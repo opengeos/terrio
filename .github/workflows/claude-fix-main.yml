@@ -21,17 +21,19 @@ name: Claude fix main CI
 #     find the marker.
 #   - A failure that survives the rerun, a failure on a commit that a `ci-fix/` pull request
 #     produced, and a fix or publish job that fails all file an issue rather than trying again.
-#   - Claude has no shell and no git: it reads the logs and the code and edits files. No code from
-#     the checkout runs next to its token (a build script or test could read it from the Claude
-#     process), so the fix is tested by the pull request's own CI. The workflow runs `cargo fmt`
-#     (which runs no project code) and commits. A separate job pushes with AUTOFIX_TOKEN, after a
-#     check that the commit carries no token and leaves `.github/` alone. AUTOFIX_TOKEN is a
-#     maintainer's token (see claude-autofix.yml) that can also write commit statuses: a push or
-#     pull request made with GITHUB_TOKEN wouldn't start CI. Claude reads and writes only inside
-#     the checkout.
+#   - Claude has no shell and no git: it reads the logs and the code and edits files, only inside
+#     the checkout. No code from the checkout runs next to its token (a build script or test could
+#     read it from the Claude process), so the fix is tested by the pull request's own CI. Once the
+#     changed files pass the path check below, the workflow runs rustfmt on them (it runs no
+#     project code) and commits. A separate job pushes with AUTOFIX_TOKEN, after checking that the
+#     commit carries no token and passes the path check again. AUTOFIX_TOKEN is a maintainer's
+#     token (see claude-autofix.yml) that can also write commit statuses: a push or pull request
+#     made with GITHUB_TOKEN wouldn't start CI.
 #   - The fix pull request's CI runs Claude's code with the repository's secrets before review, an
-#     accepted risk for code that only edits sources and tests: a fix that touches `.github/`,
-#     `.cargo/`, a `build.rs`, a `Cargo.toml`, `Cargo.lock` or the toolchain file isn't pushed.
+#     accepted risk for a change confined to sources and tests: a fix may only touch
+#     `crates/*/{src,tests,benches}/`, `python/{src,tests,python}/` and `js/{src,tests}/`, and no
+#     `build.rs`, `Cargo.toml`, `package.json` or `pyproject.toml` there. Anything else (workflows,
+#     scripts, manifests, Cargo config, the toolchain) goes to a maintainer as an issue.
 
 on:
   workflow_run:
@@ -174,7 +176,7 @@ jobs:
           mkdir -p .cifix/logs
           echo .cifix >> .git/info/exclude
           gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&event=push&per_page=50" \
-            --jq '.workflow_runs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)\t\(.html_url)"' > .cifix/runs.tsv
+            --jq '.workflow_runs[] | select(.name == "CI" or .name == "CI (macOS and Windows)" or .name == "CI (npm and conformance)") | select(.conclusion == "failure") | "\(.id)\t\(.name)\t\(.html_url)"' > .cifix/runs.tsv
           : > .cifix/jobs.tsv
           while IFS=$'\t' read -r id name url; do
             gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" < /dev/null \
@@ -232,9 +234,21 @@ jobs:
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           [ -s .cifix/report.md ] || { echo "::error::No .cifix/report.md."; exit 1; }
           if [ "$verdict" = fix ]; then
-            cargo fmt --all
             git add -A
             git diff --cached --quiet && { echo "::error::Verdict fix, but nothing changed."; exit 1; }
+            # The fix pull request's CI runs this commit with the repository's secrets before anyone
+            # reviews it, so it may change only sources and tests: no workflow, manifest, build script,
+            # package script, toolchain or Cargo config. The report job files an issue otherwise.
+            # Checked before anything else runs on the edited tree.
+            allowed='^(crates/[^/]+/(src|tests|benches)/|python/(src|tests|python)/|js/(src|tests)/)'
+            if git diff --cached --name-only | grep -Ev "$allowed" | grep . ||
+              git diff --cached --name-only | grep -E '(^|/)(build\.rs|Cargo\.toml|package\.json|pyproject\.toml)$'; then
+              echo "::error::The fix changes files outside the source and test directories (listed above)."
+              exit 1
+            fi
+            # rustfmt itself rather than cargo fmt, which would read Cargo configuration.
+            git diff --cached --name-only --diff-filter=AM -z -- '*.rs' | xargs -0 -r rustfmt --edition 2024 --config-path rustfmt.toml
+            git add -A
             [ -s .cifix/commit.txt ] || { echo "::error::No .cifix/commit.txt."; exit 1; }
             git commit -q -F .cifix/commit.txt
             git bundle create .cifix/fix.bundle HEAD --not "$SHA"
@@ -315,11 +329,11 @@ jobs:
           git fetch -q "$DIR/fix.bundle" "HEAD:refs/cifix"
           new=$(git rev-parse refs/cifix)
           git merge-base --is-ancestor "$SHA" "$new"
-          # The pull request's CI runs this commit with the repository's secrets before anyone reviews
-          # it, so a change to the workflows or to how the code is built goes to a maintainer instead
-          # (the report job files the issue).
-          if ! git diff --quiet "$SHA" "$new" -- .github/ .cargo/ ':(glob)**/build.rs' ':(glob)**/Cargo.toml' Cargo.lock 'rust-toolchain*'; then
-            echo "::error::The fix changes the workflows or the build configuration, which this workflow doesn't push."
+          # Checked again here, from the bundle itself (see "Commit and bundle").
+          allowed='^(crates/[^/]+/(src|tests|benches)/|python/(src|tests|python)/|js/(src|tests)/)'
+          if git diff --name-only "$SHA" "$new" | grep -Ev "$allowed" | grep . ||
+            git diff --name-only "$SHA" "$new" | grep -E '(^|/)(build\.rs|Cargo\.toml|package\.json|pyproject\.toml)$'; then
+            echo "::error::The fix changes files outside the source and test directories (listed above)."
             exit 1
           fi
           git push origin "$new:refs/heads/$branch"
@@ -338,7 +352,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=success -f context="$MARKER" -f description="Fix proposed" -f target_url="$url" --silent
           # Auto-merge waits only for required checks, which are the Linux ci.yml jobs.
           # A refused auto-merge leaves the pull request for a maintainer; the fix still stands.
-          if [ "$AUTOMERGE" = true ] && [ -z "$(cut -f2 "$DIR/jobs.tsv" | grep -vx CI || true)" ]; then
+          if [ "$AUTOMERGE" = true ] && [ -s "$DIR/jobs.tsv" ] && [ -z "$(cut -f2 "$DIR/jobs.tsv" | grep -vx CI || true)" ]; then
             gh pr merge "$url" --auto --squash || echo "::warning::Auto-merge wasn't enabled for $url."
           fi
 
