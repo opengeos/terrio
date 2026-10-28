@@ -210,3 +210,14 @@ indexes and Layer/VectorDataset/GeoJSON/path values for vector indexes; path dis
 options apply only to path inputs. Retain `DatasetIndex` when writing GTI catalogs:
 writing its ordinary `layer` alone does not carry the GTI metadata. Multi-file
 outputs require a fresh basename; in-memory Shapefiles use `index.shp.zip`.
+
+Remote query strings are retained in stored locations, so sharing such a catalog
+can share signed access credentials. Python emits a `UserWarning` without echoing
+the query. Use credential-free references and environment credentials for shared
+catalogs, or separate a stored locator from the signed URL used to inspect it:
+
+```python
+index = terrio.raster_index({"/vsis3/bucket/tile.tif": signed_url})
+```
+
+This stores the credential-free mapping key; readers need their own credentials.

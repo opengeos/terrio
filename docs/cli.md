@@ -2049,7 +2049,7 @@ a filename filter is strict, as in GDAL: unrelated files and sidecars can fail
 the run. Use a filter or raster `--skip-errors` for mixed-content directories. Lazy-capable raster
 readers only inspect headers. Local GeoPackage/FlatGeobuf vector inputs use cached
 bounds when present; these cached bounds are trusted, so stale source extents must
-be refreshed before indexing. Other formats scan features in chunks where supported.
+be refreshed before indexing. Other paths, including remote datasets, scan features in chunks where supported.
 
 Both index commands support `--location-name`, `--output-layer`, `--output-crs`,
 `--source-crs-field-name`, `--source-crs-format auto|WKT|EPSG|PROJ`, `--format`
@@ -2067,9 +2067,10 @@ require known source CRSs. For nonlinear transformations, vector corner envelope
 can underestimate curved edges and miss features in spatial queries. Keep the
 source CRS, or construct densified footprints, when full edge coverage is required.
 
-Raster pixel-size filters use `sqrt(envelope_area / pixel_count)` after reprojection,
-including rotated rasters. Repeatable `--fetch-metadata KEY,FIELD,TYPE` copies header
-metadata as String, Integer or Real; `{PIXEL_SIZE}` selects the computed size.
+Raster pixel-size filters use `sqrt(envelope_area / source_pixel_count)` after
+reprojection, including rotated rasters. The area uses the suggested warped-grid
+envelope, while the pixel count remains the original source width times height. Repeatable `--fetch-metadata KEY,FIELD,TYPE` copies header
+metadata as String, Integer or Real; the reserved GDAL key `{PIXEL_SIZE}` selects the computed size.
 Missing metadata becomes null; invalid numeric metadata is rejected. Integer
 `{PIXEL_SIZE}` fields truncate toward zero, matching GDAL. Non-finite Real metadata
 follows the output driver's representation; GeoPackage stores NaN as null, as GDAL does.

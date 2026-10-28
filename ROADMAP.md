@@ -49,9 +49,10 @@ and drivers below.
       maximum distance and curvature/refraction controls, with explicit input nodata behavior.
       Done in [#240](https://github.com/opengeos/terrio/pull/240), through Rust, CLI/MCP, Python
       and JavaScript; projected DEM comparisons are registered in conformance.
-- [x] Raster/vector footprint index creation across Rust, CLI/MCP, Python and JavaScript;
-      GTI metadata in GeoPackage/FlatGeobuf, discovery/filtering and source-CRS fields.
-      Creates new indexes or replaces single-file outputs; append/STAC/XML options deferred.
+- [x] Create new raster/vector footprint indexes and replace single-file outputs across
+      Rust, CLI/MCP, Python and JavaScript, with GTI metadata in GeoPackage/FlatGeobuf,
+      discovery/filtering and source-CRS fields. Done in [#347](https://github.com/opengeos/terrio/pull/347).
+      Append/update, STAC profiles and XML companions remain separate future extensions.
 - [x] Indexed raster catalogs: GTI-compatible GeoPackage/FlatGeobuf tile indexes, spatial source
       selection, compositing order, mixed-CRS sources and a bounded source cache. Done in
       [#249](https://github.com/opengeos/terrio/pull/249), with nested VRT export protection

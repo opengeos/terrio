@@ -1,7 +1,8 @@
 //! Dataset footprint indexes, including metadata for GDAL's GTI raster driver.
 //!
-//! Raster footprints use only the source header: creating an index does not read
-//! raster pixels. Vector footprints are layer envelopes, not feature footprints.
+//! Raster footprints are computed from source headers. Lazy-capable drivers avoid
+//! pixel decoding; other drivers use their existing whole-reader fallback.
+//! Vector footprints are layer envelopes, not feature footprints.
 use crate::crs::{SpatialRef, Transformer};
 use crate::{Error, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, LazyRaster, Result};
 use std::collections::{HashMap, HashSet};
