@@ -23,7 +23,7 @@ terrio owes its design to [GDAL](https://gdal.org): to Frank Warmerdam, who star
 Even Rouault, its long-time lead maintainer, and to the hundreds of developers who have built it
 since, with the organizations that fund their work. terrio's command names and options, the meaning
 of those options, the behavior of its drivers and many of its algorithms come from more than
-twenty-five years of their work, much of it by volunteers. GDAL is also the reference terrio
+twenty-five years of their work. GDAL is also the reference terrio
 is tested against, and an optional backend for the formats terrio cannot read itself.
 
 Several parts of terrio are ports of GDAL code (MIT licence), each attributed in
@@ -53,7 +53,7 @@ tolerances. If terrio is useful to you, please consider
 ## PROJ and PDAL
 
 [PROJ](https://proj.org) and [PDAL](https://pdal.io) are, with GDAL, the reference terrio measures
-itself against: its commands, options and outputs follow PDAL's, and its tests compare its
+itself against: its point cloud commands and filters follow PDAL's, and its tests compare its
 coordinates and point clouds with theirs.
 
 - The map projections in `crates/terrio-crs/src/` are ported from PROJ (MIT licence). The
