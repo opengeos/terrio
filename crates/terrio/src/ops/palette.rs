@@ -174,9 +174,11 @@ fn map_pixels(
     source_nodata: Option<u8>,
 ) -> Vec<u8> {
     let mut errors = vec![[0i32; 3]; width + 2];
-    // A dense cache is bounded at 64 KiB (5 bits) or 32 MiB (8 bits),
-    // and avoids a linear palette scan per pixel after a hash-cache cap.
-    let mut cache = vec![u16::MAX; (1usize << options.bit_depth).pow(3)];
+    // Small full-precision images need at most one entry per pixel. Larger
+    // images use a dense cache to avoid a cap-and-miss cliff; 5-bit queries
+    // always fit in a 64 KiB dense table.
+    let mut small_cache = (options.bit_depth == 8 && rgb.len() <= 65_536).then(HashMap::new);
+    let mut cache = if small_cache.is_none() { vec![u16::MAX; (1usize << options.bit_depth).pow(3)] } else { Vec::new() };
     let mut output = Vec::with_capacity(rgb.len());
     let levels = 1u32 << options.bit_depth;
     for (y, row) in rgb.chunks_exact(width).enumerate() {
@@ -210,7 +212,9 @@ fn map_pixels(
             let query = c.map(|v| (((v as u32 * levels / 256) * 255) / (levels - 1)) as u8);
             let cube = c.map(|v| v as usize * levels as usize / 256);
             let key = (cube[0] * levels as usize + cube[1]) * levels as usize + cube[2];
-            let index = if cache[key] == u16::MAX {
+            let index = if let Some(cache) = &mut small_cache {
+                *cache.entry(query).or_insert_with(|| nearest(query, table, nodata))
+            } else if cache[key] == u16::MAX {
                 let index = nearest(query, table, nodata);
                 cache[key] = index as u16;
                 index
@@ -648,6 +652,27 @@ mod tests {
         assert_eq!(result.color_table.len(), 256);
         assert_eq!(result.color_table[0], [0, 0, 0, 0]);
         assert_eq!(result.color_table[255], [254, 254, 254, 255]);
+    }
+    #[test]
+    fn high_nodata_padding_matches_gdal_virtual_palette() {
+        let source = super::super::build_raster_data(
+            super::super::Grid { width: 6, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+            RasterData::U8([1, 16, 32, 48, 64, 240].repeat(3)),
+            3,
+            None,
+            &Default::default(),
+        )
+        .unwrap();
+        let result =
+            rgb_to_palette(&source, &PaletteOptions { color_count: 2, output_nodata: Some(200), dither: false, ..Default::default() })
+                .unwrap();
+        // GDAL 3.13.3 GDALG exposes transparent black padding and can select
+        // its index 2 for a valid dark pixel. GeoTIFF normalizes non-nodata alpha.
+        assert_eq!(result.raster.data.to_f64_vec(), [2., 0., 0., 0., 0., 1.]);
+        assert_eq!(result.color_table[0], [8, 8, 8, 255]);
+        assert_eq!(result.color_table[1], [136, 136, 136, 255]);
+        assert_eq!(result.color_table[2], [0; 4]);
+        assert_eq!(result.color_table[200], [0; 4]);
     }
     #[test]
     fn full_precision_retains_first_occurrence_and_nearest_ties() {

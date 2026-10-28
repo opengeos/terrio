@@ -1177,3 +1177,8 @@ Palette lookup uses a dense u16 cache: 64 KiB at 5-bit precision or 32 MiB at
 cache. The output files were byte-identical. These timings are local observations,
 not performance thresholds; the fixed-size cache avoids repeated linear palette
 scans after 65,536 distinct query colors.
+
+For full-precision palette mapping, images of up to 65,536 pixels use a sparse
+cache bounded by their pixel count. Larger images retain the dense 32 MiB table;
+5-bit mapping uses the 64 KiB table. This avoids the large fixed allocation on
+small conversions without reintroducing capped-cache misses on large images.

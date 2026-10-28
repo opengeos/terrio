@@ -488,12 +488,11 @@ impl PyRaster {
         let mut options = options_;
         // A raster read by window is written as a tile archive a tile row at a time.
         let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
-        if self.inner.dataset().is_none()
-            && matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles))
-        {
-            if self.inner.has_mask() {
-                return Err(crate::invalid("tile archive writes do not preserve dataset masks; use an explicit alpha band"));
-            }
+        let tile_archive = matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles));
+        if tile_archive && self.inner.has_mask() {
+            return Err(crate::invalid("tile archive writes do not preserve dataset masks; use an explicit alpha band"));
+        }
+        if self.inner.dataset().is_none() && tile_archive {
             return py.detach(|| self.inner.write(path, &options)).py();
         }
         if options.mask.is_none() && matches!(driver, Some(terrio::formats::RasterDriver::GTiff | terrio::formats::RasterDriver::Cog)) {
@@ -526,6 +525,13 @@ impl PyRaster {
         let bytes = py
             .detach(|| {
                 let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(filename));
+                if matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles))
+                    && self.inner.has_mask()
+                {
+                    return Err(terrio::Error::InvalidArgument(
+                        "tile archive writes do not preserve dataset masks; use an explicit alpha band".into(),
+                    ));
+                }
                 if matches!(driver, Some(terrio::formats::RasterDriver::GTiff | terrio::formats::RasterDriver::Cog)) {
                     options.mask = self.inner.read_mask(Window::full(self.inner.width(), self.inner.height()), None)?;
                 }

@@ -2058,7 +2058,10 @@ pixel can become nodata after dithering. An automatically generated palette rese
 zero for invalid pixels; a supplied map uses invalid-pixel handling only when
 `--output-nodata` is given, following GDAL. Reserving a nodata index inserts
 a table slot, shifts later entries and drops the old last entry if the table
-would exceed 256 entries; this also follows GDAL for supplied palettes.
+would exceed 256 entries; this also follows GDAL for supplied palettes. A nodata
+index beyond the table pads it with transparent black, and valid pixels may map
+to those padding entries, as in GDAL's virtual output. GeoTIFF normalizes their
+alpha to opaque unless the entry is the declared nodata index.
 
 `terrio palette-to-rgb INPUT OUTPUT [--rgba]` expands indexed pixels to three
 or four Byte bands, and `terrio attach-palette PALETTE INPUT OUTPUT` replaces a

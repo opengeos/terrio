@@ -652,6 +652,9 @@ impl Dataset {
                     return Err(JsError::new("reprojected toBytes does not preserve dataset masks; use an explicit alpha band"));
                 }
                 let effective_driver = driver.or_else(|| RasterDriver::for_extension(filename));
+                if matches!(effective_driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && r.has_mask() {
+                    return Err(JsError::new("tile archive writes do not preserve dataset masks; use an explicit alpha band"));
+                }
                 let mask = if matches!(effective_driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
                     r.read_mask(window, o.overview).map_err(js_err)?
                 } else {

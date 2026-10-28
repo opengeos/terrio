@@ -2361,6 +2361,9 @@ test("masked toBytes reprojection is refused explicitly", () => {
   const copy = terrio.open(dataset.toBytes("output.tif"), "copy.tif");
   assert.throws(() => copy.toBytes("reprojected.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
   assert.ok(dataset.toBytes("output.asc").length > 0);
+  for (const extension of ["pmtiles","mbtiles"]) {
+    assert.throws(() => copy.toBytes(`output.${extension}`), /dataset masks/);
+  }
   copy.free();
   dataset.free();
 });

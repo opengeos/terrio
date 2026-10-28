@@ -219,6 +219,16 @@ def test_palette_sidecar_destination_and_malformed_tables(tmp_path, gdal):
                 else:
                     terrio.attach_palette(str(palette), [[1, 2, 3, 255]], str(path))
             assert not path.exists()
+            result = (
+                terrio.palette_to_rgb(str(palette))
+                if operation == "expand"
+                else terrio.attach_palette(str(palette), [[1, 2, 3, 255]])
+            )
+            with pytest.raises(ValueError, match="dataset masks"):
+                result.write(str(path))
+            with pytest.raises(ValueError, match="dataset masks"):
+                result.to_bytes(path.name)
+            assert not path.exists()
     oversized = tmp_path / "oversized.txt"
     with oversized.open("wb") as stream:
         stream.truncate(10 * 1024 * 1024 + 1)
