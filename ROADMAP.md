@@ -76,6 +76,11 @@ documented; additional feature scope belongs in separate tracking issues.
 [#289](https://github.com/opengeos/terrio/issues/289) tracks the remaining unified GDAL
 commands. Command-group progress:
 
+- [ ] COG validation: GDAL 3.13 structural rules and full compressed-block checks,
+      uploaded TIFF bytes through Rust/Python/JavaScript, and CLI/MCP options.
+      Proposed in [#374](https://github.com/opengeos/terrio/pull/374), with real-data
+      conformance and measured remote header/full-check I/O.
+
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
       [#306](https://github.com/opengeos/terrio/pull/306), through Rust, CLI/MCP, Python and
