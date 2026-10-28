@@ -1173,3 +1173,10 @@ On the 1024×1024 random Float32 COG regression, automatic remote validation
 transferred 65,536 bytes in one GET. Explicit full checking transferred
 4,955,322 bytes in 76 GETs from the same source and detected the damaged final
 trailer. These are observed transfer counts, not timing targets.
+
+Local full validation also measures reads from the underlying file. On a
+2048×2048 Float32 COG with 128-pixel tiles, the buffered path read 5,688,654
+bytes; direct boundary reads read 7,897 bytes, with identical validation
+results and one source-file open per call. The GDAL profile now uses direct
+local reads for full checking. Python uploaded-byte validation borrows immutable
+bytes instead of duplicating the full payload.

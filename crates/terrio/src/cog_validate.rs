@@ -377,7 +377,7 @@ pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> 
             validate_reader(&mut crate::http::RangeReader::open(&remote)?, None, options, false)
         }
         Location::Local(p) => {
-            let mut f = std::io::BufReader::new(std::fs::File::open(p)?);
+            let mut file = std::fs::File::open(p)?;
             let mut ovr = p.clone().into_os_string();
             ovr.push(".ovr");
             let ovr = std::path::Path::new(&ovr);
@@ -390,7 +390,14 @@ pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> 
             } else {
                 None
             };
-            validate_reader(&mut f, sidecar, options, true)
+            // Full checks make tiny reads at distant compressed-block boundaries.
+            // A BufReader refills after each absolute seek and reads payload bytes
+            // that validation does not need. Read the local file directly here.
+            if options.profile == CogValidationProfile::Gdal && options.full_check.unwrap_or(true) {
+                validate_reader(&mut file, sidecar, options, true)
+            } else {
+                validate_reader(&mut std::io::BufReader::new(file), sidecar, options, true)
+            }
         }
         _ => {
             let local = crate::vfs::resolve(path)?;
@@ -586,6 +593,8 @@ fn check_blocks<R: Read + Seek>(
                 offset = mask_offset;
             }
         }
+        // GDAL 3.13.3 resets ordering after an empty block too. Keep this
+        // observable policy rather than silently tightening the GDAL profile.
         *last = offset;
     }
     Ok(())
@@ -987,6 +996,58 @@ mod tests {
         let bytes = [b"II*\0\0\0\0\0".as_slice(), header.as_bytes(), ghost.as_bytes()].concat();
         let options = CogValidationOptions { profile: CogValidationProfile::Gdal, ..Default::default() };
         assert!(!validate_cog_bytes(&bytes, &options).unwrap().is_valid);
+    }
+    #[test]
+    fn gdal_sparse_blocks_reset_row_order_state() {
+        let image =
+            Ifd { width: 3, height: 1, tile: Some((1, 1)), offsets: vec![16, 0, 8], byte_counts: vec![1, 0, 1], ..Default::default() };
+        let mut errors = Vec::new();
+        let mut last = 0;
+        check_blocks(
+            &mut std::io::Cursor::new(vec![0; 32]),
+            32,
+            &image,
+            0..3,
+            "Main resolution image",
+            None,
+            (true, false, false),
+            &mut last,
+            &mut errors,
+        )
+        .unwrap();
+        assert!(errors.is_empty(), "GDAL resets on the empty middle block: {errors:?}");
+    }
+    #[test]
+    fn local_full_checks_read_only_boundary_bytes_without_buffer_refills() {
+        struct Measured {
+            file: std::fs::File,
+            bytes: usize,
+        }
+        impl Read for Measured {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.file.read(buffer)?;
+                self.bytes += n;
+                Ok(n)
+            }
+        }
+        impl Seek for Measured {
+            fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                self.file.seek(position)
+            }
+        }
+        let (_dir, path) =
+            write(&raster(2048, 2048), &driver(crate::formats::RasterDriver::Cog, &[("COMPRESS", "DEFLATE"), ("BLOCKSIZE", "128")]));
+        let options = CogValidationOptions { profile: CogValidationProfile::Gdal, ..Default::default() };
+        let mut buffered = std::io::BufReader::new(Measured { file: std::fs::File::open(&path).unwrap(), bytes: 0 });
+        let reference = validate_reader(&mut buffered, None, &options, true).unwrap();
+        let buffered_bytes = buffered.get_ref().bytes;
+        let mut direct = Measured { file: std::fs::File::open(&path).unwrap(), bytes: 0 };
+        let actual = validate_reader(&mut direct, None, &options, true).unwrap();
+        assert!(actual.is_valid, "{actual:?}");
+        assert_eq!(actual, reference);
+        assert!(direct.bytes < buffered_bytes);
+        assert_eq!(validate_cog_with_options(&path, &options).unwrap(), actual);
+        println!("local COG full validation: one source open per call, buffered={buffered_bytes} bytes, direct={} bytes", direct.bytes);
     }
     #[test]
     fn not_a_tiff() {

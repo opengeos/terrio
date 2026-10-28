@@ -24,14 +24,9 @@ def main():
         root = Path(directory)
         cases = []
         for source, bands in [('landsat.tif', [1, 2, 3]), ('USGS_1_n40w106.tif', [1])]:
-            # The test-data bundle has used both DEM names.
             source_path = args.data / source
-            if not source_path.exists() and source == 'usgs_dem.tif':
-                source_path = args.data / 'dem.tif'
             if not source_path.exists():
-                if source == 'landsat.tif':
-                    raise FileNotFoundError(source_path)
-                continue
+                raise FileNotFoundError(source_path)
             for interleave in ['PIXEL', 'BAND', 'TILE']:
                 for big in ['NO', 'YES']:
                     name = f'{source_path.stem}-{interleave}-bigtiff-{big}'

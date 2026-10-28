@@ -57,8 +57,8 @@ fn validate_cog(
         },
     };
     let v = if let Ok(bytes) = path.cast::<pyo3::types::PyBytes>() {
-        let bytes = bytes.as_bytes().to_vec();
-        with_warnings(py, || terrio::validate_cog_bytes(&bytes, &options))?
+        let bytes = bytes.as_bytes();
+        with_warnings(py, || terrio::validate_cog_bytes(bytes, &options))?
     } else {
         let path = raster_path(path)?.ok_or_else(|| invalid("validate_cog takes a path or bytes, not a terrio.Raster"))?;
         with_warnings(py, || terrio::validate_cog_with_options(&path, &options))?
