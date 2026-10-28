@@ -27,7 +27,11 @@ name: Claude fix main CI
 #     (which runs no project code) and commits. A separate job pushes with AUTOFIX_TOKEN, after a
 #     check that the commit carries no token and leaves `.github/` alone. AUTOFIX_TOKEN is a
 #     maintainer's token (see claude-autofix.yml) that can also write commit statuses: a push or
-#     pull request made with GITHUB_TOKEN wouldn't start CI.
+#     pull request made with GITHUB_TOKEN wouldn't start CI. Claude reads and writes only inside
+#     the checkout.
+#   - The fix pull request's CI runs Claude's code with the repository's secrets before review, an
+#     accepted risk for code that only edits sources and tests: a fix that touches `.github/`,
+#     `.cargo/`, a `build.rs`, a `Cargo.toml`, `Cargo.lock` or the toolchain file isn't pushed.
 
 on:
   workflow_run:
@@ -144,13 +148,15 @@ jobs:
           persist-credentials: false
 
       # The platform and extended workflows run for far longer than CI: waiting for all of them
-      # lets one diagnosis see every failure on the commit.
+      # lets one diagnosis see every failure on the commit. The wait is capped at 45 minutes so the
+      # diagnosis keeps the rest of the job's time; a run still going then is left out, and its
+      # later failure only finds the marker.
       - name: Wait for the other CI runs on the commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for _ in $(seq 90); do
+          for _ in $(seq 45); do
             pending=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&event=push&per_page=50" \
               --jq '[.workflow_runs[] | select(.name == "CI" or .name == "CI (macOS and Windows)" or .name == "CI (npm and conformance)") | select(.status != "completed")] | length')
             [ "$pending" = 0 ] && exit 0
@@ -208,7 +214,7 @@ jobs:
             --model claude-sonnet-5-5
             --max-turns 150
             --disallowedTools "Bash,Read(//proc/**),Read(//sys/**),Read(/${{ runner.temp }}/**),Read(~/.claude/**),Read(.git/config),Edit(/${{ runner.temp }}/**),Edit(.git/**),Edit(.github/**),Edit(~/.claude/**),Edit(~/.gitconfig),Edit(~/.config/git/**)"
-            --allowedTools "Read,Grep,Glob,Edit,Write"
+            --allowedTools "Read(./**),Grep,Glob,Edit(./**),Write(./**)"
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -309,8 +315,11 @@ jobs:
           git fetch -q "$DIR/fix.bundle" "HEAD:refs/cifix"
           new=$(git rev-parse refs/cifix)
           git merge-base --is-ancestor "$SHA" "$new"
-          if ! git diff --quiet "$SHA" "$new" -- .github/; then
-            echo "::error::The fix changes .github/, which this workflow doesn't push."
+          # The pull request's CI runs this commit with the repository's secrets before anyone reviews
+          # it, so a change to the workflows or to how the code is built goes to a maintainer instead
+          # (the report job files the issue).
+          if ! git diff --quiet "$SHA" "$new" -- .github/ .cargo/ ':(glob)**/build.rs' ':(glob)**/Cargo.toml' Cargo.lock 'rust-toolchain*'; then
+            echo "::error::The fix changes the workflows or the build configuration, which this workflow doesn't push."
             exit 1
           fi
           git push origin "$new:refs/heads/$branch"
@@ -328,8 +337,9 @@ jobs:
           echo "$url"
           gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=success -f context="$MARKER" -f description="Fix proposed" -f target_url="$url" --silent
           # Auto-merge waits only for required checks, which are the Linux ci.yml jobs.
+          # A refused auto-merge leaves the pull request for a maintainer; the fix still stands.
           if [ "$AUTOMERGE" = true ] && [ -z "$(cut -f2 "$DIR/jobs.tsv" | grep -vx CI || true)" ]; then
-            gh pr merge "$url" --auto --squash
+            gh pr merge "$url" --auto --squash || echo "::warning::Auto-merge wasn't enabled for $url."
           fi
 
       - name: Rerun the failed jobs
