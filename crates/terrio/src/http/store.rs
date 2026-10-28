@@ -441,12 +441,13 @@ fn write_request_with(
         Some(_) if signs_payload(&url, payload) => payload.sha256()?,
         Some(_) => UNSIGNED_PAYLOAD.to_string(),
     };
+    let unsigned = payload_hash == UNSIGNED_PAYLOAD;
     // A signed payload hash also made the service refuse a file that changed while it was sent.
     // Without one, the file's size and modification time are compared before and after (best
     // effort: a same-size change within the timestamp resolution goes unnoticed). Stamped before
     // the length is read, so that a change between the two is caught.
     let unsigned_file = match payload {
-        Payload::File(path, _) if payload_hash == UNSIGNED_PAYLOAD => Some((path, file_stamp(path)?)),
+        Payload::File(path, _) if unsigned => Some((path, file_stamp(path)?)),
         _ => None,
     };
     let length = payload.len()?;
@@ -491,7 +492,7 @@ fn write_request_with(
                 Ok(r) => eprintln!(
                     "terrio: {method} {} ({length} bytes{}) -> {}",
                     redact(&url),
-                    match (signed, payload_hash == UNSIGNED_PAYLOAD) {
+                    match (signed, unsigned) {
                         (true, true) => ", signed, unsigned payload",
                         (true, false) => ", signed",
                         _ => "",
@@ -554,7 +555,8 @@ fn write_request_with(
         {
             if (200..300).contains(&status)
                 && let Some((path, before)) = &unsigned_file
-                && file_stamp(path)? != *before
+                // A file removed or renamed since is reported as changed too.
+                && file_stamp(path).ok().as_ref() != Some(before)
             {
                 return Err(Error::Io(std::io::Error::other(format!(
                     "{}: changed while it was uploaded to {}; the object may not match it, upload it again",
