@@ -2072,3 +2072,13 @@ test("object-store listing rejects HTML and error roots returned with status 200
     await assert.rejects(terrio.listUrl("s3://bucket/dir", {fetch: async () => new Response(body)}), /not an XML object-store listing/);
   }
 });
+
+test("raster blend alpha and options", () => {
+  const base = terrio.rasterFromArray(new Uint8Array([30, 80, 170, 255]), 1, 1, [10, 1, 0, 20, 0, -1]);
+  const overlay = terrio.rasterFromArray(new Uint8Array([250, 20, 0, 0]), 1, 1, [10, 1, 0, 20, 0, -1]);
+  const out = terrio.blend(base, overlay);
+  assert.deepEqual([1,2,3,4].map(b => out.readBand(b)[0]), [30, 80, 170, 255]);
+  assert.throws(() => terrio.blend(base, overlay, { operator: "bad" }), /operator/);
+  assert.throws(() => terrio.blend(base, overlay, { opacity: 101 }), /opacity/);
+  out.free(); overlay.free(); base.free();
+});

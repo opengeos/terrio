@@ -33,6 +33,8 @@ pub(crate) struct GeoTags {
     pub band_metadata: Vec<(usize, String, String)>,
     /// Descriptive properties, including TIFF photometric colors and GDAL role overrides.
     pub band_properties: Vec<crate::BandMetadata>,
+    /// TIFF palette converted from UInt16 channels to Byte RGBA.
+    pub color_table: Vec<[u8; 4]>,
     /// Whether the raster type is `RasterPixelIsPoint`.
     pub pixel_is_point: bool,
     /// The `GDAL_NODATA` value.
@@ -176,6 +178,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
                 | 258
                 | 259
                 | 277
+                | 320
                 | 338
                 | 339
                 | MODEL_PIXEL_SCALE
@@ -276,6 +279,12 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
         })
     };
     let photometric = shorts(PHOTOMETRIC).and_then(|s| s.first()).copied().unwrap_or(1);
+    if photometric == 3
+        && let Some(map) = shorts(320)
+    {
+        let n = map.len() / 3;
+        out.color_table = (0..n).map(|i| [(map[i] / 257) as u8, (map[n + i] / 257) as u8, (map[2 * n + i] / 257) as u8, 255]).collect();
+    }
     let samples = shorts(277).and_then(|s| s.first()).copied().unwrap_or(1) as usize;
     let jpeg = shorts(259).and_then(|s| s.first()).copied() == Some(7);
     let base = match photometric {
@@ -913,6 +922,7 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     let has_nodata = tags.nodata.is_some();
     let mut ds = crate::RasterDataset::with_driver(raster, crate::formats::RasterDriver::GTiff, has_nodata);
     ds.band_metadata = tags.band_properties.clone();
+    ds.color_table = tags.color_table.clone();
     ds.gcps = tags.gcps.clone();
     if !tags.band_nodata.is_empty() {
         ds.band_nodata = (1..=samples).map(|b| tags.band_nodata.iter().find(|(i, _)| *i == b).map(|(_, v)| *v).or(tags.nodata)).collect();

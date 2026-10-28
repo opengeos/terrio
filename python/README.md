@@ -174,3 +174,8 @@ only_best=True)`; `convert(..., ct_opt={"ALLOW_BALLPARK": "NO", "ONLY_BEST": "YE
 does after `PromoteTo3D`. Warnings identify horizontal datum fallbacks,
 missing grids and operations outside their area. `warp(..., kernel_version="3.13")`
 selects GDAL 3.13 resampling behavior; the default remains `"3.12"`.
+
+`terrio.blend(color, overlay, dst=None, operator="multiply", opacity=75)` composes
+same-sized Byte rasters or paths, with GDAL's ten raster blend operators and integer
+opacity percentages. Alpha controls transparency; nodata/masks are ignored. Inputs
+and output are materialized; see the CLI blend reference for band-count rules.

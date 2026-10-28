@@ -823,6 +823,30 @@ def suite_raster_query(ctx):
     return suite
 
 
+def suite_blend(ctx):
+    """Raster image composition against GDAL 3.13."""
+    if missing_modules("osgeo"):
+        s = Suite("blend", "Raster blending", "`gdal raster blend`", "All ten operators need GDAL >= 3.13.")
+        s.skipped = "needs osgeo"
+        return s
+    from osgeo import gdal
+
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        s = Suite("blend", "Raster blending", "`gdal raster blend`", "All ten operators need GDAL >= 3.13.")
+        s.skipped = "needs GDAL >= 3.13 for all ten blend operators"
+        return s
+    return suite_json_ops(
+        ctx, "blend", "compare_blend_with_gdal.py", "Raster blending",
+        "`gdal raster blend`",
+        "Landsat colors: all ten operators, 1–4 band inputs, zero/partial/full opacity, "
+        "alpha and byte boundaries, plus OPERA GeoTIFF/PNG palettes. Pixels, type, nodata, CRS, "
+        "geotransform and color interpretations. GDAL reference kernels use whole datasets for generic "
+        "operators and lazy GDALG bands for source-over/HSV; unsafe mixed-band and gray-alpha "
+        "reference inputs are normalized to RGBA (documented GDAL 3.13.3 bugs).",
+        1,
+    )
+
+
 def suite_raster_pixel(ctx):
     """Pixel-wise raster commands against GDAL's unified ``gdal raster`` commands."""
     return suite_json_ops(
@@ -1807,6 +1831,7 @@ SUITES = OrderedDict(
 
         ("raster-query", suite_raster_query),
         ("raster-pixel", suite_raster_pixel),
+        ("blend", suite_blend),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),

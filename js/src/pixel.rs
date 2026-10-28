@@ -156,3 +156,27 @@ pub fn as_features(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let layer = terrio::ops::as_features::as_features(&ds, &o).map_err(js_err)?;
     Ok(Dataset::from_layers(vec![layer], VectorDriver::GeoJSON))
 }
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct BlendArgs {
+    operator: String,
+    opacity: u8,
+}
+impl Default for BlendArgs {
+    fn default() -> Self {
+        Self { operator: "src-over".into(), opacity: 100 }
+    }
+}
+/// Blends equal-sized Byte images. Options: operator (GDAL name), opacity (0..100).
+#[wasm_bindgen]
+pub fn blend(src: JsValue, overlay: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    let a: BlendArgs = parse_options(&options)?;
+    let o = terrio::ops::blend::BlendOptions {
+        operator: terrio::ops::blend::BlendOperator::parse(&a.operator).map_err(js_err)?,
+        opacity: a.opacity,
+    };
+    let base = input_raster(&src)?;
+    let overlay = input_raster(&overlay)?;
+    Ok(Dataset::from_raster(terrio::ops::blend::blend(&base, &overlay, &o).map_err(js_err)?))
+}

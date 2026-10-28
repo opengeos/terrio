@@ -69,6 +69,7 @@ __all__ = [
     "enhance",
     "enhance_luts",
     "unscale",
+    "blend",
     "nodata_to_alpha",
     "reclassify",
     "as_features",
@@ -1805,3 +1806,17 @@ def move_raster(
     error_threshold: float | None = None,
     ignore_cog_layout_break: bool = False,
 ) -> dict[str, Any]: ...
+def blend(
+    src: str | Raster,
+    overlay: str | Raster,
+    dst: str | None = None,
+    *,
+    operator: str = "src-over",
+    opacity: int = 100,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster:
+    """Blends equal-sized Byte images, with GDAL operators and opacity 0..100."""
+    ...

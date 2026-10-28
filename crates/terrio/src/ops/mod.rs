@@ -30,6 +30,7 @@
 //! `[x_origin, pixel_width, 0, y_origin, 0, -pixel_height]`.
 
 pub mod as_features;
+pub mod blend;
 pub mod calc;
 pub mod compare;
 pub mod concat;

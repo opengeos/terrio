@@ -296,6 +296,7 @@ impl LazyRaster {
         if let Inner::Tiff(t) = &self.inner {
             header.raster.metadata = t.tags.metadata.clone();
             header.band_metadata = t.tags.band_properties.clone();
+            header.color_table = t.tags.color_table.clone();
             header.gcps = t.tags.gcps.clone();
             header.raster.crs = t.tags.crs_info();
         }
@@ -734,6 +735,7 @@ impl LazyRaster {
                 has_nodata: ds.has_nodata,
                 band_nodata: ds.band_nodata.clone(),
                 band_metadata: ds.band_metadata.clone(),
+                color_table: ds.color_table.clone(),
                 gcps: ds.gcps.clone(),
                 affine: ds.affine,
                 complex: ds.complex,
@@ -762,6 +764,7 @@ impl LazyRaster {
         ds.set_geo_transform(self.geo_transform());
         if let Inner::Tiff(t) = &self.inner {
             ds.band_metadata = t.tags.band_properties.clone();
+            ds.color_table = t.tags.color_table.clone();
             ds.gcps = t.tags.gcps.clone();
         }
         ds
@@ -830,6 +833,7 @@ impl LazyRaster {
         header.raster.crs = t.tags.crs_info();
         header.raster.metadata = t.tags.metadata.clone();
         header.band_metadata = t.tags.band_properties.clone();
+        header.color_table = t.tags.color_table.clone();
         header.gcps = t.tags.gcps.clone();
         let rows = crate::ops::strips::strip_rows(width, bands, value_size, block);
         let mut out = crate::ops::strips::StripWriter::create(&header, path, options)?;

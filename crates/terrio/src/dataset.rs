@@ -23,6 +23,8 @@ pub struct RasterDataset {
     pub band_nodata: Vec<Option<f64>>,
     /// Descriptive band properties, in band order; empty entries use driver defaults.
     pub band_metadata: Vec<BandMetadata>,
+    /// RGBA palette entries of a single-band indexed image, empty for direct colors.
+    pub color_table: Vec<[u8; 4]>,
     /// Ground control points in the raster CRS, retained instead of inventing an affine grid.
     pub gcps: Vec<Gcp>,
     /// The geotransform of a rotated or south-up raster, which the raster's origin and cell sizes
@@ -155,6 +157,7 @@ impl RasterDataset {
             has_nodata,
             band_nodata: Vec::new(),
             band_metadata: Vec::new(),
+            color_table: Vec::new(),
             gcps: Vec::new(),
             affine: None,
             complex: false,
@@ -726,6 +729,7 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
     let options = RasterWriteOptions {
         geo_transform: options.geo_transform.or(ds.affine),
         gcps: options.inherited_gcps(ds, driver),
+        color_table: if options.color_table.is_empty() { ds.color_table.clone() } else { options.color_table.clone() },
         band_metadata: if options.band_metadata.is_empty() { ds.band_metadata.clone() } else { options.band_metadata.clone() },
         ..options.clone()
     };

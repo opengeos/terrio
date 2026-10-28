@@ -164,6 +164,8 @@ enum Command {
     FillNodata(cmd::fill_nodata::Args),
     /// Apply band scales and offsets to get physical values (like gdal raster unscale).
     Unscale(cmd::pixel::UnscaleArgs),
+    /// Blend two Byte images with alpha and opacity.
+    Blend(cmd::pixel::BlendArgs),
     /// Replace nodata values with an alpha band (like gdal raster nodata-to-alpha).
     NodataToAlpha(cmd::pixel::NodataToAlphaArgs),
     /// Map values or ranges of values to new values (like gdal raster reclassify).
@@ -306,6 +308,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Sieve(a) => cmd::sieve::run(a),
         Command::FillNodata(a) => cmd::fill_nodata::run(a),
         Command::Unscale(a) => cmd::pixel::unscale(a),
+        Command::Blend(a) => cmd::pixel::blend(a),
         Command::NodataToAlpha(a) => cmd::pixel::nodata_to_alpha(a),
         Command::Reclassify(a) => cmd::pixel::reclassify(a),
         Command::AsFeatures(a) => cmd::pixel::as_features(a),
