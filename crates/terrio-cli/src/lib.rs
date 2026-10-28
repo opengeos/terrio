@@ -134,7 +134,7 @@ enum Command {
     Warp(cmd::warp::Args),
     /// Read an indexed raster catalog, selecting tiles spatially and compositing in z-order.
     Catalog(cmd::catalog::Args),
-    /// Create a vector footprint index of raster datasets, with optional GTI metadata.
+    /// Create a raster footprint index, with optional GTI metadata.
     RasterIndex(cmd::tile_index::RasterArgs),
     /// Create a raster footprint catalog with GTI virtual-raster metadata.
     GtiCreate(cmd::tile_index::RasterArgs),
