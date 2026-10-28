@@ -134,6 +134,15 @@ pub struct GtiOptions {
     /// Declare a dataset mask.
     pub mask: bool,
 }
+/// Nodata and color lists must hold one value, or one per band.
+fn check_band_lists(bands: usize, nodata: &[f64], colors: &[String]) -> Result<()> {
+    if (!nodata.is_empty() && nodata.len() != 1 && nodata.len() != bands)
+        || (!colors.is_empty() && colors.len() != 1 && colors.len() != bands)
+    {
+        return Err(invalid("GTI nodata/colors need one value or one per explicit/inferred output band"));
+    }
+    Ok(())
+}
 impl GtiOptions {
     /// Validates the characteristics and serializes the GTI metadata entries.
     pub fn metadata(&self) -> Result<Vec<(String, String)>> {
@@ -162,13 +171,7 @@ impl GtiOptions {
             if n == 0 {
                 return Err(invalid("GTI band count must be positive"));
             }
-            if (!self.nodata.is_empty() && self.nodata.len() != 1 && self.nodata.len() != n)
-                || (!self.color_interpretations.is_empty()
-                    && self.color_interpretations.len() != 1
-                    && self.color_interpretations.len() != n)
-            {
-                return Err(invalid("GTI nodata/colors need one value or one per band"));
-            }
+            check_band_lists(n, &self.nodata, &self.color_interpretations)?;
             out.push(("BAND_COUNT".into(), n.to_string()));
         }
         if !self.nodata.is_empty() {
@@ -358,17 +361,14 @@ pub fn raster_index(sources: &[RasterIndexSource], o: &RasterIndexOptions) -> Re
     }
     out.metadata.retain(|(k, _)| !k.eq_ignore_ascii_case("LOCATION_FIELD"));
     out.metadata.push(("LOCATION_FIELD".into(), o.index.location_field.clone()));
-    let inferred_bands = o.gti.band_count.unwrap_or(first.band_count);
-    for count in [o.gti.nodata.len(), o.gti.color_interpretations.len()] {
-        if count != 0 && count != 1 && count != inferred_bands {
-            return Err(invalid("GTI nodata/colors need one value or one per explicit/inferred output band"));
-        }
-    }
+    // Without an explicit band count, the GTI band lists are checked against the first source.
+    let bands = o.gti.band_count.unwrap_or(first.band_count);
+    check_band_lists(bands, &o.gti.nodata, &o.gti.color_interpretations)?;
     for (key, value) in o.gti.metadata()? {
         out.metadata.retain(|(k, _)| !k.eq_ignore_ascii_case(&key));
         out.metadata.push((key, value));
     }
-    if o.gti.band_count.unwrap_or(first.band_count) > 1 && !out.metadata.iter().any(|(k, _)| k.eq_ignore_ascii_case("INTERLEAVE")) {
+    if bands > 1 && !out.metadata.iter().any(|(k, _)| k.eq_ignore_ascii_case("INTERLEAVE")) {
         out.metadata.push(("INTERLEAVE".into(), "PIXEL".into()));
     }
     for src in sources {
@@ -578,6 +578,7 @@ impl DatasetIndex {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            // The umask applies to this mode, as it does to a newly created file.
             builder.permissions(std::fs::Permissions::from_mode(0o666));
         }
         let mut temp = builder.tempfile_in(parent)?;
@@ -798,6 +799,16 @@ mod tests {
             ..Default::default()
         };
         assert!(raster_index(&[raster()], &bad).is_err());
+        // The source is one band, so a three-value nodata list is refused even without band_count.
+        let bad = RasterIndexOptions { gti: GtiOptions { nodata: vec![0., 0., 0.], ..Default::default() }, ..Default::default() };
+        assert!(raster_index(&[raster()], &bad).is_err());
+        let bad = RasterIndexOptions {
+            gti: GtiOptions { color_interpretations: vec!["gray".into(); 2], ..Default::default() },
+            ..Default::default()
+        };
+        assert!(raster_index(&[raster()], &bad).is_err());
+        let ok = RasterIndexOptions { gti: GtiOptions { nodata: vec![0.], ..Default::default() }, ..Default::default() };
+        assert!(raster_index(&[raster()], &ok).is_ok());
     }
     #[cfg(feature = "sqlite")]
     #[test]
@@ -814,6 +825,29 @@ mod tests {
         let before = std::fs::read(&output).unwrap();
         assert!(out.write(output.to_str().unwrap(), &Default::default(), false).is_err());
         assert_eq!(std::fs::read(&output).unwrap(), before);
+    }
+    #[cfg(all(feature = "sqlite", unix))]
+    #[test]
+    fn written_index_gets_the_default_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let baseline = dir.path().join("baseline");
+        std::fs::File::create(&baseline).unwrap();
+        let output = dir.path().join("index.gpkg");
+        raster_index(&[raster()], &Default::default()).unwrap().write(output.to_str().unwrap(), &Default::default(), false).unwrap();
+        assert_eq!(mode(&output), mode(&baseline));
+        std::fs::set_permissions(&output, std::fs::Permissions::from_mode(0o640)).unwrap();
+        raster_index(&[raster()], &Default::default()).unwrap().write(output.to_str().unwrap(), &Default::default(), true).unwrap();
+        assert_eq!(mode(&output), 0o640);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn filename_filters_match_a_literal_star_in_names() {
+        assert!(wildcard("a*", "a*b"));
+        assert!(wildcard("*", "a*"));
+        assert!(wildcard("a?", "a*"));
+        assert!(!wildcard("a*c", "a*b"));
     }
 }
 
