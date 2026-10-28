@@ -756,9 +756,10 @@ def suite_mdmosaic(ctx):
     """Coordinate-aligned scientific mosaics against GDAL."""
     suite = Suite("mdmosaic", "Multidimensional mosaics", "`gdal mdim mosaic`",
                   "NOAA wind spatial/temporal tiles, gaps, overlap/nodata, nested selection, "
-                  "netCDF/Zarr snapshots and all ten numeric types: exact coordinate-aligned values, "
+                  "netCDF/Zarr snapshots, Float32-coordinate gaps, unindexed CF bounds and all ten numeric types: exact coordinate-aligned data values, "
                   "types, nodata, units and axis names. Descending inputs are normalized for a GDAL "
-                  "3.13.3 invalid-VRT bug. Within tolerance: source group paths retained rather than flattened.")
+                  "3.13.3 invalid-VRT bug. Within tolerance: source group paths retained rather than flattened, "
+                  "and Float32 coordinate types retained with only exact Float32 rounding of the reference allowed.")
     if missing_modules("osgeo", "numpy"):
         suite.skipped = "needs osgeo and numpy"
         return suite
@@ -769,10 +770,14 @@ def suite_mdmosaic(ctx):
         suite.error = tail(err or out)
         return suite
     for result in results:
-        status, detail = classify_raster(result)
-        if status == IDENTICAL and result.get("path_difference"):
-            status, detail = TOLERANCE, result["path_difference"]
-        suite.cases.append(Case(result["name"].split()[0], result["name"], status, detail))
+        classified = dict(result)
+        if result.get("permitted_coordinate_type_difference"):
+            classified["same_type"] = True
+        status, detail = classify_raster(classified)
+        differences = [result.get("path_difference"),result.get("coordinate_difference")]
+        if status in (IDENTICAL,TOLERANCE) and any(differences):
+            status, detail = TOLERANCE, "; ".join(filter(None,[detail,*differences]))
+        suite.cases.append(Case("Multidimensional mosaics", result["name"], status, detail))
     return suite
 
 

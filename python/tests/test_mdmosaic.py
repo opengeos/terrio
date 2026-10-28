@@ -119,3 +119,18 @@ def test_remote_mosaic_fetches_only_selected_chunk_bytes(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize("kind", ["string", "bytes", "store", "path", "handle", "integer"])
+def test_mosaic_requires_input_sequence(tmp_path, kind):
+    store, _ = cube_store()
+    source = {
+        "string": "a.nc",
+        "bytes": b"a.nc",
+        "store": store,
+        "path": tmp_path / "a.nc",
+        "handle": terrio.open_multidim(store),
+        "integer": 42,
+    }[kind]
+    with pytest.raises(terrio.InvalidArgumentError, match="sequence.*wrap a single input"):
+        terrio.mosaic_multidim(source)

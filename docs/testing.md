@@ -43,7 +43,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Area | Script | Checks |
 |---|---|---|
 | Dataset summaries | `scripts/compare_with_gdal.py` (`--pixels`) | size, bands, data types, nodata, geotransform, EPSG code, statistics, pixels; layers, feature counts, fields, extents, geometry types |
-| Multidimensional mosaics | `scripts/compare_mdmosaic_with_gdal.py` | NOAA wind spatial tiles, gaps, overlap/nodata priority, irregular time ranges, nested selection, netCDF/Zarr snapshots and all ten numeric types. Exact values/coordinates/types/nodata/units; source-group preservation reported within tolerance. Descending GDAL reference inputs are normalized for its invalid-VRT size/offset bug. Registered as `mdmosaic`. |
+| Multidimensional mosaics | `scripts/compare_mdmosaic_with_gdal.py` | NOAA wind spatial tiles, gaps, overlap/nodata priority, irregular time ranges, nested selection, netCDF/Zarr snapshots and all ten numeric types. Exact values/coordinates/types/nodata/units; source-group and Float32 coordinate-type preservation reported within tolerance. Descending GDAL reference inputs are normalized for its invalid-VRT size/offset bug. Registered as `mdmosaic`. |
 | Native multidimensional arrays | `scripts/compare_multidim_with_gdal.py` | GDAL MD and xarray: named axes, indexing variables, native slices/transposes, netCDF/Zarr coordinate/chunk preservation and damaged-unselected-chunk checks |
 | NetCDF and HDF5 subdatasets | `scripts/compare_with_gdal.py --subdatasets` | the subdataset lists of netCDF (groups included) and HDF5 files, HDF5 metadata, then every subdataset's summary and pixels |
 | Histograms | `scripts/compare_hist_with_gdal.py` | `terrio info --hist` vs `gdalinfo -hist` and `-json -hist`, byte for byte, with `-stats` and with histograms stored in `.aux.xml` sidecars, on every data type |
@@ -1166,3 +1166,11 @@ stores and counts response bodies after coordinate planning. Reading the full
 time step and two X samples fetches 32 bytes in one chunk request/file. Values
 are checked exactly. A separate damaged-chunk regression proves that metadata
 and views outside that source extent do not read the damaged payload.
+
+The multidimensional mosaic suite includes a Float32 0.1-degree coordinate grid
+near 40 degrees with four missing rows, and CF bounds arrays with a shared,
+unindexed size-two axis. Data values require zero tolerance. Float32 coordinate
+preservation permits only the exact nearest-Float32 conversion of GDAL's Float64
+coordinate values; numeric differences and their maximum magnitude are reported.
+Descending duplicate coordinates, coordinate memory limits before payload reads,
+packing/unit mismatches and scalar Python input rejection have dedicated regressions.

@@ -44,6 +44,9 @@ impl Drop for MdDataset {
 }
 #[wasm_bindgen(js_class=MultidimDataset)]
 impl MdDataset {
+    // Binding-internal bridge, mirroring Dataset.__handle. Weak lookup allows
+    // arrays of existing exported handles without consuming their ownership;
+    // it is excluded from generated public TypeScript declarations.
     #[wasm_bindgen(getter,js_name=__terrioMultidimId,skip_typescript)]
     pub fn handle_id(&self) -> u32 {
         self.id

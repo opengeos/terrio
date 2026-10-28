@@ -12,14 +12,14 @@ from osgeo import gdal
 gdal.UseExceptions()
 
 
-def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False):
+def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_dtype=gdal.GDT_Float64, bounds=False):
     dataset = gdal.GetDriverByName('netCDF').CreateMultiDimensional(str(path))
     root = dataset.GetRootGroup()
     dimensions = []
     for name, coordinates in axes:
         dimension = root.CreateDimension(name, None, None, len(coordinates))
-        variable = root.CreateMDArray(name, [dimension], gdal.ExtendedDataType.Create(gdal.GDT_Float64))
-        variable.Write(np.asarray(coordinates, dtype='<f8').tobytes())
+        variable = root.CreateMDArray(name, [dimension], gdal.ExtendedDataType.Create(coordinate_dtype))
+        variable.Write(np.asarray(coordinates, dtype='<f4' if coordinate_dtype == gdal.GDT_Float32 else '<f8').tobytes())
         dimensions.append(dimension)
     group = root.CreateGroup('science') if nested else root
     variable = group.CreateMDArray('wind', dimensions, gdal.ExtendedDataType.Create(dtype))
@@ -30,6 +30,10 @@ def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False):
     variable.SetNoDataValueDouble(fill)
     variable.Write(values.tobytes())
     variable.CreateAttribute('units', [], gdal.ExtendedDataType.CreateString()).Write('m/s')
+    if bounds:
+        bound_dim = root.CreateDimension('bnds', None, None, 2)
+        bound = root.CreateMDArray('lat_bnds', [dimensions[0], bound_dim], gdal.ExtendedDataType.Create(gdal.GDT_Float64))
+        bound.Write(np.zeros((len(axes[0][1]),2), dtype='<f8').tobytes())
     dataset.FlushCache()
 
 
@@ -43,7 +47,7 @@ def arrays(group):
     return result
 
 
-def comparison(reference, actual):
+def comparison(reference, actual, allow_float32_coordinates=False):
     ref = gdal.OpenEx(str(reference), gdal.OF_MULTIDIM_RASTER)
     out = gdal.OpenEx(str(actual), gdal.OF_MULTIDIM_RASTER)
     ra, oa = arrays(ref.GetRootGroup()), arrays(out.GetRootGroup())
@@ -60,7 +64,10 @@ def comparison(reference, actual):
         assert len({array.GetFullName() for array in mapped.values()}) == len(oa)
         oa = mapped
         path_difference = 'Terrio preserves source group paths; GDAL places selected nested arrays in the root group'
-    count = differing = 0
+    count = differing = within_count = 0
+    max_diff = 0
+    permitted_type_difference = False
+    unexpected_type_difference = False
     same_type = same_nodata = same_metadata = same_size = True
     for name, r in ra.items():
         a = oa[name]
@@ -72,17 +79,35 @@ def comparison(reference, actual):
             rc, ac = rd.GetIndexingVariable(), ad.GetIndexingVariable()
             if rc is not None and ac is not None:
                 rcv, acv = rc.ReadAsArray(), ac.ReadAsArray()
+                if allow_float32_coordinates and acv.dtype == np.dtype('float32'):
+                    rcv = rcv.astype('float32')
                 if not np.array_equal(rcv, acv):
                     assert len(rcv) == len(acv)
                     order = [int(np.flatnonzero(rcv == value)[0]) for value in acv]
                     assert len(set(order)) == len(order)
                     rv = np.take(rv, order, axis=axis)
-        same_type &= r.GetDataType().GetNumericDataType() == a.GetDataType().GetNumericDataType()
+        rt, at = r.GetDataType().GetNumericDataType(), a.GetDataType().GetNumericDataType()
+        rd = r.GetDimensions()
+        coordinate = len(rd) == 1 and rd[0].GetIndexingVariable() is not None and rd[0].GetIndexingVariable().GetFullName() == r.GetFullName()
+        permitted = coordinate and allow_float32_coordinates and rt == gdal.GDT_Float64 and at == gdal.GDT_Float32
+        same_type &= rt == at
+        permitted_type_difference |= permitted
+        unexpected_type_difference |= rt != at and not permitted
         same_size &= rv.shape == av.shape
         assert rv.shape == av.shape, (name, rv.shape, av.shape)
         different = (rv != av) & ~(np.isnan(rv) & np.isnan(av))
         differing += int(different.sum())
+        accepted = np.zeros(rv.shape, dtype=bool)
+        if permitted:
+            accepted = rv.astype('float32') == av
+        within_count += int((~different | accepted).sum())
         count += rv.size
+        for left, right in zip(rv[different], av[different]):
+            if np.issubdtype(rv.dtype, np.integer) and np.issubdtype(av.dtype, np.integer):
+                difference = abs(int(left)-int(right))
+            else:
+                difference = abs(float(left)-float(right))
+            max_diff = max(max_diff, difference if np.isfinite(difference) else float('inf'))
         rn, an = r.GetNoDataValue(), a.GetNoDataValue()
         same_nodata &= rn == an or (rn is not None and an is not None and np.isnan(rn) and np.isnan(an))
         same_metadata &= [d.GetName() for d in r.GetDimensions()] == [d.GetName() for d in a.GetDimensions()]
@@ -92,7 +117,9 @@ def comparison(reference, actual):
         for key in ['scale_factor', 'add_offset', 'units']:
             same_metadata &= rat.get(key) == aat.get(key)
     return dict(path_difference=path_difference, same_size=same_size, same_type=same_type, same_nodata=same_nodata, same_metadata=same_metadata,
-                differing=differing, exact=1 - differing / count, within_tol=1 - differing / count, max_diff=0 if not differing else float('inf'))
+                differing=differing, exact=1 - differing / count, within_tol=within_count / count, max_diff=max_diff,
+                permitted_coordinate_type_difference=permitted_type_difference and not unexpected_type_difference,
+                coordinate_difference='Float32 coordinate type retained instead of GDAL Float64; only exact Float32 rounding is allowed' if permitted_type_difference else '')
 
 
 def main():
@@ -109,12 +136,12 @@ def main():
     results = []
     with tempfile.TemporaryDirectory(prefix='terrio-mdmosaic-') as temporary:
         tmp = Path(temporary)
-        def case(name, pieces, dtype=gdal.GDT_Float32, nested=False, selected=False, output='nc', normalize_descending=False):
+        def case(name, pieces, dtype=gdal.GDT_Float32, nested=False, selected=False, output='nc', normalize_descending=False, coordinate_dtype=gdal.GDT_Float64, bounds=False):
             try:
                 sources = []
                 for index, (axes, data) in enumerate(pieces):
                     source = tmp / f'source-{index}.nc'
-                    create(source, axes, data, dtype, nested)
+                    create(source, axes, data, dtype, nested, coordinate_dtype, bounds)
                     sources.append(str(source))
                 reference_sources = sources
                 if normalize_descending:
@@ -127,7 +154,7 @@ def main():
                                 data = np.flip(data, axis=axis)
                             normalized.append((dimension, coordinates))
                         source = tmp / f'reference-source-{index}.nc'
-                        create(source, normalized, data, dtype, nested)
+                        create(source, normalized, data, dtype, nested, coordinate_dtype, bounds)
                         reference_sources.append(str(source))
                 reference = tmp / 'reference.vrt'
                 reference.unlink(missing_ok=True)
@@ -135,7 +162,7 @@ def main():
                 selection = ['--array', '/science/wind' if nested else 'wind'] if selected else []
                 subprocess.run(['gdal', 'mdim', 'mosaic', *reference_sources, str(reference), *selection], capture_output=True, check=True)
                 subprocess.run([args.terrio, 'mdmosaic', *sources, str(actual), *selection], capture_output=True, check=True)
-                result = comparison(reference, actual)
+                result = comparison(reference, actual, coordinate_dtype == gdal.GDT_Float32)
                 if normalize_descending:
                     result['reference_normalization'] = 'GDAL 3.13.3 descending-axis VRT size/offset bug; reference inputs flipped and output coordinate order restored'
             except subprocess.CalledProcessError as error:
@@ -146,6 +173,10 @@ def main():
             results.append(result)
         tiled = [([('lat', lat[y:y+8]), ('lon', lon[x:x+10])], values[y:y+8, x:x+10]) for y,x in [(0,0),(0,10),(8,0),(8,10)]]
         case('spatial four NOAA wind tiles', tiled)
+        case('spatial Float32 coordinate gaps', [([('lat', np.float32(40)+np.arange(8,dtype='float32')*np.float32(.1)+np.float32(i*1.2)), ('lon',lon[:5])],values[i*8:(i+1)*8,:5]) for i in range(2)], coordinate_dtype=gdal.GDT_Float32)
+        case('Float32 coordinate Zarr snapshot', [([('lat', np.float32(40)+np.arange(8,dtype='float32')*np.float32(.1)+np.float32(i*1.2)), ('lon',lon[:5])],values[i*8:(i+1)*8,:5]) for i in range(2)], coordinate_dtype=gdal.GDT_Float32, output='zarr')
+        case('CF shared unindexed bounds dimension', tiled, bounds=True)
+        case('CF unindexed bounds Zarr snapshot', tiled, bounds=True, output='zarr')
         case('descending latitude normalized GDAL reference', [([(n, c[::-1] if n == 'lat' else c) for n,c in axes], np.flip(data, axis=0)) for axes,data in tiled], normalize_descending=True)
         case('spatial missing quadrants', [tiled[0],tiled[3]])
         case('spatial gaps along both axes', [tiled[0],([('lat',lat[10:]),('lon',lon[12:])],values[10:,12:])])
@@ -158,13 +189,14 @@ def main():
         case('temporal irregular singleton ordering', [([('time',[t]),('lat',lat[:4]),('lon',lon[:5])],values[None,:4,:5]+i) for i,t in enumerate([10,17,12])])
         case('temporal irregular multisample blocks', [([('time',t),('lat',lat[:4]),('lon',lon[:5])], np.stack([values[:4,:5]+i for i in range(len(t))])) for t in [[0,1,3],[4,7]]])
         for dtype in [gdal.GDT_Byte,gdal.GDT_Int8,gdal.GDT_UInt16,gdal.GDT_Int16,gdal.GDT_UInt32,gdal.GDT_Int32,gdal.GDT_UInt64,gdal.GDT_Int64,gdal.GDT_Float64]:
-            converted = [(axes, np.abs(v)*3 + (2**53+13 if dtype in (gdal.GDT_UInt64,gdal.GDT_Int64) else 0)) for axes,v in tiled]
-            # Form 64-bit values in integer arithmetic, without a float64 round trip.
             if dtype in (gdal.GDT_UInt64,gdal.GDT_Int64):
+                # Form 64-bit values in integer arithmetic, without a float64 round trip.
                 converted = [(axes, np.abs(v).astype('int64')*3 + 2**53+13) for axes,v in tiled]
+            else:
+                converted = [(axes, np.abs(v)*3) for axes,v in tiled]
             case('types '+gdal.GetDataTypeName(dtype), converted, dtype)
     print(json.dumps(results, indent=1) if args.json else '\n'.join(str(r) for r in results))
-    return int(any('error' in r or r.get('differing') or any(v is False for k,v in r.items() if k.startswith('same_')) for r in results))
+    return int(any('error' in r or (r.get('differing') and r.get('within_tol') != 1) or any(v is False for k,v in r.items() if k.startswith('same_') and not (k == 'same_type' and r.get('permitted_coordinate_type_difference'))) for r in results))
 
 
 if __name__ == '__main__':

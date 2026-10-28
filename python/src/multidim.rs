@@ -1,7 +1,7 @@
 //! Native scientific groups and lazy named-dimension array views.
 use crate::{PyResultExt, invalid};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyTuple};
+use pyo3::types::{PyBytes, PyDict, PyString, PyTuple};
 use terrio::multidim::{self, ArrayInfo, View};
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -204,8 +204,17 @@ fn mosaic_multidim(
     dst: Option<&Bound<'_, PyAny>>,
     arrays: Option<Vec<String>>,
 ) -> PyResult<PyMdDataset> {
+    let message = "sources must be a sequence of multidimensional inputs; wrap a single input in a list";
+    if sources.is_instance_of::<PyString>()
+        || sources.is_instance_of::<PyBytes>()
+        || sources.is_instance_of::<PyDict>()
+        || sources.hasattr("__fspath__")?
+        || sources.cast::<PyMdDataset>().is_ok()
+    {
+        return Err(invalid(message));
+    }
     let mut datasets = Vec::new();
-    for source in sources.try_iter()? {
+    for source in sources.try_iter().map_err(|_| invalid(message))? {
         let source = source?;
         if let Ok(dataset) = source.cast::<PyMdDataset>() {
             datasets.push(dataset.try_borrow().map_err(|e| invalid(e.to_string()))?.inner.clone());

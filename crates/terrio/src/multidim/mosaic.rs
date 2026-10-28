@@ -3,7 +3,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Arrays to mosaic, by absolute path or unambiguous local name.
-/// Empty selects every array with at least two dimensions, like GDAL.
+/// Empty selects arrays with at least two dimensions, like GDAL.
 #[derive(Debug, Clone, Default)]
 pub struct MosaicOptions {
     /// Array selection; dimension indexing variables are included automatically.
@@ -37,7 +37,15 @@ impl Coordinate {
         }
     }
 }
+const MAX_COORDINATE_BYTES: usize = 256 * 1024 * 1024;
+fn check_coordinate_size(count: usize) -> Result<()> {
+    if count.checked_mul(std::mem::size_of::<Coordinate>()).is_none_or(|bytes| bytes > MAX_COORDINATE_BYTES) {
+        return Err(bad("mosaic coordinate buffer exceeds 256 MiB"));
+    }
+    Ok(())
+}
 fn coordinates(array: &Array) -> Result<Vec<Coordinate>> {
+    check_coordinate_size(elements(&array.shape())?)?;
     let data = array.read()?.data()?;
     use RasterData::*;
     macro_rules! integers {
@@ -98,22 +106,32 @@ fn encode_coordinates(values: &[Coordinate], dtype: DataType) -> Result<Vec<u8>>
     }
     Ok(bytes)
 }
-fn regular_float_step(a: Coordinate, b: Coordinate, step: f64) -> bool {
+fn regular_float_step(a: Coordinate, b: Coordinate, step: f64, epsilon: f64) -> bool {
     let magnitude = match (a, b) {
         (Coordinate::Float(a), Coordinate::Float(b)) => a.abs().max(b.abs()),
         _ => 0.,
     };
-    (a.distance(b) - step).abs() <= 1e-7 * step.abs() + 4. * f64::EPSILON * magnitude
+    (a.distance(b) - step).abs() <= 1e-7 * step.abs() + 4. * epsilon * magnitude
 }
 struct Axis {
     dimension: Dimension,
-    coordinate: Array,
+    coordinate: Option<Array>,
     starts: BTreeMap<usize, usize>,
 }
-fn axis(inputs: &[(usize, Dimension, Array)]) -> Result<Axis> {
+fn axis(inputs: &[(usize, Dimension, Option<Array>)]) -> Result<Axis> {
     let (_, dimension, template) = &inputs[0];
+    let Some(template) = template.as_ref() else {
+        if inputs.iter().any(|(_, d, a)| a.is_some() || d.size != dimension.size) {
+            return Err(bad(format!("unindexed dimension '{}' must have the same size in every input", dimension.path)));
+        }
+        return Ok(Axis { dimension: dimension.clone(), coordinate: None, starts: inputs.iter().map(|(id, _, _)| (*id, 0)).collect() });
+    };
     let mut vectors = Vec::new();
+    let mut input_count = 0usize;
     for (_, d, array) in inputs {
+        input_count = input_count.checked_add(d.size).ok_or_else(|| bad("coordinate size overflows"))?;
+        check_coordinate_size(input_count)?;
+        let array = array.as_ref().ok_or_else(|| bad(format!("indexing variable missing in one input for '{}'", d.path)))?;
         if array.info.dimensions.len() != 1
             || array.info.dimensions[0].path != d.path
             || array.shape() != [d.size]
@@ -132,6 +150,7 @@ fn axis(inputs: &[(usize, Dimension, Array)]) -> Result<Axis> {
         (Coordinate::Integer(a), Coordinate::Integer(b)) => Some(a - b),
         _ => None,
     });
+    let epsilon = if template.info.data_type == DataType::F32 { f32::EPSILON as f64 } else { f64::EPSILON };
     let mut starts = BTreeMap::new();
     let identical = vectors.iter().all(|v| v.len() == vectors[0].len() && v.iter().zip(&vectors[0]).all(|(a, b)| a.distance(*b) == 0.));
     let regular = step.filter(|step| {
@@ -139,7 +158,7 @@ fn axis(inputs: &[(usize, Dimension, Array)]) -> Result<Axis> {
             && vectors.iter().all(|v| {
                 v.windows(2).all(|w| match (w[1], w[0], integer_step) {
                     (Coordinate::Integer(a), Coordinate::Integer(b), Some(delta)) => a - b == delta,
-                    _ => regular_float_step(w[1], w[0], *step),
+                    _ => regular_float_step(w[1], w[0], *step, epsilon),
                 })
             })
     });
@@ -149,8 +168,13 @@ fn axis(inputs: &[(usize, Dimension, Array)]) -> Result<Axis> {
         }
         vectors[0].clone()
     } else if let Some(step) = regular {
-        if step == 0. {
-            return Err(bad("indexing variables must be strictly monotonic"));
+        let deviation = if integer_step.is_none() {
+            vectors.iter().flat_map(|v| v.windows(2)).map(|w| (w[1].distance(w[0]) - step).abs()).fold(0., f64::max)
+        } else {
+            0.
+        };
+        if deviation > step.abs() * 1e-3 {
+            return Err(bad("coordinate precision is insufficient to identify a regular grid"));
         }
         let mut origin = vectors[0][0];
         for v in &vectors {
@@ -173,7 +197,10 @@ fn axis(inputs: &[(usize, Dimension, Array)]) -> Result<Axis> {
                         (Coordinate::Float(a), Coordinate::Float(b)) => a.abs().max(b.abs()),
                         _ => 0.,
                     };
-                    let tolerance = 1e-6 + 4. * f64::EPSILON * magnitude / step.abs();
+                    // First-step rounding accumulates over distant tile origins.
+                    // Use the observed spacing variation as well as the native
+                    // coordinate precision, but never accept a half-cell shift.
+                    let tolerance = (1e-6 + 4. * epsilon * magnitude / step.abs() + deviation / step.abs() * start.abs()).min(0.25);
                     if !start.is_finite() || start < 0. || start > usize::MAX as f64 || (start - start.round()).abs() > tolerance {
                         return Err(bad("indexing variables are not aligned on a common grid"));
                     }
@@ -185,10 +212,7 @@ fn axis(inputs: &[(usize, Dimension, Array)]) -> Result<Axis> {
         }
         // Coordinate metadata is materialized, data arrays stay lazy. Bound the
         // coordinate allocation before generating a grid with a huge empty gap.
-        let bytes = length.checked_mul(template.info.data_type.size_bytes()).ok_or_else(|| bad("coordinate size overflows"))?;
-        if bytes > 256 * 1024 * 1024 {
-            return Err(bad("mosaic indexing variable exceeds 256 MiB"));
-        }
+        check_coordinate_size(length)?;
         (0..length).map(|i| origin.advance(step, integer_step, i)).collect::<Result<Vec<_>>>()?
     } else {
         let direction = step.unwrap_or(1.).signum();
@@ -196,11 +220,13 @@ fn axis(inputs: &[(usize, Dimension, Array)]) -> Result<Axis> {
             return Err(bad("indexing variables must be strictly monotonic in one direction"));
         }
         let mut values: Vec<_> = vectors.iter().flatten().copied().collect();
-        values.sort_by(|a, b| (a.distance(*b) * direction).total_cmp(&0.));
+        values.sort_by(|a, b| (a.distance(*b) * direction).partial_cmp(&0.).expect("finite coordinate difference"));
         values.dedup_by(|a, b| a.distance(*b) == 0.);
         let mut ranges = Vec::new();
         for ((dataset, _, _), v) in inputs.iter().zip(&vectors) {
-            let start = values.iter().position(|c| c.distance(v[0]) == 0.).unwrap();
+            let start = values
+                .binary_search_by(|c| (c.distance(v[0]) * direction).partial_cmp(&0.).expect("finite coordinate difference"))
+                .expect("source coordinate in union");
             if !values[start..].iter().zip(v).all(|(a, b)| a.distance(*b) == 0.) {
                 return Err(bad("irregular coordinate ranges overlap or interleave"));
             }
@@ -219,7 +245,7 @@ fn axis(inputs: &[(usize, Dimension, Array)]) -> Result<Axis> {
     info.dimensions = vec![dimension.clone()];
     let mut coordinate = Array::from_bytes(info, encode_coordinates(&output, template.info.data_type)?)?;
     coordinate.attribute_types.clone_from(&template.attribute_types);
-    Ok(Axis { dimension, coordinate, starts })
+    Ok(Axis { dimension, coordinate: Some(coordinate), starts })
 }
 
 #[derive(Clone)]
@@ -327,13 +353,32 @@ fn group_mut<'a>(root: &'a mut Group, path: &str, datasets: &[Dataset]) -> &'a m
     });
     &mut root.groups[index]
 }
+fn same_number(a: &Value, b: &Value) -> bool {
+    let integer = |v: &Value| v.as_i64().map(i128::from).or_else(|| v.as_u64().map(i128::from));
+    match (integer(a), integer(b)) {
+        (Some(a), Some(b)) => a == b,
+        (Some(a), None) => b.as_f64().is_some_and(|b| b.is_finite() && b.fract() == 0. && b as i128 == a),
+        (None, Some(b)) => a.as_f64().is_some_and(|a| a.is_finite() && a.fract() == 0. && a as i128 == b),
+        (None, None) => a.as_f64().zip(b.as_f64()).is_some_and(|(a, b)| a.is_finite() && a == b),
+    }
+}
+fn same_encoding(a: &Array, b: &Array) -> bool {
+    for (name, default) in [("scale_factor", serde_json::json!(1)), ("add_offset", serde_json::json!(0))] {
+        if !same_number(a.info.attributes.get(name).unwrap_or(&default), b.info.attributes.get(name).unwrap_or(&default)) {
+            return false;
+        }
+    }
+    let empty = serde_json::json!("");
+    a.info.attributes.get("units").unwrap_or(&empty) == b.info.attributes.get("units").unwrap_or(&empty)
+}
 fn parent(path: &str) -> &str {
     let p = path.rsplit_once('/').unwrap().0;
     if p.is_empty() { "/" } else { p }
 }
 
 /// Builds a coordinate-aligned mosaic without reading data-array payloads.
-/// Each dimension requires a numeric one-dimensional indexing variable. Multi-
+/// Changing dimensions require numeric one-dimensional indexing variables;
+/// common unindexed dimensions are retained positionally at their existing size. Multi-
 /// sample axes can be regularly spaced and aligned or disjoint irregular ranges.
 /// Singleton slices can form irregular axes. Last input wins overlaps (including nodata), and gaps use
 /// source nodata or zero. Data hyperslabs are fetched only when requested.
@@ -391,17 +436,12 @@ pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> 
         }
     }
     selected.extend(grid_mappings.iter().cloned());
-    let mut input_axes: BTreeMap<String, BTreeMap<usize, (Dimension, Array)>> = BTreeMap::new();
+    let mut input_axes: BTreeMap<String, BTreeMap<usize, (Dimension, Option<Array>)>> = BTreeMap::new();
     for (i, dataset) in datasets.iter().enumerate() {
         for path in &selected {
             if let Ok(array) = dataset.array(path) {
                 for dimension in &array.info.dimensions {
-                    let coordinate = dataset.array(
-                        dimension
-                            .indexing_variable
-                            .as_deref()
-                            .ok_or_else(|| bad(format!("dimension '{}' has no indexing variable", dimension.path)))?,
-                    )?;
+                    let coordinate = dimension.indexing_variable.as_deref().map(|path| dataset.array(path)).transpose()?;
                     if let Some((previous, _)) =
                         input_axes.entry(dimension.path.clone()).or_default().insert(i, (dimension.clone(), coordinate))
                         && previous != *dimension
@@ -424,10 +464,12 @@ pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> 
     root.attribute_types.clone_from(&datasets[0].root.attribute_types);
     for axis in axes.values() {
         group_mut(&mut root, parent(&axis.dimension.path), datasets).dimensions.push(axis.dimension.clone());
-        group_mut(&mut root, parent(&axis.coordinate.info.path), datasets).arrays.push(axis.coordinate.clone());
+        if let Some(coordinate) = &axis.coordinate {
+            group_mut(&mut root, parent(&coordinate.info.path), datasets).arrays.push(coordinate.clone());
+        }
     }
     for path in selected {
-        if axes.values().any(|a| a.coordinate.info.path == path) {
+        if axes.values().any(|a| a.coordinate.as_ref().is_some_and(|c| c.info.path == path)) {
             continue;
         }
         let arrays: Vec<_> = datasets.iter().enumerate().filter_map(|(i, d)| d.array(&path).ok().map(|a| (i, a))).collect();
@@ -437,10 +479,11 @@ pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> 
             if array.info.data_type != template.info.data_type
                 || array.info.dimensions.len() != template.info.dimensions.len()
                 || array.info.attributes.get("_FillValue") != template.info.attributes.get("_FillValue")
+                || !same_encoding(array, template)
                 || (grid_mappings.contains(&path) && array.info.attributes != template.info.attributes)
                 || array.info.dimensions.iter().zip(&template.info.dimensions).any(|(a, b)| a.path != b.path || a.name != b.name)
             {
-                return Err(bad(format!("incompatible array '{path}': dimensions, type or nodata differ")));
+                return Err(bad(format!("incompatible array '{path}': dimensions, type, nodata or encoding metadata differ")));
             }
             let starts = array.info.dimensions.iter().map(|d| axes[&d.path].starts[i]).collect();
             pieces.push(Piece { array: array.clone(), starts });
@@ -588,6 +631,77 @@ mod tests {
         let result = mosaic(&[a], &Default::default()).unwrap();
         assert_eq!(result.array("crs").unwrap().info.attributes["spatial_ref"], json!("source WKT"));
         assert_eq!(result.array("v").unwrap().info.attributes["grid_mapping"], json!("crs"));
+    }
+    #[test]
+    fn descending_irregular_shared_coordinates_are_sorted_and_deduplicated() {
+        let a = dataset(&[("y", &[9, 7, 4]), ("x", &[0])], &[1, 2, 3]);
+        let b = dataset(&[("y", &[9, 7, 4]), ("x", &[1])], &[4, 5, 6]);
+        let c = dataset(&[("y", &[3, 1]), ("x", &[0])], &[7, 8]);
+        let result = mosaic(&[a, b, c], &Default::default()).unwrap();
+        assert_eq!(result.array("y").unwrap().read().unwrap().values().unwrap(), json!([9, 7, 4, 3, 1]));
+        assert_eq!(result.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 4, 2, 5, 3, 6, 7, -9999, 8, -9999]));
+    }
+    #[test]
+    fn float32_regular_tiles_keep_gap_cells() {
+        let mut sources = Vec::new();
+        for i in 0..2 {
+            let mut source = dataset(&[("y", &[0, 1, 2, 3, 4, 5, 6, 7]), ("x", &[0])], &[i + 1; 8]);
+            let coordinate = &mut source.root.arrays[0];
+            coordinate.info.data_type = DataType::F32;
+            coordinate.source =
+                Source::Memory(Arc::new((0..8).flat_map(|j| (40f32 + j as f32 * 0.1 + i as f32 * 1.2).to_le_bytes()).collect()));
+            sources.push(source);
+        }
+        let output = mosaic(&sources, &Default::default()).unwrap();
+        assert_eq!(output.array("v").unwrap().shape(), [20, 1]);
+        let expected: Vec<i64> = [vec![1; 8], vec![-9999; 4], vec![2; 8]].concat();
+        assert_eq!(output.array("v").unwrap().read().unwrap().values().unwrap(), json!(expected));
+    }
+    #[test]
+    fn coordinate_memory_limits_precede_payload_reads_and_gap_allocation() {
+        let a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        let b = dataset(&[("y", &[0]), ("x", &[20_000_000, 20_000_001])], &[3, 4]);
+        assert!(mosaic(&[a.clone(), b], &Default::default()).unwrap_err().to_string().contains("256 MiB"));
+        let mut forged = a;
+        let huge = MAX_COORDINATE_BYTES / std::mem::size_of::<Coordinate>() + 1;
+        forged.root.dimensions[1].size = huge;
+        forged.root.arrays[1].info.data_type = DataType::U8;
+        forged.root.arrays[1].info.dimensions[0].size = huge;
+        forged.root.arrays[1].source = Source::Memory(Arc::new(vec![]));
+        forged.root.arrays.last_mut().unwrap().info.dimensions[1].size = huge;
+        assert!(mosaic(&[forged], &Default::default()).unwrap_err().to_string().contains("256 MiB"));
+    }
+    #[test]
+    fn incompatible_packing_and_units_are_rejected() {
+        let a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        for (name, value) in [("scale_factor", json!(0.2)), ("add_offset", json!(1)), ("units", json!("K"))] {
+            let mut b = a.clone();
+            b.root.arrays.last_mut().unwrap().info.attributes[name] = value;
+            assert!(mosaic(&[a.clone(), b], &Default::default()).is_err());
+        }
+        let mut a = a;
+        let mut b = a.clone();
+        a.root.arrays.last_mut().unwrap().info.attributes["add_offset"] = json!(9007199254740993i64);
+        b.root.arrays.last_mut().unwrap().info.attributes["add_offset"] = json!(9007199254740992i64);
+        assert!(mosaic(&[a, b], &Default::default()).is_err());
+    }
+    #[test]
+    fn unindexed_bounds_dimensions_are_retained_and_size_checked() {
+        let mut a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        let dimension = Dimension { name: "bnds".into(), path: "/bnds".into(), size: 2, unlimited: false, indexing_variable: None };
+        let mut bounds = a.root.arrays.last().unwrap().clone();
+        bounds.info.path = "/bounds".into();
+        bounds.info.name = "bounds".into();
+        bounds.info.dimensions = vec![a.root.dimensions[0].clone(), dimension.clone()];
+        a.root.dimensions.push(dimension);
+        a.root.arrays.push(bounds);
+        let output = mosaic(&[a.clone()], &Default::default()).unwrap();
+        assert_eq!(output.array("bounds").unwrap().shape(), [1, 2]);
+        assert!(output.array("v").is_ok());
+        assert!(mosaic(&[a.clone()], &MosaicOptions { arrays: vec!["bounds".into()] }).is_ok());
+        let mut b = a.clone();
+        b.root.arrays.last_mut().unwrap().info.dimensions[1].size = 3;
+        assert!(mosaic(&[a, b], &Default::default()).is_err());
     }
     #[test]
     fn incompatible_grid_types_and_nodata_are_rejected() {

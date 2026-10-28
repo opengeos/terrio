@@ -2136,10 +2136,13 @@ scientific arrays on their indexing-variable coordinates. Repeat `--array` to
 select multiple arrays; by default, all arrays with at least two dimensions
 are selected. Sources can be netCDF/HDF5 files or local/remote Zarr stores.
 The output must be a new `.nc` (netCDF-4) file or `.zarr` (Zarr v2) store.
+The command is also exposed as the `mdmosaic` MCP tool.
 
 Sources contributing to an array must agree on its full path, numeric type,
-nodata and dimension names/order. Every dimension needs a finite, numeric,
-one-dimensional indexing variable. Regular axes must share spacing and grid
+nodata, packing scale/offset, units and dimension names/order. Dimensions that
+change across inputs need a finite, numeric, one-dimensional indexing variable.
+Unindexed dimensions, including CF bounds axes, are retained positionally and
+must keep the same size across inputs. Regular axes must share spacing and grid
 alignment; disjoint irregular ranges and irregular singleton time slices are
 also supported. Last input wins overlaps, including nodata pixels. Gaps on
 regular grids, or missing combinations of coordinates across axes, are filled
@@ -2155,8 +2158,17 @@ currently materialize arrays; Zarr snapshots iterate output chunks.
 
 Terrio retains source group paths and metadata; GDAL places explicitly selected
 nested arrays at the root. It also retains integer coordinate types rather than
-GDAL's synthesized Float64 coordinates. Coordinate arrays are limited to 256 MiB
-per planned axis. String/compound arrays, serialized multidimensional VRT output,
+GDAL's synthesized Float64 coordinates. Float32 indexing variables use their
+native precision when recognizing regular grids and placing tiles; gap cells
+are retained. Off-grid origins beyond that precision allowance are rejected;
+the allowance is capped at a quarter grid cell. Irregular axes are sorted with
+equal coordinates deduplicated in either direction.
+
+Coordinate planning checks the actual in-memory element width before reading
+coordinates or allocating generated grids. Combined input coordinate storage per
+axis and each generated coordinate buffer are limited to 256 MiB. This is not a
+cap on data-array size: views remain lazy, Zarr writes iterate chunks, and netCDF
+snapshots materialize the requested data. String/compound arrays, serialized multidimensional VRT output,
 creation/open options, automatic glob/list-file expansion and replacement of
 existing outputs are outside this supported subset. Output replacement is refused
 before writing. Descending axes work directly in Terrio; comparisons normalize
