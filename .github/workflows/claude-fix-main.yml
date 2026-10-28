@@ -73,6 +73,7 @@ jobs:
           GH_TOKEN: ${{ secrets.AUTOFIX_TOKEN }}
           ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
         run: |
           set -euo pipefail
           if [ -z "$GH_TOKEN" ]; then
@@ -87,13 +88,21 @@ jobs:
             exit 0
           fi
           # The newest status of the marker context comes first.
-          handled=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses" --jq "[.[] | select(.context == \"$MARKER\")][0].description // \"\"")
+          gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses" --jq "[.[] | select(.context == \"$MARKER\")][0] // {}" > "$RUNNER_TEMP/marker.json"
+          handled=$(jq -r '.description // ""' "$RUNNER_TEMP/marker.json")
           if [ -n "$handled" ]; then
             if [ "$ATTEMPT" -gt 1 ] && [[ "$handled" == "Rerun requested"* ]]; then
               echo "action=issue" >> "$GITHUB_OUTPUT"
               echo "reason=it failed again after the automatic rerun: $RUN_URL" >> "$GITHUB_OUTPUT"
             else
+              # Already diagnosed. The run may have finished after the diagnosis collected its
+              # failures, so it is noted on the pull request or issue the marker points at.
               echo "Already handled: $handled"
+              target=$(jq -r '.target_url // ""' "$RUNNER_TEMP/marker.json")
+              if [[ "$target" =~ ^$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/(pull|issues)/([0-9]+)$ ]]; then
+                gh api "repos/$GITHUB_REPOSITORY/issues/${BASH_REMATCH[2]}/comments" --silent \
+                  -f body="$RUN_NAME failed on $SHA too: $RUN_URL. If it finished after the diagnosis, it isn't covered here; check it."
+              fi
               echo "action=skip" >> "$GITHUB_OUTPUT"
             fi
             exit 0
@@ -176,11 +185,11 @@ jobs:
           mkdir -p .cifix/logs
           echo .cifix >> .git/info/exclude
           gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&event=push&per_page=50" \
-            --jq '.workflow_runs[] | select(.name == "CI" or .name == "CI (macOS and Windows)" or .name == "CI (npm and conformance)") | select(.conclusion == "failure") | "\(.id)\t\(.name)\t\(.html_url)"' > .cifix/runs.tsv
+            --jq '.workflow_runs[] | select(.name == "CI" or .name == "CI (macOS and Windows)" or .name == "CI (npm and conformance)") | select(.conclusion == "failure" or .conclusion == "timed_out") | "\(.id)\t\(.name)\t\(.html_url)"' > .cifix/runs.tsv
           : > .cifix/jobs.tsv
           while IFS=$'\t' read -r id name url; do
             gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" < /dev/null \
-              --jq '.jobs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)"' |
+              --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | "\(.id)\t\(.name)"' |
             while IFS=$'\t' read -r job jobname; do
               printf '%s\t%s\t%s\t%s\n' "$id" "$name" "$jobname" "$url" >> .cifix/jobs.tsv
               gh run view --repo "$GITHUB_REPOSITORY" --job "$job" --log-failed < /dev/null 2> /dev/null |
@@ -246,6 +255,11 @@ jobs:
               echo "::error::The fix changes files outside the source and test directories (listed above)."
               exit 1
             fi
+            # Regular files only: a symlink or submodule could point outside those directories.
+            if git diff --cached --raw | awk '$2 != "100644" && $2 != "100755" && $2 != "000000"' | grep .; then
+              echo "::error::The fix adds a symlink or submodule (listed above)."
+              exit 1
+            fi
             # rustfmt itself rather than cargo fmt, which would read Cargo configuration.
             git diff --cached --name-only --diff-filter=AM -z -- '*.rs' | xargs -0 -r rustfmt --edition 2024 --config-path rustfmt.toml
             git add -A
@@ -295,15 +309,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions: {}
+    # The push token is given only to the steps that call GitHub, not to those that read Claude's
+    # bundle, and isn't kept in the checkout's git config.
     env:
-      GH_TOKEN: ${{ secrets.AUTOFIX_TOKEN }}
       VERDICT: ${{ needs.fix.outputs.verdict }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
-          token: ${{ secrets.AUTOFIX_TOKEN }}
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -318,25 +333,42 @@ jobs:
             cut -f2,3,4 "$DIR/jobs.tsv" | sort -u | while IFS=$'\t' read -r workflow job url; do echo "- $workflow / $job: $url"; done
           } > "$RUNNER_TEMP/jobs.md"
 
-      - name: Open the pull request
+      # The same checks as in "Commit and bundle", made again on the bundle itself.
+      - name: Check the fix
+        id: check
         if: env.VERDICT == 'fix'
-        env:
-          AUTOMERGE: ${{ vars.CI_FIX_AUTOMERGE }}
         run: |
           set -euo pipefail
           DIR=$RUNNER_TEMP/cifix
-          branch="ci-fix/${SHA:0:12}"
           git fetch -q "$DIR/fix.bundle" "HEAD:refs/cifix"
           new=$(git rev-parse refs/cifix)
           git merge-base --is-ancestor "$SHA" "$new"
-          # Checked again here, from the bundle itself (see "Commit and bundle").
           allowed='^(crates/[^/]+/(src|tests|benches)/|python/(src|tests|python)/|js/(src|tests)/)'
           if git diff --name-only "$SHA" "$new" | grep -Ev "$allowed" | grep . ||
             git diff --name-only "$SHA" "$new" | grep -E '(^|/)(build\.rs|Cargo\.toml|package\.json|pyproject\.toml)$'; then
             echo "::error::The fix changes files outside the source and test directories (listed above)."
             exit 1
           fi
-          git push origin "$new:refs/heads/$branch"
+          if git diff --raw "$SHA" "$new" | awk '$2 != "100644" && $2 != "100755" && $2 != "000000"' | grep .; then
+            echo "::error::The fix adds a symlink or submodule (listed above)."
+            exit 1
+          fi
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          jq -r .title "$DIR/verdict.json" | head -n 1 | cut -c1-120 > "$RUNNER_TEMP/title.txt"
+
+      - name: Open the pull request
+        if: env.VERDICT == 'fix'
+        env:
+          GH_TOKEN: ${{ secrets.AUTOFIX_TOKEN }}
+          AUTOMERGE: ${{ vars.CI_FIX_AUTOMERGE }}
+          NEW: ${{ steps.check.outputs.new }}
+        run: |
+          set -euo pipefail
+          DIR=$RUNNER_TEMP/cifix
+          branch="ci-fix/${SHA:0:12}"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.$GITHUB_SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" push origin "$NEW:refs/heads/$branch"
           # The labels that make the pull request rerun the label-gated jobs that failed, matched on
           # the job name alone (the workflow names mention several platforms).
           labels=ci-fix
@@ -347,22 +379,27 @@ jobs:
           grep -q 'conformance vs GDAL$' "$RUNNER_TEMP/jobs.txt" && labels="$labels,ci:conformance"
           gh label create ci-fix --repo "$GITHUB_REPOSITORY" --color B60205 --description "Automatic fix for a CI failure on main" 2> /dev/null || true
           cat "$DIR/report.md" "$RUNNER_TEMP/jobs.md" > "$RUNNER_TEMP/body.md"
-          url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" --title "$(jq -r .title "$DIR/verdict.json")" --body-file "$RUNNER_TEMP/body.md" --label "$labels")
+          url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" --title "$(cat "$RUNNER_TEMP/title.txt")" --body-file "$RUNNER_TEMP/body.md" --label "$labels")
           echo "$url"
           gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=success -f context="$MARKER" -f description="Fix proposed" -f target_url="$url" --silent
-          # Auto-merge waits only for required checks, which are the Linux ci.yml jobs.
-          # A refused auto-merge leaves the pull request for a maintainer; the fix still stands.
-          if [ "$AUTOMERGE" = true ] && [ -s "$DIR/jobs.tsv" ] && [ -z "$(cut -f2 "$DIR/jobs.tsv" | grep -vx CI || true)" ]; then
+          # Auto-merge waits only for the required checks (the ruleset's list, kept here in step), so
+          # it is used only when every failed job is one of them. A refused auto-merge leaves the pull
+          # request for a maintainer; the fix still stands.
+          required=$'^CI\t(changes|ubuntu-latest|GDAL backend \(feature build\)|MSRV \(Rust 1\.90\)|API docs and packaging|wasm|Cargo features|python \(ubuntu-latest\)|real data vs GDAL)$'
+          if [ "$AUTOMERGE" = true ] && [ -s "$DIR/jobs.tsv" ] && [ -z "$(cut -f2,3 "$DIR/jobs.tsv" | grep -Ev "$required" || true)" ]; then
             gh pr merge "$url" --auto --squash || echo "::warning::Auto-merge wasn't enabled for $url."
           fi
 
       - name: Rerun the failed jobs
         if: env.VERDICT == 'rerun'
+        env:
+          GH_TOKEN: ${{ secrets.AUTOFIX_TOKEN }}
         run: |
           set -euo pipefail
           DIR=$RUNNER_TEMP/cifix
           cat "$DIR/report.md" >> "$GITHUB_STEP_SUMMARY"
-          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=pending -f context="$MARKER" \
+          # Success: the fixer's part is done. A rerun that fails again comes back to the gate.
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=success -f context="$MARKER" \
             -f description="Rerun requested" -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --silent
           cut -f1 "$DIR/runs.tsv" | while read -r id; do
             gh run rerun "$id" --failed --repo "$GITHUB_REPOSITORY" < /dev/null
@@ -370,6 +407,8 @@ jobs:
 
       - name: File an issue
         if: env.VERDICT == 'human'
+        env:
+          GH_TOKEN: ${{ secrets.AUTOFIX_TOKEN }}
         run: |
           set -euo pipefail
           DIR=$RUNNER_TEMP/cifix
