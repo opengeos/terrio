@@ -2128,6 +2128,11 @@ test("dataset indexes retain rotated corners, source identities and GTI metadata
   });
   assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {nodata: [1, 2, 3]}), /inferred/);
   assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {colorInterpretations: ["red", "green", "blue"]}), /inferred/);
+  for (const key of ["minPixelSize", "maxPixelSize"]) {
+    for (const value of [NaN, Infinity, -Infinity]) {
+      assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {[key]: value}), /finite/);
+    }
+  }
   assert.equal(index.count, 1);
   assert.equal(index.metadata.NODATA, "255");
   const feature = index.layer().toGeoJSON().features[0];
@@ -2143,6 +2148,12 @@ test("dataset indexes retain rotated corners, source identities and GTI metadata
   }
   const archive = terrio.rasterIndex({"tile.tif": raster}).toBytes("index.shp.zip");
   assert.equal(terrio.open(archive, "index.shp.zip").toGeoJSON().features.length, 1);
+  const mixed = terrio.vectorIndex({
+    "roads.json": terrio.fromGeoJSON(SQUARES, "roads"),
+    "counties.json": terrio.fromGeoJSON(SQUARES, "counties"),
+  }, {sourceLayerNames: ["roads"]});
+  assert.equal(mixed.count, 1);
+  assert.equal(mixed.layer().toGeoJSON().features[0].properties.location, "roads.json,0");
   const vectors = terrio.vectorIndex({"squares.json": SQUARES});
   assert.equal(vectors.layer().toGeoJSON().features[0].properties.location, "squares.json,0");
   assert.deepEqual(vectors.layer().toGeoJSON().features[0].geometry.coordinates[0], [[0, 0], [0, 10], [30, 10], [30, 0], [0, 0]]);

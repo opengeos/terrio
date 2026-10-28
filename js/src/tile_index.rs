@@ -48,6 +48,17 @@ struct Args {
     dataset_name_only: bool,
 }
 impl Args {
+    fn parse(options: &JsValue) -> Result<Self, JsError> {
+        for key in ["minPixelSize", "maxPixelSize"] {
+            if !options.is_null() && !options.is_undefined() {
+                let value = js_sys::Reflect::get(options, &JsValue::from_str(key)).map_err(|_| invalid("invalid index options"))?;
+                if value.as_f64().is_some_and(|v| !v.is_finite()) {
+                    return Err(invalid("pixel-size limits must be finite and nonnegative"));
+                }
+            }
+        }
+        parse_options(options)
+    }
     fn common(&self) -> terrio::Result<ti::IndexOptions> {
         Ok(ti::IndexOptions {
             layer_name: self.output_layer.clone(),
@@ -186,7 +197,7 @@ fn raster_source(location: String, value: &JsValue) -> Result<ti::RasterIndexSou
 /// ot, bandCount, nodata (an array; strings for nan/inf), colorInterpretations and mask.
 #[wasm_bindgen(js_name=rasterIndex)]
 pub fn raster_index(sources: JsValue, options: JsValue) -> Result<DatasetIndex, JsError> {
-    let args: Args = parse_options(&options)?;
+    let args = Args::parse(&options)?;
     let options = args.raster().map_err(js_err)?;
     let headers = entries(&sources)?.into_iter().map(|(location, value)| raster_source(location, &value)).collect::<Result<Vec<_>, _>>()?;
     Ok(DatasetIndex { inner: ti::raster_index(&headers, &options).map_err(js_err)? })
@@ -196,12 +207,12 @@ pub fn raster_index(sources: JsValue, options: JsValue) -> Result<DatasetIndex, 
 /// original layers. acceptDifferentCrs, acceptDifferentSchemas and datasetNameOnly are optional.
 #[wasm_bindgen(js_name=vectorIndex)]
 pub fn vector_index(sources: JsValue, options: JsValue) -> Result<DatasetIndex, JsError> {
-    let args: Args = parse_options(&options)?;
+    let args = Args::parse(&options)?;
     let options = args.vector().map_err(js_err)?;
     let selection = ti::VectorIndexSelection { names: args.source_layer_names, indexes: args.source_layer_indexes };
     let mut headers = Vec::new();
     for (location, value) in entries(&sources)? {
-        let group = if let Some(inner) = Dataset::lookup(&value) {
+        let group: Vec<ti::VectorIndexSource> = if let Some(inner) = Dataset::lookup(&value) {
             match &*inner.borrow() {
                 Inner::Vector(layers, _) => {
                     layers.iter().enumerate().map(|(i, l)| ti::VectorIndexSource::from_layer(&location, i, l)).collect()
@@ -211,7 +222,8 @@ pub fn vector_index(sources: JsValue, options: JsValue) -> Result<DatasetIndex, 
         } else {
             input_layers(&value)?.iter().enumerate().map(|(i, l)| ti::VectorIndexSource::from_layer(&location, i, l)).collect()
         };
-        headers.extend(selection.apply(group).map_err(js_err)?);
+        headers.extend(group);
     }
+    let headers = selection.apply(headers).map_err(js_err)?;
     Ok(DatasetIndex { inner: ti::vector_index(&headers, &options).map_err(js_err)? })
 }

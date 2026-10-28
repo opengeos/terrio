@@ -15,8 +15,8 @@ import numpy as np
 from osgeo import gdal, ogr, osr
 
 
-def run(args):
-    result = subprocess.run(list(map(str, args)), capture_output=True, text=True)
+def run(args, **kwargs):
+    result = subprocess.run(list(map(str, args)), capture_output=True, text=True, **kwargs)
     if result.returncode:
         raise RuntimeError(result.stderr[-3000:])
 
@@ -25,6 +25,9 @@ def compare(a, b, *, metadata=False):
     left, right = ogr.Open(str(a)), ogr.Open(str(b))
     assert left is not None and right is not None, "cannot open indexes"
     x, y = left.GetLayer(0), right.GetLayer(0)
+    exact = True
+    max_vertex_error = 0.0
+    assert x.GetGeomType() == y.GetGeomType(), "geometry type"
     assert x.GetFeatureCount() == y.GetFeatureCount(), "feature count"
     assert bool(x.GetSpatialRef()) == bool(y.GetSpatialRef()), "CRS presence"
     if x.GetSpatialRef():
@@ -40,11 +43,14 @@ def compare(a, b, *, metadata=False):
             u, v = f.GetField(i), h.GetField(i)
             if isinstance(u, float):
                 assert np.isclose(u, v, rtol=1e-12, atol=1e-12), (u, v)
+                exact = exact and u == v
             else:
                 assert u == v, (key, i, u, v)
-        u = json.loads(f.GetGeometryRef().ExportToJson())["coordinates"]
-        v = json.loads(h.GetGeometryRef().ExportToJson())["coordinates"]
+        u = np.asarray([ring.GetPoints() for ring in f.GetGeometryRef()])
+        v = np.asarray([ring.GetPoints() for ring in h.GetGeometryRef()])
         np.testing.assert_allclose(u, v, rtol=0, atol=1e-8)
+        exact = exact and np.array_equal(u, v)
+        max_vertex_error = max(max_vertex_error, float(np.max(np.abs(u-v))))
     if metadata:
         # GDAL stores LOCATION_FIELD implicitly for the default field name.
         for key, value in x.GetMetadata().items():
@@ -53,7 +59,8 @@ def compare(a, b, *, metadata=False):
                 assert actual is not None and float(actual) == float(value), (key,value,actual)
             else:
                 assert actual == value, (key, value, y.GetMetadata())
-    return "schema/CRS/text/integer fields exact; real fields within 1e-12; vertices within 1e-8 index CRS units"
+    detail = "schema/CRS/attributes/vertices exact" if exact else f"schema/CRS/text/integer fields exact; real fields within 1e-12; maximum vertex error {max_vertex_error:.3g} (tolerance 1e-8)"
+    return exact, detail
 
 
 def main():
@@ -68,6 +75,7 @@ def main():
     if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
         raise RuntimeError("GDAL 3.13 or newer is required")
     data = args.data.resolve()
+    args.terrio = str(Path(shutil.which(args.terrio) or args.terrio).resolve())
     results = []
     grid_cache = tempfile.TemporaryDirectory(prefix="terrio-index-grids-")
     common_paths = osr.GetPROJSearchPaths()
@@ -79,8 +87,8 @@ def main():
 
     def case(name, fn):
         try:
-            detail = fn()
-            results.append(dict(name=name, status="identical" if not detail else "tolerance", detail=detail or ""))
+            exact, detail = fn()
+            results.append(dict(name=name, status="identical" if exact else "tolerance", detail=detail))
         except Exception as error:
             traceback.print_exc()
             results.append(dict(name=name, status="differs", detail=str(error)))
@@ -93,7 +101,7 @@ def main():
         work = Path(directory)
         cog, dem = data / "cog.tif", data / "usgs_dem.tif"
         if not dem.exists():
-            dem = next(data.glob("USGS*.tif"))
+            dem = next(data.glob("USGS*.tif"), dem)
         assert cog.exists() and dem.exists(), "need real COG and USGS DEM fixtures"
         # Real DEM values in small affine/CRS fixtures expose rotated-grid filtering
         # and mixed CRS behavior without manufacturing pixel values.
@@ -123,12 +131,13 @@ def main():
             common = [*sources, "--output-layer", "tileindex", *options]
             run([*command, *common, a])
             run([args.terrio, "vector-index" if vector else "gti-create" if gti else "raster-index", *common, b])
-            detail = compare(a, b, metadata=suffix in ("gpkg", "fgb"))
+            exact, detail = compare(a, b, metadata=suffix in ("gpkg", "fgb"))
             if gti:
                 left, right = gdal.Open("GTI:" + str(a)), gdal.Open("GTI:" + str(b))
                 assert left is not None and right is not None
                 assert left.RasterCount == right.RasterCount
                 shape_equal = (left.RasterXSize, left.RasterYSize) == (right.RasterXSize, right.RasterYSize)
+                exact = exact and shape_equal and left.GetGeoTransform() == right.GetGeoTransform()
                 # GPKG's GDAL-authored cached bounds are rounded to 15 digits.
                 # GTI ceil() can consequently add one border row/column. Do not
                 # compare different geographic extents via whole-image resizing.
@@ -151,7 +160,7 @@ def main():
                 width, height = min(left.RasterXSize,right.RasterXSize), min(left.RasterYSize,right.RasterYSize)
                 np.testing.assert_array_equal(left.ReadAsArray(0,0,width,height,buf_xsize=64,buf_ysize=64), right.ReadAsArray(0,0,width,height,buf_xsize=64,buf_ysize=64))
                 detail += "; GTI band metadata and shared-window queried pixels exact"
-            return detail
+            return exact, detail
 
         for suffix in ("gpkg", "fgb", "shp"):
             case(f"raster extents {suffix}", lambda suffix=suffix: indexes("raster", [cog, dem], ["--absolute-path", "--source-crs-field-name", "srs", "--output-crs", "EPSG:4326"], suffix=suffix))
@@ -190,10 +199,30 @@ def main():
                 case(f"vector {source.name} {suffix}", lambda source=source, suffix=suffix: indexes("vector", [source], ["--accept-different-schemas", "--source-crs-field-name", "srs"], vector=True, suffix=suffix))
         if counties.exists():
             case("duplicate vector inputs", lambda: indexes("duplicates", [counties,counties], vector=True))
+        if counties.exists() and multi.exists():
+            case("layer selection across datasets", lambda: indexes("union-selection", [multi,counties], ["--source-layer-name", "roads"], vector=True))
         for options in (["--source-layer-index", "1"], ["--dataset-name-only"], ["--output-crs", "EPSG:3857", "--accept-different-schemas"]):
             if not multi.exists():
                 continue
             case(f"vector options {options}", lambda options=options: indexes("vector", [multi], options, vector=True))
+        def relative_catalog():
+            base = work / "relative"
+            (base / "tiles").mkdir(parents=True)
+            (base / "out").mkdir()
+            (base / "tiles" / "a.tif").symlink_to(dem)
+            run([args.terrio,"raster-index","tiles/a.tif","out/catalog.gpkg"],cwd=base)
+            catalog_path=base / "out" / "catalog.gpkg"
+            index=ogr.Open(str(catalog_path))
+            location=index.GetLayer(0).GetNextFeature().GetField("location")
+            assert not Path(location).is_absolute()
+            assert (catalog_path.parent / location).resolve() == dem.resolve()
+            catalog=gdal.OpenEx(str(catalog_path),allowed_drivers=["GTI"])
+            source=gdal.Open(str(dem))
+            assert catalog.GetSpatialRef().IsSame(source.GetSpatialRef())
+            np.testing.assert_array_equal(catalog.ReadAsArray(128,128,8,8),source.ReadAsArray(128,128,8,8))
+            return True,"index-relative source resolves to real DEM; GDAL GTI window pixels exact"
+
+        case("relative inputs and another output directory",relative_catalog)
     grid_cache.cleanup()
     if args.json:
         print(json.dumps(results, indent=2))

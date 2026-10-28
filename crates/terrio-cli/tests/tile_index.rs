@@ -39,3 +39,18 @@ fn discovery_shapefile_parts_and_invalid_overwrite() {
     assert_eq!(run(&["raster-index", "source.tif", "index.gpkg", "--overwrite", "--min-pixel-size=-1"], path).status.code(), Some(1));
     assert_eq!(std::fs::read(path.join("index.gpkg")).unwrap(), bytes);
 }
+
+#[test]
+fn relative_inputs_work_when_the_catalog_is_in_another_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    std::fs::create_dir(path.join("tiles")).unwrap();
+    std::fs::create_dir(path.join("out")).unwrap();
+    ok(&["create-raster", "tiles/a.tif", "--size", "4,4", "--burn", "7", "--crs", "EPSG:4326", "--bbox", "0,0,4,4"], path);
+    ok(&["raster-index", "tiles/a.tif", "out/catalog.gpkg"], path);
+    ok(&["catalog", "out/catalog.gpkg", "rendered.tif"], path);
+    let raster = terrio::open_raster(path.join("rendered.tif").to_str().unwrap()).unwrap();
+    assert!(raster.raster.data.to_f64_vec().iter().all(|v| *v == 7.));
+    let index = terrio::open_vector(path.join("out/catalog.gpkg").to_str().unwrap(), &Default::default()).unwrap();
+    assert_eq!(index.layers[0].features[0].attributes[0], terrio::FieldValue::Text("../tiles/a.tif".into()));
+}

@@ -219,16 +219,21 @@ fn raster_index(
 ) -> PyResult<PyDatasetIndex> {
     let args = Args::parse(py, kwargs)?;
     let options = args.raster().py()?;
-    let index = if let Ok(mapping) = sources.cast::<PyDict>() {
+    let mut protected_paths = Vec::new();
+    let mut index = if let Ok(mapping) = sources.cast::<PyDict>() {
         args.mapped_inputs()?;
         let mut headers = Vec::new();
         for (location, source) in mapping.iter() {
             let location: String = location.extract()?;
             let header = if let Some(path) = crate::ops::raster_path(&source)? {
+                protected_paths.push(path.clone());
                 crate::with_warnings(py, || ti::RasterIndexSource::from_lazy(location, &terrio::open_raster_lazy(&path)?))?
             } else {
-                let raster =
-                    source.cast::<PyRaster>().map_err(|_| invalid("mapped raster inputs must be Raster objects or paths"))?.borrow();
+                let raster = source
+                    .cast::<PyRaster>()
+                    .map_err(|_| invalid("mapped raster inputs must be Raster objects or paths"))?
+                    .try_borrow()
+                    .map_err(|e| invalid(e.to_string()))?;
                 ti::RasterIndexSource::from_lazy(location, &raster.inner).py()?
             };
             headers.push(header);
@@ -238,6 +243,9 @@ fn raster_index(
         let paths = paths(sources)?;
         crate::with_warnings(py, || ti::raster_index_paths(&paths, &args.inputs(), &options))?
     };
+    for path in protected_paths {
+        index.protect_source_path(&path).py()?;
+    }
     finish(py, index, dst, &args)
 }
 /// Create layer envelope polygons. Paths use cached bounds where available and stream other
@@ -254,13 +262,15 @@ fn vector_index(
     let args = Args::parse(py, kwargs)?;
     let options = args.vector().py()?;
     let selection = args.selection();
-    let index = if let Ok(mapping) = sources.cast::<PyDict>() {
+    let mut protected_paths = Vec::new();
+    let mut index = if let Ok(mapping) = sources.cast::<PyDict>() {
         args.mapped_inputs()?;
         let mut headers = Vec::new();
         for (location, source) in mapping.iter() {
             let location: String = location.extract()?;
             let group = if let Ok(path) = source.extract::<std::path::PathBuf>() {
                 let path = path.into_os_string().into_string().map_err(|_| invalid("index paths must be UTF-8"))?;
+                protected_paths.push(path.clone());
                 let mut group = crate::with_warnings(py, || ti::vector_index_sources(&path))?;
                 for s in &mut group {
                     s.location = location.clone();
@@ -286,12 +296,16 @@ fn vector_index(
                     .map(|(i, l)| ti::VectorIndexSource::from_layer(&location, i, l))
                     .collect()
             };
-            headers.extend(selection.apply(group).py()?);
+            headers.extend(group);
         }
+        let headers = selection.apply(headers).py()?;
         crate::with_warnings(py, || ti::vector_index(&headers, &options))?
     } else {
         let paths = paths(sources)?;
         crate::with_warnings(py, || ti::vector_index_paths(&paths, &args.inputs(), &selection, &options))?
     };
+    for path in protected_paths {
+        index.protect_source_path(&path).py()?;
+    }
     finish(py, index, dst, &args)
 }

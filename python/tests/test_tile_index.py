@@ -65,6 +65,15 @@ def test_vector_catalog_selection_and_validation():
             }
         ],
     }
+    selected = terrio.vector_index(
+        {
+            "roads.json": terrio.Layer.from_geojson(geojson, name="roads"),
+            "counties.json": terrio.Layer.from_geojson(geojson, name="counties"),
+        },
+        source_layer_names=["roads"],
+    )
+    assert selected.count == 1
+    assert selected.layer.to_geojson()["features"][0]["properties"]["location"] == "roads.json,0"
     index = terrio.vector_index({"roads.json": geojson}, source_layer_indexes=[0])
     feature = index.layer.to_geojson()["features"][0]
     assert feature["properties"]["location"] == "roads.json,0"
@@ -75,9 +84,13 @@ def test_vector_catalog_selection_and_validation():
 
 
 def test_real_dem_catalog_is_readable_as_gti(data_dir, gdal, tmp_path):
+    if gdal.GetDriverByName("GTI") is None:
+        pytest.skip("GDAL GTI driver not available")
     dem = data_dir / "usgs_dem.tif"
     if not dem.exists():
-        dem = next(data_dir.glob("USGS*.tif"))
+        dem = next(data_dir.glob("USGS*.tif"), None)
+        if dem is None:
+            pytest.skip("USGS DEM test data not available")
     path = str(tmp_path / "catalog.fgb")
     index = terrio.raster_index([str(dem)], path, absolute_path=True, band_count=1, ot="Float32")
     assert index.count == 1
@@ -90,3 +103,23 @@ def test_real_dem_catalog_is_readable_as_gti(data_dir, gdal, tmp_path):
     np.testing.assert_array_equal(
         catalog.ReadAsArray(0, 0, 8, 8), reference.ReadAsArray(0, 0, 8, 8)
     )
+
+
+def test_mapped_path_values_cannot_be_replaced_even_with_unrelated_labels(tmp_path):
+    raster_path = tmp_path / "actual.tif"
+    terrio.create_raster(
+        str(raster_path), size=(4, 4), burn=[7], crs="EPSG:4326", bbox=(0, 0, 4, 4)
+    )
+    vector_path = tmp_path / "actual.geojson"
+    vector_path.write_text(
+        '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]}'
+    )
+    for factory, path in [(terrio.raster_index, raster_path), (terrio.vector_index, vector_path)]:
+        before = path.read_bytes()
+        index = factory({"unrelated-label": path})
+        with pytest.raises(terrio.InvalidArgumentError, match="indexed source"):
+            index.write(str(path), format="GPKG", overwrite=True)
+        assert path.read_bytes() == before
+        with pytest.raises(terrio.InvalidArgumentError, match="indexed source"):
+            factory({"unrelated-label": path}, str(path), format="GPKG", overwrite=True)
+        assert path.read_bytes() == before

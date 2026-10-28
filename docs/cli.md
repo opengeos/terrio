@@ -2028,13 +2028,20 @@ suggested warped-grid envelope when changing CRS; `gti-create` uses the same
 operation with optional GTI virtual-raster metadata. `vector-index` writes one
 layer-envelope polygon with `filename,layer_index` locations; `--dataset-name-only`
 omits the suffix. `--source-layer-name` and zero-based `--source-layer-index` are
-repeatable and select their union without renumbering original layers. Different
+repeatable and select their union across all inputs without renumbering layers.
+A selector absent from one input is allowed; absence from every input is an error. Different
 vector schemas/CRSs are skipped with warnings unless accepted with the corresponding
 flags; an explicit `--output-crs` reprojects corners. Empty vector layers are skipped.
 
 Inputs can be files, local directories, explicitly slash-terminated VSI directories,
 or `@FILE` lists. Directory scanning supports `--recursive` and repeatable case-sensitive
-`--filename-filter` patterns (`*` and `?`). `--absolute-path` affects local paths.
+`--filename-filter` patterns (`*` and `?`). `--absolute-path` stores absolute local paths. Otherwise, relative native path
+inputs are resolved relative to the written index directory, even when it differs
+from the working directory. In-memory source mappings keep their explicit stored
+locations verbatim; supply locations appropriate for the eventual catalog directory.
+Remote locations keep their query parameters, which can include access credentials;
+a warning is emitted without printing them. Use credential-free references and
+environment credentials when sharing catalogs.
 Raster `--skip-errors` skips unreadable inputs with a warning. Scanning without
 a filename filter is strict, as in GDAL: unrelated files and sidecars can fail
 the run. Use a filter or raster `--skip-errors` for mixed-content directories. Lazy-capable raster
@@ -2049,7 +2056,9 @@ and JavaScript serialization; before a raster index is given an output filename,
 its in-memory layer uses the placeholder `tileindex`. Explicit names are retained. Without an explicit target CRS, raster indexes skip incompatible source CRSs
 unless a source-CRS field is requested; with that field, they retain original
 coordinates and warn, matching GDAL. Supply a target CRS for a usable mixed-CRS catalog. Raster reprojection indexes the suggested warped-grid envelope, as GDAL 3.13
-does; vector reprojection transforms envelope corners without densification. Both
+does. Accepted mixed-CRS vector inputs retain original coordinates and warn;
+request a source-CRS field to retain their identity, or an output CRS to reproject.
+Vector reprojection transforms envelope corners without densification. Both
 require known source CRSs. For nonlinear transformations, vector corner envelopes
 can underestimate curved edges and miss features in spatial queries. Keep the
 source CRS, or construct densified footprints, when full edge coverage is required.
@@ -2061,11 +2070,20 @@ Missing metadata becomes null; invalid numeric metadata is rejected. GTI options
 include `--resolution x,y`, `--bbox xmin,ymin,xmax,ymax`, `--ot`, `--band-count`,
 repeatable/comma-separated `--nodata`, `--color-interpretation` and `--mask`.
 Nodata/color lists must contain one value or one per output band, inferred from
-the first source when `--band-count` is omitted. GeoPackage/FlatGeobuf preserve GTI metadata; open them with GDAL as `GTI:catalog.gpkg`
-or `GTI:catalog.fgb`. Custom raster location fields are recorded in `LOCATION_FIELD`.
+the first source when `--band-count` is omitted. With explicit GTI characteristics,
+included sources must provide at least that many bands; a smaller explicit output
+count selects the leading bands. Ordinary footprint inventories retain heterogeneous
+band counts with a warning, as GDAL does; they may require `--band-count` for GTI
+pixel reads. Palette-to-RGB band expansion is not performed by the index writer. GeoPackage/FlatGeobuf preserve GTI metadata; open them with GDAL as `GTI:catalog.gpkg`
+or `GTI:catalog.fgb`. For relative tile references in GDAL 3.13.3, use
+`gdal raster info --if GTI catalog.gpkg` (or `gdal.OpenEx(..., allowed_drivers=["GTI"])`):
+that version has a `GTI:` prefix resolution bug during pixel reads. Terrio resolves
+these references directly against the index directory. Custom raster location fields are recorded in `LOCATION_FIELD`.
 
 This release creates new indexes and atomically replaces single-file outputs with
-`--overwrite`. Indexed source paths and aliases cannot be replaced. Shapefile outputs
+`--overwrite`. Indexed source paths and aliases cannot be replaced, including
+files opened through Python mapping values whose stored labels differ from their
+paths. Shapefile outputs
 publish all components from staging and require a new basename even with `--overwrite`;
 `.shp.zip` writes an archive. GTI/custom metadata require GeoPackage or FlatGeobuf.
 Append/update, layer replacement, STAC-GeoParquet profiles, XML companion output and

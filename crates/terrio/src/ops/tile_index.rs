@@ -4,7 +4,7 @@
 //! raster pixels. Vector footprints are layer envelopes, not feature footprints.
 use crate::crs::{SpatialRef, Transformer};
 use crate::{Error, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, LazyRaster, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use wbvector::Coord;
 
 /// Serialization of the original source CRS into an attribute field.
@@ -272,6 +272,8 @@ pub struct DatasetIndex {
     pub metadata: Vec<(String, String)>,
     source_locations: Vec<String>,
     default_raster_name: bool,
+    relative_base: Option<std::path::PathBuf>,
+    relative_locations: HashMap<String, (std::path::PathBuf, String)>,
 }
 fn invalid(s: impl Into<String>) -> Error {
     Error::InvalidArgument(s.into())
@@ -303,7 +305,19 @@ fn empty(o: &IndexOptions, crs: &SpatialRef) -> Result<DatasetIndex> {
             return Err(invalid("invalid index metadata key/value"));
         }
     }
-    Ok(DatasetIndex { layer, metadata: o.metadata.clone(), source_locations: Vec::new(), default_raster_name: false })
+    Ok(DatasetIndex {
+        layer,
+        metadata: o.metadata.clone(),
+        source_locations: Vec::new(),
+        default_raster_name: false,
+        relative_base: None,
+        relative_locations: HashMap::new(),
+    })
+}
+fn warn_query_locations<'a>(mut locations: impl Iterator<Item = &'a str>) {
+    if locations.any(|s| s.contains('?') && (s.contains("://") || s.starts_with("/vsi"))) {
+        crate::warnings::warn("Index locations retain remote URL query parameters, which may contain access credentials. Use credential-free locations and environment credentials before sharing a catalog.".into());
+    }
 }
 fn same_crs(a: &SpatialRef, b: &SpatialRef) -> bool {
     (a.is_unknown() && b.is_unknown()) || a.same_as(b)
@@ -346,6 +360,7 @@ pub fn raster_index(sources: &[RasterIndexSource], o: &RasterIndexOptions) -> Re
     let mut out = empty(&o.index, crs)?;
     out.default_raster_name = o.index.layer_name.is_none();
     out.source_locations = sources.iter().map(|s| s.location.clone()).collect();
+    warn_query_locations(sources.iter().map(|s| s.location.as_str()));
     for limit in [o.min_pixel_size, o.max_pixel_size].into_iter().flatten() {
         if !limit.is_finite() || limit < 0. {
             return Err(invalid("pixel-size limits must be finite and nonnegative"));
@@ -367,7 +382,9 @@ pub fn raster_index(sources: &[RasterIndexSource], o: &RasterIndexOptions) -> Re
     // Without an explicit band count, the GTI band lists are checked against the first source.
     let bands = o.gti.band_count.unwrap_or(first.band_count);
     check_band_lists(bands, &o.gti.nodata, &o.gti.color_interpretations)?;
-    for (key, value) in o.gti.metadata()? {
+    let gti_metadata = o.gti.metadata()?;
+    let configured_gti = !gti_metadata.is_empty();
+    for (key, value) in gti_metadata {
         out.metadata.retain(|(k, _)| !k.eq_ignore_ascii_case(&key));
         out.metadata.push((key, value));
     }
@@ -413,6 +430,15 @@ pub fn raster_index(sources: &[RasterIndexSource], o: &RasterIndexOptions) -> Re
         if o.min_pixel_size.is_some_and(|v| pixel < v) || o.max_pixel_size.is_some_and(|v| pixel > v) {
             continue;
         }
+        if src.band_count < bands {
+            if configured_gti {
+                return Err(invalid(format!(
+                    "raster index source has {} bands, fewer than the {bands} explicit/inferred output bands",
+                    src.band_count
+                )));
+            }
+            crate::warnings::warn("Raster index sources have different band counts; the footprint inventory is retained, but GTI pixel reads need a compatible explicit band count.".into());
+        }
         let attrs = o
             .fetch_metadata
             .iter()
@@ -452,6 +478,7 @@ pub fn vector_index(sources: &[VectorIndexSource], o: &VectorIndexOptions) -> Re
     let crs = o.index.output_crs.as_ref().unwrap_or(&first_crs);
     let mut out = empty(&o.index, crs)?;
     out.source_locations = sources.iter().map(|s| s.location.clone()).collect();
+    warn_query_locations(sources.iter().map(|s| s.location.as_str()));
     for src in sources {
         if src.location.is_empty() || src.location.contains('\0') {
             return Err(invalid("vector index source needs a nonempty location"));
@@ -470,6 +497,9 @@ pub fn vector_index(sources: &[VectorIndexSource], o: &VectorIndexOptions) -> Re
         if o.index.output_crs.is_none() && !o.accept_different_crs && !same_crs(&source_crs, crs) {
             crate::warnings::warn(format!("skipping {}: different layer CRS", src.location));
             continue;
+        }
+        if o.index.output_crs.is_none() && !same_crs(&source_crs, crs) {
+            crate::warnings::warn("Accepted vector index sources have different CRSs; coordinates remain in their original CRS. Specify an output CRS to reproject them, or a source-CRS field to retain their identity.".into());
         }
         let bounds = layer_bounds(&src.layer);
         let Some(b) = bounds else {
@@ -494,12 +524,84 @@ pub fn raster_index_layer_name(filename: &str) -> String {
     };
     if stem.is_empty() { "tileindex".into() } else { stem.into() }
 }
+fn lexical_path(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut result = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {}
+            other => result.push(other.as_os_str()),
+        }
+    }
+    result
+}
+fn relative_path(path: &std::path::Path, base: &std::path::Path) -> std::path::PathBuf {
+    let source: Vec<_> = path.components().collect();
+    let parent: Vec<_> = base.components().collect();
+    let common = source.iter().zip(&parent).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        return path.to_path_buf();
+    }
+    let mut result = std::path::PathBuf::new();
+    for _ in common..parent.len() {
+        result.push("..");
+    }
+    for component in &source[common..] {
+        result.push(component.as_os_str());
+    }
+    result
+}
 impl DatasetIndex {
-    fn named_for_output(&self, filename: &str) -> Self {
+    fn needs_output_resolution(&self) -> bool {
+        self.default_raster_name || !self.relative_locations.is_empty()
+    }
+    fn resolved_for_output(&self, filename: &str) -> Result<Self> {
         let mut named = self.clone();
-        named.layer.name = raster_index_layer_name(filename);
+        if self.default_raster_name {
+            named.layer.name = raster_index_layer_name(filename);
+        }
         named.default_raster_name = false;
-        named
+        if !self.relative_locations.is_empty() {
+            let parent =
+                std::path::Path::new(filename).parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+            let parent = std::env::current_dir()?.join(parent);
+            let parent = std::fs::canonicalize(&parent).unwrap_or_else(|_| lexical_path(&parent));
+            if self.relative_base.as_ref() != Some(&parent) {
+                for feature in &mut named.layer.features {
+                    if let Some(FieldValue::Text(location)) = feature.attributes.first_mut()
+                        && let Some((absolute, suffix)) = self.relative_locations.get(location)
+                    {
+                        *location = format!("{}{}", relative_path(absolute, &parent).to_string_lossy(), suffix);
+                    }
+                }
+            }
+            named.source_locations.extend(self.relative_locations.values().map(|(p, _)| p.to_string_lossy().into_owned()));
+            named.relative_locations.clear();
+            named.relative_base = None;
+        }
+        Ok(named)
+    }
+    #[cfg(not(target_family = "wasm"))]
+    fn track_relative_location(&mut self, location: &str, suffix: &str) -> Result<()> {
+        if location.contains("://") || location.starts_with("/vsi") || std::path::Path::new(location).is_absolute() {
+            return Ok(());
+        }
+        let base = std::env::current_dir()?;
+        self.relative_locations.insert(format!("{location}{suffix}"), (base.join(location), suffix.into()));
+        self.relative_base = Some(base);
+        Ok(())
+    }
+    /// Adds an opened local file to overwrite protection independently of its stored label.
+    /// Relative paths are anchored now, so changing the working directory cannot bypass it.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn protect_source_path(&mut self, path: &str) -> Result<()> {
+        let path = std::path::Path::new(path);
+        let absolute = std::env::current_dir()?.join(path);
+        self.source_locations.push(absolute.to_string_lossy().into_owned());
+        Ok(())
     }
     /// Original source locators, including sources filtered out of the output.
     pub fn source_locations(&self) -> &[String] {
@@ -509,8 +611,8 @@ impl DatasetIndex {
     /// Serializes the index. GeoPackage/FlatGeobuf retain GTI layer metadata;
     /// ordinary indexes may also use other formats that terrio writes in memory.
     pub fn to_bytes(&self, name: &str, options: &crate::VectorWriteOptions) -> Result<Vec<u8>> {
-        if self.default_raster_name {
-            return self.named_for_output(name).to_bytes(name, options);
+        if self.needs_output_resolution() {
+            return self.resolved_for_output(name)?.to_bytes(name, options);
         }
         use crate::formats::VectorDriver;
         let driver = options
@@ -559,8 +661,8 @@ impl DatasetIndex {
     /// hard-link aliases are detected too).
     #[cfg(not(target_family = "wasm"))]
     pub fn write(&self, path: &str, options: &crate::VectorWriteOptions, overwrite: bool) -> Result<()> {
-        if self.default_raster_name {
-            return self.named_for_output(path).write(path, options, overwrite);
+        if self.needs_output_resolution() {
+            return self.resolved_for_output(path)?.write(path, options, overwrite);
         }
         use std::io::Write;
         let output = std::path::Path::new(path);
@@ -612,6 +714,7 @@ impl DatasetIndex {
             temp.as_file().set_permissions(permissions)?;
         }
         temp.flush()?;
+        temp.as_file().sync_all()?;
         if overwrite {
             temp.persist(output).map_err(|e| Error::Io(e.error))?;
         } else {
@@ -651,6 +754,7 @@ impl DatasetIndex {
                 let mut temp = tempfile::NamedTempFile::new_in(parent)?;
                 std::io::copy(&mut std::fs::File::open(source)?, &mut temp)?;
                 temp.flush()?;
+                temp.as_file().sync_all()?;
                 let permissions = if overwrite && parts.len() == 1 {
                     std::fs::metadata(&destination)
                         .or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { std::fs::metadata(source) } else { Err(e) })?
@@ -757,6 +861,57 @@ mod tests {
         assert_eq!(exterior.0[1].x, exterior.0[2].x);
     }
     #[test]
+    fn insufficient_source_bands_are_rejected_before_gti_reads() {
+        let mut two = raster();
+        two.band_count = 2;
+        let one = raster();
+        let _ = crate::warnings::take();
+        assert_eq!(raster_index(&[two.clone(), one.clone()], &Default::default()).unwrap().layer.len(), 2);
+        assert!(crate::warnings::take().iter().any(|w| w.contains("different band counts")));
+        let configured = RasterIndexOptions { gti: GtiOptions { band_count: Some(2), ..Default::default() }, ..Default::default() };
+        let error = raster_index(&[two.clone(), one.clone()], &configured).unwrap_err();
+        assert!(error.to_string().contains("fewer than the 2"));
+        let subset = RasterIndexOptions { gti: GtiOptions { band_count: Some(1), ..Default::default() }, ..Default::default() };
+        assert_eq!(raster_index(&[two, one], &subset).unwrap().layer.len(), 2);
+    }
+    #[test]
+    fn accepted_mixed_vector_crs_warns_about_untransformed_coordinates() {
+        let a = vector("a", 0);
+        let mut b = vector("b", 0);
+        SpatialRef::parse("EPSG:3857").unwrap().apply_to_layer(&mut b.layer);
+        let _ = crate::warnings::take();
+        let index = vector_index(&[a, b], &VectorIndexOptions { accept_different_crs: true, ..Default::default() }).unwrap();
+        assert_eq!(index.layer.len(), 2);
+        assert!(crate::warnings::take().iter().any(|w| w.contains("coordinates remain in their original CRS")));
+    }
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn vsi_locators_are_never_anchored_to_the_working_directory() {
+        assert_eq!(stored_location("/vsizip/data.zip/a.tif", true).unwrap(), "/vsizip/data.zip/a.tif");
+    }
+    #[test]
+    fn query_parameters_are_retained_but_never_echoed_in_the_warning() {
+        let _ = crate::warnings::take();
+        let mut source = raster();
+        source.location = "https://example.test/tile.tif?sig=private-marker".into();
+        let index = raster_index(&[source], &Default::default()).unwrap();
+        assert_eq!(index.layer.features[0].attributes[0], FieldValue::Text("https://example.test/tile.tif?sig=private-marker".into()));
+        let warnings = crate::warnings::take();
+        assert!(warnings.iter().any(|w| w.contains("query parameters")));
+        assert!(warnings.iter().all(|w| !w.contains("private-marker")));
+    }
+    #[test]
+    fn selectors_apply_to_the_union_of_input_datasets() {
+        let mut a = vector("a.gpkg", 0);
+        a.layer.name = "roads".into();
+        let mut b = vector("b.gpkg", 0);
+        b.layer.name = "counties".into();
+        let selection = VectorIndexSelection { names: vec!["roads".into()], indexes: Vec::new() };
+        let selected = selection.apply(vec![a, b]).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].location, "a.gpkg");
+    }
+    #[test]
     fn default_layer_names_are_resolved_at_serialization() {
         assert_eq!(raster_index_layer_name("path/catalog.shp.zip"), "catalog");
         let index = raster_index(&[raster()], &Default::default()).unwrap();
@@ -772,6 +927,7 @@ mod tests {
         let crate::Dataset::Vector(dataset) = crate::memory::open_bytes(bytes, "catalog.gpkg").unwrap() else { panic!("not vector") };
         assert_eq!(dataset.layers[0].name, "explicit");
     }
+    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn wildcard_stars_are_patterns_even_when_names_contain_stars() {
         for (pattern, name) in [("a*", "a*b"), ("*a*", "*ab"), ("*.tif", "a*.tif"), ("a?b", "a*b")] {
@@ -788,7 +944,9 @@ mod tests {
         options.gti.color_interpretations = vec!["red".into(), "green".into(), "blue".into()];
         assert!(raster_index(&[raster()], &options).is_err());
         options.gti.band_count = Some(3);
-        assert!(raster_index(&[raster()], &options).is_ok());
+        let mut rgb = raster();
+        rgb.band_count = 3;
+        assert!(raster_index(&[rgb], &options).is_ok());
         options.gti.band_count = None;
         options.gti.color_interpretations = vec!["gray".into()];
         assert!(raster_index(&[raster()], &options).is_ok());
@@ -851,7 +1009,7 @@ mod tests {
         let ok = RasterIndexOptions { gti: GtiOptions { nodata: vec![0.], ..Default::default() }, ..Default::default() };
         assert!(raster_index(&[raster()], &ok).is_ok());
     }
-    #[cfg(feature = "sqlite")]
+    #[cfg(all(feature = "sqlite", not(target_family = "wasm")))]
     #[test]
     fn overwriting_an_indexed_source_is_refused_atomically() {
         let dir = tempfile::tempdir().unwrap();
@@ -958,7 +1116,7 @@ pub fn index_input_paths(paths: &[String], o: &IndexInputOptions) -> Result<Vec<
 }
 #[cfg(not(target_family = "wasm"))]
 fn stored_location(path: &str, absolute: bool) -> Result<String> {
-    if !absolute || path.contains("://") || std::path::Path::new(path).is_absolute() {
+    if !absolute || path.contains("://") || path.starts_with("/vsi") || std::path::Path::new(path).is_absolute() {
         return Ok(path.into());
     }
     Ok(std::env::current_dir()?.join(path).to_string_lossy().into_owned())
@@ -980,10 +1138,15 @@ pub fn raster_index_paths(paths: &[String], inputs: &IndexInputOptions, o: &Rast
             Err(e) => return Err(e),
         }
     }
-    raster_index(&sources, o)
+    let mut output = raster_index(&sources, o)?;
+    for source in &sources {
+        output.track_relative_location(&source.location, "")?;
+    }
+    Ok(output)
 }
 /// Source layer selection for vector index creation. Names and zero-based
-/// indexes form a union; an absent requested selector is an error.
+/// indexes form a union across the supplied source collection. A missing
+/// selector is an error only when absent from every input dataset.
 #[derive(Debug, Clone, Default)]
 pub struct VectorIndexSelection {
     /// Original layer names.
@@ -1077,9 +1240,15 @@ pub fn vector_index_paths(
         for source in &mut group {
             source.location = location.clone();
         }
-        sources.extend(selection.apply(group)?);
+        sources.extend(group);
     }
-    vector_index(&sources, o)
+    let sources = selection.apply(sources)?;
+    let mut output = vector_index(&sources, o)?;
+    for source in &sources {
+        let suffix = if o.dataset_name_only { String::new() } else { format!(",{}", source.layer_index) };
+        output.track_relative_location(&source.location, &suffix)?;
+    }
+    Ok(output)
 }
 
 impl VectorIndexSelection {
