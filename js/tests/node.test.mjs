@@ -1720,6 +1720,52 @@ test("interrupted Goode homolosine matches PROJ", () => {
   }
 });
 
+test("general oblique transformation matches PROJ", () => {
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/ob_tran_reference.json", import.meta.url), "utf8"));
+  for (const c of reference.cases) {
+    const samples = c.samples.filter(s => s[2] !== null);
+    for (const target of [c.target, c.wkt2, c.wkt1]) {
+      const result = terrio.transformPoints(samples.map(s => s[0]), samples.map(s => s[1]), c.source, target);
+      for (let i = 0; i < samples.length; i++) for (let j = 0; j < 2; j++) {
+        assert.ok(Math.abs(result[j][i] - samples[i][2][j]) * c.metres_per_unit <= 0.001, `${c.name} forward ${i}/${j}`);
+      }
+    }
+    for (const s of c.samples.filter(s => s[2] === null)) {
+      assert.throws(() => terrio.transformPoints([s[0]], [s[1]], c.source, c.target), undefined, `${c.name} forward ${s[0]} ${s[1]}`);
+    }
+    const reversible = samples.filter(s => s[3] !== null);
+    for (let i = 0; i < reversible.length; i++) {
+      const [x, y] = reversible[i][2];
+      let inverse;
+      try {
+        inverse = terrio.transformPoints([x], [y], c.target, c.source);
+      } catch (error) {
+        // The rotated antimeridian is the inverse domain boundary. WASM/libm can
+        // round it one ulp outside; match the Rust/Python oracle's tiny easting retry.
+        for (const scale of [1 - 1e-12, 1 + 1e-12]) {
+          try {
+            inverse = terrio.transformPoints([x * scale], [y], c.target, c.source);
+            break;
+          } catch {
+            // Try the other side; an interior refusal still fails below.
+          }
+        }
+        if (!inverse) throw error;
+      }
+      const [lon, lat] = reversible[i][3];
+      const dlon = ((inverse[0][0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180);
+      // At a geographic pole, asin loses about sqrt(epsilon) radians and
+      // longitude is indeterminate; the PROJ fixture itself is 8.5e-7° off the pole.
+      const tolerance = Math.abs(reversible[i][1]) === 90 ? 1e-6 : 1e-8;
+      assert.ok(Math.abs(dlon) <= tolerance && Math.abs(inverse[1][0] - lat) <= tolerance, `${c.name} inverse ${i}`);
+    }
+    const refused = samples.filter(s => s[3] === null).map(s => s[2]).concat(c.inverse_samples.filter(([, e]) => e === null).map(([p]) => p));
+    for (const point of refused) {
+      assert.throws(() => terrio.transformPoints([point[0]], [point[1]], c.target, c.source), undefined, `${c.name} inverse ${point}`);
+    }
+  }
+});
+
 test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom-type, combine, sort", () => {
   const line = {
     type: "FeatureCollection",
