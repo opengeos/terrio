@@ -86,6 +86,11 @@ pub struct WindowOptions {
 /// [`LazyRaster::from_tiff_bytes_with_limits`], [`LazyRaster::from_sparse_with_limits`] and
 /// [`crate::open_raster_with_tiff_limits`] for eager reads. The
 /// window a read returns is not bounded by it: check the window's size before reading it.
+///
+/// Nor do the limits bound the chunk tables a reader keeps: after a level's first window read,
+/// its chunk offsets and byte counts (about 16 bytes per chunk) are kept for the reader's
+/// lifetime, so a file with very many small chunks keeps that memory in use while the reader is
+/// open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TiffReadLimits {
     /// The most bytes one decoded chunk may take, whichever codec decodes it, and the most a

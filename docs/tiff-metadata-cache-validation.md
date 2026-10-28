@@ -75,8 +75,9 @@ decoders per window.
 - `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`: passed.
 - `cargo test --workspace --locked --offline`: 1,514 passed, 16 ignored. The first
   sandbox run could not bind localhost test servers; the unrestricted rerun passed.
-- All seven `tiff_chunk_tables` regressions passed, including allocation and
-  metadata-only eviction checks. Four additional real-data lazy-reader tests passed.
+- All seven `tiff_chunk_tables` regressions passed, including allocation checks
+  and reads with the file's metadata blocks removed. Four additional real-data
+  lazy-reader tests passed.
 - `compare_windows_with_gdal.py local`: 96 windows across nine real GeoTIFFs and
   their overviews matched GDAL 3.13.2, including georeferencing.
 - The benchmark's 150 unique pixel/full-resolution-mask sequences matched GDAL;
@@ -96,7 +97,5 @@ Internal overview masks retain the documented existing policy of sampling the
 full-resolution mask. They are checked against that policy, rather than claimed
 identical to GDAL's overview mask; see [rasterio limitations](rasterio.md#not-covered).
 
-The local backup, matched harness sources/binaries, raw JSON results and logs are
-under `/private/tmp/terrio-tiff-review-20261028/`. The original benchmark fixtures
-remain in Claude's scratchpad; neither build outputs nor downloaded data are
-included in the working diff.
+Build outputs, downloaded data and benchmark fixtures are not included in the
+repository.
