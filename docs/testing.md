@@ -1031,3 +1031,33 @@ A local HTTP range-server measurement of lazy `info` opened the 610,612-byte
 `cog.tif` and the OPERA palette GeoTIFF with one GET and 65,536 response-body bytes
 each after color-table retention. The table does not require pixel decoding; these
 are observations for those two fixtures, not a bound for every palette TIFF.
+
+
+## Footprint index creation (#289)
+
+`compare_indexes_with_gdal.py` is registered as `indexes` and requires GDAL 3.13.
+It checks real COG/USGS rasters, rotated DEM subsets, mixed source CRSs, typed metadata,
+resolution filters, recursive discovery, multi-layer vector selection and GPKG/FGB/SHP
+cross-reads. Schema, CRS and text/integer fields match exactly; real metadata fields
+use 1e-12 relative/absolute tolerance. Vertex tolerance is 1e-8 index
+CRS units, with common installed datum grids and network grid downloads disabled.
+GTI band metadata, numeric grid-metadata values (independent of decimal spelling)
+and shared-window pixel queries are exact. GDAL-authored GPKG cached
+bounds round to 15 significant digits; GTI may consequently add one border row/column.
+This default-grid difference is reported, limited to one pixel with affine coefficients
+within 1e-12, and does not waive shared-window pixel equality. An explicit resolution/
+bbox case requires identical dimensions. Supply these options for stable GTI extents.
+
+```sh
+python scripts/conformance.py ../terrio-data --only indexes --strict
+cargo test -p terrio --lib ops::tile_index
+cargo test -p terrio-cli --test tile_index --test mcp
+pytest python/tests/test_tile_index.py
+node --test --test-name-pattern='dataset indexes' js/tests/node.test.mjs
+```
+
+A local HTTP range-server probe of raster-index creation on `cog.tif` (610,612 bytes)
+and `USGS_1_n40w106.tif` each used one GET and 65,536 served body bytes, matching
+ordinary lazy info opens. Raster index construction never called the pixel source in
+its panic-on-read unit fixture. These observations apply to lazy-capable readers;
+formats whose reader lacks a metadata-only path may materialize the input.

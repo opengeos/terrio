@@ -244,3 +244,28 @@ PixelIsPoint metadata and corner georeferencing.
 Byte datasets (gray, gray-alpha, RGB or RGBA). All ten GDAL raster blend operators
 are available. Alpha controls transparency; nodata/masks are ignored. Inputs and
 output are materialized; see the CLI blend reference for band-count rules.
+
+
+### Footprint indexes and GTI catalogs
+
+```js
+const index = terrio.rasterIndex({"tile.tif": raster}, {
+  outputCrs: "EPSG:4326", bandCount: 1, ot: "Float32", nodata: [-9999],
+});
+const bytes = index.toBytes("catalog.gpkg");
+const polygons = index.layer();
+const vectors = terrio.vectorIndex({"roads.geojson": roads}, {sourceLayerIndexes: [0]});
+```
+
+The source object maps stored locations to raster/vector Datasets, uploaded
+`Uint8Array`/`{bytes,filename}` files, or GeoJSON (vectors only). Native filesystem
+discovery is unavailable in WASM. `DatasetIndex` retains `count`, `metadata`,
+`layer()` and `toBytes(filename?, {format}?)`; keep this object to preserve GTI
+metadata when encoding GeoPackage/FlatGeobuf. `.shp.zip` encodes a Shapefile archive.
+Options use camelCase versions of the [CLI subset](../docs/cli.md#rastervector-indexes-and-gti-creation),
+including `locationName`, `sourceCrsFieldName`, `sourceCrsFormat`, `fetchMetadata`
+(triples), `minPixelSize`, `maxPixelSize`, `resolution`, `bbox`, `bandCount`, `ot`,
+`nodata`, `colorInterpretations`, `mask` and `metadata`. Vector selectors are
+`sourceLayerNames`/`sourceLayerIndexes`; the latter remain original zero-based layer
+numbers. Acceptance flags and `datasetNameOnly` match the CLI. Strings represent
+non-finite nodata, e.g. `["nan"]`.

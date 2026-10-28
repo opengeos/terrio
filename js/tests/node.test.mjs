@@ -2133,6 +2133,61 @@ test("object-store listing rejects HTML and error roots returned with status 200
   }
 });
 
+test("dataset indexes retain rotated corners, source identities and GTI metadata", () => {
+  // Independent GDAL 3.13.3 Byte TIFF: 4x6 zeros, affine rotation and EPSG:4326.
+  const raster = terrio.open(Uint8Array.from(Buffer.from("SUkqAAgAAAAPAAABAwABAAAABAAAAAEBAwABAAAABgAAAAIBAwABAAAACAAAAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAAmgEAABUBAwABAAAAAQAAABYBAwABAAAABgAAABcBBAABAAAAGAAAABwBAwABAAAAAQAAAFMBAwABAAAAAQAAANiFDAAQAAAAwgAAAK+HAwAgAAAAQgEAALCHDAACAAAAggEAALGHAgAIAAAAkgEAAAAAAAAAAAAAAAAAQAAAAAAAAOA/AAAAAAAAAAAAAAAAAAAkQAAAAAAAANA/AAAAAAAACMAAAAAAAAAAAAAAAAAAADRAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADwPwEAAQAAAAcAAAQAAAEAAgABBAAAAQABAAAIAAABAOYQAQixhwcAAAAGCAAAAQCOIwkIsIcBAAEACwiwhwEAAACIbXSWHaRyQAAAAECmVFhBV0dTIDg0fAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "base64")), "rotated.tif");
+  const index = terrio.rasterIndex({"tile.tif": raster}, {
+    sourceCrsFieldName: "srs", minPixelSize: 2.7, bandCount: 1, ot: "Byte", nodata: [255],
+    fetchMetadata: [["{PIXEL_SIZE}", "pixel_size", "Real"]],
+  });
+  assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {nodata: [1, 2, 3]}), /inferred/);
+  assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {colorInterpretations: ["red", "green", "blue"]}), /inferred/);
+  for (const key of ["minPixelSize", "maxPixelSize", "bandCount"]) {
+    for (const value of [NaN, Infinity, -Infinity]) {
+      assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {[key]: value}), /finite/);
+    }
+  }
+  assert.equal(index.count, 1);
+  assert.equal(index.metadata.NODATA, "255");
+  const feature = index.layer().toGeoJSON().features[0];
+  assert.equal(feature.properties.srs, "EPSG:4326");
+  assert.ok(Math.abs(feature.properties.pixel_size - Math.sqrt(209 / 24)) < 1e-12);
+  assert.deepEqual(feature.geometry.coordinates[0], [[10, 20], [18, 21], [21, 3], [13, 2], [10, 20]]);
+  for (const [name, feature] of [["index.gpkg", "sqlite"], ["index.fgb", "flatgeobuf"]]) {
+    if (needs(feature)) continue;
+    const bytes = index.toBytes(name);
+    const decoded = terrio.open(bytes, name);
+    assert.equal(decoded.toGeoJSON().features.length, 1);
+    assert.equal(decoded.layerNames()[0], "index");
+  }
+  const archive = terrio.rasterIndex({"tile.tif": raster}).toBytes("index.shp.zip");
+  assert.equal(terrio.open(archive, "index.shp.zip").toGeoJSON().features.length, 1);
+  const mixed = terrio.vectorIndex({
+    "roads.json": terrio.fromGeoJSON(SQUARES, "roads"),
+    "counties.json": terrio.fromGeoJSON(SQUARES, "counties"),
+  }, {sourceLayerNames: ["roads"]});
+  assert.equal(mixed.count, 1);
+  assert.equal(mixed.layer().toGeoJSON().features[0].properties.location, "roads.json,0");
+  const vectors = terrio.vectorIndex({"squares.json": SQUARES});
+  assert.equal(vectors.layer().toGeoJSON().features[0].properties.location, "squares.json,0");
+  assert.deepEqual(vectors.layer().toGeoJSON().features[0].geometry.coordinates[0], [[0, 0], [0, 10], [30, 10], [30, 0], [0, 0]]);
+  assert.throws(() => terrio.vectorIndex({"a.json": SQUARES}, {sourceLayerIndexes: [9]}), /layer/);
+  assert.throws(() => terrio.rasterIndex({"a.tif": raster}, {typo: true}), /unknown field/);
+});
+
+test("dataset indexes on real uploaded files", {skip: !DATA && "TERRIO_TEST_DATA is not set"}, () => {
+  const bytes = readFileSync(join(DATA, "cog.tif"));
+  const raster = terrio.open(bytes, "cog.tif");
+  const index = terrio.rasterIndex({"cog.tif": {bytes, filename: "cog.tif"}}, {sourceCrsFieldName: "srs"});
+  const polygon = index.layer().toGeoJSON().features[0];
+  assert.equal(polygon.properties.location, "cog.tif");
+  assert.equal(polygon.properties.srs, raster.crs);
+  assert.equal(terrio.open(index.toBytes("catalog.geojson"), "catalog.geojson").toGeoJSON().features.length, 1);
+  const roads = readFileSync(join(DATA, "TN_Counties.geojson"));
+  const vectors = terrio.vectorIndex({"counties.geojson": {bytes: roads, filename: "counties.geojson"}});
+  assert.equal(vectors.count, 1);
+});
+
 test("raster blend alpha and options", () => {
   const base = terrio.rasterFromArray(new Uint8Array([30, 80, 170, 255]), 1, 1, [10, 1, 0, 20, 0, -1]);
   const overlay = terrio.rasterFromArray(new Uint8Array([250, 20, 0, 0]), 1, 1, [10, 1, 0, 20, 0, -1]);

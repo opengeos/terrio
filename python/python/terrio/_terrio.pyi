@@ -38,6 +38,9 @@ __all__ = [
     "convert",
     "sql",
     "rasterize",
+    "raster_index",
+    "vector_index",
+    "DatasetIndex",
     "pansharpen",
     "polygonize",
     "transform_points",
@@ -1806,6 +1809,26 @@ def move_raster(
     error_threshold: float | None = None,
     ignore_cog_layout_break: bool = False,
 ) -> dict[str, Any]: ...
+@final
+class DatasetIndex:
+    """A polygon footprint index with GTI metadata."""
+    @property
+    def count(self) -> int: ...
+    @property
+    def layer(self) -> Layer: ...
+    @property
+    def metadata(self) -> dict[str, str]: ...
+    def to_bytes(self, filename: str = "index.gpkg", *, format: str | None = None) -> bytes: ...
+    def write(self, path: str, *, format: str | None = None, overwrite: bool = False) -> None: ...
+
+def raster_index(sources: Any, dst: str | None = None, **kwargs: Any) -> DatasetIndex:
+    """Create raster extent polygons; keyword options use CLI names with underscores."""
+    ...
+
+def vector_index(sources: Any, dst: str | None = None, **kwargs: Any) -> DatasetIndex:
+    """Create source layer envelope polygons, retaining original layer indexes."""
+    ...
+
 def blend(
     src: str | Raster,
     overlay: str | Raster,
