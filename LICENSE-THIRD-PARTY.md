@@ -9,8 +9,8 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 
 ## Overview
 
-- Apache License 2.0 (265)
-- MIT License (74)
+- Apache License 2.0 (266)
+- MIT License (75)
 - ISC License (19)
 - BSD 3-Clause "New" or "Revised" License (14)
 - BSD 2-Clause "Simplified" License (8)
@@ -275,7 +275,7 @@ Used by:
 - [siphasher 1.0.4](https://github.com/jedisct1/rust-siphash)
 - [spade 2.15.1](https://github.com/Stoeoef/spade)
 - [static_assertions 1.1.0](https://github.com/nvzqz/static-assertions-rs)
-- [ureq-proto 0.6.4](https://github.com/algesten/ureq-proto)
+- [ureq-proto 0.6.5](https://github.com/algesten/ureq-proto)
 - [zeroize 1.9.1](https://github.com/RustCrypto/utils)
 
 ```text
@@ -2080,7 +2080,7 @@ Used by:
 
 Used by:
 
-- [lzma-rust2 0.22.0](https://github.com/hasenbanck/lzma-rust2/)
+- [lzma-rust2 0.23.0](https://github.com/hasenbanck/lzma-rust2/)
 
 ```text
                                  Apache License
@@ -2292,7 +2292,7 @@ Used by:
 
 - [mappers 0.7.2](https://github.com/ScaleWeather/mappers)
 - [self_cell 1.3.0](https://github.com/Voultapher/self_cell)
-- [ureq 3.4.2](https://github.com/algesten/ureq)
+- [ureq 3.5.0](https://github.com/algesten/ureq)
 - [zune-core 0.5.3](https://github.com/etemesi254/zune-image)
 - [zune-jpeg 0.5.15](https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg)
 - [zune-jpegxl 0.5.2](https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpegxl)
@@ -4423,7 +4423,7 @@ limitations under the License.
 
 Used by:
 
-- [memmap2 0.9.11](https://github.com/RazrFalcon/memmap2-rs)
+- [memmap2 0.9.12](https://github.com/RazrFalcon/memmap2-rs)
 
 ```text
                               Apache License
@@ -6524,6 +6524,7 @@ Used by:
 - [r-efi 6.0.0](https://github.com/r-efi/r-efi)
 - [rand 0.10.3](https://github.com/rust-random/rand)
 - [rstar 0.12.2](https://github.com/georust/rstar)
+- [rstar 0.13.0](https://github.com/georust/rstar)
 - [rustc-hash 2.1.3](https://github.com/rust-lang/rustc-hash)
 - [ryu 1.0.23](https://github.com/dtolnay/ryu)
 - [seq-macro 0.3.6](https://github.com/dtolnay/seq-macro)
@@ -6541,6 +6542,7 @@ Used by:
 - [thiserror 2.0.21](https://github.com/dtolnay/thiserror)
 - [thrift 0.17.0](https://github.com/apache/thrift/tree/master/lib/rs)
 - [typed-path 0.12.3](https://github.com/chipsenkbeil/typed-path)
+- [typed-path 0.13.0](https://github.com/chipsenkbeil/typed-path)
 - [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident)
 - [utf8-zero 0.8.1](https://github.com/algesten/utf8-zero)
 - [utf8parse 0.2.2](https://github.com/alacritty/vte)
@@ -7676,7 +7678,7 @@ express Statement of Purpose.
 
 Used by:
 
-- [webpki-roots 1.0.9](https://github.com/rustls/webpki-roots)
+- [webpki-roots 1.0.11](https://github.com/rustls/webpki-roots)
 
 ```text
 # Community Data License Agreement - Permissive - Version 2.0
@@ -9501,6 +9503,7 @@ DEALINGS IN THE SOFTWARE.
 Used by:
 
 - [webp-rust 0.2.1](https://github.com/mith-mmk/webp-rust)
+- [webp-rust 0.3.2](https://github.com/mith-mmk/webp-rust)
 
 ```text
 MIT License
@@ -9601,7 +9604,7 @@ Used by:
 
 - [tracing-core 0.1.36](https://github.com/tokio-rs/tracing)
 - [zip 8.6.0](https://github.com/zip-rs/zip2)
-- [zip 9.0.5](https://github.com/zip-rs/zip2)
+- [zip 9.1.3](https://github.com/zip-rs/zip2)
 
 ```text
 The MIT License (MIT)

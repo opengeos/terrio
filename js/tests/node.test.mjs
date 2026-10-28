@@ -1736,6 +1736,7 @@ test("general oblique transformation matches PROJ", () => {
     const reversible = samples.filter(s => s[3] !== null);
     const invert = ([x, y]) => terrio.transformPoints([x], [y], c.target, c.source);
     const edge = [];
+    const singleResults = new Map();
     for (let i = 0; i < reversible.length; i++) {
       let inverse;
       try {
@@ -1756,6 +1757,7 @@ test("general oblique transformation matches PROJ", () => {
         inverse = nudged[0];
         edge.push(i);
       }
+      singleResults.set(reversible[i], [inverse[0][0], inverse[1][0]]);
       const [lon, lat] = reversible[i][3];
       const dlon = ((inverse[0][0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180);
       // At a geographic pole longitude is indeterminate, so only latitude is checked, and asin
@@ -1768,9 +1770,10 @@ test("general oblique transformation matches PROJ", () => {
     const interior = reversible.filter((_, i) => !edge.includes(i));
     const batch = terrio.transformPoints(interior.map(s => s[2][0]), interior.map(s => s[2][1]), c.target, c.source);
     for (let i = 0; i < interior.length; i++) {
-      assert.ok(Math.abs(batch[1][i] - interior[i][3][1]) <= (Math.abs(interior[i][1]) === 90 ? 1e-6 : 1e-8), `${c.name} batched inverse ${i}`);
+      assert.deepEqual([batch[0][i], batch[1][i]], singleResults.get(interior[i]), `${c.name} batch/single inverse ${i}`);
     }
-    const refused = samples.filter(s => s[3] === null).map(s => s[2]).concat(c.inverse_samples.filter(([, e]) => e === null).map(([p]) => p));
+    const pastPole = point => c.refuses_past_pole && Math.abs((point[1] * c.metres_per_unit - c.false_northing_metres) / c.radius_metres) > Math.PI / 2;
+    const refused = samples.filter(s => s[3] === null).map(s => s[2]).concat(c.inverse_samples.filter(([p, e]) => e === null || pastPole(p)).map(([p]) => p));
     for (const point of refused) {
       assert.throws(() => terrio.transformPoints([point[0]], [point[1]], c.target, c.source), undefined, `${c.name} inverse ${point}`);
     }

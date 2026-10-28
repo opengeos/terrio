@@ -184,7 +184,7 @@ impl GeolocationTransformer {
                 continue;
             }
             let x = x + shift;
-            for c in self.cells.locate_in_envelope_intersecting(&AABB::from_point([x, y])) {
+            for c in self.cells.locate_in_envelope_intersecting(AABB::from_point([x, y])) {
                 let ids = [
                     c.row * self.width + c.col,
                     c.row * self.width + c.col + 1,
