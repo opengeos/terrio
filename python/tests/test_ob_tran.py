@@ -67,8 +67,17 @@ def test_ob_tran_oracle(case):
     delta = actual - expected
     delta[:, 0] = ((delta[:, 0] + 180) % 360 - 180) * np.cos(np.deg2rad(expected[:, 1]))
     assert np.all(np.abs(delta) <= 1e-8)
+
     # One batched call, which reuses a single transformer for every point.
-    probes = [(p, e) for p, e in case["inverse_samples"] if e is not None]
+    # PROJ's spherical sinusoidal inverse returns a latitude past a pole, which the rotation turns
+    # into a point; terrio's sinusoidal refuses it (as crates/terrio-crs/tests/ob_tran.rs checks).
+    def past_pole(point):
+        northing = (point[1] * case["metres_per_unit"] - case["false_northing_metres"]) / case[
+            "radius_metres"
+        ]
+        return case["refuses_past_pole"] and abs(northing) > np.pi / 2
+
+    probes = [(p, e) for p, e in case["inverse_samples"] if e is not None and not past_pole(p)]
     actual = np.column_stack(
         terrio.transform_points(
             [p[0] for p, _ in probes], [p[1] for p, _ in probes], case["target"], case["source"]
@@ -79,7 +88,7 @@ def test_ob_tran_oracle(case):
     delta[:, 0] = ((delta[:, 0] + 180) % 360 - 180) * np.cos(np.deg2rad(expected[:, 1]))
     assert np.all(np.abs(delta) <= 1e-8)
     refused = [s[2] for s in samples if s[3] is None] + [
-        p for p, expected in case["inverse_samples"] if expected is None
+        p for p, expected in case["inverse_samples"] if expected is None or past_pole(p)
     ]
     for point in refused:
         with pytest.raises(terrio.CRSError):
