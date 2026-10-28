@@ -12,7 +12,7 @@ from osgeo import gdal
 gdal.UseExceptions()
 
 
-def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_dtype=gdal.GDT_Float64, bounds=False):
+def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False):
     dataset = gdal.GetDriverByName('netCDF').CreateMultiDimensional(str(path))
     root = dataset.GetRootGroup()
     dimensions = []
@@ -20,6 +20,8 @@ def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_
         dimension = root.CreateDimension(name, None, None, len(coordinates))
         variable = root.CreateMDArray(name, [dimension], gdal.ExtendedDataType.Create(coordinate_dtype))
         variable.Write(np.asarray(coordinates, dtype='<f4' if coordinate_dtype == gdal.GDT_Float32 else '<f8').tobytes())
+        if coordinate_ranges:
+            variable.CreateAttribute('actual_range', [2], gdal.ExtendedDataType.Create(gdal.GDT_Float64)).Write([float(min(coordinates)), float(max(coordinates))])
         dimensions.append(dimension)
     group = root.CreateGroup('science') if nested else root
     variable = group.CreateMDArray('wind', dimensions, gdal.ExtendedDataType.Create(dtype))
@@ -136,12 +138,12 @@ def main():
     results = []
     with tempfile.TemporaryDirectory(prefix='terrio-mdmosaic-') as temporary:
         tmp = Path(temporary)
-        def case(name, pieces, dtype=gdal.GDT_Float32, nested=False, selected=False, output='nc', normalize_descending=False, coordinate_dtype=gdal.GDT_Float64, bounds=False):
+        def case(name, pieces, dtype=gdal.GDT_Float32, nested=False, selected=False, output='nc', normalize_descending=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False):
             try:
                 sources = []
                 for index, (axes, data) in enumerate(pieces):
                     source = tmp / f'source-{index}.nc'
-                    create(source, axes, data, dtype, nested, coordinate_dtype, bounds)
+                    create(source, axes, data, dtype, nested, coordinate_dtype, bounds, coordinate_ranges)
                     sources.append(str(source))
                 reference_sources = sources
                 if normalize_descending:
@@ -154,7 +156,7 @@ def main():
                                 data = np.flip(data, axis=axis)
                             normalized.append((dimension, coordinates))
                         source = tmp / f'reference-source-{index}.nc'
-                        create(source, normalized, data, dtype, nested, coordinate_dtype, bounds)
+                        create(source, normalized, data, dtype, nested, coordinate_dtype, bounds, coordinate_ranges)
                         reference_sources.append(str(source))
                 reference = tmp / 'reference.vrt'
                 reference.unlink(missing_ok=True)
@@ -173,6 +175,7 @@ def main():
             results.append(result)
         tiled = [([('lat', lat[y:y+8]), ('lon', lon[x:x+10])], values[y:y+8, x:x+10]) for y,x in [(0,0),(0,10),(8,0),(8,10)]]
         case('spatial four NOAA wind tiles', tiled)
+        case('coordinate per-tile actual ranges', tiled, coordinate_ranges=True)
         case('spatial Float32 coordinate gaps', [([('lat', np.float32(40)+np.arange(8,dtype='float32')*np.float32(.1)+np.float32(i*1.2)), ('lon',lon[:5])],values[i*8:(i+1)*8,:5]) for i in range(2)], coordinate_dtype=gdal.GDT_Float32)
         case('Float32 coordinate Zarr snapshot', [([('lat', np.float32(40)+np.arange(8,dtype='float32')*np.float32(.1)+np.float32(i*1.2)), ('lon',lon[:5])],values[i*8:(i+1)*8,:5]) for i in range(2)], coordinate_dtype=gdal.GDT_Float32, output='zarr')
         case('CF shared unindexed bounds dimension', tiled, bounds=True)

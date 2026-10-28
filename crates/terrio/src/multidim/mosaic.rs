@@ -136,7 +136,7 @@ fn axis(inputs: &[(usize, Dimension, Option<Array>)]) -> Result<Axis> {
             || array.info.dimensions[0].path != d.path
             || array.shape() != [d.size]
             || array.info.data_type != template.info.data_type
-            || array.info.attributes != template.info.attributes
+            || !same_coordinate_metadata(array, template)
             || d.indexing_variable != dimension.indexing_variable
         {
             return Err(bad(format!("incompatible indexing variable for '{}'", d.path)));
@@ -200,7 +200,7 @@ fn axis(inputs: &[(usize, Dimension, Option<Array>)]) -> Result<Axis> {
                     // First-step rounding accumulates over distant tile origins.
                     // Use the observed spacing variation as well as the native
                     // coordinate precision, but never accept a half-cell shift.
-                    let tolerance = (1e-6 + 4. * epsilon * magnitude / step.abs() + deviation / step.abs() * start.abs()).min(0.25);
+                    let tolerance = (1e-6 + 4. * epsilon * magnitude / step.abs() + deviation / step.abs() * start.abs()).min(1e-3);
                     if !start.is_finite() || start < 0. || start > usize::MAX as f64 || (start - start.round()).abs() > tolerance {
                         return Err(bad("indexing variables are not aligned on a common grid"));
                     }
@@ -243,6 +243,11 @@ fn axis(inputs: &[(usize, Dimension, Option<Array>)]) -> Result<Axis> {
     dimension.size = output.len();
     let mut info = template.info.clone();
     info.dimensions = vec![dimension.clone()];
+    // A per-tile range describes only that tile, not the mosaic. Remove it
+    // rather than copying stale coordinate extrema to the output.
+    if let Some(attributes) = info.attributes.as_object_mut() {
+        attributes.remove("actual_range");
+    }
     let mut coordinate = Array::from_bytes(info, encode_coordinates(&output, template.info.data_type)?)?;
     coordinate.attribute_types.clone_from(&template.attribute_types);
     Ok(Axis { dimension, coordinate: Some(coordinate), starts })
@@ -314,8 +319,16 @@ fn fill(array: &Array) -> Result<Vec<u8>> {
     };
     macro_rules! integer {
         ($typ:ty) => {{
-            let value =
-                v.as_i64().map(i128::from).or_else(|| v.as_u64().map(i128::from)).ok_or_else(|| bad("invalid integer nodata value"))?;
+            let value = v
+                .as_i64()
+                .map(i128::from)
+                .or_else(|| v.as_u64().map(i128::from))
+                .or_else(|| {
+                    v.as_f64()
+                        .filter(|f| f.is_finite() && f.fract() == 0. && *f >= i64::MIN as f64 && *f < 18_446_744_073_709_551_616.)
+                        .map(|f| f as i128)
+                })
+                .ok_or_else(|| bad("invalid integer nodata value"))?;
             <$typ>::try_from(value).map_err(|_| bad("nodata value exceeds its type"))?.to_le_bytes().to_vec()
         }};
     }
@@ -361,6 +374,24 @@ fn same_number(a: &Value, b: &Value) -> bool {
         (None, Some(b)) => a.as_f64().is_some_and(|a| a.is_finite() && a.fract() == 0. && a as i128 == b),
         (None, None) => a.as_f64().zip(b.as_f64()).is_some_and(|(a, b)| a.is_finite() && a == b),
     }
+}
+fn same_nodata(a: &Array, b: &Array) -> bool {
+    match (a.info.attributes.get("_FillValue"), b.info.attributes.get("_FillValue")) {
+        (Some(a), Some(b)) => a == b || same_number(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+fn same_coordinate_metadata(a: &Array, b: &Array) -> bool {
+    fn relevant(array: &Array) -> Value {
+        let mut attributes = array.info.attributes.clone();
+        if let Some(attributes) = attributes.as_object_mut() {
+            attributes.remove("actual_range");
+            attributes.remove("_FillValue");
+        }
+        attributes
+    }
+    relevant(a) == relevant(b) && same_nodata(a, b)
 }
 fn same_encoding(a: &Array, b: &Array) -> bool {
     for (name, default) in [("scale_factor", serde_json::json!(1)), ("add_offset", serde_json::json!(0))] {
@@ -414,24 +445,33 @@ pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> 
             if let Ok(array) = dataset.array(path)
                 && let Some(name) = array.info.attributes.get("grid_mapping").and_then(Value::as_str)
             {
-                let mapping = if name.starts_with('/') {
-                    dataset.array(name)?
+                // Extended CF syntax has one or more "crs: coord ..."
+                // clauses; coordinate variable names are not mapping names.
+                let names: Vec<_> = if name.contains(':') {
+                    name.split_whitespace().filter_map(|token| token.split_once(':').map(|(name, _)| name)).collect()
                 } else {
-                    let mut group = parent(path);
-                    loop {
-                        let candidate = format!("{}/{}", group.trim_end_matches('/'), name);
-                        match dataset.array(&candidate) {
-                            Ok(array) => break array,
-                            Err(error) if group == "/" => return Err(error),
-                            Err(_) => group = parent(group),
-                        }
-                    }
+                    vec![name]
                 };
-                let mapping_path = mapping.info.path.clone();
-                if !mapping.info.dimensions.is_empty() {
-                    return Err(bad("CF grid mapping variables must be scalar"));
+                for name in names {
+                    let mapping = if name.starts_with('/') {
+                        dataset.array(name)?
+                    } else {
+                        let mut group = parent(path);
+                        loop {
+                            let candidate = format!("{}/{}", group.trim_end_matches('/'), name);
+                            match dataset.array(&candidate) {
+                                Ok(array) => break array,
+                                Err(error) if group == "/" => return Err(error),
+                                Err(_) => group = parent(group),
+                            }
+                        }
+                    };
+                    let mapping_path = mapping.info.path.clone();
+                    if !mapping.info.dimensions.is_empty() {
+                        return Err(bad("CF grid mapping variables must be scalar"));
+                    }
+                    grid_mappings.insert(mapping_path);
                 }
-                grid_mappings.insert(mapping_path);
             }
         }
     }
@@ -478,7 +518,7 @@ pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> 
         for (i, array) in &arrays {
             if array.info.data_type != template.info.data_type
                 || array.info.dimensions.len() != template.info.dimensions.len()
-                || array.info.attributes.get("_FillValue") != template.info.attributes.get("_FillValue")
+                || !same_nodata(array, template)
                 || !same_encoding(array, template)
                 || (grid_mappings.contains(&path) && array.info.attributes != template.info.attributes)
                 || array.info.dimensions.iter().zip(&template.info.dimensions).any(|(a, b)| a.path != b.path || a.name != b.name)
@@ -702,6 +742,48 @@ mod tests {
         let mut b = a.clone();
         b.root.arrays.last_mut().unwrap().info.dimensions[1].size = 3;
         assert!(mosaic(&[a, b], &Default::default()).is_err());
+    }
+    #[test]
+    fn true_fractional_cell_misalignment_is_rejected() {
+        let mut sources = Vec::new();
+        for offset in [0f32, 1.2 + 0.025] {
+            let mut source = dataset(&[("y", &[0, 1, 2, 3, 4, 5, 6, 7]), ("x", &[0])], &[1; 8]);
+            let coordinate = &mut source.root.arrays[0];
+            coordinate.info.data_type = DataType::F32;
+            coordinate.source = Source::Memory(Arc::new((0..8).flat_map(|j| (40f32 + j as f32 * 0.1 + offset).to_le_bytes()).collect()));
+            sources.push(source);
+        }
+        assert!(mosaic(&sources, &Default::default()).unwrap_err().to_string().contains("not aligned"));
+    }
+    #[test]
+    fn tile_coordinate_ranges_and_integral_float_nodata_are_accepted() {
+        let mut a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        let mut b = dataset(&[("y", &[0]), ("x", &[4, 5])], &[3, 4]);
+        a.root.arrays[1].info.attributes["actual_range"] = json!([0, 1]);
+        b.root.arrays[1].info.attributes["actual_range"] = json!([4, 5]);
+        b.root.arrays.last_mut().unwrap().info.attributes["_FillValue"] = json!(-9999.0);
+        let out = mosaic(&[a, b], &Default::default()).unwrap();
+        assert_eq!(out.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 2, -9999, -9999, 3, 4]));
+        assert!(out.array("x").unwrap().info.attributes.get("actual_range").is_none());
+    }
+    #[test]
+    fn extended_cf_grid_mapping_syntax_keeps_each_scalar_mapping() {
+        let mut source = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        source.root.arrays.last_mut().unwrap().info.attributes["grid_mapping"] = json!("crs: y x other: y x");
+        for name in ["crs", "other"] {
+            let mut info = source.root.arrays.last().unwrap().info.clone();
+            info.name = name.into();
+            info.path = format!("/{name}");
+            info.data_type = DataType::I32;
+            info.dimensions.clear();
+            info.chunks = None;
+            info.coordinates.clear();
+            info.attributes = json!({"grid_mapping_name": "latitude_longitude"});
+            source.root.arrays.push(Array::from_bytes(info, 0i32.to_le_bytes().to_vec()).unwrap());
+        }
+        let out = mosaic(&[source], &Default::default()).unwrap();
+        assert!(out.array("crs").is_ok());
+        assert!(out.array("other").is_ok());
     }
     #[test]
     fn incompatible_grid_types_and_nodata_are_rejected() {

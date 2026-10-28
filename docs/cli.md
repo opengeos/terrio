@@ -2161,7 +2161,7 @@ nested arrays at the root. It also retains integer coordinate types rather than
 GDAL's synthesized Float64 coordinates. Float32 indexing variables use their
 native precision when recognizing regular grids and placing tiles; gap cells
 are retained. Off-grid origins beyond that precision allowance are rejected;
-the allowance is capped at a quarter grid cell. Irregular axes are sorted with
+the allowance is capped at 0.001 grid cells. Per-tile coordinate `actual_range` metadata may differ and is removed from the mosaic. Extended scalar CF `grid_mapping` clauses are retained; unresolved mapping references are rejected. Irregular axes are sorted with
 equal coordinates deduplicated in either direction.
 
 Coordinate planning checks the actual in-memory element width before reading
