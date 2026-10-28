@@ -94,16 +94,7 @@ fn finish(
     if let Some(path) = dst {
         let mut options = write_options(format, compress, tile_size, bigtiff)?;
         py.detach(|| {
-            let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
-            if matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles)) && output.has_mask()
-            {
-                return Err(terrio::Error::InvalidArgument(
-                    "tile archive writes do not preserve dataset masks; use an explicit alpha band".into(),
-                ));
-            }
-            if matches!(driver, Some(terrio::formats::RasterDriver::GTiff | terrio::formats::RasterDriver::Cog)) {
-                options.mask = output.read_mask(terrio::Window::full(output.width(), output.height()), None)?;
-            }
+            output.prepare_output_mask(path, &mut options, terrio::Window::full(output.width(), output.height()), None)?;
             terrio::write_raster_dataset(&output.read()?, path, &options)
         })
         .py()?;

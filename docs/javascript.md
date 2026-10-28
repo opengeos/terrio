@@ -458,3 +458,8 @@ palette sources. Operations materialize the input/output. See
 Raster `toBytes` preserves dataset masks for GeoTIFF/COG without `tSrs`.
 Other formats omit separate dataset masks. Reprojecting a raster
 with a separate dataset mask is refused explicitly; use an alpha band instead.
+
+Color-file text passed to palette APIs as a `Uint8Array` needs a filename hint
+or `{bytes, filename: "colors.txt"}`. Plain strings and `{text, filename}` also
+accept text tables. Tile-archive serialization rejects any raster with a
+dataset mask, including materialized palette results; use an explicit alpha band.

@@ -604,6 +604,12 @@ mod tests {
     fn indexed_color_files_preserve_sparse_indices_and_xml_alpha() {
         let text = parse_color_table("0 1 2 3 4\n2 red 128", "colors.txt").unwrap();
         assert_eq!(text, [[1, 2, 3, 4], [0, 0, 0, 0], [255, 0, 0, 128]]);
+        let cpt = parse_color_table(
+            "# COLOR_MODEL = RGB\n0 1 2 3 2 4 5 6\n2 7 8 9 4 10 11 12\nB 0 0 0\nF 255 255 255\nN 255 0 0\n",
+            "colors.cpt",
+        )
+        .unwrap();
+        assert_eq!(cpt, [[1, 2, 3, 255], [0; 4], [7, 8, 9, 255], [0; 4], [10, 11, 12, 255]]);
         let xml = r##"<qgis><pipe><rasterrenderer type="paletted"><colorPalette><paletteEntry value="2" color="#ff0000" alpha="128"/></colorPalette></rasterrenderer></pipe></qgis>"##;
         assert_eq!(parse_color_table(xml, "colors.qml").unwrap(), [[0, 0, 0, 0], [0, 0, 0, 0], [255, 0, 0, 128]]);
         assert!(parse_color_table("1.5 red", "colors.txt").is_err());

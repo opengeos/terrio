@@ -2047,7 +2047,7 @@ sample.
 median-cut palette generation and integer error diffusion. `--color-count 2..256`
 (default 256), `--bit-depth 5|8` (default 5), `--no-dither`, `--color-map FILE` and
 `--output-nodata INDEX` control generation/mapping. A color map can be an indexed
-raster, indexed GDAL/GRASS text, RGB GMT CPT or QGIS QML/QLR file. RGB color
+raster, indexed GDAL/GRASS text, RGB GMT CPT (with a `# COLOR_MODEL = RGB` header) or QGIS QML/QLR file. RGB color
 interpretations select the channels when present; otherwise the first three
 bands are used. Shared RGB nodata excludes pixels from palette generation. If no shared RGB
 nodata value exists, dataset masks (or alpha validity) select valid pixels. This
@@ -2171,3 +2171,7 @@ publish all components from staging and require a new basename even with `--over
 Append/update, layer replacement, STAC-GeoParquet profiles, XML companion output and
 GDAL-specific creation options are outside this supported subset. Shapefile field
 width/type limits still apply. The three commands are also exposed as MCP tools.
+
+Palette commands reject masked PMTiles/MBTiles outputs, including materialized
+results, because these writers cannot retain the separate dataset mask.
+GeoTIFF/COG preserve it.

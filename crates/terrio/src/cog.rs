@@ -961,6 +961,28 @@ impl LazyRaster {
             }
     }
 
+    /// Prepares inherited validity for an output window. GeoTIFF/COG retain
+    /// per-dataset masks unless an explicit mask is supplied. Tile archives
+    /// reject masked sources because their writers cannot retain that validity.
+    /// Other formats keep their existing pixel/alpha/nodata serialization.
+    pub fn prepare_output_mask(
+        &mut self,
+        filename: &str,
+        options: &mut crate::RasterWriteOptions,
+        window: Window,
+        overview: Option<usize>,
+    ) -> Result<()> {
+        use crate::formats::RasterDriver;
+        let driver = options.driver.or_else(|| RasterDriver::for_extension(filename));
+        if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && self.has_mask() {
+            return Err(Error::InvalidArgument("tile archive writes do not preserve dataset masks; use an explicit alpha band".into()));
+        }
+        if options.mask.is_none() && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
+            options.mask = self.read_mask(window, overview)?;
+        }
+        Ok(())
+    }
+
     /// Reads a window of the per-dataset mask, at full resolution or of an overview: 255 for
     /// valid pixels, 0 for invalid ones, row by row. `None` when the raster has no mask (for an
     /// overview without a mask of its own, the full-resolution mask is sampled by nearest

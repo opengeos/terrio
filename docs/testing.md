@@ -1170,8 +1170,9 @@ This fixture is an I/O observation, not a general zero-overhead guarantee;
 source counts and confirms that the unsupported lazy tile-archive mask path
 refuses the write without creating output.
 
-Palette lookup uses a dense u16 cache: 64 KiB at 5-bit precision or 32 MiB at
-8-bit precision. On the complete 2127 × 1564 Landsat RGB fixture, using a supplied
+Palette lookup uses a dense u16 cache at 5-bit precision (64 KiB). At 8 bits,
+images up to 65,536 pixels use a pixel-bounded hash cache; larger images use a
+32 MiB dense table. On the complete 2127 × 1564 Landsat RGB fixture, using a supplied
 256-entry grayscale table and 8-bit diffusion, two local optimized CLI runs took
 0.517/0.519 s with the previous capped hash cache and 0.284/0.289 s with the dense
 cache. The output files were byte-identical. These timings are local observations,

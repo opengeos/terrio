@@ -651,15 +651,9 @@ impl Dataset {
                 if t_srs.is_some() && r.has_mask() {
                     return Err(JsError::new("reprojected toBytes does not preserve dataset masks; use an explicit alpha band"));
                 }
-                let effective_driver = driver.or_else(|| RasterDriver::for_extension(filename));
-                if matches!(effective_driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && r.has_mask() {
-                    return Err(JsError::new("tile archive writes do not preserve dataset masks; use an explicit alpha band"));
-                }
-                let mask = if matches!(effective_driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
-                    r.read_mask(window, o.overview).map_err(js_err)?
-                } else {
-                    None
-                };
+                let mut mask_options = RasterWriteOptions { driver, ..Default::default() };
+                r.prepare_output_mask(filename, &mut mask_options, window, o.overview).map_err(js_err)?;
+                let mask = mask_options.mask;
                 let mut ds = r.read_window(window, &opts).map_err(js_err)?;
                 if let Some(dst) = t_srs {
                     let o = terrio::ops::warp::WarpOptions {
