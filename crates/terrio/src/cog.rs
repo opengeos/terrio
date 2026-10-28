@@ -21,12 +21,12 @@
 
 use crate::crs::SpatialRef;
 use crate::formats::RasterDriver;
-use crate::geotiff::{GeoTags, PatchedReader, read_geo_tags_from};
+use crate::geotiff::{ChunkTables, GeoTags, PatchedReader, read_geo_tags_from};
 use crate::vfs::{self, Location};
 use crate::{Error, RasterDataset, Result};
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
-use tiff::decoder::{ChunkType, Decoder, DecodingResult, Limits};
+use tiff::decoder::{Decoder, DecodingResult, Limits};
 use tiff::tags::Tag;
 use wbraster::DataType;
 use wbraster::raster::RasterData;
@@ -997,19 +997,20 @@ fn read_tiff_mask(t: &mut TiffRaster, window: Window, level: usize) -> Result<Op
     let (lw, lh) = (t.levels[level].width, t.levels[level].height);
     let (fw, fh) = (t.levels[0].width, t.levels[0].height);
     let w = (window.x, window.y, window.width, window.height);
-    let own = t.masks.iter().find(|m| m.overview == (level > 0) && (m.width, m.height) == (lw, lh)).cloned();
+    // The masks are borrowed, not copied with their chunk tables.
+    let own = t.masks.iter().find(|m| m.overview == (level > 0) && (m.width, m.height) == (lw, lh));
     let reader = t.decoder.inner();
     if let Some(m) = own {
-        return crate::tiff_mask::read_mask(reader, &m, w).map(Some);
+        return crate::tiff_mask::read_mask(reader, m, w).map(Some);
     }
-    let Some(full) = t.masks.iter().find(|m| !m.overview && (m.width, m.height) == (fw, fh)).cloned() else { return Ok(None) };
+    let Some(full) = t.masks.iter().find(|m| !m.overview && (m.width, m.height) == (fw, fh)) else { return Ok(None) };
     // Nearest neighbour from the full-resolution mask.
     let (sx, sy) = (fw as f64 / lw as f64, fh as f64 / lh as f64);
     let col = |c: usize| (((c as f64 + 0.5) * sx) as usize).min(fw - 1);
     let row = |r: usize| (((r as f64 + 0.5) * sy) as usize).min(fh - 1);
     let (c0, c1) = (col(window.x), col(window.x + window.width - 1));
     let (r0, r1) = (row(window.y), row(window.y + window.height - 1));
-    let src = crate::tiff_mask::read_mask(reader, &full, (c0, r0, c1 - c0 + 1, r1 - r0 + 1))?;
+    let src = crate::tiff_mask::read_mask(reader, full, (c0, r0, c1 - c0 + 1, r1 - r0 + 1))?;
     let sw = c1 - c0 + 1;
     let mut out = Vec::with_capacity(window.width * window.height);
     for r in window.y..window.y + window.height {
@@ -1155,6 +1156,11 @@ struct Level {
     /// The level of the `.ovr` file (see [`TiffRaster::ovr`]) this one is, rather than an image
     /// of this file.
     external: Option<usize>,
+    /// The image's chunk tables, read by the level's first window read and reused by the next.
+    tables: Option<Arc<ChunkTables>>,
+    /// How the image's chunks are decoded, settled by the level's first window read that gets to
+    /// decoding: `Some(None)` when the `tiff` crate decodes them itself.
+    codec: Option<Option<crate::tiff_codecs::ChunkCodec>>,
 }
 
 struct TiffRaster {
@@ -1211,7 +1217,15 @@ impl TiffRaster {
         let data_type = sample_type(&mut dec)?;
         let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
         let (cw, ch) = dec.chunk_dimensions();
-        let mut levels = vec![Level { ifd: 0, width: w as usize, height: h as usize, block: (cw as usize, ch as usize), external: None }];
+        let mut levels = vec![Level {
+            ifd: 0,
+            width: w as usize,
+            height: h as usize,
+            block: (cw as usize, ch as usize),
+            external: None,
+            tables: None,
+            codec: None,
+        }];
         let mut ifd = 1;
         while dec.more_images() && ifd < MAX_IMAGES {
             // Images the decoder cannot read (such as unusual masks) are skipped.
@@ -1223,7 +1237,8 @@ impl TiffRaster {
                 if subfile & 1 == 1 && subfile & 4 == 0 && samples == bands && same_type {
                     let (ow, oh) = dec.dimensions().map_err(tiff_err)?;
                     let (cw, ch) = dec.chunk_dimensions();
-                    levels.push(Level { ifd, width: ow as usize, height: oh as usize, block: (cw as usize, ch as usize), external: None });
+                    let block = (cw as usize, ch as usize);
+                    levels.push(Level { ifd, width: ow as usize, height: oh as usize, block, external: None, tables: None, codec: None });
                 }
             }
             ifd += 1;
@@ -1269,7 +1284,16 @@ impl TiffRaster {
         for (i, l) in ovr.levels.iter().enumerate() {
             // GDAL accepts all matching-band/type images, including irregular,
             // equal-sized and larger images; there is no reduction-factor gate.
-            self.levels.push(Level { ifd: l.ifd, width: l.width, height: l.height, block: l.block, external: Some(i) });
+            // Read through the `.ovr`'s own levels, which keep their tables.
+            self.levels.push(Level {
+                ifd: l.ifd,
+                width: l.width,
+                height: l.height,
+                block: l.block,
+                external: Some(i),
+                tables: None,
+                codec: None,
+            });
         }
         self.levels[1..].sort_by_key(|l| std::cmp::Reverse((l.width, l.height)));
         // Use the same sidecar-mask policy as a local base TIFF. This probes
@@ -1321,12 +1345,16 @@ impl TiffRaster {
         let (cw, ch) = (cw as usize, ch as usize);
         let across = lw.div_ceil(cw);
         let per_plane = across * lh.div_ceil(ch);
-        let (offsets_tag, counts_tag) = match dec.get_chunk_type() {
-            ChunkType::Tile => (Tag::TileOffsets, Tag::TileByteCounts),
-            ChunkType::Strip => (Tag::StripOffsets, Tag::StripByteCounts),
+        // The level's chunk tables list every chunk of the image, whatever the window: read by its
+        // first window read, then reused.
+        let tables = match &self.levels[level].tables {
+            Some(tables) => tables.clone(),
+            None => {
+                let tables = Arc::new(ChunkTables::read(dec).map_err(tiff_err)?);
+                self.levels[level].tables = Some(tables.clone());
+                tables
+            }
         };
-        let offsets = dec.get_tag_u64_vec(offsets_tag).map_err(tiff_err)?;
-        let counts = dec.get_tag_u64_vec(counts_tag).map_err(tiff_err)?;
 
         // The chunks to read, with the output bands each one fills: (chunk, [(sample, out band)]).
         let planes: Vec<(usize, Vec<(usize, usize)>)> = if planar {
@@ -1342,8 +1370,7 @@ impl TiffRaster {
                 }
             }
         }
-        let ranges: Vec<(u64, u64)> =
-            chunks.iter().filter_map(|(i, ..)| Some((*offsets.get(*i)?, *counts.get(*i)?))).filter(|(_, n)| *n > 0).collect();
+        let ranges: Vec<(u64, u64)> = chunks.iter().filter_map(|(i, ..)| tables.get(*i)).filter(|(_, n)| *n > 0).collect();
         dec.inner().get_ref().prefetch(&ranges)?;
 
         // Missing (sparse) chunks read as nodata, or 0, as in GDAL.
@@ -1354,7 +1381,7 @@ impl TiffRaster {
         // A chunk can fill several output bands (a band asked for twice in a planar image).
         let mut targets: std::collections::HashMap<u32, Vec<ChunkTarget>> = std::collections::HashMap::with_capacity(chunks.len());
         for (idx, x0, y0, map) in chunks {
-            if counts.get(idx).copied().unwrap_or(0) == 0 {
+            if tables.counts.get(idx).copied().unwrap_or(0) == 0 {
                 continue;
             }
             let t = targets.entry(idx as u32).or_default();
@@ -1380,7 +1407,14 @@ impl TiffRaster {
             }
         });
         let reopen = reopen.as_ref().map(|f| f as crate::geotiff::Reopen<PatchedReader<Source>>);
-        crate::geotiff::decode_chunks(dec, reopen, ifd, &wanted, limits, &tiff_err, |(idx, chunk, (dw, dh))| {
+        // The compressions the `tiff` crate does not decode (alone), with the same limit: the
+        // level's codec is made once, with the level's tables, and kept, as is the lack of one.
+        let codec = &mut self.levels[level].codec;
+        if codec.is_none() {
+            *codec = Some(crate::tiff_codecs::ChunkCodec::new(dec, limits.chunk_bytes, Some(tables.clone())).map_err(tiff_err)?);
+        }
+        let codec = codec.as_ref().and_then(Option::as_ref);
+        crate::geotiff::decode_chunks(dec, reopen, ifd, &wanted, codec, &tiff_err, |(idx, chunk, (dw, dh))| {
             let targets = &targets[&idx];
             macro_rules! place {
                 ($($out:ident <- $res:ident),*) => {

@@ -833,6 +833,35 @@ python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
 JavaScript exposure of these additional lazy-reader facts remains follow-up
 work; the existing bindings retain their behavior.
 
+### Chunk tables of lazy GeoTIFF reads (#348)
+
+```sh
+cargo test -p terrio --test tiff_chunk_tables
+```
+
+A lazy GeoTIFF keeps the tile or strip offsets and byte counts of each image
+(full resolution or overview, `.ovr` levels included) after its first window
+read, with the codec terrio decodes its chunks with, or the lack of one. The
+tests drop every block of a sparse file but those of chunk data after a level's
+first read: the next reads of the level (Deflate and LZW, pixel- and
+band-interleaved, tiles and strips, classic and BigTIFF, sparse and edge chunks,
+reordered and repeated bands, overviews, masks) must read nothing else and match
+the source. Counting the bytes each thread allocates, a one-strip read of an
+image of 65,536 strips must allocate less than a quarter of one copy of its
+tables, as must a mask read (at full resolution, and sampled for an overview);
+the first read of a level keeps one copy, shared with its codec; and returning
+to a level after reading another must allocate at least its tables less than
+its first read, for internal and `.ovr` overviews. Tables over the decoding
+limits still fail every read. The table-reuse and allocation checks fail on the
+code before the change. Additional tests switch between IFDs with different
+codecs and strip geometry, and read windows, masks and overviews concurrently
+through shared lazy handles, checking pixels, nodata, type and georeferencing.
+
+Moving to another level still reads that image's directory and tables (the
+`tiff` crate's `seek_to_image`), and the threads decoding the chunks of a
+multi-chunk window of a local file or bytes in memory each open a decoder,
+which reads the first image's tables (and the level's). Opening is unchanged.
+
 ## File management (#289)
 
 `scripts/compare_vsi_with_gdal.py` (the `vsi` conformance suite) compares `terrio vsi` with

@@ -14,6 +14,15 @@
   reads only the header, a window reads only the rows it covers, and `info`
   decodes no pixels. Remote SRTM tiles are read with HTTP range requests, and
   `convert` to a GeoTIFF or COG writes these inputs a strip at a time.
+- Lazy GeoTIFF reads keep the tile or strip offsets and byte counts of each
+  image (full resolution or overview) after its first window read (#348): later
+  windows of the image no longer read and decode both tables again, nor does
+  terrio's own codec (LZW and the other compressions it decodes) read them a
+  second time, and mask reads no longer copy the mask's tables. Windows decoded
+  on the calling thread (one chunk, or remote and sparse files) no longer cost
+  more as the image has more tiles; the threads decoding the chunks of larger
+  windows of local files still each read the tables, as does moving to another
+  overview. The tables kept take 16 bytes per chunk of each image read.
 
 ### Remote I/O
 

@@ -6,8 +6,8 @@
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
 
-/// A mask image of a TIFF file.
-#[derive(Debug, Clone)]
+/// A mask image of a TIFF file. Not `Clone`: reads borrow it rather than copy its chunk tables.
+#[derive(Debug)]
 pub(crate) struct MaskImage {
     pub width: usize,
     pub height: usize,
