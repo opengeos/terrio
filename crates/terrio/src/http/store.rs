@@ -934,6 +934,42 @@ mod tests {
     }
 
     #[test]
+    fn unsigned_uploads_fail_when_the_file_is_removed_while_it_is_sent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds = Credentials { access_key_id: "TESTKEY".into(), secret_access_key: "secret".into(), session_token: None };
+        let path = tmp.path().join("removed");
+        std::fs::write(&path, vec![7u8; SIGNED_BUFFER_LIMIT as usize + 1]).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let remote = Remote::Url(format!("http://{}/bucket/key", listener.local_addr().unwrap()));
+        let removed = path.clone();
+        // The file is removed after its body is received, before the service answers 200.
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let (mut length, mut line) = (0, String::new());
+            while reader.read_line(&mut line).unwrap() > 2 {
+                if let Some((key, value)) = line.split_once(':')
+                    && key.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap();
+                }
+                line.clear();
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            std::fs::remove_file(&removed).unwrap();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        ASSUME_HTTPS.with(|c| c.set(true));
+        let sent = write_request_with("PUT", &remote, "", &[], file_payload(&path), Accept::Success, (Some(creds), None));
+        ASSUME_HTTPS.with(|c| c.set(false));
+        server.join().unwrap();
+        let Err(err) = sent else { panic!("an upload of a file that was removed succeeded") };
+        assert!(err.to_string().contains("changed while it was uploaded"), "{err}");
+    }
+
+    #[test]
     fn only_https_uploads_of_large_unhashed_files_leave_the_payload_unsigned() {
         let file = file_payload(Path::new("large"));
         assert!(!signs_payload("https://bucket.s3.amazonaws.com/key", &file));
