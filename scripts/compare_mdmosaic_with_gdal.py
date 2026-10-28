@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Compare coordinate-aligned multidimensional mosaics on real NOAA wind values."""
+import argparse
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+
+import numpy as np
+from osgeo import gdal
+
+gdal.UseExceptions()
+
+
+def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False):
+    dataset = gdal.GetDriverByName('netCDF').CreateMultiDimensional(str(path))
+    root = dataset.GetRootGroup()
+    dimensions = []
+    for name, coordinates in axes:
+        dimension = root.CreateDimension(name, None, None, len(coordinates))
+        variable = root.CreateMDArray(name, [dimension], gdal.ExtendedDataType.Create(gdal.GDT_Float64))
+        variable.Write(np.asarray(coordinates, dtype='<f8').tobytes())
+        dimensions.append(dimension)
+    group = root.CreateGroup('science') if nested else root
+    variable = group.CreateMDArray('wind', dimensions, gdal.ExtendedDataType.Create(dtype))
+    names = {'Byte': '<u1', 'Int8': '<i1', 'UInt16': '<u2', 'Int16': '<i2', 'UInt32': '<u4',
+             'Int32': '<i4', 'UInt64': '<u8', 'Int64': '<i8', 'Float32': '<f4', 'Float64': '<f8'}
+    values = np.asarray(values, dtype=names[gdal.GetDataTypeName(dtype)])
+    fill = 255 if dtype == gdal.GDT_Byte else 0 if dtype in (gdal.GDT_UInt16, gdal.GDT_UInt32, gdal.GDT_UInt64) else -99
+    variable.SetNoDataValueDouble(fill)
+    variable.Write(values.tobytes())
+    variable.CreateAttribute('units', [], gdal.ExtendedDataType.CreateString()).Write('m/s')
+    dataset.FlushCache()
+
+
+def arrays(group):
+    result = {}
+    for name in group.GetMDArrayNames() or []:
+        array = group.OpenMDArray(name)
+        result[array.GetFullName()] = array
+    for name in group.GetGroupNames() or []:
+        result.update(arrays(group.OpenGroup(name)))
+    return result
+
+
+def comparison(reference, actual):
+    ref = gdal.OpenEx(str(reference), gdal.OF_MULTIDIM_RASTER)
+    out = gdal.OpenEx(str(actual), gdal.OF_MULTIDIM_RASTER)
+    ra, oa = arrays(ref.GetRootGroup()), arrays(out.GetRootGroup())
+    path_difference = ''
+    if set(ra) != set(oa):
+        # GDAL places a selected nested array at the root; Terrio retains its
+        # source group path. Require an unambiguous one-to-one name mapping.
+        assert len(ra) == len(oa)
+        mapped = {}
+        for name in ra:
+            candidates = [key for key in oa if key.rsplit('/', 1)[-1] == name.rsplit('/', 1)[-1]]
+            assert len(candidates) == 1, (name, candidates)
+            mapped[name] = oa[candidates[0]]
+        assert len({array.GetFullName() for array in mapped.values()}) == len(oa)
+        oa = mapped
+        path_difference = 'Terrio preserves source group paths; GDAL places selected nested arrays in the root group'
+    count = differing = 0
+    same_type = same_nodata = same_metadata = same_size = True
+    for name, r in ra.items():
+        a = oa[name]
+        rv, av = r.ReadAsArray(), a.ReadAsArray()
+        # The descending-axis case normalizes GDAL's inputs (3.13.3 writes an
+        # invalid zero-sized VRT dimension otherwise), then restores Terrio's
+        # source-axis orientation by exact coordinate matching.
+        for axis, (rd, ad) in enumerate(zip(r.GetDimensions(), a.GetDimensions())):
+            rc, ac = rd.GetIndexingVariable(), ad.GetIndexingVariable()
+            if rc is not None and ac is not None:
+                rcv, acv = rc.ReadAsArray(), ac.ReadAsArray()
+                if not np.array_equal(rcv, acv):
+                    assert len(rcv) == len(acv)
+                    order = [int(np.flatnonzero(rcv == value)[0]) for value in acv]
+                    assert len(set(order)) == len(order)
+                    rv = np.take(rv, order, axis=axis)
+        same_type &= r.GetDataType().GetNumericDataType() == a.GetDataType().GetNumericDataType()
+        same_size &= rv.shape == av.shape
+        assert rv.shape == av.shape, (name, rv.shape, av.shape)
+        different = (rv != av) & ~(np.isnan(rv) & np.isnan(av))
+        differing += int(different.sum())
+        count += rv.size
+        rn, an = r.GetNoDataValue(), a.GetNoDataValue()
+        same_nodata &= rn == an or (rn is not None and an is not None and np.isnan(rn) and np.isnan(an))
+        same_metadata &= [d.GetName() for d in r.GetDimensions()] == [d.GetName() for d in a.GetDimensions()]
+        same_metadata &= r.GetUnit() == a.GetUnit()
+        rat = {at.GetName(): at.Read() for at in r.GetAttributes()}
+        aat = {at.GetName(): at.Read() for at in a.GetAttributes()}
+        for key in ['scale_factor', 'add_offset', 'units']:
+            same_metadata &= rat.get(key) == aat.get(key)
+    return dict(path_difference=path_difference, same_size=same_size, same_type=same_type, same_nodata=same_nodata, same_metadata=same_metadata,
+                differing=differing, exact=1 - differing / count, within_tol=1 - differing / count, max_diff=0 if not differing else float('inf'))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('data', type=Path)
+    parser.add_argument('--terrio', default='target/release/terrio')
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args()
+    wind = gdal.OpenEx(str(args.data / 'wind_global.nc'), gdal.OF_MULTIDIM_RASTER)
+    root = wind.GetRootGroup()
+    values = root.OpenMDArray('u_wind').ReadAsArray()[:16, :20]
+    lat, lon = (root.OpenMDArray(n).ReadAsArray()[:count] for n, count in [('lat', 16), ('lon', 20)])
+    values, lat = values[::-1, :], lat[::-1]
+    results = []
+    with tempfile.TemporaryDirectory(prefix='terrio-mdmosaic-') as temporary:
+        tmp = Path(temporary)
+        def case(name, pieces, dtype=gdal.GDT_Float32, nested=False, selected=False, output='nc', normalize_descending=False):
+            try:
+                sources = []
+                for index, (axes, data) in enumerate(pieces):
+                    source = tmp / f'source-{index}.nc'
+                    create(source, axes, data, dtype, nested)
+                    sources.append(str(source))
+                reference_sources = sources
+                if normalize_descending:
+                    reference_sources = []
+                    for index, (axes, data) in enumerate(pieces):
+                        normalized = []
+                        for axis, (dimension, coordinates) in enumerate(axes):
+                            if len(coordinates) > 1 and coordinates[1] < coordinates[0]:
+                                coordinates = coordinates[::-1]
+                                data = np.flip(data, axis=axis)
+                            normalized.append((dimension, coordinates))
+                        source = tmp / f'reference-source-{index}.nc'
+                        create(source, normalized, data, dtype, nested)
+                        reference_sources.append(str(source))
+                reference = tmp / 'reference.vrt'
+                reference.unlink(missing_ok=True)
+                actual = tmp / ('actual-' + str(len(results)) + '.' + output)
+                selection = ['--array', '/science/wind' if nested else 'wind'] if selected else []
+                subprocess.run(['gdal', 'mdim', 'mosaic', *reference_sources, str(reference), *selection], capture_output=True, check=True)
+                subprocess.run([args.terrio, 'mdmosaic', *sources, str(actual), *selection], capture_output=True, check=True)
+                result = comparison(reference, actual)
+                if normalize_descending:
+                    result['reference_normalization'] = 'GDAL 3.13.3 descending-axis VRT size/offset bug; reference inputs flipped and output coordinate order restored'
+            except subprocess.CalledProcessError as error:
+                result = {'error': error.stderr.decode()[-800:]}
+            except Exception as error:
+                result = {'error': str(error)[-800:]}
+            result['name'] = name
+            results.append(result)
+        tiled = [([('lat', lat[y:y+8]), ('lon', lon[x:x+10])], values[y:y+8, x:x+10]) for y,x in [(0,0),(0,10),(8,0),(8,10)]]
+        case('spatial four NOAA wind tiles', tiled)
+        case('descending latitude normalized GDAL reference', [([(n, c[::-1] if n == 'lat' else c) for n,c in axes], np.flip(data, axis=0)) for axes,data in tiled], normalize_descending=True)
+        case('spatial missing quadrants', [tiled[0],tiled[3]])
+        case('spatial gaps along both axes', [tiled[0],([('lat',lat[10:]),('lon',lon[12:])],values[10:,12:])])
+        overlap = [([('lat',lat[:10]),('lon',lon[:12])], values[:10,:12]),
+                   ([('lat',lat[6:]),('lon',lon[8:])], values[6:,8:] + 17)]
+        overlap[1][1][:2,:2] = -99
+        case('spatial overlap last input includes nodata', overlap)
+        case('groups selected nested wind', tiled, nested=True, selected=True)
+        case('zarr spatial coordinate snapshot', tiled, output='zarr')
+        case('temporal irregular singleton ordering', [([('time',[t]),('lat',lat[:4]),('lon',lon[:5])],values[None,:4,:5]+i) for i,t in enumerate([10,17,12])])
+        case('temporal irregular multisample blocks', [([('time',t),('lat',lat[:4]),('lon',lon[:5])], np.stack([values[:4,:5]+i for i in range(len(t))])) for t in [[0,1,3],[4,7]]])
+        for dtype in [gdal.GDT_Byte,gdal.GDT_Int8,gdal.GDT_UInt16,gdal.GDT_Int16,gdal.GDT_UInt32,gdal.GDT_Int32,gdal.GDT_UInt64,gdal.GDT_Int64,gdal.GDT_Float64]:
+            converted = [(axes, np.abs(v)*3 + (2**53+13 if dtype in (gdal.GDT_UInt64,gdal.GDT_Int64) else 0)) for axes,v in tiled]
+            # Form 64-bit values in integer arithmetic, without a float64 round trip.
+            if dtype in (gdal.GDT_UInt64,gdal.GDT_Int64):
+                converted = [(axes, np.abs(v).astype('int64')*3 + 2**53+13) for axes,v in tiled]
+            case('types '+gdal.GetDataTypeName(dtype), converted, dtype)
+    print(json.dumps(results, indent=1) if args.json else '\n'.join(str(r) for r in results))
+    return int(any('error' in r or r.get('differing') or any(v is False for k,v in r.items() if k.startswith('same_')) for r in results))
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

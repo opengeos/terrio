@@ -752,6 +752,30 @@ def suite_dem_calc(ctx):
     )
 
 
+def suite_mdmosaic(ctx):
+    """Coordinate-aligned scientific mosaics against GDAL."""
+    suite = Suite("mdmosaic", "Multidimensional mosaics", "`gdal mdim mosaic`",
+                  "NOAA wind spatial/temporal tiles, gaps, overlap/nodata, nested selection, "
+                  "netCDF/Zarr snapshots and all ten numeric types: exact coordinate-aligned values, "
+                  "types, nodata, units and axis names. Descending inputs are normalized for a GDAL "
+                  "3.13.3 invalid-VRT bug. Within tolerance: source group paths retained rather than flattened.")
+    if missing_modules("osgeo", "numpy"):
+        suite.skipped = "needs osgeo and numpy"
+        return suite
+    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_mdmosaic_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        status, detail = classify_raster(result)
+        if status == IDENTICAL and result.get("path_difference"):
+            status, detail = TOLERANCE, result["path_difference"]
+        suite.cases.append(Case(result["name"].split()[0], result["name"], status, detail))
+    return suite
+
+
 def suite_multidim(ctx):
     """Native groups, dimensions, slices and snapshots against GDAL MD and xarray."""
     suite = Suite(
@@ -1962,6 +1986,7 @@ SUITES = OrderedDict(
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),
+        ("mdmosaic", suite_mdmosaic),
         ("topology", suite_topology),
         ("vector-geom", suite_vector_geom),
         ("vector-dataset", suite_vector_dataset),

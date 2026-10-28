@@ -531,3 +531,11 @@ clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
 base update commits. Use `create-raster`, `edit-raster` and `update-raster` when
 calling the corresponding CLI commands.
+
+`terrio.mosaic_multidim(sources, dst=None, *, arrays=None)` builds a lazy
+coordinate-aligned mosaic. Each source can be a `MultidimDataset`, a scientific
+path/bytes, or a Zarr key/value dictionary. Read coordinate-aligned views through
+`output.array(name)`, or write a new netCDF/Zarr snapshot with `dst` or `write`.
+Source handles stay alive through the mosaic. See
+[Multidimensional mosaics](cli.md#multidimensional-mosaics) for alignment,
+priority, type preservation and supported scope.

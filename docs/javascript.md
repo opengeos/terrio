@@ -441,3 +441,10 @@ implementations must return a standard `Response`. Object-store XML pagination i
 
 VSI listing bindings return structured flat entries. Nested tree presentation (`--tree`)
 is currently available through the CLI; JSON serialization flags apply to CLI output.
+
+`mosaicMultidim(sources, {arrays})` builds a lazy coordinate-aligned
+`MultidimDataset` from dataset handles or uploaded scientific inputs. `arrays`
+selects numeric arrays by path or unambiguous name. Source handles can be freed
+after construction; mosaic views keep the source data alive. See
+[Multidimensional mosaics](cli.md#multidimensional-mosaics) for alignment,
+priority, Int64/UInt64 handling and snapshot formats.

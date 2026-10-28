@@ -53,6 +53,7 @@ __all__ = [
     "MultidimDataset",
     "MultidimArray",
     "open_multidim",
+    "mosaic_multidim",
     "dem",
     "calc",
     "proximity",
@@ -1773,7 +1774,9 @@ def refresh_overviews(
     external: bool = False,
     ignore_cog_layout_break: bool = False,
 ) -> list[tuple[int, int]]: ...
-def validate_cog(path: str | os.PathLike[str], *, strict: bool = False) -> tuple[bool, list[str], list[str]]: ...
+def validate_cog(
+    path: str | os.PathLike[str], *, strict: bool = False
+) -> tuple[bool, list[str], list[str]]: ...
 def update_raster(
     src: str | os.PathLike[str] | Raster,
     dst: str,
@@ -1846,3 +1849,10 @@ def blend(
 ) -> Raster:
     """Blends equal-sized Byte images, with GDAL operators and opacity 0..100."""
     ...
+
+def mosaic_multidim(
+    sources: Sequence[MultidimDataset | str | os.PathLike[str] | bytes | dict[str, bytes]],
+    dst: str | os.PathLike[str] | None = None,
+    *,
+    arrays: Sequence[str] | None = None,
+) -> MultidimDataset: ...

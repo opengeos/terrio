@@ -8,6 +8,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMdDataset>()?;
     m.add_class::<PyMdArray>()?;
     m.add_function(wrap_pyfunction!(open_multidim, m)?)?;
+    m.add_function(wrap_pyfunction!(mosaic_multidim, m)?)?;
     Ok(())
 }
 fn path(value: &Bound<'_, PyAny>) -> PyResult<String> {
@@ -188,5 +189,39 @@ fn open_multidim(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<PyMdDataset
         let source = path(src)?;
         py.detach(|| multidim::open(&source)).py()?
     };
+    Ok(PyMdDataset { inner })
+}
+
+/// Build a lazy coordinate-aligned mosaic from MultidimDataset objects or scientific inputs.
+/// arrays selects array paths/names; None selects all arrays with at least two dimensions.
+/// Last input wins overlaps. Reading a view fetches only intersecting source hyperslabs.
+/// dst optionally writes a new netCDF/Zarr snapshot; existing outputs are refused.
+#[pyfunction]
+#[pyo3(signature=(sources, dst=None, *, arrays=None))]
+fn mosaic_multidim(
+    py: Python<'_>,
+    sources: &Bound<'_, PyAny>,
+    dst: Option<&Bound<'_, PyAny>>,
+    arrays: Option<Vec<String>>,
+) -> PyResult<PyMdDataset> {
+    let mut datasets = Vec::new();
+    for source in sources.try_iter()? {
+        let source = source?;
+        if let Ok(dataset) = source.cast::<PyMdDataset>() {
+            datasets.push(dataset.try_borrow().map_err(|e| invalid(e.to_string()))?.inner.clone());
+        } else {
+            datasets.push(open_multidim(py, &source)?.inner);
+        }
+    }
+    let destination = dst.map(path).transpose()?;
+    let inner = py
+        .detach(|| {
+            let output = multidim::mosaic(&datasets, &multidim::MosaicOptions { arrays: arrays.unwrap_or_default() })?;
+            if let Some(path) = destination {
+                output.write(&path)?;
+            }
+            Ok(output)
+        })
+        .py()?;
     Ok(PyMdDataset { inner })
 }

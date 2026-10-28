@@ -1,0 +1,603 @@
+//! Coordinate-aligned, lazy mosaics of numeric scientific arrays.
+use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Arrays to mosaic, by absolute path or unambiguous local name.
+/// Empty selects every array with at least two dimensions, like GDAL.
+#[derive(Debug, Clone, Default)]
+pub struct MosaicOptions {
+    /// Array selection; dimension indexing variables are included automatically.
+    pub arrays: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Coordinate {
+    Integer(i128),
+    Float(f64),
+}
+impl Coordinate {
+    fn distance(self, origin: Self) -> f64 {
+        match (self, origin) {
+            (Self::Integer(a), Self::Integer(b)) => (a - b) as f64,
+            (Self::Float(a), Self::Float(b)) => a - b,
+            _ => unreachable!("coordinate types checked"),
+        }
+    }
+    fn advance(self, step: f64, integer_step: Option<i128>, index: usize) -> Result<Self> {
+        let delta = step * index as f64;
+        match self {
+            Self::Integer(value) => {
+                let delta = integer_step
+                    .ok_or_else(|| bad("integer indexing variables require an integral grid"))?
+                    .checked_mul(index as i128)
+                    .ok_or_else(|| bad("coordinate overflow"))?;
+                Ok(Self::Integer(value.checked_add(delta).ok_or_else(|| bad("coordinate overflow"))?))
+            }
+            Self::Float(value) => Ok(Self::Float(value + delta)),
+        }
+    }
+}
+fn coordinates(array: &Array) -> Result<Vec<Coordinate>> {
+    let data = array.read()?.data()?;
+    use RasterData::*;
+    macro_rules! integers {
+        ($values:expr) => {
+            $values.into_iter().map(|v| Coordinate::Integer(v as i128)).collect()
+        };
+    }
+    let values: Vec<_> = match data {
+        U8(v) => integers!(v),
+        I8(v) => integers!(v),
+        U16(v) => integers!(v),
+        I16(v) => integers!(v),
+        U32(v) => integers!(v),
+        I32(v) => integers!(v),
+        U64(v) => integers!(v),
+        I64(v) => integers!(v),
+        F32(v) => v.into_iter().map(|v| Coordinate::Float(v as f64)).collect(),
+        F64(v) => v.into_iter().map(Coordinate::Float).collect(),
+    };
+    if values.is_empty() || values.iter().any(|v| matches!(v, Coordinate::Float(x) if !x.is_finite())) {
+        return Err(bad("indexing variables must be nonempty and finite"));
+    }
+    Ok(values)
+}
+fn encode_coordinates(values: &[Coordinate], dtype: DataType) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    for value in values {
+        macro_rules! integer {
+            ($typ:ty) => {{
+                let Coordinate::Integer(v) = value else {
+                    return Err(bad("indexing variable type changed"));
+                };
+                bytes.extend_from_slice(&<$typ>::try_from(*v).map_err(|_| bad("coordinate exceeds its type"))?.to_le_bytes());
+            }};
+        }
+        match dtype {
+            DataType::U8 => integer!(u8),
+            DataType::I8 => integer!(i8),
+            DataType::U16 => integer!(u16),
+            DataType::I16 => integer!(i16),
+            DataType::U32 => integer!(u32),
+            DataType::I32 => integer!(i32),
+            DataType::U64 => integer!(u64),
+            DataType::I64 => integer!(i64),
+            DataType::F32 => {
+                let Coordinate::Float(v) = value else {
+                    return Err(bad("indexing variable type changed"));
+                };
+                bytes.extend_from_slice(&(*v as f32).to_le_bytes());
+            }
+            DataType::F64 => {
+                let Coordinate::Float(v) = value else {
+                    return Err(bad("indexing variable type changed"));
+                };
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
+    Ok(bytes)
+}
+fn regular_float_step(a: Coordinate, b: Coordinate, step: f64) -> bool {
+    let magnitude = match (a, b) {
+        (Coordinate::Float(a), Coordinate::Float(b)) => a.abs().max(b.abs()),
+        _ => 0.,
+    };
+    (a.distance(b) - step).abs() <= 1e-7 * step.abs() + 4. * f64::EPSILON * magnitude
+}
+struct Axis {
+    dimension: Dimension,
+    coordinate: Array,
+    starts: BTreeMap<usize, usize>,
+}
+fn axis(inputs: &[(usize, Dimension, Array)]) -> Result<Axis> {
+    let (_, dimension, template) = &inputs[0];
+    let mut vectors = Vec::new();
+    for (_, d, array) in inputs {
+        if array.info.dimensions.len() != 1
+            || array.info.dimensions[0].path != d.path
+            || array.shape() != [d.size]
+            || array.info.data_type != template.info.data_type
+            || array.info.attributes != template.info.attributes
+            || d.indexing_variable != dimension.indexing_variable
+        {
+            return Err(bad(format!("incompatible indexing variable for '{}'", d.path)));
+        }
+        vectors.push(coordinates(array)?);
+    }
+    // A multi-sample source determines grid spacing/direction. Singleton temporal
+    // slices can instead have irregular coordinates, sorted into one axis.
+    let step = vectors.iter().find(|v| v.len() > 1).map(|v| v[1].distance(v[0]));
+    let integer_step = vectors.iter().find(|v| v.len() > 1).and_then(|v| match (v[1], v[0]) {
+        (Coordinate::Integer(a), Coordinate::Integer(b)) => Some(a - b),
+        _ => None,
+    });
+    let mut starts = BTreeMap::new();
+    let identical = vectors.iter().all(|v| v.len() == vectors[0].len() && v.iter().zip(&vectors[0]).all(|(a, b)| a.distance(*b) == 0.));
+    let regular = step.filter(|step| {
+        *step != 0.
+            && vectors.iter().all(|v| {
+                v.windows(2).all(|w| match (w[1], w[0], integer_step) {
+                    (Coordinate::Integer(a), Coordinate::Integer(b), Some(delta)) => a - b == delta,
+                    _ => regular_float_step(w[1], w[0], *step),
+                })
+            })
+    });
+    let output = if identical {
+        for (dataset, _, _) in inputs {
+            starts.insert(*dataset, 0);
+        }
+        vectors[0].clone()
+    } else if let Some(step) = regular {
+        if step == 0. {
+            return Err(bad("indexing variables must be strictly monotonic"));
+        }
+        let mut origin = vectors[0][0];
+        for v in &vectors {
+            if v[0].distance(origin) / step < 0. {
+                origin = v[0];
+            }
+        }
+        let mut length = 0usize;
+        for ((dataset, _, _), v) in inputs.iter().zip(&vectors) {
+            let start = match (v[0], origin, integer_step) {
+                (Coordinate::Integer(a), Coordinate::Integer(b), Some(delta)) => {
+                    if (a - b) % delta != 0 {
+                        return Err(bad("indexing variables are not aligned on a common grid"));
+                    }
+                    usize::try_from((a - b) / delta).map_err(|_| bad("mosaic axis overflows"))?
+                }
+                _ => {
+                    let start = v[0].distance(origin) / step;
+                    let magnitude = match (v[0], origin) {
+                        (Coordinate::Float(a), Coordinate::Float(b)) => a.abs().max(b.abs()),
+                        _ => 0.,
+                    };
+                    let tolerance = 1e-6 + 4. * f64::EPSILON * magnitude / step.abs();
+                    if !start.is_finite() || start < 0. || start > usize::MAX as f64 || (start - start.round()).abs() > tolerance {
+                        return Err(bad("indexing variables are not aligned on a common grid"));
+                    }
+                    start.round() as usize
+                }
+            };
+            length = length.max(start.checked_add(v.len()).ok_or_else(|| bad("mosaic axis overflows"))?);
+            starts.insert(*dataset, start);
+        }
+        // Coordinate metadata is materialized, data arrays stay lazy. Bound the
+        // coordinate allocation before generating a grid with a huge empty gap.
+        let bytes = length.checked_mul(template.info.data_type.size_bytes()).ok_or_else(|| bad("coordinate size overflows"))?;
+        if bytes > 256 * 1024 * 1024 {
+            return Err(bad("mosaic indexing variable exceeds 256 MiB"));
+        }
+        (0..length).map(|i| origin.advance(step, integer_step, i)).collect::<Result<Vec<_>>>()?
+    } else {
+        let direction = step.unwrap_or(1.).signum();
+        if direction == 0. || vectors.iter().any(|v| v.windows(2).any(|w| w[1].distance(w[0]) * direction <= 0.)) {
+            return Err(bad("indexing variables must be strictly monotonic in one direction"));
+        }
+        let mut values: Vec<_> = vectors.iter().flatten().copied().collect();
+        values.sort_by(|a, b| (a.distance(*b) * direction).total_cmp(&0.));
+        values.dedup_by(|a, b| a.distance(*b) == 0.);
+        let mut ranges = Vec::new();
+        for ((dataset, _, _), v) in inputs.iter().zip(&vectors) {
+            let start = values.iter().position(|c| c.distance(v[0]) == 0.).unwrap();
+            if !values[start..].iter().zip(v).all(|(a, b)| a.distance(*b) == 0.) {
+                return Err(bad("irregular coordinate ranges overlap or interleave"));
+            }
+            let end = start + v.len();
+            if ranges.iter().any(|&(lo, hi)| start < hi && lo < end && (lo != start || hi != end)) {
+                return Err(bad("overlaps require regularly spaced coordinates"));
+            }
+            ranges.push((start, end));
+            starts.insert(*dataset, start);
+        }
+        values
+    };
+    let mut dimension = dimension.clone();
+    dimension.size = output.len();
+    let mut info = template.info.clone();
+    info.dimensions = vec![dimension.clone()];
+    let mut coordinate = Array::from_bytes(info, encode_coordinates(&output, template.info.data_type)?)?;
+    coordinate.attribute_types.clone_from(&template.attribute_types);
+    Ok(Axis { dimension, coordinate, starts })
+}
+
+#[derive(Clone)]
+struct Piece {
+    array: Array,
+    starts: Vec<usize>,
+}
+#[derive(Clone)]
+pub(crate) struct MosaicSource {
+    pieces: Vec<Piece>,
+    fill: Vec<u8>,
+}
+impl MosaicSource {
+    pub(super) fn read(&self, selection: &[Selection]) -> Result<Vec<u8>> {
+        let shape: Vec<_> = selection.iter().map(|s| s.count).collect();
+        let size = self.fill.len();
+        let n = elements(&shape)?;
+        n.checked_mul(size).ok_or_else(|| bad("mosaic byte length overflows"))?;
+        let mut output = self.fill.repeat(n);
+        let output_strides = strides(&shape)?;
+        for piece in &self.pieces {
+            let mut view = piece.array.view();
+            let mut origins = Vec::new();
+            let mut counts = Vec::new();
+            let mut empty = false;
+            for (i, ((s, &start), d)) in selection.iter().zip(&piece.starts).zip(&piece.array.info.dimensions).enumerate() {
+                let lower = start.saturating_sub(s.start).div_ceil(s.step).min(s.count);
+                let end = start.checked_add(d.size).ok_or_else(|| bad("source extent overflows"))?;
+                let upper = end.saturating_sub(s.start).div_ceil(s.step).min(s.count);
+                if upper <= lower {
+                    empty = true;
+                    break;
+                }
+                view = view.slice_axis(i, s.start + lower * s.step - start, upper - lower, s.step)?;
+                origins.push(lower);
+                counts.push(upper - lower);
+            }
+            if empty {
+                continue;
+            }
+            let buffer = view.read()?;
+            for flat in 0..elements(&counts)? {
+                let mut remainder = flat;
+                let mut target = 0;
+                for axis in (0..counts.len()).rev() {
+                    target += (origins[axis] + remainder % counts[axis]) * output_strides[axis];
+                    remainder /= counts[axis];
+                }
+                output[target * size..(target + 1) * size].copy_from_slice(&buffer.bytes[flat * size..(flat + 1) * size]);
+            }
+        }
+        Ok(output)
+    }
+}
+fn fill(array: &Array) -> Result<Vec<u8>> {
+    let v = array.info.attributes.get("_FillValue").cloned().unwrap_or(serde_json::json!(0));
+    let float = || {
+        v.as_f64()
+            .or_else(|| match v.as_str() {
+                Some("NaN") => Some(f64::NAN),
+                Some("Infinity") => Some(f64::INFINITY),
+                Some("-Infinity") => Some(f64::NEG_INFINITY),
+                _ => None,
+            })
+            .ok_or_else(|| bad("invalid nodata value"))
+    };
+    macro_rules! integer {
+        ($typ:ty) => {{
+            let value =
+                v.as_i64().map(i128::from).or_else(|| v.as_u64().map(i128::from)).ok_or_else(|| bad("invalid integer nodata value"))?;
+            <$typ>::try_from(value).map_err(|_| bad("nodata value exceeds its type"))?.to_le_bytes().to_vec()
+        }};
+    }
+    Ok(match array.info.data_type {
+        DataType::U8 => integer!(u8),
+        DataType::I8 => integer!(i8),
+        DataType::U16 => integer!(u16),
+        DataType::I16 => integer!(i16),
+        DataType::U32 => integer!(u32),
+        DataType::I32 => integer!(i32),
+        DataType::U64 => integer!(u64),
+        DataType::I64 => integer!(i64),
+        DataType::F32 => (float()? as f32).to_le_bytes().to_vec(),
+        DataType::F64 => float()?.to_le_bytes().to_vec(),
+    })
+}
+fn group_mut<'a>(root: &'a mut Group, path: &str, datasets: &[Dataset]) -> &'a mut Group {
+    if path == "/" {
+        return root;
+    }
+    let (parent, _) = path.rsplit_once('/').unwrap();
+    let parent = if parent.is_empty() { "/" } else { parent };
+    let root = group_mut(root, parent, datasets);
+    let index = root.groups.iter().position(|g| g.path == path).unwrap_or_else(|| {
+        fn find<'a>(g: &'a Group, path: &str) -> Option<&'a Group> {
+            if g.path == path { Some(g) } else { g.groups.iter().find_map(|c| find(c, path)) }
+        }
+        let mut group = Group::new(path);
+        if let Some(template) = datasets.iter().find_map(|d| find(&d.root, path)) {
+            group.attributes.clone_from(&template.attributes);
+            group.attribute_types.clone_from(&template.attribute_types);
+        }
+        root.groups.push(group);
+        root.groups.len() - 1
+    });
+    &mut root.groups[index]
+}
+fn parent(path: &str) -> &str {
+    let p = path.rsplit_once('/').unwrap().0;
+    if p.is_empty() { "/" } else { p }
+}
+
+/// Builds a coordinate-aligned mosaic without reading data-array payloads.
+/// Each dimension requires a numeric one-dimensional indexing variable. Multi-
+/// sample axes can be regularly spaced and aligned or disjoint irregular ranges.
+/// Singleton slices can form irregular axes. Last input wins overlaps (including nodata), and gaps use
+/// source nodata or zero. Data hyperslabs are fetched only when requested.
+pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> {
+    if datasets.is_empty() {
+        return Err(bad("mosaic requires at least one dataset"));
+    }
+    let available: BTreeSet<_> = datasets.iter().flat_map(|d| d.root.arrays_recursive()).map(|a| a.info.path.clone()).collect();
+    let mut selected = BTreeSet::new();
+    if options.arrays.is_empty() {
+        selected.extend(
+            datasets.iter().flat_map(|d| d.root.arrays_recursive()).filter(|a| a.info.dimensions.len() >= 2).map(|a| a.info.path.clone()),
+        );
+    } else {
+        for given in &options.arrays {
+            let exact = format!("/{}", given.trim_matches('/'));
+            let matches: Vec<_> =
+                available.iter().filter(|p| **p == exact || (!given.contains('/') && p.rsplit('/').next() == Some(given))).collect();
+            if matches.len() != 1 {
+                return Err(bad(format!("array '{given}' is missing or ambiguous")));
+            }
+            selected.insert(matches[0].clone());
+        }
+    }
+    if selected.is_empty() {
+        return Err(bad("no arrays selected for mosaic"));
+    }
+    // Retain scalar CF CRS variables referenced by selected arrays. Dropping
+    // them would leave grid_mapping attributes pointing to nonexistent arrays.
+    let mut grid_mappings = BTreeSet::new();
+    for dataset in datasets {
+        for path in &selected {
+            if let Ok(array) = dataset.array(path)
+                && let Some(name) = array.info.attributes.get("grid_mapping").and_then(Value::as_str)
+            {
+                let mapping = if name.starts_with('/') {
+                    dataset.array(name)?
+                } else {
+                    let mut group = parent(path);
+                    loop {
+                        let candidate = format!("{}/{}", group.trim_end_matches('/'), name);
+                        match dataset.array(&candidate) {
+                            Ok(array) => break array,
+                            Err(error) if group == "/" => return Err(error),
+                            Err(_) => group = parent(group),
+                        }
+                    }
+                };
+                let mapping_path = mapping.info.path.clone();
+                if !mapping.info.dimensions.is_empty() {
+                    return Err(bad("CF grid mapping variables must be scalar"));
+                }
+                grid_mappings.insert(mapping_path);
+            }
+        }
+    }
+    selected.extend(grid_mappings.iter().cloned());
+    let mut input_axes: BTreeMap<String, BTreeMap<usize, (Dimension, Array)>> = BTreeMap::new();
+    for (i, dataset) in datasets.iter().enumerate() {
+        for path in &selected {
+            if let Ok(array) = dataset.array(path) {
+                for dimension in &array.info.dimensions {
+                    let coordinate = dataset.array(
+                        dimension
+                            .indexing_variable
+                            .as_deref()
+                            .ok_or_else(|| bad(format!("dimension '{}' has no indexing variable", dimension.path)))?,
+                    )?;
+                    if let Some((previous, _)) =
+                        input_axes.entry(dimension.path.clone()).or_default().insert(i, (dimension.clone(), coordinate))
+                        && previous != *dimension
+                    {
+                        return Err(bad(format!("conflicting dimension declarations for '{}'", dimension.path)));
+                    }
+                }
+            }
+        }
+    }
+    let axes: BTreeMap<_, _> = input_axes
+        .into_iter()
+        .map(|(path, entries)| {
+            let entries: Vec<_> = entries.into_iter().map(|(i, (d, a))| (i, d, a)).collect();
+            Ok((path, axis(&entries)?))
+        })
+        .collect::<Result<_>>()?;
+    let mut root = Group::new("/");
+    root.attributes.clone_from(&datasets[0].root.attributes);
+    root.attribute_types.clone_from(&datasets[0].root.attribute_types);
+    for axis in axes.values() {
+        group_mut(&mut root, parent(&axis.dimension.path), datasets).dimensions.push(axis.dimension.clone());
+        group_mut(&mut root, parent(&axis.coordinate.info.path), datasets).arrays.push(axis.coordinate.clone());
+    }
+    for path in selected {
+        if axes.values().any(|a| a.coordinate.info.path == path) {
+            continue;
+        }
+        let arrays: Vec<_> = datasets.iter().enumerate().filter_map(|(i, d)| d.array(&path).ok().map(|a| (i, a))).collect();
+        let template = &arrays[0].1;
+        let mut pieces = Vec::new();
+        for (i, array) in &arrays {
+            if array.info.data_type != template.info.data_type
+                || array.info.dimensions.len() != template.info.dimensions.len()
+                || array.info.attributes.get("_FillValue") != template.info.attributes.get("_FillValue")
+                || (grid_mappings.contains(&path) && array.info.attributes != template.info.attributes)
+                || array.info.dimensions.iter().zip(&template.info.dimensions).any(|(a, b)| a.path != b.path || a.name != b.name)
+            {
+                return Err(bad(format!("incompatible array '{path}': dimensions, type or nodata differ")));
+            }
+            let starts = array.info.dimensions.iter().map(|d| axes[&d.path].starts[i]).collect();
+            pieces.push(Piece { array: array.clone(), starts });
+        }
+        let mut info = template.info.clone();
+        info.dimensions = info.dimensions.iter().map(|d| axes[&d.path].dimension.clone()).collect();
+        let array = Array {
+            info,
+            source: Source::Mosaic(Arc::new(MosaicSource { pieces, fill: fill(template)? })),
+            attribute_types: template.attribute_types.clone(),
+        };
+        group_mut(&mut root, parent(&path), datasets).arrays.push(array);
+    }
+    let output = Dataset { driver: "Mosaic".into(), root };
+    write::validate(&output)?;
+    Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    fn dataset(axes: &[(&str, &[i64])], values: &[i64]) -> Dataset {
+        let mut root = Group::new("/");
+        root.attributes = json!({"title":"mosaic test"});
+        for (name, values) in axes {
+            let dimension = Dimension {
+                name: name.to_string(),
+                path: format!("/{name}"),
+                size: values.len(),
+                unlimited: *name == "time",
+                indexing_variable: Some(format!("/{name}")),
+            };
+            root.dimensions.push(dimension.clone());
+            root.arrays.push(
+                Array::from_bytes(
+                    ArrayInfo {
+                        name: name.to_string(),
+                        path: format!("/{name}"),
+                        data_type: DataType::I64,
+                        dimensions: vec![dimension],
+                        chunks: Some(vec![2]),
+                        attributes: json!({}),
+                        coordinates: vec![],
+                    },
+                    values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+                )
+                .unwrap(),
+            );
+        }
+        root.arrays.push(
+            Array::from_bytes(
+                ArrayInfo {
+                    name: "v".into(),
+                    path: "/v".into(),
+                    data_type: DataType::I64,
+                    dimensions: root.dimensions.clone(),
+                    chunks: Some(vec![1; axes.len()]),
+                    attributes: json!({"_FillValue":-9999,"scale_factor":0.1}),
+                    coordinates: root.dimensions.iter().map(|d| d.indexing_variable.clone().unwrap()).collect(),
+                },
+                values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            )
+            .unwrap(),
+        );
+        Dataset { driver: "Memory".into(), root }
+    }
+    #[test]
+    fn two_axis_tiles_gaps_descending_coordinates_and_strided_views() {
+        let a = dataset(&[("y", &[2, 1]), ("x", &[0, 1])], &[1, 2, 3, 4]);
+        let b = dataset(&[("y", &[1, 0]), ("x", &[3, 4])], &[5, 6, 7, 8]);
+        let result = mosaic(&[a, b], &Default::default()).unwrap();
+        let array = result.array("v").unwrap();
+        assert_eq!(array.shape(), [3, 5]);
+        assert_eq!(
+            array.read().unwrap().values().unwrap(),
+            json!([1, 2, -9999, -9999, -9999, 3, 4, -9999, 5, 6, -9999, -9999, -9999, 7, 8])
+        );
+        assert_eq!(array.view().slice("x", 1, 2, 2).unwrap().isel("y", 1).unwrap().read().unwrap().values().unwrap(), json!([4, 5]));
+        assert_eq!(result.array("y").unwrap().read().unwrap().values().unwrap(), json!([2, 1, 0]));
+        assert_eq!(array.info.attributes["scale_factor"], json!(0.1));
+    }
+    #[test]
+    fn irregular_singleton_slices_preserve_large_integer_coordinates() {
+        let base = 9007199254740993i64;
+        let a = dataset(&[("time", &[base]), ("x", &[0, 3, 4])], &[1, 2, 3]);
+        let b = dataset(&[("time", &[base + 7]), ("x", &[0, 3, 4])], &[4, 5, 6]);
+        let c = dataset(&[("time", &[base + 2]), ("x", &[0, 3, 4])], &[7, 8, 9]);
+        let result = mosaic(&[a, b, c], &Default::default()).unwrap();
+        assert_eq!(result.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 2, 3, 7, 8, 9, 4, 5, 6]));
+        assert_eq!(result.array("time").unwrap().read().unwrap().values().unwrap(), json!([base, base + 2, base + 7]));
+        assert!(result.array("time").unwrap().info.dimensions[0].unlimited);
+    }
+    #[test]
+    fn integral_grid_steps_above_float_precision_remain_exact() {
+        let step = 9007199254740993i64;
+        let a = dataset(&[("y", &[0]), ("x", &[0, step])], &[1, 2]);
+        let b = dataset(&[("y", &[0]), ("x", &[step * 2, step * 3])], &[3, 4]);
+        let result = mosaic(&[a, b], &Default::default()).unwrap();
+        assert_eq!(result.array("x").unwrap().read().unwrap().values().unwrap(), json!([0, step, step * 2, step * 3]));
+    }
+    #[test]
+    fn disjoint_irregular_ranges_are_concatenated() {
+        let a = dataset(&[("time", &[0, 1, 3]), ("x", &[0])], &[1, 2, 3]);
+        let b = dataset(&[("time", &[4, 7]), ("x", &[0])], &[4, 5]);
+        let result = mosaic(&[a, b], &Default::default()).unwrap();
+        assert_eq!(result.array("time").unwrap().read().unwrap().values().unwrap(), json!([0, 1, 3, 4, 7]));
+        assert_eq!(result.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 2, 3, 4, 5]));
+    }
+    #[test]
+    fn overlap_uses_last_source_including_nodata() {
+        let a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        let b = dataset(&[("y", &[0]), ("x", &[0, 1])], &[-9999, 4]);
+        assert_eq!(mosaic(&[a, b], &Default::default()).unwrap().array("v").unwrap().read().unwrap().values().unwrap(), json!([-9999, 4]));
+    }
+    #[test]
+    fn unselected_payloads_are_never_read() {
+        let a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        let mut b = dataset(&[("y", &[0]), ("x", &[4, 5])], &[3, 4]);
+        b.root.arrays.last_mut().unwrap().source = Source::Memory(Arc::new(vec![]));
+        let result = mosaic(&[a, b], &Default::default()).unwrap();
+        let v = result.array("v").unwrap();
+        assert_eq!(v.view().slice("x", 0, 2, 1).unwrap().read().unwrap().values().unwrap(), json!([1, 2]));
+        assert!(v.view().slice("x", 4, 1, 1).unwrap().read().is_err());
+    }
+    #[test]
+    fn scalar_cf_grid_mapping_metadata_is_retained() {
+        let mut a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        a.root.arrays.last_mut().unwrap().info.attributes["grid_mapping"] = json!("crs");
+        a.root.arrays.push(
+            Array::from_bytes(
+                ArrayInfo {
+                    name: "crs".into(),
+                    path: "/crs".into(),
+                    data_type: DataType::I32,
+                    dimensions: vec![],
+                    chunks: None,
+                    attributes: json!({"spatial_ref":"source WKT"}),
+                    coordinates: vec![],
+                },
+                0i32.to_le_bytes().to_vec(),
+            )
+            .unwrap(),
+        );
+        let result = mosaic(&[a], &Default::default()).unwrap();
+        assert_eq!(result.array("crs").unwrap().info.attributes["spatial_ref"], json!("source WKT"));
+        assert_eq!(result.array("v").unwrap().info.attributes["grid_mapping"], json!("crs"));
+    }
+    #[test]
+    fn incompatible_grid_types_and_nodata_are_rejected() {
+        let a = dataset(&[("y", &[0]), ("x", &[0, 2])], &[1, 2]);
+        let b = dataset(&[("y", &[0]), ("x", &[1, 3])], &[3, 4]);
+        assert!(mosaic(&[a.clone(), b], &Default::default()).is_err());
+        let mut b = a.clone();
+        b.root.arrays.last_mut().unwrap().info.attributes["_FillValue"] = json!(-1);
+        assert!(mosaic(&[a.clone(), b], &Default::default()).is_err());
+        assert!(mosaic(&[a], &MosaicOptions { arrays: vec!["missing".into()] }).is_err());
+        assert!(mosaic(&[], &Default::default()).is_err());
+    }
+}

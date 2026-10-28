@@ -397,11 +397,19 @@ def test_dem_path_to_path_matches_in_memory(tmp_path):
     # A pathlib.Path source takes the same path to path route, and so the budget.
     r = terrio.dem(src, "slope", dst=str(tmp_path / "path.tif"), max_memory_mib=0.001)
     assert r.is_lazy
-    np.testing.assert_array_equal(r.read(), terrio.dem(terrio.open_raster(str(src)), "slope").read())
+    np.testing.assert_array_equal(
+        r.read(), terrio.dem(terrio.open_raster(str(src)), "slope").read()
+    )
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.dem(str(src), "slope", max_memory_mib=10)
     with pytest.raises(terrio.InvalidArgumentError, match="VRT output"):
-        terrio.dem(str(src), "color-relief", color_file=str(colors), dst=str(tmp_path / "x.vrt"), max_memory_mib=10)
+        terrio.dem(
+            str(src),
+            "color-relief",
+            color_file=str(colors),
+            dst=str(tmp_path / "x.vrt"),
+            max_memory_mib=10,
+        )
     # An output that is also the input is read whole: a budget cannot apply.
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.dem(str(src), "slope", dst=str(src), max_memory_mib=10)

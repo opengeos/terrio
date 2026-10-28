@@ -2128,3 +2128,37 @@ publish all components from staging and require a new basename even with `--over
 Append/update, layer replacement, STAC-GeoParquet profiles, XML companion output and
 GDAL-specific creation options are outside this supported subset. Shapefile field
 width/type limits still apply. The three commands are also exposed as MCP tools.
+
+## Multidimensional mosaics
+
+`terrio mdmosaic INPUT... OUTPUT [--array PATH_OR_NAME]` combines numeric
+scientific arrays on their indexing-variable coordinates. Repeat `--array` to
+select multiple arrays; by default, all arrays with at least two dimensions
+are selected. Sources can be netCDF/HDF5 files or local/remote Zarr stores.
+The output must be a new `.nc` (netCDF-4) file or `.zarr` (Zarr v2) store.
+
+Sources contributing to an array must agree on its full path, numeric type,
+nodata and dimension names/order. Every dimension needs a finite, numeric,
+one-dimensional indexing variable. Regular axes must share spacing and grid
+alignment; disjoint irregular ranges and irregular singleton time slices are
+also supported. Last input wins overlaps, including nodata pixels. Gaps on
+regular grids, or missing combinations of coordinates across axes, are filled
+with nodata, or zero if no nodata is declared.
+
+The shared Rust `multidim::mosaic` creates lazy array handles: it reads coordinate
+variables to plan the mosaic but fetches data only for intersecting hyperslabs.
+Python `mosaic_multidim(sources, dst=None, arrays=None)` and JavaScript
+`mosaicMultidim(sources, {arrays})` expose the same engine. Numeric values retain
+their native types, including Int64/UInt64 precision. Input handles may be closed
+after construction; mosaic views keep their sources alive. netCDF snapshots
+currently materialize arrays; Zarr snapshots iterate output chunks.
+
+Terrio retains source group paths and metadata; GDAL places explicitly selected
+nested arrays at the root. It also retains integer coordinate types rather than
+GDAL's synthesized Float64 coordinates. Coordinate arrays are limited to 256 MiB
+per planned axis. String/compound arrays, serialized multidimensional VRT output,
+creation/open options, automatic glob/list-file expansion and replacement of
+existing outputs are outside this supported subset. Output replacement is refused
+before writing. Descending axes work directly in Terrio; comparisons normalize
+GDAL 3.13.3 inputs because its descending-axis VRT size/offset computation can
+produce invalid dimensions, then restore the coordinate order for comparison.

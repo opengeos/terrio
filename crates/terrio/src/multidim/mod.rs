@@ -9,9 +9,11 @@ use serde_json::Value;
 use std::sync::Arc;
 use wbraster::raster::RasterData;
 
+mod mosaic;
 #[cfg(feature = "netcdf-hdf5")]
 mod netcdf;
 pub(crate) mod write;
+pub use mosaic::{MosaicOptions, mosaic};
 
 fn bad(message: impl std::fmt::Display) -> Error {
     Error::InvalidArgument(format!("multidim: {message}"))
@@ -190,6 +192,7 @@ impl Dataset {
 #[derive(Clone)]
 pub(crate) enum Source {
     Memory(Arc<Vec<u8>>),
+    Mosaic(Arc<mosaic::MosaicSource>),
     #[cfg(feature = "netcdf-hdf5")]
     Netcdf(Arc<netcdf_reader::NcFile>),
     #[cfg(feature = "zarr")]
@@ -363,6 +366,7 @@ impl View {
             return Ok(Buffer { data_type: self.data_type(), shape, bytes: Vec::new() });
         }
         let raw = match &self.array.source {
+            Source::Mosaic(source) => source.read(&self.axes)?,
             Source::Memory(b) => select_bytes(b, &self.array.shape(), &self.axes, size)?,
             #[cfg(feature = "netcdf-hdf5")]
             Source::Netcdf(f) => netcdf::read(f, &self.array.info.path, self.data_type(), &self.axes)?,
