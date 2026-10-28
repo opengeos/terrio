@@ -49,11 +49,11 @@ struct Args {
 }
 impl Args {
     fn parse(options: &JsValue) -> Result<Self, JsError> {
-        for key in ["minPixelSize", "maxPixelSize"] {
+        for key in ["minPixelSize", "maxPixelSize", "bandCount"] {
             if !options.is_null() && !options.is_undefined() {
                 let value = js_sys::Reflect::get(options, &JsValue::from_str(key)).map_err(|_| invalid("invalid index options"))?;
                 if value.as_f64().is_some_and(|v| !v.is_finite()) {
-                    return Err(invalid("pixel-size limits must be finite and nonnegative"));
+                    return Err(invalid(format!("{key} must be finite")));
                 }
             }
         }

@@ -2142,7 +2142,7 @@ test("dataset indexes retain rotated corners, source identities and GTI metadata
   });
   assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {nodata: [1, 2, 3]}), /inferred/);
   assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {colorInterpretations: ["red", "green", "blue"]}), /inferred/);
-  for (const key of ["minPixelSize", "maxPixelSize"]) {
+  for (const key of ["minPixelSize", "maxPixelSize", "bandCount"]) {
     for (const value of [NaN, Infinity, -Infinity]) {
       assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {[key]: value}), /finite/);
     }

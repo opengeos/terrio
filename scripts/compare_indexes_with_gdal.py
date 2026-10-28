@@ -53,8 +53,12 @@ def compare(a, b, *, metadata=False):
         max_vertex_error = max(max_vertex_error, float(np.max(np.abs(u-v))))
     if metadata:
         # GDAL stores LOCATION_FIELD implicitly for the default field name.
-        for key, value in x.GetMetadata().items():
-            actual = y.GetMetadataItem(key)
+        expected_metadata, actual_metadata = x.GetMetadata(), y.GetMetadata()
+        for values in (expected_metadata, actual_metadata):
+            values.setdefault("LOCATION_FIELD", "location")
+        assert expected_metadata.keys() == actual_metadata.keys(), (expected_metadata, actual_metadata)
+        for key, value in expected_metadata.items():
+            actual = actual_metadata[key]
             if key in {"MINX", "MINY", "MAXX", "MAXY", "RESX", "RESY"}:
                 assert actual is not None and float(actual) == float(value), (key,value,actual)
             else:

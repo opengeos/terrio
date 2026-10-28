@@ -637,8 +637,10 @@ impl DatasetIndex {
             return Ok(());
         }
         let base = std::env::current_dir()?;
-        self.relative_locations.insert(format!("{location}{suffix}"), (base.join(location), suffix.into()));
-        self.relative_base = Some(base);
+        let joined = base.join(location);
+        let absolute = std::fs::canonicalize(&joined).unwrap_or_else(|_| lexical_path(&joined));
+        self.relative_locations.insert(format!("{location}{suffix}"), (absolute, suffix.into()));
+        self.relative_base = Some(std::fs::canonicalize(&base).unwrap_or(base));
         Ok(())
     }
     /// Adds an opened local file to overwrite protection independently of its stored label.
@@ -857,6 +859,24 @@ mod tests {
         header.set_geo_transform([10., 2., 0.5, 20., 0.25, -3.]);
         let lazy = LazyRaster::from_source(header, Box::new(NoPixels));
         RasterIndexSource::from_lazy("tile.tif", &lazy).unwrap()
+    }
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn relative_sources_resolve_from_sibling_catalog_directory() {
+        let base = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&base).unwrap();
+        std::fs::create_dir(dir.path().join("tiles")).unwrap();
+        std::fs::create_dir(dir.path().join("catalogs")).unwrap();
+        let source = dir.path().join("tiles/a.tif");
+        std::fs::write(&source, b"source").unwrap();
+        let relative = source.strip_prefix(&base).unwrap().to_string_lossy();
+        let mut index = raster_index(&[raster()], &Default::default()).unwrap();
+        index.layer.features[0].attributes[0] = FieldValue::Text(relative.to_string());
+        index.track_relative_location(&relative, "").unwrap();
+        let resolved = index.resolved_for_output(dir.path().join("catalogs/index.gpkg").to_str().unwrap()).unwrap();
+        let FieldValue::Text(location) = &resolved.layer.features[0].attributes[0] else { panic!("missing location") };
+        assert!(!std::path::Path::new(location).is_absolute());
+        assert_eq!(std::fs::canonicalize(dir.path().join("catalogs").join(location)).unwrap(), std::fs::canonicalize(source).unwrap());
     }
     #[test]
     fn raster_index_is_header_only_and_keeps_rotated_corners() {
