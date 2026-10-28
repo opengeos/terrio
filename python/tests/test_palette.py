@@ -234,3 +234,55 @@ def test_palette_sidecar_destination_and_malformed_tables(tmp_path, gdal):
         stream.truncate(10 * 1024 * 1024 + 1)
     with pytest.raises(ValueError, match="10 MiB"):
         terrio.read_color_table(oversized)
+
+
+def test_palette_text_limit_unknown_http_size():
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    size = 64 * 1024 * 1024
+    sent = {"bytes": 0, "gets": 0}
+    finished = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+        def do_GET(self):
+            sent["gets"] += 1
+            done = threading.Event()
+            finished.append(done)
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            chunk = b"0 1 2 3\n" * 8192
+            try:
+                for _ in range(size // len(chunk)):
+                    self.wfile.write(chunk)
+                    sent["bytes"] += len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                done.set()
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/colors.txt"
+            with pytest.raises(ValueError, match="10 MiB"):
+                terrio.read_color_table(url)
+            for done in finished:
+                assert done.wait(2)
+            # VSI stat may probe a one-byte range and an untyped HTML index.
+            assert 1 <= sent["gets"] <= 3
+            assert sent["bytes"] < size
+            print("bounded size-less palette HTTP response:", sent)
+        finally:
+            server.shutdown()
+            worker.join()

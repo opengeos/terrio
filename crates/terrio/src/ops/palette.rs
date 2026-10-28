@@ -280,7 +280,11 @@ pub fn read_color_table(path: &str) -> Result<Vec<[u8; 4]>> {
         if crate::vsi::stat(path)?.and_then(|entry| entry.size).is_some_and(|size| size > 10 * 1024 * 1024) {
             return Err(invalid("color table text exceeds 10 MiB"));
         }
-        return color_table_from_bytes(crate::vsi::read(path)?, path);
+        let bytes = crate::vsi::read_limited(path, 10 * 1024 * 1024).map_err(|error| match error {
+            crate::Error::DecodedLimitExceeded { resource: "VSI file", .. } => invalid("color table text exceeds 10 MiB"),
+            other => other,
+        })?;
+        return color_table_from_bytes(bytes, path);
     }
     let source = crate::open_raster_lazy(path)?;
     color_table(&source.header())
@@ -481,12 +485,8 @@ pub fn parse_color_table(text: &str, filename: &str) -> Result<Vec<[u8; 4]>> {
                 return Err(invalid("QGIS palette colors must use #RRGGBB"));
             }
             let rgb = u32::from_str_radix(&color[1..], 16).map_err(|_| invalid("invalid QGIS palette color"))?;
-            let alpha = node
-                .attr("alpha")
-                .map(|s| s.parse::<i32>().map(|a| a.clamp(0, 255) as u8))
-                .transpose()
-                .map_err(|_| invalid("invalid QGIS palette alpha"))?
-                .unwrap_or(255);
+            let alpha =
+                node.attr("alpha").map(|s| s.parse::<u8>()).transpose().map_err(|_| invalid("invalid QGIS palette alpha"))?.unwrap_or(255);
             entries.push((index, [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, alpha]));
         }
     } else {
@@ -505,7 +505,8 @@ pub fn parse_color_table(text: &str, filename: &str) -> Result<Vec<[u8; 4]>> {
             if !entry.value.is_finite() || entry.value < 0. || entry.value.fract() != 0. || entry.value > 65535. {
                 return Err(invalid("palette values must be integer indices in 0..65535"));
             }
-            entries.push((entry.value as usize, [entry.r as u8, entry.g as u8, entry.b as u8, entry.a as u8]));
+            let byte = |value: i32| u8::try_from(value).map_err(|_| invalid("color channel must be 0..255"));
+            entries.push((entry.value as usize, [byte(entry.r)?, byte(entry.g)?, byte(entry.b)?, byte(entry.a)?]));
         }
     }
     let mut output = Vec::new();
@@ -615,6 +616,10 @@ mod tests {
         assert!(parse_color_table("1.5 red", "colors.txt").is_err());
         assert!(parse_color_table("65536 red", "colors.txt").is_err());
         assert!(parse_color_table("50% red", "colors.txt").is_err());
+        for text in ["0 256 0 0", "0 -1 0 0", "0 1 2 3 256", "0 1 2 3 -1"] {
+            assert!(parse_color_table(text, "colors.txt").unwrap_err().to_string().contains("0..255"));
+        }
+        assert!(parse_color_table(&xml.replace("alpha=\"128\"", "alpha=\"256\""), "colors.qml").is_err());
     }
     #[test]
     fn gdal_nodata_precedence_and_diffused_nodata_fixture() {

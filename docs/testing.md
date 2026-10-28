@@ -1183,3 +1183,10 @@ For full-precision palette mapping, images of up to 65,536 pixels use a sparse
 cache bounded by their pixel count. Larger images retain the dense 32 MiB table;
 5-bit mapping uses the 64 KiB table. This avoids the large fixed allocation on
 small conversions without reintroducing capped-cache misses on large images.
+
+Color-file reads enforce the 10 MiB accepted-text limit while streaming,
+including sources without a size. A 64 MiB size-less HTTP response is cancelled
+before completion; counters include the existing VSI metadata/index probes.
+Local, in-memory and decompressed ZIP member regressions check exact-limit
+success, oversized rejection and transport-error preservation. Malformed
+text/XML channels outside 0–255 are rejected rather than wrapped.

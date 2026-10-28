@@ -2175,3 +2175,8 @@ width/type limits still apply. The three commands are also exposed as MCP tools.
 Palette commands reject masked PMTiles/MBTiles outputs, including materialized
 results, because these writers cannot retain the separate dataset mask.
 GeoTIFF/COG preserve it.
+
+Palette text/XML channels outside 0–255 are rejected. GDAL 3.13.3 wraps invalid
+RGB text channels; Terrio deliberately rejects those malformed inputs. Text
+color files are limited to 10 MiB while streaming, including when their size
+is unavailable.

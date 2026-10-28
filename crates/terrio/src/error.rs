@@ -28,10 +28,11 @@ pub enum Error {
     #[error("{0}")]
     InvalidArgument(String),
     /// A decoded payload exceeded a decoded-byte limit: a PMTiles directory, metadata or tile
-    /// (`PmTilesReadLimits`), or a GeoTIFF chunk or tag value (`TiffReadLimits`).
+    /// (`PmTilesReadLimits`), a GeoTIFF chunk or tag value (`TiffReadLimits`), or a
+    /// bounded VSI file read (after archive decompression).
     #[error("{resource} exceeds decoded-byte limit {limit}")]
     DecodedLimitExceeded {
-        /// The payload kind (root directory, leaf directory, metadata, tile, TIFF chunk or tag value).
+        /// The payload kind (directory, metadata, tile, TIFF chunk/tag, or VSI file).
         resource: &'static str,
         /// The maximum allowed decoded bytes.
         limit: usize,

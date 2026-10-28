@@ -1246,3 +1246,28 @@ fn memory_archives_and_moves_do_not_copy_bytes() {
     assert_eq!(crate::memfs::COPIED.with(|c| c.get()), 0);
     delete("/vsimem/vsi_nocopy", true).unwrap();
 }
+
+#[test]
+#[cfg(not(target_family = "wasm"))]
+fn limited_reads_bound_local_memory_and_decompressed_archive_members() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("payload.txt");
+    let bytes = vec![b'a'; 16_384];
+    fs::write(&path, &bytes).unwrap();
+    let memory = "/vsimem/vsi-limited-payload.txt";
+    write(memory, &bytes).unwrap();
+    let archive = temp.path().join("payload.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+    zip.start_file("payload.txt", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)).unwrap();
+    zip.write_all(&bytes).unwrap();
+    zip.finish().unwrap();
+    for path in [s(&path), memory.into(), format!("/vsizip/{}/payload.txt", archive.display())] {
+        assert_eq!(read_limited(&path, bytes.len()).unwrap(), bytes);
+        assert!(matches!(read_limited(&path, bytes.len() - 1), Err(Error::DecodedLimitExceeded { resource: "VSI file", .. })));
+        assert!(matches!(read_limited(&path, 0), Err(Error::DecodedLimitExceeded { .. })));
+    }
+    delete(memory, false).unwrap();
+    fs::write(&path, []).unwrap();
+    assert_eq!(read_limited(&s(&path), 0).unwrap(), Vec::<u8>::new());
+    assert!(matches!(read_limited(&s(&temp.path().join("missing")), 0), Err(Error::Io(_))));
+}
