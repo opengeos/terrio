@@ -121,7 +121,7 @@ pub struct MetadataField {
 pub struct GtiOptions {
     /// Output pixel resolution in index CRS units (positive x/y sizes).
     pub resolution: Option<[f64; 2]>,
-    /// Virtual mosaic bounds [min_x,min_y,max_x,max_y].
+    /// Virtual mosaic bounds `[min_x, min_y, max_x, max_y]`.
     pub extent: Option<[f64; 4]>,
     /// Virtual raster sample type (otherwise inferred when opened).
     pub data_type: Option<crate::DataType>,
