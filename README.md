@@ -312,9 +312,16 @@ terrio builds on the work of many projects and their authors:
 
 - [whitebox_next_gen](https://github.com/jblindsay/whitebox_next_gen) by John Lindsay, whose
   pure-Rust format libraries (`wbraster`, `wbvector`, `wbprojection`) terrio began on.
-- [GDAL](https://gdal.org), [PROJ](https://proj.org) and [PDAL](https://pdal.io), the reference terrio
-  follows and tests against; its projections are ported from PROJ, its point cloud filters follow
-  PDAL's (the cloth simulation filter of Zhang et al., 2016, is a port of the CSF code PDAL vendors).
+- [GDAL](https://gdal.org), by Frank Warmerdam, Even Rouault and hundreds of contributors over more
+  than twenty-five years. terrio's commands, options and much of its behavior follow GDAL's; many
+  of its algorithms and drivers are ports of GDAL code (contours, nodata filling, gridding,
+  overviews, pansharpening, the GRIB and SRTMHGT drivers and more, each attributed in
+  [NOTICE](NOTICE)); and GDAL is the reference it is tested against and its optional backend.
+  If terrio is useful to you, please consider
+  [sponsoring GDAL](https://gdal.org/en/stable/sponsors/index.html).
+- [PROJ](https://proj.org) and [PDAL](https://pdal.io), with GDAL the reference terrio tests
+  against; its projections are ported from PROJ, its point cloud filters follow PDAL's (the cloth
+  simulation filter of Zhang et al., 2016, is a port of the CSF code PDAL vendors).
 - The [EPSG Geodetic Parameter Dataset](https://epsg.org) of IOGP and Esri's
   [projection engine data](https://github.com/Esri/projection-engine-db-doc), for the coordinate
   reference systems.
