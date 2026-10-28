@@ -1735,8 +1735,6 @@ test("general oblique transformation matches PROJ", () => {
     }
     const reversible = samples.filter(s => s[3] !== null);
     const invert = ([x, y]) => terrio.transformPoints([x], [y], c.target, c.source);
-    const edge = [];
-    const singleResults = new Map();
     for (let i = 0; i < reversible.length; i++) {
       let inverse;
       try {
@@ -1755,9 +1753,7 @@ test("general oblique transformation matches PROJ", () => {
         }).filter(r => r !== null);
         if (nudged.length !== 1) throw error;
         inverse = nudged[0];
-        edge.push(i);
       }
-      singleResults.set(reversible[i], [inverse[0][0], inverse[1][0]]);
       const [lon, lat] = reversible[i][3];
       const dlon = ((inverse[0][0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180);
       // At a geographic pole longitude is indeterminate, so only latitude is checked, and asin
@@ -1766,13 +1762,16 @@ test("general oblique transformation matches PROJ", () => {
       assert.ok(pole || Math.abs(dlon) <= 1e-8, `${c.name} inverse longitude ${i}`);
       assert.ok(Math.abs(inverse[1][0] - lat) <= (pole ? 1e-6 : 1e-8), `${c.name} inverse latitude ${i}`);
     }
-    // One batched call over the interior samples, which reuses a single transformer.
-    const interior = reversible.filter((_, i) => !edge.includes(i));
-    const batch = terrio.transformPoints(interior.map(s => s[2][0]), interior.map(s => s[2][1]), c.target, c.source);
-    for (let i = 0; i < interior.length; i++) {
-      assert.deepEqual([batch[0][i], batch[1][i]], singleResults.get(interior[i]), `${c.name} batch/single inverse ${i}`);
-    }
     const pastPole = point => c.refuses_past_pole && Math.abs((point[1] * c.metres_per_unit - c.false_northing_metres) / c.radius_metres) > Math.PI / 2;
+    // One batched call over the accepted inverse domain probes, which reuses a single transformer
+    // (as the Python oracle does; the Rust oracle checks the same probes one by one).
+    const probes = c.inverse_samples.filter(([p, e]) => e !== null && !pastPole(p));
+    const batch = terrio.transformPoints(probes.map(([p]) => p[0]), probes.map(([p]) => p[1]), c.target, c.source);
+    for (let i = 0; i < probes.length; i++) {
+      const [lon, lat] = probes[i][1];
+      const dlon = ((batch[0][i] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180);
+      assert.ok(Math.abs(dlon) <= 1e-8 && Math.abs(batch[1][i] - lat) <= 1e-8, `${c.name} batched inverse ${probes[i][0]}`);
+    }
     const refused = samples.filter(s => s[3] === null).map(s => s[2]).concat(c.inverse_samples.filter(([p, e]) => e === null || pastPole(p)).map(([p]) => p));
     for (const point of refused) {
       assert.throws(() => terrio.transformPoints([point[0]], [point[1]], c.target, c.source), undefined, `${c.name} inverse ${point}`);

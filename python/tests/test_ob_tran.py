@@ -87,7 +87,7 @@ def test_ob_tran_oracle(case):
             [p[0] for p, _ in probes], [p[1] for p, _ in probes], case["target"], case["source"]
         )
     )
-    expected = np.asarray([e for _, e in probes])
+    expected = np.asarray([e for _, e in probes]).reshape(-1, 2)
     delta = actual - expected
     delta[:, 0] = ((delta[:, 0] + 180) % 360 - 180) * np.cos(np.deg2rad(expected[:, 1]))
     assert np.all(np.abs(delta) <= 1e-8)
