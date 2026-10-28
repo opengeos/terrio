@@ -5,7 +5,7 @@ use terrio::ops::tile_index::{
     self as ti, GtiOptions, IndexInputOptions, IndexOptions, MetadataField, RasterIndexOptions, SourceCrsFormat, VectorIndexOptions,
     VectorIndexSelection,
 };
-use terrio::{Error, FieldType, Result, VectorWriteOptions};
+use terrio::{Error, Result, VectorWriteOptions};
 
 #[derive(clap::Args)]
 pub struct CommonArgs {
@@ -146,13 +146,7 @@ fn metadata_field(s: &str) -> Result<MetadataField> {
     let [key, name, kind] = parts.as_slice() else {
         return Err(Error::InvalidArgument("fetch-metadata needs KEY,FIELD,TYPE".into()));
     };
-    let field_type = match kind.to_ascii_lowercase().as_str() {
-        "string" | "text" => FieldType::Text,
-        "integer" => FieldType::Integer,
-        "real" | "float" => FieldType::Float,
-        _ => return Err(Error::InvalidArgument("fetch-metadata TYPE must be String, Integer or Real".into())),
-    };
-    Ok(MetadataField { key: (*key).into(), name: (*name).into(), field_type })
+    MetadataField::from_type_name(*key, *name, kind)
 }
 /// Creates a raster footprint index, optionally configured as a GTI mosaic.
 pub fn raster(a: RasterArgs) -> Result<()> {

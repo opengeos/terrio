@@ -358,6 +358,12 @@ pub fn raster_index(sources: &[RasterIndexSource], o: &RasterIndexOptions) -> Re
     }
     out.metadata.retain(|(k, _)| !k.eq_ignore_ascii_case("LOCATION_FIELD"));
     out.metadata.push(("LOCATION_FIELD".into(), o.index.location_field.clone()));
+    let inferred_bands = o.gti.band_count.unwrap_or(first.band_count);
+    for count in [o.gti.nodata.len(), o.gti.color_interpretations.len()] {
+        if count != 0 && count != 1 && count != inferred_bands {
+            return Err(invalid("GTI nodata/colors need one value or one per explicit/inferred output band"));
+        }
+    }
     for (key, value) in o.gti.metadata()? {
         out.metadata.retain(|(k, _)| !k.eq_ignore_ascii_case(&key));
         out.metadata.push((key, value));
@@ -443,7 +449,6 @@ pub fn vector_index(sources: &[VectorIndexSource], o: &VectorIndexOptions) -> Re
     let crs = o.index.output_crs.as_ref().unwrap_or(&first_crs);
     let mut out = empty(&o.index, crs)?;
     out.source_locations = sources.iter().map(|s| s.location.clone()).collect();
-    let mut seen = HashSet::new();
     for src in sources {
         if src.location.is_empty() || src.location.contains('\0') {
             return Err(invalid("vector index source needs a nonempty location"));
@@ -461,9 +466,6 @@ pub fn vector_index(sources: &[VectorIndexSource], o: &VectorIndexOptions) -> Re
         }
         if o.index.output_crs.is_none() && !o.accept_different_crs && !same_crs(&source_crs, crs) {
             crate::warnings::warn(format!("skipping {}: different layer CRS", src.location));
-            continue;
-        }
-        if !seen.insert((&src.location, src.layer_index)) {
             continue;
         }
         let bounds = layer_bounds(&src.layer);
@@ -562,8 +564,27 @@ impl DatasetIndex {
         }
         let bytes = self.to_bytes(path, options)?;
         let parent = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
-        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+        let existing_permissions = if overwrite {
+            match std::fs::metadata(output) {
+                Ok(metadata) => Some(metadata.permissions()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            None
+        };
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o666));
+        }
+        let mut temp = builder.tempfile_in(parent)?;
         temp.write_all(&bytes)?;
+        if let Some(permissions) = existing_permissions {
+            temp.as_file().set_permissions(permissions)?;
+        }
         temp.flush()?;
         if overwrite {
             temp.persist(output).map_err(|e| Error::Io(e.error))?;
@@ -604,7 +625,14 @@ impl DatasetIndex {
                 let mut temp = tempfile::NamedTempFile::new_in(parent)?;
                 std::io::copy(&mut std::fs::File::open(source)?, &mut temp)?;
                 temp.flush()?;
-                temp.as_file().set_permissions(std::fs::metadata(source)?.permissions())?;
+                let permissions = if overwrite && parts.len() == 1 {
+                    std::fs::metadata(&destination)
+                        .or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { std::fs::metadata(source) } else { Err(e) })?
+                        .permissions()
+                } else {
+                    std::fs::metadata(source)?.permissions()
+                };
+                temp.as_file().set_permissions(permissions)?;
                 if overwrite && parts.len() == 1 {
                     temp.persist(&destination).map_err(|e| Error::Io(e.error))?;
                 } else {
@@ -702,6 +730,45 @@ mod tests {
         assert_eq!(exterior.0[0].y, exterior.0[1].y);
         assert_eq!(exterior.0[1].x, exterior.0[2].x);
     }
+    #[test]
+    fn wildcard_stars_are_patterns_even_when_names_contain_stars() {
+        for (pattern, name) in [("a*", "a*b"), ("*a*", "*ab"), ("*.tif", "a*.tif"), ("a?b", "a*b")] {
+            assert!(wildcard(pattern, name));
+        }
+        assert!(!wildcard("a*b", "a*c"));
+    }
+    #[test]
+    fn gti_counts_use_inferred_source_band_count() {
+        let mut options = RasterIndexOptions::default();
+        options.gti.nodata = vec![1., 2., 3.];
+        assert!(raster_index(&[raster()], &options).is_err());
+        options.gti.nodata = vec![1.];
+        options.gti.color_interpretations = vec!["red".into(), "green".into(), "blue".into()];
+        assert!(raster_index(&[raster()], &options).is_err());
+        options.gti.band_count = Some(3);
+        assert!(raster_index(&[raster()], &options).is_ok());
+        options.gti.band_count = None;
+        options.gti.color_interpretations = vec!["gray".into()];
+        assert!(raster_index(&[raster()], &options).is_ok());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn index_outputs_honor_umask_and_preserve_existing_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let control = dir.path().join("control");
+        std::fs::write(&control, b"control").unwrap();
+        let expected = std::fs::metadata(control).unwrap().permissions().mode() & 0o777;
+        let index = vector_index(&[vector("source.gpkg", 0)], &Default::default()).unwrap();
+        for suffix in ["gpkg", "fgb", "shp.zip", "geojson"] {
+            let path = dir.path().join(format!("index.{suffix}"));
+            index.write(path.to_str().unwrap(), &Default::default(), false).unwrap();
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, expected);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+            index.write(path.to_str().unwrap(), &Default::default(), true).unwrap();
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o640);
+        }
+    }
     fn vector(name: &str, index: usize) -> VectorIndexSource {
         let mut layer = Layer::new("source");
         layer.extent = Some(wbvector::BBox::new(1., 2., 3., 4.));
@@ -715,6 +782,8 @@ mod tests {
         let sources = [vector("a.gpkg", 0), b];
         let out = vector_index(&sources, &Default::default()).unwrap();
         assert_eq!(out.layer.features.len(), 1);
+        let duplicate = vector_index(&[vector("same.gpkg", 0), vector("same.gpkg", 0)], &Default::default()).unwrap();
+        assert_eq!(duplicate.layer.len(), 2);
         let out = vector_index(&sources, &VectorIndexOptions { accept_different_schemas: true, ..Default::default() }).unwrap();
         assert_eq!(out.layer.features[1].attributes, [FieldValue::Text("b.gpkg,3".into())]);
         let Some(Geometry::Polygon { exterior, .. }) = &out.layer.features[1].geometry else { panic!("not a polygon") };
@@ -766,13 +835,13 @@ fn wildcard(pattern: &str, value: &str) -> bool {
     let v: Vec<char> = value.chars().collect();
     let (mut i, mut j, mut star, mut consumed) = (0, 0, None, 0);
     while j < v.len() {
-        if i < p.len() && (p[i] == '?' || p[i] == v[j]) {
-            i += 1;
-            j += 1;
-        } else if i < p.len() && p[i] == '*' {
+        if i < p.len() && p[i] == '*' {
             star = Some(i);
             i += 1;
             consumed = j;
+        } else if i < p.len() && (p[i] == '?' || p[i] == v[j]) {
+            i += 1;
+            j += 1;
         } else if let Some(s) = star {
             i = s + 1;
             consumed += 1;
@@ -928,26 +997,12 @@ pub fn vector_index_paths(
     let paths = index_input_paths(paths, inputs)?;
     let mut sources = Vec::new();
     for path in paths {
-        let layers = read_vector_index_headers(&path)?;
-        for name in &selection.names {
-            if !layers.iter().any(|l| &l.name == name) {
-                return Err(invalid(format!("no layer '{name}' in {path}")));
-            }
+        let mut group = vector_index_sources(&path)?;
+        let location = stored_location(&path, inputs.absolute_path)?;
+        for source in &mut group {
+            source.location = location.clone();
         }
-        for &index in &selection.indexes {
-            if index >= layers.len() {
-                return Err(invalid(format!("no layer {index} in {path}")));
-            }
-        }
-        for (index, layer) in layers.into_iter().enumerate() {
-            if (!selection.names.is_empty() || !selection.indexes.is_empty())
-                && !selection.names.contains(&layer.name)
-                && !selection.indexes.contains(&index)
-            {
-                continue;
-            }
-            sources.push(VectorIndexSource { location: stored_location(&path, inputs.absolute_path)?, layer_index: index, layer });
-        }
+        sources.extend(selection.apply(group)?);
     }
     vector_index(&sources, o)
 }

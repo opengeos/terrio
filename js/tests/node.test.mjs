@@ -2080,6 +2080,8 @@ test("dataset indexes retain rotated corners, source identities and GTI metadata
     sourceCrsFieldName: "srs", minPixelSize: 2.7, bandCount: 1, ot: "Byte", nodata: [255],
     fetchMetadata: [["{PIXEL_SIZE}", "pixel_size", "Real"]],
   });
+  assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {nodata: [1, 2, 3]}), /inferred/);
+  assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {colorInterpretations: ["red", "green", "blue"]}), /inferred/);
   assert.equal(index.count, 1);
   assert.equal(index.metadata.NODATA, "255");
   const feature = index.layer().toGeoJSON().features[0];

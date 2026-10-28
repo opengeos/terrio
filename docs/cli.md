@@ -2011,7 +2011,8 @@ terrio vector-index roads.gpkg counties.geojson index.gpkg --accept-different-sc
   --source-crs-field-name source_crs --output-crs EPSG:4326
 ```
 
-`raster-index` writes the four affine raster corners; `gti-create` uses the same
+`raster-index` writes affine corners when retaining the source CRS, and the
+suggested warped-grid envelope when changing CRS; `gti-create` uses the same
 operation with optional GTI virtual-raster metadata. `vector-index` writes one
 layer-envelope polygon with `filename,layer_index` locations; `--dataset-name-only`
 omits the suffix. `--source-layer-name` and zero-based `--source-layer-index` are
@@ -2022,7 +2023,9 @@ flags; an explicit `--output-crs` reprojects corners. Empty vector layers are sk
 Inputs can be files, local directories, explicitly slash-terminated VSI directories,
 or `@FILE` lists. Directory scanning supports `--recursive` and repeatable case-sensitive
 `--filename-filter` patterns (`*` and `?`). `--absolute-path` affects local paths.
-Raster `--skip-errors` skips unreadable inputs with a warning. Lazy-capable raster
+Raster `--skip-errors` skips unreadable inputs with a warning. Scanning without
+a filename filter is strict, as in GDAL: unrelated files and sidecars can fail
+the run. Use a filter or raster `--skip-errors` for mixed-content directories. Lazy-capable raster
 readers only inspect headers. Local GeoPackage/FlatGeobuf vector inputs use cached
 bounds when present; other formats scan features in chunks where supported.
 
@@ -2041,7 +2044,8 @@ metadata as String, Integer or Real; `{PIXEL_SIZE}` selects the computed size.
 Missing metadata becomes null; invalid numeric metadata is rejected. GTI options
 include `--resolution x,y`, `--bbox xmin,ymin,xmax,ymax`, `--ot`, `--band-count`,
 repeatable/comma-separated `--nodata`, `--color-interpretation` and `--mask`.
-GeoPackage/FlatGeobuf preserve GTI metadata; open them with GDAL as `GTI:catalog.gpkg`
+Nodata/color lists must contain one value or one per output band, inferred from
+the first source when `--band-count` is omitted. GeoPackage/FlatGeobuf preserve GTI metadata; open them with GDAL as `GTI:catalog.gpkg`
 or `GTI:catalog.fgb`. Custom raster location fields are recorded in `LOCATION_FIELD`.
 
 This release creates new indexes and atomically replaces single-file outputs with

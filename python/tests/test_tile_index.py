@@ -19,6 +19,9 @@ def test_raster_catalog_geometry_and_metadata(tmp_path):
         ot="Byte",
         nodata=[255],
     )
+    for options in ({"nodata": [1, 2, 3]}, {"color_interpretations": ["red", "green", "blue"]}):
+        with pytest.raises(terrio.InvalidArgumentError, match="inferred"):
+            terrio.raster_index({"tile.tif": raster}, **options)
     assert index.count == 1
     assert index.metadata["NODATA"] == "255"
     feature = index.layer.to_geojson()["features"][0]

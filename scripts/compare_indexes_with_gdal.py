@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import nullcontext
 import json
 import os
 import shutil
-import traceback
 import subprocess
 import tempfile
+import traceback
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -185,8 +185,10 @@ def main():
         for source in (counties, multi):
             for suffix in ("gpkg", "fgb", "shp"):
                 case(f"vector {source.name} {suffix}", lambda source=source, suffix=suffix: indexes("vector", [source], ["--accept-different-schemas", "--source-crs-field-name", "srs"], vector=True, suffix=suffix))
+        case("duplicate vector inputs", lambda: indexes("duplicates", [counties,counties], vector=True))
         for options in (["--source-layer-index", "1"], ["--dataset-name-only"], ["--output-crs", "EPSG:3857", "--accept-different-schemas"]):
             case(f"vector options {options}", lambda options=options: indexes("vector", [multi], options, vector=True))
+    grid_cache.cleanup()
     if args.json:
         print(json.dumps(results, indent=2))
     return int(any(r["status"] == "differs" for r in results))
