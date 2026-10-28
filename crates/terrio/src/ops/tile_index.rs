@@ -1299,6 +1299,8 @@ pub fn index_input_paths(paths: &[String], o: &IndexInputOptions) -> Result<Vec<
         }
         let entries = crate::vsi::list(path, &crate::vsi::ListOptions { recursive: o.recursive, ..Default::default() })
             .map_err(|e| index_source_error(path, e))?;
+        // Collecting the components drops doubled and trailing separators (`tiles//` gives `tiles/a.tif`).
+        let local_base: std::path::PathBuf = std::path::Path::new(base).components().collect();
         for entry in entries.into_iter().filter(|e| !e.is_dir()) {
             let name = entry.name.rsplit('/').next().unwrap_or(&entry.name);
             if !o.filename_filters.is_empty() && !o.filename_filters.iter().any(|p| wildcard(p, name)) {
@@ -1310,10 +1312,8 @@ pub fn index_input_paths(paths: &[String], o: &IndexInputOptions) -> Result<Vec<
             } else {
                 // Local entries join with the platform separator, as the directory path itself does.
                 // `Path::join` of the '/'-separated entry name would leave a mixed `dir\sub/a.tif`
-                // on Windows, so its parts are joined one by one; collecting the base's components
-                // drops doubled and trailing separators (`tiles//` gives `tiles/a.tif`).
-                let base: std::path::PathBuf = std::path::Path::new(base).components().collect();
-                let joined = entry.name.split('/').filter(|part| !part.is_empty()).fold(base, |p, part| p.join(part));
+                // on Windows, so its parts are joined one by one.
+                let joined = entry.name.split('/').filter(|part| !part.is_empty()).fold(local_base.clone(), |p, part| p.join(part));
                 out.push(joined.to_string_lossy().into_owned());
             }
         }
