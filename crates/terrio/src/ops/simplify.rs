@@ -230,7 +230,7 @@ impl Simplifier {
     }
 
     fn has_output_intersection(&self, flat: (P, P)) -> bool {
-        self.output.locate_in_envelope_intersecting(&query_box(flat.0, flat.1)).any(|e| {
+        self.output.locate_in_envelope_intersecting(query_box(flat.0, flat.1)).any(|e| {
             let (a, b, alive) = self.output_segments[e.data];
             alive && Self::invalid_intersection((a, b), flat)
         })
@@ -239,7 +239,7 @@ impl Simplifier {
     /// Whether the flattening segment crosses an input segment, other than those of the section
     /// `excluded` (line, start, end) it replaces.
     fn has_input_intersection(&self, excluded: Option<(usize, usize, usize)>, flat: (P, P)) -> bool {
-        self.input.locate_in_envelope_intersecting(&query_box(flat.0, flat.1)).any(|e| {
+        self.input.locate_in_envelope_intersecting(query_box(flat.0, flat.1)).any(|e| {
             let (l, k) = e.data;
             if !self.input_alive[l][k] {
                 return false;
