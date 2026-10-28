@@ -784,7 +784,7 @@ impl<'a> Engine<'a> {
         if let Some(tree) = &self.tree {
             let m = margin(r, px, py);
             let env = AABB::from_corners([minx - m, miny - m], [maxx + m, maxy + m]);
-            for p in tree.locate_in_envelope(&env) {
+            for p in tree.locate_in_envelope(env) {
                 let i = p.data;
                 let (xi, yi) = (self.x[i as usize], self.y[i as usize]);
                 if !(xi > maxx || xi < minx || yi > maxy || yi < miny) {
@@ -807,7 +807,7 @@ impl<'a> Engine<'a> {
                 let r = r1.abs().max(r2.abs());
                 let m = margin(r, px, py) + r * 1e-9;
                 let env = AABB::from_corners([px - r - m, py - r - m], [px + r + m, py + r + m]);
-                out.extend(tree.locate_in_envelope(&env).map(|p| p.data));
+                out.extend(tree.locate_in_envelope(env).map(|p| p.data));
                 out.sort_unstable();
             }
             _ => out.extend(0..self.x.len() as u32),
@@ -1072,7 +1072,7 @@ impl<'a> Engine<'a> {
         };
         let r = if r1 == 0.0 && r2 == 0.0 {
             // Every point is in the ellipse: the nearest, and those as near, rotation aside.
-            match tree.nearest_neighbor(&[px, py]) {
+            match tree.nearest_neighbor([px, py]) {
                 Some(p) => {
                     let (dx, dy) = (p.geom()[0] - px, p.geom()[1] - py);
                     (dx * dx + dy * dy).sqrt()
@@ -1087,7 +1087,7 @@ impl<'a> Engine<'a> {
         };
         let m = margin(r, px, py) + r * 1e-6;
         let env = AABB::from_corners([px - r - m, py - r - m], [px + r + m, py + r + m]);
-        ids.extend(tree.locate_in_envelope(&env).map(|p| p.data));
+        ids.extend(tree.locate_in_envelope(env).map(|p| p.data));
         ids.sort_unstable();
     }
 

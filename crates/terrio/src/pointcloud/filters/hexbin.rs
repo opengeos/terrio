@@ -531,7 +531,7 @@ fn trace(dense: &HashSet<Lattice>) -> Vec<(Vec<Corner>, Vec<Vec<Corner>>)> {
         .map(|i| {
             let p = lattice[i][0];
             boxes
-                .locate_all_at_point(&[p.0 as f64, p.1 as f64])
+                .locate_all_at_point([p.0 as f64, p.1 as f64])
                 .map(|b| b.data)
                 .filter(|&k| k != i && areas[k] > areas[i] && inside(p, &lattice[k]))
                 .min_by_key(|&k| areas[k])

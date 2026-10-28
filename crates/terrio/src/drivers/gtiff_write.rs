@@ -237,9 +237,13 @@ fn webp_encode(data: Vec<u8>, chunk: &ChunkInfo, options: &CodecParams) -> Resul
     });
     let image = webp_rust::ImageBuffer { width: chunk.w, height: chunk.h, rgba };
     let encoded = if options.webp_lossless {
-        webp_rust::encode_lossless(&image, 2, None)
+        webp_rust::encode_lossless_with_config(&image, &webp_rust::LosslessEncodingConfig { z_level: 2 }, None)
     } else {
-        webp_rust::encode_lossy(&image, 0, options.webp_quality as usize, None)
+        webp_rust::encode_lossy_with_config(
+            &image,
+            &webp_rust::LossyEncodingConfig { quality: options.webp_quality as f32, method: 0, ..Default::default() },
+            None,
+        )
     }
     .map_err(|error| Error::InvalidData(format!("WebP: {error}")))?;
     let Some(alpha) = alpha else { return Ok(encoded) };

@@ -314,6 +314,23 @@ fn empty(o: &IndexOptions, crs: &SpatialRef) -> Result<DatasetIndex> {
         relative_locations: HashMap::new(),
     })
 }
+fn warning_locator(location: &str) -> &str {
+    if location.contains("://") || location.starts_with("/vsi") {
+        location.split_once('?').map_or(location, |(base, _)| base)
+    } else {
+        location
+    }
+}
+#[cfg(not(target_family = "wasm"))]
+fn warn_skipped_source(path: &str, error: &Error) {
+    if warning_locator(path) != path {
+        // Driver/transport errors can repeat the complete signed URL. Keep those
+        // diagnostics out of warnings as well as sanitizing the displayed locator.
+        crate::warnings::warn(format!("skipping {}: cannot inspect remote source metadata", warning_locator(path)));
+    } else {
+        crate::warnings::warn(format!("skipping {path}: {error}"));
+    }
+}
 fn warn_query_locations<'a>(mut locations: impl Iterator<Item = &'a str>) {
     if locations.any(|s| s.contains('?') && (s.contains("://") || s.starts_with("/vsi"))) {
         crate::warnings::warn("Index locations retain remote URL query parameters, which may contain access credentials. Use credential-free locations and environment credentials before sharing a catalog.".into());
@@ -402,10 +419,16 @@ pub fn raster_index(sources: &[RasterIndexSource], o: &RasterIndexOptions) -> Re
         }
         if o.index.output_crs.is_none() && !same_crs(&src.crs, crs) {
             if o.index.source_crs_field.is_none() {
-                crate::warnings::warn(format!("skipping {}: different CRS; specify output CRS or a source-CRS field", src.location));
+                crate::warnings::warn(format!(
+                    "skipping {}: different CRS; specify output CRS or a source-CRS field",
+                    warning_locator(&src.location)
+                ));
                 continue;
             }
-            crate::warnings::warn(format!("{} has a different CRS; specify output CRS for a mixed-CRS catalog", src.location));
+            crate::warnings::warn(format!(
+                "{} has a different CRS; specify output CRS for a mixed-CRS catalog",
+                warning_locator(&src.location)
+            ));
         }
         let [w, h] = src.size.map(|v| v as f64);
         let corners = [(0., 0.), (w, 0.), (w, h), (0., h)]
@@ -491,11 +514,11 @@ pub fn vector_index(sources: &[VectorIndexSource], o: &VectorIndexOptions) -> Re
             .iter()
             .map(|f| (&f.name, f.field_type)));
         if !o.accept_different_schemas && !schema_equal {
-            crate::warnings::warn(format!("skipping {}: different layer schema", src.location));
+            crate::warnings::warn(format!("skipping {}: different layer schema", warning_locator(&src.location)));
             continue;
         }
         if o.index.output_crs.is_none() && !o.accept_different_crs && !same_crs(&source_crs, crs) {
-            crate::warnings::warn(format!("skipping {}: different layer CRS", src.location));
+            crate::warnings::warn(format!("skipping {}: different layer CRS", warning_locator(&src.location)));
             continue;
         }
         if o.index.output_crs.is_none() && !same_crs(&source_crs, crs) {
@@ -904,6 +927,48 @@ mod tests {
         assert!(warnings.iter().all(|w| !w.contains("private-marker")));
     }
     #[test]
+    fn skipped_and_mixed_crs_warnings_do_not_echo_url_queries() {
+        let a = raster();
+        let mut b = raster();
+        b.location = "https://example.test/tile.tif?sig=private-marker".into();
+        b.crs = SpatialRef::parse("EPSG:3857").unwrap();
+        for source_crs_field in [None, Some("srs".into())] {
+            let _ = crate::warnings::take();
+            let options = RasterIndexOptions { index: IndexOptions { source_crs_field, ..Default::default() }, ..Default::default() };
+            raster_index(&[a.clone(), b.clone()], &options).unwrap();
+            let warnings = crate::warnings::take();
+            assert!(warnings.iter().any(|w| w.contains("different CRS")));
+            assert!(warnings.iter().all(|w| !w.contains("private-marker")));
+        }
+        for schema_mismatch in [false, true] {
+            let a = vector("a", 0);
+            let mut b = vector("https://example.test/data.gpkg?sig=private-marker", 0);
+            SpatialRef::parse("EPSG:3857").unwrap().apply_to_layer(&mut b.layer);
+            if schema_mismatch {
+                b.layer.schema.add_field(FieldDef::new("extra", FieldType::Text));
+            }
+            let _ = crate::warnings::take();
+            vector_index(&[a, b], &Default::default()).unwrap();
+            let warnings = crate::warnings::take();
+            assert!(warnings.iter().any(|w| w.contains("skipping")));
+            assert!(warnings.iter().all(|w| !w.contains("private-marker")));
+        }
+    }
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn failed_remote_discovery_does_not_echo_query_in_transport_error() {
+        let _ = crate::warnings::take();
+        let result = raster_index_paths(
+            &["unsupported-scheme://example.test/a.tif?sig=private-marker".into()],
+            &IndexInputOptions { skip_errors: true, ..Default::default() },
+            &Default::default(),
+        );
+        assert!(result.is_err());
+        let warnings = crate::warnings::take();
+        assert!(warnings.iter().any(|w| w.contains("cannot inspect remote source")));
+        assert!(warnings.iter().all(|w| !w.contains("private-marker")));
+    }
+    #[test]
     fn selectors_apply_to_the_union_of_input_datasets() {
         let mut a = vector("a.gpkg", 0);
         a.layer.name = "roads".into();
@@ -1137,7 +1202,7 @@ pub fn raster_index_paths(paths: &[String], inputs: &IndexInputOptions, o: &Rast
         })();
         match result {
             Ok(source) => sources.push(source),
-            Err(e) if inputs.skip_errors => crate::warnings::warn(format!("skipping {path}: {e}")),
+            Err(e) if inputs.skip_errors => warn_skipped_source(&path, &e),
             Err(e) => return Err(e),
         }
     }
