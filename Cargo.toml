@@ -29,7 +29,7 @@ geographiclib-rs = { version = "0.2.7", default-features = false }
 # Planar topology, buffering, validity and polygon repair, without native libraries.
 geo = { version = "0.33.1", default-features = false, features = ["spade"] }
 # Candidate lookup for polygon overlays; the same pure-Rust R-tree used by geo.
-rstar = "0.12.2"
+rstar = "0.13.0"
 # Delaunay and constrained triangulations for hulls and linear gridding; the version geo uses.
 spade = "2.15.1"
 
