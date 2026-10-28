@@ -1809,7 +1809,7 @@ def move_raster(
     error_threshold: float | None = None,
     ignore_cog_layout_break: bool = False,
 ) -> dict[str, Any]: ...
-
+@final
 class DatasetIndex:
     """A polygon footprint index with GTI metadata."""
     @property
