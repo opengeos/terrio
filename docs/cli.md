@@ -695,6 +695,10 @@ nested definitions; definitions are held in memory. A file used both as file-bea
 metadata and raw VRT pixels is refused if rewriting would change those pixels. VRT deletion removes the definition and its owned companions,
 retaining referenced rasters.
 
+Dataset file management refuses MVT trees containing entries outside `metadata.json` and
+numeric `z/x/y.pbf` or `z/x/y.mvt` tile paths. Relative GML schema references must belong
+to the inventoried file set so they can be rebased; external absolute URIs remain unchanged.
+
 All inputs and destinations are checked before staging files. Source aliases, overlapping
 directory trees, protected roots, read-only mutations and file/directory collisions are
 refused. Failed staging or installation attempts restore the original paths; failed

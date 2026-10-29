@@ -85,9 +85,10 @@ commands. Command-group progress:
       `terrio lineref`. Proposed in [#305](https://github.com/opengeos/terrio/pull/305), through Rust,
       CLI/MCP, Python and JavaScript, with real-data comparisons registered in conformance.
 
-- [ ] Dataset identification: bounded 16 KiB headers, ordered input batches, recursive local
+- [x] Dataset identification: bounded 16 KiB headers, ordered input batches, recursive local
       discovery and explicit companion-file reader fallback through Rust, CLI/MCP, Python and
-      JavaScript. Real-data GDAL comparisons are registered as `identify`.
+      JavaScript. Landed in [#375](https://github.com/opengeos/terrio/pull/375);
+      real-data GDAL comparisons are registered as `identify`.
 
 - [ ] Dataset file management: encoded copies, renames and deletion of owned companions,
       with staged replacement and source alias protection through Rust, CLI/MCP, Python and
