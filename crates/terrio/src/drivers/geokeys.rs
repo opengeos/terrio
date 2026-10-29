@@ -62,6 +62,91 @@ pub(crate) fn esri_pe_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
     Some(wbraster::CrsInfo { epsg: s.epsg, wkt: Some(wkt.to_string()), proj4: s.proj4 })
 }
 
+/// A user-defined projected CRS of GeoKeys as GDAL reads it, where that is not the WKT of its
+/// PROJ string (`proj4`, from [`user_defined_proj4`]): `None` when it is.
+///
+/// - An ESRI CRS named by the citation (GTCitationGeoKey, as GDAL writes one), whose definition
+///   the GeoKeys give: GDAL takes the registry's CRS of that name when the two are equivalent
+///   (`GTIFGetOfficialCRS` on any authority, gt_wkt_srs.cpp), ESRI:102003 for
+///   `USA_Contiguous_Albers_Equal_Area_Conic`.
+/// - A linear unit PROJ strings do not name (Clarke's foot, a user-defined unit), named as GDAL
+///   names it.
+/// - The inverse flattening GDAL computes from the axes (see [`computed_inverse_flattening`]),
+///   on a geographic CRS without code.
+pub(crate) fn user_defined_projected_crs(k: &GeoKeys, proj4: &str) -> Option<wbraster::CrsInfo> {
+    let wkt = crate::crs::SpatialRef::from_proj4(proj4).ok()?.to_wkt()?;
+    let name = [3073, 1026].iter().find_map(|id| k.text(*id)).map(str::trim).filter(|n| !n.is_empty() && !n.contains(" = "));
+    if let Some(name) = name
+        && let Some(named) = renamed(&wkt, name)
+        && let Some(code) = crate::crs::SpatialRef::from_wkt(&named).with_esri().esri
+        && let Some(esri) = crate::crs::SpatialRef::from_esri(code).ok().and_then(|s| s.to_wkt())
+    {
+        // With its code, as GDAL's `SetFromUserInput("ESRI:<code>")` gives it.
+        let declared = esri.ends_with(&format!("AUTHORITY[\"ESRI\",\"{code}\"]]"));
+        let esri = if declared { esri } else { format!("{},AUTHORITY[\"ESRI\",\"{code}\"]]", &esri[..esri.len() - 1]) };
+        return Some(wbraster::CrsInfo { epsg: None, wkt: Some(esri), proj4: None });
+    }
+    let mut out = wkt.clone();
+    if let Some(unit) = linear_unit_wkt(k) {
+        out = with_unit(&out, &unit)?;
+    }
+    if let Some(rf) = computed_inverse_flattening(k)
+        && let Some(i) = out.find("SPHEROID[")
+        && !geogcs_has_code(&out)
+    {
+        // SPHEROID["name",a,rf...]: the third field.
+        let body = &out[i..];
+        let first = body.find(',')? + 1;
+        let second = first + body[first..].find(',')? + 1;
+        let end = second + body[second..].find([',', ']'])?;
+        out = format!("{}{}{}", &out[..i + second], wkt_number(rf), &out[i + end..]);
+    }
+    (out != wkt).then_some(wbraster::CrsInfo { epsg: None, wkt: Some(out), proj4: None })
+}
+
+/// Whether the `GEOGCS` of a projected CRS's WKT 1 has a code: an `AUTHORITY` as its own (last)
+/// child.
+fn geogcs_has_code(wkt: &str) -> bool {
+    let Some(start) = wkt.find("GEOGCS[") else { return false };
+    let (mut depth, mut last) = (0, 0);
+    for (i, c) in wkt[start..].char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' if depth == 1 => return wkt[start + last..].trim_start_matches(',').starts_with("AUTHORITY["),
+            ']' => depth -= 1,
+            ',' if depth == 1 => last = i,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The inverse flattening GDAL gives the ellipsoid of a user-defined geographic CRS whose
+/// citation does not name the ellipsoid (GeogCitationGeoKey without `Ellipsoid = `, as GDAL
+/// writes it for an ellipsoid with a code): GDAL names the ellipsoid by its code, and computes
+/// the inverse flattening from the semi-major axis and the semi-minor axis libgeotiff derives
+/// from GeogInvFlatteningGeoKey (`OSRCalcInvFlattening`, gt_wkt_srs.cpp), taking WGS 84's as
+/// defined: 298.257222101004 for GRS 1980's 298.257222101. `None` when GDAL takes the key's
+/// value (a citation naming the ellipsoid) or the keys give no axes.
+fn computed_inverse_flattening(k: &GeoKeys) -> Option<f64> {
+    if k.text(2049).is_some_and(|c| c.contains("Ellipsoid = ")) {
+        return None;
+    }
+    let a = k.double(2057).filter(|a| *a > 0.0)?;
+    // libgeotiff's GTIFGetDefn: the inverse flattening overrides the semi-minor axis.
+    let b = match (k.double(2059), k.double(2058)) {
+        (Some(rf), _) if rf != 0.0 => a * (1.0 - 1.0 / rf),
+        (Some(_), _) => a,
+        (None, Some(b)) => b,
+        (None, None) => return None,
+    };
+    if (a - b).abs() < 0.1 || b <= 0.0 || b > a {
+        return None;
+    }
+    let rf = a / (a - b);
+    Some(if (a - 6_378_137.0).abs() < 1e-10 && (rf - 298.257_223_563).abs() < 1e-10 { 298.257_223_563 } else { rf })
+}
+
 /// The PROJ definition of a user-defined projected CRS: the projection method and its parameters,
 /// the datum and the linear unit. `None` for a method terrio does not map.
 pub(crate) fn user_defined_proj4(k: &GeoKeys) -> Option<String> {
@@ -86,6 +171,24 @@ pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
     }
     let proj = match k.short(1024)? {
         2 => {
+            // In an angular unit other than the degree, which PROJ strings cannot hold: the WKT
+            // GDAL reads, without code (GDAL identifies none: its unit is not the registry's).
+            if let Some((_, unit)) = angular_unit(k) {
+                let wkt = crate::crs::SpatialRef::from_proj4(&format!("+proj=longlat {}", geographic_proj(k)?)).ok()?.to_wkt()?;
+                let cited = |key: &str| k.text(2049).and_then(|c| c.split('|').find_map(|p| p.trim().strip_prefix(key)));
+                let mut wkt = renamed(&without_code(&with_unit(&wkt, &unit)?), cited("GCS Name = ").unwrap_or("unknown"))?;
+                // The datum and ellipsoid named by the citation, as GDAL names them
+                // (`GetGeogCSFromCitation`), and its axes in the registry's order, as GDAL builds
+                // a geographic CRS from GeoKeys.
+                for (node, key) in [("DATUM[", "Datum = "), ("SPHEROID[", "Ellipsoid = ")] {
+                    if let (Some(name), Some(i)) = (cited(key), wkt.find(node)) {
+                        wkt = format!("{}{}", &wkt[..i], renamed(&wkt[i..], name)?);
+                    }
+                }
+                let wkt =
+                    wkt.replace(",AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]", ",AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST]");
+                return Some(wbraster::CrsInfo { epsg: None, wkt: Some(wkt), proj4: None });
+            }
             // On an EPSG datum PROJ strings do not name (NAD83(HARN)): its EPSG geographic CRS.
             if let Some((code, wkt)) = epsg_geographic(k).and_then(|c| Some((c, crate::crs::epsg_wkt(c)?))) {
                 return Some(wbraster::CrsInfo { epsg: Some(code), wkt: Some(wkt.to_string()), proj4: None });
@@ -114,7 +217,24 @@ pub(crate) fn projected_on_epsg_geographic(k: &GeoKeys) -> Option<wbraster::CrsI
     }
     let code = epsg_geographic(k)?;
     let wkt = crate::crs::from_proj_on(&user_defined_proj4(k)?, code)?;
+    // A linear unit PROJ strings do not name, named as GDAL names it.
+    let wkt = linear_unit_wkt(k).and_then(|u| with_unit(&wkt, &u)).unwrap_or(wkt);
     Some(wbraster::CrsInfo { epsg: None, wkt: Some(wkt), proj4: None })
+}
+
+/// A WKT 1 CRS without the code of its root (its last node).
+fn without_code(wkt: &str) -> String {
+    match wkt.rfind(",AUTHORITY[") {
+        Some(i) if wkt[i..].matches(']').count() == 2 && wkt.ends_with("]]") => format!("{}]", &wkt[..i]),
+        _ => wkt.to_string(),
+    }
+}
+
+/// A WKT 1 CRS with its root named `name`.
+fn renamed(wkt: &str, name: &str) -> Option<String> {
+    let open = wkt.find("[\"")? + 2;
+    let close = open + wkt[open..].find('"')?;
+    Some(format!("{}{}{}", &wkt[..open], name.replace('"', ""), &wkt[close..]))
 }
 
 /// The EPSG geographic CRS of GeoKeys whose datum a PROJ string does not name exactly (OSGB36,
@@ -222,16 +342,20 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
     const STRAIGHT_VERT_POLE_LONG: u16 = 3095;
     const RECTIFIED_GRID_ANGLE: u16 = 3096;
 
-    let lon0 = k.first(&[NAT_ORIGIN_LONG, FALSE_ORIGIN_LONG, CENTER_LONG, STRAIGHT_VERT_POLE_LONG]).unwrap_or(0.0);
-    let lat0 = k.first(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]).unwrap_or(0.0);
+    // Angles are in the geographic CRS's angular unit, which libgeotiff (1.7.4 and later)
+    // converts to degrees, the azimuth excepted.
+    let to_degrees = angular_unit(k).map_or(1.0, |(d, _)| d);
+    let angle = |ids: &[u16]| k.first(ids).map(|v| v * to_degrees);
+    let lon0 = angle(&[NAT_ORIGIN_LONG, FALSE_ORIGIN_LONG, CENTER_LONG, STRAIGHT_VERT_POLE_LONG]).unwrap_or(0.0);
+    let lat0 = angle(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]).unwrap_or(0.0);
     let x0 = k.first(&[FALSE_EASTING, FALSE_ORIGIN_EASTING]).unwrap_or(0.0) * to_meter;
     let y0 = k.first(&[FALSE_NORTHING, FALSE_ORIGIN_NORTHING]).unwrap_or(0.0) * to_meter;
     let scale = k.first(&[SCALE_AT_NAT_ORIGIN, SCALE_AT_CENTER]).unwrap_or(1.0);
-    let lat1 = k.double(STD_PARALLEL_1);
-    let lat2 = k.double(STD_PARALLEL_2);
+    let lat1 = angle(&[STD_PARALLEL_1]);
+    let lat2 = angle(&[STD_PARALLEL_2]);
     let false_xy = format!("+x_0={x0} +y_0={y0}");
     let oblique_mercator = |variant: &str| -> Option<String> {
-        let gamma = k.double(RECTIFIED_GRID_ANGLE).map(|g| format!(" +gamma={g}")).unwrap_or_default();
+        let gamma = angle(&[RECTIFIED_GRID_ANGLE]).map(|g| format!(" +gamma={g}")).unwrap_or_default();
         Some(format!("omerc{variant} +lat_0={lat0} +lonc={lon0} +alpha={}{gamma} +k={scale} {false_xy}", k.double(AZIMUTH)?))
     };
     // A UTM zone by its ProjectionGeoKey (16001-16060 north, 16101-16160 south) alone, as GDAL
@@ -248,7 +372,7 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         // Hotine oblique Mercator: variant A (natural origin) and B (centre of projection).
         3 => oblique_mercator(" +no_uoff")?,
         // Swiss oblique Mercator, as GDAL writes it: variant B of azimuth 90°.
-        9815 if k.double(AZIMUTH) == Some(90.0) && k.double(RECTIFIED_GRID_ANGLE).is_none_or(|g| g == 90.0) => {
+        9815 if k.double(AZIMUTH) == Some(90.0) && angle(&[RECTIFIED_GRID_ANGLE]).is_none_or(|g| g == 90.0) => {
             format!("somerc +lat_0={lat0} +lon_0={lon0} +k_0={scale} {false_xy}")
         }
         9815 => oblique_mercator("")?,
@@ -269,11 +393,11 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
             // Variant B's standard parallel is in ProjStdParallel1GeoKey for some writers, and in
             // ProjNatOriginLatGeoKey for GDAL (which writes a scale of 1 too); a natural origin
             // latitude of ±90 is variant A, with its scale.
-            let origin = k.double(NAT_ORIGIN_LAT).unwrap_or(90.0);
+            let origin = angle(&[NAT_ORIGIN_LAT]).unwrap_or(90.0);
             let ts = lat1.or(((origin.abs() - 90.0).abs() > 1e-9).then_some(origin));
             let pole = if ts.unwrap_or(origin) < 0.0 { -90.0 } else { 90.0 };
             // The longitude is ProjStraightVertPoleLongGeoKey's, whatever other origin keys say.
-            let lon0 = k.double(STRAIGHT_VERT_POLE_LONG).unwrap_or(lon0);
+            let lon0 = angle(&[STRAIGHT_VERT_POLE_LONG]).unwrap_or(lon0);
             match ts {
                 Some(ts) => format!("stere +lat_0={pole} +lat_ts={ts} +lon_0={lon0} {false_xy}"),
                 None => format!("stere +lat_0={pole} +lon_0={lon0} +k={scale} {false_xy}"),
@@ -297,8 +421,63 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
     })
 }
 
+/// The EPSG length units, `(code, name, metres)`, as PROJ's database (9.8.1) gives them to GDAL's
+/// GeoTIFF reader for a ProjLinearUnitsGeoKey (libgeotiff's `GTIFGetUOMLengthInfoEx`), rates
+/// excepted.
+const LENGTH_UNITS: &[(u16, &str, f64)] = &[
+    (1025, "millimetre", 0.001),
+    (1033, "centimetre", 0.01),
+    (9001, "metre", 1.0),
+    (9002, "foot", 0.3048),
+    // libgeotiff's, not the registry's 0.30480060960121924 (the same to 16 digits).
+    (9003, "US survey foot", 12.0 / 39.37),
+    (9005, "Clarke's foot", 0.3047972654),
+    (9014, "fathom", 1.8288),
+    (9030, "nautical mile", 1852.0),
+    (9031, "German legal metre", 1.0000135965),
+    (9033, "US survey chain", 20.11684023368047),
+    (9034, "US survey link", 0.2011684023368047),
+    (9035, "US survey mile", 1609.3472186944375),
+    (9036, "kilometre", 1000.0),
+    (9037, "Clarke's yard", 0.9143917962),
+    (9038, "Clarke's chain", 20.1166195164),
+    (9039, "Clarke's link", 0.201166195164),
+    (9040, "British yard (Sears 1922)", 0.9143984146160287),
+    (9041, "British foot (Sears 1922)", 0.3047994715386762),
+    (9042, "British chain (Sears 1922)", 20.116765121552632),
+    (9043, "British link (Sears 1922)", 0.2011676512155263),
+    (9050, "British yard (Benoit 1895 A)", 0.9143992),
+    (9051, "British foot (Benoit 1895 A)", 0.3047997333333333),
+    (9052, "British chain (Benoit 1895 A)", 20.1167824),
+    (9053, "British link (Benoit 1895 A)", 0.201167824),
+    (9060, "British yard (Benoit 1895 B)", 0.9143992042898124),
+    (9061, "British foot (Benoit 1895 B)", 0.30479973476327077),
+    (9062, "British chain (Benoit 1895 B)", 20.116782494375872),
+    (9063, "British link (Benoit 1895 B)", 0.2011678249437587),
+    (9070, "British foot (1865)", 0.30480083333333335),
+    (9080, "Indian foot", 0.30479951024814694),
+    (9081, "Indian foot (1937)", 0.30479841),
+    (9082, "Indian foot (1962)", 0.3047996),
+    (9083, "Indian foot (1975)", 0.3047995),
+    (9084, "Indian yard", 0.9143985307444408),
+    (9085, "Indian yard (1937)", 0.91439523),
+    (9086, "Indian yard (1962)", 0.9143988),
+    (9087, "Indian yard (1975)", 0.9143985),
+    (9093, "Statute mile", 1609.344),
+    (9094, "Gold Coast foot", 0.3047997101815088),
+    (9095, "British foot (1936)", 0.3048007491),
+    (9096, "yard", 0.9144),
+    (9097, "chain", 20.1168),
+    (9098, "link", 0.201168),
+    (9099, "British yard (Sears 1922 truncated)", 0.914398),
+    (9300, "British foot (Sears 1922 truncated)", 0.30479933333333337),
+    (9301, "British chain (Sears 1922 truncated)", 20.116756),
+    (9302, "British link (Sears 1922 truncated)", 0.20116756),
+];
+
 /// The linear unit of the GeoKeys (ProjLinearUnitsGeoKey, or ProjLinearUnitSizeGeoKey for a
-/// user-defined one) as a PROJ parameter, and its size in metres.
+/// user-defined one) as a PROJ parameter, and its size in metres. A code GDAL finds in no
+/// registry leaves its size at a metre, as in libgeotiff's `GTIFGetDefn`.
 fn units(k: &GeoKeys) -> (String, f64) {
     match k.short(3076) {
         Some(9002) => ("+units=ft".into(), 0.3048),
@@ -308,8 +487,98 @@ fn units(k: &GeoKeys) -> (String, f64) {
             Some(m) if m > 0.0 => (format!("+to_meter={m}"), m),
             _ => ("+units=m".into(), 1.0),
         },
-        _ => ("+units=m".into(), 1.0),
+        Some(code) => match LENGTH_UNITS.iter().find(|u| u.0 == code && u.0 != 9001) {
+            Some(&(_, _, m)) => (format!("+to_meter={m}"), m),
+            None => ("+units=m".into(), 1.0),
+        },
+        None => ("+units=m".into(), 1.0),
     }
+}
+
+/// The size in metres of the GeoKeys' linear unit (a metre when they give none).
+pub(crate) fn linear_unit_size(k: &GeoKeys) -> f64 {
+    units(k).1
+}
+
+/// A name as WKT 1 quotes it: within double quotes, each of its own doubled (as terrio's WKT
+/// writer writes a name and its reader reads one).
+fn wkt_quoted(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// A number as GDAL writes it in WKT: to 15 significant digits.
+fn wkt_number(v: f64) -> String {
+    format!("{v:.14e}").parse::<f64>().map(|r| r.to_string()).unwrap_or_else(|_| v.to_string())
+}
+
+/// The WKT `UNIT` GDAL gives the linear unit of projected GeoKeys when PROJ strings have no name
+/// for it: an EPSG unit by its registry name and code, a user-defined one by the `LUnits = `
+/// name of its citation (which GDAL writes for it), else `unknown`. `None` for the units PROJ
+/// strings name (metre, foot, US survey foot, kilometre), whose WKT is already GDAL's.
+fn linear_unit_wkt(k: &GeoKeys) -> Option<String> {
+    let size = linear_unit_size(k);
+    match k.short(3076) {
+        None | Some(9001 | 9002 | 9003 | 9036) => None,
+        Some(USER_DEFINED) => {
+            let name = [3073, 1026].iter().find_map(|id| k.text(*id)?.split('|').find_map(|p| p.trim().strip_prefix("LUnits = ")));
+            Some(format!("UNIT[{},{}]", wkt_quoted(name.unwrap_or("unknown").trim()), wkt_number(size)))
+        }
+        Some(code) => {
+            let (_, name, m) = LENGTH_UNITS.iter().find(|u| u.0 == code)?;
+            Some(format!("UNIT[\"{name}\",{},AUTHORITY[\"EPSG\",\"{code}\"]]", wkt_number(*m)))
+        }
+    }
+}
+
+/// A WKT 1 CRS with the `UNIT` node of its root (its last, after the `GEOGCS`'s) replaced by
+/// `unit`. `None` for a WKT with a PROJ4 extension, which describes the CRS instead.
+fn with_unit(wkt: &str, unit: &str) -> Option<String> {
+    if wkt.contains("EXTENSION[") {
+        return None;
+    }
+    let start = wkt.rfind(",UNIT[")? + 1;
+    let mut depth = 0;
+    let len = wkt[start..]
+        .char_indices()
+        .find(|&(_, c)| {
+            depth += match c {
+                '[' => 1,
+                ']' => -1,
+                _ => 0,
+            };
+            c == ']' && depth == 0
+        })?
+        .0;
+    Some(format!("{}{unit}{}", &wkt[..start], &wkt[start + len + 1..]))
+}
+
+/// The angular unit of the GeoKeys when it is not the degree, as GDAL reads it: its size in
+/// degrees and its WKT `UNIT` (GeogAngularUnitsGeoKey by the codes libgeotiff knows, else
+/// GeogAngularUnitSizeGeoKey in radians with the `AUnits = ` name of the citation).
+fn angular_unit(k: &GeoKeys) -> Option<(f64, String)> {
+    const RAD: f64 = 180.0 / std::f64::consts::PI;
+    let (name, degrees): (String, f64) = match k.short(2054)? {
+        9102 | 9107 | 9108 | 9110 | 9122 => return None,
+        9101 => ("radian".into(), RAD),
+        9103 => ("arc-minute".into(), 1.0 / 60.0),
+        9104 => ("arc-second".into(), 1.0 / 3600.0),
+        9105 => ("grad".into(), 0.9),
+        9106 => ("gon".into(), 0.9),
+        9109 => ("microradian".into(), RAD / 1e6),
+        USER_DEFINED => {
+            let radians = k.double(2055).filter(|r| *r > 0.0)?;
+            let name = k.text(2049).and_then(|c| c.split('|').find_map(|p| p.trim().strip_prefix("AUnits = ")));
+            (name.unwrap_or("unknown").trim().to_string(), radians * RAD)
+        }
+        _ => return None,
+    };
+    // GDAL's WKT: the size in radians, and the registry's grad (PROJ names only the degree and
+    // the grad by their codes).
+    let unit = match name.as_str() {
+        "grad" => "UNIT[\"grad\",0.015707963267949,AUTHORITY[\"EPSG\",\"9105\"]]".to_string(),
+        _ => format!("UNIT[{},{}]", wkt_quoted(&name), wkt_number(degrees * 0.0174532925199433)),
+    };
+    Some((degrees, unit))
 }
 
 /// GeoKeys for a CRS without an EPSG code, as GDAL writes them: from its PROJ string when it has

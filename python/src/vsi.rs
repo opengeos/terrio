@@ -1,7 +1,7 @@
 //! File management on local, in-memory, remote and archive locations (`terrio vsi`, GDAL's
 //! `gdal vsi`).
 
-use crate::PyResultExt;
+use crate::{Detach, PyResultExt};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use terrio::vsi::{self, CopyOptions, Entry, ListOptions, Report, SyncOptions};
@@ -72,7 +72,7 @@ fn vsi_list<'py>(
     long: bool,
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
     let options = ListOptions { recursive, depth, absolute, details: long };
-    let entries = py.detach(|| vsi::list(path, &options)).py()?;
+    let entries = py.detach_result(|| vsi::list(path, &options)).py()?;
     entries.iter().map(|e| entry(py, e)).collect()
 }
 
@@ -85,7 +85,7 @@ fn vsi_list<'py>(
 ///     dict | None: The entry, named ``path``.
 #[pyfunction]
 fn vsi_stat<'py>(py: Python<'py>, path: &str) -> PyResult<Option<Bound<'py, PyDict>>> {
-    let e = py.detach(|| vsi::stat(path)).py()?;
+    let e = py.detach_result(|| vsi::stat(path)).py()?;
     e.map(|e| entry(py, &e)).transpose()
 }
 
@@ -104,7 +104,7 @@ fn vsi_stat<'py>(py: Python<'py>, path: &str) -> PyResult<Option<Bound<'py, PyDi
 #[pyfunction]
 #[pyo3(signature = (src, dst, *, recursive=false, skip_errors=false))]
 fn vsi_copy<'py>(py: Python<'py>, src: &str, dst: &str, recursive: bool, skip_errors: bool) -> PyResult<Bound<'py, PyDict>> {
-    let r = py.detach(|| vsi::copy(src, dst, &CopyOptions { recursive, skip_errors })).py()?;
+    let r = py.detach_result(|| vsi::copy(src, dst, &CopyOptions { recursive, skip_errors })).py()?;
     report(py, &r)
 }
 
@@ -124,7 +124,7 @@ fn vsi_copy<'py>(py: Python<'py>, src: &str, dst: &str, recursive: bool, skip_er
 #[pyfunction]
 #[pyo3(signature = (path, *, recursive=false))]
 fn vsi_delete<'py>(py: Python<'py>, path: &str, recursive: bool) -> PyResult<Bound<'py, PyDict>> {
-    let r = py.detach(|| vsi::delete(path, recursive)).py()?;
+    let r = py.detach_result(|| vsi::delete(path, recursive)).py()?;
     report(py, &r)
 }
 
@@ -139,7 +139,7 @@ fn vsi_delete<'py>(py: Python<'py>, path: &str, recursive: bool) -> PyResult<Bou
 ///     dict: The report.
 #[pyfunction]
 fn vsi_move<'py>(py: Python<'py>, src: &str, dst: &str) -> PyResult<Bound<'py, PyDict>> {
-    let r = py.detach(|| vsi::rename(src, dst)).py()?;
+    let r = py.detach_result(|| vsi::rename(src, dst)).py()?;
     report(py, &r)
 }
 
@@ -160,11 +160,15 @@ fn vsi_move<'py>(py: Python<'py>, src: &str, dst: &str) -> PyResult<Bound<'py, P
 #[pyo3(signature = (src, dst, *, recursive=false, strategy="timestamp"))]
 fn vsi_sync<'py>(py: Python<'py>, src: &str, dst: &str, recursive: bool, strategy: &str) -> PyResult<Bound<'py, PyDict>> {
     let options = SyncOptions { recursive, strategy: strategy.parse().py()? };
-    let r = py.detach(|| vsi::sync(src, dst, &options)).py()?;
+    let r = py.detach_result(|| vsi::sync(src, dst, &options)).py()?;
     report(py, &r)
 }
 
 /// Reads a whole file of any location (an archive member, an object, ``/vsimem/``...).
+///
+/// Archive members are read within the limits a raster open keeps (``TERRIO_ZIP_MAX_ENTRIES``,
+/// ``TERRIO_ZIP_MAX_SIZE``, ``TERRIO_ZIP_MAX_RATIO``), and a file more than the process can hold
+/// is refused before it is read.
 ///
 /// Args:
 ///     path: The file.
@@ -173,8 +177,12 @@ fn vsi_sync<'py>(py: Python<'py>, src: &str, dst: &str, recursive: bool, strateg
 ///     bytes: Its contents.
 #[pyfunction]
 fn vsi_read<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyBytes>> {
-    let data = py.detach(|| vsi::read(path)).py()?;
-    Ok(PyBytes::new(py, &data))
+    let data = py.detach_result(|| vsi::read(path)).py()?;
+    // `MemoryError` when Python cannot allocate the copy.
+    PyBytes::new_with(py, data.len(), |bytes| {
+        bytes.copy_from_slice(&data);
+        Ok(())
+    })
 }
 
 /// Writes a file (local, ``/vsimem/``, S3 or Azure), replacing it. Local files are written to a
@@ -185,5 +193,5 @@ fn vsi_read<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyBytes>> {
 ///     data: Its contents.
 #[pyfunction]
 fn vsi_write(py: Python<'_>, path: &str, data: &[u8]) -> PyResult<()> {
-    py.detach(|| vsi::write(path, data)).py()
+    py.detach_result(|| vsi::write(path, data)).py()
 }

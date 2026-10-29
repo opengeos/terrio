@@ -719,6 +719,7 @@ impl Grid {
 }
 
 /// Maps `f` over items, with a scratch value per worker: in parallel on native builds.
+#[allow(clippy::disallowed_methods)] // On terrio's pool, inside `par::install`.
 fn par_map<T: Sync, R: Send, S: Send>(
     items: &[T],
     init: impl Fn() -> S + Sync + Send,
@@ -727,7 +728,7 @@ fn par_map<T: Sync, R: Send, S: Send>(
     #[cfg(not(target_family = "wasm"))]
     {
         use rayon::prelude::*;
-        items.par_iter().map_init(init, f).collect()
+        crate::par::install(|| items.par_iter().map_init(init, f).collect())
     }
     #[cfg(target_family = "wasm")]
     {

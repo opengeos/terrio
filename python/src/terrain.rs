@@ -1,6 +1,7 @@
 //! Terrain analysis and raster algebra: `dem`, `calc`, `proximity` and `sieve`, with keyword
 //! arguments named after the command-line options.
 
+use crate::Detach;
 use crate::ops::{finish_raster, input_raster, raster_path};
 use crate::raster::PyRaster;
 use crate::{PyResultExt, invalid};
@@ -208,7 +209,7 @@ fn dem(
             return Err(invalid("a VRT output needs color-relief, a source path and dst"));
         };
         let out = py
-            .detach(|| {
+            .detach_result(|| {
                 let text = std::fs::read_to_string(file)
                     .map_err(|e| terrio::Error::InvalidArgument(format!("cannot read the color file '{file}': {e}")))?;
                 let map = ColorMap::parse(&text, &ds, band, pam_statistics(src_path, band))?;
@@ -219,7 +220,7 @@ fn dem(
         return finish_raster(py, out, None, None, None, None, false);
     }
     let out = py
-        .detach(|| match (product, color_file) {
+        .detach_result(|| match (product, color_file) {
             (Some(p), _) => terrio::ops::dem::dem(&ds, p, &o),
             (None, Some(file)) => {
                 let text = std::fs::read_to_string(file)
@@ -334,7 +335,7 @@ fn calc(
         projection_check,
     };
     let out = py
-        .detach(|| {
+        .detach_result(|| {
             let inputs: Vec<CalcInput> = named
                 .iter()
                 .map(|(n, ds)| CalcInput { name: n.clone(), ds, band: bands.iter().rev().find(|(m, _)| m == n).map_or(1, |(_, b)| *b) })
@@ -413,7 +414,7 @@ fn proximity(
         output_type: parse_data_type(ot).py()?,
     };
     let ds = input_raster(py, src)?;
-    let out = py.detach(|| terrio::ops::proximity::proximity(&ds, &o)).py()?;
+    let out = py.detach_result(|| terrio::ops::proximity::proximity(&ds, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 
@@ -466,7 +467,7 @@ fn sieve(
     let none = mask.and_then(|m| m.extract::<String>().ok()).is_some_and(|s| s.eq_ignore_ascii_case("none"));
     let ds = input_raster(py, src)?;
     let out = py
-        .detach(|| {
+        .detach_result(|| {
             let mask = match (&mask_ds, none) {
                 (Some(m), _) => SieveMask::Raster(m),
                 (None, true) => SieveMask::None,
@@ -519,7 +520,7 @@ fn viewshed(
         out_of_range: ov,
     };
     let ds = input_raster(py, src)?;
-    let out = py.detach(|| terrio::ops::viewshed::viewshed(&ds, &o)).py()?;
+    let out = py.detach_result(|| terrio::ops::viewshed::viewshed(&ds, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 
@@ -582,7 +583,7 @@ fn fill_nodata(
         None => default_mask,
     };
     let options = FillNodataOptions { band, mask: bytes.as_deref(), max_distance, interpolation: method, smoothing_iterations };
-    let out = py.detach(|| terrio::ops::fill_nodata::fill_nodata(&ds, &options)).py()?;
+    let out = py.detach_result(|| terrio::ops::fill_nodata::fill_nodata(&ds, &options)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 
@@ -646,13 +647,13 @@ fn pansharpen(
         let pan_path = pan_path.unwrap();
         let mut sources = Vec::new();
         for path in paths.into_iter().flatten() {
-            let count = py.detach(|| terrio::open_raster_lazy(&path)).py()?.band_count();
+            let count = py.detach_result(|| terrio::open_raster_lazy(&path)).py()?.band_count();
             sources.extend((1..=count).map(|band| (path.clone(), band)));
         }
         if virtual_output {
             let dst = dst.ok_or_else(|| invalid("VRT output requires dst"))?;
             let inner = py
-                .detach(|| {
+                .detach_result(|| {
                     let description = terrio::ops::pansharpen::vrt::PansharpenVrt::from_paths(&pan_path, &sources, &o)?;
                     description.write(dst)?;
                     description.into_lazy(std::path::Path::new(""), Default::default())
@@ -662,11 +663,11 @@ fn pansharpen(
         }
         if let Some(dst) = dst {
             let options = crate::raster::write_options(format, compress, tile_size, bigtiff)?;
-            py.detach(|| terrio::ops::pansharpen::vrt::pansharpen_to_path(&pan_path, &sources, &o, dst, &options)).py()?;
-            return Ok(PyRaster { inner: py.detach(|| terrio::open_raster_lazy(dst)).py()? });
+            py.detach_result(|| terrio::ops::pansharpen::vrt::pansharpen_to_path(&pan_path, &sources, &o, dst, &options)).py()?;
+            return Ok(PyRaster { inner: py.detach_result(|| terrio::open_raster_lazy(dst)).py()? });
         }
         let out = py
-            .detach(|| {
+            .detach_result(|| {
                 let description = terrio::ops::pansharpen::vrt::PansharpenVrt::from_paths(&pan_path, &sources, &o)?;
                 description.into_lazy(std::path::Path::new(""), Default::default())?.read()
             })
@@ -677,6 +678,6 @@ fn pansharpen(
     let datasets = crate::ops::input_rasters(py, spectral)?;
     let inputs =
         datasets.iter().flat_map(|(_, ds)| (1..=ds.raster.bands).map(move |band| SpectralBand { dataset: ds, band })).collect::<Vec<_>>();
-    let out = py.detach(|| terrio::ops::pansharpen::pansharpen(&pan, &inputs, &o)).py()?;
+    let out = py.detach_result(|| terrio::ops::pansharpen::pansharpen(&pan, &inputs, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }

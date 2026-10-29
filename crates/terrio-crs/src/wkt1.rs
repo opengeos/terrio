@@ -78,12 +78,27 @@ impl Node {
     }
 }
 
-/// Parses WKT into its tree.
+/// The nesting PROJ's WKT parser allows (`WKTNode::createFrom` refuses a value at `recLevel`
+/// 16), which GDAL reads WKT with: the root is at level 0 and every value (a node, a string, a
+/// number or a word) inside a node at level `n` is at level `n + 1`.
+pub(crate) const MAX_LEVELS: usize = 16;
+
+/// The longest WKT GDAL imports (`OGRSpatialReference::importFromWkt` refuses more than 100,000
+/// bytes unless `OSR_IMPORT_FROM_WKT_LIMIT=NO`).
+pub(crate) const MAX_LEN: usize = 100_000;
+
+/// Parses WKT into its tree, as PROJ's WKT parser (and so GDAL) accepts it: `[` and `(` open a
+/// node, and either `]` or `)` closes it whichever opened it (`SPHEROID["WGS 84",6378137,
+/// 298.257223563)` is WGS 84's spheroid for GDAL). `None` for text that is not WKT, WKT nested
+/// deeper than PROJ allows, or longer than GDAL imports. Every step of the parser consumes
+/// input or fails, and its recursion is bounded by [`MAX_LEVELS`].
 pub(crate) fn parse(s: &str) -> Option<Node> {
+    if s.len() > MAX_LEN {
+        return None;
+    }
     let b = s.as_bytes();
     let mut i = 0;
-    let n = node(b, &mut i)?;
-    Some(n)
+    node(b, &mut i, 0)
 }
 
 fn skip_ws(b: &[u8], i: &mut usize) {
@@ -92,7 +107,11 @@ fn skip_ws(b: &[u8], i: &mut usize) {
     }
 }
 
-fn node(b: &[u8], i: &mut usize) -> Option<Node> {
+/// The node at `b[*i..]`, at nesting `level` (see [`MAX_LEVELS`]); `*i` ends after its closer.
+fn node(b: &[u8], i: &mut usize, level: usize) -> Option<Node> {
+    if level >= MAX_LEVELS {
+        return None;
+    }
     skip_ws(b, i);
     let start = *i;
     while *i < b.len() && (b[*i].is_ascii_alphanumeric() || b[*i] == b'_') {
@@ -103,54 +122,67 @@ fn node(b: &[u8], i: &mut usize) -> Option<Node> {
     if *i >= b.len() || !(b[*i] == b'[' || b[*i] == b'(') {
         return None;
     }
-    let close = if b[*i] == b'[' { b']' } else { b')' };
     *i += 1;
     let mut args = Vec::new();
     loop {
         skip_ws(b, i);
-        if *i >= b.len() {
+        let before = *i;
+        match b.get(*i)? {
+            // Either closer ends the node, as in PROJ.
+            b']' | b')' => {
+                *i += 1;
+                break;
+            }
+            b',' => {
+                *i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        // A value of this node, one level deeper.
+        if level + 1 >= MAX_LEVELS {
             return None;
-        }
-        if b[*i] == close {
-            *i += 1;
-            break;
-        }
-        if b[*i] == b',' {
-            *i += 1;
-            continue;
         }
         if b[*i] == b'"' {
             *i += 1;
             let mut s = Vec::new();
-            while *i < b.len() {
-                if b[*i] == b'"' {
-                    if *i + 1 < b.len() && b[*i + 1] == b'"' {
+            loop {
+                match *b.get(*i)? {
+                    b'"' if b.get(*i + 1) == Some(&b'"') => {
                         s.push(b'"');
                         *i += 2;
-                        continue;
                     }
-                    break;
+                    b'"' => {
+                        *i += 1;
+                        break;
+                    }
+                    c => {
+                        s.push(c);
+                        *i += 1;
+                    }
                 }
-                s.push(b[*i]);
+            }
+            args.push(Arg::Str(String::from_utf8_lossy(&s).into_owned()));
+        } else {
+            // A number, a word or a nested node: the scan stops at a delimiter, which is not
+            // the first byte (handled above) unless it opens a nested node.
+            let start = *i;
+            while *i < b.len() && !matches!(b[*i], b',' | b'[' | b'(' | b']' | b')') {
                 *i += 1;
             }
-            *i += 1;
-            args.push(Arg::Str(String::from_utf8_lossy(&s).into_owned()));
-            continue;
+            let tok = std::str::from_utf8(&b[start..*i]).ok()?.trim();
+            if *i < b.len() && (b[*i] == b'[' || b[*i] == b'(') {
+                *i = start;
+                args.push(Arg::Node(node(b, i, level + 1)?));
+            } else if let Ok(v) = tok.parse::<f64>() {
+                args.push(Arg::Num(v));
+            } else {
+                args.push(Arg::Ident(tok.to_string()));
+            }
         }
-        // A number, an identifier or a nested node.
-        let start = *i;
-        while *i < b.len() && !matches!(b[*i], b',' | b'[' | b'(' | b']' | b')') {
-            *i += 1;
-        }
-        let tok = std::str::from_utf8(&b[start..*i]).ok()?.trim();
-        if *i < b.len() && (b[*i] == b'[' || b[*i] == b'(') {
-            *i = start;
-            args.push(Arg::Node(node(b, i)?));
-        } else if let Ok(v) = tok.parse::<f64>() {
-            args.push(Arg::Num(v));
-        } else {
-            args.push(Arg::Ident(tok.to_string()));
+        // Each value consumed input: a parser that stops advancing fails rather than looping.
+        if *i <= before {
+            return None;
         }
     }
     Some(Node { key, args })
@@ -590,6 +622,148 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{SpatialRef, Transformer};
+    use std::time::Duration;
+
+    /// GDAL's WKT of WGS 84 as a GeoJSON `crs` member or a PAM `<SRS>` carries it, and the same
+    /// with the spheroid's `]` replaced by `)` (reproducers from a fuzzing campaign).
+    const WGS84: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+    const WGS84_PAREN: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563)],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+
+    /// Runs `f` on a thread with a 256 MiB stack, failing when it does not return within `secs`:
+    /// a parser that stops consuming input fails the test instead of hanging it, and a recursion
+    /// the parser does not bound returns (deep) instead of overflowing a small stack.
+    fn within<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .stack_size(256 << 20)
+            .spawn(move || {
+                let _ = tx.send(f());
+            })
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(secs)).unwrap_or_else(|_| panic!("did not return within {secs} s"))
+    }
+
+    #[test]
+    fn either_closer_ends_a_node_as_in_proj() {
+        // PROJ's `WKTNode::createFrom` (GDAL 3.12.1's reader) takes `]` or `)` as the end of any
+        // node: rasterio 1.5.0's `CRS.from_wkt(WGS84_PAREN)` is EPSG:4326.
+        let good = parse(WGS84).unwrap();
+        assert_eq!(within(5, || parse(WGS84_PAREN)), Some(good.clone()));
+        let all_parens = WGS84.replace('[', "(").replace(']', ")");
+        assert_eq!(within(5, move || parse(&all_parens)), Some(good.clone()));
+        let crossed = WGS84.replacen("GEOGCS[", "GEOGCS(", 1);
+        assert_eq!(within(5, move || parse(&crossed)), Some(good));
+        assert_eq!(within(5, || parse("X(]")), Some(Node { key: "X".into(), args: vec![] }));
+        let s = within(5, || SpatialRef::from_wkt(WGS84_PAREN));
+        assert_eq!((s.epsg, s.esri), (Some(4326), None));
+    }
+
+    #[test]
+    fn malformed_wkt_is_refused_promptly() {
+        let prj = r#"GEOGCS["GCQ_WGS_1984",DATUM["D_WGS_1985"(SPHEROID["WGS_1984",6378137*0,298.257223563]],PRIMEM["Greenwhch",0.0],UNIT[&Degree",0.0174532925199433]]"#;
+        // Vector case 1424's `.prj` (GDAL: "missing , or ]"), unterminated nodes and strings.
+        for text in [prj, "A[)", "A[(", "A[\"x)", "A[1,)", "GEOGCS[\"x\",DATUM[)", "A[[[[", "A((((", "A[,,,"] {
+            let t = text.to_string();
+            let unterminated = !matches!(text, "A[)" | "A[1,)");
+            assert_eq!(within(5, move || parse(&t).is_some()), !unterminated, "{text}");
+        }
+    }
+
+    #[test]
+    fn nesting_is_bounded_as_in_proj() {
+        let nested = |levels: usize| format!("{}1{}", "A[".repeat(levels), "]".repeat(levels));
+        // PROJ refuses a value at level 16: the 1 of 15 nested nodes is at level 15.
+        assert!(parse(&nested(15)).is_some());
+        assert!(parse(&nested(16)).is_none());
+        assert!(parse(&format!("{}{}", "A[".repeat(15), "]".repeat(15))).is_some());
+        assert!(parse(&format!("{}{}", "A[".repeat(17), "]".repeat(17))).is_none());
+        // The deepest nesting that fits in GDAL's length limit.
+        let deep = nested(MAX_LEN / 3);
+        assert_eq!(within(30, move || parse(&deep)), None);
+        let deep = format!("GEOGCS[{}", "[".repeat(MAX_LEN - 8));
+        assert_eq!(within(30, move || parse(&deep)), None);
+    }
+
+    #[test]
+    fn wkt_longer_than_gdal_imports_is_refused() {
+        let padded = |len: usize| format!("{WGS84}{}", " ".repeat(len - WGS84.len()));
+        assert_eq!(parse(&padded(MAX_LEN)), parse(WGS84));
+        assert_eq!(parse(&padded(MAX_LEN + 1)), None);
+    }
+
+    #[test]
+    fn refused_wkt_is_not_handed_to_wbprojection() {
+        // WKT the reader refuses errors in terrio, rather than in wbprojection's parser, whose
+        // recursion is unbounded (a stack overflow on the 8 MiB main thread for such text).
+        let deep = format!("GEOGCS[\"x\",{}1{}]", "A[".repeat(30_000), "]".repeat(30_000));
+        let (def, wbp) = within(30, move || {
+            let s = SpatialRef { wkt: Some(deep), ..Default::default() };
+            // Without the `wbprojection-fallback` feature, nothing reaches wbprojection.
+            #[cfg(feature = "wbprojection-fallback")]
+            let wbp = s.to_wbp().err().map(|e| e.to_string());
+            #[cfg(not(feature = "wbprojection-fallback"))]
+            let wbp: Option<String> = None;
+            (crate::Def::new(&s).err().map(|e| e.to_string()), wbp)
+        });
+        assert!(def.is_some_and(|e| e.contains("not a WKT definition GDAL reads")));
+        #[cfg(feature = "wbprojection-fallback")]
+        assert!(wbp.is_some_and(|e| e.contains("not a WKT definition GDAL reads")));
+        #[cfg(not(feature = "wbprojection-fallback"))]
+        assert_eq!(wbp, None);
+    }
+
+    #[test]
+    fn user_wkt_gdal_refuses_is_an_error() {
+        // `SpatialRef::parse` (every string CRS input): as GDAL's `importFromWkt`, not an opaque
+        // CRS that transforms to infinities.
+        let deep = format!("GEOGCS[\"x\",{}1{}]", "A[".repeat(30_000), "]".repeat(30_000));
+        for bad in [deep.as_str(), &WGS84[..WGS84.len() - 1]] {
+            let b = bad.to_string();
+            assert!(within(30, move || SpatialRef::parse(&b)).is_err());
+        }
+        assert_eq!(within(5, || SpatialRef::parse(WGS84_PAREN).unwrap().epsg), Some(4326));
+    }
+
+    #[test]
+    fn crs_files_are_read_as_gdal_reads_them() {
+        let dir = std::env::temp_dir().join(format!("terrio-crs-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A file naming itself: its text is a definition, not another file (it recursed forever).
+        let own = dir.join("own.txt");
+        std::fs::write(&own, own.to_str().unwrap()).unwrap();
+        let path = own.to_str().unwrap().to_string();
+        assert!(within(10, move || SpatialRef::parse(&path)).is_err());
+        // GDAL reads at most 100,000 bytes and refuses a longer file ("File too large to be a WKT,
+        // PROJ string or XML"), whatever it holds; `/dev/zero` was read until memory ran out.
+        let long = dir.join("long.prj");
+        std::fs::write(&long, format!("+proj=longlat +datum=WGS84 +no_defs{}", " ".repeat(100_000))).unwrap();
+        let short = dir.join("short.prj");
+        std::fs::write(&short, "+proj=longlat +datum=WGS84 +no_defs").unwrap();
+        assert!(SpatialRef::parse(long.to_str().unwrap()).is_err());
+        assert!(SpatialRef::parse(short.to_str().unwrap()).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_geographic_crs_in_parentheses_keeps_its_datum_shift() {
+        // ESRI's NAD27 / UTM zone 13N, without AUTHORITY (its datum is identified from its GEOGCS
+        // text), in brackets and in parentheses (both WKT 1 delimiters), transforms alike as
+        // GDAL reads both alike.
+        let esri = r#"PROJCS["NAD_1927_UTM_Zone_13N",GEOGCS["GCS_North_American_1927",DATUM["D_North_American_1927",SPHEROID["Clarke_1866",6378206.4,294.9786982]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",-105.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
+        let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+        // Unidentified, as a CRS read from a file without its code.
+        let run = |w: &str| {
+            let s = SpatialRef { wkt: Some(w.to_string()), ..Default::default() };
+            Transformer::new(&s, &wgs84).unwrap().transform(500_000.0, 4_400_000.0).unwrap()
+        };
+        let good = run(esri);
+        assert_eq!(run(&esri.replace('[', "(").replace(']', ")")), good);
+        assert_eq!(run(&esri.replace("294.9786982]]", "294.9786982)]")), good);
+        // NAD27 is shifted (by tens of metres here), not taken as WGS 84.
+        let unshifted = run(&esri.replace("D_North_American_1927", "D_Unknown"));
+        assert!((good.1 - unshifted.1).abs() > 1e-5, "{good:?} {unshifted:?}");
+    }
 
     #[test]
     fn geocentric_geographic_parent_uses_datum_registry() {

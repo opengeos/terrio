@@ -265,6 +265,40 @@ def test_south_up_reproject_and_write(tmp_path):
     assert back.terrio.transform() == Affine(1.0, 0.0, 100.0, 0.0, -1.0, 13.0)
 
 
+def test_south_up_reproject_keeps_the_source_s_pixel_edges():
+    """A south-up array is warped through its own transform, as rioxarray hands it to GDAL.
+
+    A destination pixel centre on the edge between two source rows falls in the row that edge
+    starts in the source's order (the northern row, latitudes ascending), and a centre within
+    1e-10 pixel of the source's far edge (the north pole) is outside it. Flipped north-up
+    first, the source gave the southern row, and values at the north pole but not the south.
+    """
+    # Latitudes 19 to 20, 1/9 degree apart: destination row 3's centre is 19.5, the edge
+    # between the source rows at 19.444 (4) and 19.556 (5).
+    v = np.random.default_rng(42).random((10, 10), dtype=np.float32)
+    da = xr.DataArray(
+        v,
+        dims=("y", "x"),
+        coords={"y": np.linspace(19.0, 20.0, 10), "x": np.linspace(-156.0, -155.0, 10)},
+    ).terrio.write_crs("EPSG:4326")
+    t = rio.transform.from_bounds(-155.9, 19.1, -155.1, 19.9, 7, 7)
+    out = da.terrio.reproject("EPSG:4326", shape=(7, 7), transform=t)
+    rows, cols = [8, 7, 6, 5, 3, 2, 1], [1, 2, 3, 5, 6, 7, 8]
+    np.testing.assert_array_equal(out.values, v[np.ix_(rows, cols)])
+    # A global 1-degree grid onto Web Mercator's default grid (401 x 33): its 54 top rows have
+    # centres within 1e-10 degree of the north pole and stay empty; every other pixel is warped.
+    g = xr.DataArray(
+        np.ones((180, 360), "float32"),
+        dims=("lat", "lon"),
+        coords={"lat": np.arange(-89.5, 90.0), "lon": np.arange(-179.5, 180.0)},
+    )
+    g = g.terrio.set_spatial_dims(x_dim="lon", y_dim="lat").terrio.write_crs("EPSG:4326")
+    m = g.terrio.reproject("EPSG:3857", nodata=np.nan).values
+    assert m.shape == (401, 33)
+    np.testing.assert_array_equal(np.isnan(m).all(axis=1), np.arange(401) < 54)
+    assert int(np.isnan(m).sum()) == 54 * 33 and (m[54:] == 1.0).all()
+
+
 def test_to_raster_round_trips(files, tmp_path):
     da = txr.open_rasterio(files["dem"], mask_and_scale=True, chunks={"x": 100, "y": 100})
     for name, kw in [

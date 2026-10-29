@@ -378,6 +378,8 @@ pub fn rename_layers_in_place(path: &str, o: &RenameOptions) -> Result<Vec<(Stri
     if !local_gpkg(path) {
         return Err(Error::Unsupported(format!("'{path}': layers are renamed in place in local GeoPackages only; give an output")));
     }
+    // Opened by the GeoPackage driver to be rewritten: only if the vector allow-list has it.
+    crate::formats::check_driver_allowed("GPKG", path, crate::formats::Kind::Vector)?;
     #[cfg(feature = "sqlite")]
     {
         use crate::drivers::vector::gpkg_edit as ge;
@@ -521,6 +523,8 @@ pub fn edit_in_place(path: &str, o: &EditOptions) -> Result<()> {
     if !local_gpkg(path) {
         return Err(Error::Unsupported(format!("'{path}': datasets are edited in place in local GeoPackages only; give an output")));
     }
+    // Opened by the GeoPackage driver to be rewritten: only if the vector allow-list has it.
+    crate::formats::check_driver_allowed("GPKG", path, crate::formats::Kind::Vector)?;
     if o.unset_fid {
         return Err(Error::InvalidArgument("unsetting feature ids needs an output dataset".into()));
     }
@@ -613,6 +617,8 @@ pub type GpkgMetadata = (Vec<(String, String)>, Vec<(String, Vec<(String, String
 pub fn read_gpkg_metadata(path: &str) -> Result<GpkgMetadata> {
     #[cfg(feature = "sqlite")]
     {
+        // Read by the GeoPackage driver whatever its name: only if the vector allow-list has it.
+        crate::formats::check_driver_allowed("GPKG", path, crate::formats::Kind::Vector)?;
         use crate::drivers::vector::gpkg_edit as ge;
         let default = |md: ge::Metadata| md.into_iter().find(|(dom, _)| dom.is_empty()).map(|(_, i)| i).unwrap_or_default();
         return ge::modify_bytes(std::fs::read(path)?, |d| {

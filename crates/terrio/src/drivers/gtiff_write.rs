@@ -6,9 +6,9 @@
 //! layout: the IFDs first, then the image data from the smallest overview to the full resolution,
 //! with GDAL's structural metadata, block leaders and trailers.
 
+use super::gdal_overview::{self, Method};
 use crate::pixel::{Pixel, map_data, with_data};
 use crate::{Error, Result};
-use std::collections::HashMap;
 use std::io::Write;
 use wbraster::raster::RasterData;
 use wbraster::{DataType, Raster};
@@ -385,10 +385,20 @@ pub(crate) struct TiffOptions {
     pub bigtiff: bool,
     /// Write a Cloud Optimized GeoTIFF: tiled, with overviews and GDAL's layout.
     pub cog: bool,
-    /// GDAL 3.13 recursive, floor-sized COG overview policy.
-    pub gdal_overviews: bool,
     /// The nodata value to declare.
     pub nodata: Option<f64>,
+    /// The resampling of a COG's overviews (`OVERVIEW_RESAMPLING`, `RESAMPLING`); by default
+    /// GDAL's: cubic, or nearest neighbour for paletted and complex rasters.
+    pub cog_resampling: Option<Method>,
+    /// The resampling option as given, which GDAL's COG driver records.
+    pub cog_resampling_name: Option<String>,
+    /// A GeoTIFF whose overviews (and their masks) a COG copies rather than computing its own,
+    /// as GDAL's COG driver does with a source that has some (`OVERVIEWS=AUTO`).
+    pub source_overviews: Option<String>,
+    /// The number of a COG's overviews (`OVERVIEW_COUNT`); by default, until one fits in a tile.
+    pub overview_count: Option<usize>,
+    /// The block size of the raster written, which sets the blocks GDAL computes overviews in.
+    pub source_block: Option<(usize, usize)>,
     /// Tiles of `(width, height)`, overriding `tile_size` (GeoTIFF only).
     pub block: Option<(u32, u32)>,
     /// Rows per strip, for striped GeoTIFFs. By default, strips of 64 KiB.
@@ -420,6 +430,10 @@ pub(crate) struct TiffOptions {
     pub gcps: Vec<crate::Gcp>,
     /// A validity mask (`cols * rows`, 0 for invalid), written as GDAL's internal mask.
     pub mask: Option<Vec<u8>>,
+    /// The mask is a band without a dataset, as a MEM dataset holds the mask GDAL's
+    /// `MEMRasterBand::CreateMaskBand` creates (rasterio's buffered COG writes, private option
+    /// `@MASK_WITHOUT_DATASET`): see [`mask_levels`].
+    pub mask_without_dataset: bool,
     /// The 92 values of the `RPCCoefficientTag`, or none.
     pub rpc: Vec<f64>,
     /// The parameters of LERC and JPEG.
@@ -427,6 +441,73 @@ pub(crate) struct TiffOptions {
     /// The raster's bands are pairs of real and imaginary parts (a complex dataset): written as
     /// complex samples (`SampleFormat` 5 or 6, GDAL's `CInt16`... `CFloat64`).
     pub complex: bool,
+    /// Metadata domains other than the default one (`@METADATA_DOMAINS`), those GDAL writes.
+    pub domains: Vec<MetadataDomain>,
+    /// Leave out the dataset's and the bands' default-domain items, as GDAL's `CreateCopy` does
+    /// for some `COPY_SRC_MDD` and `SRC_MDD` options.
+    pub drop_default_items: (bool, bool),
+}
+
+/// A metadata domain of the dataset (`band` 0) or of a band (from 1), its items in order.
+#[derive(Debug, Clone)]
+pub(crate) struct MetadataDomain {
+    pub band: usize,
+    pub name: String,
+    pub items: Vec<(String, String)>,
+}
+
+impl MetadataDomain {
+    /// The domains of `@METADATA_DOMAINS` (JSON `[[band, domain, {name: value...}]...]`, terrio.rio's
+    /// `update_tags`) that GDAL writes into a GeoTIFF, following `GTiffDataset::WriteMetadata`
+    /// (gtiffdataset_write.cpp) and `WriteMDMetadata`, which leaves out IMAGE_STRUCTURE,
+    /// DERIVED_SUBDATASETS, COLOR_PROFILE, RPC and xml:XMP. A GeoTIFF writes the domains of the
+    /// dataset it created (`bSrcIsGeoTIFF`). The COG driver copies a dataset (`CreateCopy`), which
+    /// writes, with `COPY_SRC_MDD=AUTO`, only json:ISIS3 and json:VICAR (dataset) and IMAGERY
+    /// (bands); with `COPY_SRC_MDD=YES` or `SRC_MDD`, the domains those name. Also returns whether
+    /// the dataset's and the bands' default-domain items are left out.
+    fn parse(json: Option<&str>, cog: bool, copy_src_mdd: Option<&str>, src_mdd: &[&str]) -> Result<(Vec<Self>, (bool, bool))> {
+        let invalid = |e: String| Error::InvalidArgument(format!("invalid @METADATA_DOMAINS: {e}"));
+        let mut domains = Vec::new();
+        if let Some(json) = json {
+            let v: serde_json::Value = serde_json::from_str(json).map_err(|e| invalid(e.to_string()))?;
+            for d in v.as_array().ok_or_else(|| invalid("not a list".into()))? {
+                let (Some(band), Some(name), Some(items)) =
+                    (d.get(0).and_then(serde_json::Value::as_u64), d.get(1).and_then(|n| n.as_str()), d.get(2).and_then(|i| i.as_object()))
+                else {
+                    return Err(invalid(d.to_string()));
+                };
+                let items = items.iter().map(|(k, v)| (k.clone(), v.as_str().map_or_else(|| v.to_string(), str::to_string))).collect();
+                domains.push(Self { band: band as usize, name: name.to_string(), items });
+            }
+        }
+        let skipped = |n: &str| {
+            ["", "IMAGE_STRUCTURE", "DERIVED_SUBDATASETS", "COLOR_PROFILE", "RPC", "xml:XMP"].iter().any(|s| n.eq_ignore_ascii_case(s))
+        };
+        domains.retain(|d| !skipped(&d.name) && !d.items.is_empty());
+        if !cog {
+            return Ok((domains, (false, false)));
+        }
+        let copy = copy_src_mdd.unwrap_or("AUTO");
+        let auto = copy.eq_ignore_ascii_case("AUTO");
+        // CPLTestBool: anything but NO, FALSE, OFF and 0.
+        let test_bool = !["NO", "FALSE", "OFF", "0"].iter().any(|s| copy.eq_ignore_ascii_case(s));
+        let listed = |n: &str| src_mdd.iter().any(|s| s.eq_ignore_ascii_case(n));
+        let any = auto || test_bool || !src_mdd.is_empty();
+        let named = (!auto && test_bool) || !src_mdd.is_empty();
+        domains.retain(|d| {
+            let wanted = src_mdd.is_empty() || listed(&d.name);
+            if d.band == 0 {
+                any && ((auto && src_mdd.is_empty() && ["json:ISIS3", "json:VICAR"].iter().any(|s| d.name.eq_ignore_ascii_case(s)))
+                    || (named && wanted))
+            } else if auto && src_mdd.is_empty() {
+                d.name.eq_ignore_ascii_case("IMAGERY")
+            } else {
+                (test_bool || !src_mdd.is_empty()) && wanted
+            }
+        });
+        let dataset_items = any && (src_mdd.is_empty() || listed("") || listed("_DEFAULT_"));
+        Ok((domains, (!dataset_items, !(auto && src_mdd.is_empty()))))
+    }
 }
 
 impl Default for TiffOptions {
@@ -436,8 +517,12 @@ impl Default for TiffOptions {
             tile_size: None,
             bigtiff: false,
             cog: false,
-            gdal_overviews: false,
             nodata: None,
+            cog_resampling: None,
+            cog_resampling_name: None,
+            source_overviews: None,
+            overview_count: None,
+            source_block: None,
             block: None,
             rows_per_strip: None,
             planar: false,
@@ -446,22 +531,46 @@ impl Default for TiffOptions {
             band_metadata: Vec::new(),
             color_table: Vec::new(),
             overviews: Vec::new(),
-            overview_resampling: OverviewResampling::Nearest,
+            overview_resampling: OverviewResampling::Gdal(Method::Nearest),
             georeferenced: true,
             predictor: 1,
             geo_transform: None,
             gcps: Vec::new(),
             mask: None,
+            mask_without_dataset: false,
             rpc: Vec::new(),
             codec: CodecParams::default(),
             complex: false,
+            domains: Vec::new(),
+            drop_default_items: (false, false),
         }
     }
 }
 
-/// How the overviews given as factors are computed, as GDAL does.
+/// How the overviews given as factors are computed: as GDAL does, or terrio's minimum or
+/// maximum of the valid pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverviewResampling {
+    Gdal(Method),
+    Min,
+    Max,
+}
+
+impl OverviewResampling {
+    fn parse(s: &str) -> Result<Self> {
+        Ok(match s.trim().to_ascii_lowercase().as_str() {
+            "min" => Self::Min,
+            "max" => Self::Max,
+            other => Self::Gdal(Method::parse(other).ok_or_else(|| unsupported_resampling(other))?),
+        })
+    }
+}
+
+/// The resampling of the overviews that `add_overviews` computes (GDAL's `gdaladdo`), with its
+/// own kernels (`ops::overview_kernel`); the overviews of a GeoTIFF or COG being written take
+/// [`OverviewResampling`] and GDAL's kernels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddOverviewsResampling {
     Nearest,
     Average,
     Min,
@@ -469,7 +578,7 @@ pub(crate) enum OverviewResampling {
     Mode,
 }
 
-impl OverviewResampling {
+impl AddOverviewsResampling {
     /// GDAL's name for the method, as its overviews' `RESAMPLING` metadata item holds it.
     pub(crate) fn gdal_name(self) -> &'static str {
         match self {
@@ -497,6 +606,12 @@ impl OverviewResampling {
     }
 }
 
+fn unsupported_resampling(name: &str) -> Error {
+    Error::Unsupported(format!(
+        "'{name}' overview resampling is not supported (nearest, average, rms, bilinear, cubic, cubicspline, lanczos, mode)"
+    ))
+}
+
 /// Whether a creation option value means yes.
 fn yes(v: &str) -> bool {
     matches!(v.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1")
@@ -516,27 +631,12 @@ impl TiffOptions {
         let size = |key: &str| -> Result<Option<u32>> {
             co(key).map(|v| v.trim().parse::<u32>().map_err(|_| Error::InvalidArgument(format!("invalid {key} '{v}'")))).transpose()
         };
-        let gdal_overviews = match co("COG_OVERVIEW_POLICY").map(str::to_ascii_uppercase).as_deref() {
-            None | Some("SOURCE") => false,
-            Some("GDAL_3_13") if cog => true,
-            Some(value) => {
-                return Err(Error::InvalidArgument(format!("invalid COG_OVERVIEW_POLICY '{value}' (SOURCE or GDAL_3_13 for COG)")));
-            }
-        };
-        let overview_resampling =
-            match options.overview_resampling.as_deref().or_else(|| if gdal_overviews { co("RESAMPLING") } else { None }) {
-                Some(method) => OverviewResampling::parse(method)?,
-                None if cog => OverviewResampling::Average,
-                None => OverviewResampling::Nearest,
-            };
         let mut o = Self {
             compression,
             tile_size: options.tile_size,
             bigtiff: options.bigtiff || co("BIGTIFF").is_some_and(yes),
             cog,
             nodata,
-            overview_resampling,
-            gdal_overviews,
             band_metadata: options.band_metadata.clone(),
             color_table: options.color_table.clone(),
             geo_transform: options.geo_transform,
@@ -549,6 +649,22 @@ impl TiffOptions {
             if let Some(b) = size("BLOCKSIZE")? {
                 o.tile_size = Some(b);
             }
+            // GDAL's COG driver reads OVERVIEW_RESAMPLING, then RESAMPLING; rasterio's
+            // `overview_resampling` keyword is the first.
+            if let Some(r) = co("OVERVIEW_RESAMPLING").or_else(|| co("RESAMPLING")).or(options.overview_resampling.as_deref()) {
+                o.cog_resampling = Some(Method::parse(r).ok_or_else(|| unsupported_resampling(r))?);
+                o.cog_resampling_name = Some(r.to_ascii_uppercase());
+            }
+            o.source_overviews = co("@COPY_SRC_OVERVIEWS").map(str::to_string);
+            o.mask_without_dataset = co("@MASK_WITHOUT_DATASET").is_some_and(yes);
+            if let Some(n) = co("OVERVIEW_COUNT") {
+                let n: i64 = n.trim().parse().map_err(|_| Error::InvalidArgument(format!("invalid OVERVIEW_COUNT '{n}'")))?;
+                o.overview_count = usize::try_from(n).ok();
+            }
+            if co("OVERVIEWS").is_some_and(|v| v.eq_ignore_ascii_case("NONE")) {
+                o.overview_count = Some(0);
+            }
+            o.source_block = options.source_block_size;
         } else {
             let (bx, by) = (size("BLOCKXSIZE")?, size("BLOCKYSIZE")?);
             if co("TILED").is_some_and(yes) {
@@ -558,6 +674,9 @@ impl TiffOptions {
                 o.rows_per_strip = by;
             }
             o.overviews = options.overviews.clone();
+            if let Some(r) = &options.overview_resampling {
+                o.overview_resampling = OverviewResampling::parse(r)?;
+            }
         }
         if let Some(i) = co("INTERLEAVE") {
             o.planar = match i.to_ascii_uppercase().as_str() {
@@ -580,6 +699,9 @@ impl TiffOptions {
             });
         }
         o.georeferenced = !co("GEOREFERENCED").is_some_and(|v| !yes(v));
+        let src_mdd: Vec<&str> =
+            options.creation_options.iter().filter(|(k, _)| k.eq_ignore_ascii_case("SRC_MDD")).map(|(_, v)| v.as_str()).collect();
+        (o.domains, o.drop_default_items) = MetadataDomain::parse(co("@METADATA_DOMAINS"), cog, co("COPY_SRC_MDD"), &src_mdd)?;
         if let Some(p) = co("PREDICTOR") {
             o.predictor = match p.trim().to_ascii_uppercase().as_str() {
                 "1" | "NO" | "NONE" => 1,
@@ -633,16 +755,6 @@ impl TiffOptions {
         }
         o.codec.jpeg_ycbcr = o.photometric == Some(6);
         o.alpha = co("ALPHA").is_some_and(|v| yes(v) || v.eq_ignore_ascii_case("NON-PREMULTIPLIED"));
-        if o.gdal_overviews
-            && (o.alpha
-                || o.mask.is_some()
-                || o.band_metadata.iter().any(|b| b.color_interp.as_deref() == Some("Alpha"))
-                || !matches!(o.overview_resampling, OverviewResampling::Average | OverviewResampling::Nearest))
-        {
-            return Err(Error::Unsupported(
-                "GDAL_3_13 COG overviews support average and nearest for rasters without explicit masks or alpha bands".into(),
-            ));
-        }
         if !o.color_table.is_empty() && o.photometric.is_none() {
             o.photometric = Some(3);
         }
@@ -814,9 +926,30 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
     if predictor == 3 && !matches!(raster.data_type, DataType::F32 | DataType::F64) {
         return Err(Error::InvalidArgument("PREDICTOR=3 is only supported for floating-point data".into()));
     }
+    // The colour interpretations GDAL reads from the photometric and extra samples written
+    // (`GTiffRasterBand`): GDAL_METADATA holds only the bands' others (see [`geo_tags`]).
+    let implied: Vec<&str> = (0..samples).map(|i| implied_color_interp(photometric, &extra, base_samples, i)).collect();
     let layout =
         Layout { tile, rows_per_strip: opts.rows_per_strip, planar: opts.planar && samples > 1, photometric, extra, predictor, parts };
-    let mut geo = geo_tags(raster, opts.nodata, &opts.band_metadata)?;
+    // GDAL's COG driver records the resampling of the overviews it makes (`@OVERVIEW_RESAMPLING`,
+    // an IMAGE_STRUCTURE item): the option as given, else `GetResampling`'s; for overviews it
+    // copies, the source's `RESAMPLING` item.
+    let image_structure: Vec<(String, String)> = match (tile, &opts.source_overviews) {
+        (Some(_), Some(path)) if opts.cog => crate::LazyRaster::open_tiff(path)
+            .ok()
+            .flatten()
+            .and_then(|mut s| s.overview_resampling())
+            .map(|r| vec![("OVERVIEW_RESAMPLING".to_string(), r)])
+            .unwrap_or_default(),
+        (Some((t, _)), None)
+            if opts.cog && !gdal_overview::cog_sizes(raster.cols, raster.rows, t as usize, opts.overview_count).is_empty() =>
+        {
+            let default = if !opts.color_table.is_empty() || opts.complex { "NEAREST" } else { "CUBIC" };
+            vec![("OVERVIEW_RESAMPLING".to_string(), opts.cog_resampling_name.clone().unwrap_or_else(|| default.to_string()))]
+        }
+        _ => Vec::new(),
+    };
+    let mut geo = geo_tags(raster, opts, &image_structure, &implied)?;
     if !opts.georeferenced || !opts.gcps.is_empty() || opts.geo_transform.is_some_and(|gt| !crate::is_north_up(&gt)) {
         geo.retain(|(tag, _)| !matches!(tag, 33550 | 33922));
     }
@@ -887,45 +1020,76 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     // The full-resolution image, then overviews: a COG's until one fits in a tile, or the
     // factors asked for.
     let mut levels = vec![Level::from_raster(raster)];
-    if let (true, Some((t, _))) = (opts.cog, tile) {
-        let t = t as usize;
-        if opts.gdal_overviews {
-            while levels.last().is_some_and(|level| level.cols > t || level.rows > t) {
-                let previous = levels.last().unwrap();
-                let next = previous.resample((previous.cols / 2).max(1), (previous.rows / 2).max(1), opts.overview_resampling, opts.nodata);
-                levels.push(next);
-            }
-        } else {
-            let (mut cols, mut rows) = (raster.cols, raster.rows);
-            let mut count = 0;
-            while cols > t || rows > t {
-                cols = cols.div_ceil(2);
-                rows = rows.div_ceil(2);
-                count += 1;
-            }
-            levels.extend(crate::par::map_range_coarse(count, |i| {
-                let factor = 1usize << (i + 1);
-                let mut reducer =
-                    CogOverview::new(raster.cols, raster.rows, raster.bands, factor, opts.overview_resampling, opts.nodata, opts.alpha);
-                let data = reducer.write_rows(&raster.data, raster.rows);
-                Level {
-                    cols: raster.cols.div_ceil(factor),
-                    rows: raster.rows.div_ceil(factor),
-                    bands: raster.bands,
-                    data: std::borrow::Cow::Owned(data),
-                }
-            }));
+    // The per-dataset mask of each level, as GDAL reads it (0 or 255).
+    let mut masks: Vec<Vec<u8>> = opts.mask.iter().map(|m| m.iter().map(|v| if *v != 0 { 255 } else { 0 }).collect()).collect();
+    // The overviews of the mask as they are computed, before they are written as bits (level `i`
+    // at `i - 1`): GDAL keeps them in a temporary Byte file, which the next level is computed
+    // from (see [`mask_levels`]).
+    let mut raw_masks: Vec<Vec<u8>> = Vec::new();
+    let (sizes, method) = match (opts.cog, tile) {
+        (true, Some(_)) if opts.source_overviews.is_some() => (Vec::new(), None),
+        (true, Some((t, _))) => {
+            (gdal_overview::cog_sizes(raster.cols, raster.rows, t as usize, opts.overview_count), Some(cog_method(opts)))
         }
-    } else if !opts.cog {
-        let mut factors: Vec<usize> = opts.overviews.iter().copied().filter(|f| *f > 1).collect();
-        factors.sort_unstable();
-        factors.dedup();
-        for f in factors {
-            let (w, h) = (raster.cols.div_ceil(f), raster.rows.div_ceil(f));
-            // As GDAL does, each overview is computed from the previous (larger) one.
-            let src = levels.last().filter(|l| l.cols > w).unwrap_or(&levels[0]);
-            let next = src.resample(w, h, opts.overview_resampling, opts.nodata);
-            levels.push(next);
+        (true, None) => (Vec::new(), None),
+        (false, _) => {
+            let mut factors: Vec<usize> = opts.overviews.iter().copied().filter(|f| *f > 1).collect();
+            factors.sort_unstable();
+            factors.dedup();
+            let sizes = factors.iter().map(|f| (raster.cols.div_ceil(*f), raster.rows.div_ceil(*f))).collect();
+            match opts.overview_resampling {
+                OverviewResampling::Gdal(m) => (sizes, Some(m)),
+                other => {
+                    for (w, h) in sizes {
+                        // Each overview is computed from the previous (larger) one.
+                        let src = levels.last().filter(|l| l.cols > w).unwrap_or(&levels[0]);
+                        let next = src.resample(w, h, other, opts.nodata);
+                        levels.push(next);
+                    }
+                    (Vec::new(), None)
+                }
+            }
+        }
+    };
+    if let (true, Some(_), Some(path)) = (opts.cog, tile, &opts.source_overviews) {
+        copy_source_overviews(path, raster, opts, &mut levels, &mut masks)?;
+    }
+    if let Some(method) = method {
+        let block = gdal_overview::ovr_block(opts.source_block);
+        // GDAL weights each level by the masks of the level it is computed from
+        // (`GDALRegenerateOverviewsMultiBand`): the alpha band's, and the per-dataset mask's,
+        // whose own overviews are made first (`GDALCOGCreator::Create`, which cascades them;
+        // `GTiffDataset::IBuildOverviews`, which cascades them unless with nearest neighbour).
+        let (alpha, alpha_masks) = alpha_weights(opts, raster.bands, raster.data_type);
+        // `GTiffDataset::IBuildOverviews` cascades through `GDALRegenerateOverviewsMultiBand` for
+        // pixel-interleaved files or those with an alpha band; band-interleaved ones go band by
+        // band (`GDALRegenerateOverviewsEx`), cascading only with methods other than nearest and
+        // bands whose masks are nodata or all valid, else each level from the full resolution.
+        let per_band = !opts.cog && opts.planar && alpha.is_none();
+        let cascade = !per_band || (method != Method::Nearest && opts.mask.is_none());
+        for (w, h) in sizes {
+            // As GDAL does, each overview is computed from the previous one when it is larger.
+            let si = if cascade && levels.last().is_some_and(|l| l.cols > w) { levels.len() - 1 } else { 0 };
+            let src = &levels[si];
+            let plan = gdal_overview::Plan::new(method, (src.cols, src.rows), (w, h), raster.bands, block, raster.data_type);
+            // The data are weighted by the mask overview as GDAL keeps it (Byte values, which
+            // weight the kernel), the bits written when the mask was regenerated as a mask band.
+            let source_mask = match (opts.mask_without_dataset, si) {
+                (true, 1..) => raw_masks.get(si - 1),
+                _ => masks.get(si),
+            };
+            let weights = gdal_overview::Weights { alpha, alpha_masks, mask: source_mask.map(Vec::as_slice) };
+            let data = gdal_overview::level(&plan, src.data.as_ref(), raster.bands, opts.nodata, weights);
+            if !masks.is_empty() {
+                // The mask band's overviews cascade on their own (with nearest neighbour, GTiff's
+                // single-band regeneration decimates each from the full resolution).
+                let cascade_mask = (opts.cog || method != Method::Nearest) && levels.last().is_some_and(|l| l.cols > w);
+                let mi = if cascade_mask { levels.len() - 1 } else { 0 };
+                let next = mask_levels(opts, method, &masks, &raw_masks, mi, (levels[mi].cols, levels[mi].rows), (w, h), block);
+                masks.push(next.iter().map(|v| if *v != 0 { 255 } else { 0 }).collect());
+                raw_masks.push(next);
+            }
+            levels.push(Level { cols: w, rows: h, bands: raster.bands, data: std::borrow::Cow::Owned(data) });
         }
     }
     let mut images = Vec::with_capacity(levels.len());
@@ -934,9 +1098,10 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
         if i > 0 {
             img.tags.push((254, Value::Longs(vec![1])));
         }
-        // Georeferencing on the full-resolution image; nodata on every image, as GDAL does.
+        // Georeferencing on the full-resolution image; nodata on every image, as GDAL does, but
+        // not on the overviews of 64-bit integer rasters (see [`overview_nodata`]).
         for (tag, v) in &geo {
-            if i == 0 || *tag == 42113 {
+            if i == 0 || (*tag == 42113 && overview_nodata(raster.data_type)) {
                 img.tags.push((*tag, v.clone()));
             }
         }
@@ -945,9 +1110,10 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
         }
         img.tags.sort_by_key(|(t, _)| *t);
         images.push(img);
-        // GDAL's internal mask follows the full-resolution image.
-        if let (0, Some(m)) = (i, &opts.mask) {
-            let main = &images[0];
+        // GDAL's internal mask follows each image it masks (`NewSubfileType` 4, and 5 for an
+        // overview's).
+        if let Some(m) = masks.get(i) {
+            let main = &images[images.len() - 1];
             let tag = |t: u16| {
                 main.tags.iter().find_map(|(k, v)| match v {
                     Value::Longs(v) if *k == t => v.first().map(|x| *x as usize),
@@ -956,16 +1122,106 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
             };
             let block = match (tag(322), tag(323), tag(278)) {
                 (Some(w), Some(h), _) => (w, h, true),
-                (_, _, Some(rows)) => (raster.cols, rows, false),
-                _ => (raster.cols, raster.rows, false),
+                (_, _, Some(rows)) => (level.cols, rows, false),
+                _ => (level.cols, level.rows, false),
             };
-            images.push(mask_image(m, raster.cols, raster.rows, block)?);
+            let mut mi = mask_image(m, level.cols, level.rows, block)?;
+            if i > 0 {
+                for (k, v) in mi.tags.iter_mut() {
+                    if *k == 254 {
+                        *v = Value::Longs(vec![5]);
+                    }
+                }
+            }
+            images.push(mi);
         }
     }
 
     let data_len: u64 = images.iter().flat_map(|i| i.chunks.iter()).map(|c| c.len() as u64 + 8).sum();
     let big = opts.bigtiff || data_len > (u32::MAX as u64) - (1 << 24);
     Ok(Prepared { images, big, cog: opts.cog })
+}
+
+/// The resampling of a COG's overviews: the one asked for, else GDAL's default.
+fn cog_method(opts: &TiffOptions) -> Method {
+    opts.cog_resampling.unwrap_or_else(|| Method::cog_default(!opts.color_table.is_empty() || opts.complex))
+}
+
+/// The overviews of the GeoTIFF a COG is converted from, copied as they are, as GDAL's COG driver
+/// copies a source's (`OVERVIEWS=AUTO`, `COPY_SRC_OVERVIEWS`), with their masks: the source's
+/// when its mask has overviews, else made at the overviews' sizes as `GDALCOGCreator::Create`
+/// makes them (`bGenerateMskOvr`), cascading from the full-resolution mask.
+fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels: &mut Vec<Level>, masks: &mut Vec<Vec<u8>>) -> Result<()> {
+    let mut src = crate::LazyRaster::open_tiff(path)?.ok_or_else(|| Error::InvalidArgument(format!("{path}: not a GeoTIFF")))?;
+    if (src.width(), src.height(), src.band_count(), src.data_type()) != (raster.cols, raster.rows, raster.bands, raster.data_type) {
+        return Err(Error::InvalidArgument(format!("{path}: not the raster written")));
+    }
+    let sizes = src.overviews();
+    let own_masks = (0..sizes.len()).all(|i| src.has_overview_mask(i));
+    let block = gdal_overview::ovr_block(opts.source_block);
+    for (i, (w, h)) in sizes.into_iter().enumerate() {
+        let level = src.read_window(crate::Window::full(w, h), &crate::WindowOptions { bands: Vec::new(), overview: Some(i) })?;
+        if !masks.is_empty() {
+            let m = if own_masks {
+                src.read_mask(crate::Window::full(w, h), Some(i))?.unwrap_or_else(|| vec![255; w * h])
+            } else {
+                let mi = if levels.last().is_some_and(|l| l.cols > w) { levels.len() - 1 } else { 0 };
+                gdal_overview::mask_level(cog_method(opts), &masks[mi], (levels[mi].cols, levels[mi].rows), (w, h), block)
+            };
+            masks.push(m.into_iter().map(|v| if v != 0 { 255 } else { 0 }).collect());
+        }
+        levels.push(Level { cols: w, rows: h, bands: raster.bands, data: std::borrow::Cow::Owned(level.raster.data) });
+    }
+    Ok(())
+}
+
+/// The next overview of the per-dataset mask, computed from level `mi` (its bits `masks[mi]`, or
+/// the values it was computed with, `raw_masks[mi - 1]`) of size `from`, as GDAL's COG and GTiff
+/// drivers regenerate a mask band's overviews (`GDALRegenerateOverviewsMultiBand`, which weights
+/// each level by the source band's mask band, or by the band itself when it is a mask band).
+///
+/// A mask with a dataset (a file's internal mask, or `.msk` sidecar) is a mask band at every
+/// level: the temporary overviews carry `INTERNAL_MASK_FLAGS_1` (`GTIFFBuildOverviewMetadata`),
+/// so each level is weighted by its own values. A mask without a dataset, as GDAL 3.12.1's
+/// `MEMRasterBand::CreateMaskBand` creates it (`opts.mask_without_dataset`: rasterio holds a COG
+/// it writes in a MEM dataset), gets no such metadata (`GTIFFBuildOverviewsEx` writes it only
+/// for a band with a dataset): its first overview is weighted by the mask's own values, and the
+/// later ones, computed from the temporary Byte overviews, by their all-valid mask.
+#[allow(clippy::too_many_arguments)]
+fn mask_levels(
+    opts: &TiffOptions,
+    method: Method,
+    masks: &[Vec<u8>],
+    raw_masks: &[Vec<u8>],
+    mi: usize,
+    from: (usize, usize),
+    to: (usize, usize),
+    block: usize,
+) -> Vec<u8> {
+    if !opts.mask_without_dataset || mi == 0 {
+        return gdal_overview::mask_level(method, &masks[mi], from, to, block);
+    }
+    let src = &raw_masks[mi - 1];
+    let all_valid = vec![255u8; src.len()];
+    let plan = gdal_overview::Plan::new(method, from, to, 1, block, DataType::U8);
+    let weights = gdal_overview::Weights { alpha: None, alpha_masks: false, mask: Some(&all_valid) };
+    match gdal_overview::level(&plan, &RasterData::U8(src.clone()), 1, None, weights) {
+        RasterData::U8(v) => v,
+        _ => unreachable!("a Byte level"),
+    }
+}
+
+/// The alpha band (the last, with `ALPHA` or an `Alpha` color interpretation), which GDAL's
+/// overviews weight by itself (`IsMaskBand`), and whether it is the other bands' mask band too
+/// (two or four bands, Byte or UInt16: `GDALRasterBand::GetMaskBand`).
+fn alpha_weights(opts: &TiffOptions, bands: usize, t: DataType) -> (Option<usize>, bool) {
+    let last_is_alpha = opts
+        .band_metadata
+        .get(bands.wrapping_sub(1))
+        .and_then(|b| b.color_interp.as_deref())
+        .is_some_and(|c| c.eq_ignore_ascii_case("alpha"));
+    let alpha = (opts.alpha || last_is_alpha).then(|| bands - 1);
+    (alpha, alpha.is_some() && matches!(bands, 2 | 4) && matches!(t, DataType::U8 | DataType::U16))
 }
 
 /// GDAL's internal mask (`GDAL_TIFF_INTERNAL_MASK`): a 1-bit transparency mask image
@@ -1057,15 +1313,10 @@ impl<'a> Level<'a> {
         Self { cols: r.cols, rows: r.rows, bands: r.bands, data: std::borrow::Cow::Borrowed(&r.data) }
     }
 
-    /// Resamples to `cols` x `rows` pixels, as GDAL computes overviews.
+    /// Resamples to `cols` x `rows` pixels with terrio's `min` or `max`.
     fn resample(&self, cols: usize, rows: usize, method: OverviewResampling, nodata: Option<f64>) -> Level<'static> {
         let src = (self.cols, self.rows, self.bands);
-        // GDAL's mode kernel works on 16, 32 and 64-bit signed data as unsigned: a negative nodata
-        // value is out of its range, and empty blocks get 0.
-        let signed = matches!(self.data.data_type(), DataType::I16 | DataType::I32 | DataType::I64);
-        let fill =
-            if method == OverviewResampling::Mode && signed && nodata.is_some_and(|n| n < 0.0) { 0.0 } else { nodata.unwrap_or(0.0) };
-        let data = map_data!(self.data.as_ref(), v => resample(v, src, cols, rows, method, nodata, fill));
+        let data = map_data!(self.data.as_ref(), v => resample(v, src, cols, rows, method, nodata, nodata.unwrap_or(0.0)));
         Level { cols, rows, bands: self.bands, data: std::borrow::Cow::Owned(data) }
     }
 
@@ -1188,9 +1439,9 @@ fn apply_predictor(buf: &mut [u8], predictor: u16, row_samples: usize, stride: u
     }
 }
 
-/// Resamples a band-major image to `out_cols` x `out_rows`, as GDAL computes overviews: nearest
-/// neighbour picks the pixel at `0.5 + i * ratio`; the other methods combine the valid pixels of
-/// the source window of each output pixel (an average weighted by coverage).
+/// Resamples a band-major image to `out_cols` x `out_rows` with terrio's `min` or `max`: the
+/// extreme of the valid pixels of each output pixel's source window (GDAL's methods are
+/// [`gdal_overview`]'s).
 fn resample<T: Pixel>(
     src: &[T],
     (cols, rows, bands): (usize, usize, usize),
@@ -1200,20 +1451,7 @@ fn resample<T: Pixel>(
     nodata: Option<f64>,
     fill: f64,
 ) -> Vec<T> {
-    resample_region(src, (cols, rows, bands), (out_cols, out_rows), method, nodata, fill, None)
-}
-
-fn resample_region<T: Pixel>(
-    src: &[T],
-    (cols, rows, bands): (usize, usize, usize),
-    (out_cols, out_rows): (usize, usize),
-    method: OverviewResampling,
-    nodata: Option<f64>,
-    fill: f64,
-    region: Option<(usize, usize, usize, usize)>,
-) -> Vec<T> {
-    let (row_offset, output_start, full_rows, full_out_rows) = region.unwrap_or((0, 0, rows, out_rows));
-    let (rx, ry) = (cols as f64 / out_cols as f64, full_rows as f64 / full_out_rows as f64);
+    let (rx, ry) = (cols as f64 / out_cols as f64, rows as f64 / out_rows as f64);
     // Source windows: (first, end, first weight, last weight).
     let window = |i: usize, ratio: f64, n: usize| -> (usize, usize, f64, f64) {
         let (f0, f1) = (i as f64 * ratio, (i + 1) as f64 * ratio);
@@ -1232,77 +1470,27 @@ fn resample_region<T: Pixel>(
     crate::par::chunks_mut_coarse(&mut out, out_cols, |k, line| {
         let (b, r) = (k / out_rows, k % out_rows);
         let band = &src[b * cols * rows..(b + 1) * cols * rows];
-        if method == OverviewResampling::Nearest {
-            let sy = ((0.5 + (r + output_start) as f64 * ry) as usize).min(full_rows - 1) - row_offset;
-            for (c, o) in line.iter_mut().enumerate() {
-                let sx = ((0.5 + c as f64 * rx) as usize).min(cols - 1);
-                *o = band[sy * cols + sx];
-            }
-            return;
-        }
-        let (y0, y1, wy0, wy1) = window(r + output_start, ry, full_rows);
-        let mut values: Vec<f64> = Vec::new();
+        let (y0, y1, _, _) = window(r, ry, rows);
         for (c, o) in line.iter_mut().enumerate() {
-            let (x0, x1, wx0, wx1) = xs[c];
-            let (mut sum, mut weight) = (0.0, 0.0);
-            values.clear();
+            let (x0, x1, _, _) = xs[c];
+            let mut extreme: Option<f64> = None;
             for y in y0..y1 {
-                let wy = if y == y0 {
-                    wy0
-                } else if y + 1 == y1 {
-                    wy1
-                } else {
-                    1.0
-                };
                 for x in x0..x1 {
-                    let v = band[(y - row_offset) * cols + x].to_f64();
+                    let v = band[y * cols + x].to_f64();
                     if v.is_nan() || nodata.is_some_and(|nd| v == nd) {
                         continue;
                     }
-                    let wx = if x == x0 {
-                        wx0
-                    } else if x + 1 == x1 {
-                        wx1
-                    } else {
-                        1.0
-                    };
-                    sum += v * wx * wy;
-                    weight += wx * wy;
-                    values.push(v);
+                    extreme = Some(match (extreme, method) {
+                        (None, _) => v,
+                        (Some(e), OverviewResampling::Min) => e.min(v),
+                        (Some(e), _) => e.max(v),
+                    });
                 }
             }
-            let v = if values.is_empty() {
-                fill
-            } else {
-                match method {
-                    OverviewResampling::Average => sum / weight,
-                    OverviewResampling::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
-                    OverviewResampling::Max => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-                    _ => mode(&values),
-                }
-            };
-            *o = T::from_f64(v);
+            *o = T::from_f64(extreme.unwrap_or(fill));
         }
     });
     out
-}
-
-/// The most frequent value, as GDAL counts: the first value to reach the highest count.
-fn mode(values: &[f64]) -> f64 {
-    let mut seen: Vec<(f64, usize)> = Vec::new();
-    let mut best = 0;
-    for v in values {
-        match seen.iter().position(|(w, _)| w == v) {
-            Some(i) => {
-                seen[i].1 += 1;
-                if seen[i].1 > seen[best].1 {
-                    best = i;
-                }
-            }
-            None => seen.push((*v, 1)),
-        }
-    }
-    seen[best].0
 }
 
 /// The pixel-interleaved little-endian bytes of a chunk of `chunk_w` x `h` pixels at `(x0, y0)`,
@@ -1331,295 +1519,6 @@ fn chunk_bytes<T: Pixel>(data: &[T], cols: usize, rows: usize, spp: usize, x0: u
         }
     }
     buf
-}
-
-/// Accumulates a source block in row order, keeping sums local instead of updating shared row
-/// buffers for every source sample. Alpha is a weight only for color bands.
-#[inline]
-fn average_block<T: Pixel>(
-    band: &[T],
-    alpha: Option<&[T]>,
-    cols: usize,
-    (x0, x1): (usize, usize),
-    (y0, y1): (usize, usize),
-    nodata: Option<f64>,
-    (mut sum, mut weight): (f64, f64),
-) -> (f64, f64) {
-    if let Some(alpha) = alpha {
-        for y in y0..y1 {
-            let span = y * cols + x0..y * cols + x1;
-            for (&sample, &a) in band[span.clone()].iter().zip(&alpha[span]) {
-                let v = sample.to_f64();
-                if v.is_nan() || nodata.is_some_and(|nd| v == nd) {
-                    continue;
-                }
-                let a = a.to_f64();
-                if !a.is_finite() || a <= 0.0 || nodata.is_some_and(|nd| a == nd) {
-                    continue;
-                }
-                sum += v * a;
-                weight += a;
-            }
-        }
-    } else {
-        for y in y0..y1 {
-            for &sample in &band[y * cols + x0..y * cols + x1] {
-                let v = sample.to_f64();
-                if !v.is_nan() && !nodata.is_some_and(|nd| v == nd) {
-                    sum += v;
-                    weight += 1.0;
-                }
-            }
-        }
-    }
-    (sum, weight)
-}
-
-/// Native categorical samples must not pass through f64 (notably UInt64 above 2^53).
-struct CategoricalRow<T> {
-    values: Vec<T>,
-    counts: Vec<HashMap<u64, usize>>,
-}
-
-enum CategoricalSamples {
-    U8(CategoricalRow<u8>),
-    I8(CategoricalRow<i8>),
-    U16(CategoricalRow<u16>),
-    I16(CategoricalRow<i16>),
-    U32(CategoricalRow<u32>),
-    I32(CategoricalRow<i32>),
-    U64(CategoricalRow<u64>),
-    I64(CategoricalRow<i64>),
-    F32(CategoricalRow<f32>),
-    F64(CategoricalRow<f64>),
-}
-
-/// Reduces full-resolution source blocks into one COG overview. Only the current output row's
-/// unrounded sums and weights are retained, so input slab boundaries cannot change the pixels.
-struct CogOverview {
-    cols: usize,
-    rows: usize,
-    bands: usize,
-    factor: usize,
-    received: usize,
-    method: OverviewResampling,
-    nodata: Option<f64>,
-    alpha: bool,
-    sums: Vec<f64>,
-    weights: Vec<f64>,
-    categorical: Option<CategoricalSamples>,
-}
-
-impl CogOverview {
-    /// Creates a source-block reducer retaining only the current output row's accumulation.
-    fn new(cols: usize, rows: usize, bands: usize, factor: usize, method: OverviewResampling, nodata: Option<f64>, alpha: bool) -> Self {
-        let n = if method == OverviewResampling::Nearest { 0 } else { cols.div_ceil(factor) * bands };
-        Self {
-            cols,
-            rows,
-            bands,
-            factor,
-            received: 0,
-            method,
-            nodata,
-            alpha,
-            sums: if method == OverviewResampling::Average { vec![0.0; n] } else { Vec::new() },
-            weights: vec![0.0; n],
-            categorical: None,
-        }
-    }
-
-    /// Consumes consecutive source rows and returns band-major output rows of the same type.
-    /// Nearest emits a row when its center arrives; other methods wait for the whole block.
-    fn write_rows(&mut self, data: &RasterData, rows: usize) -> RasterData {
-        let out = if self.method == OverviewResampling::Average {
-            map_data!(data, v => self.average(v, rows))
-        } else if self.method == OverviewResampling::Nearest {
-            map_data!(data, v => self.reduce(v, rows, None))
-        } else {
-            macro_rules! categorical {
-                ($v:expr, $variant:ident) => {{
-                    let n = self.cols.div_ceil(self.factor) * self.bands;
-                    let state = self.categorical.take().unwrap_or_else(|| {
-                        CategoricalSamples::$variant(CategoricalRow {
-                            values: vec![Default::default(); n],
-                            counts: if self.method == OverviewResampling::Mode { vec![HashMap::new(); n] } else { Vec::new() },
-                        })
-                    });
-                    let CategoricalSamples::$variant(mut state) = state else { unreachable!("source sample type changed") };
-                    let out = self.reduce($v, rows, Some(&mut state));
-                    self.categorical = Some(CategoricalSamples::$variant(state));
-                    RasterData::$variant(out)
-                }};
-            }
-            match data {
-                RasterData::U8(v) => categorical!(v, U8),
-                RasterData::I8(v) => categorical!(v, I8),
-                RasterData::U16(v) => categorical!(v, U16),
-                RasterData::I16(v) => categorical!(v, I16),
-                RasterData::U32(v) => categorical!(v, U32),
-                RasterData::I32(v) => categorical!(v, I32),
-                RasterData::U64(v) => categorical!(v, U64),
-                RasterData::I64(v) => categorical!(v, I64),
-                RasterData::F32(v) => categorical!(v, F32),
-                RasterData::F64(v) => categorical!(v, F64),
-            }
-        };
-        self.received += rows;
-        out
-    }
-
-    /// Complete output rows are independent; only an unfinished source block needs persistent
-    /// accumulation. Each cell visits source samples in the same order across slab boundaries.
-    fn average<T: Pixel>(&mut self, src: &[T], rows: usize) -> Vec<T> {
-        let (cols, factor, bands) = (self.cols, self.factor, self.bands);
-        let out_cols = cols.div_ceil(factor);
-        let received = self.received;
-        let end = received + rows;
-        let first = received / factor;
-        let completed = if end == self.rows { end.div_ceil(factor) } else { end / factor };
-        let out_rows = completed - first;
-        let band_len = cols * rows;
-        let nodata = self.nodata;
-        let fill = nodata.unwrap_or(0.0);
-        let alpha = self.alpha.then(|| &src[(bands - 1) * band_len..]);
-        let (sums, weights) = (&self.sums, &self.weights);
-        let mut out = vec![T::default(); out_cols * out_rows * bands];
-        crate::par::chunks_mut_coarse(&mut out, out_cols, |i, line| {
-            let (b, r) = (i / out_rows, i % out_rows);
-            let band = &src[b * band_len..(b + 1) * band_len];
-            let alpha = alpha.filter(|_| b + 1 < bands);
-            let block_y = (first + r) * factor;
-            let y0 = block_y.saturating_sub(received);
-            let y1 = (block_y + factor).min(end) - received;
-            for (c, o) in line.iter_mut().enumerate() {
-                let k = b * out_cols + c;
-                let carry = if block_y < received { (sums[k], weights[k]) } else { (0.0, 0.0) };
-                let x0 = c * factor;
-                let (sum, weight) = average_block(band, alpha, cols, (x0, (x0 + factor).min(cols)), (y0, y1), nodata, carry);
-                *o = T::from_f64(if weight == 0.0 { fill } else { sum / weight });
-            }
-        });
-        if end < self.rows && !end.is_multiple_of(factor) {
-            let y0 = (end / factor * factor).saturating_sub(received);
-            for b in 0..bands {
-                let band = &src[b * band_len..(b + 1) * band_len];
-                let alpha = alpha.filter(|_| b + 1 < bands);
-                for c in 0..out_cols {
-                    let k = b * out_cols + c;
-                    let carry = if out_rows == 0 { (self.sums[k], self.weights[k]) } else { (0.0, 0.0) };
-                    let x0 = c * factor;
-                    let (sum, weight) = average_block(band, alpha, cols, (x0, (x0 + factor).min(cols)), (y0, rows), nodata, carry);
-                    self.sums[k] = sum;
-                    self.weights[k] = weight;
-                }
-            }
-        } else {
-            self.sums.fill(0.0);
-            self.weights.fill(0.0);
-        }
-        out
-    }
-
-    /// Reduces one typed slab; `received` advances only after the caller restores its state.
-    fn reduce<T: Pixel + PartialOrd>(&mut self, src: &[T], rows: usize, mut categorical: Option<&mut CategoricalRow<T>>) -> Vec<T> {
-        let (cols, factor, bands) = (self.cols, self.factor, self.bands);
-        let out_cols = cols.div_ceil(factor);
-        let end = self.received + rows;
-        let center = |y: usize| (y / factor * factor + factor / 2).min(self.rows - 1);
-        if self.method == OverviewResampling::Nearest {
-            let out_rows = (self.received..end).filter(|&y| y == center(y)).count();
-            let mut out = vec![T::default(); out_cols * out_rows * bands];
-            let mut r = 0;
-            for y in self.received..end {
-                if y != center(y) {
-                    continue;
-                }
-                for b in 0..bands {
-                    for x in 0..out_cols {
-                        let sx = (x * factor + factor / 2).min(cols - 1);
-                        out[(b * out_rows + r) * out_cols + x] = src[(b * rows + y - self.received) * cols + sx];
-                    }
-                }
-                r += 1;
-            }
-            return out;
-        }
-        let completed = if end == self.rows { end.div_ceil(factor) } else { end / factor };
-        let out_rows = completed - self.received / factor;
-        let mut out = vec![T::default(); out_cols * out_rows * bands];
-        let mut r = 0;
-        for y in 0..rows {
-            for b in 0..bands {
-                for x in 0..cols {
-                    let sample = src[(b * rows + y) * cols + x];
-                    let v = sample.to_f64();
-                    let invalid = self.nodata.is_some_and(|nd| {
-                        if categorical.is_some() {
-                            let native = T::from_f64(nd);
-                            native.to_f64() == nd && sample == native
-                        } else {
-                            v == nd
-                        }
-                    });
-                    if v.is_nan() || invalid {
-                        continue;
-                    }
-                    let k = b * out_cols + x / factor;
-                    match self.method {
-                        OverviewResampling::Min | OverviewResampling::Max => {
-                            let values = &mut categorical.as_mut().unwrap().values;
-                            if self.weights[k] == 0.0
-                                || (self.method == OverviewResampling::Min && sample < values[k])
-                                || (self.method == OverviewResampling::Max && sample > values[k])
-                            {
-                                values[k] = sample;
-                            }
-                            self.weights[k] = 1.0;
-                        }
-                        OverviewResampling::Mode => {
-                            let state = categorical.as_mut().unwrap();
-                            // Native bits keep integer classes exact; numeric equality groups signed zeros.
-                            let mut bytes = [0u8; 8];
-                            if v != 0.0 {
-                                sample.put_le(&mut bytes[..T::SIZE]);
-                            }
-                            let count = state.counts[k].entry(u64::from_le_bytes(bytes)).or_insert(0);
-                            *count += 1;
-                            let count = *count;
-                            if count as f64 > self.weights[k] {
-                                state.values[k] = sample;
-                                self.weights[k] = count as f64;
-                            }
-                        }
-                        OverviewResampling::Nearest | OverviewResampling::Average => unreachable!(),
-                    }
-                }
-            }
-            let sy = self.received + y + 1;
-            if !sy.is_multiple_of(factor) && sy != self.rows {
-                continue;
-            }
-            for b in 0..bands {
-                for x in 0..out_cols {
-                    let k = b * out_cols + x;
-                    out[(b * out_rows + r) * out_cols + x] = if self.weights[k] == 0.0 {
-                        T::from_f64(self.nodata.unwrap_or(0.0))
-                    } else {
-                        categorical.as_ref().unwrap().values[k]
-                    };
-                }
-            }
-            self.weights.fill(0.0);
-            if let Some(state) = &mut categorical {
-                for counts in &mut state.counts {
-                    counts.clear();
-                }
-            }
-            r += 1;
-        }
-        out
-    }
 }
 
 fn sample_format(t: DataType) -> (u16, u16) {
@@ -1655,7 +1554,27 @@ fn pixel_is_point(r: &Raster) -> bool {
 }
 
 /// The georeferencing tags: pixel scale and tie point, GeoKeys, nodata and metadata.
-fn geo_tags(r: &Raster, nodata: Option<f64>, bands: &[crate::BandMetadata]) -> Result<Vec<(u16, Value)>> {
+/// The colour interpretation GDAL gives band `i` (from 0) of a TIFF of the photometric
+/// interpretation `photometric`, whose samples past the first `base` are the extra samples
+/// `extra` (`GTiffRasterBand`'s, as [`crate::geotiff`] reads them).
+fn implied_color_interp(photometric: u16, extra: &[u16], base: usize, i: usize) -> &'static str {
+    match (photometric, i) {
+        (0 | 1, 0) => "Gray",
+        (2 | 6, 0) => "Red",
+        (2 | 6, 1) => "Green",
+        (2 | 6, 2) => "Blue",
+        (3, 0) => "Palette",
+        _ if i >= base && extra.get(i - base).is_some_and(|e| matches!(e, 1 | 2)) => "Alpha",
+        _ => "Undefined",
+    }
+}
+
+/// The GeoTIFF tags of a raster written with `opts`. `implied` holds the colour interpretations
+/// the written photometric and extra samples give the bands: as GDAL's
+/// `GTiffDataset::WriteMetadata`, only the bands' other colour interpretations go to
+/// GDAL_METADATA (GDAL 3.12.1 copies a gray or RGB file without it, and three gray Byte bands,
+/// written as RGB, with theirs).
+fn geo_tags(r: &Raster, opts: &TiffOptions, image_structure: &[(String, String)], implied: &[&str]) -> Result<Vec<(u16, Value)>> {
     let mut tags = vec![
         (33550, Value::Doubles(vec![r.cell_size_x, r.cell_size_y, 0.0])),
         (33922, Value::Doubles(vec![0.0, 0.0, 0.0, r.x_min, r.y_max(), 0.0])),
@@ -1675,12 +1594,23 @@ fn geo_tags(r: &Raster, nodata: Option<f64>, bands: &[crate::BandMetadata]) -> R
         v.shorts.push((3076, *unit));
     } else if !crs.is_unknown() {
         let geographic = crs.is_geographic();
-        match crs.epsg.and_then(|c| u16::try_from(c).ok()) {
-            Some(code) => {
+        // A compound CRS of EPSG CRSs: its horizontal CRS's keys, its vertical CRS's and its name,
+        // in GeoTIFF 1.1 as GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`); a compound code in
+        // a horizontal key reads as another CRS.
+        let compound = crs.compound_parts().and_then(|(h, v)| Some((u16::try_from(h).ok()?, u16::try_from(v).ok()?)));
+        match (compound, crs.epsg.and_then(|c| u16::try_from(c).ok())) {
+            (Some((h, vertical)), _) => {
+                let geographic = crate::crs::SpatialRef::from_epsg(u32::from(h)).is_ok_and(|s| s.is_geographic());
+                v.shorts.push((1024, if geographic { 2 } else { 1 }));
+                v.shorts.push((if geographic { 2048 } else { 3072 }, h));
+                v.shorts.push((4096, vertical));
+                v.ascii.push((1026, crs.name().unwrap_or_else(|| "unnamed".into())));
+            }
+            (None, Some(code)) => {
                 v.shorts.push((1024, if geographic { 2 } else { 1 }));
                 v.shorts.push((if geographic { 2048 } else { 3072 }, code));
             }
-            None => {
+            (None, None) => {
                 let name = crs.name().unwrap_or_else(|| "unnamed".into());
                 let user = crate::drivers::geokeys::user_keys(&crs, &name);
                 match user {
@@ -1707,7 +1637,9 @@ fn geo_tags(r: &Raster, nodata: Option<f64>, bands: &[crate::BandMetadata]) -> R
         ascii.push_str(&text);
     }
     keys.sort_by_key(|k| k[0]);
-    let mut dir = vec![1u16, 1, 0, keys.len() as u16];
+    // GeoTIFF 1.1 (minor revision 1) for a vertical CRS, which GDAL strips from 1.0 files.
+    let minor = u16::from(keys.iter().any(|k| k[0] == 4096));
+    let mut dir = vec![1u16, 1, minor, keys.len() as u16];
     dir.extend(keys.iter().flatten());
     // Without a CRS, no GeoKeys: GDAL reads a lone raster-type key as a local CRS.
     if !crs.is_unknown() {
@@ -1719,21 +1651,41 @@ fn geo_tags(r: &Raster, nodata: Option<f64>, bands: &[crate::BandMetadata]) -> R
     if !ascii.is_empty() {
         tags.push((34737, Value::Ascii(ascii)));
     }
-    if let Some(xml) = gdal_metadata_xml(&r.metadata, bands) {
+    let bands: Vec<crate::BandMetadata> = opts
+        .band_metadata
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let mut b = b.clone();
+            if b.color_interp.as_deref().is_some_and(|c| implied.get(i).is_some_and(|m| m.eq_ignore_ascii_case(c))) {
+                b.color_interp = None;
+            }
+            b
+        })
+        .collect();
+    if let Some(xml) = gdal_metadata_xml(&r.metadata, &bands, &opts.domains, opts.drop_default_items, image_structure) {
         tags.push((42112, Value::Ascii(xml)));
     }
-    if let Some(nd) = nodata {
-        tags.push((42113, Value::Ascii(format_nodata(nd))));
+    if let Some(nd) = opts.nodata {
+        tags.push((42113, Value::Ascii(format_nodata_for(nd, r.data_type))));
     }
     Ok(tags)
 }
 
-/// The `GDAL_METADATA` document of dataset items and band metadata, as GDAL writes it (values
-/// escaped twice). `None` when there is nothing to write.
-fn gdal_metadata_xml(dataset: &[(String, String)], bands: &[crate::BandMetadata]) -> Option<String> {
+/// The `GDAL_METADATA` document as GDAL writes it (`GTiffDataset::WriteMetadata`): the dataset's
+/// items (default domain, then the other domains), each band's (default domain, other domains,
+/// then OFFSET, SCALE, UNITTYPE, DESCRIPTION and COLORINTERP) and the IMAGE_STRUCTURE items, values
+/// escaped twice. `None` when there is nothing to write.
+fn gdal_metadata_xml(
+    dataset: &[(String, String)],
+    bands: &[crate::BandMetadata],
+    domains: &[MetadataDomain],
+    drop_default_items: (bool, bool),
+    image_structure: &[(String, String)],
+) -> Option<String> {
     let mut xml = String::from("<GDALMetadata>\n");
     let mut any = false;
-    let mut item = |name: &str, value: &str, sample: Option<usize>, role: Option<&str>| {
+    let mut item = |name: &str, value: &str, sample: Option<usize>, role: Option<&str>, domain: Option<&str>| {
         let mut attrs = format!("name=\"{}\"", xml_escape(name));
         if let Some(s) = sample {
             attrs.push_str(&format!(" sample=\"{s}\""));
@@ -1741,34 +1693,66 @@ fn gdal_metadata_xml(dataset: &[(String, String)], bands: &[crate::BandMetadata]
         if let Some(r) = role {
             attrs.push_str(&format!(" role=\"{r}\""));
         }
+        if let Some(d) = domain {
+            attrs.push_str(&format!(" domain=\"{}\"", xml_escape(d)));
+        }
         xml.push_str(&format!("  <Item {attrs}>{}</Item>\n", xml_escape(&xml_escape(value))));
         any = true;
     };
-    for (k, v) in dataset {
-        if k == "AREA_OR_POINT" {
-            continue;
+    // WriteMDMetadata: the items of an xml: or json: domain are documents, written as "doc".
+    fn domain_items(domains: &[MetadataDomain], band: usize, item: &mut impl FnMut(&str, &str, Option<usize>, Option<&str>, Option<&str>)) {
+        for d in domains.iter().filter(|d| d.band == band) {
+            let doc = ["xml:", "json:"].iter().any(|p| d.name.get(..p.len()).is_some_and(|s| s.eq_ignore_ascii_case(p)));
+            for (k, v) in &d.items {
+                if doc {
+                    // A document read back (terrio names it `doc`, rasterio after its domain), or
+                    // an item `update_tags` set, a `name=value` string to GDAL.
+                    let value = if k == "doc" || *k == d.name { v.clone() } else { format!("{k}={v}") };
+                    item("doc", &value, band.checked_sub(1), None, Some(&d.name));
+                } else {
+                    item(k, v, band.checked_sub(1), None, Some(&d.name));
+                }
+            }
         }
-        item(k, v, None, None);
     }
-    for (i, b) in bands.iter().enumerate() {
+    if !drop_default_items.0 {
+        for (k, v) in dataset {
+            // Written as the GeoKey RasterPixelIsPoint, as GDAL writes it.
+            if k == "AREA_OR_POINT" {
+                continue;
+            }
+            item(k, v, None, None, None);
+        }
+    }
+    domain_items(domains, 0, &mut item);
+    let count = bands.len().max(domains.iter().map(|d| d.band).max().unwrap_or(0));
+    for i in 0..count {
+        let b = bands.get(i);
+        if !drop_default_items.1 {
+            for (k, v) in b.map(|b| b.items.as_slice()).unwrap_or_default() {
+                item(k, v, Some(i), None, None);
+            }
+        }
+        domain_items(domains, i + 1, &mut item);
+        let Some(b) = b else { continue };
         if let Some(v) = b.offset {
-            item("OFFSET", &format!("{v}"), Some(i), Some("offset"));
+            item("OFFSET", &format!("{v}"), Some(i), Some("offset"), None);
         }
         if let Some(v) = b.scale {
-            item("SCALE", &format!("{v}"), Some(i), Some("scale"));
+            item("SCALE", &format!("{v}"), Some(i), Some("scale"), None);
         }
         if let Some(v) = &b.unit {
-            item("UNITTYPE", v, Some(i), Some("unittype"));
+            item("UNITTYPE", v, Some(i), Some("unittype"), None);
         }
         if let Some(v) = &b.description {
-            item("DESCRIPTION", v, Some(i), Some("description"));
-        }
-        for (k, v) in &b.items {
-            item(k, v, Some(i), None);
+            item("DESCRIPTION", v, Some(i), Some("description"), None);
         }
         if let Some(v) = &b.color_interp {
-            item("COLORINTERP", v, Some(i), Some("colorinterp"));
+            item("COLORINTERP", v, Some(i), Some("colorinterp"), None);
         }
+    }
+    for (k, v) in image_structure {
+        item(k, v, None, None, Some("IMAGE_STRUCTURE"));
     }
     xml.push_str("</GDALMetadata>");
     any.then_some(xml)
@@ -1798,6 +1782,15 @@ fn merge(mut a: crate::drivers::geokeys::GeoKeyValues, b: crate::drivers::geokey
     a
 }
 
+/// Whether overview images carry the `GDAL_NODATA` tag: GDAL 3.12.1 writes it on the overviews it
+/// builds only from a nodata held as a double (`GTiffDataset::GetOverviewParameters` reads
+/// `m_bNoDataSet`), not from the Int64 and UInt64 nodata it holds apart
+/// (`m_bNoDataSetAsInt64`, `m_bNoDataSetAsUInt64`). GDAL then masks no overview pixel of such a
+/// raster by value.
+fn overview_nodata(t: DataType) -> bool {
+    !matches!(t, DataType::I64 | DataType::U64)
+}
+
 /// Formats a nodata value as GDAL writes it.
 pub(crate) fn format_nodata(nd: f64) -> String {
     if nd.is_nan() {
@@ -1807,6 +1800,22 @@ pub(crate) fn format_nodata(nd: f64) -> String {
     } else {
         // Shortest representation that round-trips.
         format!("{nd}")
+    }
+}
+
+/// Formats the `GDAL_NODATA` of samples of type `t` as GDAL writes it: the nodata of Int64 and
+/// UInt64 samples that the type holds exactly as an integer (`GTiffDataset::WriteNoDataValue` for
+/// `int64_t` and `uint64_t`, GDAL 3.12.1), which GDAL reads back with `strtoll` or `strtoull`;
+/// other values as [`format_nodata`]. A large value printed as a double (`9223372036854776000`
+/// for 2^63) reads back as another integer.
+pub(crate) fn format_nodata_for(nd: f64, t: DataType) -> String {
+    // `GDALIsValueExactAs`: within [-2^63, 2^63) or [0, 2^64), and integral.
+    match t {
+        DataType::I64 if (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&nd) && nd.fract() == 0.0 => {
+            (nd as i64).to_string()
+        }
+        DataType::U64 if (0.0..18_446_744_073_709_551_616.0).contains(&nd) && nd.fract() == 0.0 => (nd as u64).to_string(),
+        _ => format_nodata(nd),
     }
 }
 
@@ -1873,6 +1882,19 @@ pub(crate) fn xml_escape(s: &str) -> String {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub struct GeoTiffWriter {
+    inner: RowWriter,
+}
+
+/// How a [`GeoTiffWriter`] writes: a GeoTIFF's blocks as their rows come, or a COG's levels as
+/// their rows come ([`CogWriter`], in a mutex, which makes the writer `Sync` as Python's classes
+/// must be: its compression results come through channels).
+enum RowWriter {
+    Tiff(Box<TiffRows>),
+    Cog(Box<std::sync::Mutex<CogWriter>>),
+}
+
+/// A GeoTIFF written block row by block row (see [`GeoTiffWriter`]).
+struct TiffRows {
     file: std::io::BufWriter<std::fs::File>,
     pos: u64,
     big: bool,
@@ -1901,15 +1923,97 @@ pub struct GeoTiffWriter {
 
 impl std::fmt::Debug for GeoTiffWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GeoTiffWriter")
-            .field("cols", &self.cols)
-            .field("rows", &self.rows)
-            .field("bands", &self.bands)
-            .finish_non_exhaustive()
+        let mut d = f.debug_struct("GeoTiffWriter");
+        match &self.inner {
+            RowWriter::Tiff(t) => d.field("cols", &t.cols).field("rows", &t.rows).field("bands", &t.bands),
+            RowWriter::Cog(_) => d.field("cog", &true),
+        };
+        d.finish_non_exhaustive()
     }
 }
 
 impl GeoTiffWriter {
+    /// Creates the file. `header` describes the raster (its size, bands, data type,
+    /// georeferencing, CRS, nodata and metadata); its pixels are not read. `options` are those of
+    /// [`crate::write_raster_dataset`] for GeoTIFFs and COGs; for GeoTIFFs, `options.mask` asks
+    /// for an internal mask, whose rows are given with the pixels'. A COG's overviews are
+    /// computed as their rows come, the file the same, byte for byte, as `write_raster_dataset`'s.
+    ///
+    /// # Errors
+    /// For overviews, COGs with a mask or a source's overviews to copy, and compressions
+    /// terrio's own writer does not encode (WEBP...), which need the whole raster; and when the
+    /// file cannot be created.
+    pub fn create(path: &str, header: &crate::RasterDataset, options: &crate::RasterWriteOptions) -> Result<Self> {
+        let inner = if options.driver == Some(crate::formats::RasterDriver::Cog) {
+            RowWriter::Cog(Box::new(std::sync::Mutex::new(cog_rows(path, header, options)?)))
+        } else {
+            RowWriter::Tiff(Box::new(TiffRows::create(path, header, options)?))
+        };
+        Ok(Self { inner })
+    }
+
+    /// The number of rows given so far.
+    pub fn rows_written(&self) -> usize {
+        match &self.inner {
+            RowWriter::Tiff(t) => t.rows_written(),
+            RowWriter::Cog(c) => c.lock().unwrap_or_else(std::sync::PoisonError::into_inner).rows_written(),
+        }
+    }
+
+    /// Appends `rows` full rows of every band (`data`: band after band, of the raster's data
+    /// type), and of the mask (0 for invalid pixels) when the file has one.
+    ///
+    /// # Errors
+    /// When the data does not hold `rows` rows of every band, rows go past the raster's height,
+    /// a mask is given for a file without one, or the file cannot be written.
+    pub fn write_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
+        match &mut self.inner {
+            RowWriter::Tiff(t) => t.write_rows(data, rows, mask),
+            RowWriter::Cog(_) if mask.is_some() => Err(Error::InvalidArgument("the COG has no mask".into())),
+            RowWriter::Cog(c) => c.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).write_rows(data.clone(), rows),
+        }
+    }
+
+    /// Writes the directories (and the COG's levels) and closes the file.
+    ///
+    /// # Errors
+    /// When rows are missing, or the file cannot be written.
+    pub fn finish(self) -> Result<()> {
+        match self.inner {
+            RowWriter::Tiff(t) => (*t).finish(),
+            RowWriter::Cog(c) => c.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner).finish(),
+        }
+    }
+}
+
+/// The COG `create` writes in rows: as `crate::write_raster_dataset` writes it, without a mask,
+/// overviews, a source's overviews to copy, or a compression only the whole raster is encoded
+/// with.
+fn cog_rows(path: &str, header: &crate::RasterDataset, options: &crate::RasterWriteOptions) -> Result<CogWriter> {
+    if options.mask.is_some() || !options.overviews.is_empty() {
+        return Err(Error::Unsupported("COGs with a mask or overview factors need the whole raster".into()));
+    }
+    let mut opts = TiffOptions::from_write_options(options, true, header.nodata())?.ok_or_else(|| {
+        let name = options.compression.as_deref().unwrap_or_default();
+        Error::Unsupported(format!("{name} compression needs the whole raster"))
+    })?;
+    if opts.source_overviews.is_some() {
+        return Err(Error::Unsupported("a COG copying a source's overviews needs the whole raster".into()));
+    }
+    if opts.geo_transform.is_none() {
+        opts.geo_transform = header.affine;
+    }
+    opts.complex = header.complex;
+    CogWriter::create(path, &header.raster, &opts)
+}
+
+impl std::fmt::Debug for TiffRows {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TiffRows").field("cols", &self.cols).field("rows", &self.rows).field("bands", &self.bands).finish_non_exhaustive()
+    }
+}
+
+impl TiffRows {
     /// Creates the file. `header` describes the raster (its size, bands, data type,
     /// georeferencing, CRS, nodata and metadata); its pixels are not read. `options` are those of
     /// [`crate::write_raster_dataset`] for GeoTIFFs; `options.mask` is ignored: masks are given
@@ -2249,83 +2353,6 @@ fn chunk_spool() -> Result<ChunkSpool> {
     Ok(Default::default())
 }
 
-enum CogReducer {
-    Source(CogOverview),
-    Gdal(GdalCogOverview),
-}
-
-impl CogReducer {
-    fn write_rows(&mut self, data: &RasterData, rows: usize) -> Result<RasterData> {
-        match self {
-            Self::Source(reducer) => Ok(reducer.write_rows(data, rows)),
-            Self::Gdal(reducer) => reducer.write_rows(data, rows),
-        }
-    }
-}
-
-struct GdalCogOverview {
-    cols: usize,
-    rows: usize,
-    bands: usize,
-    out_cols: usize,
-    out_rows: usize,
-    received: usize,
-    emitted: usize,
-    start: usize,
-    pending_rows: usize,
-    pending: Option<RasterData>,
-    method: OverviewResampling,
-    nodata: Option<f64>,
-}
-
-impl GdalCogOverview {
-    fn new(cols: usize, rows: usize, bands: usize, method: OverviewResampling, nodata: Option<f64>) -> Self {
-        Self {
-            cols,
-            rows,
-            bands,
-            out_cols: (cols / 2).max(1),
-            out_rows: (rows / 2).max(1),
-            received: 0,
-            emitted: 0,
-            start: 0,
-            pending_rows: 0,
-            pending: None,
-            method,
-            nodata,
-        }
-    }
-
-    fn write_rows(&mut self, data: &RasterData, rows: usize) -> Result<RasterData> {
-        let pending = match self.pending.take() {
-            Some(previous) => append_rows(&previous, self.pending_rows, data, rows, self.cols, self.bands)?,
-            None => data.clone(),
-        };
-        self.pending_rows += rows;
-        self.received += rows;
-        let ratio = self.rows as f64 / self.out_rows as f64;
-        let mut end = self.emitted;
-        while end < self.out_rows && (((end + 1) as f64 * ratio - 1e-8).ceil() as usize).min(self.rows) <= self.received {
-            end += 1;
-        }
-        let count = end - self.emitted;
-        let out = if count == 0 {
-            RasterData::new_filled(data.data_type(), 0, 0.0)
-        } else {
-            map_data!(&pending, values => resample_region(values, (self.cols, self.pending_rows, self.bands), (self.out_cols, count),
-                self.method, self.nodata, self.nodata.unwrap_or(0.0), Some((self.start, self.emitted, self.rows, self.out_rows))))
-        };
-        self.emitted = end;
-        let keep = if end == self.out_rows { self.rows } else { (end as f64 * ratio + 1e-8) as usize };
-        // end never decreases, and this window-start function is monotonic for the fixed ratio.
-        let dropped = keep - self.start;
-        self.pending = Some(slice_rows(&pending, self.pending_rows, dropped..self.pending_rows, self.cols, self.bands));
-        self.pending_rows -= dropped;
-        self.start = keep;
-        Ok(out)
-    }
-}
-
 /// One resolution level of a [`CogWriter`].
 struct CogLevel {
     cols: usize,
@@ -2335,8 +2362,6 @@ struct CogLevel {
     /// Rows received but not yet compressed (less than a row of tiles), band after band.
     pending: RasterData,
     pending_rows: usize,
-    /// Reduces full-resolution source rows independently for this overview.
-    overview: Option<CogReducer>,
     /// The compressed chunks of each plane, and their sizes.
     spools: Vec<ChunkSpool>,
     sizes: Vec<Vec<u64>>,
@@ -2344,17 +2369,36 @@ struct CogLevel {
     tags: Vec<(u16, Value)>,
 }
 
+/// An overview level of a [`CogWriter`] being computed from the level it is resampled from: the
+/// rows of that level its next blocks need (`buf_rows` rows from `buf_row0`, band after band),
+/// and its next row.
+struct CogBuild {
+    level: usize,
+    src: usize,
+    plan: gdal_overview::Plan,
+    buf: RasterData,
+    buf_row0: usize,
+    buf_rows: usize,
+    next_y: usize,
+}
+
 /// A COG written a few rows at a time, from the top, so that the raster is never held whole. Each
-/// overview reduces the original rows independently, while every level compresses complete rows
-/// of tiles into a temporary file. Once the last row is in, the file is laid out as [`write`]
-/// lays it out: the IFDs, then the levels' tiles from the smallest overview, copied from the
-/// temporary files. The file is byte for byte the same.
+/// level (the full resolution, then the overviews down to one that fits in a tile) compresses its
+/// rows of tiles as they are complete, into a temporary file, and keeps the rows the next level's
+/// next blocks are resampled from, computing them as GDAL does once their rows are in (as
+/// [`write`] computes them from the whole raster). Once the last row is in, the file is laid out as
+/// [`write`] lays it out: the IFDs, then the levels' tiles from the smallest overview, copied from
+/// the temporary files. The file is byte for byte the same.
 pub(crate) struct CogWriter {
     file: std::io::BufWriter<std::fs::File>,
     bands: usize,
     data_type: DataType,
     encoding: std::sync::Arc<(Compression, CodecParams, Layout)>,
     tile: usize,
+    nodata: Option<f64>,
+    /// The alpha band, and whether it masks the other bands ([`alpha_weights`]).
+    alpha: (Option<usize>, bool),
+    builds: Vec<CogBuild>,
     bigtiff: bool,
     /// The full-resolution image's georeferencing and metadata tags (nodata on every level).
     geo: Vec<(u16, Value)>,
@@ -2382,35 +2426,26 @@ impl CogWriter {
         let tile = tile.map_or(512, |(t, _)| t as usize);
         let planes = if layout.planar { raster.bands / layout.parts } else { 1 };
         let mut sizes = vec![(raster.cols, raster.rows)];
-        while let Some(&(c, r)) = sizes.last().filter(|(c, r)| *c > tile || *r > tile) {
-            sizes.push(if opts.gdal_overviews { ((c / 2).max(1), (r / 2).max(1)) } else { (c.div_ceil(2), r.div_ceil(2)) });
-        }
-        let previous_sizes = sizes.clone();
+        sizes.extend(gdal_overview::cog_sizes(raster.cols, raster.rows, tile, opts.overview_count));
+        let (method, block) = (cog_method(opts), gdal_overview::ovr_block(opts.source_block));
+        let builds = (1..sizes.len())
+            .map(|level| {
+                // As GDAL does, each overview is computed from the previous one when it is larger.
+                let src = if sizes[level - 1].0 > sizes[level].0 { level - 1 } else { 0 };
+                let plan = gdal_overview::Plan::new(method, sizes[src], sizes[level], raster.bands, block, raster.data_type);
+                let buf = RasterData::new_filled(raster.data_type, 0, 0.0);
+                CogBuild { level, src, plan, buf, buf_row0: 0, buf_rows: 0, next_y: 0 }
+            })
+            .collect();
         let levels = sizes
             .into_iter()
-            .enumerate()
-            .map(|(i, (cols, rows))| {
+            .map(|(cols, rows)| {
                 Ok(CogLevel {
                     cols,
                     rows,
                     received: 0,
                     pending: RasterData::new_filled(raster.data_type, 0, 0.0),
                     pending_rows: 0,
-                    overview: (i > 0).then(|| {
-                        if opts.gdal_overviews {
-                            let (cols, rows) = previous_sizes[i - 1];
-                            return CogReducer::Gdal(GdalCogOverview::new(cols, rows, raster.bands, opts.overview_resampling, opts.nodata));
-                        }
-                        CogReducer::Source(CogOverview::new(
-                            raster.cols,
-                            raster.rows,
-                            raster.bands,
-                            1usize << i,
-                            opts.overview_resampling,
-                            opts.nodata,
-                            opts.alpha,
-                        ))
-                    }),
                     spools: (0..planes).map(|_| chunk_spool()).collect::<Result<_>>()?,
                     sizes: vec![Vec::new(); planes],
                     tags: Vec::new(),
@@ -2424,6 +2459,9 @@ impl CogWriter {
             data_type: raster.data_type,
             encoding: std::sync::Arc::new((opts.compression, opts.codec, layout)),
             tile,
+            nodata: opts.nodata,
+            alpha: alpha_weights(opts, raster.bands, raster.data_type),
+            builds,
             bigtiff: opts.bigtiff,
             geo,
             color_map,
@@ -2431,6 +2469,11 @@ impl CogWriter {
             #[cfg(not(target_family = "wasm"))]
             in_flight: Default::default(),
         })
+    }
+
+    /// The number of full-resolution rows given so far.
+    pub(crate) fn rows_written(&self) -> usize {
+        self.levels[0].received
     }
 
     /// Appends the next `rows` full rows of every band (`data`: band after band, of the raster's
@@ -2454,38 +2497,11 @@ impl CogWriter {
                 l.cols
             )));
         }
-        if rows == 0 {
-            return Ok(());
-        }
-        if self.levels.get(1).is_some_and(|level| matches!(level.overview, Some(CogReducer::Gdal(_)))) {
-            let mut current = data;
-            let mut count = rows;
-            for i in 0..self.levels.len() {
-                let next =
-                    self.levels.get_mut(i + 1).map(|level| level.overview.as_mut().unwrap().write_rows(&current, count)).transpose()?;
-                self.push(i, current, count)?;
-                let Some(next) = next else { break };
-                count = next.len() / (self.levels[i + 1].cols * self.bands);
-                if count == 0 {
-                    break;
-                }
-                current = next;
-            }
-            return Ok(());
-        }
-        let overviews = crate::par::map_mut_coarse(&mut self.levels[1..], |level| level.overview.as_mut().unwrap().write_rows(&data, rows));
-        for (i, overview) in overviews.into_iter().enumerate() {
-            let overview = overview?;
-            let i = i + 1;
-            let overview_rows = overview.len() / (self.levels[i].cols * self.bands);
-            if overview_rows > 0 {
-                self.push(i, overview, overview_rows)?;
-            }
-        }
-        self.push(0, data, rows)
+        if rows > 0 { self.push(0, data, rows) } else { Ok(()) }
     }
 
-    /// Adds `rows` rows to level `i`, compressing complete rows of tiles and the final partial row.
+    /// Adds `rows` rows to level `i`: resampled into the levels computed from it as soon as their
+    /// next blocks' rows are in, and compressed by rows of tiles.
     fn push(&mut self, i: usize, data: RasterData, rows: usize) -> Result<()> {
         let bands = self.bands;
         let (cols, done) = {
@@ -2493,6 +2509,39 @@ impl CogWriter {
             l.received += rows;
             (l.cols, l.received == l.rows)
         };
+        let received = self.levels[i].received;
+        for b in 0..self.builds.len() {
+            if self.builds[b].src != i {
+                continue;
+            }
+            let bd = &mut self.builds[b];
+            bd.buf = if bd.buf_rows == 0 { data.clone() } else { append_rows(&bd.buf, bd.buf_rows, &data, rows, cols, bands)? };
+            bd.buf_rows += rows;
+            loop {
+                let bd = &self.builds[b];
+                if bd.next_y >= bd.plan.dst.1 {
+                    break;
+                }
+                let (n, need) = bd.plan.rows(bd.next_y);
+                if need.end > received && !done {
+                    break;
+                }
+                let weights = gdal_overview::Weights { alpha: self.alpha.0, alpha_masks: self.alpha.1, mask: None };
+                let out = gdal_overview::block_row(&bd.plan, &bd.buf, bd.buf_row0, bd.buf_rows, bands, self.nodata, weights, bd.next_y);
+                let bd = &mut self.builds[b];
+                bd.next_y += n;
+                // The rows no later block reads.
+                let keep = bd.plan.first_row(bd.next_y).clamp(bd.buf_row0, bd.buf_row0 + bd.buf_rows);
+                if keep > bd.buf_row0 {
+                    let drop = keep - bd.buf_row0;
+                    bd.buf = slice_rows(&bd.buf, bd.buf_rows, drop..bd.buf_rows, cols, bands);
+                    bd.buf_rows -= drop;
+                    bd.buf_row0 = keep;
+                }
+                let level = bd.level;
+                self.push(level, out, n)?;
+            }
+        }
         // Whole rows of tiles, and the level's last rows.
         let l = &mut self.levels[i];
         if l.pending_rows == 0 {
@@ -2532,7 +2581,7 @@ impl CogWriter {
         #[cfg(not(target_family = "wasm"))]
         {
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
-            rayon::spawn(move || {
+            crate::par::spawn(move || {
                 let _ = tx.send(encode());
             });
             self.in_flight.push_back((i, rows, rx));
@@ -2596,8 +2645,10 @@ impl CogWriter {
             if i > 0 {
                 tags.push((254, Value::Longs(vec![1])));
             }
-            // Georeferencing on the full-resolution image; nodata on every image, as GDAL does.
-            tags.extend(self.geo.iter().filter(|(t, _)| i == 0 || *t == 42113).cloned());
+            // Georeferencing on the full-resolution image; nodata on every image, as GDAL does,
+            // but not on the overviews of 64-bit integer rasters (see [`overview_nodata`]).
+            let ovr_nodata = overview_nodata(self.data_type);
+            tags.extend(self.geo.iter().filter(|(t, _)| i == 0 || (*t == 42113 && ovr_nodata)).cloned());
             if let Some(cm) = &self.color_map {
                 tags.push((320, cm.clone()));
             }
@@ -2832,7 +2883,7 @@ mod tests {
         )
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        assert!(gdal_metadata_xml(&r.metadata, &[]).is_none());
+        assert!(gdal_metadata_xml(&r.metadata, &[], &[], (false, false), &[]).is_none());
         let mut unknown = r.clone();
         unknown.crs = Default::default();
         let path = dir.path().join("unknown.tif");
@@ -2914,8 +2965,8 @@ mod tests {
     fn cog_row_type_errors_leave_the_writer_usable() {
         let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
         let dir = tempfile::tempdir().unwrap();
-        for method in [OverviewResampling::Nearest, OverviewResampling::Average, OverviewResampling::Mode] {
-            let opts = TiffOptions { cog: true, tile_size: Some(16), overview_resampling: method, ..Default::default() };
+        for method in [Method::Nearest, Method::Average, Method::Mode] {
+            let opts = TiffOptions { cog: true, tile_size: Some(16), cog_resampling: Some(method), ..Default::default() };
             let path = dir.path().join("typed.tif");
             let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
             assert!(matches!(writer.write_rows(RasterData::F32(vec![1.0; 65]), 1), Err(Error::InvalidArgument(_))));
@@ -2933,20 +2984,22 @@ mod tests {
     /// interleaved and planar bands, and rows given one at a time or in uneven runs.
     #[test]
     fn cogs_written_in_rows_are_those_written_whole() {
-        use OverviewResampling::{Average, Max, Min, Mode, Nearest};
+        use Method::{Average, Bilinear, Cubic, Lanczos, Mode, Nearest};
         let dir = tempfile::tempdir().unwrap();
-        for (cols, rows, bands, t, planar, overview_resampling, alpha, compression) in [
-            (70, 50, 1, DataType::F32, false, Average, false, Compression::Deflate),
-            (157, 133, 3, DataType::U8, false, Average, false, Compression::Lzw),
-            (157, 133, 2, DataType::I16, true, Average, false, Compression::Zstd),
-            (33, 129, 1, DataType::U8, false, Nearest, false, Compression::None),
-            (16, 16, 1, DataType::F32, false, Average, false, Compression::Deflate),
-            (73, 127, 2, DataType::F32, true, Average, true, Compression::Deflate),
-            (67, 131, 4, DataType::U8, false, Average, true, Compression::Lzw),
-            (33, 129, 1, DataType::I16, false, Min, false, Compression::Deflate),
-            (67, 93, 2, DataType::U8, true, Max, true, Compression::Deflate),
-            (35, 131, 1, DataType::I16, false, Mode, false, Compression::Deflate),
-            (33, 129, 2, DataType::U8, false, Nearest, true, Compression::None),
+        // The matrix of #165, with GDAL's methods: COG overviews are GDAL's, which has no
+        // min or max, so the rows of #165 for those are bilinear and cubic here.
+        for (cols, rows, bands, t, planar, method, alpha, compression) in [
+            (70, 50, 1, DataType::F32, false, None, false, Compression::Deflate),
+            (157, 133, 3, DataType::U8, false, Some(Lanczos), false, Compression::Lzw),
+            (157, 133, 2, DataType::I16, true, Some(Average), false, Compression::Zstd),
+            (33, 129, 1, DataType::U8, false, Some(Nearest), false, Compression::None),
+            (16, 16, 1, DataType::F32, false, None, false, Compression::Deflate),
+            (73, 127, 2, DataType::F32, true, Some(Average), true, Compression::Deflate),
+            (67, 131, 4, DataType::U8, false, Some(Average), true, Compression::Lzw),
+            (33, 129, 1, DataType::I16, false, Some(Bilinear), false, Compression::Deflate),
+            (67, 93, 2, DataType::U8, true, Some(Cubic), true, Compression::Deflate),
+            (35, 131, 1, DataType::I16, false, Some(Mode), false, Compression::Deflate),
+            (33, 129, 2, DataType::U8, false, Some(Nearest), true, Compression::None),
         ] {
             let cfg = wbraster::RasterConfig {
                 cols,
@@ -2988,7 +3041,7 @@ mod tests {
                 tile_size: Some(16),
                 nodata: Some(-1.0),
                 planar,
-                overview_resampling,
+                cog_resampling: method,
                 alpha,
                 photometric: (bands == 4).then_some(2),
                 ..Default::default()
@@ -3006,7 +3059,7 @@ mod tests {
                 w.finish().unwrap();
                 assert!(
                     std::fs::read(&p).unwrap() == whole,
-                    "{cols}x{rows}x{bands} {t:?} planar {planar}, {overview_resampling:?}, alpha {alpha}, rows by {step}"
+                    "{cols}x{rows}x{bands} {t:?} planar {planar}, {method:?}, alpha {alpha}, rows by {step}"
                 );
             }
         }
@@ -3110,65 +3163,6 @@ mod tests {
                 _ => false,
             };
             assert!(same, "{co:?}");
-        }
-    }
-
-    #[test]
-    fn creation_option_resampling_is_scoped_to_gdal_cog_profile() {
-        for cog in [false, true] {
-            let mut options =
-                crate::RasterWriteOptions { creation_options: vec![("RESAMPLING".into(), "CUBIC".into())], ..Default::default() };
-            let actual = TiffOptions::from_write_options(&options, cog, None).unwrap().unwrap();
-            assert_eq!(actual.overview_resampling, if cog { OverviewResampling::Average } else { OverviewResampling::Nearest });
-            options.overview_resampling = Some("min".into());
-            assert_eq!(TiffOptions::from_write_options(&options, cog, None).unwrap().unwrap().overview_resampling, OverviewResampling::Min);
-        }
-        let mut options = crate::RasterWriteOptions {
-            creation_options: vec![("COG_OVERVIEW_POLICY".into(), "GDAL_3_13".into()), ("RESAMPLING".into(), "CUBIC".into())],
-            ..Default::default()
-        };
-        assert!(TiffOptions::from_write_options(&options, true, None).is_err());
-        options.creation_options[1].1 = "nearest".into();
-        assert_eq!(
-            TiffOptions::from_write_options(&options, true, None).unwrap().unwrap().overview_resampling,
-            OverviewResampling::Nearest
-        );
-    }
-
-    #[test]
-    fn gdal_cog_pyramids_are_recursive_and_independent_of_slabs() {
-        let opts = TiffOptions {
-            cog: true,
-            gdal_overviews: true,
-            tile_size: Some(16),
-            overview_resampling: OverviewResampling::Average,
-            ..Default::default()
-        };
-        for (rows, sizes) in [(35, [(32, 17), (16, 8)]), (7, [(32, 3), (16, 1)]), (3, [(32, 1), (16, 1)])] {
-            let raster = Raster::from_data_native(
-                wbraster::RasterConfig { cols: 65, rows, bands: 1, data_type: DataType::F32, ..Default::default() },
-                RasterData::F32((0..65 * rows).map(|i| 777.0 + (i % 217) as f32 * 0.25).collect()),
-            )
-            .unwrap();
-            let expected = encode(&raster, &opts).unwrap();
-            let lazy = crate::LazyRaster::from_tiff_bytes(expected.clone()).unwrap().unwrap();
-            assert_eq!(lazy.overviews(), sizes);
-            let dir = tempfile::tempdir().unwrap();
-            for step in [1, 2, 7, 16, rows] {
-                let path = dir.path().join("gdal.tif");
-                let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
-                for y in (0..rows).step_by(step) {
-                    let count = step.min(rows - y);
-                    writer.write_rows(slice_rows(&raster.data, rows, y..y + count, 65, 1), count).unwrap();
-                    for level in &writer.levels[1..] {
-                        if let Some(CogReducer::Gdal(reducer)) = &level.overview {
-                            assert!(reducer.pending_rows <= 3, "only the unfinished resampling window is retained");
-                        }
-                    }
-                }
-                writer.finish().unwrap();
-                assert_eq!(std::fs::read(path).unwrap(), expected, "rows {rows}, slab size {step}");
-            }
         }
     }
 
@@ -3428,9 +3422,134 @@ mod tests {
         assert_eq!(v[3 * 35 + 7], avg(6, 14));
     }
 
+    // The tests of the COG overview model of #165: each level reduced from the source,
+    // 33x18, 17x9 and 9x5 for 65x35 with 16-pixel tiles. terrio's COG overviews are GDAL's
+    // COG driver's (gdal_overview.rs): 32x17 and 16x8 there, each level from the previous one.
+    // GDAL 3.12.1 agrees with terrio on 22 of the 23 scenarios below and with the model of #165
+    // on none, so the tests whose oracle is that model are ignored here, and their scenarios run
+    // against GDAL itself in python/tests/test_cog_overview_scenarios.py.
     // An odd-sized source large enough for factors 2, 4 and 8 with 16-pixel COG tiles.
     fn overview_fixture(bands: usize, data_type: DataType, data: RasterData) -> Raster {
         Raster::from_data_native(wbraster::RasterConfig { cols: 65, rows: 35, bands, data_type, ..Default::default() }, data).unwrap()
+    }
+
+    /// A mask without a dataset (rasterio's buffered COG writes hold it in a MEM dataset) has its
+    /// first overview weighted by its own values, as a file's mask, and its later ones computed
+    /// from the Byte values of the level before with all-valid weights, where a file's mask keeps
+    /// weighting each level by its own values.
+    #[test]
+    fn a_mask_without_a_dataset_cascades_as_gdal_from_a_mem_dataset() {
+        let (w, h) = (65usize, 35usize);
+        let mask: Vec<u8> = (0..w * h).map(|i| if (i * 7919 + i / w * 31) % 13 < 5 { 0 } else { 255 }).collect();
+        let file = TiffOptions { cog: true, ..Default::default() };
+        let mem = TiffOptions { mask_without_dataset: true, ..file.clone() };
+        let (s1, s2, block) = ((33, 18), (17, 9), gdal_overview::ovr_block(None));
+        let first = |o: &TiffOptions| mask_levels(o, Method::Cubic, std::slice::from_ref(&mask), &[], 0, (w, h), s1, block);
+        let raw1 = first(&mem);
+        assert_eq!(raw1, first(&file), "the first overview, from the full resolution");
+        let bits1: Vec<u8> = raw1.iter().map(|v| if *v != 0 { 255 } else { 0 }).collect();
+        let masks = [mask.clone(), bits1];
+        let raws = [raw1.clone()];
+        let second = |o: &TiffOptions| mask_levels(o, Method::Cubic, &masks, &raws, 1, s1, s2, block);
+        let all_valid = vec![255u8; raw1.len()];
+        let plan = gdal_overview::Plan::new(Method::Cubic, s1, s2, 1, block, DataType::U8);
+        let weights = gdal_overview::Weights { alpha: None, alpha_masks: false, mask: Some(&all_valid) };
+        let RasterData::U8(unweighted) = gdal_overview::level(&plan, &RasterData::U8(raw1.clone()), 1, None, weights) else {
+            unreachable!()
+        };
+        assert_eq!(second(&mem), unweighted);
+        assert_eq!(second(&file), gdal_overview::mask_level(Method::Cubic, &masks[1], s1, s2, block));
+        assert_ne!(second(&mem), second(&file), "the fixture tells the two apart");
+    }
+
+    /// The data of a COG whose mask has no dataset are weighted by the Byte values of the mask
+    /// overview they are computed from, as GDAL keeps it in its temporary file, not by the bits
+    /// written. The first mask overview, weighted by itself, is all 0 or 255; the
+    /// second is not, so the third data overview tells the two apart.
+    #[test]
+    fn data_overviews_are_weighted_by_a_mask_without_a_dataset_as_gdal_keeps_it() {
+        let (w, h) = (130usize, 70usize);
+        let data: Vec<u8> = (0..w * h).map(|i| ((i % w) * 3 + (i / w) * 5) as u8).collect();
+        let mask: Vec<u8> = (0..w * h).map(|i| if (i * 7919 + i / w * 31) % 13 < 5 { 0 } else { 255 }).collect();
+        let cfg = wbraster::RasterConfig { cols: w, rows: h, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let raster = Raster::from_data_native(cfg, RasterData::U8(data)).unwrap();
+        let options = crate::RasterWriteOptions {
+            tile_size: Some(16),
+            compression: Some("NONE".into()),
+            overview_resampling: Some("cubic".into()),
+            ..Default::default()
+        };
+        let mut opts = TiffOptions::from_write_options(&options, true, None).unwrap().unwrap();
+        opts.mask = Some(mask.clone());
+        opts.mask_without_dataset = true;
+        let mut lazy = crate::LazyRaster::from_tiff_bytes(encode(&raster, &opts).unwrap()).unwrap().unwrap();
+        let sizes = lazy.overviews();
+        assert_eq!(sizes.len(), 3);
+        let mut stored = |level: usize| {
+            let (cols, rows) = sizes[level];
+            let options = crate::WindowOptions { bands: vec![], overview: Some(level) };
+            let RasterData::U8(v) = lazy.read_window(crate::Window::new(0, 0, cols, rows), &options).unwrap().raster.data else {
+                unreachable!()
+            };
+            v
+        };
+        let block = gdal_overview::ovr_block(None);
+        let bits = |raw: &[u8]| -> Vec<u8> { raw.iter().map(|v| if *v != 0 { 255 } else { 0 }).collect() };
+        let raw1 = mask_levels(&opts, Method::Cubic, std::slice::from_ref(&mask), &[], 0, (w, h), sizes[0], block);
+        assert_eq!(raw1, bits(&raw1), "the first mask overview is all 0 or 255");
+        let masks = [mask.clone(), bits(&raw1)];
+        let raw2 = mask_levels(&opts, Method::Cubic, &masks, std::slice::from_ref(&raw1), 1, sizes[0], sizes[1], block);
+        let second = RasterData::U8(stored(1));
+        let plan = gdal_overview::Plan::new(Method::Cubic, sizes[1], sizes[2], 1, block, DataType::U8);
+        let weighted = |m: &[u8]| {
+            let weights = gdal_overview::Weights { alpha: None, alpha_masks: false, mask: Some(m) };
+            let RasterData::U8(v) = gdal_overview::level(&plan, &second, 1, None, weights) else { unreachable!() };
+            v
+        };
+        assert_ne!(weighted(&raw2), weighted(&bits(&raw2)), "the fixture tells the two apart");
+        assert_eq!(stored(2), weighted(&raw2));
+    }
+
+    /// Whether each image of a TIFF has the `GDAL_NODATA` tag.
+    fn nodata_tags(bytes: Vec<u8>) -> Vec<bool> {
+        let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut found = Vec::new();
+        for i in 0.. {
+            if dec.seek_to_image(i).is_err() {
+                break;
+            }
+            found.push(dec.find_tag(tiff::tags::Tag::Unknown(42113)).unwrap().is_some());
+        }
+        found
+    }
+
+    /// GDAL 3.12.1 writes `GDAL_NODATA` on the overview images it builds from a nodata held as a
+    /// double, not on those of Int64 and UInt64 rasters (`GetOverviewParameters`): a COG written
+    /// whole or in rows has the tag on its full-resolution image, and on its overviews but for
+    /// those types.
+    #[test]
+    fn overviews_carry_nodata_as_gdal_writes_it() {
+        let n = 65 * 35;
+        for (data_type, data, on_overviews) in [
+            (DataType::U16, RasterData::U16((0..n).map(|i| (i % 9) as u16).collect()), true),
+            (DataType::F32, RasterData::F32((0..n).map(|i| (i % 9) as f32).collect()), true),
+            (DataType::U64, RasterData::U64((0..n).map(|i| (i % 9) as u64).collect()), false),
+            (DataType::I64, RasterData::I64((0..n).map(|i| (i % 9) as i64).collect()), false),
+        ] {
+            let raster = overview_fixture(1, data_type, data);
+            let options = crate::RasterWriteOptions { tile_size: Some(16), compression: Some("NONE".into()), ..Default::default() };
+            let opts = TiffOptions::from_write_options(&options, true, Some(7.0)).unwrap().unwrap();
+            let whole = nodata_tags(encode(&raster, &opts).unwrap());
+            assert!(whole.len() > 1, "{data_type:?}: overviews");
+            assert!(whole[0], "{data_type:?}: the full-resolution image");
+            assert!(whole[1..].iter().all(|t| *t == on_overviews), "{data_type:?}, written whole: {whole:?}");
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("rows.tif");
+            let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
+            writer.write_rows(raster.data.clone(), 35).unwrap();
+            writer.finish().unwrap();
+            assert_eq!(nodata_tags(std::fs::read(path).unwrap()), whole, "{data_type:?}, written in rows");
+        }
     }
 
     fn stored_cog_overviews(raster: &Raster, mut options: crate::RasterWriteOptions, nodata: Option<f64>) -> Vec<(usize, RasterData)> {
@@ -3457,6 +3576,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "#165's model, not GDAL's: run against GDAL by python/tests/test_cog_overview_scenarios.py"]
     fn cog_nearest_overviews_sample_original_block_centers_and_palette_classes() {
         let classes = [0, 3, 9, 17];
         let source: Vec<u8> = (0..35).flat_map(|y| (0..65).map(move |x| classes[(x + 2 * y) % classes.len()])).collect();
@@ -3482,6 +3602,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "#165's model, not GDAL's: run against GDAL by python/tests/test_cog_overview_scenarios.py"]
     fn cog_average_overviews_weight_rgba_and_gray_alpha_colors() {
         for bands in [2, 4] {
             let pixels = 65 * 35;
@@ -3573,7 +3694,7 @@ mod tests {
             cog: true,
             tile_size: Some(16),
             compression: Compression::None,
-            overview_resampling: OverviewResampling::Average,
+            cog_resampling: Some(Method::Average),
             nodata: Some(nodata),
             alpha,
             photometric: (bands == 4).then_some(2),
@@ -3641,6 +3762,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "#165's model, not GDAL's: run against GDAL by python/tests/test_cog_overview_scenarios.py"]
     fn cog_float32_average_pixels_preserve_source_order_across_slabs() {
         for bands in [1, 2, 4] {
             assert_cog_float_average_source_order(DataType::F32, bands);
@@ -3648,6 +3770,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "#165's model, not GDAL's: run against GDAL by python/tests/test_cog_overview_scenarios.py"]
     fn cog_float64_average_pixels_preserve_source_order_across_slabs() {
         for bands in [1, 2, 4] {
             assert_cog_float_average_source_order(DataType::F64, bands);
@@ -3655,6 +3778,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "#165's model, not GDAL's: run against GDAL by python/tests/test_cog_overview_scenarios.py"]
     fn cog_float_average_overviews_preserve_original_valid_sample_counts() {
         let nodata = -9999.0f32;
         let mut source: Vec<f32> = (0..35).flat_map(|y| (0..65).map(move |x| ((x * 17 + y * 7) % 101) as f32 * 0.25)).collect();
@@ -3694,6 +3818,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "#165's model, not GDAL's: run against GDAL by python/tests/test_cog_overview_scenarios.py"]
     fn cog_uint16_average_overviews_round_only_after_full_source_reduction() {
         let nodata = u16::MAX;
         let mut source: Vec<u16> = (0..35).flat_map(|y| (0..65).map(move |x| ((x * 17 + y * 7) % 101) as u16)).collect();
@@ -3737,6 +3862,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "#165's model, not GDAL's: run against GDAL by python/tests/test_cog_overview_scenarios.py"]
     fn cog_overviews_honor_min_max_and_mode() {
         let source: Vec<u8> = (0..35).flat_map(|y| (0..65).map(move |x| [1, 5, 5, 9][(y % 2) * 2 + x % 2])).collect();
         let raster = overview_fixture(1, DataType::U8, RasterData::U8(source.clone()));
@@ -3773,6 +3899,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "#165's model, not GDAL's: run against GDAL by python/tests/test_cog_overview_scenarios.py"]
     fn cog_categorical_overviews_preserve_uint64_samples() {
         let base = 1u64 << 53;
         let pattern = [base, base + 1, base + 3, base + 3];
@@ -3818,6 +3945,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "#165's model, not GDAL's: run against GDAL by python/tests/test_cog_overview_scenarios.py"]
     fn cog_mode_counts_high_cardinality_uint64_classes_across_slabs() {
         let (cols, rows) = (257, 65);
         let base = 1u64 << 63;
@@ -3837,7 +3965,7 @@ mod tests {
             cog: true,
             tile_size: Some(16),
             compression: Compression::None,
-            overview_resampling: OverviewResampling::Mode,
+            cog_resampling: Some(Method::Mode),
             ..Default::default()
         };
         let dir = tempfile::tempdir().unwrap();
@@ -3887,6 +4015,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "#165's model, not GDAL's: run against GDAL by python/tests/test_cog_overview_scenarios.py"]
     fn cog_float_mode_groups_signed_zeros_and_excludes_nans() {
         let nodata = -9999.0;
         let patterns = [
@@ -3929,14 +4058,6 @@ mod tests {
     fn cog_rejects_unsupported_overview_resampling() {
         let options = crate::RasterWriteOptions { overview_resampling: Some("not-a-resampler".into()), ..Default::default() };
         assert!(TiffOptions::from_write_options(&options, true, None).is_err());
-    }
-
-    #[test]
-    fn mode_counts_as_gdal() {
-        // The first value to reach the highest count wins.
-        assert_eq!(mode(&[1.0, 2.0, 2.0, 1.0]), 2.0);
-        assert_eq!(mode(&[3.0, 1.0, 2.0]), 3.0);
-        assert_eq!(mode(&[1.0, 2.0, 1.0, 2.0, 2.0]), 2.0);
     }
 
     #[test]

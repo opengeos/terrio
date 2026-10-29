@@ -391,13 +391,15 @@ this software is based in part on the work of the Independent JPEG Group.
 GDAL's GRIB driver (degrib and g2clib)
 -------------------------------------------------------------------------------
 
-The GRIB driver in crates/terrio/src/drivers/grib/ reads GRIB files as GDAL's GRIB driver does
-(https://gdal.org): it ports the rules of GDAL's frmts/grib/gribdataset.cpp, of its copy of NOAA
-MDL's degrib (naming, levels, units, grids) and of NCEP's g2clib (the GRIB2 unpacking and template
-tables), and includes the GRIB tables GDAL distributes (frmts/grib/data, and degrib's GRIB1 tables
-from grib1tab.cpp) in crates/terrio/data/grib_tables.txt.zst. degrib and g2clib are works of the
-US government, in the public domain; the WMO's GRIB tables are published by the WMO. Small GRIB
-files of GDAL's test suite are among terrio's test files (crates/terrio/tests/data/grib).
+The GRIB driver in crates/terrio/src/drivers/grib.rs and crates/terrio/src/drivers/grib/ reads
+GRIB files as GDAL's GRIB driver does (https://gdal.org): it ports the rules of GDAL's
+frmts/grib/gribdataset.cpp, of its copy of NOAA MDL's degrib (naming, levels, units, grids) and of
+NCEP's g2clib (the GRIB2 unpacking and template tables), and includes the GRIB tables GDAL
+distributes: its GRIB2 CSV tables (degrib's tables merged with the WMO's) in
+crates/terrio/data/grib2.tsv.zst, and degrib's GRIB1 tables from grib1tab.cpp in
+crates/terrio/src/drivers/grib/grib1.tsv.zst. degrib and g2clib are works of the US government,
+in the public domain; the WMO's GRIB tables are published by the WMO. Small GRIB files of GDAL's
+test suite are among terrio's test files (crates/terrio/tests/data/grib).
 
   Copyright (c) 2007, ITC
   Copyright (c) 2008-2017, Even Rouault <even dot rouault at spatialys dot com>

@@ -10,17 +10,20 @@ use wbraster::raster::RasterData;
 use wbraster::{DataType, Raster};
 
 /// Reads an Esri ASCII grid.
+/// The keywords of an Esri ASCII grid's header lines (in any case).
+pub(crate) const HEADER_KEYS: &[&str] =
+    &["ncols", "nrows", "xllcorner", "yllcorner", "xllcenter", "yllcenter", "cellsize", "dx", "dy", "nodata_value"];
+
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let text = std::fs::read_to_string(path)?;
     let bad = |what: &str| Error::InvalidData(format!("{}: {what}", path.display()));
     // The header is the lines that start with a known keyword; the values follow.
-    const KEYS: &[&str] = &["ncols", "nrows", "xllcorner", "yllcorner", "xllcenter", "yllcenter", "cellsize", "dx", "dy", "nodata_value"];
     let mut header: Vec<(String, String)> = Vec::new();
     let mut data_start = 0;
     for line in text.split_inclusive('\n') {
         let t = line.trim();
         let key = t.split_whitespace().next().unwrap_or_default().to_ascii_lowercase();
-        if KEYS.contains(&key.as_str()) {
+        if HEADER_KEYS.contains(&key.as_str()) {
             let mut it = t.split_whitespace();
             if let (Some(k), Some(v)) = (it.next(), it.next()) {
                 header.push((k.to_ascii_lowercase(), v.to_string()));

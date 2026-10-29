@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+import terrio
+
 
 @pytest.fixture(scope="session")
 def data_dir():
@@ -44,3 +46,15 @@ def ogr():
     ogr = pytest.importorskip("osgeo.ogr")
     ogr.UseExceptions()
     return ogr
+
+
+@pytest.fixture(autouse=True)
+def _fresh_http_cache():
+    """Each test starts with an empty process-wide HTTP cache (GDAL's `VSICurlClearCache`).
+
+    terrio keeps what remote files' requests returned, as GDAL's `/vsicurl/` cache does: a
+    loopback server of a later test may get an earlier one's port, and its files must not be
+    read from the earlier test's bytes.
+    """
+    terrio.clear_http_cache()
+    yield

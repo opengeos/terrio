@@ -1,6 +1,7 @@
 //! Pixel-wise raster operations: `unscale`, `nodata_to_alpha`, `reclassify` and `as_features`,
 //! with keyword arguments named after the command-line options.
 
+use crate::Detach;
 use crate::PyResultExt;
 use crate::invalid;
 use crate::ops::{finish_raster, input_raster, vector_write_options, write_mode};
@@ -49,7 +50,7 @@ fn unscale(
 ) -> PyResult<PyRaster> {
     let o = UnscaleOptions { output_type: ot.map(parse_data_type).transpose().py()? };
     let ds = input_raster(py, src)?;
-    let out = py.detach(|| terrio::ops::pixel::unscale(&ds, &o)).py()?;
+    let out = py.detach_result(|| terrio::ops::pixel::unscale(&ds, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 
@@ -90,7 +91,7 @@ fn nodata_to_alpha(
     };
     let o = NodataToAlphaOptions { nodata };
     let ds = input_raster(py, src)?;
-    let out = py.detach(|| terrio::ops::pixel::nodata_to_alpha(&ds, &o)).py()?;
+    let out = py.detach_result(|| terrio::ops::pixel::nodata_to_alpha(&ds, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 
@@ -131,7 +132,7 @@ fn reclassify(
     };
     let o = ReclassifyOptions { mapping, output_type: ot.map(parse_data_type).transpose().py()? };
     let ds = input_raster(py, src)?;
-    let out = py.detach(|| terrio::ops::pixel::reclassify(&ds, &o)).py()?;
+    let out = py.detach_result(|| terrio::ops::pixel::reclassify(&ds, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 
@@ -188,7 +189,7 @@ fn as_features(
     let write = dst.map(|_| vector_write_options(format)).transpose()?;
     let mode = write_mode(append, overwrite)?;
     let layer = py
-        .detach(|| -> terrio::Result<terrio::Layer> {
+        .detach_result(|| -> terrio::Result<terrio::Layer> {
             let layer = terrio::ops::as_features::as_features(&ds, &o)?;
             if let (Some(path), Some(w)) = (dst, &write) {
                 terrio::ops::vector_filter::write_vector_with_mode(std::slice::from_ref(&layer), path, w, mode)?;
@@ -218,6 +219,6 @@ fn blend(
     let o = terrio::ops::blend::BlendOptions { operator: terrio::ops::blend::BlendOperator::parse(operator).py()?, opacity };
     let base = input_raster(py, src)?;
     let overlay = input_raster(py, overlay)?;
-    let out = py.detach(|| terrio::ops::blend::blend(&base, &overlay, &o)).py()?;
+    let out = py.detach_result(|| terrio::ops::blend::blend(&base, &overlay, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }

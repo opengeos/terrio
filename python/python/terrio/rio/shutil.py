@@ -122,8 +122,33 @@ def _copy_dataset(src: Any, dst_path: str, driver: str, creation_options: dict[s
         profile.pop(k, None)
     profile["driver"] = driver
     profile.update({k.lower(): v for k, v in creation_options.items()})
+    if driver.upper() in ("GTIFF", "COG") and src.count > 1 and "interleave" not in profile:
+        # GDALDriver::CreateCopy (gcore/gdaldriver.cpp): without INTERLEAVE, and without a
+        # COMPRESS other than NONE, the copy keeps its source's pixel or band interleaving;
+        # otherwise it is the drivers' default, PIXEL.
+        src_interleave = src.tags(ns="IMAGE_STRUCTURE").get("INTERLEAVE", "").upper()
+        compress = profile.get("compress", "NONE")
+        keep = str(getattr(compress, "value", compress)).upper() == "NONE"
+        profile["interleave"] = (
+            src_interleave.lower() if keep and src_interleave in ("PIXEL", "BAND") else "pixel"
+        )
+    if driver.upper() == "COG":
+        # GDAL's COG driver has no PHOTOMETRIC creation option and ignores the one a source's
+        # profile carries (YCbCr, say): GTiff's CreateCopy derives it from the source's color
+        # interpretation instead, RGB for red, green and blue.
+        profile.pop("photometric", None)
+        if [c.name for c in src.colorinterp[:3]] == ["red", "green", "blue"]:
+            profile["photometric"] = "rgb"
+        # A source with overviews of its own: GDAL's COG driver copies them (OVERVIEWS=AUTO).
+        if (
+            str(profile.get("overviews", "AUTO")).upper() in ("AUTO", "FORCE_USE_EXISTING")
+            and src.driver in ("GTiff", "COG")
+            and src.overviews(1)
+        ):
+            profile["@copy_src_overviews"] = src.name
     gcps, gcp_crs = src.gcps
     with rio_open(dst_path, "w", **profile) as dst:
+        dst._mask_has_dataset = True
         dst.update_tags(**src.tags())
         for b in src.indexes:
             band_tags = src.tags(b)

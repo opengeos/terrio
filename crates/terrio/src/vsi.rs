@@ -891,8 +891,9 @@ fn zip_index(archive: &Node, reader: &mut dyn ReadSeek) -> Result<std::rc::Rc<Zi
     if let Some(index) = ZIP_INDEX.with(|cache| cache.borrow().as_ref().filter(|(node, _)| node == archive).map(|(_, i)| i.clone())) {
         return Ok(index);
     }
-    let entries = zipdir::central_directory(reader)?;
-    let mut by_name = std::collections::HashMap::with_capacity(entries.len());
+    let entries = zipdir::central_directory(reader, &crate::vfs::ZipLimits::from_config())?;
+    let mut by_name = std::collections::HashMap::new();
+    by_name.try_reserve(entries.len()).map_err(|_| Error::InvalidData("zip: cannot allocate the index of the archive's entries".into()))?;
     for (i, entry) in entries.iter().enumerate().filter(|(_, e)| !e.is_dir()) {
         by_name.entry(clean_member(&entry.name)).or_insert(i);
     }
@@ -947,7 +948,9 @@ fn tar_entries(archive: &Node, kind: ArchiveKind) -> Result<Vec<Entry>> {
         return with_archive_stream(archive, |reader| {
             let mut tar = tar::Archive::new(flate2::read::MultiGzDecoder::new(reader));
             let mut out = Vec::new();
+            let mut limits = TarLimits::new();
             for entry in tar.entries()? {
+                limits.count()?;
                 if let Some(entry) = tar_entry(&entry?) {
                     out.push(entry);
                 }
@@ -959,13 +962,52 @@ fn tar_entries(archive: &Node, kind: ArchiveKind) -> Result<Vec<Entry>> {
         let mut out = Vec::new();
         // Plain tar can seek over payloads, fetching only headers remotely.
         let mut tar = tar::Archive::new(SeekRead(reader));
+        let mut limits = TarLimits::new();
         for entry in tar.entries_with_seek()? {
+            limits.count()?;
             if let Some(entry) = tar_entry(&entry?) {
                 out.push(entry);
             }
         }
         Ok(out)
     })
+}
+
+/// The archive limits of a raster open (see [`crate::vfs::ZipLimits`]) on a tar archive, whose
+/// entries are known only as they are read: its entries counted as they come, each member's size
+/// (declared in its header, which bounds what is read of it) and the total of the members read
+/// checked before the member's bytes are read. A tar member has no compressed size of its own, so
+/// no ratio is checked.
+#[cfg(not(target_family = "wasm"))]
+struct TarLimits {
+    limits: crate::vfs::ZipLimits,
+    entries: u64,
+    total: u64,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl TarLimits {
+    fn new() -> Self {
+        TarLimits { limits: crate::vfs::ZipLimits::from_config(), entries: 0, total: 0 }
+    }
+
+    /// Counts one more entry of the archive, within the entries allowed.
+    fn count(&mut self) -> Result<()> {
+        self.entries += 1;
+        if self.entries > self.limits.max_entries {
+            return Err(Error::Unsupported(format!(
+                "tar: the archive lists more than the {} entries allowed (TERRIO_ZIP_MAX_ENTRIES)",
+                self.limits.max_entries
+            )));
+        }
+        Ok(())
+    }
+
+    /// Counts `size` more bytes to be read for `member`, within the size allowed.
+    fn read(&mut self, member: &str, size: u64) -> Result<()> {
+        self.total = self.total.saturating_add(size);
+        self.limits.check_size("tar", member, self.total)
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -986,7 +1028,9 @@ fn tar_stat(archive: &Node, kind: ArchiveKind, inner: &str) -> Result<Option<Sta
 fn tar_stat_entries<R: Read>(entries: tar::Entries<'_, R>, inner: &str) -> Result<Option<Stat>> {
     let prefix = format!("{inner}/");
     let mut implied_directory = false;
+    let mut limits = TarLimits::new();
     for entry in entries {
+        limits.count()?;
         let Some(info) = tar_entry(&entry?) else { continue };
         if info.name == inner {
             return Ok(Some(Stat { dir: info.is_dir(), size: info.size, modified: info.modified, permissions: None, etag: None }));
@@ -1012,8 +1056,10 @@ impl std::io::Seek for SeekRead<'_> {
     }
 }
 
-/// Copies an archive member's bytes into `out`.
-fn read_member(archive: &Node, kind: ArchiveKind, inner: &str, out: &mut dyn Write) -> Result<u64> {
+/// Copies an archive member's bytes into `out`, within the archive limits of a raster open (see
+/// [`crate::vfs::ZipLimits`]): a zip member's ratio and size are checked before it is read, and
+/// `out` is told its size.
+fn read_member(archive: &Node, kind: ArchiveKind, inner: &str, out: &mut dyn Sink) -> Result<u64> {
     #[cfg(not(target_family = "wasm"))]
     if kind == ArchiveKind::TarGz {
         return with_archive_stream(archive, |reader| read_tar_member(&mut flate2::read::MultiGzDecoder::new(reader), inner, out));
@@ -1022,6 +1068,10 @@ fn read_member(archive: &Node, kind: ArchiveKind, inner: &str, out: &mut dyn Wri
         ArchiveKind::Zip => {
             let index = zip_index(archive, reader)?;
             let entry = index.by_name.get(inner).map(|&i| &index.entries[i]).ok_or_else(|| not_found(inner))?;
+            let limits = crate::vfs::ZipLimits::from_config();
+            limits.check_ratio("zip", inner, entry.uncompressed_size, entry.compressed_size)?;
+            limits.check_size("zip", inner, entry.uncompressed_size)?;
+            out.expect(entry.uncompressed_size)?;
             zipdir::extract(reader, entry, out)
         }
         #[cfg(not(target_family = "wasm"))]
@@ -1037,16 +1087,20 @@ fn read_member(archive: &Node, kind: ArchiveKind, inner: &str, out: &mut dyn Wri
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn read_tar_member(reader: &mut dyn Read, inner: &str, out: &mut dyn Write) -> Result<u64> {
+fn read_tar_member(reader: &mut dyn Read, inner: &str, out: &mut dyn Sink) -> Result<u64> {
     let mut tar = tar::Archive::new(reader);
     copy_tar_entries(tar.entries()?, inner, out)
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn copy_tar_entries<R: Read>(entries: tar::Entries<'_, R>, inner: &str, out: &mut dyn Write) -> Result<u64> {
+fn copy_tar_entries<R: Read>(entries: tar::Entries<'_, R>, inner: &str, out: &mut dyn Sink) -> Result<u64> {
+    let mut limits = TarLimits::new();
     for entry in entries {
+        limits.count()?;
         let mut entry = entry?;
         if clean_member(&String::from_utf8_lossy(&entry.path_bytes())) == inner && entry.header().entry_type().is_file() {
+            limits.read(inner, entry.size())?;
+            out.expect(entry.size())?;
             return Ok(std::io::copy(&mut entry, out)?);
         }
     }
@@ -1090,12 +1144,60 @@ fn check_regular_source(node: &Node) -> Result<()> {
     Ok(())
 }
 
+/// Where the bytes of a file read go: told, before they come, how many bytes the source declares
+/// (an archive member, within the archive limits, a local file, or a remote file, whose first
+/// response gives its length).
+pub(crate) trait Sink: Write {
+    /// Readies the sink for `bytes` more bytes.
+    fn expect(&mut self, bytes: u64) -> Result<()> {
+        let _ = bytes;
+        Ok(())
+    }
+}
+
+impl Sink for std::fs::File {}
+impl<W: Write> Sink for std::io::BufWriter<W> {}
+#[cfg(remote)]
+impl<W: Write> Sink for crate::http::store::HashingWriter<W> {}
+
+/// Bytes read into memory. The buffer is reserved fallibly, once the size a source declares has
+/// been checked against the memory the process can use (where the system overcommits memory, an
+/// allocation of more succeeds and the process is killed as its pages are written), and grows
+/// fallibly past it: a read too large for the memory is an error, not an abort.
+#[derive(Default)]
+struct Memory(Vec<u8>);
+
+impl Write for Memory {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .try_reserve(buf.len())
+            .map_err(|_| crate::dataset::fallible::out_of_memory(self.0.len().checked_add(buf.len()), "a file read into memory"))?;
+        self.0.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Sink for Memory {
+    fn expect(&mut self, bytes: u64) -> Result<()> {
+        let bytes = crate::dataset::fallible::check_usable(usize::try_from(bytes).ok(), || {
+            "a file read into memory is too large to allocate".into()
+        })
+        .map_err(|message| Error::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, message)))?;
+        Ok(crate::dataset::fallible::reserve(&mut self.0, bytes, "a file read into memory")?)
+    }
+}
+
 /// Copies a file's bytes into `out`.
-fn read_into(node: &Node, out: &mut dyn Write) -> Result<u64> {
+fn read_into(node: &Node, out: &mut dyn Sink) -> Result<u64> {
     check_regular_source(node)?;
     match node {
         Node::Local(p) => {
             let mut f = std::fs::File::open(p).map_err(|e| io_context(e, &p.display().to_string()))?;
+            out.expect(f.metadata()?.len())?;
             Ok(std::io::copy(&mut f, out)?)
         }
         Node::Mem(k) => {
@@ -1113,12 +1215,14 @@ fn read_into(node: &Node, out: &mut dyn Write) -> Result<u64> {
     }
 }
 
-/// Reads a whole file into memory.
+/// Reads a whole file into memory. Archive members are read within the archive limits of a raster
+/// open (see [`crate::vfs::ZipLimits`]), and a file is refused, not allocated, when the process
+/// cannot hold it.
 pub fn read(path: &str) -> Result<Vec<u8>> {
     let _cache = OperationScope::new();
-    let mut out = Vec::new();
+    let mut out = Memory::default();
     read_into(&Node::parse(path)?, &mut out)?;
-    Ok(out)
+    Ok(out.0)
 }
 
 /// Writes bytes to a file (local, in memory, or an object), replacing it.
@@ -1219,9 +1323,9 @@ fn copy_file(src: &Node, dst: &Node, known_size: Option<u64>) -> Result<u64> {
             Ok(n)
         }
         Node::Mem(k) => {
-            let mut buf = Vec::new();
+            let mut buf = Memory::default();
             let n = read_into(src, &mut buf)?;
-            crate::memfs::write(Path::new(k), buf)?;
+            crate::memfs::write(Path::new(k), buf.0)?;
             Ok(n)
         }
         #[cfg(remote)]
@@ -1256,7 +1360,7 @@ fn copy_file(src: &Node, dst: &Node, known_size: Option<u64>) -> Result<u64> {
 /// Uploads the bytes `fill` writes, through a temporary file. They are hashed as they are written
 /// for a signed S3 upload, whose signature covers them, so that the file is read once, to send it.
 #[cfg(remote)]
-fn upload_spooled(remote: &crate::http::Remote, fill: impl FnOnce(&mut dyn Write) -> Result<u64>) -> Result<u64> {
+fn upload_spooled(remote: &crate::http::Remote, fill: impl FnOnce(&mut dyn Sink) -> Result<u64>) -> Result<u64> {
     use crate::http::store;
     let mut tmp = tempfile::NamedTempFile::new()?;
     let (n, sha256) = if matches!(remote, crate::http::Remote::S3(_)) && crate::s3::Credentials::from_env().is_some() {
@@ -1640,9 +1744,10 @@ fn checked_child_target(root: &Node, name: &str, portable: bool) -> Result<Node>
     Ok(target)
 }
 
-/// Writes one sequential archive member without reopening its archive.
+/// Writes one sequential archive member of `size` bytes (declared in its header) without
+/// reopening its archive.
 #[cfg(not(target_family = "wasm"))]
-fn write_member(dst: &Node, reader: &mut dyn Read) -> Result<u64> {
+fn write_member(dst: &Node, reader: &mut dyn Read, size: u64) -> Result<u64> {
     if let Some(reason) = dst.read_only_reason() {
         return Err(Error::Unsupported(reason));
     }
@@ -1659,9 +1764,10 @@ fn write_member(dst: &Node, reader: &mut dyn Read) -> Result<u64> {
             Ok(copied)
         }
         Node::Mem(key) => {
-            let mut data = Vec::new();
+            let mut data = Memory::default();
+            data.expect(size)?;
             let copied = std::io::copy(reader, &mut data)?;
-            crate::memfs::write(Path::new(key), data)?;
+            crate::memfs::write(Path::new(key), data.0)?;
             Ok(copied)
         }
         #[cfg(remote)]
@@ -1673,10 +1779,14 @@ fn write_member(dst: &Node, reader: &mut dyn Read) -> Result<u64> {
     }
 }
 
+/// Copies (with `sync`, synchronizes) the members below `inner` of a tar archive read from
+/// `reader` to `dst`, within the archive limits (see [`TarLimits`]): `member` names what is
+/// copied in the refusal of a size over the limit.
 #[cfg(not(target_family = "wasm"))]
 fn copy_tar_reader(
     reader: &mut dyn Read,
     inner: &str,
+    member: &str,
     dst: &Node,
     skip_errors: bool,
     sync: Option<&SyncOptions>,
@@ -1691,7 +1801,9 @@ fn copy_tar_reader(
     let prefix = format!("{}/", inner.trim_matches('/'));
     let mut archive = tar::Archive::new(reader);
     let mut made = std::collections::HashSet::new();
+    let mut limits = TarLimits::new();
     for entry in archive.entries()? {
+        limits.count()?;
         let mut entry = entry?;
         let Some(info) = tar_entry(&entry) else {
             let name = clean_member(&String::from_utf8_lossy(&entry.path_bytes()));
@@ -1759,14 +1871,18 @@ fn copy_tar_reader(
             && sync.is_some_and(|o| o.strategy != SyncStrategy::Overwrite)
             && targets.get(relative).is_some_and(|t| !t.is_dir() && t.size == info.size)
         {
-            let result = sync_mem_member(key, &mut entry);
+            let size = entry.size();
+            limits.read(member, size)?;
+            let result = sync_mem_member(key, &mut entry, size);
             if matches!(&result, Ok(None)) {
                 report.unchanged += 1;
                 continue;
             }
             result
         } else {
-            write_member(&target, &mut entry).map(Some)
+            let size = entry.size();
+            limits.read(member, size)?;
+            write_member(&target, &mut entry, size).map(Some)
         };
         match result {
             Ok(Some(bytes)) => {
@@ -1782,15 +1898,40 @@ fn copy_tar_reader(
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn sync_mem_member(key: &str, input: &mut dyn Read) -> Result<Option<u64>> {
-    let mut bytes = Vec::new();
-    input.read_to_end(&mut bytes)?;
+fn sync_mem_member(key: &str, input: &mut dyn Read, size: u64) -> Result<Option<u64>> {
+    let mut bytes = Memory::default();
+    bytes.expect(size)?;
+    std::io::copy(input, &mut bytes)?;
+    let bytes = bytes.0;
     if crate::memfs::read(Path::new(key))?.as_slice() == bytes {
         return Ok(None);
     }
     let n = bytes.len() as u64;
     crate::memfs::write(Path::new(key), bytes)?;
     Ok(Some(n))
+}
+
+/// Checks the members a copy of the zip archive directory `src` reads (its `entries`), before
+/// any is read, as a raster open checks a directory member (see [`crate::vfs::ZipLimits`]): each
+/// member's ratio, and their sizes together. The archive's index is the one its listing read.
+fn check_zip_members(src: &Node, entries: &[Entry]) -> Result<()> {
+    let Node::Archive { archive, kind: ArchiveKind::Zip, inner } = src else { return Ok(()) };
+    let cached = ZIP_INDEX.with(|cache| cache.borrow().as_ref().filter(|(node, _)| node == archive.as_ref()).map(|(_, i)| i.clone()));
+    let index = match cached {
+        Some(index) => index,
+        None => with_archive_reader(archive, true, |r| zip_index(archive, r))?,
+    };
+    let limits = crate::vfs::ZipLimits::from_config();
+    let member = if inner.is_empty() { archive.file_name() } else { inner.clone() };
+    let mut total = 0u64;
+    for e in entries.iter().filter(|e| !e.is_dir()) {
+        let name = join_key(inner, &e.name);
+        let Some(entry) = index.by_name.get(&name).map(|&i| &index.entries[i]) else { continue };
+        limits.check_ratio("zip", &name, entry.uncompressed_size, entry.compressed_size)?;
+        total = total.saturating_add(entry.uncompressed_size);
+        limits.check_size("zip", &member, total)?;
+    }
+    Ok(())
 }
 
 /// Copies a directory's tree: every file (and directory) below `src` to the same name below
@@ -1801,12 +1942,13 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<&SyncOption
     if let Node::Archive { archive, kind, inner } = src
         && matches!(kind, ArchiveKind::Tar | ArchiveKind::TarGz)
     {
+        let member = if inner.is_empty() { archive.file_name() } else { inner.clone() };
         if *kind == ArchiveKind::TarGz {
             return with_archive_stream(archive, |reader| {
-                copy_tar_reader(&mut flate2::read::MultiGzDecoder::new(reader), inner, dst, skip_errors, sync, report)
+                copy_tar_reader(&mut flate2::read::MultiGzDecoder::new(reader), inner, &member, dst, skip_errors, sync, report)
             });
         }
-        return with_archive_reader(archive, false, |reader| copy_tar_reader(reader, inner, dst, skip_errors, sync, report));
+        return with_archive_reader(archive, false, |reader| copy_tar_reader(reader, inner, &member, dst, skip_errors, sync, report));
     }
     // A non-recursive sync creates the subdirectories, empty, as GDAL does.
     let entries = read_dir(src, recursive, None)?;
@@ -1816,6 +1958,7 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<&SyncOption
     if entries.iter().any(|e| unsafe_destination_name(dst, &e.name, portable)) {
         return Err(Error::InvalidArgument("refusing unsafe path traversal in copy source".into()));
     }
+    check_zip_members(src, &entries)?;
     let target_entries = match sync {
         Some(_) => match stat_node(dst)? {
             Some(s) if s.dir => read_dir(dst, recursive, None)?,
@@ -1953,6 +2096,7 @@ fn md5_of(node: &Node) -> Result<String> {
             Ok(())
         }
     }
+    impl Sink for Hasher {}
     let mut h = Hasher(md5::Md5::new());
     read_into(node, &mut h)?;
     Ok(h.0.finish().iter().map(|b| format!("{b:02x}")).collect())
@@ -2235,4 +2379,4 @@ pub fn is_remote(path: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

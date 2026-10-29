@@ -808,6 +808,15 @@ fn gdal_name(path: &str) -> String {
 }
 
 fn gdal_open(path: &str, flags: GdalOpenFlags) -> Result<GdalDataset> {
+    // Every dataset GDAL opens (a `GDAL:` name, the fallback for what terrio's drivers cannot read,
+    // bytes through `/vsimem/`) is opened by the GDAL backend, whose own drivers pick the format:
+    // only if the process-wide allow-list of each kind asked for has the GDAL driver.
+    use crate::formats::Kind;
+    for (flag, kind) in [(GdalOpenFlags::GDAL_OF_RASTER, Kind::Raster), (GdalOpenFlags::GDAL_OF_VECTOR, Kind::Vector)] {
+        if flags.contains(flag) {
+            crate::formats::check_driver_allowed(RasterDriver::Gdal.name(), path, kind)?;
+        }
+    }
     let name = gdal_name(path);
     let options = DatasetOptions { open_flags: flags, ..Default::default() };
     GdalDataset::open_ex(&name, options).map_err(|e| match e {

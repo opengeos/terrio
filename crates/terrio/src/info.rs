@@ -86,6 +86,12 @@ pub struct BandInfo {
     /// The histogram, when requested: `gdalinfo -hist`'s (see [`InfoOptions::histogram`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub histogram: Option<Histogram>,
+    /// The band's description, for drivers that give one (GRIB: its level).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The band's metadata items (GDAL's default domain), for drivers that give them (GRIB).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub metadata: Vec<(String, String)>,
 }
 
 fn serialize_nodata<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
@@ -232,7 +238,16 @@ fn raster_info_at(ds: &RasterDataset, options: &InfoOptions, path: Option<&str>,
                     crate::histogram::default_histogram(ds, b * part, &ctx, statistics.map(|s| (s.min, s.max)))
                 })
                 .flatten();
-            BandInfo { band: b + 1, data_type: ds.data_type_name(), nodata: ds.band_nodata(b * part + 1), statistics, histogram }
+            let md = ds.band_metadata.get(b);
+            BandInfo {
+                band: b + 1,
+                data_type: ds.data_type_name(),
+                nodata: ds.band_nodata(b * part + 1),
+                statistics,
+                histogram,
+                description: md.and_then(|m| m.description.clone()),
+                metadata: md.map(|m| m.items.clone()).unwrap_or_default(),
+            }
         })
         .collect();
     RasterInfo {
@@ -335,7 +350,8 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
         let stats = lazy_band_statistics(r)?;
         let header = r.header();
         let mut info = raster_info_at(&header, &InfoOptions { statistics: false, ..*options }, path, None);
-        for (band, s) in info.bands.iter_mut().zip(stats) {
+        // A complex band's statistics are those of its real parts, as GDAL's.
+        for (band, s) in info.bands.iter_mut().zip(stats.into_iter().step_by(if header.complex { 2 } else { 1 })) {
             band.statistics = s;
         }
         info.overviews = overviews;
@@ -345,19 +361,27 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
     let gt = r.geo_transform();
     let (w, h) = (r.width() as f64, r.height() as f64);
     let extent = [gt[0], gt[3] + h * gt[5], gt[0] + w * gt[1], gt[3]];
-    let bands = (0..r.band_count())
-        .map(|b| BandInfo {
-            band: b + 1,
-            data_type: gdal_type_name(r.data_type()).to_string(),
-            nodata: r.band_nodata(b + 1),
-            statistics: None,
-            histogram: None,
+    // Complex bands count once, typed as GDAL types them (`CFloat32`), as for a dataset read whole.
+    let part = if r.is_complex() { 2 } else { 1 };
+    let data_type = if r.is_complex() { format!("C{}", gdal_type_name(r.data_type())) } else { gdal_type_name(r.data_type()).to_string() };
+    let bands = (0..r.band_count() / part)
+        .map(|b| {
+            let md = r.band_metadata().get(b);
+            BandInfo {
+                band: b + 1,
+                data_type: data_type.clone(),
+                nodata: r.band_nodata(b * part + 1),
+                statistics: None,
+                histogram: None,
+                description: md.and_then(|m| m.description.clone()),
+                metadata: md.map(|m| m.items.clone()).unwrap_or_default(),
+            }
         })
         .collect();
     Ok(RasterInfo {
         driver: r.driver().name().to_string(),
         size: [r.width(), r.height()],
-        band_count: r.band_count(),
+        band_count: r.band_count() / part,
         geo_transform: gt,
         wgs84_extent: wgs84_extent(&crs, extent),
         crs: CrsSummary::new(&crs),
@@ -385,6 +409,13 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
+    // Judged as `crate::open` judges a dataset of either kind, by its name and first bytes; a point
+    // cloud against the allow-list of its kind (`TERRIO_ALLOWED_DRIVERS` alone), as its reader is.
+    #[cfg(feature = "pointcloud")]
+    let kind = crate::pointcloud::is_point_cloud_path(path).then_some(crate::formats::Kind::PointCloud);
+    #[cfg(not(feature = "pointcloud"))]
+    let kind = None;
+    crate::formats::check_allowed(path, kind)?;
     if let Some(result) = crate::catalog::open_lazy(path) {
         return Ok(Info::Raster(Box::new(lazy_raster_info(&mut result?, options)?)));
     }
@@ -697,6 +728,12 @@ impl Info {
                         let _ = write!(s, ", nodata={nd}");
                     }
                     let _ = writeln!(s);
+                    if let Some(d) = &b.description {
+                        let _ = writeln!(s, "  Description = {d}");
+                    }
+                    for (k, v) in &b.metadata {
+                        let _ = writeln!(s, "  Metadata: {k}={v}");
+                    }
                     if let Some(st) = &b.statistics {
                         let _ = writeln!(
                             s,

@@ -7,6 +7,7 @@
 //! and parameter names and codes, so that PROJ (and GDAL, pyproj, GeoPandas) read the result as
 //! the same CRS. The reverse conversion lets CRSs without an EPSG code round-trip.
 
+use crate::crs::wkt1::{MAX_LEN, MAX_LEVELS};
 use serde_json::{Map, Value, json};
 use std::fmt::Write as _;
 
@@ -65,10 +66,17 @@ impl Node {
     }
 }
 
-/// Parses WKT1 text into its root node.
+/// Parses WKT1 text into its root node, within the bounds of terrio's CRS reader (`crs::wkt1`),
+/// which are GDAL's and PROJ's: `None` for text longer than GDAL imports (`MAX_LEN` bytes) or
+/// nested deeper than PROJ allows (a value at level `MAX_LEVELS`). The WKT of a layer reaches it
+/// as its file has it (a `.prj`, a FlatGeobuf header, a GeoPackage definition): unbounded, a
+/// deeply nested one overflowed the stack.
 fn parse(text: &str) -> Option<Node> {
+    if text.len() > MAX_LEN {
+        return None;
+    }
     let mut p = Parser { s: text.as_bytes(), i: 0 };
-    let n = p.node()?;
+    let n = p.node(0)?;
     p.ws();
     (p.i == p.s.len()).then_some(n)
 }
@@ -94,7 +102,12 @@ impl Parser<'_> {
         String::from_utf8_lossy(&self.s[start..self.i]).into_owned()
     }
 
-    fn node(&mut self) -> Option<Node> {
+    /// The node at the current position, at nesting `level` (the root at 0); the position ends
+    /// after its closer. As PROJ's `WKTNode::createFrom`, which GDAL reads WKT with: either `]`
+    /// or `)` closes a node, whichever opened it, and a value (a node, a string, a number or a
+    /// word, one level deeper than the node holding it) at level `MAX_LEVELS` is refused. Every
+    /// step consumes input or fails.
+    fn node(&mut self, level: usize) -> Option<Node> {
         let key = self.word();
         if key.is_empty() {
             return None;
@@ -107,12 +120,23 @@ impl Parser<'_> {
         let mut args = Vec::new();
         loop {
             self.ws();
+            let before = self.i;
             match *self.s.get(self.i)? {
                 b']' | b')' => {
                     self.i += 1;
                     return Some(Node { key, args });
                 }
-                b',' => self.i += 1,
+                b',' => {
+                    self.i += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            // A value of this node, one level deeper.
+            if level + 1 >= MAX_LEVELS {
+                return None;
+            }
+            match self.s[self.i] {
                 b'"' => {
                     self.i += 1;
                     let mut out = Vec::new();
@@ -144,13 +168,16 @@ impl Parser<'_> {
                     self.ws();
                     if matches!(self.s.get(self.i), Some(b'[' | b'(')) {
                         self.i = save;
-                        args.push(Arg::Node(self.node()?));
-                    } else if w.is_empty() {
-                        return None;
-                    } else {
+                        args.push(Arg::Node(self.node(level + 1)?));
+                    } else if !w.is_empty() {
                         args.push(Arg::Word(w));
                     }
                 }
+            }
+            // Each value consumed input: a byte that starts none (`*`, `&`) fails the parse
+            // rather than looping on it.
+            if self.i <= before {
+                return None;
             }
         }
     }
@@ -693,5 +720,83 @@ mod tests {
         assert_eq!(j["conversion"]["method"]["id"]["code"], 9802);
         assert_eq!(j["coordinate_system"]["axis"][0]["unit"]["name"], "US survey foot");
         assert_eq!(j["base_crs"]["datum"]["id"]["code"], 6269);
+    }
+
+    /// GDAL's WKT of WGS 84, as a `.prj` or a GeoJSON `crs` member carries it.
+    const WGS84: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+
+    /// Runs `f` on a thread with a 256 MiB stack, failing when it does not return within `secs`
+    /// (as `crs::wkt1`'s tests): a step that stops consuming input fails the test instead of
+    /// hanging it, and a recursion the parser does not bound returns (deep) instead of
+    /// overflowing the stack.
+    fn within<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .stack_size(256 << 20)
+            .spawn(move || {
+                let _ = tx.send(f());
+            })
+            .unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(secs)).unwrap_or_else(|_| panic!("did not return within {secs} s"))
+    }
+
+    #[test]
+    fn nesting_is_bounded_as_in_proj() {
+        let nested = |levels: usize| format!("{}1{}", "A[".repeat(levels), "]".repeat(levels));
+        // PROJ's `WKTNode::createFrom` refuses a value at level 16: the 1 of 15 nested nodes is
+        // at level 15 (rasterio 1.5.0 parses it, then names the unknown keyword), of 16 at level
+        // 16 ("too many nesting levels").
+        assert!(parse(&nested(15)).is_some());
+        assert_eq!(parse(&nested(16)), None);
+        assert!(parse(&format!("{}{}", "A[".repeat(16), "]".repeat(16))).is_some());
+        assert_eq!(parse(&format!("{}{}", "A[".repeat(17), "]".repeat(17))), None);
+        // WGS 84 with a node whose string sits at level 15 is WGS 84 for GDAL; at level 16, GDAL
+        // refuses it.
+        let extra = |level: usize| format!("{},B[{}\"x\"{}]]", &WGS84[..WGS84.len() - 1], "A[".repeat(level - 2), "]".repeat(level - 2));
+        assert_eq!(from_wkt1(&extra(15), None), from_wkt1(WGS84, None));
+        assert!(from_wkt1(WGS84, None).is_some());
+        assert_eq!(from_wkt1(&extra(16), None), None);
+        // The deepest nesting within GDAL's length limit, and the `.prj` that overflowed the
+        // stack through the Arrow and GeoParquet writers (tests/deep_wkt_sinks.rs): refused, not
+        // parsed.
+        let deep = nested(MAX_LEN / 3);
+        assert_eq!(within(30, move || parse(&deep)), None);
+        let deep = format!("GEOGCS[\"x\",{}1{}]", "A[".repeat(30_000), "]".repeat(30_000));
+        assert_eq!(within(30, move || from_wkt1(&deep, None)), None);
+    }
+
+    #[test]
+    fn wkt_longer_than_gdal_imports_is_refused() {
+        // GDAL's `importFromWkt` refuses more than 100,000 bytes.
+        let padded = |len: usize| WGS84.replacen(",DATUM", &format!(",{}DATUM", " ".repeat(len - WGS84.len())), 1);
+        assert_eq!(padded(MAX_LEN).len(), MAX_LEN);
+        assert!(from_wkt1(WGS84, None).is_some());
+        assert_eq!(from_wkt1(&padded(MAX_LEN), None), from_wkt1(WGS84, None));
+        assert_eq!(from_wkt1(&padded(MAX_LEN + 1), None), None);
+    }
+
+    #[test]
+    fn every_step_consumes_input_or_fails() {
+        // Bytes that start no value, and unterminated nodes and strings: refused promptly.
+        for text in ["A[*]", "A[NORTH *]", "GEOGCS[\"x\",&]", "A[", "A[\"x", "A[1,", "A[,,,"] {
+            let t = text.to_string();
+            assert_eq!(within(5, move || parse(&t)), None, "{text}");
+        }
+        assert_eq!(parse("A[NORTH,\"x\",1]").map(|n| n.args), Some(vec![Arg::Word("NORTH".into()), Arg::Str("x".into()), Arg::Num(1.0)]));
+    }
+
+    #[test]
+    fn either_closer_ends_a_node_as_in_proj() {
+        // PROJ's `WKTNode::createFrom` ends any node at `]` or `)`: rasterio 1.5.0 reads WGS 84
+        // with its spheroid's `]` as `)` as EPSG:4326.
+        let j = from_wkt1(WGS84, None).unwrap();
+        let variants = [
+            WGS84.replace("298.257223563]", "298.257223563)"),
+            WGS84.replace('[', "(").replace(']', ")"),
+            WGS84.replacen("GEOGCS[", "GEOGCS(", 1),
+        ];
+        for v in variants {
+            assert_eq!(from_wkt1(&v, None).as_ref(), Some(&j), "{v}");
+        }
     }
 }

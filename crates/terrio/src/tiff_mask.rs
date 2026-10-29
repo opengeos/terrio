@@ -159,22 +159,37 @@ pub(crate) fn find_masks<R: Read + Seek>(f: &mut R) -> Vec<MaskImage> {
     out
 }
 
-/// Decompresses a chunk.
-fn decompress(raw: Vec<u8>, compression: u16) -> Result<Vec<u8>> {
+/// Decompresses a chunk into at most `size` bytes, the chunk's decoded size: a stream that would
+/// expand further is cut there, however far it would go.
+fn decompress(raw: Vec<u8>, compression: u16, size: usize) -> Result<Vec<u8>> {
     Ok(match compression {
         1 => raw,
-        5 => weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
-            .decode(&raw)
-            .map_err(|e| Error::InvalidData(format!("mask LZW: {e}")))?,
+        5 => {
+            let mut out = crate::dataset::fallible::filled_now(size, 0u8, "a TIFF mask chunk")?;
+            let mut dec = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
+            let (mut consumed, mut written) = (0, 0);
+            while written < size {
+                let r = dec.decode_bytes(&raw[consumed..], &mut out[written..]);
+                consumed += r.consumed_in;
+                written += r.consumed_out;
+                match r.status.map_err(|e| Error::InvalidData(format!("mask LZW: {e}")))? {
+                    weezl::LzwStatus::Done => break,
+                    weezl::LzwStatus::NoProgress if r.consumed_in == 0 && r.consumed_out == 0 => break,
+                    _ => {}
+                }
+            }
+            out.truncate(written);
+            out
+        }
         8 | 32946 => {
             let mut out = Vec::new();
-            flate2::read::ZlibDecoder::new(&raw[..]).read_to_end(&mut out)?;
+            flate2::read::ZlibDecoder::new(&raw[..]).take(size as u64).read_to_end(&mut out)?;
             out
         }
         32773 => {
             let mut out = Vec::new();
             let mut i = 0;
-            while i < raw.len() {
+            while i < raw.len() && out.len() < size {
                 let n = raw[i] as i8;
                 i += 1;
                 if n >= 0 {
@@ -186,6 +201,7 @@ fn decompress(raw: Vec<u8>, compression: u16) -> Result<Vec<u8>> {
                     i += 1;
                 }
             }
+            out.truncate(size);
             out
         }
         c => return Err(Error::Unsupported(format!("TIFF masks compressed with method {c} are not supported"))),
@@ -193,13 +209,20 @@ fn decompress(raw: Vec<u8>, compression: u16) -> Result<Vec<u8>> {
 }
 
 /// Reads a window `(x, y, width, height)` of a mask image: 255 for valid pixels, 0 for invalid
-/// ones, row by row.
-pub(crate) fn read_mask<R: Read + Seek>(f: &mut R, m: &MaskImage, window: (usize, usize, usize, usize)) -> Result<Vec<u8>> {
+/// ones, row by row. A chunk decoding to more than `limit` bytes
+/// ([`crate::TiffReadLimits::chunk_bytes`]) is refused before it is read; a chunk's stored bytes
+/// are read as the file holds them, never allocated from the byte count the header declares.
+pub(crate) fn read_mask<R: Read + Seek>(f: &mut R, m: &MaskImage, window: (usize, usize, usize, usize), limit: usize) -> Result<Vec<u8>> {
     let (x, y, w, h) = window;
     let (bw, bh) = m.block;
     let across = m.width.div_ceil(bw);
     let row_bytes = bw.div_ceil(8);
-    let mut out = vec![0u8; w * h];
+    let size = crate::dataset::fallible::len(&[row_bytes, bh], "a TIFF mask chunk")?;
+    if size > limit {
+        return Err(Error::DecodedLimitExceeded { resource: "TIFF chunk or tag value", limit });
+    }
+    let what = "the mask";
+    let mut out = crate::dataset::fallible::filled(crate::dataset::fallible::len(&[w, h], what)?, 0u8, what)?;
     for by in y / bh..(y + h).div_ceil(bh) {
         for bx in x / bw..(x + w).div_ceil(bw) {
             let idx = if m.tiled { by * across + bx } else { by };
@@ -208,9 +231,14 @@ pub(crate) fn read_mask<R: Read + Seek>(f: &mut R, m: &MaskImage, window: (usize
                 continue;
             }
             f.seek(SeekFrom::Start(off))?;
-            let mut raw = vec![0u8; count as usize];
-            f.read_exact(&mut raw)?;
-            let bits = decompress(raw, m.compression)?;
+            // The buffer grows as bytes arrive: a corrupt byte count allocates no more than the
+            // file holds, and a chunk the file does not hold whole is an error, as before.
+            let mut raw = Vec::new();
+            (&mut *f).take(count).read_to_end(&mut raw)?;
+            if (raw.len() as u64) < count {
+                return Err(Error::InvalidData(format!("TIFF mask chunk {idx}: {} bytes, {count} expected", raw.len())));
+            }
+            let bits = decompress(raw, m.compression, size)?;
             let (x0, y0) = (bx * bw, by * bh);
             for r in y0.max(y)..(y0 + bh).min(y + h).min(m.height) {
                 let line = (r - y0) * row_bytes;
@@ -224,4 +252,55 @@ pub(crate) fn read_mask<R: Read + Seek>(f: &mut R, m: &MaskImage, window: (usize
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mask(block: (usize, usize), compression: u16, count: u64) -> MaskImage {
+        let (width, height) = block;
+        MaskImage {
+            width,
+            height,
+            overview: false,
+            tiled: true,
+            block,
+            compression,
+            lsb_first: false,
+            offsets: vec![0],
+            counts: vec![count],
+        }
+    }
+
+    /// Mask chunks decompress no further than their decoded size, however far their streams
+    /// would expand: 64 MiB of set bits in Deflate, LZW and PackBits for a chunk of 8 bytes.
+    #[test]
+    fn mask_chunks_inflate_no_further_than_the_chunk() {
+        use std::io::Write;
+        let bits = vec![0xFF_u8; 64 << 20];
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        z.write_all(&bits).unwrap();
+        let deflate = z.finish().unwrap();
+        let lzw = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(&bits).unwrap();
+        // PackBits: 0xFF repeated 128 times per two bytes.
+        let packbits = [0x81_u8, 0xFF].repeat(bits.len() / 128);
+        for (compression, stream) in [(8, &deflate), (5, &lzw), (32773, &packbits)] {
+            assert_eq!(decompress(stream.clone(), compression, 8).unwrap(), vec![0xFF; 8], "compression {compression}");
+        }
+        let mut f = std::io::Cursor::new(deflate.clone());
+        assert_eq!(read_mask(&mut f, &mask((8, 8), 8, deflate.len() as u64), (0, 0, 8, 8), 1 << 20).unwrap(), vec![255; 64]);
+    }
+
+    /// A chunk's byte count is read as far as the file goes, never allocated as declared (2^50
+    /// bytes, which no allocator holds); a chunk decoding to more than the limit is refused.
+    #[test]
+    fn mask_chunks_are_bounded_by_the_file_and_the_limit() {
+        let mut f = std::io::Cursor::new(vec![0xFF_u8; 64]);
+        let e = read_mask(&mut f, &mask((8, 8), 1, 1 << 50), (0, 0, 8, 8), 1 << 20).unwrap_err();
+        assert!(e.to_string().contains("64 bytes"), "{e}");
+        // 2^20 x 2^20 bits (128 GiB) under a limit of 1 MiB.
+        let e = read_mask(&mut f, &mask((1 << 20, 1 << 20), 1, 8), (0, 0, 1, 1), 1 << 20).unwrap_err();
+        assert!(matches!(e, Error::DecodedLimitExceeded { limit, .. } if limit == 1 << 20), "{e}");
+    }
 }

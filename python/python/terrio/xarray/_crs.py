@@ -37,6 +37,225 @@ def crs_from_user_input(crs_input: Any) -> CRS:
     return CRS.from_user_input(crs_input)
 
 
+def _g(v: Any) -> str:
+    """A number as GDAL writes it in WKT1 (`%.15g`).
+
+    Args:
+        v: The number.
+
+    Returns:
+        str: The text.
+    """
+    return f"{float(v):.15g}"
+
+
+# CF attributes that name parts of the CRS. pyproj builds named or registered datums,
+# ellipsoids and prime meridians from them, which the templates below do not reproduce.
+_CF_NAMED = (
+    "horizontal_datum_name",
+    "reference_ellipsoid_name",
+    "prime_meridian_name",
+    "geographic_crs_name",
+    "projected_crs_name",
+    "towgs84",
+    "crs_wkt",
+    "spatial_ref",
+)
+
+_WGS84_DATUM = (
+    'DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],'
+    'AUTHORITY["EPSG","6326"]]'
+)
+
+
+def _cf_geogcs(attrs: Any, geographic: bool) -> str:
+    """The GEOGCS of CF grid mapping attributes, as GDAL writes pyproj's `CRS.from_cf`.
+
+    Args:
+        attrs: The grid mapping attributes.
+        geographic: True for a geographic CRS (unit authority and axes are written).
+
+    Returns:
+        str: The WKT1 GEOGCS.
+    """
+    if "earth_radius" in attrs:
+        datum = f'DATUM["undefined",SPHEROID["undefined",{_g(attrs["earth_radius"])},0]]'
+    elif "semi_major_axis" in attrs and "inverse_flattening" in attrs:
+        a, rf = attrs["semi_major_axis"], attrs["inverse_flattening"]
+        datum = f'DATUM["undefined",SPHEROID["undefined",{_g(a)},{_g(rf)}]]'
+    elif "semi_major_axis" in attrs and "semi_minor_axis" in attrs:
+        a, b = float(attrs["semi_major_axis"]), float(attrs["semi_minor_axis"])
+        rf = 0.0 if a == b else a / (a - b)
+        datum = f'DATUM["undefined",SPHEROID["undefined",{_g(a)},{_g(rf)}]]'
+    else:
+        datum = _WGS84_DATUM
+    if "longitude_of_prime_meridian" in attrs:
+        primem = f'PRIMEM["undefined",{_g(attrs["longitude_of_prime_meridian"])}]'
+    else:
+        primem = 'PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]]'
+    if geographic:
+        unit = 'UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],'
+        unit += 'AXIS["Longitude",EAST],AXIS["Latitude",NORTH]'
+    else:
+        unit = 'UNIT["degree",0.0174532925199433]'
+    return f'GEOGCS["undefined",{datum},{primem},{unit}]'
+
+
+def _cf_parallels(attrs: Any) -> list[float]:
+    """The `standard_parallel` attribute as a list (a scalar is one parallel).
+
+    Args:
+        attrs: The grid mapping attributes.
+
+    Returns:
+        list: The parallels.
+    """
+    sp = attrs["standard_parallel"]
+    try:
+        return [float(v) for v in sp]
+    except TypeError:
+        return [float(sp)]
+
+
+def _cf_projection(attrs: Any) -> tuple[str, list[tuple[str, float]]] | None:
+    """The WKT1 projection and parameters of a CF projected grid mapping.
+
+    Args:
+        attrs: The grid mapping attributes.
+
+    Returns:
+        tuple | None: `(PROJECTION name, [(PARAMETER name, value), ...])`, or None when the
+        grid mapping is not one whose rendering is reproduced here.
+    """
+    name = attrs["grid_mapping_name"]
+    fe = ("false_easting", attrs.get("false_easting", 0.0))
+    fn = ("false_northing", attrs.get("false_northing", 0.0))
+    lat0 = attrs.get("latitude_of_projection_origin", 0.0)
+    if name == "lambert_conformal_conic":
+        sp = _cf_parallels(attrs)
+        lon0 = attrs.get("longitude_of_central_meridian", 0.0)
+        if len(sp) == 2:
+            return "Lambert_Conformal_Conic_2SP", [
+                ("standard_parallel_1", sp[0]),
+                ("standard_parallel_2", sp[1]),
+                ("latitude_of_origin", lat0),
+                ("central_meridian", lon0),
+                fe,
+                fn,
+            ]
+        if len(sp) == 1:
+            return "Lambert_Conformal_Conic_1SP", [
+                ("latitude_of_origin", sp[0]),
+                ("central_meridian", lon0),
+                ("scale_factor", attrs.get("scale_factor_at_projection_origin", 1.0)),
+                fe,
+                fn,
+            ]
+        return None
+    if name == "transverse_mercator":
+        return "Transverse_Mercator", [
+            ("latitude_of_origin", lat0),
+            ("central_meridian", attrs.get("longitude_of_central_meridian", 0.0)),
+            ("scale_factor", attrs.get("scale_factor_at_central_meridian", 1.0)),
+            fe,
+            fn,
+        ]
+    if name == "albers_conical_equal_area":
+        sp = _cf_parallels(attrs)
+        if len(sp) != 2:
+            return None
+        return "Albers_Conic_Equal_Area", [
+            ("latitude_of_center", lat0),
+            ("longitude_of_center", attrs.get("longitude_of_central_meridian", 0.0)),
+            ("standard_parallel_1", sp[0]),
+            ("standard_parallel_2", sp[1]),
+            fe,
+            fn,
+        ]
+    if name == "lambert_azimuthal_equal_area":
+        return "Lambert_Azimuthal_Equal_Area", [
+            ("latitude_of_center", lat0),
+            ("longitude_of_center", attrs.get("longitude_of_projection_origin", 0.0)),
+            fe,
+            fn,
+        ]
+    if name == "polar_stereographic":
+        lon0 = attrs.get("straight_vertical_longitude_from_pole", 0.0)
+        if "scale_factor_at_projection_origin" in attrs:
+            return "Polar_Stereographic", [
+                ("latitude_of_origin", lat0),
+                ("central_meridian", lon0),
+                ("scale_factor", attrs["scale_factor_at_projection_origin"]),
+                fe,
+                fn,
+            ]
+        if "standard_parallel" in attrs:
+            sp = _cf_parallels(attrs)
+            return "Polar_Stereographic", [
+                ("latitude_of_origin", sp[0]),
+                ("central_meridian", lon0),
+                fe,
+                fn,
+            ]
+        return None
+    if name == "mercator" and "standard_parallel" in attrs:
+        return "Mercator_2SP", [
+            ("standard_parallel_1", _cf_parallels(attrs)[0]),
+            ("central_meridian", attrs.get("longitude_of_projection_origin", 0.0)),
+            fe,
+            fn,
+        ]
+    return None
+
+
+def crs_from_cf(attrs: Any) -> CRS | None:
+    """The CRS of CF grid mapping attributes, as rioxarray reads it.
+
+    rioxarray falls back to `pyproj.CRS.from_cf(attrs)` when the grid mapping has neither
+    `spatial_ref` nor `crs_wkt`, and rasterio holds that CRS as GDAL's WKT1. For the grid
+    mappings rendered here (latitude_longitude, Lambert conformal conic with one or two
+    parallels, transverse Mercator, Albers, Lambert azimuthal equal area, polar
+    stereographic A and B, Mercator 2SP) the CRS is that WKT1, text for text. Others are
+    read through pyproj when it is installed, else not at all.
+
+    Args:
+        attrs: The grid mapping coordinate's attributes.
+
+    Returns:
+        CRS | None: The CRS, or None when the attributes do not describe one.
+    """
+    name = attrs.get("grid_mapping_name")
+    if not name:
+        return None
+    wkt = None
+    if not any(k in attrs for k in _CF_NAMED):
+        try:
+            if name == "latitude_longitude":
+                wkt = _cf_geogcs(attrs, geographic=True)
+            else:
+                proj = _cf_projection(attrs)
+                if proj is not None:
+                    method, params = proj
+                    body = ",".join(f'PARAMETER["{k}",{_g(v)}]' for k, v in params)
+                    wkt = (
+                        f'PROJCS["undefined",{_cf_geogcs(attrs, geographic=False)},'
+                        f'PROJECTION["{method}"],{body},UNIT["metre",1,AUTHORITY["EPSG","9001"]],'
+                        'AXIS["Easting",EAST],AXIS["Northing",NORTH]]'
+                    )
+        except (KeyError, TypeError, ValueError):
+            wkt = None
+    if wkt is not None:
+        return CRS.from_wkt(wkt)
+    try:
+        import pyproj
+    except ImportError:
+        return None
+    try:
+        return CRS.from_wkt(pyproj.CRS.from_cf(dict(attrs)).to_wkt("WKT1_GDAL"))
+    except Exception:  # noqa: BLE001 - not a CRS rioxarray could read either
+        return None
+
+
 def _params(node: list[Any]) -> dict[str, float]:
     """The PARAMETER values of a PROJCS node, by lower-case name.
 

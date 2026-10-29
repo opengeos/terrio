@@ -17,7 +17,7 @@ GDAL's drivers (the formats marked * are written that way): see
 | Zarr | Zarr v2 and v3, GeoZarr (`spatial:`, `proj:`, `multiscales`) | ✓ | ✓ | zarr |
 | netCDF | netCDF classic and netCDF-4 (groups included); writes CDF-1/2/5 and netCDF-4 | ✓ | ✓ | nc, nc4, cdf |
 | HDF5 | HDF5 datasets, as GDAL's HDF5 driver reads them | ✓ | | h5, hdf5, he5 |
-| GRIB | GRIB editions 1 and 2, as GDAL's GRIB driver reads them | ✓ | | grb, grb2, grib, grib2 |
+| GRIB | GRIB editions 1 and 2, as GDAL's GRIB driver reads them | ✓ | ✓ | grb, grb2, grib, grib2 |
 | HFA | ERDAS Imagine (written with the `gdal` feature) | ✓ | ✓* | img |
 | GPKG | GeoPackage tiles and gridded coverages | ✓ | ✓ | gpkg |
 | PMTiles | PMTiles v3 raster tiles (PNG, JPEG, WebP; AVIF read) | ✓ | ✓ | pmtiles |
@@ -38,9 +38,24 @@ GDAL's drivers (the formats marked * are written that way): see
 | ERS | ER Mapper | ✓ | ✓ | ers |
 | PNG | PNG with world file | ✓ | ✓ | png |
 | JPEG | JPEG with world file | ✓ | ✓ | jpg, jpeg |
+| WEBP | WebP with world file (written lossless) | ✓ | ✓ | webp |
 | XYZ | XYZ ASCII grid | ✓ | ✓ | xyz |
 | DTED | DTED elevation | ✓ | ✓ | dt0, dt1, dt2 |
 | SRTMHGT | SRTM HGT tiles (`N37W120.hgt`, zipped or not; NASADEM `.hgts`, `.err`, `.img`, `.num` and water body `.raw`, `.swb` read) | ✓ | ✓ | hgt |
+
+PNG, JPEG and WebP files are written with a world file (`.wld`) and the CRS in a `.aux.xml`
+sidecar. JPEG files are written as GDAL's JPEG driver writes them: one band as grayscale, three as
+YCbCr with 4:2:0 chroma subsampling (each 2 x 2 block's chroma averaged, as libjpeg averages it),
+quantized at the `QUALITY` creation option (1 to 100, default 75) as libjpeg scales its tables,
+with optimized Huffman tables. Other data types are rounded and saturated to Byte; GDAL's 4-band
+(CMYK) and 12-bit JPEGs are not written. WebP files hold 3 (RGB) or 4 (RGBA) Byte bands of at most
+16383 x 16383 pixels, as GDAL's WEBP driver requires, and are always lossless (encoded in Rust,
+without libwebp), every sample kept: `LOSSLESS=NO`, GDAL's default, still gives a lossless file,
+not the size of GDAL's lossy one, and `QUALITY` (checked to be 0 to 100) and `EXACT` (0 or 1) have
+no effect. The RGB values under fully transparent pixels are kept, as GDAL keeps them with `EXACT=1`;
+with GDAL's default, `EXACT=0`, libwebp writes values of its own choosing there. An alpha band
+that is opaque everywhere is left out, so the file reads back as 3 bands, in GDAL as in terrio.
+WebP files are read lossless or lossy, as 3 bands, or 4 with an alpha channel.
 
 Native TIFF readers limit each decoded tile or strip to 256 MiB by default. For trusted
 files with larger chunks, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`
@@ -60,7 +75,10 @@ GDAL's. Lossy JPEG XL can differ from libjxl's by 1 in a few pixels. LERC, JPEG 
 read, not written. Unsigned samples packed in 9 to 15 or 17 to 31 bits (GDAL's
 `NBITS`, as GDAL writes Sentinel-2's 15-bit bands) are read as UInt16 or UInt32, as GDAL reads them,
 in either bit order (`FillOrder`); packed signed samples and packed samples with a predictor are
-not supported (GDAL writes neither).
+not supported (GDAL writes neither). WhiteIsZero samples are read as stored, as GDAL reads them,
+under every compression terrio reads: terrio decodes them itself (the `tiff` crate inverts those of
+8 bits and more uncompressed or under LZW, Deflate and PackBits, and refuses some), and
+`terrio.rio` gives those of at most 16 bits GDAL's inverted gray color table.
 
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
@@ -75,6 +93,45 @@ thread) and 1.7 GB, and the smallest overview 0.05 s (GDAL: 0.09 s, 1.1 s and 0.
 window and overview is identical to GDAL's. GeoTIFFs compressed with JPEG XL are read tile by tile
 the same way (JPEG XL files themselves are not a format terrio reads).
 
+GRIB files (editions 1 and 2) are read as GDAL's GRIB driver reads them, also when found by
+their content rather than their extension: each field of each GRIB2 message, and each GRIB1
+message, is a Float64 band, in file order; the geotransform and CRS are GDAL's for regular,
+rotated and Gaussian latitude/longitude grids (templates 3.0, 3.1 and 3.40, 0-360 longitudes
+shifted and split at the antimeridian as GDAL does), Mercator (3.10), transverse Mercator (3.12),
+polar stereographic (3.20) and Lambert conformal (3.30) grids, on every shape of the earth GRIB2
+defines, and for GRIB1's latitude/longitude, Gaussian, rotated, polar stereographic, Lambert
+conformal and Mercator grids. Simple packing (5.0), complex packing with and without spatial
+differencing (5.2, 5.3), IEEE floats (5.4), JPEG 2000 (5.40), PNG (5.41) and CCSDS (5.42, with the
+pure-Rust `rust-aec` decoder) are unpacked with GDAL's arithmetic (GRIB1 simple packing in double
+precision, as degrib does), so the pixels are GDAL's: temperatures in Celsius (GDAL's default
+`GRIB_NORMALIZE_UNITS=YES`), points a bitmap masks set to 9999 and complex packing's missing
+values kept, both reported as the band's nodata. Bands carry GDAL's description (the level) and
+metadata (`GRIB_ELEMENT`, `GRIB_UNIT`, `GRIB_COMMENT`, `GRIB_SHORT_NAME`, `GRIB_REF_TIME`,
+`GRIB_VALID_TIME`, `GRIB_FORECAST_SECONDS`, `GRIB_DISCIPLINE`, `GRIB_IDS`, `GRIB_PDS_PDTN`,
+`GRIB_PDS_TEMPLATE_NUMBERS` and, for common product templates, `GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES`),
+named from GDAL's GRIB2 and degrib's GRIB1 tables. Every allocation a header sizes is fallible: a
+damaged file is an error, never an abort. Not read: other grids (Albers, Lambert azimuthal...),
+spectral and run-length packings, GRIB1 complex packing; NDFD's and MOS's own product names.
+Opened lazily (`terrio.rio.open`, `open_raster(..., lazy=True)`), only the bands read are decoded,
+as GDAL decodes them. Remote files are read by range, message by message as GDAL reads them, with
+no `.idx` or `.index` sidecar: at open one 16 KiB block per message for its section headers, then a
+band's message when the band is read; a server that ignores range requests is refused.
+
+GRIB2 is written as GDAL's GRIB driver writes it (`terrio.rio.open(path, "w", driver="GRIB")`,
+`terrio.rio.shutil.copy(..., driver="GRIB")`, `write_raster`), byte for byte: one message per band,
+on latitude/longitude (3.0), transverse Mercator (3.12, UTM included), Lambert conformal with two
+standard parallels (3.30) and Albers equal area (3.31) grids, with simple packing (5.0) or IEEE
+floats (5.4) chosen as GDAL's `DATA_ENCODING=AUTO` chooses (IEEE for floating-point bands). The
+options are GDAL's (`DISCIPLINE`, `IDS` and `IDS_*`, `PDS_PDTN`, `PDS_TEMPLATE_NUMBERS`, `INPUT_UNIT`,
+`DATA_ENCODING`, `NBITS`, `DECIMAL_SCALE_FACTOR`, each also as `BAND_<n>_<KEY>`); the product ones
+default to the bands' `GRIB_*` metadata, so a GRIB file copied to GRIB keeps its products, and
+temperatures in Celsius are written in Kelvin. One deliberate difference: values spanning exactly a
+power of two get the bit GDAL's packing leaves out (GDAL writes 0 for the largest). Not written:
+complex packing (so bands whose nodata value occurs in the data are refused unless an encoding that
+stores it as data is asked for), PNG and JPEG 2000 packing, Mercator, polar stereographic, Lambert
+azimuthal equal area and one-parallel Lambert conformal grids, `PDS_TEMPLATE_ASSEMBLED_VALUES`, and
+several fields in one message (`WRITE_SUBGRIDS`).
+
 Raw-layout rasters (SRTM HGT tiles, EHdr, ENVI, SAGA, ERS, Idrisi and Surfer 6 binary grids) are
 read in place, as GDAL's raw drivers read them: opening reads the header (for SRTM tiles, only the
 file's name and size), and a window reads each row it covers at its offset in the data file, of the
@@ -83,10 +140,14 @@ window of one band reads the row's samples of every band). `terrio info` reads n
 asked for statistics, computed a strip of rows at a time, or a histogram, which reads the raster
 whole, and `terrio convert` to a GeoTIFF or COG writes them a strip at a time (when named with
 their formats' own extensions: an ENVI `.img` is read whole, then written). Remote SRTM tiles
-(HTTP(S) and `s3://`) are read with range requests; remote rasters of the other raw formats, and
-zipped tiles, are downloaded whole. A 512 x 512 window of a 0.5" tile (103.7 MB) reads 524,288
-bytes and peaks at 31 MB, where reading the tile whole peaked at 211 MB; over HTTP, a summary of a
-1" tile fetches its first 64 KiB block and a 300 x 20 window three more.
+(HTTP(S) and `s3://`) are read with range requests, once their first request has shown a tile's
+name and size (the process-wide allow-list then applies to SRTMHGT, as for a local tile); remote
+rasters of the other raw formats, and zipped tiles, are downloaded whole. The samples a read
+returns, and each run of rows read, are checked against the memory the process can use and
+allocated fallibly. A 512 x 512 window of a 0.5" tile (103.7 MB) reads 524,288 bytes and peaks at
+31 MB, where reading the tile whole peaked at 211 MB; over HTTP, a summary of a 1" tile fetches its
+first 16 KiB, as GDAL does, and a 300 x 20 window one more request (212,992 bytes in all; GDAL
+262,144 in 12 requests).
 
 netCDF variables are opened as `NETCDF:"file.nc":variable`, as in GDAL, and those below the
 root group by their path, `NETCDF:"file.nc":/group/variable`. A file of several variables opens
@@ -178,54 +239,6 @@ GDAL computes them), and writes complex GeoTIFFs (`SampleFormat` 5 and 6) that G
 `CInt16`... `CFloat64`. Python's `read()` returns complex arrays. Other formats write the parts as
 bands. Groups that contain themselves (hard links to an ancestor) are walked once.
 
-GRIB files (editions 1 and 2, local, remote or in memory) are read as GDAL's GRIB driver reads
-them, with GDAL's `GRIB_NORMALIZE_UNITS=YES` default and as with `-oo USE_IDX=NO`: a Float64
-band per message (per field of GRIB2 messages that repeat their sections, sub-fields reusing a
-bitmap included), the size and georeferencing of the first, rasters north-up whatever the scanning
-mode, and global grids from 0 to 360 degrees rewrapped to start at -180. Each band has GDAL's
-metadata, `GRIB_ELEMENT`, `GRIB_COMMENT`, `GRIB_UNIT`, `GRIB_SHORT_NAME`, `GRIB_REF_TIME`,
-`GRIB_VALID_TIME`, `GRIB_FORECAST_SECONDS` and, for GRIB2, `GRIB_DISCIPLINE`, `GRIB_IDS`,
-`GRIB_PDS_PDTN`, `GRIB_PDS_TEMPLATE_NUMBERS` and `GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES`
-(`BAND_<n>#GRIB_...` items), and GDAL's description (`2[m] HTGL="Specified height level above
-ground"`): terrio names fields with GDAL's tables (the WMO's, NCEP's, NDFD's, MRMS's and the
-Canadian ones for GRIB2; NCEP's, ECMWF's, DWD's and the others of degrib for GRIB1) and degrib's
-rules (probabilities, percentiles, accumulations, ensemble spreads). Kelvin values are converted to
-Celsius (`[C]` units) unless `GRIB_NORMALIZE_UNITS=NO` is set in the environment. Points a bitmap
-masks are 9999, and the missing values of complex packing its primary missing value, the band's
-nodata value, as GDAL gives them. terrio's raster model holds one nodata value: bands without one
-(GDAL reports none) are listed as such in the `TERRIO#BAND_<n>_NODATA` items, which `terrio.rio`
-reads as its `nodatavals`.
-
-The grids are those GDAL georeferences: GRIB2 regular and rotated latitude/longitude (3.0, 3.1),
-Mercator (3.10), transverse Mercator (3.12), polar stereographic (3.20), Lambert conformal and
-Albers (3.30, 3.31), regular Gaussian (3.40), GDAL's full-disk geostationary view (3.90) and
-Lambert azimuthal equal area (3.140); GRIB1 latitude/longitude, Gaussian, rotated, polar
-stereographic, Lambert conformal and Mercator, with GDAL's earth shapes (NCEP's 6371.2 km sphere
-for GRIB1). GRIB2 values are decoded as GDAL's copy of NCEP's g2clib decodes them, in single
-precision, so that they are GDAL's to the bit: simple packing (5.0), complex packing with and
-without spatial differencing (5.2, 5.3), IEEE floats (5.4), JPEG 2000 (5.40, with the OpenJPEG
-port of the `jp2` feature), PNG (5.41) and CCSDS (5.42, with the pure-Rust decoder of
-[gribberish](https://github.com/mpiannucci/gribberish)); GRIB1 simple packing in double precision,
-as degrib does. Like GDAL, terrio does not read GRIB1 complex (second-order) packing, spherical
-harmonics, reduced (quasi-regular) Gaussian grids, or the unstructured and other GRIB2 grids
-(GDAL reads GRIB1 complex packing as zeros; terrio fails), and the data of a message is decoded when
-its band is read, the decoded bands kept up to 100 MB (GDAL's `GRIB_CACHEMAX`). On GDAL's GRIB
-test files, ecCodes' and real forecasts (every field of a GFS file, HRRR's and ECMWF's open data),
-every band is identical to GDAL's, metadata and pixels (`scripts/compare_grib_with_gdal.py`); a
-1-degree GFS file (696 bands) reads in 0.12 s, GDAL's in 1.0 s.
-
-Terrio's GRIB driver limits each field to 16,777,216 points by default, including constant and
-compressed fields. This is 128 MiB of decoded Float64 values; decoder buffers and multi-band reads use
-additional memory. To allow larger fields, set `TERRIO_GRIB_MAX_POINTS` to a larger positive
-integer. The limit is checked when opening the grid and before decoding it, for local, remote
-and in-memory files. A limit error does not trigger the optional GDAL fallback.
-
-```sh
-terrio info gfs.t00z.pgrb2.0p25.f000                 # bands, GRIB_* metadata
-terrio translate hrrr.t00z.wrfsfcf00.grib2 t2m.tif -b 71
-GRIB_NORMALIZE_UNITS=NO terrio convert era.grib1 era.tif
-```
-
 GeoPackage rasters are written as GDAL writes them: Byte rasters (1 to 4 bands) as PNG tiles, or
 JPEG with `--compress JPEG`; one-band Int16, UInt16 and Float32 rasters as gridded coverages
 (16-bit PNG or float TIFF tiles), with every zoom level of the pyramid. A GeoPackage holding
@@ -245,7 +258,16 @@ and coordinate arrays and grid mappings are looked for in the groups above the a
 are read chunk by chunk, local or remote (see [Remote data](remote-data.md)), with the codecs
 none, zlib, gzip, Zstandard, LZ4 and Blosc, transposition, CRC32C checksums, v3 sharding
 (`sharding_indexed`, inner chunks read by range), and the `scale_offset` and `cast_value` codecs
-of the EOPF GeoZarr samples; `float16` arrays (NOAA's HRRR) are read as Float32. Arrays of more
+of the EOPF GeoZarr samples; `float16` arrays (NOAA's HRRR) are read as Float32. A chunk whose
+elements take more than 1 GiB as stored (for a shard read by parts, an inner chunk), or more than
+512 MiB in a v2 chunk in Fortran order (GDAL counts the copy it transposes such a chunk into), is
+refused at read, as GDAL refuses it, unless `TERRIO_ZARR_ALLOW_BIG_TILE_SIZE` (or GDAL's
+`ZARR_ALLOW_BIG_TILE_SIZE`) is `YES`; chunk dimensions whose product overflows are an error. A
+chunk in Fortran order, or transposed, is read in place, held once, and a chunk whose decoding
+takes more than the memory the process can use is an error. A
+chunk is decoded no further than the bytes of its elements and 64 bytes (a shard, than its inner
+chunks at their largest encoded and its index): a codec's output past that is an error, and an
+LZ4 or Blosc chunk stating a larger size is refused before that size is allocated. Arrays of more
 than three dimensions (`time, level, y, x`) are rasters whose bands are every combination of the
 other dimensions, the last varying fastest, as GDAL numbers them, each band's position given as
 GDAL's `DIM_<name>_INDEX`, `DIM_<name>_VALUE` and `DIM_<name>_UNIT` band metadata (terrio's

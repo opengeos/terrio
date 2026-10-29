@@ -96,18 +96,12 @@ terrio convert $B04 window.tif --srcwin 2000 6000 1024 1024
 terrio convert $B04 small.tif --overview 3
 ```
 
-GRIB files (`.grib2`, `.grb`, and NOAA's names such as `gfs.t00z.pgrb2.0p25.f000`) are read in
-place too: opening reads each message's first sections with a small range request, the requests
-sent in parallel at the offsets of the file's NOAA `.idx` or ECMWF `.index` sidecar when it has one
-(otherwise the messages are found one after another by their lengths first), and reading a band
-fetches its message alone. Opening a 1-degree GFS file (696 messages) fetches 3 MB of its 42 MB;
-HRRR's surface file (170 messages), 0.7 MB.
-
-```sh
-GFS=https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20241022/00/atmos/gfs.t00z.pgrb2.1p00.f000
-terrio info $GFS                                         # 696 bands with GDAL's GRIB metadata
-terrio translate $GFS q.tif -b 581                       # one message fetched and decoded
-```
+GRIB files (`.grib2`, `.grb2`, `.grib`, `.grb`) are read in place too, message by message as GDAL
+reads them: opening reads one 16 KiB block per message for its section headers, finding each
+message after the previous one by its length, and reading a band fetches its message alone. No
+`.idx` or `.index` sidecar is requested, and a server that ignores range requests is refused.
+A remote GRIB file whose name has no GRIB extension (NOAA's `gfs.t00z.pgrb2.0p25.f000`) is
+recognized by its first bytes and read by range in the same way.
 
 ## STAC
 
@@ -140,6 +134,20 @@ terrio convert "STACIT:\"$PC/search?collections=sentinel-2-l2a&bbox=-105.3,39.95
 `method=POST` sends the search as a `POST` request, as pystac-client does, and `POST` pages are
 followed through their `next` links as `GET` pages are.
 
+A STAC document chooses where its links lead, so links are followed with limits:
+
+- a STAC document opened by its name (a `.json` or `.geojson` URL or file, not a `STAC:` or
+  `STACIT:` name) follows links only when no allow-list restricts the drivers or one names `STAC`
+  or `STACIT`; otherwise it is read as the GeoJSON it is, its own features, with no request but its
+  own;
+- links lead to the document's own origin only (`TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES` allows
+  others), and another origin gets no header, neither a previous page's nor one the link supplies;
+  a link's requests follow redirects to that origin only (each redirect is checked before it is
+  followed, for ranged reads, requests with headers and `POST` requests alike), and a redirect to
+  another origin is an error unless `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`;
+- a search made with `GET` is not continued with a `POST` its page asks for
+  (`TERRIO_STAC_ALLOW_POST=YES` allows it); one made with `method=POST` is.
+
 A STAC item of tiled assets (GDAL's STACTA, see [Formats](formats.md#stac)) opens from its URL
 or as `STACTA:"item-url":asset`: the item is fetched, then the headers of the first tile when the
 item does not declare its bands, and a window read fetches only the tiles (and, for COG tiles, the
@@ -165,7 +173,13 @@ Requests are signed (AWS Signature Version 4) when credentials are found, and un
 ## Azure
 
 `AZURE_STORAGE_ACCOUNT` names the account; `AZURE_STORAGE_SAS_TOKEN` authorizes private
-containers.
+containers. `AZURE_STORAGE_ACCESS_TOKEN` is sent as a bearer token to `/vsiaz/` and `az://` blobs
+only, and only to the configured endpoint: `<AZURE_STORAGE_ACCOUNT>.blob.core.windows.net`, or the
+`BlobEndpoint` of `AZURE_STORAGE_CONNECTION_STRING`, or `CPL_AZURE_ENDPOINT`. As with GDAL's
+`/vsiaz/`, the account for the token comes from the configuration: `az://account/container/blob`
+without `AZURE_STORAGE_ACCOUNT` is read without it. An account taken from the path must be an
+account name (3 to 24 lowercase letters and digits): a name that would reach another host
+(`az://host.example?x=/container/blob`, `az://user@host/...`) fails at open, before any request.
 
 ## HTTP settings
 
@@ -178,12 +192,43 @@ The GDAL variable is read when the terrio one is not set.
 | `TERRIO_HTTP_MAX_RETRY` | `GDAL_HTTP_MAX_RETRY` | 3 |
 | `TERRIO_HTTP_RETRY_DELAY` (seconds, doubled each retry) | `GDAL_HTTP_RETRY_DELAY` | 0.5 |
 | `TERRIO_HTTP_BLOCK_SIZE` (bytes) | `CPL_VSIL_CURL_CHUNK_SIZE` | 65536 |
-| `TERRIO_HTTP_CACHE_SIZE` (bytes) | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
+| `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
 | `TERRIO_HTTP_LOG=YES` (log each request) | `CPL_CURL_VERBOSE` | off |
+| `TERRIO_JSON_MAX_SIZE` (bytes; `K`, `M`, `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
 
 Transient errors (connection failures, HTTP 429, 500, 502, 503, 504) are retried with backoff.
 Signatures and SAS tokens are hidden in logs and error messages.
+
+The first request of a remote file asks for its first 16,384 bytes, as GDAL's `/vsicurl/` does:
+a file that is not what its name says (64 MiB of noise named `.tif`, say) is refused after them,
+not downloaded. A remote `.json` or `.geojson` document opened as a raster is identified by its
+first 32,768 bytes, as GDAL's STACTA and STACIT drivers identify one: unless they show a STAC
+document, it is refused after them rather than fetched whole to be read as GeoJSON. A remote file
+opened as a raster whose name points to no raster driver (`x`, `x.bin`, `dir.json/x`, a vector
+file's name) or to a labelled raw raster, read with a `.hdr` a remote file comes without (ENVI's
+`.dat`, `.bsq`, `.bip`; EHdr's `.bil`, `.flt`), is judged by its first 16,384 bytes too: it is
+downloaded whole only when they show a format the whole read takes under that name (an HDF5,
+netCDF or GRIB file named for no raster driver, a Surfer 6 binary grid under either), and is
+otherwise refused after them (GDAL refuses a document after 49,152): a document, and also a PNG,
+a JPEG or a STAC item so named, which terrio reads under their own names, and a TIFF for the whole
+read (a lazy open, as `rio.open`'s, reads a TIFF of any name by range). `info` judges the names it
+reads by content alone the same way. The refusal, and the errors of a whole read that follows,
+name the dataset as it was given, not its local copy. With `TERRIO_WBRASTER_FALLBACK=YES` (for
+`info`, also `TERRIO_WBVECTOR_FALLBACK=YES`), a file named for no driver is still downloaded whole,
+for their detection. Files read
+whole (PNG, JPEG, vector files) are downloaded by range, and a server
+that ignores ranges is refused for a file more than ten times the first request, as GDAL refuses
+it. What requests return is kept process-wide, as GDAL's `/vsicurl/` cache keeps it, so a file
+opened again costs no request for the bytes already read; entries are keyed by the URL and by the
+headers and credentials sent, so bytes fetched with a credential are never returned to an open
+without it. The headers and credentials a file's requests carry (path-specific options included)
+are read when it is opened, as GDAL's `/vsicurl/` handle reads its options when it is created: an
+option changed while a file is open applies to the next open, not to the open file's later reads.
+`terrio.clear_http_cache()` empties the cache (GDAL's `VSICurlClearCache`).
+
+Bodies fetched whole are capped: a JSON document at `CPL_JSON_MAX_SIZE` (GDAL's 100 MB), a page of
+an object store's listing (remote Zarr groups) at 64 MiB, a STAC signing token response at 64 KiB.
 
 ## Managing files
 

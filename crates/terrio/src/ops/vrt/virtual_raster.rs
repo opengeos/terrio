@@ -21,8 +21,10 @@ pub struct VirtualRaster {
 }
 
 impl VirtualRaster {
-    /// Parse a serialized VRT without opening its sources or executing embedded code.
+    /// Parse a serialized VRT without opening its sources or executing embedded code. Under a
+    /// process-wide raster allow-list, only with the VRT driver allowed.
     pub fn from_xml(text: &str) -> Result<Self> {
+        crate::formats::check_driver_allowed("VRT", "a VRT description", crate::formats::Kind::Raster)?;
         let root = xml::parse(text)?;
         if root.attr("subClass") == Some("VRTPansharpenedDataset") {
             let pansharpen = crate::ops::pansharpen::vrt::PansharpenVrt::from_xml(text)?;
@@ -336,6 +338,8 @@ impl VirtualRaster {
 
 /// Open a local, archived or remote VRT and resolve relative sources from its location.
 pub fn open_virtual_raster(path: &str) -> Result<LazyRaster> {
+    // Opened as a VRT, by its name or by its caller: only if the VRT driver is allowed.
+    crate::formats::check_driver_allowed("VRT", path, crate::formats::Kind::Raster)?;
     let local = crate::vfs::resolve(path)?;
     let text = String::from_utf8(crate::memfs::read(local.path())?).map_err(|e| invalid(&format!("invalid XML encoding: {e}")))?;
     VirtualRaster::from_xml(&text)?.into_lazy_reference(path, HashMap::new())
@@ -544,15 +548,22 @@ impl Reader {
         window: Window,
         output_type: DataType,
     ) -> Result<Vec<Option<f64>>> {
+        let valid_rect = |r: &[f64; 4]| r.iter().all(|v| v.is_finite()) && r[2] > 0. && r[3] > 0.;
+        if !valid_rect(&src.dst_rect) || (!src.src_rect[0].is_nan() && !valid_rect(&src.src_rect)) {
+            return Err(invalid("invalid source/destination rectangle"));
+        }
+        // GDAL's `VRTSimpleSource::GetSrcDstWindow()`: a request that misses the source's
+        // destination rectangle leaves the source alone, unopened: a mosaic reads the windows
+        // over its other sources when this one cannot be opened (a remote source that is down).
+        let [dx, dy, dw, dh] = src.dst_rect;
+        let (wx, wy) = (window.x as f64, window.y as f64);
+        if wx >= dx + dw || wy >= dy + dh || wx + window.width as f64 <= dx || wy + window.height as f64 <= dy {
+            return Ok(vec![None; window.width * window.height]);
+        }
         let source = self.source(&src.filename, src.relative_to_vrt)?;
         let (width, height) = (source.width(), source.height());
         let rect = if src.src_rect[0].is_nan() { [0., 0., width as f64, height as f64] } else { src.src_rect };
-        if rect.iter().chain(src.dst_rect.iter()).any(|v| !v.is_finite())
-            || rect[2] <= 0.
-            || rect[3] <= 0.
-            || src.dst_rect[2] <= 0.
-            || src.dst_rect[3] <= 0.
-        {
+        if !valid_rect(&rect) {
             return Err(invalid("invalid source/destination rectangle"));
         }
         let kernel = element.child("Kernel");
@@ -1868,6 +1879,46 @@ mod tests {
         assert_eq!(out.geo_transform(), [2., 1., 0., 4., 0., -1.]);
     }
 
+    /// A mosaic with a source that cannot be opened (a remote source that is down): as GDAL's
+    /// `VRTSimpleSource::GetSrcDstWindow()` leaves a source unopened when a request misses its
+    /// destination rectangle, windows over the other source read its values, up to the edge of
+    /// the missing one, on whichever side it lies; a window reaching the missing source fails to
+    /// open it.
+    #[test]
+    fn windows_missing_an_unopenable_source_read_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let rects = |(x, y): (usize, usize)| {
+            format!("<SrcRect xOff=\"0\" yOff=\"0\" xSize=\"5\" ySize=\"5\"/><DstRect xOff=\"{x}\" yOff=\"{y}\" xSize=\"5\" ySize=\"5\"/>")
+        };
+        let read = |lazy: &mut LazyRaster, w: Window| lazy.read_window(w, &WindowOptions::default()).map(|d| d.raster.data.to_f64_vec());
+        // The readable source and the missing one side by side: the missing one right, left, below, above.
+        for ((width, height), at, missing_at, across) in [
+            ((10, 5), (0, 0), (5, 0), Window::new(4, 0, 2, 1)),
+            ((10, 5), (5, 0), (0, 0), Window::new(4, 0, 2, 1)),
+            ((5, 10), (0, 0), (0, 5), Window::new(0, 4, 1, 2)),
+            ((5, 10), (0, 5), (0, 0), Window::new(0, 4, 1, 2)),
+        ] {
+            let missing = format!(
+                "<SimpleSource><SourceFilename relativeToVRT=\"1\">missing.tif</SourceFilename><SourceBand>1</SourceBand>{}</SimpleSource>",
+                rects(missing_at)
+            );
+            let text = format!(
+                "<VRTDataset rasterXSize=\"{width}\" rasterYSize=\"{height}\"><GeoTransform>0,1,0,10,0,-1</GeoTransform>\
+                 <VRTRasterBand dataType=\"Float64\"><NoDataValue>-1</NoDataValue>{}{missing}</VRTRasterBand></VRTDataset>",
+                source("SimpleSource", &rects(at)),
+            );
+            let mut lazy = VirtualRaster::from_xml(&text).unwrap().into_lazy(dir.path(), sources()).unwrap();
+            let (x, y) = at;
+            assert_eq!(read(&mut lazy, Window::new(x, y, 5, 5)).unwrap(), (0..25).map(f64::from).collect::<Vec<_>>(), "{at:?}");
+            assert_eq!(read(&mut lazy, Window::new(x + 1, y + 2, 3, 2)).unwrap(), vec![11., 12., 13., 16., 17., 18.], "{at:?}");
+            let (mx, my) = missing_at;
+            for w in [across, Window::new(mx, my, 1, 1), Window::new(0, 0, width, height)] {
+                let error = read(&mut lazy, w).unwrap_err();
+                assert!(matches!(&error, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound), "{at:?} {w:?}: {error}");
+            }
+        }
+    }
+
     #[test]
     fn derived_sum_and_serialized_roundtrip() {
         let text = document(&format!(
@@ -2089,6 +2140,9 @@ mod inventory_tests {
             Arc, Mutex,
             atomic::{AtomicBool, Ordering},
         };
+        // The second pass reads the same URLs: terrio's process-wide cache of remote files serves
+        // them, as GDAL's `/vsicurl/` cache does. Held, it evicts nothing meanwhile.
+        let _cache = crate::http::cache_test_guard();
         let dir = tempfile::tempdir().unwrap();
         let leaf = dir.path().join("unopened.tif");
         let source = |name: &str, relative: bool| {
@@ -2194,7 +2248,8 @@ mod inventory_tests {
                 let catalog = crate::catalog::RasterCatalog::open(index.to_str().unwrap(), options)?.into_lazy();
                 let paths = catalog.input_paths()?;
                 assert!(paths.contains(&leaf.to_string_lossy().into_owned()));
-                assert_eq!(requests.lock().unwrap().len(), 8);
+                // Every document is in the cache: no request.
+                assert_eq!(requests.lock().unwrap().len(), 4);
             }
             Ok(())
         };
@@ -2204,8 +2259,7 @@ mod inventory_tests {
         result.unwrap();
         let requests = requests.lock().unwrap();
         assert!(requests.iter().all(|(path, _)| matches!(path.as_str(), "/root.vrt" | "/a.vrt" | "/b.vrt" | "/nested.vrt")));
-        let passes = if cfg!(feature = "sqlite") { 2 } else { 1 };
-        assert_eq!(requests.iter().map(|(_, bytes)| bytes).sum::<usize>(), expected_bytes * passes);
+        assert_eq!(requests.iter().map(|(_, bytes)| bytes).sum::<usize>(), expected_bytes);
         assert!(expected_bytes < 4096);
         assert!(!leaf.exists());
     }

@@ -19,6 +19,20 @@ pub struct Identification {
     /// Whether identification required opening a dataset beyond the bounded header.
     pub deep: bool,
 }
+/// `found`, unless the process-wide allow-list leaves its driver out: GDAL identifies a
+/// dataset only with its registered drivers (`GDALIdentifyDriver` skips the others), and the list
+/// is the counterpart of de-registering the drivers it leaves out (`formats::set_allowed_drivers`),
+/// so a disallowed driver identifies nothing. A dataset's kind is not known before it is
+/// identified: a driver must be allowed by the list of each kind it belongs to, as `open` judges a
+/// dataset (`formats::allowed_drivers(None)`); a point-cloud driver by `TERRIO_ALLOWED_DRIVERS`,
+/// the only list that restricts them. The public functions return judged identifications; the
+/// content check dispatches on unjudged ones and opens with the openers, which judge the list.
+fn judged(found: Option<Identification>) -> Option<Identification> {
+    let kind = |found: &Identification| (found.kinds == [Kind::PointCloud]).then_some(Kind::PointCloud);
+    found.filter(|found| {
+        crate::formats::allowed_drivers(kind(found)).is_none_or(|list| list.contains(&crate::formats::canonical_driver_name(&found.driver)))
+    })
+}
 fn raster(driver: RasterDriver) -> Option<Identification> {
     driver.ensure_built().ok()?;
     let mut result = Identification {
@@ -53,6 +67,10 @@ fn contains(bytes: &[u8], value: &[u8]) -> bool {
 /// Identifies uploaded bytes without opening a codec or copying the payload.
 /// Unknown formats return `None`; no filename-only guesses are made for binary inputs.
 pub fn identify_bytes(bytes: &[u8], name: &str) -> Option<Identification> {
+    judged(identify_bytes_unjudged(bytes, name))
+}
+/// [`identify_bytes`] whatever the allow-list says (for the content check).
+pub(crate) fn identify_bytes_unjudged(bytes: &[u8], name: &str) -> Option<Identification> {
     identify_header(&bytes[..bytes.len().min(IDENTIFICATION_HEADER_BYTES)], name, Some(bytes.len() as u64))
 }
 /// Identifies a fetched prefix without requiring the complete payload. `length`
@@ -61,7 +79,7 @@ pub fn identify_prefix(bytes: &[u8], name: &str, length: Option<u64>) -> Option<
     if length.is_some_and(|length| length < bytes.len() as u64) {
         return None;
     }
-    identify_header(&bytes[..bytes.len().min(IDENTIFICATION_HEADER_BYTES)], name, length)
+    judged(identify_header(&bytes[..bytes.len().min(IDENTIFICATION_HEADER_BYTES)], name, length))
 }
 fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Identification> {
     let filename = crate::vfs::Location::parse(name).file_name();
@@ -171,7 +189,7 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
         return Some(Identification { driver: driver.into(), kinds: vec![Kind::PointCloud], multidimensional: false, deep: false });
     }
     #[cfg(feature = "grib")]
-    if crate::drivers::grib::is_grib(bytes) {
+    if crate::drivers::grib::is_grib_bytes(bytes) {
         return raster(RasterDriver::GRIB);
     }
     if ext == "hgt" && length.is_some_and(|length| [1201u64, 3601].iter().any(|side| side * side * 2 == length)) {
@@ -295,10 +313,16 @@ fn root_json_type(text: &str) -> Option<String> {
 /// Those fallback readers may materialize formats without lazy metadata support.
 #[cfg(not(target_family = "wasm"))]
 pub fn identify(path: &str, deep: bool) -> Result<Option<Identification>> {
+    Ok(judged(identify_unjudged(path, deep)?))
+}
+/// [`identify`] whatever the allow-list says (for the content check, which then opens
+/// with the openers, each judging the list; the deeper fallback's opens judge it too).
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn identify_unjudged(path: &str, deep: bool) -> Result<Option<Identification>> {
     use std::io::Read;
     if path.starts_with("/vsimem/") {
         let bytes = crate::memfs::read_shared(std::path::Path::new(path))?;
-        return Ok(identify_bytes(bytes.as_ref(), path));
+        return Ok(identify_bytes_unjudged(bytes.as_ref(), path));
     }
     let location = crate::vfs::Location::parse(path);
     let identified = match &location {
@@ -503,10 +527,13 @@ mod tests {
     #[test]
     #[cfg(feature = "grib")]
     fn grib_signature_search_matches_the_reader_limit() {
-        let mut bytes = vec![b' '; 1024];
-        bytes[301..309].copy_from_slice(b"GRIB\0\0\0\x02");
+        // The GRIB driver takes a message whose "GRIB" and
+        // edition (1 or 2) are in the first kilobyte. GDAL 3.12.1 identifies "GRIB" alone there,
+        // so at 301 to 1016 as here (the reader of #232 stopped at 300), and at 1017 to 1020 too.
+        let mut bytes = vec![b' '; 2048];
+        bytes[1017..1025].copy_from_slice(b"GRIB\0\0\0\x02");
         assert!(identify_bytes(&bytes, "data.bin").is_none());
-        bytes[300..308].copy_from_slice(b"GRIB\0\0\0\x02");
+        bytes[1016..1024].copy_from_slice(b"GRIB\0\0\0\x02");
         assert_eq!(identify_bytes(&bytes, "data.bin").unwrap().driver, "GRIB");
     }
     #[test]

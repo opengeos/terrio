@@ -43,6 +43,7 @@ arrow-ipc = { workspace = true, optional = true }
 arrow-buffer = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 quick-xml.workspace = true
+encoding_rs.workspace = true
 osmpbfreader = { workspace = true, optional = true }
 half.workspace = true
 flate2.workspace = true
@@ -61,8 +62,6 @@ image-webp.workspace = true
 webp-rust.workspace = true
 # JPEG 2000, in WebAssembly builds too (see `drivers::jp2` for the allocator it links against).
 openjp2 = { workspace = true, optional = true }
-gribberish = { workspace = true, optional = true }
-bitvec = { workspace = true, optional = true }
 lerc-reader = { workspace = true, optional = true }
 lerc-core = { workspace = true, optional = true }
 lerc-writer = { workspace = true, optional = true }
@@ -74,6 +73,8 @@ jxl-oxide.workspace = true
 rayon.workspace = true
 rusty_av1d = { workspace = true, optional = true }
 lzma-rust2 = { workspace = true, optional = true }
+# GRIB2's CCSDS packing (template 5.42): a pure-Rust decoder of CCSDS 121.0-B-3 (libaec's format).
+rust-aec = { version = "0.1.1", optional = true }
 
 # The optional GDAL backend: opens what GDAL can when terrio has no driver for it. Needs GDAL
 # (3.4 or later) installed, found with pkg-config or GDAL_HOME.
@@ -112,8 +113,8 @@ lzma = ["dep:lzma-rust2"]
 flatgeobuf = ["dep:flatgeobuf", "dep:flatbuffers"]
 ## JPEG 2000.
 jp2 = ["dep:openjp2"]
-## GRIB editions 1 and 2 (read only). JPEG 2000 packed GRIB2 messages need `jp2` too.
-grib = ["dep:gribberish", "dep:bitvec"]
+## GRIB1 and GRIB2 reading (pure Rust). GRIB2's JPEG 2000 packing needs `jp2` too.
+grib = ["dep:rust-aec"]
 ## LERC-compressed GeoTIFFs (read and written).
 lerc = ["dep:lerc-reader", "dep:lerc-core", "dep:lerc-writer"]
 ## Point clouds: LAS, LAZ, COPC, EPT, E57, PLY (the `pointcloud` module).
@@ -124,12 +125,13 @@ tiles = ["sqlite"]
 zarr = ["dep:lz4_flex"]
 ## GeoPackage (vector and raster tiles), SQLite/SpatiaLite and the SQLite store of MBTiles.
 sqlite = []
-## Zstandard (GeoTIFF and EPT tiles) with the zstd C library, natively: it decodes faster and
-## compresses better than `ruzstd`, used without it and in WebAssembly, which writes at its fastest
-## level (about zstd's 1) whatever level is asked for. Without it, natively, ZSTD GeoTIFFs whose
-## samples only the `tiff` crate decodes (Float16, 1 to 7 bits, WhiteIsZero) are not read, as in
-## WebAssembly. In WebAssembly it compiles the C library (as `parquet` does) but does not use it.
-libzstd = ["dep:zstd", "tiff/zstd", "terrio-crs/libzstd"]
+## Zstandard (GeoTIFF chunks and EPT tiles) with the zstd C library, natively: it decodes faster
+## and compresses better than `ruzstd`, used without it and in WebAssembly, which writes at its
+## fastest level (about zstd's 1) whatever level is asked for. terrio decodes every ZSTD GeoTIFF
+## chunk itself, Float16, complex and WhiteIsZero samples included: the `tiff` crate is built
+## without its Zstandard (zstd 0.13, whose streaming decoder has known advisories), so ZSTD datum
+## grids, which terrio-crs reads with the crate, are not read (PROJ's are DEFLATE-compressed).
+libzstd = ["dep:zstd"]
 ## Open any format GDAL reads, through the same data model, when terrio has no driver for it.
 gdal = ["dep:gdal", "dep:gdal-sys"]
 ## Raster pixels as `ndarray` arrays without copying them: borrowed and mutable views, owned

@@ -237,7 +237,9 @@ fn remove_incomplete_output(path: &str) {
 /// A GeoTIFF or COG written as its rows come, by terrio's own writer.
 enum Tiff {
     GeoTiff(GeoTiffWriter),
-    Cog(CogWriter),
+    // Boxed (clippy's `large_enum_variant`): a `CogWriter` takes at least 240 bytes, a
+    // `GeoTiffWriter` 16; one box is allocated per file written.
+    Cog(Box<CogWriter>),
 }
 
 impl Tiff {
@@ -261,7 +263,7 @@ impl Tiff {
             opts.geo_transform = header.affine;
         }
         opts.complex = header.complex;
-        Ok(Some(Self::Cog(CogWriter::create(path, &header.raster, &opts)?)))
+        Ok(Some(Self::Cog(Box::new(CogWriter::create(path, &header.raster, &opts)?))))
     }
 
     fn write_rows(&mut self, data: RasterData, rows: usize) -> Result<()> {

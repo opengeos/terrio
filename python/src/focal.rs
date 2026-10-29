@@ -3,7 +3,7 @@
 
 use crate::ops::{finish_raster, input_raster, raster_path};
 use crate::raster::{PyRaster, write_options};
-use crate::{PyResultExt, invalid};
+use crate::{Detach, PyResultExt, invalid};
 use pyo3::prelude::*;
 use terrio::ops::enhance::{BandLut, EnhanceOptions};
 use terrio::ops::nearblack::CollarRequest;
@@ -92,7 +92,7 @@ fn neighbors(
         nodata,
     };
     let ds = input_raster(py, src)?;
-    let out = py.detach(|| terrio::ops::neighbors::neighbors(&ds, &o)).py()?;
+    let out = py.detach_result(|| terrio::ops::neighbors::neighbors(&ds, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 
@@ -118,7 +118,7 @@ fn collar(
 ) -> PyResult<PyRaster> {
     let has_mask = keep
         && match raster_path(src)? {
-            Some(path) => py.detach(|| terrio::open_raster_lazy(&path)).py()?.has_mask(),
+            Some(path) => py.detach_result(|| terrio::open_raster_lazy(&path)).py()?.has_mask(),
             None => src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow().inner.has_mask(),
         };
     let ds = input_raster(py, src)?;
@@ -155,14 +155,14 @@ fn collar(
     if o.set_mask && dst.is_none() {
         return Err(invalid("a mask (add_mask, or an input with a mask) needs dst, the file that holds it"));
     }
-    let collar = py.detach(|| terrio::ops::nearblack::nearblack(&ds, &o)).py()?;
+    let collar = py.detach_result(|| terrio::ops::nearblack::nearblack(&ds, &o)).py()?;
     let Some(mask) = collar.mask else { return finish_raster(py, collar.dataset, dst, format, compress, tile_size, bigtiff) };
     // A mask is kept by the file it is written to.
     let path = dst.expect("mask output requires dst, checked before processing");
     let mut options = write_options(format, compress, tile_size, bigtiff)?;
     options.mask = Some(mask);
-    py.detach(|| terrio::write_raster_dataset(&collar.dataset, path, &options)).py()?;
-    Ok(PyRaster { inner: py.detach(|| terrio::open_raster_lazy(path)).py()? })
+    py.detach_result(|| terrio::write_raster_dataset(&collar.dataset, path, &options)).py()?;
+    Ok(PyRaster { inner: py.detach_result(|| terrio::open_raster_lazy(path)).py()? })
 }
 
 /// Sets the nearly black (or white) borders of an image to exact black (or white), like
@@ -306,8 +306,8 @@ fn luts(
     }
     if equalize {
         return match raster_path(src)? {
-            Some(path) => py.detach(|| e::equalization_luts_from_path(&path, bins)).py(),
-            None => py.detach(|| e::equalization_luts(ds, bins)).py(),
+            Some(path) => py.detach_result(|| e::equalization_luts_from_path(&path, bins)).py(),
+            None => py.detach_result(|| e::equalization_luts(ds, bins)).py(),
         };
     }
     if let Some(config) = config {
@@ -360,7 +360,7 @@ fn enhance(
     let ds = input_raster(py, src)?;
     let tables = luts(py, src, &ds, equalize, config, src_scale, lut_bins)?;
     let o = EnhanceOptions { bins: lut_bins, output_type: terrio::ops::parse_data_type(ot).py()? };
-    let out = py.detach(|| terrio::ops::enhance::enhance(&ds, &tables, &o)).py()?;
+    let out = py.detach_result(|| terrio::ops::enhance::enhance(&ds, &tables, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 
@@ -378,10 +378,10 @@ fn enhance(
 #[pyo3(signature = (src, *, config=None, lut_bins=256))]
 fn enhance_luts(py: Python<'_>, src: &Bound<'_, PyAny>, config: Option<&str>, lut_bins: usize) -> PyResult<String> {
     let tables = match raster_path(src)? {
-        Some(path) => py.detach(|| terrio::ops::enhance::equalization_luts_from_path(&path, lut_bins)).py()?,
+        Some(path) => py.detach_result(|| terrio::ops::enhance::equalization_luts_from_path(&path, lut_bins)).py()?,
         None => {
             let ds = input_raster(py, src)?;
-            py.detach(|| terrio::ops::enhance::equalization_luts(&ds, lut_bins)).py()?
+            py.detach_result(|| terrio::ops::enhance::equalization_luts(&ds, lut_bins)).py()?
         }
     };
     let text = terrio::ops::enhance::format_luts(&tables);

@@ -122,6 +122,17 @@ impl TiffReadLimits {
         l
     }
 
+    /// [`TiffReadLimits::tiff`] within the bounds of a file of `len` bytes
+    /// ([`crate::geotiff::file_limits`]): the tag values the crate allocates are read from the
+    /// file, so a file holds at most so many of them, whatever these limits allow.
+    pub(crate) fn tiff_within(self, len: u64) -> Limits {
+        let file = crate::geotiff::file_limits(len);
+        let mut l = self.tiff();
+        l.decoding_buffer_size = l.decoding_buffer_size.min(file.decoding_buffer_size);
+        l.ifd_value_size = l.ifd_value_size.min(file.ifd_value_size);
+        l
+    }
+
     /// The error of a TIFF decoder with these limits: [`Error::DecodedLimitExceeded`], with the
     /// limit, for a chunk or tag value over it.
     pub(crate) fn error(self) -> impl Fn(tiff::TiffError) -> Error + Sync + Copy {
@@ -204,6 +215,12 @@ pub(crate) trait WindowSource: Send + Sync {
     /// Reads a window of some bands (numbered from 1) of a level (0 for full resolution, `i + 1`
     /// for overview `i`), band after band.
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData>;
+    /// Reads the pixels at columns `cols` of rows `rows` of a level (see
+    /// [`LazyRaster::read_sampled`]), when the source reads them from the blocks that hold them
+    /// alone; `None` for a source that would read the window spanning them.
+    fn read_sampled(&mut self, _level: usize, _cols: &[usize], _rows: &[usize], _bands: &[usize]) -> Result<Option<RasterData>> {
+        Ok(None)
+    }
 }
 
 /// A [`WindowSource`] whose full-resolution rows can be read from several threads at once.
@@ -260,6 +277,9 @@ impl WindowSource for SharedRaster {
     }
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
         Ok(self.lock()?.read_window(window, &WindowOptions { bands: bands.into(), overview: level.checked_sub(1) })?.raster.data)
+    }
+    fn read_sampled(&mut self, level: usize, cols: &[usize], rows: &[usize], bands: &[usize]) -> Result<Option<RasterData>> {
+        self.lock()?.read_sampled(cols, rows, &WindowOptions { bands: bands.into(), overview: level.checked_sub(1) })
     }
 }
 impl StreamedSource for SharedRaster {
@@ -356,6 +376,7 @@ impl LazyRaster {
     /// tiles, EHdr, ENVI, SAGA, ERS, Idrisi and Surfer 6 grids), JPEG 2000, GRIB and Zarr; other
     /// formats are read whole.
     pub fn open(path: &str) -> Result<Self> {
+        crate::formats::check_allowed(path, Some(crate::formats::Kind::Raster))?;
         let mut r = Self::open_without_sidecars(path)?;
         r.find_sidecar_mask(path);
         Ok(r)
@@ -365,11 +386,14 @@ impl LazyRaster {
     /// `GDAL_TIFF_INTERNAL_MASK=NO` or for formats without internal masks) when the raster has
     /// no internal mask and the sidecar is a per-dataset mask of its size.
     fn find_sidecar_mask(&mut self, path: &str) {
-        if self.has_mask() || !Location::parse(path).is_local() {
+        // Not under `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, where GDAL sees an empty directory
+        // and reads no `.msk` (GDAL 3.12.1: the mask is then all valid), nor when the allow-list
+        // refuses the sidecar, which GDAL cannot read with its GTiff driver de-registered.
+        if self.has_mask() || !Location::parse(path).is_local() || crate::config::sidecars_disabled() {
             return;
         }
         let msk = format!("{path}.msk");
-        if !std::path::Path::new(&msk).is_file() {
+        if !std::path::Path::new(&msk).is_file() || crate::formats::check_allowed(&msk, Some(crate::formats::Kind::Raster)).is_err() {
             return;
         }
         // Per-dataset (INTERNAL_MASK_FLAGS_1=2, GMF_PER_DATASET): one mask for every band.
@@ -410,6 +434,11 @@ impl LazyRaster {
         }
         match Self::open_tiff(path)? {
             Some(r) => Ok(r),
+            // A local VRT whatever its name, as GDAL's VRT driver identifies it by its content,
+            // read as a `.vrt` is. An allow-list without VRT has refused it.
+            None if is_local_vrt(path) => {
+                crate::ops::vrt::read_vrt(path).map(|ds| Self { inner: Inner::Memory(Arc::new(ds)), sidecar_mask: None })
+            }
             None => crate::open_raster(path).map(|ds| Self { inner: Inner::Memory(Arc::new(ds)), sidecar_mask: None }),
         }
     }
@@ -440,6 +469,10 @@ impl LazyRaster {
         if !is_tiff(&mut source) {
             return Ok(None);
         }
+        // A TIFF is read by the GeoTIFF reader whatever its name: only if the GTiff driver is
+        // allowed. `LazyRaster::open` judges a local file's content before; a remote one's, and a
+        // TIFF opened here directly, are judged here, after the first request.
+        crate::formats::check_driver_allowed("GTiff", path, crate::formats::Kind::Raster)?;
         let mut t = TiffRaster::new(source, local, limits)?;
         t.files.push(path.to_string());
         if let Location::Local(p) = &loc
@@ -478,6 +511,8 @@ impl LazyRaster {
         if !is_tiff(&mut source) {
             return Ok(None);
         }
+        // Opened as a GeoTIFF by its caller: only if the GTiff driver is allowed.
+        crate::formats::check_driver_allowed("GTiff", "a GeoTIFF in memory", crate::formats::Kind::Raster)?;
         let t = TiffRaster::new(source, None, limits)?;
         t.tags.warn_unreadable("a GeoTIFF in memory");
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None }))
@@ -499,6 +534,8 @@ impl LazyRaster {
         if !matches!(&magic, b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+") {
             return Ok(None);
         }
+        // Opened as a GeoTIFF by its caller: only if the GTiff driver is allowed.
+        crate::formats::check_driver_allowed("GTiff", "a remote GeoTIFF", crate::formats::Kind::Raster)?;
         source.seek(SeekFrom::Start(0))?;
         let t = TiffRaster::new(source, None, limits)?;
         t.tags.warn_unreadable("a remote GeoTIFF");
@@ -518,6 +555,41 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(_) | Inner::Source(..) => None,
             Inner::Memory(ds) => Some(ds),
+        }
+    }
+
+    /// The description and metadata of each band, for drivers that report them per band (GRIB);
+    /// empty otherwise.
+    pub fn band_metadata(&self) -> &[crate::BandMetadata] {
+        match &self.inner {
+            Inner::Memory(ds) | Inner::Source(ds, _) => &ds.band_metadata,
+            Inner::Tiff(_) => &[],
+        }
+    }
+
+    /// The nodata value of each band, when the bands declare different ones (GRIB); empty when
+    /// every band has [`LazyRaster::nodata`]. [`LazyRaster::band_nodata`] gives one band's.
+    pub fn band_nodata_values(&self) -> &[Option<f64>] {
+        match &self.inner {
+            Inner::Memory(ds) | Inner::Source(ds, _) => &ds.band_nodata,
+            Inner::Tiff(_) => &[],
+        }
+    }
+
+    /// Metadata domains other than the default one (see [`RasterDataset::metadata_domains`]).
+    pub fn metadata_domains(&self) -> &[crate::dataset::MetadataDomain] {
+        match &self.inner {
+            Inner::Memory(ds) | Inner::Source(ds, _) => &ds.metadata_domains,
+            Inner::Tiff(_) => &[],
+        }
+    }
+
+    /// The color table of the first band (see [`RasterDataset::color_table`]); empty for
+    /// GeoTIFFs, whose color map `terrio.rio` reads from the file's tags.
+    pub fn color_table(&self) -> &[[u8; 4]] {
+        match &self.inner {
+            Inner::Memory(ds) | Inner::Source(ds, _) => &ds.color_table,
+            Inner::Tiff(_) => &[],
         }
     }
 
@@ -584,11 +656,22 @@ impl LazyRaster {
         }
     }
 
-    /// The pixel data type.
+    /// The pixel data type: for complex bands, the type of their real and imaginary parts (see
+    /// [`LazyRaster::is_complex`]).
     pub fn data_type(&self) -> DataType {
         match &self.inner {
             Inner::Tiff(t) => t.data_type,
             Inner::Memory(ds) | Inner::Source(ds, _) => ds.raster.data_type,
+        }
+    }
+
+    /// Whether the bands hold complex numbers, as GDAL's `CInt16`, `CInt32`, `CFloat32` and
+    /// `CFloat64` bands (see [`RasterDataset::complex`]): each is two of the
+    /// [`LazyRaster::band_count`] bands, its real parts then its imaginary parts.
+    pub fn is_complex(&self) -> bool {
+        match &self.inner {
+            Inner::Tiff(t) => t.complex,
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.complex,
         }
     }
 
@@ -624,6 +707,18 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(t) => t.geo_transform,
             Inner::Memory(ds) | Inner::Source(ds, _) => ds.geo_transform(),
+        }
+    }
+
+    /// Whether the file gives a geotransform, for a GeoTIFF: one without (no transformation
+    /// matrix, or no tie point with a pixel scale) has [`LazyRaster::geo_transform`] `(0, 1, 0,
+    /// height, 0, -1)`, which a georeferenced file can also have. `None` for other formats, whose
+    /// fallback the caller tells apart (rio's `has_transform`), unlike
+    /// [`LazyRaster::has_geo_transform`].
+    pub fn geotiff_has_geo_transform(&self) -> Option<bool> {
+        match &self.inner {
+            Inner::Tiff(t) => Some(t.tags.corner_geo_transform().is_some()),
+            Inner::Memory(_) | Inner::Source(..) => None,
         }
     }
 
@@ -740,11 +835,12 @@ impl LazyRaster {
                 has_nodata: ds.has_nodata,
                 band_nodata: ds.band_nodata.clone(),
                 band_metadata: ds.band_metadata.clone(),
-                color_table: ds.color_table.clone(),
                 gcps: ds.gcps.clone(),
                 affine: ds.affine,
                 complex: ds.complex,
                 geolocation: ds.geolocation.clone(),
+                metadata_domains: ds.metadata_domains.clone(),
+                color_table: ds.color_table.clone(),
             };
         }
         let raster = wbraster::Raster {
@@ -762,6 +858,7 @@ impl LazyRaster {
             data: wbraster::raster::RasterData::new_filled(self.data_type(), 0, 0.0),
         };
         let mut ds = RasterDataset::with_driver(raster, self.driver(), self.nodata().is_some());
+        ds.complex = self.is_complex();
         ds.band_nodata = (1..=self.band_count()).map(|b| self.band_nodata(b)).collect();
         let first_nodata = ds.band_nodata.first().copied().flatten();
         ds.has_nodata = first_nodata.is_some();
@@ -813,6 +910,14 @@ impl LazyRaster {
         {
             return crate::tiles::write_raster_lazy(self, path, driver, options);
         }
+        let mut with_block;
+        let options = if options.source_block_size.is_none() && self.block_size().is_some() {
+            with_block = options.clone();
+            with_block.source_block_size = self.block_size();
+            &with_block
+        } else {
+            options
+        };
         let (width, height, bands) = (self.width(), self.height(), self.band_count());
         let block = self.block_size().map(|(_, h)| h);
         let value_size = self.data_type().size_bytes();
@@ -931,10 +1036,42 @@ impl LazyRaster {
             .collect();
         ds.band_metadata = bands.iter().map(|&b| band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
         ds.band_nodata = band_nodata;
+        // Whole complex bands (a band's real then imaginary parts) are read as complex bands,
+        // described band by band.
+        if self.is_complex() && bands.len().is_multiple_of(2) && bands.as_chunks::<2>().0.iter().all(|p| p[0] % 2 == 1 && p[1] == p[0] + 1)
+        {
+            ds.complex = true;
+            ds.band_metadata =
+                bands.as_chunks::<2>().0.iter().map(|p| band_metadata.get((p[0] - 1) / 2).cloned().unwrap_or_default()).collect();
+        }
         if bands == [1] {
             ds.color_table = color_table.clone();
         }
         Ok(ds)
+    }
+
+    /// Reads the pixels at columns `cols` of rows `rows` (each in any order, repeated or not) of
+    /// some bands, at full resolution or from an overview, as nearest-neighbour resampling picks
+    /// them: `(bands, rows, cols)`, band-major, as stored. Read, as GDAL reads them, from the
+    /// blocks that hold them alone, by the formats whose reader can (Zarr: one chunk at a time,
+    /// rather than a window spanning billions of columns); `None` for the others, whose callers
+    /// read the window spanning the pixels.
+    pub fn read_sampled(&mut self, cols: &[usize], rows: &[usize], options: &WindowOptions) -> Result<Option<RasterData>> {
+        let (lw, lh) = self.level_size(options.overview)?;
+        if let Some(c) = cols.iter().find(|c| **c >= lw) {
+            return Err(Error::InvalidArgument(format!("column {c} is outside the {lw}x{lh} image")));
+        }
+        if let Some(r) = rows.iter().find(|r| **r >= lh) {
+            return Err(Error::InvalidArgument(format!("row {r} is outside the {lw}x{lh} image")));
+        }
+        let bands: Vec<usize> = if options.bands.is_empty() { (1..=self.band_count()).collect() } else { options.bands.clone() };
+        if let Some(b) = bands.iter().find(|b| **b == 0 || **b > self.band_count()) {
+            return Err(Error::InvalidArgument(format!("no band {b}: the raster has {} band(s)", self.band_count())));
+        }
+        match &mut self.inner {
+            Inner::Source(_, s) => s.read_sampled(options.overview.map_or(0, |i| i + 1), cols, rows, &bands),
+            Inner::Tiff(_) | Inner::Memory(_) => Ok(None),
+        }
     }
 }
 
@@ -979,6 +1116,40 @@ impl LazyRaster {
         read_tiff_mask(t, window, overview.map_or(0, |i| i + 1))
     }
 
+    /// Whether overview `overview` (from 0) has a mask image of its own (GDAL's internal mask
+    /// of an overview), rather than none.
+    pub fn has_overview_mask(&self, overview: usize) -> bool {
+        let Inner::Tiff(t) = &self.inner else { return false };
+        let Some(l) = t.levels.get(overview + 1) else { return false };
+        t.masks.iter().any(|m| m.overview && (m.width, m.height) == (l.width, l.height))
+    }
+
+    /// The first overview's `RESAMPLING` item, which GDAL writes with the overviews it builds
+    /// (`GTIFFBuildOverviewMetadata`), if any.
+    pub fn overview_resampling(&mut self) -> Option<String> {
+        let Inner::Tiff(t) = &mut self.inner else { return None };
+        let (external, ifd) = t.levels.get(1).map(|l| (l.external, l.ifd))?;
+        // The first overview of an external `.ovr` is that file's image, with its own metadata.
+        let t = match (external, t.ovr.as_mut()) {
+            (Some(i), Some(ovr)) => {
+                let ifd = ovr.levels.get(i)?.ifd;
+                ovr.decoder.seek_to_image(ifd).ok()?;
+                ovr.current_ifd = ifd;
+                ovr
+            }
+            _ => {
+                t.decoder.seek_to_image(ifd).ok()?;
+                t.current_ifd = ifd;
+                t
+            }
+        };
+        let xml = t.decoder.get_tag_ascii_string(Tag::Unknown(42112)).ok()?;
+        crate::drivers::gtiff_write::parse_gdal_band_metadata(&xml)
+            .into_iter()
+            .find(|(b, k, _)| *b == 0 && k == "RESAMPLING")
+            .map(|(_, _, v)| v)
+    }
+
     /// A raster read by window by `source`, described by `header` (a dataset without pixels).
     pub(crate) fn from_source(header: RasterDataset, source: Box<dyn WindowSource>) -> Self {
         Self { inner: Inner::Source(Arc::new(header), source), sidecar_mask: None }
@@ -1011,11 +1182,12 @@ fn read_tiff_mask(t: &mut TiffRaster, window: Window, level: usize) -> Result<Op
     let (lw, lh) = (t.levels[level].width, t.levels[level].height);
     let (fw, fh) = (t.levels[0].width, t.levels[0].height);
     let w = (window.x, window.y, window.width, window.height);
+    let limit = t.limits.chunk_bytes;
     // The masks are borrowed, not copied with their chunk tables.
     let own = t.masks.iter().find(|m| m.overview == (level > 0) && (m.width, m.height) == (lw, lh));
     let reader = t.decoder.inner();
     if let Some(m) = own {
-        return crate::tiff_mask::read_mask(reader, m, w).map(Some);
+        return crate::tiff_mask::read_mask(reader, m, w, limit).map(Some);
     }
     let Some(full) = t.masks.iter().find(|m| !m.overview && (m.width, m.height) == (fw, fh)) else { return Ok(None) };
     // Nearest neighbour from the full-resolution mask.
@@ -1024,9 +1196,10 @@ fn read_tiff_mask(t: &mut TiffRaster, window: Window, level: usize) -> Result<Op
     let row = |r: usize| (((r as f64 + 0.5) * sy) as usize).min(fh - 1);
     let (c0, c1) = (col(window.x), col(window.x + window.width - 1));
     let (r0, r1) = (row(window.y), row(window.y + window.height - 1));
-    let src = crate::tiff_mask::read_mask(reader, full, (c0, r0, c1 - c0 + 1, r1 - r0 + 1))?;
+    let src = crate::tiff_mask::read_mask(reader, full, (c0, r0, c1 - c0 + 1, r1 - r0 + 1), limit)?;
     let sw = c1 - c0 + 1;
-    let mut out = Vec::with_capacity(window.width * window.height);
+    let mut out = Vec::new();
+    crate::dataset::fallible::reserve(&mut out, crate::dataset::fallible::len(&[window.width, window.height], "the mask")?, "the mask")?;
     for r in window.y..window.y + window.height {
         for c in window.x..window.x + window.width {
             out.push(src[(row(r) - r0) * sw + col(c) - c0]);
@@ -1079,6 +1252,12 @@ fn is_tiff<R: Read + Seek>(r: &mut R) -> bool {
     let ok = r.read_exact(&mut b).is_ok();
     let _ = r.seek(SeekFrom::Start(0));
     ok && matches!(&b, b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+")
+}
+
+/// Whether `path` is a local file whose first bytes show a VRT.
+fn is_local_vrt(path: &str) -> bool {
+    matches!(Location::parse(path), Location::Local(p) if p.is_file())
+        && crate::formats::identify(path).by_content.as_deref() == Some("VRT")
 }
 
 /// Cuts a window of some bands (numbered from 1) out of a raster in memory.
@@ -1180,8 +1359,16 @@ struct Level {
 struct TiffRaster {
     decoder: Decoder<PatchedReader<Source>>,
     tags: GeoTags,
+    /// The bands reported: the samples per pixel, or 4 for CMYK read as RGBA.
     bands: usize,
+    /// The samples per pixel of the file's images.
+    samples: usize,
+    /// 8-bit CMYK, read as GDAL reads it: RGBA (see [`cmyk_to_rgba`]).
+    cmyk: bool,
+    /// The type of the samples, or of their parts when they are complex.
     data_type: DataType,
+    /// Complex samples (see [`sample_type`]): `bands` counts their real and imaginary parts.
+    complex: bool,
     /// `BitsPerSample` of the full-resolution image.
     bits: u16,
     geo_transform: [f64; 6],
@@ -1198,6 +1385,8 @@ struct TiffRaster {
     file: Option<std::path::PathBuf>,
     /// The decoders' limits.
     limits: TiffReadLimits,
+    /// The length of the TIFF, in bytes.
+    file_len: u64,
     /// The files [`LazyRaster::file_list`] lists: the TIFF as it was named, and the sidecars read.
     files: Vec<String>,
     /// The external overviews (`.ovr` file) of a file without internal ones.
@@ -1222,13 +1411,21 @@ fn tiff_err(e: tiff::TiffError) -> Error {
 impl TiffRaster {
     fn new(mut source: Source, local: Option<vfs::LocalPath>, limits: TiffReadLimits) -> Result<Self> {
         let tags = read_geo_tags_from(&mut source).ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
+        // A directory libtiff cannot read is refused here, before any pixel is decoded.
+        tags.check_structure()?;
         let masks = crate::tiff_mask::find_masks(&mut source);
+        let len = source.seek(SeekFrom::End(0))?;
         source.seek(SeekFrom::Start(0))?;
         let tiff_err = limits.error();
-        let mut dec = Decoder::new(PatchedReader::new(source, &tags)).map_err(tiff_err)?.with_limits(limits.tiff());
+        // The caller's limits, within the file's bounds (see `TiffReadLimits::tiff_within`).
+        let mut dec = Decoder::new(PatchedReader::new(source, &tags)).map_err(tiff_err)?.with_limits(limits.tiff_within(len));
         let (w, h) = dec.dimensions().map_err(tiff_err)?;
-        let bands = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).map_err(tiff_err)?.unwrap_or(1).max(1) as usize;
-        let data_type = sample_type(&mut dec)?;
+        crate::geotiff::check_open(&mut dec, tiff_err)?;
+        let samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).map_err(tiff_err)?.unwrap_or(1).max(1) as usize;
+        let (data_type, complex) = sample_type(&mut dec)?;
+        let cmyk = reads_cmyk_as_rgba(&mut dec, samples, data_type)?;
+        // A complex sample is two bands: its real and its imaginary parts.
+        let bands = if cmyk { 4 } else { samples * if complex { 2 } else { 1 } };
         let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
         let (cw, ch) = dec.chunk_dimensions();
         let mut levels = vec![Level {
@@ -1245,10 +1442,10 @@ impl TiffRaster {
             // Images the decoder cannot read (such as unusual masks) are skipped.
             if dec.seek_to_image(ifd).is_ok() {
                 let subfile = dec.find_tag_unsigned::<u32>(Tag::NewSubfileType).ok().flatten().unwrap_or(0);
-                let samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).ok().flatten().unwrap_or(1).max(1) as usize;
-                let same_type = sample_type(&mut dec).is_ok_and(|t| t == data_type);
+                let level_samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).ok().flatten().unwrap_or(1).max(1) as usize;
+                let same_type = sample_type(&mut dec).is_ok_and(|t| t == (data_type, complex));
                 // A reduced-resolution image that is not a transparency mask.
-                if subfile & 1 == 1 && subfile & 4 == 0 && samples == bands && same_type {
+                if subfile & 1 == 1 && subfile & 4 == 0 && level_samples == samples && same_type {
                     let (ow, oh) = dec.dimensions().map_err(tiff_err)?;
                     let (cw, ch) = dec.chunk_dimensions();
                     let block = (cw as usize, ch as usize);
@@ -1268,7 +1465,10 @@ impl TiffRaster {
             decoder: dec,
             tags,
             bands,
+            samples,
+            cmyk,
             data_type,
+            complex,
             bits,
             geo_transform,
             levels,
@@ -1277,6 +1477,7 @@ impl TiffRaster {
             _local: local,
             file: None,
             limits,
+            file_len: len,
             files: Vec::new(),
             ovr: None,
             ovr_mask: None,
@@ -1291,7 +1492,7 @@ impl TiffRaster {
         }
         let Ok(file) = std::fs::File::open(path) else { return };
         let Ok(mut ovr) = TiffRaster::new(Source::File(BufReader::new(file)), None, self.limits) else { return };
-        if ovr.bands != self.bands || ovr.data_type != self.data_type {
+        if ovr.bands != self.bands || ovr.data_type != self.data_type || ovr.complex != self.complex {
             return;
         }
         ovr.file = Some(path.to_path_buf());
@@ -1331,13 +1532,27 @@ impl TiffRaster {
         }
     }
 
-    /// Reads a window of some bands (numbered from 1) of a level, band-major.
+    /// Reads a window of some bands (numbered from 1) of a level, band-major: CMYK read as GDAL
+    /// reads it, as RGBA.
     fn read(&mut self, level: usize, w: Window, bands: &[usize]) -> Result<RasterData> {
+        // A level of an external `.ovr` is read from it.
         if let Some(i) = self.levels[level].external
             && let Some(ovr) = self.ovr.as_mut()
         {
             return ovr.read(i, w, bands);
         }
+        if !self.cmyk {
+            return self.read_samples(level, w, bands);
+        }
+        let RasterData::U8(cmyk) = self.read_samples(level, w, &[1, 2, 3, 4])? else {
+            return Err(Error::InvalidData("CMYK samples that are not bytes".into()));
+        };
+        cmyk_to_rgba(&cmyk, w.width * w.height, bands)
+    }
+
+    /// Reads a window of some samples (numbered from 1) of a level, band-major, as stored.
+    fn read_samples(&mut self, level: usize, w: Window, bands: &[usize]) -> Result<RasterData> {
+        // A window too large for any allocation is refused before its chunks are listed or fetched.
         let len = bands
             .len()
             .checked_mul(w.width)
@@ -1371,12 +1586,18 @@ impl TiffRaster {
         };
 
         // The chunks to read, with the output bands each one fills: (chunk, [(sample, out band)]).
+        // A complex sample's parts are two consecutive samples of the chunk: band `b` (from 1)
+        // is part `(b - 1) % 2` of the plane (or sample) `(b - 1) / 2`.
+        let parts = if self.complex { 2 } else { 1 };
         let planes: Vec<(usize, Vec<(usize, usize)>)> = if planar {
-            bands.iter().enumerate().map(|(k, b)| (b - 1, vec![(0, k)])).collect()
+            bands.iter().enumerate().map(|(k, b)| ((b - 1) / parts, vec![((b - 1) % parts, k)])).collect()
         } else {
             vec![(0, bands.iter().enumerate().map(|(k, b)| (b - 1, k)).collect())]
         };
+        let (rows, cols) = ((w.y + w.height - 1) / ch - w.y / ch + 1, (w.x + w.width - 1) / cw - w.x / cw + 1);
+        let what = "the TIFF chunk list";
         let mut chunks = Vec::new();
+        crate::dataset::fallible::reserve(&mut chunks, crate::dataset::fallible::len(&[planes.len(), rows, cols], what)?, what)?;
         for (plane, map) in &planes {
             for ty in w.y / ch..=(w.y + w.height - 1) / ch {
                 for tx in w.x / cw..=(w.x + w.width - 1) / cw {
@@ -1384,16 +1605,24 @@ impl TiffRaster {
                 }
             }
         }
-        let ranges: Vec<(u64, u64)> = chunks.iter().filter_map(|(i, ..)| tables.get(*i)).filter(|(_, n)| *n > 0).collect();
+        let mut ranges: Vec<(u64, u64)> = Vec::new();
+        crate::dataset::fallible::reserve(&mut ranges, chunks.len(), what)?;
+        ranges.extend(chunks.iter().filter_map(|(i, ..)| tables.get(*i)).filter(|(_, n)| *n > 0));
+        // Compressed chunks whose stored bytes run past the end of the file: refused, as GDAL does,
+        // before anything is fetched.
+        let compression = dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1);
+        crate::geotiff::check_stored_chunks(compression, ranges.iter().copied(), self.file_len)?;
         dec.inner().get_ref().prefetch(&ranges)?;
 
         // Missing (sparse) chunks read as nodata, or 0, as in GDAL.
         let mut out = try_new_filled(self.data_type, len, self.tags.nodata.unwrap_or(0.0))?;
-        let spp = if planar { 1 } else { self.bands };
+        let spp = if planar { parts } else { self.samples * parts };
         // Chunks with data, and where they go.
-        let mut wanted: Vec<u32> = Vec::with_capacity(chunks.len());
+        let mut wanted: Vec<u32> = Vec::new();
+        crate::dataset::fallible::reserve(&mut wanted, chunks.len(), what)?;
         // A chunk can fill several output bands (a band asked for twice in a planar image).
-        let mut targets: std::collections::HashMap<u32, Vec<ChunkTarget>> = std::collections::HashMap::with_capacity(chunks.len());
+        let mut targets: std::collections::HashMap<u32, Vec<ChunkTarget>> = std::collections::HashMap::new();
+        targets.try_reserve(chunks.len()).map_err(|_| crate::dataset::fallible::out_of_memory(None, what))?;
         for (idx, x0, y0, map) in chunks {
             if tables.counts.get(idx).copied().unwrap_or(0) == 0 {
                 continue;
@@ -1413,11 +1642,16 @@ impl TiffRaster {
         };
         let reopen = source.map(|source| {
             move || -> Result<Decoder<PatchedReader<Source>>> {
-                let s = match &source {
-                    Reopened::File(path) => Source::File(BufReader::new(std::fs::File::open(path)?)),
-                    Reopened::Memory(bytes) => Source::Memory(std::io::Cursor::new(bytes.clone())),
+                // The `tiff` crate's limits bounded by the file's size, as for the first decoder.
+                let (s, len) = match &source {
+                    Reopened::File(path) => {
+                        let file = std::fs::File::open(path)?;
+                        let len = file.metadata()?.len();
+                        (Source::File(BufReader::new(file)), len)
+                    }
+                    Reopened::Memory(bytes) => (Source::Memory(std::io::Cursor::new(bytes.clone())), bytes.as_ref().len() as u64),
                 };
-                Ok(Decoder::new(PatchedReader::new(s, tags)).map_err(tiff_err)?.with_limits(limits.tiff()))
+                Ok(Decoder::new(PatchedReader::new(s, tags)).map_err(tiff_err)?.with_limits(limits.tiff_within(len)))
             }
         });
         let reopen = reopen.as_ref().map(|f| f as crate::geotiff::Reopen<PatchedReader<Source>>);
@@ -1428,7 +1662,7 @@ impl TiffRaster {
             *codec = Some(crate::tiff_codecs::ChunkCodec::new(dec, limits.chunk_bytes, Some(tables.clone())).map_err(tiff_err)?);
         }
         let codec = codec.as_ref().and_then(Option::as_ref);
-        crate::geotiff::decode_chunks(dec, reopen, ifd, &wanted, codec, &tiff_err, |(idx, chunk, (dw, dh))| {
+        crate::geotiff::decode_chunks(dec, reopen, ifd, &wanted, codec, limits.chunk_bytes, &tiff_err, |(idx, chunk, (dw, dh))| {
             let targets = &targets[&idx];
             macro_rules! place {
                 ($($out:ident <- $res:ident),*) => {
@@ -1439,7 +1673,10 @@ impl TiffRaster {
                             }
                         })*
                         (RasterData::F32(o), DecodingResult::F16(v)) => {
-                            let v: Vec<f32> = v.iter().map(|x| x.to_f32()).collect();
+                            let mut f = Vec::new();
+                            crate::dataset::fallible::reserve(&mut f, v.len(), "a TIFF chunk")?;
+                            f.extend(v.iter().map(|x| x.to_f32()));
+                            let v = f;
                             for &(x0, y0, map) in targets {
                                 place(o, &v, &ChunkGeom { x0, y0, dw, dh, spp }, w, map);
                             }
@@ -1507,45 +1744,74 @@ pub(crate) fn place<T: Copy>(out: &mut [T], vals: &[T], g: &ChunkGeom, w: Window
     }
 }
 
-/// [`RasterData::new_filled`], or an error when the samples cannot be allocated: a header can
-/// declare an image of terabytes, whose full window would abort the process.
-fn try_new_filled(data_type: DataType, len: usize, value: f64) -> Result<RasterData> {
-    fn filled<T: Clone>(len: usize, value: T) -> Result<Vec<T>> {
-        let mut v = Vec::new();
-        v.try_reserve_exact(len).map_err(|_| Error::InvalidArgument(format!("a window of {len} samples is too large to allocate")))?;
-        v.resize(len, value);
-        Ok(v)
+/// Whether the decoder's image is CMYK that GDAL reads through libtiff's RGBA interface, as RGBA
+/// (GDAL 3.12.1 `GTiffDataset::OpenOffset`: `bTreatAsRGBA` for PHOTOMETRIC_SEPARATED of at most 8
+/// bits when `TIFFRGBAImageOK`; libtiff 4.7 `TIFFRGBAImageOK` wants InkSet CMYK and 4 samples or
+/// more, and its put routines exist for 8-bit samples, of 4 samples when planar). Other CMYK
+/// images are left as they are stored.
+pub(crate) fn reads_cmyk_as_rgba<R: Read + Seek>(dec: &mut Decoder<R>, samples: usize, data_type: DataType) -> Result<bool> {
+    if dec.find_tag_unsigned::<u16>(Tag::PhotometricInterpretation).map_err(tiff_err)? != Some(5) {
+        return Ok(false);
     }
-    Ok(match data_type {
-        DataType::U8 => RasterData::U8(filled(len, value as u8)?),
-        DataType::I8 => RasterData::I8(filled(len, value as i8)?),
-        DataType::U16 => RasterData::U16(filled(len, value as u16)?),
-        DataType::I16 => RasterData::I16(filled(len, value as i16)?),
-        DataType::U32 => RasterData::U32(filled(len, value as u32)?),
-        DataType::I32 => RasterData::I32(filled(len, value as i32)?),
-        DataType::U64 => RasterData::U64(filled(len, value as u64)?),
-        DataType::I64 => RasterData::I64(filled(len, value as i64)?),
-        DataType::F32 => RasterData::F32(filled(len, value as f32)?),
-        DataType::F64 => RasterData::F64(filled(len, value)?),
-    })
+    let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
+    let format = dec.find_tag_unsigned_vec::<u16>(Tag::SampleFormat).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
+    let inkset = dec.find_tag_unsigned::<u16>(Tag::Unknown(332)).map_err(tiff_err)?.unwrap_or(1);
+    let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2);
+    Ok(bits == 8 && format == 1 && data_type == DataType::U8 && inkset == 1 && samples >= 4 && (!planar || samples == 4))
 }
 
-/// The pixel type of the decoder's current image, from `BitsPerSample` and `SampleFormat`.
-fn sample_type<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<DataType> {
+/// RGBA from 8-bit CMYK planes (`cmyk`: C, M, Y and K, `n` samples each), as libtiff's
+/// `putRGBcontig8bitCMYKtile` and `putCMYKseparate8bittile` compute it: `k = 255 - K`, each color
+/// `k * (255 - C) / 255` in integers, alpha 255. Returns the bands asked for (1 red, 2 green, 3
+/// blue, 4 alpha), band-major.
+pub(crate) fn cmyk_to_rgba(cmyk: &[u8], n: usize, bands: &[usize]) -> Result<RasterData> {
+    let what = "the window";
+    let mut out = Vec::new();
+    crate::dataset::fallible::reserve(&mut out, crate::dataset::fallible::len(&[bands.len(), n], what)?, what)?;
+    let plane = |i: usize| &cmyk[i * n..(i + 1) * n];
+    for &b in bands {
+        match b {
+            1..=3 => out.extend(plane(b - 1).iter().zip(plane(3)).map(|(&c, &k)| ((u32::from(255 - k) * u32::from(255 - c)) / 255) as u8)),
+            _ => out.extend(std::iter::repeat_n(255u8, n)),
+        }
+    }
+    Ok(RasterData::U8(out))
+}
+
+/// [`RasterData::new_filled`], or an error when the samples cannot be allocated: a header can
+/// declare an image of terabytes, whose full window would abort the process. Allocated as
+/// [`crate::dataset::fallible::raster_data`] allocates: zeros from the allocator zeroed, their
+/// pages untouched until written.
+fn try_new_filled(data_type: DataType, len: usize, value: f64) -> Result<RasterData> {
+    crate::dataset::fallible::raster_data(data_type, len, value, "the window")
+        .map_err(|_| Error::InvalidArgument(format!("a window of {len} samples is too large to allocate")))
+}
+
+/// The pixel type of the decoder's current image, from `BitsPerSample` and `SampleFormat`, and
+/// whether its samples are complex (`SampleFormat` 5 or 6, GDAL's `CInt16`, `CInt32`, `CFloat32`
+/// and `CFloat64`): the type is then that of their real and imaginary parts, each sample two
+/// values of it (see [`RasterDataset::complex`]).
+pub(crate) fn sample_type<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<(DataType, bool)> {
     let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
     let format = dec.find_tag_unsigned_vec::<u16>(Tag::SampleFormat).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
     Ok(match (format, bits) {
-        (2, 8) => DataType::I8,
-        (2, 16) => DataType::I16,
-        (2, 32) => DataType::I32,
-        (2, 64) => DataType::I64,
-        (3, 16 | 32) => DataType::F32,
-        (3, 64) => DataType::F64,
-        (_, 1..=8) => DataType::U8,
+        // GDAL 3.12.1 `GTiffRasterBand::GTiffRasterBand`: complex integers of 32 and 64 bits,
+        // complex floats of 64 and 128 bits (its CFloat16, of 32 bits, is not read).
+        (5, 32) => (DataType::I16, true),
+        (5, 64) => (DataType::I32, true),
+        (6, 64) => (DataType::F32, true),
+        (6, 128) => (DataType::F64, true),
+        (2, 8) => (DataType::I8, false),
+        (2, 16) => (DataType::I16, false),
+        (2, 32) => (DataType::I32, false),
+        (2, 64) => (DataType::I64, false),
+        (3, 16 | 32) => (DataType::F32, false),
+        (3, 64) => (DataType::F64, false),
+        (_, 1..=8) => (DataType::U8, false),
         // Packed samples (GDAL's NBITS) are read as the type GDAL gives them.
-        (1, 9..=16) => DataType::U16,
-        (1, 17..=32) => DataType::U32,
-        (_, 64) => DataType::U64,
+        (1, 9..=16) => (DataType::U16, false),
+        (1, 17..=32) => (DataType::U32, false),
+        (_, 64) => (DataType::U64, false),
         _ => return Err(Error::Unsupported(format!("TIFF samples of {bits} bits (format {format}) are not supported"))),
     })
 }
@@ -1728,5 +1994,156 @@ mod tests {
         let r = wbraster::Raster::from_data_native(cfg, data).unwrap();
         let RasterData::I32(v) = cut(&r, Window::new(1, 1, 2, 2), &[2]) else { panic!() };
         assert_eq!(v, vec![17, 18, 21, 22]);
+    }
+
+    /// A local VRT named `.tif` (or without an extension) opens as a VRT, as GDAL's VRT
+    /// driver identifies it by its content.
+    #[test]
+    fn a_local_vrt_opens_whatever_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.tif").to_str().unwrap().to_string();
+        let cfg = wbraster::RasterConfig { cols: 8, rows: 8, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let r = wbraster::Raster::from_data_native(cfg, RasterData::U8((0..64).collect())).unwrap();
+        let options = crate::RasterWriteOptions { driver: Some(RasterDriver::GTiff), ..Default::default() };
+        crate::write_raster_dataset(&RasterDataset::with_driver(r, RasterDriver::GTiff, false), &src, &options).unwrap();
+        let vrt = format!(
+            "<VRTDataset rasterXSize=\"8\" rasterYSize=\"8\"><VRTRasterBand dataType=\"Byte\" band=\"1\"><SimpleSource>\
+<SourceFilename relativeToVRT=\"0\">{src}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>"
+        );
+        for name in ["pointer.vrt", "disguised.tif", "no_extension"] {
+            let path = dir.path().join(name).to_str().unwrap().to_string();
+            std::fs::write(&path, &vrt).unwrap();
+            let mut r = LazyRaster::open(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let RasterData::U8(v) = r.read().unwrap().raster.data else { panic!("{name}") };
+            assert_eq!(v, (0..64).collect::<Vec<u8>>(), "{name}");
+        }
+    }
+
+    /// 8-bit CMYK reads as GDAL reads it through libtiff's RGBA interface: RGBA, by libtiff's
+    /// integer formula, alpha 255; 16-bit CMYK is left as stored.
+    #[test]
+    fn cmyk_reads_as_rgba() {
+        // libtiff: k = 255 - K; R = k * (255 - C) / 255 (integer division).
+        let n = 3;
+        let cmyk = [121u8, 0, 255, 229, 0, 255, 158, 0, 255, 159, 0, 255];
+        let RasterData::U8(rgba) = cmyk_to_rgba(&cmyk, n, &[1, 2, 3, 4]).unwrap() else { panic!() };
+        assert_eq!(rgba, [50, 255, 0, 9, 255, 0, 36, 255, 0, 255, 255, 255]);
+        let RasterData::U8(b) = cmyk_to_rgba(&cmyk, n, &[3, 1]).unwrap() else { panic!() };
+        assert_eq!(b, [36, 255, 0, 50, 255, 0]);
+        // A 2 x 1 strip of CMYK, 8 and 16 bits.
+        for (bits, as_rgba) in [(8u16, true), (16, false)] {
+            let samples: Vec<u16> = vec![121, 229, 158, 159, 0, 0, 0, 0];
+            let data: Vec<u8> =
+                if bits == 8 { samples.iter().map(|v| *v as u8).collect() } else { samples.iter().flat_map(|v| v.to_le_bytes()).collect() };
+            let tags: [(u16, u16, u32); 9] = [
+                (256, 3, 2),
+                (257, 3, 1),
+                (258, 3, u32::from(bits)),
+                (259, 3, 1),
+                (262, 3, 5),
+                (273, 4, 0),
+                (277, 3, 4),
+                (278, 3, 1),
+                (279, 4, data.len() as u32),
+            ];
+            let data_offset = 8 + 2 + tags.len() as u32 * 12 + 4;
+            let mut b = b"II*\0".to_vec();
+            b.extend(8u32.to_le_bytes());
+            b.extend((tags.len() as u16).to_le_bytes());
+            for (tag, typ, value) in tags {
+                b.extend(tag.to_le_bytes());
+                b.extend(typ.to_le_bytes());
+                b.extend(1u32.to_le_bytes());
+                b.extend((if tag == 273 { data_offset } else { value }).to_le_bytes());
+            }
+            b.extend(0u32.to_le_bytes());
+            b.extend(&data);
+            let mut r = LazyRaster::from_tiff_bytes(b).unwrap().unwrap();
+            assert_eq!(r.band_count(), 4);
+            let got = r.read().unwrap().raster.data;
+            match (as_rgba, got) {
+                (true, RasterData::U8(v)) => assert_eq!(v, [50, 255, 9, 255, 36, 255, 255, 255], "{bits} bits"),
+                (false, RasterData::U16(v)) => assert_eq!(v, [121, 0, 229, 0, 158, 0, 159, 0], "{bits} bits"),
+                (_, other) => panic!("{bits} bits: {:?}", other.data_type()),
+            }
+        }
+    }
+
+    /// A GeoTIFF whose own transform is `(1, 0, 0, 0, -1, H)`, H its height, has a geotransform;
+    /// one without georeferencing tags has none, though both read `(0, 1, 0, H, 0, -1)`.
+    #[test]
+    fn says_whether_a_geotiff_has_a_geotransform() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, georeferenced) in [("flipped.tif", true), ("plain.tif", false)] {
+            let path = dir.path().join(name).to_str().unwrap().to_string();
+            let cfg = wbraster::RasterConfig {
+                cols: 8,
+                rows: 6,
+                bands: 1,
+                data_type: DataType::U8,
+                x_min: 0.0,
+                y_min: 0.0,
+                cell_size: 1.0,
+                ..Default::default()
+            };
+            let r = wbraster::Raster::from_data_native(cfg, RasterData::U8(vec![1; 48])).unwrap();
+            let options = crate::RasterWriteOptions { driver: Some(RasterDriver::GTiff), ..Default::default() };
+            let mut ds = RasterDataset::with_driver(r, RasterDriver::GTiff, false);
+            let bytes = if georeferenced {
+                ds.affine = Some([0.0, 1.0, 0.0, 6.0, 0.0, -1.0]);
+                crate::write_raster_dataset(&ds, &path, &options).unwrap();
+                std::fs::read(&path).unwrap()
+            } else {
+                // The same strip, without its georeferencing tags.
+                crate::write_raster_dataset(&ds, &path, &options).unwrap();
+                strip_georeferencing(std::fs::read(&path).unwrap())
+            };
+            let r = LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
+            assert_eq!(r.geo_transform(), [0.0, 1.0, 0.0, 6.0, 0.0, -1.0], "{name}");
+            assert_eq!(r.geotiff_has_geo_transform(), Some(georeferenced), "{name}");
+        }
+    }
+
+    /// A little-endian classic TIFF with its ModelPixelScale, ModelTiepoint and
+    /// ModelTransformation entries renamed to an unknown private tag.
+    fn strip_georeferencing(mut b: Vec<u8>) -> Vec<u8> {
+        assert_eq!(&b[..4], b"II*\0");
+        let ifd = u32::from_le_bytes(b[4..8].try_into().unwrap()) as usize;
+        let n = u16::from_le_bytes(b[ifd..ifd + 2].try_into().unwrap()) as usize;
+        for i in 0..n {
+            let at = ifd + 2 + 12 * i;
+            if matches!(u16::from_le_bytes(b[at..at + 2].try_into().unwrap()), 33550 | 33922 | 34264) {
+                b[at..at + 2].copy_from_slice(&65000u16.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    /// A `.msk` sidecar (#201) is read as the per-dataset mask, except under
+    /// `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, where GDAL 3.12.1 reads no sidecar and the mask
+    /// is all valid (`test_empty_dir_ignores_msk_sidecars` compares with GDAL).
+    #[test]
+    fn msk_sidecars_are_not_read_under_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let tif = dir.path().join("m.tif").to_str().unwrap().to_string();
+        let write = |path: &str, data: RasterData| {
+            let cfg = wbraster::RasterConfig { cols: 8, rows: 8, bands: 1, data_type: DataType::U8, ..Default::default() };
+            let r = wbraster::Raster::from_data_native(cfg, data).unwrap();
+            let options = crate::RasterWriteOptions { driver: Some(RasterDriver::GTiff), ..Default::default() };
+            crate::write_raster_dataset(&RasterDataset::with_driver(r, RasterDriver::GTiff, false), path, &options).unwrap();
+        };
+        write(&tif, RasterData::U8(vec![7; 64]));
+        write(&format!("{tif}.msk"), RasterData::U8((0..64).map(|i| if i < 32 { 0 } else { 255 }).collect()));
+        let mut r = LazyRaster::open(&tif).unwrap();
+        assert!(r.has_mask());
+        let mask = r.read_mask(Window::full(8, 8), None).unwrap().unwrap();
+        assert_eq!(mask.iter().filter(|v| **v == 0).count(), 32);
+        crate::config::push_scope(std::collections::HashMap::from([(
+            "GDAL_DISABLE_READDIR_ON_OPEN".to_string(),
+            Some("EMPTY_DIR".to_string()),
+        )]));
+        let opened = LazyRaster::open(&tif);
+        crate::config::pop_scope();
+        assert!(!opened.unwrap().has_mask(), "EMPTY_DIR: no sidecar is read");
     }
 }

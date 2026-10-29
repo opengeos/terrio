@@ -45,9 +45,30 @@ use crate::Result;
 use serde::Serialize;
 
 pub(crate) use terrio_crs::{
-    describe, epsg_ellipsoid, epsg_wkt, from_proj_on, geographic_datum, geographic_on_datum, identify_epsg, is_esri_code, prefetch,
+    compound_code, describe, epsg_ellipsoid, epsg_wkt, from_proj_on, geographic_datum, geographic_on_datum, identify_epsg, is_esri_code,
     semi_major_axis, wkt_proj,
 };
+
+/// Starts loading the EPSG table in the background, on terrio's pool (see [`initialize`]), for
+/// work that will need it once it has read its input.
+pub(crate) fn prefetch() {
+    initialize();
+    terrio_crs::prefetch();
+}
+
+/// The bounds of the engine's WKT reader, which are GDAL's and PROJ's: other WKT readers of
+/// terrio's take them.
+pub(crate) mod wkt1 {
+    pub(crate) use terrio_crs::{WKT_MAX_LEN as MAX_LEN, WKT_MAX_LEVELS as MAX_LEVELS};
+}
+
+/// Holds the engine's process-wide locks across a fork, for [`crate::par`]: the forking thread
+/// takes them before the process is copied and lets them go after, so that the child never starts
+/// with one held by a thread it does not have.
+#[cfg(all(unix, not(target_family = "wasm")))]
+pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+    terrio_crs::hold_for_fork(held);
+}
 
 /// A coordinate reference system, known by an EPSG (or ESRI) code, a WKT definition, a PROJ
 /// string or a combination of them.
@@ -159,6 +180,15 @@ impl SpatialRef {
     pub fn to_wkt(&self) -> Option<String> {
         self.as_core().to_wkt()
     }
+    /// The CRS as PROJJSON, as GDAL (3.12.1, with PROJ 9.7.1) writes it: with `database`, for the
+    /// CRS GDAL builds from the CRS's EPSG code (`CRS.from_epsg`), else for the one it reads from
+    /// the CRS's WKT (a dataset's CRS, `CRS.from_wkt`). Fails for a CRS this writer does not model.
+    /// (`to_projjson` writes terrio's own PROJJSON, for more kinds of CRS, with documented
+    /// differences from PROJ's.)
+    pub fn to_gdal_projjson(&self, database: bool) -> Result<serde_json::Value> {
+        initialize();
+        self.as_core().to_gdal_projjson(database).map_err(Into::into)
+    }
     /// The CRS's name, such as `WGS 84 / UTM zone 33N`.
     pub fn name(&self) -> Option<String> {
         self.as_core().name()
@@ -166,6 +196,11 @@ impl SpatialRef {
     /// A short label: `EPSG:4326` (or `ESRI:54009`) when the code is known, otherwise the name.
     pub fn label(&self) -> String {
         self.as_core().label()
+    }
+    /// The EPSG codes of the horizontal and the vertical CRS of a compound CRS (see the standalone
+    /// CRS engine's `compound_parts` method).
+    pub(crate) fn compound_parts(&self) -> Option<(u32, u32)> {
+        self.as_core().compound_parts()
     }
     /// Whether the enabled engines recognize a geographic (longitude/latitude) CRS.
     /// Unrecognized definitions return `false`, as do projected CRSs.
@@ -378,10 +413,28 @@ pub fn set_network_enabled(enabled: Option<bool>) {
 }
 /// Reset decoded grids in the shared engine.
 pub fn reset_grid_cache() {
+    initialize();
     terrio_crs::reset_grid_cache();
 }
 
+/// Makes the engine terrio's, once, before it is used: it reads terrio's configuration (options
+/// scoped to the calling thread, then the environment: `TERRIO_NETWORK`, `PROJ_NETWORK` and the
+/// CDN endpoint), runs its background work on terrio's pool, and registers terrio's fork handlers
+/// before it first takes a process-wide lock, which those handlers hold across a fork (see
+/// [`crate::par`]). Every entry point of this module that reaches the engine's locks or its
+/// background work calls it first.
 fn initialize() {
+    static HOST: std::sync::Once = std::sync::Once::new();
+    HOST.call_once(|| {
+        terrio_crs::set_host(terrio_crs::Host {
+            config: crate::config::get,
+            #[cfg(not(target_family = "wasm"))]
+            spawn: |job| crate::par::spawn(job),
+            #[cfg(target_family = "wasm")]
+            spawn: |job| job(),
+            before_lock: crate::par::fork_safe,
+        });
+    });
     // Every unit-test entry point uses the same no-grid reference context. Do this
     // before constructing transformers, rather than changing shared state in
     // individual tests that may run alongside another transformation.
@@ -454,5 +507,45 @@ mod transport_tests {
         }
         assert_eq!(transport_error(Error::Http("http://host/status 404: status 403".into())).kind(), std::io::ErrorKind::Other);
         assert_eq!(transport_error(Error::Crs("status 404".into())).kind(), std::io::ErrorKind::Other);
+    }
+}
+
+#[cfg(all(test, unix, not(target_family = "wasm")))]
+mod fork_tests {
+    /// The engine's process-wide locks (the grids' settings, registered grids, files read, failed
+    /// fetches, availability and grid sets, and the grid transport's) are held across a fork as
+    /// terrio's own are: a child forked while another thread holds all of them does not start with
+    /// one held, and resets, registers and configures grids. In a process of its own
+    /// (`par::alone`), so that no other test delays the fork (another test holding the fork's
+    /// locks would) until the locks are free anyway.
+    #[test]
+    fn a_child_never_starts_with_the_engines_locks_held() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        crate::par::alone(60, || {
+            super::initialize();
+            let holding = Arc::new(AtomicBool::new(false));
+            let h = holding.clone();
+            let holder = std::thread::spawn(move || {
+                let mut held = Vec::new();
+                terrio_crs::hold_for_fork(&mut held);
+                h.store(true, Ordering::Release);
+                std::thread::sleep(Duration::from_millis(300));
+                drop(held);
+            });
+            while !holding.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let exit = crate::par::in_child(10, || {
+                super::reset_grid_cache();
+                super::register_grid("in_child.gtx", Vec::new());
+                super::set_network_enabled(Some(false));
+                #[cfg(remote)]
+                terrio_crs::network::set_default_grid_transport(Arc::new(super::GridTransport));
+                true
+            });
+            holder.join().is_ok() && exit == Some(0)
+        });
     }
 }

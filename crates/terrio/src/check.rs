@@ -189,7 +189,7 @@ pub fn check_path(path: &str, options: &CheckOptions) -> Result<CheckSummary> {
     {
         return check_raster(&mut crate::open_raster_lazy(path)?, options);
     }
-    let format = crate::inspection::identify(path, false)?;
+    let format = crate::inspection::identify_unjudged(path, false)?;
     if format.as_ref().is_some_and(|format| format.multidimensional) {
         return check_multidim(&crate::multidim::open(path)?);
     }
@@ -204,6 +204,7 @@ pub fn check_path(path: &str, options: &CheckOptions) -> Result<CheckSummary> {
     }
     #[cfg(feature = "sqlite")]
     if format.as_ref().is_some_and(|format| format.driver == "GPKG") {
+        check_gpkg_allowed(path)?;
         let local = crate::vfs::resolve(path)?;
         let db = crate::stream::sqlite::FileDb::open(local.as_str())?;
         let (layers, rasters) = crate::drivers::vector::gpkg_read::contents(&db)?;
@@ -265,6 +266,15 @@ fn check_vector_path(path: &str) -> Result<CheckSummary> {
     Ok(summary)
 }
 
+/// Refuses a GeoPackage when the allow-list leaves GPKG out of either kind's list: the
+/// check reads its layers and raster tables with the GeoPackage readers directly, which do not
+/// judge the list, and its kinds are not known before it is read, as `open` judges one.
+#[cfg(feature = "sqlite")]
+fn check_gpkg_allowed(path: &str) -> Result<()> {
+    crate::formats::check_driver_allowed("GPKG", path, crate::formats::Kind::Raster)?;
+    crate::formats::check_driver_allowed("GPKG", path, crate::formats::Kind::Vector)
+}
+
 #[cfg(feature = "sqlite")]
 fn merge(summary: &mut CheckSummary, other: CheckSummary) -> Result<()> {
     macro_rules! sum {
@@ -295,7 +305,7 @@ fn has_hdf5_signature(bytes: &[u8]) -> bool {
 /// Checks uploaded content. TIFF decoding stays windowed; other formats use the
 /// existing in-memory readers. Scientific uploads include all numeric arrays.
 pub fn check_bytes(bytes: Vec<u8>, filename: &str, options: &CheckOptions) -> Result<CheckSummary> {
-    let format = crate::inspection::identify_bytes(&bytes, filename);
+    let format = crate::inspection::identify_bytes_unjudged(&bytes, filename);
     if format.as_ref().is_some_and(|format| format.multidimensional) || (format.is_none() && has_hdf5_signature(&bytes)) {
         return check_multidim(&crate::multidim::open_bytes(&bytes)?);
     }
@@ -310,6 +320,7 @@ pub fn check_bytes(bytes: Vec<u8>, filename: &str, options: &CheckOptions) -> Re
     }
     #[cfg(feature = "sqlite")]
     if format.as_ref().is_some_and(|format| format.driver == "GPKG") {
+        check_gpkg_allowed(filename)?;
         let db = crate::drivers::sqlite::Db::new(bytes)?;
         let (_, rasters) = crate::drivers::vector::gpkg_read::contents(&db)?;
         let mut summary = CheckSummary::default();

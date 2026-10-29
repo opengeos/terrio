@@ -89,12 +89,22 @@ fn sniff_local(path: &str) -> bool {
         return false;
     }
     let crate::vfs::Location::Local(p) = crate::vfs::Location::parse(path) else { return false };
-    let mut head = Vec::with_capacity(32768);
+    let mut head = Vec::with_capacity(SNIFF_BYTES as usize);
     let Ok(f) = std::fs::File::open(p) else { return false };
-    if std::io::Read::read_to_end(&mut std::io::Read::take(f, 32768), &mut head).is_err() {
+    if std::io::Read::read_to_end(&mut std::io::Read::take(f, SNIFF_BYTES), &mut head).is_err() {
         return false;
     }
-    let head = String::from_utf8_lossy(&head);
+    names_tiled_assets(&head)
+}
+
+/// The bytes GDAL looks at to identify an item: its first 32,768 (`STACTADataset::Identify`
+/// tries the first 1,024, then `TryToIngest(32768)`).
+pub(crate) const SNIFF_BYTES: u64 = 32768;
+
+/// Whether the first bytes of a document name the tiled-assets extension among its
+/// `stac_extensions`, as GDAL identifies a STACTA item (`frmts/stacta/stactadataset.cpp`).
+pub(crate) fn names_tiled_assets(head: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(head);
     head.contains("\"stac_extensions\"")
         && (head.contains("\"tiled-assets\"")
             || head.contains("https:\\/\\/stac-extensions.github.io\\/tiled-assets\\/")
@@ -162,10 +172,11 @@ pub(crate) fn open_named_or_local(path: &str) -> Option<Result<LazyRaster>> {
 /// Opens a STACTA dataset lazily: a `STACTA:` name, a local item, or a remote `.json` one.
 /// `None` when `path` is none of these.
 ///
-/// A remote `.json` document is fetched to see whether it is an item of tiled assets (only on
+/// A remote `.json` document is identified as GDAL identifies one, by its first bytes (at most
+/// [`SNIFF_BYTES`], read by range): only an item of tiled assets is then fetched whole (only on
 /// this lazy path: `open` and `info` route remote items through the STAC module's single
-/// fetch); one that cannot be fetched is that error, and one that is not JSON or not tiled
-/// assets is left to the other drivers.
+/// fetch). One whose first bytes cannot be read is that error, and one that is not JSON or not
+/// tiled assets is left to the other drivers.
 pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
     if let Some(r) = open_named_or_local(path) {
         return Some(r);
@@ -174,6 +185,22 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
     let loc = crate::vfs::Location::parse(path);
     if !base.ends_with(".json") || loc.is_local() || matches!(loc, crate::vfs::Location::Zip { .. }) {
         return None;
+    }
+    #[cfg(remote)]
+    {
+        let remote = loc.remote()?;
+        // GDAL's two looks: the first bytes the open reads anyway, then up to 32,768.
+        let head = match crate::http::head(&remote, crate::http::FIRST_READ) {
+            Ok(h) => h,
+            Err(e) => return Some(Err(e)),
+        };
+        if !names_tiled_assets(&head) {
+            match crate::http::head(&remote, SNIFF_BYTES) {
+                Ok(h) if names_tiled_assets(&h) => {}
+                Ok(_) => return None,
+                Err(e) => return Some(Err(e)),
+            }
+        }
     }
     let bytes = match crate::stac::fetch(path) {
         Ok(b) => b,
@@ -430,9 +457,23 @@ fn config_true(key: &str) -> bool {
     std::env::var(key).is_ok_and(|v| !matches!(v.trim().to_ascii_uppercase().as_str(), "NO" | "FALSE" | "OFF" | "0"))
 }
 
+/// Refuses a STACTA item when a raster allow-list is set without the STACTA driver: an item is a
+/// pointer format (its tiles are other files, remote ones too), which opens only when named, as
+/// GDAL opens it only with its STACTA driver registered. Its JSON reads as STAC by content, so a
+/// list that allows STAC does not allow STACTA.
+fn check_allowed() -> Result<()> {
+    match crate::formats::allowed_drivers(Some(crate::formats::Kind::Raster)) {
+        Some(list) if !list.iter().any(|d| crate::formats::canonical_driver_name(d) == "STACTA") => {
+            Err(Error::Unsupported(format!("STACTA: the STACTA driver is not allowed (allowed: {})", list.join(", "))))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Opens an asset of an item at a tile matrix set (by default, the first of each), or lists the
 /// subdatasets of an item of several when neither is asked for. `extra` is metadata to add.
 fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(String, String)>) -> Result<Opened> {
+    check_allowed()?;
     let doc = &item.doc;
     let props = doc["properties"].as_object().ok_or_else(|| bad("Missing properties"))?;
     let templates = doc["asset_templates"].as_object().ok_or_else(|| bad("Missing asset_templates"))?;
@@ -882,6 +923,31 @@ fn escape_jsonc(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A remote `.json` that is not a STACTA item is identified from a bounded prefix, never
+    /// fetched whole.
+    #[cfg(remote)]
+    #[test]
+    fn a_remote_json_is_identified_from_its_first_bytes() {
+        // Its request count relies on the process-wide cache between two reads of the file.
+        let _serial = crate::http::cache_test_guard();
+        let mut doc = br#"{"type":"FeatureCollection","features":[]"#.to_vec();
+        doc.resize(1_000_000, b' ');
+        doc.push(b'}');
+        let (base, seen) = crate::http::test_server(doc);
+        assert!(open_lazy(&format!("{base}/collection.json")).is_none(), "not an item of tiled assets");
+        let ranges: Vec<Option<String>> = seen.lock().unwrap().clone();
+        assert!(ranges.iter().all(Option::is_some), "only range requests: {ranges:?}");
+        let asked: u64 = ranges
+            .iter()
+            .flatten()
+            .map(|r| {
+                let (a, b) = r.trim_start_matches("bytes=").split_once('-').unwrap();
+                b.parse::<u64>().unwrap() - a.parse::<u64>().unwrap() + 1
+            })
+            .sum();
+        assert!(asked <= 65_536, "{asked} bytes asked: {ranges:?}");
+    }
 
     #[test]
     fn parses_names() {

@@ -29,6 +29,17 @@ pub(crate) enum Color {
 
 type Result<T> = std::result::Result<T, String>;
 
+/// How the errors of allocations that failed start (see `crate::dataset::fallible`): not retried
+/// with another decoder.
+const ALLOCATION_FAILED: &str = "cannot allocate";
+
+/// A zeroed buffer of the product of `dims` bytes, allocated fallibly: the sizes come from the
+/// frame header.
+fn zeroed(dims: &[usize], what: &str) -> Result<Vec<u8>> {
+    use crate::dataset::fallible;
+    fallible::len(dims, what).and_then(|n| fallible::filled(n, 0u8, what)).map_err(|e| e.to_string())
+}
+
 /// A frame component.
 #[derive(Debug, Clone)]
 struct Component {
@@ -69,6 +80,10 @@ impl Huffman {
             let n = counts[len - 1] as usize;
             valptr[len] = k as i32 - code;
             for _ in 0..n {
+                // Each code must fit in `len` bits; more codes than that is a corrupt table.
+                if code >= 1 << len {
+                    return Err("invalid Huffman table".into());
+                }
                 if len <= 8 {
                     let shift = 8 - len;
                     let start = (code as usize) << shift;
@@ -339,7 +354,7 @@ pub(crate) fn decode(data: &[u8], color: Color) -> Result<Image> {
                     c.bh = mcuy * c.v;
                     c.w = (width * c.h).div_ceil(hmax);
                     c.hgt = (height * c.v).div_ceil(vmax);
-                    c.plane = vec![0; c.bw * 8 * c.bh * 8];
+                    c.plane = zeroed(&[c.bw * 8, c.bh * 8], "a JPEG component")?;
                 }
                 frame = Some((width, height, comps));
             }
@@ -356,7 +371,11 @@ pub(crate) fn decode(data: &[u8], color: Color) -> Result<Image> {
                 for i in 0..n {
                     let (cs, t) = (seg[1 + 2 * i], seg[2 + 2 * i]);
                     let ci = comps.iter().position(|c| c.id == cs).ok_or("JPEG scan of an unknown component")?;
-                    scan.push((ci, (t >> 4) as usize, (t & 15) as usize));
+                    let (td, ta) = ((t >> 4) as usize, (t & 15) as usize);
+                    if td > 3 || ta > 3 {
+                        return Err("invalid JPEG Huffman table selector".into());
+                    }
+                    scan.push((ci, td, ta));
                 }
                 pos = decode_scan(data, pos, comps, &scan, (*width, *height), &qt, &dc, &ac, restart_interval)?;
             }
@@ -372,15 +391,28 @@ pub(crate) fn decode(data: &[u8], color: Color) -> Result<Image> {
         }
         c => c,
     };
-    Ok(output(width, height, &comps, color))
+    output(width, height, &comps, color)
 }
 
 /// Decodes a JPEG file as libjpeg does by default, into `(width, height, components, samples)`:
 /// with this decoder, or `jpeg-decoder` for the streams it does not read (progressive ones).
 pub(crate) fn decode_file(b: &[u8]) -> std::result::Result<Image, String> {
-    decode(b, Color::Auto).or_else(|_| {
+    decode(b, Color::Auto).or_else(|e| {
+        if e.starts_with(ALLOCATION_FAILED) {
+            return Err(e);
+        }
         let mut d = jpeg_decoder::Decoder::new(std::io::Cursor::new(b));
-        let data = d.decode().map_err(|e| e.to_string())?;
+        d.read_info().map_err(|e| e.to_string())?;
+        // `jpeg-decoder` allocates infallibly, about four bytes a sample (coefficients, planes,
+        // the image): within this decoder's limit, and only once that much could be reserved.
+        let info = d.info().ok_or("no JPEG header")?;
+        let samples = (info.width as usize) * (info.height as usize) * info.pixel_format.pixel_bytes();
+        if samples > 1 << 31 {
+            return Err(format!("JPEG image too large ({} x {})", info.width, info.height));
+        }
+        drop(zeroed(&[samples, 4], "a JPEG image")?);
+        // On terrio's thread pool: `jpeg-decoder` decodes large images with rayon (see `par`).
+        let data = crate::par::install(|| d.decode()).map_err(|e| e.to_string())?;
         let info = d.info().ok_or("no JPEG header")?;
         let (width, height) = (info.width as usize, info.height as usize);
         let components = (data.len() / (width * height).max(1)).clamp(1, 4);
@@ -551,12 +583,13 @@ fn range_limit(v: i32) -> u8 {
 }
 
 /// Upsamples the components to the image size (libjpeg's fancy upsampling) and converts colours.
-fn output(width: usize, height: usize, comps: &[Component], color: Color) -> Image {
+fn output(width: usize, height: usize, comps: &[Component], color: Color) -> Result<Image> {
     let hmax = comps.iter().map(|c| c.h).max().unwrap_or(1);
     let vmax = comps.iter().map(|c| c.v).max().unwrap_or(1);
-    let planes: Vec<Vec<u8>> = comps.iter().map(|c| upsample(c, hmax / c.h.max(1), vmax / c.v.max(1), width, height)).collect();
+    let planes: Vec<Vec<u8>> =
+        comps.iter().map(|c| upsample(c, hmax / c.h.max(1), vmax / c.v.max(1), width, height)).collect::<Result<_>>()?;
     let n = comps.len();
-    let mut data = vec![0u8; width * height * n];
+    let mut data = zeroed(&[width, height, n], "a JPEG image")?;
     for (k, p) in planes.iter().enumerate() {
         for (i, v) in p.iter().enumerate() {
             data[i * n + k] = *v;
@@ -565,13 +598,13 @@ fn output(width: usize, height: usize, comps: &[Component], color: Color) -> Ima
     if n == 3 && color == Color::Rgb {
         ycc_to_rgb(&mut data);
     }
-    Image { width, height, components: n, data }
+    Ok(Image { width, height, components: n, data })
 }
 
 /// A component's samples at the image's size, `width` x `height`: copied, or upsampled by
 /// `hs` x `vs` as libjpeg does by default (`jdsample.c`: triangle filters for 2x1, 2x2 and 1x2,
 /// replication otherwise), its edge rows repeated beyond the image.
-fn upsample(c: &Component, hs: usize, vs: usize, width: usize, height: usize) -> Vec<u8> {
+fn upsample(c: &Component, hs: usize, vs: usize, width: usize, height: usize) -> Result<Vec<u8>> {
     let stride = c.bw * 8;
     let (w, h) = (c.w, c.hgt);
     // A row of the component, its index clamped to the rows it holds.
@@ -579,7 +612,7 @@ fn upsample(c: &Component, hs: usize, vs: usize, width: usize, height: usize) ->
         let r = r.clamp(0, h as isize - 1) as usize;
         &c.plane[r * stride..r * stride + w]
     };
-    let mut out = vec![0u8; width * height];
+    let mut out = zeroed(&[width, height], "a JPEG component")?;
     let mut put_row = |r: usize, vals: &[u8]| {
         if r < height {
             let n = width.min(vals.len());
@@ -650,7 +683,7 @@ fn upsample(c: &Component, hs: usize, vs: usize, width: usize, height: usize) ->
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Converts YCbCr samples to RGB in place, with libjpeg's fixed-point tables (`jdcolor.c`).
@@ -730,6 +763,29 @@ mod tests {
         jpeg_encoder::Encoder::new(&mut bytes, 75).encode(&grey, w as u16, h as u16, jpeg_encoder::ColorType::Luma).unwrap();
         let ours = decode_file(&bytes).unwrap();
         assert_eq!((ours.width, ours.height, ours.components), (w, h, 1));
+    }
+
+    /// A table with more codes of one length than fit in that many bits is an error, not a panic.
+    #[test]
+    fn overfull_huffman_table_is_an_error() {
+        let mut counts = [0u8; 16];
+        counts[0] = 2;
+        assert!(Huffman::new(&counts, vec![0, 1]).is_ok());
+        counts[0] = 3;
+        assert!(Huffman::new(&counts, vec![0, 1, 2]).is_err());
+    }
+
+    /// A scan naming a Huffman table beyond JPEG's four is an error, not a panic.
+    #[test]
+    fn scan_with_an_invalid_table_selector_is_an_error() {
+        let mut bytes = Vec::new();
+        jpeg_encoder::Encoder::new(&mut bytes, 75).encode(&[128; 64], 8, 8, jpeg_encoder::ColorType::Luma).unwrap();
+        assert!(decode(&bytes, Color::Auto).is_ok());
+        // SOS: the marker, its length, the component count, then each component and its tables.
+        let sos = bytes.windows(2).position(|w| w == [0xff, 0xda]).unwrap();
+        bytes[sos + 6] = 0x44;
+        let err = decode(&bytes, Color::Auto).err().unwrap();
+        assert!(err.contains("selector"), "{err}");
     }
 
     #[test]

@@ -20,6 +20,7 @@ import terrio
 import terrio.rio as rio
 from terrio.rio import cli
 from terrio.rio.control import GroundControlPoint
+from terrio.rio.errors import NotGeoreferencedWarning
 from terrio.rio.transform import from_gcps
 
 T = rio.transform.from_origin(500000, 4100000, 30, 30)
@@ -142,7 +143,9 @@ def test_write_commands(raster, tmp_path):
     r = run("overview", out / "a.tif", "--build", "2,4", cwd=out)
     assert r.returncode == 0, r.stderr
     r = run("overview", out / "a.tif", "--ls", cwd=out)
-    assert r.stdout.splitlines()[1] == "  Band 1: [2, 4] (method: 'unknown')"
+    # rasterio's `rio overview --ls` reads the method from the `rio_overview` metadata domain,
+    # which terrio writes as GDAL does: 'nearest', as rasterio reports it for this file.
+    assert r.stdout.splitlines()[1] == "  Band 1: [2, 4] (method: 'nearest')"
 
 
 def test_key_val_bounds_build():
@@ -234,8 +237,10 @@ def test_from_gcps():
     assert np.allclose(from_gcps(gcps), t, rtol=1e-12)
     two = [GroundControlPoint(row=r, col=c, x=c * 2.0, y=-r * 3.0) for r, c in ((0, 0), (10, 10))]
     assert from_gcps(two) == Affine(2.0, 0.0, 0.0, 0.0, -3.0, 0.0)
-    with pytest.raises(ValueError):
-        from_gcps(two[:1])
+    # One GCP determines no transform: rasterio 1.5.0 returns an unset (zero) transform, this
+    # branch (as `GDALGCPsToGeoTransform` fails) warns and returns the identity.
+    with pytest.warns(NotGeoreferencedWarning):
+        assert from_gcps(two[:1]) == Affine.identity()
 
 
 def test_shapes_sampling(raster):

@@ -31,7 +31,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
-use crate::formats::{RasterDriver, VectorDriver, extension};
+use crate::formats::{Kind, RasterDriver, VectorDriver, extension};
 use crate::{Dataset, Error, LazyRaster, RasterDataset, RasterWriteOptions, Result, VectorDataset, VectorOpenOptions, VectorWriteOptions};
 use wbvector::Layer;
 
@@ -41,9 +41,16 @@ pub use crate::drivers::vector::shapefile::to_zip_bytes as write_shapefile_zip_b
 /// Opens a dataset, raster or vector, from its bytes. `name` is a file name whose extension tells
 /// the format (`dem.tif`, `roads.fgb`, `parcels.zip`).
 pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
+    open_bytes_of_kind(bytes, name, None)
+}
+
+/// [`open_bytes`] for a dataset of `kind`: its name and content must pass that kind's allowed
+/// drivers (see [`crate::formats::set_allowed_drivers`]), as a file's must.
+fn open_bytes_of_kind(bytes: Vec<u8>, name: &str, kind: Option<Kind>) -> Result<Dataset> {
     #[cfg(not(target_family = "wasm"))]
     {
         let (_dir, path) = native::spill(&bytes, name)?;
+        crate::formats::check_allowed(&path, kind)?;
         let result = crate::dataset::open_native(&path);
         // What terrio cannot read, GDAL reads from memory (`/vsimem/`).
         #[cfg(feature = "gdal")]
@@ -51,12 +58,15 @@ pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
         result
     }
     #[cfg(target_family = "wasm")]
-    codec::open(bytes, name, &VectorOpenOptions::default())
+    {
+        crate::formats::check_allowed_bytes(name, &bytes, kind)?;
+        codec::open(bytes, name, &VectorOpenOptions::default())
+    }
 }
 
 /// Opens a raster from its bytes.
 pub fn open_raster_bytes(bytes: Vec<u8>, name: &str) -> Result<RasterDataset> {
-    match open_bytes(bytes, name)? {
+    match open_bytes_of_kind(bytes, name, Some(Kind::Raster))? {
         Dataset::Raster(r) => Ok(r),
         Dataset::Vector(_) => Err(Error::Unsupported(format!("'{name}' is a vector dataset, not a raster"))),
     }
@@ -65,7 +75,14 @@ pub fn open_raster_bytes(bytes: Vec<u8>, name: &str) -> Result<RasterDataset> {
 /// Opens a raster from its bytes for reading by window. GeoTIFFs are decoded one window at a time;
 /// other formats are decoded whole.
 pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> {
-    if crate::tiles::archive_kind(name).is_some() {
+    // Tile archives, JPEG 2000, GRIB and TIFF are decoded from memory, without a file to check.
+    crate::formats::check_allowed_bytes(name, &bytes, Some(Kind::Raster))?;
+    if let Some(kind) = crate::tiles::archive_kind(name) {
+        // An MBTiles archive under another archive's name is found by its content: read only if
+        // the MBTiles driver is allowed.
+        if bytes.starts_with(b"SQLite format 3\0") && kind != crate::tiles::ArchiveKind::MBTiles {
+            crate::formats::check_driver_allowed("MBTiles", name, Kind::Raster)?;
+        }
         #[cfg(feature = "tiles")]
         return Ok(LazyRaster::from_tiles(crate::tiles::raster::open_lazy_bytes(bytes)?));
         #[cfg(not(feature = "tiles"))]
@@ -76,8 +93,10 @@ pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> 
         return crate::drivers::jp2::open_lazy_bytes(bytes);
     }
     #[cfg(feature = "grib")]
-    if crate::drivers::grib::is_grib(&bytes) {
-        return crate::drivers::grib::open_lazy_bytes(bytes);
+    if crate::drivers::grib::is_grib_bytes(&bytes) {
+        // Found by its content whatever its name: read only if the GRIB driver is allowed.
+        crate::drivers::check_recognised(RasterDriver::GRIB, name)?;
+        return crate::drivers::grib::open_lazy_bytes(bytes.into());
     }
     if codec::is_tiff(&bytes) {
         if let Some(r) = LazyRaster::from_tiff_bytes(bytes)? {
@@ -94,6 +113,9 @@ pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> 
 pub fn open_zarr_store(files: Vec<(String, Vec<u8>)>) -> Result<RasterDataset> {
     let names: Vec<String> = files.iter().map(|(n, _)| n.clone()).collect();
     let root = codec::zarr_root(&names).ok_or_else(|| Error::InvalidData("not a Zarr store: no .zgroup, .zarray or zarr.json".into()))?;
+    // Opened as Zarr by its caller: only if the process-wide raster allow-list has Zarr, as a
+    // de-registered GDAL driver opens no store.
+    crate::formats::check_driver_allowed("Zarr", if root.is_empty() { "the Zarr store" } else { &root }, Kind::Raster)?;
     codec::open_zarr_store(files, &root)
 }
 
@@ -102,13 +124,17 @@ pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions
     #[cfg(not(target_family = "wasm"))]
     {
         let (_dir, path) = native::spill(&bytes, name)?;
+        crate::formats::check_allowed(&path, Some(Kind::Vector))?;
         let result = crate::dataset::open_vector_native(&path, options);
         #[cfg(feature = "gdal")]
         let result = crate::dataset::gdal_fallback(&path, result, |_| crate::gdal_backend::open_vector_bytes(bytes, name, options));
         result
     }
     #[cfg(target_family = "wasm")]
-    match codec::open(bytes, name, options)? {
+    match {
+        crate::formats::check_allowed_bytes(name, &bytes, Some(Kind::Vector))?;
+        codec::open(bytes, name, options)?
+    } {
         Dataset::Vector(v) => Ok(v),
         Dataset::Raster(_) => Err(Error::Unsupported(format!("'{name}' is a raster, not a vector dataset"))),
     }
@@ -367,8 +393,8 @@ pub(crate) mod codec {
             return crate::drivers::jp2::read_bytes(&bytes).map(Dataset::Raster);
         }
         #[cfg(feature = "grib")]
-        if crate::drivers::grib::is_grib(&bytes) {
-            return crate::drivers::grib::read_bytes(bytes).map(Dataset::Raster);
+        if crate::drivers::grib::is_grib_bytes(&bytes) {
+            return crate::drivers::grib::read_bytes(&bytes).map(Dataset::Raster);
         }
         if is_zip(&bytes) && ext != "kmz" {
             return open_zip(&bytes, name, options);
@@ -605,6 +631,41 @@ mod tests {
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
+
+    /// A Zarr store opened from its files is a Zarr open, as GDAL's de-registered driver opens no
+    /// store: refused under a raster allow-list without Zarr, opened with it or without a list.
+    #[cfg(feature = "zarr")]
+    #[test]
+    fn a_zarr_store_in_memory_opens_only_with_zarr_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("s.zarr");
+        crate::write_raster_dataset(&raster(1, DataType::U8), store.to_str().unwrap(), &RasterWriteOptions::default()).unwrap();
+        let (mut files, mut dirs) = (Vec::new(), vec![store]);
+        while let Some(d) = dirs.pop() {
+            for path in std::fs::read_dir(&d).unwrap().flatten().map(|e| e.path()) {
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    let name = path.strip_prefix(dir.path()).unwrap().to_string_lossy().replace('\\', "/");
+                    files.push((name, std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        let open = |drivers: Option<&str>| {
+            if let Some(list) = drivers {
+                let option = ("TERRIO_ALLOWED_DRIVERS".to_string(), Some(list.to_string()));
+                crate::config::push_scope(std::collections::HashMap::from([option]));
+            }
+            let out = open_zarr_store(files.clone()).map(|d| d.driver.name()).map_err(|e| e.to_string());
+            if drivers.is_some() {
+                crate::config::pop_scope();
+            }
+            out
+        };
+        assert_eq!(open(None), Ok("Zarr"));
+        assert_eq!(open(Some("GTiff")), Err("'s.zarr' holds Zarr data, and the Zarr driver is not allowed (allowed: GTIFF)".to_string()));
+        assert_eq!(open(Some("GTiff,Zarr")), Ok("Zarr"));
+    }
 
     #[test]
     fn memory_codec_preserves_color_overrides() {

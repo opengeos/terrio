@@ -93,8 +93,9 @@ pub(crate) fn decode_name(bytes: &[u8], utf8: bool) -> String {
     }
 }
 
-/// The entries of the central directory.
-pub(crate) fn central_directory(r: &mut dyn ReadSeek) -> Result<Vec<CdEntry>> {
+/// The entries of the central directory, within the archive limits of a raster open: the entries
+/// its end record declares and the directory's size are checked before the directory is read.
+pub(crate) fn central_directory(r: &mut dyn ReadSeek, limits: &crate::vfs::ZipLimits) -> Result<Vec<CdEntry>> {
     let len = r.seek(SeekFrom::End(0))?;
     if len < 22 {
         return Err(invalid("too short"));
@@ -131,6 +132,10 @@ pub(crate) fn central_directory(r: &mut dyn ReadSeek) -> Result<Vec<CdEntry>> {
     }
     if cd_offset.checked_add(cd_size).is_none_or(|end| end > len) {
         return Err(invalid("central directory out of bounds"));
+    }
+    limits.check_entries("zip", count)?;
+    if cd_size > crate::vfs::MAX_DIRECTORY_BYTES {
+        return Err(Error::InvalidData(format!("zip: a central directory of {cd_size} bytes in an archive of {len}")));
     }
     r.seek(SeekFrom::Start(cd_offset))?;
     // Do not allocate the advertised directory size or entry count. Both can be
@@ -183,7 +188,9 @@ pub(crate) fn central_directory(r: &mut dyn ReadSeek) -> Result<Vec<CdEntry>> {
         if size as u64 > remaining {
             return Err(invalid("truncated central directory"));
         }
-        let mut fields = vec![0; size];
+        let mut fields = Vec::new();
+        fields.try_reserve_exact(size).map_err(|_| invalid("cannot allocate a central directory record"))?;
+        fields.resize(size, 0);
         cd.read_exact(&mut fields)?;
         remaining -= size as u64;
         let name = decode_name(&fields[..name_len], flags & 0x800 != 0);
@@ -336,10 +343,11 @@ mod tests {
             }
         }
         let mut forged = Counted { cursor: std::io::Cursor::new(forged), max_read: 0 };
-        assert!(central_directory(&mut forged).is_err());
+        let limits = crate::vfs::ZipLimits::default();
+        assert!(central_directory(&mut forged, &limits).is_err());
         assert!(forged.max_read <= 64 * 1024);
 
-        let cd = central_directory(&mut r).unwrap();
+        let cd = central_directory(&mut r, &limits).unwrap();
         let names: Vec<&str> = cd.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["d/", "d/a.txt", "b.bin", "big.txt"]);
         assert!(cd[0].is_dir());
@@ -365,12 +373,12 @@ mod tests {
         let mut bad_directory = r.get_ref().clone();
         let end_record = bad_directory.windows(4).rposition(|w| w == EOCD.to_le_bytes()).unwrap();
         bad_directory[end_record + 10..end_record + 12].copy_from_slice(&5u16.to_le_bytes());
-        assert!(central_directory(&mut std::io::Cursor::new(bad_directory)).is_err());
+        assert!(central_directory(&mut std::io::Cursor::new(bad_directory), &limits).is_err());
         // A corrupt byte is detected.
         let mut bytes = r.into_inner();
         let at = data_offset(&mut std::io::Cursor::new(&bytes), &cd[2]).unwrap() as usize;
         bytes[at] ^= 0xFF;
         assert!(extract(&mut std::io::Cursor::new(bytes), &cd[2], &mut Vec::new()).is_err());
-        assert!(central_directory(&mut std::io::Cursor::new(b"not a zip at all, really not".to_vec())).is_err());
+        assert!(central_directory(&mut std::io::Cursor::new(b"not a zip at all, really not".to_vec()), &limits).is_err());
     }
 }

@@ -45,13 +45,14 @@ pub(crate) fn parse_subdataset(s: &str) -> Option<(String, String)> {
     Some((rest[..at].to_string(), rest[at + 1..].to_string()))
 }
 
+/// The extensions of the formats whose drivers read a file even when it is HDF5 inside: GDAL's HDF5
+/// driver leaves them to the others.
+pub(crate) const OTHER_DRIVERS: &[&str] = &["nc", "cdf", "nc2", "nc3", "nc4", "grd", "gmac", "kea", "bag"];
+
 /// Whether a file is HDF5 and, as GDAL decides between its drivers, not one for another: netCDF-4
 /// files carry netCDF's extensions, and KEA and BAG files (HDF5 too) have drivers of their own.
 pub(crate) fn is_hdf5(path: &Path) -> bool {
-    let other_driver = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| ["nc", "cdf", "nc2", "nc3", "nc4", "grd", "gmac", "kea", "bag"].iter().any(|n| e.eq_ignore_ascii_case(n)));
+    let other_driver = path.extension().and_then(|e| e.to_str()).is_some_and(|e| OTHER_DRIVERS.iter().any(|n| e.eq_ignore_ascii_case(n)));
     !other_driver && has_signature(path)
 }
 

@@ -26,7 +26,7 @@
 //! ```
 
 use crate::drivers::gtiff_update::{self, Appender, Directory, Entry, Tiff};
-use crate::drivers::gtiff_write::{self as gw, CodecParams, Compression, Layout, OverviewResampling, Value};
+use crate::drivers::gtiff_write::{self as gw, AddOverviewsResampling as OverviewResampling, CodecParams, Compression, Layout, Value};
 use crate::ops::Resampling;
 use crate::ops::overview_kernel as kernel;
 use crate::{Error, LazyRaster, Result, Window, WindowOptions};
@@ -288,6 +288,7 @@ pub fn delete_overviews(path: &str, options: &DeleteOptions) -> Result<()> {
     if options.external {
         let ovr = ovr_path(std::path::Path::new(path));
         if ovr.is_file() {
+            crate::geotiff::check_tiff_allowed(&ovr, &ovr.to_string_lossy())?;
             let tiff = parse_file(&ovr)?;
             if tiff.dirs.is_empty() || !tiff.dirs.iter().all(|d| d.is_overview() || d.is_mask()) {
                 return Err(Error::InvalidArgument(format!("refusing to remove '{}': not an overview sidecar", ovr.display())));
@@ -296,6 +297,7 @@ pub fn delete_overviews(path: &str, options: &DeleteOptions) -> Result<()> {
         }
         return Ok(());
     }
+    crate::geotiff::check_tiff_allowed(std::path::Path::new(path), path)?;
     gtiff_update::update_file(&file, |f| delete_internal(f, options.ignore_cog_layout_break))
 }
 
@@ -303,6 +305,10 @@ pub fn delete_overviews(path: &str, options: &DeleteOptions) -> Result<()> {
 pub fn delete_overviews_from_bytes(tiff: &[u8], options: &DeleteOptions) -> Result<Vec<u8>> {
     if options.external {
         return Err(Error::Unsupported("a GeoTIFF in memory has no external overviews".into()));
+    }
+    // Read by the GeoTIFF reader to be rewritten: only if the GTiff driver is allowed.
+    if crate::formats::sniff(&tiff[..tiff.len().min(4)]) == Some("GTIFF") {
+        crate::formats::check_driver_allowed("GTiff", "a GeoTIFF in memory", crate::formats::Kind::Raster)?;
     }
     let mut out = std::io::Cursor::new(tiff.to_vec());
     delete_internal(&mut out, options.ignore_cog_layout_break)?;

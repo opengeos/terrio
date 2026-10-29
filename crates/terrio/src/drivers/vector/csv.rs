@@ -719,6 +719,15 @@ mod tests {
     }
 
     #[test]
+    fn text_that_is_not_ascii_does_not_split_at_a_fixed_byte() {
+        // Byte 10 falls inside "é": the date check must not slice the text there.
+        let text = "id,when\n1,2020-01-0\u{e9} 10:20:30\n2,2020-01-01 10:20:30\n";
+        let l = parse(text, "t", &CsvOptions::default()).unwrap();
+        assert_eq!(l.schema.fields()[1].field_type, FieldType::Text);
+        assert_eq!(l.features[0].attributes[1], FieldValue::Text("2020-01-0\u{e9} 10:20:30".into()));
+    }
+
+    #[test]
     fn reads_points_from_lon_lat_columns() {
         let text =
             "id,Longitude,Latitude,name,when\n1,-122.5,45.25,\"A, quoted\",2024-01-02\n2,10,-20.5,\"say \"\"hi\"\"\",2024-01-03T10:00:00\n";

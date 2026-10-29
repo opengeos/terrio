@@ -1,7 +1,11 @@
 """Coordinate reference systems, with rasterio's `CRS` class.
 
 CRSs are parsed and identified by terrio (EPSG codes, WKT, PROJ strings); WKT exported for an EPSG
-code is the WKT1 that GDAL writes.
+code is the WKT1 that GDAL writes. With pyproj installed, a CRS read from WKT2 exports GDAL's
+WKT1, and `to_dict(projjson=True)` returns PROJ's PROJJSON: both as the PROJ that pyproj bundles
+writes them, which is rasterio's when the versions match. Without pyproj, terrio writes the
+PROJJSON GDAL 3.12.1 writes for the geographic and projected CRSs it models, and raises
+`CRSError` for others.
 """
 
 from __future__ import annotations
@@ -10,6 +14,7 @@ import json
 import math
 import os
 import re
+import warnings
 from collections.abc import Mapping
 from typing import Any
 
@@ -19,6 +24,40 @@ from terrio.rio.errors import CRSError
 
 _ANGULAR = {"degree": math.pi / 180.0}
 _EXACT_UNITS = {"ussurveyfoot": 0.30480060960121924, "footus": 0.30480060960121924, "foot": 0.3048}
+# Root keywords of WKT2 (ISO 19162) definitions.
+_WKT2_ROOTS = (
+    "PROJCRS",
+    "PROJECTEDCRS",
+    "GEOGCRS",
+    "GEOGRAPHICCRS",
+    "GEODCRS",
+    "GEODETICCRS",
+    "BOUNDCRS",
+    "COMPOUNDCRS",
+    "VERTCRS",
+    "VERTICALCRS",
+    "ENGCRS",
+    "ENGINEERINGCRS",
+    "DERIVEDPROJCRS",
+    "PARAMETRICCRS",
+    "TIMECRS",
+)
+# An authority code (`EPSG:4326`, `ESRI:54009`, `OGC:CRS84`), which GDAL resolves through PROJ's
+# database.
+_AUTHORITY_CODE = re.compile(r"^\s*[A-Za-z]\w*:\w+\s*$")
+
+
+def _pyproj() -> Any:
+    """pyproj, when installed: terrio writes PROJJSON, and WKT1 from WKT2, through its PROJ.
+
+    Returns:
+        module | None: pyproj, or None.
+    """
+    try:
+        import pyproj
+    except ImportError:
+        return None
+    return pyproj
 
 
 def _parse_wkt(wkt: str) -> list[Any] | None:
@@ -92,6 +131,11 @@ class CRS(Mapping[str, Any]):
     strings and EPSG codes defining it.
     """
 
+    # The definition GDAL resolves through PROJ's database (an authority code, or `+init=`), as
+    # rasterio's CRSs from codes are; None for CRSs from WKT or PROJ parameters, datasets' CRSs,
+    # copies and unpickled CRSs, which rasterio reads back from WKT.
+    _database: str | None = None
+
     def __init__(self, initialdata: Any = None, **kwargs: Any) -> None:
         """Creates a CRS from PROJ parameters (deprecated rasterio style) or another CRS.
 
@@ -115,6 +159,7 @@ class CRS(Mapping[str, Any]):
         if params:
             other = CRS.from_dict(params)
             self._info, self._input, self._from_file = other._info, other._input, other._from_file
+            self._database = other._database
 
     @classmethod
     def _from(cls, definition: str) -> CRS:
@@ -136,8 +181,27 @@ class CRS(Mapping[str, Any]):
         crs = cls()
         crs._info = dict(info)
         crs._input = definition
+        if _AUTHORITY_CODE.match(definition):
+            crs._database = definition.strip()
         crs._from_file = os.path.isfile(definition) and bool(info.get("wkt"))
         return crs
+
+    @classmethod
+    def _from_dataset(cls, value: Any) -> CRS:
+        """A dataset's CRS, which GDAL reads back from the dataset rather than PROJ's database.
+
+        Args:
+            value: Anything `from_user_input` accepts.
+
+        Returns:
+            CRS: The CRS.
+        """
+        crs = cls.from_user_input(value)
+        if crs._database is None:
+            return crs
+        out = cls()
+        out._info, out._input = dict(crs._info), crs._input
+        return out
 
     @classmethod
     def from_epsg(cls, code: int | str) -> CRS:
@@ -205,7 +269,10 @@ class CRS(Mapping[str, Any]):
         """
         m = re.search(r"\+init=epsg:(\d+)", proj, re.IGNORECASE)
         if m:
-            return cls.from_epsg(m.group(1))
+            # GDAL hands `+init=` to PROJ, whose PROJJSON differs from the EPSG code's.
+            crs = cls.from_epsg(m.group(1))
+            crs._database = proj.strip()
+            return crs
         return cls._from(proj)
 
     @classmethod
@@ -257,7 +324,7 @@ class CRS(Mapping[str, Any]):
         value = value.strip()
         m = re.match(r"^(?:\+init=)?epsg:(\d+)$", value, re.IGNORECASE)
         if m:
-            return cls.from_epsg(m.group(1))
+            return cls.from_proj4(value) if value.startswith("+") else cls.from_epsg(m.group(1))
         if value.startswith("{"):
             return cls._from(value)
         if value.lstrip().startswith("+") or "+proj=" in value:
@@ -371,6 +438,10 @@ class CRS(Mapping[str, Any]):
         if unit is None:
             cs = _child(node, "CS")
             unit = _child(cs, "UNIT") if cs else None
+        if unit is None:
+            # WKT2 as PROJ writes it declares the unit inside each AXIS.
+            axis = _child(node, "AXIS")
+            unit = _child(axis, "LENGTHUNIT", "ANGLEUNIT", "UNIT") if axis else None
         if unit is None:
             if str(node[0]).upper() in ("GEOGCS", "GEOGCRS", "GEODCRS"):
                 return ("degree", _ANGULAR["degree"])
@@ -497,6 +568,23 @@ class CRS(Mapping[str, Any]):
             v = WktVersion(version) if not isinstance(version, WktVersion) else version
             if v not in (WktVersion.WKT1_GDAL, WktVersion.WKT1):
                 raise CRSError(f"terrio.rio writes WKT1 only, not {v.value}")
+        root = self._root
+        if root is not None and str(root[0]).upper() in _WKT2_ROOTS:
+            # GDAL exports a CRS read from WKT2 as WKT1_GDAL, axes included: PROJ's export,
+            # through pyproj when it is installed (else the WKT2 is returned as given).
+            wkt1 = self.__dict__.get("_wkt1")
+            if wkt1 is None:
+                wkt1 = ""
+                pyproj = _pyproj()
+                if pyproj is not None:
+                    try:
+                        crs = pyproj.CRS.from_wkt(self.wkt)
+                        wkt1 = crs.to_wkt("WKT1_GDAL", output_axis_rule=True) or ""
+                    except Exception:  # noqa: BLE001 - PROJ cannot write it as WKT1
+                        wkt1 = ""
+                self._wkt1 = wkt1
+            if wkt1:
+                return wkt1
         return self.wkt
 
     def to_string(self) -> str:
@@ -540,18 +628,70 @@ class CRS(Mapping[str, Any]):
         """The CRS as PROJ parameters, or as PROJJSON.
 
         Args:
-            projjson: The PROJJSON (as rasterio's `to_dict(projjson=True)`).
+            projjson: Return PROJJSON, as PROJ writes it for the CRS GDAL builds: PROJ's database
+                object for a CRS from an authority code (with its area, bbox and scope), else the
+                CRS read from its WKT (as rasterio's `CRS.from_wkt` and datasets' CRSs give it).
+                Through pyproj when it is installed; otherwise terrio writes it as GDAL 3.12.1
+                (PROJ 9.7.1) does, for the geographic and projected CRSs it models.
 
         Returns:
-            dict: The parameters.
+            dict: The parameters, or the PROJJSON document.
+
+        Raises:
+            CRSError: If PROJJSON is asked for, pyproj is not installed, and terrio cannot write
+                this CRS as GDAL does (a CRS from a PROJ string or from a non-EPSG authority code,
+                or one of a kind terrio does not model): PROJ parameters are never returned in
+                its place.
         """
-        if projjson:
-            return json.loads(self.to_projjson())
+        if projjson and self.is_valid:
+            pyproj = _pyproj()
+            if pyproj is not None:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", FutureWarning)  # pyproj on `+init=`
+                        if self._database is not None:
+                            crs = pyproj.CRS.from_user_input(self._database)
+                        else:
+                            crs = pyproj.CRS.from_wkt(self.wkt)
+                    return dict(crs.to_json_dict())
+                except Exception:  # noqa: BLE001 - rasterio returns {} when PROJ cannot
+                    return {}
+            return self._native_projjson()
         proj4 = self._info.get("proj4")
         if proj4:
             return _proj_dict(proj4)
         root = self._root
         return _wkt_to_proj(root) if root is not None else {}
+
+    def _native_projjson(self) -> dict[str, Any]:
+        """The PROJJSON GDAL writes for the CRS, written by terrio (without pyproj).
+
+        Returns:
+            dict: The PROJJSON document.
+
+        Raises:
+            CRSError: If terrio cannot write the CRS as GDAL does.
+        """
+        if self._database is not None:
+            m = re.match(r"^\s*EPSG:(\d+)\s*$", self._database, re.IGNORECASE)
+            if m is None:
+                # GDAL builds `+init=`, ESRI and OGC codes through PROJ otherwise than terrio.
+                raise CRSError(f"PROJJSON of '{self._database}' needs pyproj")
+            definition, database = f"EPSG:{m.group(1)}", True
+        elif self._input.lstrip().startswith("+") or (
+            "+proj=" in self._input and not re.match(r"^\s*[A-Za-z_]+\s*[\[(]", self._input)
+        ):
+            # GDAL describes a CRS from a PROJ string as PROJ builds it, not from WKT (WKT may hold
+            # a PROJ string in an `EXTENSION`).
+            raise CRSError("PROJJSON of a CRS from a PROJ string needs pyproj")
+        else:
+            definition, database = self.wkt, False
+        try:
+            return dict(json.loads(_terrio.crs_projjson(definition, database)))
+        except CRSError:
+            raise
+        except Exception as err:
+            raise CRSError(str(err)) from err
 
     # Comparison.
 
@@ -825,12 +965,19 @@ def _wkt_to_proj(root: list[Any]) -> dict[str, Any]:
                     out["b"] = _num(sph[2])
     if kind == "PROJCS":
         unit = _child(root, "UNIT")
+        to_meter = 1.0
         if unit is not None:
             uname = _norm(unit[1])
             if uname in _UNITS:
                 out["units"] = _UNITS[uname]
             else:
                 out["to_meter"] = _num(unit[2])
+            to_meter = _EXACT_UNITS.get(uname, float(unit[2]) if len(unit) > 2 else 1.0)
+        # PROJ strings give false eastings and northings in metres, whatever the CRS's unit (as
+        # GDAL exports them, to 15 significant digits): WKT gives them in the CRS's unit.
+        for key in ("x_0", "y_0"):
+            if key in out and to_meter != 1.0:
+                out[key] = _num(float(f"{float(out[key]) * to_meter:.15g}"))
     out["no_defs"] = True
     return out
 

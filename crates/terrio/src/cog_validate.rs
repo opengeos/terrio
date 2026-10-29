@@ -168,8 +168,10 @@ fn invalid(msg: impl Into<String>) -> Error {
     Error::InvalidData(msg.into())
 }
 
-/// Reads the IFDs of a TIFF. `None` when the stream is not a TIFF.
-fn read_tiff<R: Read + Seek>(f: &mut R) -> Result<Option<Tiff>> {
+/// Reads the IFDs of a TIFF. `None` when the stream is not a TIFF. A TIFF is read only if the
+/// process-wide raster allow-list has the GTiff driver (`shown` names it in the refusal), as GDAL's
+/// validation opens it with that driver.
+fn read_tiff<R: Read + Seek>(f: &mut R, shown: &str) -> Result<Option<Tiff>> {
     let mut header = [0u8; 16];
     f.seek(SeekFrom::Start(0))?;
     let mut n = 0;
@@ -190,6 +192,7 @@ fn read_tiff<R: Read + Seek>(f: &mut R) -> Result<Option<Tiff>> {
         43 => true,
         _ => return Ok(None),
     };
+    crate::formats::check_driver_allowed("GTiff", shown, crate::formats::Kind::Raster)?;
     let mut next = if big {
         f.read_exact(&mut header[8..16])?;
         e.u64(&header[8..16])
@@ -200,6 +203,8 @@ fn read_tiff<R: Read + Seek>(f: &mut R) -> Result<Option<Tiff>> {
     // Value arrays must lie within the stream, checked before they are allocated or fetched.
     let stream_len = f.seek(SeekFrom::End(0))?;
     let (entry_len, count_len, inline) = if big { (20usize, 8usize, 8usize) } else { (12, 2, 4) };
+    // The bytes of the arrays read so far, of every image: see below.
+    let mut stored_bytes: u64 = 0;
     let mut ifds: Vec<Ifd> = Vec::new();
     while next != 0 && ifds.len() < MAX_IFDS {
         if ifds.iter().any(|i| i.offset == next) {
@@ -245,6 +250,13 @@ fn read_tiff<R: Read + Seek>(f: &mut R) -> Result<Option<Tiff>> {
                 let off = if big { e.u64(value) } else { e.u32(value) as u64 };
                 if off.checked_add(len as u64).is_none_or(|end| end > stream_len) {
                     return Err(invalid(format!("TIFF tag {tag}'s {n} values run past the end of the file")));
+                }
+                // The images of a file do not share their arrays, which together fit in it: more
+                // is refused, before it is read. Every image's offsets and byte counts are held,
+                // so images pointing to one array would hold it once per image.
+                stored_bytes += len as u64;
+                if stored_bytes > stream_len {
+                    return Err(invalid(format!("the TIFF's tag arrays take more than its {stream_len} bytes")));
                 }
                 stored.push((tag, typ, off, len));
             }
@@ -320,7 +332,7 @@ pub fn validate_cog(path: &str, strict: bool) -> Result<CogValidation> {
         Location::Url(_) | Location::S3 { .. } => {
             let remote = loc.remote().ok_or_else(|| Error::InvalidArgument(format!("'{path}' is not remote")))?;
             let mut r = crate::http::RangeReader::open(&remote)?;
-            (read_tiff(&mut r)?, None)
+            (read_tiff(&mut r, path)?, None)
         }
         Location::Local(p) => {
             let mut f = std::io::BufReader::new(std::fs::File::open(p)?);
@@ -331,7 +343,7 @@ pub fn validate_cog(path: &str, strict: bool) -> Result<CogValidation> {
             // open its overviews. One that cannot be opened is an error, as the file itself is.
             let sidecar = if ovr.is_file() {
                 Some(
-                    read_tiff(&mut std::io::BufReader::new(std::fs::File::open(ovr)?))
+                    read_tiff(&mut std::io::BufReader::new(std::fs::File::open(ovr)?), &ovr.to_string_lossy())
                         .ok()
                         .flatten()
                         .unwrap_or(Tiff { ifds: Vec::new(), ghost: None }),
@@ -339,11 +351,11 @@ pub fn validate_cog(path: &str, strict: bool) -> Result<CogValidation> {
             } else {
                 None
             };
-            (read_tiff(&mut f)?, sidecar)
+            (read_tiff(&mut f, path)?, sidecar)
         }
         _ => {
             let local = crate::vfs::resolve(path)?;
-            (read_tiff(&mut std::io::BufReader::new(std::fs::File::open(local.path())?))?, None)
+            (read_tiff(&mut std::io::BufReader::new(std::fs::File::open(local.path())?), path)?, None)
         }
     };
     Ok(validate(tiff, ovr, strict))
@@ -655,6 +667,45 @@ mod tests {
         // More values than any image needs.
         let e = [(256, 4, 1, 1024), (324, 4, (1 << 22) + 1, 100)];
         assert!(validate_bytes(&crafted(&e, &[])).is_err());
+    }
+
+    /// A little-endian classic TIFF of `images` image directories after two arrays of 64 LONGs
+    /// (offsets at byte 8, byte counts at byte 264) that every directory points to.
+    fn sharing_arrays(images: u32) -> Vec<u8> {
+        let (offsets, counts, first, ifd_len): (u32, u32, u32, u32) = (8, 8 + 256, 8 + 512, 2 + 6 * 12 + 4);
+        let mut b = b"II*\0".to_vec();
+        b.extend(first.to_le_bytes());
+        b.extend((0..64u32).flat_map(|i| (first + images * ifd_len + i).to_le_bytes()));
+        b.extend((0..64u32).flat_map(|_| 1u32.to_le_bytes()));
+        for i in 0..images {
+            let entries: [(u16, u16, u32, u32); 6] =
+                [(256, 4, 1, 2048), (257, 4, 1, 2048), (322, 3, 1, 256), (323, 3, 1, 256), (324, 4, 64, offsets), (325, 4, 64, counts)];
+            b.extend(6u16.to_le_bytes());
+            for (tag, typ, count, value) in entries {
+                b.extend(tag.to_le_bytes());
+                b.extend(typ.to_le_bytes());
+                b.extend(count.to_le_bytes());
+                b.extend(value.to_le_bytes());
+            }
+            let next = if i + 1 < images { first + (i + 1) * ifd_len } else { 0 };
+            b.extend(next.to_le_bytes());
+        }
+        b.extend([0u8; 64]);
+        b
+    }
+
+    #[test]
+    fn tag_arrays_shared_by_images_are_refused_before_reading() {
+        // One directory: its two arrays (512 bytes) fit in the file (662 bytes).
+        let one = sharing_arrays(1);
+        assert_eq!(one.len(), 662);
+        let v = validate_bytes(&one).unwrap();
+        assert_eq!(v.data_offsets, vec![598], "{v:?}");
+        // Two directories pointing to the same arrays: 1,024 bytes of arrays in a file of 740.
+        let two = sharing_arrays(2);
+        assert_eq!(two.len(), 740);
+        let err = validate_bytes(&two).unwrap_err();
+        assert_eq!(err.to_string(), "the TIFF's tag arrays take more than its 740 bytes");
     }
 
     #[test]

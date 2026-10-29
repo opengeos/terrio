@@ -199,7 +199,10 @@ fn mutable_views_write_to_the_raster() {
     assert_eq!(values.as_ptr(), base);
 }
 
+// The bands run as a caller runs them, on rayon's global pool: the disallowed methods of
+// clippy.toml are for terrio's own work, which runs on its own pool.
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn bands_split_for_threads() {
     let mut raster = raster(3, 0);
     let base = f32s(&raster.data).as_ptr();

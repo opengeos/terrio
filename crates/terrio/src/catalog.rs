@@ -226,6 +226,10 @@ impl RasterCatalog {
     /// Opens a GTI XML descriptor or GeoPackage/FlatGeobuf index. Metadata inference opens
     /// at most one tile; GeoTIFF/COG pixels remain lazy. Other formats follow their readers.
     pub fn open(path: &str, mut options: CatalogOptions) -> Result<Self> {
+        // Opened as GTI (by the `GTI:` prefix, a `.gti` descriptor, or a `.gti.gpkg` or `.gti.fgb`
+        // index): only if the process-wide raster allow-list has GTI, besides the index's own
+        // driver that the open judges by its name, as a de-registered GDAL driver opens nothing.
+        crate::formats::check_driver_allowed("GTI", path, crate::formats::Kind::Raster)?;
         let path = if path.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("GTI:")) { &path[4..] } else { path };
         let descriptor = Path::new(path);
         let mut index_path = path.to_string();
@@ -242,6 +246,9 @@ impl RasterCatalog {
             };
             apply_xml(&root, &mut options)?;
         }
+        // The index, named directly or by a descriptor's `IndexDataset`, is judged as the open of a
+        // `.gti.gpkg` or `.gti.fgb` judges it by its name and first bytes.
+        crate::formats::check_allowed(&index_path, Some(crate::formats::Kind::Raster))?;
         let (reader, schema, bounds, metadata) = index_header(&index_path, options.layer.as_deref())?;
         apply_metadata(&metadata, &mut options)?;
         let layer = schema.name.clone();
@@ -1169,5 +1176,70 @@ mod lazy_source_tests {
         assert_eq!(mask.len(), 2048 * 1024);
         assert_eq!(mask.iter().filter(|&&value| value == 255).count(), 32);
         assert!(catalog.last_mask.is_none());
+    }
+}
+
+/// The process-wide raster allow-list and GTI catalogs, as GDAL's de-registered drivers: a catalog
+/// opened as GTI (a `.gti.gpkg` index by the whole read, the same index named `GTI:` by the lazy
+/// open, or [`RasterCatalog::open`]) needs GTI allowed, and its index's driver (GeoPackage) as the
+/// open judges the index's name; with both, it opens as before. The list is set with
+/// `TERRIO_ALLOWED_DRIVERS` on the test's thread, which the process-wide list joins.
+#[cfg(all(test, feature = "sqlite"))]
+mod allow_list_tests {
+    use super::*;
+    use wbvector::{Coord, Feature, FieldDef, FieldType, Geometry, Ring};
+
+    #[test]
+    fn a_catalog_opens_only_with_gti_and_its_index_driver_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = RasterConfig {
+            cols: 4,
+            rows: 4,
+            bands: 1,
+            cell_size: 1.0,
+            data_type: DataType::F64,
+            crs: wbraster::CrsInfo::from_epsg(3857),
+            ..Default::default()
+        };
+        let tile = Raster::from_data_native(cfg, RasterData::F64(vec![7.0; 16])).unwrap();
+        crate::write_raster(&tile, dir.path().join("t.tif").to_str().unwrap(), &Default::default()).unwrap();
+        let mut index = Layer::new("tiles");
+        index.set_crs_epsg(Some(3857));
+        index.add_field(FieldDef::new("location", FieldType::Text));
+        let square = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)].map(|(x, y)| Coord::xy(x, y));
+        let mut footprint = Feature::with_geometry(0, Geometry::Polygon { exterior: Ring(square.to_vec()), interiors: Vec::new() }, 1);
+        footprint.attributes = vec![FieldValue::Text("t.tif".into())];
+        index.push(footprint);
+        let path = dir.path().join("index.gti.gpkg");
+        let path = path.to_str().unwrap();
+        crate::write_vector(&[index], path, &Default::default()).unwrap();
+        let prefixed = format!("GTI:{path}");
+        let opens = |drivers: Option<&str>| {
+            if let Some(list) = drivers {
+                crate::config::push_scope(HashMap::from([("TERRIO_ALLOWED_DRIVERS".to_string(), Some(list.to_string()))]));
+            }
+            let out = [
+                crate::open_raster(path).map(|d| d.driver.name()),
+                LazyRaster::open(&prefixed).map(|r| r.driver().name()),
+                RasterCatalog::open(path, CatalogOptions::default()).map(|c| c.into_lazy().driver().name()),
+            ]
+            .map(|r| r.map_err(|e| e.to_string()));
+            if drivers.is_some() {
+                crate::config::pop_scope();
+            }
+            out
+        };
+        let all = |driver: &'static str| std::array::from_fn::<_, 3, _>(|_| Ok(driver));
+        assert_eq!(opens(None), all("GTI"));
+        assert_eq!(opens(Some("GTI,GPKG,GTiff")), all("GTI"));
+        let [whole, lazy, explicit] = opens(Some("GPKG,GTiff"));
+        assert_eq!(whole, Err(format!("'{path}' holds GTI data, and the GTI driver is not allowed (allowed: GPKG, GTIFF)")));
+        assert_eq!(lazy, Err(format!("'{prefixed}' holds GTI data, and the GTI driver is not allowed (allowed: GPKG, GTIFF)")));
+        assert_eq!(explicit, whole);
+        // Without GeoPackage, the index is refused by its name, `GTI:` or not.
+        let refused = format!("{path}': the GPKG driver is not allowed (allowed: GTI, GTIFF)");
+        for (i, r) in opens(Some("GTI,GTiff")).into_iter().enumerate() {
+            assert!(r.as_ref().is_err_and(|e| e.contains(&refused)), "open #{i}: {r:?}");
+        }
     }
 }

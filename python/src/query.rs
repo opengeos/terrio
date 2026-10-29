@@ -2,7 +2,7 @@
 //! pixel-info`, `gdallocationinfo`) and `xyz` (`gdal2xyz.py`).
 
 use crate::raster::PyRaster;
-use crate::{PyResultExt, invalid};
+use crate::{Detach, PyResultExt, invalid};
 use pyo3::prelude::*;
 use terrio::LazyRaster;
 use terrio::ops::compare::CompareOptions;
@@ -32,7 +32,8 @@ fn with_raster<T: Send>(
         Some(path) => crate::with_warnings(py, || f(&mut terrio::open_raster_lazy(&path)?)),
         None => {
             let mut r = src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut();
-            f(&mut r.inner).py()
+            let inner = &mut r.inner;
+            py.detach_result(|| f(inner)).py()
         }
     }
 }
@@ -95,13 +96,15 @@ fn compare<'py>(
         (Some(a), Some(b)) => crate::with_warnings(py, || terrio::ops::compare::compare(&a, &b, &options))?,
         (None, None) if reference.is(input) => {
             let mut a = open_or_borrow(py, reference)?;
-            let mut copy = a.raster().shared();
-            terrio::ops::compare::compare_rasters(a.raster(), &mut copy, &options).py()?
+            let a = a.raster();
+            let mut copy = a.shared();
+            py.detach_result(|| terrio::ops::compare::compare_rasters(a, &mut copy, &options)).py()?
         }
         _ => {
             let mut a = open_or_borrow(py, reference)?;
             let mut b = open_or_borrow(py, input)?;
-            terrio::ops::compare::compare_rasters(a.raster(), b.raster(), &options).py()?
+            let (a, b) = (a.raster(), b.raster());
+            py.detach_result(|| terrio::ops::compare::compare_rasters(a, b, &options)).py()?
         }
     };
     json_to_python(py, &comparison.to_json())

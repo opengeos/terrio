@@ -46,6 +46,16 @@ bands of rows), writing Zarr chunks, and decoding and encoding vector features. 
 work is computed on its own and the results are combined in input order, so outputs are the same
 bytes as a single-threaded run gives. WebAssembly builds run the same code sequentially.
 
+All of it runs on one thread pool, terrio's own (`crates/terrio/src/par.rs`), never on rayon's
+global pool. A `fork()`ed child, as Python's `multiprocessing` starts on Linux, has only the
+thread that forked: a pool started before the fork has no threads there, and work given to it
+would wait forever. terrio's pool is per process, so the first parallel call in a child starts a
+new one. A fork also waits for terrio's background work in progress to finish. New parallel code
+uses `par`'s functions: `par::map_range`, `par::for_each_owned` and the like for data parallelism,
+`par::spawn` for work in the background, and `par::install` around rayon code they cannot express
+or a dependency that uses rayon by itself. `clippy.toml` disallows rayon's global-pool functions
+and parallel iterators everywhere else.
+
 ## Pure Rust
 
 There are no C dependencies apart from the Zstandard codec, which compiles for WebAssembly too

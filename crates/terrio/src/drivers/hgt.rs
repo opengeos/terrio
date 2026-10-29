@@ -81,6 +81,30 @@ pub(crate) fn is_hgt(path: &Path) -> bool {
     !is_hfa
 }
 
+/// [`is_hgt`] for a file given as bytes, named `name`.
+pub(crate) fn is_hgt_bytes(name: &str, bytes: &[u8]) -> bool {
+    is_tile(name, bytes.len() as u64, bytes)
+}
+
+/// Whether `name` is a tile's: named after its corner, with one of the tile extensions. Whether a
+/// file so named is a tile depends on its size ([`is_tile`]).
+pub(crate) fn is_tile_name(name: &str) -> bool {
+    name_and_extension(Path::new(name)).is_some_and(|(name, ext)| tile_origin(name).is_some() && EXTENSIONS.contains(&ext.as_str()))
+}
+
+/// Whether `name` has one of the tile extensions, whatever its shape (`big.hgt` as well as
+/// `N37W120.hgt`).
+pub(crate) fn has_tile_extension(name: &str) -> bool {
+    name_and_extension(Path::new(name)).is_some_and(|(_, ext)| EXTENSIONS.contains(&ext.as_str()))
+}
+
+/// [`is_hgt`] for a file named `name` of `len` bytes, whose first bytes are `head`: what the first
+/// request for a remote file tells (its size, from `Content-Range`), as GDAL's SRTMHGT driver
+/// identifies a remote tile from its name and `VSIStatL`, before reading it.
+pub(crate) fn is_tile(name: &str, len: u64, head: &[u8]) -> bool {
+    is_tile_name(name) && grid(len).is_some() && !head.starts_with(b"EHFA_HEADER_TAG")
+}
+
 /// Reads an SRTM tile, georeferenced as GDAL does: WGS 84, cell centres on whole degrees at the
 /// tile's edges (`AREA_OR_POINT=Point`), with -32768 as nodata except for Byte (water body) tiles.
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
@@ -96,6 +120,15 @@ pub(crate) fn open(path: &Path) -> Result<RawRaster> {
     let grid = grid(std::fs::metadata(path)?.len()).ok_or_else(bad)?;
     let (header, layout) = tile(origin, grid, &ext)?;
     RawRaster::open(header, path, layout, &[])
+}
+
+/// [`open`] for a file [`is_hgt`] recognised as a tile by its name and size, whatever driver its
+/// extension names: refused when the process-wide allow-list leaves SRTMHGT out, as a tile named
+/// for another driver (`.img`, HFA's) reaches this point from an archive or a download as that
+/// driver's file.
+pub(crate) fn open_recognised(path: &Path) -> Result<RawRaster> {
+    crate::formats::check_driver_allowed("SRTMHGT", &path.to_string_lossy(), crate::formats::Kind::Raster)?;
+    open(path)
 }
 
 /// Opens a remote SRTM tile for its header, to be read by window with range requests. `None` when
@@ -116,6 +149,11 @@ pub(crate) fn open_remote(loc: &crate::vfs::Location) -> Option<Result<RawRaster
     let mut magic = [0u8; 15];
     if std::io::Read::read_exact(&mut reader.clone(), &mut magic).is_ok() && &magic == b"EHFA_HEADER_TAG" {
         return None;
+    }
+    // Known as a tile by its name and size, before anything past the first request is read: the
+    // process-wide allow-list decides, as for a local tile (`formats::check_remote_head`).
+    if let Err(e) = crate::formats::check_driver_allowed("SRTMHGT", &loc.shown(), crate::formats::Kind::Raster) {
+        return Some(Err(e));
     }
     Some(tile(origin, grid, &ext).and_then(|(header, layout)| RawRaster::open_remote(header, reader, layout)))
 }
@@ -247,6 +285,51 @@ mod tests {
         assert_eq!(ds.raster.get(0, 1200, 5), 1100.0);
         assert!(ds.raster.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v == "Point"));
         assert_eq!(ds.band_metadata[0].unit.as_deref(), Some("m"));
+    }
+
+    /// A tile is read no further than the grid its size gave when it was opened: a file that has
+    /// grown since (by 4,096 bytes here) is read up to the tile's size, the rest left unread, and
+    /// its samples are the tile's.
+    #[test]
+    fn a_tile_is_read_no_further_than_its_grid() {
+        use crate::drivers::common::RAW_BYTES_READ;
+        let read = || RAW_BYTES_READ.with(|c| c.get());
+        let tile = tile_bytes();
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("S01W120.hgt");
+        std::fs::write(&p, &tile).unwrap();
+        let path = p.to_str().unwrap();
+        let expected = crate::open_raster(path).unwrap().raster.data.to_f64_vec();
+        let mut lazy = crate::open_raster_lazy(path).unwrap();
+        let mut file = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        std::io::Write::write_all(&mut file, &[7u8; 4096]).unwrap();
+        let before = read();
+        let all = lazy.read().unwrap();
+        assert_eq!(read() - before, tile.len() as u64);
+        assert!(all.raster.data.to_f64_vec() == expected, "the tile's samples, as stored");
+    }
+
+    /// `driver=` (`check_drivers`) sees a tile named for another driver as SRTM data, by its name
+    /// and size, on disk and as bytes: HFA alone does not let `N37W120.img` open as a tile.
+    #[test]
+    fn a_tile_named_for_another_driver_is_identified_as_a_tile() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("N37W120.img");
+        std::fs::write(&p, tile_bytes()).unwrap();
+        let path = p.to_str().unwrap();
+        let id = crate::formats::identify(path);
+        assert_eq!((id.by_name, id.by_content.as_deref()), (vec!["HFA".to_string()], Some("SRTMHGT")));
+        let err = crate::formats::check_drivers(path, &["HFA".to_string()]).unwrap_err().to_string();
+        assert!(err.contains("holds SRTMHGT data"), "{err}");
+        // The name rule stays: HFA named by the extension must be allowed too.
+        crate::formats::check_drivers(path, &["HFA".to_string(), "SRTMHGT".to_string()]).unwrap();
+        let id = crate::formats::identify_bytes("N37W120.img", &tile_bytes());
+        assert_eq!(id.by_content.as_deref(), Some("SRTMHGT"));
+        // Not a tile: another size, or an Imagine header.
+        assert_eq!(crate::formats::identify_bytes("N37W120.img", &tile_bytes()[1..]).by_content, None);
+        let mut imagine = tile_bytes();
+        imagine[..15].copy_from_slice(b"EHFA_HEADER_TAG");
+        assert_eq!(crate::formats::identify_bytes("N37W120.img", &imagine).by_content, None);
     }
 
     #[test]

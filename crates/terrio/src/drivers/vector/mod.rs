@@ -82,6 +82,7 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
         VectorDriver::CSV => vec![csv::read(path, &options.csv)?],
         #[cfg(feature = "parquet")]
         VectorDriver::Parquet => vec![geoparquet::read_filtered(path, options.spatial_filter)?],
+        VectorDriver::Shapefile if options.has_range() => vec![shapefile::read_range(path, options.skip_features, options.max_features)?],
         VectorDriver::Shapefile => vec![shapefile::read(path)?],
         VectorDriver::GML => gml::read(path)?,
         VectorDriver::GPX => gpx::read(path)?,

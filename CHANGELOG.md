@@ -196,3 +196,63 @@
   suite compares 18 such cases with GDAL.
 - A hole whose first vertex lies on the exterior now belongs to that exterior.
   It was read as a polygon of its own.
+
+### Hardening and GDAL parity
+
+- `driver=` and the process-wide allow-lists (`TERRIO_ALLOWED_DRIVERS`) are
+  enforced; under them, VRT, STAC, STACIT and Zarr open only when named.
+- Every entry point that opens data judges the driver it opens it with against
+  the allow-lists before the data is read or downloaded: formats recognised by
+  their content or by a file beside them (a Surfer 6 grid under any name, ENVI
+  and EHdr data by their `.hdr`), GTI catalogs, the multidimensional, tile
+  archive, VRT, TIFF, sparse and point cloud readers, and the GDAL backend.
+- Format identification (`identify`) names only drivers the allow-lists allow,
+  as GDAL identifies only with its registered drivers, and reads a remote
+  file's first 16 KiB through the range reader: cached, and refused from a
+  server that ignores ranges for a file over ten times that, as GDAL refuses
+  it. The content check (`check_dataset`) reads a dataset only through openers
+  that judge its driver, a GeoPackage only with GPKG allowed.
+- `terrio.identify_drivers(path)` gives what the allow-lists judge, the drivers
+  a file's name and its first bytes point to, beside `terrio.identify`'s format
+  identification.
+- A format no terrio driver recognises is refused; the `wbraster` and `wbvector`
+  fallbacks need `TERRIO_WBRASTER_FALLBACK` or `TERRIO_WBVECTOR_FALLBACK`.
+- Zip archives, on raster opens and in the `vsi` functions, JSON documents
+  fetched whole and STAC links are limited (`TERRIO_ZIP_MAX_*`,
+  `TERRIO_JSON_MAX_SIZE`, same-origin STAC links).
+- Outside STAC API paths, a remote file whose name says no format, or one of
+  most formats read whole (VRT, netCDF, HDF5, GeoPackage...), is refused after
+  its first bytes unless they show a format the read takes under that name.
+- Zarr chunks past 1 GiB (Fortran order counting twice) are refused, as in GDAL,
+  others decoded no further than they need; Zstandard GeoTIFF chunks, decoded
+  by terrio, stop at their size.
+- Zarr decimated reads read only picked chunks; windows past memory are errors.
+- A Zarr chunk is held once; big ones decode in parallel within half the memory.
+- Zarr stores of more than 65,536 bands are refused at open, as in GDAL.
+- `zarr_format`, GeoTIFF tile sizes and codecs are checked at open, as in GDAL.
+- A compressed GeoTIFF chunk running past the end of the file is an error.
+- `validate_cog` refuses a file whose images' tag arrays together take more
+  bytes than the file (images pointing to one array), before reading them.
+- Raster PMTiles and MBTiles pyramids built a tile row at a time are refused,
+  before anything is read, when the process cannot hold what they hold at once
+  (each level's rows, the filtered rows, the tiles an MBTiles archive gathers),
+  and allocate their rows fallibly: an error, not an abort.
+- WhiteIsZero GeoTIFF samples of 8 bits and more are read as stored, as in GDAL.
+- Panics in bindings that release the GIL raise `terrio.errors.InternalError`.
+- `MEM:::DATAPOINTER=` names open only when `GDAL_MEM_ENABLE_OPEN` allows it.
+- WEBP files are read, and written lossless; JPEG files are written with GDAL's
+  `QUALITY` and 4:2:0 chroma subsampling.
+- GRIB is read by a new pure-Rust reader, in place of the driver of #232, and
+  GRIB2 written, as GDAL does.
+- Web Mercator to WGS 84 longitudes are GDAL's, bit for bit, in bounded time.
+- A remote SRTM tile is known by its name and size from its first request, before
+  anything more of it is read (by range); where a tile is recognised by its name
+  and size, locally or remotely, the allow-list applies to SRTMHGT.
+- GeoTIFF and COG writes carry a color table as GDAL 3.12.1's `CreateCopy` does: a
+  single Byte or UInt16 band's, and JPEG compression of it is refused.
+- Self-touching Shapefile rings are kept as stored, as GDAL 3.12 keeps them.
+- Parallel work runs on a thread pool of terrio's own, which survives `fork()`.
+- `scripts/build_wheel_manylinux_2_28.sh` builds the Linux wheel for glibc 2.28
+  and later without Docker.
+- `terrio.rio.MemoryFile` removes its files when it is dropped unclosed, as
+  rasterio's leaves nothing.

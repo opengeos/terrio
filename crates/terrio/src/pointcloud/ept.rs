@@ -205,6 +205,7 @@ fn bounds6(v: &Value, what: &str) -> Result<[f64; 6]> {
 impl EptReader {
     /// Opens a dataset: its `ept.json`, or an `ept://` path or URL of its directory.
     pub fn open(path: &str) -> Result<Self> {
+        super::read::check_driver("EPT", path)?;
         let mut base = path.strip_prefix("ept://").unwrap_or(path).to_string();
         if base.ends_with("ept.json") {
             base.truncate(base.len() - "ept.json".len());
@@ -507,10 +508,8 @@ impl FormatReader for EptReader {
         // Fetch (in parallel, on native builds) and decode the nodes.
         let base = &self.base;
         #[cfg(not(target_family = "wasm"))]
-        let parts: Vec<Result<Vec<Dimension>>> = {
-            use rayon::prelude::*;
-            keys.par_iter().zip(files.par_iter()).map(|((k, n), f)| self.decode(*k, *n, fetch(base, f)?)).collect()
-        };
+        let parts: Vec<Result<Vec<Dimension>>> =
+            crate::par::map_range(keys.len(), |i| self.decode(keys[i].0, keys[i].1, fetch(base, &files[i])?));
         #[cfg(target_family = "wasm")]
         let parts: Vec<Result<Vec<Dimension>>> = keys.iter().zip(&files).map(|((k, n), f)| self.decode(*k, *n, fetch(base, f)?)).collect();
         let parts = parts.into_iter().collect::<Result<Vec<_>>>()?;

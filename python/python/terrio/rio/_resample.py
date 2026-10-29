@@ -37,6 +37,21 @@ RESAMPLING_NAMES = {
 # resolution, else an overview index): an array `(bands, h, w)`.
 LevelReader = Callable[[Sequence[int], tuple[int, int, int, int], "int | None"], np.ndarray]
 
+# A function reading the GDAL mask bands of `bands` over a window of a level, as a `LevelReader`
+# reads pixels: uint8 `(bands, h, w)` (0 for invalid pixels, or alpha values), or None when the
+# bands' masks are their nodata masks (or all valid).
+MaskReader = Callable[[Sequence[int], tuple[int, int, int, int], "int | None"], "np.ndarray | None"]
+
+# A function reading `bands` at columns `cols` of rows `rows` of a level from the blocks holding
+# them alone, as GDAL's nearest-neighbour decimation reads them: `(bands, len(rows), len(cols))`,
+# or None when the format reads the window spanning them instead.
+SampleReader = Callable[[Sequence[int], np.ndarray, np.ndarray, "int | None"], "np.ndarray | None"]
+
+# The methods resampled as GDAL's `RasterIOResampled` does (`terrio.ops.rasterio`).
+GDAL_KERNELS = {"bilinear", "cubic", "cubicspline", "lanczos", "average", "rms", "mode", "gauss"}
+# The methods `GDALDataset::IRasterIO` resamples all bands at once.
+DATASET_KERNELS = {"bilinear", "cubic", "cubicspline", "lanczos"}
+
 
 def gdal_cast(arr: np.ndarray, dtype: Any) -> np.ndarray:
     """Converts pixel values as GDAL does.
@@ -75,6 +90,49 @@ def gdal_cast(arr: np.ndarray, dtype: Any) -> np.ndarray:
             return clipped
         return arr.astype(dt)
     return arr.astype(dt)
+
+
+def is_nodata(values: np.ndarray, nodata: float) -> np.ndarray:
+    """Which values a band's nodata mask band masks, as GDAL's `GDALNoDataMaskBand` decides.
+
+    Floating-point values are compared as GDAL 3.12's `ARE_REAL_EQUAL` compares them
+    (`gcore/gdal_cpp_functions.h`): equal, or `|v - nodata| < FLT_EPSILON * |v + nodata| * 2`,
+    in single precision for Float32 (and Float16) bands, the nodata value cast to float, and in
+    double precision for Float64 bands, still with FLT_EPSILON. A value a warp moved just off
+    the nodata value (9999.000000000002 for 9999) is therefore masked. A NaN nodata value masks
+    NaNs. Integers are compared with the nodata value cast to their type. A nodata value outside
+    the type's range masks nothing (`GDALNoDataMaskBand::IsNoDataInRange`).
+
+    Args:
+        values: The band's values.
+        nodata: The nodata value.
+
+    Returns:
+        numpy.ndarray: True where the mask band is 0.
+    """
+    if values.dtype.kind == "c":
+        # A complex band's mask compares its real parts, which GDAL reads it as.
+        return is_nodata(values.real, nodata)
+    if values.dtype.kind == "f":
+        if np.isnan(nodata):
+            return np.isnan(values)
+        t = np.float32 if values.dtype.itemsize <= 4 else np.float64
+        if np.isfinite(nodata) and abs(nodata) > np.finfo(t).max:
+            return np.zeros(values.shape, bool)
+        # numpy's stubs cannot type arithmetic on `astype` to one of two types (a generic dtype).
+        v: Any = values.astype(t, copy=False)
+        nd = t(nodata)
+        tolerance = t(np.finfo(np.float32).eps)
+        with np.errstate(over="ignore", invalid="ignore"):
+            near: np.ndarray = (v == nd) | (np.abs(v - nd) < tolerance * np.abs(v + nd) * t(2))
+        return near
+    if values.dtype.kind in "iu":
+        info = np.iinfo(values.dtype)
+        if np.isnan(nodata) or not info.min <= nodata <= info.max:
+            return np.zeros(values.shape, bool)
+        same: np.ndarray = values == values.dtype.type(int(nodata))
+        return same
+    return np.asarray(values == nodata)
 
 
 def best_overview(
@@ -128,6 +186,11 @@ def raster_io(
     buf: tuple[int, int],
     resampling: int,
     nodata: float | None,
+    iwin: tuple[int, int, int, int] | None = None,
+    masks: MaskReader | None = None,
+    block_width: int | None = None,
+    dataset: bool = False,
+    sample: SampleReader | None = None,
 ) -> np.ndarray:
     """Reads a window of bands into a buffer, as GDAL's `RasterIO` with a floating-point window.
 
@@ -140,6 +203,14 @@ def raster_io(
         buf: The output `(height, width)`.
         resampling: The `Resampling` value.
         nodata: The nodata value, which resampling other than nearest ignores.
+        iwin: The integer window GDAL is given with the floating-point one, when it is not the
+            floating-point one truncated (a VRT source rounds its size).
+        masks: Reads the bands' mask bands, for methods other than nearest neighbour.
+        block_width: The bands' block width (by default, the level's width).
+        dataset: Whether GDAL reads the bands through its dataset (several bands with a shared
+            mask, or none, and no nodata value), which resamples them all at once.
+        sample: Reads the pixels nearest-neighbour resampling picks from the blocks holding them,
+            where the format can, rather than the window spanning them.
 
     Returns:
         numpy.ndarray: The pixels, `(bands, buf_h, buf_w)`, in the raster's data type.
@@ -147,8 +218,11 @@ def raster_io(
     width, height = size
     fx, fy, fxs, fys = window
     bh, bw = buf
-    nx, ny = int(fx), int(fy)
-    nxs, nys = int(max(1, fxs)), int(max(1, fys))
+    if iwin is None:
+        nx, ny = int(fx), int(fy)
+        nxs, nys = int(max(1, fxs)), int(max(1, fys))
+    else:
+        nx, ny, nxs, nys = iwin
     integer = nx == fx and ny == fy and nxs == fxs and nys == fys
     if (bw, bh) == (nxs, nys) and integer:
         return read(bands, (nx, ny, nxs, nys), None)
@@ -173,7 +247,42 @@ def raster_io(
                 return read(bands, (nx, ny, nxs, nys), level)
 
     if resampling == 0:
-        return _nearest(read, bands, (lw, lh), level, (fx, fy, fxs, fys), (bh, bw))
+        return _nearest(read, bands, (lw, lh), level, (fx, fy, fxs, fys), (bh, bw), sample)
+    name = RESAMPLING_NAMES.get(resampling, "nearest")
+    if name in GDAL_KERNELS:
+        # `GDALDataset::IRasterIO` resamples the bands at once only for kernels, a buffer of
+        # another size, and bands without overviews left to decimate through.
+        decimating_full = (bw < nxs or bh < nys) and bool(overviews) and level is None
+        whole = (
+            dataset
+            and len(bands) > 1
+            and name in DATASET_KERNELS
+            and (bw, bh) != (nxs, nys)
+            and not decimating_full
+        )
+        geometry = (
+            name,
+            (lw, lh),
+            (nx, ny, nxs, nys),
+            (fx, fy, fxs, fys),
+            (bw, bh),
+            int(block_width or lw),
+        )
+        region = _terrio.resampled_region(*geometry, dataset=whole)
+        x0, y0, w, h = region
+        block = np.ascontiguousarray(read(bands, (x0, y0, w, h), level))
+        mask = masks(bands, (x0, y0, w, h), level) if masks is not None else None
+        if mask is not None:
+            mask = np.ascontiguousarray(mask, dtype=np.uint8)
+        out: np.ndarray = _terrio.resampled_read(
+            block,
+            region,
+            *geometry,
+            nodata=nodata,
+            masks=mask,
+            dataset=whole,
+        )
+        return out
     return _resampled(
         read, bands, (lw, lh), level, (fx, fy, fxs, fys), (bh, bw), resampling, nodata
     )
@@ -186,6 +295,7 @@ def _nearest(
     level: int | None,
     window: tuple[float, float, float, float],
     buf: tuple[int, int],
+    sample: SampleReader | None = None,
 ) -> np.ndarray:
     """Nearest-neighbour decimation or replication, with GDAL's pixel centre formula.
 
@@ -196,6 +306,7 @@ def _nearest(
         level: The level.
         window: The floating-point window in the level's pixels.
         buf: The output `(height, width)`.
+        sample: Reads the picked pixels from the blocks holding them, where the format can.
 
     Returns:
         numpy.ndarray: The pixels.
@@ -206,6 +317,11 @@ def _nearest(
     eps = 1e-10
     xs = ((np.arange(bw) + 0.5) * (fxs / bw) + fx + eps).clip(0, lw - 1).astype(np.int64)
     ys = ((np.arange(bh) + 0.5) * (fys / bh) + fy + eps).clip(0, lh - 1).astype(np.int64)
+    if sample is not None:
+        # As GDAL reads them: the blocks holding the pixels, not the window spanning them.
+        picked = sample(bands, xs, ys, level)
+        if picked is not None:
+            return picked
     x0, x1 = int(xs.min()), int(xs.max()) + 1
     y0, y1 = int(ys.min()), int(ys.max()) + 1
     block = read(bands, (x0, y0, x1 - x0, y1 - y0), level)

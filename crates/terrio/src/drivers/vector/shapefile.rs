@@ -40,6 +40,111 @@ pub fn read(path: &str) -> Result<Layer> {
     })
 }
 
+/// Reads the features `skip..skip + max` of a shapefile (`max` `None`: to the end), numbered as
+/// [`read`] numbers them, reading only their records: DBF records by position (they have a fixed
+/// size), and SHP records at the offsets the `.shx` index gives (through a scan of the record
+/// headers, without decoding the others, when there is no `.shx`). Memory follows the range,
+/// not the file.
+pub fn read_range(path: &str, skip: usize, max: Option<usize>) -> Result<Layer> {
+    use std::io::{Read, Seek, SeekFrom};
+    let not_a_shapefile = || Error::InvalidData(format!("'{path}' is not a shapefile"));
+    let base = Path::new(path).with_extension("");
+    let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("layer");
+    let mut shp = std::io::BufReader::new(std::fs::File::open(path)?);
+    let shp_len = shp.get_ref().metadata()?.len();
+    let mut head = [0u8; 100];
+    shp.read_exact(&mut head).map_err(|_| not_a_shapefile())?;
+    let mut layer = header_layer(&head, name).map_err(|_| not_a_shapefile())?;
+    let prj = sidecar(&base, "prj").and_then(|p| std::fs::read_to_string(p).ok());
+    if prj.is_some() {
+        crate::crs::prefetch();
+    }
+    let cpg = sidecar(&base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
+
+    // Where each record of the .shp starts: from the .shx when it indexes the file, else a scan
+    // of the record headers.
+    let shx = sidecar(&base, "shx").map(std::fs::read).transpose()?.filter(|x| x.len() >= 100 && (x.len() - 100) % 8 == 0);
+    let offsets: Vec<u64> = match &shx {
+        Some(x) => x[100..].as_chunks::<8>().0.iter().map(|e| 2 * u64::from(u32::from_be_bytes([e[0], e[1], e[2], e[3]]))).collect(),
+        None => {
+            let mut found = Vec::new();
+            let mut pos = 100u64;
+            while pos + 8 <= shp_len {
+                found.push(pos);
+                shp.seek(SeekFrom::Start(pos + 4))?;
+                let mut w = [0u8; 4];
+                shp.read_exact(&mut w)?;
+                pos = (pos + 8 + 2 * u64::from(u32::from_be_bytes(w))).min(shp_len);
+            }
+            found
+        }
+    };
+
+    let (fields, dbf_total, mut dbf) = match sidecar(&base, "dbf") {
+        Some(p) => {
+            let mut f = std::io::BufReader::new(std::fs::File::open(p)?);
+            let len = f.get_ref().metadata()?.len();
+            let mut first = [0u8; 32];
+            f.read_exact(&mut first).map_err(|_| Error::InvalidData("truncated .dbf file".into()))?;
+            let header_len = dbf_header_len(&first)?;
+            let mut header = first.to_vec();
+            header.resize(header_len.max(32).min(len as usize), 0);
+            f.read_exact(&mut header[32..]).map_err(|_| Error::InvalidData("truncated .dbf file".into()))?;
+            let l = dbf_layout(&header, cpg.as_deref())?;
+            let held = (len as usize).saturating_sub(l.header_len) / l.record_len.max(1);
+            let total = if l.record_len == 0 { 0 } else { l.count.min(held) };
+            (l.fields.clone(), total, Some((f, l)))
+        }
+        None => (Vec::new(), 0, None),
+    };
+    for f in fields {
+        layer.add_field(f);
+    }
+    let n = if dbf_total == 0 { offsets.len() } else { dbf_total.max(offsets.len()) };
+    let start = skip.min(n);
+    let end = max.map_or(n, |m| start.saturating_add(m).min(n));
+
+    // The DBF records of the range, read at their position.
+    let mut records: Vec<Vec<FieldValue>> = Vec::new();
+    if let Some((f, l)) = dbf.as_mut() {
+        let last = end.min(dbf_total);
+        if start < last {
+            let bytes = (last - start) * l.record_len;
+            let mut buf: Vec<u8> = Vec::new();
+            buf.try_reserve_exact(bytes).map_err(|_| Error::InvalidData(format!("cannot allocate {bytes} bytes for .dbf records")))?;
+            buf.resize(bytes, 0);
+            f.seek(SeekFrom::Start((l.header_len + start * l.record_len) as u64))?;
+            f.read_exact(&mut buf)?;
+            records.try_reserve_exact(last - start).map_err(|_| Error::InvalidData("cannot allocate .dbf records".into()))?;
+            records.extend(buf.chunks_exact(l.record_len).map(|r| l.record(r)));
+        }
+    }
+
+    let width = layer.schema.len();
+    layer.features.try_reserve_exact(end - start).map_err(|_| Error::InvalidData("cannot allocate features".into()))?;
+    let mut content = Vec::new();
+    let mut records = records.into_iter();
+    for fid in start..end {
+        let geometry = match offsets.get(fid) {
+            Some(&at) if at + 8 <= shp_len => {
+                shp.seek(SeekFrom::Start(at + 4))?;
+                let mut w = [0u8; 4];
+                shp.read_exact(&mut w)?;
+                let len = (2 * u64::from(u32::from_be_bytes(w))).min(shp_len - at - 8) as usize;
+                content.clear();
+                content.resize(len, 0);
+                shp.read_exact(&mut content)?;
+                parse_shape(&content)
+            }
+            _ => None,
+        };
+        let attributes = records.next().unwrap_or_else(|| vec![FieldValue::Null; width]);
+        layer.push(Feature { fid: fid as u64, geometry, attributes });
+    }
+    apply_prj(&mut layer, prj.as_deref());
+    Ok(layer)
+}
+
 /// Reads a shapefile from the contents of its `.shp`, `.dbf`, `.prj` and `.cpg` files. `name`
 /// names the layer.
 pub fn parse(shp: &[u8], dbf: Option<&[u8]>, prj: Option<&str>, cpg: Option<&str>, name: &str) -> Result<Layer> {
@@ -135,8 +240,12 @@ fn parse_shape(rec: &[u8]) -> Option<Geometry> {
         return None;
     }
     let multipoint = st % 10 == 8;
-    let (num_parts, num_points, parts_at) =
-        if multipoint { (1, i32_at(36)? as usize, 40) } else { (i32_at(36)? as usize, i32_at(40)? as usize, 44) };
+    let count = |o: usize| i32_at(o).and_then(|v| usize::try_from(v).ok());
+    let (num_parts, num_points, parts_at) = if multipoint { (1, count(36)?, 40) } else { (count(36)?, count(40)?, 44) };
+    // Counts the record cannot hold are corrupt (GDAL reads no geometry either).
+    if num_parts > rec.len() / 4 || num_points > rec.len() / 16 {
+        return None;
+    }
     let points_at = parts_at + if multipoint { 0 } else { 4 * num_parts };
     let mut starts: Vec<usize> =
         if multipoint { vec![0] } else { (0..num_parts).map(|i| i32_at(parts_at + 4 * i).map(|v| v as usize)).collect::<Option<_>>()? };
@@ -166,11 +275,16 @@ fn parse_shape(rec: &[u8]) -> Option<Geometry> {
     })
 }
 
+/// Whether the self-touching rings of records of several parts are split into an exterior and
+/// holes, as GDAL 3.13 splits them (#315). GDAL 3.12.1, which terrio reads as, keeps them as
+/// stored: off, measured on the 18 cases of `scripts/compare_shapefile_rings_with_gdal.py`.
+const SPLIT_SELF_TOUCHING_RINGS: bool = false;
+
 /// Groups rings into polygons: clockwise rings are exteriors, and each counter-clockwise ring is
 /// a hole of the smallest exterior containing it.
 fn organize_rings(parts: Vec<Vec<Coord>>) -> Geometry {
     // GDAL organizes, and since 3.13 splits self-touching rings, only in records of several parts.
-    let several = parts.len() > 1;
+    let several = parts.len() > 1 && SPLIT_SELF_TOUCHING_RINGS;
     let mut rings: Vec<Ring> = Vec::with_capacity(parts.len());
     let mut split_loops: Vec<Ring> = Vec::new();
     for mut cs in parts {
@@ -315,14 +429,225 @@ pub(crate) fn ring_contains(r: &Ring, x: f64, y: f64) -> bool {
     inside
 }
 
-/// Decodes DBF text: UTF-8 when the `.cpg` says so or the bytes are valid UTF-8, otherwise
-/// Latin-1 (Windows-1252 and ISO-8859-1 agree on letters).
-fn decode(bytes: &[u8], utf8: bool) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(s) => s.to_string(),
-        Err(_) if utf8 => String::from_utf8_lossy(bytes).into_owned(),
-        Err(_) => bytes.iter().map(|&b| b as char).collect(),
+/// The encoding of a `.dbf` file's text, decided as GDAL's Shapefile driver decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DbfEncoding {
+    Utf8,
+    /// A single-byte code page: the characters of bytes 0x80 to 0xFF.
+    Table(&'static [char; 128]),
+    /// A multi-byte code page: 932, 936, 949 or 950.
+    Cjk(u16),
+    /// GDAL does not recode the text (no `.cpg`, no language driver id, or an encoding it cannot
+    /// recode from): its bytes reach the caller as they are, and pyogrio decodes them as
+    /// ISO-8859-1.
+    Raw,
+}
+
+#[path = "shapefile_codepages.rs"]
+mod codepages;
+
+#[path = "shapefile_cjk.rs"]
+mod cjk;
+
+impl DbfEncoding {
+    /// The encoding of a `.dbf` whose `.cpg` holds `cpg` (its first line counts) and whose header
+    /// has the language driver id `ldid` (byte 29), as GDAL decides it: the `.cpg`, else the id,
+    /// else the `SHAPE_ENCODING` option.
+    pub(crate) fn detect(cpg: Option<&str>, ldid: u8) -> Self {
+        let cpg = cpg.map(|c| c.split(['\n', '\r']).next().unwrap_or_default()).filter(|c| !c.is_empty());
+        let named = match cpg {
+            Some(c) => Some(Self::from_code_page(c)),
+            None if ldid != 0 => Some(Self::from_ldid(ldid)),
+            None => None,
+        };
+        match named {
+            Some(e) => e,
+            None => crate::config::get("SHAPE_ENCODING").map_or(Self::Raw, |e| Self::from_code_page(&e)),
+        }
     }
+
+    /// GDAL's `OGRShapeLayer::ConvertCodePage` of a `.cpg` value: code page numbers (as `atoi`
+    /// reads them) of 437 to 950 and 1250 to 1258 are `CP<n>`, `8859...` is `ISO-8859-...`,
+    /// `UTF-8...` is UTF-8, and other values go to iconv as they are.
+    fn from_code_page(c: &str) -> Self {
+        // ESRI writes `ANSI 1252`, which GDAL reads as the code page number.
+        let number = c.strip_prefix("ANSI ").unwrap_or(c);
+        let digits: String = number.trim_start().chars().take_while(char::is_ascii_digit).take(9).collect();
+        let n: u32 = digits.parse().unwrap_or(0);
+        let upper = c.to_ascii_uppercase();
+        if (437..=950).contains(&n) || (1250..=1258).contains(&n) {
+            return Self::from_iconv_name(&format!("CP{n}"));
+        }
+        if let Some(rest) = upper.strip_prefix("8859") {
+            return Self::from_iconv_name(&format!("ISO-8859-{}", rest.strip_prefix('-').unwrap_or(rest)));
+        }
+        if upper.starts_with("UTF-8") {
+            return Self::Utf8;
+        }
+        Self::from_iconv_name(upper.trim())
+    }
+
+    /// The encoding iconv knows by `name` (upper case), for the encodings terrio decodes;
+    /// [`DbfEncoding::Raw`] for the others, which GDAL then leaves unrecoded too when iconv does
+    /// not know them.
+    fn from_iconv_name(name: &str) -> Self {
+        let iso = |n: &str| format!("ISO-8859-{n}");
+        let canonical = match name {
+            "UTF-8" | "UTF8" => return Self::Utf8,
+            // The names glibc's iconv gives these code pages' tables (measured: its SJIS, EUC-KR
+            // and GB18030 are other tables; WINDOWS-932, -949 and -950 are unknown to it).
+            "CP932" | "WINDOWS-31J" | "MS932" => return Self::Cjk(932),
+            "CP936" | "GBK" | "MS936" | "WINDOWS-936" => return Self::Cjk(936),
+            "CP949" | "UHC" => return Self::Cjk(949),
+            "CP950" | "BIG5" => return Self::Cjk(950),
+            "LATIN1" | "L1" | "ISO88591" | "ISO-IR-100" | "CP819" | "IBM819" => iso("1"),
+            "LATIN2" | "L2" => iso("2"),
+            "LATIN3" | "L3" => iso("3"),
+            "LATIN4" | "L4" => iso("4"),
+            "CYRILLIC" => iso("5"),
+            "ARABIC" => iso("6"),
+            "GREEK" => iso("7"),
+            "HEBREW" => iso("8"),
+            "LATIN5" | "L5" => iso("9"),
+            "LATIN6" | "L6" => iso("10"),
+            "LATIN7" | "L7" => iso("13"),
+            "LATIN8" | "L8" => iso("14"),
+            "LATIN9" | "L9" => iso("15"),
+            "LATIN10" | "L10" => iso("16"),
+            "MS-ANSI" => "CP1252".into(),
+            "MS-EE" => "CP1250".into(),
+            "MS-CYRL" => "CP1251".into(),
+            "MS-GREEK" => "CP1253".into(),
+            "MS-TURK" => "CP1254".into(),
+            "MS-HEBR" => "CP1255".into(),
+            "MS-ARAB" => "CP1256".into(),
+            "WINBALTRIM" => "CP1257".into(),
+            n => {
+                if let Some(cp) = n.strip_prefix("WINDOWS-").or_else(|| n.strip_prefix("IBM")) {
+                    format!("CP{cp}")
+                } else if let Some(rest) = n.strip_prefix("ISO8859-").or_else(|| n.strip_prefix("ISO_8859-")) {
+                    iso(rest)
+                } else {
+                    n.to_string()
+                }
+            }
+        };
+        codepages::table(&canonical).map_or(Self::Raw, Self::Table)
+    }
+
+    /// GDAL's code page of a DBF language driver id (`LDID/<n>`).
+    fn from_ldid(ldid: u8) -> Self {
+        let cp = match ldid {
+            87 => return Self::from_iconv_name("ISO-8859-1"),
+            1 | 11 | 13 | 15 | 18 | 21 | 24 | 25 | 27 => 437,
+            2 | 10 | 14 | 16 | 20 | 22 | 26 | 29 | 37 | 55 => 850,
+            3 | 88 | 89 => 1252,
+            8 | 17 | 23 | 102 => 865,
+            19 | 123 => 932,
+            28 | 108 => 863,
+            31 | 34 | 35 | 64 | 100 | 135 => 852,
+            36 => 860,
+            38 | 101 => 866,
+            77 | 122 => 936,
+            78 | 121 => 949,
+            79 | 120 => 950,
+            80 | 124 => 874,
+            103 => 861,
+            106 | 134 => 737,
+            107 | 136 => 857,
+            200 => 1250,
+            201 => 1251,
+            202 => 1254,
+            203 => 1253,
+            204 => 1257,
+            _ => return Self::Raw,
+        };
+        Self::from_iconv_name(&format!("CP{cp}"))
+    }
+
+    /// Decodes text in this encoding. Invalid UTF-8 is replaced; bytes a code page leaves
+    /// undefined are skipped, as iconv's recoding in GDAL skips them.
+    pub(crate) fn decode(self, bytes: &[u8]) -> String {
+        match self {
+            Self::Utf8 => String::from_utf8_lossy(bytes).into_owned(),
+            Self::Raw => bytes.iter().map(|&b| b as char).collect(),
+            Self::Table(t) => bytes
+                .iter()
+                .map(|&b| if b < 0x80 { b as char } else { t[usize::from(b - 0x80)] })
+                .filter(|&c| c != codepages::UNDEFINED)
+                .collect(),
+            Self::Cjk(cp) => decode_cjk(cp, bytes),
+        }
+    }
+}
+
+/// Decodes a multi-byte code page as GDAL's recoding (glibc's iconv) does: `encoding_rs`'s
+/// decoder where the two agree, glibc's differences from [`cjk`], and iconv's error handling in
+/// GDAL: a byte that starts no character is skipped, and a character cut by the end of the text
+/// ends it.
+fn decode_cjk(cp: u16, bytes: &[u8]) -> String {
+    use std::cmp::Ordering;
+    let (encoding, invalid, chars, swallowed) = match cp {
+        932 => (encoding_rs::SHIFT_JIS, cjk::INVALID_932, cjk::CHARS_932, cjk::SWALLOWED_932),
+        936 => (encoding_rs::GBK, cjk::INVALID_936, cjk::CHARS_936, cjk::SWALLOWED_936),
+        949 => (encoding_rs::EUC_KR, cjk::INVALID_949, cjk::CHARS_949, cjk::SWALLOWED_949),
+        _ => (encoding_rs::BIG5, cjk::INVALID_950, cjk::CHARS_950, cjk::SWALLOWED_950),
+    };
+    // The character glibc decodes from `seq` (one byte, or a lead byte and a trail byte), whose
+    // code is `code`.
+    let glibc = |code: u16, seq: &[u8]| -> Option<char> {
+        let rejected = invalid.binary_search_by(|&(a, b)| {
+            if code < a {
+                Ordering::Greater
+            } else if code > b {
+                Ordering::Less
+            } else {
+                Ordering::Equal
+            }
+        });
+        if rejected.is_ok() {
+            return None;
+        }
+        if let Ok(i) = chars.binary_search_by_key(&code, |&(c, _)| c) {
+            return Some(chars[i].1);
+        }
+        let text = encoding.decode_without_bom_handling_and_without_replacement(seq)?;
+        let mut it = text.chars();
+        match (it.next(), it.next()) {
+            (Some(c), None) => Some(c),
+            _ => None,
+        }
+    };
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b < 0x80 {
+            out.push(char::from(b));
+            i += 1;
+        } else if let Some(c) = glibc(u16::from(b), &bytes[i..=i]) {
+            out.push(c);
+            i += 1;
+        } else if let Some(&t) = bytes.get(i + 1) {
+            let code = u16::from_be_bytes([b, t]);
+            if swallowed.contains(&code) {
+                // glibc consumes the two bytes, writes nothing and reports an error: GDAL skips
+                // one more byte.
+                i += 3;
+                continue;
+            }
+            match glibc(code, &bytes[i..i + 2]) {
+                Some(c) => {
+                    out.push(c);
+                    i += 2;
+                }
+                None => i += 1,
+            }
+        } else {
+            break;
+        }
+    }
+    out
 }
 
 /// The fields and record layout of a `.dbf` file.
@@ -330,7 +655,7 @@ pub(crate) struct DbfLayout {
     /// The fields.
     pub fields: Vec<FieldDef>,
     layout: Vec<(usize, usize, u8)>,
-    utf8: bool,
+    encoding: DbfEncoding,
     /// The number of records the header declares.
     pub count: usize,
     /// The length of the header, where the records start.
@@ -350,10 +675,7 @@ pub(crate) fn dbf_header_len(d: &[u8]) -> Result<usize> {
 /// Reads a `.dbf` header (`d` holds at least the header).
 pub(crate) fn dbf_layout(d: &[u8], cpg: Option<&str>) -> Result<DbfLayout> {
     let header_len = dbf_header_len(d)?;
-    let utf8 = cpg.is_some_and(|c| {
-        let c = c.trim().to_ascii_uppercase();
-        c.contains("UTF-8") || c.contains("UTF8") || c == "65001"
-    });
+    let encoding = DbfEncoding::detect(cpg, d[29]);
     let count = u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize;
     let record_len = u16::from_le_bytes([d[10], d[11]]) as usize;
     let mut fields = Vec::new();
@@ -362,12 +684,13 @@ pub(crate) fn dbf_layout(d: &[u8], cpg: Option<&str>) -> Result<DbfLayout> {
     let mut pos = 32;
     while pos + 32 <= d.len().min(header_len) && d[pos] != 0x0D {
         let raw = &d[pos..pos + 11];
-        let name = decode(&raw[..raw.iter().position(|&b| b == 0).unwrap_or(11)], utf8).trim().to_string();
+        let name = encoding.decode(&raw[..raw.iter().position(|&b| b == 0).unwrap_or(11)]).trim().to_string();
         let kind = d[pos + 11];
         let width = d[pos + 16] as usize;
         let decimals = d[pos + 17] as usize;
+        // As shapelib and GDAL type them: numbers without decimals are integers below 19 digits.
         let t = match kind {
-            b'N' | b'F' if decimals == 0 && width < 19 && kind == b'N' => FieldType::Integer,
+            b'N' | b'F' if decimals == 0 && width < 19 => FieldType::Integer,
             b'N' | b'F' | b'O' => FieldType::Float,
             b'I' => FieldType::Integer,
             b'L' => FieldType::Boolean,
@@ -383,13 +706,14 @@ pub(crate) fn dbf_layout(d: &[u8], cpg: Option<&str>) -> Result<DbfLayout> {
         offset += width;
         pos += 32;
     }
-    Ok(DbfLayout { fields, layout, utf8, count, header_len, record_len })
+    Ok(DbfLayout { fields, layout, encoding, count, header_len, record_len })
 }
 
 impl DbfLayout {
-    /// Decodes a record.
+    /// Decodes a record, with shapelib's rules for null values and blanks as GDAL builds it
+    /// (`TRIM_DBF_WHITESPACE`: text loses its leading and trailing spaces).
     pub(crate) fn record(&self, rec: &[u8]) -> Vec<FieldValue> {
-        let utf8 = self.utf8;
+        let encoding = self.encoding;
         self.layout
             .iter()
             .zip(&self.fields)
@@ -398,25 +722,30 @@ impl DbfLayout {
                 if kind == b'I' && raw.len() == 4 {
                     return FieldValue::Integer(i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as i64);
                 }
-                let text = decode(raw, utf8);
-                let v = text.trim_matches(|c: char| c == ' ' || c == '\0');
-                if v.is_empty() || (matches!(kind, b'N' | b'F') && v.bytes().all(|b| b == b'*')) {
+                let raw = raw.split(|&b| b == 0).next().unwrap_or_default();
+                let start = raw.iter().position(|&b| b != b' ').unwrap_or(raw.len());
+                let end = raw.iter().rposition(|&b| b != b' ').map_or(start, |e| e + 1);
+                let v = &raw[start..end];
+                let null = match kind {
+                    b'N' | b'F' => v.first() == Some(&b'*') || v.is_empty(),
+                    b'D' => v.is_empty() || v.starts_with(b"00000000") || v == b"0",
+                    b'L' => v.first() == Some(&b'?'),
+                    _ => v.is_empty(),
+                };
+                if null {
                     return FieldValue::Null;
                 }
+                let ascii = || std::str::from_utf8(v).unwrap_or_default();
                 match def.field_type {
-                    FieldType::Integer => v.parse().map(FieldValue::Integer).unwrap_or(FieldValue::Null),
-                    FieldType::Float => v.parse().map(FieldValue::Float).unwrap_or(FieldValue::Null),
-                    FieldType::Boolean => match v {
-                        "T" | "t" | "Y" | "y" => FieldValue::Boolean(true),
-                        "F" | "f" | "N" | "n" => FieldValue::Boolean(false),
-                        _ => FieldValue::Null,
-                    },
-                    FieldType::Date if v.len() == 8 && v != "00000000" && v.bytes().all(|b| b.is_ascii_digit()) => {
+                    FieldType::Integer => ascii().parse().map(FieldValue::Integer).unwrap_or(FieldValue::Null),
+                    FieldType::Float => ascii().parse().map(FieldValue::Float).unwrap_or(FieldValue::Null),
+                    FieldType::Boolean => FieldValue::Boolean(matches!(v.first(), Some(b'T' | b't' | b'Y' | b'y'))),
+                    FieldType::Date if v.len() == 8 && v.iter().all(u8::is_ascii_digit) => {
+                        let v = ascii();
                         FieldValue::Date(format!("{}-{}-{}", &v[..4], &v[4..6], &v[6..]))
                     }
                     FieldType::Date => FieldValue::Null,
-                    // Text keeps leading spaces, as GDAL does.
-                    _ => FieldValue::Text(text.trim_end_matches([' ', '\0']).to_string()),
+                    _ => FieldValue::Text(encoding.decode(v)),
                 }
             })
             .collect()
@@ -426,13 +755,28 @@ impl DbfLayout {
 /// Parses a `.dbf` file into field definitions and records.
 fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<FieldValue>>)> {
     let l = dbf_layout(d, cpg)?;
-    // Records are decoded in parallel, up to the first one the file does not hold whole.
-    let records = crate::par::map_range(l.count, |i| {
+    // The header's record count is not trusted: only the records the file holds are read, and
+    // their list is allocated fallibly.
+    let held = d.len().saturating_sub(l.header_len) / l.record_len.max(1);
+    let count = if l.record_len == 0 { 0 } else { l.count.min(held) };
+    let mut records: Vec<Vec<FieldValue>> = Vec::new();
+    records
+        .try_reserve_exact(count)
+        .map_err(|_| Error::InvalidData(format!("the .dbf file declares {count} records, more than memory holds")))?;
+    // Every record below `count` is whole in the file; they are decoded in parallel into the
+    // list reserved above.
+    let record = |i: usize| {
         let start = l.header_len + i * l.record_len;
-        let rec = d.get(start..start + l.record_len)?;
-        Some(l.record(rec))
+        l.record(&d[start..start + l.record_len])
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::par::install(|| {
+        use rayon::prelude::*;
+        #[allow(clippy::disallowed_methods)] // On terrio's pool, inside `par::install`.
+        records.par_extend((0..count).into_par_iter().map(record));
     });
-    let records = records.into_iter().map_while(|r| r).collect();
+    #[cfg(target_arch = "wasm32")]
+    records.extend((0..count).map(record));
     Ok((l.fields, records))
 }
 
@@ -1038,7 +1382,17 @@ mod tests {
         cs
     }
 
+    /// GDAL 3.12.1 keeps a self-touching Esri ring as stored, in a record of several parts too
+    /// (the first case of `compare_shapefile_rings_with_gdal.py`, read by GDAL 3.12.1).
     #[test]
+    fn keeps_self_touching_rings_as_gdal_3_12_does() {
+        let ring = [(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0), (5.0, 0.0), (6.0, 2.0), (4.0, 2.0), (5.0, 0.0)];
+        let hole = [(2.0, 6.0), (3.0, 6.0), (3.0, 7.0), (2.0, 7.0)];
+        assert_eq!(polygon_rings(&organize_rings(vec![closed(&ring), closed(&hole)])), [vec![ring.to_vec(), hole.to_vec()]]);
+    }
+
+    #[test]
+    #[ignore = "GDAL 3.13's split (#315); GDAL 3.12.1, the reference, keeps the rings as stored (SPLIT_SELF_TOUCHING_RINGS)"]
     fn splits_self_touching_rings_like_gdal() {
         // An Esri ring: clockwise round a 10 × 10 square, then round a hole touching the edge at
         // (5, 0), the way the ISTAT municipalities of Rutigliano and Santa Ninfa are stored. The
@@ -1192,5 +1546,138 @@ mod tests {
         let back = read(path).unwrap();
         assert_eq!(back.crs_epsg(), None);
         assert_eq!(back.crs_wkt(), Some(custom));
+    }
+
+    /// A `.dbf` of one text field holding `cell`, its header declaring `count` records and the
+    /// language driver id `ldid`.
+    fn dbf(cell: &[u8], count: u32, ldid: u8) -> Vec<u8> {
+        let width = cell.len() as u8;
+        let mut d = vec![3u8, 125, 1, 1];
+        d.extend_from_slice(&count.to_le_bytes());
+        d.extend_from_slice(&65u16.to_le_bytes());
+        d.extend_from_slice(&(1 + u16::from(width)).to_le_bytes());
+        d.extend_from_slice(&[0; 17]);
+        d.extend_from_slice(&[ldid, 0, 0]);
+        d.extend_from_slice(b"NAME\0\0\0\0\0\0\0C\0\0\0\0");
+        d.extend_from_slice(&[width, 0]);
+        d.extend_from_slice(&[0; 14]);
+        d.push(0x0D);
+        d.push(b' ');
+        d.extend_from_slice(cell);
+        d.push(0x1A);
+        d
+    }
+
+    fn text(d: &[u8], cpg: Option<&str>) -> String {
+        let (_, records) = parse_dbf(d, cpg).unwrap();
+        match &records[0][0] {
+            FieldValue::Text(s) => s.clone(),
+            v => panic!("{v:?}"),
+        }
+    }
+
+    #[test]
+    fn the_cpg_then_the_language_driver_decide_the_encoding() {
+        // As pyogrio 0.13.0 (GDAL 3.12.4) reads them.
+        let cp1252 = b"Z\xfcrich \x80";
+        assert_eq!(text(&dbf(cp1252, 1, 0), Some("1252")), "Zürich €");
+        assert_eq!(text(&dbf(cp1252, 1, 0), Some("CP1252\r\n")), "Zürich €");
+        assert_eq!(text(&dbf(cp1252, 1, 0), Some("LATIN1")), "Zürich \u{80}");
+        assert_eq!(text(&dbf("Zürich €".as_bytes(), 1, 0x57), Some("UTF-8")), "Zürich €");
+        assert_eq!(text(&dbf(cp1252, 1, 0x03), None), "Zürich €");
+        assert_eq!(text(&dbf(cp1252, 1, 0x57), None), "Zürich \u{80}");
+        // Nothing names an encoding: GDAL does not recode, and pyogrio reads ISO-8859-1.
+        assert_eq!(text(&dbf("Zürich".as_bytes(), 1, 0), None), "ZÃ¼rich");
+    }
+
+    #[test]
+    fn decodes_the_code_pages_gdal_recodes_from() {
+        // .cpg values as GDAL's ConvertCodePage reads them, then language driver ids.
+        let privet = "Привет";
+        assert_eq!(text(&dbf(b"\xcf\xf0\xe8\xe2\xe5\xf2", 1, 0), Some("1251")), privet);
+        assert_eq!(text(&dbf(b"\xcf\xf0\xe8\xe2\xe5\xf2", 1, 0), Some("WINDOWS-1251")), privet);
+        assert_eq!(text(&dbf(b"\xf0\xd2\xc9\xd7\xc5\xd4", 1, 0), Some("KOI8-R")), privet);
+        assert_eq!(text(&dbf(b"\x8f\xe0\xa8\xa2\xa5\xe2", 1, 0), Some("866")), privet);
+        assert_eq!(text(&dbf(b"\xa3\xf3d\xbc", 1, 0), Some("88592")), "Łódź");
+        assert_eq!(text(&dbf(b"\xa3\xf3d\xbc", 1, 0), Some("ISO-8859-2")), "Łódź");
+        assert_eq!(text(&dbf(b"\xc3\xe5\xe9\xdc", 1, 0), Some("1253")), "Γειά");
+        assert_eq!(text(&dbf(b"\xa5and\xa3", 1, 0x01), None), "Ñandú");
+        assert_eq!(text(&dbf(b"\xa5and\xa3", 1, 0x02), None), "Ñandú");
+        assert_eq!(text(&dbf(b"\x8f\xe0\xa8\xa2\xa5\xe2", 1, 0x26), None), privet);
+        assert_eq!(text(&dbf(b"\xcf\xf0\xe8\xe2\xe5\xf2", 1, 0xC9), None), privet);
+        assert_eq!(text(&dbf(b"\xcf", 1, 0), Some("ANSI 1251")), "П");
+        // Undefined bytes are skipped; a name iconv does not know leaves the text unrecoded.
+        assert_eq!(text(&dbf(b"a\x81b", 1, 0), Some("1252")), "ab");
+        assert_eq!(text(&dbf(b"\xcf", 1, 0), Some("65001")), "\u{cf}");
+    }
+
+    #[test]
+    fn decodes_multi_byte_code_pages_as_gdal_recodes_them() {
+        // As glibc's iconv recodes them in GDAL: undefined bytes skipped, a cut character ends
+        // the text, and glibc's tables where they differ from the WHATWG ones.
+        assert_eq!(text(&dbf(b"\x80\x93\xfa\x96\x7b", 1, 0), Some("932")), "日本");
+        assert_eq!(text(&dbf(b"\xd6\xd0\xce\xc4", 1, 0), Some("936")), "中文");
+        assert_eq!(text(&dbf(b"\xd6\xd0\xce", 1, 0), Some("CP936")), "中");
+        assert_eq!(text(&dbf(b"\xaa\xa1x", 1, 0), Some("GBK")), "x");
+        assert_eq!(text(&dbf(b"\xc7\xd1\xb1\xb9", 1, 0), Some("949")), "한국");
+        assert_eq!(text(&dbf(b"\xa2\xe8\xea\xbf", 1, 0), Some("949")), "");
+        assert_eq!(text(&dbf(b"\xa2\xe8xyz", 1, 0), Some("UHC")), "yz");
+        assert_eq!(text(&dbf(b"\xa4\xa4\xa4\xe5\x80", 1, 0x78), None), "中文\u{80}");
+        assert_eq!(text(&dbf(b"\x88\x62", 1, 0), Some("950")), "b");
+        assert_eq!(text(&dbf(b"\xc6\xa1", 1, 0), Some("950")), "\u{f6b1}");
+    }
+
+    #[test]
+    fn the_record_count_of_the_header_is_not_trusted() {
+        // 4,294,967,295 records declared, one held: one is read, and nothing is allocated for
+        // the others.
+        let (_, records) = parse_dbf(&dbf(b"a", u32::MAX, 0), None).unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(records.capacity() < 1024, "{} records allocated", records.capacity());
+    }
+
+    #[test]
+    fn corrupt_counts_give_no_geometry() {
+        let mut rec = 5i32.to_le_bytes().to_vec();
+        rec.extend_from_slice(&[0; 32]);
+        rec.extend_from_slice(&(-1i32).to_le_bytes());
+        rec.extend_from_slice(&i32::MAX.to_le_bytes());
+        assert_eq!(parse_shape(&rec), None);
+    }
+
+    #[test]
+    fn a_range_reads_the_features_a_whole_read_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.shp");
+        let path = path.to_str().unwrap();
+        let mut l = Layer::new("r");
+        l.add_field(FieldDef::new("id", FieldType::Integer));
+        l.add_field(FieldDef::new("name", FieldType::Text));
+        for i in 0..50i64 {
+            let g = (i % 7 != 3).then(|| Geometry::point(i as f64, -(i as f64)));
+            l.push(Feature { fid: i as u64, geometry: g, attributes: vec![FieldValue::Integer(i), FieldValue::Text(format!("f{i}"))] });
+        }
+        write(&l, path).unwrap();
+        let whole = read(path).unwrap();
+        let check = |skip: usize, max: Option<usize>| {
+            let part = read_range(path, skip, max).unwrap();
+            let start = skip.min(whole.features.len());
+            let end = max.map_or(whole.features.len(), |m| (start + m).min(whole.features.len()));
+            let key = |f: &Feature| (f.fid, f.geometry.clone(), f.attributes.clone());
+            let got: Vec<_> = part.features.iter().map(key).collect();
+            let want: Vec<_> = whole.features[start..end].iter().map(key).collect();
+            assert_eq!(got, want, "{skip} {max:?}");
+            let fields = |l: &Layer| l.schema.fields().iter().map(|f| (f.name.clone(), f.field_type, f.width)).collect::<Vec<_>>();
+            assert_eq!(fields(&part), fields(&whole));
+            assert_eq!(part.crs_epsg(), whole.crs_epsg());
+        };
+        for (skip, max) in [(0, Some(10)), (3, Some(4)), (49, Some(1)), (45, Some(20)), (60, Some(5)), (10, None), (0, None)] {
+            check(skip, max);
+        }
+        // Without the .shx, the record headers are scanned instead.
+        std::fs::remove_file(dir.path().join("r.shx")).unwrap();
+        for (skip, max) in [(3, Some(4)), (49, Some(1)), (10, None)] {
+            check(skip, max);
+        }
     }
 }

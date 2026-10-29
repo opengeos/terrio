@@ -947,6 +947,9 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
         && crate::vfs::Location::parse(path).is_local()
         && std::path::Path::new(path).is_file()
     {
+        // Read by the driver its name points to, as `open_vector` reads the others: judged as that
+        // open judges a dataset.
+        crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
         let declared = crate::drivers::vector::gpkg_read::declared_layers(path, layers)?;
         return Ok(OgrSchema { layers: declared.iter().map(declared_schema).collect() });
     }

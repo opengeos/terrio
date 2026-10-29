@@ -70,6 +70,15 @@ fn parse_header(text: &str) -> Vec<(String, String)> {
     out
 }
 
+/// [`open`] for a file `raw_opener` recognised by the ENVI header beside it (or as that header),
+/// whatever driver its name points to: refused when the process-wide allow-list leaves ENVI out,
+/// as a data file named for another driver (`e.img`, Imagine's) reaches this point as that
+/// driver's file.
+pub(crate) fn open_recognised(path: &Path) -> Result<RawRaster> {
+    crate::formats::check_driver_allowed("ENVI", &path.to_string_lossy(), crate::formats::Kind::Raster)?;
+    open(path)
+}
+
 /// Opens an ENVI raster through its data file or its header, reading only the header now: its
 /// pixels are read by window.
 pub(crate) fn open(path: &Path) -> Result<RawRaster> {
