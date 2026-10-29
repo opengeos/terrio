@@ -25,9 +25,9 @@ in progress. See [ROADMAP.md](ROADMAP.md).
 
 terrio builds on the pure-Rust format libraries of
 [whitebox_next_gen](https://github.com/jblindsay/whitebox_next_gen) (`wbraster`, `wbvector`,
-`wbprojection`) and adds format detection, remote and archived inputs, a GeoTIFF reader built on
-the [`tiff`](https://crates.io/crates/tiff) crate, fixes for what the format libraries miss, and
-GDAL-style operations. terrio needs no GDAL installation, but it is not independent of GDAL: its
+`wbprojection`) and adds format detection, remote and archived inputs, a GeoTIFF reader built on the
+[`tiff`](https://crates.io/crates/tiff) crate, fixes for what the format libraries miss, and
+GDAL-style operations. terrio runs without installing GDAL, but it is not independent of GDAL: its
 commands and options follow GDAL's, many of its algorithms and drivers are ports of GDAL, PROJ and
 PDAL code, and its results are tested against them (see [Acknowledgements](#acknowledgements)).
 
@@ -228,7 +228,7 @@ rasterio scripts run with an import change, `import terrio.rio as rasterio`: dat
 CRSs, features, warping, merging, masking and memory files follow rasterio's API, compared with
 rasterio on real files. See [Coming from rasterio](https://terrio.opengeos.org/rasterio/).
 
-`terrio.xarray` is rioxarray's API without a GDAL installation (`pip install "terrio[xarray]"`):
+`terrio.xarray` is rioxarray's API without installing GDAL (`pip install "terrio[xarray]"`):
 `terrio.xarray.open_rasterio` and `xr.open_dataset(path, engine="terrio")` open rasters lazily
 (remote COGs fetch only the tiles a window needs, chunked with dask), and the `.terrio` accessor
 has rioxarray's `.rio` methods (`clip_box`, `clip`, `reproject`, `reproject_match`, `pad_box`,

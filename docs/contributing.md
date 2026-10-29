@@ -52,12 +52,13 @@ to a Rust release less than six months old, and from 1.0 on only in a minor rele
 
 ## Release notes
 
-Release notes and release announcements end with a **Credits** section naming the projects whose
-code that release ports or adapts (GDAL, PROJ, PDAL, GEOS and others), the features that came
-from each, a link to `NOTICE`, and a link to
-[sponsoring GDAL](https://gdal.org/en/stable/sponsors/index.html). Describe terrio as needing no
-GDAL installation, not as being free of GDAL: its commands follow GDAL's and many of its
-algorithms are ports of GDAL code.
+The release workflow publishes notes generated from the merged pull requests. Edit the release
+after it is published to end its notes with a **Credits** section naming the projects whose code
+that release ports or adapts (GDAL, PROJ, PDAL, GEOS and others), the features that came from
+each, a link to `NOTICE`, and a link to
+[sponsoring GDAL](https://gdal.org/en/stable/sponsors/index.html); release announcements carry
+the same credits. Describe terrio as running without installing GDAL, not as being free of GDAL:
+its commands follow GDAL's and many of its algorithms are ports of GDAL code.
 
 ## Documentation
 

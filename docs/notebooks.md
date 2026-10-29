@@ -27,7 +27,8 @@ A tour of terrio in Python:
 [View on GitHub](https://github.com/opengeos/terrio/blob/main/docs/notebooks/xarray.ipynb) ·
 [Download](notebooks/xarray.ipynb)
 
-[`terrio.xarray`](xarray.md), rioxarray's API without a GDAL installation (`pip install "terrio[xarray]"`):
+[`terrio.xarray`](xarray.md), rioxarray's API without installing GDAL
+(`pip install "terrio[xarray]"`):
 
 - the USGS 3DEP elevation COG opened lazily as a dask-backed DataArray, with rioxarray's
   coordinates, attributes and `spatial_ref` grid mapping;
