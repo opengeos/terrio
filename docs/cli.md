@@ -2178,5 +2178,5 @@ GeoTIFF/COG preserve it.
 
 Palette text/XML channels outside 0–255 are rejected. GDAL 3.13.3 wraps invalid
 RGB text channels; Terrio deliberately rejects those malformed inputs. Text
-color files are limited to 10 MiB while streaming, including when their size
+XML nesting is limited to 256 element levels; color files are limited to 10 MiB while streaming, including when their size
 is unavailable.

@@ -15,17 +15,41 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_color_table, m)?)?;
     Ok(())
 }
+struct Destination<'a> {
+    path: &'a str,
+    other_sources: Vec<String>,
+    overwrite: bool,
+}
+fn check_destination(source: &LazyRaster, path: Option<&str>, destination: Option<Destination<'_>>) -> terrio::Result<()> {
+    if let Some(destination) = destination {
+        let mut paths = destination.other_sources;
+        paths.extend(source.file_list()?);
+        if let Some(path) = path {
+            paths.push(path.into());
+        }
+        palette::check_output(destination.path, &paths.iter().map(String::as_str).collect::<Vec<_>>(), destination.overwrite)?;
+    }
+    Ok(())
+}
 fn with_source<T: Send>(
     py: Python<'_>,
     src: &Bound<'_, PyAny>,
+    destination: Option<Destination<'_>>,
     convert: impl FnOnce(&mut LazyRaster) -> terrio::Result<T> + Send,
 ) -> PyResult<T> {
     if let Some(path) = raster_path(src)? {
-        crate::with_warnings(py, || convert(&mut terrio::open_raster_lazy(&path)?))
+        crate::with_warnings(py, || {
+            let mut source = terrio::open_raster_lazy(&path)?;
+            check_destination(&source, Some(&path), destination)?;
+            convert(&mut source)
+        })
     } else {
         let mut raster = src.cast::<PyRaster>()?.try_borrow_mut().map_err(|e| invalid(e.to_string()))?;
         let inner = &mut raster.inner;
-        crate::with_warnings(py, || convert(inner))
+        crate::with_warnings(py, || {
+            check_destination(inner, None, destination)?;
+            convert(inner)
+        })
     }
 }
 fn table(py: Python<'_>, source: &Bound<'_, PyAny>, filename: Option<&str>) -> PyResult<Vec<[u8; 4]>> {
@@ -48,7 +72,7 @@ fn table(py: Python<'_>, source: &Bound<'_, PyAny>, filename: Option<&str>) -> P
         return palette::color_table_from_bytes(data.to_vec(), hint).py();
     }
     if source.cast::<PyRaster>().is_ok() {
-        return with_source(py, source, |r| palette::color_table(&r.header()));
+        return with_source(py, source, None, |r| palette::color_table(&r.header()));
     }
     let path = source
         .extract::<std::path::PathBuf>()
@@ -56,30 +80,31 @@ fn table(py: Python<'_>, source: &Bound<'_, PyAny>, filename: Option<&str>) -> P
     let path = path.into_os_string().into_string().map_err(|_| invalid("raster paths must be UTF-8"))?;
     crate::with_warnings(py, || palette::read_color_table(&path))
 }
-fn check_destination(src: &Bound<'_, PyAny>, color_map: Option<&Bound<'_, PyAny>>, dst: Option<&str>, overwrite: bool) -> PyResult<()> {
-    if let Some(dst) = dst {
-        let mut paths = Vec::new();
-        if let Some(path) = raster_path(src)? {
-            paths.extend(terrio::open_raster_lazy(&path).py()?.file_list().py()?);
-            paths.push(path);
-        } else if let Ok(raster) = src.cast::<PyRaster>() {
-            paths.extend(raster.try_borrow().map_err(|e| invalid(e.to_string()))?.inner.file_list().py()?);
-        }
-        if let Some(source) = color_map
-            && let Ok(raster) = source.cast::<PyRaster>()
-        {
-            paths.extend(raster.try_borrow().map_err(|e| invalid(e.to_string()))?.inner.file_list().py()?);
-        }
-        if let Some(source) = color_map
-            && !source.is_instance_of::<PyBytes>()
-            && let Ok(path) = source.extract::<std::path::PathBuf>()
-        {
-            let path = path.into_os_string().into_string().map_err(|_| invalid("raster paths must be UTF-8"))?;
-            paths.extend(palette::color_table_files(&path).py()?);
-        }
-        palette::check_output(dst, &paths.iter().map(String::as_str).collect::<Vec<_>>(), overwrite).py()?;
+fn destination<'a>(
+    py: Python<'_>,
+    color_map: Option<&Bound<'_, PyAny>>,
+    dst: Option<&'a str>,
+    overwrite: bool,
+) -> PyResult<Option<Destination<'a>>> {
+    let Some(path) = dst else {
+        return Ok(None);
+    };
+    // Reject an existing output before loading palettes or opening the source.
+    palette::check_output(path, &[], overwrite).py()?;
+    let mut paths = Vec::new();
+    if let Some(source) = color_map
+        && let Ok(raster) = source.cast::<PyRaster>()
+    {
+        paths.extend(raster.try_borrow().map_err(|e| invalid(e.to_string()))?.inner.file_list().py()?);
     }
-    Ok(())
+    if let Some(source) = color_map
+        && !source.is_instance_of::<PyBytes>()
+        && let Ok(palette_path) = source.extract::<std::path::PathBuf>()
+    {
+        let palette_path = palette_path.into_os_string().into_string().map_err(|_| invalid("raster paths must be UTF-8"))?;
+        paths.extend(crate::with_warnings(py, || palette::color_table_files(&palette_path))?);
+    }
+    Ok(Some(Destination { path, other_sources: paths, overwrite }))
 }
 #[allow(clippy::too_many_arguments)]
 fn finish(
@@ -153,7 +178,7 @@ fn rgb_to_palette(
     bigtiff: bool,
     overwrite: bool,
 ) -> PyResult<PyRaster> {
-    check_destination(src, color_map, dst, overwrite)?;
+    let destination = destination(py, color_map, dst, overwrite)?;
     let mut options = PaletteOptions {
         color_count,
         bit_depth,
@@ -163,7 +188,7 @@ fn rgb_to_palette(
         mask: None,
     };
     let mask = mask.map(|m| (m.shape().to_vec(), m.as_array().iter().copied().collect::<Vec<_>>()));
-    let output = with_source(py, src, move |source| {
+    let output = with_source(py, src, destination, move |source| {
         if let Some((shape, values)) = mask {
             if shape != [source.height(), source.width()] {
                 return Err(terrio::Error::InvalidArgument("mask dimensions must match the raster".into()));
@@ -190,8 +215,8 @@ fn palette_to_rgb(
     bigtiff: bool,
     overwrite: bool,
 ) -> PyResult<PyRaster> {
-    check_destination(src, None, dst, overwrite)?;
-    let output = with_source(py, src, |source| palette::palette_to_rgb_lazy(source, rgba))?;
+    let destination = destination(py, None, dst, overwrite)?;
+    let output = with_source(py, src, destination, |source| palette::palette_to_rgb_lazy(source, rgba))?;
     finish(py, output, dst, format, compress, tile_size, bigtiff)
 }
 /// Attaches a color map without changing Byte/UInt16 indices, nodata or dataset masks.
@@ -211,8 +236,8 @@ fn attach_palette(
     bigtiff: bool,
     overwrite: bool,
 ) -> PyResult<PyRaster> {
-    check_destination(src, Some(color_map), dst, overwrite)?;
+    let destination = destination(py, Some(color_map), dst, overwrite)?;
     let colors = table(py, color_map, None)?;
-    let output = with_source(py, src, |source| palette::attach_palette_lazy(source, &colors))?;
+    let output = with_source(py, src, destination, |source| palette::attach_palette_lazy(source, &colors))?;
     finish(py, output, dst, format, compress, tile_size, bigtiff)
 }

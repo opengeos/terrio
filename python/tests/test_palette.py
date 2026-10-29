@@ -299,3 +299,59 @@ def test_lazy_write_rejects_explicit_mask_for_tile_archives(tmp_path, extension)
     with pytest.raises(ValueError, match="dataset masks"):
         lazy.write(str(output), mask=np.full((2, 2), 255, dtype="uint8"))
     assert not output.exists()
+
+
+def test_deep_xml_palette_fails_without_aborting():
+    with pytest.raises(ValueError, match="256 element levels"):
+        terrio.read_color_table(b"<a>" * 100_000, filename="colors.qml")
+
+
+def test_palette_destination_reuses_the_remote_source(tmp_path, gdal, monkeypatch):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    monkeypatch.setenv("TERRIO_HTTP_TIMEOUT", "5")
+    path = tmp_path / "indexed.tif"
+    dataset = gdal.GetDriverByName("GTiff").Create(str(path), 2, 2, 1, gdal.GDT_Byte)
+    dataset.SetGeoTransform((0, 1, 0, 2, 0, -1))
+    colors = gdal.ColorTable()
+    colors.SetColorEntry(0, (10, 20, 30, 255))
+    colors.SetColorEntry(1, (40, 50, 60, 255))
+    dataset.GetRasterBand(1).SetColorTable(colors)
+    dataset.GetRasterBand(1).WriteArray(np.array([[0, 1], [1, 0]], dtype="uint8"))
+    dataset = None
+    payload = path.read_bytes()
+    counts = {"gets": 0, "bytes": 0}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_GET(self):
+            counts["gets"] += 1
+            first, last = self.headers["Range"].removeprefix("bytes=").split("-", 1)
+            first, last = int(first), min(int(last), len(payload) - 1)
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {first}-{last}/{len(payload)}")
+            self.send_header("Content-Length", str(last - first + 1))
+            self.end_headers()
+            self.wfile.write(payload[first : last + 1])
+            counts["bytes"] += last - first + 1
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/indexed.tif"
+            output = tmp_path / "rgb.tif"
+            terrio.palette_to_rgb(url, str(output))
+            assert counts["gets"] == 1
+            assert counts["bytes"] == len(payload)
+            result = gdal.Open(str(output))
+            np.testing.assert_array_equal(
+                result.GetRasterBand(1).ReadAsArray(), [[10, 40], [40, 10]]
+            )
+            print("palette path destination I/O:", counts)
+        finally:
+            server.shutdown()
+            worker.join()

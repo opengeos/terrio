@@ -551,7 +551,7 @@ GDAL differences.
 
 Python `Raster.write` and `to_bytes` retain dataset masks for GeoTIFF/COG
 outputs. Other writers omit separate dataset masks, as before; explicit masks
-passed to unsupported writers are rejected. Any raster with a dataset mask, including materialized results, is refused for tile-archive writes and byte serialization,
+passed to unsupported writers are rejected. Any raster with a dataset mask, including materialized results, is refused for PMTiles/MBTiles writes and their byte serialization,
 since that streaming path supports alpha bands rather than separate masks.
 Normal raster writes materialize the full raster and its mask; remote inputs
 therefore fetch the selected image blocks and mask blocks.

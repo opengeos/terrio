@@ -96,7 +96,11 @@ pub fn parse(text: &str) -> Result<Element> {
     reader.config_mut().check_end_names = false;
     let mut stack: Vec<Element> = vec![Element::default()];
     loop {
-        match reader.read_event().map_err(|e| err(&e))? {
+        let event = reader.read_event().map_err(|e| err(&e))?;
+        if matches!(&event, Event::Start(_) | Event::Empty(_)) && stack.len() > 256 {
+            return Err(Error::InvalidData("XML: nesting exceeds 256 element levels".into()));
+        }
+        match event {
             Event::Start(e) => stack.push(element(&e)),
             Event::Empty(e) => {
                 let el = element(&e);
@@ -173,6 +177,16 @@ pub fn escape(s: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn deep_trees_fail_before_recursive_traversal_or_drop() {
+        let document = "<a>".repeat(100_000);
+        assert!(parse(&document).unwrap_err().to_string().contains("256 element levels"));
+        let allowed = format!("{}{}", "<a>".repeat(256), "</a>".repeat(256));
+        let root = parse(&allowed).unwrap();
+        assert!(root.find("missing").is_none());
+        let empty_leaf = format!("{}<b/>{}", "<a>".repeat(256), "</a>".repeat(256));
+        assert!(parse(&empty_leaf).is_err());
+    }
     #[test]
     fn parses_elements_text_and_entities() {
         let root = parse(r#"<?xml version="1.0"?><a:root xmlns:a="x" a:id="1"><b>T &amp; &#233;<![CDATA[<c>]]></b><b/></a:root>"#).unwrap();

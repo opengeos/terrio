@@ -2379,3 +2379,7 @@ test("palette binary options bypass JSON serialization", () => {
   assert.throws(() => terrio.rgbToPalette(source, {unknown: true}), /unknown field/);
   source.free(); indexed.free(); output.free();
 });
+
+test("palette XML nesting fails as an error without trapping", () => {
+  assert.throws(() => terrio.readColorTable("<a>".repeat(100000), "colors.qml"), /256 element levels/);
+});
