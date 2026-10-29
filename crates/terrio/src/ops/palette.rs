@@ -366,9 +366,7 @@ pub fn rgb_to_palette(source: &RasterDataset, options: &PaletteOptions) -> Resul
             table.resize(index + 1, [0; 4]);
         }
     }
-    if table.is_empty() {
-        return Err(invalid("no valid pixels for palette generation"));
-    }
+    // An all-invalid input retains the reserved nodata entry, matching GDAL.
     let pixels = map_pixels(&rgb, &valid, source.raster.cols, &table, options, nodata, nd.map(|v| v as u8));
     let mut out = super::derived(source, RasterData::U8(pixels), 1)?;
     out.color_table = table;
@@ -465,7 +463,7 @@ pub fn parse_color_table(text: &str, filename: &str) -> Result<Vec<[u8; 4]>> {
     let mut entries = Vec::new();
     let ext = filename.rsplit('.').next().unwrap_or("");
     if ext.eq_ignore_ascii_case("qml") || ext.eq_ignore_ascii_case("qlr") || text.trim_start().starts_with('<') {
-        let root = crate::drivers::vector::xml::parse(text)?;
+        let root = crate::drivers::vector::xml::parse_limited(text, 65_536)?;
         let renderer = root.find("rasterrenderer").ok_or_else(|| invalid("no raster renderer in QGIS color file"))?;
         let tag = match renderer.attr("type") {
             Some("paletted") => "paletteEntry",

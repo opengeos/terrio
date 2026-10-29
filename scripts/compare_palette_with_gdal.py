@@ -44,7 +44,7 @@ def main():
                             outputType=gdal.GDT_Byte)
         ds = None
         sources = {'rgb': rgb}
-        for kind in ['nodata', 'mask', 'alpha']:
+        for kind in ['nodata', 'mask', 'alpha', 'all-invalid', 'one-valid-high']:
             path = os.path.join(tmp, kind + '.tif')
             ds = gdal.Translate(path, rgb, bandList=[1, 2, 3, 1] if kind == 'alpha' else [1, 2, 3])
             if kind == 'nodata':
@@ -57,6 +57,12 @@ def main():
             else:
                 valid = np.full((47, 63), 255, dtype='uint8')
                 valid[:8, :11] = 0
+                if kind in ['all-invalid', 'one-valid-high']:
+                    valid.fill(0)
+                    if kind == 'one-valid-high':
+                        valid[0, 0] = 255
+                    for band in range(1, 4):
+                        ds.GetRasterBand(band).Fill(255)
                 if kind == 'alpha':
                     ds.GetRasterBand(4).SetColorInterpretation(gdal.GCI_AlphaBand)
                     ds.GetRasterBand(4).WriteArray(valid)

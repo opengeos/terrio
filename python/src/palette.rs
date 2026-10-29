@@ -60,7 +60,7 @@ fn table(py: Python<'_>, source: &Bound<'_, PyAny>, filename: Option<&str>) -> P
         let data = bytes.as_bytes();
         let hint = if let Some(filename) = filename {
             filename
-        } else if data.starts_with(b"II") || data.starts_with(b"MM") {
+        } else if matches!(data.get(..4), Some(b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+")) {
             "palette.tif"
         } else if data.starts_with(b"\x89PNG") {
             "palette.png"

@@ -91,12 +91,24 @@ pub fn decode(bytes: &[u8]) -> String {
 
 /// Parses a document and returns its root element.
 pub fn parse(text: &str) -> Result<Element> {
+    parse_limited(text, usize::MAX)
+}
+
+/// Parse with a caller-specific bound on total elements, including empty siblings.
+pub fn parse_limited(text: &str, max_elements: usize) -> Result<Element> {
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("XML: {e}"));
     let mut reader = Reader::from_str(text);
     reader.config_mut().check_end_names = false;
     let mut stack: Vec<Element> = vec![Element::default()];
+    let mut elements = 0usize;
     loop {
         let event = reader.read_event().map_err(|e| err(&e))?;
+        if matches!(&event, Event::Start(_) | Event::Empty(_)) {
+            if elements >= max_elements {
+                return Err(Error::InvalidData(format!("XML: element count exceeds {max_elements}")));
+            }
+            elements += 1;
+        }
         if matches!(&event, Event::Start(_) | Event::Empty(_)) && stack.len() > 256 {
             return Err(Error::InvalidData("XML: nesting exceeds 256 element levels".into()));
         }
@@ -175,6 +187,11 @@ pub fn escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn caller_element_limit_counts_empty_siblings() {
+        assert!(super::parse_limited("<a><b/><b/><b/></a>", 3).unwrap_err().to_string().contains("element count"));
+        assert_eq!(super::parse_limited("<a><b/><b/></a>", 3).unwrap().children.len(), 2);
+    }
     use super::*;
 
     #[test]
