@@ -22,7 +22,7 @@ pub struct FileOptions {
 fn paths_json<S: Serializer>(paths: &[String], serializer: S) -> std::result::Result<S::Ok, S::Error> {
     paths.iter().map(|s| vsi::listing::redact_url(s).into_owned()).collect::<Vec<_>>().serialize(serializer)
 }
-/// Owned files of a dataset. Referenced raster assets are not owned by a VRT/catalog.
+/// Owned files of a dataset. Referenced raster assets are not owned by a VRT.
 #[derive(Debug, Clone, Serialize)]
 pub struct FileSet {
     /// Recognized source driver.
@@ -263,18 +263,7 @@ fn check_shared_ownership(inventory: &FileSet, approved: &[String]) -> Result<()
     };
     let name = location::name(primary)?;
     let base = stem(&name);
-    let shared: Vec<_> = inventory
-        .files
-        .iter()
-        .filter(|file| {
-            location::name(file).is_ok_and(|name| {
-                stem(&name) == base
-                    && ["prj", "hdr", "stx", "clr", "wld", "ind"]
-                        .iter()
-                        .any(|extension| name.rsplit_once('.').is_some_and(|(_, suffix)| suffix.eq_ignore_ascii_case(extension)))
-            })
-        })
-        .collect();
+    let shared: Vec<_> = inventory.files.iter().collect();
     if shared.is_empty() {
         return Ok(());
     }
@@ -889,7 +878,7 @@ pub fn copy(source: &str, target: &str, options: &FileOptions) -> Result<FileRep
 pub fn rename(source: &str, target: &str, options: &FileOptions) -> Result<FileReport> {
     transfer(source, target, options, true)
 }
-/// Deletes owned dataset files. Referenced VRT/catalog assets are preserved. All paths are
+/// Deletes owned dataset files. Referenced VRT assets are preserved. All paths are
 /// checked before staging the first removal; dangerous roots and read-only stores fail.
 pub fn delete(path: &str, format: Option<&str>) -> Result<FileReport> {
     Ok(delete_many(&[path.into()], format)?.remove(0))
@@ -1227,6 +1216,31 @@ mod tests {
         assert!(!exists(&csv).unwrap() && !exists(&shp).unwrap() && !exists(&prj).unwrap());
         assert!(exists(&replacement).unwrap());
     }
+    #[test]
+    #[cfg(all(not(target_family = "wasm"), feature = "geotiff"))]
+    fn shared_rpc_and_world_files_require_every_raster_owner() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_str().unwrap();
+        let first = format!("{root}/scene.tif");
+        let second = format!("{root}/scene.tiff");
+        let file = std::fs::File::create(&first).unwrap();
+        tiff::encoder::TiffEncoder::new(file).unwrap().write_image::<tiff::encoder::colortype::Gray8>(2, 2, &[1; 4]).unwrap();
+        std::fs::copy(&first, &second).unwrap();
+        for name in ["scene.RPB", "scene.tfw"] {
+            let companion = format!("{root}/{name}");
+            put(&companion, b"shared bytes");
+            assert!(file_list(&first, None).unwrap().files.contains(&companion));
+            assert!(file_list(&second, None).unwrap().files.contains(&companion));
+            assert!(delete(&first, None).unwrap_err().to_string().contains("shared"));
+            assert!(rename(&first, &format!("{root}/moved.tif"), &Default::default()).is_err());
+            assert_eq!(vsi::read(&companion).unwrap(), b"shared bytes");
+            std::fs::remove_file(&companion).unwrap();
+        }
+        put(&format!("{root}/scene.RPB"), b"shared bytes");
+        delete_many(&[first, second], None).unwrap();
+        assert!(!std::path::Path::new(&format!("{root}/scene.RPB")).exists());
+    }
+
     #[test]
     fn companion_directory_is_not_removed_by_overwrite() {
         let root = directory();

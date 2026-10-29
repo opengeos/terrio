@@ -226,7 +226,15 @@ pub(crate) fn in_source_tree(reference: &str, source: &str) -> Result<bool> {
         (Node::Local(reference), Node::Local(source)) => {
             let source_parent = source.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
             let directory = std::fs::canonicalize(source_parent)?;
-            std::fs::canonicalize(reference)?.starts_with(directory)
+            std::fs::canonicalize(&reference)
+                .map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        Error::InvalidArgument(format!("VRT source file does not exist: {}", reference.display()))
+                    } else {
+                        error.into()
+                    }
+                })?
+                .starts_with(directory)
         }
         (Node::Mem(reference), Node::Mem(source)) => below(&reference, &source),
         (Node::S3 { bucket: a, key: reference }, Node::S3 { bucket: b, key: source }) => a == b && below(&reference, &source),

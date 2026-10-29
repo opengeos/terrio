@@ -97,7 +97,7 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
     if bytes.starts_with(b"RUU CROSS SYSTEM MAP FORMAT") {
         return raster(RasterDriver::PCRaster);
     }
-    if bytes.starts_with(b"UHL") || bytes.get(80..83) == Some(b"UHL") {
+    if bytes.starts_with(b"UHL") {
         return raster(RasterDriver::DTED);
     }
     if bytes.starts_with(b"fgb\x03fgb\x01") {
@@ -206,7 +206,7 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
     if ext == "sgrd" && lower.contains("cellcount_x") && lower.contains("cellcount_y") {
         return raster(RasterDriver::SAGA);
     }
-    if lower.starts_with("!table") || ext == "mif" && lower.starts_with("version") {
+    if lower.starts_with("!table") || (ext == "mif" && lower.starts_with("version")) {
         return vector(VectorDriver::MapInfo);
     }
     if ext == "dxf" && lower.contains("section") && lower.contains("header") {
@@ -472,6 +472,15 @@ pub fn identify_many(paths: &[String], options: &IdentifyOptions) -> Vec<Identif
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dted_user_header_is_anchored_at_the_start() {
+        let mut bytes = vec![b' '; 128];
+        bytes[80..83].copy_from_slice(b"UHL");
+        assert!(identify_bytes(&bytes, "unknown.bin").is_none());
+        bytes[..3].copy_from_slice(b"UHL");
+        assert_eq!(identify_bytes(&bytes, "unknown.bin").unwrap().driver, "DTED");
+    }
+
     #[test]
     fn bounded_signatures_do_not_trust_binary_filename_extensions() {
         assert_eq!(identify_bytes(b"II*\0garbage", "renamed.bin").unwrap().driver, "GTiff");

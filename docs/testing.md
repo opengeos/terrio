@@ -1163,9 +1163,9 @@ formats whose reader lacks a metadata-only path may materialize the input.
 
 The `identify` conformance suite compares driver identification with GDAL 3.13.3
 on real Landsat, USGS, OPERA, SRTM, netCDF/HDF5 and vector files, and raster encodings
-derived from real imagery. The local run has 37 cases: 32 exact labels, three accepted
-generic JP2/KML/HDF5 driver families and two explicit non-comparisons because the
-reference build lacks Parquet and GRIB. Companion-file encodings use `--deep`; renamed
+derived from real imagery. The local run has 37 cases: 33 exact labels, three accepted
+generic JP2/KML driver labels and one explicit non-comparison because the
+reference build lacks Parquet. Companion-file encodings use `--deep`; renamed
 GeoTIFFs and unknown inputs are also checked. Identification does not validate
 payload values or metadata. Missing mandatory datasets fail the suite.
 
@@ -1236,8 +1236,8 @@ extractor integrity checks.
 
 A separate local benchmark uses a generated 2,000-tile VRT from real 32×32 Landsat
 subsets. Copying its 2,001 files took 155.04 seconds before path indexing and
-2.57 seconds afterward, with all GDAL-read pixels and checksum 32088 unchanged.
-Batch deletion of the 2,000 TIFFs took 13.66 versus 0.23 seconds and preserved an
+2.62 seconds afterward, with all GDAL-read pixels and checksum 32088 unchanged.
+Batch deletion of the 2,000 TIFFs took 13.66 versus 0.28 seconds and preserved an
 unrelated file. These are local observations rather than general timing guarantees.
 
 ```sh

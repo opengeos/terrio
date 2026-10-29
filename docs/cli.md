@@ -683,6 +683,8 @@ as explicit raw-band data. Virtual keys with dot segments are refused by default
 Use `--allow-external-references` only for trusted VRTs that need assets outside
 that tree, such as a local VRT referencing an HTTP raster. The same option is
 `allow_external_references` in Rust/Python and `allowExternalReferences` in JavaScript.
+MCP exposes the same opt-in: a client enabling it is explicitly trusting the VRT
+references and permitting access beyond the source tree.
 Source references are rewritten to the new names. Rename moves the owned definition
 but preserves original dependencies so other datasets can keep using them; copied
 payloads count toward reported bytes, including for same-filesystem VRT renames.
@@ -691,7 +693,7 @@ header references are also updated. Irregular basenames are refused before mutat
 as in GDAL. VRT graph traversal reuses completed inventories and permits at most 128
 nested definitions; definitions are held in memory. A file used both as file-bearing
 metadata and raw VRT pixels is refused if rewriting would change those pixels. VRT deletion removes the definition and its owned companions,
-retaining referenced rasters; catalog/STAC deletion likewise retains referenced assets.
+retaining referenced rasters.
 
 All inputs and destinations are checked before staging files. Source aliases, overlapping
 directory trees, protected roots, read-only mutations and file/directory collisions are
@@ -743,7 +745,8 @@ change the command's success exit status, matching GDAL dataset identification.
 `--deep` permits existing raster/vector readers as a fallback for formats requiring
 companion files, such as an ENVI data file. The report marks those results with
 `deep: true`. A fallback reader can materialize formats without lazy metadata support.
-Archives require this fallback except for header-identifiable KMZ. Signatures beyond
+Archives require this fallback, except `.kmz` files: the ZIP header alone does not
+identify KMZ; that case also requires the filename hint. Signatures beyond
 the prefix can be missed. SQLite containers use `.gpkg`/`.mbtiles` filename hints as GDAL does, including
 SQLite files whose application ID is unset; this does not validate their tables.
 Text formats may need filename hints; raw SRTM HGT tiles
