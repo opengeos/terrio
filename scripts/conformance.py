@@ -817,8 +817,8 @@ def suite_dataset_files(ctx):
         "are rebased and CSV CRS .prj files retained rather than repeating GDAL's copy losses. "
         "HTTP requests and transferred bytes are measured, with metadata-only overhead bounded.",
     )
-    if missing_modules("osgeo"):
-        suite.skipped = "needs osgeo"
+    if missing_modules("osgeo") or shutil.which("gdal") is None:
+        suite.skipped = "needs osgeo and the gdal command"
         return suite
     code, out, err = run([
         sys.executable, str(SCRIPTS / "compare_dataset_files_with_gdal.py"),

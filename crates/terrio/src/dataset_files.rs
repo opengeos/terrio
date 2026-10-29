@@ -107,12 +107,16 @@ fn directory_driver(path: &str) -> Result<Option<String>> {
     for marker in ["zarr.json", ".zgroup", ".zarray"] {
         let marker = location::child(path, marker)?;
         if location::file_exists(&marker)? {
-            let prefix = location::prefix(&marker, crate::inspection::IDENTIFICATION_HEADER_BYTES)?;
-            let compact: String = String::from_utf8_lossy(&prefix).split_ascii_whitespace().collect();
-            if ["\"zarr_format\":2,", "\"zarr_format\":3,", "\"zarr_format\":2}", "\"zarr_format\":3}"]
-                .iter()
-                .any(|key| compact.contains(key))
-            {
+            // Deserialize only the required top-level field. Unknown metadata
+            // is streamed and skipped rather than materialized or substring-matched.
+            #[derive(serde::Deserialize)]
+            struct ZarrMarker {
+                zarr_format: u64,
+            }
+            let recognized = location::with_seekable(&marker, |reader| {
+                Ok(serde_json::from_reader::<_, ZarrMarker>(reader).ok().is_some_and(|m| matches!(m.zarr_format, 2 | 3)))
+            })?;
+            if recognized {
                 return Ok(Some("Zarr".into()));
             }
         }
@@ -340,7 +344,7 @@ fn temporary(path: &str) -> Result<String> {
         let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let name = format!(".terrio-dataset-{id}-{}", location::name(path)?);
         let path = location::sibling(path, &name)?;
-        if !exists(&path)? {
+        if !location::entry_exists(&path)? {
             return Ok(path);
         }
     }
@@ -787,11 +791,11 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
     for path in &sources {
         names.insert(location::name_key(path)?, location::name(&mapped(path, source, target)?)?);
     }
-    let mut targets = BTreeSet::new();
+    let mut targets = HashSet::new();
     let mut items = Vec::new();
     for path in &sources {
         let destination = mapped(path, source, target)?;
-        if !targets.insert(destination.clone()) {
+        if !targets.insert(location::destination_key(&destination)?) {
             return Err(invalid("dataset components map to the same destination"));
         }
         location::check_write(&destination)?;
@@ -879,6 +883,12 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
             backups.push(Backup { original: path.clone(), staged });
         }
         for item in &mut items {
+            // All pre-existing destinations were backed up above. A remaining
+            // entry can be a case alias of an earlier install on this filesystem.
+            // Refuse and roll back rather than overwriting that component.
+            if location::entry_exists(&item.target)? {
+                return Err(invalid("dataset components collide on the destination filesystem"));
+            }
             let report = location::rename(&item.staged, &item.target)?;
             item.installed = true;
             bytes = bytes.checked_add(report.bytes).ok_or_else(|| invalid("copied byte count overflows"))?;
@@ -982,6 +992,51 @@ mod tests {
         let path = format!("{root}/{name}.csv");
         put(&path, b"x,y,name\n1,2,first\n3,4,second\n");
         path
+    }
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn case_variant_companions_never_replace_one_another_on_native_output() {
+        let source_root = directory();
+        let source = csv(&source_root, "source");
+        put(&format!("{source_root}/source.csvt"), b"Real,Real,String");
+        put(&format!("{source_root}/source.CSVT"), b"Integer,Integer,String");
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("case-probe");
+        std::fs::write(&probe, b"probe").unwrap();
+        let insensitive = dir.path().join("CASE-PROBE").exists();
+        std::fs::remove_file(probe).unwrap();
+        let target = dir.path().join("out.csv");
+        let result = copy(&source, target.to_str().unwrap(), &Default::default());
+        if cfg!(windows) || insensitive {
+            assert!(result.is_err());
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        } else {
+            result.unwrap();
+            assert_eq!(std::fs::read(dir.path().join("out.csvt")).unwrap(), b"Real,Real,String");
+            assert_eq!(std::fs::read(dir.path().join("out.CSVT")).unwrap(), b"Integer,Integer,String");
+        }
+        assert_eq!(vsi::read(&format!("{source_root}/source.csvt")).unwrap(), b"Real,Real,String");
+        assert_eq!(vsi::read(&format!("{source_root}/source.CSVT")).unwrap(), b"Integer,Integer,String");
+        vsi::delete(&source_root, true).unwrap();
+    }
+    #[test]
+    fn nested_or_malformed_zarr_markers_cannot_authorize_directory_deletion() {
+        for bytes in [br#"{"other":{"zarr_format":2}}"#.as_slice(), br#"{"zarr_format":2} garbage"#, br#"{"zarr_format":"2"}"#] {
+            let root = directory();
+            put(&format!("{root}/.zgroup"), bytes);
+            put(&format!("{root}/keep.txt"), b"preserve");
+            assert!(file_list(&root, None).is_err());
+            assert!(delete(&root, None).is_err());
+            assert!(copy(&root, &format!("{root}-copy"), &Default::default()).is_err());
+            assert_eq!(vsi::read(&format!("{root}/keep.txt")).unwrap(), b"preserve");
+            vsi::delete(&root, true).unwrap();
+        }
+        let root = directory();
+        // Recognition must not depend on fitting the complete marker in a sniff prefix.
+        let marker = format!(r#"{{"zarr_format":2,"description":"{}"}}"#, "x".repeat(131_072));
+        put(&format!("{root}/.zgroup"), marker.as_bytes());
+        assert_eq!(file_list(&root, None).unwrap().driver, "Zarr");
+        vsi::delete(&root, true).unwrap();
     }
     #[test]
     #[cfg(not(target_family = "wasm"))]

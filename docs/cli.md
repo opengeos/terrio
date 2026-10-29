@@ -656,8 +656,8 @@ terrio dataset-rename countries.shp countries-new.shp
 terrio dataset-delete obsolete.tif obsolete.shp
 ```
 
-These commands manage encoded datasets and their companion files without conversion.
-The destination is an exact dataset name. Existing destinations and companion collisions
+These commands manage encoded datasets and their companion files without conversion. The
+destination is an exact dataset name. Existing destinations and companion collisions
 require `--overwrite`; replacing a dataset removes obsolete companions. `--input-format`
 (alias `--format`) restricts the source driver. `--json` returns the driver, affected
 files and copied bytes. `dataset-files` lists owned files and a directory flag.
@@ -665,72 +665,80 @@ files and copied bytes. `dataset-files` lists owned files and a directory flag.
 Shapefile and MapInfo components, raw raster headers, world files, RPCs, PAM metadata,
 overviews and masks are included when present. Raster-only companions are not assigned
 to vector files. Zarr, Arc/Info grids and vector directory datasets (including whole MVT
-pyramids) are handled as trees. A recognized Zarr or Arc/Info grid directory owns
-its complete subtree: copying, renaming or deleting it includes every entry, even
-user-added files. Store unrelated files outside these dataset roots. A Shapefile,
-MapInfo or CSV directory is accepted
-only when every entry belongs to that driver's datasets; directories containing
-unrelated files or subdirectories are refused. Select individual dataset files
-in a mixed directory. Unrelated siblings of individual dataset files are retained. TIFF world files are
-used only without an embedded transform. CSV `.prj` files are preserved: GDAL 3.13.3
-uses these CRSs but omits them from `GetFileList` and loses them during dataset copy. Basename
-companions such as `.prj` and `.hdr` can be shared by distinct recognized primary
-files. Rename, deletion and replacement refuse such a companion while another
-same-basename owner remains. A batch deletion may include all owners; copying
-may read a shared companion without changing its original.
+pyramids) are handled as trees. A recognized Zarr or Arc/Info grid directory owns its
+complete subtree: copying, renaming or deleting it includes every entry, even user-added
+files. Store unrelated files outside these dataset roots. A Shapefile, MapInfo or CSV
+directory is accepted only when every entry belongs to that driver's datasets;
+directories containing unrelated files or subdirectories are refused. Select individual
+dataset files in a mixed directory. Unrelated siblings of individual dataset files are
+retained. TIFF world files are used only without an embedded transform. CSV `.prj` files
+are preserved: GDAL 3.13.3 uses these CRSs but omits them from `GetFileList` and loses
+them during dataset copy. Basename companions such as `.prj` and `.hdr` can be shared by
+distinct recognized primary files. Rename, deletion and replacement refuse such a
+companion while another same-basename owner remains. A batch deletion may include all
+owners; copying may read a shared companion without changing its original.
 
 VRT copies and renames copy referenced assets with regular corresponding basenames,
-confined by default to the original source directory tree. Native links and all
-entries of referenced directory datasets are checked before mutation. Non-raw
-references must identify a supported dataset; arbitrary files are accepted only
-as explicit raw-band data. Virtual keys with dot segments are refused by default.
-Use `--allow-external-references` only for trusted VRTs that need assets outside
-that tree, such as a local VRT referencing an HTTP raster. The same option is
+confined by default to the original source directory tree. Native links and all entries
+of referenced directory datasets are checked before mutation. Non-raw references must
+identify a supported dataset; arbitrary files are accepted only as explicit raw-band
+data. Virtual keys with dot segments are refused by default. Use
+`--allow-external-references` only for trusted VRTs that need assets outside that tree,
+such as a local VRT referencing an HTTP raster. The same option is
 `allow_external_references` in Rust/Python and `allowExternalReferences` in JavaScript.
 MCP exposes the same opt-in: a client enabling it is explicitly trusting the VRT
-references and permitting access beyond the source tree. MCP clients must not
-enable it for untrusted VRTs.
-Source references are rewritten to the new names. Rename moves the owned definition
-but preserves original dependencies so other datasets can keep using them; copied
-payloads count toward reported bytes, including for same-filesystem VRT renames.
-VRT/GML bytes are preserved when no reference needs rebasing. GML schema locations and Idrisi/ERS
-header references are also updated. Irregular basenames are refused before mutation,
-as in GDAL. VRT graph traversal reuses completed inventories and permits at most 128
-nested definitions; definitions are held in memory. GML definitions are also read
-and parsed in full when preparing a transfer, even when no reference changes.
-Shared-companion safety checks scan the parent directory for each input with
-companions; large batches in one directory can incur quadratic preflight work. A file used both as file-bearing
-metadata and raw VRT pixels is refused if rewriting would change those pixels. VRT deletion removes the definition and its owned companions,
-retaining referenced rasters.
+references and permitting access beyond the source tree. MCP clients must not enable it
+for untrusted VRTs. Source references are rewritten to the new names. Rename moves the
+owned definition but preserves original dependencies so other datasets can keep using
+them; copied payloads count toward reported bytes, including for same-filesystem VRT
+renames. VRT/GML bytes are preserved when no reference needs rebasing. GML schema
+locations and Idrisi/ERS header references are also updated. Irregular basenames are
+refused before mutation, as in GDAL. VRT graph traversal reuses completed inventories
+and permits at most 128 nested definitions; definitions are held in memory. GML
+definitions are also read and parsed in full when preparing a transfer, even when no
+reference changes. Shared-companion safety checks scan the parent directory for each
+input with companions; large batches in one directory can incur quadratic preflight
+work. A file used both as file-bearing metadata and raw VRT pixels is refused if
+rewriting would change those pixels. VRT deletion removes the definition and its owned
+companions, retaining referenced rasters.
 
 Dataset file management refuses MVT trees containing entries outside `metadata.json` and
-numeric `z/x/y.pbf` or `z/x/y.mvt` tile paths. Relative GML schema references must belong
-to the inventoried file set so they can be rebased; external absolute URIs remain unchanged.
+numeric `z/x/y.pbf` or `z/x/y.mvt` tile paths. Relative GML schema references must
+belong to the inventoried file set so they can be rebased; external absolute URIs remain
+unchanged.
 
-All inputs and destinations are checked before staging files. Source aliases, overlapping
-directory trees, protected roots, read-only mutations and file/directory collisions are
-refused. Failed staging or installation attempts restore the original paths; failed
-rollback returns an error identifying recovery files. After installation commits,
-cleanup failures return success with leftover staged paths in `recovery_files`.
+Windows native destinations with case-equivalent names are refused during preflight.
+Installation also checks actual destination entries on every platform, rolling back if
+the filesystem aliases two components instead of silently replacing one.
+
+All inputs and destinations are checked before staging files. Source aliases,
+overlapping directory trees, protected roots, read-only mutations and file/directory
+collisions are refused. Failed staging or installation attempts restore the original
+paths; failed rollback returns an error identifying recovery files. After installation
+commits, cleanup failures return success with leftover staged paths in `recovery_files`.
 The CLI reports these leftovers on stderr as well as in JSON. An empty list means
-cleanup completed. Batch deletion includes the shared cleanup list in each report.
-An existing destination must have a successful inventory, including with overwrite; an unknown or corrupt destination is refused. Source and destination trees must not be changed concurrently. Native renames
-preserve symlink text, so relative links must remain meaningful at their destination;
-links cannot be renamed across filesystems. Overlapping input directory/component
-sets are refused because they cannot be staged independently. Multiple file or object
-operations do not provide a filesystem-wide or object-store transaction.
+cleanup completed. Batch deletion includes the shared cleanup list in each report. An
+existing destination must have a successful inventory, including with overwrite; an
+unknown or corrupt destination is refused. Source and destination trees must not be
+changed concurrently. Native renames preserve symlink text, so relative links must
+remain meaningful at their destination; links cannot be renamed across filesystems.
+Overlapping input directory/component sets are refused because they cannot be staged
+independently. Multiple file or object operations do not provide a filesystem-wide or
+object-store transaction.
 
 Local and VSI locations follow `terrio vsi`: memory and writable cloud stores support
 mutation; HTTP and archive members are copy sources only. WebAssembly operates on
 `/vsimem/` datasets and archive members, with no native files or signed cloud writes.
 Owned-file queries and deletion do not open VRT references, which may be missing.
-Archive TIFF tag discovery uses a 16 KiB member cache. Stored ZIP members are read
-by range; compressed members stream and discard preceding bytes when seeking.
-Partial metadata inventories do not validate the whole-member CRC; complete copies
-still use the normal archive extractor and its integrity checks.
-MCP exposes all four commands; only `dataset-files` is marked read-only. JSON and text
-reports redact URL credentials. Byte counts exclude backup/rollback work; native
-same-filesystem and memory file moves copy no payload bytes.
+Archive TIFF tag discovery uses a 16 KiB member cache. Stored ZIP members are read by
+range; compressed members stream and discard preceding bytes when seeking. Partial
+metadata inventories do not validate the whole-member CRC; complete copies still use the
+normal archive extractor and its integrity checks. MCP exposes all four commands; only
+`dataset-files` is marked read-only. JSON and text reports redact URL credentials. Byte
+counts exclude backup/rollback work; native same-filesystem and memory file moves copy
+no payload bytes.
+
+
 
 ## identify
 
