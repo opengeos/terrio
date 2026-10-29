@@ -2341,7 +2341,9 @@ test("GeoPackage repack preserves real features in bytes and memory", { skip: !D
   const packed = terrio.open(compact, "packed.gpkg");
   assert.deepEqual(packed.toGeoJSON(), expected);
   packed.free();
-  const path = "/vsimem/gpkg-repack-js.gpkg";
+  const path = "/vsimem/gpkg-repack-js.gpkg ";
+  const neighbor = path.trimEnd();
+  terrio.vsiWrite(neighbor, new Uint8Array([11,22,33]));
   terrio.vsiWrite(path, bytes);
   try {
     const report = terrio.gpkgRepack(path);
@@ -2355,7 +2357,9 @@ test("GeoPackage repack preserves real features in bytes and memory", { skip: !D
     assert.deepEqual(terrio.vsiRead(path), new Uint8Array([1, 2, 3]));
     assert.throws(() => terrio.gpkgRepackBytes(bytes.slice(0, 100)), /page|truncated/);
   } finally {
+    assert.deepEqual([...terrio.vsiRead(neighbor)], [11,22,33]);
     terrio.vsiDelete(path);
+    terrio.vsiDelete(neighbor);
   }
 });
 
