@@ -99,6 +99,11 @@ commands. Command-group progress:
       JavaScript. Proposed in [#383](https://github.com/opengeos/terrio/pull/383); real-data
       and measured S3 range-read comparisons are registered as `parquet-metadata`.
 
+- [x] Dataset content checks: all exposed raster bands, vector layers, numeric scientific
+      arrays and point records, with optional raster overviews and masks. Rust, CLI/MCP,
+      Python and JavaScript share the checks; conformance is registered as `dataset-check`.
+      Done in [#378](https://github.com/opengeos/terrio/pull/378).
+
 ## 0.1: Foundations
 
 - [x] Data model: `Dataset`, raster `Band` with block access, vector `Layer` with `Feature`, field

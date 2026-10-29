@@ -784,6 +784,31 @@ def suite_pansharpen(ctx):
     )
 
 
+def suite_dataset_check(ctx):
+    suite = Suite("dataset-check", "Dataset content read checks", "`gdal dataset check` and GDAL all-level/mask reads (3.13.3)",
+                  "Real imagery, scientific arrays and vector files, plus derived grouped wind arrays and damaged compressed tiles/GeoJSON. Compare read success/failure status and all-level/mask sample counts, not checksums or pixel equality. A malformed GeoPackage geometry blob is accepted by both readers and is reported explicitly; successful reads cannot detect every mutation.")
+    if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None:
+        suite.skipped = "needs GDAL 3.13 commands/bindings and NumPy"
+        return suite
+    from osgeo import gdal
+
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13 for dataset check"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_check_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical": IDENTICAL, "not compared": NOT_COMPARED}
+    for result in results:
+        suite.cases.append(Case("Dataset content check", result["name"], statuses.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_parquet_metadata(ctx):
     suite = Suite("parquet-metadata", "Parquet metadata aggregation", "GDAL 3.13.3 / Arrow dataset reader",
                   "Natural Earth partitions: row groups, column offsets/statistics, all values, CRS, geometry types and merged GeoParquet metadata; reference CRS loss explicitly reported.")
@@ -816,8 +841,8 @@ def suite_dataset_files(ctx):
         "are rebased and CSV CRS .prj files retained rather than repeating GDAL's copy losses. "
         "HTTP requests and transferred bytes are measured, with metadata-only overhead bounded.",
     )
-    if missing_modules("osgeo"):
-        suite.skipped = "needs osgeo"
+    if missing_modules("osgeo") or shutil.which("gdal") is None:
+        suite.skipped = "needs osgeo and the gdal command"
         return suite
     code, out, err = run([
         sys.executable, str(SCRIPTS / "compare_dataset_files_with_gdal.py"),
@@ -2035,6 +2060,7 @@ SUITES = OrderedDict(
         ("identify", suite_identify),
         ("dataset-files", suite_dataset_files),
         ("parquet-metadata", suite_parquet_metadata),
+        ("dataset-check", suite_dataset_check),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),

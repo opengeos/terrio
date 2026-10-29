@@ -92,6 +92,17 @@ pub(crate) fn name_key(path: &str) -> Result<NameKey> {
     Ok(NameKey(node))
 }
 
+/// New local Windows entries must be distinct even before they can be canonicalized.
+pub(crate) fn destination_key(path: &str) -> Result<NameKey> {
+    let key = name_key(path)?;
+    #[cfg(windows)]
+    let key = match key {
+        NameKey(Node::Local(path)) => NameKey(Node::Local(PathBuf::from(path.to_string_lossy().to_uppercase()))),
+        other => other,
+    };
+    Ok(key)
+}
+
 /// Preflight paths are stable until staging. Resolve native paths and file
 /// identities once; ordered sets answer ancestor/descendant queries by depth.
 #[derive(Default)]
@@ -107,7 +118,13 @@ fn virtual_key(node: &Node) -> Option<String> {
     match node {
         Node::Mem(key) => Some(format!("mem:{key}")),
         Node::S3 { bucket, key } => Some(format!("s3:{bucket}/{key}")),
-        Node::Url { base, .. } => Some(format!("url:{base}")),
+        Node::Url { base, .. } => {
+            let (scheme, rest) = base.split_once("://")?;
+            let authority = rest.split('/').next()?;
+            let path = &rest[authority.len()..];
+            let (userinfo, host) = authority.rsplit_once('@').map_or((String::new(), authority), |(u, h)| (format!("{u}@"), h));
+            Some(format!("url:{}://{}{}{}", scheme.to_ascii_lowercase(), userinfo, host.to_ascii_lowercase(), path))
+        }
         _ => None,
     }
 }
@@ -663,6 +680,21 @@ mod tests {
     use super::*;
     use std::io::{Seek, SeekFrom};
 
+    #[test]
+    fn url_overlap_identity_ignores_host_case_but_preserves_path_case() {
+        let index = OverlapIndex::new(&["https://ACC.blob.core.windows.net/c/X.tif?token=one".into()]).unwrap();
+        assert!(index.overlaps("https://acc.blob.core.windows.net/c/X.tif?token=two").unwrap());
+        assert!(!index.overlaps("https://acc.blob.core.windows.net/c/x.tif").unwrap());
+        let root = OverlapIndex::new(&["https://ACC.blob.core.windows.net".into()]).unwrap();
+        assert!(root.overlaps("https://acc.blob.core.windows.net/c/X.tif").unwrap());
+    }
+    #[test]
+    fn destination_identity_matches_platform_case_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = destination_key(dir.path().join("out.dbf").to_str().unwrap()).unwrap();
+        let b = destination_key(dir.path().join("out.DBF").to_str().unwrap()).unwrap();
+        assert_eq!(a == b, cfg!(windows));
+    }
     #[test]
     fn member_cache_handles_boundaries_backward_seeks_and_eof() {
         let bytes: Vec<_> = (0..2_000_003usize).map(|i| (i % 251) as u8).collect();

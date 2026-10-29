@@ -33,6 +33,8 @@ enum Command {
     DatasetFiles(cmd::dataset_files::FilesArgs),
     /// Create a Parquet metadata-only file from explicit partitions.
     ParquetCreateMetadata(cmd::parquet_metadata::Args),
+    /// Read all exposed dataset content to detect decoding failures.
+    Check(cmd::inspection::CheckArgs),
     /// Inspect native scientific groups, named dimensions and arrays without reading payloads.
     Mdinfo(cmd::multidim::InfoArgs),
     /// Read a native multidimensional hyperslab with named-axis slicing and transposition.
@@ -278,6 +280,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::DatasetDelete(a) => cmd::dataset_files::delete(a),
         Command::DatasetFiles(a) => cmd::dataset_files::files(a),
         Command::ParquetCreateMetadata(a) => cmd::parquet_metadata::run(a),
+        Command::Check(a) => cmd::inspection::check(a),
         Command::Mdinfo(a) => cmd::multidim::info(a),
         Command::Mdread(a) => cmd::multidim::read(a),
         Command::Mdconvert(a) => cmd::multidim::convert(a),
