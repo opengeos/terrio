@@ -109,3 +109,72 @@ def test_vrt_reference_scope_and_explicit_external_opt_in(tmp_path):
     assert report["recovery_files"] == []
     assert output.with_suffix(".raw").read_bytes() == raw.read_bytes()
     assert raw.exists()
+
+
+@pytest.mark.parametrize("separator", ["%2f", "%2F"])
+def test_remote_vrt_encoded_separator_is_refused_before_fetch(tmp_path, separator):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    gdal = pytest.importorskip("osgeo.gdal")
+    gdal.UseExceptions()
+    payload_path = tmp_path / "outside.tif"
+    dataset = gdal.GetDriverByName("GTiff").Create(str(payload_path), 2, 2, 1, gdal.GDT_Byte)
+    dataset.GetRasterBand(1).Fill(7)
+    dataset = None
+    payload = payload_path.read_bytes()
+    requests = []
+    secret_path = f"/work{separator}secret/source.tif"
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def serve(self, body):
+            requests.append(self.path)
+            if self.path == "/work/source.vrt":
+                content = vrt
+            elif self.path.lower() == secret_path.lower():
+                content = payload
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            if body:
+                self.wfile.write(content)
+
+        def do_HEAD(self):
+            self.serve(False)
+
+        def do_GET(self):
+            self.serve(True)
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        base = f"http://127.0.0.1:{server.server_port}"
+        vrt = (
+            '<VRTDataset rasterXSize="2" rasterYSize="2">'
+            '<VRTRasterBand dataType="Byte" band="1"><SimpleSource>'
+            f'<SourceFilename relativeToVRT="0">{base}{secret_path}</SourceFilename>'
+            "<SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>"
+        ).encode()
+        worker = Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        output = tmp_path / "copy.vrt"
+        try:
+            with pytest.raises(ValueError, match="source directory tree"):
+                terrio.dataset_copy(f"{base}/work/source.vrt", output)
+            assert not any(
+                path.lower().startswith(f"/work{separator}secret".lower()) for path in requests
+            )
+            assert not output.exists()
+            assert not output.with_suffix(".tif").exists()
+            terrio.dataset_copy(f"{base}/work/source.vrt", output, allow_external_references=True)
+            assert any(path.lower() == secret_path.lower() for path in requests)
+            result = gdal.Open(str(output))
+            np.testing.assert_array_equal(result.ReadAsArray(), np.full((2, 2), 7, dtype="uint8"))
+            result = None
+        finally:
+            server.shutdown()
+            worker.join()
