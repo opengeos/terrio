@@ -2195,7 +2195,9 @@ must keep the same size across inputs. Regular axes must share spacing and grid
 alignment; disjoint irregular ranges and axes made entirely of irregular singleton time slices are
 also supported. Last input wins overlaps, including nodata pixels. Gaps on
 regular grids, or missing combinations of coordinates across axes, are filled
-with nodata, or zero if no nodata is declared.
+with `_FillValue`, falling back to a scalar CF `missing_value`, or raw zero
+if neither is declared. An array-valued `missing_value` is retained as metadata
+but does not select a unique gap fill value.
 
 The shared Rust `multidim::mosaic` creates lazy array handles: it reads coordinate
 variables to plan the mosaic but fetches data only for intersecting hyperslabs.

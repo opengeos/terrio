@@ -12,7 +12,7 @@ from osgeo import gdal
 gdal.UseExceptions()
 
 
-def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False):
+def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False, missing_value_only=False):
     dataset = gdal.GetDriverByName('netCDF').CreateMultiDimensional(str(path))
     root = dataset.GetRootGroup()
     dimensions = []
@@ -29,7 +29,10 @@ def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_
              'Int32': '<i4', 'UInt64': '<u8', 'Int64': '<i8', 'Float32': '<f4', 'Float64': '<f8'}
     values = np.asarray(values, dtype=names[gdal.GetDataTypeName(dtype)])
     fill = 255 if dtype == gdal.GDT_Byte else 0 if dtype in (gdal.GDT_UInt16, gdal.GDT_UInt32, gdal.GDT_UInt64) else -99
-    variable.SetNoDataValueDouble(fill)
+    if missing_value_only:
+        variable.CreateAttribute("missing_value", [], gdal.ExtendedDataType.Create(dtype)).Write(fill)
+    else:
+        variable.SetNoDataValueDouble(fill)
     variable.Write(values.tobytes())
     variable.CreateAttribute('units', [], gdal.ExtendedDataType.CreateString()).Write('m/s')
     if bounds:
@@ -156,12 +159,12 @@ def main():
     results = []
     with tempfile.TemporaryDirectory(prefix='terrio-mdmosaic-') as temporary:
         tmp = Path(temporary)
-        def case(name, pieces, dtype=gdal.GDT_Float32, nested=False, selected=False, output='nc', normalize_descending=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False):
+        def case(name, pieces, dtype=gdal.GDT_Float32, nested=False, selected=False, output='nc', normalize_descending=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False, missing_value_only=False):
             try:
                 sources = []
                 for index, (axes, data) in enumerate(pieces):
                     source = tmp / f'source-{index}.nc'
-                    create(source, axes, data, dtype, nested, coordinate_dtype, bounds, coordinate_ranges)
+                    create(source, axes, data, dtype, nested, coordinate_dtype, bounds, coordinate_ranges, missing_value_only)
                     sources.append(str(source))
                 reference_sources = sources
                 if normalize_descending:
@@ -174,7 +177,7 @@ def main():
                                 data = np.flip(data, axis=axis)
                             normalized.append((dimension, coordinates))
                         source = tmp / f'reference-source-{index}.nc'
-                        create(source, normalized, data, dtype, nested, coordinate_dtype, bounds, coordinate_ranges)
+                        create(source, normalized, data, dtype, nested, coordinate_dtype, bounds, coordinate_ranges, missing_value_only)
                         reference_sources.append(str(source))
                 reference = tmp / 'reference.vrt'
                 reference.unlink(missing_ok=True)
@@ -205,6 +208,7 @@ def main():
         case('CF unindexed bounds Zarr snapshot', tiled, bounds=True, output='zarr')
         case('descending latitude normalized GDAL reference', [([(n, c[::-1] if n == 'lat' else c) for n,c in axes], np.flip(data, axis=0)) for axes,data in tiled], normalize_descending=True)
         case('spatial missing quadrants', [tiled[0],tiled[3]])
+        case('CF missing_value without _FillValue gaps', [tiled[0], tiled[3]], missing_value_only=True)
         case('spatial gaps along both axes', [tiled[0],([('lat',lat[10:]),('lon',lon[12:])],values[10:,12:])])
         overlap = [([('lat',lat[:10]),('lon',lon[:12])], values[:10,:12]),
                    ([('lat',lat[6:]),('lon',lon[8:])], values[6:,8:] + 17)]

@@ -37,6 +37,13 @@ impl Coordinate {
         }
     }
 }
+// Relative step jitter beyond floating-point roundoff.
+const STEP_RELATIVE_TOLERANCE: f64 = 1e-7;
+// Four storage ULPs cover rounding in endpoint subtraction and step estimation.
+const COORDINATE_ULPS: f64 = 4.;
+// Alignment is measured in cells; accumulated drift is capped at 0.1% of a cell.
+const ALIGNMENT_BASE_CELLS: f64 = 1e-6;
+const MAX_ALIGNMENT_CELLS: f64 = 1e-3;
 const MAX_COORDINATE_BYTES: usize = 256 * 1024 * 1024;
 fn check_coordinate_size(count: usize) -> Result<()> {
     if count.checked_mul(std::mem::size_of::<Coordinate>()).is_none_or(|bytes| bytes > MAX_COORDINATE_BYTES) {
@@ -111,7 +118,7 @@ fn regular_float_step(a: Coordinate, b: Coordinate, step: f64, epsilon: f64) -> 
         (Coordinate::Float(a), Coordinate::Float(b)) => a.abs().max(b.abs()),
         _ => 0.,
     };
-    (a.distance(b) - step).abs() <= 1e-7 * step.abs() + 4. * epsilon * magnitude
+    (a.distance(b) - step).abs() <= STEP_RELATIVE_TOLERANCE * step.abs() + COORDINATE_ULPS * epsilon * magnitude
 }
 struct Axis {
     dimension: Dimension,
@@ -174,7 +181,7 @@ fn axis(inputs: &[(usize, Dimension, Option<Array>)]) -> Result<Axis> {
         } else {
             0.
         };
-        if deviation > step.abs() * 1e-3 {
+        if deviation > step.abs() * MAX_ALIGNMENT_CELLS {
             return Err(bad("coordinate precision is insufficient to identify a regular grid"));
         }
         let mut origin = vectors[0][0];
@@ -201,7 +208,9 @@ fn axis(inputs: &[(usize, Dimension, Option<Array>)]) -> Result<Axis> {
                     // First-step rounding accumulates over distant tile origins.
                     // Use the observed spacing variation as well as the native
                     // coordinate precision, but never accept a half-cell shift.
-                    let tolerance = (1e-6 + 4. * epsilon * magnitude / step.abs() + deviation / step.abs() * start.abs()).min(1e-3);
+                    let tolerance =
+                        (ALIGNMENT_BASE_CELLS + COORDINATE_ULPS * epsilon * magnitude / step.abs() + deviation / step.abs() * start.abs())
+                            .min(MAX_ALIGNMENT_CELLS);
                     if !start.is_finite() || start < 0. || start > usize::MAX as f64 || (start - start.round()).abs() > tolerance {
                         return Err(bad("indexing variables are not aligned on a common grid"));
                     }
@@ -318,7 +327,13 @@ impl MosaicSource {
     }
 }
 fn fill(array: &Array) -> Result<Vec<u8>> {
-    let v = array.info.attributes.get("_FillValue").cloned().unwrap_or(serde_json::json!(0));
+    let v = array
+        .info
+        .attributes
+        .get("_FillValue")
+        .or_else(|| array.info.attributes.get("missing_value").filter(|v| !v.is_array()))
+        .cloned()
+        .unwrap_or(serde_json::json!(0));
     let float = || {
         v.as_f64()
             .or_else(|| match v.as_str() {
@@ -384,7 +399,7 @@ fn same_number(a: &Value, b: &Value) -> bool {
         (Some(a), Some(b)) => a == b,
         (Some(a), None) => b.as_f64().is_some_and(|b| b.is_finite() && b.fract() == 0. && b as i128 == a),
         (None, Some(b)) => a.as_f64().is_some_and(|a| a.is_finite() && a.fract() == 0. && a as i128 == b),
-        (None, None) => a.as_f64().zip(b.as_f64()).is_some_and(|(a, b)| a.is_finite() && a == b),
+        (None, None) => a == b || a.as_f64().zip(b.as_f64()).is_some_and(|(a, b)| a.is_finite() && a == b),
     }
 }
 fn same_nodata(a: &Array, b: &Array) -> bool {
@@ -636,6 +651,33 @@ mod tests {
         assert_eq!(array.view().slice("x", 1, 2, 2).unwrap().isel("y", 1).unwrap().read().unwrap().values().unwrap(), json!([4, 5]));
         assert_eq!(result.array("y").unwrap().read().unwrap().values().unwrap(), json!([2, 1, 0]));
         assert_eq!(array.info.attributes["scale_factor"], json!(0.1));
+    }
+    #[test]
+    fn scalar_cf_missing_value_fills_gaps_without_fill_value() {
+        let mut sources =
+            vec![dataset(&[("y", &[0]), ("x", &[0, 1, 2])], &[1, 2, 3]), dataset(&[("y", &[0]), ("x", &[5, 6, 7])], &[4, 5, 6])];
+        for source in &mut sources {
+            source.root.arrays.last_mut().unwrap().info.attributes = json!({"missing_value": -999});
+        }
+        let out = mosaic(&sources, &Default::default()).unwrap();
+        assert_eq!(out.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 2, 3, -999, -999, 4, 5, 6]));
+        assert_eq!(out.array("v").unwrap().info.attributes["missing_value"], json!(-999));
+        for source in &mut sources {
+            source.root.arrays.last_mut().unwrap().info.attributes["_FillValue"] = json!(-99);
+        }
+        let out = mosaic(&sources, &Default::default()).unwrap();
+        assert_eq!(out.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 2, 3, -99, -99, 4, 5, 6]));
+    }
+    #[test]
+    fn identical_array_valued_packing_metadata_is_preserved() {
+        let mut sources = vec![dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]), dataset(&[("y", &[0]), ("x", &[2, 3])], &[3, 4])];
+        for source in &mut sources {
+            source.root.arrays.last_mut().unwrap().info.attributes["scale_factor"] = json!([0.1]);
+        }
+        let out = mosaic(&sources, &Default::default()).unwrap();
+        assert_eq!(out.array("v").unwrap().info.attributes["scale_factor"], json!([0.1]));
+        sources[1].root.arrays.last_mut().unwrap().info.attributes["scale_factor"] = json!([0.2]);
+        assert!(mosaic(&sources, &Default::default()).is_err());
     }
     #[test]
     fn irregular_singleton_slices_preserve_large_integer_coordinates() {
