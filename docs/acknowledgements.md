@@ -44,6 +44,8 @@ copyright holders:
 - overview generation (`gcore/overview.cpp`) and GeoTIFF update rules
 - weighted Brovey pansharpening, VRT kernel filters and focal statistics, nearblack, enhance,
   blend, unscale, reclassify, nodata-to-alpha and as-features
+- median-cut palette quantization and integer error diffusion (`alg/gdalmediancut.cpp`,
+  `alg/gdaldither.cpp`), following Frank Warmerdam and Even Rouault
 - the edge-mode height recurrence of the viewshed (Tamas Szekeres)
 - segmentize, geometry type conversion, combine, Hilbert sort and linear referencing (OGR)
 - the vector dataset commands concat, partition, set-field-type, make-point, create,

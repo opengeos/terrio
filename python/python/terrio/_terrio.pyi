@@ -77,6 +77,10 @@ __all__ = [
     "enhance_luts",
     "unscale",
     "blend",
+    "rgb_to_palette",
+    "palette_to_rgb",
+    "attach_palette",
+    "read_color_table",
     "nodata_to_alpha",
     "reclassify",
     "as_features",
@@ -1863,6 +1867,48 @@ def mosaic_multidim(
     *,
     arrays: Sequence[str] | None = None,
 ) -> MultidimDataset: ...
+
+_PaletteSource: TypeAlias = Raster | str | os.PathLike[str] | bytes | Sequence[Sequence[int]]
+
+def read_color_table(source: _PaletteSource, filename: str | None = None) -> list[list[int]]: ...
+def rgb_to_palette(
+    src: Raster | str | os.PathLike[str],
+    dst: str | None = None,
+    *,
+    color_count: int = 256,
+    bit_depth: int = 5,
+    dither: bool = True,
+    color_map: _PaletteSource | None = None,
+    output_nodata: int | None = None,
+    mask: NDArray[np.uint8] | None = None,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+    overwrite: bool = False,
+) -> Raster: ...
+def palette_to_rgb(
+    src: Raster | str | os.PathLike[str],
+    dst: str | None = None,
+    *,
+    rgba: bool = False,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+    overwrite: bool = False,
+) -> Raster: ...
+def attach_palette(
+    src: Raster | str | os.PathLike[str],
+    color_map: _PaletteSource,
+    dst: str | None = None,
+    *,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+    overwrite: bool = False,
+) -> Raster: ...
 def identify(
     sources: str | os.PathLike[str] | Iterable[str | os.PathLike[str]] | bytes,
     *,

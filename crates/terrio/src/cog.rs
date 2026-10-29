@@ -939,6 +939,17 @@ impl LazyRaster {
 }
 
 impl LazyRaster {
+    /// Carries a materialized operation result and its full-resolution validity mask together.
+    pub(crate) fn from_masked_dataset(dataset: RasterDataset, mask: Vec<u8>) -> Result<Self> {
+        let mut raster = Self::from(dataset);
+        if raster.width().checked_mul(raster.height()) != Some(mask.len()) {
+            return Err(Error::InvalidArgument("mask must contain one byte per pixel".into()));
+        }
+        let dataset = crate::ops::derived(&raster.header(), wbraster::raster::RasterData::U8(mask), 1)?;
+        raster.sidecar_mask = Some(Box::new(Self::from(dataset)));
+        Ok(raster)
+    }
+
     /// Whether the raster has a per-dataset mask (GDAL's `GMF_PER_DATASET`): a GeoTIFF's
     /// internal mask, or a `.msk` sidecar.
     pub fn has_mask(&self) -> bool {
@@ -948,6 +959,28 @@ impl LazyRaster {
                 Inner::Tiff(t) => t.masks.iter().any(|m| !m.overview && (m.width, m.height) == (t.levels[0].width, t.levels[0].height)),
                 _ => false,
             }
+    }
+
+    /// Prepares inherited validity for an output window. GeoTIFF/COG retain
+    /// per-dataset masks unless an explicit mask is supplied. Tile archives
+    /// reject masked sources because their writers cannot retain that validity.
+    /// Other formats keep their existing pixel/alpha/nodata serialization.
+    pub fn prepare_output_mask(
+        &mut self,
+        filename: &str,
+        options: &mut crate::RasterWriteOptions,
+        window: Window,
+        overview: Option<usize>,
+    ) -> Result<()> {
+        use crate::formats::RasterDriver;
+        let driver = options.driver.or_else(|| RasterDriver::for_extension(filename));
+        if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && (self.has_mask() || options.mask.is_some()) {
+            return Err(Error::InvalidArgument("tile archive writes do not preserve dataset masks; use an explicit alpha band".into()));
+        }
+        if options.mask.is_none() && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
+            options.mask = self.read_mask(window, overview)?;
+        }
+        Ok(())
     }
 
     /// Reads a window of the per-dataset mask, at full resolution or of an overview: 255 for

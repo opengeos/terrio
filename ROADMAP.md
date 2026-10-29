@@ -76,6 +76,11 @@ documented; additional feature scope belongs in separate tracking issues.
 [#289](https://github.com/opengeos/terrio/issues/289) tracks the remaining unified GDAL
 commands. Command-group progress:
 
+- [x] Palette conversion: RGB median cut, supplied palettes, RGB/RGBA expansion and
+      attachment across Rust, CLI/MCP, Python and JavaScript; real Landsat/OPERA
+      GDAL 3.13.3 comparisons registered as `palette`. Landed in
+      [#372](https://github.com/opengeos/terrio/pull/372).
+
 - [x] COG validation: GDAL 3.13 structural rules and full compressed-block checks,
       uploaded TIFF bytes through Rust/Python/JavaScript, and CLI/MCP options.
       Landed in [#374](https://github.com/opengeos/terrio/pull/374), with real-data
@@ -90,9 +95,9 @@ commands. Command-group progress:
       geometry-type conversion, grouped combine and spatial sort. Landed in
       [#306](https://github.com/opengeos/terrio/pull/306), through Rust, CLI/MCP, Python and
       JavaScript, with GDAL/GEOS comparisons and documented tolerances.
-- [ ] Vector gridding and linear referencing: every `gdal_grid` algorithm (search ellipses,
+- [x] Vector gridding and linear referencing: every `gdal_grid` algorithm (search ellipses,
       quadtree order, per-quadrant limits) as `terrio vector-grid`, and `ogrlineref` as
-      `terrio lineref`. Proposed in [#305](https://github.com/opengeos/terrio/pull/305), through Rust,
+      `terrio lineref`. Landed in [#305](https://github.com/opengeos/terrio/pull/305), through Rust,
       CLI/MCP, Python and JavaScript, with real-data comparisons registered in conformance.
 
 - [x] Dataset identification: bounded 16 KiB headers, ordered input batches, recursive local

@@ -243,9 +243,8 @@ fn archive_end(s: &str, extensions: &[&str]) -> Option<(usize, usize)> {
 impl Node {
     fn parse(input: &str) -> Result<Node> {
         let original = input;
-        let input = input.trim();
         let shown = listing::redact_url(input);
-        if input.is_empty() {
+        if input.trim().is_empty() {
             return Err(Error::InvalidArgument("empty path".into()));
         }
         for (prefix, exts) in [("/vsizip/", ZIP_EXTENSIONS), ("/vsitar/", TAR_EXTENSIONS)] {
@@ -531,7 +530,7 @@ fn stat_node(node: &Node) -> Result<Option<Stat>> {
 fn stat_input(input: &str, node: &Node, listing: bool) -> Result<Option<Stat>> {
     #[cfg(remote)]
     if let Node::Url { .. } = node
-        && (listing || input.trim().split('?').next().is_some_and(|path| path.ends_with('/')))
+        && (listing || input.split('?').next().is_some_and(|path| path.ends_with('/')))
     {
         return remote_stat(node, true);
     }
@@ -1121,6 +1120,48 @@ pub fn read(path: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Reads a file with a hard limit on retained bytes, stopping a streamed source
+/// as soon as the next write would exceed the limit. Archive members are bounded
+/// after decompression. Transport errors are preserved unless the limit fired.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn read_limited(path: &str, limit: usize) -> Result<Vec<u8>> {
+    struct Bounded {
+        bytes: Vec<u8>,
+        limit: usize,
+        exceeded: bool,
+    }
+    impl Write for Bounded {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+                self.exceeded = true;
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "VSI read limit exceeded"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let _cache = OperationScope::new();
+    let node = Node::parse(path)?;
+    let mut out = Bounded { bytes: Vec::new(), limit, exceeded: false };
+    let result = match &node {
+        #[cfg(remote)]
+        Node::S3 { .. } | Node::Url { .. } => {
+            crate::http::with_reader(&node.remote().ok_or_else(|| Error::InvalidArgument("not remote".into()))?, |reader| {
+                Ok(std::io::copy(reader, &mut out)?)
+            })
+        }
+        _ => read_into(&node, &mut out),
+    };
+    if out.exceeded {
+        return Err(Error::DecodedLimitExceeded { resource: "VSI file", limit });
+    }
+    result?;
+    Ok(out.bytes)
+}
+
 /// Writes bytes to a file (local, in memory, or an object), replacing it.
 pub fn write(path: &str, bytes: &[u8]) -> Result<()> {
     let _cache = OperationScope::new();
@@ -1392,7 +1433,7 @@ fn list_inner(path: &str, options: &ListOptions) -> Result<(bool, Vec<Entry>)> {
     let node = Node::parse(path)?;
     let stat = stat_input(path, &node, true)?.ok_or_else(|| not_found(path))?;
     if !stat.dir {
-        let name = if options.absolute { absolute_name(path, &node, "") } else { listing::redact_url(path.trim()).into_owned() };
+        let name = if options.absolute { absolute_name(path, &node, "") } else { listing::redact_url(path).into_owned() };
         return Ok((true, vec![stat.entry(name)]));
     }
     let mut entries = read_dir(&node, options.recursive, options.depth)?;
@@ -1526,7 +1567,7 @@ fn absolute_name(path: &str, node: &Node, name: &str) -> String {
     {
         return abs.display().to_string();
     }
-    let base = listing::redact_url(path.trim()).into_owned();
+    let base = listing::redact_url(path).into_owned();
     let base = base.trim_end_matches('/');
     if name.is_empty() { base.to_string() } else { format!("{base}/{name}") }
 }
@@ -1535,14 +1576,14 @@ fn absolute_name(path: &str, node: &Node, name: &str) -> String {
 pub fn stat(path: &str) -> Result<Option<Entry>> {
     let _cache = OperationScope::new();
     let node = Node::parse(path)?;
-    Ok(stat_input(path, &node, false)?.map(|s| s.entry(listing::redact_url(path.trim()).into_owned())))
+    Ok(stat_input(path, &node, false)?.map(|s| s.entry(listing::redact_url(path).into_owned())))
 }
 
 /// Where a file or directory copied to `dst` goes: into `dst` when it is an existing directory
 /// (or ends with `/`), as `dst` otherwise.
 fn copy_target(src: &Node, dst_input: &str, dst: &Node) -> Result<Node> {
     let existing_directory = stat_node(dst)?.is_some_and(|s| s.dir);
-    let into = dst_input.trim().ends_with('/') || existing_directory;
+    let into = dst_input.ends_with('/') || existing_directory;
     let portable = matches!(src, Node::Archive { .. }) || cfg!(windows) && matches!(dst, Node::Local(_));
     Ok(if into { checked_child_target(dst, &src.file_name(), portable)? } else { dst.clone() })
 }
@@ -2213,7 +2254,7 @@ pub fn sync(src: &str, dst: &str, options: &SyncOptions) -> Result<Report> {
         report.copied += 1;
         return Ok(report);
     }
-    let target = if src.trim().ends_with('/') { dst_node.clone() } else { dst_node.join(&src_node.file_name()) };
+    let target = if src.ends_with('/') { dst_node.clone() } else { dst_node.join(&src_node.file_name()) };
     if is_within(&target, &src_node) {
         return Err(Error::InvalidArgument(format!(
             "cannot synchronize '{}' into itself ('{}')",
