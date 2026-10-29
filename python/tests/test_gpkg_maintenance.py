@@ -78,10 +78,12 @@ def test_native_and_bytes_repack_preserve_all_values(tmp_path):
     assert not list(tmp_path.glob("*-journal"))
 
 
-def test_memory_and_failed_repack_preserve_inputs(tmp_path):
+@pytest.mark.parametrize(
+    "name", ["/vsimem/gpkg-repack-python.gpkg", "/vsimem/gpkg-repack-python.zip"]
+)
+def test_memory_and_failed_repack_preserve_inputs(tmp_path, name):
     path = fixture(tmp_path)
     source = path.read_bytes()
-    name = "/vsimem/gpkg-repack-python.gpkg"
     terrio.vsi_write(name, source)
     try:
         assert terrio.gpkg_repack(name)["bytes_before"] == len(source)

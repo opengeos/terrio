@@ -22,6 +22,7 @@ pub mod multidim;
 pub mod neighbors;
 pub mod overviews;
 
+pub mod palette;
 pub mod pansharpen;
 pub mod pixel;
 pub mod pixel_info;
