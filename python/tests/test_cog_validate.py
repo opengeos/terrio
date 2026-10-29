@@ -117,3 +117,76 @@ def test_non_square_blocks_agree_with_rio_cogeo(tmp_path):
             expected = cogeo.cog_validate(str(path), strict=strict, quiet=True)
             got = terrio.validate_cog(path, strict=strict)
             assert got == (expected[0], list(expected[1]), list(expected[2])), path.name
+
+
+def test_gdal_profile_uploaded_bytes_and_corruption(files):
+    data = files["cog"].read_bytes()
+    assert terrio.validate_cog(data, profile="gdal") == (True, [], [])
+    assert terrio.validate_cog(files["cog"], profile="gdal", full_check=False)[0]
+    assert terrio.validate_cog(data)[0]
+    with pytest.raises(ValueError, match="profile"):
+        terrio.validate_cog(data, profile="unknown")
+    with pytest.raises(ValueError, match="requires"):
+        terrio.validate_cog(data, full_check=True)
+    # Terrio's COGs end with the repeated compressed-block trailer.
+    damaged = data[:-1] + bytes([data[-1] ^ 1])
+    valid, errors, _ = terrio.validate_cog(damaged, profile="gdal")
+    assert not valid
+    assert any("trailer" in error for error in errors)
+    assert terrio.validate_cog(damaged, profile="gdal", full_check=False)[0]
+
+
+def test_remote_gdal_auto_keeps_header_reads(tmp_path):
+    import re
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    path = tmp_path / "random.tif"
+    values = np.random.default_rng(173).random((1024, 1024), dtype=np.float32)
+    raster = terrio.Raster.from_array(values, TRANSFORM, "EPSG:32610", -9999)
+    raster.write(str(path), driver="COG", compress="DEFLATE", tile_size=128)
+    data = bytearray(path.read_bytes())
+    data[-1] ^= 1
+    counts = {"bytes": 0, "gets": 0}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+
+        def do_GET(self):
+            match = re.fullmatch(r"bytes=(\d+)-(\d*)", self.headers.get("Range", ""))
+            start, end = (0, len(data) - 1)
+            if match:
+                start = int(match[1])
+                end = min(int(match[2]) if match[2] else end, end)
+            payload = data[start : end + 1]
+            self.send_response(206 if match else 200)
+            self.send_header("Content-Length", str(len(payload)))
+            if match:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+            self.end_headers()
+            counts["bytes"] += len(payload)
+            counts["gets"] += 1
+            self.wfile.write(payload)
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/random.tif"
+            assert terrio.validate_cog(url, profile="gdal")[0]
+            header = counts.copy()
+            counts.update(bytes=0, gets=0)
+            assert not terrio.validate_cog(url, profile="gdal", full_check=True)[0]
+            full = counts.copy()
+            assert header["bytes"] < full["bytes"]
+            assert header["bytes"] < len(data) // 4
+            print("COG remote validation I/O:", {"header": header, "full": full})
+        finally:
+            server.shutdown()
+            worker.join()

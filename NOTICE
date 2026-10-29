@@ -717,3 +717,11 @@ OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
 WHETHER OR NOT ADVISED OF THE POSSIBILITY OF DAMAGE, AND ON ANY THEORY OF
 LIABILITY, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
 OF THIS SOFTWARE.
+
+GDAL Cloud Optimized GeoTIFF validation
+--------------------------------------
+The GDAL profile and compressed block-layout checks in
+crates/terrio/src/cog_validate.rs follow GDAL 3.13.3's
+swig/python/gdal-utils/osgeo_utils/samples/validate_cloud_optimized_geotiff.py
+(https://github.com/OSGeo/gdal). Copyright (c) 2017, Even Rouault.
+Licensed under the MIT permission and warranty terms reproduced above for GDAL.

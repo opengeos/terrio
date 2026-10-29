@@ -81,6 +81,11 @@ commands. Command-group progress:
       GDAL 3.13.3 comparisons registered as `palette`. Implemented in
       [#372](https://github.com/opengeos/terrio/pull/372), pending review and merge.
 
+- [x] COG validation: GDAL 3.13 structural rules and full compressed-block checks,
+      uploaded TIFF bytes through Rust/Python/JavaScript, and CLI/MCP options.
+      Landed in [#374](https://github.com/opengeos/terrio/pull/374), with real-data
+      conformance and measured remote header/full-check I/O.
+
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
       [#306](https://github.com/opengeos/terrio/pull/306), through Rust, CLI/MCP, Python and
@@ -90,13 +95,15 @@ commands. Command-group progress:
       `terrio lineref`. Proposed in [#305](https://github.com/opengeos/terrio/pull/305), through Rust,
       CLI/MCP, Python and JavaScript, with real-data comparisons registered in conformance.
 
-- [ ] Dataset identification: bounded 16 KiB headers, ordered input batches, recursive local
+- [x] Dataset identification: bounded 16 KiB headers, ordered input batches, recursive local
       discovery and explicit companion-file reader fallback through Rust, CLI/MCP, Python and
-      JavaScript. Real-data GDAL comparisons are registered as `identify`.
+      JavaScript. Landed in [#375](https://github.com/opengeos/terrio/pull/375).
+      Real-data GDAL comparisons are registered as `identify`.
 
-- [ ] Dataset content checks: all exposed raster bands, vector layers, numeric scientific
+- [x] Dataset content checks: all exposed raster bands, vector layers, numeric scientific
       arrays and point records, with optional raster overviews and masks. Rust, CLI/MCP,
-      Python and JavaScript share the checks; conformance is registered as `dataset-check`.
+      Python and JavaScript share the checks. Landed in
+      [#378](https://github.com/opengeos/terrio/pull/378); conformance is registered as `dataset-check`.
 
 ## 0.1: Foundations
 
