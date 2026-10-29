@@ -171,6 +171,10 @@ fn axis(inputs: &[(usize, Dimension, Option<Array>)]) -> Result<Axis> {
             })
     });
     let output = if identical {
+        let direction = step.unwrap_or(1.).signum();
+        if vectors[0].windows(2).any(|w| w[1].distance(w[0]) * direction <= 0.) {
+            return Err(bad("indexing variables must be strictly monotonic in one direction"));
+        }
         for (dataset, _, _) in inputs {
             starts.insert(*dataset, 0);
         }
@@ -402,6 +406,16 @@ fn same_number(a: &Value, b: &Value) -> bool {
         (None, None) => a == b || a.as_f64().zip(b.as_f64()).is_some_and(|(a, b)| a.is_finite() && a == b),
     }
 }
+fn same_value(a: &Value, b: &Value) -> bool {
+    a == b
+        || match (a, b) {
+            (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value(a, b)),
+            (Value::Object(a), Value::Object(b)) => {
+                a.len() == b.len() && a.iter().all(|(key, a)| b.get(key).is_some_and(|b| same_value(a, b)))
+            }
+            _ => same_number(a, b),
+        }
+}
 fn same_nodata(a: &Array, b: &Array) -> bool {
     match (a.info.attributes.get("_FillValue"), b.info.attributes.get("_FillValue")) {
         (Some(a), Some(b)) => a == b || same_number(a, b),
@@ -419,7 +433,7 @@ fn same_coordinate_metadata(a: &Array, b: &Array) -> bool {
         }
         attributes
     }
-    relevant(a) == relevant(b) && same_nodata(a, b)
+    same_value(&relevant(a), &relevant(b)) && same_nodata(a, b)
 }
 fn same_encoding(a: &Array, b: &Array) -> bool {
     for (name, default) in [("scale_factor", serde_json::json!(1)), ("add_offset", serde_json::json!(0))] {
@@ -427,14 +441,7 @@ fn same_encoding(a: &Array, b: &Array) -> bool {
             return false;
         }
     }
-    fn same_value(a: &Value, b: &Value) -> bool {
-        a == b
-            || match (a, b) {
-                (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value(a, b)),
-                _ => same_number(a, b),
-            }
-    }
-    for name in ["valid_range", "valid_min", "valid_max", "missing_value", "grid_mapping", "_Unsigned"] {
+    for name in ["valid_range", "valid_min", "valid_max", "missing_value", "grid_mapping", "_Unsigned", "_CRS", "bounds"] {
         match (a.info.attributes.get(name), b.info.attributes.get(name)) {
             (None, None) => (),
             (Some(a), Some(b)) if same_value(a, b) => (),
@@ -447,6 +454,21 @@ fn same_encoding(a: &Array, b: &Array) -> bool {
 fn parent(path: &str) -> &str {
     let p = path.rsplit_once('/').unwrap().0;
     if p.is_empty() { "/" } else { p }
+}
+
+fn resolve_reference(dataset: &Dataset, path: &str, name: &str) -> Result<Array> {
+    if name.starts_with('/') {
+        return dataset.array(name);
+    }
+    let mut group = parent(path);
+    loop {
+        let candidate = format!("{}/{}", group.trim_end_matches('/'), name);
+        match dataset.array(&candidate) {
+            Ok(array) => return Ok(array),
+            Err(error) if group == "/" => return Err(error),
+            Err(_) => group = parent(group),
+        }
+    }
 }
 
 /// Builds a coordinate-aligned mosaic without reading data-array payloads.
@@ -479,6 +501,32 @@ pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> 
     }
     if selected.is_empty() {
         return Err(bad("no arrays selected for mosaic"));
+    }
+    // Retain coordinate variables and their CF bounds, including dependencies
+    // of an explicitly selected payload. Resolve names within the source group
+    // and then its ancestors, as for CF grid mappings.
+    let mut pending: Vec<_> = selected.iter().cloned().collect();
+    while let Some(path) = pending.pop() {
+        for dataset in datasets {
+            if let Ok(array) = dataset.array(&path) {
+                let mut dependencies: Vec<_> =
+                    array.info.dimensions.iter().filter_map(|dimension| dimension.indexing_variable.clone()).collect();
+                if let Some(bounds) = array.info.attributes.get("bounds") {
+                    let name = bounds
+                        .as_str()
+                        .filter(|name| !name.is_empty())
+                        .ok_or_else(|| bad("CF bounds reference must be a nonempty array name"))?;
+                    let bounds = resolve_reference(dataset, &path, name)?;
+                    dependencies.push(bounds.info.path.clone());
+                }
+                for dependency in dependencies {
+                    dataset.array(&dependency)?;
+                    if selected.insert(dependency.clone()) {
+                        pending.push(dependency);
+                    }
+                }
+            }
+        }
     }
     // Retain scalar CF CRS variables referenced by selected arrays. Dropping
     // them would leave grid_mapping attributes pointing to nonexistent arrays.
@@ -820,6 +868,65 @@ mod tests {
         a.root.arrays.last_mut().unwrap().info.attributes["add_offset"] = json!(9007199254740993i64);
         b.root.arrays.last_mut().unwrap().info.attributes["add_offset"] = json!(9007199254740992i64);
         assert!(mosaic(&[a, b], &Default::default()).is_err());
+    }
+    #[test]
+    fn identical_axes_still_require_strict_monotonicity() {
+        for coordinates in [&[0, 0, 1][..], &[0, 2, 1][..]] {
+            let a = dataset(&[("y", coordinates), ("x", &[0])], &[1, 2, 3]);
+            assert!(mosaic(&[a.clone(), a], &Default::default()).unwrap_err().to_string().contains("strictly monotonic"));
+        }
+        let a = dataset(&[("y", &[3, 2, 0]), ("x", &[0])], &[1, 2, 3]);
+        assert!(mosaic(&[a.clone(), a], &Default::default()).is_ok());
+    }
+    #[test]
+    fn coordinate_metadata_compares_numbers_without_integer_precision_loss() {
+        let mut a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        let mut b = a.clone();
+        a.root.arrays[1].info.attributes["valid_range"] = json!([0, 1]);
+        b.root.arrays[1].info.attributes["valid_range"] = json!([0.0, 1.0]);
+        assert!(mosaic(&[a.clone(), b.clone()], &Default::default()).is_ok());
+        a.root.arrays[1].info.attributes["valid_min"] = json!(9007199254740993i64);
+        b.root.arrays[1].info.attributes["valid_min"] = json!(9007199254740992.0);
+        assert!(mosaic(&[a, b], &Default::default()).is_err());
+    }
+    #[test]
+    fn crs_must_match_even_without_grid_mapping() {
+        let mut a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        a.root.arrays.last_mut().unwrap().info.attributes["_CRS"] = json!({"url":"EPSG:4326"});
+        let mut b = a.clone();
+        assert!(mosaic(&[a.clone(), b.clone()], &Default::default()).is_ok());
+        b.root.arrays.last_mut().unwrap().info.attributes["_CRS"] = json!({"url":"EPSG:3857"});
+        assert!(mosaic(&[a.clone(), b.clone()], &Default::default()).is_err());
+        b.root.arrays.last_mut().unwrap().info.attributes.as_object_mut().unwrap().remove("_CRS");
+        assert!(mosaic(&[a, b], &Default::default()).is_err());
+    }
+    #[test]
+    fn selected_payload_retains_coordinate_bounds_and_rejects_missing_targets() {
+        let sources: Vec<_> = [0, 2]
+            .into_iter()
+            .map(|offset| {
+                let mut a = dataset(&[("y", &[offset, offset + 1]), ("x", &[0])], &[1, 2]);
+                a.root.arrays[0].info.attributes["bounds"] = json!("bounds");
+                let dimension = Dimension { name: "bnds".into(), path: "/bnds".into(), size: 2, unlimited: false, indexing_variable: None };
+                let mut bounds = a.root.arrays.last().unwrap().clone();
+                bounds.info.path = "/bounds".into();
+                bounds.info.name = "bounds".into();
+                bounds.info.dimensions = vec![a.root.dimensions[0].clone(), dimension.clone()];
+                bounds.source = Source::Memory(Arc::new(
+                    [offset * 10 + 1, offset * 10 + 2, offset * 10 + 11, offset * 10 + 12].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                ));
+                a.root.dimensions.push(dimension);
+                a.root.arrays.push(bounds);
+                a
+            })
+            .collect();
+        let options = MosaicOptions { arrays: vec!["v".into()] };
+        let result = mosaic(&sources, &options).unwrap();
+        assert_eq!(result.array("bounds").unwrap().read().unwrap().values().unwrap(), json!([1, 2, 11, 12, 21, 22, 31, 32]));
+        assert_eq!(result.array("y").unwrap().info.attributes["bounds"], json!("bounds"));
+        let mut missing = sources.clone();
+        missing[1].root.arrays.pop();
+        assert!(mosaic(&missing, &options).is_err());
     }
     #[test]
     fn unindexed_bounds_dimensions_are_retained_and_size_checked() {

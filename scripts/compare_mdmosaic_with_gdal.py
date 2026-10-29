@@ -12,7 +12,7 @@ from osgeo import gdal
 gdal.UseExceptions()
 
 
-def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False, missing_value_only=False):
+def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False, missing_value_only=False, extra_payload=False):
     dataset = gdal.GetDriverByName('netCDF').CreateMultiDimensional(str(path))
     root = dataset.GetRootGroup()
     dimensions = []
@@ -35,10 +35,14 @@ def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_
         variable.SetNoDataValueDouble(fill)
     variable.Write(values.tobytes())
     variable.CreateAttribute('units', [], gdal.ExtendedDataType.CreateString()).Write('m/s')
+    if extra_payload:
+        extra = group.CreateMDArray("unselected", dimensions, gdal.ExtendedDataType.Create(dtype))
+        extra.Write((values + 17).tobytes())
     if bounds:
         bound_dim = root.CreateDimension('bnds', None, None, 2)
         bound = root.CreateMDArray('lat_bnds', [dimensions[0], bound_dim], gdal.ExtendedDataType.Create(gdal.GDT_Float64))
-        bound.Write(np.zeros((len(axes[0][1]),2), dtype='<f8').tobytes())
+        root.OpenMDArray(axes[0][0]).CreateAttribute('bounds', [], gdal.ExtendedDataType.CreateString()).Write('lat_bnds')
+        bound.Write(np.asarray([[float(value)-0.25, float(value)+0.25] for value in axes[0][1]], dtype='<f8').tobytes())
     dataset.FlushCache()
 
 
@@ -52,7 +56,7 @@ def arrays(group):
     return result
 
 
-def comparison(reference, actual, allow_float32_coordinates=False, source_coordinates=None):
+def comparison(reference, actual, allow_float32_coordinates=False, source_coordinates=None, expected_nested=False):
     ref = gdal.OpenEx(str(reference), gdal.OF_MULTIDIM_RASTER)
     out = gdal.OpenEx(str(actual), gdal.OF_MULTIDIM_RASTER)
     ra, oa = arrays(ref.GetRootGroup()), arrays(out.GetRootGroup())
@@ -77,6 +81,8 @@ def comparison(reference, actual, allow_float32_coordinates=False, source_coordi
     same_type = same_nodata = same_metadata = same_size = True
     for name, r in ra.items():
         a = oa[name]
+        if expected_nested and r.GetName() == 'wind':
+            assert a.GetFullName() == '/science/wind', a.GetFullName()
         rv, av = r.ReadAsArray(), a.ReadAsArray()
         # The descending-axis case normalizes GDAL's inputs (3.13.3 writes an
         # invalid zero-sized VRT dimension otherwise), then restores Terrio's
@@ -164,7 +170,7 @@ def main():
                 sources = []
                 for index, (axes, data) in enumerate(pieces):
                     source = tmp / f'source-{index}.nc'
-                    create(source, axes, data, dtype, nested, coordinate_dtype, bounds, coordinate_ranges, missing_value_only)
+                    create(source, axes, data, dtype, nested, coordinate_dtype, bounds, coordinate_ranges, missing_value_only, extra_payload=nested and selected)
                     sources.append(str(source))
                 reference_sources = sources
                 if normalize_descending:
@@ -183,13 +189,15 @@ def main():
                 reference.unlink(missing_ok=True)
                 actual = tmp / ('actual-' + str(len(results)) + '.' + output)
                 selection = ['--array', '/science/wind' if nested else 'wind'] if selected else []
-                subprocess.run(['gdal', 'mdim', 'mosaic', *reference_sources, str(reference), *selection], capture_output=True, check=True)
+                subprocess.run(['gdal', 'mdim', 'mosaic', *reference_sources, str(reference), *(selection if not (bounds and selected) else [])], capture_output=True, check=True)
                 subprocess.run([args.terrio, 'mdmosaic', *sources, str(actual), *selection], capture_output=True, check=True)
                 source_coordinates = {}
                 for axes, _ in pieces:
                     for axis_name, coordinates in axes:
                         source_coordinates.setdefault(axis_name, []).append(coordinates)
-                result = comparison(reference, actual, coordinate_dtype == gdal.GDT_Float32, source_coordinates)
+                result = comparison(reference, actual, coordinate_dtype == gdal.GDT_Float32, source_coordinates, expected_nested=nested)
+                if bounds and selected:
+                    result['reference_normalization'] = 'GDAL selected-array output drops referenced CF bounds; compare its complete output to the retained dependency closure'
                 if normalize_descending:
                     result['reference_normalization'] = 'GDAL 3.13.3 descending-axis VRT size/offset bug; reference inputs flipped and output coordinate order restored'
             except subprocess.CalledProcessError as error:
@@ -206,6 +214,8 @@ def main():
         case('spatial Float64 source coordinate bits', [([('lat', 40. + np.arange(8)*.1 + i*1.2), ('lon',lon[:5])],values[i*8:(i+1)*8,:5]) for i in range(2)])
         case('CF shared unindexed bounds dimension', tiled, bounds=True)
         case('CF unindexed bounds Zarr snapshot', tiled, bounds=True, output='zarr')
+        case('CF selected payload retains bounds', tiled, bounds=True, selected=True)
+        case('CF selected payload bounds Zarr snapshot', tiled, bounds=True, selected=True, output='zarr')
         case('descending latitude normalized GDAL reference', [([(n, c[::-1] if n == 'lat' else c) for n,c in axes], np.flip(data, axis=0)) for axes,data in tiled], normalize_descending=True)
         case('spatial missing quadrants', [tiled[0],tiled[3]])
         case('CF missing_value without _FillValue gaps', [tiled[0], tiled[3]], missing_value_only=True)
@@ -218,6 +228,18 @@ def main():
         case('zarr spatial coordinate snapshot', tiled, output='zarr')
         case('temporal irregular singleton ordering', [([('time',[t]),('lat',lat[:4]),('lon',lon[:5])],values[None,:4,:5]+i) for i,t in enumerate([10,17,12])])
         case('temporal irregular multisample blocks', [([('time',t),('lat',lat[:4]),('lon',lon[:5])], np.stack([values[:4,:5]+i for i in range(len(t))])) for t in [[0,1,3],[4,7]]])
+        for label, coordinates in [('duplicate', [0,0,1]), ('unsorted', [0,2,1])]:
+            sources = []
+            for index in range(2):
+                source = tmp/f'{label}-{index}.nc'
+                create(source, [('lat',coordinates), ('lon',[0])], [1,2,3])
+                sources.append(str(source))
+            reference = subprocess.run(['gdal','mdim','mosaic',*sources,str(tmp/f'{label}.vrt')],capture_output=True)
+            destination = tmp/f'{label}.nc'
+            actual = subprocess.run([args.terrio,'mdmosaic',*sources,str(destination)],capture_output=True)
+            results.append({'name':f'identical {label} coordinate refusal','expected_rejection':True,
+                            'same_rejection':reference.returncode == 1 and actual.returncode == 1
+                            and b'strictly' in reference.stderr and b'strictly monotonic' in actual.stderr and not destination.exists()})
         # GDAL rejects an off-grid singleton mixed with a regular series.
         create(tmp/'regular.nc', [('time',[0,6,12]),('x',[0])], np.array([[1],[2],[3]]))
         create(tmp/'singleton.nc', [('time',[19]),('x',[0])], np.array([[4]]))

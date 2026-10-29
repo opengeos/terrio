@@ -1189,6 +1189,14 @@ reference after rounding to the source type. GDAL's regenerated grid can differ 
 Float32 samples by 3.05e-05 in the NOAA derivative; those coordinate-only differences are
 reported within tolerance, while payload values still require exact equality.
 
+Mosaic selection retains CF coordinate bounds and their indexing variables, rejecting
+missing bounds targets. Nonzero per-row bounds are compared with GDAL's complete
+output: GDAL 3.13.3 drops these dependencies for explicit array selection. Duplicate
+and unsorted common axes are refused by both implementations. Nested selection checks
+require the original `/science/wind` path and exclude a second eligible payload.
+Equivalent integer/float metadata values are accepted without rounding large integers;
+conflicting or missing `_CRS` attributes are rejected.
+
 ## Dataset identification (#289)
 
 The `identify` conformance suite compares driver identification with GDAL 3.13.3
