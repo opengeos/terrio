@@ -790,8 +790,8 @@ def suite_parquet_metadata(ctx):
     if missing_modules("osgeo", "pyarrow"):
         suite.skipped = "needs osgeo and pyarrow"
         return suite
-    available, _, _ = run(["gdal", "driver", "parquet", "create-metadata-file", "--help"])
-    if available:
+    code_help, _, _ = run(["gdal", "driver", "parquet", "create-metadata-file", "--help"])
+    if code_help:
         suite.skipped = "needs GDAL 3.13+ with the Parquet metadata command"
         return suite
     code, out, err = run([sys.executable, str(SCRIPTS / "compare_parquet_metadata_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])

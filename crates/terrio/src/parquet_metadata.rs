@@ -332,6 +332,57 @@ mod enabled {
             assert_eq!(footer(&mut guard).unwrap().file_metadata().num_rows(), 3);
         }
         #[test]
+        fn external_page_indexes_decode_and_prune_the_referenced_partition() {
+            use parquet::arrow::arrow_reader::{
+                ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder, RowSelection, RowSelector,
+            };
+            use parquet::file::metadata::PageIndexPolicy;
+            use parquet::file::properties::{EnabledStatistics, WriterProperties};
+            use std::sync::Arc;
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("part.parquet");
+            let output = dir.path().join("_metadata");
+            let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new("value", arrow_schema::DataType::Int32, false)]));
+            let batch =
+                arrow_array::RecordBatch::try_new(schema.clone(), vec![Arc::new(arrow_array::Int32Array::from(vec![1, 2, 3, 4, 5, 6]))])
+                    .unwrap();
+            let props = WriterProperties::builder()
+                .set_statistics_enabled(EnabledStatistics::Page)
+                .set_data_page_row_count_limit(2)
+                .set_write_batch_size(2)
+                .build();
+            let mut writer = parquet::arrow::ArrowWriter::try_new(std::fs::File::create(&path).unwrap(), schema, Some(props)).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+            super::create(&[path.to_str().unwrap().to_owned()], output.to_str().unwrap(), &MetadataOptions::default()).unwrap();
+            let catalog = footer(&mut std::fs::File::open(&output).unwrap()).unwrap();
+            let physical = output.parent().unwrap().join(catalog.row_group(0).column(0).file_path().unwrap());
+            assert_eq!(physical, path);
+            // A metadata-only catalog references both data pages and their indexes in file_path.
+            // Load actual index payloads using those retained offsets, not just presence flags.
+            let file = std::fs::File::open(&physical).unwrap();
+            let original = ParquetMetaDataReader::new().with_page_index_policy(PageIndexPolicy::Required).parse_and_finish(&file).unwrap();
+            let mut reader = ParquetMetaDataReader::new_with_metadata(catalog).with_page_index_policy(PageIndexPolicy::Required);
+            reader.read_page_indexes(&file).unwrap();
+            let indexed = reader.finish().unwrap();
+            assert_eq!(indexed.column_index(), original.column_index());
+            assert_eq!(indexed.offset_index(), original.offset_index());
+            assert!(indexed.offset_index().unwrap()[0][0].page_locations().len() > 1);
+            let arrow = ArrowReaderMetadata::try_new(Arc::new(indexed), ArrowReaderOptions::default()).unwrap();
+            let selection = RowSelection::from(vec![RowSelector::skip(4), RowSelector::select(2)]);
+            let batches = ParquetRecordBatchReaderBuilder::new_with_metadata(file, arrow)
+                .with_row_selection(selection)
+                .build()
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            let values: Vec<_> = batches
+                .iter()
+                .flat_map(|batch| batch.column(0).as_any().downcast_ref::<arrow_array::Int32Array>().unwrap().values().iter().copied())
+                .collect();
+            assert_eq!(values, vec![5, 6]);
+        }
+        #[test]
         fn geo_union_and_incompatible_crs() {
             let a = serde_json::json!({"version":"1.1.0","primary_column":"geometry","columns":{"geometry":{"encoding":"WKB","geometry_types":["Point"],"bbox":[1,2,3,4]}}});
             let mut b = a.clone();

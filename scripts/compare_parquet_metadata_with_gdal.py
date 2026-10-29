@@ -124,8 +124,14 @@ def main():
                 assert ours.num_rows == theirs.num_rows
                 for column in range(ours.num_columns):
                     assert ours.column(column).to_dict() == theirs.column(column).to_dict()
-                    assert ours.column(column).has_column_index == theirs.column(column).has_column_index
-                    assert ours.column(column).has_offset_index == theirs.column(column).has_offset_index
+                    assert (
+                        ours.column(column).has_column_index
+                        == theirs.column(column).has_column_index
+                    )
+                    assert (
+                        ours.column(column).has_offset_index
+                        == theirs.column(column).has_offset_index
+                    )
             combined = pa.concat_tables(expected)
             assert (
                 ds.parquet_dataset(str(actual / "_metadata"))
@@ -165,7 +171,10 @@ def main():
             assert ours["fields"] == [field for field in theirs["fields"] if field[0] not in extra]
             assert ours["crs"] and ours["geometry_type"] == source.GetLayer(0).GetGeomType()
             correction = (
-                ours["crs"] != theirs["crs"] or ours["geometry_type"] != theirs["geometry_type"]
+                ours["crs"] != theirs["crs"]
+                or ours["geometry_type"] != theirs["geometry_type"]
+                or normalized != theirs["features"]
+                or ours["fields"] != theirs["fields"]
             )
             results.append(
                 dict(

@@ -2270,3 +2270,7 @@ or one writable S3/Azure namespace) so column paths remain relative. Query-beari
 URLs cannot be persisted as partition references. Archive inputs cannot target another
 filesystem. Native symbolic-link outputs are refused. This command does not discover
 partitions or change the existing `partition` command's output behavior.
+
+Parquet page indexes remain in the referenced partition files. The metadata file retains
+column/offset-index locations relative to each column's `file_path`, just as it retains the
+column data-page locations; it does not copy those payloads into `_metadata`.
