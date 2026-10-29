@@ -44,7 +44,7 @@ mod enabled {
     use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaData, ParquetMetaDataReader, ParquetMetaDataWriter};
     use serde_json::Value;
     use std::collections::{BTreeMap, BTreeSet};
-    use std::io::SeekFrom;
+    use std::io::{Read, SeekFrom};
 
     fn invalid(message: impl std::fmt::Display) -> Error {
         Error::InvalidData(format!("Parquet metadata: {message}"))
@@ -71,8 +71,12 @@ mod enabled {
             return Err(invalid("footer extends before the file header"));
         }
         reader.seek(SeekFrom::Start(size - 8 - length as u64))?;
-        let mut data = vec![0; length];
-        reader.read_exact(&mut data)?;
+        // Grow with bytes actually received, not an untrusted remote footer length.
+        let mut data = Vec::with_capacity(length.min(1 << 20));
+        reader.take(length as u64).read_to_end(&mut data)?;
+        if data.len() != length {
+            return Err(invalid("truncated footer"));
+        }
         ParquetMetaDataReader::decode_metadata(&data).map_err(invalid)
     }
     fn metadata_map(metadata: &ParquetMetaData) -> Result<BTreeMap<String, Option<String>>> {
@@ -108,6 +112,7 @@ mod enabled {
             }
         }
         let dimensions = values.len() / 2;
+        // Axis zero may wrap across the antimeridian; merge_geo omits that bbox.
         if (1..dimensions).any(|axis| values[axis].as_f64().unwrap() > values[axis + dimensions].as_f64().unwrap()) {
             return Err(invalid("inverted GeoParquet bbox"));
         }
@@ -331,6 +336,46 @@ mod enabled {
             let mut guard = Guard { footer_start: (bytes.len() - 8 - length) as u64, cursor: Cursor::new(bytes) };
             assert_eq!(footer(&mut guard).unwrap().file_metadata().num_rows(), 3);
         }
+        #[test]
+        fn truncated_remote_footer_does_not_request_the_declared_length_at_once() {
+            use std::io::{Read, Seek};
+            struct Truncated {
+                position: u64,
+                largest: usize,
+            }
+            const SIZE: u64 = 16 * 1024 * 1024;
+            impl Read for Truncated {
+                fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                    if self.position == 0 && bytes.len() == 4 {
+                        bytes.copy_from_slice(b"PAR1");
+                        self.position += 4;
+                        return Ok(4);
+                    }
+                    if self.position == SIZE - 8 && bytes.len() == 8 {
+                        bytes[..4].copy_from_slice(&(8 * 1024 * 1024u32).to_le_bytes());
+                        bytes[4..].copy_from_slice(b"PAR1");
+                        self.position += 8;
+                        return Ok(8);
+                    }
+                    self.largest = self.largest.max(bytes.len());
+                    Ok(0)
+                }
+            }
+            impl Seek for Truncated {
+                fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                    self.position = match position {
+                        SeekFrom::Start(n) => n,
+                        SeekFrom::Current(n) => (self.position as i64 + n) as u64,
+                        SeekFrom::End(n) => (SIZE as i64 + n) as u64,
+                    };
+                    Ok(self.position)
+                }
+            }
+            let mut reader = Truncated { position: 0, largest: 0 };
+            assert!(footer(&mut reader).unwrap_err().to_string().contains("truncated footer"));
+            assert!(reader.largest <= 1024 * 1024, "untrusted length controlled the read allocation");
+        }
+
         #[test]
         fn external_page_indexes_decode_and_prune_the_referenced_partition() {
             use parquet::arrow::arrow_reader::{

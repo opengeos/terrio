@@ -4,11 +4,12 @@
 import argparse
 import json
 import os
+import shutil
+import sys
 import threading
 import time
 import traceback
 from http.server import ThreadingHTTPServer
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -42,7 +43,8 @@ def main():
         if overwrite:
             command.append("--overwrite")
         process = subprocess.run(command, capture_output=True, text=True, env=env)
-        assert (process.returncode == 0) == success, process.stderr
+        if (process.returncode == 0) != success:
+            raise RuntimeError(process.stderr)
         return json.loads(process.stdout) if success else process.stderr
 
     def snapshot(directory):
@@ -206,6 +208,37 @@ def main():
                 dict(name="Parquet metadata aggregation", status="differs", detail=str(error))
             )
         try:
+            spaced = root / "spaced"
+            spaced.mkdir()
+            unusual = [spaced / "part 0.parquet", spaced / "part%201.parquet"]
+            for original, target in zip(inputs, unusual):
+                shutil.copyfile(original, target)
+            call(unusual, spaced / "_metadata")
+            metadata = pq.read_metadata(spaced / "_metadata")
+            assert {
+                metadata.row_group(i).column(0).file_path for i in range(metadata.num_row_groups)
+            } == {p.name for p in unusual}
+            loaded = ds.parquet_dataset(str(spaced / "_metadata")).to_table()
+            assert loaded.combine_chunks().equals(
+                pa.concat_tables(expected).combine_chunks(), check_metadata=False
+            )
+            results.append(
+                dict(
+                    name="logical partition names with spaces and percent characters",
+                    status="identical",
+                    detail="PyArrow reads the metadata file and resolves every column from the actual space/percent filenames; all values exact",
+                )
+            )
+        except Exception as error:
+            traceback.print_exc()
+            results.append(
+                dict(
+                    name="logical partition names with spaces and percent characters",
+                    status="differs",
+                    detail=str(error),
+                )
+            )
+        try:
             large = root / "large.parquet"
             repeated = pa.concat_tables([table] * 40)
             pq.write_table(
@@ -230,9 +263,7 @@ def main():
 
             class Server(ThreadingHTTPServer):
                 def handle_error(self, request, client_address):
-                    if not isinstance(
-                        __import__("sys").exception(), (ConnectionResetError, BrokenPipeError)
-                    ):
+                    if not isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError)):
                         super().handle_error(request, client_address)
 
             server = Server(("127.0.0.1", 0), Handler)

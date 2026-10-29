@@ -2265,7 +2265,8 @@ bound rather than inventing Z values or an incorrect Cartesian extent. Other fil
 metadata is regenerated to carry the merged GeoParquet metadata.
 
 The operation reads headers and footers without decoding data pages and does not validate
-page integrity. Input and output must share a filesystem namespace (native, `/vsimem/`,
+page integrity. Footer buffers grow with bytes received; complete footers and their
+decoded metadata are materialized, so memory scales with metadata size. Input and output must share a filesystem namespace (native, `/vsimem/`,
 or one writable S3/Azure namespace) so column paths remain relative. Query-bearing source
 URLs cannot be persisted as partition references. Archive inputs cannot target another
 filesystem. Native symbolic-link outputs are refused. This command does not discover
