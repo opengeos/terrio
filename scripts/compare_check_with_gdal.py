@@ -2,11 +2,14 @@
 """Compare dataset read checking with GDAL 3.13 on real and damaged data."""
 
 import argparse
+import functools
+import http.server
 import json
 import shutil
 import sqlite3
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -152,7 +155,7 @@ def main():
                 "COMPRESS=DEFLATE",
             ],
         )
-        ds = None
+        del ds
         compare(raster, "real RGB tiled raster")
         auxiliary = root / "with-overviews-and-mask.tif"
         shutil.copyfile(raster, auxiliary)
@@ -227,7 +230,10 @@ def main():
             table, geometry = connection.execute(
                 "SELECT table_name, column_name FROM gpkg_geometry_columns"
             ).fetchone()
-            quote = lambda value: '"' + value.replace('"', '""') + '"'
+
+            def quote(value):
+                return '"' + value.replace('"', '""') + '"'
+
             triggers = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name=?",
                 (table,),
@@ -248,6 +254,82 @@ def main():
         compare(geojson, "real GeoJSON subset")
         geojson.write_bytes(geojson.read_bytes()[:-25])
         compare(geojson, "truncated GeoJSON features", expected=1)
+        # Storage chunks larger than the old 256-element slab should be fetched
+        # once when each decoded chunk fits the checker budget.
+        store = root / "chunked-wind.zarr"
+        store.mkdir()
+        wind = gdal.OpenEx(str(args.data / "wind_global.nc"), gdal.OF_MULTIDIM_RASTER)
+        values = wind.GetRootGroup().OpenMDArray("u_wind").ReadAsArray()
+        values = np.resize(values, (2048, 2048)).astype("<f4")
+        (store / ".zarray").write_text(
+            json.dumps(
+                dict(
+                    zarr_format=2,
+                    shape=[2048, 2048],
+                    chunks=[1024, 1024],
+                    dtype="<f4",
+                    compressor=None,
+                    fill_value=0,
+                    order="C",
+                    filters=None,
+                )
+            )
+        )
+        (store / ".zattrs").write_text(json.dumps({"_ARRAY_DIMENSIONS": ["Y", "X"]}))
+        for y in range(2):
+            for x in range(2):
+                (store / f"{y}.{x}").write_bytes(
+                    values[
+                        y * 1024 : (y + 1) * 1024, x * 1024 : (x + 1) * 1024
+                    ].tobytes()
+                )
+        compare(store, "real wind with 1024-square Zarr storage chunks")
+        requests = []
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_GET(self):
+                requests.append(self.path)
+                super().do_GET()
+
+        server = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), functools.partial(Handler, directory=str(root))
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            actual = run(
+                [
+                    args.terrio,
+                    "check",
+                    f"http://127.0.0.1:{server.server_port}/{store.name}",
+                    "--json",
+                ]
+            )
+            counts = {
+                f"{y}.{x}": requests.count(f"/{store.name}/{y}.{x}")
+                for y in range(2)
+                for x in range(2)
+            }
+            ok = actual.returncode == 0 and all(n == 1 for n in counts.values())
+            if actual.returncode == 0:
+                summary = json.loads(actual.stdout)
+                ok &= (
+                    summary["arrays"] == 1 and summary["array_elements"] == values.size
+                )
+            results.append(
+                dict(
+                    name="HTTP Zarr storage chunk reads",
+                    status="identical" if ok else "differs",
+                    detail=f"real wind values; chunk GET counts={counts}; encoded chunk bytes={values.nbytes}; {actual.stderr[-400:]}",
+                )
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
         unknown = root / "unknown.bin"
         unknown.write_bytes(b"not a dataset")
         compare(unknown, "unrecognized dataset", expected=1)

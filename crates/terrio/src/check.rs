@@ -39,8 +39,9 @@ fn add(total: &mut u64, count: usize) -> Result<()> {
 }
 
 /// Reads all bands in two-dimensional windows of about 8 MiB, aligning to
-/// source blocks when they fit. Codec working memory and readers without lazy
-/// support retain their existing allocation behavior.
+/// source blocks when they fit. Oversized compressed blocks may be decoded again
+/// for each window that intersects them. Codec working memory and readers without
+/// lazy support retain their existing allocation behavior.
 pub fn check_raster(source: &mut LazyRaster, options: &CheckOptions) -> Result<CheckSummary> {
     let mut summary = CheckSummary::default();
     let mut levels = vec![(None, source.width(), source.height())];
@@ -91,6 +92,33 @@ pub fn check_raster(source: &mut LazyRaster, options: &CheckOptions) -> Result<C
     Ok(summary)
 }
 
+fn array_chunks(array: &crate::multidim::Array, shape: &[usize]) -> Vec<usize> {
+    if let Some(chunks) = &array.info.chunks
+        && chunks.len() == shape.len()
+        && !chunks.contains(&0)
+    {
+        let mut chunks: Vec<_> = chunks.iter().zip(shape).map(|(&chunk, &size)| chunk.min(size)).collect();
+        let budget = (8 << 20) / array.info.data_type.size_bytes();
+        if let Some(mut elements) = chunks.iter().try_fold(1usize, |n, &chunk| n.checked_mul(chunk))
+            && elements <= budget
+        {
+            // Coalesce whole adjacent chunks so tiny storage chunks do not
+            // require one hyperslab/view per chunk. Keep interior boundaries
+            // aligned, leaving only the final slab clipped to the array edge.
+            for axis in (0..shape.len()).rev() {
+                let unit = chunks[axis];
+                let others = elements / unit;
+                chunks[axis] = (budget / others / unit).min(shape[axis] / unit) * unit;
+                elements = others * chunks[axis];
+            }
+            return chunks;
+        }
+    }
+    // Unknown or oversized storage chunks use bounded slabs. A backend may
+    // decode the same storage chunk for multiple slabs in this case.
+    crate::multidim::write::default_chunks(shape, array.info.data_type)
+}
+
 /// Reads all numeric arrays and their coordinates by bounded hyperslabs.
 /// Unsupported array types fail explicitly instead of yielding a false success.
 pub fn check_multidim(dataset: &crate::multidim::Dataset) -> Result<CheckSummary> {
@@ -111,7 +139,7 @@ pub fn check_multidim(dataset: &crate::multidim::Dataset) -> Result<CheckSummary
         if shape.contains(&0) {
             continue;
         }
-        let chunks = crate::multidim::write::default_chunks(&shape, array.info.data_type);
+        let chunks = array_chunks(array, &shape);
         let mut starts = vec![0usize; shape.len()];
         loop {
             let mut view = array.view();
@@ -205,15 +233,24 @@ pub fn check_path(path: &str, options: &CheckOptions) -> Result<CheckSummary> {
     }
     // Scientific signatures can lie beyond the identification prefix (HDF5
     // user blocks). A full check must still include every numeric array.
-    if let Ok(dataset) = crate::multidim::open(path) {
-        return check_multidim(&dataset);
-    }
+    let scientific_error = match crate::multidim::open(path) {
+        Ok(dataset) => return check_multidim(&dataset),
+        Err(error) => error,
+    };
     // Companion-file formats and reader-specific dataset names need the normal
     // dispatch fallback when the bounded identifier has no signature.
-    if let Ok(mut raster) = crate::open_raster_lazy(path) {
-        return check_raster(&mut raster, options);
-    }
-    check_vector_path(path)
+    let raster_error = match crate::open_raster_lazy(path) {
+        Ok(mut raster) => return check_raster(&mut raster, options),
+        Err(error) => error,
+    };
+    // Reader error variants do not reliably distinguish an unrecognized input
+    // from corrupt content. Preserve every failed probe rather than guessing
+    // which one describes the input's actual format.
+    check_vector_path(path).map_err(|vector_error| {
+        Error::InvalidData(format!(
+            "dataset check could not open unrecognized input; multidimensional reader: {scientific_error}; raster reader: {raster_error}; vector reader: {vector_error}"
+        ))
+    })
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -369,6 +406,56 @@ mod tests {
         header.raster.data = RasterData::U8(Vec::new());
         let mut source = LazyRaster::from_source(header, Box::new(Wide));
         assert!(check_raster(&mut source, &Default::default()).unwrap_err().to_string().contains("first planned window"));
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn fallback_failures_keep_all_reader_diagnostics() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unknown.bin");
+        std::fs::write(&path, b"not a dataset").unwrap();
+        let path = path.to_str().unwrap();
+        let scientific = crate::multidim::open(path).unwrap_err().to_string();
+        let raster = crate::open_raster_lazy(path).err().unwrap().to_string();
+        let vector = check_vector_path(path).unwrap_err().to_string();
+        let message = check_path(path, &Default::default()).unwrap_err().to_string();
+        assert!(message.contains(&format!("multidimensional reader: {scientific}")));
+        assert!(message.contains(&format!("raster reader: {raster}")));
+        assert!(message.contains(&format!("vector reader: {vector}")));
+    }
+
+    #[test]
+    fn oversized_strips_bound_output_but_repeat_block_decoding() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct Strips(Arc<AtomicUsize>);
+        impl crate::cog::WindowSource for Strips {
+            fn overviews(&self) -> Vec<(usize, usize)> {
+                Vec::new()
+            }
+            fn block_size(&self) -> Option<(usize, usize)> {
+                Some((1_000_000, 16))
+            }
+            fn read(&mut self, _: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
+                assert!(window.width * window.height * bands.len() <= 8 << 20);
+                let first = window.y / 16;
+                let last = (window.y + window.height - 1) / 16;
+                self.0.fetch_add(last - first + 1, Ordering::Relaxed);
+                Ok(RasterData::U8(vec![1; window.width * window.height * bands.len()]))
+            }
+        }
+        let decoded = Arc::new(AtomicUsize::new(0));
+        let mut header = raster(1, 1, 1);
+        header.raster.cols = 1_000_000;
+        header.raster.rows = 16;
+        header.raster.data = RasterData::U8(Vec::new());
+        let mut source = LazyRaster::from_source(header, Box::new(Strips(decoded.clone())));
+        let summary = check_raster(&mut source, &Default::default()).unwrap();
+        assert_eq!(summary.raster_samples, 16_000_000);
+        assert_eq!(summary.raster_windows, 2);
+        assert_eq!(decoded.load(Ordering::Relaxed), 2);
     }
 
     #[test]

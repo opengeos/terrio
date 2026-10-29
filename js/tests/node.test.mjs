@@ -2346,7 +2346,6 @@ test("identify inspects bounded upload prefixes and filename hints", () => {
   raster.free();
 });
 
-
 test("checkDataset decodes all exposed uploaded content", () => {
   const raster = terrio.createRaster(null, {size: [4, 3], burn: [7], crs: "EPSG:4326", bbox: [0, 0, 4, 3]});
   const bytes = raster.toBytes("input.tif");
@@ -2360,7 +2359,6 @@ test("checkDataset decodes all exposed uploaded content", () => {
   assert.throws(() => terrio.checkDataset(vector.subarray(0, vector.length - 8), "points.geojson"));
   raster.free();
 });
-
 
 test("checkDataset reads real raster, vector and scientific uploads", {skip: needs("flatgeobuf") || needs("netcdf-hdf5") || (!DATA && "TERRIO_TEST_DATA is not set")}, () => {
   const raster = terrio.checkDataset(new Uint8Array(readFileSync(join(DATA, "cog.tif"))), "cog.tif");

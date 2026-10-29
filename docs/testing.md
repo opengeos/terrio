@@ -1189,7 +1189,7 @@ node --test --test-name-pattern='identify inspects' js/tests/node.test.mjs
 
 The registered `dataset-check` suite compares with GDAL 3.13.3 on Landsat, USGS,
 OPERA, SRTM, scientific wind arrays and vector datasets, plus derived real-data
-fixtures. It has 28 cases: 27 matching read outcomes and one explicit Parquet
+fixtures. It has 30 cases: 29 matching read outcomes/I/O checks and one explicit Parquet
 non-comparison because the reference build lacks that driver. It checks base-band
 reads, damage in the last compressed tile, truncated GeoJSON, all requested
 overviews/masks and every array in grouped scientific data. Auxiliary reads also
@@ -1203,7 +1203,15 @@ A local range-server probe of the real 610,612-byte `cog.tif` used two GETs and
 identification prefix before the ordinary lazy reader opens the source. These
 are fixture-specific I/O counts, not a general request or memory guarantee.
 
+A real wind-derived 2048×2048 Float32 Zarr array with four 1024×1024 storage
+chunks checks HTTP payload requests. Before storage-chunk alignment, each chunk
+was fetched 16 times (64 chunk GETs); the updated checker fetches each once
+(four chunk GETs, 16,777,216 encoded payload bytes, excluding metadata).
+Chunks that exceed the 8 MiB value budget can still be decoded repeatedly;
+this bounds output buffers rather than codec working memory.
+
 Core tests check late-window failures, bounded planning for million-column rasters,
+repeated reads of oversized strips and preservation of every fallback reader error,
 all-band/level/mask counts, scalar/empty scientific arrays and complete mixed
 GeoPackage contents. CLI tests verify failure status and MCP discovery/invocation.
 Python additionally checks an HDF5 user block beyond the identification prefix

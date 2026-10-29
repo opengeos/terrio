@@ -718,8 +718,11 @@ also read all exposed point records.
 
 Lazy raster readers use two-dimensional value windows of about 8 MiB, aligned to
 source blocks when they fit. Very wide images do not require a whole tile row in
-memory. Scientific arrays use bounded hyperslabs and stream-capable vector readers
-use batches. Input storage, codec working buffers and readers without lazy support
+memory. A compressed block larger than this budget can be decoded once per window
+that intersects it: a 16-row strip that only fits eight rows per window can require
+two decodes. Scientific arrays use their storage chunk shape when its decoded values
+fit the same budget; unknown or oversized chunks use bounded hyperslabs and may
+also be decoded repeatedly. Stream-capable vector readers use batches. Input storage, codec working buffers and readers without lazy support
 retain their existing memory behavior. Checking all content can require reading
 the entire source, including remote data. Identification alone remains a separate
 bounded-header operation.
