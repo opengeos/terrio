@@ -1256,7 +1256,7 @@ ASCII and Surfer grids, Zarr, Shapefile, MapInfo TAB/MIF, CSV, GeoPackage, GML,
 MVT pyramids and VRT TIFF/netCDF references. GDAL reads MVT zoom-level directories;
 the whole-pyramid reference copy uses `gdal vsi copy --recursive`.
 
-The local run has 49 cases: 44 identical and five explicit metadata/reference
+The local run has 51 cases: 46 identical and five explicit metadata/reference
 corrections. GDAL's generic copy loses the CSV CRS `.prj`, omits GML XSD schemas,
 leaves the Idrisi reference-system name stale, and does not make the two VRT
 reference cases independent of their originals. Terrio preserves source values

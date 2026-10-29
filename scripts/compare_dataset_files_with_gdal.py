@@ -614,6 +614,35 @@ def main():
                 )
             except Exception as error:
                 results.append(dict(name=label, status="differs", detail=str(error)))
+        # GDAL refuses arbitrary VRT dependency basenames as well: neither
+        # implementation should partially copy or rename the fileset.
+        folder = root / "irregular-vrt"
+        folder.mkdir()
+        data = folder / "tile_01.tif"
+        gdal.Translate(str(data), str(args.data / "dem.tif"), srcWin=dem_window).Close()
+        source = folder / "mosaic.vrt"
+        gdal.Translate(str(source), str(data), format="VRT").Close()
+        before = {path.name: path.read_bytes() for path in folder.iterdir()}
+        for operation in ["copy", "rename"]:
+            stage = f"irregular VRT {operation} refusal"
+            try:
+                reference_target = folder / f"gdal-{operation}.vrt"
+                actual_target = folder / f"terrio-{operation}.vrt"
+                reference = subprocess.run(
+                    ["gdal", "dataset", operation, str(source), str(reference_target)],
+                    capture_output=True, text=True,
+                )
+                actual = subprocess.run(
+                    [args.terrio, f"dataset-{operation}", str(source), str(actual_target)],
+                    capture_output=True, text=True,
+                )
+                assert reference.returncode == actual.returncode == 1
+                assert "irregular basenames" in reference.stderr
+                assert "irregular basenames" in actual.stderr
+                assert {path.name: path.read_bytes() for path in folder.iterdir()} == before
+                results.append(dict(name=stage, status="identical", detail="GDAL and Terrio refuse unrelated VRT dependency basenames before mutation"))
+            except Exception as error:
+                results.append(dict(name=stage, status="differs", detail=str(error)))
         stage = "HTTP copy with overview/mask/PAM sidecars"
         try:
             import threading
