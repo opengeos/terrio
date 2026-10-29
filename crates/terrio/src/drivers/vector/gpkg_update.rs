@@ -8,10 +8,9 @@
 //! or triggers this module does not emulate) and GeoPackages held in memory are
 //! read whole (every table's rows as stored, every index, trigger and view) and written anew;
 //! a file is then renamed over the original. A pending WAL must be checkpointed with SQLite
-//! first; rewriting only the main file would lose committed changes. Files with tables or indexes
-//! that cannot be
-//! rewritten (`WITHOUT ROWID` tables, indexes on expressions, UTF-16 text) or that a hot
-//! rollback journal goes with are left untouched, with an error.
+//! first; rewriting only the main file would lose committed changes. Files with tables or
+//! indexes that cannot be rewritten (`WITHOUT ROWID` tables, indexes on expressions, UTF-16
+//! text), or accompanied by a hot rollback journal, are left untouched with an error.
 
 use super::geopackage::{self as gw, Builder};
 use super::sqlite::{self as w, Index, SchemaObject, Table};
@@ -72,6 +71,7 @@ fn real(v: &w::Value) -> Option<f64> {
 pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
     let resolved = std::fs::canonicalize(path)?;
     let path = resolved.to_str().ok_or_else(|| Error::InvalidArgument("GeoPackage path must be UTF-8".into()))?;
+    // Reject pending WAL state before selecting the in-place or rewrite path.
     crate::drivers::sqlite_edit::ensure_no_wal(&resolved)?;
     if super::gpkg_inplace::update_in_place(&resolved, layers, mode)? {
         return Ok(());
@@ -84,6 +84,7 @@ pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
 /// files are not changed in place) a transaction interrupted cannot be told from one under way,
 /// and the journal, left next to the new file, would be rolled back over it.
 fn rewrite(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
+    // Recheck at the rewrite boundary before reading only the main image.
     crate::drivers::sqlite_edit::ensure_no_wal(std::path::Path::new(path))?;
     if crate::drivers::sqlite_edit::has_hot_journal(std::path::Path::new(path))? {
         return Err(Error::Unsupported(format!(
