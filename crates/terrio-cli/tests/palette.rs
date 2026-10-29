@@ -61,3 +61,26 @@ fn palette_raster_sidecars_cannot_be_replaced() {
         assert!(!root.join(args.last().unwrap()).exists());
     }
 }
+
+#[test]
+fn supplied_tables_ignore_color_count_but_generation_still_validates_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    assert!(run(root, &["create-raster", "indices.tif", "--size", "2,2", "--burn", "1"]).status.success());
+    std::fs::write(root.join("colors.txt"), "0 0 0 0\n1 248 16 32\n").unwrap();
+    assert!(run(root, &["attach-palette", "colors.txt", "indices.tif", "indexed.tif"]).status.success());
+    assert!(run(root, &["palette-to-rgb", "indexed.tif", "rgb.tif"]).status.success());
+    for count in [0usize, 1, 257, 65535, usize::MAX] {
+        let value = count.to_string();
+        let name = format!("count-{count}.tif");
+        let result = run(root, &["rgb-to-palette", "rgb.tif", &name, "--color-map", "colors.txt", "--color-count", &value]);
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        let actual = terrio::open_raster_lazy(root.join(&name).to_str().unwrap()).unwrap().read().unwrap();
+        assert_eq!(actual.raster.data.to_f64_vec(), vec![1.; 4]);
+        let rejected = format!("rejected-{count}.tif");
+        let result = run(root, &["rgb-to-palette", "rgb.tif", &rejected, "--color-count", &value]);
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("2..256"));
+        assert!(!root.join(rejected).exists());
+    }
+}

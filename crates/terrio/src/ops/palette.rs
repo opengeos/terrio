@@ -379,7 +379,7 @@ pub fn rgb_to_palette(source: &RasterDataset, options: &PaletteOptions) -> Resul
     Ok(out)
 }
 /// Expands one palette-index band to RGB or RGBA Byte bands. Missing entries
-/// are black, matching GDAL's palette expansion. Source nodata is not copied.
+/// are black in RGB and transparent black in RGBA. Source nodata is not copied.
 pub fn palette_to_rgb(source: &RasterDataset, alpha: bool) -> Result<RasterDataset> {
     if source.raster.bands != 1 || source.color_table.is_empty() || source.complex {
         return Err(invalid("palette expansion requires one indexed band and a color table"));
@@ -391,6 +391,7 @@ pub fn palette_to_rgb(source: &RasterDataset, alpha: bool) -> Result<RasterDatas
     }
     let length = n.checked_mul(bands).ok_or_else(|| invalid("palette output size overflow"))?;
     let mut data = vec![0; length];
+    let nodata = source.band_nodata(1);
     for i in 0..n {
         let v = source.raster.data.get_f64(i);
         let mut color = if v.is_finite() && v >= 0. && v.fract() == 0. {
@@ -398,7 +399,7 @@ pub fn palette_to_rgb(source: &RasterDataset, alpha: bool) -> Result<RasterDatas
         } else {
             [0; 4]
         };
-        if source.band_nodata(1) == Some(v) {
+        if nodata == Some(v) {
             color[3] = 0;
         }
         for b in 0..bands {
@@ -484,6 +485,7 @@ pub fn parse_color_table(text: &str, filename: &str) -> Result<Vec<[u8; 4]>> {
     if text.len() > 10 * 1024 * 1024 {
         return Err(invalid("color table text exceeds 10 MiB"));
     }
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut entries = Vec::new();
     let ext = filename.rsplit('.').next().unwrap_or("");
     if ext.eq_ignore_ascii_case("qml") || ext.eq_ignore_ascii_case("qlr") || text.trim_start().starts_with('<') {
@@ -714,6 +716,9 @@ mod tests {
         assert_eq!(cpt, [[1, 2, 3, 255], [0; 4], [7, 8, 9, 255], [0; 4], [10, 11, 12, 255]]);
         let xml = r##"<qgis><pipe><rasterrenderer type="paletted"><colorPalette><paletteEntry value="2" color="#ff0000" alpha="128"/></colorPalette></rasterrenderer></pipe></qgis>"##;
         assert_eq!(parse_color_table(xml, "colors.qml").unwrap(), [[0, 0, 0, 0], [0, 0, 0, 0], [255, 0, 0, 128]]);
+        for filename in ["colors.txt", "color-map", "colors.qml"] {
+            assert_eq!(parse_color_table(&format!("\u{feff}{xml}"), filename).unwrap(), parse_color_table(xml, "colors.qml").unwrap());
+        }
         assert!(parse_color_table("1.5 red", "colors.txt").is_err());
         assert!(parse_color_table("65536 red", "colors.txt").is_err());
         assert!(parse_color_table("50% red", "colors.txt").is_err());

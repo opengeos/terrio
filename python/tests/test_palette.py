@@ -51,6 +51,12 @@ def test_palette_mask_and_color_files():
     assert rgba.read(4)[0, 0] == 0
     assert rgba.read(4)[1, 1] == 255
     assert terrio.read_color_table(b"0 1 2 3 255\n2 red 128")[2] == [255, 0, 0, 128]
+    xml = (
+        '\ufeff<qgis><rasterrenderer type="paletted">'
+        '<paletteEntry value="0" color="#010203" alpha="128"/>'
+        "</rasterrenderer></qgis>"
+    )
+    assert terrio.read_color_table(xml.encode("utf-8"))[0] == [1, 2, 3, 128]
 
 
 def test_palette_dataset_mask_survives_serialization(tmp_path):

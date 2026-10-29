@@ -36,8 +36,8 @@ pub struct RgbArgs {
     #[command(flatten)]
     image: ImageArgs,
     /// Number of generated colors.
-    #[arg(short='n',long,default_value_t=256,value_parser=clap::value_parser!(u16).range(2..=256))]
-    color_count: u16,
+    #[arg(short = 'n', long, default_value_t = 256)]
+    color_count: usize,
     /// Palette raster or indexed TXT/CPT/QML/QLR color file instead of generation.
     #[arg(long)]
     color_map: Option<String>,
@@ -60,9 +60,12 @@ fn bits(s: &str) -> std::result::Result<u8, String> {
 }
 /// Runs RGB quantization.
 pub fn rgb(a: RgbArgs) -> Result<()> {
+    if a.color_map.is_none() && !(2..=256).contains(&a.color_count) {
+        return Err(terrio::Error::InvalidArgument("palette needs 2..256 generated colors".into()));
+    }
     a.image.check(a.color_map.as_deref())?;
     let options = PaletteOptions {
-        color_count: a.color_count as usize,
+        color_count: a.color_count,
         bit_depth: a.bit_depth,
         dither: !a.no_dither,
         color_table: a.color_map.as_deref().map(palette::read_color_table).transpose()?,

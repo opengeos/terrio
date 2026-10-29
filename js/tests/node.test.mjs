@@ -2347,6 +2347,7 @@ test("palette conversion APIs preserve colors, masks and serialized tables", () 
   const rgba = terrio.paletteToRgb(masked, {rgba: true});
   assert.deepEqual([...rgba.readBand(4)], [0, 255]);
   assert.deepEqual(terrio.readColorTable("0 1 2 3 255\n2 red 128")[2], [255, 0, 0, 128]);
+  assert.deepEqual(terrio.readColorTable('\ufeff<qgis><rasterrenderer type="paletted"><paletteEntry value="0" color="#010203" alpha="128"/></rasterrenderer></qgis>')[0], [1,2,3,128]);
   assert.throws(() => terrio.rgbToPalette(source, {bitDepth: 6}), /bit depth/);
   assert.throws(() => terrio.rgbToPalette(source, {mask: [0]}), /mask/);
   assert.throws(() => terrio.rgbToPalette(source, {outputNodata: NaN}), /finite/);
@@ -2429,6 +2430,7 @@ test("palette memory paths keep trailing spaces distinct", () => {
     source.free(); indexed.free();
   }
   try {
+    assert.equal(terrio.vsiStat(`${root}/source.tif `).name, `${root}/source.tif `);
     const source = terrio.open(terrio.vsiRead(`${root}/source.tif `), "source.tif");
     const result = terrio.paletteToRgb(source);
     assert.deepEqual([...result.readBand(1)], [200]);

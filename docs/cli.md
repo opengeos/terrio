@@ -2190,6 +2190,9 @@ bands are used. Shared RGB nodata excludes pixels from palette generation. If no
 nodata value exists, dataset masks (or alpha validity) select valid pixels. This
 precedence follows GDAL; masks do not add exclusions when shared RGB nodata exists.
 Explicit Python/JavaScript masks use this same precedence.
+Indexed CPT tables retain declared segment endpoints; interior indices are padding,
+matching GDAL palette conversion. DEM color relief interpolates ramps separately.
+UTF-8 BOM-prefixed QGIS XML is recognized without a QML filename hint.
 GDAL also tests vertically diffused RGB values for nodata, so a valid near-black
 pixel can become nodata after dithering. An automatically generated palette reserves index
 zero for invalid pixels; a supplied map uses invalid-pixel handling only when
@@ -2205,7 +2208,7 @@ or four Byte bands, and `terrio attach-palette PALETTE INPUT OUTPUT` replaces a
 Byte/UInt16 raster's table without changing its indices. Expansion/attachment
 preserve dataset masks in returned handles and GeoTIFF/COG outputs; other
 formats omit separate masks. Source nodata becomes transparent on RGBA expansion;
-unmapped indices become black. GeoTIFF stores RGB table entries and nodata
+unmapped indices become black in RGB and transparent black in RGBA. GeoTIFF stores RGB table entries and nodata
 transparency; arbitrary per-entry alpha requires a format such as PNG.
 
 All three commands accept raster output options and require `--overwrite` to

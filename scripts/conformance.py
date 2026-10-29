@@ -939,7 +939,7 @@ def suite_palette(ctx):
         return suite
     from osgeo import gdal
 
-    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000 or run(["gdal", "raster", "rgb-to-palette", "--help"])[0] != 0:
         suite = Suite("palette", "Palette conversion", "GDAL 3.13", "Exact palettes and pixels.")
         suite.skipped = "needs GDAL >= 3.13 for rgb-to-palette"
         return suite
