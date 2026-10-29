@@ -17,10 +17,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-terrio ports and adapts code and data from other projects, among them GDAL,
-PROJ and PDAL. The copyright in that code and data remains with its authors.
-NOTICE lists them with their licenses, and LICENSE-THIRD-PARTY.md lists the
-licenses of the Rust crates terrio is built with.
