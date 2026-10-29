@@ -1221,6 +1221,22 @@ require the original `/science/wind` path and exclude a second eligible payload.
 Equivalent integer/float metadata values are accepted without rounding large integers;
 conflicting or missing `_CRS` attributes are rejected.
 
+Mosaic dependency planning retains two-dimensional auxiliary coordinates, bounds and
+scalar CRS definitions before accessing payloads. Bounds/auxiliary references must resolve
+to consistent array paths across contributors; scalar CRS aliases are accepted only when
+their metadata agrees. Extended grid-mapping coordinate tuples retain their declared order.
+Tests cover conflicting CRS aliases, shadowed group names, missing dependencies and damaged
+auxiliary payloads that remain unread until requested. Python/Node tests and netCDF/Zarr
+round trips verify the dependency closure. The GDAL comparison checks actual bounds links,
+source samples even where GDAL agrees, and exclusion of unselected two-dimensional arrays.
+
+References retain local names when unambiguous and use absolute paths to prevent rebinding
+by merged groups, following [CF group scoping](https://cfconventions.org/Data/cf-conventions/cf-conventions-1.8/cf-conventions.html#groups).
+Terrio reopens these paths correctly. GDAL 3.13.3's `GetCoordinateVariables` does not resolve
+absolute coordinate names; automatic discovery can omit such cross-group references,
+although the arrays and reference attributes remain readable. Same-group auxiliary
+coordinate discovery is checked independently through GDAL for both snapshot formats.
+
 ## Dataset identification (#289)
 
 The `identify` conformance suite compares driver identification with GDAL 3.13.3

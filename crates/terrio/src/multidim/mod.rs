@@ -133,6 +133,15 @@ impl Group {
     fn find(&self, p: &str) -> Option<&Array> {
         self.arrays.iter().find(|a| a.info.path == p).or_else(|| self.groups.iter().find_map(|g| g.find(p)))
     }
+    /// All numeric and unsupported array paths, recursively in group order.
+    pub(crate) fn array_paths_recursive(&self) -> Vec<&str> {
+        self.arrays
+            .iter()
+            .map(|a| a.info.path.as_str())
+            .chain(self.unsupported_arrays.iter().map(|a| a.path.as_str()))
+            .chain(self.groups.iter().flat_map(|g| g.array_paths_recursive()))
+            .collect()
+    }
     /// All numeric arrays, recursively in group order.
     pub fn arrays_recursive(&self) -> Vec<&Array> {
         self.arrays.iter().chain(self.groups.iter().flat_map(|g| g.arrays_recursive())).collect()
@@ -547,4 +556,78 @@ pub fn open_zarr_store(files: Vec<(String, Vec<u8>)>) -> Result<Dataset> {
         let _ = files;
         Err(Error::disabled("zarr"))
     }
+}
+
+/// Resolves CF paths without allowing an explicit relative path to fall back to
+/// another ancestor. Known unsupported variables still participate in scope.
+pub(crate) fn reference_path(owner: &str, name: &str, names: &std::collections::HashSet<String>) -> Option<String> {
+    fn normalized(path: &str) -> Option<String> {
+        let mut parts = Vec::new();
+        for part in path.split('/') {
+            match part {
+                "" | "." => (),
+                ".." => {
+                    parts.pop()?;
+                }
+                _ => parts.push(part),
+            }
+        }
+        Some(format!("/{}", parts.join("/")))
+    }
+    if name.is_empty() {
+        return None;
+    }
+    let mut group = owner.rsplit_once('/').map_or("/", |(group, _)| if group.is_empty() { "/" } else { group });
+    if name.contains('/') {
+        let path =
+            if name.starts_with('/') { normalized(name)? } else { normalized(&format!("{}/{}", group.trim_end_matches('/'), name))? };
+        return names.contains(&path).then_some(path);
+    }
+    loop {
+        let path = format!("{}/{}", group.trim_end_matches('/'), name);
+        if names.contains(&path) {
+            return Some(path);
+        }
+        if group == "/" {
+            return None;
+        }
+        group = group.rsplit_once('/').map_or("/", |(parent, _)| if parent.is_empty() { "/" } else { parent });
+    }
+}
+
+pub(crate) fn coordinate_reference_path(info: &ArrayInfo, name: &str, names: &std::collections::HashSet<String>) -> Option<String> {
+    reference_path(&info.path, name, names).or_else(|| {
+        // Only a declared NUG coordinate can use a lateral dimension link.
+        (!name.contains('/'))
+            .then(|| {
+                info.dimensions.iter().find_map(|d| {
+                    let path = d.indexing_variable.as_ref()?;
+                    (d.name == name && path.rsplit('/').next() == Some(name) && names.contains(path)).then(|| path.clone())
+                })
+            })
+            .flatten()
+    })
+}
+
+#[cfg(any(feature = "netcdf-hdf5", feature = "zarr"))]
+pub(crate) fn resolve_coordinates(root: &mut Group) {
+    let names: std::collections::HashSet<_> = root.array_paths_recursive().into_iter().map(str::to_string).collect();
+    fn visit(group: &mut Group, names: &std::collections::HashSet<String>) {
+        for a in &mut group.arrays {
+            if let Some(raw) = a.info.attributes.get("coordinates").and_then(Value::as_str) {
+                for name in raw.split_whitespace() {
+                    let coordinate = coordinate_reference_path(&a.info, name, names);
+                    if let Some(c) = coordinate
+                        && !a.info.coordinates.contains(&c)
+                    {
+                        a.info.coordinates.push(c);
+                    }
+                }
+            }
+        }
+        for child in &mut group.groups {
+            visit(child, names);
+        }
+    }
+    visit(root, &names);
 }

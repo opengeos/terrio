@@ -1,5 +1,7 @@
 """Lazy coordinate-aligned scientific mosaics through the Python API."""
 
+import json
+
 import numpy as np
 import pytest
 from test_multidim import cube_store
@@ -151,3 +153,39 @@ def test_cf_missing_value_fills_gap_through_uploaded_stores():
     np.testing.assert_array_equal(
         terrio.open_multidim(output.to_zarr_store())["cube"].read(), expected
     )
+
+
+def test_selected_auxiliary_coordinates_survive_uploaded_snapshots():
+    first, second, expected = sources()
+    latitude = np.arange(8, dtype="<f8").reshape(2, 4) + 30
+    longitude = np.arange(8, dtype="<f8").reshape(2, 4) - 100
+    for files in [first, second]:
+        attrs = json.loads(files["cube/.zattrs"])
+        attrs["coordinates"] = "latitude longitude"
+        files["cube/.zattrs"] = json.dumps(attrs).encode()
+        for name, values in [("latitude", latitude), ("longitude", longitude)]:
+            files[f"{name}/.zarray"] = json.dumps(
+                {
+                    "zarr_format": 2,
+                    "shape": [2, 4],
+                    "chunks": [2, 4],
+                    "dtype": "<f8",
+                    "compressor": None,
+                    "fill_value": None,
+                    "order": "C",
+                    "filters": None,
+                }
+            ).encode()
+            files[f"{name}/.zattrs"] = json.dumps({"_ARRAY_DIMENSIONS": ["y", "x"]}).encode()
+            files[f"{name}/0.0"] = values.tobytes()
+    output = terrio.mosaic_multidim([first, second], arrays=["cube"])
+    assert {"/latitude", "/longitude"} <= set(output["cube"].coordinates)
+    assert output["cube"].attributes["coordinates"] == "latitude longitude"
+    for snapshot in [
+        output,
+        terrio.open_multidim(output.to_bytes()),
+        terrio.open_multidim(output.to_zarr_store()),
+    ]:
+        np.testing.assert_array_equal(snapshot["cube"].read(), expected)
+        np.testing.assert_array_equal(snapshot["latitude"].read(), latitude)
+        np.testing.assert_array_equal(snapshot["longitude"].read(), longitude)

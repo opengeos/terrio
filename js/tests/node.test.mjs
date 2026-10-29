@@ -2339,9 +2339,12 @@ test("coordinate-aligned multidimensional mosaics retain lazy source lifetimes",
     for (const [name, shape, dimensions, values] of [
       ["time", [1], ["time"], [BigInt(time)]], ["x", [2], ["x"], [0n, 1n]],
       ["wind", [1, 2], ["time", "x"], [base, base+1n]],
+      ["extra", [1, 2], ["time", "x"], [base+6n, base+7n]],
+      ["latitude", [1, 2], ["time", "x"], [BigInt(time), BigInt(time)+1n]],
+      ["longitude", [1, 2], ["time", "x"], [1n,2n]],
     ]) {
       files[`${name}/.zarray`] = encode({zarr_format: 2, shape, chunks: shape, dtype: "<i8", compressor: null, fill_value: null, order: "C", filters: null});
-      files[`${name}/.zattrs`] = encode({_ARRAY_DIMENSIONS: dimensions});
+      files[`${name}/.zattrs`] = encode({_ARRAY_DIMENSIONS: dimensions, ...(name === "wind" ? {coordinates: "latitude longitude"} : {})});
       const bytes = new Uint8Array(values.length*8), view = new DataView(bytes.buffer);
       values.forEach((value,index) => view.setBigInt64(index*8, value, true));
       files[`${name}/${shape.map(() => 0).join(".")}`] = bytes;
@@ -2352,6 +2355,9 @@ test("coordinate-aligned multidimensional mosaics retain lazy source lifetimes",
   const a = terrio.openMultidim(store(10, base)), b = terrio.openMultidim(store(17, base+2n));
   const output = terrio.mosaicMultidim([b, a, store(12, base+4n)], {arrays: ["wind"]});
   a.free(); b.free();
+  assert.throws(() => output.array("extra"), /no numeric array|not found|missing/);
+  assert.equal(output.array("wind").info().attributes.coordinates, "latitude longitude");
+  assert.deepEqual([...output.array("latitude").read()], [10n,11n,12n,13n,17n,18n]);
   assert.deepEqual([...output.array("time").read()], [10n,12n,17n]);
   assert.deepEqual([...output.array("wind").read()], [base,base+1n,base+4n,base+5n,base+2n,base+3n]);
   const view = output.array("wind").slice("time", 0, 2, 2).transpose(["x", "time"]);

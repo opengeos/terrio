@@ -2286,12 +2286,22 @@ if neither is declared. An array-valued `missing_value` is retained as metadata
 but does not select a unique gap fill value.
 
 The shared Rust `multidim::mosaic` creates lazy array handles: it reads coordinate
-variables to plan the mosaic but fetches data only for intersecting hyperslabs.
+one-dimensional indexing variables to plan the mosaic but fetches data only for intersecting hyperslabs.
 Python `mosaic_multidim(sources, dst=None, arrays=None)` and JavaScript
 `mosaicMultidim(sources, {arrays})` expose the same engine. Numeric values retain
 their native types, including Int64/UInt64 precision. Input handles may be closed
 after construction; mosaic views keep their sources alive. netCDF snapshots
 currently materialize arrays; Zarr snapshots iterate output chunks.
+
+Selected arrays automatically retain their auxiliary coordinates, CF bounds and scalar
+CRS definitions. Auxiliary coordinates and bounds must resolve to the same array paths
+across contributors; equivalent scalar CRS aliases can use different paths when their
+metadata agrees. Conflicting definitions and missing dependencies are rejected. Extended
+grid-mapping coordinate tuples retain their declared order. Auxiliary payloads stay lazy.
+Reference attributes keep unambiguous local names and use explicit paths when merged
+groups would otherwise rebind them. GDAL 3.13.3 automatic coordinate discovery does not
+resolve absolute coordinate names; those cross-group arrays/attributes remain readable,
+and Terrio resolves them according to CF group scoping.
 
 Terrio retains source group paths and metadata; GDAL places explicitly selected
 nested arrays at the root. It also retains integer coordinate types rather than

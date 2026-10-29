@@ -1,5 +1,6 @@
 //! Coordinate-aligned, lazy mosaics of numeric scientific arrays.
 use super::*;
+mod references;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Arrays to mosaic, by absolute path or unambiguous local name.
@@ -427,7 +428,18 @@ fn same_coordinate_metadata(a: &Array, b: &Array) -> bool {
     fn relevant(array: &Array) -> Value {
         let mut attributes = array.info.attributes.clone();
         if let Some(attributes) = attributes.as_object_mut() {
-            for name in ["actual_range", "_FillValue", "comment", "history", "long_name", "source", "references"] {
+            for name in [
+                "actual_range",
+                "_FillValue",
+                "comment",
+                "history",
+                "long_name",
+                "source",
+                "references",
+                "bounds",
+                "coordinates",
+                "grid_mapping",
+            ] {
                 attributes.remove(name);
             }
         }
@@ -441,7 +453,7 @@ fn same_encoding(a: &Array, b: &Array) -> bool {
             return false;
         }
     }
-    for name in ["valid_range", "valid_min", "valid_max", "missing_value", "grid_mapping", "_Unsigned", "_CRS", "bounds"] {
+    for name in ["valid_range", "valid_min", "valid_max", "missing_value", "_Unsigned", "_CRS"] {
         match (a.info.attributes.get(name), b.info.attributes.get(name)) {
             (None, None) => (),
             (Some(a), Some(b)) if same_value(a, b) => (),
@@ -454,21 +466,6 @@ fn same_encoding(a: &Array, b: &Array) -> bool {
 fn parent(path: &str) -> &str {
     let p = path.rsplit_once('/').unwrap().0;
     if p.is_empty() { "/" } else { p }
-}
-
-fn resolve_reference(dataset: &Dataset, path: &str, name: &str) -> Result<Array> {
-    if name.starts_with('/') {
-        return dataset.array(name);
-    }
-    let mut group = parent(path);
-    loop {
-        let candidate = format!("{}/{}", group.trim_end_matches('/'), name);
-        match dataset.array(&candidate) {
-            Ok(array) => return Ok(array),
-            Err(error) if group == "/" => return Err(error),
-            Err(_) => group = parent(group),
-        }
-    }
 }
 
 /// Builds a coordinate-aligned mosaic without reading data-array payloads.
@@ -502,71 +499,7 @@ pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> 
     if selected.is_empty() {
         return Err(bad("no arrays selected for mosaic"));
     }
-    // Retain coordinate variables and their CF bounds, including dependencies
-    // of an explicitly selected payload. Resolve names within the source group
-    // and then its ancestors, as for CF grid mappings.
-    let mut pending: Vec<_> = selected.iter().cloned().collect();
-    while let Some(path) = pending.pop() {
-        for dataset in datasets {
-            if let Ok(array) = dataset.array(&path) {
-                let mut dependencies: Vec<_> =
-                    array.info.dimensions.iter().filter_map(|dimension| dimension.indexing_variable.clone()).collect();
-                if let Some(bounds) = array.info.attributes.get("bounds") {
-                    let name = bounds
-                        .as_str()
-                        .filter(|name| !name.is_empty())
-                        .ok_or_else(|| bad("CF bounds reference must be a nonempty array name"))?;
-                    let bounds = resolve_reference(dataset, &path, name)?;
-                    dependencies.push(bounds.info.path.clone());
-                }
-                for dependency in dependencies {
-                    dataset.array(&dependency)?;
-                    if selected.insert(dependency.clone()) {
-                        pending.push(dependency);
-                    }
-                }
-            }
-        }
-    }
-    // Retain scalar CF CRS variables referenced by selected arrays. Dropping
-    // them would leave grid_mapping attributes pointing to nonexistent arrays.
-    let mut grid_mappings = BTreeSet::new();
-    for dataset in datasets {
-        for path in &selected {
-            if let Ok(array) = dataset.array(path)
-                && let Some(name) = array.info.attributes.get("grid_mapping").and_then(Value::as_str)
-            {
-                // Extended CF syntax has one or more "crs: coord ..."
-                // clauses; coordinate variable names are not mapping names.
-                let names: Vec<_> = if name.contains(':') {
-                    name.split_whitespace().filter_map(|token| token.split_once(':').map(|(name, _)| name)).collect()
-                } else {
-                    vec![name]
-                };
-                for name in names {
-                    let mapping = if name.starts_with('/') {
-                        dataset.array(name)?
-                    } else {
-                        let mut group = parent(path);
-                        loop {
-                            let candidate = format!("{}/{}", group.trim_end_matches('/'), name);
-                            match dataset.array(&candidate) {
-                                Ok(array) => break array,
-                                Err(error) if group == "/" => return Err(error),
-                                Err(_) => group = parent(group),
-                            }
-                        }
-                    };
-                    let mapping_path = mapping.info.path.clone();
-                    if !mapping.info.dimensions.is_empty() {
-                        return Err(bad("CF grid mapping variables must be scalar"));
-                    }
-                    grid_mappings.insert(mapping_path);
-                }
-            }
-        }
-    }
-    selected.extend(grid_mappings.iter().cloned());
+    let references = references::Plan::collect(datasets, &mut selected)?;
     let mut input_axes: BTreeMap<String, BTreeMap<usize, (Dimension, Option<Array>)>> = BTreeMap::new();
     for (i, dataset) in datasets.iter().enumerate() {
         for path in &selected {
@@ -611,7 +544,7 @@ pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> 
                 || array.info.dimensions.len() != template.info.dimensions.len()
                 || !same_nodata(array, template)
                 || !same_encoding(array, template)
-                || (grid_mappings.contains(&path) && array.info.attributes != template.info.attributes)
+                || (references.grids.contains_key(&path) && !same_value(&array.info.attributes, &template.info.attributes))
                 || array.info.dimensions.iter().zip(&template.info.dimensions).any(|(a, b)| a.path != b.path || a.name != b.name)
             {
                 return Err(bad(format!("incompatible array '{path}': dimensions, type, nodata or encoding metadata differ")));
@@ -631,6 +564,12 @@ pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> 
         };
         group_mut(&mut root, parent(&path), datasets).arrays.push(array);
     }
+    for (path, mapping) in &references.grids {
+        if !root.arrays_recursive().iter().any(|array| array.info.path == *path) {
+            group_mut(&mut root, parent(path), datasets).arrays.push(mapping.clone());
+        }
+    }
+    references.apply(&mut root);
     let output = Dataset { driver: "Mosaic".into(), root };
     write::validate(&output)?;
     Ok(output)
@@ -684,6 +623,202 @@ mod tests {
             .unwrap(),
         );
         Dataset { driver: "Memory".into(), root }
+    }
+    fn move_array(source: &mut Dataset, name: &str, path: &str) {
+        let index = source.root.arrays.iter().position(|a| a.info.name == name).unwrap();
+        let mut array = source.root.arrays.remove(index);
+        array.info.path = path.into();
+        group_mut(&mut source.root, parent(path), &[]).arrays.push(array);
+    }
+    fn auxiliary(source: &mut Dataset, path: &str, values: &[i64]) {
+        let mut info = source.root.arrays_recursive().iter().find(|a| a.info.name == "v").unwrap().info.clone();
+        info.path = path.into();
+        info.name = path.rsplit('/').next().unwrap().into();
+        info.attributes = json!({});
+        info.coordinates.clear();
+        let array = Array::from_bytes(info, values.iter().flat_map(|v| v.to_le_bytes()).collect()).unwrap();
+        group_mut(&mut source.root, parent(path), &[]).arrays.push(array);
+    }
+    fn mapping(source: &mut Dataset, path: &str, definition: Value) {
+        let mut info = source.root.arrays_recursive().iter().find(|a| a.info.name == "v").unwrap().info.clone();
+        info.path = path.into();
+        info.name = path.rsplit('/').next().unwrap().into();
+        info.dimensions.clear();
+        info.coordinates.clear();
+        info.chunks = None;
+        info.data_type = DataType::I32;
+        info.attributes = definition;
+        let array = Array::from_bytes(info, 0i32.to_le_bytes().to_vec()).unwrap();
+        group_mut(&mut source.root, parent(path), &[]).arrays.push(array);
+    }
+    #[test]
+    fn reference_resolution_never_skips_an_unsupported_nearer_variable() {
+        let mut source = dataset(&[("y", &[0]), ("x", &[0])], &[1]);
+        move_array(&mut source, "v", "/g/v");
+        auxiliary(&mut source, "/latitude", &[10]);
+        source.root.groups[0].arrays[0].info.attributes["coordinates"] = json!("latitude");
+        source.root.groups[0].unsupported_arrays.push(UnsupportedArray {
+            path: "/g/latitude".into(),
+            data_type: "string".into(),
+            shape: vec![1, 1],
+        });
+        #[cfg(any(feature = "netcdf-hdf5", feature = "zarr"))]
+        {
+            super::super::resolve_coordinates(&mut source.root);
+            assert!(source.array("/g/v").unwrap().info.coordinates.contains(&"/g/latitude".into()));
+        }
+        assert!(mosaic(&[source], &MosaicOptions { arrays: vec!["/g/v".into()] }).unwrap_err().to_string().contains("/g/latitude"));
+    }
+    #[test]
+    fn explicit_relative_references_do_not_search_other_ancestor_paths() {
+        let mut source = dataset(&[("y", &[0]), ("x", &[0])], &[1]);
+        move_array(&mut source, "v", "/g/v");
+        auxiliary(&mut source, "/sub/latitude", &[10]);
+        source.root.groups[0].arrays[0].info.attributes["coordinates"] = json!("sub/latitude");
+        assert!(mosaic(&[source.clone()], &MosaicOptions { arrays: vec!["/g/v".into()] }).is_err());
+        source.root.groups[0].arrays[0].info.attributes["coordinates"] = json!("../sub/latitude");
+        let output = mosaic(&[source], &MosaicOptions { arrays: vec!["/g/v".into()] }).unwrap();
+        assert!(output.array("/g/v").unwrap().info.coordinates.contains(&"/sub/latitude".into()));
+        assert_eq!(output.array("/sub/latitude").unwrap().read().unwrap().values().unwrap(), json!([10]));
+    }
+    #[test]
+    fn selected_payload_keeps_two_dimensional_auxiliary_coordinates() {
+        for typed_only in [false, true] {
+            let mut sources = Vec::new();
+            for row in 0..2i64 {
+                let mut source = dataset(&[("y", &[row]), ("x", &[0, 1])], &[row * 2 + 1, row * 2 + 2]);
+                auxiliary(&mut source, "/latitude", &[100 + row * 10, 101 + row * 10]);
+                auxiliary(&mut source, "/longitude", &[200 + row * 10, 201 + row * 10]);
+                let v = source.root.arrays.iter_mut().find(|a| a.info.name == "v").unwrap();
+                if typed_only {
+                    v.info.coordinates.extend(["/latitude".into(), "/longitude".into()]);
+                } else {
+                    v.info.attributes["coordinates"] = json!("latitude longitude");
+                }
+                sources.push(source);
+            }
+            let output = mosaic(&sources, &MosaicOptions { arrays: vec!["v".into()] }).unwrap();
+            assert_eq!(output.array("latitude").unwrap().read().unwrap().values().unwrap(), json!([100, 101, 110, 111]));
+            assert_eq!(output.array("longitude").unwrap().read().unwrap().values().unwrap(), json!([200, 201, 210, 211]));
+            let info = output.array("v").unwrap().info;
+            assert!(info.coordinates.contains(&"/latitude".into()));
+            assert_eq!(info.attributes["coordinates"], json!("latitude longitude"));
+            #[cfg(feature = "netcdf-hdf5")]
+            {
+                let back = super::super::open_bytes(&output.to_netcdf_bytes().unwrap()).unwrap();
+                assert!(back.array("v").unwrap().info.coordinates.contains(&"/longitude".into()));
+                assert_eq!(back.array("latitude").unwrap().read().unwrap().values().unwrap(), json!([100, 101, 110, 111]));
+            }
+            #[cfg(feature = "zarr")]
+            {
+                let back = super::super::open_zarr_store(output.to_zarr_store().unwrap()).unwrap();
+                assert!(back.array("v").unwrap().info.coordinates.contains(&"/latitude".into()));
+                assert_eq!(back.array("longitude").unwrap().read().unwrap().values().unwrap(), json!([200, 201, 210, 211]));
+            }
+            let mut damaged = sources.clone();
+            damaged[1].root.arrays.iter_mut().find(|a| a.info.name == "latitude").unwrap().source = Source::Memory(Arc::new(vec![]));
+            let lazy = mosaic(&damaged, &MosaicOptions { arrays: vec!["v".into()] }).unwrap();
+            assert_eq!(lazy.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 2, 3, 4]));
+            assert!(lazy.array("latitude").unwrap().read().is_err());
+            let mut missing = sources.clone();
+            missing[1].root.arrays.retain(|a| a.info.name != "latitude");
+            assert!(mosaic(&missing, &MosaicOptions { arrays: vec!["v".into()] }).is_err());
+        }
+    }
+    #[test]
+    fn resolved_grid_mapping_aliases_require_matching_crs_metadata() {
+        let mut a = dataset(&[("y", &[0]), ("x", &[0])], &[1]);
+        let mut b = dataset(&[("y", &[1]), ("x", &[0])], &[2]);
+        move_array(&mut a, "v", "/g/v");
+        move_array(&mut b, "v", "/g/v");
+        a.root.groups[0].arrays[0].info.attributes["grid_mapping"] = json!("crs");
+        b.root.groups[0].arrays[0].info.attributes["grid_mapping"] = json!("/crs");
+        mapping(&mut a, "/g/crs", json!({"spatial_ref":"EPSG:4326","false_easting":0}));
+        mapping(&mut b, "/crs", json!({"spatial_ref":"EPSG:3857","false_easting":0.0}));
+        assert!(mosaic(&[a.clone(), b.clone()], &Default::default()).unwrap_err().to_string().contains("grid mapping"));
+        b.root.arrays.iter_mut().find(|a| a.info.path == "/crs").unwrap().info.attributes["spatial_ref"] = json!("EPSG:4326");
+        // A non-referenced same-path mapping in the second input must not override
+        // the canonical mapping actually referenced by the first input.
+        mapping(&mut b, "/g/crs", json!({"spatial_ref":"EPSG:3857"}));
+        let output = mosaic(&[a, b], &Default::default()).unwrap();
+        assert_eq!(output.array("/g/v").unwrap().info.attributes["grid_mapping"], json!("crs"));
+        assert_eq!(output.array("/g/crs").unwrap().info.attributes["spatial_ref"], json!("EPSG:4326"));
+        assert_eq!(output.array("/g/v").unwrap().read().unwrap().values().unwrap(), json!([1, 2]));
+        assert!(output.array("/crs").is_err());
+    }
+    #[test]
+    fn output_group_shadowing_cannot_rebind_auxiliary_coordinates() {
+        let mut a = dataset(&[("y", &[0]), ("x", &[0])], &[1]);
+        let mut b = dataset(&[("y", &[1]), ("x", &[0])], &[2]);
+        move_array(&mut a, "v", "/g/v");
+        auxiliary(&mut a, "/latitude", &[10]);
+        move_array(&mut b, "v", "/g/v");
+        auxiliary(&mut b, "/g/latitude", &[20]);
+        a.root.groups[0].arrays[0].info.attributes["coordinates"] = json!("latitude");
+        let v = &mut b.root.groups[0].arrays[0];
+        v.info.name = "u".into();
+        v.info.path = "/g/u".into();
+        v.info.attributes["coordinates"] = json!("latitude");
+        let output = mosaic(&[a.clone(), b], &MosaicOptions { arrays: vec!["/g/v".into(), "/g/u".into()] }).unwrap();
+        assert_eq!(output.array("/g/v").unwrap().info.attributes["coordinates"], json!("/latitude"));
+        assert_eq!(output.array("/g/u").unwrap().info.attributes["coordinates"], json!("latitude"));
+        assert_eq!(output.array("/latitude").unwrap().read().unwrap().values().unwrap(), json!([10, 0]));
+        #[cfg(feature = "zarr")]
+        {
+            // Re-read a real store with an unqualified ancestor coordinate before
+            // mosaicking: the Zarr reader must publish the resolved absolute path.
+            let back = super::super::open_zarr_store(a.to_zarr_store().unwrap()).unwrap();
+            assert!(back.array("/g/v").unwrap().info.coordinates.contains(&"/latitude".into()));
+            assert!(!back.array("/g/v").unwrap().info.coordinates.contains(&"/g/latitude".into()));
+        }
+    }
+    #[test]
+    fn equal_bounds_names_cannot_resolve_to_different_input_paths() {
+        let mut sources = Vec::new();
+        for (row, bounds_path) in [(0i64, "/bounds"), (1, "/g/bounds")] {
+            let mut source = dataset(&[("y", &[row]), ("x", &[0])], &[row + 1]);
+            move_array(&mut source, "v", "/g/v");
+            move_array(&mut source, "y", "/g/y");
+            fn relink(group: &mut Group) {
+                for d in &mut group.dimensions {
+                    if d.path == "/y" {
+                        d.indexing_variable = Some("/g/y".into());
+                    }
+                }
+                for a in &mut group.arrays {
+                    for d in &mut a.info.dimensions {
+                        if d.path == "/y" {
+                            d.indexing_variable = Some("/g/y".into());
+                        }
+                    }
+                    for c in &mut a.info.coordinates {
+                        if c == "/y" {
+                            *c = "/g/y".into();
+                        }
+                    }
+                    if a.info.path == "/g/y" {
+                        a.info.attributes["bounds"] = json!("bounds");
+                    }
+                }
+                for child in &mut group.groups {
+                    relink(child);
+                }
+            }
+            relink(&mut source.root);
+            let bounds_dimension =
+                Dimension { name: "bnds".into(), path: "/bnds".into(), size: 2, unlimited: false, indexing_variable: None };
+            source.root.dimensions.push(bounds_dimension.clone());
+            let mut info = source.root.arrays_recursive().iter().find(|a| a.info.name == "v").unwrap().info.clone();
+            info.path = bounds_path.into();
+            info.name = "bounds".into();
+            info.coordinates.clear();
+            info.attributes = json!({});
+            info.dimensions = vec![source.root.dimensions[0].clone(), bounds_dimension];
+            let array = Array::from_bytes(info, [row * 10, row * 10 + 1].iter().flat_map(|v| v.to_le_bytes()).collect()).unwrap();
+            group_mut(&mut source.root, parent(bounds_path), &[]).arrays.push(array);
+            sources.push(source);
+        }
+        assert!(mosaic(&sources, &MosaicOptions { arrays: vec!["/g/v".into()] }).unwrap_err().to_string().contains("CF bounds"));
     }
     #[test]
     fn two_axis_tiles_gaps_descending_coordinates_and_strided_views() {
@@ -1022,6 +1157,9 @@ mod tests {
         let mut different = source.clone();
         different.root.arrays.iter_mut().find(|a| a.info.name == "v").unwrap().info.attributes["grid_mapping"] = json!("other: y x");
         assert!(mosaic(&[source.clone(), different], &Default::default()).unwrap_err().to_string().contains("encoding metadata"));
+        let mut swapped = source.clone();
+        swapped.root.arrays.iter_mut().find(|a| a.info.name == "v").unwrap().info.attributes["grid_mapping"] = json!("crs: x y other: y x");
+        assert!(mosaic(&[source.clone(), swapped], &Default::default()).is_err());
         let out = mosaic(&[source], &Default::default()).unwrap();
         assert!(out.array("crs").is_ok());
         assert!(out.array("other").is_ok());

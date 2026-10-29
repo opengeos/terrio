@@ -12,7 +12,7 @@ from osgeo import gdal
 gdal.UseExceptions()
 
 
-def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False, missing_value_only=False, extra_payload=False):
+def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False, missing_value_only=False, extra_payload=False, auxiliary=False):
     dataset = gdal.GetDriverByName('netCDF').CreateMultiDimensional(str(path))
     root = dataset.GetRootGroup()
     dimensions = []
@@ -35,6 +35,15 @@ def create(path, axes, values, dtype=gdal.GDT_Float32, nested=False, coordinate_
         variable.SetNoDataValueDouble(fill)
     variable.Write(values.tobytes())
     variable.CreateAttribute('units', [], gdal.ExtendedDataType.CreateString()).Write('m/s')
+    if auxiliary:
+        y, x = (np.asarray(coordinates) for _, coordinates in axes[-2:])
+        shape = (len(y), len(x))
+        for name, data in [("latitude2d", np.broadcast_to(y[:,None],shape)), ("longitude2d", np.broadcast_to(x[None,:],shape))]:
+            coordinate = group.CreateMDArray(name, dimensions[-2:], gdal.ExtendedDataType.Create(gdal.GDT_Float64))
+            coordinate.Write(np.asarray(data,dtype='<f8').tobytes())
+            coordinate.CreateAttribute("standard_name", [], gdal.ExtendedDataType.CreateString()).Write("latitude" if name == "latitude2d" else "longitude")
+            coordinate.CreateAttribute("units", [], gdal.ExtendedDataType.CreateString()).Write("degrees_north" if name == "latitude2d" else "degrees_east")
+        variable.CreateAttribute("coordinates", [], gdal.ExtendedDataType.CreateString()).Write("latitude2d longitude2d")
     if extra_payload:
         extra = group.CreateMDArray("unselected", dimensions, gdal.ExtendedDataType.Create(dtype))
         extra.Write((values + 17).tobytes())
@@ -56,12 +65,28 @@ def arrays(group):
     return result
 
 
-def comparison(reference, actual, allow_float32_coordinates=False, source_coordinates=None, expected_nested=False):
+def comparison(reference, actual, allow_float32_coordinates=False, source_coordinates=None, expected_nested=False, excluded_arrays=(), expected_auxiliary=False):
     ref = gdal.OpenEx(str(reference), gdal.OF_MULTIDIM_RASTER)
     out = gdal.OpenEx(str(actual), gdal.OF_MULTIDIM_RASTER)
     ra, oa = arrays(ref.GetRootGroup()), arrays(out.GetRootGroup())
+    reference_paths, actual_paths = dict(ra), dict(oa)
+    assert not any(name.rsplit('/',1)[-1] in excluded_arrays for name in oa), sorted(oa)
+    ra = {name: array for name,array in ra.items() if name.rsplit('/',1)[-1] not in excluded_arrays}
+    def resolved_path(known, owner, name):
+        assert isinstance(name,str) and name
+        if name.startswith('/'):
+            assert name in known, (owner,name)
+            return name
+        parent = owner.rsplit('/',1)[0] or '/'
+        while True:
+            candidate = parent.rstrip('/') + '/' + name
+            if candidate in known:
+                return candidate
+            assert parent != '/', (owner,name)
+            parent = parent.rsplit('/',1)[0] or '/'
     path_difference = ''
     if set(ra) != set(oa):
+        assert expected_nested, (sorted(ra),sorted(oa))
         # GDAL places a selected nested array at the root; Terrio retains its
         # source group path. Require an unambiguous one-to-one name mapping.
         assert len(ra) == len(oa)
@@ -81,6 +106,9 @@ def comparison(reference, actual, allow_float32_coordinates=False, source_coordi
     same_type = same_nodata = same_metadata = same_size = True
     for name, r in ra.items():
         a = oa[name]
+        if expected_auxiliary and r.GetName() == 'wind':
+            names = {coordinate.GetFullName() for coordinate in a.GetCoordinateVariables()}
+            assert {'/latitude2d','/longitude2d'} <= names, names
         if expected_nested and r.GetName() == 'wind':
             assert a.GetFullName() == '/science/wind', a.GetFullName()
         rv, av = r.ReadAsArray(), a.ReadAsArray()
@@ -112,21 +140,24 @@ def comparison(reference, actual, allow_float32_coordinates=False, source_coordi
         same_size &= rv.shape == av.shape
         assert rv.shape == av.shape, (name, rv.shape, av.shape)
         different = (rv != av) & ~(np.isnan(rv) & np.isnan(av))
-        differing += int(different.sum())
         accepted = np.zeros(rv.shape, dtype=bool)
         if coordinate and source_coordinates is not None:
             # GDAL regenerates a regular grid from one estimated step. Preserve
             # source samples exactly, allowing its rounding drift only where an
             # independently supplied source coordinate proves the desired value.
             expected = rv.astype(av.dtype).copy()
+            source_samples = np.zeros(rv.shape,dtype=bool)
             for values in source_coordinates.get(r.GetName(), []):
                 values = np.asarray(values, dtype=av.dtype)
                 start = int(np.argmin(np.abs(rv - values[0])))
                 assert start + len(values) <= len(expected)
                 expected[start:start + len(values)] = values
+                source_samples[start:start + len(values)] = True
             accepted = expected == av
+            different |= source_samples & ~accepted
         elif permitted:
             accepted = rv.astype('float32') == av
+        differing += int(different.sum())
         source_coordinate_adjusted |= coordinate and bool((different & accepted).any())
         within_count += int((~different | accepted).sum())
         count += rv.size
@@ -145,6 +176,12 @@ def comparison(reference, actual, allow_float32_coordinates=False, source_coordi
         assert 'actual_range' not in aat, (name, aat.get('actual_range'))
         for key in ['scale_factor', 'add_offset', 'units']:
             same_metadata &= rat.get(key) == aat.get(key)
+        if rat.get('bounds') is not None and aat.get('bounds') is not None:
+            target = resolved_path(reference_paths,r.GetFullName(),rat['bounds'])
+            actual_target = resolved_path(actual_paths,a.GetFullName(),aat['bounds'])
+            same_metadata &= target in oa and oa[target].GetFullName() == actual_target
+        else:
+            same_metadata &= rat.get('bounds') == aat.get('bounds')
     return dict(path_difference=path_difference, same_size=same_size, same_type=same_type, same_nodata=same_nodata, same_metadata=same_metadata,
                 differing=differing, exact=1 - differing / count, within_tol=within_count / count, max_diff=max_diff,
                 permitted_coordinate_type_difference=permitted_type_difference and not unexpected_type_difference,
@@ -165,12 +202,12 @@ def main():
     results = []
     with tempfile.TemporaryDirectory(prefix='terrio-mdmosaic-') as temporary:
         tmp = Path(temporary)
-        def case(name, pieces, dtype=gdal.GDT_Float32, nested=False, selected=False, output='nc', normalize_descending=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False, missing_value_only=False):
+        def case(name, pieces, dtype=gdal.GDT_Float32, nested=False, selected=False, output='nc', normalize_descending=False, coordinate_dtype=gdal.GDT_Float64, bounds=False, coordinate_ranges=False, missing_value_only=False, auxiliary=False):
             try:
                 sources = []
                 for index, (axes, data) in enumerate(pieces):
                     source = tmp / f'source-{index}.nc'
-                    create(source, axes, data, dtype, nested, coordinate_dtype, bounds, coordinate_ranges, missing_value_only, extra_payload=nested and selected)
+                    create(source, axes, data, dtype, nested, coordinate_dtype, bounds, coordinate_ranges, missing_value_only, extra_payload=selected, auxiliary=auxiliary)
                     sources.append(str(source))
                 reference_sources = sources
                 if normalize_descending:
@@ -189,15 +226,15 @@ def main():
                 reference.unlink(missing_ok=True)
                 actual = tmp / ('actual-' + str(len(results)) + '.' + output)
                 selection = ['--array', '/science/wind' if nested else 'wind'] if selected else []
-                subprocess.run(['gdal', 'mdim', 'mosaic', *reference_sources, str(reference), *(selection if not (bounds and selected) else [])], capture_output=True, check=True)
+                subprocess.run(['gdal', 'mdim', 'mosaic', *reference_sources, str(reference), *(selection if not ((bounds or auxiliary) and selected) else [])], capture_output=True, check=True)
                 subprocess.run([args.terrio, 'mdmosaic', *sources, str(actual), *selection], capture_output=True, check=True)
                 source_coordinates = {}
                 for axes, _ in pieces:
                     for axis_name, coordinates in axes:
                         source_coordinates.setdefault(axis_name, []).append(coordinates)
-                result = comparison(reference, actual, coordinate_dtype == gdal.GDT_Float32, source_coordinates, expected_nested=nested)
-                if bounds and selected:
-                    result['reference_normalization'] = 'GDAL selected-array output drops referenced CF bounds; compare its complete output to the retained dependency closure'
+                result = comparison(reference, actual, coordinate_dtype == gdal.GDT_Float32, source_coordinates, expected_nested=nested, excluded_arrays=("unselected",) if selected else (), expected_auxiliary=auxiliary)
+                if (bounds or auxiliary) and selected:
+                    result['reference_normalization'] = 'GDAL selected-array output drops referenced CF dependencies; compare its complete output excluding the explicitly unselected payload'
                 if normalize_descending:
                     result['reference_normalization'] = 'GDAL 3.13.3 descending-axis VRT size/offset bug; reference inputs flipped and output coordinate order restored'
             except subprocess.CalledProcessError as error:
@@ -216,6 +253,8 @@ def main():
         case('CF unindexed bounds Zarr snapshot', tiled, bounds=True, output='zarr')
         case('CF selected payload retains bounds', tiled, bounds=True, selected=True)
         case('CF selected payload bounds Zarr snapshot', tiled, bounds=True, selected=True, output='zarr')
+        case('CF selected two-dimensional auxiliary coordinates', tiled, auxiliary=True, selected=True)
+        case('CF selected auxiliary coordinates Zarr snapshot', tiled, auxiliary=True, selected=True, output='zarr')
         case('descending latitude normalized GDAL reference', [([(n, c[::-1] if n == 'lat' else c) for n,c in axes], np.flip(data, axis=0)) for axes,data in tiled], normalize_descending=True)
         case('spatial missing quadrants', [tiled[0],tiled[3]])
         case('CF missing_value without _FillValue gaps', [tiled[0], tiled[3]], missing_value_only=True)
