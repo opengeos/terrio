@@ -1159,6 +1159,30 @@ ordinary lazy info opens. Raster index construction never called the pixel sourc
 its panic-on-read unit fixture. These observations apply to lazy-capable readers;
 formats whose reader lacks a metadata-only path may materialize the input.
 
+## COG validation
+
+The registered `cog-validate` suite compares GDAL 3.13.3's unified COG validator
+with `validate-cog --profile gdal`, with full checks both enabled and disabled.
+Real Landsat and USGS-derived COGs cover pixel/band/tile interleave, BigTIFF,
+internal masks, external overviews and deliberate leader/trailer corruption.
+Validity, exit status, finding counts, IFD offsets and first-block offsets must
+agree exactly; diagnostic wording is not compared. Rust, Python and WASM
+regressions exercise uploaded bytes and corrupt block boundaries. A counting
+HTTP regression verifies automatic remote validation reads headers only while
+explicit full checking detects a damaged trailer.
+
+On the 1024×1024 random Float32 COG regression, automatic remote validation
+transferred 65,536 bytes in one GET. Explicit full checking transferred
+4,955,322 bytes in 76 GETs from the same source and detected the damaged final
+trailer. These are observed transfer counts, not timing targets.
+
+Local full validation also measures reads from the underlying file. On a
+2048×2048 Float32 COG with 128-pixel tiles, the buffered path read 5,688,654
+bytes; direct boundary reads read 7,897 bytes, with identical validation
+results and one source-file open per call. The GDAL profile now uses direct
+local reads for full checking. Python uploaded-byte validation borrows immutable
+bytes instead of duplicating the full payload.
+
 ## GeoPackage repacking
 
 `scripts/compare_gpkg_repack_with_gdal.py` is registered as `gpkg-repack`. GDAL 3.13.3
@@ -1211,4 +1235,46 @@ cargo test -p terrio --lib bounded_prefixes_stop_even_when_ranges_are_ignored
 cargo test -p terrio-cli --test inspection
 pytest python/tests/test_inspection.py
 node --test --test-name-pattern='identify inspects' js/tests/node.test.mjs
+```
+
+## Dataset content checking (#289)
+
+The registered `dataset-check` suite compares with GDAL 3.13.3 on Landsat, USGS,
+OPERA, SRTM, scientific wind arrays and vector datasets, plus derived real-data
+fixtures. It has 30 cases: 29 matching read outcomes/I/O checks and one explicit Parquet
+non-comparison because the reference build lacks that driver. It checks base-band
+reads, damage in the last compressed tile, truncated GeoJSON, all requested
+overviews/masks and every array in grouped scientific data. Auxiliary reads also
+compare sample/mask counts with GDAL's Python API. The suite compares readability,
+not pixel equality or checksums. Both readers accepting a malformed GeoPackage
+geometry blob is recorded explicitly rather than claimed as corruption detection.
+
+A local range-server probe of the real 610,612-byte `cog.tif` used two GETs and
+610,612 served bytes for `info --stats`, and three GETs and 626,996 bytes for
+`check`, with one raster worker. The extra GET and 16,384 bytes are the bounded
+identification prefix before the ordinary lazy reader opens the source. These
+are fixture-specific I/O counts, not a general request or memory guarantee.
+
+A real wind-derived 2048×2048 Float32 Zarr array with four 1024×1024 storage
+chunks checks HTTP payload requests. Before storage-chunk alignment, each chunk
+was fetched 16 times (64 chunk GETs); the updated checker fetches each once
+(four chunk GETs, 16,777,216 encoded payload bytes, excluding metadata).
+Chunks that exceed the 8 MiB value budget can still be decoded repeatedly;
+this bounds output buffers rather than codec working memory.
+
+Core tests check late-window failures, bounded planning for million-column rasters,
+repeated reads of oversized strips and preservation of every fallback reader error,
+all-band/level/mask counts, scalar/empty scientific arrays and complete mixed
+GeoPackage contents. CLI tests verify failure status and MCP discovery/invocation.
+Python additionally checks an HDF5 user block beyond the identification prefix
+(using GDAL and `h5repack`); uploaded and open scientific handles must read all arrays.
+Focused Node tests read real COG, FlatGeobuf and scientific uploads when test data
+is available.
+
+```sh
+python scripts/conformance.py ../terrio-data --only dataset-check --strict
+cargo test -p terrio --lib check::
+cargo test -p terrio-cli --test inspection
+pytest python/tests/test_check.py
+TERRIO_TEST_DATA=../terrio-data node --test --test-name-pattern='checkDataset' js/tests/node.test.mjs
 ```

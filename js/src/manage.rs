@@ -249,3 +249,20 @@ pub fn move_raster(bytes: Vec<u8>, options: JsValue) -> Result<JsValue, JsError>
     js_sys::Reflect::set(&result, &"report".into(), &report).map_err(|_| JsError::new("cannot set move report"))?;
     Ok(result.into())
 }
+
+/// Validates uploaded TIFF structure without decoding pixels. Options: profile
+/// (`rio-cogeo` or `gdal`), strict, fullCheck (default automatic; true for bytes).
+/// GDAL full checks inspect all compressed block leaders/trailers and ordering.
+#[wasm_bindgen(js_name = validateCog)]
+pub fn validate_cog(bytes: &[u8], options: JsValue) -> Result<JsValue, JsError> {
+    #[derive(Deserialize, Default)]
+    #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+    struct Args {
+        strict: bool,
+        profile: terrio::CogValidationProfile,
+        full_check: Option<bool>,
+    }
+    let args: Args = parse_options(&options)?;
+    let options = terrio::CogValidationOptions { strict: args.strict, profile: args.profile, full_check: args.full_check };
+    crate::to_js(&terrio::validate_cog_bytes(bytes, &options).map_err(js_err)?)
+}

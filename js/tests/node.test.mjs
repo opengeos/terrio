@@ -2363,6 +2363,21 @@ test("GeoPackage repack preserves real features in bytes and memory", { skip: !D
   }
 });
 
+test("COG validation profiles inspect uploaded block trailers", () => {
+  const raster = terrio.createRaster(null, {size: [64, 64], burn: [7]});
+  const bytes = raster.toBytes("input.tif", {format: "COG", compress: "DEFLATE"});
+  assert.equal(terrio.validateCog(bytes, {profile: "gdal"}).is_valid, true);
+  assert.equal(terrio.validateCog(bytes).is_valid, true);
+  const damaged = bytes.slice();
+  damaged[damaged.length - 1] ^= 1;
+  const report = terrio.validateCog(damaged, {profile: "gdal"});
+  assert.equal(report.is_valid, false);
+  assert.ok(report.errors.some(error => error.includes("trailer")));
+  assert.equal(terrio.validateCog(damaged, {profile: "gdal", fullCheck: false}).is_valid, true);
+  assert.throws(() => terrio.validateCog(bytes, {profile: "unknown"}), /unknown variant/);
+  raster.free();
+});
+
 test("identify inspects bounded upload prefixes and filename hints", () => {
   const raster = terrio.createRaster(null, {size: [2, 2], burn: [1], crs: "EPSG:4326", bbox: [0, 0, 2, 2]});
   const bytes = raster.toBytes("source.tif");
@@ -2375,4 +2390,43 @@ test("identify inspects bounded upload prefixes and filename hints", () => {
   assert.equal(terrio.identify(beyondPrefix, "data.json"), null);
   assert.throws(() => terrio.identify({bytes: "not an array"}), /Uint8Array/);
   raster.free();
+});
+
+test("checkDataset decodes all exposed uploaded content", () => {
+  const raster = terrio.createRaster(null, {size: [4, 3], burn: [7], crs: "EPSG:4326", bbox: [0, 0, 4, 3]});
+  const bytes = raster.toBytes("input.tif");
+  const summary = terrio.checkDataset(bytes, "input.tif", {overviews: true, masks: true});
+  assert.equal(summary.raster_samples, 12);
+  assert.equal(summary.features, 0);
+  assert.throws(() => terrio.checkDataset(new TextEncoder().encode("II*\0broken"), "broken.tif"));
+  assert.throws(() => terrio.checkDataset(bytes, "input.tif", {misspelled: true}), /unknown field/);
+  const vector = new TextEncoder().encode('{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}]}');
+  assert.equal(terrio.checkDataset(vector, "points.geojson").features, 1);
+  assert.throws(() => terrio.checkDataset(vector.subarray(0, vector.length - 8), "points.geojson"));
+  raster.free();
+});
+
+test("checkDataset reads real raster, vector and scientific uploads", {skip: needs("flatgeobuf") || needs("netcdf-hdf5") || (!DATA && "TERRIO_TEST_DATA is not set")}, () => {
+  const raster = terrio.checkDataset(new Uint8Array(readFileSync(join(DATA, "cog.tif"))), "cog.tif");
+  assert.ok(raster.raster_samples > 0);
+  const vector = terrio.checkDataset(new Uint8Array(readFileSync(join(DATA, "countries.fgb"))), "countries.fgb");
+  assert.ok(vector.features > 100);
+  const scientific = terrio.checkDataset(new Uint8Array(readFileSync(join(DATA, "wind_global.nc"))), "wind.nc");
+  assert.equal(scientific.arrays, 4);
+  assert.equal(scientific.array_elements, 2 * 181 * 360 + 181 + 360);
+  const md = terrio.openMultidim(new Uint8Array(readFileSync(join(DATA, "wind_global.nc"))));
+  assert.deepEqual(md.check(), scientific);
+  md.free();
+  if (BUILT.includes("pointcloud")) {
+    for (const name of ["autzen_trim.las", "autzen_trim.laz"]) {
+      const path = join(DATA, "pointcloud", name);
+      if (!existsSync(path)) continue;
+      const bytes = new Uint8Array(readFileSync(path));
+      const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const legacy = header.getUint32(107, true);
+      const expected = header.getUint8(25) >= 4 && legacy === 0 ? Number(header.getBigUint64(247, true)) : legacy;
+      assert.ok(expected > 0);
+      assert.equal(terrio.checkDataset(bytes, name).points, expected);
+    }
+  }
 });

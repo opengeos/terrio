@@ -234,6 +234,7 @@ pub mod raster {
     pub use wbraster::{CrsInfo, RasterError, ReprojectOptions, ResampleMethod};
 }
 pub mod catalog;
+pub mod check;
 pub mod stac;
 mod stacta;
 pub mod stream;
@@ -243,7 +244,9 @@ pub mod vsi;
 pub mod warnings;
 
 pub use cog::{LazyRaster, TiffReadLimits, Window, WindowOptions, open_raster_lazy};
-pub use cog_validate::{CogValidation, validate_cog};
+pub use cog_validate::{
+    CogValidation, CogValidationOptions, CogValidationProfile, validate_cog, validate_cog_bytes, validate_cog_with_options,
+};
 pub use dataset::{
     BandMetadata, Dataset, Gcp, Geolocation, RasterDataset, RasterWriteOptions, VectorDataset, VectorOpenOptions, VectorWriteOptions,
     geo_transform, is_north_up, list_layers, open, open_raster, open_raster_with_tiff_limits, open_vector, read_gcps, write_netcdf_groups,

@@ -17,6 +17,7 @@ __all__ = [
     "refresh_overviews",
     "update_raster",
     "validate_cog",
+    "check_dataset",
     "identify",
     "__version__",
     "gpkg_repack",
@@ -1418,6 +1419,7 @@ class MultidimDataset:
     def array_paths(self) -> list[str]: ...
     @property
     def group_paths(self) -> list[str]: ...
+    def check(self) -> dict[str, int]: ...
     def info(self) -> dict[str, Any]: ...
     def array(self, name: str) -> MultidimArray: ...
     def __getitem__(self, key: str, /) -> MultidimArray: ...
@@ -1777,7 +1779,11 @@ def refresh_overviews(
     ignore_cog_layout_break: bool = False,
 ) -> list[tuple[int, int]]: ...
 def validate_cog(
-    path: str | os.PathLike[str], *, strict: bool = False
+    path: str | os.PathLike[str] | bytes,
+    *,
+    strict: bool = False,
+    profile: str = "rio-cogeo",
+    full_check: bool | None = None,
 ) -> tuple[bool, list[str], list[str]]: ...
 def update_raster(
     src: str | os.PathLike[str] | Raster,
@@ -1868,3 +1874,11 @@ def identify(
     JavaScript's single-upload API returns format metadata or null instead.
     """
     ...
+
+def check_dataset(
+    source: str | os.PathLike[str] | bytes,
+    *,
+    filename: str | None = None,
+    overviews: bool = False,
+    masks: bool = False,
+) -> dict[str, int]: ...

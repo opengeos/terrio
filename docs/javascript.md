@@ -442,6 +442,14 @@ implementations must return a standard `Response`. Object-store XML pagination i
 VSI listing bindings return structured flat entries. Nested tree presentation (`--tree`)
 is currently available through the CLI; JSON serialization flags apply to CLI output.
 
+`validateCog(bytes, {profile: "gdal", fullCheck: true})` checks uploaded TIFF
+structure without decoding pixels and returns `is_valid`, `errors`, `warnings`,
+`ifd_offsets`, `data_offsets`, `overview_factors`, `structural_metadata` and
+`layout_notes`. The default profile is `rio-cogeo`; `gdal` selects GDAL 3.13
+rules with full leader/trailer, row-order and interleaved-mask checks enabled
+for uploaded bytes unless `fullCheck: false` is supplied. External sidecars
+are unavailable for a standalone byte buffer.
+
 `gpkgRepack(path)` compacts an uploaded `/vsimem/` GeoPackage in place and returns
 `bytes_before`, `bytes_after`, `page_size`, `pages_before` and `pages_after`.
 `gpkgRepackBytes(bytes)` returns a compacted `Uint8Array` copy of a self-contained image.

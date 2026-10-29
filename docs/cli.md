@@ -4,6 +4,7 @@
 terrio <COMMAND>
 
   identify        Identify dataset formats from bounded headers
+  check           Read dataset content and report decoding failures
   info            Summarize a raster, vector dataset or point cloud
   convert         Convert a dataset to another format, optionally reprojecting it
   concat          Concatenate vector layers and datasets (like gdal vector concat and ogrmerge.py)
@@ -694,6 +695,57 @@ or `identify({bytes, filename})`, returning format metadata or `null`. Only the 
 16 KiB of JavaScript input is copied into WASM. Uploaded bytes do not use the deeper
 native reader fallback.
 
+## check
+
+```sh
+terrio check scene.tif --json
+terrio check scene.tif --overviews --masks --json
+terrio check countries.gpkg
+terrio check scientific.nc
+```
+
+Reads every exposed base-resolution raster band, vector layer or numeric
+scientific array. Successful checks exit with status 0 and report content counts;
+reader errors exit with status 1. JSON reports contain `raster_samples`,
+`raster_windows`, `mask_samples`, `layers`, `features`, `arrays`, `array_elements`
+and `points`. Errors use the usual CLI diagnostic instead of a success report.
+MCP exposes `check` as a read-only tool.
+
+The default matches `gdal dataset check`'s base-band scope. `--overviews` also reads
+the exposed raster pyramid; `--masks` reads per-dataset masks at every checked
+level. These options do not request generated alpha/nodata masks. GeoPackage roots
+include every exposed feature layer and raster table; explicit subdataset names
+check the selected raster. Scientific roots include coordinates, scalar arrays
+and nested groups; unsupported array types fail explicitly. Point-cloud builds
+also read all exposed point records.
+
+Lazy raster readers use two-dimensional value windows of about 8 MiB, aligned to
+source blocks when they fit. The window planner uses the base level block shape
+for overviews too; an overview with a different block shape can decode a tile
+more than once. Very wide images do not require a whole tile row in
+memory. Requested masks add up to one byte per window pixel on top of the value
+window budget, plus any codec working buffers. A compressed block larger than this budget can be decoded once per window
+that intersects it: a 16-row strip that only fits eight rows per window can require
+two decodes. Scientific arrays use their storage chunk shape when its decoded values
+fit the same budget; unknown or oversized chunks use bounded hyperslabs and may
+also be decoded repeatedly. Stream-capable vector readers use batches. Input storage, codec working buffers and readers without lazy support
+retain their existing memory behavior. Checking all content can require reading
+the entire source, including remote data. Identification alone remains a separate
+bounded-header operation.
+
+A successful check establishes that the reader reported no errors, not that the
+file matches its original bytes. Valid-valued mutations and corruption tolerated
+by a driver can pass. GDAL 3.13.3 and Terrio both accept the malformed GeoPackage
+geometry-blob fixture in the conformance suite; the damaged compressed TIFF and
+truncated GeoJSON fixtures fail in both.
+
+Python exposes `terrio.check_dataset(path_or_bytes, filename=None,
+overviews=False, masks=False)`, returning counts or raising a reader exception.
+`filename` is an upload hint only. JavaScript exposes
+`checkDataset(uint8Array, filename, {overviews, masks})`; it owns the full upload
+for decoding. Native scientific handles also expose `MultidimDataset.check()`
+in Python and JavaScript, including JavaScript Zarr stores opened in memory.
+
 ## info
 
 ```sh
@@ -1093,6 +1145,40 @@ requests. `--json` adds the IFD and first-block offsets, the overview factors, G
 metadata and layout notes (mask IFDs after image data, which do not affect validity). The exit
 status is 1 when the file is not a valid COG, as with GDAL's script. The command is also a
 read-only MCP tool.
+
+`--profile gdal` selects GDAL 3.13's structural rules: exact main-IFD placement
+following the optional structural metadata, source-width tiling threshold above
+1024, and overviews ordered by their dimensions. `--full-check auto|yes|no`
+checks row-major block order, little-endian size leaders, repeated four-byte
+trailers and interleaved masks when the file declares those optimizations. Auto
+checks local inputs fully and keeps HTTP/S3 checks to headers and offset arrays;
+`yes` explicitly fetches block boundary bytes remotely. No pixels are decoded.
+`--full-check yes` requires the GDAL profile. The default profile retains the
+existing rio-cogeo behavior.
+
+GDAL COG full checking examines blocks in the main TIFF and its internal overviews.
+External `.ovr` sidecars make the report invalid and receive header checks only.
+Explicit full checks of URLs can make several boundary requests per stored block;
+the cost grows with the number of blocks, so automatic mode leaves them off.
+Remote full checks stop with an error after 10,000 boundary read calls (excluding
+header/table reads and configured HTTP retries); download larger files to validate
+their full layout locally.
+Full block validation stops at 1,000 findings and reports the limit; remaining
+blocks need not be checked once the file is already invalid.
+Full GDAL checks limit total parsed GDAL metadata to 4 MiB per file and XML nesting
+to 128 levels. Header-only checks and the default rio-cogeo profile ignore this metadata tag.
+
+```sh
+terrio validate-cog dem.tif --profile gdal --full-check yes --json
+```
+
+COG validation reads `GDAL_METADATA` only when full GDAL checks run. Full checks reject
+metadata XML parse errors and malformed attributes. Local files and byte uploads have no
+shared total boundary-read budget; work scales with the stored block arrays. Other VSI
+inputs use the conservative remote policy: automatic full checks are off, and explicit
+full checks use the 10,000-read budget. This includes ZIP members backed by local archives: the
+input is classified by its VSI location, even when resolution extracts it to a temporary
+file. This keeps archive validation policy independent of where the archive is stored.
 
 ## pixel-info
 
@@ -2192,7 +2278,7 @@ can differ from SQLite VACUUM; the operation does not promise byte-identical fil
 
 Native changes use SQLite-compatible exclusive locks and a synced rollback journal. All original
 data pages, including unchanged pages and pages removed by truncation, are journaled before a
-full-image write. SQLite’s unused lock-byte page is excluded because its page number is a
+full-image write. SQLite's unused lock-byte page is excluded because its page number is a
 super-journal marker. An interrupted rewrite can be recovered by SQLite.
 The database pathname is checked against the locked handle before journal creation. Do not
 rename or replace an open database or its parent directory during a transaction. On Unix,
@@ -2205,6 +2291,9 @@ are process-scoped; callers must close/checkpoint same-process SQLite connection
 repacking and must not access the database concurrently through them. Native symbolic-link or
 hard-linked dataset filenames, linked/special sidecars, reserved/encrypted page bytes, remote and archive paths
 are refused. This is storage maintenance, not a GeoPackage specification validator.
+
+Native append also rejects linked or special journal/WAL/shared-memory sidecars before
+recovery; it never replays a journal through a symbolic link or hard-link alias.
 
 Unix directory-sync requirements also apply to existing native SQLite in-place edits and
 recovery, including append/update. Unreadable directories and filesystems rejecting directory

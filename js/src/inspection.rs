@@ -21,3 +21,12 @@ pub fn identify(source: JsValue, filename: Option<String>) -> Result<JsValue, Js
     let prefix = array.subarray(0, length.min(terrio::inspection::IDENTIFICATION_HEADER_BYTES as u32)).to_vec();
     to_js(&terrio::inspection::identify_prefix(&prefix, &name, Some(length as u64)))
 }
+
+/// Reads all exposed uploaded content. Returns successful content counts;
+/// reader failures throw. This cannot detect mutations without integrity checks.
+#[wasm_bindgen(js_name=checkDataset)]
+pub fn check_dataset(bytes: Vec<u8>, filename: &str, options: JsValue) -> Result<JsValue, JsError> {
+    let options: terrio::check::CheckOptions = crate::parse_options(&options)?;
+    let summary = terrio::check::check_bytes(bytes, filename, &options).map_err(crate::js_err)?;
+    to_js(&summary)
+}
