@@ -2263,17 +2263,23 @@ Input schemas and Arrow field metadata must agree. GeoParquet coordinate systems
 and column definitions must agree; bounds and geometry types are merged. A missing bound
 omits that column's aggregate bound, and an unknown geometry type keeps the aggregate type
 unknown. Mixed 2D/3D bounds and antimeridian-wrapped bounds omit the optional aggregate
-bound rather than inventing Z values or an incorrect Cartesian extent. Other file metadata is retained only when identical across inputs; JSON reports
+bound rather than inventing Z values or an incorrect Cartesian extent. Other file
+metadata is retained only when identical across inputs; JSON reports
 `omitted_metadata_keys`, file/row-group counts, rows and encoded output bytes. Arrow schema
 metadata is regenerated to carry the merged GeoParquet metadata.
 
 The operation reads headers and footers without decoding data pages and does not validate
 page integrity. Footer buffers grow with bytes received; complete footers and their
-decoded metadata are materialized, so memory scales with metadata size. Input and output must share a filesystem namespace (native, `/vsimem/`,
+decoded metadata are materialized, so memory scales with metadata size. Input and
+output must share a filesystem namespace (native, `/vsimem/`,
 or one writable S3/Azure namespace) so column paths remain relative. Query-bearing source
 URLs cannot be persisted as partition references. Archive inputs cannot target another
 filesystem. Native symbolic-link outputs are refused. This command does not discover
 partitions or change the existing `partition` command's output behavior.
+
+Column `file_path` values are logical relative paths. URL transport paths are decoded
+once when deriving them and encoded once when resolving them; spaces and literal percent
+characters remain distinct. Object-store keys retain their logical spelling.
 
 Parquet page indexes remain in the referenced partition files. The metadata file retains
 column/offset-index locations relative to each column's `file_path`, just as it retains the

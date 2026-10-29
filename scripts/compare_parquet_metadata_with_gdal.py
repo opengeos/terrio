@@ -76,7 +76,12 @@ def main():
         reference.mkdir()
         table = pq.read_table(args.data / "countries.parquet")
         source = gdal.OpenEx(str(args.data / "countries.parquet"), gdal.OF_VECTOR)
-        envelopes = [feature.GetGeometryRef().GetEnvelope() for feature in source.GetLayer(0)]
+        envelopes = []
+        for feature in source.GetLayer(0):
+            geometry = feature.GetGeometryRef()
+            if geometry is None:
+                raise RuntimeError("Natural Earth reference fixture unexpectedly contains a null geometry")
+            envelopes.append(geometry.GetEnvelope())
         inputs = []
         expected = []
         for index, (start, end) in enumerate([(0, 80), (80, table.num_rows)]):

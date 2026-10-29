@@ -553,7 +553,8 @@ pub(crate) fn relative_file(input: &str, output: &str) -> Result<String> {
             if a != b {
                 return Err(unsupported());
             }
-            keys(&input, &output)
+            // file_path is a logical filesystem path, not URL-escaped transport text.
+            keys(&listing::uri_decode(&input), &listing::uri_decode(&output))
         }
         (Node::Archive { archive: a, kind: ak, inner: input }, Node::Archive { archive: b, kind: bk, inner: output })
             if a == b && ak == bk =>
@@ -593,7 +594,8 @@ pub(crate) fn resolve_file(input: &str, reference: &str) -> Result<String> {
         Node::Url { base, query } => {
             let (scheme, rest) = base.split_once("://").ok_or_else(|| Error::InvalidArgument("invalid source URL".into()))?;
             let (host, key) = rest.split_once('/').unwrap_or((rest, ""));
-            Node::Url { base: format!("{scheme}://{host}/{}", joined(key, reference)?), query }
+            let logical = joined(&listing::uri_decode(key), reference)?;
+            Node::Url { base: format!("{scheme}://{host}/{}", listing::uri_encode(&logical, false)), query }
         }
         Node::Archive { archive, kind, inner } => Node::Archive { archive, kind, inner: joined(&inner, reference)? },
     };
@@ -788,6 +790,10 @@ mod parquet_path_tests {
         assert!(relative_file("https://a.example/part.parquet", "https://b.example/_metadata").is_err());
         assert!(relative_file("https://a.example/part.parquet?token=private", "https://a.example/_metadata").is_err());
         assert!(relative_file("/vsimem/part.parquet", "_metadata").is_err());
-        assert_eq!(resolve_file("https://example.org/p/_metadata", "a%20b.parquet").unwrap(), "https://example.org/p/a%20b.parquet");
+        assert_eq!(resolve_file("https://example.org/p/_metadata", "a b.parquet").unwrap(), "https://example.org/p/a%20b.parquet");
+        assert_eq!(resolve_file("https://example.org/p/_metadata", "a%20b.parquet").unwrap(), "https://example.org/p/a%2520b.parquet");
+        assert_eq!(relative_file("https://example.org/p/a%20b.parquet", "https://example.org/p/_metadata").unwrap(), "a b.parquet");
+        assert_eq!(relative_file("https://example.org/p/a%2520b.parquet", "https://example.org/p/_metadata").unwrap(), "a%20b.parquet");
+        assert_eq!(relative_file("/vsis3/b/p/a%20b.parquet", "/vsis3/b/p/_metadata").unwrap(), "a%20b.parquet");
     }
 }
