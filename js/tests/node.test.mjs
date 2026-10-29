@@ -2332,6 +2332,43 @@ test("palette blend survives windows and in-memory TIFF writes", () => {
   source.free();
 });
 
+test("coordinate-aligned multidimensional mosaics retain lazy source lifetimes", {skip: needs("netcdf-hdf5", "zarr")}, () => {
+  const encode = value => new TextEncoder().encode(JSON.stringify(value));
+  function store(time, base) {
+    const files = {".zgroup": encode({zarr_format: 2}), ".zattrs": encode({})};
+    for (const [name, shape, dimensions, values] of [
+      ["time", [1], ["time"], [BigInt(time)]], ["x", [2], ["x"], [0n, 1n]],
+      ["wind", [1, 2], ["time", "x"], [base, base+1n]],
+      ["extra", [1, 2], ["time", "x"], [base+6n, base+7n]],
+      ["latitude", [1, 2], ["time", "x"], [BigInt(time), BigInt(time)+1n]],
+      ["longitude", [1, 2], ["time", "x"], [1n,2n]],
+    ]) {
+      files[`${name}/.zarray`] = encode({zarr_format: 2, shape, chunks: shape, dtype: "<i8", compressor: null, fill_value: null, order: "C", filters: null});
+      files[`${name}/.zattrs`] = encode({_ARRAY_DIMENSIONS: dimensions, ...(name === "wind" ? {coordinates: "latitude longitude"} : {})});
+      const bytes = new Uint8Array(values.length*8), view = new DataView(bytes.buffer);
+      values.forEach((value,index) => view.setBigInt64(index*8, value, true));
+      files[`${name}/${shape.map(() => 0).join(".")}`] = bytes;
+    }
+    return files;
+  }
+  const base = 9007199254740993n;
+  const a = terrio.openMultidim(store(10, base)), b = terrio.openMultidim(store(17, base+2n));
+  const output = terrio.mosaicMultidim([b, a, store(12, base+4n)], {arrays: ["wind"]});
+  a.free(); b.free();
+  assert.throws(() => output.array("extra"), /no numeric array|not found|missing/);
+  assert.equal(output.array("wind").info().attributes.coordinates, "latitude longitude");
+  assert.deepEqual([...output.array("latitude").read()], [10n,11n,12n,13n,17n,18n]);
+  assert.deepEqual([...output.array("time").read()], [10n,12n,17n]);
+  assert.deepEqual([...output.array("wind").read()], [base,base+1n,base+4n,base+5n,base+2n,base+3n]);
+  const view = output.array("wind").slice("time", 0, 2, 2).transpose(["x", "time"]);
+  assert.deepEqual([...view.read()], [base,base+2n,base+1n,base+3n]);
+  const back = terrio.openMultidim(output.toBytes());
+  assert.deepEqual([...back.array("wind").read()], [...output.array("wind").read()]);
+  assert.throws(() => terrio.mosaicMultidim([], {}), /at least one/);
+  assert.throws(() => terrio.mosaicMultidim([output], {arrays: ["missing"]}), /missing/);
+  output.free(); view.free(); back.free();
+});
+
 test("palette conversion APIs preserve colors, masks and serialized tables", () => {
   const source = terrio.rasterFromArray(new Uint8Array([248, 0, 0, 248, 0, 0]), 2, 1, [10, 1, 0, 20, 0, -1]);
   const colors = [[248, 0, 0, 255], [0, 248, 0, 255]];

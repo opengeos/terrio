@@ -450,6 +450,12 @@ rules with full leader/trailer, row-order and interleaved-mask checks enabled
 for uploaded bytes unless `fullCheck: false` is supplied. External sidecars
 are unavailable for a standalone byte buffer.
 
+`mosaicMultidim(sources, {arrays})` builds a lazy coordinate-aligned
+`MultidimDataset` from dataset handles or uploaded scientific inputs. `arrays`
+selects numeric arrays by path or unambiguous name. Source handles can be freed
+after construction; mosaic views keep the source data alive. See
+[Multidimensional mosaics](cli.md#multidimensional-mosaics) for alignment,
+priority, Int64/UInt64 handling and snapshot formats.
 
 ## Dataset file management
 

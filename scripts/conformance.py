@@ -752,6 +752,42 @@ def suite_dem_calc(ctx):
     )
 
 
+def suite_mdmosaic(ctx):
+    """Coordinate-aligned scientific mosaics against GDAL."""
+    suite = Suite("mdmosaic", "Multidimensional mosaics", "`gdal mdim mosaic`",
+                  "NOAA wind spatial/temporal tiles, gaps, overlap/nodata, nested selection, "
+                  "netCDF/Zarr snapshots, Float32-coordinate gaps, unindexed CF bounds and all ten numeric types: exact coordinate-aligned data values, "
+                  "types, nodata, units and axis names. Descending inputs are normalized for a GDAL "
+                  "3.13.3 invalid-VRT bug. Within tolerance: source group paths retained rather than flattened, "
+                  "and source coordinate values/types retained exactly; GDAL regenerated-grid rounding differences are accepted only where input samples prove the expected value, and gap coordinates must match the rounded reference.")
+    if missing_modules("osgeo", "numpy"):
+        suite.skipped = "needs osgeo and numpy"
+        return suite
+    if shutil.which("gdal") is None or run(["gdal", "mdim", "mosaic", "--help"])[0] != 0:
+        suite.skipped = "needs a GDAL release with the gdal mdim mosaic command"
+        return suite
+    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_mdmosaic_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        if result.get("expected_rejection"):
+            suite.cases.append(Case("Multidimensional mosaics", result["name"], IDENTICAL if result.get("same_rejection") else DIFFERS,
+                                    "both reject; Terrio preserves the absent destination" if result.get("same_rejection") else "rejection differs"))
+            continue
+        classified = dict(result)
+        if result.get("permitted_coordinate_type_difference"):
+            classified["same_type"] = True
+        status, detail = classify_raster(classified)
+        differences = [result.get("path_difference"),result.get("coordinate_difference")]
+        if status in (IDENTICAL,TOLERANCE) and any(differences):
+            status, detail = TOLERANCE, "; ".join(filter(None,[detail,*differences]))
+        suite.cases.append(Case("Multidimensional mosaics", result["name"], status, detail))
+    return suite
+
+
 def suite_multidim(ctx):
     """Native groups, dimensions, slices and snapshots against GDAL MD and xarray."""
     suite = Suite(
@@ -2121,6 +2157,7 @@ SUITES = OrderedDict(
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),
+        ("mdmosaic", suite_mdmosaic),
         ("topology", suite_topology),
         ("vector-geom", suite_vector_geom),
         ("vector-dataset", suite_vector_dataset),

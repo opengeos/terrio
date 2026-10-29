@@ -43,6 +43,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Area | Script | Checks |
 |---|---|---|
 | Dataset summaries | `scripts/compare_with_gdal.py` (`--pixels`) | size, bands, data types, nodata, geotransform, EPSG code, statistics, pixels; layers, feature counts, fields, extents, geometry types |
+| Multidimensional mosaics | `scripts/compare_mdmosaic_with_gdal.py` | NOAA wind spatial tiles, gaps, overlap/nodata priority, irregular time ranges, nested selection, netCDF/Zarr snapshots and all ten numeric types. Exact values/coordinates/types/nodata/units; source-group and Float32 coordinate-type preservation reported within tolerance. Descending GDAL reference inputs are normalized for its invalid-VRT size/offset bug. Registered as `mdmosaic`. |
 | Native multidimensional arrays | `scripts/compare_multidim_with_gdal.py` | GDAL MD and xarray: named axes, indexing variables, native slices/transposes, netCDF/Zarr coordinate/chunk preservation and damaged-unselected-chunk checks |
 | NetCDF and HDF5 subdatasets | `scripts/compare_with_gdal.py --subdatasets` | the subdataset lists of netCDF (groups included) and HDF5 files, HDF5 metadata, then every subdataset's summary and pixels |
 | Histograms | `scripts/compare_hist_with_gdal.py` | `terrio info --hist` vs `gdalinfo -hist` and `-json -hist`, byte for byte, with `-stats` and with histograms stored in `.aux.xml` sidecars, on every data type |
@@ -1216,6 +1217,59 @@ bytes; direct boundary reads read 7,897 bytes, with identical validation
 results and one source-file open per call. The GDAL profile now uses direct
 local reads for full checking. Python uploaded-byte validation borrows immutable
 bytes instead of duplicating the full payload.
+
+## Multidimensional mosaic validation
+
+The multidimensional mosaic HTTP regression serves two chunked numeric Zarr
+stores and counts response bodies after coordinate planning. Reading the full
+6 × 2 × 4 Int64 mosaic fetches 384 bytes in 12 chunk requests/files; reading one
+time step and two X samples fetches 32 bytes in one chunk request/file. Values
+are checked exactly. A separate damaged-chunk regression proves that metadata
+and views outside that source extent do not read the damaged payload.
+
+The multidimensional mosaic suite includes a Float32 0.1-degree coordinate grid
+near 40 degrees with four missing rows, and CF bounds arrays with a shared,
+unindexed size-two axis. Data values require zero tolerance. Float32 coordinate
+preservation checks input samples exactly and permits reference-rounded generated gap
+coordinate values; numeric differences and their maximum magnitude are reported.
+Descending duplicate coordinates, coordinate memory limits before payload reads,
+packing/unit mismatches and scalar Python input rejection have dedicated regressions.
+
+Mosaic regressions reject mismatched CF validity bounds, missing-value markers,
+unsigned interpretation and grid-mapping references. An off-grid singleton mixed
+with a regular series is rejected by both GDAL 3.13.3 and Terrio, while axes
+made entirely from singleton slices retain irregular-coordinate support. The
+registered suite verifies this refusal without creating a Terrio destination.
+
+Mosaic coordinate regressions preserve every supplied Float64 coordinate bit. The GDAL
+comparison checks source coordinate samples exactly; generated gap coordinates match the
+reference after rounding to the source type. GDAL's regenerated grid can differ from stored
+Float32 samples by 3.05e-05 in the NOAA derivative; those coordinate-only differences are
+reported within tolerance, while payload values still require exact equality.
+
+Mosaic selection retains CF coordinate bounds and their indexing variables, rejecting
+missing bounds targets. Nonzero per-row bounds are compared with GDAL's complete
+output: GDAL 3.13.3 drops these dependencies for explicit array selection. Duplicate
+and unsorted common axes are refused by both implementations. Nested selection checks
+require the original `/science/wind` path and exclude a second eligible payload.
+Equivalent integer/float metadata values are accepted without rounding large integers;
+conflicting or missing `_CRS` attributes are rejected.
+
+Mosaic dependency planning retains two-dimensional auxiliary coordinates, bounds and
+scalar CRS definitions before accessing payloads. Bounds/auxiliary references must resolve
+to consistent array paths across contributors; scalar CRS aliases are accepted only when
+their metadata agrees. Extended grid-mapping coordinate tuples retain their declared order.
+Tests cover conflicting CRS aliases, shadowed group names, missing dependencies and damaged
+auxiliary payloads that remain unread until requested. Python/Node tests and netCDF/Zarr
+round trips verify the dependency closure. The GDAL comparison checks actual bounds links,
+source samples even where GDAL agrees, and exclusion of unselected two-dimensional arrays.
+
+References retain local names when unambiguous and use absolute paths to prevent rebinding
+by merged groups, following [CF group scoping](https://cfconventions.org/Data/cf-conventions/cf-conventions-1.8/cf-conventions.html#groups).
+Terrio reopens these paths correctly. GDAL 3.13.3's `GetCoordinateVariables` does not resolve
+absolute coordinate names; automatic discovery can omit such cross-group references,
+although the arrays and reference attributes remain readable. Same-group auxiliary
+coordinate discovery is checked independently through GDAL for both snapshot formats.
 
 ## Dataset identification (#289)
 
