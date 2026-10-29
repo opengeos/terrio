@@ -53,11 +53,11 @@ pub fn repack(path: &str) -> Result<RepackReport> {
         match crate::vfs::Location::parse(path) {
             crate::vfs::Location::Local(path) if crate::memfs::is_virtual(&path) => {
                 let name = path.to_str().ok_or_else(|| Error::InvalidArgument("memory path must be UTF-8".into()))?;
-                let before = crate::vsi::read(name)?;
-                let after = repack_bytes(&before)?;
-                let result = report(&before, &after);
-                crate::vsi::write(name, &after)?;
-                Ok(result)
+                crate::vsi::transform_memory(name, |before| {
+                    let after = repack_bytes(before)?;
+                    let result = report(before, &after);
+                    Ok((after, result))
+                })
             }
             crate::vfs::Location::Local(path) => {
                 if cfg!(target_family = "wasm") {
@@ -181,5 +181,18 @@ mod tests {
                 std::fs::remove_file(&sidecar).unwrap();
             }
         }
+    }
+    #[test]
+    fn memory_repack_does_not_overwrite_a_concurrent_update() {
+        let name = "/vsimem/repack-concurrent.gpkg";
+        crate::vsi::write(name, &sample()).unwrap();
+        let result = crate::vsi::transform_memory(name, |before| {
+            let after = repack_bytes(before)?;
+            crate::vsi::write(name, b"newer writer")?;
+            Ok((after, ()))
+        });
+        assert!(result.is_err(), "stale compaction must fail");
+        assert_eq!(crate::vsi::read(name).unwrap(), b"newer writer");
+        crate::vsi::delete(name, false).unwrap();
     }
 }

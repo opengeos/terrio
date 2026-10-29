@@ -932,7 +932,14 @@ impl Editor {
         // 1. The journal: the original pages, synced, then its record count, synced.
         let journal_path = with_suffix(&self.path, "-journal");
         let nonce = nonce();
-        let mut journal = OpenOptions::new().write(true).create(true).truncate(true).open(&journal_path)?;
+        // Under the database's exclusive lock, any remaining entry is cold/stale. Unlink
+        // the entry rather than opening its target; create_new also closes the subsequent race.
+        match std::fs::remove_file(&journal_path) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+        let mut journal = OpenOptions::new().write(true).create_new(true).open(&journal_path)?;
         let mut header = vec![0u8; SECTOR];
         header[..8].copy_from_slice(&JOURNAL_MAGIC);
         header[12..16].copy_from_slice(&nonce.to_be_bytes());
@@ -1143,6 +1150,20 @@ fn read_journal(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
+/// A main-file-only rewrite cannot incorporate committed frames from a pending WAL.
+pub(crate) fn ensure_no_wal(path: &Path) -> Result<()> {
+    let wal = with_suffix(path, "-wal");
+    match std::fs::symlink_metadata(&wal) {
+        Ok(metadata) if !metadata.file_type().is_file() || metadata.len() > 0 => Err(Error::Unsupported(format!(
+            "{}: the database has a write-ahead log; open it with SQLite to recover/checkpoint it first",
+            path.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Whether a hot journal (one an interrupted transaction left) goes with the database file.
 pub(crate) fn has_hot_journal(path: &Path) -> Result<bool> {
     Ok(read_journal(path)?.is_some_and(|j| journal_pages(&j).is_some()))
@@ -1259,6 +1280,29 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(Editor::open_repack(&link).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), original);
+    }
+
+    #[test]
+    fn journal_links_planted_after_open_cannot_overwrite_foreign_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.db");
+        let foreign = dir.path().join("foreign.bin");
+        let journal = with_suffix(&target, "-journal");
+        for hard in [false, true] {
+            let original = sample(3);
+            std::fs::write(&target, &original).unwrap();
+            std::fs::write(&foreign, b"foreign data must remain").unwrap();
+            let compact = crate::drivers::sqlite_repack::compact(&original).unwrap();
+            let mut editor = Editor::open_repack(&target).unwrap().unwrap();
+            editor.replace_image(original, compact).unwrap();
+            if hard {
+                std::fs::hard_link(&foreign, &journal).unwrap();
+            } else {
+                std::os::unix::fs::symlink(&foreign, &journal).unwrap();
+            }
+            editor.commit().unwrap();
+            assert!(std::fs::read(&foreign).unwrap() == b"foreign data must remain", "foreign bytes changed");
+        }
     }
 
     #[test]

@@ -4,10 +4,12 @@
 //! added, and everything else in the file kept: other layers, rasters, metadata, extensions,
 //! triggers and views.
 //!
-//! Files are changed in place (see [`super::gpkg_inplace`]). Those that cannot be (a write-ahead
-//! log, auto-vacuum, triggers this module does not emulate) and GeoPackages held in memory are
+//! Files are changed in place (see [`super::gpkg_inplace`]). Those that cannot be (auto-vacuum
+//! or triggers this module does not emulate) and GeoPackages held in memory are
 //! read whole (every table's rows as stored, every index, trigger and view) and written anew;
-//! a file is then renamed over the original. Files with tables or indexes that cannot be
+//! a file is then renamed over the original. A pending WAL must be checkpointed with SQLite
+//! first; rewriting only the main file would lose committed changes. Files with tables or indexes
+//! that cannot be
 //! rewritten (`WITHOUT ROWID` tables, indexes on expressions, UTF-16 text) or that a hot
 //! rollback journal goes with are left untouched, with an error.
 
@@ -68,7 +70,10 @@ fn real(v: &w::Value) -> Option<f64> {
 /// are written, in a transaction protected by a rollback journal); files that cannot be changed
 /// that way are rewritten, the new file replacing the original once complete.
 pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
-    if super::gpkg_inplace::update_in_place(std::path::Path::new(path), layers, mode)? {
+    let resolved = std::fs::canonicalize(path)?;
+    let path = resolved.to_str().ok_or_else(|| Error::InvalidArgument("GeoPackage path must be UTF-8".into()))?;
+    crate::drivers::sqlite_edit::ensure_no_wal(&resolved)?;
+    if super::gpkg_inplace::update_in_place(&resolved, layers, mode)? {
         return Ok(());
     }
     rewrite(path, layers, mode)
@@ -79,6 +84,7 @@ pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
 /// files are not changed in place) a transaction interrupted cannot be told from one under way,
 /// and the journal, left next to the new file, would be rolled back over it.
 fn rewrite(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
+    crate::drivers::sqlite_edit::ensure_no_wal(std::path::Path::new(path))?;
     if crate::drivers::sqlite_edit::has_hot_journal(std::path::Path::new(path))? {
         return Err(Error::Unsupported(format!(
             "{path}: the database has a hot rollback journal (a transaction interrupted or under way); \
@@ -730,6 +736,21 @@ mod tests {
         assert_eq!(layers.iter().map(|l| (l.name.as_str(), l.len())).collect::<Vec<_>>(), [("a", 500), ("b", 2), ("c", 3)]);
         assert_eq!(layers[1].features[0].fid, 1);
         assert_eq!(layers[2].crs_epsg(), Some(4326));
+    }
+
+    #[test]
+    fn rewrite_refuses_pending_wal_without_touching_either_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wal.gpkg");
+        let base = super::super::geopackage::to_bytes(&[layer("a", 3, 0.0)]).unwrap();
+        std::fs::write(&path, &base).unwrap();
+        let wal = dir.path().join("wal.gpkg-wal");
+        std::fs::write(&wal, b"pending committed frames").unwrap();
+        assert!(rewrite(path.to_str().unwrap(), &[layer("a", 2, 10.0)], UpdateMode::Append).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), base);
+        assert_eq!(std::fs::read(&wal).unwrap(), b"pending committed frames");
+        std::fs::write(&wal, []).unwrap();
+        rewrite(path.to_str().unwrap(), &[layer("a", 2, 10.0)], UpdateMode::Append).unwrap();
     }
 
     #[test]

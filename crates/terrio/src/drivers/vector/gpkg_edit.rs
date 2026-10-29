@@ -71,10 +71,7 @@ pub(crate) fn modify_file<T>(path: &str, f: impl FnOnce(&mut Database) -> Result
             "'{path}' has a hot rollback journal (a transaction interrupted or under way); open it with SQLite to recover it first"
         )));
     }
-    let wal = format!("{path}-wal");
-    if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
-        return Err(Error::Unsupported(format!("'{path}' has a write-ahead log: checkpoint it with SQLite first")));
-    }
+    crate::drivers::sqlite_edit::ensure_no_wal(p)?;
     let (bytes, value) = modify_bytes(std::fs::read(p)?, f)?;
     use std::io::Write;
     let mut tmp = tempfile::NamedTempFile::new_in(p.parent().unwrap_or(Path::new(".")))?;

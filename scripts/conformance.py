@@ -779,6 +779,9 @@ def suite_gpkg_repack(ctx):
     if missing_modules("osgeo"):
         suite.skipped="needs osgeo"
         return suite
+    if shutil.which("gdal") is None:
+        suite.skipped="needs gdal executable"
+        return suite
     code,out,err=run([sys.executable,str(SCRIPTS/"compare_gpkg_repack_with_gdal.py"),ctx.data,"--terrio",ctx.terrio,"--json"])
     try:
         results=json.loads(out)

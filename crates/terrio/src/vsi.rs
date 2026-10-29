@@ -1146,6 +1146,19 @@ pub fn write(path: &str, bytes: &[u8]) -> Result<()> {
     }
 }
 
+/// Compute outside the memory-store lock, then conditionally install the same image version.
+#[cfg(feature = "sqlite")]
+pub(crate) fn transform_memory<T>(path: &str, operation: impl FnOnce(&[u8]) -> Result<(Vec<u8>, T)>) -> Result<T> {
+    let Node::Mem(key) = Node::parse(path)? else {
+        return Err(Error::InvalidArgument("expected a /vsimem/ file".into()));
+    };
+    let path = Path::new(&key);
+    let snapshot = crate::memfs::read_shared(path)?;
+    let (bytes, value) = operation(snapshot.as_ref())?;
+    crate::memfs::replace_if_unchanged(path, &snapshot, bytes)?;
+    Ok(value)
+}
+
 /// Writes a local file through a temporary file in the same directory, renamed into place once
 /// complete: a failure leaves any existing file as it was.
 fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Result<()>) -> Result<()> {
