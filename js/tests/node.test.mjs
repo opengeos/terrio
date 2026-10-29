@@ -2364,6 +2364,21 @@ test("GeoPackage repack preserves real features in bytes and memory", { skip: !D
   }
 });
 
+test("GeoPackage repack accepts opaque uploaded filenames", { skip: !DATA || needs("sqlite") }, () => {
+  const path = "/vsimem/gpkg-repack-upload.zip";
+  const bytes = readFileSync(join(DATA, "countries.gpkg"));
+  terrio.vsiWrite(path, bytes);
+  try {
+    const report = terrio.gpkgRepack(path);
+    const compact = terrio.vsiRead(path);
+    assert.equal(report.bytes_after, compact.length);
+    const actual = terrio.open(compact, "compact.gpkg");
+    const expected = terrio.open(bytes, "source.gpkg");
+    assert.deepEqual(actual.toGeoJSON(), expected.toGeoJSON());
+    actual.free(); expected.free();
+  } finally { terrio.vsiDelete(path); }
+});
+
 test("palette conversion APIs preserve colors, masks and serialized tables", () => {
   const source = terrio.rasterFromArray(new Uint8Array([248, 0, 0, 248, 0, 0]), 2, 1, [10, 1, 0, 20, 0, -1]);
   const colors = [[248, 0, 0, 255], [0, 248, 0, 255]];

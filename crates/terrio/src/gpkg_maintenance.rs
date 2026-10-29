@@ -52,16 +52,16 @@ pub fn repack(path: impl AsRef<std::path::Path>) -> Result<RepackReport> {
     #[cfg(feature = "sqlite")]
     {
         let path = path.as_ref();
+        if crate::memfs::is_virtual(path) {
+            let name = path.to_str().ok_or_else(|| Error::InvalidArgument("memory path must be UTF-8".into()))?;
+            return crate::vsi::transform_memory(name, |before| {
+                let after = repack_bytes(before)?;
+                let result = report(before, &after);
+                Ok((after, result))
+            });
+        }
         let location = path.to_str().map(crate::vfs::Location::parse).unwrap_or_else(|| crate::vfs::Location::Local(path.to_path_buf()));
         match location {
-            crate::vfs::Location::Local(path) if crate::memfs::is_virtual(&path) => {
-                let name = path.to_str().ok_or_else(|| Error::InvalidArgument("memory path must be UTF-8".into()))?;
-                crate::vsi::transform_memory(name, |before| {
-                    let after = repack_bytes(before)?;
-                    let result = report(before, &after);
-                    Ok((after, result))
-                })
-            }
             crate::vfs::Location::Local(path) => {
                 if cfg!(target_family = "wasm") {
                     return Err(Error::Unsupported("GeoPackage repack in WebAssembly needs /vsimem/ or the bytes API".into()));
@@ -145,6 +145,18 @@ mod tests {
         assert!(repack_bytes(&crate::vsi::read(spaced).unwrap()).is_ok());
         crate::vsi::delete(spaced, false).unwrap();
         crate::vsi::delete(plain, false).unwrap();
+    }
+
+    #[test]
+    fn memory_repack_accepts_an_archive_like_filename() {
+        let name = "/vsimem/gpkg-repack-snapshot.zip";
+        crate::vsi::write(name, &sample()).unwrap();
+        let result = repack(name);
+        let bytes = crate::vsi::read(name).unwrap();
+        crate::vsi::delete(name, false).unwrap();
+        let report = result.unwrap();
+        assert_eq!(report.bytes_after, bytes.len() as u64);
+        assert_eq!(crate::drivers::sqlite::Db::new(bytes).unwrap().table("notes").unwrap().rows.len(), 2);
     }
 
     #[test]

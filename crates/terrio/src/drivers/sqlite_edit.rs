@@ -1253,6 +1253,10 @@ pub(crate) fn open_consistent(path: &Path) -> Result<crate::drivers::sqlite::Db>
 /// Plays back a hot journal left by an interrupted transaction: the original pages are written
 /// back and the file truncated to its original size, then the journal is deleted.
 fn recover(file: &mut File, path: &Path) -> Result<()> {
+    recover_with_sync(file, path, sync_dir)
+}
+
+fn recover_with_sync(file: &mut File, path: &Path, mut sync_directory: impl FnMut(&Path) -> std::io::Result<()>) -> Result<()> {
     let journal_path = with_suffix(path, "-journal");
     let Some(journal) = read_journal(path)? else { return Ok(()) };
     let Some((original, page_size, pages)) = journal_pages(&journal) else {
@@ -1260,6 +1264,8 @@ fn recover(file: &mut File, path: &Path) -> Result<()> {
         let _ = std::fs::remove_file(&journal_path);
         return Ok(());
     };
+    // Refuse unsupported or inaccessible directory synchronization before replaying pages.
+    sync_directory(path)?;
     for (pgno, data) in pages.iter().rev() {
         file.seek(SeekFrom::Start((*pgno as u64 - 1) * page_size as u64))?;
         file.write_all(data)?;
@@ -1269,7 +1275,8 @@ fn recover(file: &mut File, path: &Path) -> Result<()> {
     }
     file.sync_all()?;
     std::fs::remove_file(&journal_path)?;
-    sync_dir(path)?;
+    sync_directory(path)
+        .map_err(|error| std::io::Error::new(error.kind(), format!("SQLite recovery completed but durability is unconfirmed: {error}")))?;
     Ok(())
 }
 
@@ -1447,6 +1454,38 @@ mod tests {
         let table = database.table("t").unwrap();
         assert_eq!(table.rows.len(), 2);
         assert_eq!(table.rows[1][1], crate::drivers::sqlite::Value::Text("committed".into()));
+    }
+
+    #[test]
+    fn recovery_sync_failures_preserve_or_report_the_completed_rollback() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("recover-sync.db");
+        let original = sample(3);
+        std::fs::write(&path, &original).unwrap();
+        let root = root_of(&path);
+        let mut editor = Editor::open(&path).unwrap().unwrap();
+        editor.insert(root, 4, &w::record(&[w::Value::Null, w::Value::Text("interrupted".into())])).unwrap();
+        editor.commit_until(Stage::Written).unwrap();
+        let written = std::fs::read(&path).unwrap();
+        assert_ne!(written, original);
+        let journal_path = with_suffix(&path, "-journal");
+        let journal = std::fs::read(&journal_path).unwrap();
+        let mut file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let error = recover_with_sync(&mut file, &path, |_| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))).unwrap_err();
+        assert!(matches!(error, Error::Io(ref error) if error.kind() == std::io::ErrorKind::PermissionDenied));
+        assert_eq!(std::fs::read(&path).unwrap(), written);
+        assert_eq!(std::fs::read(&journal_path).unwrap(), journal);
+        let mut calls = 0;
+        let error = recover_with_sync(&mut file, &path, |_| {
+            calls += 1;
+            if calls == 2 { Err(std::io::Error::other("final sync failed")) } else { Ok(()) }
+        })
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(error.to_string().contains("recovery completed"));
+        assert!(error.to_string().contains("durability is unconfirmed"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!journal_path.exists());
     }
 
     #[test]

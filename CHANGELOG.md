@@ -64,9 +64,9 @@
   still apply their file-list whitespace rules.
 - Native Unix SQLite in-place append/update and recovery propagate parent-directory open/fsync
   failures. Filesystems without directory fsync support can fail before page writes. An error
-  after journal deletion reports committed changes with unconfirmed durability; do not blindly
-  retry an append. Native append also refuses linked/special journal, WAL and shared-memory
-  sidecars before recovery.
+  after journal deletion reports committed changes or completed recovery with unconfirmed
+  durability; do not blindly retry an append. Native append also refuses linked/special
+  journal, WAL and shared-memory sidecars before recovery.
 - Signed S3 uploads of local files over 8 MiB over HTTPS use `UNSIGNED-PAYLOAD`
   (#335). An S3-compatible service, or a bucket policy, that refuses it now
   rejects those uploads; they can be sent over plain HTTP to keep a signed

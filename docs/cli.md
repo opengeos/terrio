@@ -2355,7 +2355,8 @@ recovery; it never replays a journal through a symbolic link or hard-link alias.
 Unix directory-sync requirements also apply to existing native SQLite in-place edits and
 recovery, including append/update. Unreadable directories and filesystems rejecting directory
 fsync can fail before page writes. A sync failure after journal deletion explicitly reports
-that changes committed but durability is unconfirmed; callers must not blindly retry an append.
+that changes committed or recovery completed but durability is unconfirmed; callers must not
+blindly retry an append.
 Native append/update follows filename symlinks to their target and checks that target's WAL.
 
 The rollback journal can approach the original file size, plus per-page record headers.
