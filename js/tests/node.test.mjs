@@ -2378,3 +2378,19 @@ test("dataset TIFF copies preserve bytes without loading pixel codecs", () => {
     assert.throws(() => terrio.datasetRename(`${root}/source.tif`, `${root}/source.tif`, {overwrite:true}), /overlap/);
   } finally { raster.free(); terrio.vsiDelete(root, {recursive:true}); }
 });
+
+test("dataset VRT references require explicit external scope permission", () => {
+  const root = "/vsimem/js-vrt-reference-scope";
+  const source = `${root}/inputs/source.vrt`, output = `${root}/copy.vrt`;
+  const encode = text => new TextEncoder().encode(text);
+  terrio.vsiWrite(`${root}/source.raw`, new Uint8Array([1,2,3,4]));
+  terrio.vsiWrite(source, encode(`<VRTDataset rasterXSize="2" rasterYSize="2"><VRTRasterBand band="1" dataType="Byte" subClass="VRTRawRasterBand"><SourceFilename relativeToVRT="0">${root}/source.raw</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>1</PixelOffset><LineOffset>2</LineOffset></VRTRasterBand></VRTDataset>`));
+  try {
+    assert.throws(() => terrio.datasetCopy(source, output), /source directory tree/);
+    assert.equal(terrio.vsiStat(output), null);
+    const report = terrio.datasetCopy(source, output, {allowExternalReferences:true});
+    assert.deepEqual(report.recovery_files, []);
+    assert.deepEqual(terrio.vsiRead(`${root}/copy.raw`), new Uint8Array([1,2,3,4]));
+    assert.ok(terrio.vsiStat(`${root}/source.raw`));
+  } finally { terrio.vsiDelete(root, {recursive:true}); }
+});

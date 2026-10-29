@@ -209,6 +209,37 @@ impl OverlapIndex {
         self.query(path, true, true)
     }
 }
+/// Confine VRT dependencies to the requested source directory, including the
+/// actual native target of links. Virtual keys with dot segments are refused;
+/// callers can explicitly trust external references instead.
+pub(crate) fn in_source_tree(reference: &str, source: &str) -> Result<bool> {
+    fn parent(path: &str) -> &str {
+        path.rsplit_once('/').map_or("", |(parent, _)| parent)
+    }
+    fn below(reference: &str, source: &str) -> bool {
+        let clean = |path: &str| !path.split(['/', '\\']).any(|part| matches!(part, "." | ".."));
+        let directory = parent(source);
+        clean(reference) && clean(source) && (directory.is_empty() || reference.starts_with(&format!("{directory}/")))
+    }
+    let (reference, source) = (Node::parse(reference)?, Node::parse(source)?);
+    Ok(match (reference, source) {
+        (Node::Local(reference), Node::Local(source)) => {
+            let source_parent = source.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            let directory = std::fs::canonicalize(source_parent)?;
+            std::fs::canonicalize(reference)?.starts_with(directory)
+        }
+        (Node::Mem(reference), Node::Mem(source)) => below(&reference, &source),
+        (Node::S3 { bucket: a, key: reference }, Node::S3 { bucket: b, key: source }) => a == b && below(&reference, &source),
+        (Node::Url { base: reference, .. }, Node::Url { base: source, .. }) => {
+            let (reference, source) = (listing::uri_decode(&reference), listing::uri_decode(&source));
+            below(&reference, &source)
+        }
+        (Node::Archive { archive: a, kind: ak, inner: reference }, Node::Archive { archive: b, kind: bk, inner: source }) => {
+            ak == bk && a == b && below(&reference, &source)
+        }
+        _ => false,
+    })
+}
 pub(crate) fn same_name(a: &str, b: &str) -> Result<bool> {
     let (a, b) = (Node::parse(a)?, Node::parse(b)?);
     if let (Node::Local(a), Node::Local(b)) = (&a, &b) {
@@ -533,6 +564,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reference_trees_confine_virtual_roots_hosts_archives_and_encoded_traversal() {
+        for (reference, source) in [
+            ("/vsimem/work/source.raw", "/vsimem/work/source.vrt"),
+            ("s3://bucket/source.raw", "s3://bucket/source.vrt"),
+            ("https://example.invalid/work/sub/source.tif", "https://example.invalid/work/source.vrt"),
+            ("/vsizip/{/vsimem/archive.zip}/source.tif", "/vsizip/{/vsimem/archive.zip}/source.vrt"),
+        ] {
+            assert!(in_source_tree(reference, source).unwrap(), "{reference}");
+        }
+        for (reference, source) in [
+            ("/vsimem/work2/source.raw", "/vsimem/work/source.vrt"),
+            ("/vsimem/work/../source.raw", "/vsimem/work/source.vrt"),
+            ("s3://other/source.raw", "s3://bucket/source.vrt"),
+            ("https://elsewhere.invalid/work/source.tif", "https://example.invalid/work/source.vrt"),
+            ("https://example.invalid/work/%2e%2e/private.tif", "https://example.invalid/work/source.vrt"),
+            ("/vsizip/{/vsimem/other.zip}/source.tif", "/vsizip/{/vsimem/archive.zip}/source.vrt"),
+            ("/etc/private.raw", "/vsimem/work/source.vrt"),
+        ] {
+            assert!(!in_source_tree(reference, source).unwrap_or(false), "{reference}");
+        }
+    }
     #[test]
     fn virtual_overlap_queries_preserve_roots_queries_and_name_boundaries() {
         let inputs = vec![

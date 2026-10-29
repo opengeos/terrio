@@ -1217,7 +1217,12 @@ rollback, unavailable VRT references, raw VRT sources and CDATA/entity handling.
 CLI/MCP, release-wheel Python and release WASM tests exercise the public surfaces.
 
 VRT rename moves owned definitions but copies referenced assets, preserving other
-users of those assets. The suite verifies native and read-only HTTP dependencies.
+users of those assets. The suite verifies native and read-only HTTP dependencies; HTTP references use
+explicit external-reference permission. Core and binding regressions reject default
+outside-tree references, symlink escapes, linked directory payloads and unrecognized
+non-raw files. A permission-denied cleanup regression checks successful committed
+copy/delete reports and structured recovery paths. Shared companion overwrite tests
+include an absent target primary with a `.prj` still owned by another dataset.
 VRT/GML definitions with no rebased references retain their original bytes.
 
 Archive inventory probes serve the same padded 8 MiB TIFF from stored and deflated

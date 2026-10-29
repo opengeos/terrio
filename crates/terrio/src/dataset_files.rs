@@ -16,6 +16,8 @@ pub struct FileOptions {
     pub format: Option<String>,
     /// Replace an existing destination and its obsolete companion files.
     pub overwrite: bool,
+    /// Allow trusted VRT references outside the source directory tree.
+    pub allow_external_references: bool,
 }
 fn paths_json<S: Serializer>(paths: &[String], serializer: S) -> std::result::Result<S::Ok, S::Error> {
     paths.iter().map(|s| vsi::listing::redact_url(s).into_owned()).collect::<Vec<_>>().serialize(serializer)
@@ -48,6 +50,16 @@ pub struct FileReport {
     /// Bytes copied for new files; native same-filesystem moves copy no payload bytes.
     /// Backup and rollback work is excluded.
     pub bytes: u64,
+    /// Staged files left after a committed operation whose cleanup failed.
+    /// The operation succeeded; callers can remove these recovery files separately.
+    #[serde(serialize_with = "paths_json")]
+    pub recovery_files: Vec<String>,
+}
+impl FileReport {
+    /// Cleanup locations with credentials redacted for text output.
+    pub fn recovery_names(&self) -> Vec<String> {
+        self.recovery_files.iter().map(|path| vsi::listing::redact_url(path).into_owned()).collect()
+    }
 }
 fn invalid(message: impl Into<String>) -> Error {
     Error::InvalidArgument(message.into())
@@ -404,7 +416,7 @@ fn remember_files(inventory: &FileSet, main: &str, graph: &mut FileGraph) -> Res
 }
 /// Inventory VRT reference paths without opening pixel codecs. Owned-file queries and
 /// deletion deliberately never enter this graph. Only descriptions are held in memory.
-fn vrt_dependencies(path: &str, files: &mut Vec<String>, graph: &mut FileGraph) -> Result<()> {
+fn vrt_dependencies(path: &str, scope: &str, allow_external: bool, files: &mut Vec<String>, graph: &mut FileGraph) -> Result<()> {
     use quick_xml::{Reader, events::Event};
     if graph.active.len() >= 128 {
         return Err(Error::Unsupported("VRT file-set references exceed 128 levels".into()));
@@ -445,6 +457,11 @@ fn vrt_dependencies(path: &str, files: &mut Vec<String>, graph: &mut FileGraph) 
                 let name = reference_text(&mut reader)?;
                 let reference = crate::ops::vrt::resolve_reference(path, &name, relative);
                 let physical = crate::ops::vrt::subdataset_parts(&reference)?.map_or(reference.as_str(), |(_, file, _)| file);
+                if !allow_external && !location::in_source_tree(physical, scope)? {
+                    return Err(invalid(
+                        "VRT reference leaves the source directory tree; enable allow_external_references only for trusted references",
+                    ));
+                }
                 let raw = bands.last().copied().unwrap_or(false);
                 let physical_key = location::name_key(physical)?;
                 if graph.active.contains(&physical_key) {
@@ -464,11 +481,25 @@ fn vrt_dependencies(path: &str, files: &mut Vec<String>, graph: &mut FileGraph) 
                     graph.completed.insert((physical_key, true));
                     continue;
                 }
-                let inventory = inventory(physical, None)?.unwrap_or_else(|| FileSet {
-                    driver: String::new(),
-                    files: vec![physical.into()],
-                    directory: false,
-                });
+                let inventory = inventory(physical, None)?
+                    .ok_or_else(|| Error::Unsupported("non-raw VRT reference is not a recognized dataset".into()))?;
+                // A driver's inventory can include companions reached through
+                // links or metadata; confine those paths before reading/copying.
+                if !allow_external {
+                    for file in &inventory.files {
+                        if !location::in_source_tree(file, scope)? {
+                            return Err(invalid("VRT companion leaves the source directory tree"));
+                        }
+                        if inventory.directory {
+                            for entry in vsi::list(file, &vsi::ListOptions { recursive: true, ..Default::default() })? {
+                                let child = location::child(file, &entry.name)?;
+                                if !location::in_source_tree(&child, scope)? {
+                                    return Err(invalid("VRT directory dependency leaves the source directory tree"));
+                                }
+                            }
+                        }
+                    }
+                }
                 remember_files(&inventory, physical, graph)?;
                 let nested = inventory.driver == "VRT";
                 for file in inventory.files {
@@ -477,7 +508,7 @@ fn vrt_dependencies(path: &str, files: &mut Vec<String>, graph: &mut FileGraph) 
                     }
                 }
                 if nested {
-                    vrt_dependencies(physical, files, graph)?;
+                    vrt_dependencies(physical, scope, allow_external, files, graph)?;
                 }
                 graph.completed.insert((physical_key, false));
             }
@@ -657,18 +688,8 @@ fn rewrite(path: &str, names: &HashMap<location::NameKey, String>, driver: &str)
     }
     Ok(None)
 }
-fn cleanup<'a>(paths: impl Iterator<Item = &'a str>, action: &str) -> Result<()> {
-    let mut failures = Vec::new();
-    for path in paths {
-        if let Err(error) = vsi::delete(path, true) {
-            failures.push(format!("'{}': {error}", vsi::listing::redact_url(path)));
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::InvalidData(format!("{action}; staged cleanup failed; recovery files: {}", failures.join("; "))))
-    }
+fn cleanup<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
+    paths.filter(|path| vsi::delete(path, true).is_err()).map(str::to_owned).collect()
 }
 fn backup_to(source: &str, staged: &str, recovery: &mut Vec<String>) -> Result<()> {
     if let Err(error) = location::rename(source, staged) {
@@ -732,7 +753,7 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
     }
     remember_files(&inventory, source, &mut graph)?;
     if inventory.driver == "VRT" {
-        vrt_dependencies(source, &mut sources, &mut graph)?;
+        vrt_dependencies(source, source, options.allow_external_references, &mut sources, &mut graph)?;
     }
     if rename {
         check_shared_ownership(&inventory, &inventory.files)?;
@@ -802,6 +823,8 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
             if !options.overwrite {
                 return Err(invalid("dataset companion destination exists; use overwrite to replace it"));
             }
+            let companion = FileSet { driver: String::new(), files: vec![item.target.clone()], directory: false };
+            check_shared_ownership(&companion, &obsolete)?;
             obsolete.push(item.target.clone());
         }
     }
@@ -855,11 +878,8 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
         }
         return Err(Error::InvalidData(format!("{error}; rollback incomplete; recovery files: {}", failed.join(", "))));
     }
-    cleanup(
-        backups.iter().map(|b| b.staged.as_str()).chain(items.iter().filter_map(|item| item.original.as_deref())),
-        "dataset transfer committed",
-    )?;
-    Ok(FileReport { driver: inventory.driver, files: items.into_iter().map(|item| item.target).collect(), bytes })
+    let recovery_files = cleanup(backups.iter().map(|b| b.staged.as_str()).chain(items.iter().filter_map(|item| item.original.as_deref())));
+    Ok(FileReport { driver: inventory.driver, files: items.into_iter().map(|item| item.target).collect(), bytes, recovery_files })
 }
 /// Copies a dataset and its companion files, preserving encoded payload bytes.
 pub fn copy(source: &str, target: &str, options: &FileOptions) -> Result<FileReport> {
@@ -927,8 +947,11 @@ pub fn delete_many(paths: &[String], format: Option<&str>) -> Result<Vec<FileRep
         }
         return Err(Error::InvalidData(format!("{error}; rollback incomplete; recovery files: {}", failed.join(", "))));
     }
-    cleanup(backups.iter().map(|b| b.staged.as_str()), "dataset deletion committed")?;
-    Ok(inventories.into_iter().map(|inventory| FileReport { driver: inventory.driver, files: inventory.files, bytes: 0 }).collect())
+    let recovery_files = cleanup(backups.iter().map(|b| b.staged.as_str()));
+    Ok(inventories
+        .into_iter()
+        .map(|inventory| FileReport { driver: inventory.driver, files: inventory.files, bytes: 0, recovery_files: recovery_files.clone() })
+        .collect())
 }
 
 #[cfg(test)]
@@ -944,6 +967,119 @@ mod tests {
         let path = format!("{root}/{name}.csv");
         put(&path, b"x,y,name\n1,2,first\n3,4,second\n");
         path
+    }
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn vrt_references_cannot_export_files_outside_the_source_tree_without_opt_in() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_dir = directory.path().join("inputs");
+        std::fs::create_dir(&source_dir).unwrap();
+        let source = source_dir.join("source.vrt");
+        let data = directory.path().join("source.raw");
+        let target = directory.path().join("copied.vrt");
+        std::fs::write(&data, [1, 2, 3, 4]).unwrap();
+        let definition = |name: &str, raw: bool| {
+            format!(
+                "<VRTDataset rasterXSize='2' rasterYSize='2'><VRTRasterBand band='1' dataType='Byte' subClass='{}'><SourceFilename relativeToVRT='1'>{name}</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>1</PixelOffset><LineOffset>2</LineOffset></VRTRasterBand></VRTDataset>",
+                if raw { "VRTRawRasterBand" } else { "VRTSourcedRasterBand" }
+            )
+        };
+        for reference in ["../source.raw".to_owned(), data.to_str().unwrap().to_owned()] {
+            std::fs::write(&source, definition(&reference, true)).unwrap();
+            assert!(
+                copy(source.to_str().unwrap(), target.to_str().unwrap(), &Default::default())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("source directory tree")
+            );
+            assert!(!target.exists());
+        }
+        copy(source.to_str().unwrap(), target.to_str().unwrap(), &FileOptions { allow_external_references: true, ..Default::default() })
+            .unwrap();
+        assert_eq!(std::fs::read(directory.path().join("copied.raw")).unwrap(), [1, 2, 3, 4]);
+        assert!(data.exists());
+        std::fs::remove_file(&target).unwrap();
+        std::fs::write(source_dir.join("source.raw"), [1, 2, 3, 4]).unwrap();
+        std::fs::write(&source, definition("source.raw", false)).unwrap();
+        assert!(
+            copy(
+                source.to_str().unwrap(),
+                target.to_str().unwrap(),
+                &FileOptions { allow_external_references: true, ..Default::default() }
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("not a recognized dataset")
+        );
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(source_dir.join("source.raw")).unwrap();
+            std::os::unix::fs::symlink(&data, source_dir.join("source.raw")).unwrap();
+            std::fs::write(&source, definition("source.raw", true)).unwrap();
+            assert!(copy(source.to_str().unwrap(), target.to_str().unwrap(), &Default::default()).is_err());
+            assert!(!target.exists());
+        }
+    }
+
+    #[test]
+    #[cfg(all(unix, feature = "zarr"))]
+    fn vrt_directory_dependency_links_are_confined_before_copying() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("inputs");
+        let store = input.join("source.zarr");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join(".zgroup"), b"{\"zarr_format\":2}").unwrap();
+        let outside = directory.path().join("source.raw");
+        std::fs::write(&outside, [1, 2, 3, 4]).unwrap();
+        std::os::unix::fs::symlink(&outside, store.join("linked")).unwrap();
+        let source = input.join("source.vrt");
+        std::fs::write(&source, b"<VRTDataset rasterXSize='1' rasterYSize='1'><VRTRasterBand band='1' dataType='Byte'><SimpleSource><SourceFilename relativeToVRT='1'>source.zarr</SourceFilename></SimpleSource></VRTRasterBand></VRTDataset>").unwrap();
+        let target = directory.path().join("copied.vrt");
+        assert!(
+            copy(source.to_str().unwrap(), target.to_str().unwrap(), &Default::default())
+                .unwrap_err()
+                .to_string()
+                .contains("directory dependency")
+        );
+        assert!(!target.exists() && !directory.path().join("copied.zarr").exists());
+        assert_eq!(std::fs::read(&outside).unwrap(), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    #[cfg(all(unix, feature = "zarr"))]
+    fn committed_operations_report_leftover_backups_when_cleanup_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.zarr");
+        let target = directory.path().join("target.zarr");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join(".zgroup"), b"{\"zarr_format\":2}").unwrap();
+        std::fs::create_dir_all(target.join("locked")).unwrap();
+        std::fs::write(target.join(".zgroup"), b"{\"zarr_format\":2}").unwrap();
+        std::fs::write(target.join("locked/old"), b"recover this").unwrap();
+        std::fs::set_permissions(target.join("locked"), std::fs::Permissions::from_mode(0o500)).unwrap();
+        if std::fs::write(target.join("locked/probe"), b"probe").is_ok() {
+            std::fs::set_permissions(target.join("locked"), std::fs::Permissions::from_mode(0o700)).unwrap();
+            return; // A privileged runner cannot exercise a failed unlink here.
+        }
+        let report =
+            copy(source.to_str().unwrap(), target.to_str().unwrap(), &FileOptions { overwrite: true, ..Default::default() }).unwrap();
+        assert_eq!(report.recovery_files.len(), 1);
+        assert!(target.join(".zgroup").exists() && !target.join("locked").exists());
+        let backup = std::path::Path::new(&report.recovery_files[0]);
+        assert_eq!(std::fs::read(backup.join("locked/old")).unwrap(), b"recover this");
+        std::fs::set_permissions(backup.join("locked"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        vsi::delete(backup.to_str().unwrap(), true).unwrap();
+        std::fs::create_dir_all(target.join("locked")).unwrap();
+        std::fs::write(target.join("locked/old"), b"recover deletion").unwrap();
+        std::fs::set_permissions(target.join("locked"), std::fs::Permissions::from_mode(0o500)).unwrap();
+        let report = delete(target.to_str().unwrap(), None).unwrap();
+        assert!(!target.exists());
+        assert_eq!(report.recovery_files.len(), 1);
+        let backup = std::path::Path::new(&report.recovery_files[0]);
+        assert_eq!(std::fs::read(backup.join("locked/old")).unwrap(), b"recover deletion");
+        std::fs::set_permissions(backup.join("locked"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        vsi::delete(backup.to_str().unwrap(), true).unwrap();
     }
     #[test]
     fn vrt_cycles_fail_before_staging_any_file() {
@@ -1079,6 +1215,14 @@ mod tests {
         assert!(copy(&replacement, &csv, &FileOptions { overwrite: true, ..Default::default() }).is_err());
         assert_eq!(vsi::read(&prj).unwrap(), b"shared projection");
         assert!(exists(&csv).unwrap() && exists(&shp).unwrap());
+        put(&format!("{root}/replacement.prj"), b"replacement projection");
+        std::fs::remove_file(&csv).unwrap();
+        let error = copy(&replacement, &csv, &FileOptions { overwrite: true, ..Default::default() }).unwrap_err();
+        assert!(error.to_string().contains("shared"));
+        assert!(!exists(&csv).unwrap());
+        assert_eq!(vsi::read(&prj).unwrap(), b"shared projection");
+        assert!(exists(&shp).unwrap());
+        self::csv(root, "roads");
         delete_many(&[csv.clone(), shp.clone()], None).unwrap();
         assert!(!exists(&csv).unwrap() && !exists(&shp).unwrap() && !exists(&prj).unwrap());
         assert!(exists(&replacement).unwrap());
@@ -1192,8 +1336,12 @@ mod tests {
         assert_eq!(file_list(&path, Some("CSV")).unwrap().driver, "CSV");
         assert!(file_list(&path, Some("GTiff")).is_err());
         assert!(file_list(&path, Some("nonsense")).is_err());
-        let report =
-            FileReport { driver: "CSV".into(), files: vec!["https://example.invalid/a.csv?X-Amz-Signature=private".into()], bytes: 0 };
+        let report = FileReport {
+            driver: "CSV".into(),
+            files: vec!["https://example.invalid/a.csv?X-Amz-Signature=private".into()],
+            bytes: 0,
+            recovery_files: vec!["https://example.invalid/staged?X-Amz-Signature=private".into()],
+        };
         assert!(!serde_json::to_string(&report).unwrap().contains("private"));
         assert!(!location::same_name("https://example.invalid/source.tif?band=1", "https://example.invalid/source.tif?band=2").unwrap());
         vsi::delete(&root, true).unwrap();

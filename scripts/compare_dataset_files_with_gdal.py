@@ -584,7 +584,16 @@ def main():
                         element.set("relativeToVRT", "0")
                     document.write(definition, encoding="utf-8", xml_declaration=True)
                     moved = root / "remote-reference.vrt"
-                    report = call("dataset-rename", definition, moved)
+                    try:
+                        call("dataset-rename", definition, moved)
+                        raise AssertionError("external reference unexpectedly accepted")
+                    except AssertionError as error:
+                        assert "source directory tree" in str(error), str(error)
+                    assert definition.exists() and not moved.exists()
+                    assert counts["gets"] == counts["heads"] == counts["bytes"] == 0
+                    report = call(
+                        "dataset-rename", definition, moved, allow_external_references=True
+                    )
                     assert not definition.exists()
                     assert raster_snapshot(moved) == expected_vrt
                     assert all(path.exists() for path in owned)
@@ -596,7 +605,7 @@ def main():
                 dict(
                     name="VRT rename preserves read-only HTTP dependencies",
                     status="identical",
-                    detail="owned VRT moved; referenced HTTP raster and companions copied; source files retained; GDAL snapshots exact",
+                    detail="default refusal before any HTTP requests; explicit opt-in moves owned VRT and copies dependencies; source files retained; GDAL snapshots exact",
                 )
             )
         except Exception as error:

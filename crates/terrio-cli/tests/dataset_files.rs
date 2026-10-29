@@ -53,3 +53,23 @@ fn mcp_discovers_file_operations_and_marks_mutations_as_writes() {
     assert_eq!(reply["isError"], false);
     assert_eq!(std::fs::read(&target).unwrap(), b"x,y\n1,2\n");
 }
+
+#[test]
+fn external_vrt_reference_flag_is_explicit_and_recovery_status_is_structured() {
+    let directory = tempfile::tempdir().unwrap();
+    let inputs = directory.path().join("inputs");
+    std::fs::create_dir(&inputs).unwrap();
+    std::fs::write(directory.path().join("source.raw"), [1, 2, 3, 4]).unwrap();
+    let source = inputs.join("source.vrt");
+    let output = directory.path().join("copy.vrt");
+    std::fs::write(&source, b"<VRTDataset rasterXSize='2' rasterYSize='2'><VRTRasterBand band='1' dataType='Byte' subClass='VRTRawRasterBand'><SourceFilename relativeToVRT='1'>../source.raw</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>1</PixelOffset><LineOffset>2</LineOffset></VRTRasterBand></VRTDataset>").unwrap();
+    let rejected = run(&["dataset-copy", source.to_str().unwrap(), output.to_str().unwrap(), "--json"]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("source directory tree"));
+    assert!(!output.exists());
+    let accepted = run(&["dataset-copy", source.to_str().unwrap(), output.to_str().unwrap(), "--allow-external-references", "--json"]);
+    assert!(accepted.status.success(), "{}", String::from_utf8_lossy(&accepted.stderr));
+    let report: Value = serde_json::from_slice(&accepted.stdout).unwrap();
+    assert_eq!(report["recovery_files"], json!([]));
+    assert_eq!(std::fs::read(output.with_extension("raw")).unwrap(), [1, 2, 3, 4]);
+}

@@ -1878,6 +1878,7 @@ def dataset_copy(
     *,
     format: str | None = None,
     overwrite: bool = False,
+    allow_external_references: bool = False,
 ) -> dict[str, Any]: ...
 def dataset_rename(
     source: str | os.PathLike[str],
@@ -1885,6 +1886,7 @@ def dataset_rename(
     *,
     format: str | None = None,
     overwrite: bool = False,
+    allow_external_references: bool = False,
 ) -> dict[str, Any]: ...
 def dataset_delete(
     sources: str | os.PathLike[str] | Iterable[str | os.PathLike[str]], *, format: str | None = None

@@ -13,6 +13,9 @@ pub struct TransferArgs {
     /// Replace the destination dataset and remove its obsolete companion files.
     #[arg(long)]
     overwrite: bool,
+    /// Allow trusted VRT references outside the source directory tree.
+    #[arg(long)]
+    allow_external_references: bool,
     /// Emit the affected file set and copied bytes as JSON.
     #[arg(long)]
     json: bool,
@@ -44,8 +47,14 @@ fn emit(report: &serde_json::Value) -> terrio::Result<()> {
     println!("{}", serde_json::to_string_pretty(report).map_err(|e| terrio::Error::InvalidData(e.to_string()))?);
     Ok(())
 }
+fn warn_recovery(paths: &[String]) {
+    if !paths.is_empty() {
+        eprintln!("operation committed; cleanup remains at: {}", paths.join(", "));
+    }
+}
 pub fn transfer(args: TransferArgs, rename: bool) -> terrio::Result<()> {
-    let options = FileOptions { format: args.input_format, overwrite: args.overwrite };
+    let options =
+        FileOptions { format: args.input_format, overwrite: args.overwrite, allow_external_references: args.allow_external_references };
     let report = super::quiet(|| {
         if rename {
             dataset_files::rename(&args.source, &args.destination, &options)
@@ -53,6 +62,7 @@ pub fn transfer(args: TransferArgs, rename: bool) -> terrio::Result<()> {
             dataset_files::copy(&args.source, &args.destination, &options)
         }
     })?;
+    warn_recovery(&report.recovery_names());
     if args.json {
         emit(&serde_json::json!(report))?;
     }
@@ -60,6 +70,8 @@ pub fn transfer(args: TransferArgs, rename: bool) -> terrio::Result<()> {
 }
 pub fn delete(args: DeleteArgs) -> terrio::Result<()> {
     let reports = super::quiet(|| dataset_files::delete_many(&args.inputs, args.input_format.as_deref()))?;
+    let recovery: std::collections::BTreeSet<_> = reports.iter().flat_map(|report| report.recovery_names()).collect();
+    warn_recovery(&recovery.into_iter().collect::<Vec<_>>());
     if args.json {
         emit(&serde_json::json!(reports))?;
     }

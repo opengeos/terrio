@@ -86,3 +86,26 @@ def test_vsimem_and_overwrite_remove_obsolete_sidecars():
             terrio.dataset_copy(source, source, overwrite=True)
     finally:
         terrio.vsi_delete(root, recursive=True)
+
+
+def test_vrt_reference_scope_and_explicit_external_opt_in(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    raw = tmp_path / "source.raw"
+    raw.write_bytes(bytes([1, 2, 3, 4]))
+    source = inputs / "source.vrt"
+    source.write_text(
+        '<VRTDataset rasterXSize="2" rasterYSize="2">'
+        '<VRTRasterBand band="1" dataType="Byte" subClass="VRTRawRasterBand">'
+        '<SourceFilename relativeToVRT="1">../source.raw</SourceFilename>'
+        "<ImageOffset>0</ImageOffset><PixelOffset>1</PixelOffset><LineOffset>2</LineOffset>"
+        "</VRTRasterBand></VRTDataset>"
+    )
+    output = tmp_path / "copy.vrt"
+    with pytest.raises(Exception, match="source directory tree"):
+        terrio.dataset_copy(source, output)
+    assert not output.exists()
+    report = terrio.dataset_copy(source, output, allow_external_references=True)
+    assert report["recovery_files"] == []
+    assert output.with_suffix(".raw").read_bytes() == raw.read_bytes()
+    assert raw.exists()

@@ -676,7 +676,14 @@ same-basename owner remains. A batch deletion may include all owners; copying
 may read a shared companion without changing its original.
 
 VRT copies and renames copy referenced assets with regular corresponding basenames,
-and rewrite source references to the new names. Rename moves the owned definition
+confined by default to the original source directory tree. Native links and all
+entries of referenced directory datasets are checked before mutation. Non-raw
+references must identify a supported dataset; arbitrary files are accepted only
+as explicit raw-band data. Virtual keys with dot segments are refused by default.
+Use `--allow-external-references` only for trusted VRTs that need assets outside
+that tree, such as a local VRT referencing an HTTP raster. The same option is
+`allow_external_references` in Rust/Python and `allowExternalReferences` in JavaScript.
+Source references are rewritten to the new names. Rename moves the owned definition
 but preserves original dependencies so other datasets can keep using them; copied
 payloads count toward reported bytes, including for same-filesystem VRT renames.
 VRT/GML bytes are preserved when no reference needs rebasing. GML schema locations and Idrisi/ERS
@@ -688,9 +695,11 @@ retaining referenced rasters; catalog/STAC deletion likewise retains referenced 
 
 All inputs and destinations are checked before staging files. Source aliases, overlapping
 directory trees, protected roots, read-only mutations and file/directory collisions are
-refused. Failed staging or installation attempts restore the original paths; if rollback
-or cleanup itself fails, the error identifies recovery files. An error explicitly saying
-that the operation committed means the final paths changed but staged cleanup failed.
+refused. Failed staging or installation attempts restore the original paths; failed
+rollback returns an error identifying recovery files. After installation commits,
+cleanup failures return success with leftover staged paths in `recovery_files`.
+The CLI reports these leftovers on stderr as well as in JSON. An empty list means
+cleanup completed. Batch deletion includes the shared cleanup list in each report.
 An existing destination must have a successful inventory, including with overwrite; an unknown or corrupt destination is refused. Source and destination trees must not be changed concurrently. Native renames
 preserve symlink text, so relative links must remain meaningful at their destination;
 links cannot be renamed across filesystems. Overlapping input directory/component

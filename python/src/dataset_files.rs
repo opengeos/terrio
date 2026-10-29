@@ -32,30 +32,34 @@ fn dataset_files<'py>(py: Python<'py>, source: &Bound<'_, PyAny>, format: Option
 }
 /// Copies encoded dataset files and companions without converting their format.
 #[pyfunction]
-#[pyo3(signature = (source, destination, *, format=None, overwrite=false))]
+#[pyo3(signature = (source, destination, *, format=None, overwrite=false, allow_external_references=false))]
 fn dataset_copy<'py>(
     py: Python<'py>,
     source: &Bound<'_, PyAny>,
     destination: &Bound<'_, PyAny>,
     format: Option<String>,
     overwrite: bool,
+    allow_external_references: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
     let (source, destination) = (path(source)?, path(destination)?);
-    let report = crate::with_warnings(py, || files::copy(&source, &destination, &FileOptions { format, overwrite }))?;
+    let report =
+        crate::with_warnings(py, || files::copy(&source, &destination, &FileOptions { format, overwrite, allow_external_references }))?;
     json(py, &report)
 }
 /// Renames a dataset and its companion files, guarding source aliases and destination collisions.
 #[pyfunction]
-#[pyo3(signature = (source, destination, *, format=None, overwrite=false))]
+#[pyo3(signature = (source, destination, *, format=None, overwrite=false, allow_external_references=false))]
 fn dataset_rename<'py>(
     py: Python<'py>,
     source: &Bound<'_, PyAny>,
     destination: &Bound<'_, PyAny>,
     format: Option<String>,
     overwrite: bool,
+    allow_external_references: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
     let (source, destination) = (path(source)?, path(destination)?);
-    let report = crate::with_warnings(py, || files::rename(&source, &destination, &FileOptions { format, overwrite }))?;
+    let report =
+        crate::with_warnings(py, || files::rename(&source, &destination, &FileOptions { format, overwrite, allow_external_references }))?;
     json(py, &report)
 }
 /// Deletes owned files of one path or an iterable of paths, returning a list of reports.

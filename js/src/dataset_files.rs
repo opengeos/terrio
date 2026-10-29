@@ -14,6 +14,8 @@ struct SourceOptions {
 struct TransferOptions {
     format: Option<String>,
     overwrite: bool,
+    #[serde(rename = "allowExternalReferences")]
+    allow_external_references: bool,
 }
 /// Lists owned files. Options: `format`. Referenced VRT assets are not owned.
 #[wasm_bindgen(js_name=datasetFiles)]
@@ -21,17 +23,39 @@ pub fn dataset_files(source: &str, options: JsValue) -> Result<JsValue, JsError>
     let options: SourceOptions = parse_options(&options)?;
     to_js(&files::file_list(source, options.format.as_deref()).map_err(js_err)?)
 }
-/// Copies a dataset file set without conversion. Options: `format`, `overwrite`.
+/// Copies a dataset file set without conversion. Options: `format`, `overwrite`, `allowExternalReferences`.
 #[wasm_bindgen(js_name=datasetCopy)]
 pub fn dataset_copy(source: &str, destination: &str, options: JsValue) -> Result<JsValue, JsError> {
     let options: TransferOptions = parse_options(&options)?;
-    to_js(&files::copy(source, destination, &FileOptions { format: options.format, overwrite: options.overwrite }).map_err(js_err)?)
+    to_js(
+        &files::copy(
+            source,
+            destination,
+            &FileOptions {
+                format: options.format,
+                overwrite: options.overwrite,
+                allow_external_references: options.allow_external_references,
+            },
+        )
+        .map_err(js_err)?,
+    )
 }
-/// Renames a dataset file set. Options: `format`, `overwrite`.
+/// Renames a dataset file set. Options: `format`, `overwrite`, `allowExternalReferences`.
 #[wasm_bindgen(js_name=datasetRename)]
 pub fn dataset_rename(source: &str, destination: &str, options: JsValue) -> Result<JsValue, JsError> {
     let options: TransferOptions = parse_options(&options)?;
-    to_js(&files::rename(source, destination, &FileOptions { format: options.format, overwrite: options.overwrite }).map_err(js_err)?)
+    to_js(
+        &files::rename(
+            source,
+            destination,
+            &FileOptions {
+                format: options.format,
+                overwrite: options.overwrite,
+                allow_external_references: options.allow_external_references,
+            },
+        )
+        .map_err(js_err)?,
+    )
 }
 /// Deletes owned files of one path or an array of paths. Returns one report per input.
 /// Options: `format`. Referenced VRT/catalog source assets are retained.
