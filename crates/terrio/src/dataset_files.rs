@@ -263,7 +263,10 @@ fn check_shared_ownership(inventory: &FileSet, approved: &[String]) -> Result<()
     };
     let name = location::name(primary)?;
     let base = stem(&name);
-    let shared: Vec<_> = inventory.files.iter().collect();
+    // Normal inventories start with their primary file. Synthetic overwrite
+    // inventories have no driver and contain only a prospective companion.
+    let skip = usize::from(!inventory.driver.is_empty());
+    let shared: Vec<_> = inventory.files.iter().skip(skip).collect();
     if shared.is_empty() {
         return Ok(());
     }
