@@ -85,7 +85,6 @@ pub(super) fn validate(dataset: &Dataset) -> Result<()> {
 }
 
 /// Keep inferred chunk buffers below 8 MiB regardless of array rank.
-#[cfg(any(feature = "netcdf-hdf5", feature = "zarr"))]
 pub(crate) fn default_chunks(shape: &[usize], dtype: DataType) -> Vec<usize> {
     let mut chunks: Vec<_> = shape.iter().map(|&n| n.clamp(1, 256)).collect();
     let budget = (8 * 1024 * 1024) / dtype.size_bytes();

@@ -26,6 +26,8 @@ enum Command {
 
     /// Identify many datasets from bounded headers, without decoding their payloads.
     Identify(cmd::inspection::IdentifyArgs),
+    /// Read all exposed dataset content to detect decoding failures.
+    Check(cmd::inspection::CheckArgs),
     /// Inspect native scientific groups, named dimensions and arrays without reading payloads.
     Mdinfo(cmd::multidim::InfoArgs),
     /// Read a native multidimensional hyperslab with named-axis slicing and transposition.
@@ -268,6 +270,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::GpkgRepack(a) => cmd::gpkg::repack(a),
 
         Command::Identify(a) => cmd::inspection::identify(a),
+        Command::Check(a) => cmd::inspection::check(a),
         Command::Mdinfo(a) => cmd::multidim::info(a),
         Command::Mdread(a) => cmd::multidim::read(a),
         Command::Mdconvert(a) => cmd::multidim::convert(a),

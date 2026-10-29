@@ -1,8 +1,8 @@
 terrio-crs
-Copyright (c) 2026 Qiusheng Wu
 Licensed under the MIT License (see LICENSE).
 
-This crate adapts algorithms and data from the projects below.
+This crate adapts algorithms and data from the projects below. The copyright in those algorithms
+and data remains with their authors, whose notices follow.
 
 -------------------------------------------------------------------------------
 PROJ
