@@ -532,6 +532,25 @@ are required for in-place changes; external overview updates can fail after the
 base update commits. Use `create-raster`, `edit-raster` and `update-raster` when
 calling the corresponding CLI commands.
 
+COG validation also accepts uploaded TIFF `bytes`. Use
+`terrio.validate_cog(data, profile="gdal", full_check=True)` for GDAL 3.13
+structural rules and compressed-block leader, trailer, order and mask checks.
+The result remains `(valid, errors, warnings)`; the default `rio-cogeo` profile
+preserves existing behavior. Automatic full checking applies to local paths
+and bytes, and stays off for URLs.
+
+GDAL COG full checking examines blocks in the main TIFF and its internal overviews.
+External `.ovr` sidecars make the report invalid and receive header checks only.
+Explicit full checks of URLs can make several boundary requests per stored block;
+the cost grows with the number of blocks, so automatic mode leaves them off.
+Remote full checks stop with an error after 10,000 boundary read calls (excluding
+header/table reads and configured HTTP retries); download larger files to validate
+their full layout locally.
+Full block validation stops at 1,000 findings and reports the limit; remaining
+blocks need not be checked once the file is already invalid.
+The GDAL profile limits total parsed GDAL metadata to 4 MiB per file and XML nesting
+to 128 levels. The default rio-cogeo profile ignores this metadata tag.
+
 `terrio.mosaic_multidim(sources, dst=None, *, arrays=None)` builds a lazy
 coordinate-aligned mosaic. Each source can be a `MultidimDataset`, a scientific
 path/bytes, or a Zarr key/value dictionary. Read coordinate-aligned views through

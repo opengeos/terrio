@@ -1160,6 +1160,30 @@ ordinary lazy info opens. Raster index construction never called the pixel sourc
 its panic-on-read unit fixture. These observations apply to lazy-capable readers;
 formats whose reader lacks a metadata-only path may materialize the input.
 
+## COG validation
+
+The registered `cog-validate` suite compares GDAL 3.13.3's unified COG validator
+with `validate-cog --profile gdal`, with full checks both enabled and disabled.
+Real Landsat and USGS-derived COGs cover pixel/band/tile interleave, BigTIFF,
+internal masks, external overviews and deliberate leader/trailer corruption.
+Validity, exit status, finding counts, IFD offsets and first-block offsets must
+agree exactly; diagnostic wording is not compared. Rust, Python and WASM
+regressions exercise uploaded bytes and corrupt block boundaries. A counting
+HTTP regression verifies automatic remote validation reads headers only while
+explicit full checking detects a damaged trailer.
+
+On the 1024×1024 random Float32 COG regression, automatic remote validation
+transferred 65,536 bytes in one GET. Explicit full checking transferred
+4,955,322 bytes in 76 GETs from the same source and detected the damaged final
+trailer. These are observed transfer counts, not timing targets.
+
+Local full validation also measures reads from the underlying file. On a
+2048×2048 Float32 COG with 128-pixel tiles, the buffered path read 5,688,654
+bytes; direct boundary reads read 7,897 bytes, with identical validation
+results and one source-file open per call. The GDAL profile now uses direct
+local reads for full checking. Python uploaded-byte validation borrows immutable
+bytes instead of duplicating the full payload.
+
 ## Multidimensional mosaic validation
 
 The multidimensional mosaic HTTP regression serves two chunked numeric Zarr

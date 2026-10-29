@@ -22,12 +22,16 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// pixels), overviews sorted by decimation, the image directories first (the main one within 300
 /// bytes) and the image data after them, from the smallest overview to the full resolution.
 ///
-/// The result, errors and warnings are rio-cogeo's, messages included.
+/// The default profile retains rio-cogeo's results and diagnostic messages.
 ///
 /// Args:
 ///     path: A local path (`str` or `os.PathLike`), HTTP(S) URL or S3 URI (read with range
-///         requests).
+///         requests), or uploaded TIFF bytes. Bytes cannot include external sidecars.
 ///     strict: Treat warnings as errors.
+///     profile: "rio-cogeo" (the default) or "gdal" for GDAL 3.13 structural rules.
+///     full_check: With profile="gdal", inspect every block's structural promises.
+///         Malformed XML or GDAL metadata exceeding 4 MiB raises an exception instead of returning a verdict.
+///         None enables full checks for local paths and bytes, and disables them for URLs.
 ///
 /// Returns:
 ///     tuple[bool, list[str], list[str]]: Whether the file is a valid COG, the errors and the
@@ -36,10 +40,30 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Raises:
 ///     TerrioError: If the file cannot be read.
 #[pyfunction]
-#[pyo3(signature = (path, *, strict=false))]
-fn validate_cog(py: Python<'_>, path: &Bound<'_, PyAny>, strict: bool) -> PyResult<(bool, Vec<String>, Vec<String>)> {
-    let path = raster_path(path)?.ok_or_else(|| invalid("validate_cog takes a path, not a terrio.Raster"))?;
-    let v = with_warnings(py, || terrio::validate_cog(&path, strict))?;
+#[pyo3(signature = (path, *, strict=false, profile="rio-cogeo", full_check=None))]
+fn validate_cog(
+    py: Python<'_>,
+    path: &Bound<'_, PyAny>,
+    strict: bool,
+    profile: &str,
+    full_check: Option<bool>,
+) -> PyResult<(bool, Vec<String>, Vec<String>)> {
+    let options = terrio::CogValidationOptions {
+        strict,
+        full_check,
+        profile: match profile {
+            "rio-cogeo" => terrio::CogValidationProfile::RioCogeo,
+            "gdal" => terrio::CogValidationProfile::Gdal,
+            _ => return Err(invalid("profile must be rio-cogeo or gdal")),
+        },
+    };
+    let v = if let Ok(bytes) = path.cast::<pyo3::types::PyBytes>() {
+        let bytes = bytes.as_bytes();
+        with_warnings(py, || terrio::validate_cog_bytes(bytes, &options))?
+    } else {
+        let path = raster_path(path)?.ok_or_else(|| invalid("validate_cog takes a path or bytes, not a terrio.Raster"))?;
+        with_warnings(py, || terrio::validate_cog_with_options(&path, &options))?
+    };
     Ok((v.is_valid, v.errors, v.warnings))
 }
 

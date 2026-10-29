@@ -442,6 +442,14 @@ implementations must return a standard `Response`. Object-store XML pagination i
 VSI listing bindings return structured flat entries. Nested tree presentation (`--tree`)
 is currently available through the CLI; JSON serialization flags apply to CLI output.
 
+`validateCog(bytes, {profile: "gdal", fullCheck: true})` checks uploaded TIFF
+structure without decoding pixels and returns `is_valid`, `errors`, `warnings`,
+`ifd_offsets`, `data_offsets`, `overview_factors`, `structural_metadata` and
+`layout_notes`. The default profile is `rio-cogeo`; `gdal` selects GDAL 3.13
+rules with full leader/trailer, row-order and interleaved-mask checks enabled
+for uploaded bytes unless `fullCheck: false` is supplied. External sidecars
+are unavailable for a standalone byte buffer.
+
 `mosaicMultidim(sources, {arrays})` builds a lazy coordinate-aligned
 `MultidimDataset` from dataset handles or uploaded scientific inputs. `arrays`
 selects numeric arrays by path or unambiguous name. Source handles can be freed
