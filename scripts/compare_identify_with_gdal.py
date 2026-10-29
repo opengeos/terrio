@@ -3,8 +3,8 @@
 
 import argparse
 import json
-import subprocess
 import sqlite3
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -53,14 +53,14 @@ def main():
             }
             if (
                 expected is None
-                and actual == "Parquet"
-                and gdal.GetDriverByName("Parquet") is None
+                and actual in ("Parquet", "GRIB")
+                and gdal.GetDriverByName(actual) is None
             ):
                 results.append(
                     {
                         "name": name,
                         "status": "not compared",
-                        "detail": "GDAL build lacks the Parquet driver; Terrio recognizes the real GeoParquet file",
+                        "detail": f"GDAL build lacks the {actual} driver; Terrio recognizes the real dataset",
                     }
                 )
                 return
@@ -112,7 +112,7 @@ def main():
             if not path.exists():
                 raise FileNotFoundError(path)
             compare(path)
-        for pattern in ["GATMO*.h5", "S5P*.nc", "*.jp2"]:
+        for pattern in ["GATMO*.h5", "S5P*.nc", "*.jp2", "grib/gfs-*.grib2"]:
             path = next(args.data.glob(pattern), None)
             if path:
                 compare(path)

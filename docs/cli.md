@@ -682,11 +682,13 @@ JSON is an array of records with `name`, `driver`, `kinds`, `multidimensional` a
 `deep`; failures have `name` and `error` instead of driver metadata. `kinds` describes
 the formats supported by a container, rather than verifying which tables it holds.
 URL credential parameters are redacted from display names. MCP exposes `identify`
-as a read-only tool with the same options.
+as a read-only tool with the same options. Recursive scans enumerate the requested
+local tree without an entry or depth cap; scope the input directory accordingly.
 
 Python exposes `terrio.identify(path_or_paths, recursive=False, force_recursive=False,
 deep=False, report_failures=False)`. Uploaded immutable bytes accept `filename=...`
-instead of native scan options. JavaScript exposes `identify(uint8Array, filename?)`
+instead of native scan options. Python always returns a list of named records,
+including for a single upload. JavaScript exposes `identify(uint8Array, filename?)`
 or `identify({bytes, filename})`, returning format metadata or `null`. Only the first
 16 KiB of JavaScript input is copied into WASM. Uploaded bytes do not use the deeper
 native reader fallback.

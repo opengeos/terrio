@@ -170,7 +170,8 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
         };
         return Some(Identification { driver: driver.into(), kinds: vec![Kind::PointCloud], multidimensional: false, deep: false });
     }
-    if bytes.windows(8).any(|part| &part[..4] == b"GRIB" && matches!(part[7], 1 | 2)) {
+    #[cfg(feature = "grib")]
+    if crate::drivers::grib::is_grib(bytes) {
         return raster(RasterDriver::GRIB);
     }
     if ext == "hgt" && length.is_some_and(|length| [1201u64, 3601].iter().any(|side| side * side * 2 == length)) {
@@ -337,6 +338,8 @@ pub fn identify(path: &str, deep: bool) -> Result<Option<Identification>> {
             let (header, length) = crate::http::read_prefix(&remote, IDENTIFICATION_HEADER_BYTES)?;
             identify_header(&header, path, length)
         }
+        #[cfg(not(remote))]
+        crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => return Err(crate::Error::disabled("remote")),
         _ => None,
     };
     if identified.is_some() || !deep {
@@ -487,6 +490,15 @@ mod tests {
         assert_eq!(identify_bytes(br#"{"type": "FeatureCollection", "features": ["#, "data.bin").unwrap().driver, "GeoJSON");
         let data = [vec![b' '; IDENTIFICATION_HEADER_BYTES], br#"{"type":"FeatureCollection"}"#.to_vec()].concat();
         assert!(identify_bytes(&data, "data.json").is_none());
+    }
+    #[test]
+    #[cfg(feature = "grib")]
+    fn grib_signature_search_matches_the_reader_limit() {
+        let mut bytes = vec![b' '; 1024];
+        bytes[301..309].copy_from_slice(b"GRIB\0\0\0\x02");
+        assert!(identify_bytes(&bytes, "data.bin").is_none());
+        bytes[300..308].copy_from_slice(b"GRIB\0\0\0\x02");
+        assert_eq!(identify_bytes(&bytes, "data.bin").unwrap().driver, "GRIB");
     }
     #[test]
     fn prefix_size_and_reported_names_are_preserved() {

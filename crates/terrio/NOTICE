@@ -5,6 +5,10 @@ Licensed under the MIT License (see LICENSE).
 terrio adapts code and data from the projects below; their notices follow. The licenses of the
 Rust crates terrio's packages and binaries are built with are in LICENSE-THIRD-PARTY.md.
 
+Dataset identification in crates/terrio/src/inspection.rs uses GDAL 3.13 as a behavioral
+reference for filename hints and driver-family reporting. It also reuses the existing
+GDAL-derived SRTMHGT and GRIB reader rules credited below.
+
 -------------------------------------------------------------------------------
 PROJ
 -------------------------------------------------------------------------------
