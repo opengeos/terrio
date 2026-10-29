@@ -1,5 +1,7 @@
 """Palette conversion across in-memory, serialized and guarded path APIs."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -381,3 +383,13 @@ def test_palette_destination_reuses_the_remote_source(tmp_path, gdal, monkeypatc
         finally:
             server.shutdown()
             worker.join()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="trailing-space filenames need POSIX")
+def test_palette_native_path_keeps_trailing_space_distinct(tmp_path):
+    table = [[10, 20, 30, 255], [200, 210, 220, 255]]
+    for name, index in [("source.tif", 0), ("source.tif ", 1)]:
+        source = terrio.Raster.from_array(np.array([[index]], dtype="uint8"), (0, 1, 0, 1, 0, -1))
+        (tmp_path / name).write_bytes(terrio.attach_palette(source, table).to_bytes())
+    result = terrio.palette_to_rgb(tmp_path / "source.tif ")
+    assert result.read(1)[0, 0] == 200

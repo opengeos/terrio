@@ -2403,3 +2403,20 @@ test("identify inspects bounded upload prefixes and filename hints", () => {
   assert.throws(() => terrio.identify({bytes: "not an array"}), /Uint8Array/);
   raster.free();
 });
+
+
+test("palette memory paths keep trailing spaces distinct", () => {
+  const root = "/vsimem/palette-space-identity";
+  for (const [name, index] of [["source.tif",0],["source.tif ",1]]) {
+    const source = terrio.rasterFromArray(new Uint8Array([index]), 1, 1, [0,1,0,1,0,-1]);
+    const indexed = terrio.attachPalette(source, [[10,20,30,255],[200,210,220,255]]);
+    terrio.vsiWrite(`${root}/${name}`, indexed.toBytes("source.tif"));
+    source.free(); indexed.free();
+  }
+  try {
+    const source = terrio.open(terrio.vsiRead(`${root}/source.tif `), "source.tif");
+    const result = terrio.paletteToRgb(source);
+    assert.deepEqual([...result.readBand(1)], [200]);
+    result.free(); source.free();
+  } finally { terrio.vsiDelete(root, true); }
+});

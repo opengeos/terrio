@@ -93,6 +93,8 @@ def main():
             out.write('0 0 0 0\n1 255 0 0\n2 0 255 0\n3 0 0 255\n')
         for color_map, bits, dither, nodata in itertools.product([palette, text], [5, 8], [True, False], [None, 0, 3]):
             opts = ['--color-map', color_map, '--bit-depth', str(bits)]
+            if color_map == text:
+                opts += ['--color-count', '2']
             if not dither:
                 opts += ['--no-dither']
             if nodata is not None:
