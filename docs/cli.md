@@ -2143,6 +2143,12 @@ can differ from SQLite VACUUM; the operation does not promise byte-identical fil
 
 Native changes use SQLite-compatible exclusive locks and a synced rollback journal. Pages
 removed by truncation are journaled too, so an interrupted rewrite can be recovered by SQLite.
+The database pathname is checked against the locked handle before journal creation. Do not
+rename or replace an open database or its parent directory during a transaction. On Unix,
+directory sync errors abort before database writes; filesystems without directory fsync are
+unsupported for this operation. Windows flushes the journal and database file handles; directory
+entry durability follows the platform. In-memory replacement refuses a concurrent change to its
+source image, allowing the caller to retry.
 A locked database or nonempty WAL sidecar is refused; close/checkpoint the SQLite connection before
 retrying. Native symbolic-link dataset filenames, linked/special sidecars, reserved/encrypted page bytes, remote and archive paths
 are refused. This is storage maintenance, not a GeoPackage specification validator.

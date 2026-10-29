@@ -342,6 +342,78 @@ def main():
                     detail=str(error),
                 )
             )
+        try:
+            source = root / "points.geojson"
+            destination = root / "points.gpkg"
+            source.write_text(
+                json.dumps(
+                    {
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {"name": "kept"},
+                                "geometry": {"type": "Point", "coordinates": [1, 2]},
+                            }
+                        ],
+                    }
+                )
+            )
+            subprocess.run(
+                [args.terrio, "convert", str(source), str(destination)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from osgeo import gdal; import os,sys; gdal.UseExceptions(); "
+                    "db=gdal.OpenEx(sys.argv[1],gdal.OF_VECTOR|gdal.OF_UPDATE); "
+                    "result=db.ExecuteSQL('PRAGMA journal_mode=WAL'); "
+                    "db.ReleaseResultSet(result) if result else None; "
+                    "db.ExecuteSQL(\"UPDATE points SET name='wal-value'\"); os._exit(0)",
+                    str(destination),
+                ],
+                check=True,
+            )
+            with closing(sqlite3.connect(destination.as_uri() + "?mode=ro", uri=True)) as db:
+                assert db.execute("SELECT name FROM points").fetchall() == [("wal-value",)]
+            before = destination.read_bytes()
+            sidecar = destination.with_name(destination.name + "-wal")
+            pending = sidecar.read_bytes()
+            command = [args.terrio, "convert", str(source), str(destination), "--append"]
+            refused = subprocess.run(command, capture_output=True, text=True)
+            assert refused.returncode != 0 and "write-ahead log" in refused.stderr, refused.stderr
+            assert destination.read_bytes() == before and sidecar.read_bytes() == pending
+            with closing(sqlite3.connect(destination)) as db:
+                db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                assert db.execute("SELECT name FROM points").fetchall() == [("wal-value",)]
+            appended = subprocess.run(command, capture_output=True, text=True)
+            assert appended.returncode == 0, appended.stderr
+            with closing(sqlite3.connect(destination)) as db:
+                assert db.execute("SELECT name FROM points ORDER BY fid").fetchall() == [
+                    ("wal-value",),
+                    ("kept",),
+                ]
+                assert db.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+            results.append(
+                dict(
+                    name="append rewrite preserves orphan WAL commits",
+                    status="identical",
+                    detail="actual GDAL feature update committed to orphan WAL: append refuses with main/WAL bytes unchanged; after SQLite checkpoint, append preserves both committed and new values",
+                )
+            )
+        except Exception as error:
+            traceback.print_exc()
+            results.append(
+                dict(
+                    name="append rewrite preserves orphan WAL commits",
+                    status="differs",
+                    detail=str(error),
+                )
+            )
     if args.json:
         print(json.dumps(results))
     else:

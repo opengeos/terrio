@@ -218,6 +218,7 @@ impl Editor {
                 }
             }
         }
+        ensure_path_identity(&file, path)?;
         recover(&mut file, path)?;
         let wal = with_suffix(path, "-wal");
         if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
@@ -904,7 +905,11 @@ impl Editor {
         self.commit_until(Stage::Done)
     }
 
-    fn commit_until(mut self, stop: Stage) -> Result<()> {
+    fn commit_until(self, stop: Stage) -> Result<()> {
+        self.commit_with_sync(stop, sync_dir)
+    }
+
+    fn commit_with_sync(mut self, stop: Stage, mut directory_sync: impl FnMut(&Path) -> std::io::Result<()>) -> Result<()> {
         let mut rewrite = self.rewrite.take();
         if self.dirty.is_empty() && rewrite.is_none() {
             return Ok(());
@@ -928,6 +933,8 @@ impl Editor {
                 self.set_header_u32(40, cookie)?;
             }
         }
+
+        ensure_path_identity(&self.file, &self.path)?;
 
         // 1. The journal: the original pages, synced, then its record count, synced.
         let journal_path = with_suffix(&self.path, "-journal");
@@ -978,7 +985,7 @@ impl Editor {
         journal.seek(SeekFrom::Start(8))?;
         journal.write_all(&records.to_be_bytes())?;
         journal.sync_all()?;
-        sync_dir(&self.path);
+        directory_sync(&self.path)?;
         if stop == Stage::Journal {
             return Ok(());
         }
@@ -1024,7 +1031,7 @@ impl Editor {
         // 3. Deleting the journal commits.
         drop(journal);
         std::fs::remove_file(&journal_path)?;
-        sync_dir(&self.path);
+        directory_sync(&self.path)?;
         Ok(())
     }
 }
@@ -1060,16 +1067,58 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Syncs the directory holding a file, so that a journal's creation or deletion is durable.
-fn sync_dir(path: &Path) {
+/// Refuse a pathname rebound after the database handle was locked. On Unix this uses stat,
+/// not a second open/close, which would release this process's POSIX locks on the inode.
+fn ensure_path_identity(file: &File, path: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        return Err(bad("database pathname no longer names a regular file"));
+    }
     #[cfg(unix)]
-    if let Some(dir) = path.parent().map(|p| if p.as_os_str().is_empty() { Path::new(".") } else { p })
-        && let Ok(d) = File::open(dir)
     {
-        let _ = d.sync_all();
+        use std::os::unix::fs::MetadataExt;
+        let opened = file.metadata()?;
+        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+            return Err(bad("database pathname changed after opening"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
+        };
+        let named = OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?;
+        let identity = |handle: &File| -> std::io::Result<(u32, u32, u32)> {
+            let mut information = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: the live file handle and writable output structure are valid.
+            if unsafe { GetFileInformationByHandle(handle.as_raw_handle(), &mut information) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok((information.dwVolumeSerialNumber, information.nFileIndexHigh, information.nFileIndexLow))
+        };
+        if identity(file)? != identity(&named)? {
+            return Err(bad("database pathname changed after opening"));
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = file;
+    Ok(())
+}
+
+/// Syncs journal directory entries on Unix. Unsupported directory fsync is an error, so no
+/// database pages are written without a durable journal. Windows has no std directory sync;
+/// its transaction still flushes both file handles, with the platform's directory durability.
+fn sync_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        File::open(dir)?.sync_all()?;
     }
     #[cfg(not(unix))]
     let _ = path;
+    Ok(())
 }
 
 /// What a hot journal holds: see [`journal_pages`].
@@ -1194,7 +1243,7 @@ fn recover(file: &mut File, path: &Path) -> Result<()> {
     }
     file.sync_all()?;
     std::fs::remove_file(&journal_path)?;
-    sync_dir(path);
+    sync_dir(path)?;
     Ok(())
 }
 
@@ -1280,6 +1329,49 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(Editor::open_repack(&link).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), original);
+    }
+
+    #[test]
+    fn renamed_database_refuses_commit_without_creating_a_foreign_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.db");
+        let moved = dir.path().join("moved.db");
+        let original = sample(3);
+        std::fs::write(&path, &original).unwrap();
+        let compact = crate::drivers::sqlite_repack::compact(&original).unwrap();
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        editor.replace_image(original.clone(), compact).unwrap();
+        std::fs::rename(&path, &moved).unwrap();
+        std::fs::write(&path, b"replacement must remain untouched").unwrap();
+        assert!(editor.commit_until(Stage::Journal).is_err(), "renamed database accepted");
+        assert!(!with_suffix(&path, "-journal").exists(), "journal attached to replacement");
+        assert_eq!(std::fs::read(&moved).unwrap(), original);
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement must remain untouched");
+    }
+
+    #[test]
+    fn failed_journal_directory_sync_leaves_database_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.db");
+        let original = sample(3);
+        std::fs::write(&path, &original).unwrap();
+        let compact = crate::drivers::sqlite_repack::compact(&original).unwrap();
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        editor.replace_image(original.clone(), compact).unwrap();
+        let error = editor.commit_with_sync(Stage::Done, |_| Err(std::io::Error::other("directory sync failed"))).unwrap_err();
+        assert!(error.to_string().contains("directory sync failed"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(has_hot_journal(&path).unwrap());
+        // A failed sync leaves the synced original pages available to normal recovery.
+        drop(Editor::open_repack(&path).unwrap().unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!with_suffix(&path, "-journal").exists());
+    }
+
+    #[test]
+    fn directory_sync_reports_an_unreachable_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(sync_dir(&dir.path().join("missing/data.db")).is_err());
     }
 
     #[test]

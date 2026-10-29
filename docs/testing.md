@@ -1167,12 +1167,16 @@ The suite checks all table records and SQL objects, rowids, text encoding, appli
 versions, auto-vacuum mode, page size, GDAL features/fields/CRS, and every raster pixel/mask.
 R-tree and application triggers are exercised after repacking. Cases include WITHOUT ROWID,
 expression/partial/collated indexes, 512/4096/65536-byte pages, both UTF-16 encodings, mixed
-vector/raster files, and active/orphan-WAL and truncated-input refusal. Physical layouts/sizes may differ.
+vector/raster files, and active/orphan-WAL and truncated-input refusal. An actual GDAL feature
+update committed to an orphan WAL also exercises append refusal and post-checkpoint preservation.
+Physical layouts/sizes may differ.
 
 `interrupted_repack_restores_truncated_pages` stops before/during/after database writes,
 checking exact recovery including truncated pages. Set `TERRIO_SQLITE_REFERENCE_PYTHON` to a
 Python interpreter with the standard sqlite3 module to additionally recover these journals
-with SQLite itself, for both rollback- and checkpointed-WAL file headers.
+with SQLite itself, for both rollback- and checkpointed-WAL file headers. Separate regressions
+check renamed database refusal before journal creation, directory-sync failure before page
+writes, planted journal links, and concurrent in-memory writes.
 
 A local repack memory check used a Natural Earth GeoPackage derivative with 2,048 one-MiB
 zero-filled BLOB rows and incremental auto-vacuum (2,155,819,008 bytes). Peak RSS measured
