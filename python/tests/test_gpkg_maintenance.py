@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -25,7 +26,7 @@ def fixture(tmp_path):
         crs="EPSG:4326",
     )
     layer.write(str(path))
-    with sqlite3.connect(path) as database:
+    with closing(sqlite3.connect(path)) as database, database:
         database.execute(
             "CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT,"
             " label TEXT COLLATE NOCASE UNIQUE, payload BLOB)"
@@ -47,7 +48,7 @@ def fixture(tmp_path):
 
 
 def snapshot(path):
-    with sqlite3.connect(path) as database:
+    with closing(sqlite3.connect(path)) as database, database:
         return {
             "schema": database.execute(
                 "SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name"
@@ -58,8 +59,11 @@ def snapshot(path):
         }
 
 
-def test_native_and_bytes_repack_preserve_all_values(tmp_path):
+@pytest.mark.parametrize("filename", ["data.gpkg", "snapshot.zip"])
+def test_native_and_bytes_repack_preserve_all_values(tmp_path, filename):
     path = fixture(tmp_path)
+    if path.name != filename:
+        path = path.rename(tmp_path / filename)
     expected = snapshot(path)
     original = path.read_bytes()
     compact = terrio.gpkg_repack_bytes(original)
@@ -71,8 +75,14 @@ def test_native_and_bytes_repack_preserve_all_values(tmp_path):
     assert report["bytes_before"] == len(original)
     assert report["bytes_after"] == path.stat().st_size < len(original)
     assert snapshot(path) == expected
+    if path.suffix == ".zip":
+        current = path.read_bytes()
+        for archive in ["/vsizip/" + str(path), str(path) + "!member.gpkg"]:
+            with pytest.raises((ValueError, OSError)):
+                terrio.gpkg_repack(archive)
+            assert path.read_bytes() == current
     for target in [path, copy]:
-        with sqlite3.connect(target) as database:
+        with closing(sqlite3.connect(target)) as database, database:
             assert database.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
             assert database.execute("PRAGMA freelist_count").fetchone() == (0,)
     assert not list(tmp_path.glob("*-journal"))
@@ -121,15 +131,16 @@ def test_active_wal_refused_without_losing_committed_rows(tmp_path):
     finally:
         connection.close()
     terrio.gpkg_repack(path)
-    with sqlite3.connect(path) as database:
+    with closing(sqlite3.connect(path)) as database, database:
         assert database.execute("SELECT payload FROM notes WHERE label='wal-kept'").fetchone() == (
             b"\x01\x02",
         )
 
 
 @pytest.mark.skipif(os.name != "posix", reason="non-UTF-8 and trailing-space filenames need POSIX")
-@pytest.mark.parametrize("name", [os.fsdecode(b"caf\xe9.gpkg"), " edge.gpkg "])
+@pytest.mark.parametrize("name", [b"caf\xe9.gpkg", " edge.gpkg "])
 def test_native_non_utf8_path_preserves_database(tmp_path, name):
+    name = os.fsdecode(name)
     source = fixture(tmp_path)
     expected = snapshot(source)
     path = tmp_path / name
@@ -144,5 +155,5 @@ def test_native_non_utf8_path_preserves_database(tmp_path, name):
     assert snapshot(path) == expected
     if neighbor != path:
         assert neighbor.read_bytes() == b"preserve unrelated file"
-    with sqlite3.connect(path) as database:
+    with closing(sqlite3.connect(path)) as database, database:
         assert database.execute("PRAGMA integrity_check").fetchall() == [("ok",)]

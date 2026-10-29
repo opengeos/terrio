@@ -2359,6 +2359,14 @@ that changes committed or recovery completed but durability is unconfirmed; call
 blindly retry an append.
 Native append/update follows filename symlinks to their target and checks that target's WAL.
 
+Native repacking also accepts GeoPackage contents under opaque filenames such as `snapshot.zip`;
+explicit archive locations remain unsupported. On Unix, rollback journals inherit the database's
+permission bits, restricted further by the process umask. A nonempty WAL is refused before any
+rollback-journal recovery. Other format checks inspect the recovered header, so successful
+recovery can precede a format-specific refusal. If initial journal-directory synchronization
+fails, the unchanged database and synced rollback journal are retained for recovery after the
+filesystem issue is resolved; filesystems without directory synchronization are unsupported.
+
 The rollback journal can approach the original file size, plus per-page record headers.
 Peak database-plus-journal disk usage can approach twice the original size; write I/O includes
 both the journal and replacement database image. Reserve disk space accordingly.

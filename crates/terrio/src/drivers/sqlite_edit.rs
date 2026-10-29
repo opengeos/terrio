@@ -240,11 +240,11 @@ impl Editor {
             }
         }
         ensure_path_identity(&file, path)?;
-        recover(&mut file, path)?;
         let wal = with_suffix(path, "-wal");
         if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
             return Ok(Err(NotInPlace("the database has a write-ahead log".into())));
         }
+        recover(&mut file, path)?;
         let mut header = [0u8; 100];
         file.seek(SeekFrom::Start(0))?;
         file.read_exact(&mut header).map_err(|_| bad("not an SQLite database"))?;
@@ -967,7 +967,14 @@ impl Editor {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
             Err(error) => return Err(error.into()),
         }
-        let mut journal = OpenOptions::new().write(true).create_new(true).open(&journal_path)?;
+        let mut journal_options = OpenOptions::new();
+        journal_options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+            journal_options.mode(self.file.metadata()?.mode() & 0o777);
+        }
+        let mut journal = journal_options.open(&journal_path)?;
         let mut header = vec![0u8; SECTOR];
         header[..8].copy_from_slice(&JOURNAL_MAGIC);
         header[12..16].copy_from_slice(&nonce.to_be_bytes());
@@ -1413,6 +1420,42 @@ mod tests {
     }
 
     #[test]
+    fn review_regression_repack_wal_refusal_preserves_hot_journal_and_image() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wal-and-journal.db");
+        std::fs::write(&path, sample(3)).unwrap();
+        let root = root_of(&path);
+        let mut editor = Editor::open(&path).unwrap().unwrap();
+        editor.insert(root, 4, &w::record(&[w::Value::Null, w::Value::Text("interrupted".into())])).unwrap();
+        editor.commit_until(Stage::Written).unwrap();
+        let image = std::fs::read(&path).unwrap();
+        let journal_path = with_suffix(&path, "-journal");
+        let journal = std::fs::read(&journal_path).unwrap();
+        let wal_path = with_suffix(&path, "-wal");
+        std::fs::write(&wal_path, b"active WAL must remain untouched").unwrap();
+        assert!(Editor::open_repack(&path).unwrap().is_err());
+        assert!(std::fs::read(&path).unwrap() == image, "WAL refusal replayed database pages");
+        assert!(std::fs::read(&journal_path).unwrap() == journal, "WAL refusal changed the journal");
+        assert_eq!(std::fs::read(&wal_path).unwrap(), b"active WAL must remain untouched");
+    }
+
+    #[test]
+    fn review_regression_repack_journal_does_not_broaden_database_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private.db");
+        let original = sample(3);
+        std::fs::write(&path, &original).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        editor.replace_image(original.clone(), crate::drivers::sqlite_repack::compact(&original).unwrap()).unwrap();
+        editor.commit_until(Stage::Journal).unwrap();
+        let journal = with_suffix(&path, "-journal");
+        assert_eq!(std::fs::metadata(journal).unwrap().permissions().mode() & 0o077, 0, "private database leaked into a broader journal");
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
     fn failed_journal_directory_sync_leaves_database_unchanged() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("data.db");
@@ -1576,7 +1619,17 @@ mod tests {
         file.write_all(&[original[at as usize] ^ 0xff]).unwrap();
         file.sync_all().unwrap();
         drop(file);
-        let output=std::process::Command::new(python).args(["-c","import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); assert db.execute('PRAGMA integrity_check').fetchall()==[('ok',)]; db.close()"]).arg(&path).output().unwrap();
+        let output = std::process::Command::new(python)
+            .args([
+                "-c",
+                concat!(
+                    "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); ",
+                    "assert db.execute('PRAGMA integrity_check').fetchall()==[('ok',)]; db.close()"
+                ),
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         assert!(std::fs::read(&path).unwrap() == original, "SQLite must restore every original byte beyond the lock page too");
     }

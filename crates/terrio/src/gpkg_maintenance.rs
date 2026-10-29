@@ -61,6 +61,14 @@ pub fn repack(path: impl AsRef<std::path::Path>) -> Result<RepackReport> {
             });
         }
         let location = path.to_str().map(crate::vfs::Location::parse).unwrap_or_else(|| crate::vfs::Location::Local(path.to_path_buf()));
+        // Repacking identifies the native file by its SQLite header, not its
+        // suffix. Explicit archive locations remain unsupported.
+        let location = match location {
+            crate::vfs::Location::Zip { archive, inner: None } if path.to_str().is_some_and(|name| !name.starts_with("/vsizip/")) => {
+                *archive
+            }
+            location => location,
+        };
         match location {
             crate::vfs::Location::Local(path) => {
                 if cfg!(target_family = "wasm") {
@@ -171,6 +179,20 @@ mod tests {
         assert_eq!(crate::vsi::read(name).unwrap(), b"not a geopackage");
         crate::vsi::delete(name, false).unwrap();
     }
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn review_regression_native_repack_accepts_archive_like_filenames() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["snapshot.zip", "snapshot.ZIP"] {
+            let path = directory.path().join(name);
+            std::fs::write(&path, sample()).unwrap();
+            let report = repack(&path).unwrap();
+            let bytes = std::fs::read(path).unwrap();
+            assert_eq!(report.bytes_after, bytes.len() as u64);
+            assert_eq!(crate::drivers::sqlite::Db::new(bytes).unwrap().table("notes").unwrap().rows.len(), 2);
+        }
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn native_repack_uses_journal_without_leaving_sidecars() {
