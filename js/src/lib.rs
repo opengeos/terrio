@@ -18,6 +18,7 @@ mod inspection;
 mod manage;
 mod multidim;
 mod ops;
+mod palette;
 mod pixel;
 #[cfg(feature = "pointcloud")]
 mod pointcloud;
@@ -617,6 +618,8 @@ impl Dataset {
     /// stores come back as a zip archive of their files. Shapefile output requires
     /// `roads.shp.zip` (MIME `application/zip`); `.shp` alone is refused. The ZIP holds
     /// `.shp`, `.shx`, `.dbf`, `.cpg` and, when a CRS is present, `.prj`.
+    /// GeoTIFF/COG preserve dataset masks for raster writes without tSrs; a masked raster with
+    /// tSrs is refused because separate-mask reprojection is not implemented.
     /// Text over 254 UTF-8 bytes and unsupported DBF values are explicit errors.
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
@@ -647,6 +650,12 @@ impl Dataset {
                     (None, None) => Window::full(r.width(), r.height()),
                 };
                 let opts = WindowOptions { bands: o.bands.unwrap_or_default(), overview: o.overview };
+                if t_srs.is_some() && r.has_mask() {
+                    return Err(JsError::new("reprojected toBytes does not preserve dataset masks; use an explicit alpha band"));
+                }
+                let mut mask_options = RasterWriteOptions { driver, ..Default::default() };
+                r.prepare_output_mask(filename, &mut mask_options, window, o.overview).map_err(js_err)?;
+                let mask = mask_options.mask;
                 let mut ds = r.read_window(window, &opts).map_err(js_err)?;
                 if let Some(dst) = t_srs {
                     let o = terrio::ops::warp::WarpOptions {
@@ -668,6 +677,7 @@ impl Dataset {
                     driver,
                     compression: o.compress,
                     tile_size: o.tile_size,
+                    mask,
                     creation_options,
                     overviews: o.overviews,
                     overview_resampling: o.overview_resampling,

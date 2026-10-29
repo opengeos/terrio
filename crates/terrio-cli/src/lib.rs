@@ -141,6 +141,12 @@ enum Command {
     Update(cmd::vector_dataset::UpdateArgs),
     /// Subset, resize, rescale or change the type of a raster (like gdal_translate).
     Translate(cmd::translate::Args),
+    /// Convert RGB Byte images to indexed color.
+    RgbToPalette(cmd::palette::RgbArgs),
+    /// Expand a palette-index image to RGB or RGBA.
+    PaletteToRgb(cmd::palette::ExpandArgs),
+    /// Attach a palette without changing index values.
+    AttachPalette(cmd::palette::AttachArgs),
     /// Reproject and resample rasters (like gdalwarp).
     Warp(cmd::warp::Args),
     /// Read an indexed raster catalog, selecting tiles spatially and compositing in z-order.
@@ -315,6 +321,9 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Edit(a) => cmd::vector_dataset::edit(a),
         Command::Update(a) => cmd::vector_dataset::update(a),
         Command::Translate(a) => cmd::translate::run(a),
+        Command::RgbToPalette(a) => cmd::palette::rgb(a),
+        Command::PaletteToRgb(a) => cmd::palette::expand(a),
+        Command::AttachPalette(a) => cmd::palette::attach(a),
         Command::Warp(a) => cmd::warp::run(a),
         Command::Catalog(a) => cmd::catalog::run(a),
         Command::RasterIndex(a) | Command::GtiCreate(a) => cmd::tile_index::raster(a),

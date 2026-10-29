@@ -556,3 +556,27 @@ to 128 levels. The default rio-cogeo profile ignores this metadata tag.
 `gpkg_repack_bytes(data)` returns a compacted `bytes` copy of a self-contained GeoPackage,
 leaving the input unchanged. Both preserve encoded table/index records and schema SQL.
 See [supported scope and storage safety](cli.md#geopackage-repacking).
+
+### Indexed color conversion
+
+`terrio.rgb_to_palette(src, dst=None, *, color_count=256, bit_depth=5,
+ dither=True, color_map=None, output_nodata=None, mask=None)` returns an indexed
+Byte `Raster`. `src` accepts a path or Raster; `color_map` accepts a palette
+raster/path, encoded color-file bytes, or a sequence of RGBA integer entries.
+`mask` is a two-dimensional uint8 validity array. `palette_to_rgb(src, dst=None,
+rgba=False)` expands to RGB/RGBA; `attach_palette(src, color_map, dst=None)`
+changes only the table. `read_color_table(source, filename=None)` returns integer
+RGBA lists; `filename` supplies the format hint for encoded bytes.
+
+The three conversion functions accept output format/compression/tile options
+and `overwrite=False`. Existing outputs need `overwrite=True`; source path
+aliases are protected. Operations materialize the input/output. See
+[Palette conversion](cli.md#palette-conversion) for validity rules, formats and
+GDAL differences.
+
+Python `Raster.write` and `to_bytes` retain dataset masks for GeoTIFF/COG
+outputs. Other writers omit separate dataset masks, as before; explicit masks
+passed to unsupported writers are rejected. Any raster with a dataset mask, including materialized results, is refused for PMTiles/MBTiles writes and their byte serialization,
+since that streaming path supports alpha bands rather than separate masks.
+Normal raster writes materialize the full raster and its mask; remote inputs
+therefore fetch the selected image blocks and mask blocks.

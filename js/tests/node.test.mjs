@@ -2364,6 +2364,65 @@ test("GeoPackage repack preserves real features in bytes and memory", { skip: !D
   }
 });
 
+test("palette conversion APIs preserve colors, masks and serialized tables", () => {
+  const source = terrio.rasterFromArray(new Uint8Array([248, 0, 0, 248, 0, 0]), 2, 1, [10, 1, 0, 20, 0, -1]);
+  const colors = [[248, 0, 0, 255], [0, 248, 0, 255]];
+  const indexed = terrio.rgbToPalette(source, {colorMap: colors, bitDepth: 8, dither: false});
+  assert.deepEqual([...indexed.readBand(1)], [0, 1]);
+  const expanded = terrio.paletteToRgb({bytes: indexed.toBytes("indexed.tif"), filename: "indexed.tif"});
+  assert.deepEqual([...expanded.readBand(1)], [248, 0]);
+  assert.deepEqual([...expanded.readBand(2)], [0, 248]);
+  const attached = terrio.attachPalette(indexed, [[1, 2, 3, 255], [4, 5, 6, 255]]);
+  assert.deepEqual(terrio.readColorTable(attached)[0], [1, 2, 3, 255]);
+  assert.deepEqual([...attached.readBand(1)], [0, 1]);
+  const masked = terrio.rgbToPalette(source, {mask: new Uint8Array([0, 255])});
+  const rgba = terrio.paletteToRgb(masked, {rgba: true});
+  assert.deepEqual([...rgba.readBand(4)], [0, 255]);
+  assert.deepEqual(terrio.readColorTable("0 1 2 3 255\n2 red 128")[2], [255, 0, 0, 128]);
+  assert.deepEqual(terrio.readColorTable('\ufeff<qgis><rasterrenderer type="paletted"><paletteEntry value="0" color="#010203" alpha="128"/></rasterrenderer></qgis>')[0], [1,2,3,128]);
+  assert.throws(() => terrio.rgbToPalette(source, {bitDepth: 6}), /bit depth/);
+  assert.throws(() => terrio.rgbToPalette(source, {mask: [0]}), /mask/);
+  assert.throws(() => terrio.rgbToPalette(source, {outputNodata: NaN}), /finite/);
+  for (const ds of [source, indexed, expanded, attached, masked, rgba]) ds.free();
+});
+
+
+test("masked toBytes reprojection is refused explicitly", () => {
+  const bytes = new Uint8Array(Buffer.from("SUkqAAgAAAANAAABAwABAAAAAgAAAAEBAwABAAAAAgAAAAIBAwABAAAACAAAAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAA8gAAABUBAwABAAAAAQAAABYBAwABAAAAAgAAABcBBAABAAAABAAAABwBAwABAAAAAQAAAFMBAwABAAAAAQAAAA6DDAADAAAAqgAAAIKEDAAGAAAAwgAAAPYAAAAAAAAAAADwPwAAAAAAAPA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAABAQEBDQD+AAQAAQAAAAQAAAAAAQMAAQAAAAIAAAABAQMAAQAAAAIAAAACAQMAAQAAAAEAAAADAQMAAQAAAAgAAAAGAQMAAQAAAAQAAAARAQQAAQAAAJgBAAAVAQMAAQAAAAEAAAAWAQMAAQAAAAIAAAAXAQQAAQAAAA0AAAAcAQMAAQAAAAEAAAA9AQMAAQAAAAEAAABTAQMAAQAAAAEAAAAAAAAAeJwBAgD9/0DAAUIBAQ==", "base64"));
+  const dataset = terrio.open(bytes, "masked.tif");
+  assert.throws(() => dataset.toBytes("output.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
+  const copy = terrio.open(dataset.toBytes("output.tif"), "copy.tif");
+  assert.throws(() => copy.toBytes("reprojected.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
+  // Public validity is observable through the alpha band after palette expansion.
+  const colored = terrio.attachPalette(copy, [[10, 20, 30, 255], [40, 50, 60, 255]]);
+  const rgba = terrio.paletteToRgb(colored, {rgba:true});
+  const reopened = terrio.open(rgba.toBytes("mask.tif"), "mask.tif");
+  assert.deepEqual([...reopened.readBand(4)], [0,255,255,255]);
+  for (const value of [colored,rgba,reopened]) value.free();
+  assert.ok(dataset.toBytes("output.asc").length > 0);
+  for (const extension of ["pmtiles","mbtiles"]) {
+    assert.throws(() => copy.toBytes(`output.${extension}`), /dataset masks/);
+  }
+  copy.free();
+  dataset.free();
+});
+
+test("palette binary options bypass JSON serialization", () => {
+  const source = terrio.rasterFromArray(new Uint8Array([248, 0, 0, 248, 0, 0]), 2, 1, [0, 1, 0, 1, 0, -1]);
+  const indexed = terrio.rgbToPalette(source, {colorCount: 2});
+  const colorMap = indexed.toBytes("palette.tif");
+  const mask = new Uint8Array([0, 255]);
+  colorMap.toJSON = mask.toJSON = () => { throw new Error("binary options must not be serialized"); };
+  const output = terrio.rgbToPalette(source, {colorMap, mask, outputNodata: 0});
+  assert.equal(output.readBand(1)[0], 0);
+  assert.throws(() => terrio.rgbToPalette(source, {unknown: true}), /unknown field/);
+  source.free(); indexed.free(); output.free();
+});
+
+test("palette XML nesting fails as an error without trapping", () => {
+  assert.throws(() => terrio.readColorTable("<a>".repeat(100000), "colors.qml"), /256 element levels/);
+});
+
 test("COG validation profiles inspect uploaded block trailers", () => {
   const raster = terrio.createRaster(null, {size: [64, 64], burn: [7]});
   const bytes = raster.toBytes("input.tif", {format: "COG", compress: "DEFLATE"});
@@ -2391,6 +2450,24 @@ test("identify inspects bounded upload prefixes and filename hints", () => {
   assert.equal(terrio.identify(beyondPrefix, "data.json"), null);
   assert.throws(() => terrio.identify({bytes: "not an array"}), /Uint8Array/);
   raster.free();
+});
+
+
+test("palette memory paths keep trailing spaces distinct", () => {
+  const root = "/vsimem/palette-space-identity";
+  for (const [name, index] of [["source.tif",0],["source.tif ",1]]) {
+    const source = terrio.rasterFromArray(new Uint8Array([index]), 1, 1, [0,1,0,1,0,-1]);
+    const indexed = terrio.attachPalette(source, [[10,20,30,255],[200,210,220,255]]);
+    terrio.vsiWrite(`${root}/${name}`, indexed.toBytes("source.tif"));
+    source.free(); indexed.free();
+  }
+  try {
+    assert.equal(terrio.vsiStat(`${root}/source.tif `).name, `${root}/source.tif `);
+    const source = terrio.open(terrio.vsiRead(`${root}/source.tif `), "source.tif");
+    const result = terrio.paletteToRgb(source);
+    assert.deepEqual([...result.readBand(1)], [200]);
+    result.free(); source.free();
+  } finally { terrio.vsiDelete(root, true); }
 });
 
 test("checkDataset decodes all exposed uploaded content", () => {

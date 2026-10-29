@@ -2176,6 +2176,54 @@ pipeline to avoid those fast paths. The other operators use whole-dataset
 reference kernels: GDAL 3.13.3's generic per-band kernels process only the first
 sample.
 
+## Palette conversion
+
+`terrio rgb-to-palette INPUT OUTPUT` quantizes Byte RGB imagery with GDAL's
+median-cut palette generation and integer error diffusion. `--color-count 2..256`
+(default 256), `--bit-depth 5|8` (default 5), `--no-dither`, `--color-map FILE` and
+`--output-nodata INDEX` control generation/mapping. Color count applies only to
+generated palettes; when `--color-map` supplies a table, that table determines
+the color count and `--color-count` is ignored. A color map can be an indexed
+raster, indexed GDAL/GRASS text, RGB GMT CPT (with a `# COLOR_MODEL = RGB` header) or QGIS QML/QLR file. RGB color
+interpretations select the channels when present; otherwise the first three
+bands are used. Shared RGB nodata excludes pixels from palette generation. If no shared RGB
+nodata value exists, dataset masks (or alpha validity) select valid pixels. This
+precedence follows GDAL; masks do not add exclusions when shared RGB nodata exists.
+Explicit Python/JavaScript masks use this same precedence.
+Indexed CPT tables retain declared segment endpoints; interior indices are padding,
+matching GDAL palette conversion. DEM color relief interpolates ramps separately.
+UTF-8 BOM-prefixed QGIS XML is recognized without a QML filename hint.
+GDAL also tests vertically diffused RGB values for nodata, so a valid near-black
+pixel can become nodata after dithering. An automatically generated palette reserves index
+zero for invalid pixels; a supplied map uses invalid-pixel handling only when
+`--output-nodata` is given, following GDAL. Reserving a nodata index inserts
+a table slot, shifts later entries and drops the old last entry if the table
+would exceed 256 entries; this also follows GDAL for supplied palettes. A nodata
+index beyond the table pads it with transparent black, and valid pixels may map
+to those padding entries, as in GDAL's virtual output. GeoTIFF normalizes their
+alpha to opaque unless the entry is the declared nodata index.
+
+`terrio palette-to-rgb INPUT OUTPUT [--rgba]` expands indexed pixels to three
+or four Byte bands, and `terrio attach-palette PALETTE INPUT OUTPUT` replaces a
+Byte/UInt16 raster's table without changing its indices. Expansion/attachment
+preserve dataset masks in returned handles and GeoTIFF/COG outputs; other
+formats omit separate masks. Source nodata becomes transparent on RGBA expansion;
+unmapped indices become black in RGB and transparent black in RGBA. GeoTIFF stores RGB table entries and nodata
+transparency; arbitrary per-entry alpha requires a format such as PNG.
+
+All three commands accept raster output options and require `--overwrite` to
+replace an existing output. Inputs and their local symlink/hard-link aliases are
+protected from replacement. These operations currently materialize the full
+input/output. They do not append subdatasets, execute GDALG pipelines or support
+non-Byte RGB quantization. QGIS XML alpha values are honored explicitly, rather
+than reproducing GDAL 3.13.3's XML alpha parsing bug.
+
+Rust exposes `ops::palette`, Python exposes `rgb_to_palette`, `palette_to_rgb`,
+`attach_palette`, `read_color_table`, and JavaScript exposes `rgbToPalette`,
+`paletteToRgb`, `attachPalette`, `readColorTable`. Python accepts paths and Raster
+objects; JavaScript accepts Dataset objects/uploaded files and color-file text
+or RGBA arrays. CLI commands are also available through MCP.
+
 
 ## Raster/vector indexes and GTI creation
 
@@ -2263,6 +2311,15 @@ publish all components from staging and require a new basename even with `--over
 Append/update, layer replacement, STAC-GeoParquet profiles, XML companion output and
 GDAL-specific creation options are outside this supported subset. Shapefile field
 width/type limits still apply. The three commands are also exposed as MCP tools.
+
+Palette commands reject masked PMTiles/MBTiles outputs, including materialized
+results, because these writers cannot retain the separate dataset mask.
+GeoTIFF/COG preserve it.
+
+Palette text/XML channels outside 0–255 are rejected. GDAL 3.13.3 wraps invalid
+RGB text channels; Terrio deliberately rejects those malformed inputs. Text
+Color-file XML is limited to 65,536 elements and 256 nesting levels; color files are limited to 10 MiB while streaming, including when their size
+is unavailable.
 
 ### GeoPackage repacking
 

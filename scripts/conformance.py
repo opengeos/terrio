@@ -953,6 +953,27 @@ def suite_raster_query(ctx):
     return suite
 
 
+def suite_palette(ctx):
+    """Indexed colors on real Landsat and OPERA imagery."""
+    if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None:
+        suite = Suite("palette", "Palette conversion", "GDAL 3.13", "Exact palettes and pixels.")
+        suite.skipped = "needs GDAL 3.13 commands/bindings and NumPy"
+        return suite
+    from osgeo import gdal
+
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000 or run(["gdal", "raster", "rgb-to-palette", "--help"])[0] != 0:
+        suite = Suite("palette", "Palette conversion", "GDAL 3.13", "Exact palettes and pixels.")
+        suite.skipped = "needs GDAL >= 3.13 for rgb-to-palette"
+        return suite
+    return suite_json_ops(
+        ctx, "palette", "compare_palette_with_gdal.py", "Palette conversion",
+        "`gdal raster rgb-to-palette`, `gdal_translate -expand`, GDAL SetRasterColorTable",
+        "Landsat median cut and diffusion at 5/8 bits, supplied raster/text tables, "
+        "nodata, masks, alpha, OPERA expansion and attachment: exact pixels, palettes, "
+        "types, nodata, masks, CRS and georeferencing.", 1,
+    )
+
+
 def suite_blend(ctx):
     """Raster image composition against GDAL 3.13."""
     if missing_modules("osgeo"):
@@ -2061,6 +2082,7 @@ SUITES = OrderedDict(
         ("raster-query", suite_raster_query),
         ("raster-pixel", suite_raster_pixel),
         ("blend", suite_blend),
+        ("palette", suite_palette),
         ("cog-validate", suite_cog_validate),
         ("identify", suite_identify),
         ("dataset-check", suite_dataset_check),
