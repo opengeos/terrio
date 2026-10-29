@@ -110,10 +110,11 @@ terrio mdinfo ocean.nc --json
 terrio mdread ocean.nc --array /temperature --isel time=2 --isel depth=0 \
   --slice lat=10,20 --slice lon=20,30,2 --transpose lon,lat
 terrio mdconvert ocean.nc ocean.zarr
+terrio mdmosaic west.nc east.nc combined.zarr
 ```
 
 `mdread` emits the selected shape, dimensions, type and row-major values as JSON. Indexing is
-applied before ranges, then transposition. The MCP tools are `mdinfo`, `mdread` and `mdconvert`;
+applied before ranges, then transposition. The MCP tools are `mdinfo`, `mdread`, `mdconvert` and `mdmosaic`;
 the first two have read-only annotations. JSON reads default to at most 1,000,000 selected
 elements, checked before payload reads; use selectors to reduce the result, increase
 `--max-elements`, or explicitly set `--max-elements 0` for an unrestricted CLI read.

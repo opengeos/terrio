@@ -167,15 +167,7 @@ pub(crate) fn md_open(name: &str, mount: Option<std::sync::Arc<crate::memfs::Mou
                     return Err(bad("saved dimension metadata does not match the array shape"));
                 }
             }
-            let mut coordinates: Vec<_> = dimensions.iter().filter_map(|d| d.indexing_variable.clone()).collect();
-            if let Some(raw) = a.attrs.get("coordinates").and_then(Value::as_str) {
-                for n in raw.split_whitespace() {
-                    let n = if n.starts_with('/') { n.to_string() } else { format!("{}/{}", p.trim_end_matches('/'), n) };
-                    if !coordinates.contains(&n) {
-                        coordinates.push(n);
-                    }
-                }
-            }
+            let coordinates = dimensions.iter().filter_map(|d| d.indexing_variable.clone()).collect();
             let mut attributes = if a.attrs.is_object() { a.attrs.clone() } else { json!({}) };
             let attribute_types = crate::multidim::take_attribute_types(&mut attributes)?;
             let info = ArrayInfo {
@@ -236,7 +228,8 @@ pub(crate) fn md_open(name: &str, mount: Option<std::sync::Arc<crate::memfs::Mou
     fn dimension_scope_exists(g: &Group, d: &Dimension) -> bool {
         d.path == format!("{}/{}", g.path.trim_end_matches('/'), d.name) || g.groups.iter().any(|g| dimension_scope_exists(g, d))
     }
-    let root = visit(&node, "/", &mount, 0)?;
+    let mut root = visit(&node, "/", &mount, 0)?;
+    crate::multidim::resolve_coordinates(&mut root);
     // A selected subgroup/array may legitimately refer to dimensions and indexing
     // variables outside that subset. Full stores must resolve every declaration.
     let partial = selected.is_some() || read_array_opt(&node).is_ok_and(|a| a.is_some());

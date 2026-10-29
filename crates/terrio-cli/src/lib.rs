@@ -34,6 +34,8 @@ enum Command {
     Mdread(cmd::multidim::ReadArgs),
     /// Snapshot native numeric groups, coordinates and chunks between netCDF-4 and Zarr.
     Mdconvert(cmd::multidim::ConvertArgs),
+    /// Mosaic multidimensional arrays by their dimension coordinates.
+    Mdmosaic(cmd::multidim::MosaicArgs),
     /// Convert a dataset to another format, optionally reprojecting it. Point clouds convert to
     /// LAS, LAZ, COPC or vector point layers.
     Convert(cmd::convert::Args),
@@ -280,6 +282,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Mdinfo(a) => cmd::multidim::info(a),
         Command::Mdread(a) => cmd::multidim::read(a),
         Command::Mdconvert(a) => cmd::multidim::convert(a),
+        Command::Mdmosaic(a) => cmd::multidim::mosaic(a),
         Command::Convert(a) => cmd::convert::run(a),
         Command::Formats(a) => cmd::formats::run(a),
         Command::Crs(a) => cmd::crs::run(a),

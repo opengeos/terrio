@@ -450,11 +450,22 @@ rules with full leader/trailer, row-order and interleaved-mask checks enabled
 for uploaded bytes unless `fullCheck: false` is supplied. External sidecars
 are unavailable for a standalone byte buffer.
 
+### GeoPackage maintenance
+
 `gpkgRepack(path)` compacts an uploaded `/vsimem/` GeoPackage in place and returns
 `bytes_before`, `bytes_after`, `page_size`, `pages_before` and `pages_after`.
 `gpkgRepackBytes(bytes)` returns a compacted `Uint8Array` copy of a self-contained image.
 Read the in-memory result with `vsiRead(path)`. Encoded records, indexes, rowids and schema SQL
 are retained. See [supported scope](cli.md#geopackage-repacking).
+
+### Multidimensional mosaics
+
+`mosaicMultidim(sources, {arrays})` builds a lazy coordinate-aligned
+`MultidimDataset` from dataset handles or uploaded scientific inputs. `arrays`
+selects numeric arrays by path or unambiguous name. Source handles can be freed
+after construction; mosaic views keep the source data alive. See
+[Multidimensional mosaics](cli.md#multidimensional-mosaics) for alignment,
+priority, Int64/UInt64 handling and snapshot formats.
 
 ### Indexed color conversion
 

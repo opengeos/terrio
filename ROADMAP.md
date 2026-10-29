@@ -86,6 +86,11 @@ commands. Command-group progress:
       Landed in [#374](https://github.com/opengeos/terrio/pull/374), with real-data
       conformance and measured remote header/full-check I/O.
 
+- [x] Multidimensional mosaics: lazy coordinate-aligned numeric arrays across
+      Rust, CLI/MCP, Python and JavaScript, with netCDF/Zarr output and real
+      NOAA wind comparisons registered as `mdmosaic`. Landed in
+      [#373](https://github.com/opengeos/terrio/pull/373).
+
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
       [#306](https://github.com/opengeos/terrio/pull/306), through Rust, CLI/MCP, Python and

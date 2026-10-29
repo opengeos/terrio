@@ -551,11 +551,23 @@ blocks need not be checked once the file is already invalid.
 The GDAL profile limits total parsed GDAL metadata to 4 MiB per file and XML nesting
 to 128 levels. The default rio-cogeo profile ignores this metadata tag.
 
+### GeoPackage maintenance
+
 `gpkg_repack(path)` compacts a native or `/vsimem/` GeoPackage in place and returns
 `bytes_before`, `bytes_after`, `page_size`, `pages_before` and `pages_after`.
 `gpkg_repack_bytes(data)` returns a compacted `bytes` copy of a self-contained GeoPackage,
 leaving the input unchanged. Both preserve encoded table/index records and schema SQL.
 See [supported scope and storage safety](cli.md#geopackage-repacking).
+
+### Multidimensional mosaics
+
+`terrio.mosaic_multidim(sources, dst=None, *, arrays=None)` builds a lazy
+coordinate-aligned mosaic. Each source can be a `MultidimDataset`, a scientific
+path/bytes, or a Zarr key/value dictionary. Read coordinate-aligned views through
+`output.array(name)`, or write a new netCDF/Zarr snapshot with `dst` or `write`.
+Source handles stay alive through the mosaic. See
+[Multidimensional mosaics](cli.md#multidimensional-mosaics) for alignment,
+priority, type preservation and supported scope.
 
 ### Indexed color conversion
 

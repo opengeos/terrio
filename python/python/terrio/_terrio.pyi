@@ -57,6 +57,7 @@ __all__ = [
     "MultidimDataset",
     "MultidimArray",
     "open_multidim",
+    "mosaic_multidim",
     "dem",
     "calc",
     "proximity",
@@ -1864,6 +1865,12 @@ def blend(
 
 def gpkg_repack(path: str | os.PathLike[str]) -> dict[str, Any]: ...
 def gpkg_repack_bytes(data: bytes) -> bytes: ...
+def mosaic_multidim(
+    sources: Sequence[MultidimDataset | str | os.PathLike[str] | bytes | dict[str, bytes]],
+    dst: str | os.PathLike[str] | None = None,
+    *,
+    arrays: Sequence[str] | None = None,
+) -> MultidimDataset: ...
 
 _PaletteSource: TypeAlias = Raster | str | os.PathLike[str] | bytes | Sequence[Sequence[int]]
 

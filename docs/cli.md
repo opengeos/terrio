@@ -2321,7 +2321,7 @@ RGB text channels; Terrio deliberately rejects those malformed inputs. Text
 Color-file XML is limited to 65,536 elements and 256 nesting levels; color files are limited to 10 MiB while streaming, including when their size
 is unavailable.
 
-### GeoPackage repacking
+## GeoPackage repacking
 
 `terrio gpkg-repack survey.gpkg --json` compacts a native GeoPackage in place.
 The `gpkg-repack` MCP tool accepts the same arguments. JSON reports original and compacted
@@ -2376,3 +2376,73 @@ one contiguous output image; encoded records/cells for the largest tree are also
 Memory depends on row shape/count and is not hard-capped. A local 2.01 GiB live-BLOB
 derivative used about 6.04 GiB peak RSS; its mostly deleted counterpart used about 2.06 GiB. WebAssembly uses `/vsimem/` paths or the bytes API. A bytes input must be a
 self-contained, recovered/checkpointed image; external journal/WAL files are not part of it.
+
+## Multidimensional mosaics
+
+`terrio mdmosaic INPUT... OUTPUT [--array PATH_OR_NAME]` combines numeric
+scientific arrays on their indexing-variable coordinates. Repeat `--array` to
+select multiple arrays; by default, all arrays with at least two dimensions
+are selected. Sources can be netCDF/HDF5 files or local/remote Zarr stores.
+The output must be a new `.nc` (netCDF-4) file or `.zarr` (Zarr v2) store.
+The command is also exposed as the `mdmosaic` MCP tool.
+
+Sources contributing to an array must agree on its full path, numeric type,
+nodata, packing scale/offset, units and dimension names/order. Dimensions that
+change across inputs need a finite, numeric, one-dimensional indexing variable.
+Unindexed dimensions, including CF bounds axes, are retained positionally and
+must keep the same size across inputs. Regular axes must share spacing and grid
+alignment; disjoint irregular ranges and axes made entirely of irregular singleton time slices are
+also supported. Last input wins overlaps, including nodata pixels. Gaps on
+regular grids, or missing combinations of coordinates across axes, are filled
+with `_FillValue`, falling back to a scalar CF `missing_value`, or raw zero
+if neither is declared. An array-valued `missing_value` is retained as metadata
+but does not select a unique gap fill value.
+
+The shared Rust `multidim::mosaic` creates lazy array handles: it reads coordinate
+one-dimensional indexing variables to plan the mosaic but fetches data only for intersecting hyperslabs.
+Python `mosaic_multidim(sources, dst=None, arrays=None)` and JavaScript
+`mosaicMultidim(sources, {arrays})` expose the same engine. Numeric values retain
+their native types, including Int64/UInt64 precision. Input handles may be closed
+after construction; mosaic views keep their sources alive. netCDF snapshots
+currently materialize arrays; Zarr snapshots iterate output chunks.
+
+Selected arrays automatically retain their auxiliary coordinates, CF bounds and scalar
+CRS definitions. Auxiliary coordinates and bounds must resolve to the same array paths
+across contributors; equivalent scalar CRS aliases can use different paths when their
+metadata agrees. Conflicting definitions and missing dependencies are rejected. Extended
+grid-mapping coordinate tuples retain their declared order. Auxiliary payloads stay lazy.
+Reference attributes keep unambiguous local names and use explicit paths when merged
+groups would otherwise rebind them. GDAL 3.13.3 automatic coordinate discovery does not
+resolve absolute coordinate names; those cross-group arrays/attributes remain readable,
+and Terrio resolves them according to CF group scoping.
+
+Terrio retains source group paths and metadata; GDAL places explicitly selected
+nested arrays at the root. It also retains integer coordinate types rather than
+GDAL's synthesized Float64 coordinates. Float32 indexing variables use their
+native precision when recognizing regular grids and placing tiles; gap cells
+are retained. Off-grid origins beyond that precision allowance are rejected;
+the allowance is capped at 0.001 grid cells. This can reject mathematically regular
+Float32 coordinates when large origins or wide tile separation amplify rounding
+beyond that cap (including 40 + index × 0.1 at 900-cell separation, also rejected
+by GDAL 3.13.3). Such inputs require higher-precision coordinates before mosaicking. Per-tile `actual_range` metadata on coordinates and data arrays may differ and is removed from the mosaic. Coordinate `comment`, `history`, `long_name`, `source` and `references` may differ; the first input supplies them. Other coordinate attributes, including validity limits, units and calendar, must match to preserve their interpretation. Source chunk shapes and other compatible descriptive metadata are inherited from the first input. Full-array reads and netCDF snapshots materialize the requested data; use selected reads or chunked Zarr output for large mosaics. Extended scalar CF `grid_mapping` clauses are retained; unresolved mapping references are rejected. Irregular axes are sorted with
+equal coordinates deduplicated in either direction.
+
+Coordinate planning checks the actual in-memory element width before reading
+coordinates or allocating generated grids. Combined input coordinate storage per
+axis and each generated coordinate buffer are limited to 256 MiB. This is not a
+cap on data-array size: views remain lazy, Zarr writes iterate chunks, and netCDF
+snapshots materialize the requested data. String/compound arrays, serialized multidimensional VRT output,
+creation/open options, automatic glob/list-file expansion and replacement of
+existing outputs are outside this supported subset. Output replacement is refused
+before writing. Descending axes work directly in Terrio; comparisons normalize
+GDAL 3.13.3 inputs because its descending-axis VRT size/offset computation can
+produce invalid dimensions, then restore the coordinate order for comparison.
+
+A singleton mixed with a regular multidimensional series must align to that
+series; off-grid mixed slices are rejected, as in GDAL 3.13.3. Data-array
+`valid_range`, `valid_min`, `valid_max`, `missing_value`, `grid_mapping` and
+`_Unsigned` must agree across contributing inputs, in addition to scale,
+offset, units and nodata. Numeric integer/float metadata compares by value.
+
+An array present in only some inputs is retained; regions belonging to other
+inputs use that array's nodata value, or zero when it has none.
