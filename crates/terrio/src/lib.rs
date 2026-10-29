@@ -200,6 +200,8 @@ pub mod formats;
 pub mod gdal_backend;
 mod geotiff;
 pub mod gpkg_maintenance;
+#[cfg(all(test, feature = "sqlite"))]
+mod gpkg_validation;
 mod histogram;
 #[cfg(remote)]
 #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]

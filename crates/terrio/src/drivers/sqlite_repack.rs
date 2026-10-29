@@ -760,10 +760,6 @@ fn check_page_layout(bytes: &[u8], page: u32, size: usize) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "../gpkg_validation/schema.rs"]
-mod validation_schema;
-
-#[cfg(test)]
 mod validation_tests {
     use super::*;
     #[test]

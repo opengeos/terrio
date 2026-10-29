@@ -21,6 +21,7 @@ pub(super) struct Schema {
     pub foreign_keys: Vec<ForeignKey>,
     pub unique: Vec<Vec<String>>,
     pub without_rowid: bool,
+    pub rowid_alias: Option<usize>,
 }
 #[derive(Debug, Clone)]
 struct Token {
@@ -148,8 +149,10 @@ impl Schema {
             foreign_keys: Vec::new(),
             unique: Vec::new(),
             without_rowid: all[end + 1..].windows(2).any(|p| p[0].is("WITHOUT") && p[1].is("ROWID")),
+            rowid_alias: None,
         };
         let mut primary = Vec::new();
+        let mut descending_aliases = Vec::new();
         let mut at = open + 1;
         while at < end {
             let start = at;
@@ -216,6 +219,9 @@ impl Schema {
                 }
                 if rest[i].is("PRIMARY") && rest.get(i + 1).is_some_and(|t| t.is("KEY")) {
                     primary.push(name.clone());
+                    if rest.get(i + 2).is_some_and(|t| t.is("DESC")) {
+                        descending_aliases.push(name.clone());
+                    }
                     schema.unique.push(vec![name.clone()]);
                 }
                 if rest[i].is("UNIQUE") {
@@ -260,6 +266,9 @@ impl Schema {
             if schema.without_rowid || primary.len() == 1 && column.data_type == "INTEGER" {
                 column.not_null = true;
             }
+        }
+        if !schema.without_rowid && primary.len() == 1 && !descending_aliases.contains(&primary[0]) {
+            schema.rowid_alias = schema.columns.iter().position(|column| column.primary_key == 1 && column.data_type == "INTEGER");
         }
         Ok(schema)
     }
