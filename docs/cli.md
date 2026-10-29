@@ -2153,6 +2153,16 @@ A locked database or nonempty WAL sidecar is refused; close/checkpoint the SQLit
 retrying. Native symbolic-link dataset filenames, linked/special sidecars, reserved/encrypted page bytes, remote and archive paths
 are refused. This is storage maintenance, not a GeoPackage specification validator.
 
+Unix directory-sync requirements also apply to existing native SQLite in-place edits and
+recovery, including append/update. Unreadable directories and filesystems rejecting directory
+fsync can fail before page writes. A sync failure after journal deletion explicitly reports
+that changes committed but durability is unconfirmed; callers must not blindly retry an append.
+Native append/update follows filename symlinks to their target and checks that target's WAL.
+
+The rollback journal can approach the original file size, plus per-page record headers.
+Peak database-plus-journal disk usage can approach twice the original size; write I/O includes
+both the journal and replacement database image. Reserve disk space accordingly.
+
 Repacking scans and rewrites the complete database. It owns one input image and builds
 one contiguous output image; encoded records/cells for the largest tree are also materialized.
 Memory depends on row shape/count and is not hard-capped. A local 2.01 GiB live-BLOB

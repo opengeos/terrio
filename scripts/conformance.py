@@ -774,24 +774,24 @@ def suite_multidim(ctx):
 
 
 def suite_gpkg_repack(ctx):
-    suite=Suite("gpkg-repack", "GeoPackage storage repacking", "GDAL 3.13.3 / SQLite VACUUM",
+    suite = Suite("gpkg-repack", "GeoPackage storage repacking", "GDAL 3.13.3 / SQLite VACUUM",
                 "Natural Earth and USGS derivatives: all SQL records/objects/rowids, GDAL features and raster pixels/masks, types, CRS and metadata. Covers arbitrary indexes, WITHOUT ROWID, encodings, auto-vacuum, page sizes and mutation guards. Physical page layouts may differ.")
     if missing_modules("osgeo"):
-        suite.skipped="needs osgeo"
+        suite.skipped = "needs osgeo"
         return suite
-    if shutil.which("gdal") is None:
-        suite.skipped="needs gdal executable"
+    if shutil.which("gdal") is None or run(["gdal", "driver", "gpkg", "repack", "--help"])[0] != 0:
+        suite.skipped = "needs gdal driver gpkg repack"
         return suite
-    code,out,err=run([sys.executable,str(SCRIPTS/"compare_gpkg_repack_with_gdal.py"),ctx.data,"--terrio",ctx.terrio,"--json"])
+    code, out, err = run([sys.executable,str(SCRIPTS/"compare_gpkg_repack_with_gdal.py"),ctx.data,"--terrio",ctx.terrio,"--json"])
     try:
-        results=json.loads(out)
+        results = json.loads(out)
     except json.JSONDecodeError:
-        suite.error=tail(err or out)
+        suite.error = tail(err or out)
         return suite
     for result in results:
-        suite.cases.append(Case("GeoPackage repack",result["name"],IDENTICAL if result["status"]=="identical" else DIFFERS,result["detail"]))
-    if code and not any(case.status==DIFFERS for case in suite.cases):
-        suite.error=tail(err or out)
+        suite.cases.append(Case("GeoPackage repack",result["name"],IDENTICAL if result["status"] == "identical" else DIFFERS,result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
     return suite
 
 

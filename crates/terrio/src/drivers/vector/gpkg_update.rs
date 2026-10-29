@@ -739,6 +739,37 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn symlinked_append_rewrite_preserves_the_link_and_updates_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("target.gpkg");
+        let link = dir.path().join("alias.gpkg");
+        let source = Db::new(gw::to_bytes(&[layer("a", 1, 0.)]).unwrap()).unwrap();
+        let mut database = Database::load(&source).unwrap();
+        database.objects.push(SchemaObject {
+            kind: "trigger",
+            name: "custom_after_insert".into(),
+            table: "a".into(),
+            sql: "CREATE TRIGGER custom_after_insert AFTER INSERT ON a BEGIN SELECT 1; END".into(),
+        });
+        let original = database.finish().unwrap();
+        std::fs::write(&path, &original).unwrap();
+        std::os::unix::fs::symlink("target.gpkg", &link).unwrap();
+        let appended = [layer("a", 1, 10.)];
+        assert!(!super::super::gpkg_inplace::update_in_place(&path, &appended, UpdateMode::Append).unwrap());
+        let wal = dir.path().join("target.gpkg-wal");
+        std::fs::write(&wal, b"pending frames").unwrap();
+        assert!(update(link.to_str().unwrap(), &appended, UpdateMode::Append).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        std::fs::remove_file(&wal).unwrap();
+        update(link.to_str().unwrap(), &appended, UpdateMode::Append).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_link(&link).unwrap(), std::path::Path::new("target.gpkg"));
+        let database = Db::new(std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(super::super::gpkg_read::read_db(&database, &[], None).unwrap()[0].len(), 2);
+    }
+
+    #[test]
     fn rewrite_refuses_pending_wal_without_touching_either_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wal.gpkg");
