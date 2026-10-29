@@ -1,5 +1,6 @@
 //! GeoPackage validation rules, built and tested before exposing the complete public validator.
 //! Metadata requirements follow OGC GeoPackage 1.4 and GDAL 3.13.3 validate_gpkg.py.
+mod content;
 mod schema;
 
 use crate::drivers::{
@@ -34,6 +35,28 @@ struct Table {
     rows: Vec<Vec<Value>>,
 }
 impl Table {
+    fn decode(&self, record: &[u8], rowid: Option<i64>, encoding: u32) -> Result<Vec<Value>> {
+        let stored = sqlite_repack::decode_record(record, encoding)?;
+        let mut values = vec![Value::Null; self.schema.columns.len()];
+        let mut order: Vec<_> = (0..values.len()).collect();
+        if self.schema.without_rowid {
+            order.sort_by_key(|i| {
+                let pk = self.schema.columns[*i].primary_key;
+                if pk == 0 { values.len() + *i } else { pk - 1 }
+            });
+        }
+        if stored.len() > values.len() {
+            return Err(Error::InvalidData("SQLite record has more fields than its table".into()));
+        }
+        for (field, column) in order.iter().enumerate() {
+            values[*column] =
+                stored.get(field).cloned().unwrap_or_else(|| literal_default(self.schema.columns[*column].default.as_deref()));
+        }
+        if let Some(column) = self.schema.rowid_alias {
+            values[column] = rowid.map_or(Value::Null, Value::Int);
+        }
+        Ok(values)
+    }
     fn get<'a>(&self, row: &'a [Value], name: &str) -> Option<&'a Value> {
         self.schema.columns.iter().position(|column| column.name == name).and_then(|i| row.get(i))
     }
@@ -77,6 +100,12 @@ fn literal_default(value: Option<&str>) -> Value {
     if let Some(text) = value.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
         return Value::Text(text.replace("\"\"", "\""));
     }
+    if let Some(hex) = value.strip_prefix("X'").or_else(|| value.strip_prefix("x'")).and_then(|v| v.strip_suffix('\''))
+        && hex.len().is_multiple_of(2)
+        && hex.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Value::Blob((0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("checked hex")).collect());
+    }
     if let Ok(value) = value.parse::<i64>() {
         return Value::Int(value);
     }
@@ -102,25 +131,7 @@ impl Snapshot {
             }
             if metadata_table(&entry.1) {
                 let table = tables.get_mut(&entry.1).expect("inserted table");
-                let stored = sqlite_repack::decode_record(record, encoding)?;
-                let mut values = vec![Value::Null; table.schema.columns.len()];
-                let mut order: Vec<_> = (0..values.len()).collect();
-                if table.schema.without_rowid {
-                    order.sort_by_key(|i| {
-                        let pk = table.schema.columns[*i].primary_key;
-                        if pk == 0 { values.len() + *i } else { pk - 1 }
-                    });
-                }
-                if stored.len() > values.len() {
-                    return Err(Error::InvalidData("SQLite record has more fields than its table".into()));
-                }
-                for (field, column) in order.iter().enumerate() {
-                    values[*column] =
-                        stored.get(field).cloned().unwrap_or_else(|| literal_default(table.schema.columns[*column].default.as_deref()));
-                }
-                if let Some(column) = table.schema.rowid_alias {
-                    values[column] = rowid.map_or(Value::Null, Value::Int);
-                }
+                let values = table.decode(record, rowid, encoding)?;
                 table.rows.push(values);
             }
             Ok(())
@@ -205,6 +216,49 @@ impl Checker {
                 format!("{name}.{}: wrong default expression", rule.name),
             );
         }
+    }
+
+    /// Attribute table declarations; view schemas need the later SQL/view layer.
+    fn attribute_table(&mut self, name: &str) {
+        let Some(table) = self.db.tables.get(name) else { return };
+        self.report.require(table.schema.rowid_alias.is_some(), 119, format!("{name}: INTEGER primary key must act as a rowid alias"));
+        for column in &table.schema.columns {
+            self.report.require(
+                content::valid_data_type(&column.data_type),
+                5,
+                format!("{name}.{}: invalid data type {}", column.name, column.data_type),
+            );
+        }
+    }
+
+    /// A second streaming inspection examines only requested user tables. Retain
+    /// at most one warning per column, never the table's records or geometry blobs.
+    fn user_content(&mut self, bytes: &[u8], names: &[&str]) -> Result<()> {
+        let encoding = bytes
+            .get(56..60)
+            .and_then(|b| b.try_into().ok())
+            .map(u32::from_be_bytes)
+            .ok_or_else(|| Error::InvalidData("truncated SQLite header".into()))?;
+        let mut warned: BTreeMap<&str, Vec<bool>> = names
+            .iter()
+            .filter_map(|&name| self.db.tables.get(name).map(|table| (name, vec![false; table.schema.columns.len()])))
+            .collect();
+        sqlite_repack::inspect(bytes, |entry, rowid, record| {
+            if entry.0 != "table" {
+                return Ok(());
+            }
+            let Some(warned) = warned.get_mut(entry.1.as_str()) else { return Ok(()) };
+            let table = &self.db.tables[&entry.1];
+            let values = table.decode(record, rowid, encoding)?;
+            for ((column, value), warned) in table.schema.columns.iter().zip(&values).zip(warned) {
+                if !*warned && let Some(warning) = content::warning(column, value) {
+                    self.report.warnings.push(format!("{}: {warning}", entry.1));
+                    *warned = true;
+                }
+            }
+            Ok(())
+        })?;
+        Ok(())
     }
 
     fn spatial_references(&mut self) {
@@ -439,6 +493,27 @@ mod tests {
     }
 
     #[test]
+    fn attribute_table_requires_an_integer_rowid_alias_and_standard_types() {
+        for (sql, valid) in [
+            ("CREATE TABLE t(id INTEGER PRIMARY KEY, note TEXT)", true),
+            ("CREATE TABLE t(id INT PRIMARY KEY, note TEXT)", false),
+            ("CREATE TABLE t(id INTEGER PRIMARY KEY DESC, note TEXT)", false),
+            ("CREATE TABLE t(id INTEGER PRIMARY KEY, note TEXT) WITHOUT ROWID", false),
+            ("CREATE TABLE t(id INTEGER, other INTEGER, PRIMARY KEY(id,other))", false),
+            ("CREATE TABLE t(id INTEGER PRIMARY KEY, note VARCHAR)", false),
+            ("CREATE TABLE t(id INTEGER PRIMARY KEY, note TEXT(8), bytes BLOB(2))", true),
+        ] {
+            let db = Snapshot {
+                objects: vec![],
+                tables: BTreeMap::from([("t".into(), Table { schema: Schema::parse(sql).unwrap(), rows: vec![] })]),
+            };
+            let mut checker = Checker { db, report: CoreReport::default() };
+            checker.attribute_table("t");
+            assert_eq!(checker.report.errors.is_empty(), valid, "{sql}: {:?}", checker.report);
+        }
+    }
+
+    #[test]
     fn required_srs_records_cannot_be_duplicated() {
         let schema = Schema::parse("CREATE TABLE gpkg_spatial_ref_sys(srs_name TEXT NOT NULL,srs_id INTEGER PRIMARY KEY,organization TEXT NOT NULL,organization_coordsys_id INTEGER NOT NULL,definition TEXT NOT NULL,description TEXT)").unwrap();
         let rows = [-1, 0, 4326]
@@ -552,6 +627,116 @@ print(json.dumps(out))
             let bytes = std::fs::read(case["path"].as_str().unwrap()).unwrap();
             let report = check_core(&bytes);
             assert_eq!(report.errors.is_empty(), case["valid"].as_bool().unwrap(), "{}: {report:?}", case["name"]);
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    #[ignore = "requires GDAL 3.13.3 and real comparison data"]
+    fn user_content_matches_gdal_with_documented_spec_corrections() {
+        let data = std::env::var("TERRIO_TEST_DATA").expect("set TERRIO_TEST_DATA");
+        let dir = tempfile::tempdir().unwrap();
+        let script = r#"
+import sys,pathlib,json,sqlite3
+from osgeo import gdal
+from osgeo_utils.samples.validate_gpkg import GPKGChecker
+root=pathlib.Path(sys.argv[1]); data=pathlib.Path(sys.argv[2]); path=root/'attributes.gpkg'
+gdal.UseExceptions()
+gdal.VectorTranslate(str(path),str(data/'countries.gpkg'),format='GPKG',layerName='countries',layerCreationOptions=['SPATIAL_INDEX=NO']).Close()
+cases=[]
+with sqlite3.connect(path) as db:
+ def add(kind,values,*,schema=None,warning_delta=0,error_delta=0,post=None,without_rowid=False):
+  name='case_'+str(len(cases)); schema=schema or ('id INTEGER PRIMARY KEY,v '+kind)
+  db.execute('CREATE TABLE '+name+'('+schema+')'+(' WITHOUT ROWID' if without_rowid else ''))
+  for rowid,value in enumerate(values): db.execute('INSERT INTO '+name+'(id,v) VALUES(?,?)',(rowid,value))
+  if post: db.execute('ALTER TABLE '+name+' ADD COLUMN '+post)
+  db.commit()
+  checker=GPKGChecker(str(path),abort_at_first_error=False,extra_checks=True,warning_msg=False)
+  checker._check_attribute_user_table(db.cursor(),name)
+  cases.append(dict(name=name,warnings=len(checker.warnings),errors=len(checker.errors),warning_delta=warning_delta,error_delta=error_delta))
+ for kind,lo,hi in [('BOOLEAN',0,1),('TINYINT',-128,127),('SMALLINT',-32768,32767),('MEDIUMINT',-2147483648,2147483647)]:
+  for value in [lo-1,lo,hi,hi+1,None,'bad',1.5]: add(kind,[value])
+ for kind in ['INT','INTEGER','REAL','FLOAT','DOUBLE','TEXT','BLOB']:
+  for value in [None,1,1.5,'text',b'blob']: add(kind,[value])
+ for kind,values in [('TEXT(3)',['', 'é中🙂','four',1,b'x']),('BLOB(2)',[b'',b'ab',b'abc','text',1]),('DATE',['2024-02-29','bad',None]),('DATETIME',['2024-02-29T23:59Z','2024-02-29T23:59:59Z','2024-02-29T23:59:59.123Z','bad',None])]:
+  for value in values: add(kind,[value])
+ # Explicit standard corrections to GDAL's permissive prefix regex/SQLite length.
+ for kind,value in [('DATE','2024-02-31'),('DATE','2024-01-01tail'),('DATETIME','2024-02-29T24:00Z'),('DATETIME','2024-02-29T23:59:59X123Z'),('DATETIME','2024-02-29T23:59:59.123Ztail'),('TEXT(3)','a\0bc')]:
+  add(kind,[value],warning_delta=1)
+ # One warning per column regardless of the number of offending rows.
+ add('TINYINT',[0,128,129,130])
+ # Missing fields in old records acquire the ALTER TABLE constant default.
+ add('TEXT',['old'],post="extra BLOB(1) DEFAULT X'0102'")
+ add('TEXT',['old'],post="extra TEXT(1) DEFAULT 'long'")
+ add('TEXT',['old'],post="extra REAL DEFAULT 1")
+ # The standard requires an actual rowid alias; GDAL checks only pk ordinal 1.
+ add('TEXT',[],schema='id INTEGER PRIMARY KEY DESC,v TEXT',error_delta=1)
+ add('TEXT',[],schema='id INTEGER PRIMARY KEY,v TEXT',without_rowid=True,error_delta=1)
+ add('TEXT',[],schema='id INTEGER,v TEXT,PRIMARY KEY(id,v)',error_delta=1)
+ add('VARCHAR',['text'])
+ for value in [1.1,1e40,-1e40,1e-300]: add('FLOAT',[value],warning_delta=1)
+ checker=GPKGChecker(str(path),abort_at_first_error=False,extra_checks=True,warning_msg=False)
+ checker._check_user_table_content(db.cursor(),'countries',list(db.execute('PRAGMA table_info(countries)')))
+ cases.append(dict(name='countries',warnings=len(checker.warnings),errors=0,warning_delta=0,error_delta=0,features=True))
+ db.commit()
+ # Independent SQLite rewrites exercise actual UTF-16 physical records, including
+ # all table values and the real Natural Earth geometry/attribute payloads.
+ objects=list(db.execute('SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL'))
+ def quote(name): return '\"'+name.replace('\"','\"\"')+'\"'
+ for encoding in ['UTF-16le','UTF-16be']:
+  with sqlite3.connect(root/(encoding+'.gpkg')) as other:
+   other.execute('PRAGMA encoding=\"'+encoding+'\"')
+   for kind,name,sql in objects:
+    if kind=='table' and not name.startswith('sqlite_'): other.execute(sql)
+   for kind,name,sql in objects:
+    if kind!='table': continue
+    columns=list(db.execute('PRAGMA table_info('+quote(name)+')'))
+    other.execute('DELETE FROM '+quote(name))
+    # Bind values rather than SQL text dumps, which truncate TEXT at embedded NUL.
+    other.executemany('INSERT INTO '+quote(name)+' VALUES('+','.join('?' for _ in columns)+')',db.execute('SELECT * FROM '+quote(name)))
+    assert list(other.execute('SELECT * FROM '+quote(name)))==list(db.execute('SELECT * FROM '+quote(name)))
+   for kind,name,sql in objects:
+    if kind!='table': other.execute(sql)
+print(json.dumps(dict(path=str(path),cases=cases,encodings=[str(root/(encoding+'.gpkg')) for encoding in ['UTF-16le','UTF-16be']])))
+"#;
+        let output = std::process::Command::new("python3")
+            .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .arg("-c")
+            .arg(script)
+            .arg(dir.path())
+            .arg(data)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let oracle: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let cases = oracle["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 100);
+        let paths = std::iter::once(oracle["path"].as_str().unwrap())
+            .chain(oracle["encodings"].as_array().unwrap().iter().map(|value| value.as_str().unwrap()));
+        for path in paths {
+            let bytes = std::fs::read(path).unwrap();
+            let mut checker = Checker { db: Snapshot::read(&bytes).unwrap(), report: CoreReport::default() };
+            for case in cases {
+                let name = case["name"].as_str().unwrap();
+                assert!(checker.db.tables[name].rows.is_empty(), "user records must not be retained");
+                checker.report = CoreReport::default();
+                if case["features"] != true {
+                    checker.attribute_table(name);
+                }
+                checker.user_content(&bytes, &[name]).unwrap();
+                assert_eq!(
+                    checker.report.errors.len() as u64,
+                    case["errors"].as_u64().unwrap() + case["error_delta"].as_u64().unwrap(),
+                    "{case}: {:?}",
+                    checker.report
+                );
+                assert_eq!(
+                    checker.report.warnings.len() as u64,
+                    case["warnings"].as_u64().unwrap() + case["warning_delta"].as_u64().unwrap(),
+                    "{case}: {:?}",
+                    checker.report
+                );
+            }
         }
     }
 
