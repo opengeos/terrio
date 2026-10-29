@@ -192,6 +192,7 @@ mod cog;
 mod cog_validate;
 pub mod crs;
 mod dataset;
+pub mod dataset_files;
 mod drivers;
 mod error;
 pub mod formats;
@@ -214,6 +215,7 @@ pub mod multidim;
 mod ndarray_ext;
 pub mod ops;
 mod par;
+pub mod parquet_metadata;
 mod pixel;
 #[cfg(feature = "pointcloud")]
 #[cfg_attr(docsrs, doc(cfg(feature = "pointcloud")))]

@@ -26,6 +26,17 @@ enum Command {
 
     /// Identify many datasets from bounded headers, without decoding their payloads.
     Identify(cmd::inspection::IdentifyArgs),
+    /// Copy a dataset and every associated file, preserving encoded data.
+    DatasetCopy(cmd::dataset_files::TransferArgs),
+    /// Rename a dataset and its associated files; directory datasets include the complete subtree.
+    DatasetRename(cmd::dataset_files::TransferArgs),
+    /// Delete owned dataset files, preserving referenced VRT assets.
+    /// Directory datasets include the complete subtree, including extra files.
+    DatasetDelete(cmd::dataset_files::DeleteArgs),
+    /// List the owned files of a dataset.
+    DatasetFiles(cmd::dataset_files::FilesArgs),
+    /// Create a Parquet metadata-only file from explicit partitions.
+    ParquetCreateMetadata(cmd::parquet_metadata::Args),
     /// Read all exposed dataset content to detect decoding failures.
     Check(cmd::inspection::CheckArgs),
     /// Inspect native scientific groups, named dimensions and arrays without reading payloads.
@@ -278,6 +289,11 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::GpkgRepack(a) => cmd::gpkg::repack(a),
 
         Command::Identify(a) => cmd::inspection::identify(a),
+        Command::DatasetCopy(a) => cmd::dataset_files::transfer(a, false),
+        Command::DatasetRename(a) => cmd::dataset_files::transfer(a, true),
+        Command::DatasetDelete(a) => cmd::dataset_files::delete(a),
+        Command::DatasetFiles(a) => cmd::dataset_files::files(a),
+        Command::ParquetCreateMetadata(a) => cmd::parquet_metadata::run(a),
         Command::Check(a) => cmd::inspection::check(a),
         Command::Mdinfo(a) => cmd::multidim::info(a),
         Command::Mdread(a) => cmd::multidim::read(a),

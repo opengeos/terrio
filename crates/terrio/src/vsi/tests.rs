@@ -1254,6 +1254,23 @@ fn memory_archives_and_moves_do_not_copy_bytes() {
 }
 
 #[test]
+fn memory_filenames_keep_edge_spaces_without_aliasing_another_object() {
+    let root = "/vsimem/vsi-space-identity";
+    let spaced = format!("{root}/source.txt ");
+    let plain = format!("{root}/source.txt");
+    let copied = format!("{root}/copy.txt ");
+    write(&spaced, b"spaced").unwrap();
+    write(&plain, b"plain").unwrap();
+    assert_eq!(read(&spaced).unwrap(), b"spaced");
+    assert_eq!(read(&plain).unwrap(), b"plain");
+    copy(&spaced, &copied, &CopyOptions::default()).unwrap();
+    assert_eq!(read(&copied).unwrap(), b"spaced");
+    delete(&spaced, false).unwrap();
+    assert_eq!(read(&plain).unwrap(), b"plain");
+    delete(root, true).unwrap();
+}
+
+#[test]
 #[cfg(not(target_family = "wasm"))]
 fn limited_reads_bound_local_memory_and_decompressed_archive_members() {
     let temp = tempfile::tempdir().unwrap();

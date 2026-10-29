@@ -12,6 +12,7 @@
 //! const points = readPoints(lazBytes, "lidar.laz", { classes: [2] }); // LAS, LAZ, COPC
 //! ```
 
+mod dataset_files;
 mod gpkg_maintenance;
 mod grid;
 mod inspection;
@@ -19,6 +20,7 @@ mod manage;
 mod multidim;
 mod ops;
 mod palette;
+mod parquet_metadata;
 mod pixel;
 #[cfg(feature = "pointcloud")]
 mod pointcloud;

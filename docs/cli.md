@@ -647,6 +647,120 @@ the originals. Multi-file replacements are not atomic across sidecars and a fail
 leave a partial replacement. Successful Shapefile replacements remove obsolete QIX/SBN/SBX
 indexes and optional PRJ/CPG sidecars not produced by the new write.
 
+## dataset-copy, dataset-rename, dataset-delete, dataset-files
+
+```sh
+terrio dataset-files scene.tif --json
+terrio dataset-copy scene.tif backup/scene.tif
+terrio dataset-rename countries.shp countries-new.shp
+terrio dataset-delete obsolete.tif obsolete.shp
+```
+
+These commands manage encoded datasets and their companion files without conversion. The
+destination is an exact dataset name. Existing destinations and companion collisions
+require `--overwrite`; replacing a dataset removes obsolete companions. `--input-format`
+(alias `--format`) restricts the source driver. `--json` returns the driver, affected
+files and copied bytes. `dataset-files` lists owned files and a directory flag.
+
+Shapefile and MapInfo components, raw raster headers, world files, RPCs, PAM metadata,
+overviews and masks are included when present. Raster-only companions are not assigned
+to vector files. Zarr, Arc/Info grids and vector directory datasets (including whole MVT
+pyramids) are handled as trees. A recognized Zarr or Arc/Info grid directory owns its
+complete subtree: copying, renaming or deleting it includes every entry, even user-added
+files. Store unrelated files outside these dataset roots. A Shapefile, MapInfo or CSV
+directory is accepted only when every entry belongs to that driver's datasets;
+directories containing unrelated files or subdirectories are refused. Select individual
+dataset files in a mixed directory. Unrelated siblings of individual dataset files are
+retained. TIFF world files are used only without an embedded transform. CSV `.prj` files
+are preserved: GDAL 3.13.3 uses these CRSs but omits them from `GetFileList` and loses
+them during dataset copy. Basename companions such as `.prj` and `.hdr` can be shared by
+distinct recognized primary files. Rename, deletion and replacement refuse such a
+companion while another same-basename owner remains. A batch deletion may include all
+owners; copying may read a shared companion without changing its original.
+
+Directory recognition parses complete Zarr marker and MVT metadata JSON, checking
+fields at the top level rather than matching text in a fixed prefix. Unknown fields
+are skipped while streaming. Large metadata files are read in full; tile payloads
+are not decoded for inventory.
+
+VRT copies and renames copy referenced assets with regular corresponding basenames,
+confined by default to the original source directory tree. Native links and all entries
+of referenced directory datasets are checked before mutation. Non-raw references must
+identify a supported dataset; arbitrary files are accepted only as explicit raw-band
+data. Virtual keys with dot segments are refused by default. Use
+`--allow-external-references` only for trusted VRTs that need assets outside that tree,
+such as a local VRT referencing an HTTP raster. The same option is
+`allow_external_references` in Rust/Python and `allowExternalReferences` in JavaScript.
+MCP exposes the same opt-in: a client enabling it is explicitly trusting the VRT
+references and permitting access beyond the source tree. MCP clients must not enable it
+for untrusted VRTs. Source references are rewritten to the new names. Rename moves the
+owned definition but preserves original dependencies so other datasets can keep using
+them; copied payloads count toward reported bytes, including for same-filesystem VRT
+renames. VRT/GML bytes are preserved when no reference needs rebasing. GML schema
+locations and Idrisi/ERS header references are also updated. Text header rewrites
+preserve opaque non-reference bytes and CRLF/LF line endings; file-reference values
+themselves must be UTF-8. Irregular basenames are
+refused before mutation, as in GDAL. VRT graph traversal reuses completed inventories
+and permits at most 128 nested definitions; definitions are held in memory. GML
+definitions are also read and parsed in full when preparing a transfer, even when no
+reference changes. Original bytes, decoded text and a serialized output buffer can
+coexist, so peak memory can be several times the definition size and can expand with
+text encoding; there is no fixed memory bound for these definitions. Shared-companion
+safety checks scan the parent directory for each
+input with companions; large batches in one directory can incur quadratic preflight
+work. A file used both as file-bearing metadata and raw VRT pixels is refused if
+rewriting would change those pixels. VRT deletion removes the definition and its owned
+companions, retaining referenced rasters.
+VRT source filenames preserve trailing whitespace and leading whitespace encoded with
+character references or CDATA, matching GDAL. Rewritten references encode leading
+whitespace so it remains part of the filename. Native raster paths also retain edge
+whitespace rather than silently opening a different file. Obsolete companion links,
+including dangling links, are staged and unlinked during overwrite without following
+them; destinations receiving new content continue to refuse symbolic links.
+
+Dataset file management refuses MVT trees containing entries outside `metadata.json` and
+numeric `z/x/y.pbf` or `z/x/y.mvt` tile paths. Relative GML schema references must
+belong to the inventoried file set so they can be rebased; external absolute URIs remain
+unchanged.
+
+Windows native destinations with case-equivalent names are refused during preflight.
+Installation also checks actual destination entries on every platform, rolling back if
+the filesystem aliases two components instead of silently replacing one.
+
+All inputs and destinations are checked before staging files. Source aliases,
+overlapping directory trees, protected roots, read-only mutations and file/directory
+collisions are refused. Failed staging or installation attempts restore the original
+paths; failed rollback returns an error identifying recovery files. After installation
+commits, cleanup failures return success with leftover staged paths in `recovery_files`.
+A failed stat skips deletion and reports that path, since guessing whether a cloud
+object is a directory could delete a broader prefix.
+The CLI reports these leftovers on stderr as well as in JSON. An empty list means
+cleanup completed. Batch deletion includes the shared cleanup list in each report. An
+existing destination must have a successful inventory, including with overwrite; an
+unknown or corrupt destination is refused. Source and destination trees must not be
+changed concurrently. Native renames preserve symlink text, so relative links must
+remain meaningful at their destination; links cannot be renamed across filesystems.
+Overlapping input directory/component sets are refused because they cannot be staged
+independently. Multiple file or object operations do not provide a filesystem-wide or
+object-store transaction.
+
+Local and VSI locations follow `terrio vsi`: memory and writable cloud stores support
+mutation; HTTP and archive members are copy sources only. WebAssembly operates on
+`/vsimem/` datasets and archive members, with no native files or signed cloud writes.
+Owned-file queries and deletion do not open VRT references, which may be missing.
+Archive TIFF tag discovery uses a 16 KiB member cache. Stored ZIP members are read by
+range; compressed members stream and discard preceding bytes when seeking. Partial
+metadata inventories do not validate the whole-member CRC; complete copies still use the
+normal archive extractor and its integrity checks. MCP exposes all four commands; only
+`dataset-files` is marked read-only. JSON and text reports redact URL credentials. Byte
+counts exclude backup/rollback work; native same-filesystem and memory file moves copy
+no payload bytes.
+
+
+
+Destructive operations refuse a same-stem sibling whose inventory fails: its possible
+companion ownership cannot be established safely. Repair or move that sibling first.
+
 ## identify
 
 ```sh
@@ -2321,6 +2435,41 @@ RGB text channels; Terrio deliberately rejects those malformed inputs. Text
 Color-file XML is limited to 65,536 elements and 256 nesting levels; color files are limited to 10 MiB while streaming, including when their size
 is unavailable.
 
+### Parquet metadata files
+
+`terrio parquet-create-metadata part-0.parquet part-1.parquet --output _metadata --json`
+creates a metadata-only file referencing the explicitly supplied partitions in input order.
+Inputs may repeat, including aliases of the same physical file: each occurrence contributes
+its row groups and rows again. Supply each partition once for a deduplicated catalog.
+`--overwrite` replaces an existing output; direct inputs and externally referenced column
+files are protected. The CLI command also supplies the `parquet-create-metadata` MCP tool.
+
+Input schemas and Arrow field metadata must agree. GeoParquet coordinate systems, encodings
+and column definitions must agree; bounds and geometry types are merged. A missing bound
+omits that column's aggregate bound, and an unknown geometry type keeps the aggregate type
+unknown. Mixed 2D/3D bounds and antimeridian-wrapped bounds omit the optional aggregate
+bound rather than inventing Z values or an incorrect Cartesian extent. Other file
+metadata is retained only when identical across inputs; JSON reports
+`omitted_metadata_keys`, file/row-group counts, rows and encoded output bytes. Arrow schema
+metadata is regenerated to carry the merged GeoParquet metadata.
+
+The operation reads headers and footers without decoding data pages and does not validate
+page integrity. Footer buffers grow with bytes received; complete footers and their
+decoded metadata are materialized, so memory scales with metadata size. Input and
+output must share a filesystem namespace (native, `/vsimem/`,
+or one writable S3/Azure namespace) so column paths remain relative. Query-bearing source
+URLs cannot be persisted as partition references. Archive inputs cannot target another
+filesystem. Native symbolic-link outputs are refused. This command does not discover
+partitions or change the existing `partition` command's output behavior.
+
+Column `file_path` values are logical relative paths. URL transport paths are decoded
+once when deriving them and encoded once when resolving them; spaces and literal percent
+characters remain distinct. Object-store keys retain their logical spelling.
+
+Parquet page indexes remain in the referenced partition files. The metadata file retains
+column/offset-index locations relative to each column's `file_path`, just as it retains the
+column data-page locations; it does not copy those payloads into `_metadata`.
+
 ## GeoPackage repacking
 
 `terrio gpkg-repack survey.gpkg --json` compacts a native GeoPackage in place.
@@ -2447,3 +2596,4 @@ offset, units and nodata. Numeric integer/float metadata compares by value.
 
 An array present in only some inputs is retained; regions belonging to other
 inputs use that array's nodata value, or zero when it has none.
+>

@@ -2504,6 +2504,59 @@ test("identify inspects bounded upload prefixes and filename hints", () => {
   raster.free();
 });
 
+test("dataset file management includes companions and guards batch deletion", () => {
+  const root = "/vsimem/js-dataset-files";
+  const source = `${root}/source.csv`, target = `${root}/target.csv`, moved = `${root}/moved.csv`;
+  const encode = text => new TextEncoder().encode(text);
+  terrio.vsiWrite(source, encode("x,y\n1,2\n"));
+  terrio.vsiWrite(`${root}/source.csvt`, encode("Real,Real"));
+  terrio.vsiWrite(`${root}/source.txt`, encode("keep"));
+  try {
+    assert.equal(terrio.datasetFiles(source).driver, "CSV");
+    assert.equal(terrio.datasetCopy(source, target).files.length, 2);
+    assert.throws(() => terrio.datasetCopy(source, target), /exists/);
+    terrio.datasetRename(target, moved);
+    assert.equal(terrio.vsiStat(target), null);
+    assert.deepEqual(terrio.vsiRead(`${root}/moved.csvt`), encode("Real,Real"));
+    assert.throws(() => terrio.datasetDelete([moved, `${root}/missing.csv`]), /does not exist/);
+    assert.ok(terrio.vsiStat(moved));
+    assert.equal(terrio.datasetDelete([source, moved]).length, 2);
+    assert.deepEqual(terrio.vsiList(root).map(entry => entry.name), ["source.txt"]);
+  } finally { terrio.vsiDelete(root, {recursive: true}); }
+});
+
+test("dataset TIFF copies preserve bytes without loading pixel codecs", () => {
+  const root = "/vsimem/js-dataset-tiff";
+  const raster = terrio.createRaster(null, {size: [2, 2], burn: [7], crs: "EPSG:4326", bbox: [0, 0, 2, 2]});
+  const bytes = raster.toBytes("source.tif");
+  terrio.vsiWrite(`${root}/source.tif`, bytes);
+  try {
+    terrio.datasetCopy(`${root}/source.tif`, `${root}/copy.tif`);
+    assert.deepEqual(terrio.vsiRead(`${root}/copy.tif`), bytes);
+    assert.throws(() => terrio.datasetRename(`${root}/source.tif`, `${root}/source.tif`, {overwrite:true}), /overlap/);
+  } finally { raster.free(); terrio.vsiDelete(root, {recursive:true}); }
+});
+
+test("dataset VRT references require explicit external scope permission", () => {
+  const root = "/vsimem/js-vrt-reference-scope";
+  const source = `${root}/inputs/source.vrt`, output = `${root}/copy.vrt`;
+  const encode = text => new TextEncoder().encode(text);
+  terrio.vsiWrite(`${root}/source.raw`, new Uint8Array([1,2,3,4]));
+  terrio.vsiWrite(source, encode(`<VRTDataset rasterXSize="2" rasterYSize="2"><VRTRasterBand band="1" dataType="Byte" subClass="VRTRawRasterBand"><SourceFilename relativeToVRT="0">${root}/source.raw</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>1</PixelOffset><LineOffset>2</LineOffset></VRTRasterBand></VRTDataset>`));
+  try {
+    assert.throws(() => terrio.datasetCopy(source, output), /source directory tree/);
+    assert.equal(terrio.vsiStat(output), null);
+    const report = terrio.datasetCopy(source, output, {allowExternalReferences:true});
+    assert.deepEqual(report.recovery_files, []);
+    assert.deepEqual(terrio.vsiRead(`${root}/copy.raw`), new Uint8Array([1,2,3,4]));
+    assert.ok(terrio.vsiStat(`${root}/source.raw`));
+    terrio.vsiWrite(`${root}/inputs/local.raw`, new Uint8Array([9,8,7,6]));
+    terrio.vsiWrite(`${root}/inputs/local.vrt`, encode('<VRTDataset rasterXSize="2" rasterYSize="2"><VRTRasterBand band="1" dataType="Byte" subClass="VRTRawRasterBand"><SourceFilename>local.raw</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>1</PixelOffset><LineOffset>2</LineOffset></VRTRasterBand></VRTDataset>'));
+    terrio.datasetCopy(`${root}/inputs/local.vrt`, `${root}/local-copy.vrt`);
+    assert.deepEqual([...terrio.vsiRead(`${root}/local-copy.raw`)], [9,8,7,6]);
+  } finally { terrio.vsiDelete(root, {recursive:true}); }
+});
+
 
 test("palette memory paths keep trailing spaces distinct", () => {
   const root = "/vsimem/palette-space-identity";
@@ -2520,6 +2573,26 @@ test("palette memory paths keep trailing spaces distinct", () => {
     assert.deepEqual([...result.readBand(1)], [200]);
     result.free(); source.free();
   } finally { terrio.vsiDelete(root, true); }
+});
+
+test("Parquet metadata aggregation on uploaded real partitions", { skip: !DATA || needs("parquet") }, () => {
+  const root = "/vsimem/js-parquet-metadata";
+  const input = readFileSync(join(DATA, "countries.parquet"));
+  terrio.vsiWrite(`${root}/a.parquet`, input);
+  terrio.vsiWrite(`${root}/b.parquet`, input);
+  try {
+    const report = terrio.parquetCreateMetadata([`${root}/a.parquet`, `${root}/b.parquet`], `${root}/_metadata`, {});
+    assert.equal(report.files, 2);
+    assert.equal(report.rows, 352);
+    assert.equal(report.row_groups, 2);
+    assert.equal(new TextDecoder().decode(terrio.vsiRead(`${root}/_metadata`).slice(0, 4)), "PAR1");
+    assert.throws(() => terrio.parquetCreateMetadata([`${root}/a.parquet`], `${root}/_metadata`, {}), /exists/);
+    assert.throws(() => terrio.parquetCreateMetadata([`${root}/_metadata`], `${root}/a.parquet`, { overwrite: true }), /overlap/);
+    assert.deepEqual(terrio.vsiRead(`${root}/a.parquet`), new Uint8Array(input));
+    assert.equal(terrio.parquetCreateMetadata([`${root}/a.parquet`], `${root}/_metadata`, { overwrite: true }).rows, 176);
+  } finally {
+    terrio.vsiDelete(root, { recursive: true });
+  }
 });
 
 test("checkDataset decodes all exposed uploaded content", () => {
@@ -2558,5 +2631,48 @@ test("checkDataset reads real raster, vector and scientific uploads", {skip: nee
       assert.ok(expected > 0);
       assert.equal(terrio.checkDataset(bytes, name).points, expected);
     }
+  }
+});
+
+// Different pixel values prove that whitespace never aliases another supplied source.
+test("openVrt preserves filename whitespace in uploaded sources", () => {
+  const sources = {};
+  for (const [name, value] of [["source.tif", 1], ["source.tif ", 9], [" source.tif ", 7]]) {
+    const raster = terrio.rasterFromArray(new Uint8Array([value]), 1, 1, [0, 1, 0, 1, 0, -1]);
+    sources[name] = raster.toBytes("source.tif");
+    raster.free();
+  }
+  for (const [text, expected] of [
+    ["source.tif ", 9], [" source.tif", 1], ["&#32;source.tif ", 7],
+    ["<![CDATA[ source.tif ]]>", 7], ["<![CDATA[source.tif]]> ", 1],
+  ]) {
+    const xml = `<VRTDataset rasterXSize="1" rasterYSize="1"><VRTRasterBand dataType="Byte" band="1"><SimpleSource><SourceFilename>${text}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>`;
+    const output = terrio.openVrt(xml, sources);
+    assert.deepEqual([...output.readBand(1)], [expected]);
+    output.free();
+  }
+});
+
+
+test("dataset memory paths preserve edge spaces without aliasing", () => {
+  const root = "/vsimem/dataset-space-identity";
+  const source = `${root}/source.tif `;
+  const plain = `${root}/source.tif`;
+  const output = `${root}/copy.tif `;
+  const encoded = [];
+  for (const value of [9,1]) {
+    const raster = terrio.rasterFromArray(new Uint8Array([value]), 1, 1, [0,1,0,1,0,-1]);
+    encoded.push(raster.toBytes("source.tif"));
+    raster.free();
+  }
+  terrio.vsiWrite(source, encoded[0]);
+  terrio.vsiWrite(plain, encoded[1]);
+  try {
+    terrio.datasetCopy(source, output);
+    assert.deepEqual(terrio.vsiRead(output), encoded[0]);
+    terrio.datasetDelete(source);
+    assert.deepEqual(terrio.vsiRead(plain), encoded[1]);
+  } finally {
+    terrio.vsiDelete(root, true);
   }
 });

@@ -19,6 +19,10 @@ __all__ = [
     "validate_cog",
     "check_dataset",
     "identify",
+    "dataset_copy",
+    "dataset_delete",
+    "dataset_files",
+    "dataset_rename",
     "__version__",
     "gpkg_repack",
     "gpkg_repack_bytes",
@@ -122,6 +126,7 @@ __all__ = [
     "vsi_move",
     "vsi_sync",
     "concat",
+    "parquet_create_metadata",
     "partition",
     "set_field_type",
     "make_point",
@@ -1928,6 +1933,34 @@ def identify(
     """
     ...
 
+def dataset_files(
+    source: str | os.PathLike[str], *, format: str | None = None
+) -> dict[str, Any]: ...
+def dataset_copy(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    format: str | None = None,
+    overwrite: bool = False,
+    allow_external_references: bool = False,
+) -> dict[str, Any]: ...
+def dataset_rename(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    format: str | None = None,
+    overwrite: bool = False,
+    allow_external_references: bool = False,
+) -> dict[str, Any]: ...
+def dataset_delete(
+    sources: str | os.PathLike[str] | Iterable[str | os.PathLike[str]], *, format: str | None = None
+) -> list[dict[str, Any]]: ...
+def parquet_create_metadata(
+    inputs: Sequence[str | os.PathLike[str]],
+    output: str | os.PathLike[str],
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]: ...
 def check_dataset(
     source: str | os.PathLike[str] | bytes,
     *,

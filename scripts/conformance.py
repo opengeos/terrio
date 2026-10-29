@@ -867,6 +867,59 @@ def suite_dataset_check(ctx):
     return suite
 
 
+def suite_parquet_metadata(ctx):
+    suite = Suite("parquet-metadata", "Parquet metadata aggregation", "GDAL 3.13.3 / Arrow dataset reader",
+                  "Natural Earth partitions: row groups, column offsets/statistics, all values, CRS, geometry types and merged GeoParquet metadata; reference CRS loss explicitly reported.")
+    if missing_modules("osgeo", "pyarrow"):
+        suite.skipped = "needs osgeo and pyarrow"
+        return suite
+    code_help, _, _ = run(["gdal", "driver", "parquet", "create-metadata-file", "--help"])
+    if code_help:
+        suite.skipped = "needs GDAL 3.13+ with the Parquet metadata command"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_parquet_metadata_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical": IDENTICAL, "tolerance": TOLERANCE}
+    for result in results:
+        suite.cases.append(Case("Parquet metadata", result["name"], statuses.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_dataset_files(ctx):
+    suite = Suite(
+        "dataset-files", "Dataset file management", "GDAL 3.13.3 dataset commands and recursive VSI copy",
+        "Real Landsat and Natural Earth derivatives: encoded bytes, owned companion files, "
+        "pixels/features, masks, overviews, types, CRS, transforms and metadata. VRT references "
+        "are rebased and CSV CRS .prj files retained rather than repeating GDAL's copy losses. "
+        "HTTP requests and transferred bytes are measured, with metadata-only overhead bounded.",
+    )
+    if missing_modules("osgeo") or shutil.which("gdal") is None:
+        suite.skipped = "needs osgeo and the gdal command"
+        return suite
+    code, out, err = run([
+        sys.executable, str(SCRIPTS / "compare_dataset_files_with_gdal.py"),
+        ctx.data, "--terrio", ctx.terrio, "--json",
+    ])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical": IDENTICAL, "tolerance": TOLERANCE}
+    for result in results:
+        suite.cases.append(Case("Dataset file management", result["name"],
+                                statuses.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_identify(ctx):
     suite = Suite("identify", "Dataset identification", "`gdal dataset identify` / GDALIdentifyDriverEx (GDAL 3.13.3)",
                   "Real Landsat, USGS, OPERA, SRTM, NOAA scientific data and vector files, plus derived raster encodings. Exact driver labels; generic JP2, KML and HDF5 label families are reported within tolerance. Companion-file formats use the explicit deep fallback. Unknown inputs must remain unknown; no pixel/feature values are decoded by the bounded header path.")
@@ -2121,6 +2174,8 @@ SUITES = OrderedDict(
         ("palette", suite_palette),
         ("cog-validate", suite_cog_validate),
         ("identify", suite_identify),
+        ("dataset-files", suite_dataset_files),
+        ("parquet-metadata", suite_parquet_metadata),
         ("dataset-check", suite_dataset_check),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
