@@ -58,6 +58,13 @@
 
 ### Breaking changes
 
+- Dataset/VSI paths retain leading and trailing whitespace across CLI, Python, JavaScript
+  and MCP. Native filenames and virtual keys with edge whitespace are distinct from their
+  trimmed neighbors; callers must normalize pasted paths/URLs themselves. `@FILE` lines
+  still apply their file-list whitespace rules.
+- VRT `SourceFilename` values retain trailing whitespace and newlines, matching GDAL.
+  Remove formatting whitespace from inside the element when it is not part of the filename;
+  encoded leading whitespace and CDATA remain significant.
 - Signed S3 uploads of local files over 8 MiB over HTTPS use `UNSIGNED-PAYLOAD`
   (#335). An S3-compatible service, or a bucket policy, that refuses it now
   rejects those uploads; they can be sent over plain HTTP to keep a signed

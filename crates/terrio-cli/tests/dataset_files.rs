@@ -46,7 +46,13 @@ fn mcp_discovers_file_operations_and_marks_mutations_as_writes() {
     drop(input);
     assert!(child.wait().unwrap().success());
     let tools = replies.iter().find(|r| r["id"] == 1).unwrap()["result"]["tools"].as_array().unwrap();
-    for (name, read_only) in [("dataset-files", true), ("dataset-copy", false), ("dataset-rename", false), ("dataset-delete", false)] {
+    for (name, read_only) in [
+        ("dataset-files", true),
+        ("dataset-copy", false),
+        ("dataset-rename", false),
+        ("dataset-delete", false),
+        ("parquet-create-metadata", false),
+    ] {
         assert_eq!(tools.iter().find(|t| t["name"] == name).unwrap()["annotations"]["readOnlyHint"], read_only);
     }
     let reply = &replies.iter().find(|r| r["id"] == 2).unwrap()["result"];

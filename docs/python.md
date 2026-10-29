@@ -565,6 +565,13 @@ preserves referenced rasters. Reports include `recovery_files`: a nonempty list
 means the operation committed but cleanup left staged files. I/O releases the GIL.
 See the CLI file-management section for staging, rollback, overwrite and format rules.
 
+`parquet_create_metadata(inputs, output, *, overwrite=False)` accepts a sequence of string
+or pathlib partition paths and returns a dictionary containing `files`, `row_groups`,
+`rows`, `bytes` and `omitted_metadata_keys`. It writes a metadata-only file with relative
+partition references, merged GeoParquet bounds/types and regenerated Arrow schema metadata.
+Inputs, including referenced column files, are protected from overwrite. Schemas and CRS
+must agree; data pages are not validated. See [CLI supported scope](cli.md#parquet-metadata-files).
+
 ### Indexed color conversion
 
 `terrio.rgb_to_palette(src, dst=None, *, color_count=256, bit_depth=5,

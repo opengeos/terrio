@@ -464,6 +464,13 @@ referenced rasters. Reports contain `recovery_files`; leftovers indicate a commi
 operation whose staged cleanup needs attention. The CLI file-management section documents
 companion discovery, overwrite, staging and recovery behavior shared by these APIs.
 
+`parquetCreateMetadata(inputs, output, {overwrite: false})` creates a metadata-only Parquet
+file from an array of uploaded `/vsimem/` partition paths. It returns `files`, `row_groups`,
+`rows`, `bytes` and `omitted_metadata_keys`. Read the resulting bytes with `vsiRead(output)`.
+Schemas and CRS must agree; GeoParquet bounds/types are merged and Arrow schema metadata
+is regenerated. Direct and referenced input partitions are protected from overwrite.
+See [CLI supported scope](cli.md#parquet-metadata-files); no data pages are validated.
+
 ### Indexed color conversion
 
 `rgbToPalette(source, {colorCount: 256, bitDepth: 5, dither: true, colorMap,

@@ -753,6 +753,9 @@ no payload bytes.
 
 
 
+Destructive operations refuse a same-stem sibling whose inventory fails: its possible
+companion ownership cannot be established safely. Repair or move that sibling first.
+
 ## identify
 
 ```sh
@@ -2426,3 +2429,38 @@ Palette text/XML channels outside 0–255 are rejected. GDAL 3.13.3 wraps invali
 RGB text channels; Terrio deliberately rejects those malformed inputs. Text
 Color-file XML is limited to 65,536 elements and 256 nesting levels; color files are limited to 10 MiB while streaming, including when their size
 is unavailable.
+
+### Parquet metadata files
+
+`terrio parquet-create-metadata part-0.parquet part-1.parquet --output _metadata --json`
+creates a metadata-only file referencing the explicitly supplied partitions in input order.
+Inputs may repeat, including aliases of the same physical file: each occurrence contributes
+its row groups and rows again. Supply each partition once for a deduplicated catalog.
+`--overwrite` replaces an existing output; direct inputs and externally referenced column
+files are protected. The CLI command also supplies the `parquet-create-metadata` MCP tool.
+
+Input schemas and Arrow field metadata must agree. GeoParquet coordinate systems, encodings
+and column definitions must agree; bounds and geometry types are merged. A missing bound
+omits that column's aggregate bound, and an unknown geometry type keeps the aggregate type
+unknown. Mixed 2D/3D bounds and antimeridian-wrapped bounds omit the optional aggregate
+bound rather than inventing Z values or an incorrect Cartesian extent. Other file
+metadata is retained only when identical across inputs; JSON reports
+`omitted_metadata_keys`, file/row-group counts, rows and encoded output bytes. Arrow schema
+metadata is regenerated to carry the merged GeoParquet metadata.
+
+The operation reads headers and footers without decoding data pages and does not validate
+page integrity. Footer buffers grow with bytes received; complete footers and their
+decoded metadata are materialized, so memory scales with metadata size. Input and
+output must share a filesystem namespace (native, `/vsimem/`,
+or one writable S3/Azure namespace) so column paths remain relative. Query-bearing source
+URLs cannot be persisted as partition references. Archive inputs cannot target another
+filesystem. Native symbolic-link outputs are refused. This command does not discover
+partitions or change the existing `partition` command's output behavior.
+
+Column `file_path` values are logical relative paths. URL transport paths are decoded
+once when deriving them and encoded once when resolving them; spaces and literal percent
+characters remain distinct. Object-store keys retain their logical spelling.
+
+Parquet page indexes remain in the referenced partition files. The metadata file retains
+column/offset-index locations relative to each column's `file_path`, just as it retains the
+column data-page locations; it does not copy those payloads into `_metadata`.

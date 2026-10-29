@@ -809,6 +809,30 @@ def suite_dataset_check(ctx):
     return suite
 
 
+def suite_parquet_metadata(ctx):
+    suite = Suite("parquet-metadata", "Parquet metadata aggregation", "GDAL 3.13.3 / Arrow dataset reader",
+                  "Natural Earth partitions: row groups, column offsets/statistics, all values, CRS, geometry types and merged GeoParquet metadata; reference CRS loss explicitly reported.")
+    if missing_modules("osgeo", "pyarrow"):
+        suite.skipped = "needs osgeo and pyarrow"
+        return suite
+    code_help, _, _ = run(["gdal", "driver", "parquet", "create-metadata-file", "--help"])
+    if code_help:
+        suite.skipped = "needs GDAL 3.13+ with the Parquet metadata command"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_parquet_metadata_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical": IDENTICAL, "tolerance": TOLERANCE}
+    for result in results:
+        suite.cases.append(Case("Parquet metadata", result["name"], statuses.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_dataset_files(ctx):
     suite = Suite(
         "dataset-files", "Dataset file management", "GDAL 3.13.3 dataset commands and recursive VSI copy",
@@ -2092,6 +2116,7 @@ SUITES = OrderedDict(
         ("cog-validate", suite_cog_validate),
         ("identify", suite_identify),
         ("dataset-files", suite_dataset_files),
+        ("parquet-metadata", suite_parquet_metadata),
         ("dataset-check", suite_dataset_check),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),

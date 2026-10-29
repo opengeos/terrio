@@ -12,6 +12,8 @@ mod manage;
 mod multidim;
 mod ops;
 mod palette;
+
+mod parquet_metadata;
 mod pixel;
 mod pointcloud;
 mod query;
@@ -96,6 +98,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ops::register(m)?;
     manage::register(m)?;
     dataset_files::register(m)?;
+    parquet_metadata::register(m)?;
     inspection::register(m)?;
     grid::register(m)?;
     multidim::register(m)?;

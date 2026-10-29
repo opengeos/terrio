@@ -1307,6 +1307,20 @@ python scripts/conformance.py ../terrio-data --only dataset-files --strict
 python -m pytest python/tests/test_dataset_files.py
 ```
 
+## Parquet metadata aggregation
+
+`scripts/compare_parquet_metadata_with_gdal.py` is registered as `parquet-metadata`.
+With GDAL 3.13.3 and PyArrow, it compares Natural Earth partitions' row groups, column
+paths/offsets/statistics, all Arrow values and GDAL properties/geometries. GeoParquet bounds
+and encoded Arrow schema metadata are checked separately. GDAL's loss of CRS/type metadata
+is reported as a reference correction rather than metadata-identical agreement. A local S3
+server measures GET requests and downloaded bytes for a larger real-data derivative and
+checks the uploaded metadata file by reading every value through Arrow.
+
+The metadata command was [added in GDAL 3.13](https://gdal.org/en/stable/programs/gdal_driver_parquet_create_metadata_file.html).
+The comparison suite explicitly skips its reference when that command is unavailable;
+Rust and binding regressions remain independent of that reference command.
+
 ## Dataset content checking (#289)
 
 The registered `dataset-check` suite compares with GDAL 3.13.3 on Landsat, USGS,

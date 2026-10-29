@@ -482,6 +482,8 @@ impl std::io::Seek for MemberReader {
     }
 }
 
+/// Read a file through its native, memory, HTTP/object-store or archive reader.
+/// Consumers choose the metadata ranges they need rather than materializing it.
 pub(crate) fn with_seekable<T>(path: &str, operation: impl FnOnce(&mut dyn ReadSeek) -> Result<T>) -> Result<T> {
     let node = Node::parse(path)?;
     match node {
@@ -500,6 +502,121 @@ pub(crate) fn tiff_has_transform(path: &str) -> Result<bool> {
             .map(|tags| tags.geo_transform.is_some())
             .ok_or_else(|| Error::InvalidData("cannot read TIFF georeferencing tags".into()))
     })
+}
+
+/// A portable column-chunk path, relative to the output metadata file.
+#[cfg(feature = "parquet")]
+pub(crate) fn relative_file(input: &str, output: &str) -> Result<String> {
+    fn parts(input: &[String], directory: &[String]) -> Result<String> {
+        let common = input.iter().zip(directory).take_while(|(a, b)| a == b).count();
+        let mut result: Vec<_> = directory[common..].iter().map(|_| "..".to_owned()).collect();
+        result.extend_from_slice(&input[common..]);
+        if result.is_empty() {
+            return Err(Error::InvalidArgument("metadata output and input have the same path".into()));
+        }
+        Ok(result.join("/"))
+    }
+    fn keys(input: &str, output: &str) -> Result<String> {
+        let split = |key: &str| -> Result<Vec<String>> {
+            if key.split('/').any(|part| matches!(part, "." | "..")) {
+                return Err(Error::InvalidArgument("Parquet partition keys must not contain dot segments".into()));
+            }
+            Ok(key.split('/').filter(|part| !part.is_empty()).map(str::to_owned).collect())
+        };
+        let input = split(input)?;
+        let mut output = split(output)?;
+        output.pop();
+        parts(&input, &output)
+    }
+    let unsupported = || Error::InvalidArgument("Parquet inputs and metadata output must use the same filesystem".into());
+    match (Node::parse(input)?, Node::parse(output)?) {
+        (Node::Local(input), Node::Local(output)) => {
+            let input = overlap_path(&input)?;
+            let output = overlap_path(&output)?;
+            let directory = output.parent().ok_or_else(unsupported)?;
+            let input: Vec<_> = input.components().collect();
+            let directory: Vec<_> = directory.components().collect();
+            if input.first() != directory.first() {
+                return Err(unsupported());
+            }
+            let strings = |components: &[Component<'_>]| {
+                components
+                    .iter()
+                    .map(|part| {
+                        part.as_os_str()
+                            .to_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| Error::InvalidArgument("Parquet partition paths must be UTF-8".into()))
+                    })
+                    .collect::<Result<Vec<_>>>()
+            };
+            parts(&strings(&input)?, &strings(&directory)?)
+        }
+        (Node::Mem(input), Node::Mem(output)) => keys(&input, &output),
+        (Node::S3 { bucket: a, key: input }, Node::S3 { bucket: b, key: output }) if a == b => keys(&input, &output),
+        (Node::Url { base: input, query }, Node::Url { base: output, .. }) => {
+            if !query.is_empty() {
+                return Err(Error::InvalidArgument(
+                    "query-bearing source URLs cannot be stored as portable Parquet paths; use environment credentials".into(),
+                ));
+            }
+            let split = |url: String| -> Result<(String, String)> {
+                let (scheme, rest) = url.split_once("://").ok_or_else(unsupported)?;
+                let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+                Ok((format!("{scheme}://{host}"), path.to_owned()))
+            };
+            let (a, input) = split(input)?;
+            let (b, output) = split(output)?;
+            if a != b {
+                return Err(unsupported());
+            }
+            // file_path is a logical filesystem path, not URL-escaped transport text.
+            keys(&listing::uri_decode(&input), &listing::uri_decode(&output))
+        }
+        (Node::Archive { archive: a, kind: ak, inner: input }, Node::Archive { archive: b, kind: bk, inner: output })
+            if a == b && ak == bk =>
+        {
+            keys(&input, &output)
+        }
+        _ => Err(unsupported()),
+    }
+}
+/// Resolve existing external column-chunk paths without reading those files.
+#[cfg(feature = "parquet")]
+pub(crate) fn resolve_file(input: &str, reference: &str) -> Result<String> {
+    let parsed = Node::parse(reference)?;
+    if !matches!(&parsed, Node::Local(path) if !path.is_absolute()) {
+        return Ok(raw(&parsed));
+    }
+    fn joined(key: &str, reference: &str) -> Result<String> {
+        let parent = key.rsplit_once('/').map_or("", |(parent, _)| parent);
+        let mut parts: Vec<_> = parent.split('/').filter(|part| !part.is_empty()).collect();
+        for part in reference.split('/') {
+            match part {
+                "" | "." => (),
+                ".." => {
+                    if parts.pop().is_none() {
+                        return Err(Error::InvalidData("Parquet reference escapes its filesystem root".into()));
+                    }
+                }
+                _ => parts.push(part),
+            }
+        }
+        Ok(format!("{}{}", if key.starts_with('/') { "/" } else { "" }, parts.join("/")))
+    }
+    let node = match Node::parse(input)? {
+        Node::Local(path) => Node::Local(path.parent().unwrap_or(Path::new(".")).join(reference)),
+        Node::Mem(key) => Node::Mem(joined(&key, reference)?),
+        Node::S3 { bucket, key } => Node::S3 { bucket, key: joined(&key, reference)? },
+        Node::Url { base, query } => {
+            let (scheme, rest) = base.split_once("://").ok_or_else(|| Error::InvalidArgument("invalid source URL".into()))?;
+            let (host, key) = rest.split_once('/').unwrap_or((rest, ""));
+            let logical = joined(&listing::uri_decode(key), reference)?;
+            Node::Url { base: format!("{scheme}://{host}/{}", listing::uri_encode(&logical, false)), query }
+        }
+        Node::Archive { archive, kind, inner } => Node::Archive { archive, kind, inner: joined(&inner, reference)? },
+    };
+    Ok(raw(&node))
 }
 
 /// Rename accounting for payload copies rather than the logical file size moved.
@@ -700,5 +817,28 @@ mod tests {
             assert!(index.overlaps(link.to_str().unwrap()).unwrap());
             assert_ne!(name_key(input.to_str().unwrap()).unwrap(), name_key(link.to_str().unwrap()).unwrap());
         }
+    }
+}
+
+#[cfg(all(test, feature = "parquet"))]
+mod parquet_path_tests {
+    use super::*;
+    #[test]
+    fn relative_partition_names_and_namespace_guards() {
+        for root in ["/vsimem/paths", "/vsis3/bucket/paths", "https://example.org/paths"] {
+            let input = format!("{root}/a.parquet");
+            let output = format!("{root}/nested/_metadata");
+            assert_eq!(relative_file(&input, &output).unwrap(), "../a.parquet");
+            assert_eq!(resolve_file(&output, "../a.parquet").unwrap(), raw(&Node::parse(&input).unwrap()));
+        }
+        assert!(relative_file("/vsis3/a/part.parquet", "/vsis3/b/_metadata").is_err());
+        assert!(relative_file("https://a.example/part.parquet", "https://b.example/_metadata").is_err());
+        assert!(relative_file("https://a.example/part.parquet?token=private", "https://a.example/_metadata").is_err());
+        assert!(relative_file("/vsimem/part.parquet", "_metadata").is_err());
+        assert_eq!(resolve_file("https://example.org/p/_metadata", "a b.parquet").unwrap(), "https://example.org/p/a%20b.parquet");
+        assert_eq!(resolve_file("https://example.org/p/_metadata", "a%20b.parquet").unwrap(), "https://example.org/p/a%2520b.parquet");
+        assert_eq!(relative_file("https://example.org/p/a%20b.parquet", "https://example.org/p/_metadata").unwrap(), "a b.parquet");
+        assert_eq!(relative_file("https://example.org/p/a%2520b.parquet", "https://example.org/p/_metadata").unwrap(), "a%20b.parquet");
+        assert_eq!(relative_file("/vsis3/b/p/a%20b.parquet", "/vsis3/b/p/_metadata").unwrap(), "a%20b.parquet");
     }
 }
