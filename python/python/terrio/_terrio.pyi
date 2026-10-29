@@ -19,6 +19,7 @@ __all__ = [
     "validate_cog",
     "check_dataset",
     "identify",
+    "check_dataset",
     "__version__",
     "Raster",
     "GeoTiffWriter",
