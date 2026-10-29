@@ -583,7 +583,11 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
         let root = tempfile::tempdir().unwrap();
         let invalid = root.path().join(std::ffi::OsString::from_vec(b"bad-\xff.tif".to_vec()));
-        std::fs::write(invalid, b"II*\0header").unwrap();
+        // APFS and HFS+ refuse names that are not valid UTF-8 (EILSEQ), so no such child can exist there.
+        if let Err(error) = std::fs::write(invalid, b"II*\0header") {
+            assert!(cfg!(target_os = "macos") && error.raw_os_error() == Some(92), "{error}");
+            return;
+        }
         std::fs::write(root.path().join("bad-\u{fffd}.tif"), b"II*\0header").unwrap();
         let records = identify_many(
             &[root.path().to_string_lossy().into_owned()],
