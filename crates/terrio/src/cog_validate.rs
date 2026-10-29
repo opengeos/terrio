@@ -13,7 +13,11 @@
 //! [`validate_cog_with_options`] and [`validate_cog_bytes`] also offer a GDAL
 //! 3.13 profile with exact IFD placement and optional full checks of compressed
 //! block leaders, trailers, row ordering and interleaved masks. Automatic full
-//! checking stays off for URLs and on for local files or uploaded bytes. The
+//! checking stays off for URLs and on for local files or uploaded bytes. Full
+//! checking covers the main TIFF and internal overviews; external `.ovr` files
+//! make the report invalid and receive header checks only. Explicit remote full
+//! checks cost several boundary reads per block. GDAL metadata parsing is bounded
+//! to 4 MiB per file and 128 nesting levels. The
 //! original [`validate_cog`] API retains rio-cogeo compatibility.
 //!
 //! When a local file has a `.ovr` sidecar and no internal overviews, the sidecar's images are its
@@ -201,8 +205,52 @@ fn invalid(msg: impl Into<String>) -> Error {
     Error::InvalidData(msg.into())
 }
 
+/// Extract just the interleave item, without constructing an XML tree whose
+/// recursive drop could overflow on deeply nested, untrusted metadata.
+fn tile_interleave(data: &[u8]) -> Result<bool> {
+    use quick_xml::events::Event;
+    let text = String::from_utf8_lossy(data);
+    let mut reader = quick_xml::Reader::from_str(text.trim_end_matches('\0'));
+    let mut depth = 0usize;
+    let mut target = None;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element)) => {
+                depth += 1;
+                if depth > 128 {
+                    return Err(invalid("GDAL metadata XML exceeds 128 nesting levels"));
+                }
+                if element.local_name().as_ref() == "Item" {
+                    let mut name = false;
+                    let mut domain = false;
+                    for attribute in element.attributes().flatten() {
+                        let value = attribute.normalized_value(quick_xml::XmlVersion::Implicit1_0).unwrap_or_default();
+                        match attribute.key.as_ref() {
+                            "name" => name = value == "INTERLEAVE",
+                            "domain" => domain = value == "IMAGE_STRUCTURE",
+                            _ => (),
+                        }
+                    }
+                    if name && domain {
+                        target = Some(depth);
+                    }
+                }
+            }
+            Ok(Event::Text(text)) if target == Some(depth) && text.xml10_content().trim() == "TILE" => return Ok(true),
+            Ok(Event::End(_)) => {
+                if target == Some(depth) {
+                    target = None;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            Ok(Event::Eof) | Err(_) => return Ok(false),
+            _ => (),
+        }
+    }
+}
+
 /// Reads the IFDs of a TIFF. `None` when the stream is not a TIFF.
-fn read_tiff<R: Read + Seek>(f: &mut R) -> Result<Option<Tiff>> {
+fn read_tiff<R: Read + Seek>(f: &mut R, read_metadata: bool) -> Result<Option<Tiff>> {
     let mut header = [0u8; 16];
     f.seek(SeekFrom::Start(0))?;
     let mut n = 0;
@@ -234,6 +282,7 @@ fn read_tiff<R: Read + Seek>(f: &mut R) -> Result<Option<Tiff>> {
     let stream_len = f.seek(SeekFrom::End(0))?;
     let (entry_len, count_len, inline) = if big { (20usize, 8usize, 8usize) } else { (12, 2, 4) };
     let mut ifds: Vec<Ifd> = Vec::new();
+    let mut metadata_bytes = 0u64;
     while next != 0 && ifds.len() < MAX_IFDS {
         if ifds.iter().any(|i| i.offset == next) {
             return Err(invalid("the TIFF's image directories loop"));
@@ -266,6 +315,17 @@ fn read_tiff<R: Read + Seek>(f: &mut R) -> Result<Option<Tiff>> {
                 16 | 18 => 8,
                 _ => continue,
             };
+            if tag == 42112 {
+                // The compatibility profile never needed this tag. Do not make
+                // unrelated metadata a new default-profile failure condition.
+                if !read_metadata {
+                    continue;
+                }
+                metadata_bytes = metadata_bytes.saturating_add(n.saturating_mul(size));
+                if metadata_bytes > 4 * 1024 * 1024 {
+                    return Err(invalid("GDAL metadata exceeds the 4 MiB per-file validation limit"));
+                }
+            }
             if n > MAX_CHUNKS {
                 return Err(invalid(format!("TIFF tag {tag} has {n} values")));
             }
@@ -291,15 +351,7 @@ fn read_tiff<R: Read + Seek>(f: &mut R) -> Result<Option<Tiff>> {
         for item in values.into_iter().map(Ok).chain(stored) {
             let (tag, typ, data) = item?;
             if tag == 42112 {
-                if let Ok(root) = crate::drivers::vector::xml::parse(String::from_utf8_lossy(&data).trim_end_matches('\0')) {
-                    let mut items = Vec::new();
-                    root.find_all("Item", &mut items);
-                    ifd.tile_interleave = items.iter().any(|item| {
-                        item.attr("name") == Some("INTERLEAVE")
-                            && item.attr("domain") == Some("IMAGE_STRUCTURE")
-                            && item.text.trim() == "TILE"
-                    });
-                }
+                ifd.tile_interleave = tile_interleave(&data)?;
                 continue;
             }
             let v = e.ints(typ, &data);
@@ -382,7 +434,7 @@ pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> 
             ovr.push(".ovr");
             let ovr = std::path::Path::new(&ovr);
             let sidecar = if ovr.is_file() {
-                Some(read_tiff(&mut std::io::BufReader::new(std::fs::File::open(ovr)?)).ok().flatten().unwrap_or(Tiff {
+                Some(read_tiff(&mut std::io::BufReader::new(std::fs::File::open(ovr)?), false).ok().flatten().unwrap_or(Tiff {
                     ifds: Vec::new(),
                     ghost: None,
                     expected_ifd_offset: 8,
@@ -412,6 +464,33 @@ pub fn validate_cog_bytes(bytes: &[u8], options: &CogValidationOptions) -> Resul
     validate_reader(&mut std::io::Cursor::new(bytes), None, options, true)
 }
 
+/// Remote full checks are opt-in, but still bound their boundary-read workload.
+/// This limits client read calls (and therefore range fetches, excluding configured
+/// transport retries); header/offset-table requests occur before this budget.
+struct BoundaryReader<'a, R> {
+    inner: &'a mut R,
+    remaining: usize,
+}
+impl<R: Read> Read for BoundaryReader<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            return Err(std::io::Error::other(
+                "remote COG full check exceeds 10,000 boundary reads; download the TIFF and validate locally",
+            ));
+        }
+        self.remaining -= 1;
+        self.inner.read(bytes)
+    }
+}
+impl<R: Seek> Seek for BoundaryReader<'_, R> {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(position)
+    }
+}
+
 fn validate_reader<R: Read + Seek>(
     reader: &mut R,
     sidecar: Option<Tiff>,
@@ -421,13 +500,17 @@ fn validate_reader<R: Read + Seek>(
     if options.full_check == Some(true) && options.profile != CogValidationProfile::Gdal {
         return Err(Error::InvalidArgument("full_check requires the gdal validation profile".into()));
     }
-    let tiff = read_tiff(reader)?;
+    let tiff = read_tiff(reader, options.profile == CogValidationProfile::Gdal)?;
     let mut full_errors = Vec::new();
     if options.profile == CogValidationProfile::Gdal
         && options.full_check.unwrap_or(local)
         && let Some(tiff) = &tiff
     {
-        full_check(reader, tiff, &mut full_errors)?;
+        if local {
+            full_check(reader, tiff, &mut full_errors)?;
+        } else {
+            full_check(&mut BoundaryReader { inner: reader, remaining: 10_000 }, tiff, &mut full_errors)?;
+        }
     }
     let mut result = validate(tiff, sidecar, options.strict, options.profile == CogValidationProfile::Gdal);
     result.errors.extend(full_errors);
@@ -925,6 +1008,16 @@ mod tests {
     }
 
     #[test]
+    fn metadata_is_streamed_bounded_and_ignored_by_legacy_profile() {
+        let large = crafted(&[(256, 4, 1, 1), (257, 4, 1, 1), (42112, 2, (1 << 22) + 1, 100)], &[]);
+        assert!(validate_cog_bytes(&large, &Default::default()).is_ok());
+        let options = CogValidationOptions { profile: CogValidationProfile::Gdal, full_check: Some(false), ..Default::default() };
+        assert!(validate_cog_bytes(&large, &options).unwrap_err().to_string().contains("4 MiB"));
+        assert!(tile_interleave(br#"<GDALMetadata><Item name="INTERLEAVE" domain="IMAGE_STRUCTURE">TILE</Item></GDALMetadata>"#).unwrap());
+        assert!(tile_interleave("<a>".repeat(100_000).as_bytes()).unwrap_err().to_string().contains("128 nesting"));
+    }
+
+    #[test]
     fn mask_notes_name_the_image_they_mask() {
         let image = |offset, width, subfile_type, data| Ifd {
             offset,
@@ -957,7 +1050,10 @@ mod tests {
         let bytes = std::fs::read(path).unwrap();
         let options = CogValidationOptions { profile: CogValidationProfile::Gdal, ..Default::default() };
         assert!(validate_cog_bytes(&bytes, &options).unwrap().is_valid);
-        let tiff = read_tiff(&mut std::io::Cursor::new(&bytes)).unwrap().unwrap();
+        let tiff = read_tiff(&mut std::io::Cursor::new(&bytes), true).unwrap().unwrap();
+        let mut cursor = std::io::Cursor::new(&bytes);
+        let error = full_check(&mut BoundaryReader { inner: &mut cursor, remaining: 1 }, &tiff, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("boundary reads"));
         let image = &tiff.ifds[0];
         let offset = image.offsets[0] as usize;
         let count = image.byte_counts[0] as usize;
@@ -984,7 +1080,7 @@ mod tests {
         let result = validate_cog_bytes(&bytes, &options).unwrap();
         assert!(!result.errors.iter().any(|error| error.contains("not tiled")), "{result:?}");
         assert!(validate_cog_bytes(&bytes, &Default::default()).unwrap().errors.iter().any(|error| error.contains("not tiled")));
-        let mut tiff = read_tiff(&mut std::io::Cursor::new(&bytes)).unwrap().unwrap();
+        let mut tiff = read_tiff(&mut std::io::Cursor::new(&bytes), true).unwrap().unwrap();
         tiff.ifds[0].offset = 10;
         assert!(validate(Some(tiff), None, false, true).errors.iter().any(|error| error.contains("should be 8")));
         assert!(validate_cog_bytes(&bytes, &CogValidationOptions { full_check: Some(true), ..Default::default() }).is_err());
