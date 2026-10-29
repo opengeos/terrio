@@ -98,7 +98,7 @@ def raster_snapshot(path):
 
 
 def add_tables(path):
-    with sqlite3.connect(path) as database:
+    with closing(sqlite3.connect(path)) as database, database:
         database.execute(
             "CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT COLLATE NOCASE UNIQUE, payload BLOB)"
         )
@@ -136,7 +136,7 @@ def add_tables(path):
 def change_encoding(source_path, target_path, encoding):
     # Recreate a real-data derivative through SQLite. Virtual tables recreate their own
     # shadow tables; reinsert their logical rows instead of copying module-owned node blobs.
-    with sqlite3.connect(source_path) as source, sqlite3.connect(target_path) as target:
+    with closing(sqlite3.connect(source_path)) as source, closing(sqlite3.connect(target_path)) as target, source, target:
         target.execute("PRAGMA encoding='" + encoding + "'")
         schema = source.execute("SELECT type,name,sql FROM sqlite_schema ORDER BY rowid").fetchall()
         types = {row[1]: row[2] for row in source.execute("PRAGMA table_list")}
@@ -208,7 +208,7 @@ def main():
         ]:
             path = root / (name.replace(" ", "-") + ".gpkg")
             shutil.copyfile(base, path)
-            with sqlite3.connect(path) as database:
+            with closing(sqlite3.connect(path)) as database, database:
                 database.execute("PRAGMA auto_vacuum=" + str(mode))
                 database.execute("PRAGMA page_size=" + str(size))
                 database.execute("VACUUM")
@@ -254,7 +254,7 @@ def main():
                     assert raster_snapshot(ours) == raster_snapshot(reference) == pixels
                 assert report["bytes_after"] == ours.stat().st_size < report["bytes_before"]
                 for target in (ours, reference):
-                    with sqlite3.connect(target) as database:
+                    with closing(sqlite3.connect(target)) as database, database:
                         assert database.execute("PRAGMA freelist_count").fetchone() == (0,)
                         database.execute("UPDATE notes SET label='changed' WHERE id=21")
                         assert database.execute("SELECT * FROM audit").fetchall() == [("updated",)]
@@ -276,7 +276,7 @@ def main():
         try:
             wal = root / "wal.gpkg"
             shutil.copyfile(base, wal)
-            with sqlite3.connect(wal) as database:
+            with closing(sqlite3.connect(wal)) as database, database:
                 database.execute("PRAGMA journal_mode=WAL")
                 database.execute("INSERT INTO audit VALUES ('wal-kept')")
                 database.commit()
@@ -284,7 +284,6 @@ def main():
                 repack(wal, success=False)
                 assert wal.read_bytes() == before
                 assert wal.with_name(wal.name + "-wal").read_bytes() == sidecar
-            database.close()
             expected = storage_snapshot(wal)
             repack(wal)
             assert storage_snapshot(wal) == expected

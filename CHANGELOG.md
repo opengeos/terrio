@@ -46,6 +46,14 @@
   windows of local files still each read the tables, as does moving to another
   overview. The tables kept take 16 bytes per chunk of each image read.
 
+### GeoPackage
+
+- `terrio gpkg-repack` (CLI, and the `gpkg-repack` MCP tool) compacts a native GeoPackage in
+  place, rebuilding every B-tree from its encoded records and preserving rowids, SQL objects,
+  text encodings, rasters and auto-vacuum pointer maps. Python `gpkg_repack(path)` and
+  `gpkg_repack_bytes(data)`, and JavaScript `gpkgRepack` and `gpkgRepackBytes`, expose the same
+  operation. Scope and storage safety are in [docs/cli.md](docs/cli.md#geopackage-repacking).
+
 ### Remote I/O
 
 - Signed S3 uploads of local files over 8 MiB sent over HTTPS read the file once
@@ -59,14 +67,15 @@
 ### Breaking changes
 
 - Dataset/VSI paths retain leading and trailing whitespace across CLI, Python, JavaScript
-  and MCP (#372). Native filenames and virtual keys with edge whitespace are distinct from their
+  and MCP (#384). Native filenames and virtual keys with edge whitespace are distinct from their
   trimmed neighbors; callers must normalize pasted paths/URLs themselves. `@FILE` lines
   still apply their file-list whitespace rules.
 - Native Unix SQLite in-place append/update and recovery propagate parent-directory open/fsync
   failures. Filesystems without directory fsync support can fail before page writes. An error
   after journal deletion reports committed changes or completed recovery with unconfirmed
   durability; do not blindly retry an append. Native append also refuses linked/special
-  journal, WAL and shared-memory sidecars before recovery.
+  journal, WAL and shared-memory sidecars before recovery, and refuses a database file with
+  hard-link aliases (Unix `nlink > 1`).
 - VRT `SourceFilename` values retain trailing whitespace and newlines, matching GDAL.
   Remove formatting whitespace from inside the element when it is not part of the filename;
   encoded leading whitespace and CDATA remain significant.

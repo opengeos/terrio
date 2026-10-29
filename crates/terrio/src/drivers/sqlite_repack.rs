@@ -264,9 +264,10 @@ impl PageStore for Output {
             let page = u32::try_from(self.data.len() / self.size + 1).map_err(|_| bad("too many output pages"))?;
             if self.data.len() + self.size > self.data.capacity() {
                 // Initial capacity equals the input image size. If repacking
-                // outgrows it, bound extra capacity instead of doubling a GiB
-                // buffer; allocators without in-place growth may copy here.
-                self.data.reserve_exact(1 << 24);
+                // outgrows it, grow by a quarter of the buffer: extra capacity
+                // stays bounded instead of doubling a GiB buffer, and copies on
+                // allocators without in-place growth stay amortized.
+                self.data.reserve_exact((self.data.capacity() / 4).max(1 << 24));
             }
             self.data.resize(self.data.len() + self.size, 0);
             if !self.special(page) {
@@ -394,7 +395,8 @@ pub(crate) fn compact(bytes: &[u8]) -> Result<Vec<u8>> {
     let header = &mut output.data[..size];
     header[28..32].copy_from_slice(&n.to_be_bytes());
     header[32..40].fill(0);
-    let counter = be(bytes, 24)?.wrapping_add(1);
+    // The commit bumps the change counter once, as it does for in-place changes.
+    let counter = be(bytes, 24)?;
     header[24..28].copy_from_slice(&counter.to_be_bytes());
     header[92..96].copy_from_slice(&counter.to_be_bytes());
     header[40..44].copy_from_slice(&be(bytes, 40)?.wrapping_add(1).to_be_bytes());

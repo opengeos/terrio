@@ -1304,6 +1304,10 @@ fn lock(file: &File, path: &Path) -> Result<()> {
         // SAFETY: `fd` is an open file descriptor and `fl` a valid `flock`.
         let r = unsafe { libc::fcntl(fd, libc::F_SETLK, &fl) };
         if r != 0 {
+            let error = std::io::Error::last_os_error();
+            if !matches!(error.raw_os_error(), Some(libc::EAGAIN) | Some(libc::EACCES)) {
+                return Err(error.into());
+            }
             return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 format!("{}: the database is locked by another connection", path.display()),
@@ -1392,6 +1396,33 @@ mod tests {
             }
         }
         assert!(Editor::open(&path).unwrap().is_ok());
+    }
+    #[test]
+    fn repack_commit_bumps_the_change_counter_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repack.db");
+        let original = sample(2000);
+        std::fs::write(&path, &original).unwrap();
+        let counter = |bytes: &[u8]| u32::from_be_bytes(bytes[24..28].try_into().unwrap());
+        let compact = crate::drivers::sqlite_repack::compact(&original).unwrap();
+        assert_eq!(counter(&compact), counter(&original));
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        editor.replace_image(original.clone(), compact).unwrap();
+        editor.commit().unwrap();
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(counter(&after), counter(&original).wrapping_add(1));
+        assert_eq!(after[92..96], after[24..28]);
+    }
+    #[test]
+    fn lock_keeps_os_error_that_is_not_contention() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db");
+        std::fs::write(&path, sample(1)).unwrap();
+        // A read-only descriptor cannot take a write lock: F_SETLK fails with EBADF, not contention.
+        let file = File::open(&path).unwrap();
+        let error = lock(&file, &path).unwrap_err().to_string();
+        assert!(!error.contains("locked by another connection"), "{error}");
+        assert!(error.contains("Bad file descriptor"), "{error}");
     }
     #[test]
     fn repack_open_refuses_a_symlink_even_without_path_preflight() {
