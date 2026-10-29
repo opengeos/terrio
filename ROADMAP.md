@@ -94,6 +94,10 @@ commands. Command-group progress:
       with staged replacement and source alias protection through Rust, CLI/MCP, Python and
       WebAssembly. Real Landsat and Natural Earth comparisons are registered as `dataset-files`.
 
+- [ ] Dataset content checks: all exposed raster bands, vector layers, numeric scientific
+      arrays and point records, with optional raster overviews and masks. Rust, CLI/MCP,
+      Python and JavaScript share the checks; conformance is registered as `dataset-check`.
+
 ## 0.1: Foundations
 
 - [x] Data model: `Dataset`, raster `Band` with block access, vector `Layer` with `Feature`, field

@@ -32,7 +32,7 @@
 
 mod json;
 #[cfg(feature = "sqlite")]
-mod sqlite;
+pub(crate) mod sqlite;
 
 pub use crate::drivers::vector::profile::{FieldProfile, GeometryProfile, LayerProfile};
 

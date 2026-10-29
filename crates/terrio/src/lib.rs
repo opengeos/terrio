@@ -234,6 +234,7 @@ pub mod raster {
     pub use wbraster::{CrsInfo, RasterError, ReprojectOptions, ResampleMethod};
 }
 pub mod catalog;
+pub mod check;
 pub mod stac;
 mod stacta;
 pub mod stream;

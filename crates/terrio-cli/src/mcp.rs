@@ -37,7 +37,7 @@ const INSTRUCTIONS: &str = "terrio reads, writes and converts geospatial rasters
 - Start with info (--json) to see what a dataset holds; formats lists the formats terrio reads and writes.";
 
 /// Commands that only read: they write no file.
-const READ_ONLY: &[&str] = &["info", "formats", "crs", "mdinfo", "mdread", "compare", "validate-cog", "identify", "dataset-files"];
+const READ_ONLY: &[&str] = &["info", "formats", "crs", "mdinfo", "mdread", "compare", "validate-cog", "identify", "dataset-files", "check"];
 
 type RpcError = (i64, String);
 

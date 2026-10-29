@@ -2394,3 +2394,42 @@ test("dataset VRT references require explicit external scope permission", () => 
     assert.ok(terrio.vsiStat(`${root}/source.raw`));
   } finally { terrio.vsiDelete(root, {recursive:true}); }
 });
+
+test("checkDataset decodes all exposed uploaded content", () => {
+  const raster = terrio.createRaster(null, {size: [4, 3], burn: [7], crs: "EPSG:4326", bbox: [0, 0, 4, 3]});
+  const bytes = raster.toBytes("input.tif");
+  const summary = terrio.checkDataset(bytes, "input.tif", {overviews: true, masks: true});
+  assert.equal(summary.raster_samples, 12);
+  assert.equal(summary.features, 0);
+  assert.throws(() => terrio.checkDataset(new TextEncoder().encode("II*\0broken"), "broken.tif"));
+  assert.throws(() => terrio.checkDataset(bytes, "input.tif", {misspelled: true}), /unknown field/);
+  const vector = new TextEncoder().encode('{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}]}');
+  assert.equal(terrio.checkDataset(vector, "points.geojson").features, 1);
+  assert.throws(() => terrio.checkDataset(vector.subarray(0, vector.length - 8), "points.geojson"));
+  raster.free();
+});
+
+test("checkDataset reads real raster, vector and scientific uploads", {skip: needs("flatgeobuf") || needs("netcdf-hdf5") || (!DATA && "TERRIO_TEST_DATA is not set")}, () => {
+  const raster = terrio.checkDataset(new Uint8Array(readFileSync(join(DATA, "cog.tif"))), "cog.tif");
+  assert.ok(raster.raster_samples > 0);
+  const vector = terrio.checkDataset(new Uint8Array(readFileSync(join(DATA, "countries.fgb"))), "countries.fgb");
+  assert.ok(vector.features > 100);
+  const scientific = terrio.checkDataset(new Uint8Array(readFileSync(join(DATA, "wind_global.nc"))), "wind.nc");
+  assert.equal(scientific.arrays, 4);
+  assert.equal(scientific.array_elements, 2 * 181 * 360 + 181 + 360);
+  const md = terrio.openMultidim(new Uint8Array(readFileSync(join(DATA, "wind_global.nc"))));
+  assert.deepEqual(md.check(), scientific);
+  md.free();
+  if (BUILT.includes("pointcloud")) {
+    for (const name of ["autzen_trim.las", "autzen_trim.laz"]) {
+      const path = join(DATA, "pointcloud", name);
+      if (!existsSync(path)) continue;
+      const bytes = new Uint8Array(readFileSync(path));
+      const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const legacy = header.getUint32(107, true);
+      const expected = header.getUint8(25) >= 4 && legacy === 0 ? Number(header.getBigUint64(247, true)) : legacy;
+      assert.ok(expected > 0);
+      assert.equal(terrio.checkDataset(bytes, name).points, expected);
+    }
+  }
+});
