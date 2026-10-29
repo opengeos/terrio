@@ -2349,7 +2349,8 @@ repacking and must not access the database concurrently through them. Native sym
 hard-linked dataset filenames, linked/special sidecars, reserved/encrypted page bytes, remote and archive paths
 are refused. This is storage maintenance, not a GeoPackage specification validator.
 
-Native append also rejects linked or special journal/WAL/shared-memory sidecars before
+Native in-place append/update also refuses hard-linked database targets: another alias
+may have its own WAL. It rejects linked or special journal/WAL/shared-memory sidecars before
 recovery; it never replays a journal through a symbolic link or hard-link alias.
 
 Unix directory-sync requirements also apply to existing native SQLite in-place edits and

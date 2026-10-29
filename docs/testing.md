@@ -1235,7 +1235,11 @@ checking exact recovery including truncated pages. Set `TERRIO_SQLITE_REFERENCE_
 Python interpreter with the standard sqlite3 module to additionally recover these journals
 with SQLite itself, for both rollback- and checkpointed-WAL file headers. Separate regressions
 check renamed database refusal before journal creation, directory-sync failure before page
-writes, planted journal links, and concurrent in-memory writes.
+writes, planted journal links, and concurrent in-memory writes. The Python
+`test_repack_refuses_database_locked_by_another_process` holds an exclusive SQLite
+transaction in a separate process, verifies refusal without changing database bytes,
+and retries successfully after release. It runs on the native macOS/Windows CI matrix
+as well as Linux, exercising Windows byte-range locking when that matrix runs.
 
 A local repack memory check used a Natural Earth GeoPackage derivative with 2,048 one-MiB
 zero-filled BLOB rows and incremental auto-vacuum (2,155,819,008 bytes). Peak RSS measured

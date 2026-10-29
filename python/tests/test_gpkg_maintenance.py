@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+import subprocess
 import sys
 from contextlib import closing
 
@@ -170,3 +171,39 @@ def test_native_non_utf8_path_preserves_database(tmp_path, name):
         assert neighbor.read_bytes() == b"preserve unrelated file"
     with closing(sqlite3.connect(path)) as database, database:
         assert database.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+
+
+def test_repack_refuses_database_locked_by_another_process(tmp_path):
+    path = fixture(tmp_path)
+    original = path.read_bytes()
+    script = """
+import sqlite3
+import sys
+connection = sqlite3.connect(sys.argv[1], timeout=0)
+connection.execute("BEGIN EXCLUSIVE")
+print("ready", flush=True)
+sys.stdin.readline()
+connection.rollback()
+connection.close()
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", script, str(path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout.readline() == "ready\n"
+        with pytest.raises(terrio.TerrioIOError, match="locked by another connection"):
+            terrio.gpkg_repack(path)
+        assert path.read_bytes() == original
+    finally:
+        try:
+            _, error = child.communicate("\n", timeout=10)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.communicate()
+            raise
+    assert child.returncode == 0, error
+    terrio.gpkg_repack(path)

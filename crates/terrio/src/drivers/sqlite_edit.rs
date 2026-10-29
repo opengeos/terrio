@@ -173,17 +173,17 @@ impl Editor {
             options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
         }
         let mut file = options.open(path)?;
+        let metadata = file.metadata()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() > 1 {
+                return Err(bad("database handle has hard-link aliases"));
+            }
+        }
         if repack {
-            let metadata = file.metadata()?;
             if !metadata.is_file() {
                 return Err(bad("repack handle is not a regular file"));
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                if metadata.nlink() > 1 {
-                    return Err(bad("repack handle has hard-link aliases"));
-                }
             }
             #[cfg(windows)]
             {
@@ -1329,6 +1329,10 @@ fn lock(file: &File, path: &Path) -> Result<()> {
         let ok =
             unsafe { LockFileEx(file.as_raw_handle(), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, length, 0, &mut overlap) };
         if ok == 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32) {
+                return Err(error.into());
+            }
             return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 format!("{}: the database is locked by another connection", path.display()),
@@ -1572,6 +1576,7 @@ mod tests {
         std::fs::hard_link(&path, &alias).unwrap();
         std::fs::write(&wal, b"pending frames under another name").unwrap();
         assert!(Editor::open_repack(&path).is_err(), "hard links must be refused before relying on path-based WAL checks");
+        assert!(Editor::open(&path).is_err(), "append/update must also refuse aliases before checking only the named WAL");
         assert_eq!(std::fs::read(&path).unwrap(), original);
         assert_eq!(std::fs::read(&alias).unwrap(), original);
         assert_eq!(std::fs::read(&wal).unwrap(), b"pending frames under another name");
