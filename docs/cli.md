@@ -2161,7 +2161,10 @@ nested arrays at the root. It also retains integer coordinate types rather than
 GDAL's synthesized Float64 coordinates. Float32 indexing variables use their
 native precision when recognizing regular grids and placing tiles; gap cells
 are retained. Off-grid origins beyond that precision allowance are rejected;
-the allowance is capped at 0.001 grid cells. Per-tile coordinate `actual_range` metadata may differ and is removed from the mosaic. Extended scalar CF `grid_mapping` clauses are retained; unresolved mapping references are rejected. Irregular axes are sorted with
+the allowance is capped at 0.001 grid cells. This can reject mathematically regular
+Float32 coordinates when large origins or wide tile separation amplify rounding
+beyond that cap (including 40 + index × 0.1 at 900-cell separation, also rejected
+by GDAL 3.13.3). Such inputs require higher-precision coordinates before mosaicking. Per-tile `actual_range` metadata on coordinates and data arrays may differ and is removed from the mosaic. Source chunk shapes and other compatible descriptive metadata are inherited from the first input. Full-array reads and netCDF snapshots materialize the requested data; use selected reads or chunked Zarr output for large mosaics. Extended scalar CF `grid_mapping` clauses are retained; unresolved mapping references are rejected. Irregular axes are sorted with
 equal coordinates deduplicated in either direction.
 
 Coordinate planning checks the actual in-memory element width before reading

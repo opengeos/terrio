@@ -545,6 +545,9 @@ pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> 
             pieces.push(Piece { array: array.clone(), starts });
         }
         let mut info = template.info.clone();
+        if let Some(attributes) = info.attributes.as_object_mut() {
+            attributes.remove("actual_range");
+        }
         info.dimensions = info.dimensions.iter().map(|d| axes[&d.path].dimension.clone()).collect();
         let array = Array {
             info,
@@ -772,15 +775,37 @@ mod tests {
         assert!(mosaic(&sources, &Default::default()).unwrap_err().to_string().contains("not aligned"));
     }
     #[test]
+    fn distant_float32_rounding_is_not_silently_treated_as_alignment() {
+        // GDAL 3.13.3 also rejects these stored coordinate grids: local
+        // Float32 step estimates differ between the two distant tiles.
+        for offset in [900, 1000] {
+            let sources: Vec<_> = [0, offset]
+                .into_iter()
+                .map(|base| {
+                    let mut source = dataset(&[("y", &[0, 1, 2, 3, 4, 5, 6, 7]), ("x", &[0])], &[1; 8]);
+                    let coordinate = &mut source.root.arrays[0];
+                    coordinate.info.data_type = DataType::F32;
+                    coordinate.source =
+                        Source::Memory(Arc::new((0..8).flat_map(|j| ((40. + (base + j) as f64 * 0.1) as f32).to_le_bytes()).collect()));
+                    source
+                })
+                .collect();
+            assert!(mosaic(&sources, &Default::default()).unwrap_err().to_string().contains("not aligned"));
+        }
+    }
+    #[test]
     fn tile_coordinate_ranges_and_integral_float_nodata_are_accepted() {
         let mut a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
         let mut b = dataset(&[("y", &[0]), ("x", &[4, 5])], &[3, 4]);
         a.root.arrays[1].info.attributes["actual_range"] = json!([0, 1]);
         b.root.arrays[1].info.attributes["actual_range"] = json!([4, 5]);
         b.root.arrays.last_mut().unwrap().info.attributes["_FillValue"] = json!(-9999.0);
+        a.root.arrays.last_mut().unwrap().info.attributes["actual_range"] = json!([1, 2]);
+        b.root.arrays.last_mut().unwrap().info.attributes["actual_range"] = json!([3, 4]);
         let out = mosaic(&[a, b], &Default::default()).unwrap();
         assert_eq!(out.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 2, -9999, -9999, 3, 4]));
         assert!(out.array("x").unwrap().info.attributes.get("actual_range").is_none());
+        assert!(out.array("v").unwrap().info.attributes.get("actual_range").is_none());
     }
     #[test]
     fn extended_cf_grid_mapping_syntax_keeps_each_scalar_mapping() {

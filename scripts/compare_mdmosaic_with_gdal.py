@@ -85,9 +85,13 @@ def comparison(reference, actual, allow_float32_coordinates=False):
                     rcv = rcv.astype('float32')
                 if not np.array_equal(rcv, acv):
                     assert len(rcv) == len(acv)
-                    order = [int(np.flatnonzero(rcv == value)[0]) for value in acv]
-                    assert len(set(order)) == len(order)
-                    rv = np.take(rv, order, axis=axis)
+                    # Reorder only a true permutation. A coordinate mismatch
+                    # remains in place for the numerical comparison below.
+                    matches = [np.flatnonzero(rcv == value) for value in acv]
+                    if all(len(match) == 1 for match in matches):
+                        order = [int(match[0]) for match in matches]
+                        if len(set(order)) == len(order):
+                            rv = np.take(rv, order, axis=axis)
         rt, at = r.GetDataType().GetNumericDataType(), a.GetDataType().GetNumericDataType()
         rd = r.GetDimensions()
         coordinate = len(rd) == 1 and rd[0].GetIndexingVariable() is not None and rd[0].GetIndexingVariable().GetFullName() == r.GetFullName()
@@ -116,6 +120,7 @@ def comparison(reference, actual, allow_float32_coordinates=False):
         same_metadata &= r.GetUnit() == a.GetUnit()
         rat = {at.GetName(): at.Read() for at in r.GetAttributes()}
         aat = {at.GetName(): at.Read() for at in a.GetAttributes()}
+        assert 'actual_range' not in aat, (name, aat.get('actual_range'))
         for key in ['scale_factor', 'add_offset', 'units']:
             same_metadata &= rat.get(key) == aat.get(key)
     return dict(path_difference=path_difference, same_size=same_size, same_type=same_type, same_nodata=same_nodata, same_metadata=same_metadata,
@@ -198,7 +203,22 @@ def main():
         actual = tmp/'rejected-terrio.nc'
         out = subprocess.run([args.terrio,'mdmosaic',str(tmp/'regular.nc'),str(tmp/'singleton.nc'),str(actual)], capture_output=True)
         results.append({'name':'mixed off-grid singleton rejection', 'expected_rejection':True,
-                        'same_rejection':ref.returncode != 0 and out.returncode != 0 and not actual.exists()})
+                        'same_rejection':ref.returncode == 1 and out.returncode == 1 and b'not aligned' in out.stderr and b'irregularly-spaced values' in ref.stderr.lower() and not actual.exists()})
+        # Distant Float32 origins can have measurably different stored spacing.
+        # Both implementations reject rather than silently moving those grids.
+        for offset in [900, 1000]:
+            sources = []
+            for index, origin in enumerate([0, offset]):
+                source = tmp / f'precision-{offset}-{index}.nc'
+                create(source, [('time', np.asarray([40+(origin+j)*.1 for j in range(8)], dtype='float32')), ('x',[0])],
+                       np.ones((8,1)), coordinate_dtype=gdal.GDT_Float32)
+                sources.append(str(source))
+            ref = subprocess.run(['gdal', 'mdim', 'mosaic', *sources, str(tmp/f'precision-{offset}.vrt')], capture_output=True)
+            destination = tmp/f'precision-{offset}.nc'
+            out = subprocess.run([args.terrio, 'mdmosaic', *sources, str(destination)], capture_output=True)
+            results.append({'name':f'Float32 distant-origin precision refusal {offset}', 'expected_rejection':True,
+                            'same_rejection':ref.returncode == 1 and out.returncode == 1 and b'spacing' in ref.stderr
+                            and b'not aligned' in out.stderr and not destination.exists()})
         for dtype in [gdal.GDT_Byte,gdal.GDT_Int8,gdal.GDT_UInt16,gdal.GDT_Int16,gdal.GDT_UInt32,gdal.GDT_Int32,gdal.GDT_UInt64,gdal.GDT_Int64,gdal.GDT_Float64]:
             if dtype in (gdal.GDT_UInt64,gdal.GDT_Int64):
                 # Form 64-bit values in integer arithmetic, without a float64 round trip.
@@ -207,7 +227,17 @@ def main():
                 converted = [(axes, np.abs(v)*3) for axes,v in tiled]
             case('types '+gdal.GetDataTypeName(dtype), converted, dtype)
     print(json.dumps(results, indent=1) if args.json else '\n'.join(str(r) for r in results))
-    return int(any('error' in r or (r.get('differing') and r.get('within_tol') != 1) or any(v is False for k,v in r.items() if k.startswith('same_') and not (k == 'same_type' and r.get('permitted_coordinate_type_difference'))) for r in results))
+    def failed(result):
+        if 'error' in result or (result.get('differing') and result.get('within_tol') != 1):
+            return True
+        for key, value in result.items():
+            if key.startswith('same_') and value is False:
+                if key == 'same_type' and result.get('permitted_coordinate_type_difference'):
+                    continue
+                return True
+        return False
+
+    return int(any(failed(result) for result in results))
 
 
 if __name__ == '__main__':
