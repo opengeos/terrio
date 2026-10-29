@@ -20,14 +20,15 @@ def main():
     parser.add_argument("--terrio", default="target/release/terrio")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    args.terrio = str(Path(args.terrio).resolve())
     results = []
 
-    def call(command, *paths, env=None, **flags):
+    def call(command, *paths, env=None, cwd=None, **flags):
         command = [args.terrio, command, *map(str, paths), "--json"]
         command.extend(
             "--" + name.replace("_", "-") for name, enabled in flags.items() if enabled
         )
-        process = subprocess.run(command, capture_output=True, text=True, env=env)
+        process = subprocess.run(command, capture_output=True, text=True, env=env, cwd=cwd)
         if process.returncode:
             raise AssertionError(process.stderr.strip())
         return json.loads(process.stdout)
@@ -472,6 +473,47 @@ def main():
                 )
             except Exception as error:
                 results.append(dict(name=stage, status="differs", detail=str(error)))
+        for flag_index, (raw, flag) in enumerate([(False, flag) for flag in ["1", "true", "TRUE", "yes", "on", "0", "2", "01", " 1 "]] + [(True, flag) for flag in ["true", "yes", "on"]]):
+            stage = f"VRT {'raw' if raw else 'sourced'} relativeToVRT literal {flag}"
+            try:
+                folder = root / f"relative-flag-{flag_index}"
+                folder.mkdir()
+                working, source_folder = folder / "working", folder / "source"
+                working.mkdir()
+                source_folder.mkdir()
+                for directory, delta in [(working, 1000), (source_folder, 2000)]:
+                    data = gdal.Translate(str(directory / "source.tif"), str(args.data / "dem.tif"), srcWin=[0,0,2,2], outputType=gdal.GDT_Float32)
+                    band = data.GetRasterBand(1)
+                    band.WriteArray(band.ReadAsArray() + delta)
+                    (directory / "source.bin").write_bytes(band.ReadRaster())
+                    band = data = None
+                source = source_folder / "source.vrt"
+                definition = f"<VRTRasterBand dataType='Float32' band='1' subClass='VRTRawRasterBand'><SourceFilename relativeToVRT='{flag}'>source.bin</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>4</PixelOffset><LineOffset>8</LineOffset><ByteOrder>LSB</ByteOrder></VRTRasterBand>" if raw else f"<VRTRasterBand dataType='Float32' band='1'><SimpleSource><SourceFilename relativeToVRT='{flag}'>source.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand>"
+                source.write_text(f"<VRTDataset rasterXSize='2' rasterYSize='2'><GeoTransform>0,1,0,2,0,-1</GeoTransform>{definition}</VRTDataset>")
+                previous = Path.cwd()
+                try:
+                    os.chdir(working)
+                    expected = raster_snapshot(source)
+                finally:
+                    os.chdir(previous)
+                if not raw:
+                    translated = folder / "terrio-read.tif"
+                    process = subprocess.run([args.terrio, "translate", str(source), str(translated)], cwd=working, capture_output=True, text=True)
+                    assert process.returncode == 0, process.stderr
+                    assert raster_snapshot(translated)["bands"][0]["pixels"] == expected["bands"][0]["pixels"]
+                output = folder / "output"
+                output.mkdir()
+                target = output / "copied.vrt"
+                call("dataset-copy", source, target, cwd=working, allow_external_references=True)
+                assert raster_snapshot(target) == expected
+                moved = output / "moved.vrt"
+                call("dataset-rename", target, moved)
+                assert raster_snapshot(moved) == expected
+                call("dataset-delete", moved)
+                assert (working / "source.tif").exists() and (source_folder / "source.tif").exists()
+                results.append(dict(name=stage,status="identical",detail="GDAL source resolution and copied/renamed pixels agree: sourced bands use integer flags and raw bands use boolean flags; both distinct source assets survive deletion"))
+            except Exception as error:
+                results.append(dict(name=stage,status="differs",detail=str(error)))
         # VRT dependencies are copied with regular basenames; rename moves only owned definitions.
         for selector in [False, True]:
             label = "VRT netCDF reference" if selector else "VRT TIFF reference"

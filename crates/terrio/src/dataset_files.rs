@@ -7,6 +7,7 @@ use crate::vsi::{self, dataset as location};
 use crate::{Error, Result};
 use serde::{Serialize, Serializer};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// File-operation options. The format hint restricts the source driver, not the output encoding.
@@ -345,7 +346,8 @@ static TEMP_ID: AtomicU64 = AtomicU64::new(1);
 fn temporary(path: &str) -> Result<String> {
     loop {
         let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
-        let name = format!(".terrio-dataset-{id}-{}", location::name(path)?);
+        let nonce = std::collections::hash_map::RandomState::new().hash_one((path, id));
+        let name = format!(".terrio-dataset-{nonce:016x}-{id}-{}", location::name(path)?);
         let path = location::sibling(path, &name)?;
         if !location::entry_exists(&path)? {
             return Ok(path);
@@ -412,10 +414,9 @@ fn reference_text(reader: &mut quick_xml::Reader<&[u8]>) -> Result<String> {
         }
     }
 }
-fn relative_reference(element: &quick_xml::events::BytesStart<'_>) -> bool {
+fn relative_reference(element: &quick_xml::events::BytesStart<'_>, raw: bool) -> bool {
     element.attributes().flatten().find(|a| a.key.as_ref() == "relativeToVRT").is_some_and(|a| {
-        a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
-            .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        a.normalized_value(quick_xml::XmlVersion::Implicit1_0).is_ok_and(|v| crate::ops::vrt::relative_reference_flag(Some(&v), raw))
     })
 }
 #[derive(Default)]
@@ -488,7 +489,7 @@ fn vrt_dependencies(path: &str, scope: &str, allow_external: bool, files: &mut V
                 bands.pop();
             }
             Event::Start(element) if matches!(element.local_name().as_ref(), "SourceFilename" | "SourceDataset") => {
-                let relative = relative_reference(&element);
+                let relative = relative_reference(&element, bands.last().copied().unwrap_or(false));
                 let name = reference_text(&mut reader)?;
                 let reference = crate::ops::vrt::resolve_reference(path, &name, relative);
                 let physical = crate::ops::vrt::subdataset_parts(&reference)?.map_or(reference.as_str(), |(_, file, _)| file);
@@ -618,6 +619,7 @@ fn rewrite(path: &str, names: &HashMap<location::NameKey, String>, driver: &str)
         let mut writer = Writer::new(Vec::new());
         let mut changed = false;
         let mut metadata = 0usize;
+        let mut bands = Vec::new();
         loop {
             let event = reader.read_event().map_err(|e| Error::InvalidData(format!("VRT XML: {e}")))?;
             if !gml && (metadata > 0 || matches!(&event, Event::Start(e) if e.local_name().as_ref() == "Metadata")) {
@@ -642,8 +644,18 @@ fn rewrite(path: &str, names: &HashMap<location::NameKey, String>, driver: &str)
                     changed |= rebased;
                     writer.write_event(Event::Empty(element))?;
                 }
+                Event::Start(element) if !gml && element.local_name().as_ref() == "VRTRasterBand" => {
+                    bands.push(element.attributes().flatten().any(|a| {
+                        a.key.as_ref() == "subClass" && a.normalized_value(XmlVersion::Implicit1_0).is_ok_and(|v| v == "VRTRawRasterBand")
+                    }));
+                    writer.write_event(Event::Start(element))?;
+                }
+                Event::End(element) if !gml && element.local_name().as_ref() == "VRTRasterBand" => {
+                    bands.pop();
+                    writer.write_event(Event::End(element))?;
+                }
                 Event::Start(mut element) if matches!(element.local_name().as_ref(), "SourceFilename" | "SourceDataset") => {
-                    let relative = relative_reference(&element);
+                    let relative = relative_reference(&element, bands.last().copied().unwrap_or(false));
                     let end = element.to_end().into_owned();
                     let name = reference_text(&mut reader)?;
                     let resolved = crate::ops::vrt::resolve_reference(path, &name, relative);
@@ -1032,6 +1044,32 @@ mod tests {
         let path = format!("{root}/{name}.csv");
         put(&path, b"x,y,name\n1,2,first\n3,4,second\n");
         path
+    }
+    #[test]
+    fn vrt_relative_flags_match_gdal_sourced_and_raw_band_rules() {
+        for (value, expected) in
+            [("true", true), ("yes", true), ("random", true), ("", true), ("0", false), ("OFF", false), ("false", false)]
+        {
+            let mut element = quick_xml::events::BytesStart::new("SourceFilename");
+            element.push_attribute(("relativeToVRT", value));
+            assert_eq!(relative_reference(&element, true), expected);
+        }
+        for (value, expected) in [
+            ("1", true),
+            ("true", false),
+            ("TRUE", false),
+            ("yes", false),
+            ("on", false),
+            ("0", false),
+            (" 1", true),
+            ("2", true),
+            ("01", true),
+            ("-1", true),
+        ] {
+            let mut element = quick_xml::events::BytesStart::new("SourceFilename");
+            element.push_attribute(("relativeToVRT", value));
+            assert_eq!(relative_reference(&element, false), expected, "{value}");
+        }
     }
     #[test]
     #[cfg(not(target_family = "wasm"))]

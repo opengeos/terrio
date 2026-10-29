@@ -7,6 +7,14 @@ pub struct Args {
     /// Treat the warnings (a large image without overviews) as errors.
     #[arg(long)]
     strict: bool,
+    /// Validation rules: rio-cogeo compatibility or GDAL 3.13.
+    #[arg(long, default_value = "rio-cogeo", value_parser = ["rio-cogeo", "gdal"])]
+    profile: String,
+    /// In the GDAL profile, inspect every block's leaders, trailers and ordering.
+    /// Auto enables full checks locally and disables them for remote files.
+    /// Malformed XML or GDAL metadata exceeding 4 MiB returns an error instead of a verdict.
+    #[arg(long, default_value = "auto", value_parser = ["auto", "yes", "no"])]
+    full_check: String,
     /// Print the result as JSON: validity, errors, warnings, IFD and data offsets, overview
     /// factors, GDAL's structural metadata and layout notes.
     #[arg(long)]
@@ -14,7 +22,16 @@ pub struct Args {
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
-    let v = super::quiet(|| terrio::validate_cog(&a.input, a.strict))?;
+    let options = terrio::CogValidationOptions {
+        strict: a.strict,
+        profile: if a.profile == "gdal" { terrio::CogValidationProfile::Gdal } else { terrio::CogValidationProfile::RioCogeo },
+        full_check: match a.full_check.as_str() {
+            "yes" => Some(true),
+            "no" => Some(false),
+            _ => None,
+        },
+    };
+    let v = super::quiet(|| terrio::validate_cog_with_options(&a.input, &options))?;
     if a.json {
         let report = serde_json::json!({
             "valid": v.is_valid,
