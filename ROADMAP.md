@@ -105,13 +105,15 @@ commands. Command-group progress:
       JavaScript. Landed in [#375](https://github.com/opengeos/terrio/pull/375);
       real-data GDAL comparisons are registered as `identify`.
 
-- [ ] Dataset file management: encoded copies, renames and deletion of owned companions,
+- [x] Dataset file management: encoded copies, renames and deletion of owned companions,
       with staged replacement and source alias protection through Rust, CLI/MCP, Python and
-      WebAssembly. Real Landsat and Natural Earth comparisons are registered as `dataset-files`.
+      WebAssembly. Landed in [#382](https://github.com/opengeos/terrio/pull/382);
+      real Landsat and Natural Earth comparisons are registered as `dataset-files`.
 
-- [ ] Parquet metadata aggregation: explicit compatible partitions, relative column paths,
+- [x] Parquet metadata aggregation: explicit compatible partitions, relative column paths,
       merged GeoParquet metadata and overwrite guards through Rust, CLI/MCP, Python and
-      JavaScript. Proposed in [#383](https://github.com/opengeos/terrio/pull/383); real-data
+      JavaScript. Landed in [#382](https://github.com/opengeos/terrio/pull/382), including
+      [#383](https://github.com/opengeos/terrio/pull/383); real-data
       and measured S3 range-read comparisons are registered as `parquet-metadata`.
 
 - [x] Dataset content checks: all exposed raster bands, vector layers, numeric scientific
