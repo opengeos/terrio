@@ -807,8 +807,12 @@ def suite_identify(ctx):
 def suite_cog_validate(ctx):
     suite = Suite("cog-validate", "Cloud Optimized GeoTIFF validation", "`gdal driver cog validate` (GDAL 3.13.3)",
                   "Real Landsat/DEM COGs, pixel/band/tile interleave, classic/BigTIFF, corrupt leaders/trailers, striped TIFFs and external overviews. Full checks on/off: exact validity, exit status, error/warning counts, IFD and first-block offsets. Diagnostic wording is not compared; no pixel decoding is performed.")
-    if missing_modules("osgeo", "numpy"):
-        suite.skipped = "needs osgeo and numpy"
+    try:
+        missing = missing_modules("osgeo", "numpy", "osgeo_utils.samples.validate_cloud_optimized_geotiff")
+    except (ImportError, ModuleNotFoundError):
+        missing = ["osgeo_utils.samples.validate_cloud_optimized_geotiff"]
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
         return suite
     if shutil.which("gdal") is None or run(["gdal", "driver", "cog", "validate", "--help"])[0] != 0:
         suite.skipped = "needs a GDAL release with the gdal driver cog validate command"
@@ -827,8 +831,8 @@ def suite_cog_validate(ctx):
         return suite
     for result in results:
         suite.cases.append(Case("COG validation", result["name"], IDENTICAL if result["status"] == "identical" else DIFFERS, result["detail"]))
-    if len(results) != 40:
-        suite.cases.append(Case("COG validation", "case count", DIFFERS, f"expected 40 results, got {len(results)}"))
+    if len(results) != 44:
+        suite.cases.append(Case("COG validation", "case count", DIFFERS, f"expected 44 results, got {len(results)}"))
     if code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out)
     return suite

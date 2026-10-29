@@ -60,7 +60,8 @@ pub struct CogValidation {
     /// The offsets of the IFDs of the full-resolution image, then of each overview.
     pub ifd_offsets: Vec<u64>,
     /// The offsets of the first block of the full-resolution image, then of each overview, as
-    /// rio-cogeo finds them (images without a stored block are left out).
+    /// rio-cogeo finds them (images without a stored block are left out). The GDAL
+    /// profile records 0 for images with no stored block.
     pub data_offsets: Vec<u64>,
     /// The overview decimation factors, as rasterio reports them (`round(width / overview width)`).
     pub overview_factors: Vec<usize>,
@@ -685,6 +686,8 @@ fn full_check<R: Read + Seek>(reader: &mut R, tiff: &Tiff, errors: &mut Vec<Stri
                 }
             }
         }
+        // GDAL full_check_band checks internal masks separately with the same
+        // block promises, even without MASK_INTERLEAVED_WITH_IMAGERY.
         if let Some(mask) = mask {
             let expected = mask.grid().0.checked_mul(mask.grid().1).ok_or_else(|| invalid("mask block grid overflows"))?;
             if expected != mask.offsets.len() as u64 || expected != mask.byte_counts.len() as u64 {

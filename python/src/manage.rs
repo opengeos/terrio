@@ -30,6 +30,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 ///     strict: Treat warnings as errors.
 ///     profile: "rio-cogeo" (the default) or "gdal" for GDAL 3.13 structural rules.
 ///     full_check: With profile="gdal", inspect every block's structural promises.
+///         Malformed XML or GDAL metadata exceeding 4 MiB raises an exception instead of returning a verdict.
 ///         None enables full checks for local paths and bytes, and disables them for URLs.
 ///
 /// Returns:

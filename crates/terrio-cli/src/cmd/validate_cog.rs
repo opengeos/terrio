@@ -12,6 +12,7 @@ pub struct Args {
     profile: String,
     /// In the GDAL profile, inspect every block's leaders, trailers and ordering.
     /// Auto enables full checks locally and disables them for remote files.
+    /// Malformed XML or GDAL metadata exceeding 4 MiB returns an error instead of a verdict.
     #[arg(long, default_value = "auto", value_parser = ["auto", "yes", "no"])]
     full_check: String,
     /// Print the result as JSON: validity, errors, warnings, IFD and data offsets, overview

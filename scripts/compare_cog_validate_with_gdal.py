@@ -46,11 +46,34 @@ def main():
             path = root / ('mask-'+interleave+'.tif')
             gdal.Translate(str(path), str(masked), format='COG', creationOptions=['COMPRESS=DEFLATE', 'BLOCKSIZE=128', 'INTERLEAVE='+interleave])
             cases.append(('internal-mask-'+interleave, path))
+        # Masks retain block leader/trailer/order promises even when they are
+        # not declared interleaved with imagery (GDAL checks masks separately).
+        original_mask = root / 'mask-PIXEL.tif'
+        raw_mask = original_mask.read_bytes()
+        flag = b'MASK_INTERLEAVED_WITH_IMAGERY=YES'
+        assert flag in raw_mask[:16384]
+        raw_mask = raw_mask.replace(flag, b'MASK_INTERLEAVED_WITH_IMAGERY=NO ', 1)
+        separate = root / 'noninterleaved-mask.tif'
+        separate.write_bytes(raw_mask)
+        dataset = gdal.Open(str(separate))
+        mask_band = dataset.GetRasterBand(1).GetMaskBand()
+        mask_offset = int(mask_band.GetMetadataItem('BLOCK_OFFSET_0_0', 'TIFF'))
+        mask_size = int(mask_band.GetMetadataItem('BLOCK_SIZE_0_0', 'TIFF'))
+        mask_band = None
+        dataset = None
+        cases.append(('noninterleaved-mask', separate))
+        damaged = bytearray(raw_mask)
+        damaged[mask_offset + mask_size] ^= 1
+        bad_mask = root / 'noninterleaved-mask-bad-trailer.tif'
+        bad_mask.write_bytes(damaged)
+        cases.append(('noninterleaved-mask-bad-trailer', bad_mask))
         ds = gdal.Open(str(base))
         band = ds.GetRasterBand(1)
         offset = int(band.GetMetadataItem('BLOCK_OFFSET_0_0', 'TIFF'))
         count = int(band.GetMetadataItem('BLOCK_SIZE_0_0', 'TIFF'))
         raw = base.read_bytes()
+        assert b'BLOCK_LEADER=SIZE_AS_UINT4' in raw[:16384]
+        assert b'BLOCK_TRAILER=LAST_4_BYTES_REPEATED' in raw[:16384]
         ds = None
         for name, position in [('bad-leader', offset-4), ('bad-trailer', offset+count)]:
             damaged = bytearray(raw)
@@ -73,6 +96,12 @@ def main():
             for full in [False, True]:
                 try:
                     warnings, errors, details = validate(str(path), full_check=full)
+                    if name in ('bad-leader', 'bad-trailer', 'noninterleaved-mask-bad-trailer'):
+                        assert bool(errors) == full, (name, full, errors)
+                    if name == 'noninterleaved-mask-bad-trailer' and full:
+                        assert any('mask' in error.lower() for error in errors), errors
+                    if name == 'noninterleaved-mask':
+                        assert not errors, errors
                     command = [args.terrio, 'validate-cog', str(path), '--profile', 'gdal', '--full-check', 'yes' if full else 'no', '--json']
                     process = subprocess.run(command, capture_output=True, text=True)
                     report = json.loads(process.stdout)
