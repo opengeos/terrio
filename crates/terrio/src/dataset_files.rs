@@ -356,10 +356,9 @@ fn mapped(path: &str, source: &str, target: &str) -> Result<String> {
     }
     let full_suffix = name.strip_prefix(&old).is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(['.', '_']));
     let (prefix, replacement) = if full_suffix { (old.as_str(), new.as_str()) } else { (stem(&old), stem(&new)) };
-    let suffix = name
-        .strip_prefix(prefix)
-        .filter(|s| s.is_empty() || s.starts_with(['.', '_']))
-        .ok_or_else(|| invalid("unable to copy/rename fileset with irregular basenames"))?;
+    let suffix = name.strip_prefix(prefix).filter(|s| s.is_empty() || s.starts_with(['.', '_'])).ok_or_else(|| {
+        invalid(format!("unable to copy/rename fileset with irregular basenames: '{name}' does not start with '{prefix}'"))
+    })?;
     location::sibling(target, &format!("{replacement}{suffix}"))
 }
 /// SourceFilename text is XML character data, including CDATA and character references.
@@ -707,8 +706,13 @@ fn rewrite(path: &str, names: &HashMap<location::NameKey, String>, driver: &str)
     }
     Ok(None)
 }
+fn remove_owned(path: &str) -> Result<vsi::Report> {
+    // Recursion on object stores deletes a prefix, not the exact object.
+    let directory = vsi::stat(path)?.is_some_and(|entry| entry.is_dir());
+    vsi::delete(path, directory)
+}
 fn cleanup<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
-    paths.filter(|path| vsi::delete(path, true).is_err()).map(str::to_owned).collect()
+    paths.filter(|path| remove_owned(path).is_err()).map(str::to_owned).collect()
 }
 fn backup_to(source: &str, staged: &str, recovery: &mut Vec<String>) -> Result<()> {
     if let Err(error) = location::rename(source, staged) {
@@ -732,7 +736,7 @@ fn rollback(items: &mut [Item], backups: &[Backup], rename: bool) -> Vec<String>
                 let result = if rename && !item.copy_dependency && item.original.is_none() {
                     location::rename(current, &item.source)
                 } else {
-                    vsi::delete(current, true)
+                    remove_owned(current)
                 };
                 if result.is_err() {
                     failed.push(vsi::listing::redact_url(current).into_owned());
