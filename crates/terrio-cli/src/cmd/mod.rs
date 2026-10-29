@@ -22,6 +22,7 @@ pub mod mosaic;
 pub mod multidim;
 pub mod neighbors;
 pub mod overviews;
+pub mod parquet_metadata;
 
 pub mod pansharpen;
 pub mod pixel;

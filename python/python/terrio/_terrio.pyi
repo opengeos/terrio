@@ -19,6 +19,7 @@ __all__ = [
     "validate_cog",
     "identify",
     "dataset_copy",
+    "parquet_create_metadata",
     "dataset_delete",
     "dataset_files",
     "dataset_rename",
@@ -1891,3 +1892,9 @@ def dataset_rename(
 def dataset_delete(
     sources: str | os.PathLike[str] | Iterable[str | os.PathLike[str]], *, format: str | None = None
 ) -> list[dict[str, Any]]: ...
+def parquet_create_metadata(
+    inputs: Sequence[str | os.PathLike[str]],
+    output: str | os.PathLike[str],
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]: ...

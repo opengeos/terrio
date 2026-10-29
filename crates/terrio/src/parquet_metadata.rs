@@ -108,7 +108,7 @@ mod enabled {
             }
         }
         let dimensions = values.len() / 2;
-        if (0..dimensions).any(|axis| values[axis].as_f64().unwrap() > values[axis + dimensions].as_f64().unwrap()) {
+        if (1..dimensions).any(|axis| values[axis].as_f64().unwrap() > values[axis + dimensions].as_f64().unwrap()) {
             return Err(invalid("inverted GeoParquet bbox"));
         }
         Ok(Some(values.clone()))
@@ -125,7 +125,10 @@ mod enabled {
             let mut kinds = BTreeSet::new();
             let mut unknown = false;
             for original in &originals {
-                let types = original.get("geometry_types").and_then(Value::as_array);
+                let types = original
+                    .get("geometry_types")
+                    .map(|value| value.as_array().ok_or_else(|| invalid("invalid geometry_types array")))
+                    .transpose()?;
                 if types.is_none_or(Vec::is_empty) {
                     unknown = true;
                 }
@@ -141,7 +144,13 @@ mod enabled {
                 continue;
             }
             let boxes: Vec<_> = boxes.into_iter().flatten().collect();
-            let dimensions = if boxes.iter().all(|bbox| bbox.len() == 6) { 3 } else { 2 };
+            let dimensions = boxes[0].len() / 2;
+            // A mixed-dimensional extent has no complete Z range. Wrapped longitude
+            // intervals also cannot be unioned with Cartesian min/max arithmetic.
+            // bbox is optional: retain all geometry metadata without inventing an extent.
+            if boxes.iter().any(|bbox| bbox.len() != dimensions * 2 || bbox[0].as_f64().unwrap() > bbox[bbox.len() / 2].as_f64().unwrap()) {
+                continue;
+            }
             let mut bbox: Vec<_> = (0..dimensions)
                 .map(|axis| boxes[0][axis].clone())
                 .chain((0..dimensions).map(|axis| boxes[0][axis + boxes[0].len() / 2].clone()))
@@ -170,14 +179,15 @@ mod enabled {
         if location::entry_exists(output)? && !options.overwrite {
             return Err(Error::InvalidArgument("metadata output exists; use overwrite to replace it".into()));
         }
-        let protected = location::OverlapIndex::new(inputs)?;
+        let mut protected = location::OverlapIndex::new(inputs)?;
         if protected.overlaps(output)? {
             return Err(Error::InvalidArgument("metadata output overlaps an input".into()));
         }
         let mut metadata = Vec::new();
+        let mut relatives = Vec::new();
         for input in inputs {
             // Establish a representable relative location before opening a footer.
-            location::relative_file(input, output)?;
+            relatives.push(location::relative_file(input, output)?);
             metadata.push(location::with_seekable(input, footer)?);
         }
         let first = metadata[0].file_metadata();
@@ -185,7 +195,8 @@ mod enabled {
         let mut maps = Vec::new();
         let mut row_groups = Vec::new();
         let mut rows = 0i64;
-        for (input, part) in inputs.iter().zip(&metadata) {
+        for ((input, part), relative) in inputs.iter().zip(&metadata).zip(&relatives) {
+            let mut references = std::collections::HashMap::new();
             let file = part.file_metadata();
             if first.schema().get_fields() != file.schema().get_fields() {
                 return Err(invalid("partition schemas differ"));
@@ -202,18 +213,18 @@ mod enabled {
                 part_rows = part_rows.checked_add(group.num_rows()).ok_or_else(|| invalid("row count overflows"))?;
                 let mut columns = Vec::new();
                 for column in group.columns() {
-                    let physical = match column.file_path().filter(|name| !name.is_empty()) {
-                        Some(reference) => location::resolve_file(input, reference)?,
-                        None => input.clone(),
+                    let relative = match column.file_path().filter(|name| !name.is_empty()) {
+                        Some(reference) => {
+                            if !references.contains_key(reference) {
+                                let physical = location::resolve_file(input, reference)?;
+                                protected.insert(&physical)?;
+                                references.insert(reference.to_owned(), location::relative_file(&physical, output)?);
+                            }
+                            &references[reference]
+                        }
+                        None => relative,
                     };
-                    columns.push(
-                        column
-                            .clone()
-                            .into_builder()
-                            .set_file_path(location::relative_file(&physical, output)?)
-                            .build()
-                            .map_err(invalid)?,
-                    );
+                    columns.push(column.clone().into_builder().set_file_path(relative.clone()).build().map_err(invalid)?);
                 }
                 row_groups.push(group.clone().into_builder().set_column_metadata(columns).build().map_err(invalid)?);
             }
@@ -273,6 +284,9 @@ mod enabled {
         let result = ParquetMetaData::new(file, row_groups);
         let mut bytes = b"PAR1".to_vec();
         ParquetMetaDataWriter::new(&mut bytes, &result).finish().map_err(invalid)?;
+        if protected.overlaps(output)? {
+            return Err(Error::InvalidArgument("metadata output overlaps a referenced partition".into()));
+        }
         drop(protected);
         vsi::write(output, &bytes)?;
         Ok(MetadataReport {
@@ -282,6 +296,69 @@ mod enabled {
             bytes: bytes.len() as u64,
             omitted_metadata_keys,
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn reads_header_and_footer_without_touching_data_pages() {
+            use std::io::{Cursor, Read, Seek};
+            use std::sync::Arc;
+            let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new("value", arrow_schema::DataType::Int32, false)]));
+            let batch =
+                arrow_array::RecordBatch::try_new(schema.clone(), vec![Arc::new(arrow_array::Int32Array::from(vec![1, 2, 3]))]).unwrap();
+            let mut writer = parquet::arrow::ArrowWriter::try_new(Vec::new(), schema, None).unwrap();
+            writer.write(&batch).unwrap();
+            let bytes = writer.into_inner().unwrap();
+            let length = u32::from_le_bytes(bytes[bytes.len() - 8..bytes.len() - 4].try_into().unwrap()) as usize;
+            struct Guard {
+                cursor: Cursor<Vec<u8>>,
+                footer_start: u64,
+            }
+            impl Read for Guard {
+                fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                    let pos = self.cursor.position();
+                    assert!((pos < 4 && pos + out.len() as u64 <= 4) || pos >= self.footer_start, "data pages read");
+                    self.cursor.read(out)
+                }
+            }
+            impl Seek for Guard {
+                fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+                    self.cursor.seek(pos)
+                }
+            }
+            let mut guard = Guard { footer_start: (bytes.len() - 8 - length) as u64, cursor: Cursor::new(bytes) };
+            assert_eq!(footer(&mut guard).unwrap().file_metadata().num_rows(), 3);
+        }
+        #[test]
+        fn geo_union_and_incompatible_crs() {
+            let a = serde_json::json!({"version":"1.1.0","primary_column":"geometry","columns":{"geometry":{"encoding":"WKB","geometry_types":["Point"],"bbox":[1,2,3,4]}}});
+            let mut b = a.clone();
+            b["columns"]["geometry"]["bbox"] = serde_json::json!([-2, 0, 8, 9]);
+            b["columns"]["geometry"]["geometry_types"] = serde_json::json!(["Polygon"]);
+            let merged = merge_geo(&[a.clone(), b.clone()]).unwrap();
+            assert_eq!(merged["columns"]["geometry"]["bbox"], serde_json::json!([-2, 0, 8, 9]));
+            assert_eq!(merged["columns"]["geometry"]["geometry_types"], serde_json::json!(["Point", "Polygon"]));
+            let mut mixed = b.clone();
+            mixed["columns"]["geometry"]["bbox"] = serde_json::json!([-2, 0, 1, 8, 9, 4]);
+            mixed["columns"]["geometry"]["geometry_types"] = serde_json::json!(["Point Z"]);
+            assert!(merge_geo(&[a.clone(), mixed]).unwrap()["columns"]["geometry"].get("bbox").is_none());
+            let mut wrapped = b.clone();
+            wrapped["columns"]["geometry"]["bbox"] = serde_json::json!([170, 0, -170, 9]);
+            assert!(merge_geo(&[a.clone(), wrapped]).unwrap()["columns"]["geometry"].get("bbox").is_none());
+            let mut unknown = b.clone();
+            unknown["columns"]["geometry"].as_object_mut().unwrap().remove("bbox");
+            unknown["columns"]["geometry"]["geometry_types"] = serde_json::json!([]);
+            let merged = merge_geo(&[a.clone(), unknown]).unwrap();
+            assert!(merged["columns"]["geometry"].get("bbox").is_none());
+            assert_eq!(merged["columns"]["geometry"]["geometry_types"], serde_json::json!([]));
+            b["columns"]["geometry"]["crs"] = Value::Null;
+            assert!(merge_geo(&[a.clone(), b.clone()]).is_err());
+            b["columns"]["geometry"].as_object_mut().unwrap().remove("crs");
+            b["columns"]["geometry"]["geometry_types"] = serde_json::json!("Point");
+            assert!(merge_geo(&[a, b]).is_err());
+        }
     }
 }
 
@@ -326,5 +403,29 @@ mod tests {
         assert!(create(&inputs, target, &MetadataOptions { overwrite: true }).is_err());
         assert_eq!(std::fs::read(&output).unwrap(), saved);
         assert!(create(&inputs, inputs[0].as_str(), &MetadataOptions { overwrite: true }).is_err());
+    }
+    #[test]
+    fn rebase_nested_memory_metadata_and_protect_referenced_partitions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("part.parquet");
+        partition(&path, "value");
+        let root = "/vsimem/parquet-core-rebase";
+        let input = format!("{root}/a.parquet");
+        let first = format!("{root}/nested/_metadata");
+        let output = format!("{root}/_metadata");
+        crate::vsi::write(&input, &std::fs::read(path).unwrap()).unwrap();
+        create(std::slice::from_ref(&input), &first, &MetadataOptions::default()).unwrap();
+        create(std::slice::from_ref(&first), &output, &MetadataOptions::default()).unwrap();
+        let bytes = crate::vsi::read(&output).unwrap();
+        let parsed = enabled_metadata(&bytes);
+        assert_eq!(parsed.row_group(0).column(0).file_path(), Some("a.parquet"));
+        let saved = crate::vsi::read(&input).unwrap();
+        assert!(create(&[first], &input, &MetadataOptions { overwrite: true }).is_err());
+        assert_eq!(crate::vsi::read(&input).unwrap(), saved);
+        crate::vsi::delete(root, true).unwrap();
+    }
+    fn enabled_metadata(bytes: &[u8]) -> parquet::file::metadata::ParquetMetaData {
+        let length = u32::from_le_bytes(bytes[bytes.len() - 8..bytes.len() - 4].try_into().unwrap()) as usize;
+        parquet::file::metadata::ParquetMetaDataReader::decode_metadata(&bytes[bytes.len() - 8 - length..bytes.len() - 8]).unwrap()
     }
 }
