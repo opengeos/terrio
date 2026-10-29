@@ -430,11 +430,12 @@ pub fn palette_to_rgb_lazy(source: &mut crate::LazyRaster, alpha: bool) -> Resul
 pub fn attach_palette_lazy(source: &mut crate::LazyRaster, table: &[[u8; 4]]) -> Result<crate::LazyRaster> {
     convert_with_mask(source, |dataset| attach_palette(dataset, table))
 }
-/// Checks native output replacement and canonical/hard-link aliases of known inputs.
+/// Checks supported output locations, replacement and native aliases of known inputs.
 #[cfg(not(target_family = "wasm"))]
 pub fn check_output(path: &str, sources: &[&str], overwrite: bool) -> Result<()> {
+    crate::dataset::ensure_writable_location(path)?;
     let output = std::path::Path::new(path);
-    if std::fs::symlink_metadata(output).is_ok() && !overwrite {
+    if (std::fs::symlink_metadata(output).is_ok() || crate::memfs::exists(output)) && !overwrite {
         return Err(invalid("output exists; enable overwrite to replace it"));
     }
     for source in sources {
@@ -543,6 +544,21 @@ pub fn attach_palette(source: &RasterDataset, table: &[[u8; 4]]) -> Result<Raste
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn memory_output_requires_overwrite_and_remote_outputs_are_refused() {
+        let path = "/vsimem/palette-output-guard.tif";
+        let p = std::path::Path::new(path);
+        crate::memfs::write(p, b"original").unwrap();
+        assert!(super::check_output(path, &[], false).unwrap_err().to_string().contains("output exists"));
+        assert!(super::check_output(path, &[], true).is_ok());
+        assert!(super::check_output(path, &[path], true).is_err());
+        assert_eq!(crate::memfs::read(p).unwrap(), b"original");
+        assert!(crate::memfs::remove_file(p));
+        for path in ["s3://bucket/output.tif", "https://example.com/output.tif"] {
+            assert!(super::check_output(path, &[], true).unwrap_err().to_string().contains("only local outputs"));
+        }
+    }
     use super::*;
     #[test]
     fn median_cut_and_diffusion_match_independent_gdal_3133_fixture() {

@@ -2095,7 +2095,9 @@ sample.
 `terrio rgb-to-palette INPUT OUTPUT` quantizes Byte RGB imagery with GDAL's
 median-cut palette generation and integer error diffusion. `--color-count 2..256`
 (default 256), `--bit-depth 5|8` (default 5), `--no-dither`, `--color-map FILE` and
-`--output-nodata INDEX` control generation/mapping. A color map can be an indexed
+`--output-nodata INDEX` control generation/mapping. Color count applies only to
+generated palettes; when `--color-map` supplies a table, that table determines
+the color count and `--color-count` is ignored. A color map can be an indexed
 raster, indexed GDAL/GRASS text, RGB GMT CPT (with a `# COLOR_MODEL = RGB` header) or QGIS QML/QLR file. RGB color
 interpretations select the channels when present; otherwise the first three
 bands are used. Shared RGB nodata excludes pixels from palette generation. If no shared RGB

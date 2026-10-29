@@ -126,7 +126,7 @@ def main():
                     result = {'error': str(exc)[-800:]}
                 result['name'] = f'expand {os.path.basename(source)} rgba={rgba}'
                 results.append(result)
-        # gdalattachpct behavior: replace a table, retaining pixel indices and nodata.
+        # Attach reference: SetRasterColorTable replaces the table in-process, retaining indices and nodata.
         try:
             if indexed_error:
                 raise RuntimeError(indexed_error)

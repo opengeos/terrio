@@ -886,7 +886,7 @@ def suite_palette(ctx):
         return suite
     return suite_json_ops(
         ctx, "palette", "compare_palette_with_gdal.py", "Palette conversion",
-        "`gdal raster rgb-to-palette`, `gdal_translate -expand`, `gdalattachpct`",
+        "`gdal raster rgb-to-palette`, `gdal_translate -expand`, GDAL SetRasterColorTable",
         "Landsat median cut and diffusion at 5/8 bits, supplied raster/text tables, "
         "nodata, masks, alpha, OPERA expansion and attachment: exact pixels, palettes, "
         "types, nodata, masks, CRS and georeferencing.", 1,
