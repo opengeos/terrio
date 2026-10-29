@@ -396,6 +396,12 @@ mod tests {
     #[test]
     fn the_command_line_is_well_formed() {
         // Clap's checks: unique argument names across flattened option groups, among others.
-        <super::Cli as clap::CommandFactory>::command().debug_assert();
+        // Use the production CLI worker's stack, including on Windows test threads.
+        std::thread::Builder::new()
+            .stack_size(super::STACK_SIZE)
+            .spawn(|| <super::Cli as clap::CommandFactory>::command().debug_assert())
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
