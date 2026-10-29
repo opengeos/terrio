@@ -804,7 +804,6 @@ def suite_identify(ctx):
     return suite
 
 
-
 def suite_cog_validate(ctx):
     suite = Suite("cog-validate", "Cloud Optimized GeoTIFF validation", "`gdal driver cog validate` (GDAL 3.13.3)",
                   "Real Landsat/DEM COGs, pixel/band/tile interleave, classic/BigTIFF, corrupt leaders/trailers, striped TIFFs and external overviews. Full checks on/off: exact validity, exit status, error/warning counts, IFD and first-block offsets. Diagnostic wording is not compared; no pixel decoding is performed.")

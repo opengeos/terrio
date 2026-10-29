@@ -584,19 +584,31 @@ fn full_check<R: Read + Seek>(reader: &mut R, tiff: &Tiff, errors: &mut Vec<Stri
         .iter()
         .enumerate()
         .filter(|(index, image)| *index == 0 || image.is_reduced() && !image.is_mask() && image.samples == main.samples)
-        .map(|(_, image)| image)
         .collect();
-    for (level, image) in images.iter().enumerate() {
+    // GDAL ScanDirectories assigns each mask to the first preceding, unmatched
+    // image with matching dimensions and band count. Positional mask indexing
+    // drifts when an unrelated reduced IFD was excluded from the overview list.
+    let mut masks = vec![None; images.len()];
+    for (mask_index, mask) in tiff.ifds.iter().enumerate().filter(|(_, i)| i.is_mask()) {
+        if mask.samples != 1 && mask.samples != main.samples {
+            continue;
+        }
+        if let Some((level, _)) = images.iter().enumerate().find(|(level, (image_index, image))| {
+            *image_index < mask_index
+                && masks[*level].is_none()
+                && mask.is_reduced() == image.is_reduced()
+                && mask.width == image.width
+                && mask.height == image.height
+        }) {
+            masks[level] = Some(mask);
+        }
+    }
+    for (level, (_, image)) in images.iter().enumerate() {
         if finding_limit(errors) {
             return Ok(());
         }
         let name = if level == 0 { "Main resolution image".to_string() } else { format!("Overview {}", level - 1) };
-        let mask = tiff
-            .ifds
-            .iter()
-            .filter(|i| i.is_mask() && i.is_reduced() == image.is_reduced())
-            .nth(if image.is_reduced() { level - 1 } else { 0 })
-            .filter(|i| i.width == image.width && i.height == image.height);
+        let mask = masks[level];
         let planes = if image.planar == 2 { image.samples } else { 1 };
         let blocks = image.grid().0.checked_mul(image.grid().1).ok_or_else(|| invalid("block grid overflows"))?;
         let expected = blocks.checked_mul(planes).ok_or_else(|| invalid("block count overflows"))?;
@@ -1238,6 +1250,32 @@ mod tests {
         let mut errors = Vec::new();
         full_check(&mut std::io::Cursor::new(vec![0; 100]), &tiff, &mut errors).unwrap();
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn unrelated_reduced_image_does_not_shift_overview_mask_assignment() {
+        let main = Ifd {
+            width: 4,
+            height: 1,
+            tile: Some((1, 1)),
+            samples: 1,
+            planar: 1,
+            offsets: vec![16, 20, 24, 28],
+            byte_counts: vec![1; 4],
+            ..Default::default()
+        };
+        let unrelated = Ifd { width: 2, samples: 2, subfile_type: 1, offsets: vec![32; 2], byte_counts: vec![1; 2], ..main.clone() };
+        let overview = Ifd { width: 1, subfile_type: 1, offsets: vec![40], byte_counts: vec![1], ..main.clone() };
+        let unrelated_mask = Ifd { width: 2, subfile_type: 5, offsets: vec![33, 34], byte_counts: vec![1; 2], ..main.clone() };
+        let mask = Ifd { subfile_type: 5, offsets: vec![45], ..overview.clone() };
+        let tiff = Tiff {
+            ifds: vec![main, unrelated, overview, unrelated_mask, mask],
+            ghost: Some("MASK_INTERLEAVED_WITH_IMAGERY=YES".into()),
+            expected_ifd_offset: 8,
+        };
+        let mut errors = Vec::new();
+        full_check(&mut std::io::Cursor::new(vec![0; 100]), &tiff, &mut errors).unwrap();
+        assert!(errors.iter().any(|e| e.contains("Mask of Overview 0") && e.contains("unexpected interleaved offset 45")), "{errors:?}");
     }
 
     #[test]

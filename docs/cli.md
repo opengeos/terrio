@@ -1124,7 +1124,9 @@ COG validation reads `GDAL_METADATA` only when full GDAL checks run. Full checks
 metadata XML parse errors and malformed attributes. Local files and byte uploads have no
 shared total boundary-read budget; work scales with the stored block arrays. Other VSI
 inputs use the conservative remote policy: automatic full checks are off, and explicit
-full checks use the 10,000-read budget.
+full checks use the 10,000-read budget. This includes ZIP members backed by local archives: the
+input is classified by its VSI location, even when resolution extracts it to a temporary
+file. This keeps archive validation policy independent of where the archive is stored.
 
 ## pixel-info
 
