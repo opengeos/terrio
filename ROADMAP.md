@@ -87,7 +87,8 @@ commands. Command-group progress:
 
 - [ ] GeoPackage repacking: encoded-record B-tree rebuilds, preserved rowids and SQL objects,
       auto-vacuum maps and journaled native replacement through Rust, CLI/MCP, Python and
-      JavaScript. Real-data comparisons are registered as `gpkg-repack`.
+      JavaScript. Proposed in [#384](https://github.com/opengeos/terrio/pull/384); real-data
+      comparisons are registered as `gpkg-repack`.
 
 ## 0.1: Foundations
 

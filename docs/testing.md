@@ -1167,7 +1167,7 @@ The suite checks all table records and SQL objects, rowids, text encoding, appli
 versions, auto-vacuum mode, page size, GDAL features/fields/CRS, and every raster pixel/mask.
 R-tree and application triggers are exercised after repacking. Cases include WITHOUT ROWID,
 expression/partial/collated indexes, 512/4096/65536-byte pages, both UTF-16 encodings, mixed
-vector/raster files, and active-WAL/truncated-input refusal. Physical layouts/sizes may differ.
+vector/raster files, and active/orphan-WAL and truncated-input refusal. Physical layouts/sizes may differ.
 
 `interrupted_repack_restores_truncated_pages` stops before/during/after database writes,
 checking exact recovery including truncated pages. Set `TERRIO_SQLITE_REFERENCE_PYTHON` to a

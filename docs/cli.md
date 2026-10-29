@@ -2143,8 +2143,8 @@ can differ from SQLite VACUUM; the operation does not promise byte-identical fil
 
 Native changes use SQLite-compatible exclusive locks and a synced rollback journal. Pages
 removed by truncation are journaled too, so an interrupted rewrite can be recovered by SQLite.
-A locked database or active WAL is refused; close/checkpoint the SQLite connection before
-retrying. Native symbolic-link paths, reserved/encrypted page bytes, remote and archive paths
+A locked database or nonempty WAL sidecar is refused; close/checkpoint the SQLite connection before
+retrying. Native symbolic-link paths, linked/special sidecars, reserved/encrypted page bytes, remote and archive paths
 are refused. This is storage maintenance, not a GeoPackage specification validator.
 
 Repacking scans and rewrites the complete database and currently uses memory proportional
