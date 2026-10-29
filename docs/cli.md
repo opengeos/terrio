@@ -672,7 +672,8 @@ change the command's success exit status, matching GDAL dataset identification.
 `--deep` permits existing raster/vector readers as a fallback for formats requiring
 companion files, such as an ENVI data file. The report marks those results with
 `deep: true`. A fallback reader can materialize formats without lazy metadata support.
-Archives require this fallback except for header-identifiable KMZ. Signatures beyond
+Archives require this fallback, except `.kmz` files: the ZIP header alone does not
+identify KMZ; that case also requires the filename hint. Signatures beyond
 the prefix can be missed. SQLite containers use `.gpkg`/`.mbtiles` filename hints as GDAL does, including
 SQLite files whose application ID is unset; this does not validate their tables.
 Text formats may need filename hints; raw SRTM HGT tiles
