@@ -209,10 +209,12 @@ fn invalid(msg: impl Into<String>) -> Error {
 /// recursive drop could overflow on deeply nested, untrusted metadata.
 fn tile_interleave(data: &[u8]) -> Result<bool> {
     use quick_xml::events::Event;
-    let text = String::from_utf8_lossy(data);
+    let text = std::str::from_utf8(data).map_err(|e| invalid(format!("GDAL metadata XML: {e}")))?;
     let mut reader = quick_xml::Reader::from_str(text.trim_end_matches('\0'));
     let mut depth = 0usize;
     let mut target = None;
+    let mut content = String::new();
+    let mut tile = false;
     loop {
         match reader.read_event() {
             Ok(Event::Start(element)) => {
@@ -220,30 +222,59 @@ fn tile_interleave(data: &[u8]) -> Result<bool> {
                 if depth > 128 {
                     return Err(invalid("GDAL metadata XML exceeds 128 nesting levels"));
                 }
-                if element.local_name().as_ref() == "Item" {
-                    let mut name = false;
-                    let mut domain = false;
-                    for attribute in element.attributes().flatten() {
-                        let value = attribute.normalized_value(quick_xml::XmlVersion::Implicit1_0).unwrap_or_default();
-                        match attribute.key.as_ref() {
-                            "name" => name = value == "INTERLEAVE",
-                            "domain" => domain = value == "IMAGE_STRUCTURE",
-                            _ => (),
-                        }
-                    }
-                    if name && domain {
-                        target = Some(depth);
+                let mut name = false;
+                let mut domain = false;
+                for attribute in element.attributes() {
+                    let attribute = attribute.map_err(|e| invalid(format!("GDAL metadata XML: {e}")))?;
+                    let value = attribute
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .map_err(|e| invalid(format!("GDAL metadata XML: {e}")))?;
+                    match attribute.key.as_ref() {
+                        "name" => name = value == "INTERLEAVE",
+                        "domain" => domain = value == "IMAGE_STRUCTURE",
+                        _ => (),
                     }
                 }
+                if element.local_name().as_ref() == "Item" && name && domain {
+                    target = Some(depth);
+                    content.clear();
+                }
             }
-            Ok(Event::Text(text)) if target == Some(depth) && text.xml10_content().trim() == "TILE" => return Ok(true),
+            Ok(Event::Empty(element)) => {
+                for attribute in element.attributes() {
+                    let attribute = attribute.map_err(|e| invalid(format!("GDAL metadata XML: {e}")))?;
+                    attribute
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .map_err(|e| invalid(format!("GDAL metadata XML: {e}")))?;
+                }
+            }
+            Ok(Event::Text(text)) if target == Some(depth) => content.push_str(&text.xml10_content()),
+            Ok(Event::CData(text)) if target == Some(depth) => content.push_str(&text.xml10_content()),
+            Ok(Event::GeneralRef(reference)) if target == Some(depth) => {
+                let value = reference
+                    .resolve_char_ref()
+                    .ok()
+                    .flatten()
+                    .or_else(|| match &*reference {
+                        "amp" => Some('&'),
+                        "lt" => Some('<'),
+                        "gt" => Some('>'),
+                        "quot" => Some('"'),
+                        "apos" => Some('\''),
+                        _ => None,
+                    })
+                    .ok_or_else(|| invalid("GDAL metadata XML: unresolved entity"))?;
+                content.push(value);
+            }
             Ok(Event::End(_)) => {
                 if target == Some(depth) {
+                    tile |= content.trim() == "TILE";
                     target = None;
                 }
-                depth = depth.saturating_sub(1);
+                depth = depth.checked_sub(1).ok_or_else(|| invalid("GDAL metadata XML: unmatched closing tag"))?;
             }
-            Ok(Event::Eof) | Err(_) => return Ok(false),
+            Ok(Event::Eof) => return if depth == 0 { Ok(tile) } else { Err(invalid("GDAL metadata XML: unclosed element")) },
+            Err(error) => return Err(invalid(format!("GDAL metadata XML: {error}"))),
             _ => (),
         }
     }
@@ -503,12 +534,10 @@ fn validate_reader<R: Read + Seek>(
     if options.full_check == Some(true) && options.profile != CogValidationProfile::Gdal {
         return Err(Error::InvalidArgument("full_check requires the gdal validation profile".into()));
     }
-    let tiff = read_tiff(reader, options.profile == CogValidationProfile::Gdal)?;
+    let full = options.profile == CogValidationProfile::Gdal && options.full_check.unwrap_or(local);
+    let tiff = read_tiff(reader, full)?;
     let mut full_errors = Vec::new();
-    if options.profile == CogValidationProfile::Gdal
-        && options.full_check.unwrap_or(local)
-        && let Some(tiff) = &tiff
-    {
+    if full && let Some(tiff) = &tiff {
         if local {
             full_check(reader, tiff, &mut full_errors)?;
         } else {
@@ -565,7 +594,9 @@ fn full_check<R: Read + Seek>(reader: &mut R, tiff: &Tiff, errors: &mut Vec<Stri
         let mask = tiff
             .ifds
             .iter()
-            .find(|i| i.is_mask() && i.is_reduced() == image.is_reduced() && i.width == image.width && i.height == image.height);
+            .filter(|i| i.is_mask() && i.is_reduced() == image.is_reduced())
+            .nth(if image.is_reduced() { level - 1 } else { 0 })
+            .filter(|i| i.width == image.width && i.height == image.height);
         let planes = if image.planar == 2 { image.samples } else { 1 };
         let blocks = image.grid().0.checked_mul(image.grid().1).ok_or_else(|| invalid("block grid overflows"))?;
         let expected = blocks.checked_mul(planes).ok_or_else(|| invalid("block count overflows"))?;
@@ -616,6 +647,11 @@ fn full_check<R: Read + Seek>(reader: &mut R, tiff: &Tiff, errors: &mut Vec<Stri
             }
         }
         if let Some(mask) = mask {
+            let expected = mask.grid().0.checked_mul(mask.grid().1).ok_or_else(|| invalid("mask block grid overflows"))?;
+            if expected != mask.offsets.len() as u64 || expected != mask.byte_counts.len() as u64 {
+                errors.push(format!("Mask band of {}: block offset/count arrays do not match the image grid", name.to_lowercase()));
+                continue;
+            }
             let mut last = 0;
             check_blocks(
                 reader,
@@ -979,7 +1015,7 @@ mod tests {
     /// A little-endian classic TIFF with one IFD at byte 8 of `(tag, type, count, value)`
     /// entries, followed by `data`, which starts at byte `10 + 12 * entries + 4`.
     fn crafted(entries: &[(u16, u16, u32, u32)], data: &[u8]) -> Vec<u8> {
-        let mut b = b"II* ".to_vec();
+        let mut b = b"II*\0".to_vec();
         b.extend(8u32.to_le_bytes());
         b.extend((entries.len() as u16).to_le_bytes());
         for (tag, typ, count, value) in entries {
@@ -1041,7 +1077,9 @@ mod tests {
         let large = crafted(&[(256, 4, 1, 1), (257, 4, 1, 1), (42112, 2, (1 << 22) + 1, 100)], &[]);
         assert!(validate_cog_bytes(&large, &Default::default()).is_ok());
         let options = CogValidationOptions { profile: CogValidationProfile::Gdal, full_check: Some(false), ..Default::default() };
-        assert!(validate_cog_bytes(&large, &options).unwrap_err().to_string().contains("4 MiB"));
+        assert!(validate_cog_bytes(&large, &options).is_ok());
+        let full = CogValidationOptions { full_check: Some(true), ..options };
+        assert!(validate_cog_bytes(&large, &full).unwrap_err().to_string().contains("4 MiB"));
         assert!(tile_interleave(br#"<GDALMetadata><Item name="INTERLEAVE" domain="IMAGE_STRUCTURE">TILE</Item></GDALMetadata>"#).unwrap());
         assert!(tile_interleave("<a>".repeat(100_000).as_bytes()).unwrap_err().to_string().contains("128 nesting"));
     }
@@ -1175,6 +1213,62 @@ mod tests {
         .unwrap();
         assert!(errors.is_empty(), "GDAL resets on the empty middle block: {errors:?}");
     }
+    #[test]
+    fn repeated_overview_sizes_pair_masks_by_sequence() {
+        let main = Ifd {
+            width: 4,
+            height: 1,
+            tile: Some((1, 1)),
+            samples: 1,
+            planar: 1,
+            offsets: vec![16, 20, 24, 28],
+            byte_counts: vec![1; 4],
+            ..Default::default()
+        };
+        let overview = Ifd { width: 1, height: 1, subfile_type: 1, offsets: vec![40], byte_counts: vec![1], ..main.clone() };
+        let second = Ifd { offsets: vec![80], ..overview.clone() };
+        let mask = Ifd { subfile_type: 4, offsets: vec![17, 21, 25, 29], ..main.clone() };
+        let first_mask = Ifd { subfile_type: 5, offsets: vec![41], ..overview.clone() };
+        let second_mask = Ifd { offsets: vec![81], ..first_mask.clone() };
+        let tiff = Tiff {
+            ifds: vec![main, overview, second, mask, first_mask, second_mask],
+            ghost: Some("MASK_INTERLEAVED_WITH_IMAGERY=YES".into()),
+            expected_ifd_offset: 8,
+        };
+        let mut errors = Vec::new();
+        full_check(&mut std::io::Cursor::new(vec![0; 100]), &tiff, &mut errors).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn full_check_rejects_truncated_mask_block_arrays() {
+        let main = Ifd {
+            width: 1,
+            height: 1,
+            tile: Some((1, 1)),
+            samples: 1,
+            planar: 1,
+            offsets: vec![16],
+            byte_counts: vec![1],
+            ..Default::default()
+        };
+        let mask = Ifd { subfile_type: 4, offsets: vec![], byte_counts: vec![], ..main.clone() };
+        let tiff = Tiff { ifds: vec![main, mask], ghost: Some("MASK_INTERLEAVED_WITH_IMAGERY=YES".into()), expected_ifd_offset: 8 };
+        let mut errors = Vec::new();
+        full_check(&mut std::io::Cursor::new(vec![0; 32]), &tiff, &mut errors).unwrap();
+        assert!(errors.iter().any(|e| e.to_ascii_lowercase().contains("mask") && e.contains("arrays")), "{errors:?}");
+    }
+
+    #[test]
+    fn full_metadata_rejects_malformed_xml_after_a_valid_item() {
+        let xml = br#"<GDALMetadata><Item name="INTERLEAVE" domain="IMAGE_STRUCTURE">TILE</Item></GDALMetadata><broken"#;
+        assert!(tile_interleave(xml).is_err());
+        assert!(tile_interleave(br#"<GDALMetadata><Item bad></Item></GDALMetadata>"#).is_err());
+        assert!(
+            tile_interleave(br#"<GDALMetadata><Item name="INTERLEAVE" domain="IMAGE_STRUCTURE">TI&#76;E</Item></GDALMetadata>"#).unwrap()
+        );
+    }
+
     #[test]
     fn local_full_checks_read_only_boundary_bytes_without_buffer_refills() {
         struct Measured {

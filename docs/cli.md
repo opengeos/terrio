@@ -1064,12 +1064,18 @@ header/table reads and configured HTTP retries); download larger files to valida
 their full layout locally.
 Full block validation stops at 1,000 findings and reports the limit; remaining
 blocks need not be checked once the file is already invalid.
-The GDAL profile limits total parsed GDAL metadata to 4 MiB per file and XML nesting
-to 128 levels. The default rio-cogeo profile ignores this metadata tag.
+Full GDAL checks limit total parsed GDAL metadata to 4 MiB per file and XML nesting
+to 128 levels. Header-only checks and the default rio-cogeo profile ignore this metadata tag.
 
 ```sh
 terrio validate-cog dem.tif --profile gdal --full-check yes --json
 ```
+
+COG validation reads `GDAL_METADATA` only when full GDAL checks run. Full checks reject
+metadata XML parse errors and malformed attributes. Local files and byte uploads have no
+shared total boundary-read budget; work scales with the stored block arrays. Other VSI
+inputs use the conservative remote policy: automatic full checks are off, and explicit
+full checks use the 10,000-read budget.
 
 ## pixel-info
 
