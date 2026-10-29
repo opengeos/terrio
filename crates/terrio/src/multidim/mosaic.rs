@@ -217,7 +217,7 @@ fn axis(inputs: &[(usize, Dimension, Option<Array>)]) -> Result<Axis> {
         (0..length).map(|i| origin.advance(step, integer_step, i)).collect::<Result<Vec<_>>>()?
     } else {
         let direction = step.unwrap_or(1.).signum();
-        if direction == 0. || vectors.iter().any(|v| v.windows(2).any(|w| w[1].distance(w[0]) * direction <= 0.)) {
+        if vectors.iter().any(|v| v.windows(2).any(|w| w[1].distance(w[0]) * direction <= 0.)) {
             return Err(bad("indexing variables must be strictly monotonic in one direction"));
         }
         let mut values: Vec<_> = vectors.iter().flatten().copied().collect();
@@ -293,14 +293,17 @@ impl MosaicSource {
                 continue;
             }
             let buffer = view.read()?;
-            for flat in 0..elements(&counts)? {
+            // A selected source hyperslab is contiguous in its returned buffer,
+            // including strided views. Copy its innermost rows as byte runs.
+            let run = counts.last().copied().unwrap_or(1);
+            for flat in (0..elements(&counts)?).step_by(run) {
                 let mut remainder = flat;
                 let mut target = 0;
                 for axis in (0..counts.len()).rev() {
                     target += (origins[axis] + remainder % counts[axis]) * output_strides[axis];
                     remainder /= counts[axis];
                 }
-                output[target * size..(target + 1) * size].copy_from_slice(&buffer.bytes[flat * size..(flat + 1) * size]);
+                output[target * size..(target + run) * size].copy_from_slice(&buffer.bytes[flat * size..(flat + run) * size]);
             }
         }
         Ok(output)
@@ -387,8 +390,9 @@ fn same_coordinate_metadata(a: &Array, b: &Array) -> bool {
     fn relevant(array: &Array) -> Value {
         let mut attributes = array.info.attributes.clone();
         if let Some(attributes) = attributes.as_object_mut() {
-            attributes.remove("actual_range");
-            attributes.remove("_FillValue");
+            for name in ["actual_range", "_FillValue", "comment", "history", "long_name", "source", "references"] {
+                attributes.remove(name);
+            }
         }
         attributes
     }
@@ -806,6 +810,19 @@ mod tests {
         assert_eq!(out.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 2, -9999, -9999, 3, 4]));
         assert!(out.array("x").unwrap().info.attributes.get("actual_range").is_none());
         assert!(out.array("v").unwrap().info.attributes.get("actual_range").is_none());
+    }
+    #[test]
+    fn descriptive_coordinate_attributes_can_differ_but_validity_must_match() {
+        let mut a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        let mut b = dataset(&[("y", &[0]), ("x", &[2, 3])], &[3, 4]);
+        a.root.arrays[1].info.attributes = json!({"comment":"west", "history":"first"});
+        b.root.arrays[1].info.attributes = json!({"comment":"east", "history":"second"});
+        let out = mosaic(&[a.clone(), b.clone()], &Default::default()).unwrap();
+        assert_eq!(out.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 2, 3, 4]));
+        assert_eq!(out.array("x").unwrap().info.attributes["comment"], json!("west"));
+        a.root.arrays[1].info.attributes["valid_min"] = json!(0);
+        b.root.arrays[1].info.attributes["valid_min"] = json!(2);
+        assert!(mosaic(&[a, b], &Default::default()).is_err());
     }
     #[test]
     fn extended_cf_grid_mapping_syntax_keeps_each_scalar_mapping() {
