@@ -99,6 +99,11 @@ commands. Command-group progress:
       with staged replacement and source alias protection through Rust, CLI/MCP, Python and
       WebAssembly. Real Landsat and Natural Earth comparisons are registered as `dataset-files`.
 
+- [ ] Parquet metadata aggregation: explicit compatible partitions, relative column paths,
+      merged GeoParquet metadata and overwrite guards through Rust, CLI/MCP, Python and
+      JavaScript. Proposed in [#383](https://github.com/opengeos/terrio/pull/383); real-data
+      and measured S3 range-read comparisons are registered as `parquet-metadata`.
+
 - [x] Dataset content checks: all exposed raster bands, vector layers, numeric scientific
       arrays and point records, with optional raster overviews and masks. Rust, CLI/MCP,
       Python and JavaScript share the checks. Landed in

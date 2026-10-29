@@ -2414,6 +2414,26 @@ test("dataset VRT references require explicit external scope permission", () => 
   } finally { terrio.vsiDelete(root, {recursive:true}); }
 });
 
+test("Parquet metadata aggregation on uploaded real partitions", { skip: !DATA || needs("parquet") }, () => {
+  const root = "/vsimem/js-parquet-metadata";
+  const input = readFileSync(join(DATA, "countries.parquet"));
+  terrio.vsiWrite(`${root}/a.parquet`, input);
+  terrio.vsiWrite(`${root}/b.parquet`, input);
+  try {
+    const report = terrio.parquetCreateMetadata([`${root}/a.parquet`, `${root}/b.parquet`], `${root}/_metadata`, {});
+    assert.equal(report.files, 2);
+    assert.equal(report.rows, 352);
+    assert.equal(report.row_groups, 2);
+    assert.equal(new TextDecoder().decode(terrio.vsiRead(`${root}/_metadata`).slice(0, 4)), "PAR1");
+    assert.throws(() => terrio.parquetCreateMetadata([`${root}/a.parquet`], `${root}/_metadata`, {}), /exists/);
+    assert.throws(() => terrio.parquetCreateMetadata([`${root}/_metadata`], `${root}/a.parquet`, { overwrite: true }), /overlap/);
+    assert.deepEqual(terrio.vsiRead(`${root}/a.parquet`), new Uint8Array(input));
+    assert.equal(terrio.parquetCreateMetadata([`${root}/a.parquet`], `${root}/_metadata`, { overwrite: true }).rows, 176);
+  } finally {
+    terrio.vsiDelete(root, { recursive: true });
+  }
+});
+
 test("checkDataset decodes all exposed uploaded content", () => {
   const raster = terrio.createRaster(null, {size: [4, 3], burn: [7], crs: "EPSG:4326", bbox: [0, 0, 4, 3]});
   const bytes = raster.toBytes("input.tif");

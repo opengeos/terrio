@@ -18,6 +18,7 @@ mod inspection;
 mod manage;
 mod multidim;
 mod ops;
+mod parquet_metadata;
 mod pixel;
 #[cfg(feature = "pointcloud")]
 mod pointcloud;
