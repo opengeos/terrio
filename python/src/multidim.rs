@@ -23,6 +23,12 @@ pub struct PyMdDataset {
 }
 #[pymethods]
 impl PyMdDataset {
+    /// Reads every numeric array and coordinate; unsupported arrays fail explicitly.
+    fn check<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let dataset = self.inner.clone();
+        let summary = crate::with_warnings(py, || terrio::check::check_multidim(&dataset))?;
+        json(py, &summary)
+    }
     /// Complete metadata, without reading coordinate or data array payloads.
     fn info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json(py, &self.inner)

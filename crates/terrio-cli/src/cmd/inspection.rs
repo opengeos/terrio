@@ -48,3 +48,32 @@ pub fn identify(args: IdentifyArgs) -> terrio::Result<()> {
     }
     Ok(())
 }
+
+#[derive(clap::Args)]
+pub struct CheckArgs {
+    /// Input dataset; all exposed bands, layers or numeric arrays are read.
+    input: String,
+    /// Also read raster overviews.
+    #[arg(long)]
+    overviews: bool,
+    /// Also read dataset masks at each checked raster level.
+    #[arg(long)]
+    masks: bool,
+    /// Print successful content counts as JSON. Decode errors exit with status 1.
+    #[arg(long)]
+    json: bool,
+}
+
+pub fn check(args: CheckArgs) -> terrio::Result<()> {
+    let options = terrio::check::CheckOptions { overviews: args.overviews, masks: args.masks };
+    let summary = super::quiet(|| terrio::check::check_path(&args.input, &options))?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&summary).map_err(|error| terrio::Error::InvalidData(error.to_string()))?);
+    } else {
+        println!(
+            "Dataset is readable: {} raster samples, {} features, {} array elements, {} points",
+            summary.raster_samples, summary.features, summary.array_elements, summary.points
+        );
+    }
+    Ok(())
+}

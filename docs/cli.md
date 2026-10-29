@@ -4,6 +4,7 @@
 terrio <COMMAND>
 
   identify        Identify dataset formats from bounded headers
+  check           Read dataset content and report decoding failures
   info            Summarize a raster, vector dataset or point cloud
   convert         Convert a dataset to another format, optionally reprojecting it
   concat          Concatenate vector layers and datasets (like gdal vector concat and ogrmerge.py)
@@ -690,6 +691,51 @@ instead of native scan options. JavaScript exposes `identify(uint8Array, filenam
 or `identify({bytes, filename})`, returning format metadata or `null`. Only the first
 16 KiB of JavaScript input is copied into WASM. Uploaded bytes do not use the deeper
 native reader fallback.
+
+## check
+
+```sh
+terrio check scene.tif --json
+terrio check scene.tif --overviews --masks --json
+terrio check countries.gpkg
+terrio check scientific.nc
+```
+
+Reads every exposed base-resolution raster band, vector layer or numeric
+scientific array. Successful checks exit with status 0 and report content counts;
+reader errors exit with status 1. JSON reports contain `raster_samples`,
+`raster_windows`, `mask_samples`, `layers`, `features`, `arrays`, `array_elements`
+and `points`. Errors use the usual CLI diagnostic instead of a success report.
+MCP exposes `check` as a read-only tool.
+
+The default matches `gdal dataset check`'s base-band scope. `--overviews` also reads
+the exposed raster pyramid; `--masks` reads per-dataset masks at every checked
+level. These options do not request generated alpha/nodata masks. GeoPackage roots
+include every exposed feature layer and raster table; explicit subdataset names
+check the selected raster. Scientific roots include coordinates, scalar arrays
+and nested groups; unsupported array types fail explicitly. Point-cloud builds
+also read all exposed point records.
+
+Lazy raster readers use two-dimensional value windows of about 8 MiB, aligned to
+source blocks when they fit. Very wide images do not require a whole tile row in
+memory. Scientific arrays use bounded hyperslabs and stream-capable vector readers
+use batches. Input storage, codec working buffers and readers without lazy support
+retain their existing memory behavior. Checking all content can require reading
+the entire source, including remote data. Identification alone remains a separate
+bounded-header operation.
+
+A successful check establishes that the reader reported no errors, not that the
+file matches its original bytes. Valid-valued mutations and corruption tolerated
+by a driver can pass. GDAL 3.13.3 and Terrio both accept the malformed GeoPackage
+geometry-blob fixture in the conformance suite; the damaged compressed TIFF and
+truncated GeoJSON fixtures fail in both.
+
+Python exposes `terrio.check_dataset(path_or_bytes, filename=None,
+overviews=False, masks=False)`, returning counts or raising a reader exception.
+`filename` is an upload hint only. JavaScript exposes
+`checkDataset(uint8Array, filename, {overviews, masks})`; it owns the full upload
+for decoding. Native scientific handles also expose `MultidimDataset.check()`
+in Python and JavaScript, including JavaScript Zarr stores opened in memory.
 
 ## info
 

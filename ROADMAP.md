@@ -89,6 +89,10 @@ commands. Command-group progress:
       discovery and explicit companion-file reader fallback through Rust, CLI/MCP, Python and
       JavaScript. Real-data GDAL comparisons are registered as `identify`.
 
+- [ ] Dataset content checks: all exposed raster bands, vector layers, numeric scientific
+      arrays and point records, with optional raster overviews and masks. Rust, CLI/MCP,
+      Python and JavaScript share the checks; conformance is registered as `dataset-check`.
+
 ## 0.1: Foundations
 
 - [x] Data model: `Dataset`, raster `Band` with block access, vector `Layer` with `Feature`, field

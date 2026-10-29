@@ -784,6 +784,31 @@ def suite_pansharpen(ctx):
     )
 
 
+def suite_dataset_check(ctx):
+    suite = Suite("dataset-check", "Dataset content read checks", "`gdal dataset check` and GDAL all-level/mask reads (3.13.3)",
+                  "Real imagery, scientific arrays and vector files, plus derived grouped wind arrays and damaged compressed tiles/GeoJSON. Compare read success/failure status and all-level/mask sample counts, not checksums or pixel equality. A malformed GeoPackage geometry blob is accepted by both readers and is reported explicitly; successful reads cannot detect every mutation.")
+    if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None:
+        suite.skipped = "needs GDAL 3.13 commands/bindings and NumPy"
+        return suite
+    from osgeo import gdal
+
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13 for dataset check"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_check_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical": IDENTICAL, "not compared": NOT_COMPARED}
+    for result in results:
+        suite.cases.append(Case("Dataset content check", result["name"], statuses.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_identify(ctx):
     suite = Suite("identify", "Dataset identification", "`gdal dataset identify` / GDALIdentifyDriverEx (GDAL 3.13.3)",
                   "Real Landsat, USGS, OPERA, SRTM, NOAA scientific data and vector files, plus derived raster encodings. Exact driver labels; generic JP2, KML and HDF5 label families are reported within tolerance. Companion-file formats use the explicit deep fallback. Unknown inputs must remain unknown; no pixel/feature values are decoded by the bounded header path.")
@@ -1980,6 +2005,7 @@ SUITES = OrderedDict(
         ("raster-pixel", suite_raster_pixel),
         ("blend", suite_blend),
         ("identify", suite_identify),
+        ("dataset-check", suite_dataset_check),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),
