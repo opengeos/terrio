@@ -64,6 +64,151 @@ pub(crate) fn siblings(path: &str) -> Result<Vec<String>> {
         .map(|entry| child(&directory, &entry.name))
         .collect()
 }
+/// Identity for preflight name lookup. Leaf links remain distinct owned entries;
+/// ordinary paths normalize parent aliases and case through canonicalization.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct NameKey(Node);
+pub(crate) fn name_key(path: &str) -> Result<NameKey> {
+    let mut node = Node::parse(path)?;
+    if let Node::Local(path) = &mut node {
+        if std::fs::symlink_metadata(&path).is_ok_and(|meta| !meta.file_type().is_symlink())
+            && let Ok(canonical) = std::fs::canonicalize(&path)
+        {
+            *path = canonical;
+        } else {
+            let mut clean = PathBuf::new();
+            for component in std::path::absolute(&path)?.components() {
+                match component {
+                    Component::ParentDir => {
+                        clean.pop();
+                    }
+                    Component::CurDir => (),
+                    other => clean.push(other.as_os_str()),
+                }
+            }
+            *path = clean;
+        }
+    }
+    Ok(NameKey(node))
+}
+
+/// Preflight paths are stable until staging. Resolve native paths and file
+/// identities once; ordered sets answer ancestor/descendant queries by depth.
+#[derive(Default)]
+pub(crate) struct OverlapIndex {
+    native: std::collections::BTreeSet<PathBuf>,
+    virtuals: std::collections::BTreeSet<String>,
+    #[cfg(unix)]
+    identities: std::collections::HashSet<(u64, u64)>,
+    #[cfg(windows)]
+    identities: std::collections::HashSet<same_file::Handle>,
+}
+fn virtual_key(node: &Node) -> Option<String> {
+    match node {
+        Node::Mem(key) => Some(format!("mem:{key}")),
+        Node::S3 { bucket, key } => Some(format!("s3:{bucket}/{key}")),
+        Node::Url { base, .. } => Some(format!("url:{base}")),
+        _ => None,
+    }
+}
+fn overlap_path(path: &Path) -> Result<PathBuf> {
+    let resolved = absolute_path(path).ok_or_else(|| Error::InvalidArgument("cannot resolve dataset path".into()))?;
+    let mut clean = PathBuf::new();
+    for component in resolved.components() {
+        match component {
+            Component::ParentDir => {
+                clean.pop();
+            }
+            Component::CurDir => (),
+            other => clean.push(other.as_os_str()),
+        }
+    }
+    Ok(clean)
+}
+impl OverlapIndex {
+    pub(crate) fn new(paths: &[String]) -> Result<Self> {
+        let mut index = Self::default();
+        for path in paths {
+            index.insert(path)?;
+        }
+        Ok(index)
+    }
+    pub(crate) fn insert(&mut self, path: &str) -> Result<()> {
+        let node = Node::parse(path)?;
+        if let Node::Local(path) = &node {
+            self.native.insert(overlap_path(path)?);
+            #[cfg(unix)]
+            if let Ok(meta) = std::fs::metadata(path) {
+                use std::os::unix::fs::MetadataExt;
+                self.identities.insert((meta.dev(), meta.ino()));
+            }
+            #[cfg(windows)]
+            if let Ok(handle) = same_file::Handle::from_path(path) {
+                self.identities.insert(handle);
+            }
+        } else if let Some(key) = virtual_key(&node) {
+            self.virtuals.insert(key);
+        }
+        Ok(())
+    }
+    fn query(&self, path: &str, exclude_self: bool, descendants: bool) -> Result<bool> {
+        let node = Node::parse(path)?;
+        if let Node::Local(path) = &node {
+            let canonical = overlap_path(path)?;
+            if canonical.ancestors().skip(usize::from(exclude_self)).any(|parent| self.native.contains(parent)) {
+                return Ok(true);
+            }
+            let descendant = if exclude_self {
+                self.native.range((std::ops::Bound::Excluded(canonical.clone()), std::ops::Bound::Unbounded)).next()
+            } else {
+                self.native.range(canonical.clone()..).next()
+            };
+            if descendants && descendant.is_some_and(|child| child.starts_with(&canonical)) {
+                return Ok(true);
+            }
+            if !exclude_self {
+                #[cfg(unix)]
+                if let Ok(meta) = std::fs::metadata(path) {
+                    use std::os::unix::fs::MetadataExt;
+                    if self.identities.contains(&(meta.dev(), meta.ino())) {
+                        return Ok(true);
+                    }
+                }
+                #[cfg(windows)]
+                if let Ok(handle) = same_file::Handle::from_path(path)
+                    && self.identities.contains(&handle)
+                {
+                    return Ok(true);
+                }
+            }
+        } else if let Some(key) = virtual_key(&node) {
+            if !exclude_self && self.virtuals.contains(&key) {
+                return Ok(true);
+            }
+            let mut parent = key.as_str();
+            while let Some((next, _)) = parent.rsplit_once('/') {
+                if self.virtuals.contains(next) {
+                    return Ok(true);
+                }
+                parent = next;
+            }
+            let prefix = format!("{}/", key.trim_end_matches('/'));
+            if descendants && self.virtuals.range(prefix.clone()..).next().is_some_and(|child| child.starts_with(&prefix)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    pub(crate) fn overlaps(&self, path: &str) -> Result<bool> {
+        self.query(path, false, true)
+    }
+    pub(crate) fn contains_ancestor(&self, path: &str) -> Result<bool> {
+        self.query(path, false, false)
+    }
+    pub(crate) fn overlaps_other(&self, path: &str) -> Result<bool> {
+        self.query(path, true, true)
+    }
+}
 pub(crate) fn same_name(a: &str, b: &str) -> Result<bool> {
     let (a, b) = (Node::parse(a)?, Node::parse(b)?);
     if let (Node::Local(a), Node::Local(b)) = (&a, &b) {
@@ -94,16 +239,6 @@ pub(crate) fn same_name(a: &str, b: &str) -> Result<bool> {
     }
     // Query parameters can select different representations of one HTTP path.
     Ok(a == b)
-}
-pub(crate) fn overlaps(a: &str, b: &str) -> Result<bool> {
-    let (a_node, b_node) = (Node::parse(a)?, Node::parse(b)?);
-    #[cfg(windows)]
-    if let (Node::Local(a), Node::Local(b)) = (&a_node, &b_node)
-        && same_file::is_same_file(a, b).unwrap_or(false)
-    {
-        return Ok(true);
-    }
-    Ok(is_within(&a_node, &b_node) || is_within(&b_node, &a_node) || crate::ops::strips::overwrites(a, &[b.into()]))
 }
 pub(crate) fn check_remove(path: &str) -> Result<()> {
     let node = Node::parse(path)?;
@@ -184,6 +319,113 @@ pub(crate) fn prefix(path: &str, size: usize) -> Result<Vec<u8>> {
     }
 }
 
+/// A bounded cache of an archive member. Stored ZIP members are seeked directly;
+/// other members stream/discard preceding bytes, stopping at the requested block.
+/// Partial metadata reads do not validate a whole-member CRC.
+struct MemberReader {
+    node: Node,
+    len: u64,
+    pos: u64,
+    block_start: u64,
+    block: Vec<u8>,
+}
+impl MemberReader {
+    fn open(node: Node) -> Result<Self> {
+        let len = stat_node(&node)?
+            .filter(|stat| !stat.dir)
+            .and_then(|stat| stat.size)
+            .ok_or_else(|| Error::InvalidData("archive member has no file size".into()))?;
+        Ok(Self { node, len, pos: 0, block_start: 0, block: Vec::new() })
+    }
+    fn fetch(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        if let Node::Archive { archive, kind: ArchiveKind::Zip, inner } = &self.node {
+            let direct = with_archive_reader(archive, true, |reader| {
+                let index = zip_index(archive, reader)?;
+                let entry = index.by_name.get(inner).map(|&i| &index.entries[i]).ok_or_else(|| not_found(inner))?;
+                if entry.method != 0 {
+                    return Ok(None);
+                }
+                if entry.flags & 1 != 0 {
+                    return Err(Error::Unsupported("encrypted ZIP members are unsupported".into()));
+                }
+                if entry.compressed_size != entry.uncompressed_size {
+                    return Err(Error::InvalidData("stored ZIP member sizes differ".into()));
+                }
+                let start = zipdir::data_offset(reader, entry)?
+                    .checked_add(offset)
+                    .ok_or_else(|| Error::InvalidData("archive member offset overflows".into()))?;
+                reader.seek(std::io::SeekFrom::Start(start))?;
+                let mut bytes = vec![0; len];
+                reader.read_exact(&mut bytes)?;
+                Ok(Some(bytes))
+            })?;
+            if let Some(bytes) = direct {
+                return Ok(bytes);
+            }
+        }
+        struct Range {
+            skip: u64,
+            remaining: usize,
+            bytes: Vec<u8>,
+            stopped: bool,
+        }
+        impl Write for Range {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                let skip = self.skip.min(data.len() as u64) as usize;
+                self.skip -= skip as u64;
+                let n = self.remaining.min(data.len() - skip);
+                self.bytes.extend_from_slice(&data[skip..skip + n]);
+                self.remaining -= n;
+                if skip + n < data.len() {
+                    self.stopped = true;
+                    return Err(std::io::Error::other("archive range complete"));
+                }
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut range = Range { skip: offset, remaining: len, bytes: Vec::with_capacity(len), stopped: false };
+        let result = read_into(&self.node, &mut range);
+        if !range.stopped {
+            result?;
+        }
+        if range.skip != 0 || range.remaining != 0 {
+            return Err(Error::InvalidData("archive member ended before requested metadata".into()));
+        }
+        Ok(range.bytes)
+    }
+}
+impl Read for MemberReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if out.is_empty() || self.pos >= self.len {
+            return Ok(0);
+        }
+        if self.block.is_empty() || self.pos < self.block_start || self.pos - self.block_start >= self.block.len() as u64 {
+            self.block_start = self.pos / (16 << 10) * (16 << 10);
+            let len = (self.len - self.block_start).min(16 << 10) as usize;
+            self.block = self.fetch(self.block_start, len).map_err(std::io::Error::other)?;
+        }
+        let start = (self.pos - self.block_start) as usize;
+        let n = out.len().min(self.block.len() - start);
+        out[..n].copy_from_slice(&self.block[start..start + n]);
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+impl std::io::Seek for MemberReader {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        let pos = match from {
+            std::io::SeekFrom::Start(pos) => i128::from(pos),
+            std::io::SeekFrom::Current(offset) => i128::from(self.pos) + i128::from(offset),
+            std::io::SeekFrom::End(offset) => i128::from(self.len) + i128::from(offset),
+        };
+        self.pos = u64::try_from(pos).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid archive member seek"))?;
+        Ok(self.pos)
+    }
+}
+
 pub(crate) fn tiff_has_transform(path: &str) -> Result<bool> {
     fn read(reader: impl Read + std::io::Seek) -> Result<bool> {
         crate::geotiff::read_geo_tags_from(reader)
@@ -196,7 +438,7 @@ pub(crate) fn tiff_has_transform(path: &str) -> Result<bool> {
         Node::Mem(k) => read(std::io::Cursor::new(crate::memfs::read_shared(Path::new(&k))?)),
         #[cfg(remote)]
         Node::Url { .. } | Node::S3 { .. } => read(crate::http::RangeReader::open(&node.remote().unwrap())?),
-        Node::Archive { .. } => read(std::io::Cursor::new(super::read(path)?)),
+        Node::Archive { .. } => read(MemberReader::open(node)?),
         #[cfg(not(remote))]
         _ => Err(Error::Unsupported(remote_disabled_message())),
     }
@@ -256,4 +498,99 @@ pub(crate) fn copy(src: &str, dst: &str, directory: bool) -> Result<Report> {
         return Ok(Report { copied: 1, bytes, ..Default::default() });
     }
     super::copy(src, dst, &CopyOptions { recursive: directory, skip_errors: false })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Seek, SeekFrom};
+
+    #[test]
+    fn member_cache_handles_boundaries_backward_seeks_and_eof() {
+        let bytes: Vec<_> = (0..2_000_003usize).map(|i| (i % 251) as u8).collect();
+        for method in [zip::CompressionMethod::Stored, zip::CompressionMethod::Deflated] {
+            let _operation = Operation::new();
+            let path = format!("/vsimem/member-cache-{method:?}.zip");
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            zip.start_file("data.bin", zip::write::SimpleFileOptions::default().compression_method(method)).unwrap();
+            zip.write_all(&bytes).unwrap();
+            super::super::write(&path, zip.finish().unwrap().get_ref()).unwrap();
+            let mut member = MemberReader::open(Node::parse(&format!("/vsizip/{path}/data.bin")).unwrap()).unwrap();
+            for (offset, size) in [(16_380, 32), (1_700_003, 29), (3, 12), (1_999_990, 13)] {
+                member.seek(SeekFrom::Start(offset)).unwrap();
+                let mut out = vec![0; size];
+                member.read_exact(&mut out).unwrap();
+                assert_eq!(out, bytes[offset as usize..offset as usize + size]);
+                assert!(member.block.len() <= 16 << 10);
+            }
+            assert_eq!(member.read(&mut [0; 1]).unwrap(), 0);
+            assert_eq!(member.seek(SeekFrom::End(-3)).unwrap(), bytes.len() as u64 - 3);
+            let mut tail = Vec::new();
+            member.read_to_end(&mut tail).unwrap();
+            assert_eq!(tail, bytes[bytes.len() - 3..]);
+            assert!(member.seek(SeekFrom::Current(-3_000_000)).is_err());
+            super::super::delete(&path, false).unwrap();
+        }
+    }
+
+    #[test]
+    fn virtual_overlap_queries_preserve_roots_queries_and_name_boundaries() {
+        let inputs = vec![
+            "/vsimem/tiles/a.tif".into(),
+            "/vsimem/store.zarr".into(),
+            "https://example.invalid/data.tif?version=one".into(),
+            "s3://bucket/prefix/data.tif".into(),
+        ];
+        let index = OverlapIndex::new(&inputs).unwrap();
+        for path in [
+            "/vsimem/tiles",
+            "/vsimem/store.zarr/chunk",
+            "/vsimem/store.zarr",
+            "https://example.invalid/data.tif?version=two",
+            "s3://bucket/prefix",
+        ] {
+            assert!(index.overlaps(path).unwrap(), "{path}");
+        }
+        for path in ["/vsimem/tiles/a.tif2", "/vsimem/store.zarr2", "https://elsewhere.invalid/data.tif", "s3://other/prefix"] {
+            assert!(!index.overlaps(path).unwrap(), "{path}");
+        }
+        assert!(!index.overlaps_other("/vsimem/store.zarr").unwrap());
+        assert!(index.overlaps_other("/vsimem/tiles").unwrap());
+        assert_ne!(
+            name_key("https://example.invalid/data.tif?version=one").unwrap(),
+            name_key("https://example.invalid/data.tif?version=two").unwrap()
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn indexed_native_paths_retain_alias_and_ancestor_guards() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let input = root.join("input.csv");
+        std::fs::write(&input, b"x,y\n1,2\n").unwrap();
+        std::fs::create_dir(root.join("store.zarr")).unwrap();
+        let files = vec![input.to_str().unwrap().into(), root.join("store.zarr").to_str().unwrap().into()];
+        let index = OverlapIndex::new(&files).unwrap();
+        for path in [root.to_path_buf(), input.clone(), root.join("store.zarr/0.0")] {
+            assert!(index.overlaps(path.to_str().unwrap()).unwrap(), "{}", path.display());
+        }
+        assert!(index.overlaps(root.join("new/../input.csv").to_str().unwrap()).is_err());
+        assert!(!index.overlaps(root.join("input.csv2").to_str().unwrap()).unwrap());
+        assert!(!index.overlaps_other(root.join("store.zarr").to_str().unwrap()).unwrap());
+        #[cfg(any(unix, windows))]
+        {
+            let link = root.join("hard.csv");
+            std::fs::hard_link(&input, &link).unwrap();
+            assert!(index.overlaps(link.to_str().unwrap()).unwrap());
+            assert_ne!(name_key(input.to_str().unwrap()).unwrap(), name_key(link.to_str().unwrap()).unwrap());
+        }
+        #[cfg(unix)]
+        {
+            let link = root.join("alias.csv");
+            std::os::unix::fs::symlink(&input, &link).unwrap();
+            assert!(index.overlaps(link.to_str().unwrap()).unwrap());
+            assert_ne!(name_key(input.to_str().unwrap()).unwrap(), name_key(link.to_str().unwrap()).unwrap());
+        }
+    }
 }

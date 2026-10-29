@@ -1198,7 +1198,7 @@ ASCII and Surfer grids, Zarr, Shapefile, MapInfo TAB/MIF, CSV, GeoPackage, GML,
 MVT pyramids and VRT TIFF/netCDF references. GDAL reads MVT zoom-level directories;
 the whole-pyramid reference copy uses `gdal vsi copy --recursive`.
 
-The local run has 26 cases: 21 identical and five explicit metadata/reference
+The local run has 29 cases: 24 identical and five explicit metadata/reference
 corrections. GDAL's generic copy loses the CSV CRS `.prj`, omits GML XSD schemas,
 leaves the Idrisi reference-system name stale, and does not make the two VRT
 reference cases independent of their originals. Terrio preserves source values
@@ -1215,6 +1215,25 @@ Core regressions cover source/hard-link aliases, batch preflight, stale sidecars
 file/directory collisions, nonregular inputs, symlink deletion, partial-stage
 rollback, unavailable VRT references, raw VRT sources and CDATA/entity handling.
 CLI/MCP, release-wheel Python and release WASM tests exercise the public surfaces.
+
+VRT rename moves owned definitions but copies referenced assets, preserving other
+users of those assets. The suite verifies native and read-only HTTP dependencies.
+VRT/GML definitions with no rebased references retain their original bytes.
+
+Archive inventory probes serve the same padded 8 MiB TIFF from stored and deflated
+ZIPs. The stored ZIP metadata probe transferred 360,684 bytes in 16 GETs, compared
+with 8,716,760 bytes in 142 GETs before the bounded member reader. The deflated
+probe transferred 120,211 bytes in 13 GETs. These are fixture-specific metadata
+measurements; partial probes do not validate whole-member CRCs. The reader caches
+at most 16 KiB of member content and streams/discards preceding bytes when a
+compressed member needs a noncontiguous read. Complete copies retain archive
+extractor integrity checks.
+
+A separate local benchmark uses a generated 2,000-tile VRT from real 32×32 Landsat
+subsets. Copying its 2,001 files took 155.04 seconds before path indexing and
+2.57 seconds afterward, with all GDAL-read pixels and checksum 32088 unchanged.
+Batch deletion of the 2,000 TIFFs took 13.66 versus 0.23 seconds and preserved an
+unrelated file. These are local observations rather than general timing guarantees.
 
 ```sh
 python scripts/conformance.py ../terrio-data --only dataset-files --strict

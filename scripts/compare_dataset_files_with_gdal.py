@@ -78,7 +78,10 @@ def main():
                 dict(
                     crs=reference.ExportToWkt() if reference else None,
                     fields=[
-                        (fields.GetFieldDefn(i).GetName(), fields.GetFieldDefn(i).GetType())
+                        (
+                            fields.GetFieldDefn(i).GetName(),
+                            fields.GetFieldDefn(i).GetType(),
+                        )
                         for i in range(fields.GetFieldCount())
                     ],
                     features=[json.loads(feature.ExportToJson()) for feature in layer],
@@ -183,13 +186,24 @@ def main():
         rpc.update(
             {
                 key: "1"
-                for key in ["LINE_SCALE", "SAMP_SCALE", "LAT_SCALE", "LONG_SCALE", "HEIGHT_SCALE"]
+                for key in [
+                    "LINE_SCALE",
+                    "SAMP_SCALE",
+                    "LAT_SCALE",
+                    "LONG_SCALE",
+                    "HEIGHT_SCALE",
+                ]
             }
         )
         rpc.update(
             {
                 key: "1 " + "0 " * 19
-                for key in ["LINE_NUM_COEFF", "LINE_DEN_COEFF", "SAMP_NUM_COEFF", "SAMP_DEN_COEFF"]
+                for key in [
+                    "LINE_NUM_COEFF",
+                    "LINE_DEN_COEFF",
+                    "SAMP_NUM_COEFF",
+                    "SAMP_DEN_COEFF",
+                ]
             }
         )
         dataset.SetMetadata(rpc, "RPC")
@@ -247,14 +261,23 @@ def main():
                     elif label == "GML" and actual_names == expected_names | {"source.xsd"}:
                         difference = "Terrio retains and rebases GML XSD schema omitted by GDAL GetFileList/copy"
                     else:
-                        assert actual_names == expected_names, (inventory["files"], expected_files)
+                        assert actual_names == expected_names, (
+                            inventory["files"],
+                            expected_files,
+                        )
                 unrelated = source.parent / "source.unrelated.txt"
                 unrelated.write_text("preserve unrelated sibling")
                 output_folder = source.parent / "output"
                 output_folder.mkdir()
                 target = output_folder / ("copied" + source.suffix)
                 reference_target = output_folder / ("gdal" + source.suffix)
-                reference_command = ["gdal", "dataset", "copy", str(source), str(reference_target)]
+                reference_command = [
+                    "gdal",
+                    "dataset",
+                    "copy",
+                    str(source),
+                    str(reference_target),
+                ]
                 if label == "MVT directory":
                     # GDAL opens a zoom-level directory, not the whole pyramid root.
                     reference_command = [
@@ -329,7 +352,7 @@ def main():
                 )
             except Exception as error:
                 results.append(dict(name=label, status="differs", detail=f"{stage}: {error}"))
-        # VRT dependencies move with regular basenames, while deletion owns only the definition.
+        # VRT dependencies are copied with regular basenames; rename moves only owned definitions.
         for selector in [False, True]:
             label = "VRT netCDF reference" if selector else "VRT TIFF reference"
             try:
@@ -358,7 +381,13 @@ def main():
                 reference_folder = output / "gdal"
                 reference_folder.mkdir()
                 reference_target = reference_folder / "copied.vrt"
-                reference_command = ["gdal", "dataset", "copy", str(source), str(reference_target)]
+                reference_command = [
+                    "gdal",
+                    "dataset",
+                    "copy",
+                    str(source),
+                    str(reference_target),
+                ]
                 if label == "MVT directory":
                     # GDAL opens a zoom-level directory, not the whole pyramid root.
                     reference_command = [
@@ -388,6 +417,7 @@ def main():
                 call("dataset-rename", target, moved)
                 assert raster_snapshot(moved) == expected
                 assert not target.exists()
+                assert (output / ("copied" + data.suffix)).exists()
                 call("dataset-delete", moved)
                 assert (output / ("moved" + data.suffix)).exists()
                 assert data.exists()
@@ -395,7 +425,7 @@ def main():
                     dict(
                         name=label,
                         status="identical" if independent_reference else "tolerance",
-                        detail="VRT references use copied/moved assets; GDAL's copy is not independent of the original source"
+                        detail="VRT references use copied assets (including on rename); GDAL's copy is not independent of the original source"
                         if not independent_reference
                         else "VRT reference rebasing and source-independent data exact",
                     )
@@ -447,7 +477,11 @@ def main():
                     value = self.headers.get("Range")
                     if value:
                         a, b = value.removeprefix("bytes=").split("-", 1)
-                        first, last = int(a), min(int(b), last)
+                        if a:
+                            first = int(a)
+                            last = min(int(b), last) if b else last
+                        else:
+                            first = max(0, size - int(b))
                         self.send_response(206)
                         self.send_header("Content-Range", f"bytes {first}-{last}/{size}")
                     else:
@@ -469,7 +503,9 @@ def main():
                 try:
                     target = root / "remote.tif"
                     report = call(
-                        "dataset-copy", f"http://127.0.0.1:{server.server_port}/source.tif", target
+                        "dataset-copy",
+                        f"http://127.0.0.1:{server.server_port}/source.tif",
+                        target,
                     )
                     assert raster_snapshot(target) == expected
                     assert {Path(p).name for p in report["files"]} == {
@@ -491,6 +527,76 @@ def main():
                     name="HTTP copy with overview/mask/PAM sidecars",
                     status="identical",
                     detail=f"Encoded bytes={encoded}; served={counts['bytes']}; GETs={counts['gets']} (404 probes={counts['missing']}); HEADs={counts['heads']}; existing files opened={len(opened)}; data, overviews, masks, metadata and georeferencing exact",
+                )
+            )
+            import zipfile
+
+            for method, compression in [
+                ("stored", zipfile.ZIP_STORED),
+                ("deflated", zipfile.ZIP_DEFLATED),
+            ]:
+                archive = root / f"{method}.zip"
+                with zipfile.ZipFile(archive, "w", compression=compression) as writer:
+                    writer.write(source, "source.tif")
+                payloads.clear()
+                payloads["/" + archive.name] = archive
+                counts.update(gets=0, heads=0, missing=0, bytes=0)
+                opened.clear()
+                with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+                    worker = threading.Thread(target=server.serve_forever, daemon=True)
+                    worker.start()
+                    try:
+                        uri = f"/vsizip/{{http://127.0.0.1:{server.server_port}/{archive.name}}}/source.tif"
+                        inventory = call("dataset-files", uri)
+                        assert inventory["driver"] == "GTiff" and inventory["files"] == [uri]
+                    finally:
+                        server.shutdown()
+                        worker.join()
+                # The TIFF's first IFD and transform are near the header. This
+                # metadata operation must not fetch the whole 8 MiB stored member.
+                assert counts["bytes"] <= 512 * 1024, counts
+                assert opened == {archive.name}
+                results.append(
+                    dict(
+                        name=f"HTTP {method} ZIP TIFF metadata inventory",
+                        status="identical",
+                        detail=f"GDAL source TIFF has embedded transform; uncompressed member={source.stat().st_size}; archive={archive.stat().st_size}; served={counts['bytes']}; GETs={counts['gets']}; metadata inventory only, without whole-member CRC validation",
+                    )
+                )
+            # Rename moves the owned VRT but only copies its dependencies,
+            # including sources on read-only HTTP servers.
+            import xml.etree.ElementTree as ET
+
+            payloads.clear()
+            payloads.update({"/" + p.name: p for p in owned})
+            counts.update(gets=0, heads=0, missing=0, bytes=0)
+            opened.clear()
+            definition = root / "source.vrt"
+            gdal.Translate(str(definition), str(source), format="VRT").Close()
+            expected_vrt = raster_snapshot(definition)
+            with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    document = ET.parse(definition)
+                    for element in document.iter("SourceFilename"):
+                        element.text = f"http://127.0.0.1:{server.server_port}/source.tif"
+                        element.set("relativeToVRT", "0")
+                    document.write(definition, encoding="utf-8", xml_declaration=True)
+                    moved = root / "remote-reference.vrt"
+                    report = call("dataset-rename", definition, moved)
+                    assert not definition.exists()
+                    assert raster_snapshot(moved) == expected_vrt
+                    assert all(path.exists() for path in owned)
+                    assert report["bytes"] >= source.stat().st_size
+                finally:
+                    server.shutdown()
+                    worker.join()
+            results.append(
+                dict(
+                    name="VRT rename preserves read-only HTTP dependencies",
+                    status="identical",
+                    detail="owned VRT moved; referenced HTTP raster and companions copied; source files retained; GDAL snapshots exact",
                 )
             )
         except Exception as error:

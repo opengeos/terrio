@@ -6,7 +6,7 @@ use crate::formats::{RasterDriver, VectorDriver};
 use crate::vsi::{self, dataset as location};
 use crate::{Error, Result};
 use serde::{Serialize, Serializer};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// File-operation options. The format hint restricts the source driver, not the output encoding.
@@ -142,6 +142,9 @@ fn directory_driver(path: &str) -> Result<Option<String>> {
 /// Inventories owned files without reading raster pixels. Unknown inputs fail rather than
 /// treating an arbitrary directory or file as a dataset. `format` restricts identification.
 pub fn file_list(path: &str, format: Option<&str>) -> Result<FileSet> {
+    inventory(path, format)?.ok_or_else(|| invalid("dataset format is not recognized"))
+}
+fn inventory(path: &str, format: Option<&str>) -> Result<Option<FileSet>> {
     let _operation = location::Operation::new();
     let hint = format.map(hinted).transpose()?;
     let stat = vsi::stat(path)?.ok_or_else(|| invalid(format!("dataset '{}' does not exist", vsi::listing::redact_url(path))))?;
@@ -151,7 +154,7 @@ pub fn file_list(path: &str, format: Option<&str>) -> Result<FileSet> {
             return Err(invalid("dataset does not match the input format hint"));
         }
         hinted(&driver)?;
-        return Ok(FileSet { driver, files: vec![path.into()], directory: true });
+        return Ok(Some(FileSet { driver, files: vec![path.into()], directory: true }));
     }
     let prefix = location::prefix(path, crate::inspection::IDENTIFICATION_HEADER_BYTES)?;
     let mut driver = crate::inspection::identify_prefix(&prefix, path, stat.size).map(|f| f.driver);
@@ -166,7 +169,9 @@ pub fn file_list(path: &str, format: Option<&str>) -> Result<FileSet> {
             driver = Some("MapInfo File".into());
         }
     }
-    let driver = driver.ok_or_else(|| invalid("dataset format is not recognized"))?;
+    let Some(driver) = driver else {
+        return Ok(None);
+    };
     if hint.as_ref().is_some_and(|hint| hint != &driver) {
         return Err(invalid("dataset does not match the input format hint"));
     }
@@ -232,7 +237,7 @@ pub fn file_list(path: &str, format: Option<&str>) -> Result<FileSet> {
         }
     }
     companions(&mut files, path, names)?;
-    Ok(FileSet { driver, files, directory: false })
+    Ok(Some(FileSet { driver, files, directory: false }))
 }
 
 // Basename companions can be shared by distinct recognized primary files.
@@ -275,10 +280,8 @@ fn check_shared_ownership(inventory: &FileSet, approved: &[String]) -> Result<()
         if approved_peer {
             continue;
         }
-        let other = match file_list(&peer, None) {
-            Ok(other) => other,
-            Err(Error::InvalidArgument(message)) if message == "dataset format is not recognized" => continue,
-            Err(error) => return Err(error),
+        let Some(other) = self::inventory(&peer, None)? else {
+            continue;
         };
         for file in &other.files {
             for companion in &shared {
@@ -304,6 +307,7 @@ struct Item {
     original: Option<String>,
     directory: bool,
     attempted: bool,
+    copy_dependency: bool,
 }
 struct Backup {
     original: String,
@@ -369,18 +373,17 @@ fn relative_reference(element: &quick_xml::events::BytesStart<'_>) -> bool {
 }
 #[derive(Default)]
 struct FileGraph {
-    active: Vec<String>,
-    completed: Vec<(String, bool)>,
-    metadata: Vec<(String, String)>,
-    raw: Vec<String>,
-    directories: Vec<String>,
-    inventories: Vec<FileSet>,
+    active: HashSet<location::NameKey>,
+    completed: HashSet<(location::NameKey, bool)>,
+    metadata: HashMap<location::NameKey, String>,
+    raw: HashSet<location::NameKey>,
+    directories: HashMap<location::NameKey, String>,
+    source_keys: HashSet<location::NameKey>,
 }
 fn remember_files(inventory: &FileSet, main: &str, graph: &mut FileGraph) -> Result<()> {
-    graph.inventories.push(inventory.clone());
     if inventory.directory {
         for directory in &inventory.files {
-            unique_push(&mut graph.directories, directory.clone())?;
+            graph.directories.insert(location::name_key(directory)?, directory.clone());
         }
         return Ok(());
     }
@@ -394,7 +397,7 @@ fn remember_files(inventory: &FileSet, main: &str, graph: &mut FileGraph) -> Res
             _ => false,
         };
         if rewrite {
-            graph.metadata.push((file.clone(), inventory.driver.clone()));
+            graph.metadata.entry(location::name_key(file)?).or_insert_with(|| inventory.driver.clone());
         }
     }
     Ok(())
@@ -406,12 +409,10 @@ fn vrt_dependencies(path: &str, files: &mut Vec<String>, graph: &mut FileGraph) 
     if graph.active.len() >= 128 {
         return Err(Error::Unsupported("VRT file-set references exceed 128 levels".into()));
     }
-    for parent in graph.active.iter() {
-        if location::same_name(parent, path)? {
-            return Err(invalid("cyclic VRT file references"));
-        }
+    let active_key = location::name_key(path)?;
+    if !graph.active.insert(active_key.clone()) {
+        return Err(invalid("cyclic VRT file references"));
     }
-    graph.active.push(path.into());
     let bytes = vsi::read(path)?;
     let text = crate::drivers::vector::xml::decode(&bytes);
     let mut reader = Reader::from_str(&text);
@@ -445,61 +446,53 @@ fn vrt_dependencies(path: &str, files: &mut Vec<String>, graph: &mut FileGraph) 
                 let reference = crate::ops::vrt::resolve_reference(path, &name, relative);
                 let physical = crate::ops::vrt::subdataset_parts(&reference)?.map_or(reference.as_str(), |(_, file, _)| file);
                 let raw = bands.last().copied().unwrap_or(false);
-                for parent in &graph.active {
-                    if location::same_name(parent, physical)? {
-                        return Err(invalid("cyclic VRT file references"));
-                    }
+                let physical_key = location::name_key(physical)?;
+                if graph.active.contains(&physical_key) {
+                    return Err(invalid("cyclic VRT file references"));
                 }
-                let mut known = false;
-                for (completed, role) in &graph.completed {
-                    if *role == raw && location::same_name(completed, physical)? {
-                        known = true;
-                        break;
-                    }
-                }
-                if known {
+                if graph.completed.contains(&(physical_key.clone(), raw)) {
                     continue;
                 }
                 if raw {
                     if !location::file_exists(physical)? {
                         return Err(invalid("raw VRT source file does not exist"));
                     }
-                    unique_push(files, physical.into())?;
-                    graph.raw.push(physical.into());
-                    graph.completed.push((physical.into(), true));
+                    if graph.source_keys.insert(physical_key.clone()) {
+                        files.push(physical.into());
+                    }
+                    graph.raw.insert(physical_key.clone());
+                    graph.completed.insert((physical_key, true));
                     continue;
                 }
-                let inventory = match file_list(physical, None) {
-                    Ok(inventory) => inventory,
-                    Err(Error::InvalidArgument(message)) if message == "dataset format is not recognized" => {
-                        FileSet { driver: String::new(), files: vec![physical.into()], directory: false }
-                    }
-                    Err(error) => return Err(error),
-                };
+                let inventory = inventory(physical, None)?.unwrap_or_else(|| FileSet {
+                    driver: String::new(),
+                    files: vec![physical.into()],
+                    directory: false,
+                });
                 remember_files(&inventory, physical, graph)?;
                 let nested = inventory.driver == "VRT";
                 for file in inventory.files {
-                    unique_push(files, file)?;
+                    if graph.source_keys.insert(location::name_key(&file)?) {
+                        files.push(file);
+                    }
                 }
                 if nested {
                     vrt_dependencies(physical, files, graph)?;
                 }
-                graph.completed.push((physical.into(), false));
+                graph.completed.insert((physical_key, false));
             }
             Event::Eof => break,
             _ => (),
         }
     }
-    graph.active.pop();
+    graph.active.remove(&active_key);
     Ok(())
 }
 fn gml_schema_element(
     element: quick_xml::events::BytesStart<'_>,
     path: &str,
-    sources: &[String],
-    source: &str,
-    target: &str,
-) -> Result<quick_xml::events::BytesStart<'static>> {
+    names: &HashMap<location::NameKey, String>,
+) -> Result<(quick_xml::events::BytesStart<'static>, bool)> {
     use quick_xml::XmlVersion;
     let mut element = element.into_owned();
     let mut attributes = Vec::new();
@@ -516,12 +509,9 @@ fn gml_schema_element(
                     continue;
                 }
                 let resolved = crate::ops::vrt::resolve_reference(path, token, true);
-                for candidate in sources {
-                    if location::same_name(candidate, &resolved)? {
-                        *token = location::name(&mapped(candidate, source, target)?)?;
-                        changed = true;
-                        break;
-                    }
+                if let Some(name) = names.get(&location::name_key(&resolved)?) {
+                    changed |= token != name;
+                    *token = name.clone();
                 }
             }
             attributes.push((key, tokens.join(" ")));
@@ -533,7 +523,7 @@ fn gml_schema_element(
         element.clear_attributes();
         element.extend_attributes(attributes.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     }
-    Ok(element)
+    Ok((element, changed))
 }
 fn xml_utf8_declaration(decl: quick_xml::events::BytesDecl<'_>) -> Result<quick_xml::events::BytesDecl<'static>> {
     let version = decl.version().map_err(|e| Error::InvalidData(e.to_string()))?;
@@ -541,7 +531,7 @@ fn xml_utf8_declaration(decl: quick_xml::events::BytesDecl<'_>) -> Result<quick_
     Ok(quick_xml::events::BytesDecl::new(&version, Some("UTF-8"), standalone.as_deref()))
 }
 /// Rebase file-bearing metadata before touching either source or destination.
-fn rewrite(path: &str, sources: &[String], source: &str, target: &str, driver: &str) -> Result<Option<Vec<u8>>> {
+fn rewrite(path: &str, names: &HashMap<location::NameKey, String>, driver: &str) -> Result<Option<Vec<u8>>> {
     let filename = location::name(path)?;
     let extension = crate::formats::extension(&filename).unwrap_or_default();
     let gml = driver == "GML";
@@ -554,6 +544,7 @@ fn rewrite(path: &str, sources: &[String], source: &str, target: &str, driver: &
         let text = crate::drivers::vector::xml::decode(&original);
         let mut reader = Reader::from_str(&text);
         let mut writer = Writer::new(Vec::new());
+        let mut changed = false;
         let mut metadata = 0usize;
         loop {
             let event = reader.read_event().map_err(|e| Error::InvalidData(format!("VRT XML: {e}")))?;
@@ -570,10 +561,14 @@ fn rewrite(path: &str, sources: &[String], source: &str, target: &str, driver: &
             match event {
                 Event::Decl(decl) => writer.write_event(Event::Decl(xml_utf8_declaration(decl)?))?,
                 Event::Start(element) if gml => {
-                    writer.write_event(Event::Start(gml_schema_element(element, path, sources, source, target)?))?
+                    let (element, rebased) = gml_schema_element(element, path, names)?;
+                    changed |= rebased;
+                    writer.write_event(Event::Start(element))?;
                 }
                 Event::Empty(element) if gml => {
-                    writer.write_event(Event::Empty(gml_schema_element(element, path, sources, source, target)?))?
+                    let (element, rebased) = gml_schema_element(element, path, names)?;
+                    changed |= rebased;
+                    writer.write_event(Event::Empty(element))?;
                 }
                 Event::Start(mut element) if matches!(element.local_name().as_ref(), "SourceFilename" | "SourceDataset") => {
                     let relative = relative_reference(&element);
@@ -582,18 +577,12 @@ fn rewrite(path: &str, sources: &[String], source: &str, target: &str, driver: &
                     let resolved = crate::ops::vrt::resolve_reference(path, name.trim(), relative);
                     let selector = crate::ops::vrt::subdataset_parts(&resolved)?;
                     let physical = selector.map_or(resolved.as_str(), |(_, file, _)| file);
-                    let mut mapped_source = None;
-                    for candidate in sources {
-                        if location::same_name(candidate, physical)? {
-                            mapped_source = Some(mapped(candidate, source, target)?);
-                            break;
-                        }
-                    }
-                    let mapped_source =
-                        mapped_source.ok_or_else(|| Error::Unsupported("VRT reference is not covered by the dataset file set".into()))?;
-                    let basename = location::name(&mapped_source)?;
+                    let basename = names
+                        .get(&location::name_key(physical)?)
+                        .ok_or_else(|| Error::Unsupported("VRT reference is not covered by the dataset file set".into()))?;
                     let basename =
                         selector.map_or_else(|| basename.clone(), |(prefix, _, suffix)| format!("{prefix}\"{basename}\"{suffix}"));
+                    changed |= basename != name || !relative;
                     let attributes: Vec<_> = element
                         .attributes()
                         .collect::<std::result::Result<Vec<_>, _>>()
@@ -618,7 +607,7 @@ fn rewrite(path: &str, sources: &[String], source: &str, target: &str, driver: &
                 event => writer.write_event(event)?,
             }
         }
-        return Ok(Some(writer.into_inner()));
+        return Ok(changed.then(|| writer.into_inner()));
     }
     if matches!(driver, "ERS" | "RST" | "MapInfo File") {
         let original = vsi::read(path)?;
@@ -639,14 +628,7 @@ fn rewrite(path: &str, sources: &[String], source: &str, target: &str, driver: &
                 let value = field.trim().trim_matches('"');
                 let value = if extension == "rdc" { format!("{value}.ref") } else { value.into() };
                 let resolved = location::sibling(path, &value)?;
-                let mut replacement = None;
-                for candidate in sources {
-                    if location::same_name(candidate, &resolved)? {
-                        replacement = Some(location::name(&mapped(candidate, source, target)?)?);
-                        break;
-                    }
-                }
-                let replacement = match replacement {
+                let replacement = match names.get(&location::name_key(&resolved)?) {
                     Some(name) => name,
                     None if extension == "rdc" => {
                         output.push_str(line);
@@ -657,10 +639,10 @@ fn rewrite(path: &str, sources: &[String], source: &str, target: &str, driver: &
                 output.push_str(&line[..leading]);
                 if extension == "rdc" {
                     output.push_str("ref. system : ");
-                    output.push_str(stem(&replacement));
+                    output.push_str(stem(replacement));
                 } else {
                     output.push_str(if extension == "ers" { "DataFile = \"" } else { "File \"" });
-                    output.push_str(&replacement);
+                    output.push_str(replacement);
                     output.push('"');
                 }
                 if line.ends_with('\n') {
@@ -703,17 +685,20 @@ fn rollback(items: &mut [Item], backups: &[Backup], rename: bool) -> Vec<String>
         let current = if item.installed { &item.target } else { &item.staged };
         match location::entry_exists(current) {
             Ok(true) => {
-                if rename && item.directory && location::entry_exists(&item.source).unwrap_or(true) {
+                if rename && !item.copy_dependency && item.directory && location::entry_exists(&item.source).unwrap_or(true) {
                     failed.push(vsi::listing::redact_url(current).into_owned());
                     continue;
                 }
-                let result =
-                    if rename && item.original.is_none() { location::rename(current, &item.source) } else { vsi::delete(current, true) };
+                let result = if rename && !item.copy_dependency && item.original.is_none() {
+                    location::rename(current, &item.source)
+                } else {
+                    vsi::delete(current, true)
+                };
                 if result.is_err() {
                     failed.push(vsi::listing::redact_url(current).into_owned());
                 }
             }
-            Ok(false) if rename && item.original.is_none() => {
+            Ok(false) if rename && !item.copy_dependency && item.original.is_none() => {
                 if !location::entry_exists(&item.source).unwrap_or(false) {
                     failed.push(vsi::listing::redact_url(current).into_owned());
                 }
@@ -742,28 +727,29 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
     let inventory = file_list(source, options.format.as_deref())?;
     let mut sources = inventory.files.clone();
     let mut graph = FileGraph::default();
+    for path in &sources {
+        graph.source_keys.insert(location::name_key(path)?);
+    }
     remember_files(&inventory, source, &mut graph)?;
     if inventory.driver == "VRT" {
         vrt_dependencies(source, &mut sources, &mut graph)?;
     }
     if rename {
-        for inventory in &graph.inventories {
-            check_shared_ownership(inventory, &sources)?;
+        check_shared_ownership(&inventory, &inventory.files)?;
+    }
+    let owned_keys: HashSet<_> = inventory.files.iter().map(|path| location::name_key(path)).collect::<Result<_>>()?;
+    if graph.metadata.keys().any(|metadata| graph.raw.contains(metadata)) {
+        return Err(Error::Unsupported("file-bearing metadata also used as raw VRT pixels cannot be rewritten".into()));
+    }
+    let inputs = location::OverlapIndex::new(&sources)?;
+    for directory in graph.directories.values() {
+        if inputs.overlaps_other(directory)? {
+            return Err(invalid("overlapping input directory and components cannot be staged independently"));
         }
     }
-    for (metadata, _) in &graph.metadata {
-        for raw in &graph.raw {
-            if location::same_name(metadata, raw)? {
-                return Err(Error::Unsupported("file-bearing metadata also used as raw VRT pixels cannot be rewritten".into()));
-            }
-        }
-    }
-    for directory in &graph.directories {
-        for component in &sources {
-            if !location::same_name(directory, component)? && location::overlaps(directory, component)? {
-                return Err(invalid("overlapping input directory and components cannot be staged independently"));
-            }
-        }
+    let mut names = HashMap::new();
+    for path in &sources {
+        names.insert(location::name_key(path)?, location::name(&mapped(path, source, target)?)?);
     }
     let mut targets = BTreeSet::new();
     let mut items = Vec::new();
@@ -773,31 +759,21 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
             return Err(invalid("dataset components map to the same destination"));
         }
         location::check_write(&destination)?;
-        let mut directory = false;
-        for candidate in &graph.directories {
-            if location::same_name(path, candidate)? {
-                directory = true;
-                break;
-            }
-        }
+        let key = location::name_key(path)?;
+        let directory = graph.directories.contains_key(&key);
         if vsi::stat(&destination)?.is_some_and(|entry| entry.is_dir() != directory) {
             return Err(invalid("dataset component file/directory collision"));
         }
-        if rename {
+        if rename && owned_keys.contains(&key) {
             location::check_remove(path)?;
         }
-        for input in &sources {
-            if location::overlaps(&destination, input)? {
-                return Err(invalid("dataset destination overlaps an input"));
-            }
+        if inputs.overlaps(&destination)? {
+            return Err(invalid("dataset destination overlaps an input"));
         }
-        let mut rewritten = None;
-        for (metadata, driver) in &graph.metadata {
-            if location::same_name(metadata, path)? {
-                rewritten = rewrite(path, &sources, source, target, driver)?;
-                break;
-            }
-        }
+        let rewritten = match graph.metadata.get(&key) {
+            Some(driver) => rewrite(path, &names, driver)?,
+            None => None,
+        };
         items.push(Item {
             source: path.clone(),
             staged: temporary(&destination)?,
@@ -807,6 +783,7 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
             original: None,
             directory,
             attempted: false,
+            copy_dependency: !owned_keys.contains(&key),
         });
     }
     let mut obsolete = Vec::new();
@@ -830,12 +807,13 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
     }
     for path in &obsolete {
         location::check_write(path)?;
-        for input in &sources {
-            if location::overlaps(path, input)? {
-                return Err(invalid("replaced dataset overlaps an input"));
-            }
+        if inputs.overlaps(path)? {
+            return Err(invalid("replaced dataset overlaps an input"));
         }
     }
+    // Windows identity keys retain handles during preflight only. Release
+    // them before moving or replacing any source/destination entries.
+    drop(inputs);
     let mut backups = Vec::new();
     let mut uncertain_backups = Vec::new();
     let mut bytes = 0u64;
@@ -843,14 +821,14 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
         for item in &mut items {
             item.attempted = true;
             let report = if let Some(rewritten) = &item.rewritten {
-                if rename {
+                if rename && !item.copy_dependency {
                     let original = temporary(&item.source)?;
                     backup_to(&item.source, &original, &mut uncertain_backups)?;
                     item.original = Some(original);
                 }
                 vsi::write(&item.staged, rewritten)?;
                 vsi::Report { bytes: rewritten.len() as u64, ..Default::default() }
-            } else if rename {
+            } else if rename && !item.copy_dependency {
                 location::rename(&item.source, &item.staged)?
             } else {
                 location::copy(&item.source, &item.staged, item.directory)?
@@ -905,10 +883,13 @@ pub fn delete_many(paths: &[String], format: Option<&str>) -> Result<Vec<FileRep
     }
     let inventories = paths.iter().map(|path| file_list(path, format)).collect::<Result<Vec<_>>>()?;
     let mut files = Vec::new();
+    let mut seen = HashSet::new();
     for inventory in &inventories {
         for path in &inventory.files {
             location::check_remove(path)?;
-            unique_push(&mut files, path.clone())?;
+            if seen.insert(location::name_key(path)?) {
+                files.push(path.clone());
+            }
         }
     }
     for inventory in &inventories {
@@ -916,19 +897,18 @@ pub fn delete_many(paths: &[String], format: Option<&str>) -> Result<Vec<FileRep
     }
     // A directory dataset already owns its descendants, even if a caller also named a layer.
     let mut owned: Vec<String> = Vec::new();
+    let mut directories = location::OverlapIndex::default();
     files.sort_by_key(String::len);
     for path in files {
-        let mut covered = false;
-        for parent in &owned {
-            if vsi::stat(parent)?.is_some_and(|entry| entry.is_dir()) && location::overlaps(parent, &path)? {
-                covered = true;
-                break;
-            }
+        if directories.contains_ancestor(&path)? {
+            continue;
         }
-        if !covered {
-            owned.push(path);
+        if vsi::stat(&path)?.is_some_and(|entry| entry.is_dir()) {
+            directories.insert(&path)?;
         }
+        owned.push(path);
     }
+    drop(directories);
     let mut backups: Vec<Backup> = Vec::new();
     let mut uncertain_backups = Vec::new();
     let result = (|| {
@@ -964,6 +944,43 @@ mod tests {
         let path = format!("{root}/{name}.csv");
         put(&path, b"x,y,name\n1,2,first\n3,4,second\n");
         path
+    }
+    #[test]
+    fn vrt_cycles_fail_before_staging_any_file() {
+        let root = directory();
+        let source = format!("{root}/source.vrt");
+        let other = format!("{root}/source_other.vrt");
+        let target = format!("{root}/copied.vrt");
+        let definition = |name: &str| {
+            format!(
+                "<VRTDataset rasterXSize='1' rasterYSize='1'><VRTRasterBand band='1' dataType='Byte'><SimpleSource><SourceFilename relativeToVRT='1'>{name}</SourceFilename></SimpleSource></VRTRasterBand></VRTDataset>"
+            )
+        };
+        put(&source, definition("source.vrt").as_bytes());
+        assert!(copy(&source, &target, &Default::default()).unwrap_err().to_string().contains("cyclic"));
+        put(&source, definition("source_other.vrt").as_bytes());
+        put(&other, definition("source.vrt").as_bytes());
+        assert!(rename(&source, &target, &Default::default()).unwrap_err().to_string().contains("cyclic"));
+        assert!(exists(&source).unwrap() && exists(&other).unwrap());
+        assert!(!exists(&target).unwrap());
+        assert_eq!(vsi::list(&root, &Default::default()).unwrap().len(), 2);
+        vsi::delete(&root, true).unwrap();
+    }
+    #[test]
+    fn xml_without_rebased_references_preserves_its_original_encoding() {
+        let root = directory();
+        for (extension, driver, bytes) in [
+            ("vrt", "VRT", b"<?xml version='1.0'?>\n<VRTDataset rasterXSize='1' rasterYSize='1'><VRTRasterBand band='1' dataType='Byte'/></VRTDataset>\n".as_slice()),
+            ("gml", "GML", b"<?xml version='1.0'?>\n<gml:FeatureCollection xmlns:gml='http://www.opengis.net/gml'>\n</gml:FeatureCollection>\n".as_slice()),
+        ] {
+            let source = format!("{root}/source.{extension}");
+            let target = format!("{root}/copied.{extension}");
+            put(&source, bytes);
+            assert_eq!(file_list(&source, None).unwrap().driver, driver);
+            copy(&source, &target, &Default::default()).unwrap();
+            assert_eq!(vsi::read(&target).unwrap(), bytes);
+        }
+        vsi::delete(&root, true).unwrap();
     }
     #[test]
     fn copy_rename_delete_include_parts_and_preserve_unrelated_siblings() {
@@ -1196,6 +1213,7 @@ mod tests {
             original: None,
             directory: false,
             attempted: true,
+            copy_dependency: false,
         }];
         assert!(rollback(&mut items, &[], true).is_empty());
         assert!(exists(&source).unwrap());
@@ -1260,6 +1278,7 @@ mod tests {
             original: None,
             directory: false,
             attempted: true,
+            copy_dependency: false,
         }];
         assert!(rollback(&mut items, &[], true).is_empty());
         assert_eq!(std::fs::read_link(original).unwrap(), std::path::Path::new("missing.csv"));
@@ -1305,6 +1324,8 @@ mod tests {
         assert_eq!(std::fs::read(&source).unwrap(), std::fs::read(copied_binary).unwrap());
         let definition = directory.path().join("same.vrt");
         std::fs::write(&definition, "<VRTDataset rasterXSize=\"2\" rasterYSize=\"2\"><VRTRasterBand dataType=\"Byte\" band=\"1\"><SimpleSource><SourceFilename relativeToVRT=\"1\">same.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>").unwrap();
+        let other_definition = directory.path().join("another.vrt");
+        std::fs::copy(&definition, &other_definition).unwrap();
         let output = directory.path().join("copied.vrt");
         copy(definition.to_str().unwrap(), output.to_str().unwrap(), &Default::default()).unwrap();
         assert_eq!(crate::open_raster(output.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![1., 2., 3., 4.]);
@@ -1313,7 +1334,8 @@ mod tests {
         assert!(directory.path().join("copied.tif").is_file());
         let renamed = directory.path().join("renamed.vrt");
         rename(definition.to_str().unwrap(), renamed.to_str().unwrap(), &Default::default()).unwrap();
-        assert!(!source.exists());
+        assert!(source.exists());
+        assert_eq!(crate::open_raster(other_definition.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![1., 2., 3., 4.]);
         assert_eq!(crate::open_raster(renamed.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![1., 2., 3., 4.]);
     }
 }

@@ -185,7 +185,7 @@ pub struct Report {
 }
 
 /// The kind of an archive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ArchiveKind {
     Zip,
     Tar,
@@ -193,7 +193,7 @@ enum ArchiveKind {
 }
 
 /// A location, parsed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Node {
     Local(PathBuf),
     /// A `/vsimem/` path, without a trailing slash.

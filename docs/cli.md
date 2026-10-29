@@ -675,8 +675,11 @@ files. Rename, deletion and replacement refuse such a companion while another
 same-basename owner remains. A batch deletion may include all owners; copying
 may read a shared companion without changing its original.
 
-VRT copies and renames include referenced assets with regular corresponding basenames,
-and rewrite source references to the new names. GML schema locations and Idrisi/ERS
+VRT copies and renames copy referenced assets with regular corresponding basenames,
+and rewrite source references to the new names. Rename moves the owned definition
+but preserves original dependencies so other datasets can keep using them; copied
+payloads count toward reported bytes, including for same-filesystem VRT renames.
+VRT/GML bytes are preserved when no reference needs rebasing. GML schema locations and Idrisi/ERS
 header references are also updated. Irregular basenames are refused before mutation,
 as in GDAL. VRT graph traversal reuses completed inventories and permits at most 128
 nested definitions; definitions are held in memory. A file used both as file-bearing
@@ -698,6 +701,10 @@ Local and VSI locations follow `terrio vsi`: memory and writable cloud stores su
 mutation; HTTP and archive members are copy sources only. WebAssembly operates on
 `/vsimem/` datasets and archive members, with no native files or signed cloud writes.
 Owned-file queries and deletion do not open VRT references, which may be missing.
+Archive TIFF tag discovery uses a 16 KiB member cache. Stored ZIP members are read
+by range; compressed members stream and discard preceding bytes when seeking.
+Partial metadata inventories do not validate the whole-member CRC; complete copies
+still use the normal archive extractor and its integrity checks.
 MCP exposes all four commands; only `dataset-files` is marked read-only. JSON and text
 reports redact URL credentials. Byte counts exclude backup/rollback work; native
 same-filesystem and memory file moves copy no payload bytes.
