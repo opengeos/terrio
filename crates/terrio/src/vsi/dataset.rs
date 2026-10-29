@@ -800,7 +800,9 @@ mod tests {
         for path in [root.to_path_buf(), input.clone(), root.join("store.zarr/0.0")] {
             assert!(index.overlaps(path.to_str().unwrap()).unwrap(), "{}", path.display());
         }
-        assert!(index.overlaps(root.join("new/../input.csv").to_str().unwrap()).is_err());
+        // Windows can normalize the missing component lexically; POSIX fails
+        // traversal. Both outcomes must prevent treating the input as unrelated.
+        assert!(!matches!(index.overlaps(root.join("new/../input.csv").to_str().unwrap()), Ok(false)));
         assert!(!index.overlaps(root.join("input.csv2").to_str().unwrap()).unwrap());
         assert!(!index.overlaps_other(root.join("store.zarr").to_str().unwrap()).unwrap());
         #[cfg(any(unix, windows))]

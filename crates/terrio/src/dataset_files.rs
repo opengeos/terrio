@@ -1505,8 +1505,10 @@ mod tests {
         for name in ["scene.RPB", "scene.tfw"] {
             let companion = format!("{root}/{name}");
             put(&companion, b"shared bytes");
-            assert!(file_list(&first, None).unwrap().files.contains(&companion));
-            assert!(file_list(&second, None).unwrap().files.contains(&companion));
+            for source in [&first, &second] {
+                let files = file_list(source, None).unwrap().files;
+                assert!(files.iter().any(|file| location::same_name(file, &companion).unwrap()), "{companion}: {files:?}");
+            }
             assert!(delete(&first, None).unwrap_err().to_string().contains("shared"));
             assert!(rename(&first, &format!("{root}/moved.tif"), &Default::default()).is_err());
             assert_eq!(vsi::read(&companion).unwrap(), b"shared bytes");
