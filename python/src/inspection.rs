@@ -8,6 +8,7 @@ use terrio::inspection::IdentifyRecord;
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(identify, module)?)?;
+    module.add_function(wrap_pyfunction!(check_dataset, module)?)?;
     Ok(())
 }
 /// Identifies files from bounded headers without decoding pixel/feature payloads.
@@ -62,5 +63,44 @@ fn identify<'py>(
         }
     };
     let json = serde_json::to_string(&records).map_err(|error| invalid(error.to_string()))?;
+    py.import("json")?.call_method1("loads", (json,))
+}
+
+/// Reads every exposed sample, feature or numeric scientific-array element.
+/// A successful count report is not a checksum guarantee. Decode failures raise
+/// an exception. Native paths and immutable uploaded bytes are supported.
+#[pyfunction]
+#[pyo3(signature=(source, *, filename=None, overviews=false, masks=false))]
+fn check_dataset<'py>(
+    py: Python<'py>,
+    source: &Bound<'py, PyAny>,
+    filename: Option<&str>,
+    overviews: bool,
+    masks: bool,
+) -> PyResult<Bound<'py, PyAny>> {
+    let options = terrio::check::CheckOptions { overviews, masks };
+    let summary = if let Ok(bytes) = source.cast::<PyBytes>() {
+        let owned = bytes.as_bytes().to_vec();
+        crate::with_warnings(py, || terrio::check::check_bytes(owned, filename.unwrap_or("data"), &options))?
+    } else {
+        if filename.is_some() {
+            return Err(invalid("filename applies only to uploaded bytes"));
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let path = source
+                .extract::<std::path::PathBuf>()
+                .map_err(|_| invalid("check_dataset expects a path or immutable bytes"))?
+                .into_os_string()
+                .into_string()
+                .map_err(|_| invalid("dataset paths must be UTF-8"))?;
+            crate::with_warnings(py, || terrio::check::check_path(&path, &options))?
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            return Err(invalid("this build checks uploaded bytes only"));
+        }
+    };
+    let json = serde_json::to_string(&summary).map_err(|error| invalid(error.to_string()))?;
     py.import("json")?.call_method1("loads", (json,))
 }

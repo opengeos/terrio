@@ -17,6 +17,7 @@ __all__ = [
     "refresh_overviews",
     "update_raster",
     "validate_cog",
+    "check_dataset",
     "identify",
     "__version__",
     "Raster",
@@ -1420,6 +1421,7 @@ class MultidimDataset:
     def array_paths(self) -> list[str]: ...
     @property
     def group_paths(self) -> list[str]: ...
+    def check(self) -> dict[str, int]: ...
     def info(self) -> dict[str, Any]: ...
     def array(self, name: str) -> MultidimArray: ...
     def __getitem__(self, key: str, /) -> MultidimArray: ...
@@ -1909,3 +1911,11 @@ def identify(
     JavaScript's single-upload API returns format metadata or null instead.
     """
     ...
+
+def check_dataset(
+    source: str | os.PathLike[str] | bytes,
+    *,
+    filename: str | None = None,
+    overviews: bool = False,
+    masks: bool = False,
+) -> dict[str, int]: ...
