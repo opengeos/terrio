@@ -155,6 +155,9 @@ def main():
                 max(b[3] for b in envelopes),
             ]
             assert "partition-note" in report["omitted_metadata_keys"]
+            # GDAL 3.13.3 needs the directory dataset for external column paths;
+            # opening _metadata directly raises Invalid column metadata. PyArrow
+            # above independently opens _metadata and verifies every partition.
             ours, theirs = snapshot(actual), snapshot(reference)
             original = snapshot(args.data / "countries.parquet")
             assert ours == original
@@ -227,11 +230,19 @@ def main():
             assert loaded.combine_chunks().equals(
                 pa.concat_tables(expected).combine_chunks(), check_metadata=False
             )
+            # Explicit inputs are an ordered multiset, including repeated partitions.
+            repeated = spaced / "repeated_metadata"
+            repeated_report = call([unusual[0], unusual[0]], repeated)
+            repeated_values = ds.parquet_dataset(str(repeated)).to_table()
+            assert repeated_report["rows"] == 2 * expected[0].num_rows
+            assert repeated_values.combine_chunks().equals(
+                pa.concat_tables([expected[0], expected[0]]).combine_chunks(), check_metadata=False
+            )
             results.append(
                 dict(
                     name="logical partition names with spaces and percent characters",
                     status="identical",
-                    detail="PyArrow reads the metadata file and resolves every column from the actual space/percent filenames; all values exact",
+                    detail="PyArrow reads the metadata file and resolves every column from the actual space/percent filenames; all values exact; repeated explicit inputs preserve duplicate rows",
                 )
             )
         except Exception as error:

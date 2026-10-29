@@ -2260,6 +2260,8 @@ width/type limits still apply. The three commands are also exposed as MCP tools.
 
 `terrio parquet-create-metadata part-0.parquet part-1.parquet --output _metadata --json`
 creates a metadata-only file referencing the explicitly supplied partitions in input order.
+Inputs may repeat, including aliases of the same physical file: each occurrence contributes
+its row groups and rows again. Supply each partition once for a deduplicated catalog.
 `--overwrite` replaces an existing output; direct inputs and externally referenced column
 files are protected. The CLI command also supplies the `parquet-create-metadata` MCP tool.
 
