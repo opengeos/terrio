@@ -2452,3 +2452,27 @@ test("openVrt preserves filename whitespace in uploaded sources", () => {
     output.free();
   }
 });
+
+
+test("dataset memory paths preserve edge spaces without aliasing", () => {
+  const root = "/vsimem/dataset-space-identity";
+  const source = `${root}/source.tif `;
+  const plain = `${root}/source.tif`;
+  const output = `${root}/copy.tif `;
+  const encoded = [];
+  for (const value of [9,1]) {
+    const raster = terrio.rasterFromArray(new Uint8Array([value]), 1, 1, [0,1,0,1,0,-1]);
+    encoded.push(raster.toBytes("source.tif"));
+    raster.free();
+  }
+  terrio.vsiWrite(source, encoded[0]);
+  terrio.vsiWrite(plain, encoded[1]);
+  try {
+    terrio.datasetCopy(source, output);
+    assert.deepEqual(terrio.vsiRead(output), encoded[0]);
+    terrio.datasetDelete(source);
+    assert.deepEqual(terrio.vsiRead(plain), encoded[1]);
+  } finally {
+    terrio.vsiDelete(root, true);
+  }
+});
