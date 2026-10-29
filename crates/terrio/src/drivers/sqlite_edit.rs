@@ -201,7 +201,7 @@ impl Editor {
         }
         #[cfg(any(all(unix, not(target_os = "emscripten")), windows))]
         lock(&file, path)?;
-        if repack {
+        {
             for suffix in ["-journal", "-wal", "-shm"] {
                 let sidecar = with_suffix(path, suffix);
                 match std::fs::symlink_metadata(&sidecar) {
@@ -1345,6 +1345,36 @@ mod tests {
         db.schema().unwrap().into_iter().find(|e| e.1 == "t").unwrap().3
     }
 
+    #[test]
+    fn append_refuses_linked_sidecars_before_recovery() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db");
+        let original = sample(5);
+        std::fs::write(&path, &original).unwrap();
+        let target = directory.path().join("untouched");
+        let bytes = b"must not be read, replayed or modified";
+        std::fs::write(&target, bytes).unwrap();
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let sidecar = with_suffix(&path, suffix);
+            for hard_link in [false, true] {
+                if hard_link {
+                    std::fs::hard_link(&target, &sidecar).unwrap();
+                } else {
+                    symlink(&target, &sidecar).unwrap();
+                }
+                let error = match Editor::open(&path) {
+                    Err(error) => error.to_string(),
+                    Ok(_) => panic!("linked sidecar accepted"),
+                };
+                assert!(error.contains("sidecar"), "{error}");
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                assert_eq!(std::fs::read(&target).unwrap(), bytes);
+                std::fs::remove_file(&sidecar).unwrap();
+            }
+        }
+        assert!(Editor::open(&path).unwrap().is_ok());
+    }
     #[test]
     fn repack_open_refuses_a_symlink_even_without_path_preflight() {
         let dir = tempfile::tempdir().unwrap();

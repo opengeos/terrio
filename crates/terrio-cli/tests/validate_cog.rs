@@ -47,3 +47,17 @@ fn reports_cogs_and_other_tiffs() {
     let (code, _) = terrio(&["validate-cog", &format!("{cog}.missing")]);
     assert_ne!(code, 0);
 }
+
+#[test]
+fn gdal_profile_and_full_check_options_are_exposed() {
+    let dir = tempfile::tempdir().unwrap();
+    let cog = write(dir.path(), "cog.tif", Some(terrio::formats::RasterDriver::Cog));
+    for full in ["yes", "no", "auto"] {
+        let (code, output) = terrio(&["validate-cog", &cog, "--profile", "gdal", "--full-check", full, "--json"]);
+        assert_eq!(code, 0, "{output}");
+        let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(report["valid"], true);
+    }
+    assert_ne!(terrio(&["validate-cog", &cog, "--full-check", "yes"]).0, 0);
+    assert_ne!(terrio(&["validate-cog", &cog, "--profile", "unknown"]).0, 0);
+}

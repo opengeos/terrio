@@ -1779,7 +1779,11 @@ def refresh_overviews(
     ignore_cog_layout_break: bool = False,
 ) -> list[tuple[int, int]]: ...
 def validate_cog(
-    path: str | os.PathLike[str], *, strict: bool = False
+    path: str | os.PathLike[str] | bytes,
+    *,
+    strict: bool = False,
+    profile: str = "rio-cogeo",
+    full_check: bool | None = None,
 ) -> tuple[bool, list[str], list[str]]: ...
 def update_raster(
     src: str | os.PathLike[str] | Raster,

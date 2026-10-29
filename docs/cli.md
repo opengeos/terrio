@@ -1146,6 +1146,40 @@ metadata and layout notes (mask IFDs after image data, which do not affect valid
 status is 1 when the file is not a valid COG, as with GDAL's script. The command is also a
 read-only MCP tool.
 
+`--profile gdal` selects GDAL 3.13's structural rules: exact main-IFD placement
+following the optional structural metadata, source-width tiling threshold above
+1024, and overviews ordered by their dimensions. `--full-check auto|yes|no`
+checks row-major block order, little-endian size leaders, repeated four-byte
+trailers and interleaved masks when the file declares those optimizations. Auto
+checks local inputs fully and keeps HTTP/S3 checks to headers and offset arrays;
+`yes` explicitly fetches block boundary bytes remotely. No pixels are decoded.
+`--full-check yes` requires the GDAL profile. The default profile retains the
+existing rio-cogeo behavior.
+
+GDAL COG full checking examines blocks in the main TIFF and its internal overviews.
+External `.ovr` sidecars make the report invalid and receive header checks only.
+Explicit full checks of URLs can make several boundary requests per stored block;
+the cost grows with the number of blocks, so automatic mode leaves them off.
+Remote full checks stop with an error after 10,000 boundary read calls (excluding
+header/table reads and configured HTTP retries); download larger files to validate
+their full layout locally.
+Full block validation stops at 1,000 findings and reports the limit; remaining
+blocks need not be checked once the file is already invalid.
+Full GDAL checks limit total parsed GDAL metadata to 4 MiB per file and XML nesting
+to 128 levels. Header-only checks and the default rio-cogeo profile ignore this metadata tag.
+
+```sh
+terrio validate-cog dem.tif --profile gdal --full-check yes --json
+```
+
+COG validation reads `GDAL_METADATA` only when full GDAL checks run. Full checks reject
+metadata XML parse errors and malformed attributes. Local files and byte uploads have no
+shared total boundary-read budget; work scales with the stored block arrays. Other VSI
+inputs use the conservative remote policy: automatic full checks are off, and explicit
+full checks use the 10,000-read budget. This includes ZIP members backed by local archives: the
+input is classified by its VSI location, even when resolution extracts it to a temporary
+file. This keeps archive validation policy independent of where the archive is stored.
+
 ## pixel-info
 
 `-o -` writes text formats to standard output; binary/vector formats require a file path.
@@ -2244,7 +2278,7 @@ can differ from SQLite VACUUM; the operation does not promise byte-identical fil
 
 Native changes use SQLite-compatible exclusive locks and a synced rollback journal. All original
 data pages, including unchanged pages and pages removed by truncation, are journaled before a
-full-image write. SQLite’s unused lock-byte page is excluded because its page number is a
+full-image write. SQLite's unused lock-byte page is excluded because its page number is a
 super-journal marker. An interrupted rewrite can be recovered by SQLite.
 The database pathname is checked against the locked handle before journal creation. Do not
 rename or replace an open database or its parent directory during a transaction. On Unix,
@@ -2257,6 +2291,9 @@ are process-scoped; callers must close/checkpoint same-process SQLite connection
 repacking and must not access the database concurrently through them. Native symbolic-link or
 hard-linked dataset filenames, linked/special sidecars, reserved/encrypted page bytes, remote and archive paths
 are refused. This is storage maintenance, not a GeoPackage specification validator.
+
+Native append also rejects linked or special journal/WAL/shared-memory sidecars before
+recovery; it never replays a journal through a symbolic link or hard-link alias.
 
 Unix directory-sync requirements also apply to existing native SQLite in-place edits and
 recovery, including append/update. Unreadable directories and filesystems rejecting directory
