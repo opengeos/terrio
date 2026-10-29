@@ -471,6 +471,9 @@ pub fn check_output(path: &str, sources: &[&str], overwrite: bool) -> Result<()>
             use std::os::unix::fs::MetadataExt;
             std::fs::metadata(input).ok().zip(std::fs::metadata(output).ok()).is_some_and(|(a, b)| a.dev() == b.dev() && a.ino() == b.ino())
         };
+        #[cfg(windows)]
+        // New destinations have no file identity; their NotFound error permits creation.
+        let same = same || same_file::is_same_file(input, output).unwrap_or(false);
         if same {
             return Err(invalid("palette output cannot replace an input or its alias"));
         }
@@ -569,6 +572,25 @@ pub fn attach_palette(source: &RasterDataset, table: &[[u8; 4]]) -> Result<Raste
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn native_hard_link_outputs_cannot_replace_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.tif");
+        let alias = directory.path().join("alias.tif");
+        let independent = directory.path().join("independent.tif");
+        std::fs::write(&input, b"original").unwrap();
+        std::fs::hard_link(&input, &alias).unwrap();
+        std::fs::write(&independent, b"original").unwrap();
+        let sources = [input.to_str().unwrap()];
+        let error = check_output(alias.to_str().unwrap(), &sources, true).unwrap_err();
+        assert!(error.to_string().contains("input or its alias"));
+        assert!(check_output(independent.to_str().unwrap(), &sources, true).is_ok());
+        assert!(check_output(directory.path().join("new.tif").to_str().unwrap(), &sources, false).is_ok());
+        assert_eq!(std::fs::read(input).unwrap(), b"original");
+        assert_eq!(std::fs::read(alias).unwrap(), b"original");
+    }
+
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn memory_output_requires_overwrite_and_remote_outputs_are_refused() {
