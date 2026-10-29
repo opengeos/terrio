@@ -1860,7 +1860,13 @@ def identify(
     force_recursive: bool = False,
     deep: bool = False,
     report_failures: bool = False,
-) -> list[dict[str, Any]]: ...
+) -> list[dict[str, Any]]:
+    """Return named records as a list, including for one upload.
+
+    JavaScript's single-upload API returns format metadata or null instead.
+    """
+    ...
+
 def check_dataset(
     source: str | os.PathLike[str] | bytes,
     *,
