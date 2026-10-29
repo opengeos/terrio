@@ -9460,9 +9460,9 @@ SOFTWARE.
 ---
 
 terrio ports and adapts code and data from other projects, among them GDAL,
-PROJ, PDAL, GEOS and JTS. The copyright in that code and data remains with its
-authors. NOTICE lists them with their licenses, and LICENSE-THIRD-PARTY.md lists
-the licenses of the Rust crates terrio is built with.
+PROJ and PDAL. The copyright in that code and data remains with its authors.
+NOTICE lists them with their licenses, and LICENSE-THIRD-PARTY.md lists the
+licenses of the Rust crates terrio is built with.
 
 ```
 

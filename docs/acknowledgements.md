@@ -157,8 +157,9 @@ Group.
 ## Notices and licenses
 
 [`NOTICE`](https://github.com/opengeos/terrio/blob/main/NOTICE) holds the copyright and license
-notices of the code and data terrio adapts, whose copyright remains with their authors (GDAL, PROJ, CSF, the EPSG dataset, Esri's projection
-data, rasterio, rioxarray, Apache Arrow and the IJG), and
+notices of the code and data terrio adapts (GDAL, PROJ, CSF, the EPSG dataset, Esri's projection
+data, rasterio, rioxarray, Apache Arrow and the IJG), whose copyright remains with their authors,
+and
 [`LICENSE-THIRD-PARTY.md`](https://github.com/opengeos/terrio/blob/main/LICENSE-THIRD-PARTY.md)
 the licenses of every Rust crate terrio's packages and binaries are built with, generated with
 [cargo-about](https://github.com/EmbarkStudios/cargo-about). Both ship with the Python wheels,

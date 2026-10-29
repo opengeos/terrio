@@ -362,11 +362,11 @@ anything that looks wrong.
 ## License
 
 terrio is released under the [MIT License](LICENSE). Much of it is ported or adapted from other
-projects, above all GDAL, PROJ and PDAL, and the copyright in that code and data remains with
+projects, among them GDAL, PROJ and PDAL, and the copyright in that code and data remains with
 their authors: Frank Warmerdam, Even Rouault and the GDAL contributors; Gerald Evenden, Frank
 Warmerdam, Even Rouault and the PROJ contributors; Hobu, Inc. and the PDAL contributors; and the
-authors of GEOS, JTS, CSF, rasterio, rioxarray and the other projects [`NOTICE`](NOTICE) lists
-with their licenses.
+authors of JTS, CSF, rasterio, rioxarray and the other projects [`NOTICE`](NOTICE) lists with
+their licenses.
 
 terrio's EPSG table and datum names (`crates/terrio-crs/data/epsg.tsv.zst`, `datums.tsv.zst`) are
 derived from the [EPSG Geodetic Parameter Dataset](https://epsg.org), copyright the International
