@@ -36,6 +36,7 @@ fn vector(driver: VectorDriver) -> Option<Identification> {
     driver.ensure_built().ok()?;
     Some(Identification {
         driver: driver.name().into(),
+        // The deep-reader fallback can return any enabled vector container.
         kinds: if matches!(driver, VectorDriver::GPKG | VectorDriver::MBTiles | VectorDriver::PMTiles) {
             vec![Kind::Raster, Kind::Vector]
         } else {
@@ -121,7 +122,16 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
         return vector(VectorDriver::Shapefile);
     }
     if ext == "dbf" && bytes.len() >= 32 && matches!(bytes[0], 3 | 0x30 | 0x83 | 0x8b) {
-        return vector(VectorDriver::Shapefile);
+        let header = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+        let record = u16::from_le_bytes([bytes[10], bytes[11]]) as usize;
+        if header >= 33
+            && (header - 33).is_multiple_of(32)
+            && record > (header - 33) / 32
+            && length.is_none_or(|size| size >= header as u64)
+            && bytes.get(header - 1).is_none_or(|last| *last == 0x0d)
+        {
+            return vector(VectorDriver::Shapefile);
+        }
     }
     if bytes.starts_with(b"AC10") && bytes.get(4..6).is_some_and(|v| v.iter().all(u8::is_ascii_digit)) {
         return vector(VectorDriver::DWG);
@@ -129,8 +139,11 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
     if bytes.starts_with(b"AutoCAD Binary DXF") {
         return vector(VectorDriver::DXF);
     }
-    if contains(bytes, b"OSMHeader") {
-        return vector(VectorDriver::OSM);
+    if let Some(header) = bytes.get(..4) {
+        let length = u32::from_be_bytes(header.try_into().expect("four bytes")) as usize;
+        if (1..=65_536).contains(&length) && contains(&bytes[4..(length + 4).min(bytes.len())], b"\x0a\x09OSMHeader") {
+            return vector(VectorDriver::OSM);
+        }
     }
     if matches!(ext.as_str(), "mvt" | "pbf") && bytes.first() == Some(&0x1a) {
         return vector(VectorDriver::MVT);
@@ -263,6 +276,7 @@ fn root_json_type(text: &str) -> Option<String> {
             while let Some(key) = map.next_key::<String>()? {
                 if key == "type" {
                     *self.0 = Some(map.next_value::<String>()?);
+                    // Intentionally stop before an arbitrarily large trailing payload.
                     return Err(A::Error::custom("root type found"));
                 }
                 map.next_value::<serde::de::IgnoredAny>()?;
@@ -397,6 +411,7 @@ pub fn identify_many(paths: &[String], options: &IdentifyOptions) -> Vec<Identif
             continue;
         }
         let found = identify(&path, options.deep);
+        let failed = found.is_err();
         let recognized = matches!(&found, Ok(Some(_)));
         let error = match found {
             Ok(Some(identification)) => {
@@ -408,6 +423,9 @@ pub fn identify_many(paths: &[String], options: &IdentifyOptions) -> Vec<Identif
         };
         let recurse = directory && (options.recursive || options.force_recursive) && (!recognized || options.force_recursive);
         if recurse {
+            if failed && options.report_failures {
+                records.push(IdentifyRecord { name: name.clone(), identification: None, error: error.clone() });
+            }
             let local = local.unwrap();
             let key = std::fs::canonicalize(&local).unwrap_or_else(|_| local.clone());
             if !visited.insert(key) {
@@ -418,7 +436,15 @@ pub fn identify_many(paths: &[String], options: &IdentifyOptions) -> Vec<Identif
                     let mut children = Vec::new();
                     for entry in entries {
                         match entry {
-                            Ok(entry) => children.push(entry.path().to_string_lossy().into_owned()),
+                            Ok(entry) => match entry.path().into_os_string().into_string() {
+                                Ok(path) => children.push(path),
+                                Err(_) if options.report_failures => records.push(IdentifyRecord {
+                                    name: name.clone(),
+                                    identification: None,
+                                    error: Some("entry path is not valid UTF-8".into()),
+                                }),
+                                Err(_) => (),
+                            },
                             Err(error) if options.report_failures => {
                                 records.push(IdentifyRecord { name: name.clone(), identification: None, error: Some(error.to_string()) })
                             }
@@ -447,6 +473,8 @@ mod tests {
     fn bounded_signatures_do_not_trust_binary_filename_extensions() {
         assert_eq!(identify_bytes(b"II*\0garbage", "renamed.bin").unwrap().driver, "GTiff");
         assert!(identify_bytes(b"not a TIFF", "wrong.tif").is_none());
+        assert!(identify_bytes(b"notes mentioning OSMHeader", "notes.txt").is_none());
+        assert!(identify_bytes(&[3; 32], "fake.dbf").is_none());
         assert!(identify_bytes(b"Environmental notes", "notes.txt").is_none());
         assert_eq!(identify_bytes(b"ENVI\n samples = 1", "header.hdr").unwrap().driver, "ENVI");
         assert!(identify_bytes(br#"{"geometry":{"type":"Point","coordinates":[0,0]}}"#, "config.json").is_none());
@@ -509,6 +537,39 @@ mod tests {
         let found = identify(path.to_str().unwrap(), true).unwrap().unwrap();
         assert_eq!(found.driver, "ENVI");
         assert!(found.deep);
+    }
+    #[test]
+    #[cfg(all(unix, feature = "zarr"))]
+    fn recursive_scans_retain_dataset_directory_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join(".zgroup");
+        std::fs::write(&marker, br#"{"zarr_format":2}"#).unwrap();
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o0)).unwrap();
+        // Root may bypass file permissions; this fixture cannot induce its I/O error there.
+        if std::fs::File::open(&marker).is_ok() {
+            return;
+        }
+        let records = identify_many(
+            &[root.path().to_string_lossy().into_owned()],
+            &IdentifyOptions { recursive: true, report_failures: true, ..Default::default() },
+        );
+        assert!(records.iter().any(|record| record.name == root.path().to_str().unwrap() && record.error.is_some()));
+    }
+    #[test]
+    #[cfg(unix)]
+    fn non_utf8_children_do_not_alias_a_different_file() {
+        use std::os::unix::ffi::OsStringExt;
+        let root = tempfile::tempdir().unwrap();
+        let invalid = root.path().join(std::ffi::OsString::from_vec(b"bad-\xff.tif".to_vec()));
+        std::fs::write(invalid, b"II*\0header").unwrap();
+        std::fs::write(root.path().join("bad-\u{fffd}.tif"), b"II*\0header").unwrap();
+        let records = identify_many(
+            &[root.path().to_string_lossy().into_owned()],
+            &IdentifyOptions { recursive: true, report_failures: true, ..Default::default() },
+        );
+        assert_eq!(records.iter().filter(|record| record.identification.is_some()).count(), 1);
+        assert!(records.iter().any(|record| record.error.as_ref().is_some_and(|error| error.contains("UTF-8"))));
     }
     #[test]
     #[cfg(unix)]

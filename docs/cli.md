@@ -656,8 +656,8 @@ terrio identify raw.dat --deep
 
 Identifies formats using at most the first 16 KiB of each file, without decoding
 pixels or features. Local files, individual HTTP/cloud objects and local Zarr or
-Arc/Info grid directories are supported. HTTP uses one prefix request and stops
-reading after 16 KiB even when the server ignores Range; transport buffering can
+Arc/Info grid directories are supported. HTTP sends one prefix GET plus any redirect
+or retry GETs, and stops reading after 16 KiB even when the server ignores Range; transport buffering can
 receive additional bytes. Identification is not an integrity check: a damaged file
 can retain a recognizable signature. Only formats enabled in the build are reported.
 
@@ -672,7 +672,9 @@ change the command's success exit status, matching GDAL dataset identification.
 companion files, such as an ENVI data file. The report marks those results with
 `deep: true`. A fallback reader can materialize formats without lazy metadata support.
 Archives require this fallback except for header-identifiable KMZ. Signatures beyond
-the prefix can be missed. Text formats may need filename hints; raw SRTM HGT tiles
+the prefix can be missed. SQLite containers use `.gpkg`/`.mbtiles` filename hints as GDAL does, including
+SQLite files whose application ID is unset; this does not validate their tables.
+Text formats may need filename hints; raw SRTM HGT tiles
 require their tile filename and total size. Generic format names (`JP2`, `KML`,
 `HDF5`) can differ from GDAL's installed driver implementation names.
 

@@ -518,26 +518,32 @@ pub(crate) fn download(remote: &Remote, path: &std::path::Path) -> Result<()> {
 /// Returns the total object length when response headers supply one.
 pub(crate) fn read_prefix(remote: &Remote, maximum: usize) -> Result<(Vec<u8>, Option<u64>)> {
     let mut client = Client::new(remote, HttpOptions::from_env());
-    let response = client.send(Some((0, maximum.saturating_sub(1) as u64)))?;
-    let status = response.status().as_u16();
-    let range = response.headers().get("content-range").and_then(|value| value.to_str().ok());
-    if status == 206 && !range.is_some_and(|value| value.starts_with("bytes 0-")) {
-        return Err(Error::Http("prefix response does not start at byte zero".into()));
+    let mut attempt = 0;
+    loop {
+        let response = client.send(Some((0, maximum.saturating_sub(1) as u64)))?;
+        let status = response.status().as_u16();
+        let range = response.headers().get("content-range").and_then(|value| value.to_str().ok());
+        if status == 206 && !range.is_some_and(|value| value.starts_with("bytes 0-")) {
+            return Err(Error::Http("prefix response does not start at byte zero".into()));
+        }
+        let length = if status == 200 {
+            response.headers().get("content-length").and_then(|value| value.to_str().ok()).and_then(|value| value.parse().ok())
+        } else {
+            range.and_then(content_range_total)
+        };
+        REQUESTS.fetch_add(1, Ordering::Relaxed);
+        if status == 416 {
+            return Ok((Vec::new(), length));
+        }
+        let mut bytes = Vec::new();
+        let result = response.into_body().into_reader().take(maximum as u64).read_to_end(&mut bytes);
+        BYTES.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        match result {
+            Ok(_) => return Ok((bytes, length)),
+            Err(_) if attempt < client.options.max_retry => client.backoff(&mut attempt),
+            Err(error) => return Err(Error::Http(format!("{}: {error}", redact(&client.url)))),
+        }
     }
-    let length = if status == 200 {
-        response.headers().get("content-length").and_then(|value| value.to_str().ok()).and_then(|value| value.parse().ok())
-    } else {
-        range.and_then(content_range_total)
-    };
-    REQUESTS.fetch_add(1, Ordering::Relaxed);
-    if status == 416 {
-        return Ok((Vec::new(), length));
-    }
-    let mut bytes = Vec::new();
-    let result = response.into_body().into_reader().take(maximum as u64).read_to_end(&mut bytes);
-    BYTES.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-    result.map_err(|error| Error::Http(format!("{}: {error}", redact(&client.url))))?;
-    Ok((bytes, length))
 }
 
 /// Streams a remote file into `out`; returns the bytes written.
@@ -1013,6 +1019,8 @@ mod tests {
     enum Mode {
         Ranges,
         NoRanges,
+        /// The first response closes before its declared body length.
+        BrokenBody,
         /// The first request of each connection fails with 503.
         Flaky,
         /// `/old` redirects to `/data`.
@@ -1051,6 +1059,10 @@ mod tests {
                 };
                 let response = match (mode, range) {
                     (Mode::Forbidden, _) => head("403 Forbidden", "", 0).into_bytes(),
+                    (Mode::BrokenBody, _) if !failed => {
+                        failed = true;
+                        [head("200 OK", "", data.len()).into_bytes(), data[..1024].to_vec()].concat()
+                    }
                     (Mode::Flaky, _) if !failed => {
                         failed = true;
                         head("503 Service Unavailable", "", 0).into_bytes()
@@ -1095,6 +1107,16 @@ mod tests {
         let creds = Credentials { access_key_id: "AKID".into(), secret_access_key: "secret".into(), session_token: None };
         client.s3 = Some(S3Auth { creds: Some(creds), region: Some("us-east-1".into()), discovered: true });
         assert!(client.fetch_range(None).is_err());
+    }
+
+    #[test]
+    fn bounded_prefix_retries_a_broken_body() {
+        let data = test_data();
+        let (url, count) = serve(data.clone(), Mode::BrokenBody);
+        let (prefix, length) = read_prefix(&Remote::Url(url), 16_384).unwrap();
+        assert_eq!(prefix, data[..16_384]);
+        assert_eq!(length, Some(data.len() as u64));
+        assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
     #[test]

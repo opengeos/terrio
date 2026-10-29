@@ -24,6 +24,7 @@ def test_identify_paths_sequences_uploads_and_failures(source, tmp_path):
     assert single[0]["kinds"] == ["raster"]
     assert not single[0]["deep"]
     assert len(terrio.identify([source, str(source)])) == 2
+    assert len(terrio.identify((source, str(source)))) == 2
     uploaded = terrio.identify(source.read_bytes(), filename="renamed.bin")
     assert uploaded[0]["driver"] == "GTiff"
     unknown = tmp_path / "invalid.tif"

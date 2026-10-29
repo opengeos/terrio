@@ -4,6 +4,7 @@
 import argparse
 import json
 import subprocess
+import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -105,6 +106,7 @@ def main():
             "hike_gps_trace.csv",
             "liechtenstein.osm.pbf",
             "ne_countries/ne_110m_admin_0_countries.shp",
+            "ne_countries/ne_110m_admin_0_countries.dbf",
         ]:
             path = args.data / name
             if not path.exists():
@@ -161,6 +163,11 @@ def main():
             path = root / (driver + "." + extension)
             gdal.Translate(str(path), str(source), format=driver)
             compare(path, deep, label="derived " + driver)
+        for extension in ["gpkg", "mbtiles"]:
+            hinted = root / f"plain.{extension}"
+            with sqlite3.connect(hinted) as connection:
+                connection.execute("CREATE TABLE ordinary(value)")
+            compare(hinted, label=f"SQLite filename hint {extension}")
         renamed = root / "renamed.bin"
         renamed.write_bytes(rgb.read_bytes())
         compare(renamed, label="GeoTIFF without extension")

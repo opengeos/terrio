@@ -1,7 +1,7 @@
 """Type stubs for the `terrio._terrio` extension module."""
 
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any, Literal, Protocol, TypeAlias, TypedDict, final, overload
 
 import numpy as np
@@ -1851,7 +1851,7 @@ def blend(
     ...
 
 def identify(
-    sources: str | os.PathLike[str] | list[str | os.PathLike[str]] | bytes,
+    sources: str | os.PathLike[str] | Iterable[str | os.PathLike[str]] | bytes,
     *,
     filename: str | None = None,
     recursive: bool = False,
