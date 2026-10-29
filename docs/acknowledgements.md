@@ -86,7 +86,8 @@ GEOS-backed results:
 The results are not always identical to GEOS's: concave hulls can differ where `spade`'s
 triangulation differs from GEOS's (inputs with co-circular vertices), and the vector tile
 writer's rule for polygons GEOS fails to clip agrees with GEOS 3.14 on about 97% of random
-self-crossing polygons. The source files document these differences.
+self-crossing polygons and rectangles (and on 97% of random overlapping parts). The source files
+document these differences.
 
 The buffer, overlay, dissolve and validity commands are built on
 [GeoRust](https://georust.org)'s [`geo`](https://crates.io/crates/geo) crate (MIT/Apache-2.0),
