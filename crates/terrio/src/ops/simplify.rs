@@ -1,384 +1,254 @@
-//! Topology-preserving simplification and segmentization of single geometries.
+//! Topology-preserving simplification, derived from JTS 1.20.0, and OGR segmentization.
 //!
-//! [`simplify_preserve_topology`] is a port of GEOS 3.14's `TopologyPreservingSimplifier`
-//! (itself a port of the JTS Topology Suite's), which OGR's `SimplifyPreserveTopology`, `gdal
-//! vector simplify` and `ogr2ogr -simplify` run: Douglas-Peucker simplification of every linear
-//! component, where a section is only flattened when the flattened segment crosses no input or
-//! output segment of the same geometry and does not move another component (a hole, say) to
-//! its other side, rings keep at least four points and ring endpoints may move. Every output
-//! vertex is an input vertex; Z is kept and M is dropped, as GDAL's GEOS conversion does.
+//! The JTS sources are `simplify/TaggedLineStringSimplifier`, `TaggedLineString`,
+//! `ComponentJumpChecker` and `algorithm/RayCrossingCounter`. Copyright (c) 2016
+//! Vivid Solutions, and others; Copyright (c) 2023 Martin Davis. EDL-1.0;
+//! see NOTICE and docs/jts-provenance.md. GEOS is only a behavioral oracle.
 //!
-//! [`segmentize`] is OGR's `OGRSimpleCurve::segmentize`, which `gdal vector segmentize` and
-//! `ogr2ogr -segmentize` run.
+//! Segments retain their input coordinate indices, preserving Z while dropping M.
+//! An explicit work stack replaces JTS's recursion; R-trees replace its quadtree.
 
 use crate::{Error, Geometry, Result};
 use geo::algorithm::kernels::{Kernel, Orientation, RobustKernel};
-use rstar::primitives::{GeomWithData, Rectangle};
-use rstar::{AABB, RTree};
+use rstar::{
+    AABB, RTree,
+    primitives::{GeomWithData, Rectangle},
+};
 use wbvector::{Coord, Ring};
 
 type P = (f64, f64);
 
-/// The orientation of `c` relative to the directed line `a`→`b`: 1 to the left, -1 to the
-/// right, 0 collinear, with robust predicates (as GEOS's `Orientation::index`).
+/// Robust orientation, positive for a counterclockwise turn.
 pub(crate) fn orient(a: P, b: P, c: P) -> i32 {
-    let k = |p: P| geo::coord! { x: p.0, y: p.1 };
-    match RobustKernel::orient2d(k(a), k(b), k(c)) {
+    let xy = |p: P| geo::coord! { x: p.0, y: p.1 };
+    match RobustKernel::orient2d(xy(a), xy(b), xy(c)) {
         Orientation::CounterClockwise => 1,
         Orientation::Clockwise => -1,
         Orientation::Collinear => 0,
     }
 }
 
-/// Euclidean distance, as GEOS computes it (`sqrt(dx² + dy²)`).
+/// Euclidean distance, using the arithmetic of JTS Coordinate.distance.
 pub(crate) fn dist(a: P, b: P) -> f64 {
-    let (dx, dy) = (a.0 - b.0, a.1 - b.1);
-    (dx * dx + dy * dy).sqrt()
+    ((a.0 - b.0) * (a.0 - b.0) + (a.1 - b.1) * (a.1 - b.1)).sqrt()
 }
 
-/// The distance from `p` to the segment `a`-`b` (GEOS's `Distance::pointToSegment`).
-fn point_segment_distance(p: P, a: P, b: P) -> f64 {
+/// JTS Distance.pointToSegment, with endpoint clamping.
+fn distance_to_segment(p: P, a: P, b: P) -> f64 {
     if a == b {
         return dist(p, a);
     }
-    let len2 = (b.0 - a.0) * (b.0 - a.0) + (b.1 - a.1) * (b.1 - a.1);
-    let r = ((p.0 - a.0) * (b.0 - a.0) + (p.1 - a.1) * (b.1 - a.1)) / len2;
-    if r <= 0.0 {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let squared = dx * dx + dy * dy;
+    let projection = ((p.0 - a.0) * dx + (p.1 - a.1) * dy) / squared;
+    if projection <= 0.0 {
         return dist(p, a);
     }
-    if r >= 1.0 {
+    if projection >= 1.0 {
         return dist(p, b);
     }
-    let s = ((a.1 - p.1) * (b.0 - a.0) - (a.0 - p.0) * (b.1 - a.1)) / len2;
-    s.abs() * len2.sqrt()
+    (((a.1 - p.1) * dx - (a.0 - p.0) * dy) / squared).abs() * squared.sqrt()
 }
 
-/// Whether the envelopes of two segments intersect.
-fn envelopes_intersect(p1: P, p2: P, q1: P, q2: P) -> bool {
-    !(p1.0.min(p2.0) > q1.0.max(q2.0)
-        || p1.0.max(p2.0) < q1.0.min(q2.0)
-        || p1.1.min(p2.1) > q1.1.max(q2.1)
-        || p1.1.max(p2.1) < q1.1.min(q2.1))
-}
-
-/// Whether `q` is in the envelope of the segment `p1`-`p2`.
-fn in_envelope(p1: P, p2: P, q: P) -> bool {
-    q.0 >= p1.0.min(p2.0) && q.0 <= p1.0.max(p2.0) && q.1 >= p1.1.min(p2.1) && q.1 <= p1.1.max(p2.1)
-}
-
-/// Whether two segments intersect at a point interior to either of them: GEOS's
-/// `RobustLineIntersector::computeIntersection` followed by `isInteriorIntersection`.
-fn interior_intersection(p1: P, p2: P, q1: P, q2: P) -> bool {
-    if !envelopes_intersect(p1, p2, q1, q2) {
-        return false;
-    }
-    let (pq1, pq2) = (orient(p1, p2, q1), orient(p1, p2, q2));
-    if (pq1 > 0 && pq2 > 0) || (pq1 < 0 && pq2 < 0) {
-        return false;
-    }
-    let (qp1, qp2) = (orient(q1, q2, p1), orient(q1, q2, p2));
-    if (qp1 > 0 && qp2 > 0) || (qp1 < 0 && qp2 < 0) {
-        return false;
-    }
-    let interior = |points: &[P]| points.iter().any(|&i| (i != p1 && i != p2) || (i != q1 && i != q2));
-    if pq1 == 0 && pq2 == 0 && qp1 == 0 && qp2 == 0 {
-        // Collinear: the intersection is a point or a segment.
-        let (q1p, q2p, p1q, p2q) = (in_envelope(p1, p2, q1), in_envelope(p1, p2, q2), in_envelope(q1, q2, p1), in_envelope(q1, q2, p2));
-        let points: &[P] = if q1p && q2p {
-            &[q1, q2]
-        } else if p1q && p2q {
-            &[p1, p2]
-        } else if q1p && p1q {
-            if q1 == p1 && !q2p && !p2q { &[q1] } else { &[q1, p1] }
-        } else if q1p && p2q {
-            if q1 == p2 && !q2p && !p1q { &[q1] } else { &[q1, p2] }
-        } else if q2p && p1q {
-            if q2 == p1 && !q1p && !p2q { &[q2] } else { &[q2, p1] }
-        } else if q2p && p2q {
-            if q2 == p2 && !q1p && !p1q { &[q2] } else { &[q2, p2] }
-        } else {
-            return false;
-        };
-        return interior(points);
-    }
-    if pq1 == 0 || pq2 == 0 || qp1 == 0 || qp2 == 0 {
-        // An endpoint of one segment lies on the other.
-        let i = if p1 == q1 || p1 == q2 {
-            p1
-        } else if p2 == q1 || p2 == q2 {
-            p2
-        } else if pq1 == 0 {
-            q1
-        } else if pq2 == 0 {
-            q2
-        } else if qp1 == 0 {
-            p1
-        } else {
-            p2
-        };
-        return interior(&[i]);
-    }
-    // A proper intersection, interior to both segments.
-    true
-}
-
-/// GEOS's `RayCrossingCounter`: the crossings of a ray from `p` towards +X by a segment.
-fn crossings(p: P, segments: impl Iterator<Item = (P, P)>) -> usize {
-    let mut count = 0;
-    for (p1, p2) in segments {
-        if p1.0 < p.0 && p2.0 < p.0 {
-            continue;
-        }
-        if p == p2 {
-            continue;
-        }
-        if p1.1 == p.1 && p2.1 == p.1 {
-            continue;
-        }
-        if (p1.1 > p.1 && p2.1 <= p.1) || (p2.1 > p.1 && p1.1 <= p.1) {
-            let mut o = orient(p1, p2, p);
-            if o == 0 {
-                continue;
-            }
-            if p2.1 < p1.1 {
-                o = -o;
-            }
-            if o > 0 {
-                count += 1;
-            }
-        }
-    }
-    count
-}
-
-/// A segment of a simplified line: the indices of its vertices, and its entry in the output
-/// index when it is one.
-#[derive(Clone, Copy)]
-struct ResultSegment {
-    a: usize,
-    b: usize,
-    output: Option<usize>,
-}
-
-/// A linear component being simplified (GEOS's `TaggedLineString`).
-struct Line {
-    pts: Vec<P>,
-    min_size: usize,
-    is_ring: bool,
-    result: Vec<ResultSegment>,
-}
-
-impl Line {
-    fn result_size(&self) -> usize {
-        if self.result.is_empty() { 0 } else { self.result.len() + 1 }
-    }
-
-    fn component_point(&self) -> P {
-        match self.result.first() {
-            Some(s) => self.pts[s.a],
-            None => self.pts[1.min(self.pts.len() - 1)],
-        }
-    }
-}
-
-type SegmentIndex<T> = RTree<GeomWithData<Rectangle<[f64; 2]>, T>>;
-
-fn segment_box(a: P, b: P) -> Rectangle<[f64; 2]> {
-    Rectangle::from_corners([a.0.min(b.0), a.1.min(b.1)], [a.0.max(b.0), a.1.max(b.1)])
-}
-
-fn query_box(a: P, b: P) -> AABB<[f64; 2]> {
+fn bounds(a: P, b: P) -> AABB<[f64; 2]> {
     AABB::from_corners([a.0.min(b.0), a.1.min(b.1)], [a.0.max(b.0), a.1.max(b.1)])
 }
 
-/// GEOS's `TaggedLinesSimplifier`, with its input and output segment indices.
-struct Simplifier {
-    lines: Vec<Line>,
-    tolerance: f64,
-    input: SegmentIndex<(usize, usize)>,
-    input_alive: Vec<Vec<bool>>,
-    output: SegmentIndex<usize>,
-    output_segments: Vec<(P, P, bool)>,
+/// JTS's invalid-intersection rule: equality, overlap, crossing or an interior touch.
+pub(crate) fn conflicts(a: P, b: P, c: P, d: P) -> bool {
+    if (a == c && b == d) || (a == d && b == c) {
+        return true;
+    }
+    if !rstar::Envelope::intersects(&bounds(a, b), &bounds(c, d)) {
+        return false;
+    }
+    let ab = [orient(a, b, c), orient(a, b, d)];
+    let cd = [orient(c, d, a), orient(c, d, b)];
+    if ab[0] * ab[1] < 0 && cd[0] * cd[1] < 0 {
+        return true;
+    }
+    // Collinear overlap also has an endpoint interior to at least one segment.
+    [(c, a, b, ab[0]), (d, a, b, ab[1]), (a, c, d, cd[0]), (b, c, d, cd[1])]
+        .iter()
+        .any(|&(p, u, v, o)| o == 0 && p != u && p != v && rstar::Envelope::contains_point(&bounds(u, v), &[p.0, p.1]))
 }
 
-impl Simplifier {
-    fn new(lines: Vec<Line>, tolerance: f64) -> Self {
-        let mut items = Vec::new();
-        let mut input_alive = Vec::with_capacity(lines.len());
-        for (l, line) in lines.iter().enumerate() {
-            let n = line.pts.len().saturating_sub(1);
-            for k in 0..n {
-                items.push(GeomWithData::new(segment_box(line.pts[k], line.pts[k + 1]), (l, k)));
+/// The crossing count (not boundary classification) from JTS RayCrossingCounter.
+fn ray_count(p: P, segments: impl Iterator<Item = (P, P)>) -> usize {
+    segments
+        .filter(|&(a, b)| {
+            if (a.0 < p.0 && b.0 < p.0) || p == b || (a.1 == p.1 && b.1 == p.1) {
+                return false;
             }
-            input_alive.push(vec![true; n]);
+            if (a.1 > p.1) == (b.1 > p.1) {
+                return false;
+            }
+            let turn = orient(a, b, p);
+            if b.1 < a.1 { turn < 0 } else { turn > 0 }
+        })
+        .count()
+}
+
+#[derive(Clone, Copy)]
+struct IndexedSegment {
+    a: P,
+    b: P,
+    owner: usize,
+    start: usize,
+    active: bool,
+}
+
+type Tree = RTree<GeomWithData<Rectangle<[f64; 2]>, usize>>;
+
+/// JTS's separate input and output segment indexes. The bulk-loaded input index
+/// stays immutable; the output index is grown from empty. Inactive segment flags
+/// support removals without relying on geometric identity.
+struct TaggedSimplifier {
+    points: Vec<Vec<P>>,
+    rings: Vec<bool>,
+    component_points: Vec<P>,
+    original: Vec<Vec<usize>>,
+    segments: Vec<IndexedSegment>,
+    input_tree: Tree,
+    output_tree: Tree,
+}
+
+impl TaggedSimplifier {
+    fn new(parts: &[(Vec<Coord>, bool)]) -> Self {
+        let points: Vec<Vec<P>> = parts.iter().map(|(cs, _)| cs.iter().map(|c| (c.x, c.y)).collect()).collect();
+        let mut segments = Vec::new();
+        let mut original = Vec::new();
+        for (owner, cs) in points.iter().enumerate() {
+            let mut ids = Vec::new();
+            for (start, pair) in cs.windows(2).enumerate() {
+                ids.push(segments.len());
+                segments.push(IndexedSegment { a: pair[0], b: pair[1], owner, start, active: true });
+            }
+            original.push(ids);
         }
-        Self { lines, tolerance, input: RTree::bulk_load(items), input_alive, output: RTree::new(), output_segments: Vec::new() }
+        let entries = segments
+            .iter()
+            .enumerate()
+            .map(|(id, s)| {
+                GeomWithData::new(Rectangle::from_corners([s.a.0.min(s.b.0), s.a.1.min(s.b.1)], [s.a.0.max(s.b.0), s.a.1.max(s.b.1)]), id)
+            })
+            .collect();
+        let component_points = points.iter().map(|cs| cs.get(1).copied().unwrap_or(cs[0])).collect();
+        Self {
+            points,
+            component_points,
+            rings: parts.iter().map(|p| p.1).collect(),
+            original,
+            segments,
+            input_tree: RTree::bulk_load(entries),
+            output_tree: RTree::new(),
+        }
     }
 
-    fn add_output(&mut self, a: P, b: P) -> usize {
-        let id = self.output_segments.len();
-        self.output_segments.push((a, b, true));
-        self.output.insert(GeomWithData::new(segment_box(a, b), id));
+    fn add(&mut self, owner: usize, a: usize, b: usize) -> usize {
+        let (p, q) = (self.points[owner][a], self.points[owner][b]);
+        let id = self.segments.len();
+        self.segments.push(IndexedSegment { a: p, b: q, owner, start: usize::MAX, active: true });
+        self.output_tree.insert(GeomWithData::new(Rectangle::from_corners([p.0.min(q.0), p.1.min(q.1)], [p.0.max(q.0), p.1.max(q.1)]), id));
         id
     }
 
-    fn invalid_intersection(s0: (P, P), s1: (P, P)) -> bool {
-        if (s0.0 == s1.0 && s0.1 == s1.1) || (s0.0 == s1.1 && s0.1 == s1.0) {
-            return true;
-        }
-        interior_intersection(s0.0, s0.1, s1.0, s1.1)
+    fn intersects(&self, a: P, b: P, excluded: impl Fn(&IndexedSegment) -> bool) -> bool {
+        self.input_tree
+            .locate_in_envelope_intersecting(bounds(a, b))
+            .chain(self.output_tree.locate_in_envelope_intersecting(bounds(a, b)))
+            .any(|entry| {
+                let s = &self.segments[entry.data];
+                s.active && !excluded(s) && conflicts(a, b, s.a, s.b)
+            })
     }
 
-    fn has_output_intersection(&self, flat: (P, P)) -> bool {
-        self.output.locate_in_envelope_intersecting(query_box(flat.0, flat.1)).any(|e| {
-            let (a, b, alive) = self.output_segments[e.data];
-            alive && Self::invalid_intersection((a, b), flat)
+    fn jumps(&self, owner: usize, replaced: &[(P, P)], flat: (P, P)) -> bool {
+        let env = replaced
+            .iter()
+            .flat_map(|&(a, b)| [a, b])
+            .fold((f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |e, p| {
+                (e.0.min(p.0), e.1.min(p.1), e.2.max(p.0), e.3.max(p.1))
+            });
+        self.component_points.iter().enumerate().any(|(id, &p)| {
+            if id == owner {
+                return false;
+            }
+            p.0 >= env.0
+                && p.0 <= env.2
+                && p.1 >= env.1
+                && p.1 <= env.3
+                && ray_count(p, replaced.iter().copied()) % 2 != ray_count(p, std::iter::once(flat)) % 2
         })
     }
 
-    /// Whether the flattening segment crosses an input segment, other than those of the section
-    /// `excluded` (line, start, end) it replaces.
-    fn has_input_intersection(&self, excluded: Option<(usize, usize, usize)>, flat: (P, P)) -> bool {
-        self.input.locate_in_envelope_intersecting(query_box(flat.0, flat.1)).any(|e| {
-            let (l, k) = e.data;
-            if !self.input_alive[l][k] {
-                return false;
-            }
-            let pts = &self.lines[l].pts;
-            if !Self::invalid_intersection((pts[k], pts[k + 1]), flat) {
-                return false;
-            }
-            match excluded {
-                Some((line, start, end)) if line == l => {
-                    let inside = k >= start && k < end;
-                    !inside
-                }
-                _ => true,
-            }
-        })
-    }
-
-    /// GEOS's `ComponentJumpChecker`: whether replacing `section` (segments) by `flat` moves a
-    /// point of another component to the other side of the line.
-    fn has_jump(&self, line: usize, section: &[(P, P)], flat: (P, P)) -> bool {
-        let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-        for (a, b) in section {
-            for p in [a, b] {
-                x0 = x0.min(p.0);
-                y0 = y0.min(p.1);
-                x1 = x1.max(p.0);
-                y1 = y1.max(p.1);
-            }
+    fn line(&mut self, owner: usize, tolerance: f64) -> Vec<usize> {
+        let n = self.points[owner].len();
+        if n < 2 {
+            return Vec::new();
         }
-        self.lines.iter().enumerate().any(|(i, comp)| {
-            if i == line || comp.pts.is_empty() {
-                return false;
-            }
-            let p = comp.component_point();
-            if p.0 < x0 || p.0 > x1 || p.1 < y0 || p.1 > y1 {
-                return false;
-            }
-            crossings(p, section.iter().copied()) % 2 != crossings(p, std::iter::once(flat)) % 2
-        })
-    }
-
-    fn section_valid(&self, line: usize, i: usize, j: usize, flat: (P, P)) -> bool {
-        if self.has_output_intersection(flat) || self.has_input_intersection(Some((line, i, j)), flat) {
-            return false;
-        }
-        let pts = &self.lines[line].pts;
-        let section: Vec<(P, P)> = (i..j).map(|k| (pts[k], pts[k + 1])).collect();
-        !self.has_jump(line, &section, flat)
-    }
-
-    fn simplify_line(&mut self, l: usize) {
-        let n = self.lines[l].pts.len();
-        if n == 0 {
-            return;
-        }
-        // GEOS recurses, left section first; a stack keeps that order without deep recursion.
-        let mut stack = vec![(0usize, n - 1, 0usize)];
-        while let Some((i, j, depth)) = stack.pop() {
-            let depth = depth + 1;
-            let line = &self.lines[l];
-            if i + 1 == j {
-                self.lines[l].result.push(ResultSegment { a: i, b: j, output: None });
+        let minimum = if self.points[owner].first() == self.points[owner].last() { 4 } else { 2 };
+        let mut output: Vec<(usize, usize, usize)> = Vec::new();
+        let mut stack = vec![(0, n - 1, 1)];
+        while let Some((a, b, depth)) = stack.pop() {
+            if b == a + 1 {
+                output.push((a, b, self.original[owner][a]));
                 continue;
             }
-            let mut valid = true;
-            if line.result_size() < line.min_size && depth + 1 < line.min_size {
-                valid = false;
-            }
-            let (seg_a, seg_b) = (line.pts[i], line.pts[j]);
-            let (mut furthest, mut max) = (i, -1.0);
-            for k in i + 1..j {
-                let d = point_segment_distance(line.pts[k], seg_a, seg_b);
-                if d > max {
-                    max = d;
-                    furthest = k;
+            let (p, q) = (self.points[owner][a], self.points[owner][b]);
+            let (mut farthest, mut distance) = (a + 1, -1.0);
+            for k in a + 1..b {
+                let d = distance_to_segment(self.points[owner][k], p, q);
+                if d > distance {
+                    (farthest, distance) = (k, d);
                 }
             }
-            // Extreme finite coordinates can overflow distance arithmetic to NaN;
-            // keep the original segments when no comparable distance was found.
-            if max < 0.0 {
-                for k in i..j {
-                    self.lines[l].result.push(ResultSegment { a: k, b: k + 1, output: None });
+            let size = if output.is_empty() { 0 } else { output.len() + 1 };
+            let enough = size >= minimum || depth + 1 >= minimum;
+            let valid = enough
+                && distance <= tolerance
+                && !self.intersects(p, q, |s| s.owner == owner && s.start >= a && s.start < b)
+                && !self.jumps(owner, &self.points[owner][a..=b].windows(2).map(|s| (s[0], s[1])).collect::<Vec<_>>(), (p, q));
+            if valid {
+                for &id in &self.original[owner][a..b] {
+                    self.segments[id].active = false;
                 }
-                continue;
-            }
-            if max > self.tolerance {
-                valid = false;
-            }
-            if valid && self.section_valid(l, i, j, (seg_a, seg_b)) {
-                let id = self.add_output(seg_a, seg_b);
-                for k in i..j {
-                    self.input_alive[l][k] = false;
-                }
-                self.lines[l].result.push(ResultSegment { a: i, b: j, output: Some(id) });
-                continue;
-            }
-            stack.push((furthest, j, depth));
-            stack.push((i, furthest, depth));
-        }
-        let line = &self.lines[l];
-        let pts = &line.pts;
-        if line.is_ring && pts.len() >= 4 && pts[0] == pts[pts.len() - 1] {
-            self.simplify_ring_endpoint(l);
-        }
-    }
-
-    fn simplify_ring_endpoint(&mut self, l: usize) {
-        let line = &self.lines[l];
-        if line.result_size() <= line.min_size {
-            return;
-        }
-        let (first, last) = (line.result[0], line.result[line.result.len() - 1]);
-        let pts = &line.pts;
-        let flat = (pts[last.a], pts[first.b]);
-        let end = pts[first.a];
-        if point_segment_distance(end, flat.0, flat.1) > self.tolerance {
-            return;
-        }
-        let valid = orient(flat.0, flat.1, pts[first.a]) == 0
-            || !(self.has_output_intersection(flat)
-                || self.has_input_intersection(None, flat)
-                || self.has_jump(l, &[(pts[first.a], pts[first.b]), (pts[last.a], pts[last.b])], flat));
-        if !valid {
-            return;
-        }
-        for s in [first, last] {
-            if let Some(id) = s.output {
-                self.output_segments[id].2 = false;
+                let id = self.add(owner, a, b);
+                output.push((a, b, id));
+            } else {
+                stack.push((farthest, b, depth + 1));
+                stack.push((a, farthest, depth + 1));
             }
         }
-        let id = self.add_output(flat.0, flat.1);
-        let line = &mut self.lines[l];
-        line.result.pop();
-        line.result[0] = ResultSegment { a: last.a, b: first.b, output: Some(id) };
+        // JTS only moves endpoints of LinearRings, not closed LineStrings.
+        if self.rings[owner] && output.len() + 1 > minimum {
+            let first = output[0];
+            let last = output[output.len() - 1];
+            let (a, mid, b) = (self.points[owner][last.0], self.points[owner][first.0], self.points[owner][first.1]);
+            let valid = orient(a, b, mid) == 0 || (!self.intersects(a, b, |_| false) && !self.jumps(owner, &[(a, mid), (mid, b)], (a, b)));
+            if distance_to_segment(mid, a, b) <= tolerance && valid {
+                self.segments[first.2].active = false;
+                self.segments[last.2].active = false;
+                let id = self.add(owner, last.0, first.1);
+                output[0] = (last.0, first.1, id);
+                output.pop();
+            }
+        }
+        let mut indices: Vec<usize> = output.iter().map(|s| s.0).collect();
+        if let Some(s) = output.last() {
+            indices.push(s.1);
+        }
+        // Executable GEOS observations distinguish completed components from
+        // untouched ones: their jump probe is the first retained coordinate,
+        // rather than JTS 1.20's original second coordinate.
+        if let Some(&first) = indices.first() {
+            self.component_points[owner] = self.points[owner][first];
+        }
+        indices
     }
 }
 
-/// The coordinates of a ring, closed: drivers may omit the closing point.
 pub(crate) fn closed_ring(r: &[Coord]) -> Vec<Coord> {
     let mut cs = r.to_vec();
     if let (Some(a), Some(b)) = (cs.first(), cs.last())
@@ -397,7 +267,7 @@ pub(crate) fn open_ring(mut cs: Vec<Coord>) -> Ring {
     Ring(cs)
 }
 
-/// Visits the linear components of a geometry in GEOS's order (polygon shells before their
+/// Visits linear components in geometry order (polygon shells before their
 /// holes), as `(coordinates, is_ring)`.
 fn components(g: &Geometry, out: &mut Vec<(Vec<Coord>, bool)>) {
     match g {
@@ -455,9 +325,9 @@ fn rebuild(g: &Geometry, results: &mut std::vec::IntoIter<Vec<Coord>>) -> Geomet
     }
 }
 
-/// Simplifies a geometry with a distance tolerance, preserving its topology, as GEOS's
-/// `TopologyPreservingSimplifier` (OGR's `SimplifyPreserveTopology`) does. See the module
-/// documentation. Points are unchanged; M values are dropped.
+/// Simplifies linear components using JTS's topology-preserving algorithm.
+/// Points and Z values are preserved; M values are dropped. XY must be finite,
+/// and tolerance must be non-negative (positive infinity is accepted).
 pub fn simplify_preserve_topology(g: &Geometry, tolerance: f64) -> Result<Geometry> {
     if tolerance.is_nan() || tolerance < 0.0 {
         return Err(Error::InvalidArgument("the simplification tolerance must be a non-negative number".into()));
@@ -470,31 +340,21 @@ pub fn simplify_preserve_topology(g: &Geometry, tolerance: f64) -> Result<Geomet
     if parts.iter().any(|(cs, _)| cs.len() == 1) {
         return Err(Error::InvalidArgument("a line must contain zero or at least two points".into()));
     }
-    let lines = parts
+    let mut simplifier = TaggedSimplifier::new(&parts);
+    let results = parts
         .iter()
-        .map(|(cs, is_ring)| {
-            let pts: Vec<P> = cs.iter().map(|c| (c.x, c.y)).collect();
-            let closed = pts.len() > 1 && pts.first() == pts.last();
-            Line { pts, min_size: if closed { 4 } else { 2 }, is_ring: *is_ring, result: Vec::new() }
+        .enumerate()
+        .map(|(id, (cs, _))| {
+            simplifier
+                .line(id, tolerance)
+                .into_iter()
+                .map(|i| {
+                    let c = &cs[i];
+                    Coord { x: c.x, y: c.y, z: c.z, m: None }
+                })
+                .collect()
         })
-        .collect();
-    let mut s = Simplifier::new(lines, tolerance);
-    for l in 0..s.lines.len() {
-        s.simplify_line(l);
-    }
-    let results: Vec<Vec<Coord>> = s
-        .lines
-        .iter()
-        .zip(&parts)
-        .map(|(line, (cs, _))| {
-            let xyz = |i: usize| Coord { x: cs[i].x, y: cs[i].y, z: cs[i].z, m: None };
-            let mut out: Vec<Coord> = line.result.iter().map(|r| xyz(r.a)).collect();
-            if let Some(r) = line.result.last() {
-                out.push(xyz(r.b));
-            }
-            out
-        })
-        .collect();
+        .collect::<Vec<_>>();
     Ok(rebuild(g, &mut results.into_iter()))
 }
 
@@ -625,6 +485,20 @@ mod tests {
 
     fn xy(cs: &[Coord]) -> Vec<(f64, f64)> {
         cs.iter().map(|c| (c.x, c.y)).collect()
+    }
+
+    #[test]
+    fn simplification_can_add_segments_after_index_bulk_loading() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!("../../tests/data/jts-index-panic.json")).unwrap();
+        let read = |name: &str| {
+            let hex = fixture[name].as_str().unwrap();
+            let bytes = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect::<Vec<_>>();
+            Geometry::from_wkb(&bytes).unwrap()
+        };
+        let input = read("input");
+        let expected = read("expected");
+        let result = simplify_preserve_topology(&input, 0.01).unwrap();
+        assert_eq!(result.to_wkb(), expected.to_wkb());
     }
 
     #[test]

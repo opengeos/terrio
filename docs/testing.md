@@ -882,9 +882,10 @@ python scripts/conformance.py ../terrio-data --only isea --strict
 ## Vector geometry commands (#289)
 
 `simplify`, `segmentize`, `convex-hull`, `concave-hull`, `swap-xy`, `set-geom-type`,
-`combine` and `sort` have unit tests of the GEOS/OGR behaviours they port (ring endpoint
+`combine` and `sort` have unit tests of GEOS/OGR behavior, with the simplifier, hulls
+and STR packing implemented from JTS (see [provenance](jts-provenance.md)): ring endpoint
 simplification, jump checks, OGR's segmentize direction and Z/M copies, `forceTo` dimensions,
-Graham scan ring order, concave hull areas, Hilbert codes from GDAL's C code), CLI tests of the
+Graham scan ring order, concave hull areas and Hilbert codes from GDAL's C code. There are CLI tests of the
 streamed and whole-layer paths and refusals, and Python, Node/WASM and MCP tests. The
 `vector-geom` conformance suite compares them on Tennessee and US counties, Las Vegas roads and
 Natural Earth countries and places with `gdal vector` (GDAL 3.12.2) for simplify, segmentize,
@@ -892,7 +893,8 @@ swap-xy, set-geom-type and `ogr2ogr -simplify/-segmentize`, coordinate by coordi
 OGR's `ConvexHull` (canonical WKB), `ConcaveHull` (edge sets) and GEOS's `GEOSConcaveHullOfPolygons_r` (ctypes) for polygon hulls,
 by edge sets; and, as GDAL 3.12 has no combine or sort, with Python references of GDAL 3.13's
 algorithms (GEOS's own STR tree for `--method strtree`). It needs the `gdal` command and the
-osgeo bindings.
+osgeo bindings and Shapely. Concave hulls must be valid, with relative symmetric-difference
+area at most 1e-10 and scaled Hausdorff distance at most 1e-10 when edges differ.
 
 ```sh
 cargo test -p terrio --lib -- ops::simplify ops::hull ops::vector_geom
@@ -1284,3 +1286,16 @@ cargo test -p terrio-cli --test inspection
 pytest python/tests/test_check.py
 TERRIO_TEST_DATA=../terrio-data node --test --test-name-pattern='checkDataset' js/tests/node.test.mjs
 ```
+
+## JTS provenance replacement regressions
+
+`docs/jts-provenance.md` maps the geometry replacements to pinned JTS 1.20.0
+sources. `cargo test -p terrio --test jts_behavior` replays the captured GEOS
+simplification, convex/concave hull and STR ordering observations without native
+reference libraries. `cargo test -p terrio --lib tiles::validity` checks recorded
+integer-grid validity decisions. The existing `vector-geom` conformance suite
+continues to compare the public CLI with GDAL/GEOS on real data.
+
+`scripts/compare_jts_behavior.py` refreshes or checks the synthetic observations
+against executable GEOS APIs and optionally JTS; see the provenance document for
+commands and tolerances. MakeValid is excluded from this replacement boundary.

@@ -65,6 +65,24 @@ def test_hulls():
     assert concave["type"] == "Polygon"
     # GEOS 3.14 gives the same 8 vertices and an area of 61.
     assert len(concave["coordinates"][0]) == 9
+    # GEOS observation: ratio 0.1 leaves these two triangles disconnected.
+    triangles = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [
+                [[[18, -5], [15, -6], [12, -2], [18, -5]]],
+                [[[8, 3], [13, 3], [10, 4], [8, 3]]],
+            ],
+        },
+    }
+    result = features(terrio.concave_hull(triangles, 0.1))[0]["geometry"]
+    assert result["type"] == "MultiPolygon"
+    assert all(len(polygon) == 1 for polygon in result["coordinates"])
+    assert {frozenset(map(tuple, p[0])) for p in result["coordinates"]} == {
+        frozenset(map(tuple, p[0])) for p in triangles["geometry"]["coordinates"]
+    }
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.concave_hull(POINTS, 2.0)
 

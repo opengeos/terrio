@@ -758,34 +758,17 @@ fn ring_crossings(polys: &[Vec<Vec<Pt>>]) -> Vec<Crossing> {
 /// rectangle, or in the envelope OverlayNG clips its inputs to (the inputs' envelopes, each grown
 /// by a tenth, intersected; grown to the segments crossing it, then by a tenth again) with one
 /// of its segments near the rectangle (or anywhere in that envelope for overlapping parts). This
+/// envelope calculation is ported from JTS (see `overlay_envelope`). The remaining
+/// failure predictor is a compatibility heuristic, not an overlay implementation. The
 /// rule agrees with GEOS 3.14 on 97% of random self-crossing polygons and rectangles, and 97% of
 /// random overlapping parts.
 fn clip_fails(polys: &[Vec<Vec<Pt>>], crossings: &[Crossing], env: Rect, r: Rect) -> bool {
     if crossings.is_empty() {
         return false;
     }
-    let grow = |e: Rect| {
-        let (w, h) = (e.2 - e.0, e.3 - e.1);
-        let d = 0.1 * if w.min(h) > 0.0 { w.min(h) } else { w.max(h) };
-        (e.0 - d, e.1 - d, e.2 + d, e.3 + d)
-    };
-    let (a, b) = (grow(env), grow(r));
-    let result = (a.0.max(b.0), a.1.max(b.1), a.2.min(b.2), a.3.min(b.3));
-    if result.0 > result.2 || result.1 > result.3 {
+    let Some(clip) = super::overlay_envelope::intersection(polys, env, r) else {
         return false;
-    }
-    let mut clip = result;
-    let corners = [(r.0, r.1), (r.2, r.1), (r.2, r.3), (r.0, r.3), (r.0, r.1)];
-    let rings = polys.iter().flatten().map(Vec::as_slice).chain(std::iter::once(&corners[..]));
-    for ring in rings {
-        for w in ring.windows(2) {
-            let (p, q) = (w[0], w[1]);
-            if p.0.max(q.0) >= result.0 && p.0.min(q.0) <= result.2 && p.1.max(q.1) >= result.1 && p.1.min(q.1) <= result.3 {
-                clip = (clip.0.min(p.0.min(q.0)), clip.1.min(p.1.min(q.1)), clip.2.max(p.0.max(q.0)), clip.3.max(p.1.max(q.1)));
-            }
-        }
-    }
-    let clip = grow(clip);
+    };
     let within = |p: Pt, e: Rect| p.0 >= e.0 && p.0 <= e.2 && p.1 >= e.1 && p.1 <= e.3;
     let meets = |a: Rect, b: Rect| a.0 <= b.2 && b.0 <= a.2 && a.1 <= b.3 && b.1 <= a.3;
     crossings.iter().any(|&(p, s1, s2, parts)| within(p, r) || (within(p, clip) && (parts || meets(s1, r) || meets(s2, r))))

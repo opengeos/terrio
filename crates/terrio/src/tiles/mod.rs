@@ -32,6 +32,8 @@ pub(crate) mod mbtiles;
 #[cfg(feature = "tiles")]
 pub(crate) mod mvt;
 #[cfg(feature = "tiles")]
+mod overlay_envelope;
+#[cfg(feature = "tiles")]
 pub(crate) mod pmtiles;
 #[cfg(feature = "tiles")]
 pub(crate) mod pyramid;
@@ -41,6 +43,8 @@ pub(crate) mod raster;
 pub(crate) mod source;
 #[cfg(feature = "tiles")]
 pub(crate) mod valid;
+#[cfg(feature = "tiles")]
+mod validity;
 #[cfg(feature = "tiles")]
 pub(crate) mod vector;
 

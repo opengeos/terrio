@@ -1896,6 +1896,21 @@ test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom
     geometry: { type: "MultiPoint", coordinates: [[0, 0], [10, 1], [11, 10], [1, 12], [5, 5], [5, 9], [2, 3], [8, 3]] },
   };
   assert.equal(terrio.concaveHull(pts, 0, { allowHoles: false }).toGeoJSON().features[0].geometry.type, "Polygon");
+  // GEOS observation: polygon erosion at 0.1 keeps both triangles separate.
+  const triangles = {
+    type: "Feature", properties: {},
+    geometry: { type: "MultiPolygon", coordinates: [
+      [[[18, -5], [15, -6], [12, -2], [18, -5]]],
+      [[[8, 3], [13, 3], [10, 4], [8, 3]]],
+    ] },
+  };
+  const polygonHull = terrio.concaveHull(triangles, 0.1).toGeoJSON().features[0].geometry;
+  const triangleVertices = (geometry) => geometry.coordinates.map((polygon) => {
+    assert.equal(polygon.length, 1);
+    return [...new Set(polygon[0].map((p) => JSON.stringify(p)))].sort().join(";");
+  }).sort();
+  assert.equal(polygonHull.type, "MultiPolygon");
+  assert.deepEqual(triangleVertices(polygonHull), triangleVertices(triangles.geometry));
   assert.deepEqual(terrio.swapXy(line).toGeoJSON().features[1].geometry.coordinates, [2, 1]);
   const multi = terrio.setGeomType(line, { multi: true }).toGeoJSON();
   assert.equal(multi.features[0].geometry.type, "MultiLineString");

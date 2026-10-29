@@ -1977,11 +1977,11 @@ def suite_vector_geom(ctx):
         "Tennessee and US counties, Las Vegas roads and Natural Earth countries and places: "
         "simplify, segmentize, swap-xy and set-geom-type against gdal vector, coordinate by "
         "coordinate; convex hulls by canonical WKB, concave hulls against OGR/GEOS by their edges (relative "
-        "symmetric-difference area <= 0.2 where erosion order differs); combine and sort "
+        "symmetric-difference area <= 1e-10, scaled Hausdorff distance <= 1e-10, both valid); combine and sort "
         "against GDAL 3.13's algorithms (GEOS's STR tree, GDAL's Hilbert code), ties aside.",
     )
-    if missing_modules("osgeo"):
-        s.skipped = "needs osgeo with GEOS"
+    if missing_modules("osgeo", "shapely"):
+        s.skipped = "needs osgeo with GEOS and shapely"
         return s
     if not shutil.which("gdal"):
         s.skipped = "needs the gdal command (GDAL >= 3.12)"

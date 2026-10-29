@@ -95,17 +95,19 @@ crates/terrio/src/ops/contour.rs are adapted from GDAL's alg/marching_squares
 JTS Topology Suite
 -------------------------------------------------------------------------------
 
-The topology-preserving simplification in crates/terrio/src/ops/simplify.rs and the convex and
-concave hulls in crates/terrio/src/ops/hull.rs follow the algorithms of the JTS Topology Suite
-(https://github.com/locationtech/jts: TopologyPreservingSimplifier, ConvexHull, ConcaveHull and
-ConcaveHullOfPolygons, by Martin Davis), reimplemented in Rust. Their behaviour was checked
-against GEOS 3.14 (https://libgeos.org), the C++ port of JTS that GDAL uses. The polygon
-validity checks and repair in crates/terrio/src/tiles/valid.rs follow what GEOS's IsValid
-and MakeValid (the JTS IsValidOp and GEOS's linework MakeValid) do in GDAL's MVT writer, and the
-spatial sort in crates/terrio/src/ops/vector_geom.rs follows the STR packing of GEOS's
-TemplateSTRtree (JTS's STRtree). JTS is available under the Eclipse Distribution License 1.0:
-
-  Copyright (c) 2016 Vivid Solutions and others.
+The topology-preserving simplification in crates/terrio/src/ops/simplify.rs, hulls in
+crates/terrio/src/ops/hull.rs, tile validity checks in crates/terrio/src/tiles/validity.rs
+and STR leaf packing in crates/terrio/src/ops/strtree.rs, with the point triangulation
+in crates/terrio/src/ops/jts_delaunay.rs and constrained polygon triangulation in
+crates/terrio/src/ops/jts_cdt.rs, and floating overlay clipping envelopes
+in crates/terrio/src/tiles/overlay_envelope.rs, are derived directly from the
+JTS Topology Suite 1.20.0 (https://github.com/locationtech/jts), commit
+6e95fe82feb986a7aa657f4ffa406d8c290af509, modified for Rust and Terrio's data model.
+Sources and adaptations are listed in docs/jts-provenance.md. These adaptations use
+JTS under the Eclipse Distribution License 1.0. GEOS is used only as an executable
+behavioral reference for these replacements.
+  Copyright (c) 2016 Vivid Solutions, and others.
+  Copyright (c) 2016, 2019, 2020, 2021, 2022, 2023 Martin Davis.
   All rights reserved.
 
   Redistribution and use in source and binary forms, with or without modification, are permitted
@@ -132,6 +134,14 @@ TemplateSTRtree (JTS's STRtree). JTS is available under the Eclipse Distribution
   OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
   POSSIBILITY OF SUCH DAMAGE.
 
+-------------------------------------------------------------------------------
+Deferred geometry repair provenance
+-------------------------------------------------------------------------------
+The linework MakeValid implementation and its private helpers in
+crates/terrio/src/tiles/valid.rs predate the JTS replacements described above.
+They were explicitly excluded from that replacement and require a separate,
+independent implementation and licensing review. They are NOT covered by the
+JTS attribution above. No claim of complete GEOS provenance remediation is made.
 -------------------------------------------------------------------------------
 GDAL vector geometry operations
 -------------------------------------------------------------------------------
