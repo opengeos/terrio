@@ -8,10 +8,9 @@
 //! or triggers this module does not emulate) and GeoPackages held in memory are
 //! read whole (every table's rows as stored, every index, trigger and view) and written anew;
 //! a file is then renamed over the original. A pending WAL must be checkpointed with SQLite
-//! first; rewriting only the main file would lose committed changes. Files with tables or indexes
-//! that cannot be
-//! rewritten (`WITHOUT ROWID` tables, indexes on expressions, UTF-16 text) or that a hot
-//! rollback journal goes with are left untouched, with an error.
+//! first; rewriting only the main file would lose committed changes. Files with tables or
+//! indexes that cannot be rewritten (`WITHOUT ROWID` tables, indexes on expressions, UTF-16
+//! text), or accompanied by a hot rollback journal, are left untouched with an error.
 
 use super::geopackage::{self as gw, Builder};
 use super::sqlite::{self as w, Index, SchemaObject, Table};
@@ -72,6 +71,7 @@ fn real(v: &w::Value) -> Option<f64> {
 pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
     let resolved = std::fs::canonicalize(path)?;
     let path = resolved.to_str().ok_or_else(|| Error::InvalidArgument("GeoPackage path must be UTF-8".into()))?;
+    // Reject pending WAL state before selecting the in-place or rewrite path.
     crate::drivers::sqlite_edit::ensure_no_wal(&resolved)?;
     if super::gpkg_inplace::update_in_place(&resolved, layers, mode)? {
         return Ok(());
@@ -84,6 +84,7 @@ pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
 /// files are not changed in place) a transaction interrupted cannot be told from one under way,
 /// and the journal, left next to the new file, would be rolled back over it.
 fn rewrite(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
+    // Recheck at the rewrite boundary before reading only the main image.
     crate::drivers::sqlite_edit::ensure_no_wal(std::path::Path::new(path))?;
     if crate::drivers::sqlite_edit::has_hot_journal(std::path::Path::new(path))? {
         return Err(Error::Unsupported(format!(
@@ -736,6 +737,37 @@ mod tests {
         assert_eq!(layers.iter().map(|l| (l.name.as_str(), l.len())).collect::<Vec<_>>(), [("a", 500), ("b", 2), ("c", 3)]);
         assert_eq!(layers[1].features[0].fid, 1);
         assert_eq!(layers[2].crs_epsg(), Some(4326));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinked_append_rewrite_preserves_the_link_and_updates_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("target.gpkg");
+        let link = dir.path().join("alias.gpkg");
+        let source = Db::new(gw::to_bytes(&[layer("a", 1, 0.)]).unwrap()).unwrap();
+        let mut database = Database::load(&source).unwrap();
+        database.objects.push(SchemaObject {
+            kind: "trigger",
+            name: "custom_after_insert".into(),
+            table: "a".into(),
+            sql: "CREATE TRIGGER custom_after_insert AFTER INSERT ON a BEGIN SELECT 1; END".into(),
+        });
+        let original = database.finish().unwrap();
+        std::fs::write(&path, &original).unwrap();
+        std::os::unix::fs::symlink("target.gpkg", &link).unwrap();
+        let appended = [layer("a", 1, 10.)];
+        assert!(!super::super::gpkg_inplace::update_in_place(&path, &appended, UpdateMode::Append).unwrap());
+        let wal = dir.path().join("target.gpkg-wal");
+        std::fs::write(&wal, b"pending frames").unwrap();
+        assert!(update(link.to_str().unwrap(), &appended, UpdateMode::Append).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        std::fs::remove_file(&wal).unwrap();
+        update(link.to_str().unwrap(), &appended, UpdateMode::Append).unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_link(&link).unwrap(), std::path::Path::new("target.gpkg"));
+        let database = Db::new(std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(super::super::gpkg_read::read_db(&database, &[], None).unwrap()[0].len(), 2);
     }
 
     #[test]

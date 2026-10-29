@@ -15,6 +15,7 @@ pub mod filter;
 pub mod formats;
 pub mod grid;
 pub mod info;
+pub mod inspection;
 pub mod lineref;
 pub mod mosaic;
 pub mod multidim;

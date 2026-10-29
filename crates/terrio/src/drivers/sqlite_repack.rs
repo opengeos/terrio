@@ -296,6 +296,9 @@ impl PageStore for Output {
         loop {
             let page = u32::try_from(self.data.len() / self.size + 1).map_err(|_| bad("too many output pages"))?;
             if self.data.len() + self.size > self.data.capacity() {
+                // Initial capacity equals the input image size. If repacking
+                // outgrows it, bound extra capacity instead of doubling a GiB
+                // buffer; allocators without in-place growth may copy here.
                 self.data.reserve_exact(1 << 24);
             }
             self.data.resize(self.data.len() + self.size, 0);

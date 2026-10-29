@@ -1031,7 +1031,9 @@ impl Editor {
         // 3. Deleting the journal commits.
         drop(journal);
         std::fs::remove_file(&journal_path)?;
-        directory_sync(&self.path)?;
+        directory_sync(&self.path).map_err(|error| Error::Io(std::io::Error::new(error.kind(), format!(
+            "SQLite changes committed, but directory synchronization failed; durability is unconfirmed; do not retry the change automatically: {error}"
+        ))))?;
         Ok(())
     }
 }
@@ -1366,6 +1368,31 @@ mod tests {
         drop(Editor::open_repack(&path).unwrap().unwrap());
         assert_eq!(std::fs::read(&path).unwrap(), original);
         assert!(!with_suffix(&path, "-journal").exists());
+    }
+
+    #[test]
+    fn failed_final_directory_sync_reports_committed_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("committed.db");
+        std::fs::write(&path, sample(1)).unwrap();
+        let root = root_of(&path);
+        let mut editor = Editor::open(&path).unwrap().unwrap();
+        editor.insert(root, 2, &w::record(&[w::Value::Null, w::Value::Text("committed".into())])).unwrap();
+        let mut calls = 0;
+        let error = editor
+            .commit_with_sync(Stage::Done, |_| {
+                calls += 1;
+                if calls == 2 { Err(std::io::Error::other("sync failed")) } else { Ok(()) }
+            })
+            .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(error.to_string().contains("changes committed"));
+        assert!(error.to_string().contains("durability is unconfirmed"));
+        assert!(!with_suffix(&path, "-journal").exists());
+        let database = Db::new(std::fs::read(path).unwrap()).unwrap();
+        let table = database.table("t").unwrap();
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[1][1], crate::drivers::sqlite::Value::Text("committed".into()));
     }
 
     #[test]

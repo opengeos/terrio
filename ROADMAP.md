@@ -90,6 +90,11 @@ commands. Command-group progress:
       JavaScript. Proposed in [#384](https://github.com/opengeos/terrio/pull/384); real-data
       comparisons are registered as `gpkg-repack`.
 
+- [x] Dataset identification: bounded 16 KiB headers, ordered input batches, recursive local
+      discovery and explicit companion-file reader fallback through Rust, CLI/MCP, Python and
+      JavaScript. Landed in [#375](https://github.com/opengeos/terrio/pull/375);
+      real-data GDAL comparisons are registered as `identify`.
+
 ## 0.1: Foundations
 
 - [x] Data model: `Dataset`, raster `Band` with block access, vector `Layer` with `Feature`, field

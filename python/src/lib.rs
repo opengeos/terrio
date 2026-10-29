@@ -7,6 +7,7 @@ mod cli;
 mod focal;
 mod gpkg_maintenance;
 mod grid;
+mod inspection;
 mod manage;
 mod multidim;
 mod ops;
@@ -93,6 +94,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(arrow::from_arrow, m)?)?;
     ops::register(m)?;
     manage::register(m)?;
+    inspection::register(m)?;
     grid::register(m)?;
     gpkg_maintenance::register(m)?;
     multidim::register(m)?;
