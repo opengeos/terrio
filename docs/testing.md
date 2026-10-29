@@ -1163,7 +1163,7 @@ formats whose reader lacks a metadata-only path may materialize the input.
 
 The `identify` conformance suite compares driver identification with GDAL 3.13.3
 on real Landsat, USGS, OPERA, SRTM, netCDF/HDF5 and vector files, and raster encodings
-derived from real imagery. The local run has 37 cases: 32 exact labels, three accepted
+derived from real imagery. The local run has 37 cases: 33 exact labels, three accepted
 generic JP2/KML/HDF5 driver families and two explicit non-comparisons because the
 reference build lacks Parquet and GRIB. Companion-file encodings use `--deep`; renamed
 GeoTIFFs and unknown inputs are also checked. Identification does not validate

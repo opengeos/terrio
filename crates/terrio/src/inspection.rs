@@ -97,7 +97,7 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
     if bytes.starts_with(b"RUU CROSS SYSTEM MAP FORMAT") {
         return raster(RasterDriver::PCRaster);
     }
-    if bytes.starts_with(b"UHL") || bytes.get(80..83) == Some(b"UHL") {
+    if bytes.starts_with(b"UHL") {
         return raster(RasterDriver::DTED);
     }
     if bytes.starts_with(b"fgb\x03fgb\x01") {
@@ -206,7 +206,7 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
     if ext == "sgrd" && lower.contains("cellcount_x") && lower.contains("cellcount_y") {
         return raster(RasterDriver::SAGA);
     }
-    if lower.starts_with("!table") || ext == "mif" && lower.starts_with("version") {
+    if lower.starts_with("!table") || (ext == "mif" && lower.starts_with("version")) {
         return vector(VectorDriver::MapInfo);
     }
     if ext == "dxf" && lower.contains("section") && lower.contains("header") {
