@@ -48,6 +48,22 @@ pub(crate) fn child(path: &str, name: &str) -> Result<String> {
     }
     Ok(raw(&Node::parse(path)?.join(name)))
 }
+pub(crate) fn siblings(path: &str) -> Result<Vec<String>> {
+    let parent = |key: &str| key.rsplit_once('/').map_or("", |(parent, _)| parent).to_owned();
+    let node = match Node::parse(path)? {
+        Node::Local(path) => Node::Local(path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf()),
+        Node::Mem(key) => Node::Mem(parent(&key)),
+        Node::S3 { bucket, key } => Node::S3 { bucket, key: parent(&key) },
+        Node::Url { base, query } => Node::Url { base: parent(&base), query },
+        Node::Archive { archive, kind, inner } => Node::Archive { archive, kind, inner: parent(&inner) },
+    };
+    let directory = raw(&node);
+    super::list(&directory, &Default::default())?
+        .into_iter()
+        .filter(|entry| !entry.is_dir())
+        .map(|entry| child(&directory, &entry.name))
+        .collect()
+}
 pub(crate) fn same_name(a: &str, b: &str) -> Result<bool> {
     let (a, b) = (Node::parse(a)?, Node::parse(b)?);
     if let (Node::Local(a), Node::Local(b)) = (&a, &b) {

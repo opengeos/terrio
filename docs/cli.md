@@ -664,9 +664,16 @@ files and copied bytes. `dataset-files` lists owned files and a directory flag.
 Shapefile and MapInfo components, raw raster headers, world files, RPCs, PAM metadata,
 overviews and masks are included when present. Raster-only companions are not assigned
 to vector files. Zarr, Arc/Info grids and vector directory datasets (including whole MVT
-pyramids) are handled as trees. Unrelated siblings are retained. TIFF world files are
+pyramids) are handled as trees. A Shapefile, MapInfo or CSV directory is accepted
+only when every entry belongs to that driver's datasets; directories containing
+unrelated files or subdirectories are refused. Select individual dataset files
+in a mixed directory. Unrelated siblings of individual dataset files are retained. TIFF world files are
 used only without an embedded transform. CSV `.prj` files are preserved: GDAL 3.13.3
-uses these CRSs but omits them from `GetFileList` and loses them during dataset copy.
+uses these CRSs but omits them from `GetFileList` and loses them during dataset copy. Basename
+companions such as `.prj` and `.hdr` can be shared by distinct recognized primary
+files. Rename, deletion and replacement refuse such a companion while another
+same-basename owner remains. A batch deletion may include all owners; copying
+may read a shared companion without changing its original.
 
 VRT copies and renames include referenced assets with regular corresponding basenames,
 and rewrite source references to the new names. GML schema locations and Idrisi/ERS
@@ -681,7 +688,7 @@ directory trees, protected roots, read-only mutations and file/directory collisi
 refused. Failed staging or installation attempts restore the original paths; if rollback
 or cleanup itself fails, the error identifies recovery files. An error explicitly saying
 that the operation committed means the final paths changed but staged cleanup failed.
-Source and destination trees must not be changed concurrently. Native renames
+An existing destination must have a successful inventory, including with overwrite; an unknown or corrupt destination is refused. Source and destination trees must not be changed concurrently. Native renames
 preserve symlink text, so relative links must remain meaningful at their destination;
 links cannot be renamed across filesystems. Overlapping input directory/component
 sets are refused because they cannot be staged independently. Multiple file or object

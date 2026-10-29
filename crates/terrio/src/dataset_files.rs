@@ -119,7 +119,21 @@ fn directory_driver(path: &str) -> Result<Option<String>> {
     // A directory is also a multi-layer datasource for these vector drivers.
     let entries = vsi::list(path, &Default::default())?;
     for (extension, driver) in [("shp", "ESRI Shapefile"), ("tab", "MapInfo File"), ("csv", "CSV")] {
-        if entries.iter().any(|e| !e.is_dir() && crate::formats::extension(&e.name).as_deref() == Some(extension)) {
+        let roots: Vec<_> = entries
+            .iter()
+            .filter(|entry| !entry.is_dir() && crate::formats::extension(&entry.name).as_deref() == Some(extension))
+            .collect();
+        if !roots.is_empty() {
+            let mut owned = BTreeSet::new();
+            for root in roots {
+                let dataset = file_list(&location::child(path, &root.name)?, Some(driver))?;
+                for file in dataset.files {
+                    owned.insert(location::name(&file)?);
+                }
+            }
+            if entries.iter().any(|entry| entry.is_dir() || !owned.contains(&entry.name)) {
+                return Err(invalid("vector dataset directory contains unrelated entries; select individual dataset files"));
+            }
             return Ok(Some(driver.into()));
         }
     }
@@ -221,6 +235,66 @@ pub fn file_list(path: &str, format: Option<&str>) -> Result<FileSet> {
     Ok(FileSet { driver, files, directory: false })
 }
 
+// Basename companions can be shared by distinct recognized primary files.
+// A copy may read them, but destructive changes must include every owner.
+fn check_shared_ownership(inventory: &FileSet, approved: &[String]) -> Result<()> {
+    if inventory.directory {
+        return Ok(());
+    }
+    let Some(primary) = inventory.files.first() else {
+        return Ok(());
+    };
+    let name = location::name(primary)?;
+    let base = stem(&name);
+    let shared: Vec<_> = inventory
+        .files
+        .iter()
+        .filter(|file| {
+            location::name(file).is_ok_and(|name| {
+                stem(&name) == base
+                    && ["prj", "hdr", "stx", "clr", "wld", "ind"]
+                        .iter()
+                        .any(|extension| name.rsplit_once('.').is_some_and(|(_, suffix)| suffix.eq_ignore_ascii_case(extension)))
+            })
+        })
+        .collect();
+    if shared.is_empty() {
+        return Ok(());
+    }
+    for peer in location::siblings(primary)? {
+        if stem(&location::name(&peer)?) != base {
+            continue;
+        }
+        let mut approved_peer = false;
+        for path in approved {
+            if location::same_name(path, &peer)? {
+                approved_peer = true;
+                break;
+            }
+        }
+        if approved_peer {
+            continue;
+        }
+        let other = match file_list(&peer, None) {
+            Ok(other) => other,
+            Err(Error::InvalidArgument(message)) if message == "dataset format is not recognized" => continue,
+            Err(error) => return Err(error),
+        };
+        for file in &other.files {
+            for companion in &shared {
+                if location::same_name(file, companion)? {
+                    return Err(invalid(format!(
+                        "dataset companion '{}' is shared with '{}'; include every owner in a batch deletion or separate the datasets first",
+                        vsi::listing::redact_url(companion),
+                        vsi::listing::redact_url(&peer)
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 struct Item {
     source: String,
     target: String,
@@ -300,8 +374,10 @@ struct FileGraph {
     metadata: Vec<(String, String)>,
     raw: Vec<String>,
     directories: Vec<String>,
+    inventories: Vec<FileSet>,
 }
 fn remember_files(inventory: &FileSet, main: &str, graph: &mut FileGraph) -> Result<()> {
+    graph.inventories.push(inventory.clone());
     if inventory.directory {
         for directory in &inventory.files {
             unique_push(&mut graph.directories, directory.clone())?;
@@ -670,6 +746,11 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
     if inventory.driver == "VRT" {
         vrt_dependencies(source, &mut sources, &mut graph)?;
     }
+    if rename {
+        for inventory in &graph.inventories {
+            check_shared_ownership(inventory, &sources)?;
+        }
+    }
     for (metadata, _) in &graph.metadata {
         for raw in &graph.raw {
             if location::same_name(metadata, raw)? {
@@ -733,11 +814,11 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
         if !options.overwrite {
             return Err(invalid("dataset destination exists; use overwrite to replace it"));
         }
-        match file_list(target, None) {
-            Ok(old) => obsolete = old.files,
-            Err(_) if !vsi::stat(target)?.unwrap().is_dir() => obsolete.push(target.into()),
-            Err(error) => return Err(error),
-        }
+        // A failed inventory cannot establish which stale companions must be
+        // removed. Do not silently replace only the primary file.
+        let old = file_list(target, None)?;
+        check_shared_ownership(&old, &old.files)?;
+        obsolete = old.files;
     }
     for item in &items {
         if exists(&item.target)? && !obsolete.contains(&item.target) {
@@ -829,6 +910,9 @@ pub fn delete_many(paths: &[String], format: Option<&str>) -> Result<Vec<FileRep
             location::check_remove(path)?;
             unique_push(&mut files, path.clone())?;
         }
+    }
+    for inventory in &inventories {
+        check_shared_ownership(inventory, &files)?;
     }
     // A directory dataset already owns its descendants, even if a caller also named a layer.
     let mut owned: Vec<String> = Vec::new();
@@ -923,6 +1007,64 @@ mod tests {
         assert!(!exists(&format!("{root}/new.csv")).unwrap());
         assert_eq!(vsi::list(&root, &Default::default()).unwrap().len(), 4);
         vsi::delete(&root, true).unwrap();
+    }
+    #[test]
+    fn vector_directory_with_unrelated_entries_is_refused_before_mutation() {
+        let root = directory();
+        let source = csv(&root, "source");
+        put(&format!("{root}/source.csvt"), b"Real,Real,String");
+        assert!(file_list(&root, None).unwrap().directory);
+        put(&format!("{root}/README.md"), b"keep documentation");
+        put(&format!("{root}/notes/private.txt"), b"keep nested notes");
+        let target = format!("{root}-copy");
+        for hint in [None, Some("CSV")] {
+            assert!(file_list(&root, hint).unwrap_err().to_string().contains("unrelated"));
+            assert!(delete(&root, hint).is_err());
+        }
+        assert!(rename(&root, &target, &Default::default()).is_err());
+        assert!(copy(&root, &target, &Default::default()).is_err());
+        assert!(exists(&source).unwrap());
+        assert_eq!(vsi::read(&format!("{root}/README.md")).unwrap(), b"keep documentation");
+        assert_eq!(vsi::read(&format!("{root}/notes/private.txt")).unwrap(), b"keep nested notes");
+        assert!(!exists(&target).unwrap());
+        vsi::delete(&root, true).unwrap();
+    }
+    #[test]
+    fn failed_overwrite_inventory_preserves_destination_and_companions() {
+        let root = directory();
+        let source = csv(&root, "source");
+        let target = format!("{root}/old.tif");
+        let sidecar = format!("{target}.aux.xml");
+        for bytes in [b"unrecognized".as_slice(), b"II*\0\x08\0\0\0truncated IFD".as_slice()] {
+            put(&target, bytes);
+            put(&sidecar, b"old metadata");
+            assert!(copy(&source, &target, &FileOptions { overwrite: true, ..Default::default() }).is_err());
+            assert_eq!(vsi::read(&target).unwrap(), bytes);
+            assert_eq!(vsi::read(&sidecar).unwrap(), b"old metadata");
+        }
+        vsi::delete(&root, true).unwrap();
+    }
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn shared_basename_companions_require_all_owners_before_deletion() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_str().unwrap();
+        let csv = csv(root, "roads");
+        let shp = format!("{root}/roads.shp");
+        let prj = format!("{root}/roads.prj");
+        let mut layer = crate::Layer::new("roads");
+        layer.add_feature(Some(wbvector::Geometry::point(1., 2.)), &[]).unwrap();
+        crate::drivers::vector::shapefile::write(&layer, &shp).unwrap();
+        put(&prj, b"shared projection");
+        assert!(delete(&csv, None).unwrap_err().to_string().contains("shared"));
+        assert!(rename(&csv, &format!("{root}/moved.csv"), &Default::default()).is_err());
+        let replacement = self::csv(root, "replacement");
+        assert!(copy(&replacement, &csv, &FileOptions { overwrite: true, ..Default::default() }).is_err());
+        assert_eq!(vsi::read(&prj).unwrap(), b"shared projection");
+        assert!(exists(&csv).unwrap() && exists(&shp).unwrap());
+        delete_many(&[csv.clone(), shp.clone()], None).unwrap();
+        assert!(!exists(&csv).unwrap() && !exists(&shp).unwrap() && !exists(&prj).unwrap());
+        assert!(exists(&replacement).unwrap());
     }
     #[test]
     fn companion_directory_is_not_removed_by_overwrite() {
