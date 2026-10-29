@@ -660,54 +660,65 @@ fn rewrite(path: &str, names: &HashMap<location::NameKey, String>, driver: &str)
     }
     if matches!(driver, "ERS" | "RST" | "MapInfo File") {
         let original = vsi::read(path)?;
-        let text = std::str::from_utf8(&original).map_err(|_| Error::Unsupported("dataset header is not UTF-8".into()))?;
-        let mut output = String::new();
+        let mut output = Vec::with_capacity(original.len());
         let mut changed = false;
-        for line in text.split_inclusive('\n') {
-            let leading = line.len() - line.trim_start().len();
-            let content = line.trim();
+        // Opaque header lines may use a legacy encoding (e.g. WindowsLatin1 TAB).
+        // Only file-bearing values need decoding; preserve all other bytes verbatim.
+        for line in original.split_inclusive(|&b| b == b'\n') {
+            let content = line.trim_ascii();
+            let leading = line.len() - line.trim_ascii_start().len();
             let field = if extension == "ers" {
-                content.split_once('=').filter(|(k, _)| k.trim().eq_ignore_ascii_case("DataFile")).map(|(_, v)| v)
+                content
+                    .iter()
+                    .position(|&b| b == b'=')
+                    .filter(|&i| content[..i].trim_ascii().eq_ignore_ascii_case(b"DataFile"))
+                    .map(|i| &content[i + 1..])
             } else if extension == "rdc" {
-                content.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case("ref. system")).map(|(_, v)| v)
+                content
+                    .iter()
+                    .position(|&b| b == b':')
+                    .filter(|&i| content[..i].trim_ascii().eq_ignore_ascii_case(b"ref. system"))
+                    .map(|i| &content[i + 1..])
             } else {
-                content.strip_prefix("File ").or_else(|| content.strip_prefix("file "))
+                content.get(..5).filter(|prefix| prefix.eq_ignore_ascii_case(b"File ")).map(|_| &content[5..])
             };
             if let Some(field) = field {
+                let field = std::str::from_utf8(field).map_err(|_| Error::Unsupported("dataset file reference is not UTF-8".into()))?;
                 let value = field.trim().trim_matches('"');
                 let value = if extension == "rdc" { format!("{value}.ref") } else { value.into() };
                 let resolved = location::sibling(path, &value)?;
                 let replacement = match names.get(&location::name_key(&resolved)?) {
                     Some(name) => name,
                     None if extension == "rdc" => {
-                        output.push_str(line);
+                        output.extend_from_slice(line);
                         continue;
                     } // Built-in reference systems have no owned .ref.
                     None => return Err(invalid("dataset header references a file outside its inventory")),
                 };
-                output.push_str(&line[..leading]);
+                output.extend_from_slice(&line[..leading]);
                 if extension == "rdc" {
-                    output.push_str("ref. system : ");
-                    output.push_str(stem(replacement));
+                    output.extend_from_slice(b"ref. system : ");
+                    output.extend_from_slice(stem(replacement).as_bytes());
                 } else {
-                    output.push_str(if extension == "ers" { "DataFile = \"" } else { "File \"" });
-                    output.push_str(replacement);
-                    output.push('"');
+                    output.extend_from_slice(if extension == "ers" { b"DataFile = \"" } else { b"File \"" });
+                    output.extend_from_slice(replacement.as_bytes());
+                    output.push(b'"');
                 }
-                if line.ends_with('\n') {
-                    output.push('\n');
-                }
+                let end = line.iter().rposition(|&b| b != b'\r' && b != b'\n').map_or(0, |i| i + 1);
+                output.extend_from_slice(&line[end..]);
                 changed = true;
             } else {
-                output.push_str(line);
+                output.extend_from_slice(line);
             }
         }
-        return Ok(changed.then(|| output.into_bytes()));
+        return Ok(changed.then_some(output));
     }
     Ok(None)
 }
 fn remove_owned(path: &str) -> Result<vsi::Report> {
     // Recursion on object stores deletes a prefix, not the exact object.
+    // If stat fails, retain the path as a reported recovery entry rather than
+    // guessing its kind and potentially deleting a broader prefix.
     let directory = vsi::stat(path)?.is_some_and(|entry| entry.is_dir());
     vsi::delete(path, directory)
 }
@@ -1022,6 +1033,33 @@ mod tests {
         assert_eq!(vsi::read(&format!("{source_root}/source.csvt")).unwrap(), b"Real,Real,String");
         assert_eq!(vsi::read(&format!("{source_root}/source.CSVT")).unwrap(), b"Integer,Integer,String");
         vsi::delete(&source_root, true).unwrap();
+    }
+    #[test]
+    fn header_rebasing_preserves_opaque_bytes_and_line_endings() {
+        let root = directory();
+        let path = format!("{root}/source.tab");
+        let opaque = b"!table\r\n!charset WindowsLatin1\r\nName = \"caf\xe9\"\r\n";
+        put(&path, opaque);
+        assert!(rewrite(&path, &HashMap::new(), "MapInfo File").unwrap().is_none());
+        for (extension, driver, field, replacement) in [
+            ("tab", "MapInfo File", "fIlE \"source.dat\"", "File \"copied.dat\""),
+            ("ers", "ERS", "DataFile = \"source.dat\"", "DataFile = \"copied.dat\""),
+            ("rdc", "RST", "ref. system : source", "ref. system : copied"),
+        ] {
+            let path = format!("{root}/source.{extension}");
+            let source = format!("{root}/source.{}", if extension == "rdc" { "ref" } else { "dat" });
+            let target = if extension == "rdc" { "copied.ref" } else { "copied.dat" };
+            let names = HashMap::from([(location::name_key(&source).unwrap(), target.to_owned())]);
+            for ending in ["\r\n", "\n", ""] {
+                let mut bytes = opaque.to_vec();
+                bytes.extend_from_slice(format!("  {field}{ending}").as_bytes());
+                put(&path, &bytes);
+                let mut expected = opaque.to_vec();
+                expected.extend_from_slice(format!("  {replacement}{ending}").as_bytes());
+                assert_eq!(rewrite(&path, &names, driver).unwrap().unwrap(), expected);
+            }
+        }
+        vsi::delete(&root, true).unwrap();
     }
     #[test]
     fn nested_or_malformed_zarr_markers_cannot_authorize_directory_deletion() {
