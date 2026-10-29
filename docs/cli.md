@@ -678,6 +678,11 @@ distinct recognized primary files. Rename, deletion and replacement refuse such 
 companion while another same-basename owner remains. A batch deletion may include all
 owners; copying may read a shared companion without changing its original.
 
+Directory recognition parses complete Zarr marker and MVT metadata JSON, checking
+fields at the top level rather than matching text in a fixed prefix. Unknown fields
+are skipped while streaming. Large metadata files are read in full; tile payloads
+are not decoded for inventory.
+
 VRT copies and renames copy referenced assets with regular corresponding basenames,
 confined by default to the original source directory tree. Native links and all entries
 of referenced directory datasets are checked before mutation. Non-raw references must

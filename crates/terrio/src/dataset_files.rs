@@ -430,7 +430,7 @@ fn reference_text(reader: &mut quick_xml::Reader<&[u8]>) -> Result<String> {
 }
 fn relative_reference(element: &quick_xml::events::BytesStart<'_>, raw: bool) -> bool {
     element.attributes().flatten().find(|a| a.key.as_ref() == "relativeToVRT").map_or(raw, |a| {
-        a.normalized_value(quick_xml::XmlVersion::Implicit1_0).is_ok_and(|v| crate::ops::vrt::relative_reference_flag(Some(&v), raw))
+        a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_or(raw, |v| crate::ops::vrt::relative_reference_flag(Some(&v), raw))
     })
 }
 #[derive(Default)]

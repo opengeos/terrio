@@ -114,17 +114,18 @@ pub(crate) struct OverlapIndex {
     #[cfg(windows)]
     identities: std::collections::HashSet<same_file::Handle>,
 }
+fn url_key(base: &str) -> Option<String> {
+    let (scheme, rest) = base.split_once("://")?;
+    let authority = rest.split('/').next()?;
+    let path = listing::uri_decode(&rest[authority.len()..]);
+    let (userinfo, host) = authority.rsplit_once('@').map_or((String::new(), authority), |(u, h)| (format!("{u}@"), h));
+    Some(format!("url:{}://{}{}{}", scheme.to_ascii_lowercase(), userinfo, host.to_ascii_lowercase(), path))
+}
 fn virtual_key(node: &Node) -> Option<String> {
     match node {
         Node::Mem(key) => Some(format!("mem:{key}")),
         Node::S3 { bucket, key } => Some(format!("s3:{bucket}/{key}")),
-        Node::Url { base, .. } => {
-            let (scheme, rest) = base.split_once("://")?;
-            let authority = rest.split('/').next()?;
-            let path = &rest[authority.len()..];
-            let (userinfo, host) = authority.rsplit_once('@').map_or((String::new(), authority), |(u, h)| (format!("{u}@"), h));
-            Some(format!("url:{}://{}{}{}", scheme.to_ascii_lowercase(), userinfo, host.to_ascii_lowercase(), path))
-        }
+        Node::Url { base, .. } => url_key(base),
         _ => None,
     }
 }
@@ -272,10 +273,10 @@ pub(crate) fn in_source_tree(reference: &str, source: &str) -> Result<bool> {
         }
         (Node::Mem(reference), Node::Mem(source)) => below(&reference, &source),
         (Node::S3 { bucket: a, key: reference }, Node::S3 { bucket: b, key: source }) => a == b && below(&reference, &source),
-        (Node::Url { base: reference, .. }, Node::Url { base: source, .. }) => {
-            let (reference, source) = (listing::uri_decode(&reference), listing::uri_decode(&source));
-            below(&reference, &source)
-        }
+        (Node::Url { base: reference, .. }, Node::Url { base: source, .. }) => match (url_key(&reference), url_key(&source)) {
+            (Some(reference), Some(source)) => below(&reference, &source),
+            _ => false,
+        },
         (Node::Archive { archive: a, kind: ak, inner: reference }, Node::Archive { archive: b, kind: bk, inner: source }) => {
             ak == bk && a == b && below(&reference, &source)
         }
@@ -307,6 +308,25 @@ pub(crate) fn same_name(a: &str, b: &str) -> Result<bool> {
             && let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b))
         {
             return Ok(a == b);
+        }
+        // A dangling link cannot be canonicalized. On case-insensitive Unix
+        // filesystems, identify case aliases of that directory entry without
+        // following the link or merging distinct hard-link names.
+        #[cfg(unix)]
+        if let (Some(an), Some(bn), Some(ap), Some(bp)) = (a.file_name(), b.file_name(), a.parent(), b.parent())
+            && an.to_string_lossy().eq_ignore_ascii_case(&bn.to_string_lossy())
+            && let (Ok(am), Ok(bm), Ok(ap), Ok(bp)) =
+                (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b), std::fs::canonicalize(ap), std::fs::canonicalize(bp))
+        {
+            use std::os::unix::fs::MetadataExt;
+            if am.file_type().is_symlink() && bm.file_type().is_symlink() && ap == bp && am.dev() == bm.dev() && am.ino() == bm.ino() {
+                let mut exact_names = 0;
+                for entry in std::fs::read_dir(ap)? {
+                    let name = entry?.file_name();
+                    exact_names += usize::from(name == an || name == bn);
+                }
+                return Ok(exact_names <= 1);
+            }
         }
         return Ok(false);
     }
@@ -715,9 +735,32 @@ mod tests {
         let index = OverlapIndex::new(&["https://ACC.blob.core.windows.net/c/X.tif?token=one".into()]).unwrap();
         assert!(index.overlaps("https://acc.blob.core.windows.net/c/X.tif?token=two").unwrap());
         assert!(!index.overlaps("https://acc.blob.core.windows.net/c/x.tif").unwrap());
+        assert!(index.overlaps("https://acc.blob.core.windows.net/c/%58.tif").unwrap());
+        let encoded = OverlapIndex::new(&["https://acc.blob.core.windows.net/c/a%20b.tif".into()]).unwrap();
+        assert!(encoded.overlaps("https://ACC.blob.core.windows.net/c/a b.tif").unwrap());
+        assert!(!encoded.overlaps("https://acc.blob.core.windows.net/c/a%2520b.tif").unwrap());
         let root = OverlapIndex::new(&["https://ACC.blob.core.windows.net".into()]).unwrap();
         assert!(root.overlaps("https://acc.blob.core.windows.net/c/X.tif").unwrap());
     }
+    #[cfg(unix)]
+    #[test]
+    fn case_aliases_of_dangling_links_do_not_merge_distinct_directory_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let lower = dir.path().join("type.csvt");
+        let upper = dir.path().join("type.CSVT");
+        std::os::unix::fs::symlink("missing-target", &lower).unwrap();
+        if std::fs::symlink_metadata(&upper).is_ok() {
+            assert!(same_name(lower.to_str().unwrap(), upper.to_str().unwrap()).unwrap());
+        } else {
+            // A case-sensitive filesystem can own both names, even with one inode.
+            std::fs::hard_link(&lower, &upper).unwrap();
+            assert!(!same_name(lower.to_str().unwrap(), upper.to_str().unwrap()).unwrap());
+        }
+        let separate = dir.path().join("other.csvt");
+        std::os::unix::fs::symlink("missing-target", &separate).unwrap();
+        assert!(!same_name(lower.to_str().unwrap(), separate.to_str().unwrap()).unwrap());
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinked_parents_alias_inputs_before_the_destination_exists() {
@@ -771,6 +814,7 @@ mod tests {
             ("/vsimem/work/source.raw", "/vsimem/work/source.vrt"),
             ("s3://bucket/source.raw", "s3://bucket/source.vrt"),
             ("https://example.invalid/work/sub/source.tif", "https://example.invalid/work/source.vrt"),
+            ("https://EXAMPLE.invalid/work/sub/source.tif", "https://example.INVALID/work/source.vrt"),
             ("/vsizip/{/vsimem/archive.zip}/source.tif", "/vsizip/{/vsimem/archive.zip}/source.vrt"),
         ] {
             assert!(in_source_tree(reference, source).unwrap(), "{reference}");
