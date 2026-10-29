@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "terrio"
 dynamic = ["version"]
-description = "Pure-Rust geospatial raster and vector data I/O, without GDAL"
+description = "Geospatial raster, vector and point cloud data I/O in Rust, without installing GDAL"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"

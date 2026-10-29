@@ -1160,6 +1160,8 @@ ordinary lazy info opens. Raster index construction never called the pixel sourc
 its panic-on-read unit fixture. These observations apply to lazy-capable readers;
 formats whose reader lacks a metadata-only path may materialize the input.
 
+## Multidimensional mosaic validation
+
 The multidimensional mosaic HTTP regression serves two chunked numeric Zarr
 stores and counts response bodies after coordinate planning. Reading the full
 6 × 2 × 4 Int64 mosaic fetches 384 bytes in 12 chunk requests/files; reading one
@@ -1186,3 +1188,29 @@ comparison checks source coordinate samples exactly; generated gap coordinates m
 reference after rounding to the source type. GDAL's regenerated grid can differ from stored
 Float32 samples by 3.05e-05 in the NOAA derivative; those coordinate-only differences are
 reported within tolerance, while payload values still require exact equality.
+
+## Dataset identification (#289)
+
+The `identify` conformance suite compares driver identification with GDAL 3.13.3
+on real Landsat, USGS, OPERA, SRTM, netCDF/HDF5 and vector files, and raster encodings
+derived from real imagery. The local run has 37 cases: 33 exact labels, three accepted
+generic JP2/KML driver labels and one explicit non-comparison because the
+reference build lacks Parquet. Companion-file encodings use `--deep`; renamed
+GeoTIFFs and unknown inputs are also checked. Identification does not validate
+payload values or metadata. Missing mandatory datasets fail the suite.
+
+Core/API regressions check bounded prefixes, filename hints, compiled driver
+availability, recursive scans stopping at Zarr directories, symlink loops, unknowns,
+errors and MCP invocation. A local HTTP server serving a 64 MiB padded real GeoTIFF
+checks one GET and 16,384 served bytes with ranges, and cancellation before the full
+file is sent when ranges are ignored. Server buffering can send more than the
+16 KiB retained by the identifier in the latter case.
+
+```sh
+python scripts/conformance.py ../terrio-data --only identify --strict
+cargo test -p terrio --lib inspection::
+cargo test -p terrio --lib bounded_prefixes_stop_even_when_ranges_are_ignored
+cargo test -p terrio-cli --test inspection
+pytest python/tests/test_inspection.py
+node --test --test-name-pattern='identify inspects' js/tests/node.test.mjs
+```
