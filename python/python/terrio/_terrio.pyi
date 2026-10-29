@@ -18,6 +18,8 @@ __all__ = [
     "update_raster",
     "validate_cog",
     "__version__",
+    "gpkg_repack",
+    "gpkg_repack_bytes",
     "Raster",
     "GeoTiffWriter",
     "Layer",
@@ -1773,7 +1775,9 @@ def refresh_overviews(
     external: bool = False,
     ignore_cog_layout_break: bool = False,
 ) -> list[tuple[int, int]]: ...
-def validate_cog(path: str | os.PathLike[str], *, strict: bool = False) -> tuple[bool, list[str], list[str]]: ...
+def validate_cog(
+    path: str | os.PathLike[str], *, strict: bool = False
+) -> tuple[bool, list[str], list[str]]: ...
 def update_raster(
     src: str | os.PathLike[str] | Raster,
     dst: str,
@@ -1846,3 +1850,6 @@ def blend(
 ) -> Raster:
     """Blends equal-sized Byte images, with GDAL operators and opacity 0..100."""
     ...
+
+def gpkg_repack(path: str | os.PathLike[str]) -> dict[str, Any]: ...
+def gpkg_repack_bytes(data: bytes) -> bytes: ...

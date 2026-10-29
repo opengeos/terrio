@@ -2128,3 +2128,25 @@ publish all components from staging and require a new basename even with `--over
 Append/update, layer replacement, STAC-GeoParquet profiles, XML companion output and
 GDAL-specific creation options are outside this supported subset. Shapefile field
 width/type limits still apply. The three commands are also exposed as MCP tools.
+
+### GeoPackage repacking
+
+`terrio gpkg-repack survey.gpkg --json` compacts a native GeoPackage in place.
+The `gpkg-repack` MCP tool accepts the same arguments. JSON reports original and compacted
+byte/page counts and the preserved SQLite page size.
+
+Repacking rebuilds every B-tree from its encoded records, preserving rowids, SQL objects,
+application/user versions, text encodings, rasters and vector metadata. It supports expression,
+partial, descending and collated indexes, WITHOUT ROWID tables, overflow data, R-tree shadow
+tables, and auto-vacuum/incremental-vacuum pointer maps. Physical page layouts and final sizes
+can differ from SQLite VACUUM; the operation does not promise byte-identical files.
+
+Native changes use SQLite-compatible exclusive locks and a synced rollback journal. Pages
+removed by truncation are journaled too, so an interrupted rewrite can be recovered by SQLite.
+A locked database or active WAL is refused; close/checkpoint the SQLite connection before
+retrying. Native symbolic-link paths, reserved/encrypted page bytes, remote and archive paths
+are refused. This is storage maintenance, not a GeoPackage specification validator.
+
+Repacking scans and rewrites the complete database and currently uses memory proportional
+to its size. WebAssembly uses `/vsimem/` paths or the bytes API. A bytes input must be a
+self-contained, recovered/checkpointed image; external journal/WAL files are not part of it.

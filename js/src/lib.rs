@@ -12,6 +12,7 @@
 //! const points = readPoints(lazBytes, "lidar.laz", { classes: [2] }); // LAS, LAZ, COPC
 //! ```
 
+mod gpkg_maintenance;
 mod grid;
 mod manage;
 mod multidim;

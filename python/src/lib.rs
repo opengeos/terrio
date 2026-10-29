@@ -5,6 +5,7 @@ mod arrow;
 #[cfg(not(target_os = "emscripten"))]
 mod cli;
 mod focal;
+mod gpkg_maintenance;
 mod grid;
 mod manage;
 mod multidim;
@@ -93,6 +94,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ops::register(m)?;
     manage::register(m)?;
     grid::register(m)?;
+    gpkg_maintenance::register(m)?;
     multidim::register(m)?;
     terrain::register(m)?;
     tile_index::register(m)?;

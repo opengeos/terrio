@@ -619,3 +619,22 @@ fn index_tools_are_discoverable_and_execute() {
     assert_eq!(replies[&2]["result"]["isError"], false);
     assert_eq!(terrio::open_vector(output.to_str().unwrap(), &Default::default()).unwrap().layers[0].len(), 1);
 }
+
+#[test]
+fn gpkg_repack_is_a_mutating_tool_and_preserves_vector_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("sites.geojson");
+    let target = dir.path().join("sites.gpkg");
+    std::fs::write(&source,r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"kept"},"geometry":{"type":"Point","coordinates":[12,45]}}]}"#).unwrap();
+    let input = terrio::open_vector(source.to_str().unwrap(), &Default::default()).unwrap();
+    terrio::write_vector(&input.layers, target.to_str().unwrap(), &Default::default()).unwrap();
+    let expected = terrio::open_vector(target.to_str().unwrap(), &Default::default()).unwrap();
+    let replies =
+        session(&[json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}), call(2, "gpkg-repack", &[target.to_str().unwrap(), "--json"])]);
+    let tool = replies[&1]["result"]["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == "gpkg-repack").unwrap();
+    assert_eq!(tool["annotations"]["readOnlyHint"], false);
+    assert_eq!(replies[&2]["result"]["isError"], false);
+    let output = terrio::open_vector(target.to_str().unwrap(), &Default::default()).unwrap();
+    let encode = |layers: &[terrio::Layer]| terrio::memory::write_vector_bytes(layers, "sites.geojson", &Default::default()).unwrap();
+    assert_eq!(encode(&expected.layers), encode(&output.layers));
+}

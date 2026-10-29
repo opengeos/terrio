@@ -2331,3 +2331,30 @@ test("palette blend survives windows and in-memory TIFF writes", () => {
   }
   source.free();
 });
+
+test("GeoPackage repack preserves real features in bytes and memory", { skip: !DATA || needs("sqlite") }, () => {
+  const bytes = readFileSync(join(DATA, "countries.gpkg"));
+  const source = terrio.open(bytes, "countries.gpkg");
+  const expected = source.toGeoJSON();
+  source.free();
+  const compact = terrio.gpkgRepackBytes(bytes);
+  const packed = terrio.open(compact, "packed.gpkg");
+  assert.deepEqual(packed.toGeoJSON(), expected);
+  packed.free();
+  const path = "/vsimem/gpkg-repack-js.gpkg";
+  terrio.vsiWrite(path, bytes);
+  try {
+    const report = terrio.gpkgRepack(path);
+    assert.equal(report.bytes_before, bytes.length);
+    assert.equal(report.bytes_after, terrio.vsiRead(path).length);
+    const dataset = terrio.open(terrio.vsiRead(path), "result.gpkg");
+    assert.deepEqual(dataset.toGeoJSON(), expected);
+    dataset.free();
+    terrio.vsiWrite(path, new Uint8Array([1, 2, 3]));
+    assert.throws(() => terrio.gpkgRepack(path), /SQLite/);
+    assert.deepEqual(terrio.vsiRead(path), new Uint8Array([1, 2, 3]));
+    assert.throws(() => terrio.gpkgRepackBytes(bytes.slice(0, 100)), /page|truncated/);
+  } finally {
+    terrio.vsiDelete(path);
+  }
+});

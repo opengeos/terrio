@@ -1158,3 +1158,18 @@ and `USGS_1_n40w106.tif` each used one GET and 65,536 served body bytes, matchin
 ordinary lazy info opens. Raster index construction never called the pixel source in
 its panic-on-read unit fixture. These observations apply to lazy-capable readers;
 formats whose reader lacks a metadata-only path may materialize the input.
+
+## GeoPackage repacking
+
+`scripts/compare_gpkg_repack_with_gdal.py` is registered as `gpkg-repack`. GDAL 3.13.3
+repacking (SQLite VACUUM) is compared on Natural Earth vector and USGS raster derivatives.
+The suite checks all table records and SQL objects, rowids, text encoding, application/user
+versions, auto-vacuum mode, page size, GDAL features/fields/CRS, and every raster pixel/mask.
+R-tree and application triggers are exercised after repacking. Cases include WITHOUT ROWID,
+expression/partial/collated indexes, 512/4096/65536-byte pages, both UTF-16 encodings, mixed
+vector/raster files, and active-WAL/truncated-input refusal. Physical layouts/sizes may differ.
+
+`interrupted_repack_restores_truncated_pages` stops before/during/after database writes,
+checking exact recovery including truncated pages. Set `TERRIO_SQLITE_REFERENCE_PYTHON` to a
+Python interpreter with the standard sqlite3 module to additionally recover these journals
+with SQLite itself, for both rollback- and checkpointed-WAL file headers.

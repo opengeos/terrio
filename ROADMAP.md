@@ -85,6 +85,10 @@ commands. Command-group progress:
       `terrio lineref`. Proposed in [#305](https://github.com/opengeos/terrio/pull/305), through Rust,
       CLI/MCP, Python and JavaScript, with real-data comparisons registered in conformance.
 
+- [ ] GeoPackage repacking: encoded-record B-tree rebuilds, preserved rowids and SQL objects,
+      auto-vacuum maps and journaled native replacement through Rust, CLI/MCP, Python and
+      JavaScript. Real-data comparisons are registered as `gpkg-repack`.
+
 ## 0.1: Foundations
 
 - [x] Data model: `Dataset`, raster `Band` with block access, vector `Layer` with `Feature`, field

@@ -531,3 +531,9 @@ clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
 base update commits. Use `create-raster`, `edit-raster` and `update-raster` when
 calling the corresponding CLI commands.
+
+`gpkg_repack(path)` compacts a native or `/vsimem/` GeoPackage in place and returns
+`bytes_before`, `bytes_after`, `page_size`, `pages_before` and `pages_after`.
+`gpkg_repack_bytes(data)` returns a compacted `bytes` copy of a self-contained GeoPackage,
+leaving the input unchanged. Both preserve encoded table/index records and schema SQL.
+See [supported scope and storage safety](cli.md#geopackage-repacking).

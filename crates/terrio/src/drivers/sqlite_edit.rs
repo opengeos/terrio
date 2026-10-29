@@ -5,8 +5,8 @@
 //! content of every page about to be overwritten is written to `<file>-journal` and synced
 //! before the database file is touched, the new pages are written and synced, and deleting the
 //! journal commits. A process that stops in between leaves a hot journal behind, which SQLite
-//! (and [`Editor::open`]) plays back to restore the database as it was. On Unix the file is
-//! locked as SQLite locks it (POSIX advisory locks on its lock bytes), so SQLite readers and
+//! (and [`Editor::open`]) plays back to restore the database as it was. On Unix and Windows the file is
+//! locked as SQLite locks it (POSIX or Windows byte-range locks on its lock bytes), so SQLite readers and
 //! writers wait, and updates of a database that another connection is using fail.
 //!
 //! Table b-trees grow by inserting cells and splitting pages, as SQLite's own b-tree does;
@@ -30,7 +30,7 @@ const READ_PAGES: u32 = 16;
 /// The sector size the journal header is padded to, as SQLite assumes by default.
 const SECTOR: usize = 512;
 /// The byte offsets of SQLite's file locks (`PENDING_BYTE` at 1 GiB).
-#[cfg(all(unix, not(target_os = "emscripten")))]
+#[cfg(any(all(unix, not(target_os = "emscripten")), windows))]
 const PENDING_BYTE: i64 = 0x4000_0000;
 
 fn bad(msg: impl std::fmt::Display) -> Error {
@@ -138,13 +138,60 @@ impl Editor {
     /// write-ahead log, auto-vacuum, UTF-16 text or reserved page bytes), or on a platform
     /// where it does not take SQLite's locks.
     pub(crate) fn open(path: &Path) -> Result<std::result::Result<Self, NotInPlace>> {
-        if !cfg!(all(unix, not(target_os = "emscripten"))) {
+        Self::open_mode(path, false)
+    }
+
+    /// Opens a full-image rewrite. Encoded-record rebuilding supports UTF-16 and pointer maps.
+    pub(crate) fn open_repack(path: &Path) -> Result<std::result::Result<Self, NotInPlace>> {
+        Self::open_mode(path, true)
+    }
+
+    fn open_mode(path: &Path, repack: bool) -> Result<std::result::Result<Self, NotInPlace>> {
+        if !cfg!(all(unix, not(target_os = "emscripten"))) && !(repack && cfg!(windows)) {
             // Without SQLite's locks a reader could see a half-written file.
             return Ok(Err(NotInPlace("in-place changes need SQLite's file locks, not taken on this platform".into())));
         }
         let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-        #[cfg(all(unix, not(target_os = "emscripten")))]
+        #[cfg(any(all(unix, not(target_os = "emscripten")), windows))]
         lock(&file, path)?;
+        if repack {
+            for suffix in ["-journal", "-wal", "-shm"] {
+                let sidecar = with_suffix(path, suffix);
+                match std::fs::symlink_metadata(&sidecar) {
+                    Ok(metadata) => {
+                        if !metadata.file_type().is_file() {
+                            return Err(bad(format!(
+                                "{}: sidecar must be a regular file, not a symbolic link or special file",
+                                sidecar.display()
+                            )));
+                        }
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::MetadataExt;
+                            if metadata.nlink() > 1 {
+                                return Err(bad(format!("{}: sidecar has hard-link aliases", sidecar.display())));
+                            }
+                        }
+                        #[cfg(windows)]
+                        {
+                            use std::os::windows::io::AsRawHandle;
+                            use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+                            let sidecar_file = File::open(&sidecar)?;
+                            let mut information = BY_HANDLE_FILE_INFORMATION::default();
+                            // SAFETY: both the open handle and the output structure are valid.
+                            if unsafe { GetFileInformationByHandle(sidecar_file.as_raw_handle(), &mut information) } == 0 {
+                                return Err(std::io::Error::last_os_error().into());
+                            }
+                            if information.nNumberOfLinks > 1 {
+                                return Err(bad(format!("{}: sidecar has hard-link aliases", sidecar.display())));
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
         recover(&mut file, path)?;
         let wal = with_suffix(path, "-wal");
         if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
@@ -168,10 +215,10 @@ impl Editor {
         if header[20] != 0 {
             return refuse("pages have reserved bytes");
         }
-        if be(52) != 0 {
+        if !repack && be(52) != 0 {
             return refuse("the database uses auto-vacuum");
         }
-        if be(56) > 1 {
+        if !repack && be(56) > 1 {
             return refuse("the database is UTF-16");
         }
         if header[18] > 2 || header[19] > 2 {
@@ -191,6 +238,39 @@ impl Editor {
             dirty: BTreeSet::new(),
             schema_changed: false,
         }))
+    }
+
+    /// Snapshot through the already locked handle. Opening/closing another handle to this
+    /// inode would release process-associated POSIX locks on Unix.
+    pub(crate) fn image(&mut self) -> Result<Vec<u8>> {
+        self.file.seek(SeekFrom::Start(0))?;
+        let mut image = Vec::new();
+        self.file.read_to_end(&mut image)?;
+        Ok(image)
+    }
+
+    /// Install a rebuilt image through the normal rollback-journal transaction. Truncated
+    /// original pages must be journaled too, so interruption can restore the complete file.
+    pub(crate) fn replace_image(&mut self, old: &[u8], image: &[u8]) -> Result<()> {
+        if image.is_empty() || !image.len().is_multiple_of(self.page_size) || old.len() != self.orig_pages as usize * self.page_size {
+            return Err(bad("replacement image size"));
+        }
+        let pages = u32::try_from(image.len() / self.page_size).map_err(|_| bad("replacement page count"))?;
+        for (i, original) in old.chunks_exact(self.page_size).enumerate() {
+            let number = i as u32 + 1;
+            if image.chunks_exact(self.page_size).nth(i) != Some(original) {
+                self.originals.insert(number, original.to_vec());
+            }
+        }
+        self.cache.clear();
+        self.dirty.clear();
+        self.n_pages = pages;
+        for (i, page) in image.chunks_exact(self.page_size).enumerate() {
+            let number = i as u32 + 1;
+            self.cache.insert(number, page.to_vec());
+            self.dirty.insert(number);
+        }
+        Ok(())
     }
 
     fn load(&mut self, n: u32) -> Result<()> {
@@ -1067,6 +1147,31 @@ fn lock(file: &File, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// SQLite-compatible Windows byte-range locks, released when this file handle closes.
+#[cfg(windows)]
+fn lock(file: &File, path: &Path) -> Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx};
+    use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
+    for (start, length) in [(PENDING_BYTE as u64, 2), (PENDING_BYTE as u64 + 2, 510)] {
+        let mut overlap = OVERLAPPED {
+            Anonymous: OVERLAPPED_0 { Anonymous: OVERLAPPED_0_0 { Offset: start as u32, OffsetHigh: (start >> 32) as u32 } },
+            ..OVERLAPPED::default()
+        };
+        // SAFETY: the file handle is open and overlap points to a valid zero-initialized
+        // OVERLAPPED with the synchronous byte range's offset set.
+        let ok =
+            unsafe { LockFileEx(file.as_raw_handle(), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, length, 0, &mut overlap) };
+        if ok == 0 {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("{}: the database is locked by another connection", path.display()),
+            )));
+        }
+    }
+    Ok(())
+}
+
 // In-place changes are made where SQLite's locks are taken.
 #[cfg(all(test, unix, not(target_os = "emscripten")))]
 mod tests {
@@ -1086,6 +1191,41 @@ mod tests {
     fn root_of(path: &Path) -> u32 {
         let db = Db::new(std::fs::read(path).unwrap()).unwrap();
         db.schema().unwrap().into_iter().find(|e| e.1 == "t").unwrap().3
+    }
+
+    #[test]
+    fn interrupted_repack_restores_truncated_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repack.db");
+        std::fs::write(&path, sample(2000)).unwrap();
+        let root = root_of(&path);
+        let mut editor = Editor::open(&path).unwrap().unwrap();
+        editor.rebuild_table(root, &[(1, vec![w::Value::Null, w::Value::Text("keep".into())])]).unwrap();
+        editor.commit().unwrap();
+        let original = std::fs::read(&path).unwrap();
+        for version in [1, 2] {
+            let mut original = original.clone();
+            original[18] = version;
+            original[19] = version;
+            let compact = crate::drivers::sqlite_repack::compact(&original).unwrap();
+            assert!(compact.len() < original.len());
+            for stage in [Stage::Journal, Stage::HalfWritten, Stage::Written] {
+                std::fs::write(&path, &original).unwrap();
+                let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+                editor.replace_image(&original, &compact).unwrap();
+                editor.commit_until(stage).unwrap();
+                assert_eq!(read_consistent(&path).unwrap(), original, "{stage:?}");
+                if let Some(python) = std::env::var_os("TERRIO_SQLITE_REFERENCE_PYTHON") {
+                    let result=std::process::Command::new(python)
+                    .args(["-c","import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); assert db.execute('PRAGMA integrity_check').fetchall()==[('ok',)]; assert db.execute('SELECT s FROM t').fetchall()==[('keep',)]; db.close()"])
+                    .arg(&path).output().unwrap();
+                    assert!(result.status.success(), "SQLite reference recovery {stage:?}: {}", String::from_utf8_lossy(&result.stderr));
+                }
+                drop(Editor::open_repack(&path).unwrap().unwrap());
+                assert_eq!(std::fs::read(&path).unwrap(), original, "{stage:?}");
+                assert!(!has_hot_journal(&path).unwrap());
+            }
+        }
     }
 
     #[test]

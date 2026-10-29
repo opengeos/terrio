@@ -441,3 +441,9 @@ implementations must return a standard `Response`. Object-store XML pagination i
 
 VSI listing bindings return structured flat entries. Nested tree presentation (`--tree`)
 is currently available through the CLI; JSON serialization flags apply to CLI output.
+
+`gpkgRepack(path)` compacts an uploaded `/vsimem/` GeoPackage in place and returns
+`bytes_before`, `bytes_after`, `page_size`, `pages_before` and `pages_after`.
+`gpkgRepackBytes(bytes)` returns a compacted `Uint8Array` copy of a self-contained image.
+Read the in-memory result with `vsiRead(path)`. Encoded records, indexes, rowids and schema SQL
+are retained. See [supported scope](cli.md#geopackage-repacking).

@@ -2872,6 +2872,7 @@ dependencies = [
  "wbvector",
  "webp-rust 0.3.2",
  "weezl 0.2.1",
+ "windows-sys 0.61.2",
  "zip 9.1.3",
  "zstd 0.14.3",
  "zune-core",

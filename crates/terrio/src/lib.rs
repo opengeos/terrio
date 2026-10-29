@@ -199,6 +199,7 @@ pub mod formats;
 #[cfg_attr(docsrs, doc(cfg(feature = "gdal")))]
 pub mod gdal_backend;
 mod geotiff;
+pub mod gpkg_maintenance;
 mod histogram;
 #[cfg(remote)]
 #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
