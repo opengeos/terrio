@@ -457,22 +457,120 @@ impl std::io::Seek for MemberReader {
     }
 }
 
-pub(crate) fn tiff_has_transform(path: &str) -> Result<bool> {
-    fn read(reader: impl Read + std::io::Seek) -> Result<bool> {
-        crate::geotiff::read_geo_tags_from(reader)
-            .map(|tags| tags.geo_transform.is_some())
-            .ok_or_else(|| Error::InvalidData("cannot read TIFF georeferencing tags".into()))
-    }
+/// Read a file through its native, memory, HTTP/object-store or archive reader.
+/// Consumers choose the metadata ranges they need rather than materializing it.
+pub(crate) fn with_seekable<T>(path: &str, operation: impl FnOnce(&mut dyn ReadSeek) -> Result<T>) -> Result<T> {
     let node = Node::parse(path)?;
     match node {
-        Node::Local(p) => read(std::io::BufReader::new(std::fs::File::open(p)?)),
-        Node::Mem(k) => read(std::io::Cursor::new(crate::memfs::read_shared(Path::new(&k))?)),
+        Node::Local(p) => operation(&mut std::io::BufReader::new(std::fs::File::open(p)?)),
+        Node::Mem(k) => operation(&mut std::io::Cursor::new(crate::memfs::read_shared(Path::new(&k))?)),
         #[cfg(remote)]
-        Node::Url { .. } | Node::S3 { .. } => read(crate::http::RangeReader::open(&node.remote().unwrap())?),
-        Node::Archive { .. } => read(MemberReader::open(node)?),
+        Node::Url { .. } | Node::S3 { .. } => operation(&mut crate::http::RangeReader::open(&node.remote().unwrap())?),
+        Node::Archive { .. } => operation(&mut MemberReader::open(node)?),
         #[cfg(not(remote))]
         _ => Err(Error::Unsupported(remote_disabled_message())),
     }
+}
+pub(crate) fn tiff_has_transform(path: &str) -> Result<bool> {
+    with_seekable(path, |reader| {
+        crate::geotiff::read_geo_tags_from(reader)
+            .map(|tags| tags.geo_transform.is_some())
+            .ok_or_else(|| Error::InvalidData("cannot read TIFF georeferencing tags".into()))
+    })
+}
+
+/// A portable column-chunk path, relative to the output metadata file.
+#[cfg(feature = "parquet")]
+pub(crate) fn relative_file(input: &str, output: &str) -> Result<String> {
+    fn parts(input: &[String], directory: &[String]) -> Result<String> {
+        let common = input.iter().zip(directory).take_while(|(a, b)| a == b).count();
+        let mut result: Vec<_> = directory[common..].iter().map(|_| "..".to_owned()).collect();
+        result.extend_from_slice(&input[common..]);
+        if result.is_empty() {
+            return Err(Error::InvalidArgument("metadata output and input have the same path".into()));
+        }
+        Ok(result.join("/"))
+    }
+    fn keys(input: &str, output: &str) -> Result<String> {
+        let split = |key: &str| -> Result<Vec<String>> {
+            if key.split('/').any(|part| matches!(part, "." | "..")) {
+                return Err(Error::InvalidArgument("Parquet partition keys must not contain dot segments".into()));
+            }
+            Ok(key.split('/').filter(|part| !part.is_empty()).map(str::to_owned).collect())
+        };
+        let input = split(input)?;
+        let mut output = split(output)?;
+        output.pop();
+        parts(&input, &output)
+    }
+    let unsupported = || Error::InvalidArgument("Parquet inputs and metadata output must use the same filesystem".into());
+    match (Node::parse(input)?, Node::parse(output)?) {
+        (Node::Local(input), Node::Local(output)) => {
+            let input = overlap_path(&input)?;
+            let output = overlap_path(&output)?;
+            let directory = output.parent().ok_or_else(unsupported)?;
+            let input: Vec<_> = input.components().collect();
+            let directory: Vec<_> = directory.components().collect();
+            if input.first() != directory.first() {
+                return Err(unsupported());
+            }
+            let strings = |components: &[Component<'_>]| {
+                components
+                    .iter()
+                    .map(|part| {
+                        part.as_os_str()
+                            .to_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| Error::InvalidArgument("Parquet partition paths must be UTF-8".into()))
+                    })
+                    .collect::<Result<Vec<_>>>()
+            };
+            parts(&strings(&input)?, &strings(&directory)?)
+        }
+        (Node::Mem(input), Node::Mem(output)) => keys(&input, &output),
+        (Node::S3 { bucket: a, key: input }, Node::S3 { bucket: b, key: output }) if a == b => keys(&input, &output),
+        (Node::Url { base: input, query }, Node::Url { base: output, .. }) => {
+            if !query.is_empty() {
+                return Err(Error::InvalidArgument(
+                    "query-bearing source URLs cannot be stored as portable Parquet paths; use environment credentials".into(),
+                ));
+            }
+            let split = |url: String| -> Result<(String, String)> {
+                let (scheme, rest) = url.split_once("://").ok_or_else(unsupported)?;
+                let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+                Ok((format!("{scheme}://{host}"), path.to_owned()))
+            };
+            let (a, input) = split(input)?;
+            let (b, output) = split(output)?;
+            if a != b {
+                return Err(unsupported());
+            }
+            keys(&input, &output)
+        }
+        (Node::Archive { archive: a, kind: ak, inner: input }, Node::Archive { archive: b, kind: bk, inner: output })
+            if a == b && ak == bk =>
+        {
+            keys(&input, &output)
+        }
+        _ => Err(unsupported()),
+    }
+}
+/// Resolve existing external column-chunk paths without reading those files.
+#[cfg(feature = "parquet")]
+pub(crate) fn resolve_file(input: &str, reference: &str) -> Result<String> {
+    let parsed = Node::parse(reference)?;
+    if !matches!(&parsed, Node::Local(path) if !path.is_absolute()) {
+        return Ok(raw(&parsed));
+    }
+    let parent = |key: &str| key.rsplit_once('/').map_or("", |(parent, _)| parent).to_owned();
+    let node = match Node::parse(input)? {
+        Node::Local(path) => Node::Local(path.parent().unwrap_or(Path::new(".")).join(reference)),
+        Node::Mem(key) => Node::Mem(parent(&key)).join(reference),
+        Node::S3 { bucket, key } => Node::S3 { bucket, key: parent(&key) }.join(reference),
+        Node::Url { base, query } => Node::Url { base: parent(&base), query }.join(reference),
+        Node::Archive { archive, kind, inner } => Node::Archive { archive, kind, inner: parent(&inner) }.join(reference),
+    };
+    Ok(raw(&node))
 }
 
 /// Rename accounting for payload copies rather than the logical file size moved.
