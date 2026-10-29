@@ -692,7 +692,9 @@ for untrusted VRTs. Source references are rewritten to the new names. Rename mov
 owned definition but preserves original dependencies so other datasets can keep using
 them; copied payloads count toward reported bytes, including for same-filesystem VRT
 renames. VRT/GML bytes are preserved when no reference needs rebasing. GML schema
-locations and Idrisi/ERS header references are also updated. Irregular basenames are
+locations and Idrisi/ERS header references are also updated. Text header rewrites
+preserve opaque non-reference bytes and CRLF/LF line endings; file-reference values
+themselves must be UTF-8. Irregular basenames are
 refused before mutation, as in GDAL. VRT graph traversal reuses completed inventories
 and permits at most 128 nested definitions; definitions are held in memory. GML
 definitions are also read and parsed in full when preparing a transfer, even when no
@@ -719,6 +721,8 @@ overlapping directory trees, protected roots, read-only mutations and file/direc
 collisions are refused. Failed staging or installation attempts restore the original
 paths; failed rollback returns an error identifying recovery files. After installation
 commits, cleanup failures return success with leftover staged paths in `recovery_files`.
+A failed stat skips deletion and reports that path, since guessing whether a cloud
+object is a directory could delete a broader prefix.
 The CLI reports these leftovers on stderr as well as in JSON. An empty list means
 cleanup completed. Batch deletion includes the shared cleanup list in each report. An
 existing destination must have a successful inventory, including with overwrite; an

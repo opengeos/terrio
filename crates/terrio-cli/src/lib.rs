@@ -25,9 +25,10 @@ enum Command {
     Identify(cmd::inspection::IdentifyArgs),
     /// Copy a dataset and every associated file, preserving encoded data.
     DatasetCopy(cmd::dataset_files::TransferArgs),
-    /// Rename a dataset and its associated files.
+    /// Rename a dataset and its associated files; directory datasets include the complete subtree.
     DatasetRename(cmd::dataset_files::TransferArgs),
-    /// Delete owned dataset files, preserving referenced VRT/catalog assets.
+    /// Delete owned dataset files, preserving referenced VRT assets.
+    /// Directory datasets include the complete subtree, including extra files.
     DatasetDelete(cmd::dataset_files::DeleteArgs),
     /// List the owned files of a dataset.
     DatasetFiles(cmd::dataset_files::FilesArgs),

@@ -241,6 +241,20 @@ def main():
             )
             dataset = None
             fixtures.append((label, path, vector_snapshot))
+        folder = root / "MapInfo Latin1 TAB"
+        folder.mkdir()
+        path = folder / "source.tab"
+        dataset = gdal.VectorTranslate(
+            str(path),
+            str(args.data / "countries.geojson"),
+            format="MapInfo File",
+            limit=3,
+            layerCreationOptions=["ENCODING=CP1252"],
+        )
+        dataset = None
+        # A valid legacy-encoded table label must remain opaque to the copier.
+        path.write_bytes(path.read_bytes() + b'\r\nDescription "caf\xe9"\r\n')
+        fixtures.append(("MapInfo Latin1 TAB", path, vector_snapshot))
         folder = root / "MVT directory"
         folder.mkdir()
         path = folder / "source"
@@ -265,7 +279,25 @@ def main():
                 stage = "owned file inventory"
                 inventory = call("dataset-files", source)
                 difference = ""
-                if not source.is_dir():
+                if source.is_dir():
+                    assert inventory["directory"] is True, inventory
+                    assert {Path(p) for p in inventory["files"]} == {source}, inventory
+                    # Expand the returned owned roots independently and compare the
+                    # complete fixture tree, including zoom-0 tiles and metadata.
+                    expected_tree = {
+                        p.relative_to(source) for p in source.rglob("*") if p.is_file()
+                    }
+                    actual_tree = {
+                        p.relative_to(source)
+                        for owned in inventory["files"]
+                        for p in Path(owned).rglob("*")
+                        if p.is_file()
+                    }
+                    assert expected_tree
+                    if label == "MVT directory":
+                        assert any(p.suffix == ".pbf" for p in expected_tree)
+                    assert actual_tree == expected_tree
+                else:
                     actual_names = {Path(p).name for p in inventory["files"]}
                     expected_names = {Path(p).name for p in expected_files}
                     if label == "CSV" and actual_names == expected_names | {
@@ -326,6 +358,9 @@ def main():
                 stage = "Terrio copy snapshot"
                 call("dataset-copy", source, target)
                 assert snapshot(target) == reference
+                if label == "MapInfo Latin1 TAB":
+                    assert target.read_bytes() == source.read_bytes()
+
                 if label == "GML":
                     import xml.etree.ElementTree as ET
 
@@ -794,6 +829,31 @@ def main():
                 assert set(store.objects) == {"datasets/keep.txt"}, sorted(
                     store.objects
                 )
+                assert (
+                    store.objects["datasets/keep.txt"][0]
+                    == b"preserve unrelated object"
+                )
+                existing = sources[1].read_bytes()
+                store.objects["datasets/rollback.tif"] = (existing, time.time())
+                try:
+                    call(
+                        "dataset-copy",
+                        sources[0],
+                        "/vsis3/datasets/rollback.tif",
+                        overwrite=True,
+                        env=env,
+                    )
+                    raise AssertionError("injected overwrite failure was not observed")
+                except AssertionError as error:
+                    assert "403" in str(error) or "AccessDenied" in str(error), str(
+                        error
+                    )
+                    assert "rollback incomplete" not in str(error), str(error)
+                assert set(store.objects) == {
+                    "datasets/keep.txt",
+                    "datasets/rollback.tif",
+                }
+                assert store.objects["datasets/rollback.tif"][0] == existing
                 assert (
                     store.objects["datasets/keep.txt"][0]
                     == b"preserve unrelated object"
