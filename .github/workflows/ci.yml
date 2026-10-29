@@ -80,6 +80,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+        env:
+          TERRIO_SQLITE_REFERENCE_PYTHON: python3
       # The `ndarray` feature, off by default: its module and its tests.
       - run: cargo clippy -p terrio --features ndarray --lib --test ndarray -- -D warnings
       - run: cargo test -p terrio --features ndarray --test ndarray
