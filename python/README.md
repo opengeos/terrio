@@ -10,7 +10,7 @@
 [![PyPI](https://img.shields.io/pypi/v/terrio.svg)](https://pypi.org/project/terrio/) [![CI](https://github.com/opengeos/terrio/actions/workflows/ci.yml/badge.svg)](https://github.com/opengeos/terrio/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/opengeos/terrio/blob/main/LICENSE)
 
 Python bindings for [terrio](https://github.com/opengeos/terrio): read, write, convert and
-reproject geospatial rasters, vector datasets and point clouds in pure Rust, without GDAL. Wheels need only
+reproject geospatial rasters, vector datasets and point clouds in pure Rust, with no GDAL installation needed. Wheels need only
 NumPy (and the small `affine` package).
 
 ```sh
@@ -40,7 +40,7 @@ with rasterio.open("https://example.com/cog.tif") as src:  # read lazily, by win
 
 ## xarray
 
-`terrio.xarray` is rioxarray's API without GDAL (`pip install "terrio[xarray]"`): rasters open
+`terrio.xarray` is rioxarray's API without a GDAL installation (`pip install "terrio[xarray]"`): rasters open
 lazily as DataArrays with rioxarray's coordinates, attributes and encoding, and the `.terrio`
 accessor has rioxarray's `.rio` methods. See [xarray](https://terrio.opengeos.org/xarray/).
 

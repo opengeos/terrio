@@ -27,7 +27,9 @@ terrio builds on the pure-Rust format libraries of
 [whitebox_next_gen](https://github.com/jblindsay/whitebox_next_gen) (`wbraster`, `wbvector`,
 `wbprojection`) and adds format detection, remote and archived inputs, a GeoTIFF reader built on
 the [`tiff`](https://crates.io/crates/tiff) crate, fixes for what the format libraries miss, and
-GDAL-style operations.
+GDAL-style operations. terrio needs no GDAL installation, but it is not independent of GDAL: its
+commands and options follow GDAL's, many of its algorithms and drivers are ports of GDAL, PROJ and
+PDAL code, and its results are tested against them (see [Acknowledgements](#acknowledgements)).
 
 Coordinate transformations match GDAL's: terrio carries the EPSG CRSs with the coordinate
 operations GDAL uses for them (generated from GDAL and PROJ by `scripts/gen_epsg_table.py`) and
@@ -226,7 +228,7 @@ rasterio scripts run with an import change, `import terrio.rio as rasterio`: dat
 CRSs, features, warping, merging, masking and memory files follow rasterio's API, compared with
 rasterio on real files. See [Coming from rasterio](https://terrio.opengeos.org/rasterio/).
 
-`terrio.xarray` is rioxarray's API without GDAL (`pip install "terrio[xarray]"`):
+`terrio.xarray` is rioxarray's API without a GDAL installation (`pip install "terrio[xarray]"`):
 `terrio.xarray.open_rasterio` and `xr.open_dataset(path, engine="terrio")` open rasters lazily
 (remote COGs fetch only the tiles a window needs, chunked with dask), and the `.terrio` accessor
 has rioxarray's `.rio` methods (`clip_box`, `clip`, `reproject`, `reproject_match`, `pad_box`,
@@ -322,6 +324,9 @@ terrio builds on the work of many projects and their authors:
 - [PROJ](https://proj.org) and [PDAL](https://pdal.io), with GDAL the reference terrio tests
   against; its projections are ported from PROJ, its point cloud filters follow PDAL's (the cloth
   simulation filter of Zhang et al., 2016, is a port of the CSF code PDAL vendors).
+- [GEOS](https://libgeos.org) and the [JTS Topology Suite](https://github.com/locationtech/jts),
+  whose simplification, hull and polygon validity algorithms terrio reproduces, and
+  [GeoRust](https://georust.org)'s `geo`, which its vector processing is built on.
 - The [EPSG Geodetic Parameter Dataset](https://epsg.org) of IOGP and Esri's
   [projection engine data](https://github.com/Esri/projection-engine-db-doc), for the coordinate
   reference systems.

@@ -125,7 +125,7 @@ python scripts/compare_rio_with_rasterio.py ../terrio-data --remote --output rep
 ## The `rio` command line
 
 `terrio-rio` (also `python -m terrio.rio`, installed with terrio) is rasterio's `rio` command line
-run with `terrio.rio`: the same commands, options, defaults and outputs, without GDAL. It is not
+run with `terrio.rio`: the same commands, options, defaults and outputs, without rasterio's GDAL dependency. It is not
 named `rio`, so that it does not shadow rasterio's when both are installed.
 
 ```sh

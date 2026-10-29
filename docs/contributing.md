@@ -47,6 +47,17 @@ to a Rust release less than six months old, and from 1.0 on only in a minor rele
   for WebAssembly. The optional `gdal` feature is the one exception.
 - Document every public item (`#![warn(missing_docs)]`), with a `no_run` example on entry points.
 - Name things as GDAL does: driver short names, option names in kebab case.
+- Credit what you port. Code ported or adapted from another project names its source files in a
+  comment and in `NOTICE`, and the project is listed in [Acknowledgements](acknowledgements.md).
+
+## Release notes
+
+Release notes and release announcements end with a **Credits** section naming the projects whose
+code that release ports or adapts (GDAL, PROJ, PDAL, GEOS and others), the features that came
+from each, a link to `NOTICE`, and a link to
+[sponsoring GDAL](https://gdal.org/en/stable/sponsors/index.html). Describe terrio as needing no
+GDAL installation, not as being free of GDAL: its commands follow GDAL's and many of its
+algorithms are ports of GDAL code.
 
 ## Documentation
 
