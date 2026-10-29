@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+import sys
 from contextlib import closing
 
 import pytest
@@ -138,7 +139,19 @@ def test_active_wal_refused_without_losing_committed_rows(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="non-UTF-8 and trailing-space filenames need POSIX")
-@pytest.mark.parametrize("name", [b"caf\xe9.gpkg", " edge.gpkg "])
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param(
+            b"caf\xe9.gpkg",
+            marks=pytest.mark.skipif(
+                sys.platform == "darwin", reason="APFS rejects invalid UTF-8 filenames"
+            ),
+        ),
+        "café.gpkg",
+        " edge.gpkg ",
+    ],
+)
 def test_native_non_utf8_path_preserves_database(tmp_path, name):
     name = os.fsdecode(name)
     source = fixture(tmp_path)

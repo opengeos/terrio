@@ -407,7 +407,15 @@ mod tests {
 
     fn request(s: &mut Server, method: &str, params: Value) -> Value {
         let msg = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).to_string();
-        serde_json::from_str(&s.handle(&msg).expect("a reply")).unwrap()
+        // Match run_as: the command catalog exceeds Windows' default test-thread stack.
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(crate::STACK_SIZE)
+                .spawn_scoped(scope, || serde_json::from_str(&s.handle(&msg).expect("a reply")).unwrap())
+                .unwrap()
+                .join()
+                .unwrap()
+        })
     }
 
     #[test]
