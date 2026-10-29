@@ -310,7 +310,8 @@ See [ROADMAP.md](ROADMAP.md) for what is planned and in what order.
 
 ## Acknowledgements
 
-terrio builds on the work of many projects and their authors:
+terrio builds on the work of many projects and their authors, who hold the copyright in the code
+and data terrio adapts from them:
 
 - [whitebox_next_gen](https://github.com/jblindsay/whitebox_next_gen) by John Lindsay, whose
   pure-Rust format libraries (`wbraster`, `wbvector`, `wbprojection`) terrio began on.
@@ -360,7 +361,12 @@ anything that looks wrong.
 
 ## License
 
-MIT
+terrio is released under the [MIT License](LICENSE). Much of it is ported or adapted from other
+projects, above all GDAL, PROJ and PDAL, and the copyright in that code and data remains with
+their authors: Frank Warmerdam, Even Rouault and the GDAL contributors; Gerald Evenden, Frank
+Warmerdam, Even Rouault and the PROJ contributors; Hobu, Inc. and the PDAL contributors; and the
+authors of GEOS, JTS, CSF, rasterio, rioxarray and the other projects [`NOTICE`](NOTICE) lists
+with their licenses.
 
 terrio's EPSG table and datum names (`crates/terrio-crs/data/epsg.tsv.zst`, `datums.tsv.zst`) are
 derived from the [EPSG Geodetic Parameter Dataset](https://epsg.org), copyright the International

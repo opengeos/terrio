@@ -2,6 +2,13 @@
 
 terrio stands on the work of many projects and their authors. Thank you to all of them.
 
+terrio is released under the MIT License, but much of it is ported or adapted from these
+projects, and the copyright in that code and data remains with their authors: Frank Warmerdam,
+Even Rouault and the GDAL contributors; Gerald Evenden, Frank Warmerdam, Even Rouault and the PROJ
+contributors; Hobu, Inc. and the PDAL contributors; and the authors of the other projects below.
+[`NOTICE`](https://github.com/opengeos/terrio/blob/main/NOTICE) lists each of them with their
+licenses.
+
 !!! note "Disclaimer"
 
     terrio is primarily built with [Claude Opus 5.5](https://www.anthropic.com/claude), an AI
@@ -150,7 +157,7 @@ Group.
 ## Notices and licenses
 
 [`NOTICE`](https://github.com/opengeos/terrio/blob/main/NOTICE) holds the copyright and license
-notices of the code and data terrio adapts (GDAL, PROJ, CSF, the EPSG dataset, Esri's projection
+notices of the code and data terrio adapts, whose copyright remains with their authors (GDAL, PROJ, CSF, the EPSG dataset, Esri's projection
 data, rasterio, rioxarray, Apache Arrow and the IJG), and
 [`LICENSE-THIRD-PARTY.md`](https://github.com/opengeos/terrio/blob/main/LICENSE-THIRD-PARTY.md)
 the licenses of every Rust crate terrio's packages and binaries are built with, generated with
