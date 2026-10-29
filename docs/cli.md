@@ -719,7 +719,9 @@ and nested groups; unsupported array types fail explicitly. Point-cloud builds
 also read all exposed point records.
 
 Lazy raster readers use two-dimensional value windows of about 8 MiB, aligned to
-source blocks when they fit. Very wide images do not require a whole tile row in
+source blocks when they fit. The window planner uses the base level block shape
+for overviews too; an overview with a different block shape can decode a tile
+more than once. Very wide images do not require a whole tile row in
 memory. A compressed block larger than this budget can be decoded once per window
 that intersects it: a 16-row strip that only fits eight rows per window can require
 two decodes. Scientific arrays use their storage chunk shape when its decoded values
