@@ -99,8 +99,11 @@ The topology-preserving simplification in crates/terrio/src/ops/simplify.rs and 
 concave hulls in crates/terrio/src/ops/hull.rs follow the algorithms of the JTS Topology Suite
 (https://github.com/locationtech/jts: TopologyPreservingSimplifier, ConvexHull, ConcaveHull and
 ConcaveHullOfPolygons, by Martin Davis), reimplemented in Rust. Their behaviour was checked
-against GEOS 3.14 (https://libgeos.org), the C++ port of JTS that GDAL uses. JTS is available
-under the Eclipse Distribution License 1.0:
+against GEOS 3.14 (https://libgeos.org), the C++ port of JTS that GDAL uses. The polygon
+validity checks and repair in crates/terrio/src/tiles/valid.rs follow what GEOS's IsValid
+and MakeValid (the JTS IsValidOp and GEOS's linework MakeValid) do in GDAL's MVT writer, and the
+spatial sort in crates/terrio/src/ops/vector_geom.rs follows the STR packing of GEOS's
+TemplateSTRtree (JTS's STRtree). JTS is available under the Eclipse Distribution License 1.0:
 
   Copyright (c) 2016 Vivid Solutions and others.
   All rights reserved.
