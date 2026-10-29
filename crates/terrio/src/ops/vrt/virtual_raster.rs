@@ -906,7 +906,7 @@ impl Reader {
         Ok(ParsedWarp {
             source: source.text.clone(),
             source_overview,
-            relative: source.attr("relativeToVRT") == Some("1"),
+            relative: super::relative_reference_flag(source.attr("relativeToVRT"), false),
             options,
             pairs,
             source_nodata,
@@ -923,16 +923,17 @@ impl WindowSource for Reader {
     fn input_paths(&self) -> Result<Vec<String>> {
         let _inventory = SourceInventoryScope::enter();
         let _depth = ReadDepth::enter()?;
-        fn references<'a>(element: &'a xml::Element, out: &mut Vec<(&'a str, bool)>) {
+        fn references<'a>(element: &'a xml::Element, raw: bool, out: &mut Vec<(&'a str, bool)>) {
+            let raw = if element.name == "VRTRasterBand" { element.attr("subClass") == Some("VRTRawRasterBand") } else { raw };
             if matches!(element.name.as_str(), "SourceFilename" | "SourceDataset") {
-                out.push((element.text.as_str(), element.attr("relativeToVRT") == Some("1")));
+                out.push((element.text.as_str(), super::relative_reference_flag(element.attr("relativeToVRT"), raw)));
             }
             for child in &element.children {
-                references(child, out);
+                references(child, raw, out);
             }
         }
         let mut refs = Vec::new();
-        references(&self.description.root, &mut refs);
+        references(&self.description.root, false, &mut refs);
         refs.sort_unstable();
         refs.dedup();
         let mut paths = Vec::new();

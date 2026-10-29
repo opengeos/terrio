@@ -1159,6 +1159,30 @@ ordinary lazy info opens. Raster index construction never called the pixel sourc
 its panic-on-read unit fixture. These observations apply to lazy-capable readers;
 formats whose reader lacks a metadata-only path may materialize the input.
 
+## COG validation
+
+The registered `cog-validate` suite compares GDAL 3.13.3's unified COG validator
+with `validate-cog --profile gdal`, with full checks both enabled and disabled.
+Real Landsat and USGS-derived COGs cover pixel/band/tile interleave, BigTIFF,
+internal masks, external overviews and deliberate leader/trailer corruption.
+Validity, exit status, finding counts, IFD offsets and first-block offsets must
+agree exactly; diagnostic wording is not compared. Rust, Python and WASM
+regressions exercise uploaded bytes and corrupt block boundaries. A counting
+HTTP regression verifies automatic remote validation reads headers only while
+explicit full checking detects a damaged trailer.
+
+On the 1024×1024 random Float32 COG regression, automatic remote validation
+transferred 65,536 bytes in one GET. Explicit full checking transferred
+4,955,322 bytes in 76 GETs from the same source and detected the damaged final
+trailer. These are observed transfer counts, not timing targets.
+
+Local full validation also measures reads from the underlying file. On a
+2048×2048 Float32 COG with 128-pixel tiles, the buffered path read 5,688,654
+bytes; direct boundary reads read 7,897 bytes, with identical validation
+results and one source-file open per call. The GDAL profile now uses direct
+local reads for full checking. Python uploaded-byte validation borrows immutable
+bytes instead of duplicating the full payload.
+
 ## Dataset identification (#289)
 
 The `identify` conformance suite compares driver identification with GDAL 3.13.3
@@ -1198,7 +1222,7 @@ ASCII and Surfer grids, Zarr, Shapefile, MapInfo TAB/MIF, CSV, GeoPackage, GML,
 MVT pyramids and VRT TIFF/netCDF references. GDAL reads MVT zoom-level directories;
 the whole-pyramid reference copy uses `gdal vsi copy --recursive`.
 
-The local run has 29 cases: 24 identical and five explicit metadata/reference
+The local run has 48 cases: 43 identical and five explicit metadata/reference
 corrections. GDAL's generic copy loses the CSV CRS `.prj`, omits GML XSD schemas,
 leaves the Idrisi reference-system name stale, and does not make the two VRT
 reference cases independent of their originals. Terrio preserves source values
@@ -1210,6 +1234,10 @@ A local HTTP server serves a padded 8 MiB real TIFF with overview, mask and PAM
 sidecars. The suite measures successful/missing requests, bytes served and distinct
 existing files, and bounds metadata overhead without assuming a content type.
 The data, masks, overviews, georeferencing and metadata must remain exact.
+
+GDAL source-resolution comparisons cover both integer `relativeToVRT` flags for sourced
+bands and boolean flags for raw bands, with distinct same-named assets in the working
+and VRT directories. Native paths and encoded filename whitespace retain exact identity.
 
 Core regressions cover source/hard-link aliases, batch preflight, stale sidecars,
 file/directory collisions, nonregular inputs, symlink deletion, partial-stage

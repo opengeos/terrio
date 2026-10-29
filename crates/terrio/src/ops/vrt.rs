@@ -21,6 +21,19 @@ use std::path::{Path, PathBuf};
 use wbraster::DataType;
 use wbraster::raster::RasterData;
 
+/// GDAL sourced bands use an integer flag; raw bands use CPLTestBool.
+pub(crate) fn relative_reference_flag(value: Option<&str>, raw: bool) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    if raw {
+        return !matches!(value.to_ascii_lowercase().as_str(), "0" | "no" | "off" | "false");
+    }
+    let value = value.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
+    let digits = value.strip_prefix('+').or_else(|| value.strip_prefix('-')).unwrap_or(value);
+    digits.chars().take_while(char::is_ascii_digit).any(|digit| digit != '0')
+}
+
 /// A virtual raster.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VrtDataset {
@@ -206,7 +219,7 @@ impl VrtDataset {
                 };
                 sources.push(VrtSource {
                     filename: fname.text.clone(),
-                    relative_to_vrt: fname.attr("relativeToVRT").is_some_and(|v| v.trim() == "1"),
+                    relative_to_vrt: relative_reference_flag(fname.attr("relativeToVRT"), false),
                     band,
                     src_rect,
                     dst_rect,
