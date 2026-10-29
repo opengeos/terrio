@@ -472,6 +472,7 @@ pub fn check_output(path: &str, sources: &[&str], overwrite: bool) -> Result<()>
             std::fs::metadata(input).ok().zip(std::fs::metadata(output).ok()).is_some_and(|(a, b)| a.dev() == b.dev() && a.ino() == b.ino())
         };
         #[cfg(windows)]
+        // New destinations have no file identity; their NotFound error permits creation.
         let same = same || same_file::is_same_file(input, output).unwrap_or(false);
         if same {
             return Err(invalid("palette output cannot replace an input or its alias"));
@@ -589,6 +590,7 @@ mod tests {
         assert_eq!(std::fs::read(input).unwrap(), b"original");
         assert_eq!(std::fs::read(alias).unwrap(), b"original");
     }
+
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn memory_output_requires_overwrite_and_remote_outputs_are_refused() {

@@ -152,7 +152,7 @@ sha2 = { workspace = true, optional = true }
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-same-file = "1.0.6"
+same-file.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
