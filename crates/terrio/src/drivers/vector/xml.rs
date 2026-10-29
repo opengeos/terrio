@@ -91,11 +91,15 @@ pub fn decode(bytes: &[u8]) -> String {
 
 /// Parses a document and returns its root element.
 pub fn parse(text: &str) -> Result<Element> {
-    parse_limited(text, usize::MAX)
+    parse_with_limits(text, usize::MAX, usize::MAX)
 }
 
-/// Parse with a caller-specific bound on total elements, including empty siblings.
+/// Parse with a caller-specific element bound and a 256-level nesting bound.
 pub fn parse_limited(text: &str, max_elements: usize) -> Result<Element> {
+    parse_with_limits(text, max_elements, 256)
+}
+
+fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize) -> Result<Element> {
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("XML: {e}"));
     let mut reader = Reader::from_str(text);
     reader.config_mut().check_end_names = false;
@@ -109,8 +113,8 @@ pub fn parse_limited(text: &str, max_elements: usize) -> Result<Element> {
             }
             elements += 1;
         }
-        if matches!(&event, Event::Start(_) | Event::Empty(_)) && stack.len() > 256 {
-            return Err(Error::InvalidData("XML: nesting exceeds 256 element levels".into()));
+        if matches!(&event, Event::Start(_) | Event::Empty(_)) && stack.len() > max_depth {
+            return Err(Error::InvalidData(format!("XML: nesting exceeds {max_depth} element levels")));
         }
         match event {
             Event::Start(e) => stack.push(element(&e)),
@@ -197,12 +201,13 @@ mod tests {
     #[test]
     fn deep_trees_fail_before_recursive_traversal_or_drop() {
         let document = "<a>".repeat(100_000);
-        assert!(parse(&document).unwrap_err().to_string().contains("256 element levels"));
+        assert!(parse_limited(&document, 65_536).unwrap_err().to_string().contains("256 element levels"));
         let allowed = format!("{}{}", "<a>".repeat(256), "</a>".repeat(256));
-        let root = parse(&allowed).unwrap();
+        let root = parse_limited(&allowed, 65_536).unwrap();
         assert!(root.find("missing").is_none());
         let empty_leaf = format!("{}<b/>{}", "<a>".repeat(256), "</a>".repeat(256));
-        assert!(parse(&empty_leaf).is_err());
+        assert!(parse_limited(&empty_leaf, 65_536).is_err());
+        assert!(parse(&empty_leaf).is_ok());
     }
     #[test]
     fn parses_elements_text_and_entities() {
