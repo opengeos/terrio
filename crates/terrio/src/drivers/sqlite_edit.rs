@@ -5,9 +5,10 @@
 //! content of every page about to be overwritten is written to `<file>-journal` and synced
 //! before the database file is touched, the new pages are written and synced, and deleting the
 //! journal commits. A process that stops in between leaves a hot journal behind, which SQLite
-//! (and [`Editor::open`]) plays back to restore the database as it was. On Unix and Windows the file is
-//! locked as SQLite locks it (POSIX or Windows byte-range locks on its lock bytes), so SQLite readers and
-//! writers wait, and updates of a database that another connection is using fail.
+//! (and [`Editor::open`]) plays back to restore the database as it was. Native row edits take
+//! SQLite-compatible POSIX locks on Unix. Full-image repacking additionally takes Windows
+//! byte-range locks; ordinary Windows edits keep their rewrite fallback. A conflicting
+//! SQLite connection prevents the exclusive lock.
 //!
 //! Table b-trees grow by inserting cells and splitting pages, as SQLite's own b-tree does;
 //! small tables and indexes are rebuilt in place (their root pages kept). Pages freed go to the
@@ -67,6 +68,12 @@ pub(crate) struct Node {
     pub right: Option<u32>,
 }
 
+/// Full-image replacement owns both buffers; it never clones their pages into the edit cache.
+struct FullRewrite {
+    original: Vec<u8>,
+    image: Vec<u8>,
+}
+
 /// A database file opened for changes.
 pub(crate) struct Editor {
     file: File,
@@ -83,6 +90,7 @@ pub(crate) struct Editor {
     dirty: BTreeSet<u32>,
     /// Whether the schema changed (the schema cookie is then incremented).
     pub schema_changed: bool,
+    rewrite: Option<FullRewrite>,
 }
 
 impl PageStore for Editor {
@@ -151,7 +159,25 @@ impl Editor {
             // Without SQLite's locks a reader could see a half-written file.
             return Ok(Err(NotInPlace("in-place changes need SQLite's file locks, not taken on this platform".into())));
         }
-        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        #[cfg(unix)]
+        if repack {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        #[cfg(windows)]
+        if repack {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let mut file = options.open(path)?;
+        if repack && {
+            let kind = file.metadata()?.file_type();
+            kind.is_symlink() || !kind.is_file()
+        } {
+            return Err(bad("repack handle is not a regular file"));
+        }
         #[cfg(any(all(unix, not(target_os = "emscripten")), windows))]
         lock(&file, path)?;
         if repack {
@@ -237,6 +263,7 @@ impl Editor {
             originals: BTreeMap::new(),
             dirty: BTreeSet::new(),
             schema_changed: false,
+            rewrite: None,
         }))
     }
 
@@ -251,25 +278,16 @@ impl Editor {
 
     /// Install a rebuilt image through the normal rollback-journal transaction. Truncated
     /// original pages must be journaled too, so interruption can restore the complete file.
-    pub(crate) fn replace_image(&mut self, old: &[u8], image: &[u8]) -> Result<()> {
+    pub(crate) fn replace_image(&mut self, old: Vec<u8>, image: Vec<u8>) -> Result<()> {
         if image.is_empty() || !image.len().is_multiple_of(self.page_size) || old.len() != self.orig_pages as usize * self.page_size {
             return Err(bad("replacement image size"));
         }
-        let pages = u32::try_from(image.len() / self.page_size).map_err(|_| bad("replacement page count"))?;
-        for (i, original) in old.chunks_exact(self.page_size).enumerate() {
-            let number = i as u32 + 1;
-            if image.chunks_exact(self.page_size).nth(i) != Some(original) {
-                self.originals.insert(number, original.to_vec());
-            }
+        if !self.dirty.is_empty() || self.rewrite.is_some() {
+            return Err(bad("full-image replacement requires a fresh editor"));
         }
+        self.n_pages = u32::try_from(image.len() / self.page_size).map_err(|_| bad("replacement page count"))?;
         self.cache.clear();
-        self.dirty.clear();
-        self.n_pages = pages;
-        for (i, page) in image.chunks_exact(self.page_size).enumerate() {
-            let number = i as u32 + 1;
-            self.cache.insert(number, page.to_vec());
-            self.dirty.insert(number);
-        }
+        self.rewrite = Some(FullRewrite { original: old, image });
         Ok(())
     }
 
@@ -887,19 +905,28 @@ impl Editor {
     }
 
     fn commit_until(mut self, stop: Stage) -> Result<()> {
-        if self.dirty.is_empty() {
+        let mut rewrite = self.rewrite.take();
+        if self.dirty.is_empty() && rewrite.is_none() {
             return Ok(());
         }
-        // The header: change counter, size, version-valid-for and (when the schema changed)
-        // schema cookie.
-        let counter = self.header_u32(24)?.wrapping_add(1);
-        self.set_header_u32(24, counter)?;
-        self.set_header_u32(92, counter)?;
-        self.set_header_u32(28, self.n_pages)?;
-        self.set_header_u32(96, 3_045_000)?;
-        if self.schema_changed {
-            let cookie = self.header_u32(40)?.wrapping_add(1);
-            self.set_header_u32(40, cookie)?;
+        // Header updates are made in the owned replacement or in the ordinary page cache.
+        if let Some(full) = rewrite.as_mut() {
+            let header = &mut full.image[..self.page_size];
+            let counter = u32::from_be_bytes(header[24..28].try_into().unwrap()).wrapping_add(1);
+            header[24..28].copy_from_slice(&counter.to_be_bytes());
+            header[92..96].copy_from_slice(&counter.to_be_bytes());
+            header[28..32].copy_from_slice(&self.n_pages.to_be_bytes());
+            header[96..100].copy_from_slice(&3_045_000u32.to_be_bytes());
+        } else {
+            let counter = self.header_u32(24)?.wrapping_add(1);
+            self.set_header_u32(24, counter)?;
+            self.set_header_u32(92, counter)?;
+            self.set_header_u32(28, self.n_pages)?;
+            self.set_header_u32(96, 3_045_000)?;
+            if self.schema_changed {
+                let cookie = self.header_u32(40)?.wrapping_add(1);
+                self.set_header_u32(40, cookie)?;
+            }
         }
 
         // 1. The journal: the original pages, synced, then its record count, synced.
@@ -913,19 +940,36 @@ impl Editor {
         header[20..24].copy_from_slice(&(SECTOR as u32).to_be_bytes());
         header[24..28].copy_from_slice(&(self.page_size as u32).to_be_bytes());
         let mut buf = header.clone();
-        for (n, data) in &self.originals {
-            buf.extend_from_slice(&n.to_be_bytes());
-            buf.extend_from_slice(data);
-            buf.extend_from_slice(&checksum(nonce, data).to_be_bytes());
-            if buf.len() > 1 << 24 {
-                journal.write_all(&buf)?;
-                buf.clear();
+        let mut records = 0u32;
+        {
+            let mut append = |number: u32, data: &[u8]| -> Result<()> {
+                buf.extend_from_slice(&number.to_be_bytes());
+                buf.extend_from_slice(data);
+                buf.extend_from_slice(&checksum(nonce, data).to_be_bytes());
+                records += 1;
+                if buf.len() > 1 << 24 {
+                    journal.write_all(&buf)?;
+                    buf.clear();
+                }
+                Ok(())
+            };
+            if let Some(full) = rewrite.as_ref() {
+                for (i, page) in full.original.chunks_exact(self.page_size).enumerate() {
+                    let at = i * self.page_size;
+                    if full.image.get(at..at + self.page_size) != Some(page) {
+                        append(i as u32 + 1, page)?;
+                    }
+                }
+            } else {
+                for (number, page) in &self.originals {
+                    append(*number, page)?;
+                }
             }
         }
         journal.write_all(&buf)?;
         journal.sync_all()?;
         journal.seek(SeekFrom::Start(8))?;
-        journal.write_all(&(self.originals.len() as u32).to_be_bytes())?;
+        journal.write_all(&records.to_be_bytes())?;
         journal.sync_all()?;
         sync_dir(&self.path);
         if stop == Stage::Journal {
@@ -933,23 +977,35 @@ impl Editor {
         }
 
         // 2. The database pages.
-        let pages: Vec<u32> = self.dirty.iter().copied().collect();
-        let mut run: Vec<u8> = Vec::new();
-        let mut run_start = 0u32;
-        for (k, n) in pages.iter().enumerate() {
-            if run.is_empty() {
-                run_start = *n;
-            }
-            run.extend_from_slice(&self.cache[n]);
-            let contiguous = pages.get(k + 1).is_some_and(|m| *m == n + 1);
-            if !contiguous || run.len() >= 1 << 24 {
-                self.file.seek(SeekFrom::Start((run_start as u64 - 1) * self.page_size as u64))?;
-                self.file.write_all(&run)?;
-                run.clear();
-            }
-            if stop == Stage::HalfWritten && k >= pages.len() / 2 {
+        // Once originals are durable in the journal, release that full buffer before writes.
+        let image = rewrite.map(|full| full.image);
+        if let Some(image) = image {
+            self.file.seek(SeekFrom::Start(0))?;
+            let end = if stop == Stage::HalfWritten { self.n_pages.div_ceil(2) as usize * self.page_size } else { image.len() };
+            self.file.write_all(&image[..end])?;
+            if stop == Stage::HalfWritten {
                 self.file.sync_all()?;
                 return Ok(());
+            }
+        } else {
+            let pages: Vec<u32> = self.dirty.iter().copied().collect();
+            let mut run: Vec<u8> = Vec::new();
+            let mut run_start = 0u32;
+            for (k, n) in pages.iter().enumerate() {
+                if run.is_empty() {
+                    run_start = *n;
+                }
+                run.extend_from_slice(&self.cache[n]);
+                let contiguous = pages.get(k + 1).is_some_and(|m| *m == n + 1);
+                if !contiguous || run.len() >= 1 << 24 {
+                    self.file.seek(SeekFrom::Start((run_start as u64 - 1) * self.page_size as u64))?;
+                    self.file.write_all(&run)?;
+                    run.clear();
+                }
+                if stop == Stage::HalfWritten && k >= pages.len() / 2 {
+                    self.file.sync_all()?;
+                    return Ok(());
+                }
             }
         }
         self.file.set_len(self.n_pages as u64 * self.page_size as u64)?;
@@ -1194,6 +1250,18 @@ mod tests {
     }
 
     #[test]
+    fn repack_open_refuses_a_symlink_even_without_path_preflight() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("keep.db");
+        let link = dir.path().join("alias.db");
+        let original = sample(3);
+        std::fs::write(&target, &original).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(Editor::open_repack(&link).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), original);
+    }
+
+    #[test]
     fn interrupted_repack_restores_truncated_pages() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("repack.db");
@@ -1212,13 +1280,16 @@ mod tests {
             for stage in [Stage::Journal, Stage::HalfWritten, Stage::Written] {
                 std::fs::write(&path, &original).unwrap();
                 let mut editor = Editor::open_repack(&path).unwrap().unwrap();
-                editor.replace_image(&original, &compact).unwrap();
+                editor.replace_image(original.clone(), compact.clone()).unwrap();
                 editor.commit_until(stage).unwrap();
                 assert_eq!(read_consistent(&path).unwrap(), original, "{stage:?}");
                 if let Some(python) = std::env::var_os("TERRIO_SQLITE_REFERENCE_PYTHON") {
-                    let result=std::process::Command::new(python)
-                    .args(["-c","import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); assert db.execute('PRAGMA integrity_check').fetchall()==[('ok',)]; assert db.execute('SELECT s FROM t').fetchall()==[('keep',)]; db.close()"])
-                    .arg(&path).output().unwrap();
+                    let code = concat!(
+                        "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); ",
+                        "assert db.execute('PRAGMA integrity_check').fetchall()==[('ok',)]; ",
+                        "assert db.execute('SELECT s FROM t').fetchall()==[('keep',)]; db.close()"
+                    );
+                    let result = std::process::Command::new(python).args(["-c", code]).arg(&path).output().unwrap();
                     assert!(result.status.success(), "SQLite reference recovery {stage:?}: {}", String::from_utf8_lossy(&result.stderr));
                 }
                 drop(Editor::open_repack(&path).unwrap().unwrap());

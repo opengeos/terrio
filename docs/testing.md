@@ -1173,3 +1173,12 @@ vector/raster files, and active/orphan-WAL and truncated-input refusal. Physical
 checking exact recovery including truncated pages. Set `TERRIO_SQLITE_REFERENCE_PYTHON` to a
 Python interpreter with the standard sqlite3 module to additionally recover these journals
 with SQLite itself, for both rollback- and checkpointed-WAL file headers.
+
+A local repack memory check used a Natural Earth GeoPackage derivative with 2,048 one-MiB
+zero-filled BLOB rows and incremental auto-vacuum (2,155,819,008 bytes). Peak RSS measured
+per child process with `wait4` fell from 8.27 to 6.04 GiB when all rows were live, and from
+4.12 to 2.06 GiB after retaining every 128th BLOB row (19,722,240-byte compacted result).
+Both before/after implementations passed SQLite integrity checks and streamed hashes of
+every table value. These are single local observations, not a general memory bound; record
+materialization still depends on the largest tree and row shape. The large generated files
+are excluded from commits and CI.

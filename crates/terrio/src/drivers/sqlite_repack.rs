@@ -229,7 +229,7 @@ impl<'a> Source<'a> {
 }
 
 struct Output {
-    pages: Vec<Vec<u8>>,
+    data: Vec<u8>,
     size: usize,
     auto: bool,
 }
@@ -248,7 +248,8 @@ impl Output {
         }
         let map = self.ptrmap(page);
         let at = (page - map - 1) as usize * 5;
-        let target = self.pages.get_mut(map as usize - 1).and_then(|p| p.get_mut(at..at + 5)).ok_or_else(|| bad("pointer map bounds"))?;
+        let start = (map as usize - 1) * self.size + at;
+        let target = self.data.get_mut(start..start + 5).ok_or_else(|| bad("pointer map bounds"))?;
         target[0] = kind;
         target[1..].copy_from_slice(&parent.to_be_bytes());
         Ok(())
@@ -260,15 +261,18 @@ impl PageStore for Output {
     }
     fn alloc(&mut self) -> Result<u32> {
         loop {
-            let page = u32::try_from(self.pages.len() + 1).map_err(|_| bad("too many output pages"))?;
-            self.pages.push(vec![0; self.size]);
+            let page = u32::try_from(self.data.len() / self.size + 1).map_err(|_| bad("too many output pages"))?;
+            if self.data.len() + self.size > self.data.capacity() {
+                self.data.reserve_exact(1 << 24);
+            }
+            self.data.resize(self.data.len() + self.size, 0);
             if !self.special(page) {
                 return Ok(page);
             }
         }
     }
     fn page_mut(&mut self, page: u32) -> Result<&mut [u8]> {
-        self.pages.get_mut(page as usize - 1).map(Vec::as_mut_slice).ok_or_else(|| bad("output page out of range"))
+        self.data.get_mut((page as usize - 1) * self.size..page as usize * self.size).ok_or_else(|| bad("output page out of range"))
     }
 }
 
@@ -306,7 +310,9 @@ pub(crate) fn compact(bytes: &[u8]) -> Result<Vec<u8>> {
         }
     }
     let mut roots = BTreeMap::new();
-    let mut output = Output { pages: vec![bytes[..size].to_vec()], size, auto };
+    let mut data = Vec::with_capacity(bytes.len());
+    data.extend_from_slice(&bytes[..size]);
+    let mut output = Output { data, size, auto };
     for (_, record) in &schema {
         let old = root(record)?;
         if old != 0 {
@@ -326,12 +332,12 @@ pub(crate) fn compact(bytes: &[u8]) -> Result<Vec<u8>> {
             let mut spare = Vec::new();
             writer::build_index_records(&mut output, &records, Some(new), &mut spare)?;
             for page in spare {
-                if page as usize != output.pages.len() {
+                if page as usize != output.data.len() / size {
                     return Err(bad("index builder left a non-trailing spare"));
                 }
-                output.pages.pop();
-                while output.special(output.pages.len() as u32) {
-                    output.pages.pop();
+                output.data.truncate(output.data.len() - size);
+                while output.special((output.data.len() / size) as u32) {
+                    output.data.truncate(output.data.len() - size);
                 }
             }
         } else {
@@ -381,8 +387,8 @@ pub(crate) fn compact(bytes: &[u8]) -> Result<Vec<u8>> {
             return Err(bad(format!("unaccounted input page {page}")));
         }
     }
-    let n = output.pages.len() as u32;
-    let header = &mut output.pages[0];
+    let n = (output.data.len() / size) as u32;
+    let header = &mut output.data[..size];
     header[28..32].copy_from_slice(&n.to_be_bytes());
     header[32..40].fill(0);
     let counter = be(bytes, 24)?.wrapping_add(1);
@@ -391,22 +397,27 @@ pub(crate) fn compact(bytes: &[u8]) -> Result<Vec<u8>> {
     header[40..44].copy_from_slice(&be(bytes, 40)?.wrapping_add(1).to_be_bytes());
     if auto {
         let largest = roots.values().copied().max().unwrap_or(1);
-        output.pages[0][52..56].copy_from_slice(&largest.to_be_bytes());
+        output.data[52..56].copy_from_slice(&largest.to_be_bytes());
         // Traverse the compact image to reconstruct auto-vacuum parent maps.
-        let image: Vec<_> = output.pages.iter().flatten().copied().collect();
-        let mut map = MapSource { bytes: &image, size, output: &mut output, seen: BTreeSet::new() };
-        map.tree(1, 0, 1, 0)?;
-        for &page in roots.values() {
-            map.tree(page, 0, 1, 0)?;
+        let mappings = {
+            let mut map = MapSource { bytes: &output.data, size, seen: BTreeSet::new(), mappings: Vec::new() };
+            map.tree(1, 0, 1, 0)?;
+            for &page in roots.values() {
+                map.tree(page, 0, 1, 0)?;
+            }
+            map.mappings
+        };
+        for (page, role, parent) in mappings {
+            output.pointer(page, role, parent)?;
         }
     }
-    Ok(output.pages.into_iter().flatten().collect())
+    Ok(output.data)
 }
 
 struct MapSource<'a> {
     bytes: &'a [u8],
     size: usize,
-    output: &'a mut Output,
+    mappings: Vec<(u32, u8, u32)>,
     seen: BTreeSet<u32>,
 }
 impl MapSource<'_> {
@@ -414,7 +425,7 @@ impl MapSource<'_> {
         if depth > 128 || !self.seen.insert(page) {
             return Err(bad("invalid output tree"));
         }
-        self.output.pointer(page, role, parent)?;
+        self.mappings.push((page, role, parent));
         let at = (page as usize - 1) * self.size;
         let bytes = self.bytes.get(at..at + self.size).ok_or_else(|| bad("output tree bounds"))?;
         let offset = if page == 1 { 100 } else { 0 };
@@ -447,7 +458,7 @@ impl MapSource<'_> {
                         if !self.seen.insert(next) {
                             return Err(bad("output overflow cycle"));
                         }
-                        self.output.pointer(next, role, previous)?;
+                        self.mappings.push((next, role, previous));
                         previous = next;
                         role = 4;
                         next = be(self.bytes, (next as usize - 1) * self.size)?;

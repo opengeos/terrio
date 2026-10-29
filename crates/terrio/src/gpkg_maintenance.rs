@@ -50,13 +50,14 @@ fn check(bytes: &[u8]) -> Result<()> {
 pub fn repack(path: &str) -> Result<RepackReport> {
     #[cfg(feature = "sqlite")]
     {
-        let (before, after) = match crate::vfs::Location::parse(path) {
+        match crate::vfs::Location::parse(path) {
             crate::vfs::Location::Local(path) if crate::memfs::is_virtual(&path) => {
                 let name = path.to_str().ok_or_else(|| Error::InvalidArgument("memory path must be UTF-8".into()))?;
                 let before = crate::vsi::read(name)?;
                 let after = repack_bytes(&before)?;
+                let result = report(&before, &after);
                 crate::vsi::write(name, &after)?;
-                (before, after)
+                Ok(result)
             }
             crate::vfs::Location::Local(path) => {
                 if cfg!(target_family = "wasm") {
@@ -71,28 +72,33 @@ pub fn repack(path: &str) -> Result<RepackReport> {
                     .map_err(|why| Error::Unsupported(format!("GeoPackage repack: {}", why.0)))?;
                 let before = editor.image()?;
                 let after = repack_bytes(&before)?;
-                editor.replace_image(&before, &after)?;
+                let result = report(&before, &after);
+                editor.replace_image(before, after)?;
                 editor.commit()?;
-                (before, after)
+                Ok(result)
             }
-            _ => return Err(Error::Unsupported("GeoPackage repack needs a native or /vsimem/ file".into())),
-        };
-        let page_size = match u16::from_be_bytes([before[16], before[17]]) {
-            1 => 65536,
-            value => u32::from(value),
-        };
-        Ok(RepackReport {
-            bytes_before: before.len() as u64,
-            bytes_after: after.len() as u64,
-            page_size,
-            pages_before: before.len() as u64 / u64::from(page_size),
-            pages_after: after.len() as u64 / u64::from(page_size),
-        })
+            _ => Err(Error::Unsupported("GeoPackage repack needs a native or /vsimem/ file".into())),
+        }
     }
     #[cfg(not(feature = "sqlite"))]
     {
         let _ = path;
         Err(Error::disabled("sqlite"))
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn report(before: &[u8], after: &[u8]) -> RepackReport {
+    let page_size = match u16::from_be_bytes([before[16], before[17]]) {
+        1 => 65536,
+        value => u32::from(value),
+    };
+    RepackReport {
+        bytes_before: before.len() as u64,
+        bytes_after: after.len() as u64,
+        page_size,
+        pages_before: before.len() as u64 / u64::from(page_size),
+        pages_after: after.len() as u64 / u64::from(page_size),
     }
 }
 

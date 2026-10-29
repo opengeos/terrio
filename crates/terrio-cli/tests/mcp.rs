@@ -625,7 +625,8 @@ fn gpkg_repack_is_a_mutating_tool_and_preserves_vector_data() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("sites.geojson");
     let target = dir.path().join("sites.gpkg");
-    std::fs::write(&source,r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"kept"},"geometry":{"type":"Point","coordinates":[12,45]}}]}"#).unwrap();
+    let geojson = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"kept"},"geometry":{"type":"Point","coordinates":[12,45]}}]}"#;
+    std::fs::write(&source, geojson).unwrap();
     let input = terrio::open_vector(source.to_str().unwrap(), &Default::default()).unwrap();
     terrio::write_vector(&input.layers, target.to_str().unwrap(), &Default::default()).unwrap();
     let expected = terrio::open_vector(target.to_str().unwrap(), &Default::default()).unwrap();
