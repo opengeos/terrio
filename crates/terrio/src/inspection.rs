@@ -583,13 +583,15 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
         let root = tempfile::tempdir().unwrap();
         let invalid = root.path().join(std::ffi::OsString::from_vec(b"bad-\xff.tif".to_vec()));
-        // APFS on macOS rejects names that are not valid UTF-8 (EILSEQ), so the fixture cannot exist there.
         if let Err(error) = std::fs::write(invalid, b"II*\0header") {
-            assert_eq!(error.raw_os_error(), Some(92), "unexpected error: {error}");
+            #[cfg(target_os = "macos")]
+            {
+                // APFS rejects names that are not valid UTF-8 with EILSEQ, so the fixture cannot exist there.
+                assert_eq!(error.raw_os_error(), Some(libc::EILSEQ), "unexpected error: {error}");
+                return;
+            }
             #[cfg(not(target_os = "macos"))]
             panic!("non-UTF-8 names must be creatable on this platform: {error}");
-            #[cfg(target_os = "macos")]
-            return;
         }
         std::fs::write(root.path().join("bad-\u{fffd}.tif"), b"II*\0header").unwrap();
         let records = identify_many(
