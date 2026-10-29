@@ -1,5 +1,6 @@
 """GeoPackage repacking preserves SQL objects, records and source files on refusal."""
 
+import os
 import sqlite3
 
 import pytest
@@ -122,3 +123,18 @@ def test_active_wal_refused_without_losing_committed_rows(tmp_path):
         assert database.execute("SELECT payload FROM notes WHERE label='wal-kept'").fetchone() == (
             b"\x01\x02",
         )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="non-UTF-8 native filenames need POSIX")
+def test_native_non_utf8_path_preserves_database(tmp_path):
+    source = fixture(tmp_path)
+    expected = snapshot(source)
+    path = tmp_path / os.fsdecode(b"caf\xe9.gpkg")
+    source.rename(path)
+    before = path.stat().st_size
+    report = terrio.gpkg_repack(path)
+    assert report["bytes_before"] == before
+    assert report["bytes_after"] == path.stat().st_size < before
+    assert snapshot(path) == expected
+    with sqlite3.connect(path) as database:
+        assert database.execute("PRAGMA integrity_check").fetchall() == [("ok",)]

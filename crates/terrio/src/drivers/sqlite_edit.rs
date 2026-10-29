@@ -8,7 +8,9 @@
 //! (and [`Editor::open`]) plays back to restore the database as it was. Native row edits take
 //! SQLite-compatible POSIX locks on Unix. Full-image repacking additionally takes Windows
 //! byte-range locks; ordinary Windows edits keep their rewrite fallback. A conflicting
-//! SQLite connection prevents the exclusive lock.
+//! SQLite connection in another process prevents the exclusive lock. POSIX locks
+//! are process-scoped: callers must close same-process SQLite connections before
+//! using this editor and must not concurrently access the database through them.
 //!
 //! Table b-trees grow by inserting cells and splitting pages, as SQLite's own b-tree does;
 //! small tables and indexes are rebuilt in place (their root pages kept). Pages freed go to the
@@ -30,8 +32,7 @@ const JOURNAL_MAGIC: [u8; 8] = [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
 const READ_PAGES: u32 = 16;
 /// The sector size the journal header is padded to, as SQLite assumes by default.
 const SECTOR: usize = 512;
-/// The byte offsets of SQLite's file locks (`PENDING_BYTE` at 1 GiB).
-#[cfg(any(all(unix, not(target_os = "emscripten")), windows))]
+/// The byte offset of SQLite's reserved lock-byte page (also a journal sentinel).
 const PENDING_BYTE: i64 = 0x4000_0000;
 
 fn bad(msg: impl std::fmt::Display) -> Error {
@@ -172,11 +173,31 @@ impl Editor {
             options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
         }
         let mut file = options.open(path)?;
-        if repack && {
-            let kind = file.metadata()?.file_type();
-            kind.is_symlink() || !kind.is_file()
-        } {
-            return Err(bad("repack handle is not a regular file"));
+        if repack {
+            let metadata = file.metadata()?;
+            if !metadata.is_file() {
+                return Err(bad("repack handle is not a regular file"));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if metadata.nlink() > 1 {
+                    return Err(bad("repack handle has hard-link aliases"));
+                }
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::AsRawHandle;
+                use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+                let mut information = BY_HANDLE_FILE_INFORMATION::default();
+                // SAFETY: the open database handle and output structure are valid.
+                if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                if information.nNumberOfLinks > 1 {
+                    return Err(bad("repack handle has hard-link aliases"));
+                }
+            }
         }
         #[cfg(any(all(unix, not(target_os = "emscripten")), windows))]
         lock(&file, path)?;
@@ -969,9 +990,12 @@ impl Editor {
             };
             if let Some(full) = rewrite.as_ref() {
                 for (i, page) in full.original.chunks_exact(self.page_size).enumerate() {
-                    let at = i * self.page_size;
-                    if full.image.get(at..at + self.page_size) != Some(page) {
-                        append(i as u32 + 1, page)?;
+                    let number = i as u32 + 1;
+                    // The full-image write can tear even an unchanged data page.
+                    // Journal every original page except SQLite's unused lock-byte
+                    // page, whose number is a super-journal marker in this format.
+                    if u64::from(number) != PENDING_BYTE as u64 / self.page_size as u64 + 1 {
+                        append(number, page)?;
                     }
                 }
             } else {
@@ -1422,6 +1446,70 @@ mod tests {
             editor.commit().unwrap();
             assert!(std::fs::read(&foreign).unwrap() == b"foreign data must remain", "foreign bytes changed");
         }
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn review_regression_repack_refuses_hard_link_alias_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.db");
+        let alias = dir.path().join("alias.db");
+        let wal = dir.path().join("alias.db-wal");
+        let original = sample(100);
+        std::fs::write(&path, &original).unwrap();
+        std::fs::hard_link(&path, &alias).unwrap();
+        std::fs::write(&wal, b"pending frames under another name").unwrap();
+        assert!(Editor::open_repack(&path).is_err(), "hard links must be refused before relying on path-based WAL checks");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read(&alias).unwrap(), original);
+        assert_eq!(std::fs::read(&wal).unwrap(), b"pending frames under another name");
+    }
+
+    #[test]
+    fn review_regression_torn_unchanged_page_is_recoverable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("torn.db");
+        let original = sample(2000);
+        std::fs::write(&path, &original).unwrap();
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        let page_size = editor.page_size;
+        // All data pages are identical in this replacement. Nevertheless write_all
+        // overwrites them and an interrupted write may tear any of those pages.
+        editor.replace_image(original.clone(), original.clone()).unwrap();
+        editor.commit_until(Stage::Written).unwrap();
+        let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(page_size as u64 + 20)).unwrap();
+        file.write_all(&[original[page_size + 20] ^ 0xff]).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        assert_eq!(read_consistent(&path).unwrap(), original);
+        drop(Editor::open_repack(&path).unwrap().unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    #[ignore = "requires a >1 GiB SQLite fixture and a Python SQLite reference"]
+    fn sqlite_recovers_a_torn_unchanged_page_beyond_the_lock_byte_page() {
+        let source = std::env::var_os("TERRIO_LARGE_SQLITE_REFERENCE").expect("set TERRIO_LARGE_SQLITE_REFERENCE");
+        let python = std::env::var_os("TERRIO_SQLITE_REFERENCE_PYTHON").expect("set TERRIO_SQLITE_REFERENCE_PYTHON");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        let dir = tempfile::tempdir_in(root).unwrap();
+        let path = dir.path().join("large-torn.db");
+        std::fs::copy(source, &path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        let at = PENDING_BYTE as u64 + editor.page_size as u64 + 20;
+        assert!(at < original.len() as u64);
+        editor.replace_image(original.clone(), original.clone()).unwrap();
+        editor.commit_until(Stage::Written).unwrap();
+        let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(at)).unwrap();
+        file.write_all(&[original[at as usize] ^ 0xff]).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let output=std::process::Command::new(python).args(["-c","import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); assert db.execute('PRAGMA integrity_check').fetchall()==[('ok',)]; db.close()"]).arg(&path).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(std::fs::read(&path).unwrap() == original, "SQLite must restore every original byte beyond the lock page too");
     }
 
     #[test]
