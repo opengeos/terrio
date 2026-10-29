@@ -2343,9 +2343,9 @@ test("GeoPackage repack preserves real features in bytes and memory", { skip: !D
   packed.free();
   const path = "/vsimem/gpkg-repack-js.gpkg ";
   const neighbor = path.trimEnd();
-  terrio.vsiWrite(neighbor, new Uint8Array([11,22,33]));
-  terrio.vsiWrite(path, bytes);
   try {
+    terrio.vsiWrite(neighbor, new Uint8Array([11, 22, 33]));
+    terrio.vsiWrite(path, bytes);
     assert.equal(terrio.vsiStat(path).name, path);
     const report = terrio.gpkgRepack(path);
     assert.equal(report.bytes_before, bytes.length);
@@ -2357,10 +2357,10 @@ test("GeoPackage repack preserves real features in bytes and memory", { skip: !D
     assert.throws(() => terrio.gpkgRepack(path), /SQLite/);
     assert.deepEqual(terrio.vsiRead(path), new Uint8Array([1, 2, 3]));
     assert.throws(() => terrio.gpkgRepackBytes(bytes.slice(0, 100)), /page|truncated/);
+    assert.deepEqual([...terrio.vsiRead(neighbor)], [11, 22, 33]);
   } finally {
-    assert.deepEqual([...terrio.vsiRead(neighbor)], [11,22,33]);
-    terrio.vsiDelete(path);
-    terrio.vsiDelete(neighbor);
+    if (terrio.vsiStat(path)) terrio.vsiDelete(path);
+    if (terrio.vsiStat(neighbor)) terrio.vsiDelete(neighbor);
   }
 });
 
@@ -2375,7 +2375,8 @@ test("GeoPackage repack accepts opaque uploaded filenames", { skip: !DATA || nee
     const actual = terrio.open(compact, "compact.gpkg");
     const expected = terrio.open(bytes, "source.gpkg");
     assert.deepEqual(actual.toGeoJSON(), expected.toGeoJSON());
-    actual.free(); expected.free();
+    actual.free();
+    expected.free();
   } finally { terrio.vsiDelete(path); }
 });
 

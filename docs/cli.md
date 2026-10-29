@@ -2504,13 +2504,13 @@ are refused. This is storage maintenance, not a GeoPackage specification validat
 Native in-place append/update also refuses hard-linked database targets: another alias
 may have its own WAL. It rejects linked or special journal/WAL/shared-memory sidecars before
 recovery; it never replays a journal through a symbolic link or hard-link alias.
+Native append/update follows filename symlinks to their target and checks that target's WAL.
 
 Unix directory-sync requirements also apply to existing native SQLite in-place edits and
 recovery, including append/update. Unreadable directories and filesystems rejecting directory
 fsync can fail before page writes. A sync failure after journal deletion explicitly reports
 that changes committed or recovery completed but durability is unconfirmed; callers must not
 blindly retry an append.
-Native append/update follows filename symlinks to their target and checks that target's WAL.
 
 Native repacking also accepts GeoPackage contents under opaque filenames such as `snapshot.zip`;
 explicit archive locations remain unsupported. On Unix, rollback journals inherit the database's
@@ -2527,8 +2527,10 @@ both the journal and replacement database image. Reserve disk space accordingly.
 Repacking scans and rewrites the complete database. It owns one input image and builds
 one contiguous output image; encoded records/cells for the largest tree are also materialized.
 Memory depends on row shape/count and is not hard-capped. A local 2.01 GiB live-BLOB
-derivative used about 6.04 GiB peak RSS; its mostly deleted counterpart used about 2.06 GiB. WebAssembly uses `/vsimem/` paths or the bytes API. A bytes input must be a
-self-contained, recovered/checkpointed image; external journal/WAL files are not part of it.
+derivative used about 6.04 GiB peak RSS; its mostly deleted counterpart used about 2.06 GiB.
+
+WebAssembly uses `/vsimem/` paths or the bytes API. A bytes input must be a self-contained,
+recovered/checkpointed image; external journal/WAL files are not part of it.
 
 ## Multidimensional mosaics
 

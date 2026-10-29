@@ -74,6 +74,14 @@ def test_native_and_bytes_repack_preserve_all_values(tmp_path, filename):
     copy.write_bytes(compact)
     assert snapshot(copy) == expected
     report = terrio.gpkg_repack(path)
+    assert set(report) == {
+        "bytes_before",
+        "bytes_after",
+        "page_size",
+        "pages_before",
+        "pages_after",
+    }
+    assert all(type(value) is int for value in report.values())
     assert report["bytes_before"] == len(original)
     assert report["bytes_after"] == path.stat().st_size < len(original)
     assert snapshot(path) == expected

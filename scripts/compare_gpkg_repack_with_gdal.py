@@ -219,10 +219,10 @@ def main():
             path = root / (encoding + ".gpkg")
             change_encoding(base, path, encoding)
             cases.append((encoding + " encoded records", path, False))
-        mixed = root / "mixed.gpkg"
-        shutil.copyfile(base, mixed)
+        mixed_path = root / "mixed.gpkg"
+        shutil.copyfile(base, mixed_path)
         raster = gdal.Translate(
-            str(mixed),
+            str(mixed_path),
             str(args.data / "dem.tif"),
             format="GPKG",
             srcWin=[0, 0, 64, 64],
@@ -231,7 +231,7 @@ def main():
             creationOptions=["APPEND_SUBDATASET=YES", "RASTER_TABLE=elevation", "TILE_FORMAT=TIFF"],
         )
         raster = None
-        cases.append(("mixed vector and gridded coverage", mixed, True))
+        cases.append(("mixed vector and gridded coverage", mixed_path, True))
         for name, path, mixed in cases:
             try:
                 ours = root / (path.stem + "-terrio.gpkg")

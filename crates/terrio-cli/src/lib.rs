@@ -23,7 +23,6 @@ enum Command {
     Info(cmd::info::Args),
     /// Repack a GeoPackage in place, preserving all encoded records and schema objects.
     GpkgRepack(cmd::gpkg::RepackArgs),
-
     /// Identify many datasets from bounded headers, without decoding their payloads.
     Identify(cmd::inspection::IdentifyArgs),
     /// Copy a dataset and every associated file, preserving encoded data.
@@ -287,7 +286,6 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
     let result = match cli.command {
         Command::Info(a) => cmd::info::run(a),
         Command::GpkgRepack(a) => cmd::gpkg::repack(a),
-
         Command::Identify(a) => cmd::inspection::identify(a),
         Command::DatasetCopy(a) => cmd::dataset_files::transfer(a, false),
         Command::DatasetRename(a) => cmd::dataset_files::transfer(a, true),
