@@ -432,6 +432,7 @@ def main():
                 )
             except Exception as error:
                 results.append(dict(name=label, status="differs", detail=str(error)))
+        stage = "HTTP copy with overview/mask/PAM sidecars"
         try:
             import threading
             from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -531,10 +532,12 @@ def main():
             )
             import zipfile
 
+            stage = "ZIP metadata inventory"
             for method, compression in [
                 ("stored", zipfile.ZIP_STORED),
                 ("deflated", zipfile.ZIP_DEFLATED),
             ]:
+                stage = f"HTTP {method} ZIP TIFF metadata inventory"
                 archive = root / f"{method}.zip"
                 with zipfile.ZipFile(archive, "w", compression=compression) as writer:
                     writer.write(source, "source.tif")
@@ -571,6 +574,7 @@ def main():
             payloads.update({"/" + p.name: p for p in owned})
             counts.update(gets=0, heads=0, missing=0, bytes=0)
             opened.clear()
+            stage = "VRT rename preserves read-only HTTP dependencies"
             definition = root / "source.vrt"
             gdal.Translate(str(definition), str(source), format="VRT").Close()
             expected_vrt = raster_snapshot(definition)
@@ -611,7 +615,7 @@ def main():
         except Exception as error:
             results.append(
                 dict(
-                    name="HTTP copy with overview/mask/PAM sidecars",
+                    name=stage,
                     status="differs",
                     detail=str(error),
                 )

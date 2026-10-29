@@ -683,6 +683,8 @@ as explicit raw-band data. Virtual keys with dot segments are refused by default
 Use `--allow-external-references` only for trusted VRTs that need assets outside
 that tree, such as a local VRT referencing an HTTP raster. The same option is
 `allow_external_references` in Rust/Python and `allowExternalReferences` in JavaScript.
+MCP exposes the same opt-in: a client enabling it is explicitly trusting the VRT
+references and permitting access beyond the source tree.
 Source references are rewritten to the new names. Rename moves the owned definition
 but preserves original dependencies so other datasets can keep using them; copied
 payloads count toward reported bytes, including for same-filesystem VRT renames.
@@ -691,7 +693,7 @@ header references are also updated. Irregular basenames are refused before mutat
 as in GDAL. VRT graph traversal reuses completed inventories and permits at most 128
 nested definitions; definitions are held in memory. A file used both as file-bearing
 metadata and raw VRT pixels is refused if rewriting would change those pixels. VRT deletion removes the definition and its owned companions,
-retaining referenced rasters; catalog/STAC deletion likewise retains referenced assets.
+retaining referenced rasters.
 
 All inputs and destinations are checked before staging files. Source aliases, overlapping
 directory trees, protected roots, read-only mutations and file/directory collisions are

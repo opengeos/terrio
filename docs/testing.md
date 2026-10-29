@@ -1236,8 +1236,8 @@ extractor integrity checks.
 
 A separate local benchmark uses a generated 2,000-tile VRT from real 32×32 Landsat
 subsets. Copying its 2,001 files took 155.04 seconds before path indexing and
-2.57 seconds afterward, with all GDAL-read pixels and checksum 32088 unchanged.
-Batch deletion of the 2,000 TIFFs took 13.66 versus 0.23 seconds and preserved an
+2.62 seconds afterward, with all GDAL-read pixels and checksum 32088 unchanged.
+Batch deletion of the 2,000 TIFFs took 13.66 versus 0.28 seconds and preserved an
 unrelated file. These are local observations rather than general timing guarantees.
 
 ```sh
