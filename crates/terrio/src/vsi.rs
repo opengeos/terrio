@@ -243,9 +243,8 @@ fn archive_end(s: &str, extensions: &[&str]) -> Option<(usize, usize)> {
 impl Node {
     fn parse(input: &str) -> Result<Node> {
         let original = input;
-        let input = input.trim();
         let shown = listing::redact_url(input);
-        if input.is_empty() {
+        if input.trim().is_empty() {
             return Err(Error::InvalidArgument("empty path".into()));
         }
         for (prefix, exts) in [("/vsizip/", ZIP_EXTENSIONS), ("/vsitar/", TAR_EXTENSIONS)] {

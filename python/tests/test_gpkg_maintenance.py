@@ -125,16 +125,22 @@ def test_active_wal_refused_without_losing_committed_rows(tmp_path):
         )
 
 
-@pytest.mark.skipif(os.name != "posix", reason="non-UTF-8 native filenames need POSIX")
-def test_native_non_utf8_path_preserves_database(tmp_path):
+@pytest.mark.skipif(os.name != "posix", reason="non-UTF-8 and trailing-space filenames need POSIX")
+@pytest.mark.parametrize("name", [os.fsdecode(b"caf\xe9.gpkg"), " edge.gpkg "])
+def test_native_non_utf8_path_preserves_database(tmp_path, name):
     source = fixture(tmp_path)
     expected = snapshot(source)
-    path = tmp_path / os.fsdecode(b"caf\xe9.gpkg")
+    path = tmp_path / name
     source.rename(path)
+    neighbor = tmp_path / name.rstrip()
+    if neighbor != path:
+        neighbor.write_bytes(b"preserve unrelated file")
     before = path.stat().st_size
     report = terrio.gpkg_repack(path)
     assert report["bytes_before"] == before
     assert report["bytes_after"] == path.stat().st_size < before
     assert snapshot(path) == expected
+    if neighbor != path:
+        assert neighbor.read_bytes() == b"preserve unrelated file"
     with sqlite3.connect(path) as database:
         assert database.execute("PRAGMA integrity_check").fetchall() == [("ok",)]

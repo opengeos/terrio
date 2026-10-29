@@ -135,6 +135,19 @@ mod tests {
         assert_eq!(after.header_u32(36), 0);
     }
     #[test]
+    fn memory_repack_keeps_whitespace_distinct_from_another_database_name() {
+        let spaced = "/vsimem/gpkg-space-identity.gpkg ";
+        let plain = "/vsimem/gpkg-space-identity.gpkg";
+        crate::vsi::write(plain, b"preserve unrelated object").unwrap();
+        crate::vsi::write(spaced, &sample()).unwrap();
+        repack(spaced).unwrap();
+        assert_eq!(crate::vsi::read(plain).unwrap(), b"preserve unrelated object");
+        assert!(repack_bytes(&crate::vsi::read(spaced).unwrap()).is_ok());
+        crate::vsi::delete(spaced, false).unwrap();
+        crate::vsi::delete(plain, false).unwrap();
+    }
+
+    #[test]
     fn memory_replacement_and_failed_repack_preserve_input() {
         let name = "/vsimem/gpkg-repack-core.gpkg";
         crate::vsi::write(name, &sample()).unwrap();
