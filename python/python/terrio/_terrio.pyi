@@ -17,6 +17,7 @@ __all__ = [
     "refresh_overviews",
     "update_raster",
     "validate_cog",
+    "identify",
     "__version__",
     "Raster",
     "GeoTiffWriter",
@@ -1773,7 +1774,9 @@ def refresh_overviews(
     external: bool = False,
     ignore_cog_layout_break: bool = False,
 ) -> list[tuple[int, int]]: ...
-def validate_cog(path: str | os.PathLike[str], *, strict: bool = False) -> tuple[bool, list[str], list[str]]: ...
+def validate_cog(
+    path: str | os.PathLike[str], *, strict: bool = False
+) -> tuple[bool, list[str], list[str]]: ...
 def update_raster(
     src: str | os.PathLike[str] | Raster,
     dst: str,
@@ -1846,3 +1849,13 @@ def blend(
 ) -> Raster:
     """Blends equal-sized Byte images, with GDAL operators and opacity 0..100."""
     ...
+
+def identify(
+    sources: str | os.PathLike[str] | list[str | os.PathLike[str]] | bytes,
+    *,
+    filename: str | None = None,
+    recursive: bool = False,
+    force_recursive: bool = False,
+    deep: bool = False,
+    report_failures: bool = False,
+) -> list[dict[str, Any]]: ...
