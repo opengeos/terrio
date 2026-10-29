@@ -685,7 +685,10 @@ are not decoded for inventory.
 
 VRT copies and renames copy referenced assets with regular corresponding basenames,
 confined by default to the original source directory tree. Native links and all entries
-of referenced directory datasets are checked before mutation. Non-raw references must
+of referenced directory datasets are checked before mutation. Remote URL paths with
+percent-encoded slashes are refused by default: server handling of those bytes cannot
+establish directory confinement. Trusted callers can use the same explicit external-reference
+opt-in for such paths. Non-raw references must
 identify a supported dataset; arbitrary files are accepted only as explicit raw-band
 data. Virtual keys with dot segments are refused by default. Use
 `--allow-external-references` only for trusted VRTs that need assets outside that tree,

@@ -273,10 +273,23 @@ pub(crate) fn in_source_tree(reference: &str, source: &str) -> Result<bool> {
         }
         (Node::Mem(reference), Node::Mem(source)) => below(&reference, &source),
         (Node::S3 { bucket: a, key: reference }, Node::S3 { bucket: b, key: source }) => a == b && below(&reference, &source),
-        (Node::Url { base: reference, .. }, Node::Url { base: source, .. }) => match (url_key(&reference), url_key(&source)) {
-            (Some(reference), Some(source)) => below(&reference, &source),
-            _ => false,
-        },
+        (Node::Url { base: reference, .. }, Node::Url { base: source, .. }) => {
+            // Encoded slashes may be literal server path characters rather than
+            // separators. Decoding them cannot establish directory confinement.
+            let encoded_slash = |base: &str| {
+                base.split_once("://")
+                    .and_then(|(_, rest)| rest.split_once('/'))
+                    .is_some_and(|(_, path)| path.as_bytes().windows(3).any(|part| part.eq_ignore_ascii_case(b"%2f")))
+            };
+            if encoded_slash(&reference) || encoded_slash(&source) {
+                false
+            } else {
+                match (url_key(&reference), url_key(&source)) {
+                    (Some(reference), Some(source)) => below(&reference, &source),
+                    _ => false,
+                }
+            }
+        }
         (Node::Archive { archive: a, kind: ak, inner: reference }, Node::Archive { archive: b, kind: bk, inner: source }) => {
             ak == bk && a == b && below(&reference, &source)
         }
@@ -824,6 +837,10 @@ mod tests {
             ("/vsimem/work/../source.raw", "/vsimem/work/source.vrt"),
             ("s3://other/source.raw", "s3://bucket/source.vrt"),
             ("https://elsewhere.invalid/work/source.tif", "https://example.invalid/work/source.vrt"),
+            ("https://example.invalid/work%2fsecret/source.tif", "https://example.invalid/work/source.vrt"),
+            ("https://example.invalid/work%2Fsecret/source.tif", "https://example.invalid/work/source.vrt"),
+            ("https://example.invalid/work/inside%2fpath/source.tif", "https://example.invalid/work/source.vrt"),
+            ("https://example.invalid/work/a/source.tif", "https://example.invalid/work%2fa/source.vrt"),
             ("https://example.invalid/work/%2e%2e/private.tif", "https://example.invalid/work/source.vrt"),
             ("/vsizip/{/vsimem/other.zip}/source.tif", "/vsizip/{/vsimem/archive.zip}/source.vrt"),
             ("/etc/private.raw", "/vsimem/work/source.vrt"),
