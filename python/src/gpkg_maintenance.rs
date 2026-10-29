@@ -8,7 +8,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Repack a native or /vsimem/ GeoPackage in place, returning physical storage counts.
 #[pyfunction]
 fn gpkg_repack<'py>(py: Python<'py>, path: std::path::PathBuf) -> PyResult<Bound<'py, PyAny>> {
-    let path = path.into_os_string().into_string().map_err(|_| crate::invalid("GeoPackage paths must be UTF-8"))?;
     let report = crate::with_warnings(py, || terrio::gpkg_maintenance::repack(&path))?;
     let text = serde_json::to_string(&report).map_err(|e| crate::invalid(e.to_string()))?;
     py.import("json")?.call_method1("loads", (text,))

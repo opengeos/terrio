@@ -150,6 +150,8 @@ def change_encoding(source_path, target_path, encoding):
         sequence = [(name, sql) for _, name, sql in schema if name == "sqlite_sequence"]
         for name, _ in tables + sequence:
             rows = source.execute("SELECT * FROM " + quote(name)).fetchall()
+            if name == "sqlite_sequence":
+                target.execute("DELETE FROM sqlite_sequence")
             if rows:
                 target.executemany(
                     "INSERT INTO "
@@ -159,6 +161,7 @@ def change_encoding(source_path, target_path, encoding):
                     + ")",
                     rows,
                 )
+        assert source.execute("SELECT * FROM sqlite_sequence ORDER BY name").fetchall() == target.execute("SELECT * FROM sqlite_sequence ORDER BY name").fetchall()
         for kind, _, sql in schema:
             if kind in ("index", "trigger", "view") and sql:
                 target.execute(sql)

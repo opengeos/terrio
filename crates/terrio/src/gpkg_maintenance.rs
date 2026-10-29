@@ -46,11 +46,14 @@ fn check(bytes: &[u8]) -> Result<()> {
 
 /// Repack a native GeoPackage in place under SQLite-compatible exclusive locks and a synced
 /// rollback journal. In-memory GeoPackages are replaced atomically as one memory-store write.
+/// Native paths retain their operating-system representation, including non-UTF-8 Unix names.
 /// Active WAL files are refused; close/checkpoint the SQLite connection first.
-pub fn repack(path: &str) -> Result<RepackReport> {
+pub fn repack(path: impl AsRef<std::path::Path>) -> Result<RepackReport> {
     #[cfg(feature = "sqlite")]
     {
-        match crate::vfs::Location::parse(path) {
+        let path = path.as_ref();
+        let location = path.to_str().map(crate::vfs::Location::parse).unwrap_or_else(|| crate::vfs::Location::Local(path.to_path_buf()));
+        match location {
             crate::vfs::Location::Local(path) if crate::memfs::is_virtual(&path) => {
                 let name = path.to_str().ok_or_else(|| Error::InvalidArgument("memory path must be UTF-8".into()))?;
                 crate::vsi::transform_memory(name, |before| {

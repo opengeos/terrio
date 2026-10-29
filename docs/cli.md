@@ -2190,16 +2190,20 @@ partial, descending and collated indexes, WITHOUT ROWID tables, overflow data, R
 tables, and auto-vacuum/incremental-vacuum pointer maps. Physical page layouts and final sizes
 can differ from SQLite VACUUM; the operation does not promise byte-identical files.
 
-Native changes use SQLite-compatible exclusive locks and a synced rollback journal. Pages
-removed by truncation are journaled too, so an interrupted rewrite can be recovered by SQLite.
+Native changes use SQLite-compatible exclusive locks and a synced rollback journal. All original
+data pages, including unchanged pages and pages removed by truncation, are journaled before a
+full-image write. SQLite’s unused lock-byte page is excluded because its page number is a
+super-journal marker. An interrupted rewrite can be recovered by SQLite.
 The database pathname is checked against the locked handle before journal creation. Do not
 rename or replace an open database or its parent directory during a transaction. On Unix,
 directory sync errors abort before database writes; filesystems without directory fsync are
 unsupported for this operation. Windows flushes the journal and database file handles; directory
 entry durability follows the platform. In-memory replacement refuses a concurrent change to its
 source image, allowing the caller to retry.
-A locked database or nonempty WAL sidecar is refused; close/checkpoint the SQLite connection before
-retrying. Native symbolic-link dataset filenames, linked/special sidecars, reserved/encrypted page bytes, remote and archive paths
+A database locked by another process or with a nonempty WAL sidecar is refused. POSIX locks
+are process-scoped; callers must close/checkpoint same-process SQLite connections before
+repacking and must not access the database concurrently through them. Native symbolic-link or
+hard-linked dataset filenames, linked/special sidecars, reserved/encrypted page bytes, remote and archive paths
 are refused. This is storage maintenance, not a GeoPackage specification validator.
 
 Unix directory-sync requirements also apply to existing native SQLite in-place edits and
