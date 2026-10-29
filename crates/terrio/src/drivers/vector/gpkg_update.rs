@@ -94,14 +94,11 @@ fn rewrite(path: impl AsRef<std::path::Path>, layers: &[Layer], mode: UpdateMode
         )));
     }
     let bytes = update_bytes(std::fs::read(path)?, layers, mode)?;
-    let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(".terrio-update");
-    let tmp = std::path::PathBuf::from(tmp);
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })?;
-    Ok(())
+    use std::io::Write;
+    crate::vsi::write_local_atomic(path, |file| {
+        file.write_all(&bytes)?;
+        Ok(())
+    })
 }
 
 /// Updates a GeoPackage held in memory: see [`update`].
@@ -761,6 +758,14 @@ mod tests {
             let original = database.finish().unwrap();
             std::fs::write(&path, &original).unwrap();
             std::os::unix::fs::symlink(&target_name, &link).unwrap();
+            let victim = dir.path().join("unrelated.bin");
+            std::fs::write(&victim, b"keep unrelated bytes").unwrap();
+            let mut staged_name = path.as_os_str().to_os_string();
+            staged_name.push(".terrio-update");
+            let staged = std::path::PathBuf::from(staged_name);
+            std::os::unix::fs::symlink(&victim, &staged).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
             let appended = [layer("a", 1, 10.)];
             assert!(!super::super::gpkg_inplace::update_in_place(&path, &appended, UpdateMode::Append).unwrap());
             let mut wal = path.as_os_str().to_os_string();
@@ -772,6 +777,9 @@ mod tests {
             std::fs::remove_file(&wal).unwrap();
             update(link.to_str().unwrap(), &appended, UpdateMode::Append).unwrap();
             assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read(&victim).unwrap(), b"keep unrelated bytes");
+            assert_eq!(std::fs::read_link(&staged).unwrap(), victim);
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o640);
             assert_eq!(std::fs::read_link(&link).unwrap(), std::path::Path::new(&target_name));
             let database = Db::new(std::fs::read(&path).unwrap()).unwrap();
             assert_eq!(super::super::gpkg_read::read_db(&database, &[], None).unwrap()[0].len(), 2);

@@ -671,7 +671,13 @@ fn local_path_edge_spaces_are_not_removed_before_deletion() {
         let spaced = tmp.path().join("report.txt ");
         fs::write(&plain, b"keep").unwrap();
         fs::write(&spaced, b"remove").unwrap();
-        delete(&s(&spaced), false).unwrap();
+        let entry = stat(&s(&spaced)).unwrap().unwrap();
+        assert_eq!(entry.name, s(&spaced));
+        assert_eq!(list(&s(&spaced), &Default::default()).unwrap()[0].name, s(&spaced));
+        let copied = tmp.path().join("copied.txt");
+        copy(&entry.name, &s(&copied), &Default::default()).unwrap();
+        assert_eq!(fs::read(copied).unwrap(), b"remove");
+        delete(&entry.name, false).unwrap();
         assert!(!spaced.exists());
         assert_eq!(fs::read(plain).unwrap(), b"keep");
     }
@@ -1245,4 +1251,22 @@ fn memory_archives_and_moves_do_not_copy_bytes() {
     assert!(stat("/vsimem/vsi_nocopy/a.zip").unwrap().is_none());
     assert_eq!(crate::memfs::COPIED.with(|c| c.get()), 0);
     delete("/vsimem/vsi_nocopy", true).unwrap();
+}
+
+#[test]
+fn memory_path_reports_preserve_edge_spaces_and_select_the_same_file() {
+    let root = "/vsimem/vsi-space-report";
+    let plain = format!("{root}/report.txt");
+    let spaced = format!("{root}/report.txt ");
+    write(&plain, b"keep").unwrap();
+    write(&spaced, b"selected").unwrap();
+    let entry = stat(&spaced).unwrap().unwrap();
+    assert_eq!(entry.name, spaced);
+    assert_eq!(list(&spaced, &Default::default()).unwrap()[0].name, spaced);
+    let copied = format!("{root}/copied.txt ");
+    copy(&entry.name, &copied, &Default::default()).unwrap();
+    assert_eq!(read(&copied).unwrap(), b"selected");
+    delete(&entry.name, false).unwrap();
+    assert_eq!(read(&plain).unwrap(), b"keep");
+    delete(root, true).unwrap();
 }

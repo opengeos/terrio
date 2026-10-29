@@ -2346,6 +2346,7 @@ test("GeoPackage repack preserves real features in bytes and memory", { skip: !D
   terrio.vsiWrite(neighbor, new Uint8Array([11,22,33]));
   terrio.vsiWrite(path, bytes);
   try {
+    assert.equal(terrio.vsiStat(path).name, path);
     const report = terrio.gpkgRepack(path);
     assert.equal(report.bytes_before, bytes.length);
     assert.equal(report.bytes_after, terrio.vsiRead(path).length);
