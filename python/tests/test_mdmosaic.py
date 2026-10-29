@@ -134,3 +134,20 @@ def test_mosaic_requires_input_sequence(tmp_path, kind):
     }[kind]
     with pytest.raises(terrio.InvalidArgumentError, match="sequence.*wrap a single input"):
         terrio.mosaic_multidim(source)
+
+
+def test_cf_missing_value_fills_gap_through_uploaded_stores():
+    import json
+
+    first, second, values = sources()
+    second["time/0"] = np.array([24, 30, 36], dtype="<i8").tobytes()
+    for store in [first, second]:
+        attrs = json.loads(store["cube/.zattrs"])
+        attrs["missing_value"] = -999
+        store["cube/.zattrs"] = json.dumps(attrs).encode()
+    output = terrio.mosaic_multidim([first, second], arrays=["cube"])
+    expected = np.concatenate([values[:3], np.full((1, 2, 4), -999), values[3:]])
+    np.testing.assert_array_equal(output["cube"].read(), expected)
+    np.testing.assert_array_equal(
+        terrio.open_multidim(output.to_zarr_store())["cube"].read(), expected
+    )

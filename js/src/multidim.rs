@@ -51,6 +51,10 @@ impl MdDataset {
     pub fn handle_id(&self) -> u32 {
         self.id
     }
+    /// Reads every numeric array and coordinate, including in-memory Zarr stores.
+    pub fn check(&self) -> Result<JsValue, JsError> {
+        to_js(&terrio::check::check_multidim(&self.inner).map_err(js_err)?)
+    }
     /// Complete group/array metadata without reading numeric array payloads.
     pub fn info(&self) -> Result<JsValue, JsError> {
         to_js(&*self.inner)

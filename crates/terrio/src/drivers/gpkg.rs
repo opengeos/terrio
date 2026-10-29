@@ -160,7 +160,7 @@ pub(crate) fn parse_subdataset(name: &str) -> Option<(String, String)> {
 }
 
 /// Reads a raster table (the first when `table` is `None`).
-fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<RasterDataset> {
+pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<RasterDataset> {
     let contents = db.table("gpkg_contents")?;
     let row = contents
         .rows
