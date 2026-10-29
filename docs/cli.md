@@ -3,6 +3,7 @@
 ```text
 terrio <COMMAND>
 
+  identify        Identify dataset formats from bounded headers
   info            Summarize a raster, vector dataset or point cloud
   convert         Convert a dataset to another format, optionally reprojecting it
   concat          Concatenate vector layers and datasets (like gdal vector concat and ogrmerge.py)
@@ -644,6 +645,54 @@ GeoPackages use the in-place mechanism above. Other formats stage new files then
 the originals. Multi-file replacements are not atomic across sidecars and a failure may
 leave a partial replacement. Successful Shapefile replacements remove obsolete QIX/SBN/SBX
 indexes and optional PRJ/CPG sidecars not produced by the new write.
+
+## identify
+
+```sh
+terrio identify scene.tif countries.fgb --json
+terrio identify ./data --recursive --report-failures --json
+terrio identify raw.dat --deep
+```
+
+Identifies formats using at most the first 16 KiB of each file, without decoding
+pixels or features. Local files, individual HTTP/cloud objects and local Zarr or
+Arc/Info grid directories are supported. HTTP sends one prefix GET plus any redirect
+or retry GETs, and stops reading after 16 KiB even when the server ignores Range; transport buffering can
+receive additional bytes. Identification is not an integrity check: a damaged file
+can retain a recognizable signature. Only formats enabled in the build are reported.
+
+Inputs retain their order; directory children are sorted. `--recursive` descends
+into local directories and stops at recognized dataset directories. `--force-recursive`
+also scans inside recognized directories. Nested directory symlinks are skipped.
+Remote directory traversal is not supported. `--report-failures` includes unknown
+formats and I/O errors; otherwise they are omitted. These reported failures do not
+change the command's success exit status, matching GDAL dataset identification.
+
+`--deep` permits existing raster/vector readers as a fallback for formats requiring
+companion files, such as an ENVI data file. The report marks those results with
+`deep: true`. A fallback reader can materialize formats without lazy metadata support.
+Archives require this fallback, except `.kmz` files: the ZIP header alone does not
+identify KMZ; that case also requires the filename hint. Signatures beyond
+the prefix can be missed. SQLite containers use `.gpkg`/`.mbtiles` filename hints as GDAL does, including
+SQLite files whose application ID is unset; this does not validate their tables.
+Text formats may need filename hints; raw SRTM HGT tiles
+require their tile filename and total size. Generic format names (`JP2`, `KML`,
+`HDF5`) can differ from GDAL's installed driver implementation names.
+
+JSON is an array of records with `name`, `driver`, `kinds`, `multidimensional` and
+`deep`; failures have `name` and `error` instead of driver metadata. `kinds` describes
+the formats supported by a container, rather than verifying which tables it holds.
+URL credential parameters are redacted from display names. MCP exposes `identify`
+as a read-only tool with the same options. Recursive scans enumerate the requested
+local tree without an entry or depth cap; scope the input directory accordingly.
+
+Python exposes `terrio.identify(path_or_paths, recursive=False, force_recursive=False,
+deep=False, report_failures=False)`. Uploaded immutable bytes accept `filename=...`
+instead of native scan options. Python always returns a list of named records,
+including for a single upload. JavaScript exposes `identify(uint8Array, filename?)`
+or `identify({bytes, filename})`, returning format metadata or `null`. Only the first
+16 KiB of JavaScript input is copied into WASM. Uploaded bytes do not use the deeper
+native reader fallback.
 
 ## info
 

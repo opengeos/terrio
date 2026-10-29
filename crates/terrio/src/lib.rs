@@ -204,6 +204,7 @@ mod histogram;
 #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
 pub mod http;
 pub mod info;
+pub mod inspection;
 mod jpeg;
 mod memfs;
 pub mod memory;

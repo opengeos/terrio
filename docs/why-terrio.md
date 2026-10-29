@@ -108,7 +108,7 @@ another library and not in terrio, use it.
 - Geospatial I/O in the browser or another WebAssembly runtime, through the
   [npm package](javascript.md) or the Rust library.
 - Reading cloud-optimized GeoTIFFs, PMTiles and COPC point clouds piece by piece from HTTP,
-  `s3://`, `gs://` or `az://`, and STAC items and searches, without GDAL.
+  `s3://`, `gs://` or `az://`, and STAC items and searches, without installing GDAL.
 - Replacing `gdal_translate`, `gdalwarp` or `ogr2ogr` calls in scripts and CI where installing
   GDAL is the hard part (see [Coming from GDAL](gdal.md)).
 - A Python environment that needs common formats as NumPy arrays without GDAL's wheels

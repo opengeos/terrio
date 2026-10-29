@@ -1,7 +1,7 @@
 """Type stubs for the `terrio._terrio` extension module."""
 
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any, Literal, Protocol, TypeAlias, TypedDict, final, overload
 
 import numpy as np
@@ -17,6 +17,7 @@ __all__ = [
     "refresh_overviews",
     "update_raster",
     "validate_cog",
+    "identify",
     "__version__",
     "Raster",
     "GeoTiffWriter",
@@ -1851,4 +1852,19 @@ def blend(
     bigtiff: bool = False,
 ) -> Raster:
     """Blends equal-sized Byte images, with GDAL operators and opacity 0..100."""
+    ...
+
+def identify(
+    sources: str | os.PathLike[str] | Iterable[str | os.PathLike[str]] | bytes,
+    *,
+    filename: str | None = None,
+    recursive: bool = False,
+    force_recursive: bool = False,
+    deep: bool = False,
+    report_failures: bool = False,
+) -> list[dict[str, Any]]:
+    """Return named records as a list, including for one upload.
+
+    JavaScript's single-upload API returns format metadata or null instead.
+    """
     ...

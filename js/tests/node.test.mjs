@@ -2346,3 +2346,17 @@ test("COG validation profiles inspect uploaded block trailers", () => {
   assert.throws(() => terrio.validateCog(bytes, {profile: "unknown"}), /unknown variant/);
   raster.free();
 });
+
+test("identify inspects bounded upload prefixes and filename hints", () => {
+  const raster = terrio.createRaster(null, {size: [2, 2], burn: [1], crs: "EPSG:4326", bbox: [0, 0, 2, 2]});
+  const bytes = raster.toBytes("source.tif");
+  assert.equal(terrio.identify(bytes, "renamed.bin").driver, "GTiff");
+  assert.deepEqual(terrio.identify({bytes, filename: "source.tif"}).kinds, ["raster"]);
+  assert.equal(terrio.identify(new TextEncoder().encode("x,y\n1,2\n"), "points.csv").driver, "CSV");
+  assert.equal(terrio.identify(new TextEncoder().encode("unknown"), "wrong.tif"), null);
+  assert.equal(terrio.identify(new TextEncoder().encode('{"nested":{"type":"Point"}}'), "config.json"), null);
+  const beyondPrefix = new TextEncoder().encode(" ".repeat(16 * 1024) + '{"type":"FeatureCollection"}');
+  assert.equal(terrio.identify(beyondPrefix, "data.json"), null);
+  assert.throws(() => terrio.identify({bytes: "not an array"}), /Uint8Array/);
+  raster.free();
+});
