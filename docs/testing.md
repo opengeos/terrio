@@ -1184,3 +1184,39 @@ cargo test -p terrio-cli --test inspection
 pytest python/tests/test_inspection.py
 node --test --test-name-pattern='identify inspects' js/tests/node.test.mjs
 ```
+
+
+## Dataset file management (#289)
+
+The `dataset-files` suite uses GDAL 3.13.3 and real Landsat/Natural Earth derivatives.
+It compares encoded payload bytes, owned file inventories, every pixel or feature,
+field types, nodata, masks, overviews, CRS, transforms and metadata after copies and
+renames into a different folder, then checks deletion and unrelated siblings.
+Coverage includes TIFF/PAM/overviews/masks, world-file-only TIFFs, RPCs, EHdr, ENVI
+(including `.img` data), ERS, SAGA, Idrisi, HFA spill files, PNG/JPEG world files,
+ASCII and Surfer grids, Zarr, Shapefile, MapInfo TAB/MIF, CSV, GeoPackage, GML,
+MVT pyramids and VRT TIFF/netCDF references. GDAL reads MVT zoom-level directories;
+the whole-pyramid reference copy uses `gdal vsi copy --recursive`.
+
+The local run has 26 cases: 21 identical and five explicit metadata/reference
+corrections. GDAL's generic copy loses the CSV CRS `.prj`, omits GML XSD schemas,
+leaves the Idrisi reference-system name stale, and does not make the two VRT
+reference cases independent of their originals. Terrio preserves source values
+and metadata in those cases; they are reported within tolerance as behavior
+differences rather than as identical. The derived WGS84 Idrisi fixture explicitly
+sets zero WGS84 deltas because GDAL's writer can emit uninitialized tiny values.
+
+A local HTTP server serves a padded 8 MiB real TIFF with overview, mask and PAM
+sidecars. The suite measures successful/missing requests, bytes served and distinct
+existing files, and bounds metadata overhead without assuming a content type.
+The data, masks, overviews, georeferencing and metadata must remain exact.
+
+Core regressions cover source/hard-link aliases, batch preflight, stale sidecars,
+file/directory collisions, nonregular inputs, symlink deletion, partial-stage
+rollback, unavailable VRT references, raw VRT sources and CDATA/entity handling.
+CLI/MCP, release-wheel Python and release WASM tests exercise the public surfaces.
+
+```sh
+python scripts/conformance.py ../terrio-data --only dataset-files --strict
+python -m pytest python/tests/test_dataset_files.py
+```

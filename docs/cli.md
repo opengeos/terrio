@@ -646,6 +646,55 @@ the originals. Multi-file replacements are not atomic across sidecars and a fail
 leave a partial replacement. Successful Shapefile replacements remove obsolete QIX/SBN/SBX
 indexes and optional PRJ/CPG sidecars not produced by the new write.
 
+## dataset-copy, dataset-rename, dataset-delete, dataset-files
+
+```sh
+terrio dataset-files scene.tif --json
+terrio dataset-copy scene.tif backup/scene.tif
+terrio dataset-rename countries.shp countries-new.shp
+terrio dataset-delete obsolete.tif obsolete.shp
+```
+
+These commands manage encoded datasets and their companion files without conversion.
+The destination is an exact dataset name. Existing destinations and companion collisions
+require `--overwrite`; replacing a dataset removes obsolete companions. `--input-format`
+(alias `--format`) restricts the source driver. `--json` returns the driver, affected
+files and copied bytes. `dataset-files` lists owned files and a directory flag.
+
+Shapefile and MapInfo components, raw raster headers, world files, RPCs, PAM metadata,
+overviews and masks are included when present. Raster-only companions are not assigned
+to vector files. Zarr, Arc/Info grids and vector directory datasets (including whole MVT
+pyramids) are handled as trees. Unrelated siblings are retained. TIFF world files are
+used only without an embedded transform. CSV `.prj` files are preserved: GDAL 3.13.3
+uses these CRSs but omits them from `GetFileList` and loses them during dataset copy.
+
+VRT copies and renames include referenced assets with regular corresponding basenames,
+and rewrite source references to the new names. GML schema locations and Idrisi/ERS
+header references are also updated. Irregular basenames are refused before mutation,
+as in GDAL. VRT graph traversal reuses completed inventories and permits at most 128
+nested definitions; definitions are held in memory. A file used both as file-bearing
+metadata and raw VRT pixels is refused if rewriting would change those pixels. VRT deletion removes the definition and its owned companions,
+retaining referenced rasters; catalog/STAC deletion likewise retains referenced assets.
+
+All inputs and destinations are checked before staging files. Source aliases, overlapping
+directory trees, protected roots, read-only mutations and file/directory collisions are
+refused. Failed staging or installation attempts restore the original paths; if rollback
+or cleanup itself fails, the error identifies recovery files. An error explicitly saying
+that the operation committed means the final paths changed but staged cleanup failed.
+Source and destination trees must not be changed concurrently. Native renames
+preserve symlink text, so relative links must remain meaningful at their destination;
+links cannot be renamed across filesystems. Overlapping input directory/component
+sets are refused because they cannot be staged independently. Multiple file or object
+operations do not provide a filesystem-wide or object-store transaction.
+
+Local and VSI locations follow `terrio vsi`: memory and writable cloud stores support
+mutation; HTTP and archive members are copy sources only. WebAssembly operates on
+`/vsimem/` datasets and archive members, with no native files or signed cloud writes.
+Owned-file queries and deletion do not open VRT references, which may be missing.
+MCP exposes all four commands; only `dataset-files` is marked read-only. JSON and text
+reports redact URL credentials. Byte counts exclude backup/rollback work; native
+same-filesystem and memory file moves copy no payload bytes.
+
 ## identify
 
 ```sh

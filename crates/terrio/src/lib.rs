@@ -192,6 +192,7 @@ mod cog;
 mod cog_validate;
 pub mod crs;
 mod dataset;
+pub mod dataset_files;
 mod drivers;
 mod error;
 pub mod formats;

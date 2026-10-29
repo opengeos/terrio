@@ -89,6 +89,10 @@ commands. Command-group progress:
       discovery and explicit companion-file reader fallback through Rust, CLI/MCP, Python and
       JavaScript. Real-data GDAL comparisons are registered as `identify`.
 
+- [ ] Dataset file management: encoded copies, renames and deletion of owned companions,
+      with staged replacement and source alias protection through Rust, CLI/MCP, Python and
+      WebAssembly. Real Landsat and Natural Earth comparisons are registered as `dataset-files`.
+
 ## 0.1: Foundations
 
 - [x] Data model: `Dataset`, raster `Band` with block access, vector `Layer` with `Feature`, field

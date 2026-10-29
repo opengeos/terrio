@@ -2345,3 +2345,36 @@ test("identify inspects bounded upload prefixes and filename hints", () => {
   assert.throws(() => terrio.identify({bytes: "not an array"}), /Uint8Array/);
   raster.free();
 });
+
+test("dataset file management includes companions and guards batch deletion", () => {
+  const root = "/vsimem/js-dataset-files";
+  const source = `${root}/source.csv`, target = `${root}/target.csv`, moved = `${root}/moved.csv`;
+  const encode = text => new TextEncoder().encode(text);
+  terrio.vsiWrite(source, encode("x,y\n1,2\n"));
+  terrio.vsiWrite(`${root}/source.csvt`, encode("Real,Real"));
+  terrio.vsiWrite(`${root}/source.txt`, encode("keep"));
+  try {
+    assert.equal(terrio.datasetFiles(source).driver, "CSV");
+    assert.equal(terrio.datasetCopy(source, target).files.length, 2);
+    assert.throws(() => terrio.datasetCopy(source, target), /exists/);
+    terrio.datasetRename(target, moved);
+    assert.equal(terrio.vsiStat(target), null);
+    assert.deepEqual(terrio.vsiRead(`${root}/moved.csvt`), encode("Real,Real"));
+    assert.throws(() => terrio.datasetDelete([moved, `${root}/missing.csv`]), /does not exist/);
+    assert.ok(terrio.vsiStat(moved));
+    assert.equal(terrio.datasetDelete([source, moved]).length, 2);
+    assert.deepEqual(terrio.vsiList(root).map(entry => entry.name), ["source.txt"]);
+  } finally { terrio.vsiDelete(root, {recursive: true}); }
+});
+
+test("dataset TIFF copies preserve bytes without loading pixel codecs", () => {
+  const root = "/vsimem/js-dataset-tiff";
+  const raster = terrio.createRaster(null, {size: [2, 2], burn: [7], crs: "EPSG:4326", bbox: [0, 0, 2, 2]});
+  const bytes = raster.toBytes("source.tif");
+  terrio.vsiWrite(`${root}/source.tif`, bytes);
+  try {
+    terrio.datasetCopy(`${root}/source.tif`, `${root}/copy.tif`);
+    assert.deepEqual(terrio.vsiRead(`${root}/copy.tif`), bytes);
+    assert.throws(() => terrio.datasetRename(`${root}/source.tif`, `${root}/source.tif`, {overwrite:true}), /overlap/);
+  } finally { raster.free(); terrio.vsiDelete(root, {recursive:true}); }
+});

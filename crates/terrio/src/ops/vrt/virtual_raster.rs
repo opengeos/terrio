@@ -429,7 +429,7 @@ pub(crate) fn source_input_paths(path: &str) -> Result<Vec<String>> {
 
 // Parse the filename once for both relative-reference resolution and overwrite inventory.
 // Zarr's unquoted form denotes an entire store; quoted forms may select an array.
-fn subdataset_parts(name: &str) -> Result<Option<(&str, &str, &str)>> {
+pub(crate) fn subdataset_parts(name: &str) -> Result<Option<(&str, &str, &str)>> {
     for prefix in ["NETCDF:", "HDF5:", "ZARR:", "GPKG:"] {
         if name.get(..prefix.len()).is_some_and(|v| v.eq_ignore_ascii_case(prefix)) {
             let rest = &name[prefix.len()..];

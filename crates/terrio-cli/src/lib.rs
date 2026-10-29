@@ -23,6 +23,14 @@ enum Command {
     Info(cmd::info::Args),
     /// Identify many datasets from bounded headers, without decoding their payloads.
     Identify(cmd::inspection::IdentifyArgs),
+    /// Copy a dataset and every associated file, preserving encoded data.
+    DatasetCopy(cmd::dataset_files::TransferArgs),
+    /// Rename a dataset and its associated files.
+    DatasetRename(cmd::dataset_files::TransferArgs),
+    /// Delete owned dataset files, preserving referenced VRT/catalog assets.
+    DatasetDelete(cmd::dataset_files::DeleteArgs),
+    /// List the owned files of a dataset.
+    DatasetFiles(cmd::dataset_files::FilesArgs),
     /// Inspect native scientific groups, named dimensions and arrays without reading payloads.
     Mdinfo(cmd::multidim::InfoArgs),
     /// Read a native multidimensional hyperslab with named-axis slicing and transposition.
@@ -263,6 +271,10 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
     let result = match cli.command {
         Command::Info(a) => cmd::info::run(a),
         Command::Identify(a) => cmd::inspection::identify(a),
+        Command::DatasetCopy(a) => cmd::dataset_files::transfer(a, false),
+        Command::DatasetRename(a) => cmd::dataset_files::transfer(a, true),
+        Command::DatasetDelete(a) => cmd::dataset_files::delete(a),
+        Command::DatasetFiles(a) => cmd::dataset_files::files(a),
         Command::Mdinfo(a) => cmd::multidim::info(a),
         Command::Mdread(a) => cmd::multidim::read(a),
         Command::Mdconvert(a) => cmd::multidim::convert(a),

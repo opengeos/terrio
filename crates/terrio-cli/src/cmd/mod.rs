@@ -7,6 +7,7 @@ pub mod compare;
 pub mod convert;
 pub mod create;
 pub mod crs;
+pub mod dataset_files;
 pub mod dem;
 pub mod edit;
 pub mod enhance;

@@ -531,3 +531,14 @@ clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
 base update commits. Use `create-raster`, `edit-raster` and `update-raster` when
 calling the corresponding CLI commands.
+
+
+## Dataset file management
+
+`terrio.dataset_files(path, format=None)` returns the driver, owned files and a
+`directory` flag. `dataset_copy(source, destination, format=None, overwrite=False)`
+and `dataset_rename(...)` manage the complete file set and return affected paths
+and copied bytes. Paths may be strings or `os.PathLike` values, including VSI paths.
+`dataset_delete(path_or_iterable, format=None)` preflights all inputs and returns a
+list of reports. Deleting a VRT preserves referenced rasters. I/O releases the GIL.
+See the CLI file-management section for staging, rollback, overwrite and format rules.

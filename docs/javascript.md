@@ -441,3 +441,14 @@ implementations must return a standard `Response`. Object-store XML pagination i
 
 VSI listing bindings return structured flat entries. Nested tree presentation (`--tree`)
 is currently available through the CLI; JSON serialization flags apply to CLI output.
+
+
+## Dataset file management
+
+`datasetFiles(path, {format})` returns the owned file set. `datasetCopy(source,
+destination, {format, overwrite})` and `datasetRename(...)` return affected paths
+and copied bytes. `datasetDelete(pathOrArray, {format})` preflights the whole batch
+and returns one report per input. These APIs manage `/vsimem/` datasets; archive
+members may be copied out. HTTP/cloud mutation is unavailable in WebAssembly.
+VRT deletion preserves referenced rasters. The CLI file-management section documents
+companion discovery, overwrite, staging and recovery behavior shared by these APIs.

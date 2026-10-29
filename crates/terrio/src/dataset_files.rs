@@ -1,0 +1,1177 @@
+//! Dataset-aware byte copies, renames and deletion, including companion files.
+//!
+//! These operations do not convert formats or decode payloads. Inventories distinguish
+//! owned files from VRT dependencies: deleting a VRT never deletes its source rasters.
+use crate::formats::{RasterDriver, VectorDriver};
+use crate::vsi::{self, dataset as location};
+use crate::{Error, Result};
+use serde::{Serialize, Serializer};
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// File-operation options. The format hint restricts the source driver, not the output encoding.
+#[derive(Debug, Clone, Default)]
+pub struct FileOptions {
+    /// Explicit input driver, for example `ENVI` or `ESRI Shapefile`.
+    pub format: Option<String>,
+    /// Replace an existing destination and its obsolete companion files.
+    pub overwrite: bool,
+}
+fn paths_json<S: Serializer>(paths: &[String], serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    paths.iter().map(|s| vsi::listing::redact_url(s).into_owned()).collect::<Vec<_>>().serialize(serializer)
+}
+/// Owned files of a dataset. Referenced raster assets are not owned by a VRT/catalog.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileSet {
+    /// Recognized source driver.
+    pub driver: String,
+    /// Owned paths. JSON reports redact URL credentials.
+    #[serde(serialize_with = "paths_json")]
+    pub files: Vec<String>,
+    /// A directory dataset is moved/copied as one tree.
+    pub directory: bool,
+}
+impl FileSet {
+    /// Display names with URL credentials redacted, for human-readable reports.
+    pub fn display_names(&self) -> Vec<String> {
+        self.files.iter().map(|p| vsi::listing::redact_url(p).into_owned()).collect()
+    }
+}
+/// Result of a dataset operation.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileReport {
+    /// Driver whose file set was used.
+    pub driver: String,
+    /// Final owned paths (source paths for deletion).
+    #[serde(serialize_with = "paths_json")]
+    pub files: Vec<String>,
+    /// Bytes copied for new files; native same-filesystem moves copy no payload bytes.
+    /// Backup and rollback work is excluded.
+    pub bytes: u64,
+}
+fn invalid(message: impl Into<String>) -> Error {
+    Error::InvalidArgument(message.into())
+}
+fn stem(name: &str) -> &str {
+    name.rsplit_once('.').filter(|(s, _)| !s.is_empty()).map_or(name, |(s, _)| s)
+}
+fn hinted(name: &str) -> Result<String> {
+    if let Some(driver) = RasterDriver::from_name(name) {
+        driver.ensure_built()?;
+        return Ok(if driver == RasterDriver::Cog { RasterDriver::GTiff.name() } else { driver.name() }.into());
+    }
+    if let Some(driver) = VectorDriver::from_name(name) {
+        driver.ensure_built()?;
+        return Ok(driver.name().into());
+    }
+    #[cfg(feature = "pointcloud")]
+    if ["LAS", "LAZ", "PLY", "E57", "COPC"].iter().any(|driver| driver.eq_ignore_ascii_case(name)) {
+        return Ok(name.to_ascii_uppercase());
+    }
+    Err(invalid(format!("unknown dataset driver '{name}'")))
+}
+fn exists(path: &str) -> Result<bool> {
+    Ok(vsi::stat(path)?.is_some())
+}
+fn unique_push(files: &mut Vec<String>, path: String) -> Result<()> {
+    for existing in files.iter() {
+        if location::same_name(existing, &path)? {
+            return Ok(());
+        }
+    }
+    files.push(path);
+    Ok(())
+}
+fn companions(files: &mut Vec<String>, path: &str, names: impl IntoIterator<Item = String>) -> Result<()> {
+    for name in names {
+        let candidate = location::sibling(path, &name)?;
+        if location::file_exists(&candidate)? {
+            unique_push(files, candidate)?;
+        }
+    }
+    Ok(())
+}
+fn directory_driver(path: &str) -> Result<Option<String>> {
+    for marker in ["zarr.json", ".zgroup", ".zarray"] {
+        let marker = location::child(path, marker)?;
+        if location::file_exists(&marker)? {
+            let prefix = location::prefix(&marker, crate::inspection::IDENTIFICATION_HEADER_BYTES)?;
+            let compact: String = String::from_utf8_lossy(&prefix).split_ascii_whitespace().collect();
+            if ["\"zarr_format\":2,", "\"zarr_format\":3,", "\"zarr_format\":2}", "\"zarr_format\":3}"]
+                .iter()
+                .any(|key| compact.contains(key))
+            {
+                return Ok(Some("Zarr".into()));
+            }
+        }
+    }
+    let metadata = location::child(path, "metadata.json")?;
+    if location::file_exists(&metadata)? {
+        let prefix = location::prefix(&metadata, crate::inspection::IDENTIFICATION_HEADER_BYTES)?;
+        let compact: String = String::from_utf8_lossy(&prefix).split_ascii_whitespace().collect();
+        if ["\"format\":\"pbf\"", "\"format\":\"mvt\"", "\"vector_layers\":["].iter().any(|key| compact.contains(key)) {
+            return Ok(Some("MVT".into()));
+        }
+    }
+    if location::file_exists(&location::child(path, "hdr.adf")?)? && location::file_exists(&location::child(path, "w001001.adf")?)? {
+        return Ok(Some("AIG".into()));
+    }
+    // A directory is also a multi-layer datasource for these vector drivers.
+    let entries = vsi::list(path, &Default::default())?;
+    for (extension, driver) in [("shp", "ESRI Shapefile"), ("tab", "MapInfo File"), ("csv", "CSV")] {
+        if entries.iter().any(|e| !e.is_dir() && crate::formats::extension(&e.name).as_deref() == Some(extension)) {
+            return Ok(Some(driver.into()));
+        }
+    }
+    Ok(None)
+}
+/// Inventories owned files without reading raster pixels. Unknown inputs fail rather than
+/// treating an arbitrary directory or file as a dataset. `format` restricts identification.
+pub fn file_list(path: &str, format: Option<&str>) -> Result<FileSet> {
+    let _operation = location::Operation::new();
+    let hint = format.map(hinted).transpose()?;
+    let stat = vsi::stat(path)?.ok_or_else(|| invalid(format!("dataset '{}' does not exist", vsi::listing::redact_url(path))))?;
+    if stat.is_dir() {
+        let driver = directory_driver(path)?.ok_or_else(|| invalid("directory is not a recognized dataset"))?;
+        if hint.as_ref().is_some_and(|hint| hint != &driver) {
+            return Err(invalid("dataset does not match the input format hint"));
+        }
+        hinted(&driver)?;
+        return Ok(FileSet { driver, files: vec![path.into()], directory: true });
+    }
+    let prefix = location::prefix(path, crate::inspection::IDENTIFICATION_HEADER_BYTES)?;
+    let mut driver = crate::inspection::identify_prefix(&prefix, path, stat.size).map(|f| f.driver);
+    let mut raw_reader = None;
+    if driver.is_none() {
+        let filename = location::name(path)?;
+        if let Some(raw) = crate::drivers::open_raw(path) {
+            let reader = raw?.into_lazy();
+            driver = Some(reader.driver().name().into());
+            raw_reader = Some(reader);
+        } else if filename.to_ascii_lowercase().ends_with(".tab") && prefix.starts_with(b"!table") {
+            driver = Some("MapInfo File".into());
+        }
+    }
+    let driver = driver.ok_or_else(|| invalid("dataset format is not recognized"))?;
+    if hint.as_ref().is_some_and(|hint| hint != &driver) {
+        return Err(invalid("dataset does not match the input format hint"));
+    }
+    let name = location::name(path)?;
+    let base = stem(&name);
+    let mut files = vec![path.to_string()];
+    if matches!(driver.as_str(), "EHdr" | "ENVI" | "ERS" | "RST" | "SAGA") {
+        // These readers have native lazy inventories, including raw headers and masks.
+        let reader = match raw_reader {
+            Some(reader) => reader,
+            None => crate::open_raster_lazy(path)?,
+        };
+        for file in reader.file_list()? {
+            unique_push(&mut files, file)?;
+        }
+    }
+    let suffixes: &[&str] = match driver.as_str() {
+        "ESRI Shapefile" => &["shp", "shx", "dbf", "prj", "cpg", "qix", "sbn", "sbx", "idm", "ind", "ain", "aih", "ixs", "mxs", "shp.xml"],
+        "MapInfo File" if name.to_ascii_lowercase().ends_with(".mif") => &["mif", "mid"],
+        "MapInfo File" => &["tab", "dat", "map", "id", "ind"],
+        "CSV" => &["csvt", "prj"],
+        "GML" => &["xsd", "gfs"],
+        "HFA" => &["ige", "rrd"],
+        "SAGA" => &["sgrd", "sdat", "prj"],
+        "RST" => &["rst", "rdc", "ref", "smp"],
+        "ENVI" | "EHdr" => &["hdr", "prj", "stx", "clr"],
+        "AAIGrid" | "GRASSASCIIGrid" => &["prj"],
+        _ => &[],
+    };
+    // Match the actual spelling on case-sensitive stores, including GDAL's upper-case companions.
+    let mut names = Vec::new();
+    for suffix in suffixes {
+        names.push(format!("{base}.{suffix}"));
+        names.push(format!("{base}.{}", suffix.to_ascii_uppercase()));
+    }
+    if matches!(driver.as_str(), "GTiff" | "JP2") {
+        names.extend([format!("{base}.RPB"), format!("{base}.rpb"), format!("{base}_RPC.TXT"), format!("{base}_rpc.txt")]);
+    }
+    if driver == "PNG" || driver == "JPEG" || driver == "JP2" {
+        let world = match driver.as_str() {
+            "PNG" => "pgw",
+            "JPEG" => "jgw",
+            _ => "j2w",
+        };
+        names.extend([format!("{base}.{world}"), format!("{base}.wld"), format!("{name}w")]);
+    }
+    if RasterDriver::from_name(&driver).is_some() {
+        names.extend([
+            format!("{name}.aux.xml"),
+            format!("{name}.ovr"),
+            format!("{name}.msk"),
+            format!("{name}.ovr.msk"),
+            format!("{name}.msk.ovr"),
+        ]);
+    }
+    if driver == "GTiff" && !location::tiff_has_transform(path)? {
+        for world in [format!("{base}.tfw"), format!("{base}.TFW"), format!("{name}w"), format!("{base}.wld")] {
+            let candidate = location::sibling(path, &world)?;
+            if location::file_exists(&candidate)? {
+                unique_push(&mut files, candidate)?;
+                break;
+            }
+        }
+    }
+    companions(&mut files, path, names)?;
+    Ok(FileSet { driver, files, directory: false })
+}
+
+struct Item {
+    source: String,
+    target: String,
+    staged: String,
+    installed: bool,
+    rewritten: Option<Vec<u8>>,
+    original: Option<String>,
+    directory: bool,
+    attempted: bool,
+}
+struct Backup {
+    original: String,
+    staged: String,
+}
+static TEMP_ID: AtomicU64 = AtomicU64::new(1);
+fn temporary(path: &str) -> Result<String> {
+    loop {
+        let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let name = format!(".terrio-dataset-{id}-{}", location::name(path)?);
+        let path = location::sibling(path, &name)?;
+        if !exists(&path)? {
+            return Ok(path);
+        }
+    }
+}
+fn mapped(path: &str, source: &str, target: &str) -> Result<String> {
+    let (name, old, new) = (location::name(path)?, location::name(source)?, location::name(target)?);
+    if path == source {
+        return Ok(target.into());
+    }
+    let full_suffix = name.strip_prefix(&old).is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(['.', '_']));
+    let (prefix, replacement) = if full_suffix { (old.as_str(), new.as_str()) } else { (stem(&old), stem(&new)) };
+    let suffix = name
+        .strip_prefix(prefix)
+        .filter(|s| s.is_empty() || s.starts_with(['.', '_']))
+        .ok_or_else(|| invalid("unable to copy/rename fileset with irregular basenames"))?;
+    location::sibling(target, &format!("{replacement}{suffix}"))
+}
+/// SourceFilename text is XML character data, including CDATA and character references.
+fn reference_text(reader: &mut quick_xml::Reader<&[u8]>) -> Result<String> {
+    use quick_xml::events::Event;
+    let mut value = String::new();
+    loop {
+        match reader.read_event().map_err(|e| Error::InvalidData(format!("VRT XML: {e}")))? {
+            Event::Text(t) => value.push_str(&t.xml10_content()),
+            Event::CData(t) => value.push_str(&t.xml10_content()),
+            Event::GeneralRef(r) => {
+                if let Some(c) = r.resolve_char_ref().map_err(|e| Error::InvalidData(e.to_string()))? {
+                    value.push(c);
+                } else {
+                    value.push_str(match r.as_ref() {
+                        "amp" => "&",
+                        "lt" => "<",
+                        "gt" => ">",
+                        "quot" => "\"",
+                        "apos" => "'",
+                        _ => return Err(invalid("unknown XML reference in source filename")),
+                    });
+                }
+            }
+            Event::Comment(_) => (),
+            Event::End(_) => return Ok(value.trim().into()),
+            _ => return Err(invalid("invalid XML source filename content")),
+        }
+    }
+}
+fn relative_reference(element: &quick_xml::events::BytesStart<'_>) -> bool {
+    element.attributes().flatten().find(|a| a.key.as_ref() == "relativeToVRT").is_some_and(|a| {
+        a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+            .is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+    })
+}
+#[derive(Default)]
+struct FileGraph {
+    active: Vec<String>,
+    completed: Vec<(String, bool)>,
+    metadata: Vec<(String, String)>,
+    raw: Vec<String>,
+    directories: Vec<String>,
+}
+fn remember_files(inventory: &FileSet, main: &str, graph: &mut FileGraph) -> Result<()> {
+    if inventory.directory {
+        for directory in &inventory.files {
+            unique_push(&mut graph.directories, directory.clone())?;
+        }
+        return Ok(());
+    }
+    for file in &inventory.files {
+        let primary = location::same_name(file, main)?;
+        let extension = crate::formats::extension(&location::name(file)?).unwrap_or_default();
+        let rewrite = match inventory.driver.as_str() {
+            "VRT" | "GML" | "ERS" => primary,
+            "RST" => extension == "rdc",
+            "MapInfo File" => primary && extension == "tab",
+            _ => false,
+        };
+        if rewrite {
+            graph.metadata.push((file.clone(), inventory.driver.clone()));
+        }
+    }
+    Ok(())
+}
+/// Inventory VRT reference paths without opening pixel codecs. Owned-file queries and
+/// deletion deliberately never enter this graph. Only descriptions are held in memory.
+fn vrt_dependencies(path: &str, files: &mut Vec<String>, graph: &mut FileGraph) -> Result<()> {
+    use quick_xml::{Reader, events::Event};
+    if graph.active.len() >= 128 {
+        return Err(Error::Unsupported("VRT file-set references exceed 128 levels".into()));
+    }
+    for parent in graph.active.iter() {
+        if location::same_name(parent, path)? {
+            return Err(invalid("cyclic VRT file references"));
+        }
+    }
+    graph.active.push(path.into());
+    let bytes = vsi::read(path)?;
+    let text = crate::drivers::vector::xml::decode(&bytes);
+    let mut reader = Reader::from_str(&text);
+    let mut metadata = 0usize;
+    let mut bands = Vec::new();
+    loop {
+        let event = reader.read_event().map_err(|e| Error::InvalidData(format!("VRT XML: {e}")))?;
+        if metadata > 0 {
+            match event {
+                Event::Start(_) => metadata += 1,
+                Event::End(_) => metadata -= 1,
+                Event::Eof => return Err(invalid("unterminated VRT metadata")),
+                _ => (),
+            }
+            continue;
+        }
+        match event {
+            Event::Start(element) if element.local_name().as_ref() == "Metadata" => metadata = 1,
+            Event::Start(element) if element.local_name().as_ref() == "VRTRasterBand" => {
+                bands.push(element.attributes().flatten().any(|a| {
+                    a.key.as_ref() == "subClass"
+                        && a.normalized_value(quick_xml::XmlVersion::Implicit1_0).is_ok_and(|v| v == "VRTRawRasterBand")
+                }))
+            }
+            Event::End(element) if element.local_name().as_ref() == "VRTRasterBand" => {
+                bands.pop();
+            }
+            Event::Start(element) if matches!(element.local_name().as_ref(), "SourceFilename" | "SourceDataset") => {
+                let relative = relative_reference(&element);
+                let name = reference_text(&mut reader)?;
+                let reference = crate::ops::vrt::resolve_reference(path, &name, relative);
+                let physical = crate::ops::vrt::subdataset_parts(&reference)?.map_or(reference.as_str(), |(_, file, _)| file);
+                let raw = bands.last().copied().unwrap_or(false);
+                for parent in &graph.active {
+                    if location::same_name(parent, physical)? {
+                        return Err(invalid("cyclic VRT file references"));
+                    }
+                }
+                let mut known = false;
+                for (completed, role) in &graph.completed {
+                    if *role == raw && location::same_name(completed, physical)? {
+                        known = true;
+                        break;
+                    }
+                }
+                if known {
+                    continue;
+                }
+                if raw {
+                    if !location::file_exists(physical)? {
+                        return Err(invalid("raw VRT source file does not exist"));
+                    }
+                    unique_push(files, physical.into())?;
+                    graph.raw.push(physical.into());
+                    graph.completed.push((physical.into(), true));
+                    continue;
+                }
+                let inventory = match file_list(physical, None) {
+                    Ok(inventory) => inventory,
+                    Err(Error::InvalidArgument(message)) if message == "dataset format is not recognized" => {
+                        FileSet { driver: String::new(), files: vec![physical.into()], directory: false }
+                    }
+                    Err(error) => return Err(error),
+                };
+                remember_files(&inventory, physical, graph)?;
+                let nested = inventory.driver == "VRT";
+                for file in inventory.files {
+                    unique_push(files, file)?;
+                }
+                if nested {
+                    vrt_dependencies(physical, files, graph)?;
+                }
+                graph.completed.push((physical.into(), false));
+            }
+            Event::Eof => break,
+            _ => (),
+        }
+    }
+    graph.active.pop();
+    Ok(())
+}
+fn gml_schema_element(
+    element: quick_xml::events::BytesStart<'_>,
+    path: &str,
+    sources: &[String],
+    source: &str,
+    target: &str,
+) -> Result<quick_xml::events::BytesStart<'static>> {
+    use quick_xml::XmlVersion;
+    let mut element = element.into_owned();
+    let mut attributes = Vec::new();
+    let mut changed = false;
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|e| Error::InvalidData(e.to_string()))?;
+        let key = attribute.key.as_ref().to_string();
+        let value = attribute.normalized_value(XmlVersion::Implicit1_0).map_err(|e| Error::InvalidData(e.to_string()))?;
+        let local = key.rsplit(':').next().unwrap_or(&key);
+        let mut tokens: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
+        if matches!(local, "schemaLocation" | "noNamespaceSchemaLocation") {
+            for (i, token) in tokens.iter_mut().enumerate() {
+                if local == "schemaLocation" && i % 2 == 0 {
+                    continue;
+                }
+                let resolved = crate::ops::vrt::resolve_reference(path, token, true);
+                for candidate in sources {
+                    if location::same_name(candidate, &resolved)? {
+                        *token = location::name(&mapped(candidate, source, target)?)?;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            attributes.push((key, tokens.join(" ")));
+        } else {
+            attributes.push((key, value.into_owned()));
+        }
+    }
+    if changed {
+        element.clear_attributes();
+        element.extend_attributes(attributes.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
+    Ok(element)
+}
+fn xml_utf8_declaration(decl: quick_xml::events::BytesDecl<'_>) -> Result<quick_xml::events::BytesDecl<'static>> {
+    let version = decl.version().map_err(|e| Error::InvalidData(e.to_string()))?;
+    let standalone = decl.standalone().transpose().map_err(|e| Error::InvalidData(e.to_string()))?;
+    Ok(quick_xml::events::BytesDecl::new(&version, Some("UTF-8"), standalone.as_deref()))
+}
+/// Rebase file-bearing metadata before touching either source or destination.
+fn rewrite(path: &str, sources: &[String], source: &str, target: &str, driver: &str) -> Result<Option<Vec<u8>>> {
+    let filename = location::name(path)?;
+    let extension = crate::formats::extension(&filename).unwrap_or_default();
+    let gml = driver == "GML";
+    if gml || driver == "VRT" {
+        use quick_xml::{
+            Reader, Writer, XmlVersion,
+            events::{BytesText, Event},
+        };
+        let original = vsi::read(path)?;
+        let text = crate::drivers::vector::xml::decode(&original);
+        let mut reader = Reader::from_str(&text);
+        let mut writer = Writer::new(Vec::new());
+        let mut metadata = 0usize;
+        loop {
+            let event = reader.read_event().map_err(|e| Error::InvalidData(format!("VRT XML: {e}")))?;
+            if !gml && (metadata > 0 || matches!(&event, Event::Start(e) if e.local_name().as_ref() == "Metadata")) {
+                match &event {
+                    Event::Start(_) => metadata += 1,
+                    Event::End(_) => metadata -= 1,
+                    Event::Eof => return Err(invalid("unterminated VRT metadata")),
+                    _ => (),
+                }
+                writer.write_event(event)?;
+                continue;
+            }
+            match event {
+                Event::Decl(decl) => writer.write_event(Event::Decl(xml_utf8_declaration(decl)?))?,
+                Event::Start(element) if gml => {
+                    writer.write_event(Event::Start(gml_schema_element(element, path, sources, source, target)?))?
+                }
+                Event::Empty(element) if gml => {
+                    writer.write_event(Event::Empty(gml_schema_element(element, path, sources, source, target)?))?
+                }
+                Event::Start(mut element) if matches!(element.local_name().as_ref(), "SourceFilename" | "SourceDataset") => {
+                    let relative = relative_reference(&element);
+                    let end = element.to_end().into_owned();
+                    let name = reference_text(&mut reader)?;
+                    let resolved = crate::ops::vrt::resolve_reference(path, name.trim(), relative);
+                    let selector = crate::ops::vrt::subdataset_parts(&resolved)?;
+                    let physical = selector.map_or(resolved.as_str(), |(_, file, _)| file);
+                    let mut mapped_source = None;
+                    for candidate in sources {
+                        if location::same_name(candidate, physical)? {
+                            mapped_source = Some(mapped(candidate, source, target)?);
+                            break;
+                        }
+                    }
+                    let mapped_source =
+                        mapped_source.ok_or_else(|| Error::Unsupported("VRT reference is not covered by the dataset file set".into()))?;
+                    let basename = location::name(&mapped_source)?;
+                    let basename =
+                        selector.map_or_else(|| basename.clone(), |(prefix, _, suffix)| format!("{prefix}\"{basename}\"{suffix}"));
+                    let attributes: Vec<_> = element
+                        .attributes()
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(|e| Error::InvalidData(e.to_string()))?
+                        .into_iter()
+                        .filter(|a| a.key.as_ref() != "relativeToVRT")
+                        .map(|a| {
+                            Ok((
+                                a.key.as_ref().to_string(),
+                                a.normalized_value(XmlVersion::Implicit1_0).map_err(|e| Error::InvalidData(e.to_string()))?.into_owned(),
+                            ))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    element.clear_attributes();
+                    element.extend_attributes(attributes.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+                    element.push_attribute(("relativeToVRT", "1"));
+                    writer.write_event(Event::Start(element))?;
+                    writer.write_event(Event::Text(BytesText::new(&basename)))?;
+                    writer.write_event(Event::End(end))?;
+                }
+                Event::Eof => break,
+                event => writer.write_event(event)?,
+            }
+        }
+        return Ok(Some(writer.into_inner()));
+    }
+    if matches!(driver, "ERS" | "RST" | "MapInfo File") {
+        let original = vsi::read(path)?;
+        let text = std::str::from_utf8(&original).map_err(|_| Error::Unsupported("dataset header is not UTF-8".into()))?;
+        let mut output = String::new();
+        let mut changed = false;
+        for line in text.split_inclusive('\n') {
+            let leading = line.len() - line.trim_start().len();
+            let content = line.trim();
+            let field = if extension == "ers" {
+                content.split_once('=').filter(|(k, _)| k.trim().eq_ignore_ascii_case("DataFile")).map(|(_, v)| v)
+            } else if extension == "rdc" {
+                content.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case("ref. system")).map(|(_, v)| v)
+            } else {
+                content.strip_prefix("File ").or_else(|| content.strip_prefix("file "))
+            };
+            if let Some(field) = field {
+                let value = field.trim().trim_matches('"');
+                let value = if extension == "rdc" { format!("{value}.ref") } else { value.into() };
+                let resolved = location::sibling(path, &value)?;
+                let mut replacement = None;
+                for candidate in sources {
+                    if location::same_name(candidate, &resolved)? {
+                        replacement = Some(location::name(&mapped(candidate, source, target)?)?);
+                        break;
+                    }
+                }
+                let replacement = match replacement {
+                    Some(name) => name,
+                    None if extension == "rdc" => {
+                        output.push_str(line);
+                        continue;
+                    } // Built-in reference systems have no owned .ref.
+                    None => return Err(invalid("dataset header references a file outside its inventory")),
+                };
+                output.push_str(&line[..leading]);
+                if extension == "rdc" {
+                    output.push_str("ref. system : ");
+                    output.push_str(stem(&replacement));
+                } else {
+                    output.push_str(if extension == "ers" { "DataFile = \"" } else { "File \"" });
+                    output.push_str(&replacement);
+                    output.push('"');
+                }
+                if line.ends_with('\n') {
+                    output.push('\n');
+                }
+                changed = true;
+            } else {
+                output.push_str(line);
+            }
+        }
+        return Ok(changed.then(|| output.into_bytes()));
+    }
+    Ok(None)
+}
+fn cleanup<'a>(paths: impl Iterator<Item = &'a str>, action: &str) -> Result<()> {
+    let mut failures = Vec::new();
+    for path in paths {
+        if let Err(error) = vsi::delete(path, true) {
+            failures.push(format!("'{}': {error}", vsi::listing::redact_url(path)));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::InvalidData(format!("{action}; staged cleanup failed; recovery files: {}", failures.join("; "))))
+    }
+}
+fn backup_to(source: &str, staged: &str, recovery: &mut Vec<String>) -> Result<()> {
+    if let Err(error) = location::rename(source, staged) {
+        if location::entry_exists(staged).unwrap_or(true) || !location::entry_exists(source).unwrap_or(false) {
+            recovery.push(vsi::listing::redact_url(staged).into_owned());
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+fn rollback(items: &mut [Item], backups: &[Backup], rename: bool) -> Vec<String> {
+    let mut failed = Vec::new();
+    for item in items.iter_mut().rev().filter(|item| item.attempted) {
+        let current = if item.installed { &item.target } else { &item.staged };
+        match location::entry_exists(current) {
+            Ok(true) => {
+                if rename && item.directory && location::entry_exists(&item.source).unwrap_or(true) {
+                    failed.push(vsi::listing::redact_url(current).into_owned());
+                    continue;
+                }
+                let result =
+                    if rename && item.original.is_none() { location::rename(current, &item.source) } else { vsi::delete(current, true) };
+                if result.is_err() {
+                    failed.push(vsi::listing::redact_url(current).into_owned());
+                }
+            }
+            Ok(false) if rename && item.original.is_none() => {
+                if !location::entry_exists(&item.source).unwrap_or(false) {
+                    failed.push(vsi::listing::redact_url(current).into_owned());
+                }
+            }
+            Ok(false) => (),
+            Err(_) => failed.push(vsi::listing::redact_url(current).into_owned()),
+        }
+    }
+    for item in items.iter().rev() {
+        if let Some(original) = &item.original
+            && location::rename(original, &item.source).is_err()
+        {
+            failed.push(vsi::listing::redact_url(original).into_owned());
+        }
+    }
+    for backup in backups.iter().rev() {
+        if location::rename(&backup.staged, &backup.original).is_err() {
+            failed.push(vsi::listing::redact_url(&backup.staged).into_owned());
+        }
+    }
+    failed
+}
+
+fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> Result<FileReport> {
+    let _operation = location::Operation::new();
+    let inventory = file_list(source, options.format.as_deref())?;
+    let mut sources = inventory.files.clone();
+    let mut graph = FileGraph::default();
+    remember_files(&inventory, source, &mut graph)?;
+    if inventory.driver == "VRT" {
+        vrt_dependencies(source, &mut sources, &mut graph)?;
+    }
+    for (metadata, _) in &graph.metadata {
+        for raw in &graph.raw {
+            if location::same_name(metadata, raw)? {
+                return Err(Error::Unsupported("file-bearing metadata also used as raw VRT pixels cannot be rewritten".into()));
+            }
+        }
+    }
+    for directory in &graph.directories {
+        for component in &sources {
+            if !location::same_name(directory, component)? && location::overlaps(directory, component)? {
+                return Err(invalid("overlapping input directory and components cannot be staged independently"));
+            }
+        }
+    }
+    let mut targets = BTreeSet::new();
+    let mut items = Vec::new();
+    for path in &sources {
+        let destination = mapped(path, source, target)?;
+        if !targets.insert(destination.clone()) {
+            return Err(invalid("dataset components map to the same destination"));
+        }
+        location::check_write(&destination)?;
+        let mut directory = false;
+        for candidate in &graph.directories {
+            if location::same_name(path, candidate)? {
+                directory = true;
+                break;
+            }
+        }
+        if vsi::stat(&destination)?.is_some_and(|entry| entry.is_dir() != directory) {
+            return Err(invalid("dataset component file/directory collision"));
+        }
+        if rename {
+            location::check_remove(path)?;
+        }
+        for input in &sources {
+            if location::overlaps(&destination, input)? {
+                return Err(invalid("dataset destination overlaps an input"));
+            }
+        }
+        let mut rewritten = None;
+        for (metadata, driver) in &graph.metadata {
+            if location::same_name(metadata, path)? {
+                rewritten = rewrite(path, &sources, source, target, driver)?;
+                break;
+            }
+        }
+        items.push(Item {
+            source: path.clone(),
+            staged: temporary(&destination)?,
+            target: destination,
+            installed: false,
+            rewritten,
+            original: None,
+            directory,
+            attempted: false,
+        });
+    }
+    let mut obsolete = Vec::new();
+    if exists(target)? {
+        if !options.overwrite {
+            return Err(invalid("dataset destination exists; use overwrite to replace it"));
+        }
+        match file_list(target, None) {
+            Ok(old) => obsolete = old.files,
+            Err(_) if !vsi::stat(target)?.unwrap().is_dir() => obsolete.push(target.into()),
+            Err(error) => return Err(error),
+        }
+    }
+    for item in &items {
+        if exists(&item.target)? && !obsolete.contains(&item.target) {
+            if !options.overwrite {
+                return Err(invalid("dataset companion destination exists; use overwrite to replace it"));
+            }
+            obsolete.push(item.target.clone());
+        }
+    }
+    for path in &obsolete {
+        location::check_write(path)?;
+        for input in &sources {
+            if location::overlaps(path, input)? {
+                return Err(invalid("replaced dataset overlaps an input"));
+            }
+        }
+    }
+    let mut backups = Vec::new();
+    let mut uncertain_backups = Vec::new();
+    let mut bytes = 0u64;
+    let result = (|| {
+        for item in &mut items {
+            item.attempted = true;
+            let report = if let Some(rewritten) = &item.rewritten {
+                if rename {
+                    let original = temporary(&item.source)?;
+                    backup_to(&item.source, &original, &mut uncertain_backups)?;
+                    item.original = Some(original);
+                }
+                vsi::write(&item.staged, rewritten)?;
+                vsi::Report { bytes: rewritten.len() as u64, ..Default::default() }
+            } else if rename {
+                location::rename(&item.source, &item.staged)?
+            } else {
+                location::copy(&item.source, &item.staged, item.directory)?
+            };
+            bytes = bytes.checked_add(report.bytes).ok_or_else(|| invalid("copied byte count overflows"))?;
+        }
+        for path in &obsolete {
+            let staged = temporary(path)?;
+            backup_to(path, &staged, &mut uncertain_backups)?;
+            backups.push(Backup { original: path.clone(), staged });
+        }
+        for item in &mut items {
+            let report = location::rename(&item.staged, &item.target)?;
+            item.installed = true;
+            bytes = bytes.checked_add(report.bytes).ok_or_else(|| invalid("copied byte count overflows"))?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let mut failed = rollback(&mut items, &backups, rename);
+        failed.extend(uncertain_backups);
+        if failed.is_empty() {
+            return Err(error);
+        }
+        return Err(Error::InvalidData(format!("{error}; rollback incomplete; recovery files: {}", failed.join(", "))));
+    }
+    cleanup(
+        backups.iter().map(|b| b.staged.as_str()).chain(items.iter().filter_map(|item| item.original.as_deref())),
+        "dataset transfer committed",
+    )?;
+    Ok(FileReport { driver: inventory.driver, files: items.into_iter().map(|item| item.target).collect(), bytes })
+}
+/// Copies a dataset and its companion files, preserving encoded payload bytes.
+pub fn copy(source: &str, target: &str, options: &FileOptions) -> Result<FileReport> {
+    transfer(source, target, options, false)
+}
+/// Renames a dataset and its companion files. Same-filesystem native moves do not copy payloads.
+pub fn rename(source: &str, target: &str, options: &FileOptions) -> Result<FileReport> {
+    transfer(source, target, options, true)
+}
+/// Deletes owned dataset files. Referenced VRT/catalog assets are preserved. All paths are
+/// checked before staging the first removal; dangerous roots and read-only stores fail.
+pub fn delete(path: &str, format: Option<&str>) -> Result<FileReport> {
+    Ok(delete_many(&[path.into()], format)?.remove(0))
+}
+/// Deletes multiple datasets after inventorying and checking every input. Overlapping owned
+/// file sets are staged once; a bad input leaves all of the datasets untouched.
+pub fn delete_many(paths: &[String], format: Option<&str>) -> Result<Vec<FileReport>> {
+    let _operation = location::Operation::new();
+    if paths.is_empty() {
+        return Err(invalid("dataset deletion needs at least one input"));
+    }
+    let inventories = paths.iter().map(|path| file_list(path, format)).collect::<Result<Vec<_>>>()?;
+    let mut files = Vec::new();
+    for inventory in &inventories {
+        for path in &inventory.files {
+            location::check_remove(path)?;
+            unique_push(&mut files, path.clone())?;
+        }
+    }
+    // A directory dataset already owns its descendants, even if a caller also named a layer.
+    let mut owned: Vec<String> = Vec::new();
+    files.sort_by_key(String::len);
+    for path in files {
+        let mut covered = false;
+        for parent in &owned {
+            if vsi::stat(parent)?.is_some_and(|entry| entry.is_dir()) && location::overlaps(parent, &path)? {
+                covered = true;
+                break;
+            }
+        }
+        if !covered {
+            owned.push(path);
+        }
+    }
+    let mut backups: Vec<Backup> = Vec::new();
+    let mut uncertain_backups = Vec::new();
+    let result = (|| {
+        for path in &owned {
+            let staged = temporary(path)?;
+            backup_to(path, &staged, &mut uncertain_backups)?;
+            backups.push(Backup { original: path.clone(), staged });
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let mut failed = rollback(&mut [], &backups, false);
+        failed.extend(uncertain_backups);
+        if failed.is_empty() {
+            return Err(error);
+        }
+        return Err(Error::InvalidData(format!("{error}; rollback incomplete; recovery files: {}", failed.join(", "))));
+    }
+    cleanup(backups.iter().map(|b| b.staged.as_str()), "dataset deletion committed")?;
+    Ok(inventories.into_iter().map(|inventory| FileReport { driver: inventory.driver, files: inventory.files, bytes: 0 }).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn directory() -> String {
+        format!("/vsimem/dataset-files-test-{}", TEMP_ID.fetch_add(1, Ordering::Relaxed))
+    }
+    fn put(path: &str, bytes: &[u8]) {
+        vsi::write(path, bytes).unwrap();
+    }
+    fn csv(root: &str, name: &str) -> String {
+        let path = format!("{root}/{name}.csv");
+        put(&path, b"x,y,name\n1,2,first\n3,4,second\n");
+        path
+    }
+    #[test]
+    fn copy_rename_delete_include_parts_and_preserve_unrelated_siblings() {
+        let root = directory();
+        let source = csv(&root, "source");
+        put(&format!("{root}/source.csvt"), b"Real,Real,String");
+        put(&format!("{root}/source.txt"), b"unrelated");
+        put(&format!("{root}/source.csv.msk"), b"not a CSV companion");
+        let target = format!("{root}/copied.csv");
+        let report = copy(&source, &target, &Default::default()).unwrap();
+        assert_eq!(report.files.len(), 2);
+        assert_eq!(vsi::read(&target).unwrap(), vsi::read(&source).unwrap());
+        assert_eq!(vsi::read(&format!("{root}/copied.csvt")).unwrap(), b"Real,Real,String");
+        let moved = format!("{root}/moved.csv");
+        rename(&target, &moved, &Default::default()).unwrap();
+        assert!(!exists(&target).unwrap());
+        assert!(!exists(&format!("{root}/copied.csvt")).unwrap());
+        delete(&moved, None).unwrap();
+        assert!(!exists(&moved).unwrap());
+        assert_eq!(vsi::read(&format!("{root}/source.txt")).unwrap(), b"unrelated");
+        assert!(!exists(&format!("{root}/copied.csv.msk")).unwrap());
+        assert_eq!(vsi::read(&format!("{root}/source.csv.msk")).unwrap(), b"not a CSV companion");
+        assert!(exists(&source).unwrap());
+        vsi::delete(&root, true).unwrap();
+    }
+    #[test]
+    fn overwrite_removes_stale_companions_and_preflights_all_collisions() {
+        let root = directory();
+        let source = csv(&root, "source");
+        let target = csv(&root, "target");
+        put(&format!("{root}/target.csvt"), b"stale");
+        assert!(copy(&source, &target, &Default::default()).is_err());
+        assert_eq!(vsi::read(&format!("{root}/target.csvt")).unwrap(), b"stale");
+        copy(&source, &target, &FileOptions { overwrite: true, ..Default::default() }).unwrap();
+        assert!(!exists(&format!("{root}/target.csvt")).unwrap());
+        put(&format!("{root}/source.csvt"), b"types");
+        put(&format!("{root}/new.csvt"), b"do not overwrite");
+        let error = rename(&source, &format!("{root}/new.csv"), &Default::default()).unwrap_err();
+        assert!(error.to_string().contains("companion"));
+        assert!(exists(&source).unwrap());
+        assert!(!exists(&format!("{root}/new.csv")).unwrap());
+        assert_eq!(vsi::list(&root, &Default::default()).unwrap().len(), 4);
+        vsi::delete(&root, true).unwrap();
+    }
+    #[test]
+    fn companion_directory_is_not_removed_by_overwrite() {
+        let root = directory();
+        let source = csv(&root, "source");
+        put(&format!("{root}/source.csvt"), b"Real,Real,String");
+        put(&format!("{root}/target.csvt/keep"), b"unrelated directory");
+        let error = copy(&source, &format!("{root}/target.csv"), &FileOptions { overwrite: true, ..Default::default() }).unwrap_err();
+        assert!(error.to_string().contains("directory"));
+        assert!(!exists(&format!("{root}/target.csv")).unwrap());
+        assert_eq!(vsi::read(&format!("{root}/target.csvt/keep")).unwrap(), b"unrelated directory");
+        vsi::delete(&root, true).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn late_copy_failure_keeps_old_destination_and_removes_staged_data() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.csv");
+        let sidecar = source.with_extension("csvt");
+        let target = directory.path().join("target.csv");
+        std::fs::write(&source, b"x,y\n1,2\n").unwrap();
+        std::fs::write(&sidecar, b"Real,Real").unwrap();
+        std::fs::write(&target, b"original destination").unwrap();
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&sidecar).is_ok() {
+            return;
+        } // A privileged test runner bypasses these permissions.
+        let error =
+            copy(source.to_str().unwrap(), target.to_str().unwrap(), &FileOptions { overwrite: true, ..Default::default() }).unwrap_err();
+        assert!(error.to_string().to_ascii_lowercase().contains("permission"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"original destination");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 3);
+        assert_eq!(std::fs::read(&source).unwrap(), b"x,y\n1,2\n");
+    }
+    #[test]
+    #[cfg(feature = "zarr")]
+    fn directories_keep_chunks_but_unknown_and_dangerous_roots_fail() {
+        let root = directory();
+        let source = format!("{root}/a.zarr");
+        put(&format!("{source}/.zgroup"), b"{\"zarr_format\":2}");
+        put(&format!("{source}/v/0"), b"chunk");
+        let target = format!("{root}/b.zarr");
+        copy(&source, &target, &Default::default()).unwrap();
+        assert_eq!(vsi::read(&format!("{target}/v/0")).unwrap(), b"chunk");
+        assert!(rename(&source, &format!("{source}/inside"), &Default::default()).is_err());
+        assert!(delete("/vsimem", None).is_err());
+        assert!(delete(&root, None).is_err());
+        delete(&target, None).unwrap();
+        assert!(exists(&source).unwrap());
+        vsi::delete(&root, true).unwrap();
+    }
+    #[test]
+    fn batch_delete_preflights_missing_inputs_and_deduplicates_file_sets() {
+        let root = directory();
+        let source = csv(&root, "source");
+        let other = csv(&root, "other");
+        assert!(delete_many(&[source.clone(), format!("{root}/missing.csv")], None).is_err());
+        assert!(exists(&source).unwrap());
+        let reports = delete_many(&[source.clone(), source, other], None).unwrap();
+        assert_eq!(reports.len(), 3);
+        assert!(!exists(&root).unwrap());
+    }
+    #[test]
+    #[cfg(feature = "tiles")]
+    fn mvt_directories_are_preserved_and_invalid_store_markers_are_not_datasets() {
+        let root = directory();
+        let source = format!("{root}/source");
+        put(&format!("{source}/metadata.json"), br#"{"format":"pbf","vector_layers":[]}"#);
+        put(&format!("{source}/0/0/0.pbf"), b"encoded tile");
+        let target = format!("{root}/copied");
+        assert_eq!(copy(&source, &target, &Default::default()).unwrap().driver, "MVT");
+        assert_eq!(vsi::read(&format!("{target}/0/0/0.pbf")).unwrap(), b"encoded tile");
+        let invalid = format!("{root}/not-a-store");
+        put(&format!("{invalid}/.zgroup"), br#"{"unrelated":true}"#);
+        put(&format!("{invalid}/keep.txt"), b"keep");
+        assert!(delete(&invalid, None).is_err());
+        assert_eq!(vsi::read(&format!("{invalid}/keep.txt")).unwrap(), b"keep");
+        vsi::delete(&root, true).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn nonregular_inputs_fail_before_opening_and_symlink_deletion_keeps_targets() {
+        use std::os::unix::{fs::symlink, net::UnixListener};
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("data.csv");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        assert!(file_list(socket.to_str().unwrap(), None).unwrap_err().to_string().contains("regular"));
+        let source = directory.path().join("real.csv");
+        std::fs::write(&source, b"x,y\n1,2\n").unwrap();
+        let alias = directory.path().join("alias.csv");
+        symlink("real.csv", &alias).unwrap();
+        delete(alias.to_str().unwrap(), None).unwrap();
+        assert!(!alias.exists());
+        assert_eq!(std::fs::read(&source).unwrap(), b"x,y\n1,2\n");
+        let store = directory.path().join("real.zarr");
+        std::fs::create_dir(&store).unwrap();
+        std::fs::write(store.join(".zgroup"), br#"{"zarr_format":2}"#).unwrap();
+        let alias = directory.path().join("alias.zarr");
+        symlink("real.zarr", &alias).unwrap();
+        delete(alias.to_str().unwrap(), None).unwrap();
+        assert!(store.join(".zgroup").is_file());
+    }
+    #[test]
+    fn hints_restrict_drivers_and_json_redacts_credentials() {
+        let root = directory();
+        let path = csv(&root, "input");
+        assert_eq!(file_list(&path, Some("CSV")).unwrap().driver, "CSV");
+        assert!(file_list(&path, Some("GTiff")).is_err());
+        assert!(file_list(&path, Some("nonsense")).is_err());
+        let report =
+            FileReport { driver: "CSV".into(), files: vec!["https://example.invalid/a.csv?X-Amz-Signature=private".into()], bytes: 0 };
+        assert!(!serde_json::to_string(&report).unwrap().contains("private"));
+        assert!(!location::same_name("https://example.invalid/source.tif?band=1", "https://example.invalid/source.tif?band=2").unwrap());
+        vsi::delete(&root, true).unwrap();
+    }
+    #[test]
+    fn partially_staged_transfer_restores_sources_and_destinations() {
+        let root = directory();
+        let source = csv(&root, "source");
+        let staged = format!("{root}/stage.csv");
+        location::rename(&source, &staged).unwrap();
+        let mut items = vec![Item {
+            source: source.clone(),
+            target: format!("{root}/target.csv"),
+            staged: staged.clone(),
+            installed: false,
+            rewritten: None,
+            original: None,
+            directory: false,
+            attempted: true,
+        }];
+        assert!(rollback(&mut items, &[], true).is_empty());
+        assert!(exists(&source).unwrap());
+        assert!(!exists(&staged).unwrap());
+        vsi::delete(&root, true).unwrap();
+    }
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn native_aliases_and_source_sidecar_collisions_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.csv");
+        std::fs::write(&source, b"x,y\n1,2\n").unwrap();
+        let target = directory.path().join("alias.csv");
+        std::fs::hard_link(&source, &target).unwrap();
+        let options = FileOptions { overwrite: true, ..Default::default() };
+        assert!(copy(source.to_str().unwrap(), target.to_str().unwrap(), &options).unwrap_err().to_string().contains("overlap"));
+        assert_eq!(std::fs::read(&source).unwrap(), b"x,y\n1,2\n");
+        let target = source.with_extension("csvt");
+        std::fs::write(&target, b"Real,Real").unwrap();
+        assert!(rename(source.to_str().unwrap(), target.to_str().unwrap(), &options).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"Real,Real");
+    }
+    #[test]
+    fn vrt_owned_files_and_delete_do_not_open_missing_references() {
+        let root = directory();
+        let source = format!("{root}/broken.vrt");
+        put(&source, br#"<VRTDataset rasterXSize="1" rasterYSize="1"><VRTRasterBand dataType="Byte" band="1"><SimpleSource><SourceFilename relativeToVRT="1">missing.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>"#);
+        assert_eq!(file_list(&source, None).unwrap().files.as_slice(), std::slice::from_ref(&source));
+        assert!(copy(&source, &format!("{root}/copy.vrt"), &Default::default()).is_err());
+        assert!(exists(&source).unwrap());
+        delete(&source, None).unwrap();
+        assert!(!exists(&source).unwrap());
+    }
+    #[test]
+    fn raw_vrt_sources_cdata_entities_and_metadata_are_preserved() {
+        let root = directory();
+        let source = format!("{root}/source.vrt");
+        put(&format!("{root}/source_one&two.bin"), &[1, 2, 3, 4]);
+        put(&source, br#"<VRTDataset rasterXSize="2" rasterYSize="2"><Metadata domain="xml:notes"><SourceFilename>not-an-input</SourceFilename></Metadata><VRTRasterBand dataType="Byte" band="1" subClass="VRTRawRasterBand"><SourceFilename relativeToVRT="true"><![CDATA[source_one&two.bin]]></SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>1</PixelOffset><LineOffset>2</LineOffset><ByteOrder>LSB</ByteOrder></VRTRasterBand></VRTDataset>"#);
+        let target = format!("{root}/copied.vrt");
+        copy(&source, &target, &Default::default()).unwrap();
+        assert_eq!(vsi::read(&format!("{root}/copied_one&two.bin")).unwrap(), [1, 2, 3, 4]);
+        let text = String::from_utf8(vsi::read(&target).unwrap()).unwrap();
+        assert!(text.contains("copied_one&amp;two.bin"));
+        assert!(text.contains("not-an-input"));
+        vsi::delete(&root, true).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn rollback_restores_a_temporarily_dangling_staged_link() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original.csv");
+        let stage = directory.path().join("stage.csv");
+        symlink("missing.csv", &stage).unwrap();
+        let mut items = [Item {
+            source: original.to_str().unwrap().into(),
+            target: directory.path().join("target.csv").to_str().unwrap().into(),
+            staged: stage.to_str().unwrap().into(),
+            installed: false,
+            rewritten: None,
+            original: None,
+            directory: false,
+            attempted: true,
+        }];
+        assert!(rollback(&mut items, &[], true).is_empty());
+        assert_eq!(std::fs::read_link(original).unwrap(), std::path::Path::new("missing.csv"));
+        assert!(std::fs::symlink_metadata(stage).is_err());
+    }
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn archive_parts_copy_out_and_release_the_archive_handle() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("source.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, data) in [("source.csv", b"x,y\n1,2\n".as_slice()), ("source.csvt", b"Real,Real".as_slice())] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap();
+        let source = format!("/vsizip/{}/source.csv", archive.display());
+        let target = directory.path().join("copied.csv");
+        copy(&source, target.to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"x,y\n1,2\n");
+        assert_eq!(std::fs::read(target.with_extension("csvt")).unwrap(), b"Real,Real");
+        std::fs::remove_file(archive).unwrap(); // Also verifies Windows handles were closed.
+    }
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn vrt_copy_rebases_sources_but_delete_preserves_referenced_assets() {
+        use crate::{DataType, Raster, RasterConfig, RasterDataset};
+        use wbraster::raster::RasterData;
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("same.tif");
+        let raster = Raster::from_data_native(
+            RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::U8, ..Default::default() },
+            RasterData::U8(vec![1, 2, 3, 4]),
+        )
+        .unwrap();
+        crate::write_raster_dataset(&RasterDataset::new(raster, false), source.to_str().unwrap(), &Default::default()).unwrap();
+        let renamed_binary = directory.path().join("wrong-extension.vrt");
+        std::fs::copy(&source, &renamed_binary).unwrap();
+        let copied_binary = directory.path().join("binary-copy.tif");
+        copy(renamed_binary.to_str().unwrap(), copied_binary.to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), std::fs::read(copied_binary).unwrap());
+        let definition = directory.path().join("same.vrt");
+        std::fs::write(&definition, "<VRTDataset rasterXSize=\"2\" rasterYSize=\"2\"><VRTRasterBand dataType=\"Byte\" band=\"1\"><SimpleSource><SourceFilename relativeToVRT=\"1\">same.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>").unwrap();
+        let output = directory.path().join("copied.vrt");
+        copy(definition.to_str().unwrap(), output.to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(crate::open_raster(output.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![1., 2., 3., 4.]);
+        assert!(std::fs::read_to_string(&output).unwrap().contains("copied.tif"));
+        delete(output.to_str().unwrap(), None).unwrap();
+        assert!(directory.path().join("copied.tif").is_file());
+        let renamed = directory.path().join("renamed.vrt");
+        rename(definition.to_str().unwrap(), renamed.to_str().unwrap(), &Default::default()).unwrap();
+        assert!(!source.exists());
+        assert_eq!(crate::open_raster(renamed.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![1., 2., 3., 4.]);
+    }
+}

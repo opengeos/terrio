@@ -1864,3 +1864,24 @@ def identify(
     JavaScript's single-upload API returns format metadata or null instead.
     """
     ...
+
+def dataset_files(
+    source: str | os.PathLike[str], *, format: str | None = None
+) -> dict[str, Any]: ...
+def dataset_copy(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    format: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]: ...
+def dataset_rename(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    format: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]: ...
+def dataset_delete(
+    sources: str | os.PathLike[str] | Iterable[str | os.PathLike[str]], *, format: str | None = None
+) -> list[dict[str, Any]]: ...

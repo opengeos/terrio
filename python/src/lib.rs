@@ -4,6 +4,7 @@
 mod arrow;
 #[cfg(not(target_os = "emscripten"))]
 mod cli;
+mod dataset_files;
 mod focal;
 mod grid;
 mod inspection;
@@ -93,6 +94,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(arrow::from_arrow, m)?)?;
     ops::register(m)?;
     manage::register(m)?;
+    dataset_files::register(m)?;
     inspection::register(m)?;
     grid::register(m)?;
     multidim::register(m)?;

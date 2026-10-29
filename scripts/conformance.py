@@ -784,6 +784,35 @@ def suite_pansharpen(ctx):
     )
 
 
+def suite_dataset_files(ctx):
+    suite = Suite(
+        "dataset-files", "Dataset file management", "GDAL 3.13.3 dataset commands and recursive VSI copy",
+        "Real Landsat and Natural Earth derivatives: encoded bytes, owned companion files, "
+        "pixels/features, masks, overviews, types, CRS, transforms and metadata. VRT references "
+        "are rebased and CSV CRS .prj files retained rather than repeating GDAL's copy losses. "
+        "HTTP requests and transferred bytes are measured, with metadata-only overhead bounded.",
+    )
+    if missing_modules("osgeo"):
+        suite.skipped = "needs osgeo"
+        return suite
+    code, out, err = run([
+        sys.executable, str(SCRIPTS / "compare_dataset_files_with_gdal.py"),
+        ctx.data, "--terrio", ctx.terrio, "--json",
+    ])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical": IDENTICAL, "tolerance": TOLERANCE}
+    for result in results:
+        suite.cases.append(Case("Dataset file management", result["name"],
+                                statuses.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_identify(ctx):
     suite = Suite("identify", "Dataset identification", "`gdal dataset identify` / GDALIdentifyDriverEx (GDAL 3.13.3)",
                   "Real Landsat, USGS, OPERA, SRTM, NOAA scientific data and vector files, plus derived raster encodings. Exact driver labels; generic JP2, KML and HDF5 label families are reported within tolerance. Companion-file formats use the explicit deep fallback. Unknown inputs must remain unknown; no pixel/feature values are decoded by the bounded header path.")
@@ -1980,6 +2009,7 @@ SUITES = OrderedDict(
         ("raster-pixel", suite_raster_pixel),
         ("blend", suite_blend),
         ("identify", suite_identify),
+        ("dataset-files", suite_dataset_files),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),

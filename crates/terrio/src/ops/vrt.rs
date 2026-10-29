@@ -9,7 +9,7 @@
 //! lazy warped VRTs, built-in scalar derived bands, kernel sources and validity masks.
 
 mod virtual_raster;
-pub(crate) use virtual_raster::{SourceInventoryScope, resolve_reference, source_input_paths};
+pub(crate) use virtual_raster::{SourceInventoryScope, resolve_reference, source_input_paths, subdataset_parts};
 pub use virtual_raster::{VirtualRaster, open_virtual_raster};
 
 use super::{Grid, Resampling, convert_value, data_type_name, parse_data_type};
