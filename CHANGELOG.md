@@ -58,10 +58,6 @@
 
 ### Breaking changes
 
-- Dataset/VSI paths retain leading and trailing whitespace across CLI, Python, JavaScript
-  and MCP. Native filenames and virtual keys with edge whitespace are distinct from their
-  trimmed neighbors; callers must normalize pasted paths/URLs themselves. `@FILE` lines
-  still apply their file-list whitespace rules.
 - VRT `SourceFilename` values retain trailing whitespace and newlines, matching GDAL.
   Remove formatting whitespace from inside the element when it is not part of the filename;
   encoded leading whitespace and CDATA remain significant.
@@ -95,6 +91,11 @@
   `validate_cloud_optimized_geotiff.py`), reading only headers and chunk offsets: local files,
   `/vsizip/` paths, and HTTP(S) or S3 URLs by range requests. The command exits with status 1
   when the file is not a valid COG.
+- Dataset file operations (`dataset-copy`, `dataset-rename`, `dataset-delete` and
+  `dataset-files`) use paths and URLs exactly
+  as given, across CLI, Python, JavaScript and MCP. Native filenames and virtual keys with
+  edge whitespace are distinct from their trimmed neighbors, so callers must trim pasted
+  paths/URLs themselves.
 
 ### Point clouds
 

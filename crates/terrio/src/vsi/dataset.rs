@@ -140,7 +140,24 @@ fn overlap_path(path: &Path) -> Result<PathBuf> {
             other => clean.push(other.as_os_str()),
         }
     }
-    Ok(clean)
+    // Resolve the deepest existing ancestor of the parent, so a symlinked directory names
+    // the same place before the rest of the path exists. The leaf stays unresolved, as in
+    // `name_key`, so symlink leaves remain distinct entries.
+    let (Some(parent), Some(leaf)) = (clean.parent(), clean.file_name()) else {
+        return Ok(clean);
+    };
+    let mut existing = parent.to_path_buf();
+    let mut tail = vec![leaf.to_os_string()];
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(&existing) {
+            return Ok(tail.iter().rev().fold(canonical, |resolved, part| resolved.join(part)));
+        }
+        let (Some(name), Some(up)) = (existing.file_name(), existing.parent()) else {
+            return Ok(clean);
+        };
+        tail.push(name.to_os_string());
+        existing = up.to_path_buf();
+    }
 }
 impl OverlapIndex {
     pub(crate) fn new(paths: &[String]) -> Result<Self> {
@@ -700,6 +717,18 @@ mod tests {
         assert!(!index.overlaps("https://acc.blob.core.windows.net/c/x.tif").unwrap());
         let root = OverlapIndex::new(&["https://ACC.blob.core.windows.net".into()]).unwrap();
         assert!(root.overlaps("https://acc.blob.core.windows.net/c/X.tif").unwrap());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_parents_alias_inputs_before_the_destination_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(real.join("ds.zarr/sub")).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
+        let index = OverlapIndex::new(&[real.join("ds.zarr").to_str().unwrap().into()]).unwrap();
+        let alias = dir.path().join("link/ds.zarr/sub/copy.zarr");
+        assert!(index.overlaps(alias.to_str().unwrap()).unwrap());
+        assert!(!index.overlaps(dir.path().join("link/other.zarr").to_str().unwrap()).unwrap());
     }
     #[test]
     fn destination_identity_matches_platform_case_policy() {

@@ -19,7 +19,6 @@ mod manage;
 mod multidim;
 mod ops;
 mod palette;
-
 mod parquet_metadata;
 mod pixel;
 #[cfg(feature = "pointcloud")]

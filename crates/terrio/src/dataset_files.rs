@@ -124,9 +124,20 @@ fn directory_driver(path: &str) -> Result<Option<String>> {
     }
     let metadata = location::child(path, "metadata.json")?;
     if location::file_exists(&metadata)? {
-        let prefix = location::prefix(&metadata, crate::inspection::IDENTIFICATION_HEADER_BYTES)?;
-        let compact: String = String::from_utf8_lossy(&prefix).split_ascii_whitespace().collect();
-        if ["\"format\":\"pbf\"", "\"format\":\"mvt\"", "\"vector_layers\":["].iter().any(|key| compact.contains(key)) {
+        // Only the top-level members mark MVT; nested or quoted text does not. Unknown
+        // members are streamed and skipped, as for Zarr markers. Unparseable metadata is
+        // not MVT, so the directory falls through to the other driver checks.
+        #[derive(serde::Deserialize)]
+        struct MvtMetadata {
+            format: Option<serde_json::Value>,
+            vector_layers: Option<Vec<serde::de::IgnoredAny>>,
+        }
+        let mvt = location::with_seekable(&metadata, |reader| {
+            Ok(serde_json::from_reader::<_, MvtMetadata>(reader).ok().is_some_and(|m| {
+                m.format.as_ref().and_then(|f| f.as_str()).is_some_and(|f| matches!(f, "pbf" | "mvt")) || m.vector_layers.is_some()
+            }))
+        })?;
+        if mvt {
             for entry in vsi::list(path, &vsi::ListOptions { recursive: true, ..Default::default() })? {
                 let parts: Vec<_> = entry.name.trim_end_matches('/').split('/').collect();
                 let integer = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
@@ -362,7 +373,10 @@ fn mapped(path: &str, source: &str, target: &str) -> Result<String> {
     let full_suffix = name.strip_prefix(&old).is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(['.', '_']));
     let (prefix, replacement) = if full_suffix { (old.as_str(), new.as_str()) } else { (stem(&old), stem(&new)) };
     let suffix = name.strip_prefix(prefix).filter(|s| s.is_empty() || s.starts_with(['.', '_'])).ok_or_else(|| {
-        invalid(format!("unable to copy/rename fileset with irregular basenames: '{name}' does not start with '{prefix}'"))
+        invalid(format!(
+            "unable to copy/rename fileset with irregular basenames: '{name}' does not start with '{prefix}'; \
+             VRT dependencies must share the dataset's base name '{prefix}' to move with it"
+        ))
     })?;
     location::sibling(target, &format!("{replacement}{suffix}"))
 }
@@ -790,7 +804,8 @@ fn rollback(items: &mut [Item], backups: &[Backup], rename: bool) -> Vec<String>
             }
             Ok(false) if rename && !item.copy_dependency && item.original.is_none() => {
                 if !location::entry_exists(&item.source).unwrap_or(false) {
-                    failed.push(vsi::listing::redact_url(current).into_owned());
+                    // Neither copy survives, so report the source the user must recover.
+                    failed.push(vsi::listing::redact_url(&item.source).into_owned());
                 }
             }
             Ok(false) => (),
@@ -1325,7 +1340,8 @@ mod tests {
         std::fs::set_permissions(target.join("locked"), std::fs::Permissions::from_mode(0o500)).unwrap();
         if std::fs::write(target.join("locked/probe"), b"probe").is_ok() {
             std::fs::set_permissions(target.join("locked"), std::fs::Permissions::from_mode(0o700)).unwrap();
-            return; // A privileged runner cannot exercise a failed unlink here.
+            eprintln!("skipping cleanup-failure check: a privileged runner cannot exercise a failed unlink");
+            return;
         }
         let report =
             copy(source.to_str().unwrap(), target.to_str().unwrap(), &FileOptions { overwrite: true, ..Default::default() }).unwrap();
@@ -1565,8 +1581,9 @@ mod tests {
         std::fs::write(&target, b"original destination").unwrap();
         std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o000)).unwrap();
         if std::fs::File::open(&sidecar).is_ok() {
+            eprintln!("skipping permission-failure check: a privileged test runner bypasses these permissions");
             return;
-        } // A privileged test runner bypasses these permissions.
+        }
         let error =
             copy(source.to_str().unwrap(), target.to_str().unwrap(), &FileOptions { overwrite: true, ..Default::default() }).unwrap_err();
         assert!(error.to_string().to_ascii_lowercase().contains("permission"));
@@ -1601,6 +1618,16 @@ mod tests {
         let reports = delete_many(&[source.clone(), source, other], None).unwrap();
         assert_eq!(reports.len(), 3);
         assert!(!exists(&root).unwrap());
+    }
+    #[test]
+    fn nested_mvt_text_does_not_make_a_directory_mvt() {
+        let root = directory();
+        let grid = format!("{root}/grid");
+        put(&format!("{grid}/metadata.json"), br#"{"encoding":{"format":"pbf"},"notes":{"vector_layers":[]}}"#);
+        put(&format!("{grid}/hdr.adf"), b"header");
+        put(&format!("{grid}/w001001.adf"), b"tile");
+        assert_eq!(file_list(&grid, None).unwrap().driver, "AIG");
+        vsi::delete(&root, true).unwrap();
     }
     #[test]
     #[cfg(feature = "tiles")]
@@ -1749,6 +1776,23 @@ mod tests {
         assert!(rollback(&mut items, &[], true).is_empty());
         assert_eq!(std::fs::read_link(original).unwrap(), std::path::Path::new("missing.csv"));
         assert!(std::fs::symlink_metadata(stage).is_err());
+    }
+    #[test]
+    fn rollback_reports_the_source_when_neither_copy_survives() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.csv");
+        let mut items = [Item {
+            source: source.to_str().unwrap().into(),
+            target: directory.path().join("target.csv").to_str().unwrap().into(),
+            staged: directory.path().join("stage.csv").to_str().unwrap().into(),
+            installed: false,
+            rewritten: None,
+            original: None,
+            directory: false,
+            attempted: true,
+            copy_dependency: false,
+        }];
+        assert_eq!(rollback(&mut items, &[], true), vec![source.to_str().unwrap().to_string()]);
     }
     #[cfg(not(target_family = "wasm"))]
     #[test]
