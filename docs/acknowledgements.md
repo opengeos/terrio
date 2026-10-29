@@ -79,9 +79,14 @@ GEOS-backed results:
 - topology-preserving simplification (`crates/terrio/src/ops/simplify.rs`) follows GEOS's
   `TopologyPreservingSimplifier`, and the convex and concave hulls (`ops/hull.rs`) GEOS's
   `ConvexHull`, `ConcaveHull` and `ConcaveHullOfPolygons`;
-- the polygon validity checks and repair of the vector tile writer (`tiles/valid.rs`) reproduce
+- the polygon validity checks and repair of the vector tile writer (`tiles/valid.rs`) follow
   what GEOS's `IsValid` and `MakeValid` do in GDAL's MVT writer;
 - the spatial sort follows GEOS's `TemplateSTRtree` packing.
+
+The results are not always identical to GEOS's: concave hulls can differ where `spade`'s
+triangulation differs from GEOS's (inputs with co-circular vertices), and the vector tile
+writer's rule for polygons GEOS fails to clip agrees with GEOS 3.14 on about 97% of random
+self-crossing polygons. The source files document these differences.
 
 The buffer, overlay, dissolve and validity commands are built on
 [GeoRust](https://georust.org)'s [`geo`](https://crates.io/crates/geo) crate (MIT/Apache-2.0),
