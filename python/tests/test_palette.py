@@ -66,6 +66,32 @@ def test_palette_dataset_mask_survives_serialization(tmp_path):
     mask = np.array([[0, 255], [255, 255]], dtype="uint8")
     ds.GetRasterBand(1).GetMaskBand().WriteArray(mask)
     ds = None
+    rgba = terrio.palette_to_rgb(path, rgba=True)
+    np.testing.assert_array_equal(rgba.read(4), np.where(mask == 0, 0, 255))
+    png = tmp_path / "masked-rgba.png"
+    rgba.write(str(png))
+    actual = gdal.Open(str(png))
+    np.testing.assert_array_equal(
+        actual.GetRasterBand(4).ReadAsArray(), np.where(mask == 0, 0, 255)
+    )
+    actual = None
+    payload = rgba.to_bytes("output.png")
+    memory_png = (
+        "/vsimem/terrio-palette-rgba.zip"
+        if payload.startswith(b"PK")
+        else "/vsimem/terrio-palette-rgba.png"
+    )
+    gdal.FileFromMemBuffer(memory_png, payload)
+    # Native byte output packages PNG georeferencing sidecars in a ZIP.
+    raster_path = f"/vsizip/{memory_png}/output.png" if payload.startswith(b"PK") else memory_png
+    try:
+        actual = gdal.Open(raster_path)
+        np.testing.assert_array_equal(
+            actual.GetRasterBand(4).ReadAsArray(), np.where(mask == 0, 0, 255)
+        )
+        actual = None
+    finally:
+        gdal.Unlink(memory_png)
     for result in [terrio.palette_to_rgb(path), terrio.attach_palette(path, [[1, 2, 3, 255]])]:
         output = str(tmp_path / "output.tif")
         result.write(output)

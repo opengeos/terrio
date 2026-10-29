@@ -874,9 +874,9 @@ def suite_raster_query(ctx):
 
 def suite_palette(ctx):
     """Indexed colors on real Landsat and OPERA imagery."""
-    if missing_modules("osgeo"):
+    if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None:
         suite = Suite("palette", "Palette conversion", "GDAL 3.13", "Exact palettes and pixels.")
-        suite.skipped = "needs osgeo"
+        suite.skipped = "needs GDAL 3.13 commands/bindings and NumPy"
         return suite
     from osgeo import gdal
 

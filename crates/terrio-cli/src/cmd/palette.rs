@@ -77,7 +77,7 @@ pub fn rgb(a: RgbArgs) -> Result<()> {
 pub struct ExpandArgs {
     #[command(flatten)]
     image: ImageArgs,
-    /// Output four RGBA bands instead of RGB.
+    /// Output four RGBA bands, making pixels excluded by a dataset mask transparent.
     #[arg(long)]
     rgba: bool,
 }

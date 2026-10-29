@@ -2360,6 +2360,12 @@ test("masked toBytes reprojection is refused explicitly", () => {
   assert.throws(() => dataset.toBytes("output.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
   const copy = terrio.open(dataset.toBytes("output.tif"), "copy.tif");
   assert.throws(() => copy.toBytes("reprojected.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
+  // Public validity is observable through the alpha band after palette expansion.
+  const colored = terrio.attachPalette(copy, [[10, 20, 30, 255], [40, 50, 60, 255]]);
+  const rgba = terrio.paletteToRgb(colored, {rgba:true});
+  const reopened = terrio.open(rgba.toBytes("mask.tif"), "mask.tif");
+  assert.deepEqual([...reopened.readBand(4)], [0,255,255,255]);
+  for (const value of [colored,rgba,reopened]) value.free();
   assert.ok(dataset.toBytes("output.asc").length > 0);
   for (const extension of ["pmtiles","mbtiles"]) {
     assert.throws(() => copy.toBytes(`output.${extension}`), /dataset masks/);

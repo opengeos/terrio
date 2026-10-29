@@ -304,7 +304,7 @@ pub fn color_table_files(path: &str) -> Result<Vec<String>> {
 /// Invalid pixels are excluded from histogram generation. A declared alpha band
 /// supplies validity when there is no shared RGB nodata value or explicit mask.
 pub fn rgb_to_palette(source: &RasterDataset, options: &PaletteOptions) -> Result<RasterDataset> {
-    if !(2..=256).contains(&options.color_count) || ![5, 8].contains(&options.bit_depth) {
+    if ![5, 8].contains(&options.bit_depth) || (options.color_table.is_none() && !(2..=256).contains(&options.color_count)) {
         return Err(invalid("palette needs 2..256 colors and bit depth 5 or 8"));
     }
     let n = source.raster.rows.checked_mul(source.raster.cols).ok_or_else(|| invalid("raster size overflow"))?;
@@ -385,8 +385,12 @@ pub fn palette_to_rgb(source: &RasterDataset, alpha: bool) -> Result<RasterDatas
         return Err(invalid("palette expansion requires one indexed band and a color table"));
     }
     let bands = if alpha { 4 } else { 3 };
-    let n = source.raster.rows * source.raster.cols;
-    let mut data = vec![0; n * bands];
+    let n = source.raster.rows.checked_mul(source.raster.cols).ok_or_else(|| invalid("raster size overflow"))?;
+    if source.raster.data.len() != n {
+        return Err(invalid("palette expansion requires one value per pixel"));
+    }
+    let length = n.checked_mul(bands).ok_or_else(|| invalid("palette output size overflow"))?;
+    let mut data = vec![0; length];
     for i in 0..n {
         let v = source.raster.data.get_f64(i);
         let mut color = if v.is_finite() && v >= 0. && v.fract() == 0. {
@@ -421,9 +425,28 @@ fn convert_with_mask(
     }
 }
 /// Expands a palette while retaining the source's per-dataset mask in the returned raster.
+/// RGBA expansion also makes invalid pixels transparent, preserving validity in PNG bytes.
 /// The conversion materializes the full input and output.
 pub fn palette_to_rgb_lazy(source: &mut crate::LazyRaster, alpha: bool) -> Result<crate::LazyRaster> {
-    convert_with_mask(source, |dataset| palette_to_rgb(dataset, alpha))
+    let mask = source.read_mask(crate::Window::full(source.width(), source.height()), None)?;
+    let mut output = palette_to_rgb(&source.read()?, alpha)?;
+    if alpha && let Some(mask) = &mask {
+        let n = output.raster.rows * output.raster.cols;
+        if mask.len() != n {
+            return Err(invalid("palette mask must contain one value per pixel"));
+        }
+        if let RasterData::U8(data) = &mut output.raster.data {
+            for (i, &valid) in mask.iter().enumerate() {
+                if valid == 0 {
+                    data[3 * n + i] = 0;
+                }
+            }
+        }
+    }
+    match mask {
+        Some(mask) => crate::LazyRaster::from_masked_dataset(output, mask),
+        None => Ok(output.into()),
+    }
 }
 /// Attaches a table while retaining the source's per-dataset mask in the returned raster.
 /// The conversion materializes the full input and output.
@@ -560,6 +583,70 @@ mod tests {
         }
     }
     use super::*;
+    #[test]
+    fn supplied_palette_ignores_generated_color_count() {
+        let source = super::super::build_raster(
+            super::super::Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+            vec![vec![0.], vec![0.], vec![0.]],
+            wbraster::DataType::U8,
+            None,
+            &crate::crs::SpatialRef::default(),
+            super::super::convert_value,
+        )
+        .unwrap();
+        for count in [0, 1, 257, usize::MAX] {
+            let options =
+                PaletteOptions { color_count: count, color_table: Some(vec![[0, 0, 0, 255], [255, 255, 255, 255]]), ..Default::default() };
+            assert!(rgb_to_palette(&source, &options).is_ok());
+            assert!(rgb_to_palette(&source, &PaletteOptions { color_table: None, ..options.clone() }).is_err());
+            assert!(rgb_to_palette(&source, &PaletteOptions { bit_depth: 6, ..options }).is_err());
+        }
+    }
+
+    #[test]
+    fn rgba_expansion_combines_dataset_validity_with_table_alpha() {
+        let source = super::super::build_raster(
+            super::super::Grid { width: 2, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+            vec![vec![0., 1.]],
+            wbraster::DataType::U8,
+            None,
+            &crate::crs::SpatialRef::default(),
+            super::super::convert_value,
+        )
+        .unwrap();
+        let indexed = attach_palette(&source, &[[10, 20, 30, 255], [40, 50, 60, 128]]).unwrap();
+        for alpha in [false, true] {
+            let mut source = crate::LazyRaster::from_masked_dataset(indexed.clone(), vec![0, 255]).unwrap();
+            let mut output = palette_to_rgb_lazy(&mut source, alpha).unwrap();
+            let values = output.read().unwrap().raster.data.to_f64_vec();
+            let mut expected = vec![10., 40., 20., 50., 30., 60.];
+            if alpha {
+                expected.extend([0., 128.]);
+            }
+            assert_eq!(values, expected);
+            assert_eq!(output.read_mask(crate::Window::new(0, 0, 2, 1), None).unwrap(), Some(vec![0, 255]));
+        }
+    }
+
+    #[test]
+    fn palette_expansion_rejects_inconsistent_storage_instead_of_panicking() {
+        let source = super::super::build_raster(
+            super::super::Grid { width: 2, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+            vec![vec![0., 0.]],
+            wbraster::DataType::U8,
+            None,
+            &crate::crs::SpatialRef::default(),
+            super::super::convert_value,
+        )
+        .unwrap();
+        let mut source = attach_palette(&source, &[[10, 20, 30, 255]]).unwrap();
+        source.raster.data = RasterData::U8(vec![0]);
+        assert!(palette_to_rgb(&source, true).unwrap_err().to_string().contains("one value per pixel"));
+        source.raster.rows = usize::MAX;
+        source.raster.cols = 2;
+        assert!(palette_to_rgb(&source, true).unwrap_err().to_string().contains("overflow"));
+    }
+
     #[test]
     fn median_cut_and_diffusion_match_independent_gdal_3133_fixture() {
         // Three bands of a GDAL-written 3x2 TIFF; reference outputs come from
