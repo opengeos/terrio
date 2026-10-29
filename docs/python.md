@@ -1,8 +1,8 @@
 # Python
 
 Python bindings for [terrio](https://github.com/opengeos/terrio): read, write, convert and
-reproject geospatial rasters and vector datasets in pure Rust, without GDAL. Wheels need only
-NumPy (and the small `affine` package).
+reproject geospatial rasters and vector datasets in Rust, without installing GDAL. Wheels need
+only NumPy (and the small `affine` package).
 
 ```sh
 pip install terrio

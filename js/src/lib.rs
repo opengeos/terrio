@@ -13,6 +13,7 @@
 //! ```
 
 mod grid;
+mod inspection;
 mod manage;
 mod multidim;
 mod ops;
