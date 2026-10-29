@@ -1170,7 +1170,7 @@ and views outside that source extent do not read the damaged payload.
 The multidimensional mosaic suite includes a Float32 0.1-degree coordinate grid
 near 40 degrees with four missing rows, and CF bounds arrays with a shared,
 unindexed size-two axis. Data values require zero tolerance. Float32 coordinate
-preservation permits only the exact nearest-Float32 conversion of GDAL's Float64
+preservation checks input samples exactly and permits reference-rounded generated gap
 coordinate values; numeric differences and their maximum magnitude are reported.
 Descending duplicate coordinates, coordinate memory limits before payload reads,
 packing/unit mismatches and scalar Python input rejection have dedicated regressions.
@@ -1180,3 +1180,9 @@ unsigned interpretation and grid-mapping references. An off-grid singleton mixed
 with a regular series is rejected by both GDAL 3.13.3 and Terrio, while axes
 made entirely from singleton slices retain irregular-coordinate support. The
 registered suite verifies this refusal without creating a Terrio destination.
+
+Mosaic coordinate regressions preserve every supplied Float64 coordinate bit. The GDAL
+comparison checks source coordinate samples exactly; generated gap coordinates match the
+reference after rounding to the source type. GDAL's regenerated grid can differ from stored
+Float32 samples by 3.05e-05 in the NOAA derivative; those coordinate-only differences are
+reported within tolerance, while payload values still require exact equality.

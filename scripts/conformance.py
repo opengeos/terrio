@@ -759,7 +759,7 @@ def suite_mdmosaic(ctx):
                   "netCDF/Zarr snapshots, Float32-coordinate gaps, unindexed CF bounds and all ten numeric types: exact coordinate-aligned data values, "
                   "types, nodata, units and axis names. Descending inputs are normalized for a GDAL "
                   "3.13.3 invalid-VRT bug. Within tolerance: source group paths retained rather than flattened, "
-                  "and Float32 coordinate types retained with only exact Float32 rounding of the reference allowed.")
+                  "and source coordinate values/types retained exactly; GDAL regenerated-grid rounding differences are accepted only where input samples prove the expected value, and gap coordinates must match the rounded reference.")
     if missing_modules("osgeo", "numpy"):
         suite.skipped = "needs osgeo and numpy"
         return suite

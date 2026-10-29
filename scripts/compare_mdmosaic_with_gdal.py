@@ -49,7 +49,7 @@ def arrays(group):
     return result
 
 
-def comparison(reference, actual, allow_float32_coordinates=False):
+def comparison(reference, actual, allow_float32_coordinates=False, source_coordinates=None):
     ref = gdal.OpenEx(str(reference), gdal.OF_MULTIDIM_RASTER)
     out = gdal.OpenEx(str(actual), gdal.OF_MULTIDIM_RASTER)
     ra, oa = arrays(ref.GetRootGroup()), arrays(out.GetRootGroup())
@@ -69,6 +69,7 @@ def comparison(reference, actual, allow_float32_coordinates=False):
     count = differing = within_count = 0
     max_diff = 0
     permitted_type_difference = False
+    source_coordinate_adjusted = False
     unexpected_type_difference = False
     same_type = same_nodata = same_metadata = same_size = True
     for name, r in ra.items():
@@ -104,8 +105,20 @@ def comparison(reference, actual, allow_float32_coordinates=False):
         different = (rv != av) & ~(np.isnan(rv) & np.isnan(av))
         differing += int(different.sum())
         accepted = np.zeros(rv.shape, dtype=bool)
-        if permitted:
+        if coordinate and source_coordinates is not None:
+            # GDAL regenerates a regular grid from one estimated step. Preserve
+            # source samples exactly, allowing its rounding drift only where an
+            # independently supplied source coordinate proves the desired value.
+            expected = rv.astype(av.dtype).copy()
+            for values in source_coordinates.get(r.GetName(), []):
+                values = np.asarray(values, dtype=av.dtype)
+                start = int(np.argmin(np.abs(rv - values[0])))
+                assert start + len(values) <= len(expected)
+                expected[start:start + len(values)] = values
+            accepted = expected == av
+        elif permitted:
             accepted = rv.astype('float32') == av
+        source_coordinate_adjusted |= coordinate and bool((different & accepted).any())
         within_count += int((~different | accepted).sum())
         count += rv.size
         for left, right in zip(rv[different], av[different]):
@@ -126,7 +139,7 @@ def comparison(reference, actual, allow_float32_coordinates=False):
     return dict(path_difference=path_difference, same_size=same_size, same_type=same_type, same_nodata=same_nodata, same_metadata=same_metadata,
                 differing=differing, exact=1 - differing / count, within_tol=within_count / count, max_diff=max_diff,
                 permitted_coordinate_type_difference=permitted_type_difference and not unexpected_type_difference,
-                coordinate_difference='Float32 coordinate type retained instead of GDAL Float64; only exact Float32 rounding is allowed' if permitted_type_difference else '')
+                coordinate_difference='Source coordinates retained exactly; reference grid rounding is accepted only where actual input samples prove the expected value, with reference-rounded gap coordinates' if source_coordinate_adjusted or permitted_type_difference else '')
 
 
 def main():
@@ -169,7 +182,11 @@ def main():
                 selection = ['--array', '/science/wind' if nested else 'wind'] if selected else []
                 subprocess.run(['gdal', 'mdim', 'mosaic', *reference_sources, str(reference), *selection], capture_output=True, check=True)
                 subprocess.run([args.terrio, 'mdmosaic', *sources, str(actual), *selection], capture_output=True, check=True)
-                result = comparison(reference, actual, coordinate_dtype == gdal.GDT_Float32)
+                source_coordinates = {}
+                for axes, _ in pieces:
+                    for axis_name, coordinates in axes:
+                        source_coordinates.setdefault(axis_name, []).append(coordinates)
+                result = comparison(reference, actual, coordinate_dtype == gdal.GDT_Float32, source_coordinates)
                 if normalize_descending:
                     result['reference_normalization'] = 'GDAL 3.13.3 descending-axis VRT size/offset bug; reference inputs flipped and output coordinate order restored'
             except subprocess.CalledProcessError as error:
@@ -183,6 +200,7 @@ def main():
         case('coordinate per-tile actual ranges', tiled, coordinate_ranges=True)
         case('spatial Float32 coordinate gaps', [([('lat', np.float32(40)+np.arange(8,dtype='float32')*np.float32(.1)+np.float32(i*1.2)), ('lon',lon[:5])],values[i*8:(i+1)*8,:5]) for i in range(2)], coordinate_dtype=gdal.GDT_Float32)
         case('Float32 coordinate Zarr snapshot', [([('lat', np.float32(40)+np.arange(8,dtype='float32')*np.float32(.1)+np.float32(i*1.2)), ('lon',lon[:5])],values[i*8:(i+1)*8,:5]) for i in range(2)], coordinate_dtype=gdal.GDT_Float32, output='zarr')
+        case('spatial Float64 source coordinate bits', [([('lat', 40. + np.arange(8)*.1 + i*1.2), ('lon',lon[:5])],values[i*8:(i+1)*8,:5]) for i in range(2)])
         case('CF shared unindexed bounds dimension', tiled, bounds=True)
         case('CF unindexed bounds Zarr snapshot', tiled, bounds=True, output='zarr')
         case('descending latitude normalized GDAL reference', [([(n, c[::-1] if n == 'lat' else c) for n,c in axes], np.flip(data, axis=0)) for axes,data in tiled], normalize_descending=True)

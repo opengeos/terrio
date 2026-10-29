@@ -214,7 +214,15 @@ fn axis(inputs: &[(usize, Dimension, Option<Array>)]) -> Result<Axis> {
         // Coordinate metadata is materialized, data arrays stay lazy. Bound the
         // coordinate allocation before generating a grid with a huge empty gap.
         check_coordinate_size(length)?;
-        (0..length).map(|i| origin.advance(step, integer_step, i)).collect::<Result<Vec<_>>>()?
+        let mut output = (0..length).map(|i| origin.advance(step, integer_step, i)).collect::<Result<Vec<_>>>()?;
+        // Placement tolerates storage rounding; retain the actual source coordinates.
+        // Only gap cells use the generated grid, and overlapping coordinates follow
+        // the same last-source-wins rule as the payload arrays.
+        for ((dataset, _, _), values) in inputs.iter().zip(&vectors) {
+            let start = starts[dataset];
+            output[start..start + values.len()].copy_from_slice(values);
+        }
+        output
     } else {
         let direction = step.unwrap_or(1.).signum();
         if vectors.iter().any(|v| v.windows(2).any(|w| w[1].distance(w[0]) * direction <= 0.)) {
@@ -704,6 +712,29 @@ mod tests {
         assert_eq!(result.array("y").unwrap().read().unwrap().values().unwrap(), json!([9, 7, 4, 3, 1]));
         assert_eq!(result.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 4, 2, 5, 3, 6, 7, -9999, 8, -9999]));
     }
+    #[test]
+    fn float64_regular_tiles_preserve_stored_coordinate_bits() {
+        let mut sources = Vec::new();
+        let mut expected = Vec::new();
+        for tile in 0..2 {
+            let mut source = dataset(&[("y", &[0, 1, 2, 3, 4, 5, 6, 7]), ("x", &[0])], &[1; 8]);
+            let values: Vec<f64> = (0..8).map(|j| 40. + j as f64 * 0.1 + tile as f64 * 1.2).collect();
+            expected.push(values.clone());
+            let coordinate = &mut source.root.arrays[0];
+            coordinate.info.data_type = DataType::F64;
+            coordinate.source = Source::Memory(Arc::new(values.iter().flat_map(|v| v.to_le_bytes()).collect()));
+            sources.push(source);
+        }
+        let output = mosaic(&sources, &Default::default()).unwrap();
+        let wbraster::raster::RasterData::F64(coordinates) = output.array("y").unwrap().read().unwrap().data().unwrap() else {
+            panic!("expected Float64 coordinates")
+        };
+        let actual: Vec<u64> = coordinates.iter().map(|value| value.to_bits()).collect();
+        for (start, values) in [0, 12].into_iter().zip(expected) {
+            assert_eq!(&actual[start..start + 8], values.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        }
+    }
+
     #[test]
     fn float32_regular_tiles_keep_gap_cells() {
         let mut sources = Vec::new();
