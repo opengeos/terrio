@@ -286,3 +286,16 @@ def test_palette_text_limit_unknown_http_size():
         finally:
             server.shutdown()
             worker.join()
+
+
+@pytest.mark.parametrize("extension", ["pmtiles", "mbtiles"])
+def test_lazy_write_rejects_explicit_mask_for_tile_archives(tmp_path, extension):
+    source = tmp_path / "source.tif"
+    terrio.Raster.from_array(
+        np.ones((2, 2), dtype="uint8"), (0, 1, 0, 2, 0, -1), "EPSG:4326"
+    ).write(str(source))
+    lazy = terrio.open_raster(str(source))
+    output = tmp_path / f"output.{extension}"
+    with pytest.raises(ValueError, match="dataset masks"):
+        lazy.write(str(output), mask=np.full((2, 2), 255, dtype="uint8"))
+    assert not output.exists()

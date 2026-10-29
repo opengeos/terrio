@@ -974,7 +974,7 @@ impl LazyRaster {
     ) -> Result<()> {
         use crate::formats::RasterDriver;
         let driver = options.driver.or_else(|| RasterDriver::for_extension(filename));
-        if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && self.has_mask() {
+        if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && (self.has_mask() || options.mask.is_some()) {
             return Err(Error::InvalidArgument("tile archive writes do not preserve dataset masks; use an explicit alpha band".into()));
         }
         if options.mask.is_none() && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {

@@ -490,7 +490,7 @@ pub fn parse_color_table(text: &str, filename: &str) -> Result<Vec<[u8; 4]>> {
             entries.push((index, [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, alpha]));
         }
     } else {
-        if text.contains('%') {
+        if text.lines().map(str::trim).filter(|line| !line.starts_with(['#', '/'])).any(|line| line.contains('%')) {
             return Err(invalid("palette indices cannot be percentages"));
         }
         let header = super::raster_header(
@@ -616,6 +616,7 @@ mod tests {
         assert!(parse_color_table("1.5 red", "colors.txt").is_err());
         assert!(parse_color_table("65536 red", "colors.txt").is_err());
         assert!(parse_color_table("50% red", "colors.txt").is_err());
+        assert_eq!(parse_color_table("# Reflectance (%)\n/ 100% comment\n0 red", "colors.txt").unwrap(), [[255, 0, 0, 255]]);
         for text in ["0 256 0 0", "0 -1 0 0", "0 1 2 3 256", "0 1 2 3 -1"] {
             assert!(parse_color_table(text, "colors.txt").unwrap_err().to_string().contains("0..255"));
         }
