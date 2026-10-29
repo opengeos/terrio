@@ -264,7 +264,7 @@ impl VirtualRaster {
             xml::escape(&srs(&dst_srs)),
             gt(dstgt),
             options.memory_limit,
-            xml::escape(&source)
+            xml::escape_filename(&source)
         ))
     }
 
@@ -904,7 +904,7 @@ impl Reader {
             options.dst_nodata = Nodata::Values(vec![nd]);
         }
         Ok(ParsedWarp {
-            source: source.text.trim().to_string(),
+            source: source.text.clone(),
             source_overview,
             relative: source.attr("relativeToVRT") == Some("1"),
             options,
@@ -925,7 +925,7 @@ impl WindowSource for Reader {
         let _depth = ReadDepth::enter()?;
         fn references<'a>(element: &'a xml::Element, out: &mut Vec<(&'a str, bool)>) {
             if matches!(element.name.as_str(), "SourceFilename" | "SourceDataset") {
-                out.push((element.text.trim(), element.attr("relativeToVRT") == Some("1")));
+                out.push((element.text.as_str(), element.attr("relativeToVRT") == Some("1")));
             }
             for child in &element.children {
                 references(child, out);

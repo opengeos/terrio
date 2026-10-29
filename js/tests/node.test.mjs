@@ -2453,3 +2453,46 @@ test("checkDataset reads real raster, vector and scientific uploads", {skip: nee
     }
   }
 });
+
+// Different pixel values prove that whitespace never aliases another supplied source.
+test("openVrt preserves filename whitespace in uploaded sources", () => {
+  const sources = {};
+  for (const [name, value] of [["source.tif", 1], ["source.tif ", 9], [" source.tif ", 7]]) {
+    const raster = terrio.rasterFromArray(new Uint8Array([value]), 1, 1, [0, 1, 0, 1, 0, -1]);
+    sources[name] = raster.toBytes("source.tif");
+    raster.free();
+  }
+  for (const [text, expected] of [
+    ["source.tif ", 9], [" source.tif", 1], ["&#32;source.tif ", 7],
+    ["<![CDATA[ source.tif ]]>", 7], ["<![CDATA[source.tif]]> ", 1],
+  ]) {
+    const xml = `<VRTDataset rasterXSize="1" rasterYSize="1"><VRTRasterBand dataType="Byte" band="1"><SimpleSource><SourceFilename>${text}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>`;
+    const output = terrio.openVrt(xml, sources);
+    assert.deepEqual([...output.readBand(1)], [expected]);
+    output.free();
+  }
+});
+
+
+test("dataset memory paths preserve edge spaces without aliasing", () => {
+  const root = "/vsimem/dataset-space-identity";
+  const source = `${root}/source.tif `;
+  const plain = `${root}/source.tif`;
+  const output = `${root}/copy.tif `;
+  const encoded = [];
+  for (const value of [9,1]) {
+    const raster = terrio.rasterFromArray(new Uint8Array([value]), 1, 1, [0,1,0,1,0,-1]);
+    encoded.push(raster.toBytes("source.tif"));
+    raster.free();
+  }
+  terrio.vsiWrite(source, encoded[0]);
+  terrio.vsiWrite(plain, encoded[1]);
+  try {
+    terrio.datasetCopy(source, output);
+    assert.deepEqual(terrio.vsiRead(output), encoded[0]);
+    terrio.datasetDelete(source);
+    assert.deepEqual(terrio.vsiRead(plain), encoded[1]);
+  } finally {
+    terrio.vsiDelete(root, true);
+  }
+});

@@ -97,7 +97,7 @@ fn unique_push(files: &mut Vec<String>, path: String) -> Result<()> {
 fn companions(files: &mut Vec<String>, path: &str, names: impl IntoIterator<Item = String>) -> Result<()> {
     for name in names {
         let candidate = location::sibling(path, &name)?;
-        if location::file_exists(&candidate)? {
+        if location::companion_exists(&candidate)? {
             unique_push(files, candidate)?;
         }
     }
@@ -263,9 +263,12 @@ fn inventory(path: &str, format: Option<&str>) -> Result<Option<FileSet>> {
     if driver == "GTiff" && !location::tiff_has_transform(path)? {
         for world in [format!("{base}.tfw"), format!("{base}.TFW"), format!("{name}w"), format!("{base}.wld")] {
             let candidate = location::sibling(path, &world)?;
-            if location::file_exists(&candidate)? {
+            if location::companion_exists(&candidate)? {
+                let readable = location::file_exists(&candidate)?;
                 unique_push(&mut files, candidate)?;
-                break;
+                if readable {
+                    break;
+                }
             }
         }
     }
@@ -365,11 +368,32 @@ fn mapped(path: &str, source: &str, target: &str) -> Result<String> {
 fn reference_text(reader: &mut quick_xml::Reader<&[u8]>) -> Result<String> {
     use quick_xml::events::Event;
     let mut value = String::new();
+    let mut cdata = false;
     loop {
         match reader.read_event().map_err(|e| Error::InvalidData(format!("VRT XML: {e}")))? {
-            Event::Text(t) => value.push_str(&t.xml10_content()),
-            Event::CData(t) => value.push_str(&t.xml10_content()),
+            Event::Text(t) => {
+                let text = t.xml10_content();
+                if cdata {
+                    if !text.trim().is_empty() {
+                        return Err(invalid("mixed XML source filename content"));
+                    }
+                } else {
+                    // CPL MiniXML skips literal leading XML whitespace before decoding
+                    // entities, but preserves trailing and explicitly encoded spaces.
+                    value.push_str(if value.is_empty() { text.trim_start_matches([' ', '\t', '\r', '\n']) } else { &text });
+                }
+            }
+            Event::CData(t) => {
+                if !value.is_empty() || cdata {
+                    return Err(invalid("mixed XML source filename content"));
+                }
+                value.push_str(&t.xml10_content());
+                cdata = true;
+            }
             Event::GeneralRef(r) => {
+                if cdata {
+                    return Err(invalid("mixed XML source filename content"));
+                }
                 if let Some(c) = r.resolve_char_ref().map_err(|e| Error::InvalidData(e.to_string()))? {
                     value.push(c);
                 } else {
@@ -383,8 +407,7 @@ fn reference_text(reader: &mut quick_xml::Reader<&[u8]>) -> Result<String> {
                     });
                 }
             }
-            Event::Comment(_) => (),
-            Event::End(_) => return Ok(value.trim().into()),
+            Event::End(_) if !value.is_empty() => return Ok(value),
             _ => return Err(invalid("invalid XML source filename content")),
         }
     }
@@ -623,7 +646,7 @@ fn rewrite(path: &str, names: &HashMap<location::NameKey, String>, driver: &str)
                     let relative = relative_reference(&element);
                     let end = element.to_end().into_owned();
                     let name = reference_text(&mut reader)?;
-                    let resolved = crate::ops::vrt::resolve_reference(path, name.trim(), relative);
+                    let resolved = crate::ops::vrt::resolve_reference(path, &name, relative);
                     let selector = crate::ops::vrt::subdataset_parts(&resolved)?;
                     let physical = selector.map_or(resolved.as_str(), |(_, file, _)| file);
                     let basename = names
@@ -649,7 +672,7 @@ fn rewrite(path: &str, names: &HashMap<location::NameKey, String>, driver: &str)
                     element.extend_attributes(attributes.iter().map(|(k, v)| (k.as_str(), v.as_str())));
                     element.push_attribute(("relativeToVRT", "1"));
                     writer.write_event(Event::Start(element))?;
-                    writer.write_event(Event::Text(BytesText::new(&basename)))?;
+                    writer.write_event(Event::Text(BytesText::from_escaped(crate::ops::vrt::xml::escape_filename(&basename))))?;
                     writer.write_event(Event::End(end))?;
                 }
                 Event::Eof => break,
@@ -863,7 +886,9 @@ fn transfer(source: &str, target: &str, options: &FileOptions, rename: bool) -> 
         }
     }
     for path in &obsolete {
-        location::check_write(path)?;
+        // These entries are staged and unlinked, never followed for writing.
+        // Destinations receiving new data already passed check_write above.
+        location::check_remove(path)?;
         if inputs.overlaps(path)? {
             return Err(invalid("replaced dataset overlaps an input"));
         }
@@ -1061,6 +1086,93 @@ mod tests {
         }
         vsi::delete(&root, true).unwrap();
     }
+    #[test]
+    #[cfg(unix)]
+    fn overwrite_removes_a_dangling_obsolete_companion() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = csv(dir.path().to_str().unwrap(), "source");
+        let target = csv(dir.path().to_str().unwrap(), "target");
+        let companion = dir.path().join("target.csvt");
+        std::os::unix::fs::symlink("missing-type-file", &companion).unwrap();
+        assert!(file_list(&target, None).unwrap().files.iter().any(|name| name.ends_with("target.csvt")));
+        copy(&source, &target, &FileOptions { overwrite: true, ..Default::default() }).unwrap();
+        assert!(std::fs::symlink_metadata(&companion).is_err());
+        assert_eq!(std::fs::read(target).unwrap(), std::fs::read(source).unwrap());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn vrt_whitespace_references_keep_the_correct_pixels_through_copy() {
+        use crate::{DataType, Raster, RasterConfig, RasterDataset, Window};
+        use wbraster::raster::RasterData;
+        for (text, source_name, destination, expected) in [
+            ("source.tif ", "source.vrt", "copied.vrt", 9.),
+            (" source.tif", "source.vrt", "copied.vrt", 1.),
+            ("&#32;source.tif ", " source.vrt", " copied.vrt", 7.),
+            ("<![CDATA[ source.tif ]]>", " source.vrt", " copied.vrt", 7.),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            for (name, value) in [("source.tif", 1), ("source.tif ", 9), (" source.tif ", 7)] {
+                let raster = Raster::from_data_native(
+                    RasterConfig { cols: 1, rows: 1, bands: 1, data_type: DataType::U8, ..Default::default() },
+                    RasterData::U8(vec![value]),
+                )
+                .unwrap();
+                crate::write_raster_dataset(
+                    &RasterDataset::new(raster, false),
+                    dir.path().join(name).to_str().unwrap(),
+                    &crate::RasterWriteOptions { driver: Some(RasterDriver::GTiff), ..Default::default() },
+                )
+                .unwrap();
+            }
+            let source = dir.path().join(source_name);
+            std::fs::write(&source,format!("<VRTDataset rasterXSize='1' rasterYSize='1'><VRTRasterBand dataType='Byte' band='1'><SimpleSource><SourceFilename relativeToVRT='1'>{text}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>")).unwrap();
+            let out = dir.path().join("out");
+            std::fs::create_dir(&out).unwrap();
+            let destination = out.join(destination);
+            copy(source.to_str().unwrap(), destination.to_str().unwrap(), &Default::default()).unwrap();
+            for path in [&source, &destination] {
+                let mut reader = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+                let data = reader.read_window(Window::new(0, 0, 1, 1), &Default::default()).unwrap();
+                assert_eq!(data.raster.data.to_f64_vec(), vec![expected], "{text}: {}", path.display());
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dangling_world_link_does_not_hide_a_readable_lower_priority_world_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.tif");
+        let file = std::fs::File::create(&path).unwrap();
+        tiff::encoder::TiffEncoder::new(file).unwrap().write_image::<tiff::encoder::colortype::Gray8>(1, 1, &[1]).unwrap();
+        let broken = dir.path().join("source.tfw");
+        std::os::unix::fs::symlink("missing-world", &broken).unwrap();
+        let world = dir.path().join("source.wld");
+        std::fs::write(&world, "1\n0\n0\n-1\n0.5\n0.5\n").unwrap();
+        let inventory = file_list(path.to_str().unwrap(), None).unwrap();
+        for owned in [broken, world] {
+            assert!(inventory.files.contains(&owned.to_str().unwrap().to_owned()), "{inventory:?}");
+        }
+    }
+
+    #[test]
+    fn source_filename_whitespace_matches_cpl_minixml() {
+        for (text, expected) in [
+            (" source.tif ", "source.tif "),
+            (" source.tif", "source.tif"),
+            ("&#32;source.tif ", " source.tif "),
+            ("<![CDATA[ source.tif ]]>", " source.tif "),
+            ("<![CDATA[source.tif]]> ", "source.tif"),
+        ] {
+            let xml = format!("<SourceFilename>{text}</SourceFilename>");
+            let mut reader = quick_xml::Reader::from_str(&xml);
+            reader.read_event().unwrap();
+            assert_eq!(reference_text(&mut reader).unwrap(), expected);
+            assert_eq!(crate::ops::vrt::xml::parse(&xml).unwrap().text, expected);
+        }
+    }
+
     #[test]
     fn nested_or_malformed_zarr_markers_cannot_authorize_directory_deletion() {
         for bytes in [br#"{"other":{"zarr_format":2}}"#.as_slice(), br#"{"zarr_format":2} garbage"#, br#"{"zarr_format":"2"}"#] {

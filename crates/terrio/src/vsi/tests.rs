@@ -1246,3 +1246,20 @@ fn memory_archives_and_moves_do_not_copy_bytes() {
     assert_eq!(crate::memfs::COPIED.with(|c| c.get()), 0);
     delete("/vsimem/vsi_nocopy", true).unwrap();
 }
+
+#[test]
+fn memory_filenames_keep_edge_spaces_without_aliasing_another_object() {
+    let root = "/vsimem/vsi-space-identity";
+    let spaced = format!("{root}/source.txt ");
+    let plain = format!("{root}/source.txt");
+    let copied = format!("{root}/copy.txt ");
+    write(&spaced, b"spaced").unwrap();
+    write(&plain, b"plain").unwrap();
+    assert_eq!(read(&spaced).unwrap(), b"spaced");
+    assert_eq!(read(&plain).unwrap(), b"plain");
+    copy(&spaced, &copied, &CopyOptions::default()).unwrap();
+    assert_eq!(read(&copied).unwrap(), b"spaced");
+    delete(&spaced, false).unwrap();
+    assert_eq!(read(&plain).unwrap(), b"plain");
+    delete(root, true).unwrap();
+}

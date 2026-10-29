@@ -653,6 +653,19 @@ pub(crate) fn entry_exists(path: &str) -> Result<bool> {
     }
 }
 
+/// A companion may itself be a dangling link, which still belongs to its dataset.
+/// Ordinary directories with companion-looking names remain excluded.
+pub(crate) fn companion_exists(path: &str) -> Result<bool> {
+    match Node::parse(path)? {
+        Node::Local(path) => match std::fs::symlink_metadata(path) {
+            Ok(metadata) => Ok(metadata.is_file() || metadata.file_type().is_symlink()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        },
+        _ => file_exists(path),
+    }
+}
+
 /// Probe an exact companion file, without treating a missing file as a directory index.
 pub(crate) fn file_exists(path: &str) -> Result<bool> {
     let node = Node::parse(path)?;

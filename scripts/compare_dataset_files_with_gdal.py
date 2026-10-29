@@ -413,6 +413,65 @@ def main():
                 results.append(
                     dict(name=label, status="differs", detail=f"{stage}: {error}")
                 )
+        for index, (text, primary, destination) in enumerate(
+            [
+                ("source.tif ", "source.vrt", "copied.vrt"),
+                (" source.tif", "source.vrt", "copied.vrt"),
+                ("&#32;source.tif ", " source.vrt", " copied.vrt"),
+                ("<![CDATA[ source.tif ]]>", " source.vrt", " copied.vrt"),
+                ("<![CDATA[source.tif]]> ", "source.vrt", "copied.vrt"),
+            ]
+            if os.name == "posix"
+            else []
+        ):
+            stage = f"VRT filename whitespace {index}"
+            try:
+                folder = root / f"whitespace-{index}"
+                folder.mkdir()
+                for name, delta in [
+                    ("source.tif", 0),
+                    ("source.tif ", 1000),
+                    (" source.tif ", 2000),
+                ]:
+                    data = gdal.Translate(
+                        str(folder / name),
+                        str(args.data / "dem.tif"),
+                        format="GTiff",
+                        srcWin=[0, 0, 2, 2],
+                        outputType=gdal.GDT_Float32,
+                    )
+                    band = data.GetRasterBand(1)
+                    band.WriteArray(band.ReadAsArray() + delta)
+                    band = None
+                    data = None
+                source = folder / primary
+                source.write_text(
+                    f"<VRTDataset rasterXSize='2' rasterYSize='2'><GeoTransform>0,1,0,2,0,-1</GeoTransform><VRTRasterBand dataType='Float32' band='1'><SimpleSource><SourceFilename relativeToVRT='1'>{text}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>"
+                )
+                expected = raster_snapshot(source)
+                assert call("dataset-files", source)["files"] == [str(source)]
+                output = folder / "output"
+                output.mkdir()
+                target = output / destination
+                call("dataset-copy", source, target)
+                assert raster_snapshot(target) == expected
+                moved = output / (
+                    " moved.vrt" if primary.startswith(" ") else "moved.vrt"
+                )
+                call("dataset-rename", target, moved)
+                assert raster_snapshot(moved) == expected
+                call("dataset-delete", moved)
+                assert not moved.exists()
+                assert raster_snapshot(source) == expected
+                results.append(
+                    dict(
+                        name=stage,
+                        status="identical",
+                        detail="GDAL-read pixels and metadata preserve trailing spaces and encoded leading spaces through copy/rename/delete",
+                    )
+                )
+            except Exception as error:
+                results.append(dict(name=stage, status="differs", detail=str(error)))
         # VRT dependencies are copied with regular basenames; rename moves only owned definitions.
         for selector in [False, True]:
             label = "VRT netCDF reference" if selector else "VRT TIFF reference"
