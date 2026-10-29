@@ -813,6 +813,12 @@ def suite_cog_validate(ctx):
     if shutil.which("gdal") is None or run(["gdal", "driver", "cog", "validate", "--help"])[0] != 0:
         suite.skipped = "needs a GDAL release with the gdal driver cog validate command"
         return suite
+    from osgeo import gdal
+
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13 for the cog validate reference"
+        return suite
+    suite.reference = f"`gdal driver cog validate` (GDAL {gdal.VersionInfo('RELEASE_NAME')})"
     code, out, err = run([sys.executable, str(SCRIPTS / "compare_cog_validate_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
     try:
         results = json.loads(out)
@@ -821,6 +827,8 @@ def suite_cog_validate(ctx):
         return suite
     for result in results:
         suite.cases.append(Case("COG validation", result["name"], IDENTICAL if result["status"] == "identical" else DIFFERS, result["detail"]))
+    if len(results) != 40:
+        suite.cases.append(Case("COG validation", "case count", DIFFERS, f"expected 40 results, got {len(results)}"))
     if code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out)
     return suite

@@ -215,9 +215,13 @@ fn tile_interleave(data: &[u8]) -> Result<bool> {
     let mut target = None;
     let mut content = String::new();
     let mut tile = false;
+    let mut root = false;
     loop {
         match reader.read_event() {
             Ok(Event::Start(element)) => {
+                if depth == 0 && std::mem::replace(&mut root, true) {
+                    return Err(invalid("GDAL metadata XML: multiple root elements"));
+                }
                 depth += 1;
                 if depth > 128 {
                     return Err(invalid("GDAL metadata XML exceeds 128 nesting levels"));
@@ -241,6 +245,9 @@ fn tile_interleave(data: &[u8]) -> Result<bool> {
                 }
             }
             Ok(Event::Empty(element)) => {
+                if depth == 0 && std::mem::replace(&mut root, true) {
+                    return Err(invalid("GDAL metadata XML: multiple root elements"));
+                }
                 for attribute in element.attributes() {
                     let attribute = attribute.map_err(|e| invalid(format!("GDAL metadata XML: {e}")))?;
                     attribute
@@ -250,7 +257,7 @@ fn tile_interleave(data: &[u8]) -> Result<bool> {
             }
             Ok(Event::Text(text)) if target == Some(depth) => content.push_str(&text.xml10_content()),
             Ok(Event::CData(text)) if target == Some(depth) => content.push_str(&text.xml10_content()),
-            Ok(Event::GeneralRef(reference)) if target == Some(depth) => {
+            Ok(Event::GeneralRef(reference)) => {
                 let value = reference
                     .resolve_char_ref()
                     .ok()
@@ -264,7 +271,12 @@ fn tile_interleave(data: &[u8]) -> Result<bool> {
                         _ => None,
                     })
                     .ok_or_else(|| invalid("GDAL metadata XML: unresolved entity"))?;
-                content.push(value);
+                if depth == 0 {
+                    return Err(invalid("GDAL metadata XML: reference outside root element"));
+                }
+                if target == Some(depth) {
+                    content.push(value);
+                }
             }
             Ok(Event::End(_)) => {
                 if target == Some(depth) {
@@ -273,7 +285,19 @@ fn tile_interleave(data: &[u8]) -> Result<bool> {
                 }
                 depth = depth.checked_sub(1).ok_or_else(|| invalid("GDAL metadata XML: unmatched closing tag"))?;
             }
-            Ok(Event::Eof) => return if depth == 0 { Ok(tile) } else { Err(invalid("GDAL metadata XML: unclosed element")) },
+            Ok(Event::Text(text)) if depth == 0 && !text.xml10_content().trim().is_empty() => {
+                return Err(invalid("GDAL metadata XML: text outside root element"));
+            }
+            Ok(Event::CData(_)) if depth == 0 => return Err(invalid("GDAL metadata XML: CDATA outside root element")),
+            Ok(Event::Eof) => {
+                return if depth != 0 {
+                    Err(invalid("GDAL metadata XML: unclosed element"))
+                } else if !root {
+                    Err(invalid("GDAL metadata XML: missing root element"))
+                } else {
+                    Ok(tile)
+                };
+            }
             Err(error) => return Err(invalid(format!("GDAL metadata XML: {error}"))),
             _ => (),
         }
@@ -455,6 +479,9 @@ pub fn validate_cog(path: &str, strict: bool) -> Result<CogValidation> {
 /// Validates a native/VSI input, with GDAL 3.13 full checks available through `profile`.
 /// Automatic full checks are disabled for remote inputs to preserve bounded range I/O.
 pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> Result<CogValidation> {
+    if options.full_check == Some(true) && options.profile != CogValidationProfile::Gdal {
+        return Err(Error::InvalidArgument("full_check requires the gdal validation profile".into()));
+    }
     let loc = Location::parse(path);
     match &loc {
         #[cfg(remote)]
@@ -609,8 +636,8 @@ fn full_check<R: Read + Seek>(reader: &mut R, tiff: &Tiff, errors: &mut Vec<Stri
         }
         let name = if level == 0 { "Main resolution image".to_string() } else { format!("Overview {}", level - 1) };
         let mask = masks[level];
-        let planes = if image.planar == 2 { image.samples } else { 1 };
         let blocks = image.grid().0.checked_mul(image.grid().1).ok_or_else(|| invalid("block grid overflows"))?;
+        let planes = if image.planar == 2 && blocks > 0 { image.samples } else { 1 };
         let expected = blocks.checked_mul(planes).ok_or_else(|| invalid("block count overflows"))?;
         if expected != image.offsets.len() as u64 || expected != image.byte_counts.len() as u64 {
             errors.push(format!("{name}: block offset/count arrays do not match the image grid"));
@@ -1298,9 +1325,42 @@ mod tests {
     }
 
     #[test]
+    fn zero_block_grid_does_not_iterate_unbounded_sample_planes() {
+        let tiff = Tiff {
+            ifds: vec![Ifd { width: 0, height: 1, tile: Some((1, 1)), planar: 2, samples: u64::MAX, ..Default::default() }],
+            ghost: Some("BLOCK_ORDER=ROW_MAJOR".into()),
+            expected_ifd_offset: 8,
+        };
+        let mut errors = Vec::new();
+        full_check(&mut std::io::Cursor::new(Vec::<u8>::new()), &tiff, &mut errors).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn invalid_full_check_options_are_rejected_before_opening_inputs() {
+        let options = CogValidationOptions { profile: CogValidationProfile::RioCogeo, full_check: Some(true), ..Default::default() };
+        for path in ["http://127.0.0.1:1/missing.tif", "/nonexistent/terrio-cog-option-test.tif"] {
+            assert!(matches!(validate_cog_with_options(path, &options), Err(Error::InvalidArgument(_))));
+        }
+    }
+
+    #[test]
     fn full_metadata_rejects_malformed_xml_after_a_valid_item() {
         let xml = br#"<GDALMetadata><Item name="INTERLEAVE" domain="IMAGE_STRUCTURE">TILE</Item></GDALMetadata><broken"#;
         assert!(tile_interleave(xml).is_err());
+        for invalid in [
+            br#"<GDALMetadata><Item name="OTHER">&undefined;</Item></GDALMetadata>"#.as_slice(),
+            b"",
+            b"plain text",
+            b"<!-- no root -->",
+            b"<a/><b/>",
+            b"<a/>tail",
+            b"<![CDATA[text]]>",
+        ] {
+            assert!(tile_interleave(invalid).is_err(), "{invalid:?}");
+        }
+        assert!(!tile_interleave(b"<!-- comment --><GDALMetadata/> ").unwrap());
+        assert!(!tile_interleave(b"<GDALMetadata><Item name='OTHER'>&amp;&#65;</Item></GDALMetadata>").unwrap());
         assert!(tile_interleave(br#"<GDALMetadata><Item bad></Item></GDALMetadata>"#).is_err());
         assert!(
             tile_interleave(br#"<GDALMetadata><Item name="INTERLEAVE" domain="IMAGE_STRUCTURE">TI&#76;E</Item></GDALMetadata>"#).unwrap()
