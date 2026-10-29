@@ -69,6 +69,31 @@ coordinates and point clouds with theirs.
   Key Laboratory of Remote Sensing Science, Beijing Normal University), after Zhang et al. (2016),
   *An Easy-to-Use Airborne LiDAR Data Filtering Method Based on Cloth Simulation*.
 
+## GEOS, JTS and GeoRust
+
+[GEOS](https://libgeos.org), the geometry engine GDAL uses, and the
+[JTS Topology Suite](https://github.com/locationtech/jts) it is ported from (Martin Davis and
+others) are the reference for terrio's vector geometry operations, which are compared with GDAL's
+GEOS-backed results:
+
+- topology-preserving simplification (`crates/terrio/src/ops/simplify.rs`) follows GEOS's
+  `TopologyPreservingSimplifier`, and the convex and concave hulls (`ops/hull.rs`) GEOS's
+  `ConvexHull`, `ConcaveHull` and `ConcaveHullOfPolygons`;
+- the polygon validity checks and repair of the vector tile writer (`tiles/valid.rs`) follow
+  what GEOS's `IsValid` and `MakeValid` do in GDAL's MVT writer;
+- the spatial sort follows GEOS's `TemplateSTRtree` packing.
+
+The results are not always identical to GEOS's: concave hulls can differ where `spade`'s
+triangulation differs from GEOS's (inputs with co-circular vertices), and the vector tile
+writer's rule for polygons GEOS fails to clip agrees with GEOS 3.14 on about 97% of random
+self-crossing polygons and rectangles (and on 97% of random overlapping parts). The source files
+document these differences.
+
+The buffer, overlay, dissolve and validity commands are built on
+[GeoRust](https://georust.org)'s [`geo`](https://crates.io/crates/geo) crate (MIT/Apache-2.0),
+with [`rstar`](https://crates.io/crates/rstar) R-trees and [`spade`](https://crates.io/crates/spade)
+triangulations.
+
 ## The EPSG dataset and Esri's projection data
 
 terrio's EPSG table and datum names (`crates/terrio-crs/data/epsg.tsv.zst` and `datums.tsv.zst`) are
