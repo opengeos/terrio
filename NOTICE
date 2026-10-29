@@ -731,7 +731,7 @@ Licensed under the MIT permission and warranty terms reproduced above for GDAL.
 GDAL GeoPackage validation
 -------------------------------------------------------------------------------
 
-The GeoPackage metadata requirements in crates/terrio/src/gpkg_validation/ follow
+The GeoPackage validation rules in crates/terrio/src/gpkg_validation/ follow
 OGC GeoPackage 1.4 and GDAL 3.13.3's validate_gpkg.py, reimplemented in Rust:
 https://github.com/OSGeo/gdal/blob/v3.13.3/swig/python/gdal-utils/osgeo_utils/samples/validate_gpkg.py
 

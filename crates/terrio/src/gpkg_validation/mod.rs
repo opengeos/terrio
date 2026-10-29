@@ -3,6 +3,7 @@
 mod content;
 mod extensions;
 mod schema;
+mod tiles;
 
 use crate::drivers::{
     sqlite::{SchemaEntry, Value},
@@ -468,6 +469,9 @@ fn check_core(bytes: &[u8]) -> CoreReport {
     if let Err(error) = checker.attributes(bytes) {
         checker.report.require(false, 6, error.to_string());
     }
+    if let Err(error) = checker.tiles(bytes) {
+        checker.report.require(false, 6, error.to_string());
+    }
     checker.report
 }
 
@@ -631,8 +635,9 @@ for name,path,_ in cases:
   with sqlite3.connect(path) as db:
    cursor=db.cursor()
    failed=db.execute('PRAGMA integrity_check').fetchone()[0]!='ok'
-   checker._check_gpkg_spatial_ref_sys(cursor);checker._check_gpkg_contents(cursor);checker._check_gpkg_extensions(cursor)
- except sqlite3.Error:
+   checker._check_gpkg_spatial_ref_sys(cursor);checker._check_gpkg_contents(cursor);checker._check_gpkg_extensions(cursor);checker._check_tiles(cursor)
+ except (sqlite3.Error,TypeError,ZeroDivisionError):
+  # GDAL can raise on missing/empty tile metadata instead of returning diagnostics.
   failed=True
  out.append({'name':name,'path':str(path),'valid':header and not failed and not checker.errors})
 print(json.dumps(out))
