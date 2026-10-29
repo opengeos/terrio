@@ -2339,6 +2339,7 @@ test("identify inspects bounded upload prefixes and filename hints", () => {
   assert.deepEqual(terrio.identify({bytes, filename: "source.tif"}).kinds, ["raster"]);
   assert.equal(terrio.identify(new TextEncoder().encode("x,y\n1,2\n"), "points.csv").driver, "CSV");
   assert.equal(terrio.identify(new TextEncoder().encode("unknown"), "wrong.tif"), null);
+  assert.equal(terrio.identify(new TextEncoder().encode('{"nested":{"type":"Point"}}'), "config.json"), null);
   const beyondPrefix = new TextEncoder().encode(" ".repeat(16 * 1024) + '{"type":"FeatureCollection"}');
   assert.equal(terrio.identify(beyondPrefix, "data.json"), null);
   assert.throws(() => terrio.identify({bytes: "not an array"}), /Uint8Array/);

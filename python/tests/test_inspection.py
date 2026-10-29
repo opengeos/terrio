@@ -29,6 +29,9 @@ def test_identify_paths_sequences_uploads_and_failures(source, tmp_path):
     unknown = tmp_path / "invalid.tif"
     unknown.write_text("not a dataset")
     assert terrio.identify(unknown) == []
+    deep_failure = terrio.identify(unknown, deep=True, report_failures=True)
+    assert deep_failure[0]["error"] == "format not recognized from the available header"
+    assert terrio.identify(unknown, deep=True) == []
     failures = terrio.identify([unknown, tmp_path / "missing"], report_failures=True)
     assert len(failures) == 2
     assert all("error" in record and "driver" not in record for record in failures)
@@ -113,6 +116,34 @@ def test_remote_identification_keeps_bounded_reads(source):
                     assert counts["bytes"] < size
                 results.append(counts.copy())
             print("identify HTTP I/O (range, ignored range):", results)
+        finally:
+            server.shutdown()
+            worker.join()
+
+
+def test_deep_unknown_http_redacts_names():
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_GET(self):
+            body = b"unknown dataset"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/data.unknown?X-Amz-Signature=private"
+            result = terrio.identify(url, deep=True, report_failures=True)
+            assert result[0]["error"] == "format not recognized from the available header"
+            assert "private" not in str(result)
         finally:
             server.shutdown()
             worker.join()

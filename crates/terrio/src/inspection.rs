@@ -183,7 +183,7 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
     if lower.starts_with("north:") && lower.contains("south:") && lower.contains("east:") {
         return raster(RasterDriver::GRASSASCIIGrid);
     }
-    if lower.starts_with("envi") {
+    if lower.lines().next().is_some_and(|line| line.trim() == "envi") {
         return raster(RasterDriver::ENVI);
     }
     if lower.starts_with("datasetheader begin") {
@@ -218,8 +218,8 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
         }
     }
     let json = text.trim_start_matches('\u{1e}').trim_start();
-    let compact: String = if json.starts_with('{') { json.split_ascii_whitespace().collect() } else { String::new() };
-    if compact.contains("\"type\":\"Topology\"") {
+    let root_type = root_json_type(json);
+    if root_type.as_deref() == Some("Topology") {
         return vector(VectorDriver::TopoJSON);
     }
     if [
@@ -234,7 +234,7 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
         "GeometryCollection",
     ]
     .iter()
-    .any(|kind| compact.contains(&format!("\"type\":\"{kind}\"")))
+    .any(|kind| root_type.as_deref() == Some(*kind))
     {
         return vector(if text.starts_with('\u{1e}') || matches!(ext.as_str(), "geojsonl" | "geojsons" | "geojsonseq") {
             VectorDriver::GeoJSONSeq
@@ -246,6 +246,33 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
         return vector(VectorDriver::CSV);
     }
     None
+}
+
+// A prefix may end inside a large features array. Stop after the root type
+// member, skipping nested values with serde's bounded parser rather than
+// matching a geometry type embedded in an unrelated JSON object.
+fn root_json_type(text: &str) -> Option<String> {
+    use serde::de::{Error as _, MapAccess, Visitor};
+    struct RootType<'a>(&'a mut Option<String>);
+    impl<'de> Visitor<'de> for RootType<'_> {
+        type Value = ();
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a JSON object")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<(), A::Error> {
+            while let Some(key) = map.next_key::<String>()? {
+                if key == "type" {
+                    *self.0 = Some(map.next_value::<String>()?);
+                    return Err(A::Error::custom("root type found"));
+                }
+                map.next_value::<serde::de::IgnoredAny>()?;
+            }
+            Ok(())
+        }
+    }
+    let mut found = None;
+    let _ = serde::Deserializer::deserialize_map(&mut serde_json::Deserializer::from_str(text), RootType(&mut found));
+    found
 }
 
 /// Identifies a local/HTTP/S3 dataset from a bounded header. `deep` permits
@@ -303,7 +330,7 @@ pub fn identify(path: &str, deep: bool) -> Result<Option<Identification>> {
     }
     let mut result = match crate::open_raster_lazy(path) {
         Ok(raster_source) => raster(raster_source.driver()),
-        Err(_) => vector(crate::open_vector(path, &Default::default())?.driver),
+        Err(_) => crate::open_vector(path, &Default::default()).ok().and_then(|source| vector(source.driver)),
     };
     if let Some(result) = &mut result {
         result.deep = true;
@@ -420,6 +447,14 @@ mod tests {
     fn bounded_signatures_do_not_trust_binary_filename_extensions() {
         assert_eq!(identify_bytes(b"II*\0garbage", "renamed.bin").unwrap().driver, "GTiff");
         assert!(identify_bytes(b"not a TIFF", "wrong.tif").is_none());
+        assert!(identify_bytes(b"Environmental notes", "notes.txt").is_none());
+        assert_eq!(identify_bytes(b"ENVI\n samples = 1", "header.hdr").unwrap().driver, "ENVI");
+        assert!(identify_bytes(br#"{"geometry":{"type":"Point","coordinates":[0,0]}}"#, "config.json").is_none());
+        assert!(identify_bytes(br#"{"note":"type Point","nested":{"type":"Feature"}}"#, "config.json").is_none());
+        assert_eq!(
+            identify_bytes(br#"{"nested":{"type":"Point"},"type":"FeatureCollection","features":["#, "data.json").unwrap().driver,
+            "GeoJSON"
+        );
         assert_eq!(identify_bytes(b"\x89PNG\r\n\x1a\n", "image.bin").unwrap().driver, "PNG");
         assert_eq!(identify_bytes(br#"{"type": "FeatureCollection", "features": ["#, "data.bin").unwrap().driver, "GeoJSON");
         let data = [vec![b' '; IDENTIFICATION_HEADER_BYTES], br#"{"type":"FeatureCollection"}"#.to_vec()].concat();
