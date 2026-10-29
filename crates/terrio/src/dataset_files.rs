@@ -415,7 +415,7 @@ fn reference_text(reader: &mut quick_xml::Reader<&[u8]>) -> Result<String> {
     }
 }
 fn relative_reference(element: &quick_xml::events::BytesStart<'_>, raw: bool) -> bool {
-    element.attributes().flatten().find(|a| a.key.as_ref() == "relativeToVRT").is_some_and(|a| {
+    element.attributes().flatten().find(|a| a.key.as_ref() == "relativeToVRT").map_or(raw, |a| {
         a.normalized_value(quick_xml::XmlVersion::Implicit1_0).is_ok_and(|v| crate::ops::vrt::relative_reference_flag(Some(&v), raw))
     })
 }
@@ -1047,6 +1047,9 @@ mod tests {
     }
     #[test]
     fn vrt_relative_flags_match_gdal_sourced_and_raw_band_rules() {
+        let missing = quick_xml::events::BytesStart::new("SourceFilename");
+        assert!(relative_reference(&missing, true));
+        assert!(!relative_reference(&missing, false));
         for (value, expected) in
             [("true", true), ("yes", true), ("random", true), ("", true), ("0", false), ("OFF", false), ("false", false)]
         {

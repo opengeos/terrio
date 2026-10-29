@@ -1222,7 +1222,7 @@ ASCII and Surfer grids, Zarr, Shapefile, MapInfo TAB/MIF, CSV, GeoPackage, GML,
 MVT pyramids and VRT TIFF/netCDF references. GDAL reads MVT zoom-level directories;
 the whole-pyramid reference copy uses `gdal vsi copy --recursive`.
 
-The local run has 48 cases: 43 identical and five explicit metadata/reference
+The local run has 49 cases: 44 identical and five explicit metadata/reference
 corrections. GDAL's generic copy loses the CSV CRS `.prj`, omits GML XSD schemas,
 leaves the Idrisi reference-system name stale, and does not make the two VRT
 reference cases independent of their originals. Terrio preserves source values
@@ -1236,7 +1236,7 @@ existing files, and bounds metadata overhead without assuming a content type.
 The data, masks, overviews, georeferencing and metadata must remain exact.
 
 GDAL source-resolution comparisons cover both integer `relativeToVRT` flags for sourced
-bands and boolean flags for raw bands, with distinct same-named assets in the working
+bands and boolean flags for raw bands (relative by default when omitted), with distinct same-named assets in the working
 and VRT directories. Native paths and encoded filename whitespace retain exact identity.
 
 Core regressions cover source/hard-link aliases, batch preflight, stale sidecars,

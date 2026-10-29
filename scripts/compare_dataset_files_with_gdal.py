@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -21,6 +22,22 @@ def main():
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     args.terrio = str(Path(args.terrio).resolve())
+    # Select finite real pixels; offsets of NaN cannot distinguish source identities.
+    dem = gdal.Open(str(args.data / "dem.tif"))
+    band = dem.GetRasterBand(1)
+    nodata = band.GetNoDataValue()
+    dem_window = None
+    for y in range(0, dem.RasterYSize - 1, max(1, dem.RasterYSize // 16)):
+        for x in range(0, dem.RasterXSize - 1, max(1, dem.RasterXSize // 16)):
+            values = band.ReadAsArray(x, y, 2, 2)
+            if all(math.isfinite(float(value)) and value != nodata for value in values.flat):
+                dem_window = [x, y, 2, 2]
+                break
+        if dem_window is not None:
+            break
+    band = dem = None
+    if dem_window is None:
+        raise AssertionError("the real DEM needs a finite 2-by-2 source window")
     results = []
 
     def call(command, *paths, env=None, cwd=None, **flags):
@@ -438,11 +455,15 @@ def main():
                         str(folder / name),
                         str(args.data / "dem.tif"),
                         format="GTiff",
-                        srcWin=[0, 0, 2, 2],
+                        srcWin=dem_window,
                         outputType=gdal.GDT_Float32,
                     )
                     band = data.GetRasterBand(1)
-                    band.WriteArray(band.ReadAsArray() + delta)
+                    pixels = band.ReadAsArray()
+                    assert all(math.isfinite(float(value)) for value in pixels.flat)
+                    if delta:
+                        assert (pixels + delta != pixels).all()
+                    band.WriteArray(pixels + delta)
                     band = None
                     data = None
                 source = folder / primary
@@ -473,7 +494,7 @@ def main():
                 )
             except Exception as error:
                 results.append(dict(name=stage, status="differs", detail=str(error)))
-        for flag_index, (raw, flag) in enumerate([(False, flag) for flag in ["1", "true", "TRUE", "yes", "on", "0", "2", "01", " 1 "]] + [(True, flag) for flag in ["true", "yes", "on"]]):
+        for flag_index, (raw, flag) in enumerate([(False, flag) for flag in ["1", "true", "TRUE", "yes", "on", "0", "2", "01", " 1 "]] + [(True, flag) for flag in ["true", "yes", "on", None]]):
             stage = f"VRT {'raw' if raw else 'sourced'} relativeToVRT literal {flag}"
             try:
                 folder = root / f"relative-flag-{flag_index}"
@@ -482,13 +503,18 @@ def main():
                 working.mkdir()
                 source_folder.mkdir()
                 for directory, delta in [(working, 1000), (source_folder, 2000)]:
-                    data = gdal.Translate(str(directory / "source.tif"), str(args.data / "dem.tif"), srcWin=[0,0,2,2], outputType=gdal.GDT_Float32)
+                    data = gdal.Translate(str(directory / "source.tif"), str(args.data / "dem.tif"), srcWin=dem_window, outputType=gdal.GDT_Float32)
                     band = data.GetRasterBand(1)
-                    band.WriteArray(band.ReadAsArray() + delta)
+                    pixels = band.ReadAsArray()
+                    assert all(math.isfinite(float(value)) for value in pixels.flat)
+                    if delta:
+                        assert (pixels + delta != pixels).all()
+                    band.WriteArray(pixels + delta)
                     (directory / "source.bin").write_bytes(band.ReadRaster())
                     band = data = None
                 source = source_folder / "source.vrt"
-                definition = f"<VRTRasterBand dataType='Float32' band='1' subClass='VRTRawRasterBand'><SourceFilename relativeToVRT='{flag}'>source.bin</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>4</PixelOffset><LineOffset>8</LineOffset><ByteOrder>LSB</ByteOrder></VRTRasterBand>" if raw else f"<VRTRasterBand dataType='Float32' band='1'><SimpleSource><SourceFilename relativeToVRT='{flag}'>source.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand>"
+                relative_attribute = f" relativeToVRT='{flag}'" if flag is not None else ""
+                definition = f"<VRTRasterBand dataType='Float32' band='1' subClass='VRTRawRasterBand'><SourceFilename{relative_attribute}>source.bin</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>4</PixelOffset><LineOffset>8</LineOffset><ByteOrder>LSB</ByteOrder></VRTRasterBand>" if raw else f"<VRTRasterBand dataType='Float32' band='1'><SimpleSource><SourceFilename{relative_attribute}>source.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand>"
                 source.write_text(f"<VRTDataset rasterXSize='2' rasterYSize='2'><GeoTransform>0,1,0,2,0,-1</GeoTransform>{definition}</VRTDataset>")
                 previous = Path.cwd()
                 try:

@@ -2407,6 +2407,10 @@ test("dataset VRT references require explicit external scope permission", () => 
     assert.deepEqual(report.recovery_files, []);
     assert.deepEqual(terrio.vsiRead(`${root}/copy.raw`), new Uint8Array([1,2,3,4]));
     assert.ok(terrio.vsiStat(`${root}/source.raw`));
+    terrio.vsiWrite(`${root}/inputs/local.raw`, new Uint8Array([9,8,7,6]));
+    terrio.vsiWrite(`${root}/inputs/local.vrt`, encode('<VRTDataset rasterXSize="2" rasterYSize="2"><VRTRasterBand band="1" dataType="Byte" subClass="VRTRawRasterBand"><SourceFilename>local.raw</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>1</PixelOffset><LineOffset>2</LineOffset></VRTRasterBand></VRTDataset>'));
+    terrio.datasetCopy(`${root}/inputs/local.vrt`, `${root}/local-copy.vrt`);
+    assert.deepEqual([...terrio.vsiRead(`${root}/local-copy.raw`)], [9,8,7,6]);
   } finally { terrio.vsiDelete(root, {recursive:true}); }
 });
 

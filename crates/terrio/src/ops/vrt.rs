@@ -24,7 +24,7 @@ use wbraster::raster::RasterData;
 /// GDAL sourced bands use an integer flag; raw bands use CPLTestBool.
 pub(crate) fn relative_reference_flag(value: Option<&str>, raw: bool) -> bool {
     let Some(value) = value else {
-        return false;
+        return raw;
     };
     if raw {
         return !matches!(value.to_ascii_lowercase().as_str(), "0" | "no" | "off" | "false");
