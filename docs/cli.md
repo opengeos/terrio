@@ -723,7 +723,8 @@ Lazy raster readers use two-dimensional value windows of about 8 MiB, aligned to
 source blocks when they fit. The window planner uses the base level block shape
 for overviews too; an overview with a different block shape can decode a tile
 more than once. Very wide images do not require a whole tile row in
-memory. A compressed block larger than this budget can be decoded once per window
+memory. Requested masks add up to one byte per window pixel on top of the value
+window budget, plus any codec working buffers. A compressed block larger than this budget can be decoded once per window
 that intersects it: a 16-row strip that only fits eight rows per window can require
 two decodes. Scientific arrays use their storage chunk shape when its decoded values
 fit the same budget; unknown or oversized chunks use bounded hyperslabs and may

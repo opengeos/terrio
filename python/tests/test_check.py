@@ -137,6 +137,8 @@ def test_real_point_cloud_paths_and_uploads():
     import struct
     from pathlib import Path
 
+    if not any(driver["kind"] == "pointcloud" and driver["read"] for driver in terrio.drivers()):
+        pytest.skip("point-cloud support is not compiled")
     directory = os.environ.get("TERRIO_TEST_DATA")
     if directory is None:
         pytest.skip("TERRIO_TEST_DATA is not set")

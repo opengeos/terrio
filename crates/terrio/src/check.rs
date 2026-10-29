@@ -40,7 +40,8 @@ fn add(total: &mut u64, count: usize) -> Result<()> {
 
 /// Reads all bands in two-dimensional windows of about 8 MiB, aligning to
 /// source blocks when they fit. Oversized compressed blocks may be decoded again
-/// for each window that intersects them. Codec working memory and readers without
+/// for each window that intersects them. Masks add up to one byte per window pixel.
+/// Codec working memory and readers without
 /// lazy support retain their existing allocation behavior.
 pub fn check_raster(source: &mut LazyRaster, options: &CheckOptions) -> Result<CheckSummary> {
     let mut summary = CheckSummary::default();
@@ -73,11 +74,7 @@ pub fn check_raster(source: &mut LazyRaster, options: &CheckOptions) -> Result<C
         for y in (0..height).step_by(rows) {
             for x in (0..width).step_by(columns) {
                 let window = Window::new(x, y, columns.min(width - x), rows.min(height - y));
-                window
-                    .width
-                    .checked_mul(window.height)
-                    .and_then(|pixels| pixels.checked_mul(pixel_bytes))
-                    .ok_or_else(|| Error::InvalidData("dataset check window size overflows".into()))?;
+                debug_assert!(window.width.checked_mul(window.height).is_some_and(|pixels| pixels <= budget));
                 let data = source.read_window(window, &WindowOptions { overview, ..Default::default() })?;
                 add(&mut summary.raster_samples, data.raster.data.len())?;
                 add(&mut summary.raster_windows, 1)?;
@@ -211,9 +208,12 @@ pub fn check_path(path: &str, options: &CheckOptions) -> Result<CheckSummary> {
         let db = crate::stream::sqlite::FileDb::open(local.as_str())?;
         let (layers, rasters) = crate::drivers::vector::gpkg_read::contents(&db)?;
         let mut summary = if layers.is_empty() { CheckSummary::default() } else { check_vector_path(local.as_str())? };
-        for table in rasters {
-            let name = format!("GPKG:{}:{}", local.as_str(), table.name);
-            merge(&mut summary, check_raster(&mut crate::open_raster_lazy(&name)?, options)?)?;
+        if !rasters.is_empty() {
+            let raster_db = crate::drivers::sqlite::Db::open(std::path::Path::new(local.as_str()))?;
+            for table in rasters {
+                let source = crate::drivers::gpkg::read_db(&raster_db, Some(&table.name), std::path::Path::new(local.as_str()))?;
+                merge(&mut summary, check_raster(&mut source.into(), options)?)?;
+            }
         }
         return Ok(summary);
     }
@@ -509,7 +509,7 @@ mod tests {
         let mut layer = crate::Layer::new("points");
         layer.add_feature(Some(wbvector::Geometry::point(1., 2.)), &[]).unwrap();
         builder.add_layer(&layer).unwrap();
-        for name in ["first", "second"] {
+        for name in ["first", "second:colon"] {
             crate::drivers::gpkg::add_raster(&mut builder, &source.raster, None, name, None).unwrap();
         }
         let bytes = builder.finish().unwrap();
