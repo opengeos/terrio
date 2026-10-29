@@ -706,6 +706,12 @@ input with companions; large batches in one directory can incur quadratic prefli
 work. A file used both as file-bearing metadata and raw VRT pixels is refused if
 rewriting would change those pixels. VRT deletion removes the definition and its owned
 companions, retaining referenced rasters.
+VRT source filenames preserve trailing whitespace and leading whitespace encoded with
+character references or CDATA, matching GDAL. Rewritten references encode leading
+whitespace so it remains part of the filename. Native raster paths also retain edge
+whitespace rather than silently opening a different file. Obsolete companion links,
+including dangling links, are staged and unlinked during overwrite without following
+them; destinations receiving new content continue to refuse symbolic links.
 
 Dataset file management refuses MVT trees containing entries outside `metadata.json` and
 numeric `z/x/y.pbf` or `z/x/y.mvt` tile paths. Relative GML schema references must

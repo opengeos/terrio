@@ -2433,3 +2433,22 @@ test("checkDataset reads real raster, vector and scientific uploads", {skip: nee
     }
   }
 });
+
+// Different pixel values prove that whitespace never aliases another supplied source.
+test("openVrt preserves filename whitespace in uploaded sources", () => {
+  const sources = {};
+  for (const [name, value] of [["source.tif", 1], ["source.tif ", 9], [" source.tif ", 7]]) {
+    const raster = terrio.rasterFromArray(new Uint8Array([value]), 1, 1, [0, 1, 0, 1, 0, -1]);
+    sources[name] = raster.toBytes("source.tif");
+    raster.free();
+  }
+  for (const [text, expected] of [
+    ["source.tif ", 9], [" source.tif", 1], ["&#32;source.tif ", 7],
+    ["<![CDATA[ source.tif ]]>", 7], ["<![CDATA[source.tif]]> ", 1],
+  ]) {
+    const xml = `<VRTDataset rasterXSize="1" rasterYSize="1"><VRTRasterBand dataType="Byte" band="1"><SimpleSource><SourceFilename>${text}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>`;
+    const output = terrio.openVrt(xml, sources);
+    assert.deepEqual([...output.readBand(1)], [expected]);
+    output.free();
+  }
+});
