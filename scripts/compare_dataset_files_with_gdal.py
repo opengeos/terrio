@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -21,10 +22,12 @@ def main():
     args = parser.parse_args()
     results = []
 
-    def call(command, *paths, **flags):
+    def call(command, *paths, env=None, **flags):
         command = [args.terrio, command, *map(str, paths), "--json"]
-        command.extend("--" + name.replace("_", "-") for name, enabled in flags.items() if enabled)
-        process = subprocess.run(command, capture_output=True, text=True)
+        command.extend(
+            "--" + name.replace("_", "-") for name, enabled in flags.items() if enabled
+        )
+        process = subprocess.run(command, capture_output=True, text=True, env=env)
         if process.returncode:
             raise AssertionError(process.stderr.strip())
         return json.loads(process.stdout)
@@ -130,7 +133,9 @@ def main():
                             "delta WGS84 : 0 0 0\n"
                             if line.lower().startswith("delta wgs84")
                             else line
-                            for line in reference_file.read_text().splitlines(keepends=True)
+                            for line in reference_file.read_text().splitlines(
+                                keepends=True
+                            )
                         )
                     )
             if driver == "GTiff":
@@ -169,8 +174,12 @@ def main():
         folder.mkdir()
         path = folder / "source.tif"
         original = gdal.Open(str(args.data / "landsat.tif"))
-        values = original.GetRasterBand(1).ReadRaster(0, 0, 32, 32, buf_type=gdal.GDT_Byte)
-        dataset = gdal.GetDriverByName("GTiff").Create(str(path), 32, 32, 1, gdal.GDT_Byte)
+        values = original.GetRasterBand(1).ReadRaster(
+            0, 0, 32, 32, buf_type=gdal.GDT_Byte
+        )
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(path), 32, 32, 1, gdal.GDT_Byte
+        )
         dataset.GetRasterBand(1).WriteRaster(0, 0, 32, 32, values)
         dataset = original = None
         path.with_suffix(".tfw").write_text("2\n0\n0\n-2\n10\n100\n")
@@ -182,7 +191,10 @@ def main():
             str(path), 32, 32, 1, gdal.GDT_Byte, options=["RPB=YES"]
         )
         dataset.GetRasterBand(1).WriteRaster(0, 0, 32, 32, values)
-        rpc = {key: "0" for key in ["LINE_OFF", "SAMP_OFF", "LAT_OFF", "LONG_OFF", "HEIGHT_OFF"]}
+        rpc = {
+            key: "0"
+            for key in ["LINE_OFF", "SAMP_OFF", "LAT_OFF", "LONG_OFF", "HEIGHT_OFF"]
+        }
         rpc.update(
             {
                 key: "1"
@@ -245,7 +257,9 @@ def main():
             stage = "source snapshot"
             try:
                 reference = snapshot(source)
-                dataset = gdal.OpenEx(str(source / "0" if label == "MVT directory" else source))
+                dataset = gdal.OpenEx(
+                    str(source / "0" if label == "MVT directory" else source)
+                )
                 expected_files = dataset.GetFileList()
                 dataset = None
                 stage = "owned file inventory"
@@ -254,11 +268,13 @@ def main():
                 if not source.is_dir():
                     actual_names = {Path(p).name for p in inventory["files"]}
                     expected_names = {Path(p).name for p in expected_files}
-                    if label == "CSV" and actual_names == expected_names | {"source.prj"}:
-                        difference = (
-                            "Terrio retains the CSV CRS .prj omitted by GDAL GetFileList/copy"
-                        )
-                    elif label == "GML" and actual_names == expected_names | {"source.xsd"}:
+                    if label == "CSV" and actual_names == expected_names | {
+                        "source.prj"
+                    }:
+                        difference = "Terrio retains the CSV CRS .prj omitted by GDAL GetFileList/copy"
+                    elif label == "GML" and actual_names == expected_names | {
+                        "source.xsd"
+                    }:
                         difference = "Terrio retains and rebases GML XSD schema omitted by GDAL GetFileList/copy"
                     else:
                         assert actual_names == expected_names, (
@@ -288,13 +304,18 @@ def main():
                         str(source),
                         str(reference_target),
                     ]
-                process = subprocess.run(reference_command, capture_output=True, text=True)
-                assert process.returncode == 0, process.stderr
                 stage = "GDAL reference copy"
+                process = subprocess.run(
+                    reference_command, capture_output=True, text=True
+                )
+                assert process.returncode == 0, process.stderr
+                stage = "GDAL reference snapshot"
                 copied_reference = snapshot(reference_target)
                 if difference and label == "CSV":
                     assert all(layer["crs"] is None for layer in copied_reference)
-                    assert copied_reference == [dict(layer, crs=None) for layer in reference]
+                    assert copied_reference == [
+                        dict(layer, crs=None) for layer in reference
+                    ]
                 elif difference and label == "GML":
                     assert not reference_target.with_suffix(".xsd").exists()
                 elif label == "RST" and copied_reference != reference:
@@ -311,7 +332,9 @@ def main():
                     schema = (
                         ET.parse(target)
                         .getroot()
-                        .attrib["{http://www.w3.org/2001/XMLSchema-instance}schemaLocation"]
+                        .attrib[
+                            "{http://www.w3.org/2001/XMLSchema-instance}schemaLocation"
+                        ]
                         .split()[-1]
                     )
                     assert (target.parent / schema).read_bytes() == source.with_suffix(
@@ -323,7 +346,8 @@ def main():
                         full_suffix = original.name.removeprefix(source.name)
                         name = (
                             (target.name + full_suffix)
-                            if original.name.startswith(source.name + ".") or original == source
+                            if original.name.startswith(source.name + ".")
+                            or original == source
                             else (target.stem + original.name.removeprefix(source.stem))
                         )
                         copied = target.with_name(name)
@@ -351,7 +375,9 @@ def main():
                     )
                 )
             except Exception as error:
-                results.append(dict(name=label, status="differs", detail=f"{stage}: {error}"))
+                results.append(
+                    dict(name=label, status="differs", detail=f"{stage}: {error}")
+                )
         # VRT dependencies are copied with regular basenames; rename moves only owned definitions.
         for selector in [False, True]:
             label = "VRT netCDF reference" if selector else "VRT TIFF reference"
@@ -377,7 +403,9 @@ def main():
                 target = output / "copied.vrt"
                 call("dataset-copy", source, target)
                 assert raster_snapshot(target) == expected
-                assert (output / ("copied" + data.suffix)).read_bytes() == data.read_bytes()
+                assert (
+                    output / ("copied" + data.suffix)
+                ).read_bytes() == data.read_bytes()
                 reference_folder = output / "gdal"
                 reference_folder.mkdir()
                 reference_target = reference_folder / "copied.vrt"
@@ -388,17 +416,9 @@ def main():
                     str(source),
                     str(reference_target),
                 ]
-                if label == "MVT directory":
-                    # GDAL opens a zoom-level directory, not the whole pyramid root.
-                    reference_command = [
-                        "gdal",
-                        "vsi",
-                        "copy",
-                        "--recursive",
-                        str(source),
-                        str(reference_target),
-                    ]
-                process = subprocess.run(reference_command, capture_output=True, text=True)
+                process = subprocess.run(
+                    reference_command, capture_output=True, text=True
+                )
                 reference_copy_failed = process.returncode != 0
                 hidden = data.with_name("hidden" + data.suffix)
                 data.rename(hidden)
@@ -484,7 +504,9 @@ def main():
                         else:
                             first = max(0, size - int(b))
                         self.send_response(206)
-                        self.send_header("Content-Range", f"bytes {first}-{last}/{size}")
+                        self.send_header(
+                            "Content-Range", f"bytes {first}-{last}/{size}"
+                        )
                     else:
                         self.send_response(200)
                     self.send_header("Content-Length", str(last - first + 1))
@@ -551,7 +573,9 @@ def main():
                     try:
                         uri = f"/vsizip/{{http://127.0.0.1:{server.server_port}/{archive.name}}}/source.tif"
                         inventory = call("dataset-files", uri)
-                        assert inventory["driver"] == "GTiff" and inventory["files"] == [uri]
+                        assert inventory["driver"] == "GTiff" and inventory[
+                            "files"
+                        ] == [uri]
                     finally:
                         server.shutdown()
                         worker.join()
@@ -584,7 +608,9 @@ def main():
                 try:
                     document = ET.parse(definition)
                     for element in document.iter("SourceFilename"):
-                        element.text = f"http://127.0.0.1:{server.server_port}/source.tif"
+                        element.text = (
+                            f"http://127.0.0.1:{server.server_port}/source.tif"
+                        )
                         element.set("relativeToVRT", "0")
                     document.write(definition, encoding="utf-8", xml_declaration=True)
                     moved = root / "remote-reference.vrt"
@@ -596,7 +622,10 @@ def main():
                     assert definition.exists() and not moved.exists()
                     assert counts["gets"] == counts["heads"] == counts["bytes"] == 0
                     report = call(
-                        "dataset-rename", definition, moved, allow_external_references=True
+                        "dataset-rename",
+                        definition,
+                        moved,
+                        allow_external_references=True,
                     )
                     assert not definition.exists()
                     assert raster_snapshot(moved) == expected_vrt
@@ -620,6 +649,168 @@ def main():
                     detail=str(error),
                 )
             )
+    # Exercise object cleanup independently of local filesystem deletion semantics.
+    from compare_vsi_with_gdal import S3, make_handler
+    from http.server import ThreadingHTTPServer
+    import threading
+    import time
+
+    store = S3()
+    base_handler = make_handler(store)
+    transferred = {"request_body_bytes": 0, "response_body_bytes": 0}
+    transfer_lock = threading.Lock()
+
+    class S3Handler(base_handler):
+        def body(self):
+            data = super().body()
+            with transfer_lock:
+                transferred["request_body_bytes"] += len(data)
+            return data
+
+        def reply(self, status, body=b"", headers=None):
+            with transfer_lock:
+                if self.command != "HEAD":
+                    transferred["response_body_bytes"] += len(body)
+            return super().reply(status, body, headers)
+
+        def do_PUT(self):
+            path = self.path.split("?")[0]
+            if path == "/datasets/rollback.tif.aux.xml" and self.headers.get(
+                "x-amz-copy-source"
+            ):
+                self.body()
+                return self.reply(403, b"<Error><Code>AccessDenied</Code></Error>")
+            return super().do_PUT()
+
+    stage = "S3 dataset overwrite, batch deletion and rollback cleanup"
+    try:
+        with (
+            tempfile.TemporaryDirectory(prefix="terrio-dataset-s3-") as temporary,
+            ThreadingHTTPServer(("127.0.0.1", 0), S3Handler) as server,
+        ):
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            host = f"127.0.0.1:{server.server_port}"
+            env = dict(
+                os.environ,
+                AWS_S3_ENDPOINT=f"http://{host}",
+                AWS_HTTPS="NO",
+                AWS_VIRTUAL_HOSTING="FALSE",
+                AWS_ACCESS_KEY_ID="AKID",
+                AWS_SECRET_ACCESS_KEY="secret",
+                AWS_REGION="us-east-1",
+            )
+            reference_env = dict(env, AWS_S3_ENDPOINT=host)
+            try:
+                root = Path(temporary)
+                sources = []
+                for i in range(2):
+                    source = root / f"source-{i}.tif"
+                    gdal.Translate(
+                        str(source),
+                        str(args.data / "dem.tif"),
+                        srcWin=[i * 32, 0, 32, 32],
+                        format="GTiff",
+                    ).Close()
+                    sources.append(source)
+                store.objects["datasets/keep.txt"] = (
+                    b"preserve unrelated object",
+                    time.time(),
+                )
+                for name, source, overwrite in [
+                    ("out.tif", sources[0], False),
+                    ("out.tif", sources[1], True),
+                    ("second.tif", sources[0], False),
+                ]:
+                    report = call(
+                        "dataset-copy",
+                        source,
+                        f"/vsis3/datasets/terrio/{name}",
+                        overwrite=overwrite,
+                        env=env,
+                    )
+                    assert report["recovery_files"] == [], report
+                    command = [
+                        "gdal",
+                        "dataset",
+                        "copy",
+                        str(source),
+                        f"/vsis3/datasets/gdal/{name}",
+                    ] + (["--overwrite"] if overwrite else [])
+                    subprocess.run(
+                        command, env=reference_env, capture_output=True, check=True
+                    )
+                    assert (
+                        store.objects[f"datasets/terrio/{name}"][0]
+                        == store.objects[f"datasets/gdal/{name}"][0]
+                        == source.read_bytes()
+                    )
+                    assert not any(
+                        ".terrio-dataset-" in key for key in store.objects
+                    ), sorted(store.objects)
+                reports = call(
+                    "dataset-delete",
+                    "/vsis3/datasets/terrio/out.tif",
+                    "/vsis3/datasets/terrio/second.tif",
+                    env=env,
+                )
+                assert all(report["recovery_files"] == [] for report in reports), (
+                    reports
+                )
+                subprocess.run(
+                    [
+                        "gdal",
+                        "dataset",
+                        "delete",
+                        "/vsis3/datasets/gdal/out.tif",
+                        "/vsis3/datasets/gdal/second.tif",
+                    ],
+                    env=reference_env,
+                    capture_output=True,
+                    check=True,
+                )
+                assert set(store.objects) == {"datasets/keep.txt"}, sorted(
+                    store.objects
+                )
+                # Fail the second component after the main TIFF was installed.
+                Path(str(sources[0]) + ".aux.xml").write_text(
+                    '<PAMDataset><Metadata><MDI key="sensor">derived DEM</MDI></Metadata></PAMDataset>'
+                )
+                try:
+                    call(
+                        "dataset-copy",
+                        sources[0],
+                        "/vsis3/datasets/rollback.tif",
+                        env=env,
+                    )
+                    raise AssertionError(
+                        "injected installation failure was not observed"
+                    )
+                except AssertionError as error:
+                    assert "403" in str(error) or "AccessDenied" in str(error), str(
+                        error
+                    )
+                    assert "rollback incomplete" not in str(error), str(error)
+                assert set(store.objects) == {"datasets/keep.txt"}, sorted(
+                    store.objects
+                )
+                assert (
+                    store.objects["datasets/keep.txt"][0]
+                    == b"preserve unrelated object"
+                )
+            finally:
+                server.shutdown()
+                worker.join()
+        results.append(
+            dict(
+                name=stage,
+                status="identical",
+                detail="GDAL and Terrio preserve exact real DEM bytes on S3 overwrite/delete; no recovery objects remain; injected second-component failure rolls back both installed and staged objects; "
+                f"aggregate server transfer including both tools: {transferred}",
+            )
+        )
+    except Exception as error:
+        results.append(dict(name=stage, status="differs", detail=str(error)))
     if args.json:
         print(json.dumps(results))
     else:

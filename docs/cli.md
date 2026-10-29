@@ -696,7 +696,10 @@ locations and Idrisi/ERS header references are also updated. Irregular basenames
 refused before mutation, as in GDAL. VRT graph traversal reuses completed inventories
 and permits at most 128 nested definitions; definitions are held in memory. GML
 definitions are also read and parsed in full when preparing a transfer, even when no
-reference changes. Shared-companion safety checks scan the parent directory for each
+reference changes. Original bytes, decoded text and a serialized output buffer can
+coexist, so peak memory can be several times the definition size and can expand with
+text encoding; there is no fixed memory bound for these definitions. Shared-companion
+safety checks scan the parent directory for each
 input with companions; large batches in one directory can incur quadratic preflight
 work. A file used both as file-bearing metadata and raw VRT pixels is refused if
 rewriting would change those pixels. VRT deletion removes the definition and its owned
