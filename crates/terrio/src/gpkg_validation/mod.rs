@@ -231,6 +231,26 @@ impl Checker {
         }
     }
 
+    /// Dispatch registered physical attribute tables. Attribute views still need
+    /// the separate view evaluator before the complete validator is exposed.
+    fn attributes(&mut self, bytes: &[u8]) -> Result<()> {
+        let Some(contents) = self.db.tables.get("gpkg_contents") else { return Ok(()) };
+        let names: Vec<_> = contents
+            .rows
+            .iter()
+            .filter(|row| contents.get(row, "data_type").and_then(Value::as_str) == Some("attributes"))
+            .filter_map(|row| contents.get(row, "table_name").and_then(Value::as_str))
+            .filter_map(|name| self.db.tables.keys().find(|key| key.eq_ignore_ascii_case(name)).cloned())
+            .collect();
+        if names.is_empty() {
+            return Ok(());
+        }
+        for name in &names {
+            self.attribute_table(name);
+        }
+        self.user_content(bytes, &names.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
     /// A second streaming inspection examines only requested user tables. Retain
     /// at most one warning per column, never the table's records or geometry blobs.
     fn user_content(&mut self, bytes: &[u8], names: &[&str]) -> Result<()> {
@@ -443,6 +463,9 @@ fn check_core(bytes: &[u8]) -> CoreReport {
     let mut checker = Checker { db, report };
     checker.spatial_references();
     checker.contents();
+    if let Err(error) = checker.attributes(bytes) {
+        checker.report.require(false, 6, error.to_string());
+    }
     checker.report
 }
 
@@ -650,6 +673,8 @@ with sqlite3.connect(path) as db:
   db.execute('CREATE TABLE '+name+'('+schema+')'+(' WITHOUT ROWID' if without_rowid else ''))
   for rowid,value in enumerate(values): db.execute('INSERT INTO '+name+'(id,v) VALUES(?,?)',(rowid,value))
   if post: db.execute('ALTER TABLE '+name+' ADD COLUMN '+post)
+  registered=name.upper() if name=='case_0' else name
+  db.execute("INSERT INTO gpkg_contents(table_name,data_type,identifier) VALUES(?,'attributes',?)",(registered,name))
   db.commit()
   checker=GPKGChecker(str(path),abort_at_first_error=False,extra_checks=True,warning_msg=False)
   checker._check_attribute_user_table(db.cursor(),name)
@@ -737,6 +762,14 @@ print(json.dumps(dict(path=str(path),cases=cases,encodings=[str(root/(encoding+'
                     checker.report
                 );
             }
+            let report = check_core(&bytes);
+            let attributes: Vec<_> = cases.iter().filter(|case| case["features"] != true).collect();
+            let expected_errors: u64 =
+                attributes.iter().map(|case| case["errors"].as_u64().unwrap() + case["error_delta"].as_u64().unwrap()).sum();
+            let expected_warnings: u64 =
+                attributes.iter().map(|case| case["warnings"].as_u64().unwrap() + case["warning_delta"].as_u64().unwrap()).sum();
+            assert_eq!(report.errors.iter().filter(|error| matches!(error.requirement, 5 | 119)).count() as u64, expected_errors);
+            assert_eq!(report.warnings.len() as u64, expected_warnings);
         }
     }
 
