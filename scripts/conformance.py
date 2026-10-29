@@ -806,6 +806,26 @@ def suite_pansharpen(ctx):
     )
 
 
+def suite_identify(ctx):
+    suite = Suite("identify", "Dataset identification", "`gdal dataset identify` / GDALIdentifyDriverEx (GDAL 3.13.3)",
+                  "Real Landsat, USGS, OPERA, SRTM, NOAA scientific data and vector files, plus derived raster encodings. Exact driver labels; generic JP2, KML and HDF5 label families are reported within tolerance. Companion-file formats use the explicit deep fallback. Unknown inputs must remain unknown; no pixel/feature values are decoded by the bounded header path.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs osgeo"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_identify_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical":IDENTICAL,"tolerance":TOLERANCE,"not compared":NOT_COMPARED}
+    for result in results:
+        suite.cases.append(Case("Dataset identification",result["name"],statuses.get(result["status"],DIFFERS),result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_vector_grid(ctx):
     """Scattered points gridded by every gdal_grid algorithm, against GDAL."""
     return suite_json_ops(
@@ -1982,6 +2002,7 @@ SUITES = OrderedDict(
         ("raster-query", suite_raster_query),
         ("raster-pixel", suite_raster_pixel),
         ("blend", suite_blend),
+        ("identify", suite_identify),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),
