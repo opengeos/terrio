@@ -124,6 +124,17 @@ impl Checker {
                     41,
                     "tile matrix set references missing SRS",
                 );
+                let contents = &self.db.tables["gpkg_contents"];
+                if let Some(registered) = contents.rows.iter().find(|row| contents.get(row, "table_name").and_then(Value::as_str) == name) {
+                    self.report.require(
+                        contents
+                            .get(registered, "srs_id")
+                            .and_then(Value::as_i64)
+                            .is_some_and(|id| table.get(row, "srs_id").and_then(Value::as_i64) == Some(id)),
+                        147,
+                        "tile matrix set SRS must match its contents registration",
+                    );
+                }
             }
         }
         let mut matrices: BTreeMap<String, Vec<Matrix>> = BTreeMap::new();
@@ -161,6 +172,10 @@ impl Checker {
         }
         let mut pyramids = BTreeMap::new();
         for (name, coverage) in registered {
+            let set_rows = self.db.tables.get("gpkg_tile_matrix_set").map_or(0, |table| {
+                table.rows.iter().filter(|row| table.get(row, "table_name").and_then(Value::as_str) == Some(name.as_str())).count()
+            });
+            self.report.require(set_rows == 1, 40, format!("{name}: expected one tile matrix set registration"));
             let Some(physical) = self.db.tables.keys().find(|key| key.eq_ignore_ascii_case(&name)).cloned() else {
                 if self.db.object(&name) {
                     self.report.warnings.push(format!("tile view {name} still needs view-schema and value validation"));
@@ -341,15 +356,20 @@ with sqlite3.connect(base) as db:
  db.execute('CREATE TABLE IF NOT EXISTS gpkg_extensions(table_name TEXT,column_name TEXT,extension_name TEXT NOT NULL,definition TEXT NOT NULL,scope TEXT NOT NULL,UNIQUE(table_name,column_name,extension_name))')
  assert db.execute('SELECT count(*) FROM tiles').fetchone()[0] > 0
 cases=[]
-def add(name,sql='',extra=()):
+def add(name,sql='',extra=(),reference_exception=None):
  path=root/(str(len(cases))+'.gpkg'); shutil.copyfile(base,path)
  with sqlite3.connect(path) as db:
   db.execute('PRAGMA ignore_check_constraints=ON')
   if sql: db.executescript(sql)
  checker=GPKGChecker(str(path),abort_at_first_error=False,warning_msg=False)
  checker.version=(1,4,0); checker.extended_pragma_info=True
- with sqlite3.connect(path) as db: checker._check_tiles(db.cursor())
- cases.append(dict(name=name,path=str(path),requirements=sorted([e[0] for e in checker.errors]+list(extra))))
+ try:
+  with sqlite3.connect(path) as db: checker._check_tiles(db.cursor())
+ except (TypeError,ZeroDivisionError) as error:
+  assert type(error).__name__==reference_exception,(name,type(error).__name__)
+ else:
+  assert reference_exception is None,name
+ cases.append(dict(name=name,path=str(path),requirements=sorted([e[0] for e in checker.errors]+list(extra)),reference_exception=reference_exception))
 add('real Landsat PNG tiles')
 add('empty tile user table','DELETE FROM tiles')
 add('incomplete PNG signature',"UPDATE tiles SET tile_data=X'89504e470000000000000000'",extra=[36,36])
@@ -362,7 +382,9 @@ for field in ['tile_column','tile_row']:
  # GDAL checks only MIN, missing an out-of-range maximum when a valid tile remains.
  add(field+' invalid maximum with valid minimum',"INSERT INTO tiles(zoom_level,tile_column,tile_row,tile_data) SELECT zoom_level,"+('99,tile_row' if field=='tile_column' else 'tile_column,99')+",tile_data FROM tiles LIMIT 1",extra=[56 if field=='tile_column' else 57])
 add('unregistered user zoom','UPDATE tiles SET zoom_level=42')
-add('missing SRS','UPDATE gpkg_tile_matrix_set SET srs_id=999999')
+add('missing SRS','UPDATE gpkg_tile_matrix_set SET srs_id=999999',extra=[147])
+add('defined but inconsistent SRS','UPDATE gpkg_tile_matrix_set SET srs_id=-1',extra=[147])
+add('missing matrix set registration','DELETE FROM gpkg_tile_matrix_set',extra=[40],reference_exception='TypeError')
 add('inconsistent x extent','UPDATE gpkg_tile_matrix_set SET max_x=max_x+1000')
 add('inconsistent y extent','UPDATE gpkg_tile_matrix_set SET max_y=max_y+1000')
 add('orphan matrix set',"INSERT INTO gpkg_tile_matrix_set SELECT 'ghost',srs_id,min_x,min_y,max_x,max_y FROM gpkg_tile_matrix_set")
@@ -410,7 +432,7 @@ print(json.dumps(cases))
             let mut requirements: Vec<_> = report
                 .errors
                 .iter()
-                .filter_map(|error| matches!(error.requirement, 19 | 35 | 36 | 38..=57 | 88 | 91).then_some(error.requirement))
+                .filter_map(|error| matches!(error.requirement, 19 | 35 | 36 | 38..=57 | 88 | 91 | 147).then_some(error.requirement))
                 .collect();
             requirements.sort_unstable();
             assert_eq!(serde_json::json!(requirements), case["requirements"], "{case}: {report:?}");
