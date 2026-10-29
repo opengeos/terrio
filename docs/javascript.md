@@ -463,3 +463,25 @@ VRT references stay in the source directory tree by default; enable
 referenced rasters. Reports contain `recovery_files`; leftovers indicate a committed
 operation whose staged cleanup needs attention. The CLI file-management section documents
 companion discovery, overwrite, staging and recovery behavior shared by these APIs.
+
+### Indexed color conversion
+
+`rgbToPalette(source, {colorCount: 256, bitDepth: 5, dither: true, colorMap,
+outputNodata, mask})` returns an indexed Byte Dataset. Sources accept Dataset
+objects or uploaded raster bytes (`Uint8Array` or `{bytes, filename}`). `colorMap`
+accepts a palette Dataset/upload, color-file text, `{text, filename}`, or RGBA
+integer arrays; `mask` accepts a flat Uint8Array/array of validity bytes.
+`paletteToRgb(source, {rgba: true})` expands to RGBA (RGB by default), and
+`attachPalette(source, colorMap)` changes only the table.
+`readColorTable(source, filename)` reads integer RGBA entries from these same
+palette sources. Operations materialize the input/output. See
+[Palette conversion](cli.md#palette-conversion) for formats and validity rules.
+
+Raster `toBytes` preserves dataset masks for GeoTIFF/COG without `tSrs`.
+Other formats omit separate dataset masks. Reprojecting a raster
+with a separate dataset mask is refused explicitly; use an alpha band instead.
+
+Color-file text passed to palette APIs as a `Uint8Array` needs a filename hint
+or `{bytes, filename: "colors.txt"}`. Plain strings and `{text, filename}` also
+accept text tables. Tile-archive serialization rejects any raster with a
+dataset mask, including materialized palette results; use an explicit alpha band.

@@ -51,6 +51,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Indexed raster catalogs | `scripts/compare_catalogs_with_gdal.py` | Real DEM mosaics in GeoPackage/FlatGeobuf indexes: z-order, nodata, masks, partial alpha, mixed CRS and Terrio-written indexes read by GDAL GTI; an 8x8 HTTP query from 1,002 features checks opens/cache bounds and actual bytes for both implementations |
 | Raster operations | `scripts/compare_ops_with_gdal.py` | translate, warp (all resampling methods), mosaic and VRT against `gdal_translate`, `gdalwarp`, `gdalbuildvrt`, `gdal_merge.py` |
 | Raster comparison, pixel queries, XYZ | `scripts/compare_raster_query_with_gdal.py` | `terrio compare` vs `gdal raster compare` (report lines and exit status), `terrio pixel-info` vs `gdal raster pixel-info` (GeoJSON, CSV) and `gdallocationinfo` (text, `-valonly`), `terrio xyz` vs `gdal2xyz.py`, on real rasters and derived copies. Registered in conformance as `raster-query`. |
+| Palette conversion | `scripts/compare_palette_with_gdal.py` | Landsat quantization at 5/8 bits, 2/17/256 colors and dithering, raster/text map lookup, nodata/masks/alpha, OPERA RGB/RGBA expansion and palette attachment: exact pixels, palette entries, masks, types, nodata, CRS and geotransform. Registered as `palette`. |
 | Raster blending | `scripts/compare_blend_with_gdal.py` | Ten composition operators, 1–4 band Landsat images, OPERA GeoTIFF/PNG palettes and alpha/opacity boundaries; registered as `blend`, with documented GDAL reference-path normalizations. |
 | Pixel-wise raster commands | `scripts/compare_raster_pixel_with_gdal.py` | `gdal raster unscale`, `nodata-to-alpha`, `reclassify` (inline and `@file` mappings, ranges, `NO_DATA`, `NAN`, `DEFAULT`, `PASS_THROUGH`, `--ot`) and `as-features` (polygons, points, tables, `--skip-nodata`, `--include-xy`, `--include-row-col`) on USGS, Landsat, ECOSTRESS, NLCD and Sentinel-5P data: size, type, nodata, CRS, color interpretations, scales and every pixel, or every feature's fields and vertices. Registered in conformance as `raster-pixel`. |
 | Focal statistics, collars, enhancement | `scripts/compare_focal_with_gdal.py` | `gdal raster neighbors` (every kernel and method, matrices, types, nodata, the whole USGS DEM in strips), `nearblack` and `gdal raster clean-collar` (both algorithms, colors, thresholds, distances, alpha, masks, in-place updates) and `gdalenhance` (equalization, LUT file output and input) on Sentinel-2, Landsat 7 and USGS data: pixels, masks, type, nodata, geotransform, LUT text |
@@ -1158,6 +1159,39 @@ and `USGS_1_n40w106.tif` each used one GET and 65,536 served body bytes, matchin
 ordinary lazy info opens. Raster index construction never called the pixel source in
 its panic-on-read unit fixture. These observations apply to lazy-capable readers;
 formats whose reader lacks a metadata-only path may materialize the input.
+
+## Palette validation
+
+A local HTTP range test of Python masked-raster writes (512 × 512 RGB COG,
+internal mask, uncompressed image blocks) transferred 853,046 bytes from one
+source both for a pixel-only read and a mask-preserving write: two GET responses
+versus three. Range caching covered the mask bytes in the pixel-read ranges.
+The output mask and pixels were checked independently with GDAL 3.13.3.
+This fixture is an I/O observation, not a general zero-overhead guarantee;
+`test_remote_mask_write_io_and_tile_archive_refusal` measures response bytes and
+source counts and confirms that the unsupported lazy tile-archive mask path
+refuses the write without creating output.
+
+Palette lookup uses a dense u16 cache at 5-bit precision (64 KiB). At 8 bits,
+images up to 65,536 pixels use a pixel-bounded hash cache; larger images use a
+32 MiB dense table. On the complete 2127 × 1564 Landsat RGB fixture, using a supplied
+256-entry grayscale table and 8-bit diffusion, two local optimized CLI runs took
+0.517/0.519 s with the previous capped hash cache and 0.284/0.289 s with the dense
+cache. The output files were byte-identical. These timings are local observations,
+not performance thresholds; the fixed-size cache avoids repeated linear palette
+scans after 65,536 distinct query colors.
+
+For full-precision palette mapping, images of up to 65,536 pixels use a sparse
+cache bounded by their pixel count. Larger images retain the dense 32 MiB table;
+5-bit mapping uses the 64 KiB table. This avoids the large fixed allocation on
+small conversions without reintroducing capped-cache misses on large images.
+
+Color-file reads enforce the 10 MiB accepted-text limit while streaming,
+including sources without a size. A 64 MiB size-less HTTP response is cancelled
+before completion; counters include the existing VSI metadata/index probes.
+Local, in-memory and decompressed ZIP member regressions check exact-limit
+success, oversized rejection and transport-error preservation. Malformed
+text/XML channels outside 0–255 are rejected rather than wrapped.
 
 ## COG validation
 

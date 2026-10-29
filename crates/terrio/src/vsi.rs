@@ -531,7 +531,7 @@ fn stat_node(node: &Node) -> Result<Option<Stat>> {
 fn stat_input(input: &str, node: &Node, listing: bool) -> Result<Option<Stat>> {
     #[cfg(remote)]
     if let Node::Url { .. } = node
-        && (listing || input.trim().split('?').next().is_some_and(|path| path.ends_with('/')))
+        && (listing || input.split('?').next().is_some_and(|path| path.ends_with('/')))
     {
         return remote_stat(node, true);
     }
@@ -1119,6 +1119,48 @@ pub fn read(path: &str) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     read_into(&Node::parse(path)?, &mut out)?;
     Ok(out)
+}
+
+/// Reads a file with a hard limit on retained bytes, stopping a streamed source
+/// as soon as the next write would exceed the limit. Archive members are bounded
+/// after decompression. Transport errors are preserved unless the limit fired.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn read_limited(path: &str, limit: usize) -> Result<Vec<u8>> {
+    struct Bounded {
+        bytes: Vec<u8>,
+        limit: usize,
+        exceeded: bool,
+    }
+    impl Write for Bounded {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+                self.exceeded = true;
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "VSI read limit exceeded"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let _cache = OperationScope::new();
+    let node = Node::parse(path)?;
+    let mut out = Bounded { bytes: Vec::new(), limit, exceeded: false };
+    let result = match &node {
+        #[cfg(remote)]
+        Node::S3 { .. } | Node::Url { .. } => {
+            crate::http::with_reader(&node.remote().ok_or_else(|| Error::InvalidArgument("not remote".into()))?, |reader| {
+                Ok(std::io::copy(reader, &mut out)?)
+            })
+        }
+        _ => read_into(&node, &mut out),
+    };
+    if out.exceeded {
+        return Err(Error::DecodedLimitExceeded { resource: "VSI file", limit });
+    }
+    result?;
+    Ok(out.bytes)
 }
 
 /// Writes bytes to a file (local, in memory, or an object), replacing it.
