@@ -473,6 +473,15 @@ pub fn identify_many(paths: &[String], options: &IdentifyOptions) -> Vec<Identif
 mod tests {
     use super::*;
     #[test]
+    fn dted_user_header_is_anchored_at_the_start() {
+        let mut bytes = vec![b' '; 128];
+        bytes[80..83].copy_from_slice(b"UHL");
+        assert!(identify_bytes(&bytes, "unknown.bin").is_none());
+        bytes[..3].copy_from_slice(b"UHL");
+        assert_eq!(identify_bytes(&bytes, "unknown.bin").unwrap().driver, "DTED");
+    }
+
+    #[test]
     fn bounded_signatures_do_not_trust_binary_filename_extensions() {
         assert_eq!(identify_bytes(b"II*\0garbage", "renamed.bin").unwrap().driver, "GTiff");
         assert!(identify_bytes(b"not a TIFF", "wrong.tif").is_none());
