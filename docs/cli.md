@@ -2180,3 +2180,6 @@ series; off-grid mixed slices are rejected, as in GDAL 3.13.3. Data-array
 `valid_range`, `valid_min`, `valid_max`, `missing_value`, `grid_mapping` and
 `_Unsigned` must agree across contributing inputs, in addition to scale,
 offset, units and nodata. Numeric integer/float metadata compares by value.
+
+An array present in only some inputs is retained; regions belonging to other
+inputs use that array's nodata value, or zero when it has none.
