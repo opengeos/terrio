@@ -122,6 +122,23 @@ fn directory_driver(path: &str) -> Result<Option<String>> {
         let prefix = location::prefix(&metadata, crate::inspection::IDENTIFICATION_HEADER_BYTES)?;
         let compact: String = String::from_utf8_lossy(&prefix).split_ascii_whitespace().collect();
         if ["\"format\":\"pbf\"", "\"format\":\"mvt\"", "\"vector_layers\":["].iter().any(|key| compact.contains(key)) {
+            for entry in vsi::list(path, &vsi::ListOptions { recursive: true, ..Default::default() })? {
+                let parts: Vec<_> = entry.name.trim_end_matches('/').split('/').collect();
+                let integer = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+                let valid = if entry.is_dir() {
+                    parts.len() <= 2 && parts.iter().all(|p| integer(p))
+                } else if parts.as_slice() == ["metadata.json"] {
+                    true
+                } else {
+                    parts.len() == 3
+                        && integer(parts[0])
+                        && integer(parts[1])
+                        && parts[2].rsplit_once('.').is_some_and(|(y, ext)| integer(y) && matches!(ext, "pbf" | "mvt"))
+                };
+                if !valid {
+                    return Err(invalid("MVT dataset directory contains unrelated entries; preserve them outside the tile tree"));
+                }
+            }
             return Ok(Some("MVT".into()));
         }
     }
@@ -263,7 +280,10 @@ fn check_shared_ownership(inventory: &FileSet, approved: &[String]) -> Result<()
     };
     let name = location::name(primary)?;
     let base = stem(&name);
-    let shared: Vec<_> = inventory.files.iter().collect();
+    // Normal inventories start with their primary file. Synthetic overwrite
+    // inventories have no driver and contain only a prospective companion.
+    let skip = usize::from(!inventory.driver.is_empty());
+    let shared: Vec<_> = inventory.files.iter().skip(skip).collect();
     if shared.is_empty() {
         return Ok(());
     }
@@ -532,6 +552,12 @@ fn gml_schema_element(
                 if let Some(name) = names.get(&location::name_key(&resolved)?) {
                     changed |= token != name;
                     *token = name.clone();
+                } else if !std::path::Path::new(token.as_str()).is_absolute()
+                    && !token.contains("://")
+                    && !token.starts_with("urn:")
+                    && !(token.as_bytes().get(1) == Some(&b':') && token.as_bytes()[0].is_ascii_alphabetic())
+                {
+                    return Err(Error::Unsupported("relative GML schema reference is outside the dataset inventory".into()));
                 }
             }
             attributes.push((key, tokens.join(" ")));
@@ -1242,6 +1268,27 @@ mod tests {
     }
 
     #[test]
+    fn gml_unowned_relative_schema_is_refused_but_absolute_uri_is_preserved() {
+        let root = directory();
+        let source = format!("{root}/source.gml");
+        let target = format!("{root}/copied.gml");
+        let definition = |schema: &str| {
+            format!(
+                "<?xml version='1.0'?><gml:FeatureCollection xmlns:gml='http://www.opengis.net/gml' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' xsi:noNamespaceSchemaLocation='{schema}'/>"
+            )
+        };
+        put(&source, definition("../shared.xsd").as_bytes());
+        let before = vsi::read(&source).unwrap();
+        assert!(copy(&source, &target, &Default::default()).is_err());
+        assert!(!exists(&target).unwrap());
+        assert_eq!(vsi::read(&source).unwrap(), before);
+        put(&source, definition("https://example.invalid/shared.xsd").as_bytes());
+        copy(&source, &target, &Default::default()).unwrap();
+        assert_eq!(vsi::read(&target).unwrap(), vsi::read(&source).unwrap());
+        vsi::delete(&root, true).unwrap();
+    }
+
+    #[test]
     fn companion_directory_is_not_removed_by_overwrite() {
         let root = directory();
         let source = csv(&root, "source");
@@ -1313,6 +1360,11 @@ mod tests {
         let target = format!("{root}/copied");
         assert_eq!(copy(&source, &target, &Default::default()).unwrap().driver, "MVT");
         assert_eq!(vsi::read(&format!("{target}/0/0/0.pbf")).unwrap(), b"encoded tile");
+        put(&format!("{source}/keep.txt"), b"unrelated user file");
+        assert!(delete(&source, None).is_err());
+        assert_eq!(vsi::read(&format!("{source}/keep.txt")).unwrap(), b"unrelated user file");
+        assert!(copy(&source, &format!("{root}/refused"), &Default::default()).is_err());
+        assert!(rename(&source, &format!("{root}/refused"), &Default::default()).is_err());
         let invalid = format!("{root}/not-a-store");
         put(&format!("{invalid}/.zgroup"), br#"{"unrelated":true}"#);
         put(&format!("{invalid}/keep.txt"), b"keep");
