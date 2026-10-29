@@ -546,5 +546,7 @@ the cost grows with the number of blocks, so automatic mode leaves them off.
 Remote full checks stop with an error after 10,000 boundary read calls (excluding
 header/table reads and configured HTTP retries); download larger files to validate
 their full layout locally.
+Full block validation stops at 1,000 findings and reports the limit; remaining
+blocks need not be checked once the file is already invalid.
 The GDAL profile limits total parsed GDAL metadata to 4 MiB per file and XML nesting
 to 128 levels. The default rio-cogeo profile ignores this metadata tag.

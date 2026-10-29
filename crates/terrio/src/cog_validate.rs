@@ -278,6 +278,8 @@ fn read_tiff<R: Read + Seek>(f: &mut R, read_metadata: bool) -> Result<Option<Ti
         e.u32(&header[4..8]) as u64
     };
     let ghost = read_ghost(f, if big { 16 } else { 8 })?;
+    let ghost_size = ghost.as_ref().map_or(0, |(_, size)| *size);
+    let ghost = ghost.map(|(text, _)| text);
     // Value arrays must lie within the stream, checked before they are allocated or fetched.
     let stream_len = f.seek(SeekFrom::End(0))?;
     let (entry_len, count_len, inline) = if big { (20usize, 8usize, 8usize) } else { (12, 2, 4) };
@@ -309,7 +311,8 @@ fn read_tiff<R: Read + Seek>(f: &mut R, read_metadata: bool) -> Result<Option<Ti
             let typ = e.u16(&entry[2..4]);
             let (n, value) = if big { (e.u64(&entry[4..12]), &entry[12..20]) } else { (e.u32(&entry[4..8]) as u64, &entry[8..12]) };
             let size = match typ {
-                1 | 2 => 1,
+                1 => 1,
+                2 if tag == 42112 => 1,
                 3 => 2,
                 4 | 13 => 4,
                 16 | 18 => 8,
@@ -376,15 +379,15 @@ fn read_tiff<R: Read + Seek>(f: &mut R, read_metadata: bool) -> Result<Option<Ti
         ifds.push(ifd);
     }
     let mut expected_ifd_offset = if big { 16 } else { 8 };
-    if let Some(ghost) = &ghost {
-        expected_ifd_offset += "GDAL_STRUCTURAL_METADATA_SIZE=000000 bytes\n".len() as u64 + ghost.len() as u64;
+    if ghost.is_some() {
+        expected_ifd_offset += "GDAL_STRUCTURAL_METADATA_SIZE=000000 bytes\n".len() as u64 + ghost_size;
         expected_ifd_offset += expected_ifd_offset % 2;
     }
     Ok(Some(Tiff { ifds, ghost, expected_ifd_offset }))
 }
 
 /// GDAL's structural metadata block (`GDAL_STRUCTURAL_METADATA_SIZE=...`) at `offset`, if any.
-fn read_ghost<R: Read + Seek>(f: &mut R, offset: u64) -> Result<Option<String>> {
+fn read_ghost<R: Read + Seek>(f: &mut R, offset: u64) -> Result<Option<(String, u64)>> {
     const KEY: &[u8] = b"GDAL_STRUCTURAL_METADATA_SIZE=";
     f.seek(SeekFrom::Start(offset))?;
     let mut head = [0u8; 43];
@@ -405,7 +408,7 @@ fn read_ghost<R: Read + Seek>(f: &mut R, offset: u64) -> Result<Option<String>> 
     };
     let mut body = vec![0u8; size];
     f.read_exact(&mut body)?;
-    Ok(Some(String::from_utf8_lossy(&body).into_owned()))
+    Ok(Some((String::from_utf8_lossy(&body).into_owned(), size as u64)))
 }
 
 /// Validates a Cloud Optimized GeoTIFF, local or remote (HTTP(S) or S3, read with range
@@ -518,6 +521,19 @@ fn validate_reader<R: Read + Seek>(
     Ok(result)
 }
 
+const MAX_BLOCK_FINDINGS: usize = 1000;
+const BLOCK_FINDING_LIMIT: &str = "Block validation stopped at 1000 findings; additional findings or blocks may be omitted";
+fn finding_limit(errors: &mut Vec<String>) -> bool {
+    if errors.len() < MAX_BLOCK_FINDINGS {
+        return false;
+    }
+    if errors.last().is_none_or(|error| error != BLOCK_FINDING_LIMIT) {
+        errors.truncate(MAX_BLOCK_FINDINGS);
+        errors.push(BLOCK_FINDING_LIMIT.into());
+    }
+    true
+}
+
 /// GDAL structural promises concern compressed block bytes, so these checks do
 /// not decode pixels. Offset arrays remain bounded by the parser's MAX_CHUNKS.
 fn full_check<R: Read + Seek>(reader: &mut R, tiff: &Tiff, errors: &mut Vec<String>) -> Result<()> {
@@ -542,6 +558,9 @@ fn full_check<R: Read + Seek>(reader: &mut R, tiff: &Tiff, errors: &mut Vec<Stri
         .map(|(_, image)| image)
         .collect();
     for (level, image) in images.iter().enumerate() {
+        if finding_limit(errors) {
+            return Ok(());
+        }
         let name = if level == 0 { "Main resolution image".to_string() } else { format!("Overview {}", level - 1) };
         let mask = tiff
             .ifds
@@ -575,11 +594,17 @@ fn full_check<R: Read + Seek>(reader: &mut R, tiff: &Tiff, errors: &mut Vec<Stri
                 &mut last,
                 errors,
             )?;
+            if finding_limit(errors) {
+                return Ok(());
+            }
         }
         if tile_interleave && order {
             let mut last = 0;
             for block in 0..blocks {
                 for plane in 0..planes as usize {
+                    if finding_limit(errors) {
+                        return Ok(());
+                    }
                     let offset = image.offsets[plane * blocks + block];
                     if offset != 0 {
                         if offset < last {
@@ -605,6 +630,7 @@ fn full_check<R: Read + Seek>(reader: &mut R, tiff: &Tiff, errors: &mut Vec<Stri
             )?;
         }
     }
+    finding_limit(errors);
     Ok(())
 }
 
@@ -628,6 +654,9 @@ fn check_blocks<R: Read + Seek>(
     }
     let mask = mask.filter(|mask| mask.block() == image.block());
     for index in indices {
+        if finding_limit(errors) {
+            return Ok(());
+        }
         let mut offset = image.offsets[index];
         let count = image.byte_counts.get(index).copied().unwrap_or(0);
         let block = index as u64 % blocks;
@@ -1092,6 +1121,39 @@ mod tests {
         let bytes = [b"II*\0\0\0\0\0".as_slice(), header.as_bytes(), ghost.as_bytes()].concat();
         let options = CogValidationOptions { profile: CogValidationProfile::Gdal, ..Default::default() };
         assert!(!validate_cog_bytes(&bytes, &options).unwrap().is_valid);
+    }
+    #[test]
+    fn full_block_findings_are_bounded_for_uploaded_and_local_inputs() {
+        let image = Ifd {
+            width: 5000,
+            height: 1,
+            samples: 1,
+            planar: 1,
+            tile: Some((1, 1)),
+            offsets: vec![16; 5000],
+            byte_counts: vec![8; 5000],
+            ..Default::default()
+        };
+        let tiff = Tiff { ifds: vec![image], ghost: Some("BLOCK_LEADER=SIZE_AS_UINT4".into()), expected_ifd_offset: 8 };
+        let mut errors = Vec::new();
+        full_check(&mut std::io::Cursor::new(vec![0; 32]), &tiff, &mut errors).unwrap();
+        assert_eq!(errors.len(), MAX_BLOCK_FINDINGS + 1);
+        assert_eq!(errors.last().unwrap(), BLOCK_FINDING_LIMIT);
+    }
+    #[test]
+    fn ascii_numeric_tags_are_ignored_and_ghost_offsets_use_raw_bytes() {
+        let ascii = crafted(&[(256, 4, 1, 20), (257, 4, 1, 20), (322, 2, 1, 65), (323, 3, 1, 16)], &[]);
+        assert!(read_tiff(&mut std::io::Cursor::new(ascii), false).unwrap().unwrap().ifds[0].tile.is_none());
+        let original = crafted(&[(256, 4, 1, 1), (257, 4, 1, 1)], &[]);
+        let ghost = b"GDAL_STRUCTURAL_METADATA_SIZE=000001 bytes\n\xff";
+        let offset = (8 + ghost.len()).next_multiple_of(2);
+        let mut bytes = original[..8].to_vec();
+        bytes[4..8].copy_from_slice(&(offset as u32).to_le_bytes());
+        bytes.extend_from_slice(ghost);
+        bytes.resize(offset, 0);
+        bytes.extend_from_slice(&original[8..]);
+        let tiff = read_tiff(&mut std::io::Cursor::new(bytes), true).unwrap().unwrap();
+        assert_eq!(tiff.expected_ifd_offset, offset as u64);
     }
     #[test]
     fn gdal_sparse_blocks_reset_row_order_state() {
