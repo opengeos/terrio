@@ -1,6 +1,7 @@
 //! GeoPackage validation rules, built and tested before exposing the complete public validator.
 //! Metadata requirements follow OGC GeoPackage 1.4 and GDAL 3.13.3 validate_gpkg.py.
 mod content;
+mod extensions;
 mod schema;
 
 use crate::drivers::{
@@ -463,6 +464,7 @@ fn check_core(bytes: &[u8]) -> CoreReport {
     let mut checker = Checker { db, report };
     checker.spatial_references();
     checker.contents();
+    checker.extensions();
     if let Err(error) = checker.attributes(bytes) {
         checker.report.require(false, 6, error.to_string());
     }
@@ -629,7 +631,7 @@ for name,path,_ in cases:
   with sqlite3.connect(path) as db:
    cursor=db.cursor()
    failed=db.execute('PRAGMA integrity_check').fetchone()[0]!='ok'
-   checker._check_gpkg_spatial_ref_sys(cursor);checker._check_gpkg_contents(cursor)
+   checker._check_gpkg_spatial_ref_sys(cursor);checker._check_gpkg_contents(cursor);checker._check_gpkg_extensions(cursor)
  except sqlite3.Error:
   failed=True
  out.append({'name':name,'path':str(path),'valid':header and not failed and not checker.errors})
