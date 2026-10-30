@@ -17,12 +17,19 @@ impl Checker {
                     .rows
                     .iter()
                     .filter(|row| related(table.get(row, "extension_name").and_then(Value::as_str)))
-                    .map(|row| (table.get(row, "table_name").and_then(Value::as_str), table.get(row, "scope").and_then(Value::as_str)))
+                    .map(|row| {
+                        (
+                            table.get(row, "table_name").and_then(Value::as_str),
+                            table.get(row, "scope").and_then(Value::as_str),
+                            table.get(row, "column_name"),
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default();
         if !declarations.is_empty() {
-            for (name, scope) in &declarations {
+            for (name, scope, field) in &declarations {
+                self.report.require_rule(matches!(field, Some(Value::Null)), RULE, "related-tables declaration column_name must be null");
                 self.report.require_rule(
                     *scope == Some("read-write"),
                     RULE,
@@ -30,11 +37,20 @@ impl Checker {
                 );
             }
             self.report.require_rule(
-                declarations.iter().any(|(name, _)| *name == Some("gpkgext_relations")),
+                declarations.iter().any(|(name, _, _)| name.is_some_and(|name| name.eq_ignore_ascii_case("gpkgext_relations"))),
                 RULE,
                 "missing gpkgext_relations extension declaration",
             );
-            self.report.require_rule(declarations.len() > 1, RULE, "related-tables extension must declare at least one mapping table");
+            self.report.require_rule(
+                declarations
+                    .iter()
+                    .filter_map(|(name, _, _)| name.map(str::to_ascii_lowercase))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    > 1,
+                RULE,
+                "related-tables extension must declare at least one mapping table",
+            );
         }
         if !self.db.object("gpkgext_relations") {
             self.report.require_rule(declarations.is_empty(), RULE, "declared gpkgext_relations table is missing");
@@ -61,11 +77,28 @@ impl Checker {
             .rows
             .iter()
             .map(|row| {
-                ["base_table_name", "base_primary_column", "related_table_name", "related_primary_column", "mapping_table_name"]
-                    .map(|field| table.get(row, field).and_then(Value::as_str).map(str::to_owned))
+                [
+                    "base_table_name",
+                    "base_primary_column",
+                    "related_table_name",
+                    "related_primary_column",
+                    "mapping_table_name",
+                    "relation_name",
+                ]
+                .map(|field| table.get(row, field).and_then(Value::as_str).map(str::to_owned))
             })
             .collect();
-        for [base, base_id, other, other_id, mapping] in references {
+        for [base, base_id, other, other_id, mapping, relation] in references {
+            let valid_relation = relation.as_deref().is_some_and(|name| {
+                ["media", "simple_attributes", "features", "attributes", "tiles"].contains(&name)
+                    || name
+                        .strip_prefix("x-")
+                        .and_then(|name| name.split_once('_'))
+                        .is_some_and(|(author, relation)| !author.is_empty() && !relation.is_empty())
+            });
+            if relation.is_some() {
+                self.report.require_rule(valid_relation, RULE, format!("invalid related-tables relation name {relation:?}"));
+            }
             for (name, field) in [(&base, &base_id), (&other, &other_id)] {
                 let exists = name.as_deref().is_some_and(|name| self.db.object(name));
                 self.report.require_rule(exists, RULE, format!("related-tables target {name:?} does not exist"));
@@ -82,7 +115,7 @@ impl Checker {
                 self.db.tables.get("gpkg_extensions").is_some_and(|ext| {
                     ext.rows.iter().any(|row| {
                         related(ext.get(row, "extension_name").and_then(Value::as_str))
-                            && ext.get(row, "table_name").and_then(Value::as_str) == Some(name)
+                            && ext.get(row, "table_name").and_then(Value::as_str).is_some_and(|value| value.eq_ignore_ascii_case(name))
                     })
                 })
             });

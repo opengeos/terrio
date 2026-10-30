@@ -18,9 +18,6 @@ impl Checker {
                 continue;
             }
             let index = format!("rtree_{name}_{field}");
-            if !self.db.object(&index) {
-                continue;
-            }
             let declared = self.db.tables.get("gpkg_extensions").is_some_and(|ext| {
                 ext.rows.iter().any(|row| {
                     ext.get(row, "table_name").and_then(Value::as_str) == Some(name)
@@ -29,6 +26,10 @@ impl Checker {
                         && ext.get(row, "scope").and_then(Value::as_str) == Some("write-only")
                 })
             });
+            if !self.db.object(&index) {
+                self.report.require(!declared, 75, format!("{index}: declared R-tree object is missing"));
+                continue;
+            }
             self.report.require(declared, 78, format!("{index}: missing R-tree extension declaration"));
             if let Some((_, table)) = self.db.tables.iter().find(|(key, _)| key.eq_ignore_ascii_case(&index)) {
                 self.report.require(table.schema.columns.len() == 5, 77, format!("{index}: expected five columns"));

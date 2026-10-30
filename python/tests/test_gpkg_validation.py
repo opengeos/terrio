@@ -91,6 +91,8 @@ def test_case_options_and_sidecar_refusal(geopackage):
 
 
 def test_unsupported_generated_expression_is_incomplete(geopackage):
+    if sqlite3.sqlite_version_info < (3, 38, 0):
+        pytest.skip("requires SQLite 3.38 JSON extraction operators")
     with closing(sqlite3.connect(geopackage)) as db:
         db.executescript(
             "CREATE TABLE derived(a TEXT,b TEXT AS(a ->> '$.x'));"

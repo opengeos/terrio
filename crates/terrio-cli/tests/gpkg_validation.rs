@@ -39,3 +39,16 @@ fn cli_and_mcp_return_structured_read_only_verdicts() {
     assert_eq!(rpc, report);
     assert_eq!(std::fs::read(&path).unwrap(), b"not sqlite");
 }
+
+#[cfg(unix)]
+#[test]
+fn validation_accepts_non_utf8_native_paths() {
+    use std::os::unix::ffi::OsStringExt;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join(std::ffi::OsString::from_vec(b"bad-\xff.gpkg".to_vec()));
+    std::fs::write(&path, b"not sqlite").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_terrio")).arg("gpkg-validate").arg(&path).arg("--json").output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["errors"][0]["requirement"], 1);
+}

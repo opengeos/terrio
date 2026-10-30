@@ -2628,7 +2628,9 @@ core or named extension `requirement` and `message`), `warnings` and
 `unsupported_checks`. Exit status is 0 for a valid image, 1 for invalid data or
 strict-mode warnings, and 2 when unsupported checks prevent completing validation
 (even when another check has already proven the image invalid). Text summaries
-identify both invalidity and incompleteness when both apply.
+identify both invalidity and incompleteness when both apply. Execution errors,
+including missing inputs and refusals caused by live sidecars, exit with status 1
+and return an error diagnostic rather than a JSON verdict.
 The MCP `gpkg-validate` tool is read-only: a completed query returns its structured
 verdict with `isError=false`; CLI verdict statuses are appended as diagnostic text.
 Execution failures still return `isError=true`.
@@ -2649,7 +2651,9 @@ Supported views include projections, filters, DISTINCT, ORDER/LIMIT/OFFSET,
 nested views, inner/cross/left/right/full/natural joins and compound SELECTs.
 Aggregates, CTEs, subqueries, window functions, extension loading and unimplemented
 functions yield an explicitly incomplete verdict. The image stays in memory;
-ordinary user rows stream, while metadata, integrity keys, DISTINCT/set values
+there is no configured input-size ceiling, so reserve memory for the entire file
+plus the retained validation state before validating large databases.
+Ordinary user rows stream, while metadata, integrity keys, DISTINCT/set values
 and sorted candidates are retained. Join views additionally retain all right-hand
 input rows, including geometry blobs, once per evaluation. Each join evaluation is
 limited to 1,000,000 work units, counting retained right-input rows and candidate

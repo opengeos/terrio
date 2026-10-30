@@ -273,7 +273,7 @@ impl Checker {
             let Some(pyramid) = pyramids.get_mut(&entry.1) else {
                 return Ok(());
             };
-            let table = &self.db.tables[&entry.1];
+            let table = self.db.table(&entry.1);
             let values = table.decode(&entry.1, record, rowid, text_encoding)?;
             let zoom = table.get(&values, "zoom_level").and_then(Value::as_i64);
             let matrix = zoom.and_then(|zoom| pyramid.matrices.iter().find(|matrix| matrix.zoom == zoom));
@@ -414,7 +414,8 @@ add('nullable zoom',rebuild(columns.replace('zoom_level INTEGER NOT NULL','zoom_
 add('wrong tile data declaration',rebuild(columns.replace('tile_data BLOB','tile_data TEXT')))
 add('unexpected zoom default',rebuild(columns.replace('zoom_level INTEGER NOT NULL','zoom_level INTEGER NOT NULL DEFAULT 0')))
 # OGC requirement 54 demands an INTEGER rowid alias; GDAL misses these declarations.
-add('descending INTEGER primary key',rebuild(columns.replace('id INTEGER PRIMARY KEY','id INTEGER PRIMARY KEY DESC')),extra=[54])
+# Inline DESC is neither a rowid alias nor implicitly NOT NULL.
+add('descending INTEGER primary key',rebuild(columns.replace('id INTEGER PRIMARY KEY','id INTEGER PRIMARY KEY DESC')),extra=[54,54])
 add('WITHOUT ROWID tile table',rebuild(columns,' WITHOUT ROWID'),extra=[54])
 add('INT is not a rowid alias',rebuild(columns.replace('id INTEGER PRIMARY KEY','id INT PRIMARY KEY')),extra=[54,54])
 

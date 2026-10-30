@@ -5,6 +5,7 @@ import argparse
 from contextlib import closing
 import json
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -100,7 +101,16 @@ def main():
                     command.append("--full-check")
                 reference = subprocess.run(command, capture_output=True, text=True)
                 detail = reference.stdout + reference.stderr
-                status = "identical" if (reference.returncode == 0) == valid else "differs"
+                reference_valid = reference.returncode == 0
+                reference_completed = (
+                    "Validation succeeded" in reference.stdout
+                    if reference_valid
+                    else "Validation failed" in reference.stdout
+                )
+                requirements = {int(number) for number in re.findall(r"\bReq (\d+):", reference.stdout)}
+                status = ("identical" if reference_valid == valid else "differs") if reference_completed else "not compared"
+                if not reference_completed:
+                    detail = "GDAL CLI did not complete validation (not compared):\n" + detail
                 if not args.reference_only:
                     command = [args.terrio, "gpkg-validate", str(path), "--json"]
                     if full:
@@ -108,10 +118,15 @@ def main():
                     ours = subprocess.run(command, capture_output=True, text=True)
                     try:
                         report = json.loads(ours.stdout)
-                        assert report["valid"] == valid
-                        assert report["complete"]
-                        assert (ours.returncode == 0) == valid
-                    except (ValueError, KeyError, AssertionError):
+                        ours_requirements = {error["requirement"] for error in report["errors"]}
+                        if (
+                            report["valid"] != valid
+                            or not report["complete"]
+                            or (ours.returncode == 0) != valid
+                            or not requirements.issubset(ours_requirements)
+                        ):
+                            raise ValueError("verdict or requirement diagnostics differ")
+                    except (ValueError, KeyError, TypeError):
                         status = "differs"
                         detail += "\nTerrio: " + ours.stdout + ours.stderr
                 results.append(
@@ -119,6 +134,7 @@ def main():
                         name=name + (" (full)" if full else ""),
                         status=status,
                         expected_valid=valid,
+                        reference_requirements=sorted(requirements),
                         reference=detail.strip(),
                     )
                 )

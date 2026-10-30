@@ -1463,8 +1463,12 @@ TERRIO_TEST_DATA=../terrio-data node --test --test-name-pattern='checkDataset' j
 
 `gpkg-validate` in `scripts/conformance.py` compares the public CLI with GDAL
 3.13.3 on Natural Earth features and USGS raster-tile derivatives, using both
-default and full checks. Valid/invalid verdicts and completeness are checked;
-diagnostic wording is not compared. Internal comparisons additionally cover
+default and full checks. The reference must finish validation before its verdict
+can be compared. Validity, completeness and every numeric requirement reported by
+GDAL are checked, including under `python -O`; Terrio may report additional violations.
+Cases where the GDAL CLI refuses to open the malformed input are marked not
+compared; Terrio still checks the fixture's expected verdict. Diagnostic wording
+is not compared. Internal comparisons additionally cover
 SQLite constraints/indexes/encodings, view schemas/values, extension metadata,
 geometry and tile payload corruption, and documented stricter specification
 checks. Unsupported query forms produce incomplete reports.
@@ -1494,3 +1498,10 @@ check that unevaluated view references and unsupported schema syntax cannot prod
 a complete, valid verdict. Join work and 128 MiB of cached-row bytes are shared
 across nested views and compound arms; regressions check both shared limits and
 release of cached-byte reservations on failure.
+
+GeoPackage review regressions additionally cover both required metadata/schema
+extension targets, orphan registrations, Related Tables declaration targets and names,
+uppercase metadata tables/columns, inline descending integer primary keys, native
+file identity checks and non-UTF-8 CLI paths. Metadata/schema declarations follow
+GeoPackage requirement 140/141 starting at version 1.2.1. Missing declared R-tree
+objects and UNIQUE constraints are rejected even where GDAL misses them.

@@ -1,6 +1,23 @@
 //! Read-only GeoPackage validation of self-contained SQLite images.
 use crate::{Error, Result};
 
+#[cfg(feature = "sqlite")]
+fn same_image_metadata(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (before.dev(), before.ino(), before.ctime(), before.ctime_nsec())
+            != (after.dev(), after.ino(), after.ctime(), after.ctime_nsec())
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// A GeoPackage core requirement number or a named extension requirement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 #[serde(untagged)]
@@ -153,7 +170,7 @@ pub fn validate_gpkg(path: impl AsRef<std::path::Path>, options: &GpkgValidation
             let bytes = std::fs::read(&path)?;
             sidecars()?;
             let after = std::fs::metadata(&path)?;
-            if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+            if !same_image_metadata(&before, &after) {
                 return Err(Error::Unsupported("GeoPackage changed while its image was being read".into()));
             }
             bytes
@@ -170,6 +187,21 @@ pub fn validate_gpkg(path: impl AsRef<std::path::Path>, options: &GpkgValidation
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn replacement_with_the_same_length_and_mtime_changes_image_identity() {
+        let first = tempfile::NamedTempFile::new().unwrap();
+        let second = tempfile::NamedTempFile::new().unwrap();
+        let times = std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH);
+        first.as_file().set_times(times).unwrap();
+        second.as_file().set_times(times).unwrap();
+        let before = first.as_file().metadata().unwrap();
+        let after = second.as_file().metadata().unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        assert!(!same_image_metadata(&before, &after));
+        assert!(same_image_metadata(&before, &before));
+    }
     #[test]
     fn malformed_images_return_structured_verdicts() {
         let result = validate_gpkg_bytes(b"not sqlite", &GpkgValidationOptions::default()).unwrap();

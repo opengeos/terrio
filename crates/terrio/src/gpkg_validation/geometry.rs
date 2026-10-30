@@ -262,7 +262,7 @@ impl Checker {
         };
         sqlite_repack::inspect(bytes, |entry, rowid, record| {
             if entry.0 == "table" && registrations.iter().any(|r| r.name.eq_ignore_ascii_case(&entry.1)) {
-                let table = &db.tables[&entry.1];
+                let table = db.table(&entry.1);
                 let row = table.decode(&entry.1, record, rowid, encoding)?;
                 check_row(&entry.1, rowid, &table.schema, &row)?;
             }

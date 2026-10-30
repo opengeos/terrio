@@ -21,7 +21,7 @@ pub fn repack(args: RepackArgs) -> terrio::Result<()> {
 #[derive(clap::Args)]
 pub struct ValidateArgs {
     /// Closed/checkpointed native GeoPackage or /vsimem/ image.
-    input: String,
+    input: std::path::PathBuf,
     /// Add advisory attribute range, length, date and storage-class checks.
     #[arg(long)]
     full_check: bool,
@@ -52,7 +52,7 @@ pub fn validate(args: ValidateArgs) -> terrio::Result<()> {
         }
         println!(
             "{}: {}",
-            args.input,
+            args.input.display(),
             if report.is_valid {
                 "valid GeoPackage"
             } else if !report.is_complete && !report.errors.is_empty() {

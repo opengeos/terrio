@@ -17,22 +17,21 @@ impl Checker {
             .filter(|row| contents.get(row, "data_type").and_then(Value::as_str) == Some("features"))
             .filter_map(|row| contents.get(row, "table_name").and_then(Value::as_str).map(str::to_owned))
             .collect();
-        if names.is_empty() {
-            return;
+        if !names.is_empty() {
+            self.structure(
+                "gpkg_geometry_columns",
+                21,
+                &[
+                    column("table_name", "TEXT", true, None, 1),
+                    column("column_name", "TEXT", true, None, 2),
+                    column("geometry_type_name", "TEXT", true, None, 0),
+                    column("srs_id", "INTEGER", true, None, 0),
+                    column("z", "TINYINT", true, None, 0),
+                    column("m", "TINYINT", true, None, 0),
+                ],
+                false,
+            );
         }
-        self.structure(
-            "gpkg_geometry_columns",
-            21,
-            &[
-                column("table_name", "TEXT", true, None, 1),
-                column("column_name", "TEXT", true, None, 2),
-                column("geometry_type_name", "TEXT", true, None, 0),
-                column("srs_id", "INTEGER", true, None, 0),
-                column("z", "TINYINT", true, None, 0),
-                column("m", "TINYINT", true, None, 0),
-            ],
-            false,
-        );
         let Some(registry) = self.db.tables.get("gpkg_geometry_columns") else { return };
         for name in &names {
             let rows: Vec<_> =

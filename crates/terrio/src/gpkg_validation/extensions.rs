@@ -184,7 +184,7 @@ add('missing table without column',[row(table='missing')],delta=1)
 add('column without table',[row(column='geom')],delta=1)
 for scope in ['READ-WRITE','readonly','']:
  add('invalid scope '+repr(scope),[row(scope=scope)])
-add('valid rtree registration',[row('gpkg_rtree_index','countries','geom',scope='write-only')])
+add('declared rtree without an object',[row('gpkg_rtree_index','countries','geom',scope='write-only')],delta=1)
 add('rtree global registration',[row('gpkg_rtree_index',scope='write-only')])
 add('rtree wrong scope',[row('gpkg_rtree_index','countries','geom')])
 for definition in ['', '   ']: add('empty definition '+repr(definition),[row(definition=definition)],delta=1)

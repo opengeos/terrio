@@ -76,7 +76,20 @@ impl Checker {
         }
         if !self.db.object("gpkg_metadata") {
             self.report.require(!declared, 140, "declared gpkg_metadata table is missing");
+            self.report.require(declared || !self.db.object("gpkg_metadata_reference"), 101, "metadata references require gpkg_metadata");
             return Ok(());
+        }
+        if self.report.version.unwrap_or(10400) >= 10201 {
+            for name in ["gpkg_metadata", "gpkg_metadata_reference"] {
+                let registered = self.db.tables.get("gpkg_extensions").is_some_and(|table| {
+                    table.rows.iter().any(|row| {
+                        table.get(row, "extension_name").and_then(Value::as_str) == Some("gpkg_metadata")
+                            && table.get(row, "table_name").and_then(Value::as_str).is_some_and(|value| value.eq_ignore_ascii_case(name))
+                            && matches!(table.get(row, "column_name"), Some(Value::Null))
+                    })
+                });
+                self.report.require(registered, 140, format!("missing metadata extension declaration for {name}"));
+            }
         }
         self.structure(
             "gpkg_metadata",
@@ -191,11 +204,7 @@ impl Checker {
             if !matches!(references.get(row, "md_parent_id"), Some(Value::Null)) {
                 let parent_id = references.get(row, "md_parent_id").and_then(integer);
                 self.report.require(parent_id.is_some_and(|id| ids.contains(&id)), 102, "metadata md_parent_id has no metadata record");
-                self.report.require(
-                    references.get(row, "md_file_id") != references.get(row, "md_parent_id"),
-                    102,
-                    "metadata file cannot be its own parent",
-                );
+                self.report.require(file_id != parent_id, 102, "metadata file cannot be its own parent");
             }
         }
         if !pending.is_empty() {
@@ -205,7 +214,7 @@ impl Checker {
             let mut found = BTreeSet::new();
             sqlite_repack::inspect(bytes, |entry, rowid, record| {
                 let Some(ids) = wanted.get(&entry.1) else { return Ok(()) };
-                let table = &self.db.tables[&entry.1];
+                let table = self.db.table(&entry.1);
                 // A column named ROWID shadows SQLite's hidden rowid. Preserve
                 // SQLite lookup semantics without retaining the user's rows.
                 let id = if let Some(index) = table.schema.columns.iter().position(|c| c.name.eq_ignore_ascii_case("rowid")) {

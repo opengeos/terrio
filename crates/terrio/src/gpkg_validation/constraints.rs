@@ -245,7 +245,7 @@ impl Checker {
             if entry.0 != "table" {
                 return Ok(());
             }
-            let table = &self.db.tables[&entry.1];
+            let table = self.db.table(&entry.1);
             let row = table.decode(&entry.1, record, rowid, encoding)?;
             if let Some(evaluator) = &table.evaluator {
                 for (i, check) in evaluator.checks.iter().enumerate() {

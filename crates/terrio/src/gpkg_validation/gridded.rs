@@ -284,7 +284,7 @@ impl Checker {
             let Some(c) = coverages.iter_mut().find(|c| c.name.eq_ignore_ascii_case(&entry.1)) else {
                 return Ok(());
             };
-            let table = &self.db.tables[&entry.1];
+            let table = self.db.table(&entry.1);
             let row = table.decode(&entry.1, record, rowid, encoding)?;
             c.tiles += 1;
             if let Some(id) = table.get(&row, "id").and_then(metadata::integer) {

@@ -424,7 +424,7 @@ impl Schema {
             let column =
                 schema.columns.iter_mut().find(|c| c.name.eq_ignore_ascii_case(name)).ok_or_else(|| bad("unknown primary key column"))?;
             column.primary_key = index + 1;
-            if schema.without_rowid || primary.len() == 1 && column.data_type == "INTEGER" {
+            if schema.without_rowid || primary.len() == 1 && column.data_type == "INTEGER" && !descending_aliases.contains(name) {
                 column.not_null = true;
             }
         }
@@ -438,6 +438,17 @@ impl Schema {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn descending_inline_integer_keys_do_not_imply_not_null() {
+        let inline = Schema::parse("CREATE TABLE t(id INTEGER PRIMARY KEY DESC)").unwrap();
+        assert!(inline.rowid_alias.is_none());
+        assert!(!inline.columns[0].not_null);
+        let explicit = Schema::parse("CREATE TABLE t(id INTEGER PRIMARY KEY DESC NOT NULL)").unwrap();
+        assert!(explicit.columns[0].not_null);
+        let table_key = Schema::parse("CREATE TABLE t(id INTEGER, PRIMARY KEY(id DESC))").unwrap();
+        assert_eq!(table_key.rowid_alias, Some(0));
+        assert!(table_key.columns[0].not_null);
+    }
     #[test]
     fn table_constraints_quotes_comments_and_defaults() {
         let sql = r#"CREATE TABLE "a,b" ("x" INTEGER /* pk */ PRIMARY KEY, "y" TEXT DEFAULT 'NOT NULL, UNIQUE', z DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), CONSTRAINT "a''b" UNIQUE (y,z), FOREIGN KEY (y,z) REFERENCES "other" ("a", "b"))"#;

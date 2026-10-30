@@ -829,7 +829,8 @@ def suite_gpkg_validate(ctx):
         suite.error = tail(err or out)
         return suite
     for result in results:
-        suite.cases.append(Case("GeoPackage validation", result["name"], IDENTICAL if result["status"] == "identical" else DIFFERS, result["reference"]))
+        status = {"identical": IDENTICAL, "not compared": NOT_COMPARED}.get(result["status"], DIFFERS)
+        suite.cases.append(Case("GeoPackage validation", result["name"], status, result["reference"]))
     if code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out)
     return suite

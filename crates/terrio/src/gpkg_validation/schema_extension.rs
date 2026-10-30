@@ -51,25 +51,38 @@ impl Checker {
                     .rows
                     .iter()
                     .filter(|row| table.get(row, "extension_name").and_then(Value::as_str) == Some("gpkg_schema"))
-                    .map(|row| (table.get(row, "scope"), table.get(row, "column_name")))
+                    .map(|row| {
+                        (table.get(row, "scope"), table.get(row, "column_name"), table.get(row, "table_name").and_then(Value::as_str))
+                    })
                     .collect()
             })
             .unwrap_or_default();
         if !declarations.is_empty() {
             self.report.require(
-                self.report.version.unwrap_or(10400) < 10201 || declarations.len() == 2,
+                self.report.version.unwrap_or(10400) < 10201
+                    || declarations.len() == 2
+                        && ["gpkg_data_columns", "gpkg_data_column_constraints"].iter().all(|name| {
+                            declarations.iter().any(|(_, _, target)| target.is_some_and(|target| target.eq_ignore_ascii_case(name)))
+                        }),
                 141,
                 "gpkg_schema must have exactly two declarations",
             );
             self.report.require(
-                declarations.iter().all(|(scope, _)| scope.and_then(Value::as_str) == Some("read-write")),
+                declarations.iter().all(|(scope, _, _)| scope.and_then(Value::as_str) == Some("read-write")),
                 141,
                 "gpkg_schema extension must have read-write scope",
             );
             self.report.require(
-                declarations.iter().all(|(_, field)| null(*field)),
+                declarations.iter().all(|(_, field, _)| null(*field)),
                 141,
                 "gpkg_schema declaration column_name must be null",
+            );
+        }
+        if self.report.version.unwrap_or(10400) >= 10201 && declarations.is_empty() {
+            self.report.require(
+                !self.db.object("gpkg_data_columns") && !self.db.object("gpkg_data_column_constraints"),
+                141,
+                "schema tables require gpkg_schema extension declarations",
             );
         }
         if !self.db.object("gpkg_data_columns") {

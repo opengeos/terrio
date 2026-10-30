@@ -389,11 +389,11 @@ impl Checker {
             // First collect only non-NULL referenced keys. Any NULL component
             // satisfies a SQLite foreign key, including composite keys.
             sqlite_repack::inspect(bytes, |entry, rowid, record| {
-                if entry.0 != "table" || !plans.iter().any(|p| p.child == entry.1) {
+                if entry.0 != "table" || !plans.iter().any(|p| p.child.eq_ignore_ascii_case(&entry.1)) {
                     return Ok(());
                 }
-                let row = self.db.tables[&entry.1].decode(&entry.1, record, rowid, encoding)?;
-                for p in plans.iter_mut().filter(|p| p.child == entry.1) {
+                let row = self.db.table(&entry.1).decode(&entry.1, record, rowid, encoding)?;
+                for p in plans.iter_mut().filter(|p| p.child.eq_ignore_ascii_case(&entry.1)) {
                     if p.child_columns.iter().any(|i| matches!(row[*i], Value::Null) || matches!(row[*i],Value::Real(v) if v.is_nan())) {
                         continue;
                     }
@@ -408,7 +408,7 @@ impl Checker {
                         .map(|(i, column)| {
                             // REAL-affinity source columns can use integer serial
                             // types on disk; SQLite exposes them as REAL on read.
-                            let source = &self.db.tables[&entry.1].schema.columns[*i];
+                            let source = &self.db.table(&entry.1).schema.columns[*i];
                             if affinity(&source.data_type) == Affinity::Real
                                 && let Value::Int(value) = row[*i]
                             {
@@ -427,11 +427,18 @@ impl Checker {
             // Remove matches while streaming parent rows. Table order is
             // irrelevant, and parents without rowids use their decoded PK order.
             sqlite_repack::inspect(bytes, |entry, rowid, record| {
-                if entry.0 != "table" || !plans.iter().any(|p| p.parent.as_deref() == Some(entry.1.as_str()) && !p.missing.is_empty()) {
+                if entry.0 != "table"
+                    || !plans
+                        .iter()
+                        .any(|p| p.parent.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(&entry.1)) && !p.missing.is_empty())
+                {
                     return Ok(());
                 }
-                let row = self.db.tables[&entry.1].decode(&entry.1, record, rowid, encoding)?;
-                for p in plans.iter_mut().filter(|p| p.parent.as_deref() == Some(entry.1.as_str()) && !p.missing.is_empty()) {
+                let row = self.db.table(&entry.1).decode(&entry.1, record, rowid, encoding)?;
+                for p in plans
+                    .iter_mut()
+                    .filter(|p| p.parent.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(&entry.1)) && !p.missing.is_empty())
+                {
                     let key =
                         p.parent_columns.iter().zip(&p.columns).map(|(i, column)| atom(&row[*i], column, true)).collect::<Option<Vec<_>>>();
                     if let Some(key) = key {

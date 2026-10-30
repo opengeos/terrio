@@ -120,7 +120,7 @@ impl Table {
         Ok(values)
     }
     fn get<'a>(&self, row: &'a [Value], name: &str) -> Option<&'a Value> {
-        self.schema.columns.iter().position(|column| column.name == name).and_then(|i| row.get(i))
+        self.schema.columns.iter().position(|column| column.name.eq_ignore_ascii_case(name)).and_then(|i| row.get(i))
     }
 }
 struct Snapshot {
@@ -130,7 +130,7 @@ struct Snapshot {
 }
 fn metadata_table(name: &str) -> bool {
     matches!(
-        name,
+        name.to_ascii_lowercase().as_str(),
         "gpkg_spatial_ref_sys"
             | "gpkg_contents"
             | "gpkg_geometry_columns"
@@ -193,19 +193,21 @@ impl Snapshot {
             if entry.0 != "table" {
                 return Ok(());
             }
-            if !tables.contains_key(&entry.1) {
-                tables.insert(entry.1.clone(), Table::from_sql_with_case(&entry.1, &entry.4, unicode_case)?);
+            let key = if metadata_table(&entry.1) { entry.1.to_ascii_lowercase() } else { entry.1.clone() };
+            if !tables.contains_key(&key) {
+                tables.insert(key.clone(), Table::from_sql_with_case(&entry.1, &entry.4, unicode_case)?);
             }
             if metadata_table(&entry.1) {
-                let table = tables.get_mut(&entry.1).expect("inserted table");
+                let table = tables.get_mut(&key).expect("inserted table");
                 let values = table.decode(&entry.1, record, rowid, encoding)?;
                 table.rows.push(values);
             }
             Ok(())
         })?;
         for entry in &objects {
-            if entry.0 == "table" && !tables.contains_key(&entry.1) {
-                tables.insert(entry.1.clone(), Table::from_sql_with_case(&entry.1, &entry.4, unicode_case)?);
+            let key = if metadata_table(&entry.1) { entry.1.to_ascii_lowercase() } else { entry.1.clone() };
+            if entry.0 == "table" && !tables.contains_key(&key) {
+                tables.insert(key, Table::from_sql_with_case(&entry.1, &entry.4, unicode_case)?);
             }
         }
         Ok(Self { objects, tables, unicode_case })
@@ -214,10 +216,16 @@ impl Snapshot {
         let root = self
             .objects
             .iter()
-            .find(|entry| entry.0 == "table" && entry.1 == name)
+            .find(|entry| entry.0 == "table" && entry.1.eq_ignore_ascii_case(name))
             .map(|entry| entry.3)
             .ok_or_else(|| Error::InvalidData(format!("missing SQLite table {name}")))?;
         sqlite_repack::inspect_table(bytes, root, visit)
+    }
+    fn table(&self, name: &str) -> &Table {
+        self.tables
+            .get(name)
+            .or_else(|| self.tables.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, table)| table))
+            .expect("table retained in snapshot")
     }
     fn object(&self, name: &str) -> bool {
         self.objects.iter().any(|entry| matches!(entry.0.as_str(), "table" | "view") && entry.1.eq_ignore_ascii_case(name))
@@ -351,7 +359,7 @@ impl Checker {
                 return Ok(());
             }
             let Some(warned) = warned.get_mut(entry.1.as_str()) else { return Ok(()) };
-            let table = &self.db.tables[&entry.1];
+            let table = self.db.table(&entry.1);
             let values = table.decode(&entry.1, record, rowid, encoding)?;
             for ((column, value), warned) in table.schema.columns.iter().zip(&values).zip(warned) {
                 if !*warned && let Some(warning) = content::warning(column, value) {
@@ -464,6 +472,11 @@ impl Checker {
         ];
         self.structure("gpkg_contents", 13, &expected, false);
         let Some(table) = self.db.tables.get("gpkg_contents") else { return };
+        self.report.require(
+            table.schema.unique.iter().any(|key| key.columns.len() == 1 && key.columns[0].eq_ignore_ascii_case("identifier")),
+            13,
+            "gpkg_contents.identifier requires a single-column UNIQUE key",
+        );
         for row in &table.rows {
             let name = table.get(row, "table_name").and_then(Value::as_str);
             self.report.require(name.is_some_and(|name| self.db.object(name)), 14, "contents references a missing table or view");
@@ -1006,5 +1019,138 @@ print(json.dumps(dict(path=str(path),cases=cases,encodings=[str(root/(encoding+'
         assert!(report.errors[0].message.contains("SQLite"));
         assert!(report.version.is_none());
         assert!(report.warnings.is_empty());
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod review_regressions {
+    use super::*;
+    type Fixture<'a> = (&'a str, &'a str, Vec<Vec<Value>>);
+    fn checker(tables: Vec<Fixture<'_>>) -> Checker {
+        use crate::drivers::vector::sqlite as writer;
+        let tables = tables
+            .into_iter()
+            .map(|(name, columns, rows)| writer::Table {
+                name: name.into(),
+                sql: format!("CREATE TABLE {name}({columns})"),
+                rows: rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, row)| {
+                        (
+                            i as i64 + 1,
+                            row.into_iter()
+                                .map(|value| match value {
+                                    Value::Null => writer::Value::Null,
+                                    Value::Int(v) => writer::Value::Int(v),
+                                    Value::Real(v) => writer::Value::Real(v),
+                                    Value::Text(v) => writer::Value::Text(v),
+                                    Value::Blob(v) => writer::Value::Blob(v),
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+                autoindexes: vec![],
+            })
+            .collect::<Vec<_>>();
+        let bytes = writer::write_database(&tables, &[], 10400, 0x4750_4b47).unwrap();
+        Checker { db: Snapshot::read(&bytes).unwrap(), report: CoreReport { version: Some(10400), ..Default::default() } }
+    }
+    fn text(value: &str) -> Value {
+        Value::Text(value.into())
+    }
+    const EXTENSIONS: &str = "table_name TEXT,column_name TEXT,extension_name TEXT,definition TEXT,scope TEXT";
+    fn declaration(table: &str, extension: &str) -> Vec<Value> {
+        vec![text(table), Value::Null, text(extension), text("https://www.geopackage.org/spec/"), text("read-write")]
+    }
+    #[test]
+    fn extension_registrations_require_both_correct_targets() {
+        for extension in ["gpkg_metadata", "gpkg_schema"] {
+            let names = if extension == "gpkg_metadata" {
+                ["gpkg_metadata", "gpkg_metadata_reference"]
+            } else {
+                ["gpkg_data_columns", "gpkg_data_column_constraints"]
+            };
+            let requirement = if extension == "gpkg_metadata" { 140 } else { 141 };
+            for targets in [vec![], vec![names[0]], vec![names[0], "other"], names.to_vec()] {
+                let valid = targets == names;
+                let mut c = checker(vec![
+                    (names[0], "id INTEGER", vec![]),
+                    (names[1], "id INTEGER", vec![]),
+                    ("other", "id INTEGER", vec![]),
+                    ("gpkg_extensions", EXTENSIONS, targets.into_iter().map(|name| declaration(name, extension)).collect()),
+                ]);
+                if extension == "gpkg_metadata" {
+                    c.metadata(&[]).unwrap();
+                } else {
+                    c.schema_extension();
+                }
+                assert_eq!(!c.report.errors.iter().any(|error| error.requirement == requirement), valid, "{extension}: {:?}", c.report);
+            }
+        }
+    }
+    #[test]
+    fn orphan_metadata_and_geometry_registrations_are_invalid() {
+        let mut c = checker(vec![("gpkg_metadata_reference", "md_file_id INTEGER", vec![vec![Value::Int(1)]])]);
+        c.metadata(&[]).unwrap();
+        assert!(c.report.errors.iter().any(|error| error.requirement == 101));
+        let mut c = checker(vec![
+            ("gpkg_contents", "table_name TEXT,data_type TEXT,srs_id INTEGER", vec![]),
+            ("gpkg_geometry_columns", "table_name TEXT,srs_id INTEGER", vec![vec![text("missing"), Value::Int(4326)]]),
+        ]);
+        c.features();
+        assert!(c.report.errors.iter().any(|error| error.requirement == 23));
+    }
+    #[test]
+    fn related_declarations_and_relation_names_follow_the_contract() {
+        for (relation, field, duplicate, valid) in [
+            ("attributes", Value::Null, false, true),
+            ("x-terrio_documents", Value::Null, false, true),
+            ("not_a_relation", Value::Null, false, false),
+            ("attributes", text("base_id"), false, false),
+            ("attributes", Value::Null, true, false),
+        ] {
+            let mut mapping = declaration(if duplicate { "gpkgext_relations" } else { "MAPPING" }, "gpkg_related_tables");
+            mapping[1] = field;
+            let mut c = checker(vec![
+                ("gpkg_extensions", EXTENSIONS, vec![declaration("gpkgext_relations", "gpkg_related_tables"), mapping]),
+                (
+                    "gpkgext_relations",
+                    "id INTEGER PRIMARY KEY,base_table_name TEXT NOT NULL,base_primary_column TEXT NOT NULL DEFAULT 'id',related_table_name TEXT NOT NULL,related_primary_column TEXT NOT NULL DEFAULT 'id',relation_name TEXT NOT NULL,mapping_table_name TEXT NOT NULL",
+                    vec![vec![Value::Int(1), text("base"), text("id"), text("other"), text("id"), text(relation), text("mapping")]],
+                ),
+                ("base", "id INTEGER PRIMARY KEY", vec![]),
+                ("other", "id INTEGER PRIMARY KEY", vec![]),
+                ("mapping", "base_id INTEGER,related_id INTEGER", vec![]),
+            ]);
+            c.relations();
+            assert_eq!(c.report.is_valid(), valid, "{relation}: {:?}", c.report);
+        }
+    }
+    #[test]
+    fn contents_identifier_requires_a_single_column_unique_key() {
+        for unique in ["", " UNIQUE"] {
+            let columns = format!("identifier TEXT{unique},table_name TEXT");
+            let mut c = checker(vec![("gpkg_contents", &columns, vec![])]);
+            c.contents();
+            let missing = c.report.errors.iter().any(|error| error.message.contains("single-column UNIQUE"));
+            assert_eq!(missing, unique.is_empty());
+        }
+    }
+    #[test]
+    fn numeric_metadata_ids_cannot_name_their_own_parent() {
+        let mut c = checker(vec![
+            ("gpkg_metadata", "id INTEGER", vec![vec![Value::Int(1)]]),
+            ("gpkg_metadata_reference", "md_file_id INTEGER,md_parent_id REAL", vec![vec![Value::Int(1), Value::Real(1.)]]),
+        ]);
+        c.metadata(&[]).unwrap();
+        assert!(c.report.errors.iter().any(|error| error.requirement == 102 && error.message.contains("own parent")));
+    }
+    #[test]
+    fn uppercase_metadata_tables_retain_their_rows() {
+        let c = checker(vec![("GPKG_CONTENTS", "TABLE_NAME TEXT,DATA_TYPE TEXT", vec![vec![text("missing"), text("attributes")]])]);
+        let table = &c.db.tables["gpkg_contents"];
+        assert_eq!(table.get(&table.rows[0], "table_name"), Some(&text("missing")));
     }
 }
