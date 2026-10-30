@@ -43,7 +43,7 @@ pub(crate) mod pyramid;
 pub(crate) mod raster;
 #[cfg(feature = "tiles")]
 mod repair;
-#[cfg(test)]
+#[cfg(all(test, feature = "tiles"))]
 mod repair_checks;
 #[cfg(feature = "tiles")]
 pub(crate) mod source;

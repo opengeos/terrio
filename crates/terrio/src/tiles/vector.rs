@@ -645,7 +645,8 @@ fn encode_polygon(out: &mut Vec<u32>, rings: &[Vec<Pt>], to: ToTile, cursor: &mu
     let mut encoded = Vec::new();
     for (i, r) in rings.iter().enumerate() {
         let ok = r.len() >= 4 && r.first() == r.last();
-        match if ok { encode_ring(out, r, to, i == 0, cursor)? } else { None } {
+        let ring = if ok { encode_ring(out, r, to, i == 0, cursor)? } else { None };
+        match ring {
             Some(pts) => encoded.push(pts),
             None if i == 0 => return Ok((false, encoded)),
             None => {}
@@ -654,9 +655,9 @@ fn encode_polygon(out: &mut Vec<u32>, rings: &[Vec<Pt>], to: ToTile, cursor: &mu
     Ok((true, encoded))
 }
 
-/// Encodes polygons in a tile as GDAL's MVT writer does: each polygon encoded, and when the
-/// polygons encoded are not valid (rounding to the grid made rings cross or touch, parts
-/// overlap), GEOS's `MakeValid` of them encoded instead.
+/// Encodes polygons as GDAL's MVT writer does. Invalid quantized rings go through
+/// the independent tile-grid repair before re-encoding; GEOS is an executable
+/// behavior reference, not a runtime dependency.
 fn encode_polygons(polys: &[Vec<Vec<Pt>>], f: &TileFrame, extent: u32) -> Result<Option<Vec<u32>>> {
     let mut out = Vec::new();
     let mut cursor = (0, 0);
@@ -763,15 +764,13 @@ fn ring_crossings(polys: &[Vec<Vec<Pt>>]) -> Vec<Crossing> {
     out
 }
 
-/// Whether GEOS fails to intersect a polygonal geometry (with crossings `crossings`, bounding box
-/// `env`) with the rectangle `r` (a "side location conflict"): when a crossing falls in the
-/// rectangle, or in the envelope OverlayNG clips its inputs to (the inputs' envelopes, each grown
-/// by a tenth, intersected; grown to the segments crossing it, then by a tenth again) with one
-/// of its segments near the rectangle (or anywhere in that envelope for overlapping parts). This
-/// envelope calculation is ported from JTS (see `overlay_envelope`). The remaining
-/// failure predictor is a compatibility heuristic, not an overlay implementation. The
-/// rule agrees with GEOS 3.14 on 97% of random self-crossing polygons and rectangles, and 97% of
-/// random overlapping parts.
+/// Predicts GEOS side-location clipping failures for polygon bounds `env` and
+/// tile rectangle `r`. The safe clipping envelope comes from the JTS-derived
+/// `overlay_envelope` module. A crossing triggers the predictor when it lies in
+/// `r`, or when it lies in that safe envelope and involves overlapping parts or
+/// a segment whose bounds meet `r`. This approximate heuristic agreed with
+/// executable GEOS 3.14 on 97% of the original random self-crossing probes and
+/// 97% of overlapping-part probes; it is not a full overlay implementation.
 fn clip_fails(polys: &[Vec<Vec<Pt>>], crossings: &[Crossing], env: Rect, r: Rect) -> bool {
     if crossings.is_empty() {
         return false;

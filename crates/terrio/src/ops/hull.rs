@@ -11,6 +11,10 @@
 
 use super::simplify::{dist, open_ring, orient};
 use crate::{Error, Geometry, Result};
+use rstar::{
+    AABB, Envelope, RTree,
+    primitives::{GeomWithData, Rectangle},
+};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use wbvector::{Coord, Ring};
 
@@ -222,9 +226,11 @@ impl Ord for Candidate {
         self.size.total_cmp(&b.size).then(self.area.total_cmp(&b.area))
     }
 }
-/// Independent median-partition/insertion sort for the observed GEOS/Linux
-/// ordering of equal-size hole seeds. A stable sort changes the erosion result.
-/// The comparison is ascending edge length; GEOS source is not used here.
+/// Compatibility introsort reproducing observed Linux/libstdc++ std::sort
+/// tie ordering for equal-size hole seeds. That order changes erosion results;
+/// a stable tie-break is not behaviorally interchangeable. This helper was
+/// independently written from executable observations, without GEOS or
+/// libstdc++ implementation source. See docs/jts-provenance.md.
 fn sort_hole_candidates(items: &mut [Candidate]) {
     fn less(a: Candidate, b: Candidate) -> bool {
         a.size < b.size
@@ -424,14 +430,38 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
     coords.extend(frame.iter().map(|&(x, y)| Coord::xy(x, y)));
     let ids: HashMap<_, _> = coords.iter().enumerate().map(|(i, c)| (coord_key(c), i)).collect();
     let ring_ids = |r: &Ring| r.0.iter().map(|c| ids[&coord_key(c)]).collect::<Vec<_>>();
-    let shells = polygons.iter().map(|(r, _)| ring_ids(r).into_iter().collect::<HashSet<_>>()).collect::<Vec<_>>();
+    // A contact vertex may belong to several shells. Keep sorted memberships
+    // rather than scanning every shell for each tight-erosion candidate.
+    let mut shell_membership = if tight { vec![Vec::new(); coords.len()] } else { Vec::new() };
+    if tight {
+        for (shell, (ring, _)) in polygons.iter().enumerate() {
+            for vertex in ring_ids(ring) {
+                if shell_membership[vertex].last() != Some(&shell) {
+                    shell_membership[vertex].push(shell);
+                }
+            }
+        }
+    }
+    let shell_bounds = polygons.iter().map(|(r, _)| ring_bounds(r)).collect::<Vec<_>>();
+    let shell_index = RTree::bulk_load(
+        shell_bounds
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| b.map(|b| GeomWithData::new(Rectangle::from_corners(b.lower(), b.upper()), i)))
+            .collect(),
+    );
     // Nested islands are already excluded by the enclosing shell in the frame.
     // Retain them in the original geometry, without adding a nested frame hole.
     let frame_holes = polygons
         .iter()
         .enumerate()
         .filter(|(i, (ring, _))| {
-            !polygons.iter().enumerate().any(|(j, (outer, _))| i != &j && ring.0.first().is_some_and(|c| in_ring(xy(c), &outer.0)))
+            let Some(bounds) = shell_bounds[*i] else { return false };
+            !shell_index.locate_in_envelope_intersecting(bounds).any(|entry| {
+                entry.data != *i
+                    && shell_bounds[entry.data].is_some_and(|outer| outer.contains_envelope(&bounds))
+                    && ring_nested(ring, &polygons[entry.data].0)
+            })
         })
         .map(|(_, (r, _))| ring_ids(r))
         .filter(|r| !r.is_empty())
@@ -483,7 +513,11 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
             if !mesh.triangles[t].alive {
                 continue;
             }
-            let same_shell = tight && shells.iter().any(|s| mesh.triangles[t].vertices.iter().all(|v| s.contains(v)));
+            let vertices = mesh.triangles[t].vertices;
+            let same_shell = tight
+                && shell_membership[vertices[0]]
+                    .iter()
+                    .any(|shell| vertices[1..].iter().all(|&v| shell_membership[v].binary_search(shell).is_ok()));
             if !same_shell && !border[t].is_some_and(|i| mesh.length(t, i) > target) {
                 continue;
             }
@@ -532,6 +566,27 @@ fn signed_area(r: &[P]) -> f64 {
         .sum::<f64>()
         / 2.0
 }
+fn ring_bounds(ring: &Ring) -> Option<AABB<[f64; 2]>> {
+    let first = ring.0.first()?;
+    let (lo, hi) = ring
+        .0
+        .iter()
+        .fold(([first.x, first.y], [first.x, first.y]), |(lo, hi), c| ([lo[0].min(c.x), lo[1].min(c.y)], [hi[0].max(c.x), hi[1].max(c.y)]));
+    Some(AABB::from_corners(lo, hi))
+}
+
+/// Executable GEOS frame selection includes a covered first vertex, even at
+/// a point contact. Preserve this ring-start-sensitive compatibility behavior.
+fn ring_nested(ring: &Ring, outer: &Ring) -> bool {
+    let Some(c) = ring.0.first() else { return false };
+    let p = xy(c);
+    in_ring(p, &outer.0)
+        || (0..outer.0.len()).any(|i| {
+            let (a, b) = (xy(&outer.0[i]), xy(&outer.0[(i + 1) % outer.0.len()]));
+            orient(a, b, p) == 0 && p.0 >= a.0.min(b.0) && p.0 <= a.0.max(b.0) && p.1 >= a.1.min(b.1) && p.1 <= a.1.max(b.1)
+        })
+}
+
 fn in_ring(p: P, ring: &[Coord]) -> bool {
     let mut inside = false;
     for i in 0..ring.len() {
@@ -707,6 +762,28 @@ mod tests {
         assert_eq!(interiors[0].0.len(), 3);
         assert_eq!(signed_area(&exterior.0.iter().map(xy).collect::<Vec<_>>()).abs(), 100.);
         assert_eq!(signed_area(&interiors[0].0.iter().map(xy).collect::<Vec<_>>()).abs(), 6.);
+    }
+
+    #[test]
+    fn polygon_hull_keeps_components_touching_at_a_concave_vertex() {
+        let coords = |ps: &[(f64, f64)]| Ring(ps.iter().map(|&(x, y)| Coord::xy(x, y)).collect());
+        let l_shape = coords(&[(0., 0.), (6., 0.), (6., 2.), (2., 2.), (2., 6.), (0., 6.)]);
+        let triangle = coords(&[(2., 2.), (4., 3.), (3., 4.)]);
+        for reverse in [false, true] {
+            let mut input = vec![(l_shape.clone(), vec![]), (triangle.clone(), vec![])];
+            if reverse {
+                input.reverse();
+            }
+            for holes in [false, true] {
+                let result = concave_hull_of_polygons(&Geometry::MultiPolygon(input.clone()), 0.3, true, holes).unwrap();
+                let Geometry::MultiPolygon(polygons) = result else { panic!("{result:?}") };
+                assert_eq!(polygons.len(), 2);
+                for (shell, holes) in &input {
+                    let wanted = shell.0.iter().map(coord_key).collect::<HashSet<_>>();
+                    assert!(polygons.iter().any(|(r, h)| h == holes && r.0.iter().map(coord_key).collect::<HashSet<_>>() == wanted));
+                }
+            }
+        }
     }
 
     #[test]

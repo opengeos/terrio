@@ -91,9 +91,11 @@ The fixtures record the reference versions and retain differing JTS observations
 rather than silently treating JTS/GEOS differences as identical.
 
 ```sh
+CARGO_TARGET_DIR="$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+export CARGO_TARGET_DIR
 cargo build -p terrio --example geometry_probe
 python scripts/compare_jts_behavior.py \
-  --probe "${CARGO_TARGET_DIR:-target}/debug/examples/geometry_probe" \
+  --probe "$CARGO_TARGET_DIR/debug/examples/geometry_probe" \
   --output /path/to/comparison.json
 # Optional JTS observations: compile the Java adapter against jts-core 1.20.0,
 # then pass --java /path/to/java --jts-classpath classes:jts-core-1.20.0.jar.
@@ -104,13 +106,20 @@ first compare undirected edges (ignoring ring start and orientation), then requi
 valid outputs, relative symmetric-difference area at most **1e-10** and Hausdorff
 distance at most **1e-10 times max(1, absolute reference ordinate)**. STR ordering
 compares exact IDs, allowing only the documented ambiguity for tied sort centres.
-Validity booleans must agree exactly. These checks make no equivalence claim for
+Validity booleans must agree exactly. Recorded invalid reference hulls require
+exact normalized component/ring coordinates, multiplicities and shell/hole
+grouping; no area tolerance applies to them. They are reported separately from
+valid output matches. These checks make no equivalence claim for
 MakeValid, invalid polygon hull input, or every possible floating-point input.
 
 Point triangulation retains JTS's subdivision traversal order. Equal-size,
 equal-area erosion candidates also require the observed Linux heap order.
-Hole seeds are sorted by increasing size with an independently written
-median-partition/insertion sort, checked against executable reference results;
+Hole seeds are sorted by increasing size with an independently written introsort
+reproducing the observed Linux/libstdc++ `std::sort` tie behavior. This is a
+compatibility requirement, not a claim of a new sorting algorithm. The helper
+was written from executable observations, without GEOS or libstdc++ implementation
+source; its provenance is separate from the attributed JTS ports. It is checked
+against executable reference results;
 a stable seed sort produced materially different holes on regular grids.
 This compatibility code does not use GEOS or C++ library implementation source.
 The recorded reference is Linux GEOS 3.14.1, not a claim about every platform or
@@ -131,11 +140,19 @@ retains JTS 1.20.0's `size - 1` source-triangle scan and 200-pass limit; the fin
 triangle remains eligible as a neighbor. Reaching that limit retains the last
 mesh, as JTS does, without guaranteeing convergence for every floating-point
 input. Polygon hole-seed scans advance monotonically because triangle degrees
-only decrease and edge lengths stay fixed. Integer validity containment probes
-reject non-covering ring envelopes before scanning points. Boundary walks are
+only decrease and edge lengths stay fixed. Ring-envelope indexes prune frame
+containment and integer-validity candidates. Tight erosion intersects per-vertex
+shell memberships, retaining every owner of a shared contact vertex. Boundary walks are
 split at every repeated vertex so a hole touching its shell remains a separate simple ring.
 Observed zero-area polygon inputs, including both zero and nonzero extents,
 return an empty polygon before triangulation.
+
+Executable GEOS frame selection can depend on a touching component's first
+vertex. When its envelope is covered, a first vertex on another shell counts as
+contained. The port records this behavior rather than assuming cyclic invariance.
+The contact corpus includes both component orders and all three triangle starts.
+Some non-tight reference outputs overlap and are invalid; only exact normalized
+component/ring agreement is accepted for those observations.
 
 Numeric limits are tested explicitly. A triangle of sites around 1e-200 makes
 both executable GEOS 3.14.1 and this point triangulator report a locate failure;
@@ -143,13 +160,34 @@ Terrio returns a bounded error. Rescaling only one orientation test would not
 provide scale-independent incircle, frame, distance and area calculations. The
 polygon API returns the observed empty result when area underflows to zero,
 before the frame calculation. STR centres use overflow-safe binary64 midpoints,
-with a multi-slice regression near the largest finite coordinate.
+with multi-slice regressions near the largest finite coordinate and across
+opposite-sign extreme bounds.
+
+The polygon circle predicate deliberately retains JTS 1.20 arithmetic. At
+1e90, its degree-four products can overflow and miss a circle inclusion. The
+JTS executable reproduces this limit; rescaling changed six of eight captured
+large-coordinate hull results away from executable GEOS. Those observations
+remain regression cases; this API does not promise scale-independent predicates.
+
+A mixed NaN/finite-distance simplification section can still flatten at extreme
+coordinate magnitudes. Executable GEOS 3.14.1 does the same for the captured
+four-coordinate 1e155 example. This compatibility behavior is tested explicitly;
+the API does not promise a mathematical distance bound when its arithmetic
+overflows.
+
+A single paired performance run retained identical normalized geometry hashes
+for 32/128/512-shell tight hulls and 1,024/4,096/16,384-island tile features.
+The 512-shell debug hull took 1.758s before and 1.404s after; the 16,384-island
+release tile write took 1.382s before and 0.808s after. At 1,024 islands it took
+0.043s before and 0.063s after, so this is evidence for pruning at larger sizes,
+not a claim of universal speedup or linear overall complexity.
 
 ## Validation of this replacement
 
 The final Linux reference run used GEOS 3.14.1, GDAL 3.13.3 and JTS 1.20.0.
-The fixed-seed corpus contains **1,612 observations**: 1,298 native
-geometry/ordering results match exactly, 3 STR results differ only in legal equal-key
+The fixed-seed corpus contains **1,645 observations**: 1,327 native
+geometry/ordering results match exactly, 4 invalid reference hulls match exact
+normalized component/ring structure, 3 STR results differ only in legal equal-key
 ordering, and 311 integer validity decisions are replayed by Rust unit tests.
 The separate index-panic regression adds one captured simplification observation.
 Differing JTS observations remain in the fixtures; JTS itself is not assumed to

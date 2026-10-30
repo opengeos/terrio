@@ -76,6 +76,36 @@ fn polygons(g: &Geometry) -> geo::MultiPolygon<f64> {
         _ => panic!("expected a polygon for tolerance comparison: {g:?}"),
     }
 }
+fn canonical_components(g: &Geometry) -> Vec<Vec<Vec<Point>>> {
+    let ring = |r: &Ring| {
+        let mut points = r.0.iter().map(point).collect::<Vec<_>>();
+        if points.len() > 1 && points.first() == points.last() {
+            points.pop();
+        }
+        let n = points.len();
+        (0..n)
+            .flat_map(|start| {
+                let points = &points;
+                [false, true].map(move |reverse| {
+                    (0..n).map(|i| points[if reverse { (start + n - i) % n } else { (start + i) % n }]).collect::<Vec<_>>()
+                })
+            })
+            .min()
+            .unwrap_or_default()
+    };
+    let polygon = |shell: &Ring, holes: &[Ring]| {
+        let mut holes = holes.iter().map(&ring).collect::<Vec<_>>();
+        holes.sort();
+        std::iter::once(ring(shell)).chain(holes).collect::<Vec<_>>()
+    };
+    let mut result = match g {
+        Geometry::Polygon { exterior, interiors } => vec![polygon(exterior, interiors)],
+        Geometry::MultiPolygon(ps) => ps.iter().map(|(e, h)| polygon(e, h)).collect(),
+        _ => panic!("expected reference-invalid polygon: {g:?}"),
+    };
+    result.sort();
+    result
+}
 fn corpus(text: &str) {
     let fixture: Value = serde_json::from_str(text).unwrap();
     for c in fixture["cases"].as_array().unwrap() {
@@ -124,6 +154,11 @@ fn corpus(text: &str) {
         let expected = decode(c["expected"].as_str().unwrap());
         if op == "simplify" {
             assert_eq!(actual.to_wkb(), expected.to_wkb(), "{}", c["name"]);
+            continue;
+        }
+        if c["reference_invalid"].as_bool() == Some(true) {
+            assert!(!polygons(&expected).is_valid(), "{}: expected recorded invalidity", c["name"]);
+            assert_eq!(canonical_components(&actual), canonical_components(&expected), "{}: reference-invalid exact rings", c["name"]);
             continue;
         }
         if matches!(actual, Geometry::Polygon { .. } | Geometry::MultiPolygon(_)) {

@@ -228,6 +228,18 @@ pub(crate) fn is_valid(polygons: &[Polygon<IPt>]) -> bool {
             }
         }
     }
+    // Envelope candidates prune disjoint shells and holes; the exact topology
+    // predicates still decide containment for every remaining pair.
+    let ring_envelopes = rings
+        .iter()
+        .map(|r| {
+            let (lo, hi) = r.bounds;
+            AABB::from_corners([lo.0 as f64, lo.1 as f64], [hi.0 as f64, hi.1 as f64])
+        })
+        .collect::<Vec<_>>();
+    let ring_index = RTree::bulk_load(
+        ring_envelopes.iter().enumerate().map(|(id, e)| GeomWithData::new(Rectangle::from_corners(e.lower(), e.upper()), id)).collect(),
+    );
     for ids in &by_polygon {
         let Some(&shell) = ids.first() else {
             continue;
@@ -236,15 +248,21 @@ pub(crate) fn is_valid(polygons: &[Polygon<IPt>]) -> bool {
             if !nested(&rings[hole], &rings[shell]) {
                 return false;
             }
-            for &other in ids.iter().skip(1) {
-                if hole != other && nested(&rings[hole], &rings[other]) {
-                    return false;
-                }
+            if ring_index.locate_in_envelope_intersecting(ring_envelopes[hole]).any(|entry| {
+                let other = entry.data;
+                hole != other && rings[other].hole && rings[other].polygon == rings[hole].polygon && nested(&rings[hole], &rings[other])
+            }) {
+                return false;
             }
         }
     }
     for (id, shell) in rings.iter().enumerate().filter(|(_, r)| !r.hole) {
-        for (other, target) in rings.iter().enumerate().filter(|(_, r)| !r.hole) {
+        for entry in ring_index.locate_in_envelope_intersecting(ring_envelopes[id]) {
+            let other = entry.data;
+            let target = &rings[other];
+            if target.hole {
+                continue;
+            }
             if id == other || !nested(shell, target) {
                 continue;
             }

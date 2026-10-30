@@ -200,7 +200,8 @@ commands. Command-group progress:
       zoom levels as overviews, and vector tiles (MVT) as layers, as GDAL's MBTiles, PMTiles and MVT
       drivers read them; PMTiles read in place over HTTP; rasters written as tile pyramids and vector
       layers as MVT tiles (archives or directories), as GDAL writes them; invalid polygons repaired
-      as GDAL's MVT writer repairs them with GEOS; AVIF tiles; existing archives updated (rasters
+      by an independent tile-grid implementation, checked against GDAL/GEOS with documented
+      [compatibility limits](docs/make-valid-implementation.md); AVIF tiles; existing archives updated (rasters
       and vector layers appended). Checked against GDAL (`scripts/compare_tiles_with_gdal.py`).
 - [x] STAC items and collections as datasets. Done: items, item collections, collections and STAC
       API searches (local or remote, following `next` links) as footprint layers read as GDAL reads

@@ -415,6 +415,8 @@ class Geos:
         gg = self.read(g)
         out = self.lib.GEOSConcaveHullOfPolygons_r(self.h, gg, ratio, tight, holes)
         self.lib.GEOSGeom_destroy_r(self.h, gg)
+        if not out:
+            raise RuntimeError("GEOS polygon hull returned no geometry")
         return self.write(out)
 
     def strtree_order(self, envelopes):

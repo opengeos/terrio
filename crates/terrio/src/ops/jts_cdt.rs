@@ -275,6 +275,9 @@ fn adjacency(faces: &[[usize; 3]]) -> Vec<[Option<usize>; 3]> {
     result
 }
 fn in_circle(a: P, b: P, c: P, p: P) -> bool {
+    // Preserve JTS 1.20 TrianglePredicate.isInCircleNormalized arithmetic.
+    // Rescaling changes observed GEOS hulls at extreme magnitudes; this
+    // compatibility predicate is not scale-independent (see provenance docs).
     let (ax, ay, bx, by, cx, cy) = (a.0 - p.0, a.1 - p.1, b.0 - p.0, b.1 - p.1, c.0 - p.0, c.1 - p.1);
     let ab = ax * by - bx * ay;
     let bc = bx * cy - cx * by;
@@ -363,5 +366,22 @@ impl Triangulator {
         let mut faces = ears(&ring, pts)?;
         improve(&mut faces, pts);
         Ok(faces)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn circle_test_matches_observed_jts_numeric_limits() {
+        for scale in [1., 1e90] {
+            let (a, b, c) = ((0., 0.), (scale, 0.), (0., scale));
+            assert!(in_circle(a, b, c, (scale / 4., scale / 4.)));
+            // JTS's executable returns false here at 1e90, despite the point
+            // being inside the circle. Fixing it changes GEOS hull outcomes.
+            assert_eq!(in_circle(a, b, c, (3. * scale / 4., 3. * scale / 4.)), scale == 1.);
+            assert!(!in_circle(a, b, c, (2. * scale, 2. * scale)));
+        }
     }
 }

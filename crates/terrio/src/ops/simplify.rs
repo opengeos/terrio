@@ -497,6 +497,15 @@ mod tests {
     }
 
     #[test]
+    fn mixed_unmeasurable_distances_match_the_reference() {
+        // GEOS 3.14.1 also flattens this mixed NaN/finite-distance section.
+        // Preserve the observed numeric limitation of this compatibility API.
+        let input = Geometry::LineString(line(&[(0., 0.), (1e155, 1e155), (1., 0.), (2e155, 0.)]));
+        let expected = Geometry::LineString(line(&[(0., 0.), (2e155, 0.)]));
+        assert_eq!(simplify_preserve_topology(&input, 2.).unwrap(), expected);
+    }
+
+    #[test]
     fn simplification_can_add_segments_after_index_bulk_loading() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!("../../tests/data/jts-index-panic.json")).unwrap();
         let read = |name: &str| {

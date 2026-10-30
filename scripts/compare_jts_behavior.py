@@ -53,6 +53,12 @@ def cases():
         LineString([(0, 0), (1e155, 1e155), (2e155, 0)]),
         0.3,
     )
+    yield case(
+        "overflow-mixed-reference",
+        "simplify",
+        LineString([(0, 0), (1e155, 1e155), (1, 0), (2e155, 0)]),
+        2.0,
+    )
 
     # Observed empty-result contract, including invalid zero-area polygons.
     for name, polygon in [
@@ -93,6 +99,55 @@ def cases():
                         holes,
                         tight,
                     )
+
+    # GEOS frame selection is sensitive to a touching component's first vertex.
+    # Include every triangle start and both component orders. Some non-tight
+    # reference hulls overlap; those require exact component/ring agreement.
+    l_shape = Polygon([(0, 0), (6, 0), (6, 2), (2, 2), (2, 6), (0, 6)])
+    contact_triangle = [(2, 2), (4, 3), (3, 4)]
+    for start in range(3):
+        triangle = Polygon(contact_triangle[start:] + contact_triangle[:start])
+        for reverse in (False, True):
+            parts = [l_shape, triangle]
+            if reverse:
+                parts.reverse()
+            for tight in (False, True):
+                for holes in (False, True):
+                    yield case(
+                        f"concave-contact-{start}-{reverse}-{tight}-{holes}",
+                        "polygon_hull",
+                        MultiPolygon(parts),
+                        0.3,
+                        holes,
+                        tight,
+                    )
+
+    large_rng = random.Random(402)
+    for n in range(8):
+        parts = []
+        for j in range(2 + n % 3):
+            x, y = j * 30.0, large_rng.random() * 3
+            parts.append(
+                Polygon(
+                    [
+                        (a * 1e90, b * 1e90)
+                        for a, b in [
+                            (x, y),
+                            (x + 12, y + 0.2),
+                            (x + 10, y + 11),
+                            (x + 2, y + 8),
+                        ]
+                    ]
+                )
+            )
+        yield case(
+            f"large-polygon-circle-{n}",
+            "polygon_hull",
+            MultiPolygon(parts),
+            (n % 4) / 3,
+            bool(n % 2),
+            bool(n % 3),
+        )
 
     # Observed component-jump probes: processed and unprocessed components use
     # different representative points. Cycle ring starts and reverse part order.
@@ -301,7 +356,10 @@ def cases():
     yield case(
         "str-overflow-centres",
         "strtree",
-        GeometryCollection([Point(1e308 + i * 1e306, i) for i in reversed(range(24))]),
+        GeometryCollection(
+            [Point(1e308 + i * 1e306, i) for i in reversed(range(24))]
+            + [LineString([(-1e308, 0), (1e308, 0)])]
+        ),
     )
 
     for name, parts in [
@@ -365,7 +423,16 @@ def compare(c, actual, expected):
         return ("exact" if a.IsEmpty() and b.IsEmpty() else "differs"), 0.0
     sa = from_wkb(bytes.fromhex(actual))
     sb = from_wkb(bytes.fromhex(expected))
-    if not sa.is_valid or not sb.is_valid:
+    if not sb.is_valid:
+        # Invalid reference output is not suitable for area/overlay metrics.
+        # Normalize only starts, directions and component order; retain exact
+        # coordinates, every ring, multiplicities and polygon/hole grouping.
+        return (
+            "reference-invalid-exact"
+            if sa.normalize().wkb == sb.normalize().wkb
+            else "differs"
+        ), 0.0
+    if not sa.is_valid:
         return "differs", None
     if edges(a) == edges(b):
         return "exact", 0.0
@@ -391,6 +458,11 @@ def main():
     geos = Geos()
     for c in corpus:
         c["expected"] = reference(c, geos)
+        if (
+            c["operation"] in ("convex", "concave", "polygon_hull")
+            and not from_wkb(bytes.fromhex(c["expected"])).is_valid
+        ):
+            c["reference_invalid"] = True
     if args.jts_classpath:
         version = subprocess.check_output(
             [args.java, "-cp", args.jts_classpath, "JtsOracle", "--version"], text=True

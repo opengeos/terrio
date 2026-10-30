@@ -77,10 +77,10 @@
   },
   "fallible_entry_body_identical": true,
   "final_integration_file_hashes": {
-    "crates/terrio/src/tiles/vector.rs": "f479efd1cb81a2819ab755f9de089891bb6a3f38fa885042eb6fc6824242a16a",
+    "crates/terrio/src/tiles/vector.rs": "5792657ea51b91a548546740746d75e0b7ddcebf3e0fb0562c70c244cd0ef790",
     "crates/terrio/src/tiles/boxes.rs": "7f6a3334e5b9beaba22adb1126848c24a4b62f42585ff27409786da15d63909f",
-    "crates/terrio/src/tiles/validity.rs": "e956750a75dbba17becead609a720cad0d2379b4cbbd6acfb54868d4da57eb44",
-    "crates/terrio/src/tiles/mod.rs": "9f877279722dc2476b75c1bfc3dc24d37a6f6168581efdf1b8047a0442d73257"
+    "crates/terrio/src/tiles/validity.rs": "995e87d0a968c04a01c594d184957b028db8c01f5e91ae8a99cc46485e2ad2be",
+    "crates/terrio/src/tiles/mod.rs": "d8b8223bd3469a09a9433bbf4ddc5539f8ec72f32cb9d775b5d4ca5a65a3c665"
   },
   "sealed_delivery": {
     "archive": "opus5.5-2026-10-30.tar.gz",
@@ -94,5 +94,5 @@
     "crates/terrio/src/tiles/validity.rs": "44c399307e22d9d2d0ca38dda6ee64b867ce08616fd2c4fdeef3029e3bf5f2a6",
     "crates/terrio/src/tiles/mod.rs": "c5acfb23ad2bbd45c07020e2520b6f8bd34a788490188134878cfba80e7a5eb3"
   },
-  "review_followup": "Delivered repair kernel and original tests unchanged. Added integration-side ring-connectivity checks in tiles/repair_checks.rs, an end-to-end delta-overflow regression, and an envelope prefilter in the separate JTS validity checker."
+  "review_followup": "Delivered repair kernel and original tests unchanged. Added integration-side ring-connectivity checks in tiles/repair_checks.rs with the tiles feature guard, an end-to-end delta-overflow regression, and ring-envelope candidate indexing in the separate JTS validity checker. Clipping integration comments/readability updated."
 }

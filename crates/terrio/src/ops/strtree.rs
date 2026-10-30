@@ -36,13 +36,14 @@ mod tests {
     fn packing_preserves_distinct_centres_near_coordinate_limits() {
         // More than one slice is essential: its X partition must be correct
         // before Y sorting, even when the unhalved centre sum overflows.
-        let boxes = (0..24)
+        let mut boxes = (0..24)
             .rev()
             .map(|i| {
                 let x = 1e308 + i as f64 * 1e306;
                 (x, i as f64, x, i as f64)
             })
             .collect::<Vec<_>>();
+        boxes.push((-1e308, 0.0, 1e308, 0.0));
         let normalized = boxes.iter().map(|b| (b.0 * 0.5, b.1, b.2 * 0.5, b.3)).collect::<Vec<_>>();
         assert_eq!(leaf_order(&boxes), leaf_order(&normalized));
     }
