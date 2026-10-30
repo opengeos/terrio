@@ -562,4 +562,31 @@ mod tests {
         let want: Vec<usize> = (0..3).flat_map(|k| (0..60).filter(move |i| i % 3 == k)).collect();
         assert_eq!(near.iter().map(|e| e.0).collect::<Vec<_>>(), want);
     }
+
+    #[test]
+    fn radius_keeps_the_found_order_across_leaves() {
+        // Thirty points at exactly the same distance (5) from the origin, in a scrambled order,
+        // with leaves of 4: the tree reorders them, so the order found is not index order.
+        let mut pts: Vec<[f64; 3]> = Vec::new();
+        for (a, b) in [(3.0, 4.0), (4.0, 3.0)] {
+            for (sa, sb) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+                pts.extend([[sa * a, sb * b, 0.0], [sa * a, 0.0, sb * b], [0.0, sa * a, sb * b]]);
+            }
+        }
+        for s in [5.0, -5.0] {
+            pts.extend([[s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]]);
+        }
+        let n = pts.len();
+        let pts: Vec<[f64; 3]> = (0..n).map(|i| pts[(i * 7) % n]).collect();
+        let nano = NanoKdTree::new(pts, 4);
+        let q = [0.0; 3];
+        let mut found = Vec::new();
+        nano.radius_level(&mut found, &q, 36.0, 0, 0.0, &mut [0.0; 3]);
+        let found: Vec<usize> = found.iter().map(|e| e.0).collect();
+        assert_eq!(found.len(), n);
+        assert!(found.windows(2).any(|w| w[0] > w[1]), "the tree should reorder the points");
+        let mut near = Vec::new();
+        nano.radius(&q, 6.0, &mut near);
+        assert_eq!(near.iter().map(|e| e.0).collect::<Vec<_>>(), found);
+    }
 }
