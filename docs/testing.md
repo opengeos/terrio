@@ -1611,8 +1611,8 @@ oriented integer rings and all non-collinear polygon groups must still match.
 ## Separate-file raster tiles (#289)
 
 `raster-tiles` in `scripts/conformance.py` compares XYZ/TMS folder output with
-GDAL 3.13.3 on real Landsat RGB derivatives and USGS elevation. The 43 cases
-include 41 exact comparisons of filenames, pixels, sample types, nodata/masks
+GDAL 3.13.3 on real Landsat RGB derivatives and USGS elevation. The 46 cases
+include 44 exact comparisons of filenames, pixels, sample types, nodata/masks
 and GeoTIFF grids/CRS, plus two explicitly reported policy differences.
 The lower-zoom pyramid's 1,146,880 samples independently match GDAL direct-source per-tile
 warps exactly. Terrio resamples every level directly from the source; GDAL's
@@ -1625,7 +1625,9 @@ agreement is not claimed by these nearest-neighbor checks.
 
 Fixture preparation clears inherited nodata on the RGB source so explicit mask
 and alpha behavior can be checked separately. The nodata derivative sets its own
-nodata and hole. A separate derivative sets nodata in only one RGB channel;
+nodata and hole. Interior Float32 nodata = -9999 and no-alpha PNG
+nodata/alpha sources also match GDAL, including zero-filled invalid samples.
+A separate derivative sets nodata in only one RGB channel;
 missing channels must become zero while the remaining valid channels keep the
 pixel opaque. UInt16 RGB and Float32 DEM mask derivatives are cross-checked
 against independent GDAL alpha warps, including stored masks, values/types and

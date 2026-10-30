@@ -105,6 +105,9 @@ pub fn plan(source: &RasterDataset, options: &TileOptions) -> Result<(TilePlan, 
     if scheme == "raster" {
         return Ok((TilePlan::raster(r.cols, r.rows, source.geo_transform(), &options.grid)?, None));
     }
+    if source.crs().is_unknown() {
+        return Err(invalid("global tile schemes require a source CRS"));
+    }
     let (scheme, crs) = match scheme.as_str() {
         "webmercatorquad" => (GlobalScheme::WebMercatorQuad, SpatialRef::from_epsg(3857)?),
         "worldcrs84quad" => (GlobalScheme::WorldCrs84Quad, SpatialRef::from_epsg(4326)?),
@@ -144,10 +147,17 @@ fn validate_rendering(source: &RasterDataset, options: &TileOptions, extension: 
         return Err(Error::Unsupported("PNG tiles require Byte input; scale/translate the raster first, or use GTiff".into()));
     }
     if color {
+        if matches!(source.raster.data_type, DataType::U64 | DataType::I64) {
+            return Err(Error::Unsupported("image/alpha tiles cannot preserve 64-bit integer samples; use GTiff without alpha".into()));
+        }
         color_bands(source)?;
     }
-    if options.output_nodata.is_some_and(|v| !v.is_finite()) {
-        return Err(invalid("output_nodata must be finite"));
+    if let Some(value) = options.output_nodata {
+        let dtype = source.raster.data_type;
+        let (min, max) = if dtype == DataType::F32 { (-(f32::MAX as f64), f32::MAX as f64) } else { crate::ops::type_range(dtype) };
+        if !value.is_finite() || value < min || value > max || (crate::ops::is_integer(dtype) && value.fract() != 0.0) {
+            return Err(invalid("output_nodata must be finite and representable in the output sample type"));
+        }
     }
     Ok((alpha, color, methods))
 }
@@ -229,7 +239,7 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
                     tile.band_metadata = metadata;
                 }
             }
-            if options.skip_blank && (color_blank || blank(&tile)) {
+            if options.skip_blank && color_blank {
                 report.blank += 1;
                 continue;
             }
@@ -301,10 +311,14 @@ impl WarpSource for ColorSource<'_> {
         let bands = data_bands(ds);
         let output_bands = if self.only_alpha { 1 } else { 2 * bands + 1 };
         let n = window.width * window.height;
+        if mask.as_ref().is_some_and(|m| m.len() != n) {
+            return Err(invalid("source tile mask length does not match the window"));
+        }
+        let band_nodata: Vec<_> = (1..=bands).map(|b| ds.band_nodata(b)).collect();
         let mut values = vec![0.0; n * output_bands];
         for i in 0..n {
             let invalid_band = |b: usize| {
-                ds.band_nodata(b + 1).is_some_and(|nd| {
+                band_nodata[b].is_some_and(|nd| {
                     let v = ds.raster.data.get_f64(b * n + i);
                     v == nd || (v.is_nan() && nd.is_nan())
                 })
@@ -400,22 +414,6 @@ fn encode_png(ds: &RasterDataset) -> Result<Vec<u8>> {
         writer.finish().map_err(err)?;
     }
     Ok(bytes)
-}
-
-fn blank(ds: &RasterDataset) -> bool {
-    let n = ds.raster.cols * ds.raster.rows;
-    let bands = ds.raster.bands;
-    if ds.band_color_interp(bands).eq_ignore_ascii_case("Alpha") {
-        return (0..n).all(|i| ds.raster.data.get_f64((bands - 1) * n + i) == 0.0);
-    }
-    (0..bands).all(|b| {
-        ds.band_nodata(b + 1).is_some_and(|nd| {
-            (0..n).all(|i| {
-                let v = ds.raster.data.get_f64(b * n + i);
-                v == nd || (v.is_nan() && nd.is_nan())
-            })
-        })
-    })
 }
 
 /// Generate to a new local directory, or fill missing tiles in an existing directory
@@ -516,6 +514,72 @@ mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    fn global_schemes_require_a_known_source_crs() {
+        let ds = source().header();
+        assert!(plan(&ds, &options()).is_ok());
+        for scheme in ["WebMercatorQuad", "WorldCRS84Quad"] {
+            let mut opts = options();
+            opts.tiling_scheme = scheme.into();
+            assert!(plan(&ds, &opts).unwrap_err().to_string().contains("source CRS"));
+        }
+    }
+
+    #[test]
+    fn validates_output_nodata_range_and_color_integer_precision() {
+        let mut ds = source().header();
+        let mut opts = options();
+        for value in [-1.0, 256.0, 0.5, f64::INFINITY] {
+            opts.output_nodata = Some(value);
+            assert!(validate_rendering(&ds, &opts, "png").is_err());
+        }
+        opts.output_nodata = Some(255.0);
+        assert!(validate_rendering(&ds, &opts, "png").is_ok());
+        opts.output_nodata = None;
+        for dtype in [DataType::U64, DataType::I64] {
+            ds.raster.data_type = dtype;
+            opts.alpha = Some(true);
+            assert!(validate_rendering(&ds, &opts, "tif").is_err());
+            opts.alpha = Some(false);
+            assert!(validate_rendering(&ds, &opts, "tif").is_ok());
+        }
+    }
+
+    #[test]
+    fn skip_blank_uses_source_validity_even_when_background_matches_valid_values() {
+        for format in ["PNG", "GTiff"] {
+            let mut ds = source().read().unwrap();
+            ds.raster.data = RasterData::U8(vec![7; 9]);
+            let mut opts = options();
+            opts.format = format.into();
+            opts.alpha = Some(false);
+            opts.output_nodata = Some(7.0);
+            opts.skip_blank = true;
+            let report = generate(&mut crate::LazyRaster::from(ds), &opts, &mut Collect::default()).unwrap();
+            assert_eq!(report.written, 4);
+        }
+    }
+
+    #[test]
+    fn color_source_rejects_malformed_reader_masks() {
+        struct BadMask(crate::LazyRaster);
+        impl WarpSource for BadMask {
+            fn info(&mut self) -> Result<WarpSourceInfo> {
+                self.0.info()
+            }
+            fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
+                self.0.read_window(window, options)
+            }
+            fn read_mask(&mut self, _: Window, _: Option<usize>) -> Result<Option<Vec<u8>>> {
+                Ok(Some(vec![255]))
+            }
+        }
+        let mut source = BadMask(source());
+        let info = source.info().unwrap();
+        let mut prepared = ColorSource { source: &mut source, info, only_alpha: false };
+        assert!(prepared.read_window(Window::new(0, 0, 2, 2), &WindowOptions::default()).unwrap_err().to_string().contains("mask length"));
+    }
+
     #[test]
     fn folder_png_alpha_distinguishes_nodata_and_padded_edges() {
         let mut sink = Collect::default();

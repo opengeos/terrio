@@ -31,6 +31,7 @@ fn tiles_plan_generate_and_resume() {
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["resumed"], 6);
     let mut invalid = opts.to_vec();
+    // Use a fresh output path: max_tiles must reject the plan before creating it.
     invalid[2] = "invalid";
     invalid.extend(["--max-tiles", "1"]);
     assert!(!run(&invalid, path).status.success());

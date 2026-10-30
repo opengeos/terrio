@@ -2784,10 +2784,16 @@ other channels are valid. GeoTIFF outputs without alpha retain dataset masks and
 exclude masked samples from resampling. Fully opaque
 tiles omit automatic alpha; `--add-alpha` retains it on every tile and
 `--no-alpha` removes it. `--output-nodata` sets the background when alpha is
-disabled. `--skip-blank` omits fully transparent/nodata-only tiles, including
+disabled. With `--no-alpha`, invalid image pixels become the background;
+PNG has no separate validity mask. A gray PNG with explicit output nodata uses
+a `tRNS` transparency entry; RGB PNG does not. Retain alpha for RGB transparency.
+Like GDAL, plain GeoTIFF tiles without explicit output nodata use zero padding
+while retaining source nodata tags. `--skip-blank` omits fully transparent/nodata-only tiles, including
 without alpha (GDAL 3.13.3 can retain zero-filled nodata-only tiles with
 `--no-alpha`). GeoTIFF mask/blank processing uses a separate validity rendering
-pass; it can read source windows again while retaining the same buffer budgets.
+pass. Non-nearest validity uses the maximum contributing source density, which
+can mark more edge pixels valid than a GDAL interpolating alpha warp; exact mask
+agreement is validated for nearest. It can read source windows again while retaining the same buffer budgets.
 PNG output contains image pixels only, without world files, CRS sidecars or
 web viewers. Use the JSON grid from `--dry-run` to obtain tile georeferencing;
 GeoTIFF tiles embed their grids and CRS. Distinct per-band nodata requiring PAM
@@ -2801,6 +2807,8 @@ tiles support nearest, bilinear, cubic, cubicspline, lanczos and average;
 plain GeoTIFF tiles also support the warp engine's statistical methods.
 Interpolating kernels use premultiplied alpha; exact GDAL agreement is currently
 validated for nearest-neighbor tiling. Affine georeferencing is required;
+global schemes also require a known source CRS;
+image/alpha tiles refuse Int64/UInt64 input to avoid float conversion losses;
 additional GDAL matrix sets, KML/viewer publication and `gdal_retile` file layouts
 are not currently implemented.
 
@@ -2809,6 +2817,8 @@ source window may use at most 64 MiB and the output buffer 256 MiB; requests
 exceeding those limits fail before the source window read. Decoder caches,
 already-loaded sources and PNG/GeoTIFF encoder buffers are additional. A plan
 exceeding `--max-tiles` (default one million) is rejected before rendering.
+`--dry-run` reports only the metadata grid; rendering-specific options and the
+maximum tile count are validated when generation runs.
 
 Output directories must be new unless `--resume` is given. Existing files are
 never overwritten; resume trusts existing tiles without validating their
@@ -2818,7 +2828,10 @@ published atomically only after its contents are synced; resume ignores unfinish
 temporary files and fills the missing tiles. Use a fresh directory when
 changing generation options. The caller must control the output tree throughout
 generation; hostile concurrent replacement of its directories requires separate
-filesystem confinement.
+filesystem confinement. Atomic publication requires hard-link support on the
+output filesystem; unsupported filesystems return an I/O error. File contents
+are synced before publication; power-loss durability of directory entries is
+not guaranteed.
 
 Directory writes require a native filesystem; WebAssembly callers use the
 incremental tile sink instead. The command is also the MCP `tile` tool. Rust callers use

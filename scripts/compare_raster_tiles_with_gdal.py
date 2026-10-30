@@ -51,13 +51,17 @@ def compare_folders(reference, actual, extension):
                 raise AssertionError(f'{name}: CRSs differ')
         for i in range(1, a.RasterCount + 1):
             ra, rb = a.GetRasterBand(i), b.GetRasterBand(i)
-            if ra.DataType != rb.DataType or ra.GetNoDataValue() != rb.GetNoDataValue():
+            na, nb = ra.GetNoDataValue(), rb.GetNoDataValue()
+            nodata_equal = na == nb or (na is not None and nb is not None and np.isnan(na) and np.isnan(nb))
+            if ra.DataType != rb.DataType or not nodata_equal:
                 raise AssertionError(f'{name}: type/nodata differs')
             if not np.array_equal(ra.GetMaskBand().ReadAsArray(), rb.GetMaskBand().ReadAsArray()):
                 # Alpha sample differences also change the derived RGB masks.
                 alpha_diff = any(
                     a.GetRasterBand(j).GetColorInterpretation() == gdal.GCI_AlphaBand
                     and b.GetRasterBand(j).GetColorInterpretation() == gdal.GCI_AlphaBand
+                    and np.array_equal(ra.GetMaskBand().ReadAsArray(), a.GetRasterBand(j).ReadAsArray())
+                    and np.array_equal(rb.GetMaskBand().ReadAsArray(), b.GetRasterBand(j).ReadAsArray())
                     and not np.array_equal(a.GetRasterBand(j).ReadAsArray(), b.GetRasterBand(j).ReadAsArray())
                     for j in range(1, a.RasterCount + 1))
                 derived_alpha_masks = (ra.GetMaskFlags() & gdal.GMF_ALPHA) and (rb.GetMaskFlags() & gdal.GMF_ALPHA)
@@ -259,6 +263,19 @@ def main():
             ds = None
             sources[kind] = path
             cases.append((kind, 'xyz', 128, 'GTiff', 'raster', 2, ['--skip-blank']))
+        # Interior nonzero nodata is zero-filled by GDAL's no-alpha tile writer,
+        # even while its original nodata tag is retained.
+        path = root / 'dem-interior-nodata.tif'
+        ds = gdal.Translate(str(path), str(dem))
+        values = ds.GetRasterBand(1).ReadAsArray()
+        values[:25, :30] = -9999
+        ds.GetRasterBand(1).WriteArray(values)
+        ds.GetRasterBand(1).SetNoDataValue(-9999)
+        ds = None
+        sources['dem-interior-nodata'] = path
+        cases.append(('dem-interior-nodata', 'xyz', 128, 'GTiff', 'raster', 2, []))
+        for source in ['nodata', 'alpha']:
+            cases.append((source, 'xyz', 128, 'PNG', 'raster', 2, ['--no-alpha']))
         # Global coordinate planning and reprojected nearest-neighbor pixels.
         for scheme in ['WebMercatorQuad', 'WorldCRS84Quad']:
             for convention in ['xyz', 'tms']:
