@@ -327,3 +327,16 @@ fn lazy_zip_errors_and_unindexed_fallback_are_explicit() {
     fs::write(&malformed, b"not a ZIP archive").unwrap();
     assert!(crate::open_raster_lazy(&format!("/vsizip/{}/small.tif", s(&malformed))).is_err());
 }
+
+#[test]
+fn chunks_larger_than_the_decode_scratch_buffer_remain_supported() {
+    let bytes = data(600_000);
+    let mut deflater = Deflater::new(Vec::new(), Some(262_144));
+    deflater.write_all(&bytes).unwrap();
+    let (compressed, compressed_size, offsets, _) = deflater.finish().unwrap();
+    let index = Index { chunk_size: 262_144, uncompressed_size: bytes.len() as u64, compressed_size, offsets };
+    for k in 0..index.chunks() {
+        let expected = &bytes[k * 262_144..((k + 1) * 262_144).min(bytes.len())];
+        assert_eq!(inflate_chunk(&mut std::io::Cursor::new(&compressed), 0, &index, k, expected.len()).unwrap(), expected);
+    }
+}
