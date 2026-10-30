@@ -286,8 +286,10 @@ pub(super) fn strided_knn(
     }
 }
 
-/// The points closer than `r` to `q`, nearest first, in the order PDAL's sorted radius searches
-/// (`KD2Index::radius`, `KD3Index::radius`) give them.
+/// The points closer than `r` to `q`, nearest first, as PDAL's sorted radius searches
+/// (`KD2Index::radius`, `KD3Index::radius`) give them. Points at exactly the same distance keep
+/// the order nanoflann finds them in, which is PDAL's order for up to 16 results; beyond that,
+/// PDAL's `std::sort` may order them differently.
 pub(super) fn radius_search<const D: usize>(
     tree: &NanoKdTree<D>,
     q: &[f64; D],
