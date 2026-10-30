@@ -66,7 +66,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      # By digest: the merge job names the two images with one set of tags. Reuses the build above.
+      # By digest: the merge job names the two images with one set of tags. The builder's layer cache
+      # holds the build above, so this does not compile again.
       - name: Push
         id: push
         if: github.event_name != 'pull_request' && inputs.push
@@ -119,6 +120,7 @@ jobs:
       - name: Check for the highest release
         id: highest
         run: |
+          set -o pipefail
           highest=$(git ls-remote --tags --refs "https://github.com/$GITHUB_REPOSITORY" 'v*' \
             | sed 's|.*refs/tags/v||' | grep -E '^[0-9.]+$' | sort -V | tail -n 1)
           if [ "$GITHUB_REF_NAME" = "v$highest" ]; then latest=true; else latest=false; fi
