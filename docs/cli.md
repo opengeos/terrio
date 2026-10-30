@@ -1936,7 +1936,10 @@ in two requests, including its 12,600-byte index (32 KiB chunks).
 Random member opens check the header and requested chunks to keep window reads lazy;
 a malformed requested chunk raises an error. `validate` performs the complete index,
 independent-decoding and checksum checks. Decoder state and buffers are reused between
-chunks; the offset cache mutex is released before archive I/O.
+chunks; the offset cache mutex is released before archive I/O. TIFF prefetch hints are
+not yet coalesced across ZIP chunks, so remote windows use on-demand range reads.
+When keeping paths, literal backslashes in Unix/remote names are preserved;
+`--junk-paths` flattens either separator. Optimize preserves directory KV properties.
 
 
 ## fill-nodata

@@ -919,7 +919,9 @@ fn stored_input_name(path: &str, remote: bool, junk_paths: bool) -> String {
             path.replace_range(authority..authority + userinfo + 1, "");
         }
     }
-    let path = path.replace('\\', "/");
+    // GDAL flattens either separator with junk_paths, but preserves literal
+    // backslashes in Unix/remote names when keeping paths.
+    let path = if junk_paths || cfg!(windows) && !remote { path.replace('\\', "/") } else { path };
     if junk_paths {
         return path.rsplit('/').next().unwrap_or(&path).to_string();
     }
@@ -1018,7 +1020,7 @@ pub fn optimize(input: &str, output: &str, options: &SozipOptions) -> Result<Soz
             zip.comment = comment;
             for e in entries {
                 if e.is_dir() {
-                    zip.add(&e.name, 0, (e.dos_time, e.dos_date), 0, 0, &mut std::io::empty(), 0, Vec::new(), None)?;
+                    zip.add(&e.name, 0, (e.dos_time, e.dos_date), 0, 0, &mut std::io::empty(), 0, keep_kv(&e.extra), None)?;
                     continue;
                 }
                 let (n, indexed) =
@@ -1154,6 +1156,9 @@ impl ChunkDecoder {
         }
         let next = data_start.checked_add(from).ok_or_else(|| chunk_error("chunk offset overflow"))?;
         let end = data_start.checked_add(to).ok_or_else(|| chunk_error("chunk end overflow"))?;
+        // SOZip specification Annex F (CC0 option): terminate an independent
+        // full-flush chunk by setting BFINAL on its final empty stored block.
+        // See NOTICE for the specification and attribution.
         let patch = if k + 1 < index.chunks() {
             if end - next < 5 {
                 return Err(chunk_error("chunk lacks full-flush marker"));

@@ -561,6 +561,11 @@ fn remote_member_names_omit_userinfo_queries_and_fragments() {
     }
     assert_eq!(stored_input_name("https://USER_SECRET@[::1]:8080/file@name", true, false), "[::1]:8080/file@name");
     assert_eq!(stored_input_name("local/name?literal", false, false), "local/name?literal");
+    assert_eq!(stored_input_name(r"a\b.csv", false, true), "b.csv");
+    assert_eq!(stored_input_name(r"https://example.com/a\b.csv", true, false), r"example.com/a\b.csv");
+    if !cfg!(windows) {
+        assert_eq!(stored_input_name(r"a\b.csv", false, false), r"a\b.csv");
+    }
 }
 
 #[test]
@@ -685,4 +690,21 @@ fn legacy_cp437_hidden_index_names_match_the_member() {
     let mut back = Vec::new();
     reader.read_to_end(&mut back).unwrap();
     assert_eq!(back, payload);
+}
+
+#[test]
+fn optimize_preserves_directory_kv_properties() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("directory.zip");
+    let output = tmp.path().join("optimized.zip");
+    let extra = kv_extra(&[("Content-Type", "inode/directory")]).unwrap();
+    let mut zip = ZipOut::new(Vec::new(), 0, vec![]);
+    zip.add("dir/", 0, (0, 0), 0, 0, &mut std::io::empty(), 0, extra, None).unwrap();
+    fs::write(&input, zip.finish().unwrap()).unwrap();
+    optimize(&s(&input), &s(&output), &SozipOptions { junk_paths: false, ..yes(4096) }).unwrap();
+    let (entries, _, _) = zipdir::central_directory_at(&mut fs::File::open(&output).unwrap()).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "dir/");
+    assert_eq!(keep_kv(&entries[0].extra), kv_extra(&[("Content-Type", "inode/directory")]).unwrap());
+    assert!(validate(&s(&output)).unwrap().valid);
 }
