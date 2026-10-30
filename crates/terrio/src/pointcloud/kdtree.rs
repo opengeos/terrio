@@ -542,8 +542,9 @@ mod tests {
 
     #[test]
     fn radius_keeps_the_found_order_of_points_as_near() {
-        // One leaf, so nanoflann finds the points in index order. Twenty points at each of three
-        // distances: more than the 16 libstdc++ sorts by insertion.
+        // Terrio's order, which is not PDAL's here: one leaf, so nanoflann finds the points in
+        // index order, and twenty points at each of three distances, more than the 16 that
+        // libstdc++'s std::sort orders stably.
         let pts: Vec<[f64; 3]> = (0..60).map(|i| [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]][i % 3]).collect();
         let nano = NanoKdTree::new(pts, 100);
         let mut near = Vec::new();
