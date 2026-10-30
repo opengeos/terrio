@@ -1931,6 +1931,8 @@ queries and fragments. Auto chunking uses streamed length even without a size hi
 
 `list` intentionally checks every index offset: its index-table work is eight bytes per
 additional chunk (plus a 32-byte header), so remote listings can fetch whole offset tables.
+A local HTTP listing of the 48,788,679-byte USGS archive transferred 29,895 bytes
+in two requests, including its 12,600-byte index (32 KiB chunks).
 Random member opens check the header and requested chunks to keep window reads lazy;
 a malformed requested chunk raises an error. `validate` performs the complete index,
 independent-decoding and checksum checks. Decoder state and buffers are reused between

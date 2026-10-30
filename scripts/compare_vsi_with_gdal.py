@@ -511,36 +511,44 @@ class RangeServer:
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
-                data = path.read_bytes()
+                size = path.stat().st_size
                 rng = self.headers.get("Range")
-                status, body, extra = 200, data, {}
+                status, start, length, extra = 200, 0, size, {}
                 if rng:
                     match = re.fullmatch(r"bytes=(\d*)-(\d*)", rng)
-                    if match and (match[1] or match[2]) and data:
+                    if match and (match[1] or match[2]) and size:
                         if match[1]:
                             a = int(match[1])
-                            b = min(int(match[2]) if match[2] else len(data) - 1, len(data) - 1)
+                            b = min(int(match[2]) if match[2] else size - 1, size - 1)
                         else:
-                            a, b = max(0, len(data) - int(match[2])), len(data) - 1
-                        valid = a <= b and a < len(data)
+                            a, b = max(0, size - int(match[2])), size - 1
+                        valid = a <= b and a < size
                     else:
                         valid = False
                     if not valid:
                         self.send_response(416)
                         self.send_header("Content-Length", "0")
-                        self.send_header("Content-Range", f"bytes */{len(data)}")
+                        self.send_header("Content-Range", f"bytes */{size}")
                         self.end_headers()
                         return
-                    status, body, extra = 206, data[a:b + 1], {"Content-Range": f"bytes {a}-{b}/{len(data)}"}
+                    status, start, length, extra = 206, a, b - a + 1, {"Content-Range": f"bytes {a}-{b}/{size}"}
                 self.send_response(status)
-                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Content-Length", str(length))
                 self.send_header("Accept-Ranges", "bytes")
                 for k, v in extra.items():
                     self.send_header(k, v)
                 self.end_headers()
                 if not head:
-                    self.wfile.write(body)
-                    outer.sent += len(body)
+                    with path.open("rb") as stream:
+                        stream.seek(start)
+                        remaining = length
+                        while remaining:
+                            block = stream.read(min(remaining, 64 * 1024))
+                            if not block:
+                                break
+                            self.wfile.write(block)
+                            outer.sent += len(block)
+                            remaining -= len(block)
                 outer.requests += 1
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -608,22 +616,27 @@ def sozip_cases(terrio: str, data: Path, work: Path) -> None:
         served.mkdir()
         run([terrio, "vsi", "sozip", "create", "-q", "-j", "--enable-sozip", "yes", str(dem), str(served / "dem.zip")])
         server = RangeServer(served)
-        url = f"/vsizip//vsicurl/{server.url}/dem.zip/{dem.name}"
-        p = run([terrio, "translate", url, str(work / "w_terrio.tif"), "--srcwin", "1000", "2000", "256", "256"])
-        sent = server.sent
-        q = run(["gdal_translate", "-q", "-srcwin", "1000", "2000", "256", "256", str(dem), str(work / "w_gdal.tif")])
-        if p.returncode or q.returncode:
-            record("GeoTIFF window from a SOZip archive over HTTP", False, (p.stderr or q.stderr).strip()[-300:])
-        else:
-            from osgeo import gdal
+        try:
+            url = f"/vsizip//vsicurl/{server.url}/dem.zip/{dem.name}"
+            p = run([terrio, "translate", url, str(work / "w_terrio.tif"), "--srcwin", "1000", "2000", "256", "256"])
+            sent = server.sent
+            q = run(["gdal_translate", "-q", "-srcwin", "1000", "2000", "256", "256", str(dem), str(work / "w_gdal.tif")])
+            if p.returncode or q.returncode:
+                record("GeoTIFF window from a SOZip archive over HTTP", False, (p.stderr or q.stderr).strip()[-300:])
+            else:
+                from osgeo import gdal
 
-            a = gdal.Open(str(work / "w_terrio.tif")).ReadAsArray()
-            b = gdal.Open(str(work / "w_gdal.tif")).ReadAsArray()
-            size = (served / "dem.zip").stat().st_size
-            same = a.shape == b.shape and bool((a == b).all())
-            record("GeoTIFF window from a SOZip archive over HTTP", same and sent < size / 4,
-                   f"256x256 window pixel-identical to gdal_translate's of the original; {server.requests} requests, {sent:,} bytes of a {size:,}-byte archive")
-        server.server.shutdown()
+                a = gdal.Open(str(work / "w_terrio.tif")).ReadAsArray()
+                b = gdal.Open(str(work / "w_gdal.tif")).ReadAsArray()
+                size = (served / "dem.zip").stat().st_size
+                same = a.shape == b.shape and bool((a == b).all())
+                record("GeoTIFF window from a SOZip archive over HTTP", same and sent < size / 4,
+                       f"256x256 window pixel-identical to gdal_translate's of the original; {server.requests} requests, {sent:,} bytes of a {size:,}-byte archive")
+        finally:
+            server.server.shutdown()
+            server.server.server_close()
+    else:
+        record("GeoTIFF window from a SOZip archive over HTTP", False, f"{dem.name} not found in {data}")
 
 
 def main() -> int:

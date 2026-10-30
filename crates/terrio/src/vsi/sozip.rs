@@ -306,7 +306,7 @@ fn read_index_mode(r: &mut dyn ReadSeek, e: &CdEntry, check_offsets: bool) -> Re
     let mut size = u32::from_le_bytes([h[18], h[19], h[20], h[21]]) as u64;
     let mut name = vec![0u8; name_len];
     r.read_exact(&mut name)?;
-    if zipdir::decode_name(&name, true) != index_name(&e.name) {
+    if zipdir::decode_name(&name, u16_at(6) & 0x800 != 0) != index_name(&e.name) {
         return Ok(Ok(None));
     }
     let mut extra = vec![0u8; extra_len];

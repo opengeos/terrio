@@ -651,3 +651,38 @@ fn stored_reads_report_truncation_and_checked_offset_overflow() {
     };
     assert_eq!(reader.read(&mut [0]).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
 }
+
+#[test]
+fn legacy_cp437_hidden_index_names_match_the_member() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("cafe.csv");
+    let output = tmp.path().join("legacy.zip");
+    let payload = data(20_000);
+    fs::write(&input, &payload).unwrap();
+    create(&[&s(&input)], &s(&output), &yes(4096)).unwrap();
+    let mut bytes = fs::read(&output).unwrap();
+    // Preserve every record length while converting the visible and hidden names
+    // to unflagged CP437, as used by legacy ZIP producers.
+    for at in 0..bytes.len().saturating_sub(46) {
+        let signature = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let (flag, name) = if signature == zipdir::LOCAL {
+            (at + 6, at + 30)
+        } else if signature == 0x0201_4b50 {
+            (at + 8, at + 46)
+        } else {
+            continue;
+        };
+        let flags = u16::from_le_bytes(bytes[flag..flag + 2].try_into().unwrap()) & !0x800;
+        bytes[flag..flag + 2].copy_from_slice(&flags.to_le_bytes());
+        let name = name + usize::from(bytes[name] == b'.');
+        assert_eq!(&bytes[name..name + 4], b"cafe");
+        bytes[name + 3] = 0x82;
+    }
+    fs::write(&output, &bytes).unwrap();
+    assert_eq!(list(&s(&output)).unwrap()[0].sozip_chunk_size, Some(4096));
+    assert!(validate(&s(&output)).unwrap().valid);
+    let mut reader = MemberReader::open(Box::new(std::io::Cursor::new(bytes)), "café.csv").unwrap().unwrap();
+    let mut back = Vec::new();
+    reader.read_to_end(&mut back).unwrap();
+    assert_eq!(back, payload);
+}
