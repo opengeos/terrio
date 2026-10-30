@@ -1,3 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2020-2024 Brendan C. Ward and pyogrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+#
+# Derived from (adapted and modified):
+#   pyogrio 0.13.0:
+#     pyogrio/geopandas.py
+#     pyogrio/core.py
+
 """pyogrio's API on terrio's vector drivers: what geopandas uses of `pyogrio`, without GDAL.
 
 geopandas 1.1 reads and writes vector files through a module named `pyogrio`: `read_dataframe`

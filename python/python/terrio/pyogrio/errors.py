@@ -1,3 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2020-2024 Brendan C. Ward and pyogrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+#
+# Derived from (adapted and modified):
+#   pyogrio 0.13.0:
+#     pyogrio/errors.py
+
 """Errors raised by :mod:`terrio.pyogrio`, with pyogrio's names and hierarchy.
 
 `geopandas` and callers catch these by name (``pyogrio.errors.DataSourceError``), so they are

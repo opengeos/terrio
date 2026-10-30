@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2007, ITC
 // SPDX-FileCopyrightText: Copyright (c) 2008-2017, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: PROJ contributors
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
@@ -7,6 +8,8 @@
 //   GDAL (bundled NOAA MDL degrib) v3.12.2 (public domain):
 //     frmts/grib/degrib/degrib/grib2api.c
 //     frmts/grib/degrib/degrib/metaparse.cpp
+//     frmts/grib/degrib/degrib/degrib2.cpp
+//     frmts/grib/degrib/degrib/scan.c
 //   GDAL (bundled NCEP g2clib) v3.12.2 (public domain):
 //     frmts/grib/degrib/g2clib/simunpack.c
 //     frmts/grib/degrib/g2clib/comunpack.c
@@ -14,8 +17,23 @@
 //     frmts/grib/degrib/g2clib/pngunpack.c
 //     frmts/grib/degrib/g2clib/g2_unpack7.c
 //     frmts/grib/degrib/g2clib/g2_getfld.c
+//     frmts/grib/degrib/g2clib/g2_unpack6.c
+//     frmts/grib/degrib/g2clib/dec_png.c
+//     frmts/grib/degrib/g2clib/gbits.c
+//     frmts/grib/degrib/g2clib/int_power.c
+//     frmts/grib/degrib/g2clib/rdieee.c
 //   GDAL v3.12.2:
 //     frmts/grib/gribdataset.cpp
+//   GDAL v3.12.2 (files GDAL added to its bundled g2clib):
+//     frmts/grib/degrib/g2clib/aecunpack.c
+//     frmts/grib/degrib/g2clib/dec_jpeg2000.cpp
+//   PROJ 9.7.1:
+//     src/projections/merc.cpp
+//     src/projections/lcc.cpp
+//     src/projections/stere.cpp
+//     src/tsfn.cpp
+//     src/msfn.cpp
+//     src/adjlon.cpp
 
 //! GRIB (read only), decoded as GDAL's GRIB driver (GDAL 3.12, `frmts/grib`: degrib and NCEP's
 //! g2clib) decodes it, so that pixels, nodata and georeferencing are GDAL's. GRIB1 messages are

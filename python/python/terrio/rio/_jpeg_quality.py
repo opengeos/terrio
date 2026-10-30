@@ -1,3 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 1998, 2002, Frank Warmerdam <warmerdam@pobox.com>
+# SPDX-FileCopyrightText: Copyright (c) 2007-2015, Even Rouault <even dot rouault at spatialys dot com>
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+#
+# Derived from (translated to Python and modified):
+#   GDAL v3.12.1:
+#     frmts/gtiff/gtiffdataset_write.cpp
+#     frmts/gtiff/quant_table_md5sum.h
+#     frmts/gtiff/quant_table_md5sum_jpeg9e.h
+
 """The JPEG quality of a JPEG-compressed TIFF, guessed as GDAL guesses it.
 
 GDAL's GTiff driver reports `JPEG_QUALITY` and `JPEGTABLESMODE` in a JPEG-compressed

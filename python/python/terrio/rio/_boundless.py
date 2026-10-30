@@ -1,3 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2001, Frank Warmerdam <warmerdam@pobox.com>
+# SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright (c) 2007-2014, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright (c) 1998, 2003, Frank Warmerdam
+# SPDX-FileCopyrightText: Copyright (c) 1998, Frank Warmerdam
+# SPDX-FileCopyrightText: Copyright (c) 2014, Even Rouault <even dot rouault at spatialys dot com>
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause
+#
+# Derived from (translated to Python and modified):
+#   GDAL v3.12.1:
+#     frmts/vrt/vrtsources.cpp
+#     frmts/vrt/vrtsourcedrasterband.cpp
+#     frmts/vrt/vrtdataset.cpp
+#     gcore/gdaldataset.cpp
+#     gcore/rasterio.cpp
+#     gcore/gdalrescaledalphaband.cpp
+#   rasterio 1.5.0:
+#     rasterio/vrt.py
+#     rasterio/_io.pyx
+
 """Boundless reads as rasterio 1.5 makes them: through a VRT read by GDAL 3.12.
 
 rasterio's `DatasetReaderBase.read(boundless=True)` wraps the dataset in a VRT

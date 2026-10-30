@@ -1,3 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Copyright © 2014, contributors of python-geojson
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause
+#
+# Derived from (adapted and modified):
+#   rasterio 1.5.0:
+#     rasterio/rio/helpers.py
+#   python-geojson (through rasterio) e82d2827110c9fccc5eb51d57076fd707c9a35be:
+#     geojson/coords.py
+
 """Helpers of rasterio's command line (`rasterio.rio.helpers`)."""
 
 from __future__ import annotations

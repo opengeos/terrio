@@ -1,3 +1,36 @@
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 1998, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2014, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2003, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2001, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2008-2012, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2024, Javier Jimenez Shaw
+// SPDX-FileCopyrightText: Copyright (c) 2019, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 1998, 2002, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2007-2015, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2007, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2014, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.1:
+//     gcore/overview.cpp
+//     gcore/rasterio.cpp
+//     alg/gdalwarpkernel.cpp
+//     alg/gdalresamplingkernels.h
+//     frmts/gtiff/cogdriver.cpp
+//     frmts/gtiff/geotiff.cpp
+//     gcore/gdal_misc.cpp
+//     gcore/gdalnodatamaskband.cpp
+//     gcore/gdalrescaledalphaband.cpp
+//     gcore/gdal_cpp_functions.h
+//     gcore/gdalsse_priv.h
+
 //! Overviews computed as GDAL 3.12.1 computes them, pixel for pixel.
 //!
 //! GDAL's COG driver (`frmts/gtiff/cogdriver.cpp`, `GDALCOGCreator::Create`) halves the image

@@ -1,3 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+# SPDX-FileCopyrightText: Copyright (c) 2008-2014, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright 2007, Mateusz Loskot
+# SPDX-FileCopyrightText: Copyright 2008-2024, Even Rouault <even.rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright (c) 2007, Mateusz Loskot
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+#
+# Derived from (translated to Python and modified):
+#   GDAL v3.12.1:
+#     ogr/ogrutils.cpp
+#     ogr/ogrlibjsonutils.cpp
+#     ogr/ogrgeojsonwriter.cpp
+
 """Writing GeoJSON the way GDAL 3.12's GeoJSON driver writes what pyogrio 0.13 gives it.
 
 The text matches GDAL's byte for byte for the layouts measured (see the parity tests): the

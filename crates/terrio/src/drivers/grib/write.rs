@@ -5,6 +5,9 @@
 // Derived from (translated to Rust and modified):
 //   GDAL v3.12.2:
 //     frmts/grib/gribcreatecopy.cpp
+//   GDAL (bundled NCEP g2clib) v3.12.2 (public domain):
+//     frmts/grib/degrib/g2clib/simpack.c
+//     frmts/grib/degrib/g2clib/int_power.c
 
 //! A GRIB2 writer, as GDAL's GRIB driver writes (`gribcreatecopy.cpp`): one message per band,
 //! with GDAL's sections, defaults and creation options, so that a file reads back in GDAL as the

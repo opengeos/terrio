@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2007, Mateusz Loskot
+# SPDX-FileCopyrightText: Copyright 2008-2024, Even Rouault <even.rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright (c) 2007, Mateusz Loskot
+# SPDX-FileCopyrightText: Copyright (c) 2008-2017, Even Rouault <even dot rouault at spatialys dot com>
+# SPDX-FileCopyrightText: Copyright (c) 2020-2024 Brendan C. Ward and pyogrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+#
+# Derived from (translated to Python and modified):
+#   GDAL v3.12.1:
+#     ogr/ogrlibjsonutils.cpp
+#     ogr/ogrsf_frmts/geojson/ogrgeojsonreader.cpp
+#   pyogrio 0.13.0:
+#     pyogrio/raw.py
+
 """Reading vector data the way pyogrio 0.13 reads it through GDAL 3.12, on terrio's drivers.
 
 Every dataset is opened with `terrio.open_vector`'s path (through `_terrio.pyogrio_read`), so the
