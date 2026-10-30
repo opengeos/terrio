@@ -456,9 +456,9 @@ mod tests {
         assert_eq!(request(s, "tools/call", json!({"name": "help", "arguments": {"args": []}}))["error"]["code"], INVALID_PARAMS);
         assert_eq!(request(s, "tools/call", json!({"name": "info", "arguments": {"args": [1]}}))["error"]["code"], INVALID_PARAMS);
         assert_eq!(request(s, "nope", json!({}))["error"]["code"], METHOD_NOT_FOUND);
-        assert_eq!(serde_json::from_str::<Value>(&s.handle("{").unwrap()).unwrap()["error"]["code"], PARSE_ERROR);
+        assert_eq!(serde_json::from_str::<Value>(&handle(s, "{").unwrap()).unwrap()["error"]["code"], PARSE_ERROR);
         // Notifications get no reply.
-        assert!(s.handle(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
+        assert!(handle(s, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
     }
 
     /// A tool call runs while the server answers other requests, and a cancelled one is killed
@@ -473,7 +473,7 @@ mod tests {
         assert!(handle(&mut s, &call.to_string()).is_none());
         assert!(request(&mut s, "ping", json!({}))["result"].is_object());
         let started = std::time::Instant::now();
-        s.handle(&json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "slow"}}).to_string());
+        handle(&mut s, &json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "slow"}}).to_string());
         s.shutdown();
         assert!(started.elapsed() < Duration::from_secs(10));
         assert!(replies.try_recv().is_err());

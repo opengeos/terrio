@@ -300,6 +300,7 @@ impl Editor {
 
     /// Install a rebuilt image through the normal rollback-journal transaction. Truncated
     /// original pages must be journaled too, so interruption can restore the complete file.
+    /// `old` must be the original snapshot from this editor's locked handle (`image`).
     pub(crate) fn replace_image(&mut self, old: Vec<u8>, image: Vec<u8>) -> Result<()> {
         if image.is_empty() || !image.len().is_multiple_of(self.page_size) || old.len() != self.orig_pages as usize * self.page_size {
             return Err(bad("replacement image size"));
@@ -1346,13 +1347,11 @@ fn lock(file: &File, path: &Path) -> Result<()> {
     Ok(())
 }
 
-// In-place changes are made where SQLite's locks are taken.
-#[cfg(all(test, unix, not(target_os = "emscripten")))]
-mod tests {
+#[cfg(all(test, any(all(unix, not(target_os = "emscripten")), windows)))]
+mod native_repack_tests {
     use super::*;
-    use crate::drivers::sqlite::Db;
 
-    fn sample(rows: i64) -> Vec<u8> {
+    pub(super) fn sample(rows: i64) -> Vec<u8> {
         let t = w::Table {
             name: "t".into(),
             sql: "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)".into(),
@@ -1361,6 +1360,32 @@ mod tests {
         };
         w::write_database(&[t], &[], 0, 0).unwrap()
     }
+
+    #[test]
+    fn repack_refuses_hard_link_alias_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.db");
+        let alias = dir.path().join("alias.db");
+        let wal = dir.path().join("alias.db-wal");
+        let original = sample(100);
+        std::fs::write(&path, &original).unwrap();
+        std::fs::hard_link(&path, &alias).unwrap();
+        std::fs::write(&wal, b"pending frames under another name").unwrap();
+        assert!(Editor::open_repack(&path).is_err(), "hard links must be refused before relying on path-based WAL checks");
+        #[cfg(unix)]
+        assert!(Editor::open(&path).is_err(), "append/update must also refuse aliases before checking only the named WAL");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read(&alias).unwrap(), original);
+        assert_eq!(std::fs::read(&wal).unwrap(), b"pending frames under another name");
+    }
+}
+
+// In-place changes are made where SQLite's locks are taken.
+#[cfg(all(test, unix, not(target_os = "emscripten")))]
+mod tests {
+    use super::native_repack_tests::sample;
+    use super::*;
+    use crate::drivers::sqlite::Db;
 
     fn root_of(path: &Path) -> u32 {
         let db = Db::new(std::fs::read(path).unwrap()).unwrap();
@@ -1420,9 +1445,8 @@ mod tests {
         std::fs::write(&path, sample(1)).unwrap();
         // A read-only descriptor cannot take a write lock: F_SETLK fails with EBADF, not contention.
         let file = File::open(&path).unwrap();
-        let error = lock(&file, &path).unwrap_err().to_string();
-        assert!(!error.contains("locked by another connection"), "{error}");
-        assert!(error.contains("Bad file descriptor"), "{error}");
+        let Err(Error::Io(error)) = lock(&file, &path) else { panic!("write lock accepted a read-only descriptor") };
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
     }
     #[test]
     fn repack_open_refuses_a_symlink_even_without_path_preflight() {
@@ -1455,7 +1479,7 @@ mod tests {
     }
 
     #[test]
-    fn review_regression_repack_wal_refusal_preserves_hot_journal_and_image() {
+    fn repack_wal_refusal_preserves_hot_journal_and_image() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("wal-and-journal.db");
         std::fs::write(&path, sample(3)).unwrap();
@@ -1475,7 +1499,7 @@ mod tests {
     }
 
     #[test]
-    fn review_regression_repack_journal_does_not_broaden_database_permissions() {
+    fn repack_journal_does_not_broaden_database_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("private.db");
@@ -1596,25 +1620,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(unix, windows))]
-    fn review_regression_repack_refuses_hard_link_alias_wal() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("main.db");
-        let alias = dir.path().join("alias.db");
-        let wal = dir.path().join("alias.db-wal");
-        let original = sample(100);
-        std::fs::write(&path, &original).unwrap();
-        std::fs::hard_link(&path, &alias).unwrap();
-        std::fs::write(&wal, b"pending frames under another name").unwrap();
-        assert!(Editor::open_repack(&path).is_err(), "hard links must be refused before relying on path-based WAL checks");
-        assert!(Editor::open(&path).is_err(), "append/update must also refuse aliases before checking only the named WAL");
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert_eq!(std::fs::read(&alias).unwrap(), original);
-        assert_eq!(std::fs::read(&wal).unwrap(), b"pending frames under another name");
-    }
-
-    #[test]
-    fn review_regression_torn_unchanged_page_is_recoverable() {
+    fn torn_unchanged_page_is_recoverable() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("torn.db");
         let original = sample(2000);

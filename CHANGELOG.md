@@ -67,7 +67,7 @@
 ### Breaking changes
 
 - Dataset/VSI paths retain leading and trailing whitespace across CLI, Python, JavaScript
-  and MCP (#384). Native filenames and virtual keys with edge whitespace are distinct from their
+  and MCP (#372). Native filenames and virtual keys with edge whitespace are distinct from their
   trimmed neighbors; callers must normalize pasted paths/URLs themselves. `@FILE` lines
   still apply their file-list whitespace rules.
 - Native Unix SQLite in-place append/update and recovery propagate parent-directory open/fsync

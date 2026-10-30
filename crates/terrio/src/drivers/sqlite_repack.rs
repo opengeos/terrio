@@ -228,6 +228,10 @@ impl<'a> Source<'a> {
     }
 }
 
+fn extra_capacity(capacity: usize) -> usize {
+    (capacity / 4).max(1 << 24)
+}
+
 struct Output {
     data: Vec<u8>,
     size: usize,
@@ -267,7 +271,7 @@ impl PageStore for Output {
                 // outgrows it, grow by a quarter of the buffer: extra capacity
                 // stays bounded instead of doubling a GiB buffer, and copies on
                 // allocators without in-place growth stay amortized.
-                self.data.reserve_exact((self.data.capacity() / 4).max(1 << 24));
+                self.data.reserve_exact(extra_capacity(self.data.capacity()));
             }
             self.data.resize(self.data.len() + self.size, 0);
             if !self.special(page) {
@@ -475,5 +479,23 @@ impl MapSource<'_> {
             self.tree(be(bytes, offset + 8)?, page, 5, depth + 1)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod growth_tests {
+    #[test]
+    fn large_output_growth_is_amortized() {
+        for initial in [128usize << 20, 1usize << 30] {
+            let target = initial * 2;
+            let mut capacity = initial;
+            let mut reserves = 0;
+            while capacity < target {
+                capacity += super::extra_capacity(capacity);
+                reserves += 1;
+            }
+            assert!(reserves <= 4, "doubling capacity required {reserves} reserves");
+            assert!(capacity <= target + target / 4, "over-allocation exceeds one quarter");
+        }
     }
 }

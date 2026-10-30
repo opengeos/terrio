@@ -130,6 +130,28 @@ mod tests {
         writer::write_database(&tables, &[], 10400, 0x4750_4b47).unwrap()
     }
     #[test]
+    #[cfg(any(all(unix, not(target_os = "emscripten")), windows))]
+    fn native_counter_bumps_once_with_wraparound() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("counter.gpkg");
+        for original_counter in [0u32, 41, u32::MAX] {
+            let mut original = sample();
+            original[24..28].copy_from_slice(&original_counter.to_be_bytes());
+            original[92..96].copy_from_slice(&original_counter.to_be_bytes());
+            let expected = original_counter.wrapping_add(1);
+            let compacted = repack_bytes(&original).unwrap();
+            // Byte compaction builds an image; only a native file commit advances the counter.
+            assert_eq!(&compacted[24..28], &original_counter.to_be_bytes());
+            assert_eq!(&compacted[92..96], &original_counter.to_be_bytes());
+            std::fs::write(&path, &original).unwrap();
+            repack(&path).unwrap();
+            let native = std::fs::read(&path).unwrap();
+            assert_eq!(&native[24..28], &expected.to_be_bytes());
+            assert_eq!(&native[92..96], &expected.to_be_bytes());
+        }
+    }
+
+    #[test]
     fn preserves_records_and_headers_in_memory() {
         let bytes = sample();
         let compact = repack_bytes(&bytes).unwrap();
@@ -181,7 +203,7 @@ mod tests {
     }
     #[cfg(any(unix, windows))]
     #[test]
-    fn review_regression_native_repack_accepts_archive_like_filenames() {
+    fn native_repack_accepts_archive_like_filenames() {
         let directory = tempfile::tempdir().unwrap();
         for name in ["snapshot.zip", "snapshot.ZIP"] {
             let path = directory.path().join(name);
