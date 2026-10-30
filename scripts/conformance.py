@@ -29,6 +29,7 @@ Suites:
     footprint         raster footprints, source/custom fields and singleparts vs GDAL
     vsi               terrio vsi list/copy/sync/move/delete vs gdal vsi, locally, in archives and on S3
                       (compare_vsi_with_gdal.py)
+    vector-clip       points/lines/polygons against bbox, geometry and template clips vs GDAL
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
     vector-dataset    concat, partition, set-field-type, make-point, create, export-schema, rename-layer, edit, update
     vector-geom       simplify, segmentize, hulls, swap-xy, set-geom-type, combine and sort vs
@@ -2101,7 +2102,7 @@ def suite_vector_dataset(ctx):
     if tools:
         s.skipped = "needs the GDAL command-line tools (" + ", ".join(tools) + ")"
         return s
-    needed = ("countries.gpkg", "UScounties.gpkg", "multi.gpkg", "TN_Counties.geojson", "las_vegas_roads.geojson", "hike_gps_trace.csv", "ne_places/ne_10m_populated_places_simple.shp")
+    needed = ("countries.gpkg", "UScounties.gpkg", "multi.gpkg", "TN_Counties.geojson", "las_vegas_roads.geojson", "hike_gps_trace.csv", "ne_places/ne_10m_populated_places_simple.shp", "usgs_dem.tif")
     if any(not os.path.isfile(os.path.join(ctx.data, name)) for name in needed):
         s.skipped = "needs the vector test data (scripts/fetch_test_data.sh)"
         return s
@@ -2202,6 +2203,37 @@ def suite_vector_geom(ctx):
     return s
 
 
+def suite_vector_clip(ctx):
+    """Vector clipping on real county, road and place features."""
+    suite = Suite("vector-clip", "Vector clipping", "GDAL 3.13.3 gdal vector clip",
+                  "Tennessee counties, Las Vegas roads and Natural Earth places: bbox, polygon, "
+                  "filtered vector templates, raster bounds and clipping-CRS transforms. "
+                  "Exact schema/attributes/CRS/types and source IDs, per-dimension coverage. "
+                  "Area symmetric difference <= 1e-9, relative line length <= 1e-9; "
+                  "coordinate-scaled Hausdorff distance <= 1e-9. Boundary transform ambiguity is explicit.")
+    if missing_modules("osgeo", "shapely") or not shutil.which("gdal"):
+        suite.skipped = "needs GDAL 3.13 with GEOS and shapely"
+        return suite
+    needed = ("TN_Counties.geojson", "las_vegas_roads.geojson", "ne_places/ne_10m_populated_places_simple.shp", "usgs_dem.tif")
+    if any(not os.path.isfile(os.path.join(ctx.data, name)) for name in needed):
+        suite.skipped = "needs " + ", ".join(needed)
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_vector_clip_with_gdal.py"), ctx.data,
+                          "--terrio", ctx.terrio, "--json"])
+    try:
+        rows = json.loads(out)
+    except (ValueError, TypeError) as error:
+        suite.error = str(error) + ": " + tail(err or out)
+        return suite
+    if len(rows) != 27:
+        suite.error = f"expected 27 vector clip comparisons, got {len(rows)}"
+    for row in rows:
+        suite.cases.append(Case("vector-clip", row["name"], row["status"], row.get("detail", "")))
+    if code:
+        suite.error = tail(err or out)
+    return suite
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -2247,6 +2279,7 @@ SUITES = OrderedDict(
         ("mdmosaic", suite_mdmosaic),
         ("topology", suite_topology),
         ("vector-geom", suite_vector_geom),
+        ("vector-clip", suite_vector_clip),
         ("vector-dataset", suite_vector_dataset),
         ("footprint", suite_footprint),
         ("analysis-output", suite_analysis_output),

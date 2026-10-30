@@ -2799,3 +2799,37 @@ test("validateGpkg reports complete verdicts for bytes and memory paths", {
   assert.equal(invalid.errors[0].requirement, 1);
   assert.throws(() => terrio.validateGpkg(bytes, { unknownOption: true }), /unknown field/);
 });
+
+test("clipVector preserves attributes, boundary points and interpolated line Z", () => {
+  const src = {type: "FeatureCollection", features: [
+    {type: "Feature", properties: {name: "road"}, geometry: {type: "LineString", coordinates: [[-1,1,0],[3,1,40]]}},
+    {type: "Feature", properties: {name: "boundary"}, geometry: {type: "Point", coordinates: [0,2,7]}},
+    {type: "Feature", properties: {name: "outside"}, geometry: {type: "Point", coordinates: [5,5]}},
+  ]};
+  const polygon = {type: "Polygon", coordinates: [[[0,0],[2,0],[2,2],[0,2],[0,0]]]};
+  for (const options of [{bbox: [0,0,2,2]}, {geometry: polygon}, {geometry: "POLYGON ((0 0,2 0,2 2,0 2,0 0))"}]) {
+    const out = terrio.clipVector(src, options);
+    const features = out.toGeoJSON().features;
+    assert.deepEqual(features.map(f => f.properties.name), ["road", "boundary"]);
+    assert.deepEqual(features[0].geometry, {type: "LineString", coordinates: [[0,1,10],[2,1,30]]});
+    assert.deepEqual(features[1].geometry, {type: "Point", coordinates: [0,2,7]});
+    out.free();
+  }
+  const template = {type: "FeatureCollection", features: [
+    {type: "Feature", properties: {keep: 1}, geometry: polygon},
+    {type: "Feature", properties: {keep: 0}, geometry: {type:"Polygon",coordinates:[[[4,4],[6,4],[6,6],[4,6],[4,4]]]}},
+  ]};
+  const out = terrio.clipVector(src, {like: template, likeWhere: "keep=1"});
+  assert.equal(out.toGeoJSON().features.length, 2);
+  out.free();
+  const raster = terrio.rasterFromArray(new Uint8Array(4), 2, 2, [0,1,0,2,0,-1], "EPSG:4326");
+  for (const like of [raster, {bytes: raster.toBytes("template.tif"), filename:"template.tif"}, {bytes:raster.toBytes("template.gpkg"),filename:"template.gpkg"}]) {
+    const clipped = terrio.clipVector(src, {like});
+    assert.equal(clipped.toGeoJSON().features.length, 2);
+    clipped.free();
+  }
+  raster.free();
+  assert.throws(() => terrio.clipVector(src, {}), /exactly one/);
+  assert.throws(() => terrio.clipVector(src, {bbox:[0,0,0,1]}), /bbox/);
+  assert.throws(() => terrio.clipVector(src, {bbox:[0,0,2,2], layers:["missing"]}), /no layer/);
+});

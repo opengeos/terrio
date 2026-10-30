@@ -81,6 +81,7 @@ pub mod tile_index;
 pub mod topology;
 pub mod translate;
 pub mod update;
+pub mod vector_clip;
 pub mod vector_edit;
 pub mod vector_filter;
 pub mod vector_geom;

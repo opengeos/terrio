@@ -2758,3 +2758,50 @@ an incomplete verdict; this includes the cost of character-class ranges.
 
 Checks are stricter than GDAL for some malformed geometry, image and metadata
 payloads. See [validation details and known differences](testing.md#geopackage-specification-validation).
+
+## Vector clipping
+
+`terrio vector-clip` clips points, lines and polygons to a bounding box, a
+polygon/multipolygon supplied as WKT or GeoJSON, or a dataset template:
+
+```sh
+terrio vector-clip roads.gpkg clipped.gpkg --bbox=-115.2,36.1,-115.1,36.2
+terrio vector-clip places.fgb clipped.geojson --geometry 'POLYGON ((0 0,2 0,2 2,0 2,0 0))'
+terrio vector-clip parcels.gpkg clipped.gpkg --like zones.gpkg --like-layer study_area
+terrio vector-clip roads.gpkg clipped.gpkg --like dem.tif
+terrio vector-clip parcels.gpkg clipped.gpkg --like zones.gpkg --like-where 'keep=1'
+```
+
+Supply exactly one of `--bbox`, `--geometry` or `--like`. Bbox and WKT coordinates
+use each input layer's CRS unless `--bbox-crs` or `--geometry-crs` is supplied;
+GeoJSON defaults to WGS84 or its embedded CRS. Only the clipping region is
+reprojected; input coordinates and CRS are retained. `--layer` selects input
+layers. A vector template's polygons are unioned, with `--like-layer`,
+`--like-where` or `--like-sql` selecting/filtering its features. SQL uses Terrio's
+existing documented vector SELECT subset. Raster templates use rectangular
+bounds, including rotated-grid bounds; lazy raster pixels are not decoded.
+
+Polygon holes and boundary points/lines are included. Null/empty intersections
+are omitted. Single geometry layers split multipart results and discard
+lower-dimensional contacts, as GDAL does. Multi geometry layers retain their
+declared type; unspecified/collection layers retain boundary-only intersections.
+Attributes, schema, layer name and CRS are retained, with output IDs sequential
+from 1. Points retain Z/M; line cuts interpolate source Z/M, while constructed
+polygon topology is XY. Invalid geometries are refused; repair them first with
+`make-valid`. Exact inclusion at a transformed boundary can differ from GDAL by
+a few floating-point units: for example inverse Web Mercator can put latitude
+2 just outside an upper edge of 1.9999999999999996. Reprojection does not snap
+input points to the transformed boundary.
+
+Outputs use the usual vector format inference, `--format`, `--output-layer`,
+`--append` and `--overwrite` options. Existing outputs are refused unless an
+explicit write mode is selected. GDAL-specific creation/open options, upsert and
+skip-errors are not separate options of this command.
+
+Rust uses `ops::vector_clip::{clip, ClipRegion, ClipTemplateOptions}`. Python
+`terrio.clip_vector(src, bbox=[...])` returns one `Layer` (choose `layer=` when
+needed); `geometry=`, `like=`, `crs=`, `like_layer=`, `like_where=` and `like_sql=`
+provide the corresponding options. Python accepts vector/raster paths and
+in-memory data as templates. JavaScript `clipVector(src, {bbox: [...]})` returns
+a `Dataset`, with `geometry`, `like`, `crs`, `layers`, `likeLayer`, `likeWhere`
+and `likeSql`; templates may be `Dataset`s, uploaded bytes or vector GeoJSON.

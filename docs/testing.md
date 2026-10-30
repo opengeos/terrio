@@ -1607,3 +1607,29 @@ quantized geometries are compared structurally and reported as invalid. A separa
 reported category permits only reassociation of an identical collinear ring: all
 oriented integer rings and all non-collinear polygon groups must still match.
 `scripts/reference/test_make_valid_tile_comparison.py` rejects broader changes.
+
+## Vector clipping (#289)
+
+`vector-clip` in `scripts/conformance.py` compares clipping of real Tennessee
+county polygons, Las Vegas roads and Natural Earth populated places against
+GDAL 3.13.3. Cases cover native bbox/WKT, unioned/filtered vector templates,
+SQL template selection, raster bounds and transformed bbox/geometry inputs.
+Schema, attributes grouped by source ID, CRS and declared type must match;
+coverage is checked separately in each dimension so area cannot hide lost lines
+or points. Polygon symmetric-difference area and line total-length differences
+must be within 1e-9 relative, with coordinate-scaled Hausdorff distance <= 1e-9.
+Points must match exactly. Multipart ordering and ring orientation are ignored.
+
+The polygon engine uses an integer grid for topology. The clip operation restores
+its result vertices from original floating vertices and robust edge intersections
+to avoid amplifying grid rounding on shallow-angle cuts. A focused triangle
+regression checks the cut area independently. Additional regressions cover hole
+boundaries, tangencies, polygon-only contacts, mixed collections, Z/M interpolation,
+CRS selection and CLI/MCP/output safety. Python and Node/WASM tests exercise bbox,
+WKT/GeoJSON, templates, filters, uploaded raster bytes and invalid options.
+
+One separately checked transformed-point boundary case records a known arithmetic
+difference: GDAL includes latitude 2 at a projected upper edge while Terrio's
+inverse Web Mercator produces 1.9999999999999996. The independent `terrio crs`
+result, unchanged interior point and exact source IDs/metadata are checked;
+arbitrary missing points cannot use this exception.

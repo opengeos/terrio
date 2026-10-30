@@ -14,6 +14,7 @@ use terrio::ops::vector_geom::{
 /// Registers the functions in the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simplify, m)?)?;
+    m.add_function(wrap_pyfunction!(clip_vector, m)?)?;
     m.add_function(wrap_pyfunction!(segmentize, m)?)?;
     m.add_function(wrap_pyfunction!(convex_hull, m)?)?;
     m.add_function(wrap_pyfunction!(concave_hull, m)?)?;
@@ -220,4 +221,122 @@ fn sort(py: Python<'_>, src: &Bound<'_, PyAny>, method: &str, layer: Option<Stri
     let input = one_layer(py, src, layer)?;
     let inner = py.detach(|| vector_geom::sort(&input, method));
     Ok(PyLayer { inner })
+}
+
+/// Clips vector features to a bbox, polygon geometry, or vector/raster template.
+///
+/// Args:
+///     src: Vector path, Layer, VectorDataset or GeoJSON; choose one layer with layer.
+///     bbox: xmin,ymin,xmax,ymax in the input CRS unless crs is supplied.
+///     geometry: Polygon/multipolygon WKT or GeoJSON text. GeoJSON defaults to WGS84.
+///     like: Vector/raster path, a Raster, or in-memory vector data. Polygon features
+///         are unioned; raster bounds use metadata without reading lazy raster pixels.
+///     crs: CRS of bbox/geometry, transforming the clip region rather than input data.
+///     layer: Input layer to use when src has several.
+///     like_layer: Template layer to union.
+///     like_where: OGR SQL WHERE subset for template features; exclusive with like_sql.
+///     like_sql: Supported SELECT subset for the vector template.
+///
+/// Returns:
+///     Layer: Clipped features with retained attributes and CRS, and sequential IDs.
+///         Points/line cuts retain/interpolate Z/M; new polygon topology is XY.
+#[pyfunction]
+#[pyo3(signature=(src, *, bbox=None, geometry=None, like=None, crs=None, layer=None, like_layer=None, like_where=None, like_sql=None))]
+#[allow(clippy::too_many_arguments)]
+fn clip_vector(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    bbox: Option<[f64; 4]>,
+    geometry: Option<String>,
+    like: Option<&Bound<'_, PyAny>>,
+    crs: Option<String>,
+    layer: Option<String>,
+    like_layer: Option<String>,
+    like_where: Option<String>,
+    like_sql: Option<String>,
+) -> PyResult<PyLayer> {
+    use terrio::ops::vector_clip::{ClipRegion, ClipTemplateOptions};
+    if usize::from(bbox.is_some()) + usize::from(geometry.is_some()) + usize::from(like.is_some()) != 1 {
+        return Err(invalid("provide exactly one of bbox, geometry or like"));
+    }
+    if like.is_none() && (like_layer.is_some() || like_where.is_some() || like_sql.is_some()) {
+        return Err(invalid("like_layer/where/sql require like"));
+    }
+    if like.is_some() && crs.is_some() {
+        return Err(invalid("crs applies only to bbox/geometry"));
+    }
+    let crs = crs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().py()?;
+    let template = ClipTemplateOptions { layer: like_layer, where_clause: like_where, sql: like_sql };
+    let region = if let Some(bbox) = bbox {
+        ClipRegion::bbox(bbox, crs).py()?
+    } else if let Some(text) = geometry {
+        ClipRegion::parse(&text, crs).py()?
+    } else {
+        let like = like.unwrap();
+        if let Ok(raster) = like.cast::<crate::raster::PyRaster>() {
+            if template.layer.is_some() || template.where_clause.is_some() || template.sql.is_some() {
+                return Err(invalid("like_layer/where/sql require a vector template"));
+            }
+            ClipRegion::from_raster(&raster.borrow().inner.header()).py()?
+        } else if let Some(layers) = clip_inline_geojson(like) {
+            ClipRegion::from_layers(&layers?, &template).py()?
+        } else if let Ok(path) = like.extract::<std::path::PathBuf>() {
+            let path = path.to_str().ok_or_else(|| invalid("template path must be UTF-8"))?;
+            native_clip_template(py, path, &template)?
+        } else {
+            ClipRegion::from_layers(&input_layers(py, like, None)?, &template).py()?
+        }
+    };
+    let input = if let Some(layers) = clip_inline_geojson(src) {
+        let mut layers = layers?;
+        if let Some(name) = layer {
+            layers = terrio::ops::vector_filter::select_layers(layers, &[name]).py()?;
+        }
+        if layers.len() != 1 {
+            return Err(invalid("clip_vector needs one input layer; select it with layer"));
+        }
+        layers.remove(0)
+    } else if let Ok(path) = src.extract::<std::path::PathBuf>() {
+        let path = path.to_str().ok_or_else(|| invalid("input path must be UTF-8"))?;
+        let mut layers = py
+            .detach(|| {
+                terrio::ops::vector_filter::open_layers(
+                    path,
+                    &terrio::VectorOpenOptions { layers: layer.into_iter().collect(), ..Default::default() },
+                )
+            })
+            .py()?;
+        if layers.len() != 1 {
+            return Err(invalid("clip_vector needs one input layer; select it with layer"));
+        }
+        layers.remove(0)
+    } else {
+        one_layer(py, src, layer)?
+    };
+    Ok(PyLayer { inner: py.detach(|| terrio::ops::vector_clip::clip(&input, &region)).py()? })
+}
+
+fn clip_inline_geojson(value: &Bound<'_, PyAny>) -> Option<PyResult<Vec<Layer>>> {
+    let text = value.extract::<String>().ok()?;
+    if !text.trim_start().starts_with('{') {
+        return None;
+    }
+    Some(terrio::memory::open_vector_bytes(text.into_bytes(), "input.geojson", &Default::default()).map(|v| v.layers).py())
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn native_clip_template(
+    py: Python<'_>,
+    path: &str,
+    template: &terrio::ops::vector_clip::ClipTemplateOptions,
+) -> PyResult<terrio::ops::vector_clip::ClipRegion> {
+    py.detach(|| terrio::ops::vector_clip::ClipRegion::from_path(path, template)).py()
+}
+#[cfg(target_family = "wasm")]
+fn native_clip_template(
+    _: Python<'_>,
+    _: &str,
+    _: &terrio::ops::vector_clip::ClipTemplateOptions,
+) -> PyResult<terrio::ops::vector_clip::ClipRegion> {
+    Err(invalid("template paths are unavailable in WebAssembly; pass a Raster or vector data"))
 }

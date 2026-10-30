@@ -146,6 +146,8 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
     columns: dict[str, list[Any]] = layer.columns()
     print(fields, collection["type"], geo["type"], len(wkb), sorted(columns))
     reprojected = layer.to_crs("EPSG:4326")
+    clipped_vector: terrio.Layer = terrio.clip_vector(layer, bbox=[0.0, 0.0, 2.0, 2.0])
+    _ = clipped_vector.to_geojson()
 
     gpkg = str(tmp / "parcels.gpkg")
     layer.write(gpkg)
