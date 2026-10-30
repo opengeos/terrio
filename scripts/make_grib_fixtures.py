@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "crates" / "terrio" / "tests" / "data" / "grib"
 
 # The Python test's helpers: synthetic fields, GDAL's writing, bitmap rewriting.
-_spec = importlib.util.spec_from_file_location("test_grib", ROOT / "python" / "tests" / "test_grib.py")
+_spec = importlib.util.spec_from_file_location("test_grib_gdal", ROOT / "python" / "tests" / "test_grib_gdal.py")
 t = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(t)
 
