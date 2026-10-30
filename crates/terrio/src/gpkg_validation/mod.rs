@@ -3,6 +3,7 @@
 mod content;
 mod extensions;
 mod features;
+mod geometry;
 mod schema;
 mod tiles;
 
@@ -468,6 +469,9 @@ fn check_core(bytes: &[u8]) -> CoreReport {
     checker.contents();
     checker.extensions();
     checker.features();
+    if let Err(error) = checker.geometries(bytes) {
+        checker.report.require(false, 6, error.to_string());
+    }
     if let Err(error) = checker.attributes(bytes) {
         checker.report.require(false, 6, error.to_string());
     }
