@@ -55,6 +55,8 @@ pub fn validate(args: ValidateArgs) -> terrio::Result<()> {
             args.input,
             if report.is_valid {
                 "valid GeoPackage"
+            } else if !report.is_complete && !report.errors.is_empty() {
+                "invalid GeoPackage (validation incomplete)"
             } else if !report.is_complete {
                 "validation incomplete"
             } else {

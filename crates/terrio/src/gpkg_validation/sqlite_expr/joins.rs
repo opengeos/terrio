@@ -44,10 +44,6 @@ fn column(index: usize) -> Expr {
 fn hidden(name: &str) -> bool {
     ["rowid", "_rowid_", "oid"].iter().any(|s| name.eq_ignore_ascii_case(s))
 }
-#[cfg(test)]
-thread_local! {
-    static RELATION_SCANS: Cell<usize> = const { Cell::new(0) };
-}
 impl Relation {
     fn parse(db: &Snapshot, p: &mut Parser, stack: &mut Vec<String>) -> Result<Self> {
         let mut name = p.name()?;
@@ -95,43 +91,72 @@ impl Relation {
     fn width(&self) -> usize {
         self.schema.columns.len() + usize::from(self.hidden.is_some())
     }
-    fn visit(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
-        #[cfg(test)]
-        RELATION_SCANS.with(|count| count.set(count.get() + 1));
+    fn visit(&self, db: &Snapshot, bytes: &[u8], budget: &ViewBudget, visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
         let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
         match &self.source {
-            Source::Table(name) => {
-                let active = Cell::new(true);
-                sqlite_repack::inspect(bytes, |entry, rowid, record| {
-                    if active.get() && entry.0 == "table" && entry.1 == *name {
-                        let mut row = db.tables[name].decode(name, record, rowid, encoding)?;
-                        if self.hidden.is_some() {
-                            row.push(rowid.map_or(Value::Null, Value::Int));
-                        }
-                        active.set(visitor(&row)?);
-                    }
-                    Ok(())
-                })?;
-                Ok(())
-            }
-            Source::View(view) => view.visit_control(db, bytes, visitor),
+            Source::Table(name) => db.visit_table(bytes, name, |rowid, record| {
+                let mut row = db.tables[name].decode(name, record, rowid, encoding)?;
+                if self.hidden.is_some() {
+                    row.push(rowid.map_or(Value::Null, Value::Int));
+                }
+                visitor(&row)
+            }),
+            Source::View(view) => view.visit_budgeted(db, bytes, budget, visitor),
             _ => Err(Error::Unsupported("nested join relation".into())),
         }
     }
 }
-// Includes retained right-input rows and candidate row pairs across all join levels.
+// Shared by one root view evaluation and every nested view/compound arm.
 const MAX_JOIN_WORK: usize = 1_000_000;
-struct JoinInputs {
-    rows: Vec<Vec<Vec<Value>>>,
+const MAX_JOIN_CACHE_BYTES: usize = 128 * 1024 * 1024;
+pub(super) struct ViewBudget {
     remaining: Cell<usize>,
+    retained: Cell<usize>,
+    byte_limit: usize,
 }
-impl JoinInputs {
+impl Default for ViewBudget {
+    fn default() -> Self {
+        Self { remaining: Cell::new(MAX_JOIN_WORK), retained: Cell::new(0), byte_limit: MAX_JOIN_CACHE_BYTES }
+    }
+}
+impl ViewBudget {
     fn charge(&self) -> Result<()> {
         let Some(remaining) = self.remaining.get().checked_sub(1) else {
             return Err(Error::Unsupported(format!("SQLite joined-view evaluation exceeds {MAX_JOIN_WORK} row-work units")));
         };
         self.remaining.set(remaining);
         Ok(())
+    }
+    fn retain(&self, row: &[Value]) -> Result<usize> {
+        let bytes = row
+            .iter()
+            .try_fold(std::mem::size_of::<Vec<Value>>(), |bytes, value| {
+                let payload = match value {
+                    Value::Text(text) => text.len(),
+                    Value::Blob(blob) => blob.len(),
+                    _ => 0,
+                };
+                bytes.checked_add(std::mem::size_of::<Value>()).and_then(|bytes| bytes.checked_add(payload))
+            })
+            .unwrap_or(usize::MAX);
+        let retained = self
+            .retained
+            .get()
+            .checked_add(bytes)
+            .filter(|bytes| *bytes <= self.byte_limit)
+            .ok_or_else(|| Error::Unsupported(format!("SQLite joined-view cached row bytes exceed {}", self.byte_limit)))?;
+        self.retained.set(retained);
+        Ok(bytes)
+    }
+}
+struct JoinInputs<'a> {
+    rows: Vec<Vec<Vec<Value>>>,
+    budget: &'a ViewBudget,
+    retained: usize,
+}
+impl Drop for JoinInputs<'_> {
+    fn drop(&mut self) {
+        self.budget.retained.set(self.budget.retained.get().saturating_sub(self.retained));
     }
 }
 impl Join {
@@ -359,14 +384,14 @@ impl Join {
         }
         Ok(fields.into_iter().map(|f| (f.name, Expression(f.expr))).collect())
     }
-    pub fn visit(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
+    pub fn visit(&self, db: &Snapshot, bytes: &[u8], budget: &ViewBudget, visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
         let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
-        let mut inputs =
-            JoinInputs { rows: Vec::with_capacity(self.relations.len().saturating_sub(1)), remaining: Cell::new(MAX_JOIN_WORK) };
+        let mut inputs = JoinInputs { rows: Vec::with_capacity(self.relations.len().saturating_sub(1)), budget, retained: 0 };
         for relation in self.relations.iter().skip(1) {
             let mut rows = Vec::new();
-            relation.visit(db, bytes, &mut |row| {
-                inputs.charge()?;
+            relation.visit(db, bytes, budget, &mut |row| {
+                budget.charge()?;
+                inputs.retained += budget.retain(row)?;
                 rows.push(row.to_vec());
                 Ok(true)
             })?;
@@ -380,12 +405,12 @@ impl Join {
         db: &Snapshot,
         bytes: &[u8],
         encoding: u32,
-        inputs: &JoinInputs,
+        inputs: &JoinInputs<'_>,
         visitor: &mut dyn FnMut(&[Value]) -> Result<bool>,
     ) -> Result<()> {
         let Node::Pair { left, right, kind, left_width, on } = node else {
             let Node::Leaf(i) = node else { unreachable!() };
-            return self.relations[*i].visit(db, bytes, visitor);
+            return self.relations[*i].visit(db, bytes, inputs.budget, visitor);
         };
         let relation = &self.relations[*right];
         let rows = &inputs.rows[*right - 1];
@@ -394,7 +419,7 @@ impl Join {
         self.visit_node(left, db, bytes, encoding, inputs, &mut |left_row| {
             let mut found = false;
             for (current, right_row) in rows.iter().enumerate() {
-                inputs.charge()?;
+                inputs.budget.charge()?;
                 let mut row = left_row.to_vec();
                 row.extend_from_slice(right_row);
                 let context = Context {
@@ -448,23 +473,42 @@ impl Join {
 mod tests {
     use super::*;
     #[test]
-    #[ignore = "requires the local Python SQLite reference"]
     fn joined_sources_are_scanned_once_per_evaluation() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("joins.sqlite");
-        let script = r#"
-import sqlite3,sys
-with sqlite3.connect(sys.argv[1]) as db:
-    db.executescript("CREATE TABLE a(id INTEGER); CREATE TABLE b(id INTEGER); CREATE VIEW vb AS SELECT id FROM b; CREATE VIEW expensive AS SELECT x.id FROM a x CROSS JOIN a y CROSS JOIN a z;")
-    db.executemany("INSERT INTO a VALUES(?)", [(i,) for i in range(2000)])
-    db.executemany("INSERT INTO b VALUES(?)", [(i,) for i in range(3)])
-    db.executescript("CREATE VIEW direct AS SELECT a.id,b.id AS right_id FROM a LEFT JOIN b ON a.id=b.id; CREATE VIEW nested AS SELECT a.id,vb.id AS right_id FROM a LEFT JOIN vb ON a.id=vb.id;")
-"#;
-        assert!(std::process::Command::new("python").arg("-c").arg(script).arg(&path).status().unwrap().success());
-        let bytes = std::fs::read(path).unwrap();
+        use crate::drivers::vector::sqlite as writer;
+        let table = |name: &str, count: i64| writer::Table {
+            name: name.into(),
+            sql: format!("CREATE TABLE {name}(id INTEGER)"),
+            rows: (0..count).map(|id| (id + 1, vec![writer::Value::Int(id)])).collect(),
+            autoindexes: vec![],
+        };
+        let objects = [
+            ("vb", "SELECT id FROM b"),
+            ("limited", "SELECT id FROM a LIMIT 1"),
+            ("blob_budget", "SELECT a.id FROM a CROSS JOIN b CROSS JOIN unused"),
+            ("joined_b", "SELECT b.id FROM b CROSS JOIN b other"),
+            ("nested_budget", "SELECT a.id FROM a CROSS JOIN joined_b LIMIT 1"),
+            ("expensive", "SELECT x.id FROM a x CROSS JOIN a y CROSS JOIN a z"),
+            ("direct", "SELECT a.id,b.id AS right_id FROM a LEFT JOIN b ON a.id=b.id"),
+            ("nested", "SELECT a.id,vb.id AS right_id FROM a LEFT JOIN vb ON a.id=vb.id"),
+        ]
+        .into_iter()
+        .map(|(name, query)| writer::SchemaObject {
+            kind: "view",
+            name: name.into(),
+            table: name.into(),
+            sql: format!("CREATE VIEW {name} AS {query}"),
+        })
+        .collect::<Vec<_>>();
+        let unused = writer::Table {
+            name: "unused".into(),
+            sql: "CREATE TABLE unused(id INTEGER,payload BLOB)".into(),
+            rows: vec![(1, vec![writer::Value::Int(1), writer::Value::Blob(vec![42; 2 * 1024 * 1024])])],
+            autoindexes: vec![],
+        };
+        let bytes = writer::write_database(&[table("a", 2000), table("b", 3), unused], &objects, 0, 0).unwrap();
         let db = Snapshot::read(&bytes).unwrap();
         for name in ["direct", "nested"] {
-            RELATION_SCANS.with(|count| count.set(0));
+            sqlite_repack::take_inspection_stats();
             let mut rows = 0;
             View::compile(&db, name)
                 .unwrap()
@@ -476,9 +520,38 @@ with sqlite3.connect(sys.argv[1]) as db:
                 })
                 .unwrap();
             assert_eq!(rows, 2000);
-            assert_eq!(RELATION_SCANS.with(Cell::get), 2, "{name}");
+            let stats = sqlite_repack::take_inspection_stats();
+            assert_eq!(stats.whole_images, 0, "{name}: {stats:?}");
+            assert_eq!(stats.table_roots, 2, "{name}: {stats:?}");
+            assert!(stats.pages < 64, "unrelated BLOB pages were traversed: {stats:?}");
         }
         let error = View::compile(&db, "expensive").unwrap().visit_control(&db, &bytes, &mut |_| Ok(true)).unwrap_err();
+        assert!(matches!(error, Error::Unsupported(ref message) if message.contains("row-work units")));
+        sqlite_repack::take_inspection_stats();
+        let mut limited = 0;
+        View::compile(&db, "limited")
+            .unwrap()
+            .visit_control(&db, &bytes, &mut |_| {
+                limited += 1;
+                Ok(true)
+            })
+            .unwrap();
+        let stats = sqlite_repack::take_inspection_stats();
+        assert_eq!(limited, 1);
+        assert_eq!(stats.whole_images, 0);
+        assert_eq!(stats.table_roots, 1);
+        assert!(stats.pages <= 2, "LIMIT did not stop the B-tree walk: {stats:?}");
+        let budget = ViewBudget { byte_limit: 1024 * 1024, ..ViewBudget::default() };
+        let error = View::compile(&db, "blob_budget").unwrap().visit_budgeted(&db, &bytes, &budget, &mut |_| Ok(true)).unwrap_err();
+        assert!(matches!(error, Error::Unsupported(ref message) if message.contains("cached row bytes")));
+        assert_eq!(budget.retained.get(), 0);
+        let row_bytes = std::mem::size_of::<Vec<Value>>() + std::mem::size_of::<Value>();
+        let budget = ViewBudget { byte_limit: row_bytes * 10, ..ViewBudget::default() };
+        let error = View::compile(&db, "nested_budget").unwrap().visit_budgeted(&db, &bytes, &budget, &mut |_| Ok(true)).unwrap_err();
+        assert!(matches!(error, Error::Unsupported(ref message) if message.contains("cached row bytes")));
+        assert_eq!(budget.retained.get(), 0);
+        let budget = ViewBudget { remaining: Cell::new(20), ..ViewBudget::default() };
+        let error = View::compile(&db, "nested_budget").unwrap().visit_budgeted(&db, &bytes, &budget, &mut |_| Ok(true)).unwrap_err();
         assert!(matches!(error, Error::Unsupported(ref message) if message.contains("row-work units")));
     }
     #[test]

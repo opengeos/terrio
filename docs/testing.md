@@ -1483,10 +1483,14 @@ WAL/journal refusal. All native fixtures must be closed/checkpointed first.
 
 Join evaluation scans each right-hand input once and retains its logical rows,
 including geometry blobs; the leftmost source streams. The 2,000-row direct-table
-and nested-view join regression checks result rows and counts source scans to
-prevent a full integrity pass per outer row. A three-way Cartesian product also
+and nested-view join regression checks result rows and actual full-image/root/page
+walk counters. A 2 MiB unrelated BLOB must remain unvisited during query evaluation,
+and a LIMIT 1 projection stops its single-table B-tree traversal early. This fixture
+uses the Rust SQLite writer and runs in the default test suite without Python. A three-way Cartesian product also
 must stop with an unsupported/incomplete result after the join's 1,000,000 work-unit
 budget, counting cached right rows and candidate pairs across all levels. Multi-way
 nested loops can otherwise grow as the product of input row counts. Regressions also
 check that unevaluated view references and unsupported schema syntax cannot produce
-a complete, valid verdict.
+a complete, valid verdict. Join work and 128 MiB of cached-row bytes are shared
+across nested views and compound arms; regressions check both shared limits and
+release of cached-byte reservations on failure.

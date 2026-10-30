@@ -1,5 +1,6 @@
 //! Left-associative SQLite compound SELECTs. Set equality does not apply affinity;
 //! NULLs compare equal, and the first available collation governs each column.
+use super::joins::ViewBudget;
 use super::*;
 use order::storage_atom;
 use parse::Parser;
@@ -226,7 +227,7 @@ impl Compound {
     pub fn column_collation(&self, index: usize) -> &str {
         &self.collations[index]
     }
-    pub fn visit(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
+    pub fn visit(&self, db: &Snapshot, bytes: &[u8], budget: &ViewBudget, visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
         let schema = self.schema();
         let mut emit = |row: &[Value]| {
             if row.iter().zip(&schema.columns).any(|(v, c)| matches!(v, Value::Int(_)) && affinity(&c.data_type) == Affinity::Real) {
@@ -249,7 +250,7 @@ impl Compound {
                 if !active {
                     break;
                 }
-                arm.visit_control(db, bytes, &mut |row| {
+                arm.visit_budgeted(db, bytes, budget, &mut |row| {
                     active = emit(row)?;
                     Ok(active)
                 })?;
@@ -259,9 +260,9 @@ impl Compound {
         let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
         let collect = |arm: &View| -> Result<Vec<Vec<Value>>> {
             let mut rows = Vec::new();
-            arm.visit(db, bytes, &mut |row| {
+            arm.visit_budgeted(db, bytes, budget, &mut |row| {
                 rows.push(row.to_vec());
-                Ok(())
+                Ok(true)
             })?;
             Ok(rows)
         };

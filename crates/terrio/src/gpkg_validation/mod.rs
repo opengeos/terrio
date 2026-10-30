@@ -210,6 +210,15 @@ impl Snapshot {
         }
         Ok(Self { objects, tables, unicode_case })
     }
+    fn visit_table(&self, bytes: &[u8], name: &str, visit: impl FnMut(Option<i64>, &[u8]) -> Result<bool>) -> Result<()> {
+        let root = self
+            .objects
+            .iter()
+            .find(|entry| entry.0 == "table" && entry.1 == name)
+            .map(|entry| entry.3)
+            .ok_or_else(|| Error::InvalidData(format!("missing SQLite table {name}")))?;
+        sqlite_repack::inspect_table(bytes, root, visit)
+    }
     fn object(&self, name: &str) -> bool {
         self.objects.iter().any(|entry| matches!(entry.0.as_str(), "table" | "view") && entry.1.eq_ignore_ascii_case(name))
     }

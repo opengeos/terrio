@@ -2485,7 +2485,9 @@ column data-page locations; it does not copy those payloads into `_metadata`.
 
 ## GeoPackage repacking
 
-`terrio gpkg-repack survey.gpkg --json` compacts a native GeoPackage in place.
+`terrio gpkg-repack survey.gpkg --json` compacts a native GeoPackage in place. Repacking
+rejects malformed table key ordering and child keys outside their parent divider
+ranges, matching the stricter shared SQLite traversal used by validation.
 The `gpkg-repack` MCP tool accepts the same arguments. JSON reports original and compacted
 byte/page counts and the preserved SQLite page size.
 
@@ -2624,7 +2626,9 @@ terrio gpkg-validate icu-created.gpkg --unicode-case
 The pure Rust validator reports `valid`, `complete`, `version`, `errors` (a numeric
 core or named extension `requirement` and `message`), `warnings` and
 `unsupported_checks`. Exit status is 0 for a valid image, 1 for invalid data or
-strict-mode warnings, and 2 when unsupported checks prevent completing validation.
+strict-mode warnings, and 2 when unsupported checks prevent completing validation
+(even when another check has already proven the image invalid). Text summaries
+identify both invalidity and incompleteness when both apply.
 The MCP `gpkg-validate` tool is read-only: a completed query returns its structured
 verdict with `isError=false`; CLI verdict statuses are appended as diagnostic text.
 Execution failures still return `isError=true`.
@@ -2649,7 +2653,9 @@ ordinary user rows stream, while metadata, integrity keys, DISTINCT/set values
 and sorted candidates are retained. Join views additionally retain all right-hand
 input rows, including geometry blobs, once per evaluation. Each join evaluation is
 limited to 1,000,000 work units, counting retained right-input rows and candidate
-row pairs across all join levels. Exceeding the limit yields an incomplete verdict;
+row pairs across all join levels and nested views. A shared 128 MiB limit bounds
+cached right-input row storage, counting value/row overhead and text/blob bytes;
+cache reservations are released when an evaluation ends. Exceeding either limit yields an incomplete verdict;
 multi-way nested-loop combinations can otherwise grow as the product of row counts.
 Inputs are not rescanned for each outer row. Extension/metadata/R-tree/schema rules
 that have not evaluated a referenced view, and tile views not evaluated by the tile

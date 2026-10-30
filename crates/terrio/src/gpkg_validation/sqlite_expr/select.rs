@@ -2,7 +2,7 @@
 //! rejected rather than silently omitting a registered view from validation.
 use super::*;
 use compound::Compound;
-use joins::Join;
+use joins::{Join, ViewBudget};
 use order::{Order, Sorter, Window};
 use parse::Parser;
 use std::cell::Cell;
@@ -322,6 +322,15 @@ impl View {
         })
     }
     pub(super) fn visit_control(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
+        self.visit_budgeted(db, bytes, &ViewBudget::default(), visitor)
+    }
+    pub(super) fn visit_budgeted(
+        &self,
+        db: &Snapshot,
+        bytes: &[u8],
+        budget: &ViewBudget,
+        visitor: &mut dyn FnMut(&[Value]) -> Result<bool>,
+    ) -> Result<()> {
         let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
         let (count, offset) = self.window.evaluate(encoding, db.unicode_case)?;
         if count == Some(0) {
@@ -391,16 +400,11 @@ impl View {
             Source::Unit => {
                 project(&[], None)?;
             }
-            Source::Join(join) => join.visit(db, bytes, &mut |row| project(row, None))?,
-            Source::Compound(compound) => compound.visit(db, bytes, &mut |row| project(row, None))?,
-            Source::View(view) => view.visit_control(db, bytes, &mut |row| project(row, None))?,
+            Source::Join(join) => join.visit(db, bytes, budget, &mut |row| project(row, None))?,
+            Source::Compound(compound) => compound.visit(db, bytes, budget, &mut |row| project(row, None))?,
+            Source::View(view) => view.visit_budgeted(db, bytes, budget, &mut |row| project(row, None))?,
             Source::Table(name) => {
-                sqlite_repack::inspect(bytes, |entry, rowid, record| {
-                    if active.get() && entry.0 == "table" && entry.1 == *name {
-                        project(&db.tables[name].decode(name, record, rowid, encoding)?, rowid)?;
-                    }
-                    Ok(())
-                })?;
+                db.visit_table(bytes, name, |rowid, record| project(&db.tables[name].decode(name, record, rowid, encoding)?, rowid))?;
             }
         }
         if !self.order.is_empty() {

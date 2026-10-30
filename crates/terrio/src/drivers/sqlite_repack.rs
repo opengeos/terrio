@@ -136,6 +136,43 @@ fn replace_root(record: &[u8], page: u32) -> Result<Vec<u8>> {
     Ok(result)
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct InspectionStats {
+    pub whole_images: usize,
+    pub table_roots: usize,
+    pub pages: usize,
+}
+#[cfg(test)]
+thread_local! {
+    static INSPECTION_STATS: std::cell::Cell<InspectionStats> = const { std::cell::Cell::new(InspectionStats { whole_images: 0, table_roots: 0, pages: 0 }) };
+}
+#[cfg(test)]
+pub(crate) fn take_inspection_stats() -> InspectionStats {
+    INSPECTION_STATS.with(|stats| stats.replace(InspectionStats::default()))
+}
+
+/// Visit only one table's B-tree in an image whose global ownership/integrity
+/// has already been checked by `inspect`. A false visitor result stops the walk.
+pub(crate) fn inspect_table(bytes: &[u8], root: u32, mut visit: impl FnMut(Option<i64>, &[u8]) -> Result<bool>) -> Result<()> {
+    #[cfg(test)]
+    INSPECTION_STATS.with(|stats| {
+        let mut value = stats.get();
+        value.table_roots += 1;
+        stats.set(value);
+    });
+    let mut source = Source::validated(bytes)?;
+    if root < 2 {
+        return Err(bad("invalid table root"));
+    }
+    let index = matches!(source.page(root)?[0], 2 | 10);
+    source.walk(root, index, 0, (None, None), &mut |rowid, record| {
+        fields(&record)?;
+        visit(rowid, &record)
+    })?;
+    Ok(())
+}
+
 struct Source<'a> {
     bytes: &'a [u8],
     size: usize,
@@ -143,6 +180,29 @@ struct Source<'a> {
     seen: BTreeSet<u32>,
 }
 impl<'a> Source<'a> {
+    fn validated(bytes: &'a [u8]) -> Result<Self> {
+        if bytes.len() < 100 || !bytes.starts_with(b"SQLite format 3\0") {
+            return Err(bad("not an SQLite file"));
+        }
+        let size = match u16::from_be_bytes([bytes[16], bytes[17]]) {
+            1 => 65536,
+            n => usize::from(n),
+        };
+        if !(512..=65536).contains(&size) || !size.is_power_of_two() || !bytes.len().is_multiple_of(size) {
+            return Err(bad("invalid page size or truncated database"));
+        }
+        if bytes[20] != 0 {
+            return Err(Error::Unsupported("SQLite validation: reserved/encrypted page bytes are unsupported".into()));
+        }
+        if !matches!(bytes[18], 1 | 2) || !matches!(bytes[19], 1 | 2) || bytes[21..24] != [64, 32, 32] {
+            return Err(bad("invalid SQLite header format"));
+        }
+        let count = u32::try_from(bytes.len() / size).map_err(|_| bad("too many pages"))?;
+        if be(bytes, 24)? == be(bytes, 92)? && be(bytes, 28)? != 0 && be(bytes, 28)? != count {
+            return Err(bad("database page count does not match its length"));
+        }
+        Ok(Self { bytes, size, count, seen: BTreeSet::new() })
+    }
     fn page(&self, page: u32) -> Result<&'a [u8]> {
         if page == 0 || page > self.count {
             return Err(bad(format!("page {page} out of range")));
@@ -154,6 +214,12 @@ impl<'a> Source<'a> {
         if !self.seen.insert(page) {
             return Err(bad(format!("page {page} is referenced more than once")));
         }
+        #[cfg(test)]
+        INSPECTION_STATS.with(|stats| {
+            let mut value = stats.get();
+            value.pages += 1;
+            stats.set(value);
+        });
         self.page(page)
     }
     fn payload(&mut self, page: &[u8], at: usize, kind: u8) -> Result<(Option<i64>, Vec<u8>)> {
@@ -198,8 +264,8 @@ impl<'a> Source<'a> {
         index: bool,
         depth: usize,
         bounds: (Option<i64>, Option<i64>),
-        visit: &mut impl FnMut(Option<i64>, Vec<u8>) -> Result<()>,
-    ) -> Result<()> {
+        visit: &mut impl FnMut(Option<i64>, Vec<u8>) -> Result<bool>,
+    ) -> Result<bool> {
         if depth > 128 {
             return Err(bad("b-tree depth exceeds 128"));
         }
@@ -232,7 +298,9 @@ impl<'a> Source<'a> {
                 } else {
                     None
                 };
-                self.walk(be(bytes, cell)?, index, depth + 1, (lower, upper), visit)?;
+                if !self.walk(be(bytes, cell)?, index, depth + 1, (lower, upper), visit)? {
+                    return Ok(false);
+                }
                 if kind == 5 {
                     lower = upper;
                 }
@@ -245,19 +313,22 @@ impl<'a> Source<'a> {
                     }
                     lower = Some(rowid);
                 }
-                visit(rowid, record)?;
+                if !visit(rowid, record)? {
+                    return Ok(false);
+                }
             }
         }
         if interior {
-            self.walk(be(bytes, offset + 8)?, index, depth + 1, (lower, bounds.1), visit)?;
+            return self.walk(be(bytes, offset + 8)?, index, depth + 1, (lower, bounds.1), visit);
         }
-        Ok(())
+        Ok(true)
     }
     fn tree(&mut self, page: u32, index: bool, out: &mut Vec<(Option<i64>, Vec<u8>)>, depth: usize) -> Result<()> {
         self.walk(page, index, depth, (None, None), &mut |rowid, record| {
             out.push((rowid, record));
-            Ok(())
+            Ok(true)
         })
+        .map(|_| ())
     }
 }
 
@@ -555,28 +626,15 @@ pub(crate) fn inspect(
     mut visit: impl FnMut(&super::sqlite::SchemaEntry, Option<i64>, &[u8]) -> Result<()>,
 ) -> Result<Vec<super::sqlite::SchemaEntry>> {
     use super::sqlite::Value;
-    if bytes.len() < 100 || !bytes.starts_with(b"SQLite format 3\0") {
-        return Err(bad("not an SQLite file"));
-    }
-    let size = match u16::from_be_bytes([bytes[16], bytes[17]]) {
-        1 => 65536,
-        n => usize::from(n),
-    };
-    if !(512..=65536).contains(&size) || !size.is_power_of_two() || !bytes.len().is_multiple_of(size) {
-        return Err(bad("invalid page size or truncated database"));
-    }
-    if bytes[20] != 0 {
-        return Err(Error::Unsupported("SQLite validation: reserved/encrypted page bytes are unsupported".into()));
-    }
-    if !matches!(bytes[18], 1 | 2) || !matches!(bytes[19], 1 | 2) || bytes[21..24] != [64, 32, 32] {
-        return Err(bad("invalid SQLite header format"));
-    }
-    let count = u32::try_from(bytes.len() / size).map_err(|_| bad("too many pages"))?;
-    if be(bytes, 24)? == be(bytes, 92)? && be(bytes, 28)? != 0 && be(bytes, 28)? != count {
-        return Err(bad("database page count does not match its length"));
-    }
+    #[cfg(test)]
+    INSPECTION_STATS.with(|stats| {
+        let mut value = stats.get();
+        value.whole_images += 1;
+        stats.set(value);
+    });
+    let mut source = Source::validated(bytes)?;
+    let (size, count) = (source.size, source.count);
     let encoding = be(bytes, 56)?;
-    let mut source = Source { bytes, size, count, seen: BTreeSet::new() };
     let mut encoded = Vec::new();
     source.tree(1, false, &mut encoded, 0)?;
     check_rowids(&encoded)?;
@@ -617,7 +675,8 @@ pub(crate) fn inspect(
                 last_rowid = Some(rowid);
             }
             fields(&record)?;
-            visit(entry, rowid, &record)
+            visit(entry, rowid, &record)?;
+            Ok(true)
         })?;
     }
     let auto = be(bytes, 52)? != 0;
@@ -948,5 +1007,37 @@ mod growth_tests {
             assert!(reserves <= 4, "doubling capacity required {reserves} reserves");
             assert!(capacity <= target + target / 4, "over-allocation exceeds one quarter");
         }
+    }
+}
+
+#[cfg(test)]
+mod rowid_bounds_tests {
+    use super::*;
+    #[test]
+    fn gpkg_repack_rejects_a_child_key_outside_its_divider_range() {
+        let table = writer::Table {
+            name: "records".into(),
+            sql: "CREATE TABLE records(id INTEGER PRIMARY KEY)".into(),
+            rows: (1..=2000).map(|id| (id, vec![writer::Value::Null])).collect(),
+            autoindexes: vec![],
+        };
+        let mut bytes = writer::write_database(&[table], &[], 0, 0).unwrap();
+        let root = inspect(&bytes, |_, _, _| Ok(())).unwrap().into_iter().find(|entry| entry.1 == "records").unwrap().3;
+        let size = u16::from_be_bytes([bytes[16], bytes[17]]) as usize;
+        let at = (root as usize - 1) * size;
+        assert_eq!(bytes[at], 5);
+        let cell = u16::from_be_bytes([bytes[at + 12], bytes[at + 13]]) as usize;
+        let leaf = be(&bytes, at + cell).unwrap();
+        let at = (leaf as usize - 1) * size;
+        assert_eq!(bytes[at], 13);
+        let cells = u16::from_be_bytes([bytes[at + 3], bytes[at + 4]]) as usize;
+        let last = at + 8 + 2 * (cells - 1);
+        let cell = at + u16::from_be_bytes([bytes[last], bytes[last + 1]]) as usize;
+        let (_, payload_length) = varint(&bytes, cell).unwrap();
+        let key_at = cell + payload_length;
+        assert_eq!(varint(&bytes, key_at).unwrap().1, 2);
+        bytes[key_at..key_at + 2].copy_from_slice(&[255, 127]); // 16383 exceeds the first divider.
+        assert!(compact(&bytes).unwrap_err().to_string().contains("outside parent range"));
+        assert!(inspect(&bytes, |_, _, _| Ok(())).unwrap_err().to_string().contains("outside parent range"));
     }
 }
