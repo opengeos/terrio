@@ -642,7 +642,13 @@ fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii
             // (gt_wkt_srs.cpp `GTIFGetOGISDefnAsOSR`): UTM zone 33N in US survey feet is no
             // EPSG:32633.
             let size = crate::drivers::geokeys::linear_unit_size(&k);
-            user_defined_projected(short_key(3074), geographic, short_key(2050), ascii_key(1026).or_else(|| ascii_key(3073)))
+            // A user-defined datum whose citation names WGS 84 is WGS 84's, as GDAL identifies it.
+            let cites_wgs84 = ascii_key(2049).is_some_and(|c| {
+                c.split('|')
+                    .any(|p| p.strip_prefix("Datum = ").is_some_and(|d| matches!(d.trim(), "World Geodetic System 1984" | "WGS_1984")))
+            });
+            let datum = if cites_wgs84 && short_key(2050) == Some(32767) { Some(6326) } else { short_key(2050) };
+            user_defined_projected(short_key(3074), geographic, datum, ascii_key(1026).or_else(|| ascii_key(3073)))
                 .filter(|code| crate::crs::SpatialRef::from_epsg(*code).is_ok_and(|s| (s.metres_per_unit() / size - 1.0).abs() < 1e-9))
         }
         _ => None,
@@ -1571,6 +1577,16 @@ mod tests {
         // A UTM zone on NAD83(HARN), by its geographic CRS or its datum, is no WGS 84 (or NAD83)
         // UTM zone (#209).
         assert_eq!(user_defined_projected(Some(16033), Some(32767), Some(6152), None), None);
+        // ECOSTRESS: user-defined keys whose geographic citation names WGS 84's datum; GDAL reads EPSG:32610.
+        let keys = [
+            1, 1, 0, 8, 1024, 0, 1, 1, 1026, 34737, 22, 0, 2048, 0, 1, 32767, 2049, 34737, 92, 22, 2050, 0, 1, 32767, 3072, 0, 1, 32767,
+            3074, 0, 1, 16010, 3076, 0, 1, 9001,
+        ];
+        let ascii = "WGS 84 / UTM zone 10N|GCS Name = WGS 84|Datum = World Geodetic System 1984|Ellipsoid = WGS 84|Primem = Greenwich||";
+        assert_eq!(crs_from_geokeys(&keys, None, Some(ascii)).epsg, Some(32610));
+        // The same keys with another datum named keep it: not WGS 84's zone.
+        let ascii = ascii.replace("World Geodetic System 1984", "Some Local Datum        ");
+        assert_eq!(crs_from_geokeys(&keys, None, Some(&ascii)).epsg, None);
         assert_eq!(user_defined_projected(Some(16010), Some(4152), None, Some("NAD83 / UTM zone 10N".into())), None);
     }
 

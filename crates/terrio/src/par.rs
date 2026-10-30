@@ -641,8 +641,9 @@ pub(crate) fn alone(secs: u64, scenario: impl FnOnce() -> bool) {
 mod tests {
     use super::*;
 
+    // Linux only: on macOS the forked child of a multi-threaded test process dies of SIGTRAP.
     #[test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn parallel_work_runs_in_a_child_forked_after_parallel_work() {
         alone(60, || {
             // The parent's pool is started, as after any read or write.

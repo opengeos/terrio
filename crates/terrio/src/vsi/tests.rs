@@ -1257,7 +1257,9 @@ fn zip64_holding(declared: u64, data: &[u8]) -> Vec<u8> {
 /// A member read into memory is refused before anything is allocated when the size it declares
 /// is more than the process can use (the limits raised past it), not allocated and aborted on;
 /// copied to a file, it is not held in memory.
+// Linux only: `usable_memory` reads `/proc`.
 #[test]
+#[cfg(target_os = "linux")]
 fn a_member_larger_than_the_memory_is_refused_unallocated() {
     let tmp = tempfile::tempdir().unwrap();
     let zip_path = tmp.path().join("big.zip");
@@ -1376,8 +1378,10 @@ fn declaring_server(len: u64) -> (String, std::sync::Arc<std::sync::Mutex<Vec<(S
 /// A remote file read whole into memory is refused, as a local one is and with its error, when the
 /// length its first response declares is more than the process can use: before its buffer is
 /// reserved and before anything more is requested, by `read`, a copy and a sync to `/vsimem/`.
+// Linux only: `usable_memory` reads `/proc`.
 #[cfg(remote)]
 #[test]
+#[cfg(target_os = "linux")]
 fn a_remote_file_larger_than_the_memory_is_refused_after_its_first_response() {
     let declared = 1u64 << 50;
     let local = Memory::default().expect(declared).unwrap_err().to_string();

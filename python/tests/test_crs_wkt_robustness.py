@@ -11,13 +11,17 @@ same malformed WKT through a GeoJSON `crs` member, a PAM `<SRS>` and a GeoTIFF's
 """
 
 import json
-import resource
 import struct
 import subprocess
 import sys
 import textwrap
 
 import pytest
+
+if sys.platform != "linux":
+    pytest.skip("needs RLIMIT_AS and /proc", allow_module_level=True)
+
+import resource  # noqa: E402
 
 WGS84 = (
     'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'

@@ -38,7 +38,9 @@ pub(crate) fn cannot_allocate(message: &str) {
 /// A width whose rows of 4 bands take more bytes than an allocation may (`isize::MAX`).
 pub(crate) const TOO_WIDE: usize = usize::MAX / 4;
 
+// Linux only: `usable_memory` reads `/proc`.
 #[test]
+#[cfg(target_os = "linux")]
 fn pyramids_the_process_cannot_hold_are_refused_before_any_row_is_read() {
     // A level of 2^40 x 4096 pixels: its rows alone take more than any machine holds.
     let w = 1usize << 40;

@@ -3153,7 +3153,7 @@ mod tests {
     fn zarr_format_is_the_version_the_file_holds() {
         let dir = tempfile::tempdir().unwrap();
         let v2 = |format: &str| {
-            let p = dir.path().join(format!("v2-{}.zarr", format.replace('"', "s")));
+            let p = dir.path().join(format!("v2-{}.zarr", format.replace(|c: char| !c.is_alphanumeric(), "_")));
             std::fs::create_dir_all(&p).unwrap();
             let zarray = format!(
                 r#"{{{format} "shape": [2, 2], "chunks": [2, 2], "dtype": "|u1", "compressor": null, "fill_value": 7, "order": "C", "filters": null}}"#
