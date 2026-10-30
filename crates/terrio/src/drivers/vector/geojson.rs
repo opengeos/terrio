@@ -15,22 +15,112 @@ use crate::{Error, Result};
 use serde_json::{Map, Value, json};
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
 
-/// Options for writing GeoJSON.
-#[derive(Debug, Clone, Copy, Default)]
+/// Options for writing GeoJSON and GeoJSON text sequences.
+#[derive(Debug, Clone, Default)]
 pub struct GeoJsonOptions {
     /// Write RFC 7946 GeoJSON: coordinates reprojected to WGS 84, no `crs` member,
     /// counter-clockwise exterior rings (GDAL's `RFC7946=YES`).
     pub rfc7946: bool,
+    /// The field written as each feature's `id` member instead of a property (GDAL's
+    /// `ID_FIELD`). A layer without that field is written without `id` members, as by GDAL.
+    pub id_field: Option<String>,
+    /// The JSON type of the `id` member written from [`Self::id_field`] (GDAL's `ID_TYPE`). By
+    /// default (`AUTO`), a number for integer and boolean fields and a string otherwise.
+    pub id_type: Option<GeoJsonIdType>,
+}
+
+/// The JSON type of a feature's `id` member (GDAL's `ID_TYPE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeoJsonIdType {
+    /// A string; `""` for a null value.
+    String,
+    /// An integer: text read as C's `atoi` reads it, reals truncated, `0` for a null value.
+    Integer,
 }
 
 impl GeoJsonOptions {
-    /// Sets an option by its GDAL name: `RFC7946` (YES/NO). Returns `false` for other names.
+    /// Sets an option by its GDAL name: `RFC7946` (YES/NO), `ID_FIELD` (a field name) or
+    /// `ID_TYPE` (`AUTO`, `String` or `Integer`). Returns `false` for other names.
     pub fn set(&mut self, key: &str, value: &str) -> Result<bool> {
-        if key.eq_ignore_ascii_case("RFC7946") {
-            self.rfc7946 = matches!(value.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1");
-            return Ok(true);
+        match key.to_ascii_uppercase().as_str() {
+            "RFC7946" => self.rfc7946 = matches!(value.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1"),
+            "ID_FIELD" => self.id_field = (!value.is_empty()).then(|| value.to_string()),
+            "ID_TYPE" => {
+                self.id_type = match value.to_ascii_uppercase().as_str() {
+                    "AUTO" => None,
+                    "STRING" => Some(GeoJsonIdType::String),
+                    "INTEGER" => Some(GeoJsonIdType::Integer),
+                    _ => return Err(Error::InvalidArgument(format!("ID_TYPE must be AUTO, String or Integer, not '{value}'"))),
+                }
+            }
+            _ => return Ok(false),
         }
-        Ok(false)
+        Ok(true)
+    }
+}
+
+/// The field written as each feature's `id` member: its index and whether the member is an
+/// integer.
+#[derive(Debug, Clone, Copy)]
+struct IdColumn {
+    index: usize,
+    integer: bool,
+}
+
+impl IdColumn {
+    /// The `id` column `options` asks for, when `fields` has it.
+    fn of(fields: &[FieldDef], options: &GeoJsonOptions) -> Option<Self> {
+        let name = options.id_field.as_deref()?;
+        let index = fields.iter().position(|f| f.name == name)?;
+        let integer = match options.id_type {
+            Some(GeoJsonIdType::Integer) => true,
+            Some(GeoJsonIdType::String) => false,
+            None => matches!(fields[index].field_type, FieldType::Integer | FieldType::Boolean),
+        };
+        Some(Self { index, integer })
+    }
+
+    /// The `id` member written for a value of the field, as GDAL writes it.
+    fn value(self, v: &FieldValue) -> Value {
+        if self.integer {
+            json!(match v {
+                FieldValue::Integer(x) => *x,
+                FieldValue::Boolean(b) => i64::from(*b),
+                FieldValue::Float(x) if x.is_finite() => x.trunc() as i64,
+                FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => atoi(s),
+                _ => 0,
+            })
+        } else {
+            json!(match v {
+                FieldValue::Null => String::new(),
+                FieldValue::Integer(x) => x.to_string(),
+                FieldValue::Float(x) => x.to_string(),
+                FieldValue::Boolean(b) => u8::from(*b).to_string(),
+                FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => s.clone(),
+                FieldValue::Blob(b) => b.iter().map(|x| format!("{x:02X}")).collect(),
+            })
+        }
+    }
+}
+
+/// The integer at the start of `s`, as C's `atoi` reads it: `0` when there is none. As GDAL's
+/// 64-bit parse does, a magnitude too large for `i64` saturates.
+fn atoi(s: &str) -> i64 {
+    // C's `isspace` characters, not Unicode's whitespace.
+    let s = s.trim_start_matches([' ', '\t', '\n', '\x0B', '\x0C', '\r']);
+    let (sign, digits) = match s.as_bytes().first() {
+        Some(b'-') => (-1, &s[1..]),
+        Some(b'+') => (1, &s[1..]),
+        _ => (1, s),
+    };
+    let end = digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len());
+    let magnitude = &digits[..end];
+    match magnitude.parse::<i64>() {
+        Ok(n) => sign * n,
+        // No digits at all, which `parse` rejects too.
+        Err(_) if magnitude.is_empty() => 0,
+        Err(_) if sign < 0 => i64::MIN,
+        Err(_) => i64::MAX,
     }
 }
 
@@ -908,7 +998,7 @@ pub fn write(layer: &Layer, path: &str, options: &GeoJsonOptions) -> Result<()> 
 
 /// Encodes a layer as a GeoJSON FeatureCollection.
 pub fn to_string(layer: &Layer, options: &GeoJsonOptions) -> Result<String> {
-    let mut w = CollectionEncoder::new(layer, *options)?;
+    let mut w = CollectionEncoder::new(layer, options)?;
     let mut out = w.head();
     w.features(layer, &mut out)?;
     out.push_str(CollectionEncoder::TAIL);
@@ -920,6 +1010,7 @@ pub fn to_string(layer: &Layer, options: &GeoJsonOptions) -> Result<String> {
 pub(crate) struct CollectionEncoder {
     head: String,
     rfc7946: bool,
+    id: Option<IdColumn>,
     reproject: Option<SpatialRef>,
     first: bool,
 }
@@ -929,7 +1020,7 @@ impl CollectionEncoder {
     pub(crate) const TAIL: &str = "]}\n";
 
     /// An encoder for the features of `layer` (its fields and CRS; its features are not read).
-    pub(crate) fn new(layer: &Layer, options: GeoJsonOptions) -> Result<Self> {
+    pub(crate) fn new(layer: &Layer, options: &GeoJsonOptions) -> Result<Self> {
         let srs = SpatialRef::from_layer(layer);
         let reproject =
             (options.rfc7946 && !srs.is_unknown() && srs.epsg != Some(4326)).then(|| SpatialRef::from_epsg(4326)).transpose()?;
@@ -946,7 +1037,7 @@ impl CollectionEncoder {
         doc.insert("features".into(), Value::Array(Vec::new()));
         let text = Value::Object(doc).to_string();
         let head = text.strip_suffix("]}").unwrap_or(&text).to_string();
-        Ok(Self { head, rfc7946: options.rfc7946, reproject, first: true })
+        Ok(Self { head, rfc7946: options.rfc7946, id: IdColumn::of(layer.schema.fields(), options), reproject, first: true })
     }
 
     /// The head of the collection, up to the opening of its `features` array.
@@ -965,8 +1056,8 @@ impl CollectionEncoder {
             None => chunk,
         };
         let fields = chunk.schema.fields();
-        let rfc = self.rfc7946;
-        let texts = crate::par::map_range(chunk.features.len(), |i| feature_json(&chunk.features[i], fields, rfc).to_string());
+        let (rfc, id) = (self.rfc7946, self.id);
+        let texts = crate::par::map_range(chunk.features.len(), |i| feature_json(&chunk.features[i], fields, rfc, id).to_string());
         for t in texts {
             if !self.first {
                 out.push(',');
@@ -979,12 +1070,14 @@ impl CollectionEncoder {
     }
 }
 
-/// A feature as a GeoJSON `Feature` object.
-fn feature_json(f: &Feature, fields: &[FieldDef], rfc7946: bool) -> Value {
+/// A feature as a GeoJSON `Feature` object, with the `id` member `id` gives.
+fn feature_json(f: &Feature, fields: &[FieldDef], rfc7946: bool, id: Option<IdColumn>) -> Value {
     let props: Map<String, Value> = fields
         .iter()
         .zip(&f.attributes)
-        .map(|(d, v)| {
+        .enumerate()
+        .filter(|&(i, _)| id.is_none_or(|c| c.index != i))
+        .map(|(_, (d, v))| {
             let v = match v {
                 FieldValue::Null => Value::Null,
                 FieldValue::Integer(x) => json!(x),
@@ -998,25 +1091,29 @@ fn feature_json(f: &Feature, fields: &[FieldDef], rfc7946: bool) -> Value {
             (d.name.clone(), v)
         })
         .collect();
-    json!({
-        "type": "Feature",
-        "properties": props,
-        "geometry": f.geometry.as_ref().map_or(Value::Null, |g| encode(g, rfc7946)),
-    })
+    let mut feature = Map::new();
+    feature.insert("type".into(), json!("Feature"));
+    if let Some(c) = id {
+        feature.insert("id".into(), c.value(f.attributes.get(c.index).unwrap_or(&FieldValue::Null)));
+    }
+    feature.insert("properties".into(), Value::Object(props));
+    feature.insert("geometry".into(), f.geometry.as_ref().map_or(Value::Null, |g| encode(g, rfc7946)));
+    Value::Object(feature)
 }
 
 /// Encodes GeoJSON text sequences (RFC 8142, GDAL's GeoJSONSeq): one feature per line, in
 /// WGS 84 with counter-clockwise exterior rings, as GDAL writes them.
 pub(crate) struct SeqEncoder {
     reproject: Option<SpatialRef>,
+    id: Option<IdColumn>,
 }
 
 impl SeqEncoder {
     /// An encoder for the features of `layer`.
-    pub(crate) fn new(layer: &Layer) -> Result<Self> {
+    pub(crate) fn new(layer: &Layer, options: &GeoJsonOptions) -> Result<Self> {
         let srs = SpatialRef::from_layer(layer);
         let reproject = (!srs.is_unknown() && srs.epsg != Some(4326)).then(|| SpatialRef::from_epsg(4326)).transpose()?;
-        Ok(Self { reproject })
+        Ok(Self { reproject, id: IdColumn::of(layer.schema.fields(), options) })
     }
 
     /// Appends the features of a chunk, a line each.
@@ -1030,7 +1127,8 @@ impl SeqEncoder {
             None => chunk,
         };
         let fields = chunk.schema.fields();
-        for t in crate::par::map_range(chunk.features.len(), |i| feature_json(&chunk.features[i], fields, true).to_string()) {
+        let id = self.id;
+        for t in crate::par::map_range(chunk.features.len(), |i| feature_json(&chunk.features[i], fields, true, id).to_string()) {
             out.push_str(&t);
             out.push('\n');
         }
@@ -1039,9 +1137,9 @@ impl SeqEncoder {
 }
 
 /// Encodes a layer as a GeoJSON text sequence.
-pub fn to_seq_string(layer: &Layer) -> Result<String> {
+pub fn to_seq_string(layer: &Layer, options: &GeoJsonOptions) -> Result<String> {
     let mut out = String::new();
-    SeqEncoder::new(layer)?.features(layer, &mut out)?;
+    SeqEncoder::new(layer, options)?.features(layer, &mut out)?;
     Ok(out)
 }
 
@@ -1119,6 +1217,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn id_field_is_written_as_each_features_id_as_gdal_writes_it() {
+        let mixed = r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","id":"pole-17","properties":{"name":"a"},"geometry":{"type":"Point","coordinates":[30,-2]}},
+            {"type":"Feature","id":42,"properties":{"name":"b"},"geometry":{"type":"Point","coordinates":[30.1,-2]}},
+            {"type":"Feature","id":3.5,"properties":{"name":"c"},"geometry":{"type":"Point","coordinates":[30.2,-2]}},
+            {"type":"Feature","properties":{"name":"d"},"geometry":{"type":"Point","coordinates":[30.3,-2]}}]}"#;
+        let typed = r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{"num":5,"real":2.5,"flag":true},"geometry":{"type":"Point","coordinates":[30,-2]}},
+            {"type":"Feature","properties":{"num":null,"real":null,"flag":false},"geometry":{"type":"Point","coordinates":[30.1,-2]}},
+            {"type":"Feature","properties":{"num":12,"real":-7.25,"flag":null},"geometry":{"type":"Point","coordinates":[30.2,-2]}}]}"#;
+        // The `id` members GDAL 3.12.2 writes, to GeoJSON and GeoJSONSeq, with
+        // -lco ID_FIELD=<field> -lco ID_TYPE=<type>.
+        let cases = [
+            (mixed, "id", "AUTO", r#"["pole-17","42","3.5",""]"#),
+            (mixed, "id", "String", r#"["pole-17","42","3.5",""]"#),
+            (mixed, "id", "Integer", "[0,42,3,0]"),
+            (typed, "num", "AUTO", "[5,0,12]"),
+            (typed, "num", "String", r#"["5","","12"]"#),
+            (typed, "num", "Integer", "[5,0,12]"),
+            (typed, "real", "AUTO", r#"["2.5","","-7.25"]"#),
+            (typed, "real", "String", r#"["2.5","","-7.25"]"#),
+            (typed, "real", "Integer", "[2,0,-7]"),
+            (typed, "flag", "AUTO", "[1,0,0]"),
+            (typed, "flag", "String", r#"["1","0",""]"#),
+            (typed, "flag", "Integer", "[1,0,0]"),
+        ];
+        for (source, field, id_type, ids) in cases {
+            let layer = parse(source.as_bytes(), "l").unwrap();
+            let mut options = GeoJsonOptions::default();
+            assert!(options.set("ID_FIELD", field).unwrap() && options.set("id_type", id_type).unwrap());
+            let expected: Value = serde_json::from_str(ids).unwrap();
+            let seq = to_seq_string(&layer, &options).unwrap();
+            let seq = format!("{{\"features\":[{}]}}", seq.trim_end().replace('\n', ","));
+            for text in [to_string(&layer, &options).unwrap(), seq] {
+                let doc: Value = serde_json::from_str(&text).unwrap();
+                let features = doc["features"].as_array().unwrap();
+                let got = Value::Array(features.iter().map(|f| f["id"].clone()).collect());
+                assert_eq!(got, expected, "{field} {id_type}");
+                assert!(features.iter().all(|f| f["properties"].get(field).is_none()), "{field} {id_type}");
+            }
+        }
+        // The member follows `type`, as GDAL writes it; a field the layer lacks writes no `id`.
+        let layer = parse(mixed.as_bytes(), "l").unwrap();
+        let options = GeoJsonOptions { id_field: Some("id".into()), ..Default::default() };
+        assert!(to_string(&layer, &options).unwrap().contains(r#"{"type":"Feature","id":"pole-17","properties":{"name":"a"}"#));
+        let options = GeoJsonOptions { id_field: Some("nope".into()), ..Default::default() };
+        assert!(to_string(&layer, &options).unwrap().contains(r#"{"type":"Feature","properties":{"id":"pole-17","name":"a"}"#));
+        assert!(GeoJsonOptions::default().set("ID_TYPE", "Float").is_err());
+    }
+
+    #[test]
+    fn atoi_reads_text_ids_as_c_does() {
+        assert_eq!(atoi("42"), 42);
+        assert_eq!(atoi(" \t\n\x0B\x0C\r-7x"), -7);
+        assert_eq!(atoi("\u{a0}42"), 0);
+        assert_eq!(atoi("+"), 0);
+        assert_eq!(atoi("x1"), 0);
+        assert_eq!(atoi("-9223372036854775808"), i64::MIN);
+        assert_eq!(atoi("-99999999999999999999"), i64::MIN);
+        assert_eq!(atoi("9223372036854775807"), i64::MAX);
+        assert_eq!(atoi("9223372036854775808"), i64::MAX);
+    }
+
+    #[test]
     fn reads_long_multibyte_text() {
         // Byte 10 of these names falls inside a character; the date check must not slice there (#159).
         let text = r#"{"type":"FeatureCollection","features":[
@@ -1161,7 +1323,7 @@ mod tests {
         assert_eq!(back.features[0].geometry, Some(Geometry::point(500000.0, 10.0)));
         assert_eq!(back.features[0].attributes, l.features[0].attributes);
         // RFC 7946: WGS 84.
-        let out = to_string(&l, &GeoJsonOptions { rfc7946: true }).unwrap();
+        let out = to_string(&l, &GeoJsonOptions { rfc7946: true, ..Default::default() }).unwrap();
         let back = parse(out.as_bytes(), "file").unwrap();
         assert!(!out.contains("\"crs\""));
         let Some(Geometry::Point(c)) = &back.features[0].geometry else { panic!("no point") };

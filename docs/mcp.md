@@ -49,6 +49,11 @@ Without installing anything but [uv](https://docs.astral.sh/uv/), use `uvx` as t
 
 ## What the agent can do
 
+HEC-RAS geometry and plan HDF files (the `hecras` feature, part of the default build) work like other vector data: `info` lists their layers, and `info`
+and `convert` take the HECRAS open options (`--oo "CELL_SUMMARIES=Maximum Water Surface"`, see
+[HEC-RAS](hecras.md)), so an agent can "export the maximum water surface of each 2D cell of this
+plan to GeoPackage".
+
 The tools read and write whatever the commands can: local files, and inputs from URLs and cloud
 storage (see [Remote Data](remote-data.md)). `info`, `crs` and `formats` only read; the other
 commands write their output files, and can overwrite existing ones. The `vsi` tool also copies

@@ -80,6 +80,20 @@ terrio.write_vector(layer, "world.gpkg", append=True)
 terrio.convert("more.shp", "world.gpkg", layer_name="countries", overwrite=True)
 ```
 
+Driver open options go in `options`, by their GDAL names, as `terrio convert --oo` takes them.
+HEC-RAS geometry and plan HDF files (the package is built with the `hecras` feature) read as
+vector layers this way, with the results HEC-RAS stored joined by open options
+(see [HEC-RAS](hecras.md)):
+
+```python
+plan = terrio.open_vector(
+    "BaldEagleDamBrk.p03.hdf",
+    layers=["mesh_cells", "cross_sections"],
+    options={"CELL_SUMMARIES": "Maximum Water Surface", "XS_RESULTS": "Water Surface", "TIME_STEP": "12"},
+)
+terrio.info("BaldEagleDamBrk.p03.hdf", layers=["mesh_cells"], options={"CELL_ATTRIBUTES": "MINIMUM_ELEVATION"})
+```
+
 The file is changed in place, as SQLite changes it: only the pages that change are written (new
 rows, R-tree nodes, the tables describing the layer), in a transaction protected by a rollback
 journal, so appending to a large GeoPackage costs about as much as the features appended, and a
@@ -531,3 +545,84 @@ clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
 base update commits. Use `create-raster`, `edit-raster` and `update-raster` when
 calling the corresponding CLI commands.
+
+COG validation also accepts uploaded TIFF `bytes`. Use
+`terrio.validate_cog(data, profile="gdal", full_check=True)` for GDAL 3.13
+structural rules and compressed-block leader, trailer, order and mask checks.
+The result remains `(valid, errors, warnings)`; the default `rio-cogeo` profile
+preserves existing behavior. Automatic full checking applies to local paths
+and bytes, and stays off for URLs.
+
+GDAL COG full checking examines blocks in the main TIFF and its internal overviews.
+External `.ovr` sidecars make the report invalid and receive header checks only.
+Explicit full checks of URLs can make several boundary requests per stored block;
+the cost grows with the number of blocks, so automatic mode leaves them off.
+Remote full checks stop with an error after 10,000 boundary read calls (excluding
+header/table reads and configured HTTP retries); download larger files to validate
+their full layout locally.
+Full block validation stops at 1,000 findings and reports the limit; remaining
+blocks need not be checked once the file is already invalid.
+The GDAL profile limits total parsed GDAL metadata to 4 MiB per file and XML nesting
+to 128 levels. The default rio-cogeo profile ignores this metadata tag.
+
+### GeoPackage maintenance
+
+`gpkg_repack(path)` compacts a native or `/vsimem/` GeoPackage in place and returns
+`bytes_before`, `bytes_after`, `page_size`, `pages_before` and `pages_after`.
+`gpkg_repack_bytes(data)` returns a compacted `bytes` copy of a self-contained GeoPackage,
+leaving the input unchanged. Both preserve encoded table/index records and schema SQL.
+See [supported scope and storage safety](cli.md#geopackage-repacking).
+
+### Multidimensional mosaics
+
+`terrio.mosaic_multidim(sources, dst=None, *, arrays=None)` builds a lazy
+coordinate-aligned mosaic. Each source can be a `MultidimDataset`, a scientific
+path/bytes, or a Zarr key/value dictionary. Read coordinate-aligned views through
+`output.array(name)`, or write a new netCDF/Zarr snapshot with `dst` or `write`.
+Source handles stay alive through the mosaic. See
+[Multidimensional mosaics](cli.md#multidimensional-mosaics) for alignment,
+priority, type preservation and supported scope.
+
+## Dataset file management
+
+`terrio.dataset_files(path, *, format=None)` returns the driver, owned files and a
+`directory` flag. `dataset_copy(source, destination, *, format=None, overwrite=False, allow_external_references=False)`
+and `dataset_rename(source, destination, *, format=None, overwrite=False, allow_external_references=False)` manage the complete file set and return affected paths
+and copied bytes. Paths may be strings or `os.PathLike` values, including VSI paths.
+`dataset_delete(path_or_iterable, *, format=None)` preflights all inputs and returns a
+list of reports. VRT references stay in the source directory tree by default;
+`allow_external_references=True` permits trusted external assets. Deleting a VRT
+preserves referenced rasters. Reports include `recovery_files`: a nonempty list
+means the operation committed but cleanup left staged files. I/O releases the GIL.
+See the CLI file-management section for staging, rollback, overwrite and format rules.
+
+`parquet_create_metadata(inputs, output, *, overwrite=False)` accepts a sequence of string
+or pathlib partition paths and returns a dictionary containing `files`, `row_groups`,
+`rows`, `bytes` and `omitted_metadata_keys`. It writes a metadata-only file with relative
+partition references, merged GeoParquet bounds/types and regenerated Arrow schema metadata.
+Inputs, including referenced column files, are protected from overwrite. Schemas and CRS
+must agree; data pages are not validated. See [CLI supported scope](cli.md#parquet-metadata-files).
+
+### Indexed color conversion
+
+`terrio.rgb_to_palette(src, dst=None, *, color_count=256, bit_depth=5,
+ dither=True, color_map=None, output_nodata=None, mask=None)` returns an indexed
+Byte `Raster`. `src` accepts a path or Raster; `color_map` accepts a palette
+raster/path, encoded color-file bytes, or a sequence of RGBA integer entries.
+`mask` is a two-dimensional uint8 validity array. `palette_to_rgb(src, dst=None,
+rgba=False)` expands to RGB/RGBA; `attach_palette(src, color_map, dst=None)`
+changes only the table. `read_color_table(source, filename=None)` returns integer
+RGBA lists; `filename` supplies the format hint for encoded bytes.
+
+The three conversion functions accept output format/compression/tile options
+and `overwrite=False`. Existing outputs need `overwrite=True`; source path
+aliases are protected. Operations materialize the input/output. See
+[Palette conversion](cli.md#palette-conversion) for validity rules, formats and
+GDAL differences.
+
+Python `Raster.write` and `to_bytes` retain dataset masks for GeoTIFF/COG
+outputs. Other writers omit separate dataset masks, as before; explicit masks
+passed to unsupported writers are rejected. Any raster with a dataset mask, including materialized results, is refused for PMTiles/MBTiles writes and their byte serialization,
+since that streaming path supports alpha bands rather than separate masks.
+Normal raster writes materialize the full raster and its mask; remote inputs
+therefore fetch the selected image blocks and mask blocks.

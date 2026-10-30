@@ -53,6 +53,7 @@ lz4_flex = { workspace = true, optional = true }
 ruzstd.workspace = true
 netcdf-reader = { workspace = true, optional = true }
 hdf5-reader = { workspace = true, optional = true }
+ras-commander-fast-hdf = { workspace = true, optional = true }
 jpeg-decoder.workspace = true
 laz = { workspace = true, optional = true }
 e57 = { workspace = true, optional = true }
@@ -91,7 +92,7 @@ ndarray = { workspace = true, optional = true }
 # Disabled drivers stay in the API (`RasterDriver`, `VectorDriver`) and fail with "built without
 # the `...` feature".
 [features]
-default = ["cad", "geotiff", "parquet", "remote", "avif", "netcdf-hdf5", "osm", "lzma", "flatgeobuf", "jp2", "lerc", "pointcloud", "tiles", "zarr", "sqlite", "grib", "libzstd"]
+default = ["cad", "geotiff", "parquet", "remote", "avif", "netcdf-hdf5", "osm", "lzma", "flatgeobuf", "jp2", "lerc", "pointcloud", "tiles", "zarr", "sqlite", "grib", "libzstd", "hecras"]
 ## GeoTIFF and COG reading and writing. Always built (it is the core): the feature exists so that
 ## `features = ["geotiff"]` states what a build needs.
 geotiff = []
@@ -105,6 +106,11 @@ remote = ["dep:ureq", "dep:hmac", "dep:sha2", "terrio-crs/grid-transport"]
 avif = ["tiles", "dep:rusty_av1d"]
 ## NetCDF, HDF5 and HDF-EOS reading, netCDF writing.
 netcdf-hdf5 = ["dep:netcdf-reader", "dep:hdf5-reader"]
+## HEC-RAS geometry (`.g##.hdf`) and plan (`.p##.hdf`) HDF files as vector layers (read only),
+## through the ras-commander-fast-hdf engine.
+## Needs `netcdf-hdf5`: HEC-RAS files stay readable as HDF5 rasters, and in-memory opens find
+## the root `File Type` with terrio's HDF5 reader.
+hecras = ["netcdf-hdf5", "dep:ras-commander-fast-hdf"]
 ## OpenStreetMap PBF and XML.
 osm = ["dep:osmpbfreader", "wbvector/osmpbf"]
 ## LZMA-compressed GeoTIFFs.
@@ -152,6 +158,11 @@ sha2 = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+# Windows file identity (including hard links) for dataset destination guards.
+same-file.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

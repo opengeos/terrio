@@ -21,6 +21,10 @@ pub struct Args {
     /// Only these layers of a vector dataset.
     #[arg(short, long = "layer")]
     layers: Vec<String>,
+    /// An open option of a vector dataset, as GDAL names it: `KEY=VALUE` (the options of
+    /// `terrio convert --oo`, such as HECRAS `CELL_SUMMARIES=Maximum Water Surface`).
+    #[arg(long = "oo", value_name = "KEY=VALUE")]
+    open_options: Vec<String>,
     /// Open the input with this driver: `gdal` uses the GDAL backend (builds with the `gdal`
     /// feature), as a `GDAL:` prefix on the path does.
     #[arg(long, value_name = "DRIVER")]
@@ -30,12 +34,17 @@ pub struct Args {
 pub fn run(a: Args) -> terrio::Result<()> {
     let options = InfoOptions { statistics: a.stats, histogram: a.hist };
     let input = super::with_driver(&a.input, a.driver.as_deref())?;
-    let info = if a.layers.is_empty() {
+    let info = if a.layers.is_empty() && a.open_options.is_empty() {
         // GeoTIFFs are read in place: only their headers are fetched.
         super::quiet(|| terrio::info::info_path(&input, &options))?
     } else {
-        let ds =
-            terrio::Dataset::Vector(terrio::open_vector(&input, &terrio::VectorOpenOptions { layers: a.layers, ..Default::default() })?);
+        let mut open = terrio::VectorOpenOptions { layers: a.layers, ..Default::default() };
+        for (k, v) in super::convert::key_values(&a.open_options)? {
+            if !open.set(k, v)? {
+                return Err(terrio::Error::InvalidArgument(format!("unknown open option '{k}'")));
+            }
+        }
+        let ds = terrio::Dataset::Vector(terrio::open_vector(&input, &open)?);
         terrio::info::info(&ds, &options)
     };
     if a.json {

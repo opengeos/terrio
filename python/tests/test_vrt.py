@@ -1,5 +1,6 @@
 """Serialized VRT inputs preserve lazy windows, source maps and georeferencing."""
 
+import os
 import socket
 
 import numpy as np
@@ -111,3 +112,36 @@ def test_vrt_windows_over_reachable_sources_read_when_another_is_down(tmp_path):
         for window in ((200, 0, 100, 10), (0, 0, 257, 4), (300, 0, 10, 10), None):
             with pytest.raises(RasterioIOError, match=f"127.0.0.1:{port}/right.tif"):
                 ds.read(1, window=None if window is None else Window(*window))
+
+
+def test_vrt_preserves_filename_whitespace_in_native_and_uploaded_sources(tmp_path):
+    values = {"source.tif": 1, "source.tif ": 9, " source.tif ": 7}
+    uploaded = {
+        name: terrio.Raster.from_array(
+            np.array([[value]], dtype="uint8"), transform=(0, 1, 0, 1, 0, -1)
+        ).to_bytes()
+        for name, value in values.items()
+    }
+    source_maps = [uploaded]
+    if os.name == "posix":
+        native = {}
+        for name, data in uploaded.items():
+            path = tmp_path / name
+            path.write_bytes(data)
+            native[name] = path
+        source_maps.append(native)
+    for text, expected in [
+        ("source.tif ", 9),
+        (" source.tif", 1),
+        ("&#32;source.tif ", 7),
+        ("<![CDATA[ source.tif ]]>", 7),
+        ("<![CDATA[source.tif]]> ", 1),
+    ]:
+        xml = (
+            '<VRTDataset rasterXSize="1" rasterYSize="1">'
+            '<VRTRasterBand dataType="Byte" band="1"><SimpleSource>'
+            f"<SourceFilename>{text}</SourceFilename><SourceBand>1</SourceBand>"
+            "</SimpleSource></VRTRasterBand></VRTDataset>"
+        )
+        for sources in source_maps:
+            np.testing.assert_array_equal(terrio.open_vrt(xml, sources).read(1), [[expected]])

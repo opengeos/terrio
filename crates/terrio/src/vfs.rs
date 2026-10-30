@@ -145,7 +145,6 @@ pub enum Location {
 impl Location {
     /// Parses a dataset location.
     pub fn parse(input: &str) -> Self {
-        let input = input.trim();
         if let Some(rest) = input.strip_prefix("/vsizip/") {
             // GDAL's `/vsizip/{archive}/member`: the braces delimit the archive, whatever its name.
             if let Some((archive, inner)) = rest.strip_prefix('{').and_then(|r| r.split_once('}')) {
@@ -870,6 +869,7 @@ mod tests {
     #[test]
     fn parses_locations() {
         assert_eq!(Location::parse("a/b.tif"), Location::Local("a/b.tif".into()));
+        assert_eq!(Location::parse(" a/b.tif "), Location::Local(" a/b.tif ".into()));
         assert_eq!(Location::parse("/vsicurl/https://x.org/a.tif"), Location::Url("https://x.org/a.tif".into()));
         assert_eq!(Location::parse("gs://bucket/a.tif"), Location::Url("https://storage.googleapis.com/bucket/a.tif".into()));
         assert_eq!(url_origin("https://user@Example.org:443/a?b"), url_origin("https://example.org/c"));

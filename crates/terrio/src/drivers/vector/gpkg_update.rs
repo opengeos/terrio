@@ -4,12 +4,13 @@
 //! added, and everything else in the file kept: other layers, rasters, metadata, extensions,
 //! triggers and views.
 //!
-//! Files are changed in place (see [`super::gpkg_inplace`]). Those that cannot be (a write-ahead
-//! log, auto-vacuum, triggers this module does not emulate) and GeoPackages held in memory are
+//! Files are changed in place (see [`super::gpkg_inplace`]). Those that cannot be (auto-vacuum
+//! or triggers this module does not emulate) and GeoPackages held in memory are
 //! read whole (every table's rows as stored, every index, trigger and view) and written anew;
-//! a file is then renamed over the original. Files with tables or indexes that cannot be
-//! rewritten (`WITHOUT ROWID` tables, indexes on expressions, UTF-16 text) or that a hot
-//! rollback journal goes with are left untouched, with an error.
+//! a file is then renamed over the original. A pending WAL must be checkpointed with SQLite
+//! first; rewriting only the main file would lose committed changes. Files with tables or
+//! indexes that cannot be rewritten (`WITHOUT ROWID` tables, indexes on expressions, UTF-16
+//! text), or accompanied by a hot rollback journal, are left untouched with an error.
 
 use super::geopackage::{self as gw, Builder};
 use super::sqlite::{self as w, Index, SchemaObject, Table};
@@ -68,30 +69,36 @@ fn real(v: &w::Value) -> Option<f64> {
 /// are written, in a transaction protected by a rollback journal); files that cannot be changed
 /// that way are rewritten, the new file replacing the original once complete.
 pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
-    if super::gpkg_inplace::update_in_place(std::path::Path::new(path), layers, mode)? {
+    let resolved = std::fs::canonicalize(path)?;
+    // Reject pending WAL state before selecting the in-place or rewrite path.
+    crate::drivers::sqlite_edit::ensure_no_wal(&resolved)?;
+    if super::gpkg_inplace::update_in_place(&resolved, layers, mode)? {
         return Ok(());
     }
-    rewrite(path, layers, mode)
+    rewrite(&resolved, layers, mode)
 }
 
 /// Updates a GeoPackage file by writing it anew, the new file renamed over the original. A file
 /// with a hot rollback journal is left untouched, with an error: without SQLite's locks (where
 /// files are not changed in place) a transaction interrupted cannot be told from one under way,
 /// and the journal, left next to the new file, would be rolled back over it.
-fn rewrite(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
-    if crate::drivers::sqlite_edit::has_hot_journal(std::path::Path::new(path))? {
+fn rewrite(path: impl AsRef<std::path::Path>, layers: &[Layer], mode: UpdateMode) -> Result<()> {
+    let path = path.as_ref();
+    // Recheck at the rewrite boundary before reading only the main image.
+    crate::drivers::sqlite_edit::ensure_no_wal(path)?;
+    if crate::drivers::sqlite_edit::has_hot_journal(path)? {
         return Err(Error::Unsupported(format!(
-            "{path}: the database has a hot rollback journal (a transaction interrupted or under way); \
-             open it with SQLite to recover it first"
+            "{}: the database has a hot rollback journal (a transaction interrupted or under way); \
+             open it with SQLite to recover it first",
+            path.display()
         )));
     }
     let bytes = update_bytes(std::fs::read(path)?, layers, mode)?;
-    let tmp = format!("{path}.terrio-update");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })?;
-    Ok(())
+    use std::io::Write;
+    crate::vsi::write_local_atomic(path, |file| {
+        file.write_all(&bytes)?;
+        Ok(())
+    })
 }
 
 /// Updates a GeoPackage held in memory: see [`update`].
@@ -730,6 +737,75 @@ mod tests {
         assert_eq!(layers.iter().map(|l| (l.name.as_str(), l.len())).collect::<Vec<_>>(), [("a", 500), ("b", 2), ("c", 3)]);
         assert_eq!(layers[1].features[0].fid, 1);
         assert_eq!(layers[2].crs_epsg(), Some(4326));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinked_append_rewrite_preserves_the_link_and_updates_its_target() {
+        #[allow(unused_mut)] // The invalid-byte case is added only outside macOS.
+        let mut target_names = vec![std::ffi::OsString::from("target.gpkg"), std::ffi::OsString::from("café.gpkg")];
+        // APFS rejects invalid UTF-8 filenames before Terrio can open them.
+        #[cfg(not(target_os = "macos"))]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            target_names.push(std::ffi::OsString::from_vec(b"caf\xe9.gpkg".to_vec()));
+        }
+        for target_name in target_names {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(&target_name);
+            let link = dir.path().join("alias.gpkg");
+            let source = Db::new(gw::to_bytes(&[layer("a", 1, 0.)]).unwrap()).unwrap();
+            let mut database = Database::load(&source).unwrap();
+            database.objects.push(SchemaObject {
+                kind: "trigger",
+                name: "custom_after_insert".into(),
+                table: "a".into(),
+                sql: "CREATE TRIGGER custom_after_insert AFTER INSERT ON a BEGIN SELECT 1; END".into(),
+            });
+            let original = database.finish().unwrap();
+            std::fs::write(&path, &original).unwrap();
+            std::os::unix::fs::symlink(&target_name, &link).unwrap();
+            let victim = dir.path().join("unrelated.bin");
+            std::fs::write(&victim, b"keep unrelated bytes").unwrap();
+            let mut staged_name = path.as_os_str().to_os_string();
+            staged_name.push(".terrio-update");
+            let staged = std::path::PathBuf::from(staged_name);
+            std::os::unix::fs::symlink(&victim, &staged).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+            let appended = [layer("a", 1, 10.)];
+            assert!(!super::super::gpkg_inplace::update_in_place(&path, &appended, UpdateMode::Append).unwrap());
+            let mut wal = path.as_os_str().to_os_string();
+            wal.push("-wal");
+            let wal = std::path::PathBuf::from(wal);
+            std::fs::write(&wal, b"pending frames").unwrap();
+            assert!(update(link.to_str().unwrap(), &appended, UpdateMode::Append).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            std::fs::remove_file(&wal).unwrap();
+            update(link.to_str().unwrap(), &appended, UpdateMode::Append).unwrap();
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read(&victim).unwrap(), b"keep unrelated bytes");
+            assert_eq!(std::fs::read_link(&staged).unwrap(), victim);
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o640);
+            assert_eq!(std::fs::read_link(&link).unwrap(), std::path::Path::new(&target_name));
+            let database = Db::new(std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(super::super::gpkg_read::read_db(&database, &[], None).unwrap()[0].len(), 2);
+        }
+    }
+
+    #[test]
+    fn rewrite_refuses_pending_wal_without_touching_either_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wal.gpkg");
+        let base = super::super::geopackage::to_bytes(&[layer("a", 3, 0.0)]).unwrap();
+        std::fs::write(&path, &base).unwrap();
+        let wal = dir.path().join("wal.gpkg-wal");
+        std::fs::write(&wal, b"pending committed frames").unwrap();
+        assert!(rewrite(path.to_str().unwrap(), &[layer("a", 2, 10.0)], UpdateMode::Append).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), base);
+        assert_eq!(std::fs::read(&wal).unwrap(), b"pending committed frames");
+        std::fs::write(&wal, []).unwrap();
+        rewrite(path.to_str().unwrap(), &[layer("a", 2, 10.0)], UpdateMode::Append).unwrap();
     }
 
     #[test]

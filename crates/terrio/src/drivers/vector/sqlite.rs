@@ -401,19 +401,29 @@ pub(crate) fn build_index<S: PageStore + ?Sized>(
     root: Option<u32>,
     spare: &mut Vec<u32>,
 ) -> Result<u32> {
+    let records: Vec<_> = keys.iter().map(|key| record(key)).collect();
+    build_index_records(store, &records, root, spare)
+}
+
+/// Builds an index from already sorted, encoded keys, preserving their bytes and collation order.
+/// This also represents WITHOUT ROWID tables, expression indexes and UTF-16 databases.
+pub(crate) fn build_index_records<S: PageStore + ?Sized>(
+    store: &mut S,
+    records: &[Vec<u8>],
+    root: Option<u32>,
+    spare: &mut Vec<u32>,
+) -> Result<u32> {
     let (max_local, min_local) = index_local_limits(store.page_size());
-    // Each key's payload as stored in a cell (without the child pointer of interior cells).
-    let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(keys.len());
-    for k in keys {
-        let rec = record(k);
-        let (local, overflow) = store_payload(store, &rec, max_local, min_local)?;
-        let mut c = Vec::with_capacity(local.len() + 13);
-        varint(&mut c, rec.len() as u64);
-        c.extend_from_slice(&local);
-        if let Some(o) = overflow {
-            c.extend_from_slice(&o.to_be_bytes());
+    let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(records.len());
+    for rec in records {
+        let (local, overflow) = store_payload(store, rec, max_local, min_local)?;
+        let mut cell = Vec::with_capacity(local.len() + 13);
+        varint(&mut cell, rec.len() as u64);
+        cell.extend_from_slice(&local);
+        if let Some(page) = overflow {
+            cell.extend_from_slice(&page.to_be_bytes());
         }
-        payloads.push(c);
+        payloads.push(cell);
     }
     // The leaves, with the keys between them as dividers.
     let (mut children, mut dividers) = split_index_level(payloads, 8, 0, store, |store, cells, _| {

@@ -94,7 +94,7 @@ pub(crate) fn uri_encode(s: &str, encode_slash: bool) -> String {
 }
 
 /// Decodes a URL path once; malformed escapes or non-UTF-8 keys retain their spelling.
-fn uri_decode(s: &str) -> String {
+pub(super) fn uri_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

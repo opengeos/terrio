@@ -44,11 +44,14 @@ copyright holders:
 - overview generation (`gcore/overview.cpp`) and GeoTIFF update rules
 - weighted Brovey pansharpening, VRT kernel filters and focal statistics, nearblack, enhance,
   blend, unscale, reclassify, nodata-to-alpha and as-features
+- median-cut palette quantization and integer error diffusion (`alg/gdalmediancut.cpp`,
+  `alg/gdaldither.cpp`), following Frank Warmerdam and Even Rouault
 - the edge-mode height recurrence of the viewshed (Tamas Szekeres)
 - segmentize, geometry type conversion, combine, Hilbert sort and linear referencing (OGR)
 - the vector dataset commands concat, partition, set-field-type, make-point, create,
   export-schema, rename-layer, edit and update
 - raster compare, pixel-info and gdal2xyz output
+- GDAL Cloud Optimized GeoTIFF validation and compressed-block layout checks (Even Rouault)
 - the SRTMHGT driver rules, and the GRIB driver with its degrib and g2clib rules and the GRIB
   tables GDAL distributes; small GRIB files of GDAL's test suite are among terrio's test files
 - the EPSG table, with the coordinate operations GDAL uses for each CRS, generated with GDAL and

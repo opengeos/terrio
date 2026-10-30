@@ -180,37 +180,6 @@ fn group(g: &NcGroup, p: &str, file: &Arc<NcFile>, hdf: Option<&hdf5_reader::Hdf
     }
     Ok(out)
 }
-fn resolve_coordinates(root: &mut Group) {
-    let names: std::collections::HashSet<_> = root.arrays_recursive().iter().map(|a| a.info.path.clone()).collect();
-    fn visit(group: &mut Group, names: &std::collections::HashSet<String>) {
-        for a in &mut group.arrays {
-            if let Some(raw) = a.info.attributes.get("coordinates").and_then(Value::as_str) {
-                for name in raw.split_whitespace() {
-                    let mut parent = group.path.as_str();
-                    let coordinate = loop {
-                        let candidate = if name.starts_with('/') { name.to_owned() } else { path(parent, name) };
-                        if names.contains(&candidate) {
-                            break Some(candidate);
-                        }
-                        if name.starts_with('/') || parent == "/" {
-                            break None;
-                        }
-                        parent = parent.rsplit_once('/').map(|(p, _)| if p.is_empty() { "/" } else { p }).unwrap_or("/");
-                    };
-                    if let Some(c) = coordinate
-                        && !a.info.coordinates.contains(&c)
-                    {
-                        a.info.coordinates.push(c);
-                    }
-                }
-            }
-        }
-        for child in &mut group.groups {
-            visit(child, names);
-        }
-    }
-    visit(root, &names);
-}
 fn dataset(file: NcFile, hdf: Option<hdf5_reader::Hdf5File>, driver: &str) -> Result<Dataset> {
     let file = Arc::new(file);
     let mut root = group(file.root_group().map_err(error)?, "/", &file, hdf.as_ref(), &[])?;

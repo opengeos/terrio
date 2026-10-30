@@ -365,9 +365,15 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | TopoJSON | TopoJSON | ✓ | ✓ | topojson |
 | MapInfo File | MapInfo TAB and interchange format | ✓ | ✓ | tab, mif |
 | OSM | OpenStreetMap PBF and XML | ✓ | | osm.pbf, osm |
+| HECRAS | HEC-RAS geometry and plan HDF5 (the `hecras` feature) | ✓ | | g##.hdf, p##.hdf (by content) |
 | PMTiles | PMTiles v3 vector tiles (MVT) | ✓ | ✓ | pmtiles |
 | MBTiles | MBTiles vector tiles (MVT) | ✓ | ✓ | mbtiles |
 | MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, pbf |
+
+HEC-RAS geometry and plan files (`HECRAS`, which GDAL does not have) are recognized by content,
+an HDF5 signature and the root `File Type` HEC-RAS writes, and give the mesh, 1D and 2D feature
+layers with the results HEC-RAS stored; `open_raster` still reads them as HDF5. See
+[HEC-RAS](hecras.md).
 
 Layer and field models follow GDAL's: GPX has GDAL's five layers, KML has the LIBKML driver's
 fields, OSM has the `points`, `lines`, `multilinestrings`, `multipolygons` and `other_relations`
@@ -405,6 +411,11 @@ reads it.
   the types of the features seen so far (re-encoded if a later feature widens them), then written
   in the order of the spatial index. A streamed file is identical to the one written from the
   whole layer.
+- **GeoJSON feature ids** are read as GDAL reads them: integer `id` members become the feature
+  ids, and string or mixed ones an `id` field. When writing GeoJSON or GeoJSONSeq, the `ID_FIELD`
+  creation option (`GeoJsonOptions::id_field`) writes a field as each feature's `id` member
+  instead of a property: a number for integer and boolean fields, a string otherwise, or as
+  `ID_TYPE` (`GeoJsonOptions::id_type`: `String` or `Integer`) asks.
 - **GeoJSONSeq** files hold a GeoJSON feature per line (RFC 8142, optionally with record
   separators), written in WGS 84 with counter-clockwise exterior rings, as GDAL's GeoJSONSeq
   driver writes them.
@@ -416,9 +427,25 @@ reads it.
 - **MapInfo TAB** native tables (`.tab` with its `.dat`, `.map` and `.id`) are read with every
   object type and field type, in their charset, and seamless tables; they are written with their
   spatial index, which GDAL uses for spatial filters. Views and DBF-backed tables are not read.
+- **Shapefile polygons** are made from their rings as GDAL's shapefile driver makes them. By
+  default (`ONLY_CCW`), clockwise rings are exteriors and each counter-clockwise ring is a hole of
+  the smallest exterior around it. The `ORGANIZE_POLYGONS` open option (`--oo`,
+  `VectorOpenOptions::shapefile`) or the `OGR_ORGANIZE_POLYGONS` environment variable chooses one
+  of GDAL's other methods. `DEFAULT` groups rings by containment, whatever their winding, so
+  files that wind every ring one way keep their holes. `CCW_INNER_JUST_AFTER_CW_OUTER` makes each
+  counter-clockwise ring a hole of the clockwise ring before it, and `SKIP` makes every ring a
+  polygon. With every method, a ring of a multi-part record that touches itself at a vertex to
+  enclose a hole is first split into its exterior and holes, as GDAL 3.13 does.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
+- **KMZ archives** are written as GDAL writes them, a `doc.kml` linking to one document per
+  layer under `layers/`. Files given as KMZ resources (Rust `KmzOptions::resources`, CLI
+  `--kmz-resource`, Python `kmz_resources`, JavaScript `kmzResources`), such as the icon images
+  of `SYMBOL` styles, are packed beside those documents, so relative icon links resolve inside
+  the archive.
 - **KML styles** (`<Style>`, `<StyleMap>`) are read into an `OGR_STYLE` field holding GDAL's style
-  strings (`PEN(c:#FF0000FF,w:2.000000px);BRUSH(fc:#00FF0040)`), and written back as KML styles.
+  strings (`PEN(c:#FF0000FF,w:2.000000px);BRUSH(fc:#00FF0040)`), and written back as KML styles;
+  OGR's null brush (`BRUSH(id:"ogr-brush-1")`) and null pen (`PEN(id:"ogr-pen-1")`) are written as
+  PolyStyle `<fill>0</fill>` and `<outline>0</outline>`.
 
 ### CAD drawings (DWG and DXF)
 

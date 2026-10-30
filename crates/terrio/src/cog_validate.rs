@@ -10,6 +10,16 @@
 //! (`KNOWN_INCOMPATIBLE_EDITION=YES`) is an error. The errors and warnings are rio-cogeo's, word
 //! for word.
 //!
+//! [`validate_cog_with_options`] and [`validate_cog_bytes`] also offer a GDAL
+//! 3.13 profile with exact IFD placement and optional full checks of compressed
+//! block leaders, trailers, row ordering and interleaved masks. Automatic full
+//! checking stays off for URLs and on for local files or uploaded bytes. Full
+//! checking covers the main TIFF and internal overviews; external `.ovr` files
+//! make the report invalid and receive header checks only. Explicit remote full
+//! checks cost several boundary reads per block. GDAL metadata parsing is bounded
+//! to 4 MiB per file and 128 nesting levels. The
+//! original [`validate_cog`] API retains rio-cogeo compatibility.
+//!
 //! When a local file has a `.ovr` sidecar and no internal overviews, the sidecar's images are its
 //! overviews, as GDAL (and so rio-cogeo) reads them, and their offsets are checked as rio-cogeo
 //! checks them.
@@ -39,7 +49,7 @@ const MAX_IFDS: usize = 1024;
 const MAX_CHUNKS: u64 = 1 << 22;
 
 /// The outcome of [`validate_cog`].
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct CogValidation {
     /// Whether the file is a valid COG: no errors (and, with `strict`, no warnings).
     pub is_valid: bool,
@@ -50,7 +60,8 @@ pub struct CogValidation {
     /// The offsets of the IFDs of the full-resolution image, then of each overview.
     pub ifd_offsets: Vec<u64>,
     /// The offsets of the first block of the full-resolution image, then of each overview, as
-    /// rio-cogeo finds them (images without a stored block are left out).
+    /// rio-cogeo finds them (images without a stored block are left out). The GDAL
+    /// profile records 0 for images with no stored block.
     pub data_offsets: Vec<u64>,
     /// The overview decimation factors, as rasterio reports them (`round(width / overview width)`).
     pub overview_factors: Vec<usize>,
@@ -62,6 +73,30 @@ pub struct CogValidation {
     pub structural_metadata: Option<String>,
 }
 
+/// Structural rules used by the validator. The original API retains rio-cogeo compatibility.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CogValidationProfile {
+    /// rio-cogeo's header-only validation rules.
+    #[default]
+    RioCogeo,
+    /// GDAL 3.13's exact IFD placement and optional full block-layout checks.
+    Gdal,
+}
+
+/// Validation controls shared by native and uploaded TIFF inputs.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CogValidationOptions {
+    /// Treat missing-overview warnings as errors.
+    pub strict: bool,
+    /// Select rio-cogeo compatibility or GDAL 3.13 validation.
+    pub profile: CogValidationProfile,
+    /// In the GDAL profile, inspect every block's structural promises. `None`
+    /// enables these checks for local/uploaded inputs and disables them for URLs.
+    pub full_check: Option<bool>,
+}
+
 /// One image directory: what validation needs of it.
 #[derive(Debug, Clone, Default)]
 struct Ifd {
@@ -70,6 +105,8 @@ struct Ifd {
     height: u64,
     subfile_type: u64,
     samples: u64,
+    planar: u64,
+    tile_interleave: bool,
     /// Tile width and height, when tiled.
     tile: Option<(u64, u64)>,
     rows_per_strip: u64,
@@ -128,6 +165,7 @@ impl Ifd {
 struct Tiff {
     ifds: Vec<Ifd>,
     ghost: Option<String>,
+    expected_ifd_offset: u64,
 }
 
 /// Decodes numbers in the file's byte order.
@@ -168,10 +206,109 @@ fn invalid(msg: impl Into<String>) -> Error {
     Error::InvalidData(msg.into())
 }
 
+/// Extract just the interleave item, without constructing an XML tree whose
+/// recursive drop could overflow on deeply nested, untrusted metadata.
+fn tile_interleave(data: &[u8]) -> Result<bool> {
+    use quick_xml::events::Event;
+    let text = std::str::from_utf8(data).map_err(|e| invalid(format!("GDAL metadata XML: {e}")))?;
+    let mut reader = quick_xml::Reader::from_str(text.trim_end_matches('\0'));
+    let mut depth = 0usize;
+    let mut target = None;
+    let mut content = String::new();
+    let mut tile = false;
+    let mut root = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element)) => {
+                if depth == 0 && std::mem::replace(&mut root, true) {
+                    return Err(invalid("GDAL metadata XML: multiple root elements"));
+                }
+                depth += 1;
+                if depth > 128 {
+                    return Err(invalid("GDAL metadata XML exceeds 128 nesting levels"));
+                }
+                let mut name = false;
+                let mut domain = false;
+                for attribute in element.attributes() {
+                    let attribute = attribute.map_err(|e| invalid(format!("GDAL metadata XML: {e}")))?;
+                    let value = attribute
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .map_err(|e| invalid(format!("GDAL metadata XML: {e}")))?;
+                    match attribute.key.as_ref() {
+                        "name" => name = value == "INTERLEAVE",
+                        "domain" => domain = value == "IMAGE_STRUCTURE",
+                        _ => (),
+                    }
+                }
+                if element.local_name().as_ref() == "Item" && name && domain {
+                    target = Some(depth);
+                    content.clear();
+                }
+            }
+            Ok(Event::Empty(element)) => {
+                if depth == 0 && std::mem::replace(&mut root, true) {
+                    return Err(invalid("GDAL metadata XML: multiple root elements"));
+                }
+                for attribute in element.attributes() {
+                    let attribute = attribute.map_err(|e| invalid(format!("GDAL metadata XML: {e}")))?;
+                    attribute
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .map_err(|e| invalid(format!("GDAL metadata XML: {e}")))?;
+                }
+            }
+            Ok(Event::Text(text)) if target == Some(depth) => content.push_str(&text.xml10_content()),
+            Ok(Event::CData(text)) if target == Some(depth) => content.push_str(&text.xml10_content()),
+            Ok(Event::GeneralRef(reference)) => {
+                let value = reference
+                    .resolve_char_ref()
+                    .ok()
+                    .flatten()
+                    .or_else(|| match &*reference {
+                        "amp" => Some('&'),
+                        "lt" => Some('<'),
+                        "gt" => Some('>'),
+                        "quot" => Some('"'),
+                        "apos" => Some('\''),
+                        _ => None,
+                    })
+                    .ok_or_else(|| invalid("GDAL metadata XML: unresolved entity"))?;
+                if depth == 0 {
+                    return Err(invalid("GDAL metadata XML: reference outside root element"));
+                }
+                if target == Some(depth) {
+                    content.push(value);
+                }
+            }
+            Ok(Event::End(_)) => {
+                if target == Some(depth) {
+                    tile |= content.trim() == "TILE";
+                    target = None;
+                }
+                depth = depth.checked_sub(1).ok_or_else(|| invalid("GDAL metadata XML: unmatched closing tag"))?;
+            }
+            Ok(Event::Text(text)) if depth == 0 && !text.xml10_content().trim().is_empty() => {
+                return Err(invalid("GDAL metadata XML: text outside root element"));
+            }
+            Ok(Event::CData(_)) if depth == 0 => return Err(invalid("GDAL metadata XML: CDATA outside root element")),
+            Ok(Event::Eof) => {
+                return if depth != 0 {
+                    Err(invalid("GDAL metadata XML: unclosed element"))
+                } else if !root {
+                    Err(invalid("GDAL metadata XML: missing root element"))
+                } else {
+                    Ok(tile)
+                };
+            }
+            Err(error) => return Err(invalid(format!("GDAL metadata XML: {error}"))),
+            _ => (),
+        }
+    }
+}
+
 /// Reads the IFDs of a TIFF. `None` when the stream is not a TIFF. A TIFF is read only if the
 /// process-wide raster allow-list has the GTiff driver (`shown` names it in the refusal), as GDAL's
 /// validation opens it with that driver.
-fn read_tiff<R: Read + Seek>(f: &mut R, shown: &str) -> Result<Option<Tiff>> {
+fn read_tiff<R: Read + Seek>(f: &mut R, shown: &str, read_metadata: bool) -> Result<Option<Tiff>> {
     let mut header = [0u8; 16];
     f.seek(SeekFrom::Start(0))?;
     let mut n = 0;
@@ -200,12 +337,15 @@ fn read_tiff<R: Read + Seek>(f: &mut R, shown: &str) -> Result<Option<Tiff>> {
         e.u32(&header[4..8]) as u64
     };
     let ghost = read_ghost(f, if big { 16 } else { 8 })?;
+    let ghost_size = ghost.as_ref().map_or(0, |(_, size)| *size);
+    let ghost = ghost.map(|(text, _)| text);
     // Value arrays must lie within the stream, checked before they are allocated or fetched.
     let stream_len = f.seek(SeekFrom::End(0))?;
     let (entry_len, count_len, inline) = if big { (20usize, 8usize, 8usize) } else { (12, 2, 4) };
     // The bytes of the arrays read so far, of every image: see below.
     let mut stored_bytes: u64 = 0;
     let mut ifds: Vec<Ifd> = Vec::new();
+    let mut metadata_bytes = 0u64;
     while next != 0 && ifds.len() < MAX_IFDS {
         if ifds.iter().any(|i| i.offset == next) {
             return Err(invalid("the TIFF's image directories loop"));
@@ -219,27 +359,37 @@ fn read_tiff<R: Read + Seek>(f: &mut R, shown: &str) -> Result<Option<Tiff>> {
         }
         let mut entries = vec![0u8; count as usize * entry_len];
         f.read_exact(&mut entries)?;
-        let mut ifd = Ifd { offset: next, samples: 1, rows_per_strip: u64::MAX, ..Default::default() };
+        let mut ifd = Ifd { offset: next, samples: 1, planar: 1, rows_per_strip: u64::MAX, ..Default::default() };
         let mut tile = (None, None);
         // (tag, type, offset, length) of each array stored outside its entry, and the inline values.
         let mut stored: Vec<(u16, u16, u64, usize)> = Vec::new();
         let mut values: Vec<(u16, u16, Vec<u8>)> = Vec::new();
         for entry in entries.chunks_exact(entry_len) {
             let tag = e.u16(&entry[0..2]);
-            // PlanarConfiguration (284) is not read: with separate planes, band 1's blocks come first
-            // in the offset array, so the first block search finds the same block.
-            if !matches!(tag, 254 | 256 | 257 | 273 | 277 | 278 | 279 | 322 | 323 | 324 | 325) {
+            if !matches!(tag, 254 | 256 | 257 | 273 | 277 | 278 | 279 | 284 | 322 | 323 | 324 | 325 | 42112) {
                 continue;
             }
             let typ = e.u16(&entry[2..4]);
             let (n, value) = if big { (e.u64(&entry[4..12]), &entry[12..20]) } else { (e.u32(&entry[4..8]) as u64, &entry[8..12]) };
             let size = match typ {
                 1 => 1,
+                2 if tag == 42112 => 1,
                 3 => 2,
                 4 | 13 => 4,
                 16 | 18 => 8,
                 _ => continue,
             };
+            if tag == 42112 {
+                // The compatibility profile never needed this tag. Do not make
+                // unrelated metadata a new default-profile failure condition.
+                if !read_metadata {
+                    continue;
+                }
+                metadata_bytes = metadata_bytes.saturating_add(n.saturating_mul(size));
+                if metadata_bytes > 4 * 1024 * 1024 {
+                    return Err(invalid("GDAL metadata exceeds the 4 MiB per-file validation limit"));
+                }
+            }
             if n > MAX_CHUNKS {
                 return Err(invalid(format!("TIFF tag {tag} has {n} values")));
             }
@@ -271,6 +421,10 @@ fn read_tiff<R: Read + Seek>(f: &mut R, shown: &str) -> Result<Option<Tiff>> {
         });
         for item in values.into_iter().map(Ok).chain(stored) {
             let (tag, typ, data) = item?;
+            if tag == 42112 {
+                ifd.tile_interleave = tile_interleave(&data)?;
+                continue;
+            }
             let v = e.ints(typ, &data);
             let first = v.first().copied().unwrap_or(0);
             match tag {
@@ -279,6 +433,7 @@ fn read_tiff<R: Read + Seek>(f: &mut R, shown: &str) -> Result<Option<Tiff>> {
                 257 => ifd.height = first,
                 277 => ifd.samples = first.max(1),
                 278 => ifd.rows_per_strip = first,
+                284 => ifd.planar = first,
                 322 => tile.0 = Some(first),
                 323 => tile.1 = Some(first),
                 273 | 324 => ifd.offsets = v,
@@ -291,11 +446,16 @@ fn read_tiff<R: Read + Seek>(f: &mut R, shown: &str) -> Result<Option<Tiff>> {
         }
         ifds.push(ifd);
     }
-    Ok(Some(Tiff { ifds, ghost }))
+    let mut expected_ifd_offset = if big { 16 } else { 8 };
+    if ghost.is_some() {
+        expected_ifd_offset += "GDAL_STRUCTURAL_METADATA_SIZE=000000 bytes\n".len() as u64 + ghost_size;
+        expected_ifd_offset += expected_ifd_offset % 2;
+    }
+    Ok(Some(Tiff { ifds, ghost, expected_ifd_offset }))
 }
 
 /// GDAL's structural metadata block (`GDAL_STRUCTURAL_METADATA_SIZE=...`) at `offset`, if any.
-fn read_ghost<R: Read + Seek>(f: &mut R, offset: u64) -> Result<Option<String>> {
+fn read_ghost<R: Read + Seek>(f: &mut R, offset: u64) -> Result<Option<(String, u64)>> {
     const KEY: &[u8] = b"GDAL_STRUCTURAL_METADATA_SIZE=";
     f.seek(SeekFrom::Start(offset))?;
     let mut head = [0u8; 43];
@@ -316,7 +476,7 @@ fn read_ghost<R: Read + Seek>(f: &mut R, offset: u64) -> Result<Option<String>> 
     };
     let mut body = vec![0u8; size];
     f.read_exact(&mut body)?;
-    Ok(Some(String::from_utf8_lossy(&body).into_owned()))
+    Ok(Some((String::from_utf8_lossy(&body).into_owned(), size as u64)))
 }
 
 /// Validates a Cloud Optimized GeoTIFF, local or remote (HTTP(S) or S3, read with range
@@ -326,45 +486,328 @@ fn read_ghost<R: Read + Seek>(f: &mut R, offset: u64) -> Result<Option<String>> 
 /// A file that is not a TIFF is not valid (`"The file is not a GeoTIFF"`); a file that cannot be
 /// read is an error.
 pub fn validate_cog(path: &str, strict: bool) -> Result<CogValidation> {
+    validate_cog_with_options(path, &CogValidationOptions { strict, ..Default::default() })
+}
+
+/// Validates a native/VSI input, with GDAL 3.13 full checks available through `profile`.
+/// Automatic full checks are disabled for remote inputs to preserve bounded range I/O.
+pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> Result<CogValidation> {
+    if options.full_check == Some(true) && options.profile != CogValidationProfile::Gdal {
+        return Err(Error::InvalidArgument("full_check requires the gdal validation profile".into()));
+    }
     let loc = Location::parse(path);
-    let (tiff, ovr): (_, Option<Tiff>) = match &loc {
+    match &loc {
         #[cfg(remote)]
         Location::Url(_) | Location::S3 { .. } => {
             let remote = loc.remote().ok_or_else(|| Error::InvalidArgument(format!("'{path}' is not remote")))?;
-            let mut r = crate::http::RangeReader::open(&remote)?;
-            (read_tiff(&mut r, path)?, None)
+            validate_reader(&mut crate::http::RangeReader::open(&remote)?, path, None, options, false)
         }
         Location::Local(p) => {
-            let mut f = std::io::BufReader::new(std::fs::File::open(p)?);
+            let mut file = std::fs::File::open(p)?;
             let mut ovr = p.clone().into_os_string();
             ovr.push(".ovr");
             let ovr = std::path::Path::new(&ovr);
-            // A sidecar that does not parse still counts as one, with no images; GDAL would fail to
-            // open its overviews. One that cannot be opened is an error, as the file itself is.
             let sidecar = if ovr.is_file() {
                 Some(
-                    read_tiff(&mut std::io::BufReader::new(std::fs::File::open(ovr)?), &ovr.to_string_lossy())
+                    read_tiff(&mut std::io::BufReader::new(std::fs::File::open(ovr)?), &ovr.to_string_lossy(), false)
                         .ok()
                         .flatten()
-                        .unwrap_or(Tiff { ifds: Vec::new(), ghost: None }),
+                        .unwrap_or(Tiff { ifds: Vec::new(), ghost: None, expected_ifd_offset: 8 }),
                 )
             } else {
                 None
             };
-            (read_tiff(&mut f, path)?, sidecar)
+            // Full checks make tiny reads at distant compressed-block boundaries.
+            // A BufReader refills after each absolute seek and reads payload bytes
+            // that validation does not need. Read the local file directly here.
+            if options.profile == CogValidationProfile::Gdal && options.full_check.unwrap_or(true) {
+                validate_reader(&mut file, path, sidecar, options, true)
+            } else {
+                validate_reader(&mut std::io::BufReader::new(file), path, sidecar, options, true)
+            }
         }
         _ => {
             let local = crate::vfs::resolve(path)?;
-            (read_tiff(&mut std::io::BufReader::new(std::fs::File::open(local.path())?), path)?, None)
+            validate_reader(&mut std::io::BufReader::new(std::fs::File::open(local.path())?), path, None, options, false)
         }
+    }
+}
+
+/// Validates an uploaded TIFF without decoding pixels or creating a temporary file.
+/// External `.ovr` sidecars are unavailable for a standalone byte buffer.
+pub fn validate_cog_bytes(bytes: &[u8], options: &CogValidationOptions) -> Result<CogValidation> {
+    validate_reader(&mut std::io::Cursor::new(bytes), "a GeoTIFF in memory", None, options, true)
+}
+
+/// Remote full checks are opt-in, but still bound their boundary-read workload.
+/// This limits client read calls (and therefore range fetches, excluding configured
+/// transport retries); header/offset-table requests occur before this budget.
+struct BoundaryReader<'a, R> {
+    inner: &'a mut R,
+    remaining: usize,
+}
+impl<R: Read> Read for BoundaryReader<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            return Err(std::io::Error::other(
+                "remote COG full check exceeds 10,000 boundary reads; download the TIFF and validate locally",
+            ));
+        }
+        self.remaining -= 1;
+        self.inner.read(bytes)
+    }
+}
+impl<R: Seek> Seek for BoundaryReader<'_, R> {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(position)
+    }
+}
+
+fn validate_reader<R: Read + Seek>(
+    reader: &mut R,
+    shown: &str,
+    sidecar: Option<Tiff>,
+    options: &CogValidationOptions,
+    local: bool,
+) -> Result<CogValidation> {
+    if options.full_check == Some(true) && options.profile != CogValidationProfile::Gdal {
+        return Err(Error::InvalidArgument("full_check requires the gdal validation profile".into()));
+    }
+    let full = options.profile == CogValidationProfile::Gdal && options.full_check.unwrap_or(local);
+    let tiff = read_tiff(reader, shown, full)?;
+    let mut full_errors = Vec::new();
+    if full && let Some(tiff) = &tiff {
+        if local {
+            full_check(reader, tiff, &mut full_errors)?;
+        } else {
+            full_check(&mut BoundaryReader { inner: reader, remaining: 10_000 }, tiff, &mut full_errors)?;
+        }
+    }
+    let mut result = validate(tiff, sidecar, options.strict, options.profile == CogValidationProfile::Gdal);
+    result.errors.extend(full_errors);
+    result.is_valid = result.errors.is_empty() && (!options.strict || result.warnings.is_empty());
+    Ok(result)
+}
+
+const MAX_BLOCK_FINDINGS: usize = 1000;
+const BLOCK_FINDING_LIMIT: &str = "Block validation stopped at 1000 findings; additional findings or blocks may be omitted";
+fn finding_limit(errors: &mut Vec<String>) -> bool {
+    if errors.len() < MAX_BLOCK_FINDINGS {
+        return false;
+    }
+    if errors.last().is_none_or(|error| error != BLOCK_FINDING_LIMIT) {
+        errors.truncate(MAX_BLOCK_FINDINGS);
+        errors.push(BLOCK_FINDING_LIMIT.into());
+    }
+    true
+}
+
+/// GDAL structural promises concern compressed block bytes, so these checks do
+/// not decode pixels. Offset arrays remain bounded by the parser's MAX_CHUNKS.
+fn full_check<R: Read + Seek>(reader: &mut R, tiff: &Tiff, errors: &mut Vec<String>) -> Result<()> {
+    let ghost = tiff.ghost.as_deref().unwrap_or("");
+    let order = ghost.contains("BLOCK_ORDER=ROW_MAJOR");
+    let leader = ghost.contains("BLOCK_LEADER=SIZE_AS_UINT4");
+    let trailer = ghost.contains("BLOCK_TRAILER=LAST_4_BYTES_REPEATED");
+    let interleaved_mask = ghost.contains("MASK_INTERLEAVED_WITH_IMAGERY=YES");
+    if !order && !leader && !trailer && !interleaved_mask {
+        return Ok(());
+    }
+    let length = reader.seek(SeekFrom::End(0))?;
+    let Some(main) = tiff.ifds.first() else {
+        return Ok(());
     };
-    Ok(validate(tiff, ovr, strict))
+    let tile_interleave = main.tile_interleave;
+    let images: Vec<_> = tiff
+        .ifds
+        .iter()
+        .enumerate()
+        .filter(|(index, image)| *index == 0 || image.is_reduced() && !image.is_mask() && image.samples == main.samples)
+        .collect();
+    // GDAL ScanDirectories assigns each mask to the first preceding, unmatched
+    // image with matching dimensions and band count. Positional mask indexing
+    // drifts when an unrelated reduced IFD was excluded from the overview list.
+    let mut masks = vec![None; images.len()];
+    for (mask_index, mask) in tiff.ifds.iter().enumerate().filter(|(_, i)| i.is_mask()) {
+        if mask.samples != 1 && mask.samples != main.samples {
+            continue;
+        }
+        if let Some((level, _)) = images.iter().enumerate().find(|(level, (image_index, image))| {
+            *image_index < mask_index
+                && masks[*level].is_none()
+                && mask.is_reduced() == image.is_reduced()
+                && mask.width == image.width
+                && mask.height == image.height
+        }) {
+            masks[level] = Some(mask);
+        }
+    }
+    for (level, (_, image)) in images.iter().enumerate() {
+        if finding_limit(errors) {
+            return Ok(());
+        }
+        let name = if level == 0 { "Main resolution image".to_string() } else { format!("Overview {}", level - 1) };
+        let mask = masks[level];
+        let blocks = image.grid().0.checked_mul(image.grid().1).ok_or_else(|| invalid("block grid overflows"))?;
+        let planes = if image.planar == 2 && blocks > 0 { image.samples } else { 1 };
+        let expected = blocks.checked_mul(planes).ok_or_else(|| invalid("block count overflows"))?;
+        if expected != image.offsets.len() as u64 || expected != image.byte_counts.len() as u64 {
+            errors.push(format!("{name}: block offset/count arrays do not match the image grid"));
+            continue;
+        }
+        // Metadata can declare an enormous grid, but we have just checked that
+        // it fits the bounded arrays before converting to usize or iterating.
+        let blocks = blocks as usize;
+        let mut last = 0;
+        for plane in 0..planes as usize {
+            if tile_interleave {
+                last = 0;
+            }
+            let band_name = if image.planar == 2 { format!("Band {} of {}", plane + 1, name.to_lowercase()) } else { name.clone() };
+            let mask = if interleaved_mask && (image.planar != 2 || tile_interleave && plane + 1 == planes as usize) { mask } else { None };
+            check_blocks(
+                reader,
+                length,
+                image,
+                plane * blocks..(plane + 1) * blocks,
+                &band_name,
+                mask,
+                (order, leader, trailer),
+                &mut last,
+                errors,
+            )?;
+            if finding_limit(errors) {
+                return Ok(());
+            }
+        }
+        if tile_interleave && order {
+            let mut last = 0;
+            for block in 0..blocks {
+                for plane in 0..planes as usize {
+                    if finding_limit(errors) {
+                        return Ok(());
+                    }
+                    let offset = image.offsets[plane * blocks + block];
+                    if offset != 0 {
+                        if offset < last {
+                            errors.push(format!("{name}: interleaved block offsets are not in row-major order"));
+                        }
+                        last = offset;
+                    }
+                }
+            }
+        }
+        // GDAL full_check_band checks internal masks separately with the same
+        // block promises, even without MASK_INTERLEAVED_WITH_IMAGERY.
+        if let Some(mask) = mask {
+            let expected = mask.grid().0.checked_mul(mask.grid().1).ok_or_else(|| invalid("mask block grid overflows"))?;
+            if expected != mask.offsets.len() as u64 || expected != mask.byte_counts.len() as u64 {
+                errors.push(format!("Mask band of {}: block offset/count arrays do not match the image grid", name.to_lowercase()));
+                continue;
+            }
+            let mut last = 0;
+            check_blocks(
+                reader,
+                length,
+                mask,
+                0..mask.offsets.len(),
+                &format!("Mask band of {}", name.to_lowercase()),
+                None,
+                (order, leader, trailer),
+                &mut last,
+                errors,
+            )?;
+        }
+    }
+    finding_limit(errors);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_blocks<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    image: &Ifd,
+    indices: std::ops::Range<usize>,
+    name: &str,
+    mask: Option<&Ifd>,
+    flags: (bool, bool, bool),
+    last: &mut u64,
+    errors: &mut Vec<String>,
+) -> Result<()> {
+    let (order, leader, trailer) = flags;
+    let across = image.grid().0.max(1);
+    let blocks = across.checked_mul(image.grid().1).ok_or_else(|| invalid("block grid overflows"))?.max(1);
+    if mask.is_some_and(|mask| mask.block() != image.block()) {
+        errors.push(format!("{name}: mask block size is different from its imagery band"));
+    }
+    let mask = mask.filter(|mask| mask.block() == image.block());
+    for index in indices {
+        if finding_limit(errors) {
+            return Ok(());
+        }
+        let mut offset = image.offsets[index];
+        let count = image.byte_counts.get(index).copied().unwrap_or(0);
+        let block = index as u64 % blocks;
+        let (x, y) = (block % across, block / across);
+        if offset != 0 {
+            if order && offset < *last {
+                errors.push(format!("{name}: offset of block ({x}, {y}) is smaller than previous block"));
+            }
+            if leader {
+                if offset < 4 || offset > length {
+                    errors.push(format!("{name}: block ({x}, {y}) leader lies outside the file"));
+                } else {
+                    let mut bytes = [0; 4];
+                    reader.seek(SeekFrom::Start(offset - 4))?;
+                    reader.read_exact(&mut bytes)?;
+                    let stored = u32::from_le_bytes(bytes) as u64;
+                    if stored != count {
+                        errors.push(format!("{name}: for block ({x}, {y}), size in leader bytes is {stored} instead of {count}"));
+                    }
+                }
+            }
+            if trailer && count >= 4 {
+                if offset.checked_add(count).and_then(|end| end.checked_add(4)).is_none_or(|end| end > length) {
+                    errors.push(format!("{name}: block ({x}, {y}) trailer lies outside the file"));
+                } else {
+                    let mut bytes = [0; 8];
+                    reader.seek(SeekFrom::Start(offset + count - 4))?;
+                    reader.read_exact(&mut bytes)?;
+                    if bytes[..4] != bytes[4..] {
+                        errors.push(format!("{name}: for block ({x}, {y}), trailer bytes are invalid"));
+                    }
+                }
+            }
+        }
+        if let Some(mask) = mask {
+            let mask_offset = mask.offsets.get(block as usize).copied().unwrap_or(0);
+            if offset > 0 && mask_offset > 0 {
+                let expected = offset.checked_add(count).and_then(|end| end.checked_add(4 * (u64::from(leader) + u64::from(trailer))));
+                if expected != Some(mask_offset) {
+                    errors.push(format!("Mask of {name}: for block ({x}, {y}), unexpected interleaved offset {mask_offset}"));
+                }
+            } else if offset == 0 && mask_offset > 0 {
+                if order && mask_offset < *last {
+                    errors.push(format!("Mask of {name}: offset of block ({x}, {y}) is smaller than previous block"));
+                }
+                offset = mask_offset;
+            }
+        }
+        // GDAL 3.13.3 resets ordering after an empty block too. Keep this
+        // observable policy rather than silently tightening the GDAL profile.
+        *last = offset;
+    }
+    Ok(())
 }
 
 /// Validates parsed TIFF structure, with the structure of its `.ovr` sidecar when it has one.
-fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool) -> CogValidation {
+fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool, gdal: bool) -> CogValidation {
     let mut v = CogValidation::default();
-    let Some(Tiff { ifds, ghost }) = tiff.filter(|t| !t.ifds.is_empty()) else {
+    let Some(Tiff { ifds, ghost, expected_ifd_offset }) = tiff.filter(|t| !t.ifds.is_empty()) else {
         v.errors.push("The file is not a GeoTIFF".into());
         return v;
     };
@@ -389,14 +832,16 @@ fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool) -> CogValid
     v.overview_factors = factors.clone();
     let (block_w, block_h) = main.block();
     if main.width > 512 || main.height > 512 {
-        if block_w == main.width {
+        if block_w == main.width && (!gdal || block_w > 1024) {
             v.errors.push("The file is greater than 512xH or 512xW, but is not tiled".into());
         }
         if overviews.is_empty() {
             v.warnings.push("The file is greater than 512xH or 512xW, it is recommended to include internal overviews".into());
         }
     }
-    if main.offset > 300 {
+    if gdal && main.offset != expected_ifd_offset {
+        v.errors.push(format!("The offset of the main IFD should be {expected_ifd_offset}. It is {} instead", main.offset));
+    } else if !gdal && main.offset > 300 {
         v.errors.push(format!("The offset of the main IFD should be < 300. It is {} instead", main.offset));
     }
     v.ifd_offsets.push(main.offset);
@@ -407,12 +852,22 @@ fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool) -> CogValid
     }
     let mut sorted = factors.clone();
     sorted.sort_unstable();
-    if !factors.is_empty() && factors != sorted {
+    if !gdal && !factors.is_empty() && factors != sorted {
         v.errors.push("Overviews should be sorted".into());
     }
     for (ix, (o, dec)) in overviews.iter().zip(&factors).enumerate() {
-        if *dec <= 1 {
+        if !gdal && *dec <= 1 {
             v.errors.push(format!("Invalid Decimation {dec} for overview level {ix}"));
+        }
+        if gdal {
+            let previous = if ix == 0 { main } else { overviews[ix - 1] };
+            if o.width > previous.width || o.height > previous.height {
+                v.errors.push(if ix == 0 {
+                    "First overview has larger dimension than main band".into()
+                } else {
+                    format!("Overview of index {ix} has larger dimension than overview of index {}", ix - 1)
+                });
+            }
         }
         let previous = *v.ifd_offsets.last().unwrap_or(&0);
         v.ifd_offsets.push(o.offset);
@@ -436,22 +891,26 @@ fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool) -> CogValid
     // block height and columns of its block width swapped (rasterio's block shapes are (rows,
     // cols)), overviews by the main image's block size over `size / factor` pixels.
     let scan = |ifd: &Ifd, width: u64, height: u64| -> Option<u64> {
+        if gdal {
+            return ifd.first_block_offset();
+        }
         let yblocks = height.div_ceil(block_w.max(1));
         let xblocks = width.div_ceil(block_h.max(1));
         ifd.first_stored_block(Some(xblocks), Some(yblocks))
     };
-    if let Some(off) = scan(main, main.width, main.height) {
+    if let Some(off) = scan(main, main.width, main.height).or(gdal.then_some(0)) {
         v.data_offsets.push(off);
     }
     for (o, dec) in overviews.iter().zip(&factors) {
         let d = (*dec as u64).max(1);
-        if let Some(off) = scan(o, main.width / d, main.height / d) {
+        if let Some(off) = scan(o, main.width / d, main.height / d).or(gdal.then_some(0)) {
             v.data_offsets.push(off);
         }
     }
     let data = &v.data_offsets;
     let mut errors = Vec::new();
     if let (Some(last_data), Some(last_ifd)) = (data.last(), v.ifd_offsets.last())
+        && *last_data != 0
         && last_data < last_ifd
     {
         errors.push(if overviews.is_empty() {
@@ -461,14 +920,14 @@ fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool) -> CogValid
         });
     }
     for i in (1..data.len().saturating_sub(1)).rev() {
-        if data[i] < data[i + 1] {
+        if data[i] != 0 && data[i] < data[i + 1] {
             errors.push(format!(
                 "The offset of the first block of overview of index {} should be after the one of the overview of index {i}",
                 i - 1
             ));
         }
     }
-    if data.len() >= 2 && data[0] < data[1] {
+    if data.len() >= 2 && data[0] != 0 && data[0] < data[1] {
         errors.push(format!(
             "The offset of the first block of the main resolution image should be after the one of the overview of index {}",
             overviews.len() as i64 - 1
@@ -476,7 +935,7 @@ fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool) -> CogValid
     }
     v.errors.extend(errors);
     for (ix, o) in overviews.iter().enumerate() {
-        if (o.width > 512 || o.height > 512) && o.block().0 == o.width {
+        if (o.width > 512 || o.height > 512) && o.block().0 == o.width && (!gdal || o.block().0 > 1024) {
             v.errors.push(format!("Overview of index {ix} is not tiled"));
         }
     }
@@ -612,7 +1071,7 @@ mod tests {
     /// A little-endian classic TIFF with one IFD at byte 8 of `(tag, type, count, value)`
     /// entries, followed by `data`, which starts at byte `10 + 12 * entries + 4`.
     fn crafted(entries: &[(u16, u16, u32, u32)], data: &[u8]) -> Vec<u8> {
-        let mut b = b"II* ".to_vec();
+        let mut b = b"II*\0".to_vec();
         b.extend(8u32.to_le_bytes());
         b.extend((entries.len() as u16).to_le_bytes());
         for (tag, typ, count, value) in entries {
@@ -709,6 +1168,18 @@ mod tests {
     }
 
     #[test]
+    fn metadata_is_streamed_bounded_and_ignored_by_legacy_profile() {
+        let large = crafted(&[(256, 4, 1, 1), (257, 4, 1, 1), (42112, 2, (1 << 22) + 1, 100)], &[]);
+        assert!(validate_cog_bytes(&large, &Default::default()).is_ok());
+        let options = CogValidationOptions { profile: CogValidationProfile::Gdal, full_check: Some(false), ..Default::default() };
+        assert!(validate_cog_bytes(&large, &options).is_ok());
+        let full = CogValidationOptions { full_check: Some(true), ..options };
+        assert!(validate_cog_bytes(&large, &full).unwrap_err().to_string().contains("4 MiB"));
+        assert!(tile_interleave(br#"<GDALMetadata><Item name="INTERLEAVE" domain="IMAGE_STRUCTURE">TILE</Item></GDALMetadata>"#).unwrap());
+        assert!(tile_interleave("<a>".repeat(100_000).as_bytes()).unwrap_err().to_string().contains("128 nesting"));
+    }
+
+    #[test]
     fn mask_notes_name_the_image_they_mask() {
         let image = |offset, width, subfile_type, data| Ifd {
             offset,
@@ -720,11 +1191,12 @@ mod tests {
             rows_per_strip: u64::MAX,
             offsets: vec![data; (width as usize).div_ceil(256).pow(2)],
             byte_counts: vec![1; (width as usize).div_ceil(256).pow(2)],
+            ..Default::default()
         };
         // IFDs of the main image and its overview, then image data, then the masks' IFDs: the
         // main image's mask first, as GDAL orders them.
         let ifds = vec![image(16, 1024, 0, 9000), image(200, 512, 1, 8000), image(10_000, 1024, 4, 7500), image(10_200, 512, 5, 7000)];
-        let v = validate(Some(Tiff { ifds, ghost: None }), None, false);
+        let v = validate(Some(Tiff { ifds, ghost: None, expected_ifd_offset: 8 }), None, false, false);
         assert_eq!(
             v.layout_notes,
             vec![
@@ -734,6 +1206,255 @@ mod tests {
         );
     }
 
+    #[test]
+    fn gdal_full_checks_detect_corrupted_leaders_trailers_and_row_order() {
+        let (_dir, path) = write(&raster(600, 600), &driver(crate::formats::RasterDriver::Cog, &[("COMPRESS", "DEFLATE")]));
+        let bytes = std::fs::read(path).unwrap();
+        let options = CogValidationOptions { profile: CogValidationProfile::Gdal, ..Default::default() };
+        assert!(validate_cog_bytes(&bytes, &options).unwrap().is_valid);
+        let tiff = read_tiff(&mut std::io::Cursor::new(&bytes), "t.tif", true).unwrap().unwrap();
+        let mut cursor = std::io::Cursor::new(&bytes);
+        let error = full_check(&mut BoundaryReader { inner: &mut cursor, remaining: 1 }, &tiff, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("boundary reads"));
+        let image = &tiff.ifds[0];
+        let offset = image.offsets[0] as usize;
+        let count = image.byte_counts[0] as usize;
+        for (position, message) in [(offset - 4, "size in leader"), (offset + count, "trailer bytes")] {
+            let mut damaged = bytes.clone();
+            damaged[position] ^= 1;
+            let result = validate_cog_bytes(&damaged, &options).unwrap();
+            assert!(!result.is_valid, "{result:?}");
+            assert!(result.errors.iter().any(|error| error.contains(message)), "{result:?}");
+            assert!(validate_cog_bytes(&damaged, &CogValidationOptions { full_check: Some(false), ..options.clone() }).unwrap().is_valid);
+            assert!(validate_cog_bytes(&damaged, &Default::default()).unwrap().is_valid);
+        }
+        let mut tiff = tiff;
+        tiff.ifds[0].offsets.swap(0, 1);
+        let mut errors = Vec::new();
+        full_check(&mut std::io::Cursor::new(&bytes), &tiff, &mut errors).unwrap();
+        assert!(errors.iter().any(|error| error.contains("smaller than previous")), "{errors:?}");
+    }
+    #[test]
+    fn gdal_profile_retains_its_distinct_small_strip_threshold_and_exact_ifd_rule() {
+        let (_dir, path) = write(&raster(800, 600), &Default::default());
+        let bytes = std::fs::read(path).unwrap();
+        let options = CogValidationOptions { profile: CogValidationProfile::Gdal, ..Default::default() };
+        let result = validate_cog_bytes(&bytes, &options).unwrap();
+        assert!(!result.errors.iter().any(|error| error.contains("not tiled")), "{result:?}");
+        assert!(validate_cog_bytes(&bytes, &Default::default()).unwrap().errors.iter().any(|error| error.contains("not tiled")));
+        let mut tiff = read_tiff(&mut std::io::Cursor::new(&bytes), "t.tif", true).unwrap().unwrap();
+        tiff.ifds[0].offset = 10;
+        assert!(validate(Some(tiff), None, false, true).errors.iter().any(|error| error.contains("should be 8")));
+        assert!(validate_cog_bytes(&bytes, &CogValidationOptions { full_check: Some(true), ..Default::default() }).is_err());
+    }
+    #[test]
+    fn full_check_with_structural_metadata_but_no_ifd_is_invalid() {
+        let ghost = "BLOCK_ORDER=ROW_MAJOR\n";
+        let header = format!("GDAL_STRUCTURAL_METADATA_SIZE={:06} bytes\n", ghost.len());
+        let bytes = [b"II*\0\0\0\0\0".as_slice(), header.as_bytes(), ghost.as_bytes()].concat();
+        let options = CogValidationOptions { profile: CogValidationProfile::Gdal, ..Default::default() };
+        assert!(!validate_cog_bytes(&bytes, &options).unwrap().is_valid);
+    }
+    #[test]
+    fn full_block_findings_are_bounded_for_uploaded_and_local_inputs() {
+        let image = Ifd {
+            width: 5000,
+            height: 1,
+            samples: 1,
+            planar: 1,
+            tile: Some((1, 1)),
+            offsets: vec![16; 5000],
+            byte_counts: vec![8; 5000],
+            ..Default::default()
+        };
+        let tiff = Tiff { ifds: vec![image], ghost: Some("BLOCK_LEADER=SIZE_AS_UINT4".into()), expected_ifd_offset: 8 };
+        let mut errors = Vec::new();
+        full_check(&mut std::io::Cursor::new(vec![0; 32]), &tiff, &mut errors).unwrap();
+        assert_eq!(errors.len(), MAX_BLOCK_FINDINGS + 1);
+        assert_eq!(errors.last().unwrap(), BLOCK_FINDING_LIMIT);
+    }
+    #[test]
+    fn ascii_numeric_tags_are_ignored_and_ghost_offsets_use_raw_bytes() {
+        let ascii = crafted(&[(256, 4, 1, 20), (257, 4, 1, 20), (322, 2, 1, 65), (323, 3, 1, 16)], &[]);
+        assert!(read_tiff(&mut std::io::Cursor::new(ascii), "t.tif", false).unwrap().unwrap().ifds[0].tile.is_none());
+        let original = crafted(&[(256, 4, 1, 1), (257, 4, 1, 1)], &[]);
+        let ghost = b"GDAL_STRUCTURAL_METADATA_SIZE=000001 bytes\n\xff";
+        let offset = (8 + ghost.len()).next_multiple_of(2);
+        let mut bytes = original[..8].to_vec();
+        bytes[4..8].copy_from_slice(&(offset as u32).to_le_bytes());
+        bytes.extend_from_slice(ghost);
+        bytes.resize(offset, 0);
+        bytes.extend_from_slice(&original[8..]);
+        let tiff = read_tiff(&mut std::io::Cursor::new(bytes), "t.tif", true).unwrap().unwrap();
+        assert_eq!(tiff.expected_ifd_offset, offset as u64);
+    }
+    #[test]
+    fn gdal_sparse_blocks_reset_row_order_state() {
+        let image =
+            Ifd { width: 3, height: 1, tile: Some((1, 1)), offsets: vec![16, 0, 8], byte_counts: vec![1, 0, 1], ..Default::default() };
+        let mut errors = Vec::new();
+        let mut last = 0;
+        check_blocks(
+            &mut std::io::Cursor::new(vec![0; 32]),
+            32,
+            &image,
+            0..3,
+            "Main resolution image",
+            None,
+            (true, false, false),
+            &mut last,
+            &mut errors,
+        )
+        .unwrap();
+        assert!(errors.is_empty(), "GDAL resets on the empty middle block: {errors:?}");
+    }
+    #[test]
+    fn repeated_overview_sizes_pair_masks_by_sequence() {
+        let main = Ifd {
+            width: 4,
+            height: 1,
+            tile: Some((1, 1)),
+            samples: 1,
+            planar: 1,
+            offsets: vec![16, 20, 24, 28],
+            byte_counts: vec![1; 4],
+            ..Default::default()
+        };
+        let overview = Ifd { width: 1, height: 1, subfile_type: 1, offsets: vec![40], byte_counts: vec![1], ..main.clone() };
+        let second = Ifd { offsets: vec![80], ..overview.clone() };
+        let mask = Ifd { subfile_type: 4, offsets: vec![17, 21, 25, 29], ..main.clone() };
+        let first_mask = Ifd { subfile_type: 5, offsets: vec![41], ..overview.clone() };
+        let second_mask = Ifd { offsets: vec![81], ..first_mask.clone() };
+        let tiff = Tiff {
+            ifds: vec![main, overview, second, mask, first_mask, second_mask],
+            ghost: Some("MASK_INTERLEAVED_WITH_IMAGERY=YES".into()),
+            expected_ifd_offset: 8,
+        };
+        let mut errors = Vec::new();
+        full_check(&mut std::io::Cursor::new(vec![0; 100]), &tiff, &mut errors).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn unrelated_reduced_image_does_not_shift_overview_mask_assignment() {
+        let main = Ifd {
+            width: 4,
+            height: 1,
+            tile: Some((1, 1)),
+            samples: 1,
+            planar: 1,
+            offsets: vec![16, 20, 24, 28],
+            byte_counts: vec![1; 4],
+            ..Default::default()
+        };
+        let unrelated = Ifd { width: 2, samples: 2, subfile_type: 1, offsets: vec![32; 2], byte_counts: vec![1; 2], ..main.clone() };
+        let overview = Ifd { width: 1, subfile_type: 1, offsets: vec![40], byte_counts: vec![1], ..main.clone() };
+        let unrelated_mask = Ifd { width: 2, subfile_type: 5, offsets: vec![33, 34], byte_counts: vec![1; 2], ..main.clone() };
+        let mask = Ifd { subfile_type: 5, offsets: vec![45], ..overview.clone() };
+        let tiff = Tiff {
+            ifds: vec![main, unrelated, overview, unrelated_mask, mask],
+            ghost: Some("MASK_INTERLEAVED_WITH_IMAGERY=YES".into()),
+            expected_ifd_offset: 8,
+        };
+        let mut errors = Vec::new();
+        full_check(&mut std::io::Cursor::new(vec![0; 100]), &tiff, &mut errors).unwrap();
+        assert!(errors.iter().any(|e| e.contains("Mask of Overview 0") && e.contains("unexpected interleaved offset 45")), "{errors:?}");
+    }
+
+    #[test]
+    fn full_check_rejects_truncated_mask_block_arrays() {
+        let main = Ifd {
+            width: 1,
+            height: 1,
+            tile: Some((1, 1)),
+            samples: 1,
+            planar: 1,
+            offsets: vec![16],
+            byte_counts: vec![1],
+            ..Default::default()
+        };
+        let mask = Ifd { subfile_type: 4, offsets: vec![], byte_counts: vec![], ..main.clone() };
+        let tiff = Tiff { ifds: vec![main, mask], ghost: Some("MASK_INTERLEAVED_WITH_IMAGERY=YES".into()), expected_ifd_offset: 8 };
+        let mut errors = Vec::new();
+        full_check(&mut std::io::Cursor::new(vec![0; 32]), &tiff, &mut errors).unwrap();
+        assert!(errors.iter().any(|e| e.to_ascii_lowercase().contains("mask") && e.contains("arrays")), "{errors:?}");
+    }
+
+    #[test]
+    fn zero_block_grid_does_not_iterate_unbounded_sample_planes() {
+        let tiff = Tiff {
+            ifds: vec![Ifd { width: 0, height: 1, tile: Some((1, 1)), planar: 2, samples: u64::MAX, ..Default::default() }],
+            ghost: Some("BLOCK_ORDER=ROW_MAJOR".into()),
+            expected_ifd_offset: 8,
+        };
+        let mut errors = Vec::new();
+        full_check(&mut std::io::Cursor::new(Vec::<u8>::new()), &tiff, &mut errors).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn invalid_full_check_options_are_rejected_before_opening_inputs() {
+        let options = CogValidationOptions { profile: CogValidationProfile::RioCogeo, full_check: Some(true), ..Default::default() };
+        for path in ["http://127.0.0.1:1/missing.tif", "/nonexistent/terrio-cog-option-test.tif"] {
+            assert!(matches!(validate_cog_with_options(path, &options), Err(Error::InvalidArgument(_))));
+        }
+    }
+
+    #[test]
+    fn full_metadata_rejects_malformed_xml_after_a_valid_item() {
+        let xml = br#"<GDALMetadata><Item name="INTERLEAVE" domain="IMAGE_STRUCTURE">TILE</Item></GDALMetadata><broken"#;
+        assert!(tile_interleave(xml).is_err());
+        for invalid in [
+            br#"<GDALMetadata><Item name="OTHER">&undefined;</Item></GDALMetadata>"#.as_slice(),
+            b"",
+            b"plain text",
+            b"<!-- no root -->",
+            b"<a/><b/>",
+            b"<a/>tail",
+            b"<![CDATA[text]]>",
+        ] {
+            assert!(tile_interleave(invalid).is_err(), "{invalid:?}");
+        }
+        assert!(!tile_interleave(b"<!-- comment --><GDALMetadata/> ").unwrap());
+        assert!(!tile_interleave(b"<GDALMetadata><Item name='OTHER'>&amp;&#65;</Item></GDALMetadata>").unwrap());
+        assert!(tile_interleave(br#"<GDALMetadata><Item bad></Item></GDALMetadata>"#).is_err());
+        assert!(
+            tile_interleave(br#"<GDALMetadata><Item name="INTERLEAVE" domain="IMAGE_STRUCTURE">TI&#76;E</Item></GDALMetadata>"#).unwrap()
+        );
+    }
+
+    #[test]
+    fn local_full_checks_read_only_boundary_bytes_without_buffer_refills() {
+        struct Measured {
+            file: std::fs::File,
+            bytes: usize,
+        }
+        impl Read for Measured {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.file.read(buffer)?;
+                self.bytes += n;
+                Ok(n)
+            }
+        }
+        impl Seek for Measured {
+            fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                self.file.seek(position)
+            }
+        }
+        let (_dir, path) =
+            write(&raster(2048, 2048), &driver(crate::formats::RasterDriver::Cog, &[("COMPRESS", "DEFLATE"), ("BLOCKSIZE", "128")]));
+        let options = CogValidationOptions { profile: CogValidationProfile::Gdal, ..Default::default() };
+        let mut buffered = std::io::BufReader::new(Measured { file: std::fs::File::open(&path).unwrap(), bytes: 0 });
+        let reference = validate_reader(&mut buffered, "t.tif", None, &options, true).unwrap();
+        let buffered_bytes = buffered.get_ref().bytes;
+        let mut direct = Measured { file: std::fs::File::open(&path).unwrap(), bytes: 0 };
+        let actual = validate_reader(&mut direct, "t.tif", None, &options, true).unwrap();
+        assert!(actual.is_valid, "{actual:?}");
+        assert_eq!(actual, reference);
+        assert!(direct.bytes < buffered_bytes);
+        assert_eq!(validate_cog_with_options(&path, &options).unwrap(), actual);
+        println!("local COG full validation: one source open per call, buffered={buffered_bytes} bytes, direct={} bytes", direct.bytes);
+    }
     #[test]
     fn not_a_tiff() {
         let dir = tempfile::tempdir().unwrap();

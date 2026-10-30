@@ -1,22 +1,63 @@
 //! Native multidimensional scientific datasets and lazy typed array views.
 use crate::{js_err, parse_options, to_js, typed_array};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    rc::{Rc, Weak},
+};
 use terrio::multidim::{self, ArrayInfo, View};
 use wasm_bindgen::prelude::*;
+thread_local! {
+    static NEXT_MD: Cell<u32> = const { Cell::new(1) };
+    static MD_HANDLES: RefCell<HashMap<u32, Weak<multidim::Dataset>>> = RefCell::new(HashMap::new());
+}
 
 /// A native scientific dataset containing groups, dimensions and lazy numeric arrays.
 #[wasm_bindgen(js_name=MultidimDataset)]
 pub struct MdDataset {
-    inner: multidim::Dataset,
+    inner: Rc<multidim::Dataset>,
+    id: u32,
+}
+impl MdDataset {
+    fn from_inner(inner: multidim::Dataset) -> Self {
+        let inner = Rc::new(inner);
+        let id = NEXT_MD.with(|next| {
+            let id = next.get();
+            next.set(id.checked_add(1).expect("multidim handle IDs exhausted"));
+            id
+        });
+        MD_HANDLES.with(|handles| handles.borrow_mut().insert(id, Rc::downgrade(&inner)));
+        Self { inner, id }
+    }
+    fn lookup(value: &JsValue) -> Option<Rc<multidim::Dataset>> {
+        let id = js_sys::Reflect::get(value, &JsValue::from_str("__terrioMultidimId")).ok()?.as_f64()?;
+        if id.fract() != 0. || id <= 0. || id > u32::MAX as f64 {
+            return None;
+        }
+        MD_HANDLES.with(|handles| handles.borrow().get(&(id as u32))?.upgrade())
+    }
+}
+impl Drop for MdDataset {
+    fn drop(&mut self) {
+        MD_HANDLES.with(|handles| handles.borrow_mut().remove(&self.id));
+    }
 }
 #[wasm_bindgen(js_class=MultidimDataset)]
 impl MdDataset {
+    // Binding-internal bridge, mirroring Dataset.__handle. Weak lookup allows
+    // arrays of existing exported handles without consuming their ownership;
+    // it is excluded from generated public TypeScript declarations.
+    #[wasm_bindgen(getter,js_name=__terrioMultidimId,skip_typescript)]
+    pub fn handle_id(&self) -> u32 {
+        self.id
+    }
     /// Reads every numeric array and coordinate, including in-memory Zarr stores.
     pub fn check(&self) -> Result<JsValue, JsError> {
         to_js(&terrio::check::check_multidim(&self.inner).map_err(js_err)?)
     }
     /// Complete group/array metadata without reading numeric array payloads.
     pub fn info(&self) -> Result<JsValue, JsError> {
-        to_js(&self.inner)
+        to_js(&*self.inner)
     }
     /// Numeric array paths, in group order.
     #[wasm_bindgen(getter,js_name=arrayPaths)]
@@ -143,5 +184,30 @@ pub fn open_multidim(input: JsValue) -> Result<MdDataset, JsError> {
             multidim::open_zarr_store(files).map_err(js_err)?
         }
     };
-    Ok(MdDataset { inner })
+    Ok(MdDataset::from_inner(inner))
+}
+
+/// Coordinate-aligned lazy mosaic of MultidimDataset objects or uploaded scientific inputs.
+/// Options: arrays (names/full paths); absent selects arrays with at least two axes.
+/// Last input wins overlaps. Views fetch only intersecting source hyperslabs.
+#[wasm_bindgen(js_name=mosaicMultidim)]
+pub fn mosaic_multidim(sources: JsValue, options: JsValue) -> Result<MdDataset, JsError> {
+    #[derive(Default, serde::Deserialize)]
+    #[serde(default, deny_unknown_fields)]
+    struct Options {
+        arrays: Vec<String>,
+    }
+    if !js_sys::Array::is_array(&sources) {
+        return Err(JsError::new("mosaic sources must be an array"));
+    }
+    let args: Options = parse_options(&options)?;
+    let mut datasets = Vec::new();
+    for source in js_sys::Array::from(&sources).iter() {
+        if let Some(dataset) = MdDataset::lookup(&source) {
+            datasets.push((*dataset).clone());
+        } else {
+            datasets.push((*open_multidim(source)?.inner).clone());
+        }
+    }
+    Ok(MdDataset::from_inner(multidim::mosaic(&datasets, &multidim::MosaicOptions { arrays: args.arrays }).map_err(js_err)?))
 }

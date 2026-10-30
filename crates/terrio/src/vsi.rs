@@ -26,6 +26,7 @@
 //! archive and ordinary sources. Same-device directory renames do not walk the tree and
 //! report zero copied files/bytes, since no file payloads were copied.
 
+pub(crate) mod dataset;
 pub(crate) mod listing;
 pub(crate) mod md5;
 pub(crate) mod zipdir;
@@ -184,7 +185,7 @@ pub struct Report {
 }
 
 /// The kind of an archive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ArchiveKind {
     Zip,
     Tar,
@@ -192,7 +193,7 @@ enum ArchiveKind {
 }
 
 /// A location, parsed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Node {
     Local(PathBuf),
     /// A `/vsimem/` path, without a trailing slash.
@@ -243,9 +244,8 @@ fn archive_end(s: &str, extensions: &[&str]) -> Option<(usize, usize)> {
 impl Node {
     fn parse(input: &str) -> Result<Node> {
         let original = input;
-        let input = input.trim();
         let shown = listing::redact_url(input);
-        if input.is_empty() {
+        if input.trim().is_empty() {
             return Err(Error::InvalidArgument("empty path".into()));
         }
         for (prefix, exts) in [("/vsizip/", ZIP_EXTENSIONS), ("/vsitar/", TAR_EXTENSIONS)] {
@@ -531,7 +531,7 @@ fn stat_node(node: &Node) -> Result<Option<Stat>> {
 fn stat_input(input: &str, node: &Node, listing: bool) -> Result<Option<Stat>> {
     #[cfg(remote)]
     if let Node::Url { .. } = node
-        && (listing || input.trim().split('?').next().is_some_and(|path| path.ends_with('/')))
+        && (listing || input.split('?').next().is_some_and(|path| path.ends_with('/')))
     {
         return remote_stat(node, true);
     }
@@ -1225,6 +1225,49 @@ pub fn read(path: &str) -> Result<Vec<u8>> {
     Ok(out.0)
 }
 
+/// Reads a file with a hard limit on retained bytes, stopping a streamed source
+/// as soon as the next write would exceed the limit. Archive members are bounded
+/// after decompression. Transport errors are preserved unless the limit fired.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn read_limited(path: &str, limit: usize) -> Result<Vec<u8>> {
+    struct Bounded {
+        bytes: Vec<u8>,
+        limit: usize,
+        exceeded: bool,
+    }
+    impl Write for Bounded {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+                self.exceeded = true;
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "VSI read limit exceeded"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Sink for Bounded {}
+    let _cache = OperationScope::new();
+    let node = Node::parse(path)?;
+    let mut out = Bounded { bytes: Vec::new(), limit, exceeded: false };
+    let result = match &node {
+        #[cfg(remote)]
+        Node::S3 { .. } | Node::Url { .. } => {
+            crate::http::with_reader(&node.remote().ok_or_else(|| Error::InvalidArgument("not remote".into()))?, |reader| {
+                Ok(std::io::copy(reader, &mut out)?)
+            })
+        }
+        _ => read_into(&node, &mut out),
+    };
+    if out.exceeded {
+        return Err(Error::DecodedLimitExceeded { resource: "VSI file", limit });
+    }
+    result?;
+    Ok(out.bytes)
+}
+
 /// Writes bytes to a file (local, in memory, or an object), replacing it.
 pub fn write(path: &str, bytes: &[u8]) -> Result<()> {
     let _cache = OperationScope::new();
@@ -1250,9 +1293,22 @@ pub fn write(path: &str, bytes: &[u8]) -> Result<()> {
     }
 }
 
+/// Compute outside the memory-store lock, then conditionally install the same image version.
+#[cfg(feature = "sqlite")]
+pub(crate) fn transform_memory<T>(path: &str, operation: impl FnOnce(&[u8]) -> Result<(Vec<u8>, T)>) -> Result<T> {
+    let Node::Mem(key) = Node::parse(path)? else {
+        return Err(Error::InvalidArgument("expected a /vsimem/ file".into()));
+    };
+    let path = Path::new(&key);
+    let snapshot = crate::memfs::read_shared(path)?;
+    let (bytes, value) = operation(snapshot.as_ref())?;
+    crate::memfs::replace_if_unchanged(path, &snapshot, bytes)?;
+    Ok(value)
+}
+
 /// Writes a local file through a temporary file in the same directory, renamed into place once
 /// complete: a failure leaves any existing file as it was.
-fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Result<()>) -> Result<()> {
+pub(crate) fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Result<()>) -> Result<()> {
     if cfg!(target_family = "wasm") {
         return Err(Error::Unsupported(format!("'{}': WebAssembly builds have no local files (use /vsimem/)", path.display())));
     }
@@ -1496,7 +1552,7 @@ fn list_inner(path: &str, options: &ListOptions) -> Result<(bool, Vec<Entry>)> {
     let node = Node::parse(path)?;
     let stat = stat_input(path, &node, true)?.ok_or_else(|| not_found(path))?;
     if !stat.dir {
-        let name = if options.absolute { absolute_name(path, &node, "") } else { listing::redact_url(path.trim()).into_owned() };
+        let name = if options.absolute { absolute_name(path, &node, "") } else { listing::redact_url(path).into_owned() };
         return Ok((true, vec![stat.entry(name)]));
     }
     let mut entries = read_dir(&node, options.recursive, options.depth)?;
@@ -1630,7 +1686,7 @@ fn absolute_name(path: &str, node: &Node, name: &str) -> String {
     {
         return abs.display().to_string();
     }
-    let base = listing::redact_url(path.trim()).into_owned();
+    let base = listing::redact_url(path).into_owned();
     let base = base.trim_end_matches('/');
     if name.is_empty() { base.to_string() } else { format!("{base}/{name}") }
 }
@@ -1639,14 +1695,14 @@ fn absolute_name(path: &str, node: &Node, name: &str) -> String {
 pub fn stat(path: &str) -> Result<Option<Entry>> {
     let _cache = OperationScope::new();
     let node = Node::parse(path)?;
-    Ok(stat_input(path, &node, false)?.map(|s| s.entry(listing::redact_url(path.trim()).into_owned())))
+    Ok(stat_input(path, &node, false)?.map(|s| s.entry(listing::redact_url(path).into_owned())))
 }
 
 /// Where a file or directory copied to `dst` goes: into `dst` when it is an existing directory
 /// (or ends with `/`), as `dst` otherwise.
 fn copy_target(src: &Node, dst_input: &str, dst: &Node) -> Result<Node> {
     let existing_directory = stat_node(dst)?.is_some_and(|s| s.dir);
-    let into = dst_input.trim().ends_with('/') || existing_directory;
+    let into = dst_input.ends_with('/') || existing_directory;
     let portable = matches!(src, Node::Archive { .. }) || cfg!(windows) && matches!(dst, Node::Local(_));
     Ok(if into { checked_child_target(dst, &src.file_name(), portable)? } else { dst.clone() })
 }
@@ -2257,6 +2313,11 @@ fn check_copy_move_source(node: &Node) -> Result<()> {
 /// fallbacks refuse symbolic links and non-UTF-8 names they cannot faithfully preserve.
 /// Sources must not be changed concurrently during a copy-delete move.
 pub fn rename(src: &str, dst: &str) -> Result<Report> {
+    rename_counted(src, dst, true)
+}
+
+// Dataset operations account for bytes copied, rather than the logical bytes moved by VSI.
+fn rename_counted(src: &str, dst: &str, count_native_bytes: bool) -> Result<Report> {
     let _cache = OperationScope::new();
     let src_node = Node::parse(src)?;
     let dst_node = Node::parse(dst)?;
@@ -2304,7 +2365,7 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
             Ok(()) => {
                 return Ok(Report {
                     copied: u64::from(!stat.dir),
-                    bytes: if stat.dir { 0 } else { stat.size.unwrap_or(0) },
+                    bytes: if stat.dir || !count_native_bytes { 0 } else { stat.size.unwrap_or(0) },
                     ..Default::default()
                 });
             }
@@ -2318,7 +2379,7 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
     {
         // Re-keyed in place, not copied.
         let bytes = crate::memfs::rename(Path::new(a), Path::new(b))?;
-        return Ok(Report { copied: 1, bytes, ..Default::default() });
+        return Ok(Report { copied: 1, bytes: if count_native_bytes { bytes } else { 0 }, ..Default::default() });
     }
     // Copy, then delete what was copied. Local rename above preserves native links/names;
     // the fallback must reject anything its portable copy cannot faithfully represent.
@@ -2357,7 +2418,7 @@ pub fn sync(src: &str, dst: &str, options: &SyncOptions) -> Result<Report> {
         report.copied += 1;
         return Ok(report);
     }
-    let target = if src.trim().ends_with('/') { dst_node.clone() } else { dst_node.join(&src_node.file_name()) };
+    let target = if src.ends_with('/') { dst_node.clone() } else { dst_node.join(&src_node.file_name()) };
     if is_within(&target, &src_node) {
         return Err(Error::InvalidArgument(format!(
             "cannot synchronize '{}' into itself ('{}')",

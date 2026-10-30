@@ -252,7 +252,7 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
             let s = csv::CsvStream::open(path, &options.csv)?;
             (s.layer.clone(), Box::new(CsvSource { s, batch }))
         }
-        VectorDriver::Shapefile => open_shapefile(path)?,
+        VectorDriver::Shapefile => open_shapefile(path, options)?,
         #[cfg(feature = "flatgeobuf")]
         VectorDriver::FlatGeobuf => open_fgb(path, batch)?,
         #[cfg(feature = "parquet")]
@@ -431,6 +431,7 @@ struct ShpSource {
     fid: u64,
     shp_done: bool,
     batch_bytes: usize,
+    organize: shapefile::OrganizePolygons,
 }
 
 impl ShpSource {
@@ -506,9 +507,9 @@ impl FeatureSource for ShpSource {
             return Ok(None);
         }
         let (fields, first) = (self.fields, self.fid);
-        let layout = self.dbf.as_ref().map(|(_, l, _)| l);
+        let (layout, organize) = (self.dbf.as_ref().map(|(_, l, _)| l), self.organize);
         let out = crate::par::map_range(count, |i| {
-            let geometry = shapes.get(i).and_then(|rec| shapefile::decode_shape(rec));
+            let geometry = shapes.get(i).and_then(|rec| shapefile::decode_shape(rec, organize));
             let attributes = match layout {
                 Some(l) if i < n => l.record(&records[i * l.record_len..(i + 1) * l.record_len]),
                 _ => vec![wbvector::FieldValue::Null; fields],
@@ -520,7 +521,7 @@ impl FeatureSource for ShpSource {
     }
 }
 
-fn open_shapefile(path: &str) -> Result<(Layer, Box<dyn FeatureSource>)> {
+fn open_shapefile(path: &str, options: &crate::VectorOpenOptions) -> Result<(Layer, Box<dyn FeatureSource>)> {
     let base = std::path::Path::new(path).with_extension("");
     let sidecar = |ext: &str| [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| base.with_extension(e)).find(|p| p.exists());
     let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("layer");
@@ -556,7 +557,18 @@ fn open_shapefile(path: &str) -> Result<(Layer, Box<dyn FeatureSource>)> {
     }
     shapefile::apply_prj(&mut layer, prj.as_deref());
     let fields = layer.schema.len();
-    Ok((layer, Box::new(ShpSource { shp, dbf, fields, fid: 0, shp_done: false, batch_bytes: source_bytes(CHUNK_BYTES) })))
+    Ok((
+        layer,
+        Box::new(ShpSource {
+            shp,
+            dbf,
+            fields,
+            fid: 0,
+            shp_done: false,
+            batch_bytes: source_bytes(CHUNK_BYTES),
+            organize: options.shapefile.method(),
+        }),
+    ))
 }
 
 // FlatGeobuf
@@ -818,14 +830,15 @@ impl FeatureWriter {
                 options: VectorWriteOptions { driver: Some(driver), ..options.clone() },
             }),
             (true, VectorDriver::GeoJSON, _) => {
-                let enc = geojson::CollectionEncoder::new(&schema, options.geojson)?;
+                let enc = geojson::CollectionEncoder::new(&schema, &options.geojson)?;
                 let mut out = BufWriter::with_capacity(1 << 20, File::create(path)?);
                 out.write_all(enc.head().as_bytes())?;
                 Box::new(GeoJsonSink { out, enc })
             }
-            (true, VectorDriver::GeoJSONSeq, _) => {
-                Box::new(SeqSink { out: BufWriter::with_capacity(1 << 20, File::create(path)?), enc: geojson::SeqEncoder::new(&schema)? })
-            }
+            (true, VectorDriver::GeoJSONSeq, _) => Box::new(SeqSink {
+                out: BufWriter::with_capacity(1 << 20, File::create(path)?),
+                enc: geojson::SeqEncoder::new(&schema, &options.geojson)?,
+            }),
             (true, VectorDriver::CSV, Some(p)) => {
                 let enc = csv::CsvEncoder::new(&schema, p, &options.csv)?;
                 let mut out = BufWriter::with_capacity(1 << 20, File::create(path)?);

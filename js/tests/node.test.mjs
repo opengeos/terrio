@@ -1529,6 +1529,35 @@ test("CAD DWG/DXF byte roundtrips preserve drawing coordinates, labels and holes
   source.free();
 });
 
+// ─── HEC-RAS geometry and plan HDF files (the HECRAS driver) ────────────────────────────────────
+
+test("HEC-RAS plans from memory as vector layers, with open options", { skip: needs("hecras") }, () => {
+  // The synthetic plan of crates/terrio/tests/data/hecras (scripts/make_hecras_fixture.py).
+  const plan = readFileSync(new URL("../../crates/terrio/tests/data/hecras/results_mesh_xs.h5", import.meta.url));
+  const ds = terrio.open(plan, "results_mesh_xs.h5");
+  assert.equal(ds.kind, "vector");
+  assert.deepEqual(ds.layerNames().slice(0, 3), ["mesh_cells", "mesh_cell_points", "mesh_faces"]);
+  // The stored projection text, with no EPSG code guessed.
+  assert.ok(ds.info().layers[0].crs.wkt.startsWith('PROJCS["Synthetic"'), JSON.stringify(ds.info().layers[0].crs));
+  const joined = terrio.openVector(plan, "results_mesh_xs.h5", {
+    layers: ["mesh_cells", "cross_sections"],
+    openOptions: { CELL_SERIES: "Water Surface", XS_RESULTS: "Water Surface", TIME_STEP: 1 },
+  });
+  assert.deepEqual(joined.layerNames(), ["mesh_cells", "cross_sections"]);
+  const cells = joined.toGeoJSON("mesh_cells");
+  assert.deepEqual(cells.features.map((f) => f.properties.water_surface), [12.75, 12.25]);
+  assert.deepEqual(cells.features.map((f) => f.properties.cell_id), [0, 1]);
+  // A list option may be an array of names.
+  const listed = terrio.openVector(plan, "results_mesh_xs.h5", {
+    layers: ["mesh_cells"],
+    openOptions: { CELL_SERIES: ["Water Surface"], TIME_STEP: 1 },
+  });
+  assert.deepEqual(listed.toGeoJSON("mesh_cells").features.map((f) => f.properties.water_surface), [12.75, 12.25]);
+  // A value the file does not store is an error, never an empty layer.
+  assert.throws(() => terrio.openVector(plan, "x.hdf", { layers: ["mesh_cells"], openOptions: { CELL_SERIES: "Depth", TIME_STEP: 0 } }));
+  assert.throws(() => terrio.openVector(plan, "x.hdf", { openOptions: { NO_SUCH_OPTION: "1" } }));
+});
+
 test("coordinate operation safeguards and warnings", () => {
   terrio.takeWarnings();
   const [x, y] = terrio.transformPoints([110], [35], "EPSG:4610", "EPSG:4326");
@@ -2332,6 +2361,165 @@ test("palette blend survives windows and in-memory TIFF writes", () => {
   source.free();
 });
 
+test("GeoPackage repack preserves real features in bytes and memory", { skip: !DATA || needs("sqlite") }, () => {
+  const bytes = readFileSync(join(DATA, "countries.gpkg"));
+  const source = terrio.open(bytes, "countries.gpkg");
+  const expected = source.toGeoJSON();
+  source.free();
+  const compact = terrio.gpkgRepackBytes(bytes);
+  const packed = terrio.open(compact, "packed.gpkg");
+  assert.deepEqual(packed.toGeoJSON(), expected);
+  packed.free();
+  const path = "/vsimem/gpkg-repack-js.gpkg ";
+  const neighbor = path.trimEnd();
+  try {
+    terrio.vsiWrite(neighbor, new Uint8Array([11, 22, 33]));
+    terrio.vsiWrite(path, bytes);
+    assert.equal(terrio.vsiStat(path).name, path);
+    const report = terrio.gpkgRepack(path);
+    assert.equal(report.bytes_before, bytes.length);
+    assert.equal(report.bytes_after, terrio.vsiRead(path).length);
+    const dataset = terrio.open(terrio.vsiRead(path), "result.gpkg");
+    assert.deepEqual(dataset.toGeoJSON(), expected);
+    dataset.free();
+    terrio.vsiWrite(path, new Uint8Array([1, 2, 3]));
+    assert.throws(() => terrio.gpkgRepack(path), /SQLite/);
+    assert.deepEqual(terrio.vsiRead(path), new Uint8Array([1, 2, 3]));
+    assert.throws(() => terrio.gpkgRepackBytes(bytes.slice(0, 100)), /page|truncated/);
+    assert.deepEqual([...terrio.vsiRead(neighbor)], [11, 22, 33]);
+  } finally {
+    if (terrio.vsiStat(path)) terrio.vsiDelete(path);
+    if (terrio.vsiStat(neighbor)) terrio.vsiDelete(neighbor);
+  }
+});
+
+test("GeoPackage repack accepts opaque uploaded filenames", { skip: !DATA || needs("sqlite") }, () => {
+  const path = "/vsimem/gpkg-repack-upload.zip";
+  const bytes = readFileSync(join(DATA, "countries.gpkg"));
+  terrio.vsiWrite(path, bytes);
+  try {
+    const report = terrio.gpkgRepack(path);
+    const compact = terrio.vsiRead(path);
+    assert.equal(report.bytes_after, compact.length);
+    const actual = terrio.open(compact, "compact.gpkg");
+    const expected = terrio.open(bytes, "source.gpkg");
+    assert.deepEqual(actual.toGeoJSON(), expected.toGeoJSON());
+    actual.free();
+    expected.free();
+  } finally { terrio.vsiDelete(path); }
+});
+
+test("coordinate-aligned multidimensional mosaics retain lazy source lifetimes", {skip: needs("netcdf-hdf5", "zarr")}, () => {
+  const encode = value => new TextEncoder().encode(JSON.stringify(value));
+  function store(time, base) {
+    const files = {".zgroup": encode({zarr_format: 2}), ".zattrs": encode({})};
+    for (const [name, shape, dimensions, values] of [
+      ["time", [1], ["time"], [BigInt(time)]], ["x", [2], ["x"], [0n, 1n]],
+      ["wind", [1, 2], ["time", "x"], [base, base+1n]],
+      ["extra", [1, 2], ["time", "x"], [base+6n, base+7n]],
+      ["latitude", [1, 2], ["time", "x"], [BigInt(time), BigInt(time)+1n]],
+      ["longitude", [1, 2], ["time", "x"], [1n,2n]],
+    ]) {
+      files[`${name}/.zarray`] = encode({zarr_format: 2, shape, chunks: shape, dtype: "<i8", compressor: null, fill_value: null, order: "C", filters: null});
+      files[`${name}/.zattrs`] = encode({_ARRAY_DIMENSIONS: dimensions, ...(name === "wind" ? {coordinates: "latitude longitude"} : {})});
+      const bytes = new Uint8Array(values.length*8), view = new DataView(bytes.buffer);
+      values.forEach((value,index) => view.setBigInt64(index*8, value, true));
+      files[`${name}/${shape.map(() => 0).join(".")}`] = bytes;
+    }
+    return files;
+  }
+  const base = 9007199254740993n;
+  const a = terrio.openMultidim(store(10, base)), b = terrio.openMultidim(store(17, base+2n));
+  const output = terrio.mosaicMultidim([b, a, store(12, base+4n)], {arrays: ["wind"]});
+  a.free(); b.free();
+  assert.throws(() => output.array("extra"), /no numeric array|not found|missing/);
+  assert.equal(output.array("wind").info().attributes.coordinates, "latitude longitude");
+  assert.deepEqual([...output.array("latitude").read()], [10n,11n,12n,13n,17n,18n]);
+  assert.deepEqual([...output.array("time").read()], [10n,12n,17n]);
+  assert.deepEqual([...output.array("wind").read()], [base,base+1n,base+4n,base+5n,base+2n,base+3n]);
+  const view = output.array("wind").slice("time", 0, 2, 2).transpose(["x", "time"]);
+  assert.deepEqual([...view.read()], [base,base+2n,base+1n,base+3n]);
+  const back = terrio.openMultidim(output.toBytes());
+  assert.deepEqual([...back.array("wind").read()], [...output.array("wind").read()]);
+  assert.throws(() => terrio.mosaicMultidim([], {}), /at least one/);
+  assert.throws(() => terrio.mosaicMultidim([output], {arrays: ["missing"]}), /missing/);
+  output.free(); view.free(); back.free();
+});
+
+test("palette conversion APIs preserve colors, masks and serialized tables", () => {
+  const source = terrio.rasterFromArray(new Uint8Array([248, 0, 0, 248, 0, 0]), 2, 1, [10, 1, 0, 20, 0, -1]);
+  const colors = [[248, 0, 0, 255], [0, 248, 0, 255]];
+  const indexed = terrio.rgbToPalette(source, {colorMap: colors, bitDepth: 8, dither: false});
+  assert.deepEqual([...indexed.readBand(1)], [0, 1]);
+  const expanded = terrio.paletteToRgb({bytes: indexed.toBytes("indexed.tif"), filename: "indexed.tif"});
+  assert.deepEqual([...expanded.readBand(1)], [248, 0]);
+  assert.deepEqual([...expanded.readBand(2)], [0, 248]);
+  const attached = terrio.attachPalette(indexed, [[1, 2, 3, 255], [4, 5, 6, 255]]);
+  assert.deepEqual(terrio.readColorTable(attached)[0], [1, 2, 3, 255]);
+  assert.deepEqual([...attached.readBand(1)], [0, 1]);
+  const masked = terrio.rgbToPalette(source, {mask: new Uint8Array([0, 255])});
+  const rgba = terrio.paletteToRgb(masked, {rgba: true});
+  assert.deepEqual([...rgba.readBand(4)], [0, 255]);
+  assert.deepEqual(terrio.readColorTable("0 1 2 3 255\n2 red 128")[2], [255, 0, 0, 128]);
+  assert.deepEqual(terrio.readColorTable('\ufeff<qgis><rasterrenderer type="paletted"><paletteEntry value="0" color="#010203" alpha="128"/></rasterrenderer></qgis>')[0], [1,2,3,128]);
+  assert.throws(() => terrio.rgbToPalette(source, {bitDepth: 6}), /bit depth/);
+  assert.throws(() => terrio.rgbToPalette(source, {mask: [0]}), /mask/);
+  assert.throws(() => terrio.rgbToPalette(source, {outputNodata: NaN}), /finite/);
+  for (const ds of [source, indexed, expanded, attached, masked, rgba]) ds.free();
+});
+
+
+test("masked toBytes reprojection is refused explicitly", () => {
+  const bytes = new Uint8Array(Buffer.from("SUkqAAgAAAANAAABAwABAAAAAgAAAAEBAwABAAAAAgAAAAIBAwABAAAACAAAAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAA8gAAABUBAwABAAAAAQAAABYBAwABAAAAAgAAABcBBAABAAAABAAAABwBAwABAAAAAQAAAFMBAwABAAAAAQAAAA6DDAADAAAAqgAAAIKEDAAGAAAAwgAAAPYAAAAAAAAAAADwPwAAAAAAAPA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAABAQEBDQD+AAQAAQAAAAQAAAAAAQMAAQAAAAIAAAABAQMAAQAAAAIAAAACAQMAAQAAAAEAAAADAQMAAQAAAAgAAAAGAQMAAQAAAAQAAAARAQQAAQAAAJgBAAAVAQMAAQAAAAEAAAAWAQMAAQAAAAIAAAAXAQQAAQAAAA0AAAAcAQMAAQAAAAEAAAA9AQMAAQAAAAEAAABTAQMAAQAAAAEAAAAAAAAAeJwBAgD9/0DAAUIBAQ==", "base64"));
+  const dataset = terrio.open(bytes, "masked.tif");
+  assert.throws(() => dataset.toBytes("output.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
+  const copy = terrio.open(dataset.toBytes("output.tif"), "copy.tif");
+  assert.throws(() => copy.toBytes("reprojected.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
+  // Public validity is observable through the alpha band after palette expansion.
+  const colored = terrio.attachPalette(copy, [[10, 20, 30, 255], [40, 50, 60, 255]]);
+  const rgba = terrio.paletteToRgb(colored, {rgba:true});
+  const reopened = terrio.open(rgba.toBytes("mask.tif"), "mask.tif");
+  assert.deepEqual([...reopened.readBand(4)], [0,255,255,255]);
+  for (const value of [colored,rgba,reopened]) value.free();
+  assert.ok(dataset.toBytes("output.asc").length > 0);
+  for (const extension of ["pmtiles","mbtiles"]) {
+    assert.throws(() => copy.toBytes(`output.${extension}`), /dataset masks/);
+  }
+  copy.free();
+  dataset.free();
+});
+
+test("palette binary options bypass JSON serialization", () => {
+  const source = terrio.rasterFromArray(new Uint8Array([248, 0, 0, 248, 0, 0]), 2, 1, [0, 1, 0, 1, 0, -1]);
+  const indexed = terrio.rgbToPalette(source, {colorCount: 2});
+  const colorMap = indexed.toBytes("palette.tif");
+  const mask = new Uint8Array([0, 255]);
+  colorMap.toJSON = mask.toJSON = () => { throw new Error("binary options must not be serialized"); };
+  const output = terrio.rgbToPalette(source, {colorMap, mask, outputNodata: 0});
+  assert.equal(output.readBand(1)[0], 0);
+  assert.throws(() => terrio.rgbToPalette(source, {unknown: true}), /unknown field/);
+  source.free(); indexed.free(); output.free();
+});
+
+test("palette XML nesting fails as an error without trapping", () => {
+  assert.throws(() => terrio.readColorTable("<a>".repeat(100000), "colors.qml"), /256 element levels/);
+});
+
+test("COG validation profiles inspect uploaded block trailers", () => {
+  const raster = terrio.createRaster(null, {size: [64, 64], burn: [7]});
+  const bytes = raster.toBytes("input.tif", {format: "COG", compress: "DEFLATE"});
+  assert.equal(terrio.validateCog(bytes, {profile: "gdal"}).is_valid, true);
+  assert.equal(terrio.validateCog(bytes).is_valid, true);
+  const damaged = bytes.slice();
+  damaged[damaged.length - 1] ^= 1;
+  const report = terrio.validateCog(damaged, {profile: "gdal"});
+  assert.equal(report.is_valid, false);
+  assert.ok(report.errors.some(error => error.includes("trailer")));
+  assert.equal(terrio.validateCog(damaged, {profile: "gdal", fullCheck: false}).is_valid, true);
+  assert.throws(() => terrio.validateCog(bytes, {profile: "unknown"}), /unknown variant/);
+  raster.free();
+});
+
 test("identify inspects bounded upload prefixes and filename hints", () => {
   const raster = terrio.createRaster(null, {size: [2, 2], burn: [1], crs: "EPSG:4326", bbox: [0, 0, 2, 2]});
   const bytes = raster.toBytes("source.tif");
@@ -2344,6 +2532,97 @@ test("identify inspects bounded upload prefixes and filename hints", () => {
   assert.equal(terrio.identify(beyondPrefix, "data.json"), null);
   assert.throws(() => terrio.identify({bytes: "not an array"}), /Uint8Array/);
   raster.free();
+});
+
+test("dataset file management includes companions and guards batch deletion", () => {
+  const root = "/vsimem/js-dataset-files";
+  const source = `${root}/source.csv`, target = `${root}/target.csv`, moved = `${root}/moved.csv`;
+  const encode = text => new TextEncoder().encode(text);
+  terrio.vsiWrite(source, encode("x,y\n1,2\n"));
+  terrio.vsiWrite(`${root}/source.csvt`, encode("Real,Real"));
+  terrio.vsiWrite(`${root}/source.txt`, encode("keep"));
+  try {
+    assert.equal(terrio.datasetFiles(source).driver, "CSV");
+    assert.equal(terrio.datasetCopy(source, target).files.length, 2);
+    assert.throws(() => terrio.datasetCopy(source, target), /exists/);
+    terrio.datasetRename(target, moved);
+    assert.equal(terrio.vsiStat(target), null);
+    assert.deepEqual(terrio.vsiRead(`${root}/moved.csvt`), encode("Real,Real"));
+    assert.throws(() => terrio.datasetDelete([moved, `${root}/missing.csv`]), /does not exist/);
+    assert.ok(terrio.vsiStat(moved));
+    assert.equal(terrio.datasetDelete([source, moved]).length, 2);
+    assert.deepEqual(terrio.vsiList(root).map(entry => entry.name), ["source.txt"]);
+  } finally { terrio.vsiDelete(root, {recursive: true}); }
+});
+
+test("dataset TIFF copies preserve bytes without loading pixel codecs", () => {
+  const root = "/vsimem/js-dataset-tiff";
+  const raster = terrio.createRaster(null, {size: [2, 2], burn: [7], crs: "EPSG:4326", bbox: [0, 0, 2, 2]});
+  const bytes = raster.toBytes("source.tif");
+  terrio.vsiWrite(`${root}/source.tif`, bytes);
+  try {
+    terrio.datasetCopy(`${root}/source.tif`, `${root}/copy.tif`);
+    assert.deepEqual(terrio.vsiRead(`${root}/copy.tif`), bytes);
+    assert.throws(() => terrio.datasetRename(`${root}/source.tif`, `${root}/source.tif`, {overwrite:true}), /overlap/);
+  } finally { raster.free(); terrio.vsiDelete(root, {recursive:true}); }
+});
+
+test("dataset VRT references require explicit external scope permission", () => {
+  const root = "/vsimem/js-vrt-reference-scope";
+  const source = `${root}/inputs/source.vrt`, output = `${root}/copy.vrt`;
+  const encode = text => new TextEncoder().encode(text);
+  terrio.vsiWrite(`${root}/source.raw`, new Uint8Array([1,2,3,4]));
+  terrio.vsiWrite(source, encode(`<VRTDataset rasterXSize="2" rasterYSize="2"><VRTRasterBand band="1" dataType="Byte" subClass="VRTRawRasterBand"><SourceFilename relativeToVRT="0">${root}/source.raw</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>1</PixelOffset><LineOffset>2</LineOffset></VRTRasterBand></VRTDataset>`));
+  try {
+    assert.throws(() => terrio.datasetCopy(source, output), /source directory tree/);
+    assert.equal(terrio.vsiStat(output), null);
+    const report = terrio.datasetCopy(source, output, {allowExternalReferences:true});
+    assert.deepEqual(report.recovery_files, []);
+    assert.deepEqual(terrio.vsiRead(`${root}/copy.raw`), new Uint8Array([1,2,3,4]));
+    assert.ok(terrio.vsiStat(`${root}/source.raw`));
+    terrio.vsiWrite(`${root}/inputs/local.raw`, new Uint8Array([9,8,7,6]));
+    terrio.vsiWrite(`${root}/inputs/local.vrt`, encode('<VRTDataset rasterXSize="2" rasterYSize="2"><VRTRasterBand band="1" dataType="Byte" subClass="VRTRawRasterBand"><SourceFilename>local.raw</SourceFilename><ImageOffset>0</ImageOffset><PixelOffset>1</PixelOffset><LineOffset>2</LineOffset></VRTRasterBand></VRTDataset>'));
+    terrio.datasetCopy(`${root}/inputs/local.vrt`, `${root}/local-copy.vrt`);
+    assert.deepEqual([...terrio.vsiRead(`${root}/local-copy.raw`)], [9,8,7,6]);
+  } finally { terrio.vsiDelete(root, {recursive:true}); }
+});
+
+
+test("palette memory paths keep trailing spaces distinct", () => {
+  const root = "/vsimem/palette-space-identity";
+  for (const [name, index] of [["source.tif",0],["source.tif ",1]]) {
+    const source = terrio.rasterFromArray(new Uint8Array([index]), 1, 1, [0,1,0,1,0,-1]);
+    const indexed = terrio.attachPalette(source, [[10,20,30,255],[200,210,220,255]]);
+    terrio.vsiWrite(`${root}/${name}`, indexed.toBytes("source.tif"));
+    source.free(); indexed.free();
+  }
+  try {
+    assert.equal(terrio.vsiStat(`${root}/source.tif `).name, `${root}/source.tif `);
+    const source = terrio.open(terrio.vsiRead(`${root}/source.tif `), "source.tif");
+    const result = terrio.paletteToRgb(source);
+    assert.deepEqual([...result.readBand(1)], [200]);
+    result.free(); source.free();
+  } finally { terrio.vsiDelete(root, true); }
+});
+
+test("Parquet metadata aggregation on uploaded real partitions", { skip: !DATA || needs("parquet") }, () => {
+  const root = "/vsimem/js-parquet-metadata";
+  const input = readFileSync(join(DATA, "countries.parquet"));
+  terrio.vsiWrite(`${root}/a.parquet`, input);
+  terrio.vsiWrite(`${root}/b.parquet`, input);
+  try {
+    const report = terrio.parquetCreateMetadata([`${root}/a.parquet`, `${root}/b.parquet`], `${root}/_metadata`, {});
+    assert.equal(report.files, 2);
+    assert.equal(report.rows, 352);
+    assert.equal(report.row_groups, 2);
+    assert.equal(new TextDecoder().decode(terrio.vsiRead(`${root}/_metadata`).slice(0, 4)), "PAR1");
+    assert.throws(() => terrio.parquetCreateMetadata([`${root}/a.parquet`], `${root}/_metadata`, {}), /exists/);
+    assert.throws(() => terrio.parquetCreateMetadata([`${root}/_metadata`], `${root}/a.parquet`, { overwrite: true }), /overlap/);
+    assert.deepEqual(terrio.vsiRead(`${root}/a.parquet`), new Uint8Array(input));
+    assert.equal(terrio.parquetCreateMetadata([`${root}/a.parquet`], `${root}/_metadata`, { overwrite: true }).rows, 176);
+  } finally {
+    terrio.vsiDelete(root, { recursive: true });
+  }
 });
 
 test("checkDataset decodes all exposed uploaded content", () => {
@@ -2382,5 +2661,48 @@ test("checkDataset reads real raster, vector and scientific uploads", {skip: nee
       assert.ok(expected > 0);
       assert.equal(terrio.checkDataset(bytes, name).points, expected);
     }
+  }
+});
+
+// Different pixel values prove that whitespace never aliases another supplied source.
+test("openVrt preserves filename whitespace in uploaded sources", () => {
+  const sources = {};
+  for (const [name, value] of [["source.tif", 1], ["source.tif ", 9], [" source.tif ", 7]]) {
+    const raster = terrio.rasterFromArray(new Uint8Array([value]), 1, 1, [0, 1, 0, 1, 0, -1]);
+    sources[name] = raster.toBytes("source.tif");
+    raster.free();
+  }
+  for (const [text, expected] of [
+    ["source.tif ", 9], [" source.tif", 1], ["&#32;source.tif ", 7],
+    ["<![CDATA[ source.tif ]]>", 7], ["<![CDATA[source.tif]]> ", 1],
+  ]) {
+    const xml = `<VRTDataset rasterXSize="1" rasterYSize="1"><VRTRasterBand dataType="Byte" band="1"><SimpleSource><SourceFilename>${text}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>`;
+    const output = terrio.openVrt(xml, sources);
+    assert.deepEqual([...output.readBand(1)], [expected]);
+    output.free();
+  }
+});
+
+
+test("dataset memory paths preserve edge spaces without aliasing", () => {
+  const root = "/vsimem/dataset-space-identity";
+  const source = `${root}/source.tif `;
+  const plain = `${root}/source.tif`;
+  const output = `${root}/copy.tif `;
+  const encoded = [];
+  for (const value of [9,1]) {
+    const raster = terrio.rasterFromArray(new Uint8Array([value]), 1, 1, [0,1,0,1,0,-1]);
+    encoded.push(raster.toBytes("source.tif"));
+    raster.free();
+  }
+  terrio.vsiWrite(source, encoded[0]);
+  terrio.vsiWrite(plain, encoded[1]);
+  try {
+    terrio.datasetCopy(source, output);
+    assert.deepEqual(terrio.vsiRead(output), encoded[0]);
+    terrio.datasetDelete(source);
+    assert.deepEqual(terrio.vsiRead(plain), encoded[1]);
+  } finally {
+    terrio.vsiDelete(root, true);
   }
 });

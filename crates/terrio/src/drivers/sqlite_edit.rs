@@ -5,9 +5,12 @@
 //! content of every page about to be overwritten is written to `<file>-journal` and synced
 //! before the database file is touched, the new pages are written and synced, and deleting the
 //! journal commits. A process that stops in between leaves a hot journal behind, which SQLite
-//! (and [`Editor::open`]) plays back to restore the database as it was. On Unix the file is
-//! locked as SQLite locks it (POSIX advisory locks on its lock bytes), so SQLite readers and
-//! writers wait, and updates of a database that another connection is using fail.
+//! (and [`Editor::open`]) plays back to restore the database as it was. Native row edits take
+//! SQLite-compatible POSIX locks on Unix. Full-image repacking additionally takes Windows
+//! byte-range locks; ordinary Windows edits keep their rewrite fallback. A conflicting
+//! SQLite connection in another process prevents the exclusive lock. POSIX locks
+//! are process-scoped: callers must close same-process SQLite connections before
+//! using this editor and must not concurrently access the database through them.
 //!
 //! Table b-trees grow by inserting cells and splitting pages, as SQLite's own b-tree does;
 //! small tables and indexes are rebuilt in place (their root pages kept). Pages freed go to the
@@ -29,8 +32,7 @@ const JOURNAL_MAGIC: [u8; 8] = [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
 const READ_PAGES: u32 = 16;
 /// The sector size the journal header is padded to, as SQLite assumes by default.
 const SECTOR: usize = 512;
-/// The byte offsets of SQLite's file locks (`PENDING_BYTE` at 1 GiB).
-#[cfg(all(unix, not(target_os = "emscripten")))]
+/// The byte offset of SQLite's reserved lock-byte page (also a journal sentinel).
 const PENDING_BYTE: i64 = 0x4000_0000;
 
 fn bad(msg: impl std::fmt::Display) -> Error {
@@ -67,6 +69,12 @@ pub(crate) struct Node {
     pub right: Option<u32>,
 }
 
+/// Full-image replacement owns both buffers; it never clones their pages into the edit cache.
+struct FullRewrite {
+    original: Vec<u8>,
+    image: Vec<u8>,
+}
+
 /// A database file opened for changes.
 pub(crate) struct Editor {
     file: File,
@@ -83,6 +91,7 @@ pub(crate) struct Editor {
     dirty: BTreeSet<u32>,
     /// Whether the schema changed (the schema cookie is then incremented).
     pub schema_changed: bool,
+    rewrite: Option<FullRewrite>,
 }
 
 impl PageStore for Editor {
@@ -138,18 +147,104 @@ impl Editor {
     /// write-ahead log, auto-vacuum, UTF-16 text or reserved page bytes), or on a platform
     /// where it does not take SQLite's locks.
     pub(crate) fn open(path: &Path) -> Result<std::result::Result<Self, NotInPlace>> {
-        if !cfg!(all(unix, not(target_os = "emscripten"))) {
+        Self::open_mode(path, false)
+    }
+
+    /// Opens a full-image rewrite. Encoded-record rebuilding supports UTF-16 and pointer maps.
+    pub(crate) fn open_repack(path: &Path) -> Result<std::result::Result<Self, NotInPlace>> {
+        Self::open_mode(path, true)
+    }
+
+    fn open_mode(path: &Path, repack: bool) -> Result<std::result::Result<Self, NotInPlace>> {
+        if !cfg!(all(unix, not(target_os = "emscripten"))) && !(repack && cfg!(windows)) {
             // Without SQLite's locks a reader could see a half-written file.
             return Ok(Err(NotInPlace("in-place changes need SQLite's file locks, not taken on this platform".into())));
         }
-        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-        #[cfg(all(unix, not(target_os = "emscripten")))]
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        #[cfg(unix)]
+        if repack {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        #[cfg(windows)]
+        if repack {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let mut file = options.open(path)?;
+        let metadata = file.metadata()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() > 1 {
+                return Err(bad("database handle has hard-link aliases"));
+            }
+        }
+        if repack {
+            if !metadata.is_file() {
+                return Err(bad("repack handle is not a regular file"));
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::AsRawHandle;
+                use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+                let mut information = BY_HANDLE_FILE_INFORMATION::default();
+                // SAFETY: the open database handle and output structure are valid.
+                if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                if information.nNumberOfLinks > 1 {
+                    return Err(bad("repack handle has hard-link aliases"));
+                }
+            }
+        }
+        #[cfg(any(all(unix, not(target_os = "emscripten")), windows))]
         lock(&file, path)?;
-        recover(&mut file, path)?;
+        {
+            for suffix in ["-journal", "-wal", "-shm"] {
+                let sidecar = with_suffix(path, suffix);
+                match std::fs::symlink_metadata(&sidecar) {
+                    Ok(metadata) => {
+                        if !metadata.file_type().is_file() {
+                            return Err(bad(format!(
+                                "{}: sidecar must be a regular file, not a symbolic link or special file",
+                                sidecar.display()
+                            )));
+                        }
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::MetadataExt;
+                            if metadata.nlink() > 1 {
+                                return Err(bad(format!("{}: sidecar has hard-link aliases", sidecar.display())));
+                            }
+                        }
+                        #[cfg(windows)]
+                        {
+                            use std::os::windows::io::AsRawHandle;
+                            use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+                            let sidecar_file = File::open(&sidecar)?;
+                            let mut information = BY_HANDLE_FILE_INFORMATION::default();
+                            // SAFETY: both the open handle and the output structure are valid.
+                            if unsafe { GetFileInformationByHandle(sidecar_file.as_raw_handle(), &mut information) } == 0 {
+                                return Err(std::io::Error::last_os_error().into());
+                            }
+                            if information.nNumberOfLinks > 1 {
+                                return Err(bad(format!("{}: sidecar has hard-link aliases", sidecar.display())));
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        ensure_path_identity(&file, path)?;
         let wal = with_suffix(path, "-wal");
         if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
             return Ok(Err(NotInPlace("the database has a write-ahead log".into())));
         }
+        recover(&mut file, path)?;
         let mut header = [0u8; 100];
         file.seek(SeekFrom::Start(0))?;
         file.read_exact(&mut header).map_err(|_| bad("not an SQLite database"))?;
@@ -168,10 +263,10 @@ impl Editor {
         if header[20] != 0 {
             return refuse("pages have reserved bytes");
         }
-        if be(52) != 0 {
+        if !repack && be(52) != 0 {
             return refuse("the database uses auto-vacuum");
         }
-        if be(56) > 1 {
+        if !repack && be(56) > 1 {
             return refuse("the database is UTF-16");
         }
         if header[18] > 2 || header[19] > 2 {
@@ -190,7 +285,33 @@ impl Editor {
             originals: BTreeMap::new(),
             dirty: BTreeSet::new(),
             schema_changed: false,
+            rewrite: None,
         }))
+    }
+
+    /// Snapshot through the already locked handle. Opening/closing another handle to this
+    /// inode would release process-associated POSIX locks on Unix.
+    pub(crate) fn image(&mut self) -> Result<Vec<u8>> {
+        self.file.seek(SeekFrom::Start(0))?;
+        let mut image = Vec::new();
+        self.file.read_to_end(&mut image)?;
+        Ok(image)
+    }
+
+    /// Install a rebuilt image through the normal rollback-journal transaction. Truncated
+    /// original pages must be journaled too, so interruption can restore the complete file.
+    /// `old` must be the original snapshot from this editor's locked handle (`image`).
+    pub(crate) fn replace_image(&mut self, old: Vec<u8>, image: Vec<u8>) -> Result<()> {
+        if image.is_empty() || !image.len().is_multiple_of(self.page_size) || old.len() != self.orig_pages as usize * self.page_size {
+            return Err(bad("replacement image size"));
+        }
+        if !self.dirty.is_empty() || self.rewrite.is_some() {
+            return Err(bad("full-image replacement requires a fresh editor"));
+        }
+        self.n_pages = u32::try_from(image.len() / self.page_size).map_err(|_| bad("replacement page count"))?;
+        self.cache.clear();
+        self.rewrite = Some(FullRewrite { original: old, image });
+        Ok(())
     }
 
     fn load(&mut self, n: u32) -> Result<()> {
@@ -806,26 +927,55 @@ impl Editor {
         self.commit_until(Stage::Done)
     }
 
-    fn commit_until(mut self, stop: Stage) -> Result<()> {
-        if self.dirty.is_empty() {
+    fn commit_until(self, stop: Stage) -> Result<()> {
+        self.commit_with_sync(stop, sync_dir)
+    }
+
+    fn commit_with_sync(mut self, stop: Stage, mut directory_sync: impl FnMut(&Path) -> std::io::Result<()>) -> Result<()> {
+        let mut rewrite = self.rewrite.take();
+        if self.dirty.is_empty() && rewrite.is_none() {
             return Ok(());
         }
-        // The header: change counter, size, version-valid-for and (when the schema changed)
-        // schema cookie.
-        let counter = self.header_u32(24)?.wrapping_add(1);
-        self.set_header_u32(24, counter)?;
-        self.set_header_u32(92, counter)?;
-        self.set_header_u32(28, self.n_pages)?;
-        self.set_header_u32(96, 3_045_000)?;
-        if self.schema_changed {
-            let cookie = self.header_u32(40)?.wrapping_add(1);
-            self.set_header_u32(40, cookie)?;
+        // Header updates are made in the owned replacement or in the ordinary page cache.
+        if let Some(full) = rewrite.as_mut() {
+            let header = &mut full.image[..self.page_size];
+            let counter = u32::from_be_bytes(header[24..28].try_into().unwrap()).wrapping_add(1);
+            header[24..28].copy_from_slice(&counter.to_be_bytes());
+            header[92..96].copy_from_slice(&counter.to_be_bytes());
+            header[28..32].copy_from_slice(&self.n_pages.to_be_bytes());
+            header[96..100].copy_from_slice(&3_045_000u32.to_be_bytes());
+        } else {
+            let counter = self.header_u32(24)?.wrapping_add(1);
+            self.set_header_u32(24, counter)?;
+            self.set_header_u32(92, counter)?;
+            self.set_header_u32(28, self.n_pages)?;
+            self.set_header_u32(96, 3_045_000)?;
+            if self.schema_changed {
+                let cookie = self.header_u32(40)?.wrapping_add(1);
+                self.set_header_u32(40, cookie)?;
+            }
         }
+
+        ensure_path_identity(&self.file, &self.path)?;
 
         // 1. The journal: the original pages, synced, then its record count, synced.
         let journal_path = with_suffix(&self.path, "-journal");
         let nonce = nonce();
-        let mut journal = OpenOptions::new().write(true).create(true).truncate(true).open(&journal_path)?;
+        // Under the database's exclusive lock, any remaining entry is cold/stale. Unlink
+        // the entry rather than opening its target; create_new also closes the subsequent race.
+        match std::fs::remove_file(&journal_path) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+        let mut journal_options = OpenOptions::new();
+        journal_options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+            journal_options.mode(self.file.metadata()?.mode() & 0o777);
+        }
+        let mut journal = journal_options.open(&journal_path)?;
         let mut header = vec![0u8; SECTOR];
         header[..8].copy_from_slice(&JOURNAL_MAGIC);
         header[12..16].copy_from_slice(&nonce.to_be_bytes());
@@ -833,43 +983,75 @@ impl Editor {
         header[20..24].copy_from_slice(&(SECTOR as u32).to_be_bytes());
         header[24..28].copy_from_slice(&(self.page_size as u32).to_be_bytes());
         let mut buf = header.clone();
-        for (n, data) in &self.originals {
-            buf.extend_from_slice(&n.to_be_bytes());
-            buf.extend_from_slice(data);
-            buf.extend_from_slice(&checksum(nonce, data).to_be_bytes());
-            if buf.len() > 1 << 24 {
-                journal.write_all(&buf)?;
-                buf.clear();
+        let mut records = 0u32;
+        {
+            let mut append = |number: u32, data: &[u8]| -> Result<()> {
+                buf.extend_from_slice(&number.to_be_bytes());
+                buf.extend_from_slice(data);
+                buf.extend_from_slice(&checksum(nonce, data).to_be_bytes());
+                records += 1;
+                if buf.len() > 1 << 24 {
+                    journal.write_all(&buf)?;
+                    buf.clear();
+                }
+                Ok(())
+            };
+            if let Some(full) = rewrite.as_ref() {
+                for (i, page) in full.original.chunks_exact(self.page_size).enumerate() {
+                    let number = i as u32 + 1;
+                    // The full-image write can tear even an unchanged data page.
+                    // Journal every original page except SQLite's unused lock-byte
+                    // page, whose number is a super-journal marker in this format.
+                    if u64::from(number) != PENDING_BYTE as u64 / self.page_size as u64 + 1 {
+                        append(number, page)?;
+                    }
+                }
+            } else {
+                for (number, page) in &self.originals {
+                    append(*number, page)?;
+                }
             }
         }
         journal.write_all(&buf)?;
         journal.sync_all()?;
         journal.seek(SeekFrom::Start(8))?;
-        journal.write_all(&(self.originals.len() as u32).to_be_bytes())?;
+        journal.write_all(&records.to_be_bytes())?;
         journal.sync_all()?;
-        sync_dir(&self.path);
+        directory_sync(&self.path)?;
         if stop == Stage::Journal {
             return Ok(());
         }
 
         // 2. The database pages.
-        let pages: Vec<u32> = self.dirty.iter().copied().collect();
-        let mut run: Vec<u8> = Vec::new();
-        let mut run_start = 0u32;
-        for (k, n) in pages.iter().enumerate() {
-            if run.is_empty() {
-                run_start = *n;
-            }
-            run.extend_from_slice(&self.cache[n]);
-            let contiguous = pages.get(k + 1).is_some_and(|m| *m == n + 1);
-            if !contiguous || run.len() >= 1 << 24 {
-                self.file.seek(SeekFrom::Start((run_start as u64 - 1) * self.page_size as u64))?;
-                self.file.write_all(&run)?;
-                run.clear();
-            }
-            if stop == Stage::HalfWritten && k >= pages.len() / 2 {
+        // Once originals are durable in the journal, release that full buffer before writes.
+        let image = rewrite.map(|full| full.image);
+        if let Some(image) = image {
+            self.file.seek(SeekFrom::Start(0))?;
+            let end = if stop == Stage::HalfWritten { self.n_pages.div_ceil(2) as usize * self.page_size } else { image.len() };
+            self.file.write_all(&image[..end])?;
+            if stop == Stage::HalfWritten {
                 self.file.sync_all()?;
                 return Ok(());
+            }
+        } else {
+            let pages: Vec<u32> = self.dirty.iter().copied().collect();
+            let mut run: Vec<u8> = Vec::new();
+            let mut run_start = 0u32;
+            for (k, n) in pages.iter().enumerate() {
+                if run.is_empty() {
+                    run_start = *n;
+                }
+                run.extend_from_slice(&self.cache[n]);
+                let contiguous = pages.get(k + 1).is_some_and(|m| *m == n + 1);
+                if !contiguous || run.len() >= 1 << 24 {
+                    self.file.seek(SeekFrom::Start((run_start as u64 - 1) * self.page_size as u64))?;
+                    self.file.write_all(&run)?;
+                    run.clear();
+                }
+                if stop == Stage::HalfWritten && k >= pages.len() / 2 {
+                    self.file.sync_all()?;
+                    return Ok(());
+                }
             }
         }
         self.file.set_len(self.n_pages as u64 * self.page_size as u64)?;
@@ -881,7 +1063,9 @@ impl Editor {
         // 3. Deleting the journal commits.
         drop(journal);
         std::fs::remove_file(&journal_path)?;
-        sync_dir(&self.path);
+        directory_sync(&self.path).map_err(|error| Error::Io(std::io::Error::new(error.kind(), format!(
+            "SQLite changes committed, but directory synchronization failed; durability is unconfirmed; do not retry the change automatically: {error}"
+        ))))?;
         Ok(())
     }
 }
@@ -917,16 +1101,58 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Syncs the directory holding a file, so that a journal's creation or deletion is durable.
-fn sync_dir(path: &Path) {
+/// Refuse a pathname rebound after the database handle was locked. On Unix this uses stat,
+/// not a second open/close, which would release this process's POSIX locks on the inode.
+fn ensure_path_identity(file: &File, path: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        return Err(bad("database pathname no longer names a regular file"));
+    }
     #[cfg(unix)]
-    if let Some(dir) = path.parent().map(|p| if p.as_os_str().is_empty() { Path::new(".") } else { p })
-        && let Ok(d) = File::open(dir)
     {
-        let _ = d.sync_all();
+        use std::os::unix::fs::MetadataExt;
+        let opened = file.metadata()?;
+        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+            return Err(bad("database pathname changed after opening"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
+        };
+        let named = OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?;
+        let identity = |handle: &File| -> std::io::Result<(u32, u32, u32)> {
+            let mut information = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: the live file handle and writable output structure are valid.
+            if unsafe { GetFileInformationByHandle(handle.as_raw_handle(), &mut information) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok((information.dwVolumeSerialNumber, information.nFileIndexHigh, information.nFileIndexLow))
+        };
+        if identity(file)? != identity(&named)? {
+            return Err(bad("database pathname changed after opening"));
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = file;
+    Ok(())
+}
+
+/// Syncs journal directory entries on Unix. Unsupported directory fsync is an error, so no
+/// database pages are written without a durable journal. Windows has no std directory sync;
+/// its transaction still flushes both file handles, with the platform's directory durability.
+fn sync_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        File::open(dir)?.sync_all()?;
     }
     #[cfg(not(unix))]
     let _ = path;
+    Ok(())
 }
 
 /// What a hot journal holds: see [`journal_pages`].
@@ -1007,6 +1233,20 @@ fn read_journal(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
+/// A main-file-only rewrite cannot incorporate committed frames from a pending WAL.
+pub(crate) fn ensure_no_wal(path: &Path) -> Result<()> {
+    let wal = with_suffix(path, "-wal");
+    match std::fs::symlink_metadata(&wal) {
+        Ok(metadata) if !metadata.file_type().is_file() || metadata.len() > 0 => Err(Error::Unsupported(format!(
+            "{}: the database has a write-ahead log; open it with SQLite to recover/checkpoint it first",
+            path.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Whether a hot journal (one an interrupted transaction left) goes with the database file.
 pub(crate) fn has_hot_journal(path: &Path) -> Result<bool> {
     Ok(read_journal(path)?.is_some_and(|j| journal_pages(&j).is_some()))
@@ -1021,6 +1261,10 @@ pub(crate) fn open_consistent(path: &Path) -> Result<crate::drivers::sqlite::Db>
 /// Plays back a hot journal left by an interrupted transaction: the original pages are written
 /// back and the file truncated to its original size, then the journal is deleted.
 fn recover(file: &mut File, path: &Path) -> Result<()> {
+    recover_with_sync(file, path, sync_dir)
+}
+
+fn recover_with_sync(file: &mut File, path: &Path, mut sync_directory: impl FnMut(&Path) -> std::io::Result<()>) -> Result<()> {
     let journal_path = with_suffix(path, "-journal");
     let Some(journal) = read_journal(path)? else { return Ok(()) };
     let Some((original, page_size, pages)) = journal_pages(&journal) else {
@@ -1028,6 +1272,8 @@ fn recover(file: &mut File, path: &Path) -> Result<()> {
         let _ = std::fs::remove_file(&journal_path);
         return Ok(());
     };
+    // Refuse unsupported or inaccessible directory synchronization before replaying pages.
+    sync_directory(path)?;
     for (pgno, data) in pages.iter().rev() {
         file.seek(SeekFrom::Start((*pgno as u64 - 1) * page_size as u64))?;
         file.write_all(data)?;
@@ -1037,7 +1283,8 @@ fn recover(file: &mut File, path: &Path) -> Result<()> {
     }
     file.sync_all()?;
     std::fs::remove_file(&journal_path)?;
-    sync_dir(path);
+    sync_directory(path)
+        .map_err(|error| std::io::Error::new(error.kind(), format!("SQLite recovery completed but durability is unconfirmed: {error}")))?;
     Ok(())
 }
 
@@ -1058,6 +1305,10 @@ fn lock(file: &File, path: &Path) -> Result<()> {
         // SAFETY: `fd` is an open file descriptor and `fl` a valid `flock`.
         let r = unsafe { libc::fcntl(fd, libc::F_SETLK, &fl) };
         if r != 0 {
+            let error = std::io::Error::last_os_error();
+            if !matches!(error.raw_os_error(), Some(libc::EAGAIN) | Some(libc::EACCES)) {
+                return Err(error.into());
+            }
             return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 format!("{}: the database is locked by another connection", path.display()),
@@ -1067,13 +1318,40 @@ fn lock(file: &File, path: &Path) -> Result<()> {
     Ok(())
 }
 
-// In-place changes are made where SQLite's locks are taken.
-#[cfg(all(test, unix, not(target_os = "emscripten")))]
-mod tests {
-    use super::*;
-    use crate::drivers::sqlite::Db;
+/// SQLite-compatible Windows byte-range locks, released when this file handle closes.
+#[cfg(windows)]
+fn lock(file: &File, path: &Path) -> Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx};
+    use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
+    for (start, length) in [(PENDING_BYTE as u64, 2), (PENDING_BYTE as u64 + 2, 510)] {
+        let mut overlap = OVERLAPPED {
+            Anonymous: OVERLAPPED_0 { Anonymous: OVERLAPPED_0_0 { Offset: start as u32, OffsetHigh: (start >> 32) as u32 } },
+            ..OVERLAPPED::default()
+        };
+        // SAFETY: the file handle is open and overlap points to a valid zero-initialized
+        // OVERLAPPED with the synchronous byte range's offset set.
+        let ok =
+            unsafe { LockFileEx(file.as_raw_handle(), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, length, 0, &mut overlap) };
+        if ok == 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32) {
+                return Err(error.into());
+            }
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("{}: the database is locked by another connection", path.display()),
+            )));
+        }
+    }
+    Ok(())
+}
 
-    fn sample(rows: i64) -> Vec<u8> {
+#[cfg(all(test, any(all(unix, not(target_os = "emscripten")), windows)))]
+mod native_repack_tests {
+    use super::*;
+
+    pub(super) fn sample(rows: i64) -> Vec<u8> {
         let t = w::Table {
             name: "t".into(),
             sql: "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)".into(),
@@ -1083,9 +1361,357 @@ mod tests {
         w::write_database(&[t], &[], 0, 0).unwrap()
     }
 
+    #[test]
+    fn repack_refuses_hard_link_alias_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.db");
+        let alias = dir.path().join("alias.db");
+        let wal = dir.path().join("alias.db-wal");
+        let original = sample(100);
+        std::fs::write(&path, &original).unwrap();
+        std::fs::hard_link(&path, &alias).unwrap();
+        std::fs::write(&wal, b"pending frames under another name").unwrap();
+        assert!(Editor::open_repack(&path).is_err(), "hard links must be refused before relying on path-based WAL checks");
+        #[cfg(unix)]
+        assert!(Editor::open(&path).is_err(), "append/update must also refuse aliases before checking only the named WAL");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read(&alias).unwrap(), original);
+        assert_eq!(std::fs::read(&wal).unwrap(), b"pending frames under another name");
+    }
+}
+
+// In-place changes are made where SQLite's locks are taken.
+#[cfg(all(test, unix, not(target_os = "emscripten")))]
+mod tests {
+    use super::native_repack_tests::sample;
+    use super::*;
+    use crate::drivers::sqlite::Db;
+
     fn root_of(path: &Path) -> u32 {
         let db = Db::new(std::fs::read(path).unwrap()).unwrap();
         db.schema().unwrap().into_iter().find(|e| e.1 == "t").unwrap().3
+    }
+
+    #[test]
+    fn append_refuses_linked_sidecars_before_recovery() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db");
+        let original = sample(5);
+        std::fs::write(&path, &original).unwrap();
+        let target = directory.path().join("untouched");
+        let bytes = b"must not be read, replayed or modified";
+        std::fs::write(&target, bytes).unwrap();
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let sidecar = with_suffix(&path, suffix);
+            for hard_link in [false, true] {
+                if hard_link {
+                    std::fs::hard_link(&target, &sidecar).unwrap();
+                } else {
+                    symlink(&target, &sidecar).unwrap();
+                }
+                let error = match Editor::open(&path) {
+                    Err(error) => error.to_string(),
+                    Ok(_) => panic!("linked sidecar accepted"),
+                };
+                assert!(error.contains("sidecar"), "{error}");
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                assert_eq!(std::fs::read(&target).unwrap(), bytes);
+                std::fs::remove_file(&sidecar).unwrap();
+            }
+        }
+        assert!(Editor::open(&path).unwrap().is_ok());
+    }
+    #[test]
+    fn repack_commit_bumps_the_change_counter_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repack.db");
+        let original = sample(2000);
+        std::fs::write(&path, &original).unwrap();
+        let counter = |bytes: &[u8]| u32::from_be_bytes(bytes[24..28].try_into().unwrap());
+        let compact = crate::drivers::sqlite_repack::compact(&original).unwrap();
+        assert_eq!(counter(&compact), counter(&original));
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        editor.replace_image(original.clone(), compact).unwrap();
+        editor.commit().unwrap();
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(counter(&after), counter(&original).wrapping_add(1));
+        assert_eq!(after[92..96], after[24..28]);
+    }
+    #[test]
+    fn lock_keeps_os_error_that_is_not_contention() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db");
+        std::fs::write(&path, sample(1)).unwrap();
+        // A read-only descriptor cannot take a write lock: F_SETLK fails with EBADF, not contention.
+        let file = File::open(&path).unwrap();
+        let Err(Error::Io(error)) = lock(&file, &path) else { panic!("write lock accepted a read-only descriptor") };
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+    }
+    #[test]
+    fn repack_open_refuses_a_symlink_even_without_path_preflight() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("keep.db");
+        let link = dir.path().join("alias.db");
+        let original = sample(3);
+        std::fs::write(&target, &original).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(Editor::open_repack(&link).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), original);
+    }
+
+    #[test]
+    fn renamed_database_refuses_commit_without_creating_a_foreign_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.db");
+        let moved = dir.path().join("moved.db");
+        let original = sample(3);
+        std::fs::write(&path, &original).unwrap();
+        let compact = crate::drivers::sqlite_repack::compact(&original).unwrap();
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        editor.replace_image(original.clone(), compact).unwrap();
+        std::fs::rename(&path, &moved).unwrap();
+        std::fs::write(&path, b"replacement must remain untouched").unwrap();
+        assert!(editor.commit_until(Stage::Journal).is_err(), "renamed database accepted");
+        assert!(!with_suffix(&path, "-journal").exists(), "journal attached to replacement");
+        assert_eq!(std::fs::read(&moved).unwrap(), original);
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement must remain untouched");
+    }
+
+    #[test]
+    fn repack_wal_refusal_preserves_hot_journal_and_image() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wal-and-journal.db");
+        std::fs::write(&path, sample(3)).unwrap();
+        let root = root_of(&path);
+        let mut editor = Editor::open(&path).unwrap().unwrap();
+        editor.insert(root, 4, &w::record(&[w::Value::Null, w::Value::Text("interrupted".into())])).unwrap();
+        editor.commit_until(Stage::Written).unwrap();
+        let image = std::fs::read(&path).unwrap();
+        let journal_path = with_suffix(&path, "-journal");
+        let journal = std::fs::read(&journal_path).unwrap();
+        let wal_path = with_suffix(&path, "-wal");
+        std::fs::write(&wal_path, b"active WAL must remain untouched").unwrap();
+        assert!(Editor::open_repack(&path).unwrap().is_err());
+        assert!(std::fs::read(&path).unwrap() == image, "WAL refusal replayed database pages");
+        assert!(std::fs::read(&journal_path).unwrap() == journal, "WAL refusal changed the journal");
+        assert_eq!(std::fs::read(&wal_path).unwrap(), b"active WAL must remain untouched");
+    }
+
+    #[test]
+    fn repack_journal_does_not_broaden_database_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private.db");
+        let original = sample(3);
+        std::fs::write(&path, &original).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        editor.replace_image(original.clone(), crate::drivers::sqlite_repack::compact(&original).unwrap()).unwrap();
+        editor.commit_until(Stage::Journal).unwrap();
+        let journal = with_suffix(&path, "-journal");
+        assert_eq!(std::fs::metadata(journal).unwrap().permissions().mode() & 0o077, 0, "private database leaked into a broader journal");
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn failed_journal_directory_sync_leaves_database_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.db");
+        let original = sample(3);
+        std::fs::write(&path, &original).unwrap();
+        let compact = crate::drivers::sqlite_repack::compact(&original).unwrap();
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        editor.replace_image(original.clone(), compact).unwrap();
+        let error = editor.commit_with_sync(Stage::Done, |_| Err(std::io::Error::other("directory sync failed"))).unwrap_err();
+        assert!(error.to_string().contains("directory sync failed"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(has_hot_journal(&path).unwrap());
+        // A failed sync leaves the synced original pages available to normal recovery.
+        drop(Editor::open_repack(&path).unwrap().unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!with_suffix(&path, "-journal").exists());
+    }
+
+    #[test]
+    fn failed_final_directory_sync_reports_committed_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("committed.db");
+        std::fs::write(&path, sample(1)).unwrap();
+        let root = root_of(&path);
+        let mut editor = Editor::open(&path).unwrap().unwrap();
+        editor.insert(root, 2, &w::record(&[w::Value::Null, w::Value::Text("committed".into())])).unwrap();
+        let mut calls = 0;
+        let error = editor
+            .commit_with_sync(Stage::Done, |_| {
+                calls += 1;
+                if calls == 2 { Err(std::io::Error::other("sync failed")) } else { Ok(()) }
+            })
+            .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(error.to_string().contains("changes committed"));
+        assert!(error.to_string().contains("durability is unconfirmed"));
+        assert!(!with_suffix(&path, "-journal").exists());
+        let database = Db::new(std::fs::read(path).unwrap()).unwrap();
+        let table = database.table("t").unwrap();
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[1][1], crate::drivers::sqlite::Value::Text("committed".into()));
+    }
+
+    #[test]
+    fn recovery_sync_failures_preserve_or_report_the_completed_rollback() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("recover-sync.db");
+        let original = sample(3);
+        std::fs::write(&path, &original).unwrap();
+        let root = root_of(&path);
+        let mut editor = Editor::open(&path).unwrap().unwrap();
+        editor.insert(root, 4, &w::record(&[w::Value::Null, w::Value::Text("interrupted".into())])).unwrap();
+        editor.commit_until(Stage::Written).unwrap();
+        let written = std::fs::read(&path).unwrap();
+        assert_ne!(written, original);
+        let journal_path = with_suffix(&path, "-journal");
+        let journal = std::fs::read(&journal_path).unwrap();
+        let mut file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let error = recover_with_sync(&mut file, &path, |_| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))).unwrap_err();
+        assert!(matches!(error, Error::Io(ref error) if error.kind() == std::io::ErrorKind::PermissionDenied));
+        assert_eq!(std::fs::read(&path).unwrap(), written);
+        assert_eq!(std::fs::read(&journal_path).unwrap(), journal);
+        let mut calls = 0;
+        let error = recover_with_sync(&mut file, &path, |_| {
+            calls += 1;
+            if calls == 2 { Err(std::io::Error::other("final sync failed")) } else { Ok(()) }
+        })
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(error.to_string().contains("recovery completed"));
+        assert!(error.to_string().contains("durability is unconfirmed"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!journal_path.exists());
+    }
+
+    #[test]
+    fn directory_sync_reports_an_unreachable_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(sync_dir(&dir.path().join("missing/data.db")).is_err());
+    }
+
+    #[test]
+    fn journal_links_planted_after_open_cannot_overwrite_foreign_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.db");
+        let foreign = dir.path().join("foreign.bin");
+        let journal = with_suffix(&target, "-journal");
+        for hard in [false, true] {
+            let original = sample(3);
+            std::fs::write(&target, &original).unwrap();
+            std::fs::write(&foreign, b"foreign data must remain").unwrap();
+            let compact = crate::drivers::sqlite_repack::compact(&original).unwrap();
+            let mut editor = Editor::open_repack(&target).unwrap().unwrap();
+            editor.replace_image(original, compact).unwrap();
+            if hard {
+                std::fs::hard_link(&foreign, &journal).unwrap();
+            } else {
+                std::os::unix::fs::symlink(&foreign, &journal).unwrap();
+            }
+            editor.commit().unwrap();
+            assert!(std::fs::read(&foreign).unwrap() == b"foreign data must remain", "foreign bytes changed");
+        }
+    }
+
+    #[test]
+    fn torn_unchanged_page_is_recoverable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("torn.db");
+        let original = sample(2000);
+        std::fs::write(&path, &original).unwrap();
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        let page_size = editor.page_size;
+        // All data pages are identical in this replacement. Nevertheless write_all
+        // overwrites them and an interrupted write may tear any of those pages.
+        editor.replace_image(original.clone(), original.clone()).unwrap();
+        editor.commit_until(Stage::Written).unwrap();
+        let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(page_size as u64 + 20)).unwrap();
+        file.write_all(&[original[page_size + 20] ^ 0xff]).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        assert_eq!(read_consistent(&path).unwrap(), original);
+        drop(Editor::open_repack(&path).unwrap().unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    #[ignore = "requires a >1 GiB SQLite fixture and a Python SQLite reference"]
+    fn sqlite_recovers_a_torn_unchanged_page_beyond_the_lock_byte_page() {
+        let source = std::env::var_os("TERRIO_LARGE_SQLITE_REFERENCE").expect("set TERRIO_LARGE_SQLITE_REFERENCE");
+        let python = std::env::var_os("TERRIO_SQLITE_REFERENCE_PYTHON").expect("set TERRIO_SQLITE_REFERENCE_PYTHON");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        let dir = tempfile::tempdir_in(root).unwrap();
+        let path = dir.path().join("large-torn.db");
+        std::fs::copy(source, &path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        let at = PENDING_BYTE as u64 + editor.page_size as u64 + 20;
+        assert!(at < original.len() as u64);
+        editor.replace_image(original.clone(), original.clone()).unwrap();
+        editor.commit_until(Stage::Written).unwrap();
+        let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(at)).unwrap();
+        file.write_all(&[original[at as usize] ^ 0xff]).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let output = std::process::Command::new(python)
+            .args([
+                "-c",
+                concat!(
+                    "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); ",
+                    "assert db.execute('PRAGMA integrity_check').fetchall()==[('ok',)]; db.close()"
+                ),
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(std::fs::read(&path).unwrap() == original, "SQLite must restore every original byte beyond the lock page too");
+    }
+
+    #[test]
+    fn interrupted_repack_restores_truncated_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repack.db");
+        std::fs::write(&path, sample(2000)).unwrap();
+        let root = root_of(&path);
+        let mut editor = Editor::open(&path).unwrap().unwrap();
+        editor.rebuild_table(root, &[(1, vec![w::Value::Null, w::Value::Text("keep".into())])]).unwrap();
+        editor.commit().unwrap();
+        let original = std::fs::read(&path).unwrap();
+        for version in [1, 2] {
+            let mut original = original.clone();
+            original[18] = version;
+            original[19] = version;
+            let compact = crate::drivers::sqlite_repack::compact(&original).unwrap();
+            assert!(compact.len() < original.len());
+            for stage in [Stage::Journal, Stage::HalfWritten, Stage::Written] {
+                std::fs::write(&path, &original).unwrap();
+                let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+                editor.replace_image(original.clone(), compact.clone()).unwrap();
+                editor.commit_until(stage).unwrap();
+                assert_eq!(read_consistent(&path).unwrap(), original, "{stage:?}");
+                if let Some(python) = std::env::var_os("TERRIO_SQLITE_REFERENCE_PYTHON") {
+                    let code = concat!(
+                        "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); ",
+                        "assert db.execute('PRAGMA integrity_check').fetchall()==[('ok',)]; ",
+                        "assert db.execute('SELECT s FROM t').fetchall()==[('keep',)]; db.close()"
+                    );
+                    let result = std::process::Command::new(python).args(["-c", code]).arg(&path).output().unwrap();
+                    assert!(result.status.success(), "SQLite reference recovery {stage:?}: {}", String::from_utf8_lossy(&result.stderr));
+                }
+                drop(Editor::open_repack(&path).unwrap().unwrap());
+                assert_eq!(std::fs::read(&path).unwrap(), original, "{stage:?}");
+                assert!(!has_hot_journal(&path).unwrap());
+            }
+        }
     }
 
     #[test]

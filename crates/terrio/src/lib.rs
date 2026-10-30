@@ -193,15 +193,20 @@ mod cog_validate;
 pub mod config;
 pub mod crs;
 mod dataset;
+pub mod dataset_files;
 mod drivers;
 #[cfg(test)]
 mod entry_allow_list_tests;
 mod error;
 pub mod formats;
+#[cfg(feature = "hecras")]
+#[cfg_attr(docsrs, doc(cfg(feature = "hecras")))]
+pub use drivers::hecras;
 #[cfg(feature = "gdal")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gdal")))]
 pub mod gdal_backend;
 mod geotiff;
+pub mod gpkg_maintenance;
 mod histogram;
 #[cfg(remote)]
 #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
@@ -216,6 +221,7 @@ pub mod multidim;
 mod ndarray_ext;
 pub mod ops;
 mod par;
+pub mod parquet_metadata;
 mod pixel;
 #[cfg(feature = "pointcloud")]
 #[cfg_attr(docsrs, doc(cfg(feature = "pointcloud")))]
@@ -246,7 +252,9 @@ pub mod vsi;
 pub mod warnings;
 
 pub use cog::{LazyRaster, TiffReadLimits, Window, WindowOptions, open_raster_lazy};
-pub use cog_validate::{CogValidation, validate_cog};
+pub use cog_validate::{
+    CogValidation, CogValidationOptions, CogValidationProfile, validate_cog, validate_cog_bytes, validate_cog_with_options,
+};
 /// The memory the process can use, which reads refuse windows past.
 pub use dataset::fallible::usable_memory;
 pub use dataset::{
@@ -256,7 +264,10 @@ pub use dataset::{
 };
 pub use drivers::gtiff_write::GeoTiffWriter;
 pub use drivers::vector::csv::{CsvGeometry, CsvOptions};
-pub use drivers::vector::geojson::GeoJsonOptions;
+pub use drivers::vector::geojson::{GeoJsonIdType, GeoJsonOptions};
+pub use drivers::vector::hecras_options::HecRasOpenOptions;
+pub use drivers::vector::kml::KmzOptions;
+pub use drivers::vector::shapefile::{OrganizePolygons, ShapefileOptions};
 pub use error::{Error, Result};
 /// The `ndarray` crate, of the version terrio's array views of raster pixels use.
 #[cfg(feature = "ndarray")]

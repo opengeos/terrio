@@ -26,6 +26,34 @@
 
 ### Formats
 
+- GeoJSON and GeoJSONSeq outputs write a field as each feature's `id` member with GDAL's
+  `ID_FIELD` and `ID_TYPE` creation options (`--lco`, `GeoJsonOptions::id_field` and
+  `id_type`), so the string identifiers read from a GeoJSON `id` go back out as RFC 7946 `id`
+  members. `GeoJsonOptions` is no longer `Copy`.
+- KMZ archives can carry files such as the icon images of `SYMBOL` styles (#394):
+  `VectorWriteOptions::kmz` (`KmzOptions::resources`), `terrio convert --kmz-resource`, Python's
+  `kmz_resources=` and JavaScript's `kmzResources` pack them beside the layer documents, where
+  relative icon links resolve.
+- HEC-RAS geometry (`.g##.hdf`) and plan (`.p##.hdf`) HDF files are read as
+  vector layers (the `HECRAS` driver, the `hecras` feature, on by default), through the
+  [`ras-commander-fast-hdf`](https://crates.io/crates/ras-commander-fast-hdf)
+  engine: 2D mesh cells, cell centres, faces, face points and perimeters (with
+  the stored 2D flow area table); cross sections (with station-elevation,
+  Manning's n and ineffective areas as JSON fields), river lines, storage
+  areas, structures, boundary-condition lines, breaklines, refinement regions,
+  reference lines and points, junctions, pump stations, and pipe conduits and
+  nodes, each with its stored attribute columns. Stored results join through
+  open options (summary maxima and minima with their times, time-step values,
+  series extremes, cross-section, structure, boundary and reference results).
+  The CRS is the stored `Projection` WKT. A file is claimed only when its root
+  `File Type` is `HEC-RAS Geometry` or `HEC-RAS Results`; other HDF5 and
+  NetCDF files are not affected. Compared with h5py on the HEC-RAS 7.0.1 files
+  of a public corpus: every value identical. See `docs/hecras.md`.
+- `hdf5-reader` and `netcdf-reader` are the crates.io 0.10.1 releases; the
+  `[patch]` to a netcdf-rust branch is gone (its fix, roteiro-gis/netcdf-rust#95,
+  is in 0.10). The HEC-RAS engine uses the same `hdf5-reader`, so a build
+  compiles one HDF5 reader.
+
 - SRTM HGT tiles are read and written (the `SRTMHGT` driver), as GDAL's SRTMHGT
   driver does: 3", 1" and 0.5" tiles georeferenced from their name
   (`N37W120.hgt`), `.hgt.zip` archives, and the NASADEM and water body variants.
@@ -46,6 +74,14 @@
   windows of local files still each read the tables, as does moving to another
   overview. The tables kept take 16 bytes per chunk of each image read.
 
+### GeoPackage
+
+- `terrio gpkg-repack` (CLI, and the `gpkg-repack` MCP tool) compacts a native GeoPackage in
+  place, rebuilding every B-tree from its encoded records and preserving rowids, SQL objects,
+  text encodings, rasters and auto-vacuum pointer maps. Python `gpkg_repack(path)` and
+  `gpkg_repack_bytes(data)`, and JavaScript `gpkgRepack` and `gpkgRepackBytes`, expose the same
+  operation. Scope and storage safety are in [docs/cli.md](docs/cli.md#geopackage-repacking).
+
 ### Remote I/O
 
 - Signed S3 uploads of local files over 8 MiB sent over HTTPS read the file once
@@ -58,6 +94,19 @@
 
 ### Breaking changes
 
+- Dataset/VSI paths retain leading and trailing whitespace across CLI, Python, JavaScript
+  and MCP (#372). Native filenames and virtual keys with edge whitespace are distinct from their
+  trimmed neighbors; callers must normalize pasted paths/URLs themselves. `@FILE` lines
+  still apply their file-list whitespace rules.
+- Native Unix SQLite in-place append/update and recovery propagate parent-directory open/fsync
+  failures. Filesystems without directory fsync support can fail before page writes. An error
+  after journal deletion reports committed changes or completed recovery with unconfirmed
+  durability; do not blindly retry an append. Native append also refuses linked/special
+  journal, WAL and shared-memory sidecars before recovery, and refuses a database file with
+  hard-link aliases (Unix `nlink > 1`).
+- VRT `SourceFilename` values retain trailing whitespace and newlines, matching GDAL.
+  Remove formatting whitespace from inside the element when it is not part of the filename;
+  encoded leading whitespace and CDATA remain significant.
 - Signed S3 uploads of local files over 8 MiB over HTTPS use `UNSIGNED-PAYLOAD`
   (#335). An S3-compatible service, or a bucket policy, that refuses it now
   rejects those uploads; they can be sent over plain HTTP to keep a signed
@@ -88,6 +137,11 @@
   `validate_cloud_optimized_geotiff.py`), reading only headers and chunk offsets: local files,
   `/vsizip/` paths, and HTTP(S) or S3 URLs by range requests. The command exits with status 1
   when the file is not a valid COG.
+- Dataset file operations (`dataset-copy`, `dataset-rename`, `dataset-delete` and
+  `dataset-files`) use paths and URLs exactly
+  as given, across CLI, Python, JavaScript and MCP. Native filenames and virtual keys with
+  edge whitespace are distinct from their trimmed neighbors, so callers must trim pasted
+  paths/URLs themselves.
 
 ### Point clouds
 
@@ -186,6 +240,12 @@
 
 ### Shapefile
 
+- The rings of polygon records can be organized by any of the methods of GDAL's
+  `OGR_ORGANIZE_POLYGONS`, chosen with the `ORGANIZE_POLYGONS` open option (`--oo`,
+  `VectorOpenOptions::shapefile`) or the `OGR_ORGANIZE_POLYGONS` (or `TERRIO_ORGANIZE_POLYGONS`)
+  environment variable. `DEFAULT` groups rings by containment, whatever their winding, so files
+  that wind every ring one way keep their holes. `ONLY_CCW` stays the default, as in GDAL. With
+  every method, the self-touching rings below are split first, as GDAL 3.13 does.
 - In polygon records of several parts, rings that touch themselves at a vertex
   to enclose a hole, which Esri allows, are now split into an exterior and
   holes when read, wherever the stored ring starts, as GDAL 3.13 does (GDAL
@@ -250,7 +310,6 @@
   and size, locally or remotely, the allow-list applies to SRTMHGT.
 - GeoTIFF and COG writes carry a color table as GDAL 3.12.1's `CreateCopy` does: a
   single Byte or UInt16 band's, and JPEG compression of it is refused.
-- Self-touching Shapefile rings are kept as stored, as GDAL 3.12 keeps them.
 - Parallel work runs on a thread pool of terrio's own, which survives `fork()`.
 - `scripts/build_wheel_manylinux_2_28.sh` builds the Linux wheel for glibc 2.28
   and later without Docker.

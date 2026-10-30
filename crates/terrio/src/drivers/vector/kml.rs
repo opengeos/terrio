@@ -376,15 +376,26 @@ pub fn write(layers: &[Layer], path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Options for writing KMZ.
+#[derive(Debug, Clone, Default)]
+pub struct KmzOptions {
+    /// Files packed into the archive, such as icon images, each by the relative path the styles
+    /// refer to it with (the `id` of `SYMBOL(id:"icons/pin.png")`). They are stored beside the
+    /// layer documents, against which KML resolves relative links, so they travel with the
+    /// archive.
+    pub resources: Vec<(String, Vec<u8>)>,
+}
+
 /// Writes layers as a KMZ archive laid out as GDAL writes it: a `doc.kml` linking to one
-/// document per layer under `layers/`.
-pub fn write_kmz(layers: &[Layer], path: &str) -> Result<()> {
-    std::fs::write(path, kmz_bytes(layers)?)?;
+/// document per layer under `layers/`, with the files of `kmz` beside those documents.
+pub fn write_kmz(layers: &[Layer], path: &str, kmz: &KmzOptions) -> Result<()> {
+    std::fs::write(path, kmz_bytes(layers, kmz)?)?;
     Ok(())
 }
 
 /// Encodes layers as a KMZ archive.
-pub fn kmz_bytes(layers: &[Layer]) -> Result<Vec<u8>> {
+pub fn kmz_bytes(layers: &[Layer], kmz: &KmzOptions) -> Result<Vec<u8>> {
+    let resources = resource_members(&kmz.resources)?;
     let mut buf = std::io::Cursor::new(Vec::new());
     {
         let mut zip = zip::ZipWriter::new(&mut buf);
@@ -416,9 +427,39 @@ pub fn kmz_bytes(layers: &[Layer]) -> Result<Vec<u8>> {
             zip.start_file(file.as_str(), options)?;
             std::io::Write::write_all(&mut zip, text.as_bytes())?;
         }
+        for (path, member, bytes) in &resources {
+            if files.iter().any(|(file, _)| file == member) {
+                return Err(Error::InvalidArgument(format!("the KMZ resource '{path}' would replace a layer document")));
+            }
+            zip.start_file(member.as_str(), options)?;
+            std::io::Write::write_all(&mut zip, bytes)?;
+        }
         zip.finish()?;
     }
     Ok(buf.into_inner())
+}
+
+/// Where each KMZ resource goes: under `layers/`, beside the documents whose relative links
+/// resolve to it. Only relative paths inside the archive are taken, each once, and none with
+/// characters a viewer reads as part of a URI (`?`, `#`, `%`) rather than of the member name.
+fn resource_members(resources: &[(String, Vec<u8>)]) -> Result<Vec<(&str, String, &[u8])>> {
+    let mut members: Vec<(&str, String, &[u8])> = Vec::with_capacity(resources.len());
+    for (path, bytes) in resources {
+        let parts: Vec<&str> = path.split('/').filter(|part| *part != ".").collect();
+        let relative = !parts.is_empty()
+            && !path.starts_with('/')
+            && !path.contains(['\\', ':', '#', '?', '%'])
+            && parts.iter().all(|part| !part.is_empty() && *part != "..");
+        if !relative {
+            return Err(Error::InvalidArgument(format!("the KMZ resource '{path}' is not a relative path inside the archive")));
+        }
+        let member = format!("layers/{}", parts.join("/"));
+        if members.iter().any(|(_, m, _)| *m == member) {
+            return Err(Error::InvalidArgument(format!("the KMZ resource '{path}' is given twice")));
+        }
+        members.push((path.as_str(), member, bytes.as_slice()));
+    }
+    Ok(members)
 }
 
 const HEADER: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n";
@@ -669,6 +710,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_kmz_carries_the_files_its_styles_refer_to() {
+        use std::io::Read as _;
+        let mut layer = Layer::new("pins").with_crs_epsg(4326);
+        layer.add_field(FieldDef::new(kml_style::FIELD, FieldType::Text));
+        layer.push(Feature {
+            fid: 1,
+            geometry: Some(Geometry::Point(Coord::xy(30.0, -2.0))),
+            attributes: vec![FieldValue::Text("SYMBOL(id:\"icons/pin.png\")".into())],
+        });
+        let layers = std::slice::from_ref(&layer);
+        let png = b"\x89PNG\r\n\x1a\n".to_vec();
+        let kmz = KmzOptions { resources: vec![("icons/pin.png".into(), png.clone())] };
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(kmz_bytes(layers, &kmz).unwrap())).unwrap();
+        let mut image = Vec::new();
+        zip.by_name("layers/icons/pin.png").unwrap().read_to_end(&mut image).unwrap();
+        assert_eq!(image, png);
+        let mut doc = String::new();
+        zip.by_name("layers/pins.kml").unwrap().read_to_string(&mut doc).unwrap();
+        assert!(doc.contains("<href>icons/pin.png</href>"), "{doc}");
+        // Without resources, the archive holds the documents only, as before.
+        let plain = kmz_bytes(layers, &KmzOptions::default()).unwrap();
+        assert_eq!(zip::ZipArchive::new(std::io::Cursor::new(plain)).unwrap().len(), 2);
+        for path in [
+            "",
+            ".",
+            "/icons/pin.png",
+            "../pin.png",
+            "icons/../../pin.png",
+            "icons//pin.png",
+            "http://x/pin.png",
+            "C:\\pin.png",
+            "icons/a#b.png",
+            "icons/a?b.png",
+            "icons/a%20b.png",
+            "pins.kml",
+        ] {
+            let kmz = KmzOptions { resources: vec![(path.into(), png.clone())] };
+            assert!(matches!(kmz_bytes(layers, &kmz), Err(Error::InvalidArgument(_))), "{path:?}");
+        }
+        let twice = KmzOptions { resources: vec![("icons/pin.png".into(), png.clone()), ("./icons/pin.png".into(), png)] };
+        assert!(matches!(kmz_bytes(layers, &twice), Err(Error::InvalidArgument(_))));
+    }
+
+    #[test]
     fn reads_like_libkml() {
         let kml = r##"<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>D</name>
             <Schema name="s" id="s"><SimpleField name="n" type="int"/><SimpleField name="x" type="double"/></Schema>
@@ -702,7 +787,7 @@ mod tests {
         // A KMZ holds a document per layer, linked from doc.kml.
         let dir = tempfile::tempdir().unwrap();
         let kmz = dir.path().join("t.kmz");
-        write_kmz(&layers, kmz.to_str().unwrap()).unwrap();
+        write_kmz(&layers, kmz.to_str().unwrap(), &KmzOptions::default()).unwrap();
         let back = read_kmz(kmz.to_str().unwrap()).unwrap();
         assert_eq!(back.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["D", "F", "Empty"]);
         assert_eq!(get(&back[0], 0, "x"), FieldValue::Float(1.5));

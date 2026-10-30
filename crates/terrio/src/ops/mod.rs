@@ -52,6 +52,7 @@ pub mod nearblack;
 pub mod neighbors;
 pub mod overview;
 pub(crate) mod overview_kernel;
+pub mod palette;
 pub mod pansharpen;
 pub mod partition;
 

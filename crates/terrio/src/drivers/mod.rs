@@ -28,6 +28,8 @@ pub(crate) mod hdf5;
 pub(crate) mod hdf5_write;
 #[cfg(feature = "netcdf-hdf5")]
 pub(crate) mod hdfeos;
+#[cfg(feature = "hecras")]
+pub mod hecras;
 mod hfa;
 pub(crate) mod hgt;
 #[cfg(feature = "jp2")]
@@ -44,6 +46,8 @@ mod saga;
 pub(crate) mod sqlite;
 #[cfg(feature = "sqlite")]
 pub(crate) mod sqlite_edit;
+#[cfg(feature = "sqlite")]
+pub(crate) mod sqlite_repack;
 pub(crate) mod vector;
 mod webp;
 pub(crate) mod wkt;
@@ -217,7 +221,7 @@ fn raw_opener(path: &str) -> Option<RawOpener> {
 /// Opens a raw-layout raster for its header, to be read by window: a local file one of those
 /// drivers reads (see [`raw_opener`]), or a remote SRTM tile, read with range requests. `None`
 /// for other files.
-fn open_raw(path: &str) -> Option<Result<common::RawRaster>> {
+pub(crate) fn open_raw(path: &str) -> Option<Result<common::RawRaster>> {
     use crate::vfs::Location;
     match Location::parse(path) {
         Location::Local(p) => {

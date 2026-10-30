@@ -28,9 +28,9 @@ origin = "existing"
 reason = "memmap2::Mmap::map of a database file, read only, for the lifetime of the reader"
 
 [files."crates/terrio/src/drivers/sqlite_edit.rs"]
-count = 2
+count = 6
 origin = "existing"
-reason = "A zeroed libc::flock and fcntl(F_SETLK): SQLite's exclusive lock before an edit"
+reason = "SQLite's exclusive lock before an edit: a zeroed libc::flock and fcntl(F_SETLK); on Windows, LockFileEx and GetFileInformationByHandle (file identity)"
 
 [files."crates/terrio/src/drivers/vector/osm.rs"]
 count = 2

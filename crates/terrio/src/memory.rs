@@ -66,6 +66,12 @@ fn open_bytes_of_kind(bytes: Vec<u8>, name: &str, kind: Option<Kind>) -> Result<
 
 /// Opens a raster from its bytes.
 pub fn open_raster_bytes(bytes: Vec<u8>, name: &str) -> Result<RasterDataset> {
+    // HEC-RAS files open as vector layers; a raster open reads their HDF5 arrays, as before.
+    #[cfg(feature = "hecras")]
+    if crate::drivers::hdf5::parse_subdataset(name).is_none() && crate::drivers::hecras::driver::is_hecras_bytes(&bytes) {
+        crate::formats::check_allowed_bytes(name, &bytes, Some(Kind::Raster))?;
+        return crate::drivers::hdf5::read_bytes(bytes, name, None);
+    }
     match open_bytes_of_kind(bytes, name, Some(Kind::Raster))? {
         Dataset::Raster(r) => Ok(r),
         Dataset::Vector(_) => Err(Error::Unsupported(format!("'{name}' is a vector dataset, not a raster"))),
@@ -200,11 +206,13 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
         None => {
             #[cfg(feature = "gdal")]
             if let Some(d) = crate::gdal_backend::driver_for_path(name, true) {
+                crate::dataset::ensure_kmz_resources_apply(options, None)?;
                 return crate::gdal_backend::write_vector_bytes(layers, name, &d, &[], &[]);
             }
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")));
         }
     };
+    crate::dataset::ensure_kmz_resources_apply(options, Some(driver))?;
     if driver == VectorDriver::Shapefile {
         if !name.to_ascii_lowercase().ends_with(".zip") {
             return Err(Error::InvalidArgument("Shapefile bytes are a ZIP archive: use a .shp.zip filename (MIME application/zip)".into()));
@@ -357,6 +365,15 @@ pub(crate) mod codec {
         if bytes.starts_with(b"CDF") {
             return crate::drivers::netcdf::read_bytes(&bytes, name, None).map(Dataset::Raster);
         }
+        // HEC-RAS geometry and plan files are HDF5 files that hold vector layers (the HECRAS
+        // driver): recognized by their root `File Type` before the HDF5 raster driver claims them.
+        #[cfg(feature = "hecras")]
+        if crate::drivers::hecras::driver::is_hecras_bytes(&bytes) {
+            let driver = VectorDriver::HECRAS;
+            let layers = crate::drivers::vector::read_bytes(bytes, name, driver, options)?.unwrap_or_default();
+            let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, name, driver)).collect();
+            return finish_vector(layers, driver, options);
+        }
         #[cfg(feature = "netcdf-hdf5")]
         if crate::drivers::hdf5::signature_offset_in(&bytes).is_some() {
             // NetCDF-4 files are HDF5 files with netCDF's extensions.
@@ -457,7 +474,7 @@ pub(crate) mod codec {
                 zip.borrow_mut().by_name(member).ok()?.read_to_end(&mut out).ok()?;
                 Some(out)
             };
-            let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar)?;
+            let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar, options)?;
             let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, &main, driver)).collect();
             return finish_vector(layers, driver, options);
         }
@@ -674,6 +691,19 @@ mod tests {
         let bytes = codec::write_raster(&ds, RasterDriver::GTiff, &RasterWriteOptions::default(), "raster").unwrap();
         let back = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap().header();
         assert_eq!(back.band_color_interp(1), "Undefined");
+    }
+
+    #[test]
+    fn kmz_resources_are_refused_unless_the_output_is_kmz() {
+        let layers = [Layer::new("pins").with_crs_epsg(4326)];
+        let options = VectorWriteOptions {
+            kmz: crate::drivers::vector::kml::KmzOptions { resources: vec![("icons/pin.png".into(), vec![1, 2, 3])] },
+            ..Default::default()
+        };
+        for name in ["pins.geojson", "pins.gpkg", "pins.shp.zip"] {
+            assert!(matches!(write_vector_bytes(&layers, name, &options), Err(Error::InvalidArgument(_))), "{name}");
+        }
+        assert!(write_vector_bytes(&layers, "pins.kmz", &options).is_ok());
     }
 
     fn raster(bands: usize, dt: DataType) -> RasterDataset {

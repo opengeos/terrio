@@ -165,13 +165,16 @@ fn the_readers_of_a_tiff_read_it_only_with_gtiff_allowed() {
     let tif = write_raster(dir.path(), "x.tif", &raster());
     let tif = tif.as_str();
     let bytes = std::fs::read(tif).unwrap();
-    let readers: [(&str, Opener); 10] = [
+    let gdal = crate::CogValidationOptions { profile: crate::CogValidationProfile::Gdal, full_check: Some(true), ..Default::default() };
+    let readers: [(&str, Opener); 12] = [
         ("open_tiff", &|| outcome(crate::LazyRaster::open_tiff(tif).map(|r| r.expect("a TIFF")))),
         ("open_tiff_with_limits", &|| outcome(crate::LazyRaster::open_tiff_with_limits(tif, Default::default()).map(|r| r.unwrap()))),
         ("open_raster_with_tiff_limits", &|| outcome(crate::open_raster_with_tiff_limits(tif, Default::default()))),
         ("read_gcps", &|| outcome(crate::read_gcps(tif))),
         ("read_rpc", &|| outcome(crate::ops::rpc::read_rpc(tif))),
         ("validate_cog", &|| outcome(crate::validate_cog(tif, false))),
+        ("validate_cog_with_options", &|| outcome(crate::validate_cog_with_options(tif, &gdal))),
+        ("validate_cog_bytes", &|| outcome(crate::validate_cog_bytes(&bytes, &gdal))),
         ("delete_overviews", &|| outcome(crate::ops::overview::delete_overviews(tif, &Default::default()))),
         ("from_tiff_bytes", &|| outcome(crate::LazyRaster::from_tiff_bytes(bytes.clone()).map(|r| r.unwrap()))),
         ("from_sparse", &|| outcome(crate::LazyRaster::from_sparse(sparse(&bytes)).map(|r| r.unwrap()))),
@@ -179,7 +182,7 @@ fn the_readers_of_a_tiff_read_it_only_with_gtiff_allowed() {
     ];
     for (name, read) in readers {
         let shown = match name {
-            "from_tiff_bytes" | "delete_overviews_from_bytes" => "a GeoTIFF in memory",
+            "from_tiff_bytes" | "delete_overviews_from_bytes" | "validate_cog_bytes" => "a GeoTIFF in memory",
             "from_sparse" => "a remote GeoTIFF",
             _ => tif,
         };
@@ -632,4 +635,67 @@ fn identification_and_content_checks_see_only_allowed_drivers() {
     let refused = check_upload(Some("PNG"), &tif).unwrap_err();
     assert!(refused.contains("not allowed") && !refused.contains("unrecognized"), "{refused}");
     assert_eq!(check_upload(Some("GPKG"), &mixed), Ok((15, 1, 2)));
+}
+
+/// HEC-RAS files, which the HECRAS driver recognises by their content, are read as vector layers
+/// only with HECRAS allowed, and their HDF5 arrays as a raster only with HDF5 allowed.
+#[cfg(feature = "hecras")]
+#[test]
+fn hec_ras_files_are_read_only_with_their_driver_allowed() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/hecras/results_mesh_xs.h5");
+    let bytes = std::fs::read(fixture).unwrap();
+    let vector = VectorOpenOptions::default();
+    let readers: [(&str, Opener); 4] = [
+        ("open_vector", &|| outcome(crate::open_vector(fixture, &vector))),
+        ("codec::open", &|| outcome(crate::memory::codec::open(bytes.clone(), "x.h5", &vector))),
+        ("HecRasHdf::open", &|| outcome(crate::hecras::HecRasHdf::open(fixture))),
+        ("HecRasHdf::from_bytes", &|| outcome(crate::hecras::HecRasHdf::from_bytes(bytes.clone(), "x.h5"))),
+    ];
+    for (name, read) in readers {
+        let shown = if name.starts_with("codec") || name.ends_with("bytes") { "x.h5" } else { fixture };
+        assert_eq!(under(Some("HDF5"), read), holds(shown, "HECRAS", "HDF5"), "{name}");
+        assert_eq!(under(Some("HDF5,HECRAS"), read), Ok(()), "{name}");
+    }
+    let raster = || outcome(crate::memory::open_raster_bytes(bytes.clone(), "x.h5"));
+    assert_eq!(under(Some("PNG"), raster), named("x.h5", "HDF5", "PNG"));
+}
+
+/// The dataset file functions (inventory, and copy, rename and deletion through it) manage a
+/// dataset only if its name and its content pass the lists, as `open` judges one.
+#[test]
+fn dataset_files_are_managed_only_with_their_driver_allowed() {
+    let dir = tempfile::tempdir().unwrap();
+    let tif = write_raster(dir.path(), "x.tif", &raster());
+    let list = || outcome(crate::dataset_files::file_list(&tif, None));
+    assert_eq!(under(Some("PNG"), list), named(&tif, "GTIFF/COG", "PNG"));
+    assert_eq!(under(Some("GTiff,COG"), list), Ok(()));
+}
+
+/// Parquet metadata is made from footers read only with the Parquet driver allowed.
+#[cfg(feature = "parquet")]
+#[test]
+fn parquet_metadata_reads_footers_only_with_parquet_allowed() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("a.parquet").to_str().unwrap().to_string();
+    crate::write_vector(&[points()], &input, &VectorWriteOptions::default()).unwrap();
+    let output = dir.path().join("_metadata").to_str().unwrap().to_string();
+    let create = || outcome(crate::parquet_metadata::create(std::slice::from_ref(&input), &output, &Default::default()));
+    assert_eq!(under(Some("GeoJSON"), create), holds(&input, "Parquet", "GEOJSON"));
+    assert_eq!(under(Some("GeoJSON,Parquet"), create), Ok(()));
+}
+
+/// GeoPackages are repacked, on disk and as bytes, only with GPKG allowed.
+#[cfg(feature = "sqlite")]
+#[test]
+fn geopackages_are_repacked_only_with_gpkg_allowed() {
+    let dir = tempfile::tempdir().unwrap();
+    let gpkg = dir.path().join("x.gpkg").to_str().unwrap().to_string();
+    crate::write_vector(&[points()], &gpkg, &VectorWriteOptions::default()).unwrap();
+    let bytes = std::fs::read(&gpkg).unwrap();
+    let repack = || outcome(crate::gpkg_maintenance::repack(&gpkg));
+    let repack_bytes = || outcome(crate::gpkg_maintenance::repack_bytes(&bytes));
+    assert_eq!(under(Some("GeoJSON"), repack), holds(&gpkg, "GPKG", "GEOJSON"));
+    assert_eq!(under(Some("GeoJSON"), repack_bytes), holds("a GeoPackage in memory", "GPKG", "GEOJSON"));
+    assert_eq!(under(Some("GPKG"), repack), Ok(()));
+    assert_eq!(under(Some("GPKG"), repack_bytes), Ok(()));
 }

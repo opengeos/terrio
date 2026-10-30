@@ -23,6 +23,9 @@ terrio rasterize counties.gpkg counties.tif -a FIPS --tr 0.01 0.01
 - **Vectors**: GeoPackage, GeoParquet, FlatGeobuf, Shapefile, GeoJSON (and GeoJSONSeq), CSV,
   KML/KMZ, GML, GPX, TopoJSON, MapInfo and OpenStreetMap PBF; layers larger than memory read and
   converted as streams of features.
+- **HEC-RAS**: the 2D meshes, cross sections, structures and other features of HEC-RAS geometry
+  and plan HDF files, with their stored attributes and results, as vector layers. See
+  [HEC-RAS](hecras.md).
 - **Point clouds**: LAS 1.0 to 1.4 (with waveforms), LAZ, COPC, PLY and E57, read and written,
   and EPT read; remote COPC and EPT read by bounds and octree level; files larger than memory in
   chunks; PDAL's filters (SMRF ground classification, outliers, ranges, sampling, voxels);

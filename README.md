@@ -161,7 +161,8 @@ into the same data model, and writes rasters with GDAL's drivers: `terrio::open(
 Every driver is on by default; each family of them is a cargo feature that can be turned off,
 for a smaller dependency tree and WebAssembly module: `parquet`, `remote` (URLs and object
 storage), `netcdf-hdf5`, `sqlite` (GeoPackage), `tiles` (MBTiles, PMTiles, MVT), `avif`, `zarr`,
-`jp2`, `grib`, `flatgeobuf`, `osm`, `pointcloud`, `lerc` and `lzma`. GeoTIFF and COG, the plain raster
+`jp2`, `grib`, `flatgeobuf`, `osm`, `pointcloud`, `lerc`, `lzma` and `hecras` (HEC-RAS geometry and
+plan HDF files). GeoTIFF and COG, the plain raster
 and vector formats, the CRS engine and the operations are always built. A COG writer, say,
 needs only:
 

@@ -647,6 +647,123 @@ the originals. Multi-file replacements are not atomic across sidecars and a fail
 leave a partial replacement. Successful Shapefile replacements remove obsolete QIX/SBN/SBX
 indexes and optional PRJ/CPG sidecars not produced by the new write.
 
+## dataset-copy, dataset-rename, dataset-delete, dataset-files
+
+```sh
+terrio dataset-files scene.tif --json
+terrio dataset-copy scene.tif backup/scene.tif
+terrio dataset-rename countries.shp countries-new.shp
+terrio dataset-delete obsolete.tif obsolete.shp
+```
+
+These commands manage encoded datasets and their companion files without conversion. The
+destination is an exact dataset name. Existing destinations and companion collisions
+require `--overwrite`; replacing a dataset removes obsolete companions. `--input-format`
+(alias `--format`) restricts the source driver. `--json` returns the driver, affected
+files and copied bytes. `dataset-files` lists owned files and a directory flag.
+
+Shapefile and MapInfo components, raw raster headers, world files, RPCs, PAM metadata,
+overviews and masks are included when present. Raster-only companions are not assigned
+to vector files. Zarr, Arc/Info grids and vector directory datasets (including whole MVT
+pyramids) are handled as trees. A recognized Zarr or Arc/Info grid directory owns its
+complete subtree: copying, renaming or deleting it includes every entry, even user-added
+files. Store unrelated files outside these dataset roots. A Shapefile, MapInfo or CSV
+directory is accepted only when every entry belongs to that driver's datasets;
+directories containing unrelated files or subdirectories are refused. Select individual
+dataset files in a mixed directory. Unrelated siblings of individual dataset files are
+retained. TIFF world files are used only without an embedded transform. CSV `.prj` files
+are preserved: GDAL 3.13.3 uses these CRSs but omits them from `GetFileList` and loses
+them during dataset copy. Basename companions such as `.prj` and `.hdr` can be shared by
+distinct recognized primary files. Rename, deletion and replacement refuse such a
+companion while another same-basename owner remains. A batch deletion may include all
+owners; copying may read a shared companion without changing its original.
+
+Directory recognition parses complete Zarr marker and MVT metadata JSON, checking
+fields at the top level rather than matching text in a fixed prefix. Unknown fields
+are skipped while streaming. Large metadata files are read in full; tile payloads
+are not decoded for inventory.
+
+VRT copies and renames copy referenced assets with regular corresponding basenames,
+confined by default to the original source directory tree. Native links and all entries
+of referenced directory datasets are checked before mutation. Remote URL paths with
+percent-encoded slashes are refused by default: server handling of those bytes cannot
+establish directory confinement. Trusted callers can use the same explicit external-reference
+opt-in for such paths. Non-raw references must
+identify a supported dataset; arbitrary files are accepted only as explicit raw-band
+data. Virtual keys with dot segments are refused by default. Use
+`--allow-external-references` only for trusted VRTs that need assets outside that tree,
+such as a local VRT referencing an HTTP raster. The same option is
+`allow_external_references` in Rust/Python and `allowExternalReferences` in JavaScript.
+MCP exposes the same opt-in: a client enabling it is explicitly trusting the VRT
+references and permitting access beyond the source tree. MCP clients must not enable it
+for untrusted VRTs. Source references are rewritten to the new names. Rename moves the
+owned definition but preserves original dependencies so other datasets can keep using
+them; copied payloads count toward reported bytes, including for same-filesystem VRT
+renames. VRT/GML bytes are preserved when no reference needs rebasing. GML schema
+locations and Idrisi/ERS header references are also updated. Text header rewrites
+preserve opaque non-reference bytes and CRLF/LF line endings; file-reference values
+themselves must be UTF-8. Irregular basenames are
+refused before mutation, as in GDAL. VRT graph traversal reuses completed inventories
+and permits at most 128 nested definitions; definitions are held in memory. GML
+definitions are also read and parsed in full when preparing a transfer, even when no
+reference changes. Original bytes, decoded text and a serialized output buffer can
+coexist, so peak memory can be several times the definition size and can expand with
+text encoding; there is no fixed memory bound for these definitions. Shared-companion
+safety checks scan the parent directory for each
+input with companions; large batches in one directory can incur quadratic preflight
+work. A file used both as file-bearing metadata and raw VRT pixels is refused if
+rewriting would change those pixels. VRT deletion removes the definition and its owned
+companions, retaining referenced rasters.
+VRT source filenames preserve trailing whitespace and leading whitespace encoded with
+character references or CDATA, matching GDAL. Rewritten references encode leading
+whitespace so it remains part of the filename. Native raster paths also retain edge
+whitespace rather than silently opening a different file. Obsolete companion links,
+including dangling links, are staged and unlinked during overwrite without following
+them; destinations receiving new content continue to refuse symbolic links.
+
+Dataset file management refuses MVT trees containing entries outside `metadata.json` and
+numeric `z/x/y.pbf` or `z/x/y.mvt` tile paths. Relative GML schema references must
+belong to the inventoried file set so they can be rebased; external absolute URIs remain
+unchanged.
+
+Windows native destinations with case-equivalent names are refused during preflight.
+Installation also checks actual destination entries on every platform, rolling back if
+the filesystem aliases two components instead of silently replacing one.
+
+All inputs and destinations are checked before staging files. Source aliases,
+overlapping directory trees, protected roots, read-only mutations and file/directory
+collisions are refused. Failed staging or installation attempts restore the original
+paths; failed rollback returns an error identifying recovery files. After installation
+commits, cleanup failures return success with leftover staged paths in `recovery_files`.
+A failed stat skips deletion and reports that path, since guessing whether a cloud
+object is a directory could delete a broader prefix.
+The CLI reports these leftovers on stderr as well as in JSON. An empty list means
+cleanup completed. Batch deletion includes the shared cleanup list in each report. An
+existing destination must have a successful inventory, including with overwrite; an
+unknown or corrupt destination is refused. Source and destination trees must not be
+changed concurrently. Native renames preserve symlink text, so relative links must
+remain meaningful at their destination; links cannot be renamed across filesystems.
+Overlapping input directory/component sets are refused because they cannot be staged
+independently. Multiple file or object operations do not provide a filesystem-wide or
+object-store transaction.
+
+Local and VSI locations follow `terrio vsi`: memory and writable cloud stores support
+mutation; HTTP and archive members are copy sources only. WebAssembly operates on
+`/vsimem/` datasets and archive members, with no native files or signed cloud writes.
+Owned-file queries and deletion do not open VRT references, which may be missing.
+Archive TIFF tag discovery uses a 16 KiB member cache. Stored ZIP members are read by
+range; compressed members stream and discard preceding bytes when seeking. Partial
+metadata inventories do not validate the whole-member CRC; complete copies still use the
+normal archive extractor and its integrity checks. MCP exposes all four commands; only
+`dataset-files` is marked read-only. JSON and text reports redact URL credentials. Byte
+counts exclude backup/rollback work; native same-filesystem and memory file moves copy
+no payload bytes.
+
+
+
+Destructive operations refuse a same-stem sibling whose inventory fails: its possible
+companion ownership cannot be established safely. Repair or move that sibling first.
+
 ## identify
 
 ```sh
@@ -749,7 +866,7 @@ in Python and JavaScript, including JavaScript Zarr stores opened in memory.
 ## info
 
 ```sh
-terrio info INPUT [--json] [--stats] [--hist] [-l LAYER]...
+terrio info INPUT [--json] [--stats] [--hist] [-l LAYER]... [--oo KEY=VALUE]...
 ```
 
 Prints the driver, size, bands, data types, nodata, geotransform, CRS and extent of a raster, or
@@ -758,6 +875,10 @@ computes band minimum, maximum, mean and standard deviation over valid pixels. R
 summarized from their header alone, and their overviews are listed. The subdatasets of netCDF,
 HDF5 and GeoPackage files are listed as `gdalinfo` lists them (`SUBDATASET_N_NAME` and
 `SUBDATASET_N_DESC`).
+
+`--oo KEY=VALUE` opens a vector dataset with an open option, as `convert --oo` does: for
+example the HEC-RAS options that join stored results to a layer (`terrio info plan.p03.hdf -l
+mesh_cells --oo "CELL_SUMMARIES=Maximum Water Surface"`; see [HEC-RAS](hecras.md)).
 
 `--hist` computes each band's histogram as `gdalinfo -hist` does, and prints it as it does
 (`256 buckets from -0.5 to 255.5:` and the counts; a `histogram` object of `count`, `min`, `max`
@@ -807,7 +928,13 @@ even when an unrelated codec ignores them. Invalid `WEBP_LOSSLESS` values are
 rejected; accepted booleans are `YES/NO`, `TRUE/FALSE`, `ON/OFF`, and `1/0`.
 
 Tile archives (PMTiles, MBTiles, MVT) take `--oo ZOOM_LEVEL=N` and `--oo CLIP=NO` as inputs; see
-[Formats](formats.md#tile-archives).
+[Formats](formats.md#tile-archives). HEC-RAS geometry and plan files take the HECRAS options
+(`CELL_SUMMARIES`, `CELL_SERIES` with `TIME_STEP`, `XS_RESULTS`, ...; see [HEC-RAS](hecras.md)):
+
+```sh
+terrio convert BaldEagleDamBrk.p03.hdf cells.gpkg -l mesh_cells \
+  --oo "CELL_SUMMARIES=Maximum Water Surface" --oo "CELL_SERIES=Water Surface" --oo TIME_STEP=12
+```
 
 Point clouds (LAS, LAZ, COPC, EPT, PLY, E57) convert to LAS, LAZ, COPC, PLY, E57, an EPT
 dataset (an output named `ept.json`, `--ept-data-type laszip|binary|zstandard`) or a vector
@@ -1145,6 +1272,40 @@ requests. `--json` adds the IFD and first-block offsets, the overview factors, G
 metadata and layout notes (mask IFDs after image data, which do not affect validity). The exit
 status is 1 when the file is not a valid COG, as with GDAL's script. The command is also a
 read-only MCP tool.
+
+`--profile gdal` selects GDAL 3.13's structural rules: exact main-IFD placement
+following the optional structural metadata, source-width tiling threshold above
+1024, and overviews ordered by their dimensions. `--full-check auto|yes|no`
+checks row-major block order, little-endian size leaders, repeated four-byte
+trailers and interleaved masks when the file declares those optimizations. Auto
+checks local inputs fully and keeps HTTP/S3 checks to headers and offset arrays;
+`yes` explicitly fetches block boundary bytes remotely. No pixels are decoded.
+`--full-check yes` requires the GDAL profile. The default profile retains the
+existing rio-cogeo behavior.
+
+GDAL COG full checking examines blocks in the main TIFF and its internal overviews.
+External `.ovr` sidecars make the report invalid and receive header checks only.
+Explicit full checks of URLs can make several boundary requests per stored block;
+the cost grows with the number of blocks, so automatic mode leaves them off.
+Remote full checks stop with an error after 10,000 boundary read calls (excluding
+header/table reads and configured HTTP retries); download larger files to validate
+their full layout locally.
+Full block validation stops at 1,000 findings and reports the limit; remaining
+blocks need not be checked once the file is already invalid.
+Full GDAL checks limit total parsed GDAL metadata to 4 MiB per file and XML nesting
+to 128 levels. Header-only checks and the default rio-cogeo profile ignore this metadata tag.
+
+```sh
+terrio validate-cog dem.tif --profile gdal --full-check yes --json
+```
+
+COG validation reads `GDAL_METADATA` only when full GDAL checks run. Full checks reject
+metadata XML parse errors and malformed attributes. Local files and byte uploads have no
+shared total boundary-read budget; work scales with the stored block arrays. Other VSI
+inputs use the conservative remote policy: automatic full checks are off, and explicit
+full checks use the 10,000-read budget. This includes ZIP members backed by local archives: the
+input is classified by its VSI location, even when resolution extracts it to a temporary
+file. This keeps archive validation policy independent of where the archive is stored.
 
 ## pixel-info
 
@@ -2142,6 +2303,54 @@ pipeline to avoid those fast paths. The other operators use whole-dataset
 reference kernels: GDAL 3.13.3's generic per-band kernels process only the first
 sample.
 
+## Palette conversion
+
+`terrio rgb-to-palette INPUT OUTPUT` quantizes Byte RGB imagery with GDAL's
+median-cut palette generation and integer error diffusion. `--color-count 2..256`
+(default 256), `--bit-depth 5|8` (default 5), `--no-dither`, `--color-map FILE` and
+`--output-nodata INDEX` control generation/mapping. Color count applies only to
+generated palettes; when `--color-map` supplies a table, that table determines
+the color count and `--color-count` is ignored. A color map can be an indexed
+raster, indexed GDAL/GRASS text, RGB GMT CPT (with a `# COLOR_MODEL = RGB` header) or QGIS QML/QLR file. RGB color
+interpretations select the channels when present; otherwise the first three
+bands are used. Shared RGB nodata excludes pixels from palette generation. If no shared RGB
+nodata value exists, dataset masks (or alpha validity) select valid pixels. This
+precedence follows GDAL; masks do not add exclusions when shared RGB nodata exists.
+Explicit Python/JavaScript masks use this same precedence.
+Indexed CPT tables retain declared segment endpoints; interior indices are padding,
+matching GDAL palette conversion. DEM color relief interpolates ramps separately.
+UTF-8 BOM-prefixed QGIS XML is recognized without a QML filename hint.
+GDAL also tests vertically diffused RGB values for nodata, so a valid near-black
+pixel can become nodata after dithering. An automatically generated palette reserves index
+zero for invalid pixels; a supplied map uses invalid-pixel handling only when
+`--output-nodata` is given, following GDAL. Reserving a nodata index inserts
+a table slot, shifts later entries and drops the old last entry if the table
+would exceed 256 entries; this also follows GDAL for supplied palettes. A nodata
+index beyond the table pads it with transparent black, and valid pixels may map
+to those padding entries, as in GDAL's virtual output. GeoTIFF normalizes their
+alpha to opaque unless the entry is the declared nodata index.
+
+`terrio palette-to-rgb INPUT OUTPUT [--rgba]` expands indexed pixels to three
+or four Byte bands, and `terrio attach-palette PALETTE INPUT OUTPUT` replaces a
+Byte/UInt16 raster's table without changing its indices. Expansion/attachment
+preserve dataset masks in returned handles and GeoTIFF/COG outputs; other
+formats omit separate masks. Source nodata becomes transparent on RGBA expansion;
+unmapped indices become black in RGB and transparent black in RGBA. GeoTIFF stores RGB table entries and nodata
+transparency; arbitrary per-entry alpha requires a format such as PNG.
+
+All three commands accept raster output options and require `--overwrite` to
+replace an existing output. Inputs and their local symlink/hard-link aliases are
+protected from replacement. These operations currently materialize the full
+input/output. They do not append subdatasets, execute GDALG pipelines or support
+non-Byte RGB quantization. QGIS XML alpha values are honored explicitly, rather
+than reproducing GDAL 3.13.3's XML alpha parsing bug.
+
+Rust exposes `ops::palette`, Python exposes `rgb_to_palette`, `palette_to_rgb`,
+`attach_palette`, `read_color_table`, and JavaScript exposes `rgbToPalette`,
+`paletteToRgb`, `attachPalette`, `readColorTable`. Python accepts paths and Raster
+objects; JavaScript accepts Dataset objects/uploaded files and color-file text
+or RGBA arrays. CLI commands are also available through MCP.
+
 
 ## Raster/vector indexes and GTI creation
 
@@ -2229,3 +2438,177 @@ publish all components from staging and require a new basename even with `--over
 Append/update, layer replacement, STAC-GeoParquet profiles, XML companion output and
 GDAL-specific creation options are outside this supported subset. Shapefile field
 width/type limits still apply. The three commands are also exposed as MCP tools.
+
+Palette commands reject masked PMTiles/MBTiles outputs, including materialized
+results, because these writers cannot retain the separate dataset mask.
+GeoTIFF/COG preserve it.
+
+Palette text/XML channels outside 0–255 are rejected. GDAL 3.13.3 wraps invalid
+RGB text channels; Terrio deliberately rejects those malformed inputs. Text
+Color-file XML is limited to 65,536 elements and 256 nesting levels; color files are limited to 10 MiB while streaming, including when their size
+is unavailable.
+
+### Parquet metadata files
+
+`terrio parquet-create-metadata part-0.parquet part-1.parquet --output _metadata --json`
+creates a metadata-only file referencing the explicitly supplied partitions in input order.
+Inputs may repeat, including aliases of the same physical file: each occurrence contributes
+its row groups and rows again. Supply each partition once for a deduplicated catalog.
+`--overwrite` replaces an existing output; direct inputs and externally referenced column
+files are protected. The CLI command also supplies the `parquet-create-metadata` MCP tool.
+
+Input schemas and Arrow field metadata must agree. GeoParquet coordinate systems, encodings
+and column definitions must agree; bounds and geometry types are merged. A missing bound
+omits that column's aggregate bound, and an unknown geometry type keeps the aggregate type
+unknown. Mixed 2D/3D bounds and antimeridian-wrapped bounds omit the optional aggregate
+bound rather than inventing Z values or an incorrect Cartesian extent. Other file
+metadata is retained only when identical across inputs; JSON reports
+`omitted_metadata_keys`, file/row-group counts, rows and encoded output bytes. Arrow schema
+metadata is regenerated to carry the merged GeoParquet metadata.
+
+The operation reads headers and footers without decoding data pages and does not validate
+page integrity. Footer buffers grow with bytes received; complete footers and their
+decoded metadata are materialized, so memory scales with metadata size. Input and
+output must share a filesystem namespace (native, `/vsimem/`,
+or one writable S3/Azure namespace) so column paths remain relative. Query-bearing source
+URLs cannot be persisted as partition references. Archive inputs cannot target another
+filesystem. Native symbolic-link outputs are refused. This command does not discover
+partitions or change the existing `partition` command's output behavior.
+
+Column `file_path` values are logical relative paths. URL transport paths are decoded
+once when deriving them and encoded once when resolving them; spaces and literal percent
+characters remain distinct. Object-store keys retain their logical spelling.
+
+Parquet page indexes remain in the referenced partition files. The metadata file retains
+column/offset-index locations relative to each column's `file_path`, just as it retains the
+column data-page locations; it does not copy those payloads into `_metadata`.
+
+## GeoPackage repacking
+
+`terrio gpkg-repack survey.gpkg --json` compacts a native GeoPackage in place.
+The `gpkg-repack` MCP tool accepts the same arguments. JSON reports original and compacted
+byte/page counts and the preserved SQLite page size.
+
+Repacking rebuilds every B-tree from its encoded records, preserving rowids, SQL objects,
+application/user versions, text encodings, rasters and vector metadata. It supports expression,
+partial, descending and collated indexes, WITHOUT ROWID tables, overflow data, R-tree shadow
+tables, and auto-vacuum/incremental-vacuum pointer maps. Physical page layouts and final sizes
+can differ from SQLite VACUUM; the operation does not promise byte-identical files.
+
+Native changes use SQLite-compatible exclusive locks and a synced rollback journal. All original
+data pages, including unchanged pages and pages removed by truncation, are journaled before a
+full-image write. SQLite's unused lock-byte page is excluded because its page number is a
+super-journal marker. An interrupted rewrite can be recovered by SQLite.
+The database pathname is checked against the locked handle before journal creation. Do not
+rename or replace an open database or its parent directory during a transaction. On Unix,
+directory sync errors abort before database writes; filesystems without directory fsync are
+unsupported for this operation. Windows flushes the journal and database file handles; directory
+entry durability follows the platform. In-memory replacement refuses a concurrent change to its
+source image, allowing the caller to retry.
+A database locked by another process or with a nonempty WAL sidecar is refused. POSIX locks
+are process-scoped; callers must close/checkpoint same-process SQLite connections before
+repacking and must not access the database concurrently through them. Native symbolic-link or
+hard-linked dataset filenames, linked/special sidecars, reserved/encrypted page bytes, remote and archive paths
+are refused. This is storage maintenance, not a GeoPackage specification validator.
+
+Native in-place append/update also refuses hard-linked database targets: another alias
+may have its own WAL. It rejects linked or special journal/WAL/shared-memory sidecars before
+recovery; it never replays a journal through a symbolic link or hard-link alias.
+Native append/update follows filename symlinks to their target and checks that target's WAL.
+
+Unix directory-sync requirements also apply to existing native SQLite in-place edits and
+recovery, including append/update. Unreadable directories and filesystems rejecting directory
+fsync can fail before page writes. A sync failure after journal deletion explicitly reports
+that changes committed or recovery completed but durability is unconfirmed; callers must not
+blindly retry an append.
+
+Native repacking also accepts GeoPackage contents under opaque filenames such as `snapshot.zip`;
+explicit archive locations remain unsupported. On Unix, rollback journals inherit the database's
+permission bits, restricted further by the process umask. A nonempty WAL is refused before any
+rollback-journal recovery. Other format checks inspect the recovered header, so successful
+recovery can precede a format-specific refusal. If initial journal-directory synchronization
+fails, the unchanged database and synced rollback journal are retained for recovery after the
+filesystem issue is resolved; filesystems without directory synchronization are unsupported.
+
+The rollback journal can approach the original file size, plus per-page record headers.
+Peak database-plus-journal disk usage can approach twice the original size; write I/O includes
+both the journal and replacement database image. Reserve disk space accordingly.
+
+Repacking scans and rewrites the complete database. It owns one input image and builds
+one contiguous output image; encoded records/cells for the largest tree are also materialized.
+Memory depends on row shape/count and is not hard-capped. A local 2.01 GiB live-BLOB
+derivative used about 6.04 GiB peak RSS; its mostly deleted counterpart used about 2.06 GiB.
+
+WebAssembly uses `/vsimem/` paths or the bytes API. A bytes input must be a self-contained,
+recovered/checkpointed image; external journal/WAL files are not part of it.
+
+## Multidimensional mosaics
+
+`terrio mdmosaic INPUT... OUTPUT [--array PATH_OR_NAME]` combines numeric
+scientific arrays on their indexing-variable coordinates. Repeat `--array` to
+select multiple arrays; by default, all arrays with at least two dimensions
+are selected. Sources can be netCDF/HDF5 files or local/remote Zarr stores.
+The output must be a new `.nc` (netCDF-4) file or `.zarr` (Zarr v2) store.
+The command is also exposed as the `mdmosaic` MCP tool.
+
+Sources contributing to an array must agree on its full path, numeric type,
+nodata, packing scale/offset, units and dimension names/order. Dimensions that
+change across inputs need a finite, numeric, one-dimensional indexing variable.
+Unindexed dimensions, including CF bounds axes, are retained positionally and
+must keep the same size across inputs. Regular axes must share spacing and grid
+alignment; disjoint irregular ranges and axes made entirely of irregular singleton time slices are
+also supported. Last input wins overlaps, including nodata pixels. Gaps on
+regular grids, or missing combinations of coordinates across axes, are filled
+with `_FillValue`, falling back to a scalar CF `missing_value`, or raw zero
+if neither is declared. An array-valued `missing_value` is retained as metadata
+but does not select a unique gap fill value.
+
+The shared Rust `multidim::mosaic` creates lazy array handles: it reads coordinate
+one-dimensional indexing variables to plan the mosaic but fetches data only for intersecting hyperslabs.
+Python `mosaic_multidim(sources, dst=None, arrays=None)` and JavaScript
+`mosaicMultidim(sources, {arrays})` expose the same engine. Numeric values retain
+their native types, including Int64/UInt64 precision. Input handles may be closed
+after construction; mosaic views keep their sources alive. netCDF snapshots
+currently materialize arrays; Zarr snapshots iterate output chunks.
+
+Selected arrays automatically retain their auxiliary coordinates, CF bounds and scalar
+CRS definitions. Auxiliary coordinates and bounds must resolve to the same array paths
+across contributors; equivalent scalar CRS aliases can use different paths when their
+metadata agrees. Conflicting definitions and missing dependencies are rejected. Extended
+grid-mapping coordinate tuples retain their declared order. Auxiliary payloads stay lazy.
+Reference attributes keep unambiguous local names and use explicit paths when merged
+groups would otherwise rebind them. GDAL 3.13.3 automatic coordinate discovery does not
+resolve absolute coordinate names; those cross-group arrays/attributes remain readable,
+and Terrio resolves them according to CF group scoping.
+
+Terrio retains source group paths and metadata; GDAL places explicitly selected
+nested arrays at the root. It also retains integer coordinate types rather than
+GDAL's synthesized Float64 coordinates. Float32 indexing variables use their
+native precision when recognizing regular grids and placing tiles; gap cells
+are retained. Off-grid origins beyond that precision allowance are rejected;
+the allowance is capped at 0.001 grid cells. This can reject mathematically regular
+Float32 coordinates when large origins or wide tile separation amplify rounding
+beyond that cap (including 40 + index × 0.1 at 900-cell separation, also rejected
+by GDAL 3.13.3). Such inputs require higher-precision coordinates before mosaicking. Per-tile `actual_range` metadata on coordinates and data arrays may differ and is removed from the mosaic. Coordinate `comment`, `history`, `long_name`, `source` and `references` may differ; the first input supplies them. Other coordinate attributes, including validity limits, units and calendar, must match to preserve their interpretation. Source chunk shapes and other compatible descriptive metadata are inherited from the first input. Full-array reads and netCDF snapshots materialize the requested data; use selected reads or chunked Zarr output for large mosaics. Extended scalar CF `grid_mapping` clauses are retained; unresolved mapping references are rejected. Irregular axes are sorted with
+equal coordinates deduplicated in either direction.
+
+Coordinate planning checks the actual in-memory element width before reading
+coordinates or allocating generated grids. Combined input coordinate storage per
+axis and each generated coordinate buffer are limited to 256 MiB. This is not a
+cap on data-array size: views remain lazy, Zarr writes iterate chunks, and netCDF
+snapshots materialize the requested data. String/compound arrays, serialized multidimensional VRT output,
+creation/open options, automatic glob/list-file expansion and replacement of
+existing outputs are outside this supported subset. Output replacement is refused
+before writing. Descending axes work directly in Terrio; comparisons normalize
+GDAL 3.13.3 inputs because its descending-axis VRT size/offset computation can
+produce invalid dimensions, then restore the coordinate order for comparison.
+
+A singleton mixed with a regular multidimensional series must align to that
+series; off-grid mixed slices are rejected, as in GDAL 3.13.3. Data-array
+`valid_range`, `valid_min`, `valid_max`, `missing_value`, `grid_mapping` and
+`_Unsigned` must agree across contributing inputs, in addition to scale,
+offset, units and nodata. Numeric integer/float metadata compares by value.
+
+An array present in only some inputs is retained; regions belonging to other
+inputs use that array's nodata value, or zero when it has none.
+>

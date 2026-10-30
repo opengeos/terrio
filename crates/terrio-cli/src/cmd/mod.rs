@@ -7,6 +7,7 @@ pub mod compare;
 pub mod convert;
 pub mod create;
 pub mod crs;
+pub mod dataset_files;
 pub mod dem;
 pub mod edit;
 pub mod enhance;
@@ -21,7 +22,9 @@ pub mod mosaic;
 pub mod multidim;
 pub mod neighbors;
 pub mod overviews;
+pub mod parquet_metadata;
 
+pub mod palette;
 pub mod pansharpen;
 pub mod pixel;
 pub mod pixel_info;
@@ -142,3 +145,5 @@ pub fn with_driver(input: &str, driver: Option<&str>) -> terrio::Result<String> 
         _ => Ok(input.to_string()),
     }
 }
+
+pub mod gpkg;

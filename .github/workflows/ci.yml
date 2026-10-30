@@ -80,6 +80,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+        env:
+          TERRIO_SQLITE_REFERENCE_PYTHON: python3
       # The `ndarray` feature, off by default: its module and its tests.
       - run: cargo clippy -p terrio --features ndarray --lib --test ndarray -- -D warnings
       - run: cargo test -p terrio --features ndarray --test ndarray
@@ -248,7 +250,7 @@ jobs:
           CC_wasm32_unknown_unknown: "false"
         run: >-
           cargo build -p terrio --target wasm32-unknown-unknown --no-default-features
-          --features geotiff,remote,avif,netcdf-hdf5,osm,lzma,flatgeobuf,jp2,lerc,pointcloud,tiles,zarr,sqlite,grib
+          --features geotiff,remote,avif,netcdf-hdf5,osm,lzma,flatgeobuf,jp2,lerc,pointcloud,tiles,zarr,sqlite,grib,hecras
       - name: A GeoTIFF build pulls none of the optional codecs
         run: |
           crates=$(cargo tree -p terrio -e normal --no-default-features --features geotiff --prefix none | cut -d' ' -f1 | sort -u)

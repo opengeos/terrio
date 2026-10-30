@@ -8,9 +8,18 @@ use terrio::{
 };
 
 fn fixture(path: &std::path::Path) {
+    mosaic_fixture(path, 0, 0);
+}
+fn mosaic_fixture(path: &std::path::Path, x_start: u16, offset: u16) {
     let dimensions: Vec<_> = [("time", 2), ("x", 3)]
         .into_iter()
-        .map(|(name, size)| Dimension { name: name.into(), path: format!("/{name}"), size, unlimited: false, indexing_variable: None })
+        .map(|(name, size)| Dimension {
+            name: name.into(),
+            path: format!("/{name}"),
+            size,
+            unlimited: false,
+            indexing_variable: Some(format!("/{name}")),
+        })
         .collect();
     let a = Array::from_bytes(
         ArrayInfo {
@@ -22,12 +31,30 @@ fn fixture(path: &std::path::Path) {
             attributes: json!({}),
             coordinates: vec![],
         },
-        (0u16..6).flat_map(u16::to_le_bytes).collect(),
+        (offset..offset + 6).flat_map(u16::to_le_bytes).collect(),
     )
     .unwrap();
     let mut root = Group::new("/");
     root.dimensions = dimensions;
     root.arrays.push(a);
+    for dimension in &root.dimensions {
+        let values: Vec<u16> = if dimension.name == "x" { (x_start..x_start + 3).collect() } else { vec![0, 1] };
+        root.arrays.push(
+            Array::from_bytes(
+                ArrayInfo {
+                    name: dimension.name.clone(),
+                    path: dimension.path.clone(),
+                    data_type: DataType::U16,
+                    dimensions: vec![dimension.clone()],
+                    chunks: None,
+                    attributes: json!({}),
+                    coordinates: vec![],
+                },
+                values.into_iter().flat_map(u16::to_le_bytes).collect(),
+            )
+            .unwrap(),
+        );
+    }
     Dataset { driver: "Memory".into(), root }.write(path.to_str().unwrap()).unwrap();
 }
 #[test]
@@ -71,21 +98,23 @@ fn mcp_discovers_native_tools_and_reads_the_cli() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cube.nc");
     fixture(&path);
+    let mosaic = dir.path().join("mcp-mosaic.nc");
     let mut child = Command::new(env!("CARGO_BIN_EXE_terrio")).arg("mcp").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut input = child.stdin.take().unwrap();
     for message in [
         json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mdread","arguments":{"args":[path.to_str().unwrap(),"--array","/wind","--isel","time=1"]}}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mdmosaic","arguments":{"args":[path.to_str().unwrap(),path.to_str().unwrap(),mosaic.to_str().unwrap(),"--array","wind"]}}}),
     ] {
         writeln!(input, "{message}").unwrap();
     }
     let responses: Vec<Value> =
-        BufReader::new(child.stdout.take().unwrap()).lines().take(2).map(|line| serde_json::from_str(&line.unwrap()).unwrap()).collect();
+        BufReader::new(child.stdout.take().unwrap()).lines().take(3).map(|line| serde_json::from_str(&line.unwrap()).unwrap()).collect();
     drop(input);
     assert!(child.wait().unwrap().success());
     let list = responses.iter().find(|r| r["id"] == 1).unwrap();
     let tools = list["result"]["tools"].as_array().unwrap();
-    for name in ["mdinfo", "mdread", "mdconvert"] {
+    for name in ["mdinfo", "mdread", "mdconvert", "mdmosaic"] {
         assert!(tools.iter().any(|t| t["name"] == name));
     }
     assert_eq!(tools.iter().find(|t| t["name"] == "mdread").unwrap()["annotations"]["readOnlyHint"], true);
@@ -93,6 +122,10 @@ fn mcp_discovers_native_tools_and_reads_the_cli() {
     assert_eq!(read["result"]["isError"], false);
     let values: Value = serde_json::from_str(read["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(values["values"], json!([3, 4, 5]));
+    assert_eq!(tools.iter().find(|t| t["name"] == "mdmosaic").unwrap()["annotations"]["readOnlyHint"], false);
+    assert_eq!(responses.iter().find(|r| r["id"] == 3).unwrap()["result"]["isError"], false);
+    let array = terrio::multidim::open(mosaic.to_str().unwrap()).unwrap().array("wind").unwrap();
+    assert_eq!(array.read().unwrap().values().unwrap(), json!([0, 1, 2, 3, 4, 5]));
 }
 
 #[test]
@@ -124,4 +157,28 @@ fn named_transpose_rejects_repeated_axes_clearly() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("ambiguous transpose dimension 'x'"));
+}
+
+#[test]
+fn mosaics_cli_tiles_and_preserves_existing_output_on_rejection() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.nc");
+    let b = dir.path().join("b.nc");
+    let output = dir.path().join("mosaic.nc");
+    mosaic_fixture(&a, 0, 0);
+    mosaic_fixture(&b, 3, 10);
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_terrio"))
+            .args(["mdmosaic", a.to_str().unwrap(), b.to_str().unwrap(), output.to_str().unwrap(), "--array", "wind"])
+            .output()
+            .unwrap()
+    };
+    let result = run();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let array = terrio::multidim::open(output.to_str().unwrap()).unwrap().array("wind").unwrap();
+    assert_eq!(array.shape(), [2, 6]);
+    assert_eq!(array.read().unwrap().values().unwrap(), json!([0, 1, 2, 10, 11, 12, 3, 4, 5, 13, 14, 15]));
+    let before = std::fs::read(&output).unwrap();
+    assert!(!run().status.success());
+    assert_eq!(std::fs::read(output).unwrap(), before);
 }

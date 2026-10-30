@@ -498,6 +498,7 @@ the operations and the streams. The other drivers are features:
 | `pointcloud` | on | LAS, LAZ, COPC, EPT, PLY and E57 (the `pointcloud` module). |
 | `lerc` | on | LERC-compressed GeoTIFFs, read and written. |
 | `lzma` | on | LZMA-compressed GeoTIFFs. |
+| `hecras` | on | HEC-RAS geometry and plan HDF files as vector layers, read only (the `HECRAS` driver and the `hecras` module, through the `ras-commander-fast-hdf` engine; needs `netcdf-hdf5`). See [HEC-RAS](hecras.md). |
 | `gdal` | off | The optional GDAL backend: formats terrio has no driver for, through GDAL (needs GDAL installed). See [the GDAL backend](gdal.md#the-optional-gdal-backend). |
 | `ndarray` | off | Raster pixels as `ndarray` arrays, without copying them: views, owned transfers and the masks of lazy reads, with the crate re-exported as `terrio::ndarray`. See [ndarray](#ndarray). |
 
@@ -554,3 +555,13 @@ the repository.
 
 See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
 lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
+
+### Indexed color conversion
+
+`terrio::ops::palette` exposes `rgb_to_palette` with `PaletteOptions`,
+`palette_to_rgb`, `attach_palette` and their lazy-source variants. The lazy
+variants retain dataset validity masks, while the conversions materialize the
+pixels. `parse_color_table`, `color_table_from_bytes` and native
+`read_color_table` accept indexed text/QGIS tables or raster palettes. See
+[Palette conversion](cli.md#palette-conversion) for channel selection,
+quantization settings, supported formats and GDAL differences.
