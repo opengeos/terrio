@@ -19,6 +19,7 @@ mod hexbin;
 mod neighbourhood;
 mod overlay;
 mod select;
+mod selfadjoint;
 mod tiles;
 
 pub use csf::{CsfOptions, csf, csf_classes};
