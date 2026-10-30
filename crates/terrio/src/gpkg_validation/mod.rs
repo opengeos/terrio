@@ -5,6 +5,7 @@ mod extensions;
 mod features;
 mod geometry;
 mod gridded;
+mod integrity;
 mod metadata;
 mod relations;
 mod rtree;
@@ -499,6 +500,9 @@ fn check_core(bytes: &[u8]) -> CoreReport {
         }
     };
     let mut checker = Checker { db, report };
+    if let Err(error) = checker.foreign_keys(bytes) {
+        checker.report.require(false, 6, error.to_string());
+    }
     checker.spatial_references();
     checker.contents();
     checker.extensions();

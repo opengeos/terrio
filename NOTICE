@@ -728,6 +728,28 @@ Licensed under the MIT permission and warranty terms reproduced above for GDAL.
 
 
 -------------------------------------------------------------------------------
+SQLite numeric rendering
+-------------------------------------------------------------------------------
+
+The foreign-key checker in crates/terrio/src/gpkg_validation/integrity.rs adapts
+SQLite 3.54.1's scaled binary-to-decimal conversion, digit rounding and
+round-trip shortening rules, including its power-of-ten tables:
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/util.c
+(powerOfTen, sqlite3Fp2Convert10, sqlite3FpDecode)
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/vdbemem.c (vdbeMemRenderNum)
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/printf.c
+
+SQLite is in the public domain: https://www.sqlite.org/copyright.html
+The source files carry this notice:
+
+  The author disclaims copyright to this source code.  In place of
+  a legal notice, here is a blessing:
+
+    May you do good and not evil.
+    May you find forgiveness for yourself and forgive others.
+    May you share freely, never taking more than you give.
+
+-------------------------------------------------------------------------------
 GDAL GeoPackage validation
 -------------------------------------------------------------------------------
 
