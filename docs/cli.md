@@ -2797,7 +2797,15 @@ agreement is validated for nearest. It can read source windows again while retai
 PNG output contains image pixels only, without world files, CRS sidecars or
 web viewers. Use the JSON grid from `--dry-run` to obtain tile georeferencing;
 GeoTIFF tiles embed their grids and CRS. Distinct per-band nodata requiring PAM
-sidecars is currently refused for GeoTIFF folder output.
+sidecars is currently refused for GeoTIFF folder output. The same restriction
+covers a shared Float32 nodata value whose raw value cannot be represented as
+Float32 (for example `-999.9`), because retaining it also requires PAM. Use an
+exactly representable nodata value or translate it before folder tiling.
+Alpha uses 255 for full opacity for Byte, 32-bit integer and floating-point
+samples, 65535 for UInt16 and 32767 for Int16, following
+[GDAL's warp alpha defaults](https://gdal.org/en/stable/doxygen/structGDALWarpOptions.html). Floating
+alpha fractions are retained in typed GeoTIFF tiles; GDAL 3.13.3's tile writer
+can quantize such alpha samples to integers.
 
 Maximum-zoom resampling defaults to cubic; `--overview-resampling` selects the
 method at lower zooms. Every zoom is rendered directly from the source (using
