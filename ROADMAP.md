@@ -86,6 +86,11 @@ commands. Command-group progress:
       Landed in [#374](https://github.com/opengeos/terrio/pull/374), with real-data
       conformance and measured remote header/full-check I/O.
 
+- [ ] Seek-optimized ZIP archives: create, append, list, optimize and validate through
+      Rust, CLI/MCP, Python and JavaScript, with lazy native/HTTP GeoTIFF member reads.
+      Proposed in [#404](https://github.com/opengeos/terrio/pull/404); 33 GDAL 3.13.3
+      VSI comparisons include eight SOZip archive/window checks and measured HTTP I/O.
+
 - [ ] Multidimensional mosaics: lazy coordinate-aligned numeric arrays across
       Rust, CLI/MCP, Python and JavaScript, with netCDF/Zarr output and real
       NOAA wind comparisons registered as `mdmosaic`. Proposed in
