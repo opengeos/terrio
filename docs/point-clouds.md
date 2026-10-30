@@ -225,21 +225,21 @@ neighbours as far as each other, radius searches sorted by distance with a stabl
 libstdc++'s `std::sort` orders up to 16 points; larger results may order points at exactly the
 same distance differently), covariances with PDAL's running means and offsets rounded to floats,
 and eigenvalues and eigenvectors as Eigen's `SelfAdjointEigenSolver` computes them, operation for
-operation, so that their features are PDAL's to the bit. Two differ by rounding: `Omnivariance`
-takes the cube root of Rust rather than of the C library (within an ulp), and `filters.miniball`
-finds the smallest enclosing ball exactly (Welzl's algorithm), where PDAL's Seb stops within its
-tolerance (within 1e-9). PDAL's quirks are kept: `filters.colorization` makes its dimensions
-doubles (it asks for the bands' types before opening the raster); `filters.dem` keeps no point
-when the range has no lower or upper bound; `filters.overlay` takes the second attribute when no
-column is named; `filters.sort` orders by the last dimension, the others breaking its ties (and
-keeps the order of points as large, which PDAL's default algorithm leaves to `std::sort`);
-`filters.skewnessbalancing` returns the points sorted by Z. Two are not: PDAL 2.9's
-`filters.colorization` reads the n-th band for the n-th dimension, whatever band the dimension
-names (`Infrared:4` alone gets band 1), where terrio reads the band named; and `filters.overlay`
-takes a layer without a CRS to be in the points' CRS, where PDAL refuses it. `filters.dem` and
-`filters.colorization` take the raster to be in the points' CRS, as PDAL does; `filters.overlay`
-reprojects the polygons to it. `covariancefeatures`'s `threads` (terrio uses every core) and
-`overlay`'s `query` and `bounds` are left out.
+operation, so that, short of such ties, their features are PDAL's to the bit. Two differ by
+rounding: `Omnivariance` takes the cube root of Rust rather than of the C library (within an ulp),
+and `filters.miniball` finds the smallest enclosing ball exactly (Welzl's algorithm), where PDAL's
+Seb stops within its tolerance (within 1e-9). PDAL's quirks are kept: `filters.colorization` makes
+its dimensions doubles (it asks for the bands' types before opening the raster); `filters.dem`
+keeps no point when the range has no lower or upper bound; `filters.overlay` takes the second
+attribute when no column is named; `filters.sort` orders by the last dimension, the others
+breaking its ties (and keeps the order of points as large, which PDAL's default algorithm leaves
+to `std::sort`); `filters.skewnessbalancing` returns the points sorted by Z. Two are not: PDAL
+2.9's `filters.colorization` reads the n-th band for the n-th dimension, whatever band the
+dimension names (`Infrared:4` alone gets band 1), where terrio reads the band named; and
+`filters.overlay` takes a layer without a CRS to be in the points' CRS, where PDAL refuses it.
+`filters.dem` and `filters.colorization` take the raster to be in the points' CRS, as PDAL does;
+`filters.overlay` reprojects the polygons to it. `covariancefeatures`'s `threads` (terrio uses
+every core) and `overlay`'s `query` and `bounds` are left out.
 Every filter takes `--a-srs` to assign a CRS to points that have none or a wrong one, as
 `terrio grid` and `terrio convert` do (PDAL's `readers.las.override_srs`).
 
