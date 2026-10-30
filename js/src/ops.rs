@@ -159,6 +159,18 @@ pub(crate) enum WarpInput {
 }
 
 impl terrio::ops::warp::WarpSource for WarpInput {
+    fn has_mask(&mut self) -> terrio::Result<bool> {
+        match self {
+            Self::File(reader) => Ok(reader.has_mask()),
+            Self::Shared(inner) => {
+                let inner = inner.try_borrow().map_err(|_| terrio::Error::InvalidArgument("raster is already in use".into()))?;
+                match &*inner {
+                    Inner::Raster(reader) => Ok(reader.has_mask()),
+                    _ => Err(terrio::Error::InvalidArgument("expected a raster".into())),
+                }
+            }
+        }
+    }
     fn read_mask(&mut self, window: terrio::Window, overview: Option<usize>) -> terrio::Result<Option<Vec<u8>>> {
         match self {
             Self::File(reader) => reader.read_mask(window, overview),

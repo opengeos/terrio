@@ -276,6 +276,21 @@ def main():
         cases.append(('dem-interior-nodata', 'xyz', 128, 'GTiff', 'raster', 2, []))
         for source in ['nodata', 'alpha']:
             cases.append((source, 'xyz', 128, 'PNG', 'raster', 2, ['--no-alpha']))
+        # GDAL's alpha scaling for UInt32/Int32 is 255 (not the type maximum).
+        for kind, dtype, alpha in [('alpha-uint32', gdal.GDT_UInt32, 2147483648), ('alpha-int32', gdal.GDT_Int32, 1073741824)]:
+            path = root / f'{kind}.tif'
+            original = gdal.Open(str(rgb))
+            ds = gdal.GetDriverByName('GTiff').Create(str(path), original.RasterXSize, original.RasterYSize, 4, dtype)
+            ds.SetGeoTransform(original.GetGeoTransform())
+            ds.SetProjection(original.GetProjection())
+            for band, interpretation in enumerate([gdal.GCI_RedBand, gdal.GCI_GreenBand, gdal.GCI_BlueBand], 1):
+                ds.GetRasterBand(band).WriteArray(original.GetRasterBand(band).ReadAsArray())
+                ds.GetRasterBand(band).SetColorInterpretation(interpretation)
+            ds.GetRasterBand(4).Fill(alpha)
+            ds.GetRasterBand(4).SetColorInterpretation(gdal.GCI_AlphaBand)
+            ds = None
+            sources[kind] = path
+            cases.append((kind, 'xyz', 128, 'GTiff', 'raster', 2, ['--add-alpha']))
         # Global coordinate planning and reprojected nearest-neighbor pixels.
         for scheme in ['WebMercatorQuad', 'WorldCRS84Quad']:
             for convention in ['xyz', 'tms']:
@@ -291,7 +306,7 @@ def main():
             reference, actual = root / f'ref{index}', root / f'out{index}'
             opts = ['--tiling-scheme', scheme, '--max-zoom', str(zoom), '--min-zoom', str(0 if 'pyramid' in extra else zoom), '--tile-size', str(size),
                     '--convention', convention, '--format', fmt, '--resampling', 'nearest', *[v for v in extra if v != 'pyramid']]
-            if fmt == 'GTiff':
+            if fmt == 'GTiff' and '--add-alpha' not in opts:
                 opts += ['--no-alpha']
             try:
                 run(['gdal', 'raster', 'tile', sources[source], reference, '--webviewer', 'none', '--num-threads', '1', *opts])
