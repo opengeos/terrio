@@ -249,3 +249,81 @@ fn rejects_member_range_overflow_before_reading_an_index() {
     };
     assert!(read_index(&mut std::io::Cursor::new(bytes), &member).unwrap().unwrap_err().contains("beyond the archive"));
 }
+
+#[test]
+fn invalid_properties_and_names_preserve_existing_outputs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("a.txt");
+    let output = tmp.path().join("out.zip");
+    fs::write(&input, b"hello").unwrap();
+    fs::write(&output, b"preserve").unwrap();
+    let options = SozipOptions { overwrite: true, content_type: Some("x".repeat(65536)), ..Default::default() };
+    assert!(matches!(create(&[&s(&input)], &s(&output), &options), Err(Error::InvalidArgument(_))));
+    assert_eq!(fs::read(&output).unwrap(), b"preserve");
+    let root = "/vsimem/sozip-name-limits";
+    let long = format!("{root}/{}", "x".repeat(65536));
+    crate::vsi::write(&long, b"hello").unwrap();
+    let options = SozipOptions { overwrite: true, ..Default::default() };
+    assert!(matches!(create(&[&long], &s(&output), &options), Err(Error::InvalidArgument(_))));
+    assert_eq!(fs::read(&output).unwrap(), b"preserve");
+    crate::vsi::delete(root, true).unwrap();
+}
+
+#[test]
+fn index_probe_propagates_io_failure() {
+    struct FailingReader {
+        bytes: std::io::Cursor<Vec<u8>>,
+        fail_at: u64,
+    }
+    impl Read for FailingReader {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            if self.bytes.position() == self.fail_at {
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "injected transport failure"));
+            }
+            self.bytes.read(out)
+        }
+    }
+    impl Seek for FailingReader {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.bytes.seek(pos)
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("data.bin");
+    let archive = tmp.path().join("data.zip");
+    fs::write(&source, data(10_000)).unwrap();
+    create(&[&s(&source)], &s(&archive), &yes(4096)).unwrap();
+    let mut bytes = std::io::Cursor::new(fs::read(archive).unwrap());
+    let member = zipdir::central_directory(&mut bytes).unwrap().remove(0);
+    let fail_at = zipdir::data_offset(&mut bytes, &member).unwrap() + member.compressed_size;
+    let mut failing = FailingReader { bytes, fail_at };
+    assert!(matches!(read_index(&mut failing, &member), Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut));
+}
+
+#[test]
+fn small_chunk_does_not_allocate_its_forged_decoded_size() {
+    let mut deflater = Deflater::new(Vec::new(), None);
+    deflater.write_all(b"hello").unwrap();
+    let (compressed, compressed_size, _, _) = deflater.finish().unwrap();
+    let index = Index { chunk_size: u32::MAX, uncompressed_size: u32::MAX as u64, compressed_size, offsets: vec![] };
+    assert!(inflate_chunk(&mut std::io::Cursor::new(compressed), 0, &index, 0, u32::MAX as usize - 1).is_err());
+}
+
+#[test]
+fn lazy_zip_errors_and_unindexed_fallback_are_explicit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let raster =
+        crate::Raster::new(crate::RasterConfig { cols: 10, rows: 10, bands: 1, data_type: crate::DataType::U8, ..Default::default() });
+    let source = tmp.path().join("small.tif");
+    crate::write_raster(&raster, &s(&source), &Default::default()).unwrap();
+    let archive = tmp.path().join("plain.zip");
+    create(&[&s(&source)], &s(&archive), &SozipOptions { enable: EnableSozip::No, junk_paths: true, ..Default::default() }).unwrap();
+    let path = format!("/vsizip/{}/small.tif", s(&archive));
+    let mut lazy = crate::open_raster_lazy(&path).unwrap();
+    let window = lazy.read_window(crate::Window { x: 1, y: 2, width: 3, height: 4 }, &Default::default()).unwrap();
+    assert_eq!(window.raster.get(0, 0, 0), 0.0);
+    assert!(crate::open_raster_lazy(&format!("/vsizip/{}/missing.tif", s(&archive))).is_err());
+    let malformed = tmp.path().join("bad.zip");
+    fs::write(&malformed, b"not a ZIP archive").unwrap();
+    assert!(crate::open_raster_lazy(&format!("/vsizip/{}/small.tif", s(&malformed))).is_err());
+}

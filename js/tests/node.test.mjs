@@ -2718,6 +2718,10 @@ test("sozip: create, list, validate and optimize in memory", () => {
   assert.equal(r.seek_optimized, 1);
   const members = terrio.sozipList("/vsimem/jssozip/out.zip");
   assert.deepEqual(members.map(m => [m.name, m.sozip_chunk_size]), [["big.csv", 4096], ["small.txt", null]]);
+  const before = terrio.vsiRead("/vsimem/jssozip/out.zip");
+  assert.throws(() => terrio.sozipCreate(["/vsimem/jssozip/big.csv"], "/vsimem/jssozip/out.zip", { overwrite: true, chunkSize: 0 }), /chunk size/);
+  assert.throws(() => terrio.sozipOptimize("/vsimem/jssozip/out.zip", "/vsimem/jssozip/opt.zip", { chunkSize: 0 }), /chunk size/);
+  assert.deepEqual(terrio.vsiRead("/vsimem/jssozip/out.zip"), before);
   const v = terrio.sozipValidate("/vsimem/jssozip/out.zip");
   assert.ok(v.valid);
   assert.deepEqual(v.sozip_files, ["big.csv"]);

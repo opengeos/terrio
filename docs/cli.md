@@ -1900,7 +1900,8 @@ chunk decompresses on its own; it exits with status 1 when the archive is not va
 GeoTIFFs in a zip archive are read in place when stored or seek-optimized: `terrio info` and
 window reads of `/vsizip/archive.zip/dem.tif` (or of a remote archive, by range requests) read
 only the chunks they need instead of extracting the archive. Other members, and other formats,
-are extracted to a temporary directory first.
+are extracted to a temporary directory first. In-place ZIP readers currently use a shared
+seekable member reader rather than the temporary-file reopen path for parallel decoding.
 
 GDAL 3.13.3's `sozip optimize` also adds the input archive itself to its output (a bug); terrio
 does not. Creation and optimization assemble the output archive in memory, and validation

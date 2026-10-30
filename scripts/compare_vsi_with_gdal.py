@@ -505,8 +505,8 @@ class RangeServer:
                 self.do_GET(head=True)
 
             def do_GET(self, head: bool = False):
-                path = root / urllib.parse.unquote(self.path.lstrip("/").split("?")[0])
-                if not path.is_file():
+                path = (root / urllib.parse.unquote(self.path.lstrip("/").split("?")[0])).resolve()
+                if not path.is_relative_to(root.resolve()) or not path.is_file():
                     self.send_response(404)
                     self.send_header("Content-Length", "0")
                     self.end_headers()
@@ -515,8 +515,22 @@ class RangeServer:
                 rng = self.headers.get("Range")
                 status, body, extra = 200, data, {}
                 if rng:
-                    a, b = rng.removeprefix("bytes=").split("-")
-                    a, b = int(a), min(int(b) if b else len(data) - 1, len(data) - 1)
+                    match = re.fullmatch(r"bytes=(\d*)-(\d*)", rng)
+                    if match and (match[1] or match[2]) and data:
+                        if match[1]:
+                            a = int(match[1])
+                            b = min(int(match[2]) if match[2] else len(data) - 1, len(data) - 1)
+                        else:
+                            a, b = max(0, len(data) - int(match[2])), len(data) - 1
+                        valid = a <= b and a < len(data)
+                    else:
+                        valid = False
+                    if not valid:
+                        self.send_response(416)
+                        self.send_header("Content-Length", "0")
+                        self.send_header("Content-Range", f"bytes */{len(data)}")
+                        self.end_headers()
+                        return
                     status, body, extra = 206, data[a:b + 1], {"Content-Range": f"bytes {a}-{b}/{len(data)}"}
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(body)))

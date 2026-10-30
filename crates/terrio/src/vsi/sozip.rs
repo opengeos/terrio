@@ -12,6 +12,7 @@ use super::{Node, ReadSeek, not_found, read_into};
 use crate::{Error, Result};
 use flate2::{Compress, Compression, FlushCompress, Status};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
@@ -244,7 +245,12 @@ pub(crate) fn read_index(r: &mut dyn ReadSeek, e: &CdEntry) -> Result<std::resul
     }
     r.seek(SeekFrom::Start(at))?;
     let mut h = [0u8; 30];
-    if r.read_exact(&mut h).is_err() || u32::from_le_bytes([h[0], h[1], h[2], h[3]]) != zipdir::LOCAL {
+    match r.read_exact(&mut h) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(Ok(None)),
+        Err(error) => return Err(error.into()),
+    }
+    if u32::from_le_bytes([h[0], h[1], h[2], h[3]]) != zipdir::LOCAL {
         return Ok(Ok(None));
     }
     let u16_at = |i: usize| u16::from_le_bytes([h[i], h[i + 1]]) as usize;
@@ -258,7 +264,7 @@ pub(crate) fn read_index(r: &mut dyn ReadSeek, e: &CdEntry) -> Result<std::resul
     let mut extra = vec![0u8; extra_len];
     r.read_exact(&mut extra)?;
     if size == 0xFFFF_FFFF && extra.len() >= 20 && u16::from_le_bytes([extra[0], extra[1]]) == 1 {
-        size = u64::from_le_bytes(extra[12..20].try_into().unwrap_or([0; 8]));
+        size = u64::from_le_bytes(extra[4..12].try_into().unwrap_or([0; 8]));
     }
     if method != 0 {
         return Ok(Err("the index file is compressed, not stored".into()));
@@ -312,7 +318,21 @@ fn dos_time(secs: Option<i64>) -> (u16, u16) {
 }
 
 /// GDAL's `KV` extra field: `KeyValuePairs`, a count, then length-prefixed keys and values.
-fn kv_extra(pairs: &[(&str, &str)]) -> Vec<u8> {
+fn kv_extra(pairs: &[(&str, &str)]) -> Result<Vec<u8>> {
+    let invalid = || Error::InvalidArgument("ZIP property fields exceed their format limits".into());
+    if pairs.len() > u8::MAX as usize {
+        return Err(invalid());
+    }
+    let mut size = 14usize;
+    for (key, value) in pairs {
+        if key.len() > u16::MAX as usize || value.len() > u16::MAX as usize {
+            return Err(invalid());
+        }
+        size = size.checked_add(4 + key.len() + value.len()).ok_or_else(invalid)?;
+    }
+    if size > u16::MAX as usize {
+        return Err(invalid());
+    }
     let mut body = b"KeyValuePairs".to_vec();
     body.push(pairs.len() as u8);
     for (k, v) in pairs {
@@ -324,7 +344,7 @@ fn kv_extra(pairs: &[(&str, &str)]) -> Vec<u8> {
     let mut out = b"KV".to_vec();
     out.extend_from_slice(&(body.len() as u16).to_le_bytes());
     out.extend_from_slice(&body);
-    out
+    Ok(out)
 }
 
 /// The `key=value` pairs of a `KV` extra field.
@@ -377,6 +397,9 @@ impl<W: Write> ZipOut<W> {
         extra: &[u8],
     ) -> Result<()> {
         let zip64 = compressed >= 0xFFFF_FFFF || uncompressed >= 0xFFFF_FFFF;
+        if name.len() > u16::MAX as usize || extra.len().saturating_add(if zip64 { 20 } else { 0 }) > u16::MAX as usize {
+            return Err(Error::InvalidArgument("ZIP member name or extra fields exceed their format limits".into()));
+        }
         let mut h = Vec::with_capacity(30 + name.len() + 20 + extra.len());
         h.extend_from_slice(&zipdir::LOCAL.to_le_bytes());
         h.extend_from_slice(&(if zip64 { 45u16 } else { 20 }).to_le_bytes());
@@ -704,7 +727,8 @@ impl Output {
             let mut bytes = Vec::new();
             read_into(&node, &mut bytes)?;
             let (cd, cd_offset) = zipdir::central_directory_at(&mut std::io::Cursor::new(&bytes))?;
-            prefix = bytes[..cd_offset as usize].to_vec();
+            bytes.truncate(cd_offset as usize);
+            prefix = bytes;
             kept = cd.iter().map(|e| e.raw.clone()).collect();
             names = cd.into_iter().map(|e| e.name).collect();
         }
@@ -759,13 +783,14 @@ pub fn create(inputs: &[&str], output: &str, options: &SozipOptions) -> Result<S
         return Err(Error::InvalidArgument("the chunk size must not be 0".into()));
     }
     let (out, prefix, kept, existing) = Output::open(output, options.overwrite)?;
+    let mut names: HashSet<String> = existing.into_iter().collect();
     let offset = prefix.len() as u64;
     let mut zip = ZipOut::new(prefix, offset, kept);
     let mut report = SozipReport::default();
-    let extra = options.content_type.as_deref().map(|c| kv_extra(&[("Content-Type", c)])).unwrap_or_default();
+    let extra = options.content_type.as_deref().map(|c| kv_extra(&[("Content-Type", c)])).transpose()?.unwrap_or_default();
     for input in inputs {
         for (node, name, size, modified) in inputs_of(input, options)? {
-            if existing.contains(&name) || zip.written.iter().any(|w| w.name == name) {
+            if !names.insert(name.clone()) {
                 return Err(Error::InvalidArgument(format!("'{name}' is already in '{output}'")));
             }
             let sozip = sozip_for(size, options);
@@ -936,29 +961,30 @@ fn inflate_chunk(r: &mut dyn ReadSeek, data_start: u64, index: &Index, k: usize,
         }
         compressed[size - 5] = 1;
     }
-    let capacity = len.checked_add(1).ok_or_else(|| invalid("chunk output size overflow"))?;
+    // Grow with actual decoded output, never with the untrusted advertised
+    // chunk size. A truncated small stream cannot trigger a multi-GiB zero fill.
     let mut out = Vec::new();
-    out.try_reserve_exact(capacity).map_err(|_| invalid("cannot allocate decoded chunk"))?;
-    out.resize(capacity, 0);
+    let mut scratch = [0u8; 64 * 1024];
     let mut decoder = flate2::Decompress::new(false);
     loop {
         let before = (decoder.total_in(), decoder.total_out());
         let status = decoder
-            .decompress(
-                &compressed[decoder.total_in() as usize..],
-                &mut out[decoder.total_out() as usize..],
-                flate2::FlushDecompress::Finish,
-            )
+            .decompress(&compressed[decoder.total_in() as usize..], &mut scratch, flate2::FlushDecompress::Finish)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let made = (decoder.total_out() - before.1) as usize;
+        if out.len().checked_add(made).is_none_or(|size| size > len) {
+            return Err(invalid("chunk has excess decoded output"));
+        }
+        out.try_reserve(made).map_err(|_| invalid("cannot allocate decoded chunk"))?;
+        out.extend_from_slice(&scratch[..made]);
         if status == flate2::Status::StreamEnd {
-            if decoder.total_in() != size as u64 || decoder.total_out() != len as u64 {
+            if decoder.total_in() != size as u64 || out.len() != len {
                 return Err(invalid("chunk compressed or decoded size mismatch"));
             }
-            out.truncate(len);
             return Ok(out);
         }
-        if before == (decoder.total_in(), decoder.total_out()) || decoder.total_out() >= capacity as u64 {
-            return Err(invalid("chunk stream is truncated or has excess output"));
+        if before == (decoder.total_in(), decoder.total_out()) {
+            return Err(invalid("chunk stream is truncated"));
         }
     }
 }

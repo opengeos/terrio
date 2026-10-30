@@ -258,9 +258,12 @@ struct SozipJsOptions {
 impl SozipJsOptions {
     fn options(self) -> Result<vsi::sozip::SozipOptions, JsError> {
         let d = vsi::sozip::SozipOptions::default();
+        if self.chunk_size == Some(0) {
+            return Err(JsError::new("the chunk size must not be 0"));
+        }
         Ok(vsi::sozip::SozipOptions {
             enable: self.enable.as_deref().unwrap_or("auto").parse().map_err(js_err)?,
-            chunk_size: self.chunk_size.filter(|c| *c > 0).unwrap_or(d.chunk_size),
+            chunk_size: self.chunk_size.unwrap_or(d.chunk_size),
             min_file_size: self.min_file_size.unwrap_or(d.min_file_size),
             overwrite: self.overwrite,
             recursive: self.recursive,
