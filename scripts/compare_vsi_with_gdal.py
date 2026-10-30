@@ -600,6 +600,18 @@ def sozip_cases(terrio: str, data: Path, work: Path) -> None:
             p = run(tool + ["sozip", "validate", str(work / archive)])
             ok = p.returncode == 0 and "contains 1 SOZip-enabled file(s)" in p.stdout
             record(f"sozip validate of {archive.split('_')[1].split('.')[0]}'s archive by {name}", ok, (p.stdout.strip().splitlines() or [p.stderr.strip()])[-1][-200:])
+    # Existing empty output files are often produced by temporary-file APIs.
+    empty_ok = True
+    for name, tool in [("terrio", [terrio, "vsi"]), ("gdal", ["gdal", "vsi"])]:
+        output = work / f"empty_{name}.zip"
+        output.touch()
+        p = run(tool + ["sozip", "create", "-q", "-j", str(places[0]), str(output)])
+        if p.returncode:
+            empty_ok = False
+        else:
+            with zipfile.ZipFile(output) as archive:
+                empty_ok = empty_ok and archive.namelist() == [places[0].name] and archive.read(places[0].name) == places[0].read_bytes()
+    record("sozip create into an existing empty output", empty_ok, "both tools create a readable archive containing the original real-data member")
     # Optimize: GDAL 3.13.3 adds the input archive itself as a member too (a bug): not compared.
     for name, tool in [("terrio", [terrio, "vsi"]), ("gdal", ["gdal", "vsi"])]:
         run(tool + ["sozip", "optimize", "-q", str(data / "ne_places.zip"), str(work / f"opt_{name}.zip")])

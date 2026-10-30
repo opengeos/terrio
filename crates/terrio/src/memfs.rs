@@ -139,6 +139,17 @@ pub(crate) fn replace_if_unchanged(p: &Path, expected: &SharedBytes, bytes: Vec<
     Ok(())
 }
 
+/// Publish a new memory file without replacing an intervening write.
+pub(crate) fn write_if_absent(p: &Path, bytes: Vec<u8>) -> std::io::Result<()> {
+    let key = key(p).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "expected an in-memory path"))?;
+    let mut store = files();
+    if store.contains_key(&key) {
+        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{key}: file appeared while being written")));
+    }
+    store.insert(key, Arc::new(bytes));
+    Ok(())
+}
+
 /// Moves a file in memory to another path, replacing any file there, without copying its bytes;
 /// returns its size.
 pub(crate) fn rename(from: &Path, to: &Path) -> std::io::Result<u64> {

@@ -561,6 +561,8 @@ fn remote_member_names_omit_userinfo_queries_and_fragments() {
     }
     assert_eq!(stored_input_name("https://USER_SECRET@[::1]:8080/file@name", true, false), "[::1]:8080/file@name");
     assert_eq!(stored_input_name("local/name?literal", false, false), "local/name?literal");
+    assert_eq!(stored_input_name("/home/u/a:/nested/file.txt", false, false), "home/u/a:/nested/file.txt");
+    assert_eq!(stored_input_name("C:/nested/file.txt", false, false), "nested/file.txt");
     assert_eq!(stored_input_name(r"a\b.csv", false, true), "b.csv");
     assert_eq!(stored_input_name(r"https://example.com/a\b.csv", true, false), r"example.com/a\b.csv");
     if !cfg!(windows) {
@@ -707,4 +709,121 @@ fn optimize_preserves_directory_kv_properties() {
     assert_eq!(entries[0].name, "dir/");
     assert_eq!(keep_kv(&entries[0].extra), kv_extra(&[("Content-Type", "inode/directory")]).unwrap());
     assert!(validate(&s(&output)).unwrap().valid);
+}
+
+#[test]
+fn create_accepts_existing_empty_native_and_memory_outputs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("input.txt");
+    let output = tmp.path().join("empty.zip");
+    fs::write(&input, b"payload").unwrap();
+    fs::write(&output, []).unwrap();
+    assert_eq!(create(&[&s(&input)], &s(&output), &yes(4096)).unwrap().added, 1);
+    assert!(validate(&s(&output)).unwrap().valid);
+    assert_eq!(crate::vsi::read(&format!("/vsizip/{}/input.txt", s(&output))).unwrap(), b"payload");
+    let memory = format!("/vsimem/sozip-empty-{}/out.zip", tmp.path().file_name().unwrap().to_string_lossy());
+    crate::vsi::write(&memory, &[]).unwrap();
+    assert_eq!(create(&[&s(&input)], &memory, &yes(4096)).unwrap().added, 1);
+    assert!(validate(&memory).unwrap().valid);
+    assert_eq!(crate::vsi::read(&format!("/vsizip/{memory}/input.txt")).unwrap(), b"payload");
+    crate::vsi::delete(&memory, false).unwrap();
+}
+
+#[test]
+fn hidden_zip64_size_can_follow_other_extra_fields() {
+    let payload = data(10_000);
+    let mut deflater = Deflater::new(Vec::new(), Some(4096));
+    deflater.write_all(&payload).unwrap();
+    let (compressed, size, offsets, crc) = deflater.finish().unwrap();
+    let index = Index { chunk_size: 4096, uncompressed_size: payload.len() as u64, compressed_size: size, offsets, table: None };
+    let mut zip = ZipOut::new(Vec::new(), 0, vec![]);
+    zip.add("data", 8, (0, 0), crc, payload.len() as u64, &mut std::io::Cursor::new(compressed), size, vec![], Some(&index)).unwrap();
+    let mut bytes = zip.finish().unwrap();
+    let at = 34 + size as usize;
+    let old_end = bytes.len() - 22;
+    let old_cd = u32::from_le_bytes(bytes[old_end + 16..old_end + 20].try_into().unwrap());
+    let mut extra = vec![0xfe, 0xca, 0, 0, 1, 0, 16, 0];
+    let index_size = index.to_bytes().len() as u64;
+    extra.extend_from_slice(&index_size.to_le_bytes());
+    extra.extend_from_slice(&index_size.to_le_bytes());
+    let extra_len = extra.len();
+    let extra_at = at + 30 + index_name("data").len();
+    bytes.splice(extra_at..extra_at, extra);
+    bytes[at + 4..at + 6].copy_from_slice(&45u16.to_le_bytes());
+    bytes[at + 18..at + 26].fill(255);
+    bytes[at + 28..at + 30].copy_from_slice(&(extra_len as u16).to_le_bytes());
+    let end = old_end + extra_len;
+    bytes[end + 16..end + 20].copy_from_slice(&(old_cd + extra_len as u32).to_le_bytes());
+    let entry = zipdir::central_directory(&mut std::io::Cursor::new(&bytes)).unwrap().remove(0);
+    assert!(read_index(&mut std::io::Cursor::new(bytes), &entry).unwrap().unwrap().is_some());
+}
+
+#[test]
+fn offset_budget_stops_tiny_chunk_growth_before_allocating_more() {
+    let mut deflater = Deflater::new(Vec::new(), Some(1));
+    deflater.offsets = vec![0; MAX_WRITER_OFFSETS];
+    let error = deflater.write_all(b"ab").unwrap_err();
+    assert!(error.to_string().contains("offset budget"));
+    assert_eq!(deflater.offsets.len(), MAX_WRITER_OFFSETS);
+}
+
+#[cfg(unix)]
+#[test]
+fn native_append_holds_an_exclusive_lock_until_publication_finishes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("archive.zip");
+    fs::write(&path, stored_archive(b"old")).unwrap();
+    let (first, _) = Output::open(&s(&path), false).unwrap();
+    assert!(Output::open(&s(&path), false).is_err());
+    first
+        .build(|_| {
+            assert!(Output::open(&s(&path), false).is_err());
+            Ok(SozipReport::default())
+        })
+        .unwrap();
+    assert!(Output::open(&s(&path), false).is_ok());
+}
+
+#[test]
+fn absent_outputs_do_not_replace_intervening_native_or_memory_writes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let native = s(&tmp.path().join("out.zip"));
+    let memory = format!("/vsimem/sozip-absent-{}/out.zip", tmp.path().file_name().unwrap().to_string_lossy());
+    for path in [&native, &memory] {
+        let (output, _) = Output::open(path, false).unwrap();
+        let result = output.build(|_| {
+            crate::vsi::write(path, b"another writer").unwrap();
+            Ok(SozipReport::default())
+        });
+        assert!(result.is_err());
+        assert_eq!(crate::vsi::read(path).unwrap(), b"another writer");
+    }
+    crate::vsi::delete(&memory, false).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn native_member_reopens_reject_replaced_or_modified_archives() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("source.zip");
+    let original = stored_archive(b"original");
+    fs::write(&path, &original).unwrap();
+    let location = crate::vfs::Location::Local(path.clone());
+    let mut reader = open_member(&location, "data").unwrap().unwrap();
+    let reopen = reader.reopen().unwrap();
+    assert!(reopen.open().is_ok());
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let replacement = tmp.path().join("replacement.zip");
+    fs::write(&replacement, stored_archive(b"replaced")).unwrap();
+    fs::File::open(&replacement).unwrap().set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    fs::rename(replacement, &path).unwrap();
+    assert!(reopen.open().is_err());
+    let mut back = Vec::new();
+    reader.read_to_end(&mut back).unwrap();
+    assert_eq!(back, b"original");
+    let reader = open_member(&location, "data").unwrap().unwrap();
+    let reopen = reader.reopen().unwrap();
+    fs::write(&path, original).unwrap();
+    fs::File::open(&path).unwrap().set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    assert!(reopen.open().is_err());
 }

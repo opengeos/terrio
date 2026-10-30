@@ -64,7 +64,7 @@ struct SozipWriteArgs {
     /// file larger than a chunk) or no.
     #[arg(long, default_value = "auto")]
     enable_sozip: String,
-    /// The uncompressed size of a chunk, in bytes or with a K or M suffix.
+    /// The uncompressed size of a chunk, in bytes or with a K, M or G suffix.
     #[arg(long, default_value = "32768")]
     sozip_chunk_size: String,
     /// The smallest file seek-optimized in auto mode, in bytes or with a K, M or G suffix.

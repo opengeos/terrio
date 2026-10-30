@@ -2020,7 +2020,7 @@ class _SozipValidation(TypedDict):
     errors: list[str]
 
 def sozip_create(
-    inputs: Sequence[str],
+    inputs: list[str] | tuple[str, ...],
     output: str,
     *,
     enable: Literal["auto", "yes", "no"] = "auto",

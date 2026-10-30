@@ -1496,7 +1496,13 @@ snapshot changes, actual-length Auto chunking, credential-free remote member nam
 stored-member size/range checks, unexpected EOF and offset overflow. Append/optimize
 share compression/index emission; validation and random readers reset reusable decoders.
 Further regressions cover CP437 hidden-index names, Unix/remote literal backslashes
-and directory KV properties retained during optimization.
+and directory KV properties retained during optimization. Empty native/memory output
+placeholders are accepted as new archives and compared with GDAL using a real member.
+Review regressions also cover non-leading ZIP64 index extra fields, the writer offset
+budget, native advisory append locks, absent-output races in native/memory storage,
+colon-containing path components and stale native reopens (including equal-length,
+restored-mtime replacements). Native first opens retain their original handle; identity
+checks add metadata checks without extra archive opens.
 
 
 ## GeoPackage specification validation

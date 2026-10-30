@@ -311,8 +311,19 @@ fn read_index_mode(r: &mut dyn ReadSeek, e: &CdEntry, check_offsets: bool) -> Re
     }
     let mut extra = vec![0u8; extra_len];
     r.read_exact(&mut extra)?;
-    if size == 0xFFFF_FFFF && extra.len() >= 20 && u16::from_le_bytes([extra[0], extra[1]]) == 1 {
-        size = u64::from_le_bytes(extra[4..12].try_into().unwrap_or([0; 8]));
+    if size == 0xFFFF_FFFF {
+        let mut fields = extra.as_slice();
+        while fields.len() >= 4 {
+            let length = usize::from(u16::from_le_bytes([fields[2], fields[3]]));
+            let Some(body) = fields.get(4..4 + length) else {
+                return Ok(Err("truncated index extra field".into()));
+            };
+            if fields[..2] == [1, 0] && body.len() >= 8 {
+                size = u64::from_le_bytes(body[..8].try_into().unwrap());
+                break;
+            }
+            fields = &fields[4 + length..];
+        }
     }
     if method != 0 {
         return Ok(Err("the index file is compressed, not stored".into()));
@@ -614,6 +625,8 @@ impl<W: Write> ZipOut<W> {
     }
 }
 
+const MAX_WRITER_OFFSETS: usize = 1_048_576; // At most 8 MiB of offsets per member.
+
 /// Compresses what is written to it with raw Deflate into a sink, independently every
 /// `chunk_size` bytes when chunked, recording the chunks' offsets and the CRC-32.
 struct Deflater<S: Write> {
@@ -687,6 +700,10 @@ impl<S: Write> Write for Deflater<S> {
                 // that the next chunk starts on a byte boundary with an empty dictionary.
                 self.run(&[], FlushCompress::Sync)?;
                 self.run(&[], FlushCompress::Full)?;
+                if self.offsets.len() >= MAX_WRITER_OFFSETS {
+                    return Err(std::io::Error::other("SOZip offset budget exceeded; use a larger chunk size"));
+                }
+                self.offsets.try_reserve(1).map_err(std::io::Error::other)?;
                 self.offsets.push(self.compress.total_out());
                 self.in_chunk = 0;
             }
@@ -780,6 +797,19 @@ fn add_member<W: Write>(
     Ok((n, index.is_some()))
 }
 
+fn same_native_file(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    let unchanged =
+        before.len() == after.len() && before.modified().ok() == after.modified().ok() && before.created().ok() == after.created().ok();
+    #[cfg(unix)]
+    let unchanged = {
+        use std::os::unix::fs::MetadataExt;
+        unchanged
+            && (before.dev(), before.ino(), before.ctime(), before.ctime_nsec())
+                == (after.dev(), after.ino(), after.ctime(), after.ctime_nsec())
+    };
+    unchanged
+}
+
 #[derive(Clone)]
 enum AppendVersion {
     Native(std::path::PathBuf, std::fs::Metadata),
@@ -789,16 +819,7 @@ impl AppendVersion {
     fn check(&self) -> Result<()> {
         if let Self::Native(path, before) = self {
             let after = std::fs::metadata(path)?;
-            let unchanged = before.len() == after.len()
-                && before.modified().ok() == after.modified().ok()
-                && before.created().ok() == after.created().ok();
-            #[cfg(unix)]
-            let unchanged = {
-                use std::os::unix::fs::MetadataExt;
-                unchanged
-                    && (before.dev(), before.ino(), before.ctime(), before.ctime_nsec())
-                        == (after.dev(), after.ino(), after.ctime(), after.ctime_nsec())
-            };
+            let unchanged = same_native_file(before, &after);
             if !unchanged {
                 return Err(Error::Unsupported("archive changed while preparing an append".into()));
             }
@@ -820,6 +841,7 @@ struct Output {
     kept: Vec<Vec<u8>>,
     comment: Vec<u8>,
     source: Option<AppendSource>,
+    overwrite: bool,
 }
 impl Output {
     fn open(path: &str, overwrite: bool) -> Result<(Self, Vec<String>)> {
@@ -838,6 +860,15 @@ impl Output {
             let mut snapshot = match &node {
                 Node::Local(path) => {
                     let file = std::fs::File::open(path)?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::fd::AsRawFd;
+                        // SAFETY: this descriptor is owned by the retained append reader.
+                        // Its file stays open through the atomic writer's flush/sync/rename.
+                        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                            return Err(std::io::Error::last_os_error().into());
+                        }
+                    }
                     let version = AppendVersion::Native(path.clone(), file.metadata()?);
                     AppendSource { reader: Box::new(std::io::BufReader::new(file)), version }
                 }
@@ -850,7 +881,13 @@ impl Output {
                 }
                 _ => unreachable!(),
             };
-            let (entries, offset, old_comment) = zipdir::central_directory_at(&mut *snapshot.reader)?;
+            let (entries, offset, old_comment) = if snapshot.reader.seek(SeekFrom::End(0))? == 0 {
+                // GDAL accepts an existing empty placeholder as a new archive.
+                // Retain its version so publication still detects intervening writes.
+                (Vec::new(), 0, Vec::new())
+            } else {
+                zipdir::central_directory_at(&mut *snapshot.reader)?
+            };
             snapshot.version.check()?;
             prefix = offset;
             comment = old_comment;
@@ -858,10 +895,11 @@ impl Output {
             names = entries.into_iter().map(|entry| entry.name).collect();
             source = Some(snapshot);
         }
-        Ok((Self { node, path: path.into(), prefix, kept, comment, source }, names))
+        Ok((Self { node, path: path.into(), prefix, kept, comment, source, overwrite }, names))
     }
     fn build(self, fill: impl FnOnce(&mut ZipOut<&mut dyn Write>) -> Result<SozipReport>) -> Result<SozipReport> {
-        let Self { node, path, prefix, kept, comment, mut source } = self;
+        let Self { node, path, prefix, kept, comment, mut source, overwrite } = self;
+        let replacing = overwrite || source.is_some();
         let version = source.as_ref().map(|source| source.version.clone());
         let run = |writer: &mut dyn Write| -> Result<SozipReport> {
             if let Some(source) = &mut source {
@@ -888,7 +926,7 @@ impl Output {
         match &node {
             Node::Local(path) => {
                 let mut report = None;
-                super::write_local_atomic(path, |file| {
+                super::write_local_atomic_with_replace(path, replacing, |file| {
                     let mut buffered = std::io::BufWriter::with_capacity(64 * 1024, file);
                     report = Some(run(&mut buffered)?);
                     buffered.flush()?;
@@ -901,6 +939,8 @@ impl Output {
                 let report = run(&mut bytes)?;
                 if let Some(AppendVersion::Memory(path, expected)) = version {
                     crate::memfs::replace_if_unchanged(&path, &expected, bytes)?;
+                } else if !overwrite && let Node::Mem(path) = &node {
+                    crate::memfs::write_if_absent(Path::new(path), bytes)?;
                 } else {
                     super::write(&path, &bytes)?;
                 }
@@ -925,7 +965,8 @@ fn stored_input_name(path: &str, remote: bool, junk_paths: bool) -> String {
     if junk_paths {
         return path.rsplit('/').next().unwrap_or(&path).to_string();
     }
-    let path = path.split_once(":/").map_or(path.as_str(), |(_, rest)| rest);
+    let drive = path.as_bytes().get(1..3) == Some(b":/") && path.as_bytes()[0].is_ascii_alphabetic();
+    let path = if remote || drive { path.split_once(":/").map_or(path.as_str(), |(_, rest)| rest) } else { &path };
     path.split('/').filter(|component| !component.is_empty() && *component != "." && *component != "..").collect::<Vec<_>>().join("/")
 }
 
@@ -1009,7 +1050,8 @@ pub fn optimize(input: &str, output: &str, options: &SozipOptions) -> Result<Soz
     if super::is_same(&in_node, &out_node) {
         return Err(Error::InvalidArgument("the input and output archives are the same".into()));
     }
-    let (out, _) = Output::open(output, true)?;
+    let (mut out, _) = Output::open(output, true)?;
+    out.overwrite = options.overwrite;
     if !options.overwrite && super::stat_node(&out_node)?.is_some() {
         return Err(Error::InvalidArgument(format!("'{}' exists: use the overwrite option", super::redact_diagnostic_location(output))));
     }
@@ -1459,13 +1501,24 @@ impl Seek for MemberReader {
 /// Opens a member of a zip archive for random access (see [`MemberReader`]): a local archive,
 /// or a remote one read by range requests.
 pub(crate) fn open_member(archive: &crate::vfs::Location, member: &str) -> Result<Option<MemberReader>> {
+    let mut first: Option<Box<dyn ReadSeek + Send + Sync>> = None;
     let (open, native_path): (std::sync::Arc<ArchiveOpener>, Option<std::path::PathBuf>) = match archive {
         crate::vfs::Location::Local(path) => {
             if !path.is_file() {
                 return Ok(None);
             }
             let source = path.clone();
-            (std::sync::Arc::new(move || Ok(Box::new(std::io::BufReader::new(std::fs::File::open(&source)?)))), Some(path.clone()))
+            let file = std::fs::File::open(path)?;
+            let expected = file.metadata()?;
+            first = Some(Box::new(std::io::BufReader::new(file)));
+            let open: std::sync::Arc<ArchiveOpener> = std::sync::Arc::new(move || {
+                let file = std::fs::File::open(&source)?;
+                if !same_native_file(&expected, &file.metadata()?) {
+                    return Err(Error::Unsupported("native ZIP archive changed since the member was opened".into()));
+                }
+                Ok(Box::new(std::io::BufReader::new(file)))
+            });
+            (open, Some(path.clone()))
         }
         #[cfg(remote)]
         crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => {
@@ -1479,7 +1532,11 @@ pub(crate) fn open_member(archive: &crate::vfs::Location, member: &str) -> Resul
         }
         _ => return Ok(None),
     };
-    let mut reader = MemberReader::open(open()?, member)?;
+    let initial = match first {
+        Some(reader) => reader,
+        None => open()?,
+    };
+    let mut reader = MemberReader::open(initial, member)?;
     if let Some(reader) = &mut reader {
         reader.reopen =
             Some(MemberReopen { open, data_start: reader.data_start, size: reader.size, index: reader.index.clone(), native_path });

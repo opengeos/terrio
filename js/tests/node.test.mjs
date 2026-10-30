@@ -2754,6 +2754,7 @@ test("sozip: create, list, validate and optimize in memory", () => {
   const big = new TextEncoder().encode(lines.join("\n"));
   terrio.vsiWrite("/vsimem/jssozip/big.csv", big);
   terrio.vsiWrite("/vsimem/jssozip/small.txt", new TextEncoder().encode("small"));
+  terrio.vsiWrite("/vsimem/jssozip/out.zip", new Uint8Array());
   const r = terrio.sozipCreate(["/vsimem/jssozip/big.csv", "/vsimem/jssozip/small.txt"], "/vsimem/jssozip/out.zip",
     { enable: "yes", chunkSize: 4096, junkPaths: true });
   assert.equal(r.seek_optimized, 1);

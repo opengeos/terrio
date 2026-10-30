@@ -1211,6 +1211,16 @@ pub(crate) fn transform_memory<T>(path: &str, operation: impl FnOnce(&[u8]) -> R
 /// Writes a local file through a temporary file in the same directory, renamed into place once
 /// complete: a failure leaves any existing file as it was.
 pub(crate) fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Result<()>) -> Result<()> {
+    write_local_atomic_with_replace(path, true, fill)
+}
+
+/// A synced atomic write that can also require the destination to remain absent.
+/// Hard-link publication in that mode fails atomically if another writer won.
+pub(crate) fn write_local_atomic_with_replace(
+    path: &Path,
+    replace: bool,
+    fill: impl FnOnce(&mut std::fs::File) -> Result<()>,
+) -> Result<()> {
     if cfg!(target_family = "wasm") {
         return Err(Error::Unsupported(format!("'{}': WebAssembly builds have no local files (use /vsimem/)", path.display())));
     }
@@ -1249,7 +1259,15 @@ pub(crate) fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::Fi
         Ok(file.sync_all()?)
     });
     drop(file);
-    match result.and_then(|()| Ok(std::fs::rename(&tmp, path)?)) {
+    match result.and_then(|()| {
+        if replace {
+            std::fs::rename(&tmp, path)?;
+        } else {
+            std::fs::hard_link(&tmp, path)?;
+            let _ = std::fs::remove_file(&tmp);
+        }
+        Ok(())
+    }) {
         Ok(()) => Ok(()),
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);

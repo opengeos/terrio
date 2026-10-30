@@ -135,6 +135,7 @@ def test_sozip(tmp_path):
     big.write_bytes(b"".join(f"{i},{i * 7919 % 10007}\n".encode() for i in range(20000)))
     (tmp_path / "small.txt").write_text("small")
     archive = tmp_path / "out.zip"
+    archive.touch()  # Existing empty placeholders are accepted, like GDAL.
     r = terrio.sozip_create(
         [str(big), str(tmp_path / "small.txt")],
         str(archive),
