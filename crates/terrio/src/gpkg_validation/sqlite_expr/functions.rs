@@ -1,5 +1,35 @@
 use super::*;
 
+// SQLite accepts at most 1000 container levels. IgnoredAny validates JSON with
+// serde_json's iterative skip parser instead of constructing a recursive Value.
+fn valid_json(text: &str) -> bool {
+    let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
+    for byte in text.bytes() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+        } else {
+            match byte {
+                b'"' => quoted = true,
+                b'[' | b'{' => {
+                    depth += 1;
+                    if depth > 1000 {
+                        return false;
+                    }
+                }
+                b']' | b'}' => depth = depth.saturating_sub(1),
+                _ => (),
+            }
+        }
+    }
+    serde_json::from_str::<serde::de::IgnoredAny>(text).is_ok()
+}
+
 pub(super) fn known(name: &str) -> Result<()> {
     if matches!(
         name,
@@ -193,7 +223,9 @@ pub(super) fn call(name: &str, args: &[Expr], ctx: &Context<'_>) -> Result<Value
         let collation = operands.iter().find_map(|v| v.collation.as_deref());
         let mut chosen = 0;
         for index in 1..operands.len() {
-            let order = compare(operands[index].clone(), operands[chosen].clone(), ctx.encoding, collation)?.unwrap();
+            let Some(order) = compare(operands[index].clone(), operands[chosen].clone(), ctx.encoding, collation)? else {
+                return Ok(Value::Null);
+            };
             if order == if name == "min" { Ordering::Less } else { Ordering::Greater } || name == "min" && order == Ordering::Equal {
                 chosen = index;
             }
@@ -248,7 +280,7 @@ pub(super) fn call(name: &str, args: &[Expr], ctx: &Context<'_>) -> Result<Value
         if matches!(values[0], Value::Null) {
             return Ok(Value::Null);
         }
-        return Ok(Value::Int(i64::from(serde_json::from_str::<serde_json::Value>(&text(&values[0])?).is_ok())));
+        return Ok(Value::Int(i64::from(valid_json(&text(&values[0])?))));
     }
     if values.iter().any(|v| matches!(v, Value::Null)) {
         return Ok(Value::Null);
@@ -462,6 +494,22 @@ pub(super) fn pattern(value: &str, pattern: &str, escape: Option<&str>, glob: bo
             tokens.push(Pattern::Char(c));
         }
     }
+    if tokens.iter().all(|token| matches!(token, Pattern::Star)) && !tokens.is_empty() {
+        return Ok(true);
+    }
+    let value = value.split('\0').next().unwrap_or_default();
+    if tokens.is_empty() {
+        return Ok(value.is_empty());
+    }
+    let work_per_character = tokens.iter().fold(tokens.len().saturating_mul(3), |work, token| {
+        work.saturating_add(match token {
+            Pattern::Class(ranges, _) => ranges.len(),
+            _ => 0,
+        })
+    });
+    if value.chars().count().checked_mul(work_per_character).is_none_or(|work| work > 10_000_000) {
+        return Err(Error::Unsupported("SQLite LIKE/GLOB matching exceeds 10000000 work units".into()));
+    }
     let mut states = vec![false; tokens.len() + 1];
     states[0] = true;
     for i in 0..tokens.len() {
@@ -469,8 +517,9 @@ pub(super) fn pattern(value: &str, pattern: &str, escape: Option<&str>, glob: bo
             states[i + 1] = true;
         }
     }
-    for ch in value.split('\0').next().unwrap_or_default().chars() {
-        let mut next = vec![false; states.len()];
+    let mut next = vec![false; states.len()];
+    for ch in value.chars() {
+        next.fill(false);
         for (i, token) in tokens.iter().enumerate() {
             if !states[i] {
                 continue;
@@ -495,10 +544,36 @@ pub(super) fn pattern(value: &str, pattern: &str, escape: Option<&str>, glob: bo
                 next[i + 1] = true;
             }
         }
-        states = next;
+        std::mem::swap(&mut states, &mut next);
         if !states.iter().any(|state| *state) {
             return Ok(false);
         }
     }
     Ok(*states.last().unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn matching_work_is_bounded_and_star_only_patterns_stay_linear() {
+        let value = "a".repeat(1_000_000);
+        let error = pattern(&value, &"%a".repeat(20), None, false, false).unwrap_err();
+        assert!(matches!(error, Error::Unsupported(_)));
+        assert!(pattern(&value, "%", None, false, false).unwrap());
+        assert!(pattern("abc", "a%", None, false, false).unwrap());
+        assert!(pattern("abc", "a[bc]?", None, true, false).unwrap());
+    }
+    #[test]
+    fn json_valid_supports_sqlite_depth_without_recursive_values() {
+        for depth in [0, 1, 128, 129, 1000, 1001] {
+            let text = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+            assert_eq!(valid_json(&text), depth <= 1000, "depth {depth}");
+        }
+        assert!(valid_json("1e400"));
+        assert!(valid_json(r#"{"brackets":"[\"{]","a":[true,null]}"#));
+        for text in ["[0,]", "{", "01", "[0} ", "true false"] {
+            assert!(!valid_json(text), "{text}");
+        }
+    }
 }

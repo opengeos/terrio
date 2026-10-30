@@ -3,6 +3,7 @@
 import os
 import shutil
 import sqlite3
+import struct
 from contextlib import closing
 from pathlib import Path
 
@@ -106,3 +107,68 @@ def test_unsupported_generated_expression_is_incomplete(geopackage):
     assert not report["errors"], report
     assert any("row expressions" in message for message in report["unsupported_checks"])
     assert geopackage.read_bytes() == before
+
+
+@pytest.mark.parametrize("depth", [129, 1000, 1001])
+def test_json_check_uses_sqlite_nesting_limit(geopackage, depth):
+    value = "[" * depth + "0" + "]" * depth
+    with closing(sqlite3.connect(geopackage)) as db:
+        try:
+            expected = bool(db.execute("SELECT json_valid(?)", (value,)).fetchone()[0])
+        except sqlite3.OperationalError:
+            pytest.skip("SQLite JSON functions are unavailable")
+        db.executescript(
+            "CREATE TABLE deep_json(value TEXT CHECK(json_valid(value)));"
+            "PRAGMA ignore_check_constraints=ON;"
+        )
+        db.execute("INSERT INTO deep_json VALUES(?)", (value,))
+        db.commit()
+    report = terrio.validate_gpkg(geopackage)
+    assert report["complete"], report
+    assert report["valid"] == expected, report
+
+
+def test_stored_nan_is_sql_null_in_registered_views(geopackage):
+    marker = 1.2345678987654321
+    with closing(sqlite3.connect(geopackage)) as db:
+        db.executescript(
+            "CREATE TABLE nan_values(id INTEGER PRIMARY KEY,v REAL);"
+            "CREATE VIEW nan_view AS SELECT id,CAST(min(v,0) AS REAL) AS low,"
+            "CAST(max(v,0) AS REAL) AS high FROM nan_values;"
+            "INSERT INTO gpkg_contents(table_name,data_type,identifier) "
+            "VALUES('nan_view','attributes','nan_view');"
+        )
+        db.execute("INSERT INTO nan_values VALUES(1,?)", (marker,))
+        db.commit()
+    before = geopackage.read_bytes()
+    encoded = struct.pack(">d", marker)
+    assert before.count(encoded) == 1
+    geopackage.write_bytes(before.replace(encoded, struct.pack(">d", float("nan"))))
+    with closing(sqlite3.connect(geopackage)) as db:
+        assert db.execute("SELECT typeof(v),v,min(v,0),max(v,0) FROM nan_values").fetchone() == (
+            "null",
+            None,
+            None,
+            None,
+        )
+        assert db.execute("SELECT count(*) FROM nan_values WHERE v").fetchone() == (0,)
+    report = terrio.validate_gpkg(geopackage)
+    assert report["valid"] and report["complete"], report
+
+
+def test_expensive_pattern_returns_incomplete_verdict(geopackage):
+    pattern = "%a" * 20
+    with closing(sqlite3.connect(geopackage)) as db:
+        db.executescript(
+            "CREATE TABLE text_values(id INTEGER PRIMARY KEY,v TEXT);"
+            f"CREATE VIEW pattern_view AS SELECT id FROM text_values WHERE v LIKE '{pattern}';"
+            "INSERT INTO gpkg_contents(table_name,data_type,identifier) "
+            "VALUES('pattern_view','attributes','pattern_view');"
+        )
+        db.execute("INSERT INTO text_values VALUES(1,?)", ("a" * 100_000,))
+        assert db.execute("SELECT * FROM pattern_view").fetchall() == [(1,)]
+        db.commit()
+    report = terrio.validate_gpkg(geopackage)
+    assert not report["valid"] and not report["complete"], report
+    assert not report["errors"], report
+    assert any("LIKE/GLOB" in message for message in report["unsupported_checks"])

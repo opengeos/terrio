@@ -217,7 +217,7 @@ impl Checker {
             self.report.require_rule(found.contains(&Some(name)), rule(6), format!("missing extension declaration for {name}"));
         }
         if let Some(table) = self.db.tables.get(COVERAGE) {
-            self.report.require_rule(table.rows.len() == coverages.len(), rule(7), "wrong number of coverage ancillary rows");
+            let mut counts = vec![0usize; coverages.len()];
             for row in &table.rows {
                 let name = table.get(row, "tile_matrix_set_name").and_then(Value::as_str);
                 self.report.require_rule(
@@ -237,11 +237,27 @@ impl Checker {
                 );
                 let kind = table.get(row, "datatype").and_then(Value::as_str);
                 self.report.require_rule(matches!(kind, Some("integer" | "float")), rule(9), "coverage datatype must be integer or float");
-                if let Some(c) = coverages.iter_mut().find(|c| Some(c.name.as_str()) == name)
-                    && let Some(kind) = kind
-                {
-                    c.kinds.push(kind.into());
+                if kind == Some("float") {
+                    self.report.require_rule(
+                        table.get(row, "scale").and_then(Value::as_f64) == Some(1.)
+                            && table.get(row, "offset").and_then(Value::as_f64) == Some(0.),
+                        rule(9),
+                        "float coverage scale/offset must be 1/0",
+                    );
                 }
+                if let Some(index) = coverages.iter().position(|c| name.is_some_and(|name| c.name.eq_ignore_ascii_case(name))) {
+                    counts[index] += 1;
+                    if let Some(kind) = kind {
+                        coverages[index].kinds.push(kind.into());
+                    }
+                }
+            }
+            for (coverage, count) in coverages.iter().zip(counts) {
+                self.report.require_rule(
+                    count == 1,
+                    rule(7),
+                    format!("{}: expected one coverage ancillary row, found {count}", coverage.name),
+                );
             }
         }
         if let Some(table) = self.db.tables.get(TILE) {
@@ -353,6 +369,42 @@ impl Checker {
 mod tests {
     use super::*;
 
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn coverage_metadata_is_per_coverage_and_float_values_use_unit_scaling() {
+        use super::super::review_regressions::fixture;
+        let text = |value: &str| Value::Text(value.into());
+        for (names, rows, expected_counts, expected_scale) in [
+            (
+                vec!["a", "b"],
+                vec![
+                    vec![text("a"), text("float"), Value::Real(1.), Value::Real(0.)],
+                    vec![text("a"), text("float"), Value::Real(1.), Value::Real(0.)],
+                ],
+                2,
+                0,
+            ),
+            (vec!["a"], vec![vec![text("a"), text("float"), Value::Real(2.), Value::Real(0.)]], 0, 1),
+            (vec!["a"], vec![vec![text("a"), text("float"), Value::Real(1.), Value::Real(3.)]], 0, 1),
+            (vec!["a"], vec![vec![text("a"), text("float"), Value::Real(1.), Value::Real(0.)]], 0, 0),
+        ] {
+            let (mut c, bytes) = fixture(vec![
+                (
+                    "gpkg_contents",
+                    "table_name TEXT,data_type TEXT",
+                    names.iter().map(|name| vec![text(name), text("2d-gridded-coverage")]).collect(),
+                ),
+                (COVERAGE, "tile_matrix_set_name TEXT,datatype TEXT,scale REAL,offset REAL", rows),
+                (TILE, "tpudt_name TEXT,tpudt_id INTEGER,scale REAL,offset REAL", vec![]),
+                ("gpkg_tile_matrix_set", "table_name TEXT", names.iter().map(|name| vec![text(name)]).collect()),
+                ("a", "id INTEGER", vec![]),
+                ("b", "id INTEGER", vec![]),
+            ]);
+            c.gridded(&bytes).unwrap();
+            assert_eq!(c.report.errors.iter().filter(|e| e.requirement == rule(7)).count(), expected_counts, "{:?}", c.report);
+            assert_eq!(c.report.errors.iter().filter(|e| e.requirement == rule(9)).count(), expected_scale, "{:?}", c.report);
+        }
+    }
     #[test]
     fn image_checks_decode_payloads_and_identify_types() {
         let mut png = Vec::new();

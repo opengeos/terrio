@@ -337,10 +337,11 @@ impl View {
             return Ok(());
         }
         let mut seen = BTreeSet::new();
+        let mut distinct_memory = budget.memory();
         let mut skipped = 0;
         let mut emitted = 0;
         let active = Cell::new(true);
-        let mut sorter = Sorter::new(&self.order, count.map(|n| n.saturating_add(offset)), encoding);
+        let mut sorter = Sorter::new(&self.order, count.map(|n| n.saturating_add(offset)), encoding, budget);
         let mut project = |row: &[Value], rowid| {
             if !active.get() {
                 return Ok(false);
@@ -370,6 +371,10 @@ impl View {
             }
             let result = self.projections.iter().map(|e| e.evaluate(&context)).collect::<Result<Vec<_>>>()?;
             if self.distinct {
+                // Reserve before cloning projected values into comparison keys.
+                // Three row sizes conservatively cover keys, UTF-16 text and tree overhead.
+                let mut pending = budget.memory();
+                pending.reserve(ViewBudget::row_bytes(&result).saturating_mul(3))?;
                 let key: Vec<_> = result
                     .iter()
                     .zip(&self.schema.columns)
@@ -382,9 +387,10 @@ impl View {
                 if !seen.insert(key) {
                     return Ok(true);
                 }
+                distinct_memory.absorb(pending);
             }
             if !self.order.is_empty() {
-                sorter.push(keys, result);
+                sorter.push(keys, result)?;
                 return Ok(true);
             }
             if skipped < offset {
@@ -408,7 +414,8 @@ impl View {
             }
         }
         if !self.order.is_empty() {
-            for row in sorter.finish().into_iter().skip(offset).take(count.unwrap_or(usize::MAX)) {
+            let (rows, _sort_memory) = sorter.finish();
+            for row in rows.into_iter().skip(offset).take(count.unwrap_or(usize::MAX)) {
                 if !visitor(&row)? {
                     break;
                 }

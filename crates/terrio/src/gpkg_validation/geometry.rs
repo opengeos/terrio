@@ -24,6 +24,7 @@ const TYPES: &[&str] = &[
 struct Wkb<'a> {
     bytes: &'a [u8],
     position: usize,
+    bounds: [[f64; 2]; 4],
 }
 #[derive(Debug)]
 struct Shape {
@@ -35,7 +36,7 @@ struct Shape {
 }
 // GDAL's relative XYZ join tolerance. It also accepts a reversed next segment.
 fn joined(end: [f64; 3], start: [f64; 3]) -> bool {
-    end.into_iter().zip(start).all(|(a, b)| (a - b).abs().partial_cmp(&(1e-14 * b.abs())) != Some(std::cmp::Ordering::Greater))
+    end.into_iter().zip(start).all(|(a, b)| a.is_finite() && b.is_finite() && (a - b).abs() <= 1e-14 * b.abs())
 }
 impl Wkb<'_> {
     fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
@@ -52,14 +53,47 @@ impl Wkb<'_> {
         let bytes = self.take()?;
         Some(if little { f64::from_le_bytes(bytes) } else { f64::from_be_bytes(bytes) })
     }
-    fn coordinates(&mut self, count: usize, dimensions: usize) -> Option<()> {
+    fn point(&mut self, little: bool, dimension: u32) -> Option<([f64; 3], bool)> {
+        let z = dimension == 1 || dimension == 3;
+        let m = dimension >= 2;
+        let values = [
+            self.number(little)?,
+            self.number(little)?,
+            if z { self.number(little)? } else { f64::NAN },
+            if m { self.number(little)? } else { f64::NAN },
+        ];
+        let empty = values[0].is_nan() && values[1].is_nan();
+        if empty {
+            if values.iter().any(|value| !value.is_nan()) {
+                return None;
+            }
+        } else {
+            if !values[0].is_finite() || !values[1].is_finite() || z && !values[2].is_finite() {
+                return None;
+            }
+            for (axis, value) in values.iter().enumerate() {
+                if value.is_finite() {
+                    self.bounds[axis][0] = self.bounds[axis][0].min(*value);
+                    self.bounds[axis][1] = self.bounds[axis][1].max(*value);
+                }
+            }
+        }
+        Some(([values[0], values[1], if z { values[2] } else { 0. }], empty))
+    }
+    fn coordinates(&mut self, count: usize, dimension: u32, little: bool) -> Option<Option<([f64; 3], [f64; 3])>> {
+        let dimensions = 2 + usize::from(dimension == 1 || dimension == 3) + usize::from(dimension >= 2);
         let end = self.position.checked_add(count.checked_mul(dimensions)?.checked_mul(8)?)?;
         self.bytes.get(self.position..end)?;
-        self.position = end;
-        Some(())
-    }
-    fn endpoint(&mut self, little: bool, z: bool) -> Option<[f64; 3]> {
-        Some([self.number(little)?, self.number(little)?, if z { self.number(little)? } else { 0.0 }])
+        let (mut first, mut last) = (None, None);
+        for _ in 0..count {
+            let (point, empty) = self.point(little, dimension)?;
+            if empty {
+                return None;
+            }
+            first.get_or_insert(point);
+            last = Some(point);
+        }
+        Some(first.zip(last))
     }
     fn shape(&mut self, depth: usize) -> Option<Shape> {
         if depth > 64 {
@@ -76,31 +110,17 @@ impl Wkb<'_> {
         if dimension > 3 || !(1..=12).contains(&kind) {
             return None;
         }
-        let dimensions = 2 + usize::from(dimension == 1 || dimension == 3) + usize::from(dimension >= 2);
         let mut points = 0;
         let mut ends = None;
         let empty = if kind == 1 {
-            let x = self.number(little)?;
-            let y = self.number(little)?;
-            self.coordinates(1, dimensions - 2)?;
-            x.is_nan() && y.is_nan()
+            self.point(little, dimension)?.1
         } else {
             let count = self.integer(little)? as usize;
             if kind == 2 || kind == 8 {
                 if kind == 8 && count != 0 && (count < 3 || count.is_multiple_of(2)) {
                     return None;
                 }
-                let start = self.position;
-                self.coordinates(count, dimensions)?;
-                let end = self.position;
-                if count > 0 {
-                    self.position = start;
-                    let first = self.endpoint(little, dimension == 1 || dimension == 3)?;
-                    self.position = end - dimensions * 8;
-                    let last = self.endpoint(little, dimension == 1 || dimension == 3)?;
-                    self.position = end;
-                    ends = Some((first, last));
-                }
+                ends = self.coordinates(count, dimension, little)?;
                 points = count;
                 count == 0
             } else {
@@ -113,8 +133,14 @@ impl Wkb<'_> {
                 for index in 0..count {
                     if kind == 3 {
                         let points = self.integer(little)? as usize;
-                        self.coordinates(points, dimensions)?;
-                        empty &= points == 0;
+                        if points < 4 {
+                            return None;
+                        }
+                        let (first, last) = self.coordinates(points, dimension, little)??;
+                        if first != last {
+                            return None;
+                        }
+                        empty = false;
                     } else {
                         let member = self.shape(depth + 1)?;
                         let compatible = match kind {
@@ -185,10 +211,28 @@ fn blob_shape(blob: &[u8]) -> Option<(Shape, i32, bool, u8)> {
     let srs = blob.get(4..8)?.try_into().ok()?;
     let srs = if flags & 1 != 0 { i32::from_le_bytes(srs) } else { i32::from_be_bytes(srs) };
     let bytes = blob.get(8 + envelope_bytes..)?;
-    let mut wkb = Wkb { bytes, position: 0 };
+    let mut wkb = Wkb { bytes, position: 0, bounds: [[f64::INFINITY, f64::NEG_INFINITY]; 4] };
     let shape = wkb.shape(0)?;
     if wkb.position != bytes.len() {
         return None;
+    }
+    let axes: &[usize] = match envelope {
+        0 => &[],
+        1 => &[0, 1],
+        2 => &[0, 1, 2],
+        3 => &[0, 1, 3],
+        4 => &[0, 1, 2, 3],
+        _ => return None,
+    };
+    for (i, axis) in axes.iter().enumerate() {
+        let number = |offset| -> Option<f64> {
+            let bytes = blob.get(offset..offset + 8)?.try_into().ok()?;
+            Some(if flags & 1 != 0 { f64::from_le_bytes(bytes) } else { f64::from_be_bytes(bytes) })
+        };
+        let (min, max) = (number(8 + i * 16)?, number(16 + i * 16)?);
+        if !min.is_finite() || !max.is_finite() || min > max || wkb.bounds[*axis][0] < min || wkb.bounds[*axis][1] > max {
+            return None;
+        }
     }
     Some((shape, srs, flags & 0x10 != 0, envelope))
 }
@@ -357,12 +401,81 @@ print(json.dumps(cases))
         for case in cases {
             let hex = case["blob"].as_str().unwrap();
             let bytes: Vec<_> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
-            let mut wkb = Wkb { bytes: &bytes, position: 0 };
+            let mut wkb = Wkb { bytes: &bytes, position: 0, bounds: [[f64::INFINITY, f64::NEG_INFINITY]; 4] };
             let valid = wkb.shape(0).is_some() && wkb.position == bytes.len();
             assert_eq!(valid, case["valid"].as_bool().unwrap(), "{}", case["name"]);
         }
     }
 
+    fn header(flags: u8) -> Vec<u8> {
+        let mut blob = b"GP\0".to_vec();
+        blob.push(flags);
+        blob.extend(4326i32.to_le_bytes());
+        blob
+    }
+    #[test]
+    fn empty_points_require_nan_for_every_present_ordinate() {
+        for dimension in [1u32, 2, 3] {
+            for finite in [false, true] {
+                let mut blob = header(0x11);
+                blob.push(1);
+                blob.extend((1 + 1000 * dimension).to_le_bytes());
+                let count = 2 + usize::from(dimension == 1 || dimension == 3) + usize::from(dimension >= 2);
+                for axis in 0..count {
+                    blob.extend(if finite && axis + 1 == count { 0f64 } else { f64::NAN }.to_le_bytes());
+                }
+                assert_eq!(blob_shape(&blob).is_some(), !finite, "dimension {dimension}");
+            }
+        }
+        assert!(!joined([f64::NAN, 0., 0.], [1., 0., 0.]));
+        assert!(!joined([f64::INFINITY, 0., 0.], [f64::INFINITY, 0., 0.]));
+    }
+    #[test]
+    fn polygon_rings_require_four_points_and_closure() {
+        for points in [vec![(0f64, 0f64)], vec![(0., 0.), (1., 0.), (0., 1.), (2., 2.)], vec![(0., 0.), (1., 0.), (0., 1.), (0., 0.)]] {
+            let mut blob = header(1);
+            blob.push(1);
+            blob.extend(3u32.to_le_bytes());
+            blob.extend(1u32.to_le_bytes());
+            blob.extend((points.len() as u32).to_le_bytes());
+            for (x, y) in &points {
+                blob.extend(x.to_le_bytes());
+                blob.extend(y.to_le_bytes());
+            }
+            assert_eq!(blob_shape(&blob).is_some(), points.len() == 4 && points.first() == points.last());
+        }
+    }
+    #[test]
+    fn envelopes_are_ordered_finite_and_contain_encoded_coordinates() {
+        for bounds in [[0f64, 4., 0., 4.], [4., 0., 0., 4.], [0., 1., 0., 4.], [f64::NAN, 4., 0., 4.]] {
+            let mut blob = header(3);
+            for value in bounds {
+                blob.extend(value.to_le_bytes());
+            }
+            blob.push(1);
+            blob.extend(1u32.to_le_bytes());
+            blob.extend(2f64.to_le_bytes());
+            blob.extend(3f64.to_le_bytes());
+            assert_eq!(blob_shape(&blob).is_some(), bounds == [0., 4., 0., 4.]);
+        }
+        for (dimension, envelope) in [(1u32, 2u8), (2, 3), (3, 4)] {
+            for outside in [false, true] {
+                let mut blob = header(1 | (envelope << 1));
+                let dimensions = if dimension == 3 { 4 } else { 3 };
+                for axis in 0..dimensions {
+                    let max = if outside && axis + 1 == dimensions { 0.5f64 } else { 2. };
+                    blob.extend(0f64.to_le_bytes());
+                    blob.extend(max.to_le_bytes());
+                }
+                blob.push(1);
+                blob.extend((1 + 1000 * dimension).to_le_bytes());
+                for _ in 0..dimensions {
+                    blob.extend(1f64.to_le_bytes());
+                }
+                assert_eq!(blob_shape(&blob).is_some(), !outside, "dimension {dimension}");
+            }
+        }
+    }
     #[test]
     fn rejects_truncation_counts_reserved_flags_and_trailing_bytes() {
         let mut point = b"GP\0\x01".to_vec();

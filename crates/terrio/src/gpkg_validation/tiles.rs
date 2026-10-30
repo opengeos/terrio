@@ -57,6 +57,28 @@ fn encoding(blob: &[u8]) -> Option<Encoding> {
     }
 }
 
+fn image_dimensions(blob: &[u8], encoding: &Encoding) -> std::result::Result<(u32, u32), String> {
+    let input = std::io::Cursor::new(blob);
+    match encoding {
+        Encoding::Png => {
+            let reader = png::Decoder::new(input).read_info().map_err(|e| e.to_string())?;
+            Ok((reader.info().width, reader.info().height))
+        }
+        Encoding::Jpeg => {
+            let mut reader = jpeg_decoder::Decoder::new(input);
+            reader.read_info().map_err(|e| e.to_string())?;
+            let info = reader.info().ok_or_else(|| "missing JPEG frame information".to_string())?;
+            Ok((u32::from(info.width), u32::from(info.height)))
+        }
+        Encoding::Webp => Ok(image_webp::WebPDecoder::new(input).map_err(|e| e.to_string())?.dimensions()),
+        Encoding::Tiff => tiff::decoder::Decoder::new(input)
+            .map_err(|e| e.to_string())?
+            .with_limits(crate::cog::TiffReadLimits::default().tiff())
+            .dimensions()
+            .map_err(|e| e.to_string()),
+    }
+}
+
 impl Checker {
     fn tile_extension(&self, name: &str, extension: &str, scope: Option<&str>) -> bool {
         self.db.tables.get("gpkg_extensions").is_some_and(|table| {
@@ -301,6 +323,22 @@ impl Checker {
                     matches!(kind, Some(Encoding::Png | Encoding::Jpeg | Encoding::Webp))
                 };
                 self.report.require(allowed, 36, format!("{}: tile encoding does not match registered data type", pyramid.name));
+                if let (Some(matrix), Some(kind)) = (matrix, kind.as_ref())
+                    && matrix.tile_width > 0
+                    && matrix.tile_height > 0
+                {
+                    match image_dimensions(blob, kind) {
+                        Ok((width, height)) => self.report.require(
+                            i64::from(width) == matrix.tile_width && i64::from(height) == matrix.tile_height,
+                            19,
+                            format!(
+                                "{}: tile dimensions {width}x{height} disagree with matrix {}x{}",
+                                pyramid.name, matrix.tile_width, matrix.tile_height
+                            ),
+                        ),
+                        Err(error) => self.report.require(false, 19, format!("{}: invalid tile image header: {error}", pyramid.name)),
+                    }
+                }
                 pyramid.webp |= kind == Some(Encoding::Webp);
             }
             Ok(())
@@ -323,6 +361,28 @@ impl Checker {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tile_headers_expose_the_actual_encoded_dimensions() {
+        use super::*;
+        let mut png = Vec::new();
+        {
+            let mut writer = png::Encoder::new(&mut png, 1, 1).write_header().unwrap();
+            writer.write_image_data(&[1]).unwrap();
+        }
+        assert_eq!(image_dimensions(&png, &Encoding::Png).unwrap(), (1, 1));
+        let mut tiff = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = tiff::encoder::TiffEncoder::new(&mut tiff).unwrap();
+            writer.write_image::<tiff::encoder::colortype::Gray32Float>(1, 1, &[1.]).unwrap();
+        }
+        assert_eq!(image_dimensions(tiff.get_ref(), &Encoding::Tiff).unwrap(), (1, 1));
+        let mut jpeg = Vec::new();
+        jpeg_encoder::Encoder::new(&mut jpeg, 75).encode(&[255, 0, 0], 1, 1, jpeg_encoder::ColorType::Rgb).unwrap();
+        assert_eq!(image_dimensions(&jpeg, &Encoding::Jpeg).unwrap(), (1, 1));
+        let mut webp = Vec::new();
+        image_webp::WebPEncoder::new(&mut webp).encode(&[255, 0, 0], 1, 1, image_webp::ColorType::Rgb8).unwrap();
+        assert_eq!(image_dimensions(&webp, &Encoding::Webp).unwrap(), (1, 1));
+    }
     use super::*;
 
     #[test]
@@ -354,7 +414,8 @@ with sqlite3.connect(base) as db:
  for name, in db.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall():
   db.execute('DROP TRIGGER "'+name.replace('"','""')+'"')
  db.execute('CREATE TABLE IF NOT EXISTS gpkg_extensions(table_name TEXT,column_name TEXT,extension_name TEXT NOT NULL,definition TEXT NOT NULL,scope TEXT NOT NULL,UNIQUE(table_name,column_name,extension_name))')
- assert db.execute('SELECT count(*) FROM tiles').fetchone()[0] > 0
+ tile_count=db.execute('SELECT count(*) FROM tiles').fetchone()[0]
+ assert tile_count > 0
 cases=[]
 def add(name,sql='',extra=(),reference_exception=None):
  path=root/(str(len(cases))+'.gpkg'); shutil.copyfile(base,path)
@@ -371,6 +432,12 @@ def add(name,sql='',extra=(),reference_exception=None):
   assert reference_exception is None,name
  cases.append(dict(name=name,path=str(path),requirements=sorted([e[0] for e in checker.errors]+list(extra)),reference_exception=reference_exception))
 add('real Landsat PNG tiles')
+small=root/'one.png'
+gdal.Translate(str(small),str(data/'landsat.tif'),format='PNG',srcWin=[0,0,1,1],outputType=gdal.GDT_Byte).Close()
+add('one-pixel PNG disagrees with matrix',"UPDATE tiles SET tile_data=X'"+small.read_bytes().hex()+"'",extra=[19]*tile_count)
+small=root/'one.tif'
+gdal.Translate(str(small),str(data/'dem.tif'),format='GTiff',srcWin=[0,0,1,1],outputType=gdal.GDT_Float32).Close()
+add('one-pixel TIFF disagrees with matrix',"UPDATE gpkg_contents SET data_type='2d-gridded-coverage'; UPDATE tiles SET tile_data=X'"+small.read_bytes().hex()+"'",extra=[19]*tile_count)
 add('empty tile user table','DELETE FROM tiles')
 add('incomplete PNG signature',"UPDATE tiles SET tile_data=X'89504e470000000000000000'",extra=[36,36])
 add('negative matrix zoom','UPDATE gpkg_tile_matrix SET zoom_level=-1')
@@ -398,13 +465,13 @@ add('declared other zoom intervals',level+extension+'UPDATE gpkg_tile_matrix SET
 add('wrong zoom extension column',extension.replace("'tile_data'","'tile_row'"))
 add('unknown tile encoding',"UPDATE tiles SET tile_data=X'000102030405060708090a0b'")
 webp="UPDATE tiles SET tile_data=X'524946460000000057454250';"
-add('undeclared WebP signature',webp)
+add('undeclared WebP signature',webp,extra=[19]*tile_count)
 webpext="INSERT INTO gpkg_extensions VALUES('tiles','tile_data','gpkg_webp','http://www.geopackage.org/spec/#extension_tiles_webp','read-write');"
-add('declared WebP signature',webp+webpext)
-add('wrong WebP scope',webp+webpext.replace('read-write','write-only'))
-add('TIFF signature not imagery',"UPDATE tiles SET tile_data=X'49492a000800000000000000'")
-add('TIFF signature gridded coverage',"UPDATE gpkg_contents SET data_type='2d-gridded-coverage'; UPDATE tiles SET tile_data=X'49492a000800000000000000'")
-add('JPEG signature imagery',"UPDATE tiles SET tile_data=X'ffd8ff000000000000000000'")
+add('declared WebP signature',webp+webpext,extra=[19]*tile_count)
+add('wrong WebP scope',webp+webpext.replace('read-write','write-only'),extra=[19]*tile_count)
+add('TIFF signature not imagery',"UPDATE tiles SET tile_data=X'49492a000800000000000000'",extra=[19]*tile_count)
+add('TIFF signature gridded coverage',"UPDATE gpkg_contents SET data_type='2d-gridded-coverage'; UPDATE tiles SET tile_data=X'49492a000800000000000000'",extra=[19]*tile_count)
+add('JPEG signature imagery',"UPDATE tiles SET tile_data=X'ffd8ff000000000000000000'",extra=[19]*tile_count)
 columns='id INTEGER PRIMARY KEY,zoom_level INTEGER NOT NULL,tile_column INTEGER NOT NULL,tile_row INTEGER NOT NULL,tile_data BLOB NOT NULL'
 def rebuild(declaration,suffix=''):
  return 'ALTER TABLE tiles RENAME TO old_tiles; CREATE TABLE tiles('+declaration+')'+suffix+'; INSERT INTO tiles(id,zoom_level,tile_column,tile_row,tile_data) SELECT id,zoom_level,tile_column,tile_row,tile_data FROM old_tiles; DROP TABLE old_tiles;'

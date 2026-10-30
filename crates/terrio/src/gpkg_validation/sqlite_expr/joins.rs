@@ -109,14 +109,21 @@ impl Relation {
 // Shared by one root view evaluation and every nested view/compound arm.
 const MAX_JOIN_WORK: usize = 1_000_000;
 const MAX_JOIN_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_JOIN_COPY_BYTES: usize = 1024 * 1024 * 1024;
 pub(super) struct ViewBudget {
     remaining: Cell<usize>,
     retained: Cell<usize>,
     byte_limit: usize,
+    copy_remaining: Cell<usize>,
 }
 impl Default for ViewBudget {
     fn default() -> Self {
-        Self { remaining: Cell::new(MAX_JOIN_WORK), retained: Cell::new(0), byte_limit: MAX_JOIN_CACHE_BYTES }
+        Self {
+            remaining: Cell::new(MAX_JOIN_WORK),
+            retained: Cell::new(0),
+            byte_limit: MAX_JOIN_CACHE_BYTES,
+            copy_remaining: Cell::new(MAX_JOIN_COPY_BYTES),
+        }
     }
 }
 impl ViewBudget {
@@ -127,9 +134,8 @@ impl ViewBudget {
         self.remaining.set(remaining);
         Ok(())
     }
-    fn retain(&self, row: &[Value]) -> Result<usize> {
-        let bytes = row
-            .iter()
+    pub(super) fn row_bytes(row: &[Value]) -> usize {
+        row.iter()
             .try_fold(std::mem::size_of::<Vec<Value>>(), |bytes, value| {
                 let payload = match value {
                     Value::Text(text) => text.len(),
@@ -138,15 +144,63 @@ impl ViewBudget {
                 };
                 bytes.checked_add(std::mem::size_of::<Value>()).and_then(|bytes| bytes.checked_add(payload))
             })
-            .unwrap_or(usize::MAX);
+            .unwrap_or(usize::MAX)
+    }
+    fn retain(&self, row: &[Value]) -> Result<usize> {
+        let bytes = Self::row_bytes(row);
+        self.reserve(bytes)?;
+        Ok(bytes)
+    }
+    fn reserve(&self, bytes: usize) -> Result<()> {
         let retained = self
             .retained
             .get()
             .checked_add(bytes)
             .filter(|bytes| *bytes <= self.byte_limit)
-            .ok_or_else(|| Error::Unsupported(format!("SQLite joined-view cached row bytes exceed {}", self.byte_limit)))?;
+            .ok_or_else(|| Error::Unsupported(format!("SQLite view working row bytes exceed {}", self.byte_limit)))?;
         self.retained.set(retained);
-        Ok(bytes)
+        Ok(())
+    }
+    pub(super) fn memory(&self) -> ViewMemory<'_> {
+        ViewMemory { budget: self, bytes: 0 }
+    }
+    fn candidate(&self, left: &[Value], right: &[Value], nulls: usize) -> Result<ViewMemory<'_>> {
+        self.charge()?;
+        let bytes =
+            Self::row_bytes(left).saturating_add(Self::row_bytes(right)).saturating_add(nulls.saturating_mul(std::mem::size_of::<Value>()));
+        let remaining = self
+            .copy_remaining
+            .get()
+            .checked_sub(bytes)
+            .ok_or_else(|| Error::Unsupported(format!("SQLite joined-view candidate copies exceed {MAX_JOIN_COPY_BYTES} bytes")))?;
+        self.copy_remaining.set(remaining);
+        let mut memory = self.memory();
+        memory.reserve(bytes)?;
+        Ok(memory)
+    }
+}
+pub(super) struct ViewMemory<'a> {
+    budget: &'a ViewBudget,
+    bytes: usize,
+}
+impl ViewMemory<'_> {
+    pub(super) fn reserve(&mut self, bytes: usize) -> Result<()> {
+        self.budget.reserve(bytes)?;
+        self.bytes += bytes;
+        Ok(())
+    }
+    pub(super) fn release(&mut self, bytes: usize) {
+        self.bytes -= bytes;
+        self.budget.retained.set(self.budget.retained.get() - bytes);
+    }
+    pub(super) fn absorb(&mut self, mut other: Self) {
+        self.bytes += other.bytes;
+        other.bytes = 0;
+    }
+}
+impl Drop for ViewMemory<'_> {
+    fn drop(&mut self) {
+        self.budget.retained.set(self.budget.retained.get() - self.bytes);
     }
 }
 struct JoinInputs<'a> {
@@ -419,7 +473,7 @@ impl Join {
         self.visit_node(left, db, bytes, encoding, inputs, &mut |left_row| {
             let mut found = false;
             for (current, right_row) in rows.iter().enumerate() {
-                inputs.budget.charge()?;
+                let _candidate_memory = inputs.budget.candidate(left_row, right_row, 0)?;
                 let mut row = left_row.to_vec();
                 row.extend_from_slice(right_row);
                 let context = Context {
@@ -447,6 +501,7 @@ impl Join {
                 }
             }
             if !found && matches!(kind, Kind::Left | Kind::Full) && active.get() {
+                let _candidate_memory = inputs.budget.candidate(left_row, &[], relation.width())?;
                 let mut row = left_row.to_vec();
                 row.resize(left_row.len() + relation.width(), Value::Null);
                 active.set(visitor(&row)?);
@@ -458,6 +513,7 @@ impl Join {
                 if matched.contains(&current) {
                     continue;
                 }
+                let _candidate_memory = inputs.budget.candidate(&[], right_row, *left_width)?;
                 let mut row = vec![Value::Null; *left_width];
                 row.extend_from_slice(right_row);
                 if !visitor(&row)? {
@@ -483,6 +539,12 @@ mod tests {
         };
         let objects = [
             ("vb", "SELECT id FROM b"),
+            ("sorted_unused", "SELECT * FROM unused ORDER BY id"),
+            ("small_sorted", "SELECT * FROM a ORDER BY id DESC LIMIT 5"),
+            ("small_sorted_join", "SELECT b.id FROM b CROSS JOIN small_sorted"),
+            ("distinct_unused", "SELECT DISTINCT id,payload FROM unused"),
+            ("compound_unused", "SELECT * FROM unused UNION SELECT * FROM unused"),
+            ("copy_budget", "SELECT a.id FROM a CROSS JOIN unused"),
             ("limited", "SELECT id FROM a LIMIT 1"),
             ("blob_budget", "SELECT a.id FROM a CROSS JOIN b CROSS JOIN unused"),
             ("joined_b", "SELECT b.id FROM b CROSS JOIN b other"),
@@ -541,14 +603,43 @@ mod tests {
         assert_eq!(stats.whole_images, 0);
         assert_eq!(stats.table_roots, 1);
         assert!(stats.pages <= 2, "LIMIT did not stop the B-tree walk: {stats:?}");
+        for name in ["sorted_unused", "distinct_unused", "compound_unused"] {
+            let budget = ViewBudget { byte_limit: 1024 * 1024, ..ViewBudget::default() };
+            let error = View::compile(&db, name).unwrap().visit_budgeted(&db, &bytes, &budget, &mut |_| Ok(true)).unwrap_err();
+            assert!(error.to_string().contains("working row bytes"), "{name}: {error}");
+            assert_eq!(budget.retained.get(), 0, "{name}");
+        }
+        let budget = ViewBudget { byte_limit: 4096, ..ViewBudget::default() };
+        let mut sorted_rows = 0;
+        View::compile(&db, "small_sorted_join")
+            .unwrap()
+            .visit_budgeted(&db, &bytes, &budget, &mut |_| {
+                sorted_rows += 1;
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(sorted_rows, 15);
+        assert_eq!(budget.retained.get(), 0);
+        let budget = ViewBudget { copy_remaining: Cell::new(3 * 1024 * 1024), ..ViewBudget::default() };
+        let mut copied = 0;
+        let error = View::compile(&db, "copy_budget")
+            .unwrap()
+            .visit_budgeted(&db, &bytes, &budget, &mut |_| {
+                copied += 1;
+                Ok(true)
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("candidate copies"), "{error}");
+        assert_eq!(copied, 1);
+        assert_eq!(budget.retained.get(), 0);
         let budget = ViewBudget { byte_limit: 1024 * 1024, ..ViewBudget::default() };
         let error = View::compile(&db, "blob_budget").unwrap().visit_budgeted(&db, &bytes, &budget, &mut |_| Ok(true)).unwrap_err();
-        assert!(matches!(error, Error::Unsupported(ref message) if message.contains("cached row bytes")));
+        assert!(matches!(error, Error::Unsupported(ref message) if message.contains("working row bytes")));
         assert_eq!(budget.retained.get(), 0);
         let row_bytes = std::mem::size_of::<Vec<Value>>() + std::mem::size_of::<Value>();
         let budget = ViewBudget { byte_limit: row_bytes * 10, ..ViewBudget::default() };
         let error = View::compile(&db, "nested_budget").unwrap().visit_budgeted(&db, &bytes, &budget, &mut |_| Ok(true)).unwrap_err();
-        assert!(matches!(error, Error::Unsupported(ref message) if message.contains("cached row bytes")));
+        assert!(matches!(error, Error::Unsupported(ref message) if message.contains("working row bytes")));
         assert_eq!(budget.retained.get(), 0);
         let budget = ViewBudget { remaining: Cell::new(20), ..ViewBudget::default() };
         let error = View::compile(&db, "nested_budget").unwrap().visit_budgeted(&db, &bytes, &budget, &mut |_| Ok(true)).unwrap_err();

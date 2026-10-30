@@ -95,6 +95,9 @@ pub struct GpkgValidation {
 /// The encoded image is retained by the caller; user rows are streamed, with index,
 /// identifier, DISTINCT/set and sorted-result keys retained as needed. Join views also
 /// retain their right-hand input rows once per evaluation, including geometry blobs.
+/// Shared view budgets bound working-row storage and cumulative join candidate copies;
+/// exhaustion returns an incomplete verdict. The complete image and integrity keys
+/// are separate retained storage.
 pub fn validate_gpkg_bytes(bytes: &[u8], options: &GpkgValidationOptions) -> Result<GpkgValidation> {
     #[cfg(feature = "sqlite")]
     {

@@ -1025,8 +1025,11 @@ print(json.dumps(dict(path=str(path),cases=cases,encodings=[str(root/(encoding+'
 #[cfg(all(test, not(target_family = "wasm")))]
 mod review_regressions {
     use super::*;
-    type Fixture<'a> = (&'a str, &'a str, Vec<Vec<Value>>);
+    pub(super) type Fixture<'a> = (&'a str, &'a str, Vec<Vec<Value>>);
     fn checker(tables: Vec<Fixture<'_>>) -> Checker {
+        fixture(tables).0
+    }
+    pub(super) fn fixture(tables: Vec<Fixture<'_>>) -> (Checker, Vec<u8>) {
         use crate::drivers::vector::sqlite as writer;
         let tables = tables
             .into_iter()
@@ -1055,7 +1058,7 @@ mod review_regressions {
             })
             .collect::<Vec<_>>();
         let bytes = writer::write_database(&tables, &[], 10400, 0x4750_4b47).unwrap();
-        Checker { db: Snapshot::read(&bytes).unwrap(), report: CoreReport { version: Some(10400), ..Default::default() } }
+        (Checker { db: Snapshot::read(&bytes).unwrap(), report: CoreReport { version: Some(10400), ..Default::default() } }, bytes)
     }
     fn text(value: &str) -> Value {
         Value::Text(value.into())
@@ -1127,6 +1130,26 @@ mod review_regressions {
             c.relations();
             assert_eq!(c.report.is_valid(), valid, "{relation}: {:?}", c.report);
         }
+    }
+    #[test]
+    #[ignore = "requires real GeoPackage comparison data"]
+    fn measure_whole_image_validation_passes_on_natural_earth() {
+        let data = std::path::PathBuf::from(std::env::var("TERRIO_TEST_DATA").expect("set TERRIO_TEST_DATA"));
+        let bytes = std::fs::read(data.join("countries.gpkg")).unwrap();
+        sqlite_repack::take_inspection_stats();
+        let start = std::time::Instant::now();
+        let report = check_core(&bytes);
+        assert!(report.is_valid(), "{report:?}");
+        let stats = sqlite_repack::take_inspection_stats();
+        eprintln!(
+            "GeoPackage validation: {} encoded bytes, {} full inspections, {} targeted roots, {} page visits, {:?}",
+            bytes.len(),
+            stats.whole_images,
+            stats.table_roots,
+            stats.pages,
+            start.elapsed()
+        );
+        assert!(stats.whole_images <= 10, "unexpected extra full inspections: {stats:?}");
     }
     #[test]
     fn contents_identifier_requires_a_single_column_unique_key() {

@@ -592,6 +592,12 @@ pub(crate) fn decode_record(record: &[u8], encoding: u32) -> Result<Vec<super::s
     use super::sqlite::Value;
     let layout = fields(record)?;
     let mut values = super::sqlite::Db::record_values(record);
+    // SQLite exposes a stored NaN REAL as SQL NULL, including in view expressions.
+    for value in &mut values {
+        if matches!(value, Value::Real(number) if number.is_nan()) {
+            *value = Value::Null;
+        }
+    }
     for (value, (serial, range)) in values.iter_mut().zip(layout) {
         if serial >= 13 && serial % 2 == 1 {
             let text = &record[range];
@@ -818,6 +824,14 @@ fn check_page_layout(bytes: &[u8], page: u32, size: usize) -> Result<()> {
 #[cfg(test)]
 mod validation_tests {
     use super::*;
+    #[test]
+    fn gpkg_record_nan_reals_are_sql_null() {
+        let mut record = vec![2, 7];
+        record.extend(f64::NAN.to_be_bytes());
+        assert!(matches!(decode_record(&record, 1).unwrap().as_slice(), [super::super::sqlite::Value::Null]));
+        record[2..].copy_from_slice(&f64::INFINITY.to_be_bytes());
+        assert!(matches!(decode_record(&record,1).unwrap().as_slice(),[super::super::sqlite::Value::Real(number)] if number.is_infinite()));
+    }
     #[test]
     fn adjacent_fragments_require_an_exact_bounded_total() {
         let mut page = vec![0u8; 512];

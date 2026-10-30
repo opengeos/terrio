@@ -2646,7 +2646,8 @@ the default; `--unicode-case` selects Unicode lower/upper/LIKE behavior for imag
 created with ICU SQLite. NOCASE collation retains SQLite's ASCII behavior.
 
 Native paths and `/vsimem/` images must be closed/checkpointed. Validation reads
-the complete database image and refuses nonempty WAL or rollback-journal sidecars;
+the complete database image once, then makes multiple in-memory record passes for
+different rule groups. It refuses nonempty WAL or rollback-journal sidecars;
 it never checkpoints or modifies the file. Uploaded bytes are supported by the
 Rust/Python/JavaScript APIs. Filename requirement 3 applies only to path inputs.
 
@@ -2660,16 +2661,23 @@ Ordinary user rows stream, while metadata, integrity keys, DISTINCT/set values
 and sorted candidates are retained. Join views additionally retain all right-hand
 input rows, including geometry blobs, once per evaluation. Each join evaluation is
 limited to 1,000,000 work units, counting retained right-input rows and candidate
-row pairs across all join levels and nested views. A shared 128 MiB limit bounds
-cached right-input row storage, counting value/row overhead and text/blob bytes;
-cache reservations are released when an evaluation ends. Exceeding either limit yields an incomplete verdict;
+row pairs across all join levels and nested views. A shared 128 MiB budget covers right-input caches, candidate
+rows, sorted rows, DISTINCT keys and compound-set working rows, including text/blob
+payloads. Key/set reservations are conservative and can exceed the eventual retained
+result size; compound reservations last until evaluation ends. A separate 1 GiB
+cumulative candidate-copy budget bounds repeated copying of large join payloads,
+and is charged before the candidate is constructed. Reservations are released on
+success or failure. Exceeding a budget yields an incomplete verdict;
 multi-way nested-loop combinations can otherwise grow as the product of row counts.
 Inputs are not rescanned for each outer row. Extension/metadata/R-tree/schema rules
 that have not evaluated a referenced view, and tile views not evaluated by the tile
 validator, are explicitly incomplete. Unsupported schema declarations are also
 reported as incomplete, rather than proven SQLite corruption. The same applies to
 CHECK/generated expressions outside the implemented expression subset, including
-JSON extraction operators.
+JSON extraction operators. `json_valid` supports SQLite's 1,000-level JSON nesting
+limit without constructing a recursive JSON value. LIKE/GLOB matching reuses its
+state buffers and refuses estimated work above 10,000,000 units per call, yielding
+an incomplete verdict; this includes the cost of character-class ranges.
 
 Checks are stricter than GDAL for some malformed geometry, image and metadata
 payloads. See [validation details and known differences](testing.md#geopackage-specification-validation).

@@ -1,4 +1,5 @@
 //! SQLite ORDER BY binding, LIMIT conversion and a bounded top-k sorter.
+use super::joins::{ViewBudget, ViewMemory};
 use super::*;
 use parse::Parser;
 use std::collections::BinaryHeap;
@@ -260,6 +261,7 @@ struct Record {
     keys: Vec<Key>,
     row: Vec<Value>,
     ordinal: usize,
+    bytes: usize,
 }
 impl PartialEq for Record {
     fn eq(&self, other: &Self) -> bool {
@@ -283,10 +285,11 @@ pub(super) struct Sorter<'a> {
     encoding: u32,
     heap: BinaryHeap<Record>,
     sequence: usize,
+    memory: ViewMemory<'a>,
 }
 impl<'a> Sorter<'a> {
-    pub fn new(terms: &'a [Order], limit: Option<usize>, encoding: u32) -> Self {
-        Self { terms, limit, encoding, heap: BinaryHeap::new(), sequence: 0 }
+    pub fn new(terms: &'a [Order], limit: Option<usize>, encoding: u32, budget: &'a ViewBudget) -> Self {
+        Self { terms, limit, encoding, heap: BinaryHeap::new(), sequence: 0, memory: budget.memory() }
     }
     pub fn keys(&self, context: &Context<'_>) -> Result<Vec<Key>> {
         self.terms
@@ -301,18 +304,29 @@ impl<'a> Sorter<'a> {
     pub fn admits(&self, keys: &[Key]) -> bool {
         self.limit.is_none_or(|n| self.heap.len() < n || self.heap.peek().is_some_and(|old| keys < old.keys.as_slice()))
     }
-    pub fn push(&mut self, keys: Vec<Key>, row: Vec<Value>) {
+    pub fn push(&mut self, keys: Vec<Key>, row: Vec<Value>) -> Result<()> {
         if !self.admits(&keys) {
-            return;
+            return Ok(());
         }
-        self.heap.push(Record { keys, row, ordinal: self.sequence });
+        let bytes = keys.iter().fold(ViewBudget::row_bytes(&row).saturating_add(std::mem::size_of::<Record>()), |bytes, key| {
+            let payload = match &key.atom {
+                integrity::Atom::Text(bytes, _) | integrity::Atom::Blob(bytes) => bytes.len(),
+                _ => 0,
+            };
+            bytes.saturating_add(std::mem::size_of::<Key>()).saturating_add(payload)
+        });
+        self.memory.reserve(bytes)?;
+        self.heap.push(Record { keys, row, ordinal: self.sequence, bytes });
         self.sequence += 1;
-        if self.limit.is_some_and(|n| self.heap.len() > n) {
-            self.heap.pop();
+        if self.limit.is_some_and(|n| self.heap.len() > n)
+            && let Some(record) = self.heap.pop()
+        {
+            self.memory.release(record.bytes);
         }
+        Ok(())
     }
-    pub fn finish(self) -> Vec<Vec<Value>> {
-        self.heap.into_sorted_vec().into_iter().map(|r| r.row).collect()
+    pub fn finish(self) -> (Vec<Vec<Value>>, ViewMemory<'a>) {
+        (self.heap.into_sorted_vec().into_iter().map(|r| r.row).collect(), self.memory)
     }
 }
 
@@ -323,7 +337,8 @@ mod tests {
     fn sorted_limits_retain_only_the_best_needed_rows() {
         let schema = Schema::parse("CREATE TABLE sample(v INTEGER)").unwrap();
         let terms = [Order { expr: Expression::parse("v").unwrap(), descending: false, nulls_last: false, collation: "BINARY".into() }];
-        let mut sorter = Sorter::new(&terms, Some(5), 1);
+        let budget = ViewBudget::default();
+        let mut sorter = Sorter::new(&terms, Some(5), 1, &budget);
         for n in (0..1000).rev() {
             let row = [Value::Int(n)];
             let context = Context {
@@ -337,9 +352,9 @@ mod tests {
                 unicode_case: true,
             };
             let keys = sorter.keys(&context).unwrap();
-            sorter.push(keys, row.to_vec());
+            sorter.push(keys, row.to_vec()).unwrap();
             assert!(sorter.heap.len() <= 5);
         }
-        assert_eq!(sorter.finish(), (0..5).map(|n| vec![Value::Int(n)]).collect::<Vec<_>>());
+        assert_eq!(sorter.finish().0, (0..5).map(|n| vec![Value::Int(n)]).collect::<Vec<_>>());
     }
 }

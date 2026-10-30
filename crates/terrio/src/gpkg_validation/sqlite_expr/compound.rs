@@ -258,9 +258,13 @@ impl Compound {
             return Ok(());
         }
         let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
-        let collect = |arm: &View| -> Result<Vec<Vec<Value>>> {
+        let mut memory = budget.memory();
+        let mut collect = |arm: &View| -> Result<Vec<Vec<Value>>> {
             let mut rows = Vec::new();
             arm.visit_budgeted(db, bytes, budget, &mut |row| {
+                // Conservatively retain the reservation through the compound evaluation,
+                // covering encoded keys and intermediate set maps as well as row copies.
+                memory.reserve(ViewBudget::row_bytes(row).saturating_mul(3))?;
                 rows.push(row.to_vec());
                 Ok(true)
             })?;
