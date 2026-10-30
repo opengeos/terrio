@@ -2,6 +2,7 @@
 //! Metadata requirements follow OGC GeoPackage 1.4 and GDAL 3.13.3 validate_gpkg.py.
 mod content;
 mod extensions;
+mod features;
 mod schema;
 mod tiles;
 
@@ -466,6 +467,7 @@ fn check_core(bytes: &[u8]) -> CoreReport {
     checker.spatial_references();
     checker.contents();
     checker.extensions();
+    checker.features();
     if let Err(error) = checker.attributes(bytes) {
         checker.report.require(false, 6, error.to_string());
     }
@@ -635,8 +637,8 @@ for name,path,_ in cases:
   with sqlite3.connect(path) as db:
    cursor=db.cursor()
    failed=db.execute('PRAGMA integrity_check').fetchone()[0]!='ok'
-   checker._check_gpkg_spatial_ref_sys(cursor);checker._check_gpkg_contents(cursor);checker._check_gpkg_extensions(cursor);checker._check_tiles(cursor)
- except (sqlite3.Error,TypeError,ZeroDivisionError):
+   checker._check_gpkg_spatial_ref_sys(cursor);checker._check_gpkg_contents(cursor);checker._check_gpkg_extensions(cursor);checker._check_tiles(cursor);checker._check_features(cursor)
+ except (sqlite3.Error,TypeError,ZeroDivisionError,IndexError):
   # GDAL can raise on missing/empty tile metadata instead of returning diagnostics.
   failed=True
  out.append({'name':name,'path':str(path),'valid':header and not failed and not checker.errors})
