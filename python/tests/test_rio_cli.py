@@ -20,7 +20,6 @@ import terrio
 import terrio.rio as rio
 from terrio.rio import cli
 from terrio.rio.control import GroundControlPoint
-from terrio.rio.errors import NotGeoreferencedWarning
 from terrio.rio.transform import from_gcps
 
 T = rio.transform.from_origin(500000, 4100000, 30, 30)
@@ -237,10 +236,8 @@ def test_from_gcps():
     assert np.allclose(from_gcps(gcps), t, rtol=1e-12)
     two = [GroundControlPoint(row=r, col=c, x=c * 2.0, y=-r * 3.0) for r, c in ((0, 0), (10, 10))]
     assert from_gcps(two) == Affine(2.0, 0.0, 0.0, 0.0, -3.0, 0.0)
-    # One GCP determines no transform: rasterio 1.5.0 returns an unset (zero) transform, this
-    # branch (as `GDALGCPsToGeoTransform` fails) warns and returns the identity.
-    with pytest.warns(NotGeoreferencedWarning):
-        assert from_gcps(two[:1]) == Affine.identity()
+    with pytest.raises(ValueError):
+        from_gcps(two[:1])
 
 
 def test_shapes_sampling(raster):

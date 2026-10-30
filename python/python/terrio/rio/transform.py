@@ -254,7 +254,12 @@ def from_gcps(gcps: Sequence[Any]) -> Affine:
         Affine: The transform. When no affine transform fits every GCP within a quarter of a
             pixel, a `NotGeoreferencedWarning` is issued (as rasterio does), with the least squares
             fit, or the identity when the GCPs are degenerate.
+
+    Raises:
+        ValueError: If fewer than two GCPs are given.
     """
+    if len(gcps) < 2:
+        raise ValueError("At least two GCPs are required")
     from terrio.rio.errors import NotGeoreferencedWarning
 
     ok, gt = _gcps_to_geotransform([(g.col, g.row, g.x, g.y) for g in gcps])
