@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2017, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/samples/validate_gpkg.py
+
 //! GeoPackage tiled gridded coverage metadata, references and image tiles.
 //! Follows GDAL 3.13.3 validate_gpkg.py (see NOTICE) and OGC 17-066r1.
 use super::*;

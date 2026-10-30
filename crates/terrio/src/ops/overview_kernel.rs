@@ -1,3 +1,15 @@
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.0:
+//     gcore/overview.cpp
+//     gcore/gdal_misc.cpp
+
 //! GDAL's overview resampling arithmetic (`gcore/overview.cpp`, GDAL 3.12): the source windows of
 //! each overview pixel, nearest neighbour at `0.5 + i * ratio`, the coverage-weighted average in
 //! GDAL's work data type (with its factor-of-two paths, the order of their additions included, and

@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2006, 2009 Matthew Perry
+// SPDX-FileCopyrightText: Copyright (c) 2009-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.2 and v3.13.3:
+//     apps/gdaldem_lib.cpp
+
 //! Terrain analysis: an equivalent of `gdaldem`.
 //!
 //! Hillshade (with combined, multidirectional and Igor shading), slope, aspect, color relief,

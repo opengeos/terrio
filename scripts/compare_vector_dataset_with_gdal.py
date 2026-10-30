@@ -1,3 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+#
+# Derived from (translated to Python and modified):
+#   GDAL v3.13.3:
+#     apps/gdalalg_vector_update.cpp
+
 """Compare terrio's dataset-level vector commands with GDAL on real data.
 
 Usage: python scripts/compare_vector_dataset_with_gdal.py ../terrio-data --terrio target/release/terrio

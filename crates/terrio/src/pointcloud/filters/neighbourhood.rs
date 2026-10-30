@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Copyright (c) 2016, Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2019, Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2020, University Nevada, Reno
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   PDAL 2.10.2:
+//     filters/LOFFilter.cpp
+//     filters/RadialDensityFilter.cpp
+//     filters/NNDistanceFilter.cpp
+//     filters/ReciprocityFilter.cpp
+//     filters/DBSCANFilter.cpp
+//     filters/ZsmoothFilter.cpp
+
 //! Filters that measure each point's nearest neighbours: PDAL's `filters.dbscan` (density-based
 //! clusters), `filters.lof` (local outlier factors), `filters.nndistance`,
 //! `filters.radialdensity`, `filters.reciprocity`, `filters.miniball` and `filters.zsmooth`.

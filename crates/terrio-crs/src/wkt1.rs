@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   PROJ 9.8.1:
+//     src/iso19111/io.cpp
+//   GDAL v3.13.3:
+//     ogr/ogr_srs_esri.cpp
+// No code is translated from these sources.
+
 //! A WKT 1 (OGC and ESRI) reader that turns a CRS definition into a PROJ string, as GDAL does,
 //! with its linear and angular units.
 

@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     src/select.c/resolve.c
+// No code is translated from these sources.
+
 //! SQLite ORDER BY binding, LIMIT conversion and a bounded top-k sorter.
 use super::joins::{ViewBudget, ViewMemory};
 use super::*;

@@ -1,3 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, Corteva Agriscience™
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT AND Apache-2.0
+#
+# Derived from (adapted and modified):
+#   rioxarray 0.23.0:
+#     rioxarray/xarray_plugin.py
+
 """The `terrio` xarray backend: `xr.open_dataset(path, engine="terrio")`."""
 
 from __future__ import annotations

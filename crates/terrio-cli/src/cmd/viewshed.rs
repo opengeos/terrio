@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_viewshed.rst
+// No code is translated from these sources.
+
 //! `terrio viewshed` (also exposed automatically as an MCP tool).
 use super::rasterout::{OutputArgs, open};
 use terrio::ops::viewshed::{ViewshedMode, ViewshedOptions, viewshed};

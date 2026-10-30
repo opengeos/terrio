@@ -1,3 +1,13 @@
+// SPDX-FileCopyrightText: Copyright (c) 2005, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2010-2015, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2015, European Union Satellite Centre
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     gcore/gdaljp2metadata.cpp
+
 //! JPEG 2000 (`.jp2`, `.j2k`), coded with `openjp2`, a pure-Rust port of OpenJPEG (the codec
 //! behind GDAL's JP2OpenJPEG driver), so decoded pixels match GDAL's, signed samples included, in
 //! native and WebAssembly builds alike.

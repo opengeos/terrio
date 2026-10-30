@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/gpkg/gdalgeopackagerasterband.cpp
+//     ogr/ogrsf_frmts/gpkg/ogrgeopackagedatasource.cpp
+// No code is translated from these sources.
+
 //! GeoPackage rasters: tile pyramids (PNG or JPEG tiles) and 2D gridded coverages (16-bit PNG
 //! or 32-bit float TIFF tiles), read at full resolution (the highest zoom level), over the extent
 //! in `gpkg_contents`, as GDAL reads them; and written as GDAL writes them.

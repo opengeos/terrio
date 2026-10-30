@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/gtiff/gtiffdataset_read.cpp, gt_wkt_srs.cpp
+// No code is translated from these sources.
+
 //! Reads a GeoTIFF's georeferencing tags directly, to fill in what the raster driver misses:
 //! `ModelTransformationTag` geotransforms, user-defined projected CRSs (common in NASA products)
 //! and `GDAL_NODATA`.

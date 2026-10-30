@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/ers/ersdataset.cpp
+// No code is translated from these sources.
+
 //! ER Mapper rasters: a `.ers` text header and a band-interleaved-by-line data file.
 
 use super::common::{self, Interleave, Layout, RawRaster};

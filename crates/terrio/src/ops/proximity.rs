@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2008, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2009-2010, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     alg/gdalproximity.cpp
+
 //! Distance to target pixels: an equivalent of `gdal_proximity.py` (GDAL's
 //! `GDALComputeProximity()`).
 //!

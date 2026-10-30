@@ -1,3 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (c) 2021 Martin Davis.
+// SPDX-FileCopyrightText: Copyright (c) 2016 Vivid Solutions.
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   JTS 1.20.0 (commit 6e95fe82feb986a7aa657f4ffa406d8c290af509):
+//     modules/core/src/main/java/org/locationtech/jts/operation/valid/IsValidOp.java
+//     modules/core/src/main/java/org/locationtech/jts/operation/valid/PolygonIntersectionAnalyzer.java
+//     modules/core/src/main/java/org/locationtech/jts/operation/valid/PolygonTopologyAnalyzer.java
+//     modules/core/src/main/java/org/locationtech/jts/operation/valid/PolygonRing.java
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/PolygonNodeTopology.java
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/RayCrossingCounter.java
+
 //! Integer-grid adaptation of JTS 1.20.0 IsValidOp, PolygonIntersectionAnalyzer,
 //! PolygonTopologyAnalyzer, PolygonNodeTopology and PolygonRing. Copyright (c)
 //! 2016 Vivid Solutions; Copyright (c) 2021 Martin Davis. EDL-1.0; see NOTICE.

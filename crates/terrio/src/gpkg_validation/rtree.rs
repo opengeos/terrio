@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2017, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/samples/validate_gpkg.py
+
 //! GeoPackage R-tree declarations and maintenance-trigger inventory.
 //! OGC GeoPackage requirements 75, 77 and 78, following GDAL 3.13.3
 //! validate_gpkg.py (attribution in NOTICE). Node content checks are separate.

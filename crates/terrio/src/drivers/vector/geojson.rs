@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/geojson/ogrgeojsonreader.cpp
+//     ogr/ogrsf_frmts/geojson/ogrgeojsonwritelayer.cpp
+// No code is translated from these sources.
+
 //! GeoJSON, read and written as GDAL does.
 //!
 //! Reading: fields in the order the properties first appear, typed from their JSON values

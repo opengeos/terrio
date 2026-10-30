@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL 3.13:
+//     frmts/*/ Identify() implementations
+// No code is translated from these sources.
+
 //! Dataset identification from bounded headers, with explicit deeper inspection.
 #[cfg(not(target_family = "wasm"))]
 use crate::Result;

@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_vsi_sozip.cpp, port/cpl_vsil_gzip.cpp
+// No code is translated from these sources.
+
 //! Seek-Optimized ZIP (SOZip, index version 1): creating, optimizing, listing and validating
 //! archives, and reading their members at random positions, as GDAL's `gdal vsi sozip` does.
 //!

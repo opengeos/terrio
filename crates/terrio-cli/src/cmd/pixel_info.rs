@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdallocationinfo.rst
+//     doc/source/programs/gdal_raster_pixel_info.rst
+// No code is translated from these sources.
+
 //! `terrio pixel-info` (also exposed automatically as an MCP tool).
 use std::io::Read;
 use terrio::ops::Resampling;

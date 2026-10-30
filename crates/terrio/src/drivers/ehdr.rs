@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/raw/ehdrdataset.cpp
+// No code is translated from these sources.
+
 //! Esri `.hdr` labelled rasters (EHdr): BIL, BIP and BSQ data files such as `.bil` and `.flt`,
 //! with a `.hdr` header and a `.prj` CRS, read and written as GDAL does.
 

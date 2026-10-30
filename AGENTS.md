@@ -11,7 +11,8 @@ optional backend and a reference for conformance testing.
   surfaces. CLI commands also supply the MCP interface.
 - Preserve lazy window/overview reads for large or remote rasters. Measure files
   opened or bytes transferred when changing I/O behavior.
-- Attribute algorithm ports and copied code in the applicable `NOTICE` files.
+- Attribute algorithm ports and copied code with SPDX headers (REUSE) and in the applicable
+  `NOTICE` files; see "Credit what you port" in `docs/contributing.md`.
 - Read `docs/testing.md` for validation and `ROADMAP.md` for planned scope. Read
   `docs/gdal-parity-recommendations.md` when working on GDAL feature parity.
 

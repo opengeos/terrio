@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/nearblack.rst
+//     doc/source/programs/gdal_raster_clean_collar.rst
+// No code is translated from these sources.
+
 //! `terrio clean-collar` and `terrio nearblack`.
 
 use super::rasterout::{OutputArgs, open_lazy, same_file};

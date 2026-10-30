@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_mdim_mosaic.cpp
+// No code is translated from these sources.
+
 //! Coordinate-aligned, lazy mosaics of numeric scientific arrays.
 use super::*;
 mod references;

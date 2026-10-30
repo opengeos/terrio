@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/index.rst
+// No code is translated from these sources.
+
 //! The `terrio` command-line tool, as a library: the `terrio` binary and the `terrio` command of
 //! the Python package both run [`run`].
 

@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.12.2:
+//     frmts/vrt/vrtpansharpened.cpp
+// No code is translated from these sources.
+
 //! Serialized, lazy GDAL pansharpened VRTs and bounded materialization.
 use super::{PansharpenExtent, PansharpenNodata, PansharpenOptions, Plan, SpectralBand, blocks, plan};
 use crate::cog::WindowSource;

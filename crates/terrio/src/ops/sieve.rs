@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2008, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2009-2011, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     alg/gdalsievefilter.cpp
+
 //! Removal of small raster polygons: an equivalent of `gdal_sieve.py` (GDAL's
 //! `GDALSieveFilter()`).
 //!

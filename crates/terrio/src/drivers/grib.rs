@@ -1,3 +1,22 @@
+// SPDX-FileCopyrightText: Copyright (c) 2007, ITC
+// SPDX-FileCopyrightText: Copyright (c) 2008-2017, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL (bundled NOAA MDL degrib) v3.12.2 (public domain):
+//     frmts/grib/degrib/degrib/grib2api.c
+//     frmts/grib/degrib/degrib/metaparse.cpp
+//   GDAL (bundled NCEP g2clib) v3.12.2 (public domain):
+//     frmts/grib/degrib/g2clib/simunpack.c
+//     frmts/grib/degrib/g2clib/comunpack.c
+//     frmts/grib/degrib/g2clib/jpcunpack.c
+//     frmts/grib/degrib/g2clib/pngunpack.c
+//     frmts/grib/degrib/g2clib/g2_unpack7.c
+//     frmts/grib/degrib/g2clib/g2_getfld.c
+//   GDAL v3.12.2:
+//     frmts/grib/gribdataset.cpp
+
 //! GRIB (read only), decoded as GDAL's GRIB driver (GDAL 3.12, `frmts/grib`: degrib and NCEP's
 //! g2clib) decodes it, so that pixels, nodata and georeferencing are GDAL's. GRIB1 messages are
 //! read by [`grib1`], GRIB2 fields here.

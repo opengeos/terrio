@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/ogr2ogr_lib.cpp
+// No code is translated from these sources.
+
 //! Vector conversion options, the equivalent of `ogr2ogr`'s: attribute and spatial filters, field
 //! selection, a feature limit, geometry type conversion, exploding collections, CRS assignment and
 //! reprojection, simple SQL, and appending to or overwriting existing outputs.

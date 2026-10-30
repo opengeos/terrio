@@ -1,3 +1,8 @@
+# Written to match the behavior of:
+#   rioxarray 0.23.0:
+#     rioxarray/
+# No code is translated from these sources.
+
 """xarray integration: rioxarray's API on terrio, without GDAL.
 
 Open rasters lazily as DataArrays, with rioxarray's coordinates, attributes and encoding, and

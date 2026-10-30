@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_raster_update.rst
+// No code is translated from these sources.
+
 //! `terrio update-raster`: write a raster into an existing GeoTIFF, reprojected to its grid (GDAL's
 //! `gdal raster update`).
 

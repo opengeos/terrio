@@ -1,3 +1,13 @@
+// SPDX-FileCopyrightText: Copyright (c) 2018, Oslandia <infos at oslandia dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.2:
+//     alg/marching_squares/square.h
+//     alg/marching_squares/utility.h
+//     alg/marching_squares/level_generator.h
+
 //! Contour lines from a raster band. The marching-squares interpolation and nodata subdivision
 //! follow GDAL 3.12's `alg/marching_squares` (MIT, Copyright 2018 Oslandia; see `NOTICE`).
 

@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_vsi_list.cpp, gdalalg_vsi_copy.cpp, gdalalg_vsi_delete.cpp, gdalalg_vsi_move.cpp, gdalalg_vsi_sync.cpp
+// No code is translated from these sources.
+
 //! File management across local, in-memory, remote and archive locations, as GDAL's
 //! `gdal vsi list`, `copy`, `delete`, `move` and `sync` do on its virtual file systems.
 //!

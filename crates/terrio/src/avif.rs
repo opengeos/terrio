@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2019 Joe Drago. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-2-Clause
+//
+// Derived from (translated to Rust and modified):
+//   libavif v1.4.2:
+//     src/reformat.c
+//     src/colr.c
+
 //! AVIF images (AV1 Image File Format), decoded as GDAL's AVIF driver decodes them with libavif:
 //! the HEIF container read for the primary image and its alpha plane, the AV1 bitstream decoded
 //! by `rusty_av1d` (a pure-Rust port of dav1d), and YUV converted to RGB as libavif's built-in

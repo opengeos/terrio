@@ -1,3 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2017, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2014, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/samples/validate_gpkg.py
+//     ogr/ogrcompoundcurve.cpp
+//     ogr/ogrcurvepolygon.cpp
+
 //! Bounded, allocation-free inspection of GeoPackage binary geometries.
 //! GeoPackage 1.4 requirements 19, 32, 33, 68 and 152; GDAL rule attribution in NOTICE.
 //! Compound-curve membership follows GDAL 3.13.3 ogrcompoundcurve.cpp;

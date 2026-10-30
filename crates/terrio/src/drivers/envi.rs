@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/raw/envidataset.cpp
+// No code is translated from these sources.
+
 //! ENVI labelled rasters: a raw data file with a `.hdr` text header. Opened through either file,
 //! as GDAL opens the data file.
 

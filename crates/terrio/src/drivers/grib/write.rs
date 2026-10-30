@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2017, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.2:
+//     frmts/grib/gribcreatecopy.cpp
+
 //! A GRIB2 writer, as GDAL's GRIB driver writes (`gribcreatecopy.cpp`): one message per band,
 //! with GDAL's sections, defaults and creation options, so that a file reads back in GDAL as the
 //! file GDAL would have written.

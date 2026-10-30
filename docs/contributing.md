@@ -47,14 +47,20 @@ to a Rust release less than six months old, and from 1.0 on only in a minor rele
   for WebAssembly. The optional `gdal` feature is the one exception.
 - Document every public item (`#![warn(missing_docs)]`), with a `no_run` example on entry points.
 - Name things as GDAL does: driver short names, option names in kebab case.
-- Credit what you port. Code ported or adapted from another project names its source files in a
-  comment and in `NOTICE`, and the project is listed in [Acknowledgements](acknowledgements.md).
+- Credit what you port. terrio follows the [REUSE specification](https://reuse.software), checked
+  in CI with `reuse lint`. A file translated or adapted from another project's source files
+  starts with SPDX headers: those files' copyright lines, copied verbatim, then the copyright
+  line of terrio's `LICENSE`, the `SPDX-License-Identifier` of the licenses that apply, and the
+  source files it derives from, with the version. A file written to match another program's
+  behavior without translating its code says so in a comment instead.
+  Add the project to `NOTICE` and [Acknowledgements](acknowledgements.md), and data files from
+  elsewhere to `REUSE.toml`.
 
 ## Release notes
 
 The release workflow publishes notes generated from the merged pull requests. Edit the release
 after it is published to end its notes with a **Credits** section naming the projects whose code
-that release ports or adapts (GDAL, PROJ, PDAL, GEOS and others), the features that came from
+that release ports or adapts (GDAL, PROJ, PDAL, JTS and others), the features that came from
 each, a link to `NOTICE`, and a link to
 [sponsoring GDAL](https://gdal.org/en/stable/sponsors/index.html); release announcements carry
 the same credits. Describe terrio as running without installing GDAL, not as being free of GDAL:

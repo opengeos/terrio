@@ -1,3 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (c) 2007, ITC
+// SPDX-FileCopyrightText: Copyright (c) 2008-2017, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL (bundled NOAA MDL degrib) v3.12.2 (public domain):
+//     frmts/grib/degrib/degrib/degrib1.cpp
+//     frmts/grib/degrib/degrib/grib1tab.cpp
+//     frmts/grib/degrib/degrib/inventory.cpp
+//     frmts/grib/degrib/degrib/metaparse.cpp
+//   GDAL v3.12.2:
+//     frmts/grib/gribdataset.cpp
+
 //! GRIB1 messages, read as GDAL 3.12's GRIB driver reads them: degrib's `degrib1.cpp`
 //! (`ReadGrib1Record` and its sections), `grib1tab.cpp` (parameter and level tables, in
 //! `grib1.tsv.zst`, from `gen_grib1_tables.py`) and `inventory.cpp` (`GRIB1_Inventory`).

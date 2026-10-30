@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: lerc-rust contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   lerc-rust (lerc-reader) 0.5.0:
+//     lerc-reader/src/lerc1.rs, lerc2.rs (header parsing)
+
 //! TIFF compressions the `tiff` crate does not decode, read as GDAL (libtiff) reads them: LERC
 //! (alone, or wrapped in Deflate or Zstandard), JPEG XL and LZMA, and Zstandard in every build
 //! (the crate is built without its Zstandard, zstd 0.13), Float16 samples (read as Float32, as GDAL's

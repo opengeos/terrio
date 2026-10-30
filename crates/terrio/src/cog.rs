@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/gtiff/, gcore/gdaldefaultoverviews.cpp
+// No code is translated from these sources.
+
 //! Lazy rasters: open a raster for its metadata only, then read pixel windows, at full resolution
 //! or from an overview.
 //!

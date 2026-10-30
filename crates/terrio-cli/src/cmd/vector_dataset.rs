@@ -1,3 +1,14 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_vector_concat.rst
+//     doc/source/programs/ogrmerge.rst
+//     doc/source/programs/gdal_vector_partition.rst
+//     doc/source/programs/gdal_vector_set_field_type.rst
+//     doc/source/programs/gdal_vector_create.rst
+//     doc/source/programs/gdal_vector_export_schema.rst
+//     doc/source/programs/gdal_vector_update.rst
+// No code is translated from these sources.
+
 //! Dataset-level vector commands: `concat`, `partition`, `set-field-type`, `make-point`,
 //! `create` and `export-schema` (GDAL's `gdal vector concat`, `partition`, `set-field-type`,
 //! `make-point`, `create` and `export-schema`).

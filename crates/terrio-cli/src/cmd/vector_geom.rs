@@ -1,3 +1,12 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_vector_simplify.rst
+//     doc/source/programs/gdal_vector_segmentize.rst
+//     doc/source/programs/gdal_vector_concave_hull.rst
+//     doc/source/programs/gdal_vector_sort.rst
+//     doc/source/programs/gdal_vector_combine.rst
+// No code is translated from these sources.
+
 //! Vector geometry commands, after GDAL 3.13's `gdal vector simplify`, `segmentize`,
 //! `convex-hull`, `concave-hull`, `swap-xy`, `set-geom-type`, `combine` and `sort`.
 

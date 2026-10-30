@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: GDAL contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/osm/data/osmconf.ini
+
 //! OpenStreetMap PBF and XML, read into the layers of GDAL's OSM driver with its default `osmconf.ini`.
 //!
 //! - `points`: nodes with a tag other than `created_by`, `converted_by`, `source`, `time`, `ele`

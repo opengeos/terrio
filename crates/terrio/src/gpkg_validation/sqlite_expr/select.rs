@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     src/select.c
+// No code is translated from these sources.
+
 //! Read-only, streaming view projections. Query forms not implemented here are
 //! rejected rather than silently omitting a registered view from validation.
 use super::*;

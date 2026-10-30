@@ -1,3 +1,8 @@
+# Written to match the behavior of:
+#   rioxarray 0.23.0:
+#     rioxarray/
+# No code is translated from these sources.
+
 """Global options of `terrio.xarray`, as rioxarray's `set_options` defines them."""
 
 from __future__ import annotations

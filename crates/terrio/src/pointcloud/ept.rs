@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PDAL 2.10.2:
+//     io/EptReader.cpp
+// No code is translated from these sources.
+
 //! EPT (Entwine Point Tile, <https://entwine.io/entwine-point-tile.html>): a point cloud split
 //! into an octree of tiles, each a LASzip, binary or Zstandard-compressed binary file, with the
 //! octree's hierarchy in JSON pages; local, or remote (HTTP, S3) and read in place.

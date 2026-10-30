@@ -1,3 +1,21 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025, ISciences LLC
+// SPDX-FileCopyrightText: Copyright (c) 2001, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2025, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     frmts/vrt/vrtreclassifier.cpp
+//     frmts/vrt/vrtsources.cpp
+//     gcore/gdal_misc.cpp
+//     apps/gdalalg_raster_unscale.cpp
+//     apps/gdalalg_raster_nodata_to_alpha.cpp
+//     apps/gdalalg_raster_reclassify.cpp
+
 //! Pixel-wise band operations: [`unscale`] (`gdal raster unscale`), [`nodata_to_alpha`]
 //! (`gdal raster nodata-to-alpha`) and [`reclassify`] (`gdal raster reclassify`).
 //!

@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_driver_gpkg_validate.rst
+//     doc/source/programs/gdal_driver_gpkg_repack.rst
+// No code is translated from these sources.
+
 //! GeoPackage storage maintenance, shared with the MCP command surface.
 #[derive(clap::Args)]
 pub struct RepackArgs {

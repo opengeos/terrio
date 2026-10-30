@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/gpx/ogrgpxlayer.cpp
+// No code is translated from these sources.
+
 //! GPX, read into GDAL's five layers: `waypoints`, `routes`, `tracks`, `route_points` and
 //! `track_points`, with GDAL's fields (GPX 1.0 files have `url`/`urlname` and track point
 //! `course`/`speed` fields instead of links). Simple `<extensions>` elements become extra fields

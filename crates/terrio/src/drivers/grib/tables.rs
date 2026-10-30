@@ -1,3 +1,15 @@
+// SPDX-FileCopyrightText: Copyright (c) 2007, ITC
+// SPDX-FileCopyrightText: Copyright (c) 2008-2017, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL (bundled NOAA MDL degrib) v3.12.2 (public domain):
+//     frmts/grib/degrib/degrib/inventory.cpp
+//     frmts/grib/degrib/degrib/metaname.cpp
+//   GDAL v3.12.2:
+//     frmts/grib/gribdataset.cpp
+
 //! The band metadata GDAL's GRIB driver reports (`gribdataset.cpp`, degrib's `inventory.cpp`),
 //! and the unit conversions degrib applies with `GRIB_NORMALIZE_UNITS=YES` (GDAL's default).
 

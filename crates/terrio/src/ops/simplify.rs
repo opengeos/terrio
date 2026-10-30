@@ -1,3 +1,23 @@
+// SPDX-FileCopyrightText: Copyright (c) 2016 Vivid Solutions.
+// SPDX-FileCopyrightText: Copyright (c) 2023 Martin Davis.
+// SPDX-FileCopyrightText: Copyright (c) 2016 Vivid Solutions, and others.
+// SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2008-2014, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   JTS 1.20.0 (commit 6e95fe82feb986a7aa657f4ffa406d8c290af509):
+//     modules/core/src/main/java/org/locationtech/jts/simplify/TaggedLineStringSimplifier.java
+//     modules/core/src/main/java/org/locationtech/jts/simplify/TaggedLineString.java
+//     modules/core/src/main/java/org/locationtech/jts/simplify/ComponentJumpChecker.java
+//     modules/core/src/main/java/org/locationtech/jts/simplify/TopologyPreservingSimplifier.java
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/RayCrossingCounter.java
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/Distance.java
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/RobustLineIntersector.java
+//   GDAL v3.13.3:
+//     ogr/ogrlinestring.cpp
+
 //! Topology-preserving simplification, derived from JTS 1.20.0, and OGR segmentization.
 //!
 //! The JTS sources are `simplify/TaggedLineStringSimplifier`, `TaggedLineString`,

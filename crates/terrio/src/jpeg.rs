@@ -1,3 +1,26 @@
+// SPDX-FileCopyrightText: Copyright (C) 1991-1998, Thomas G. Lane.
+// SPDX-FileCopyrightText: Copyright (C) 2015, 2020, 2022, 2026, D. R. Commander.
+// SPDX-FileCopyrightText: Copyright (C) 1991-1996, Thomas G. Lane.
+// SPDX-FileCopyrightText: Copyright 2009 Pierre Ossman <ossman@cendio.se> for Cendio AB
+// SPDX-FileCopyrightText: Copyright (C) 2010, 2015-2016, 2022, 2024-2026, D. R. Commander.
+// SPDX-FileCopyrightText: Copyright (C) 2015, Google, Inc.
+// SPDX-FileCopyrightText: Copyright (C) 2019-2020, Arm Limited.
+// SPDX-FileCopyrightText: Copyright (C) 1991-1997, Thomas G. Lane.
+// SPDX-FileCopyrightText: Copyright (C) 2009, 2011-2012, 2014-2015, 2022, 2024-2025, D. R. Commander.
+// SPDX-FileCopyrightText: Copyright (C) 2013, Linaro Limited.
+// SPDX-FileCopyrightText: Copyright (C) 1994-1998, Thomas G. Lane.
+// SPDX-FileCopyrightText: Copyright (C) 1999, Ken Murchison.
+// SPDX-FileCopyrightText: Copyright (C) 2016, 2022, 2024-2026, D. R. Commander.
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND IJG
+//
+// Derived from (translated to Rust and modified):
+//   libjpeg-turbo 3.2.1:
+//     src/jidctint.c
+//     src/jdsample.c
+//     src/jdcolor.c
+//     src/jdapimin.c
+
 //! A baseline JPEG decoder that reproduces libjpeg's output, as GDAL decodes JPEG with
 //! libjpeg(-turbo): the same integer IDCT (`jidctint.c`, the default "islow" method), "fancy"
 //! chroma upsampling (`jdsample.c`), and YCbCr to RGB conversion (`jdcolor.c`), bit for bit.

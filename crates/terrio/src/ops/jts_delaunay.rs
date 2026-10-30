@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Copyright (c) 2016 Vivid Solutions.
+// SPDX-FileCopyrightText: Copyright (c) 2016 Martin Davis.
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   JTS 1.20.0 (commit 6e95fe82feb986a7aa657f4ffa406d8c290af509):
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/DelaunayTriangulationBuilder.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/IncrementalDelaunayTriangulator.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/quadedge/QuadEdge.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/quadedge/QuadEdgeSubdivision.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/quadedge/LastFoundQuadEdgeLocator.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/quadedge/Vertex.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/quadedge/TrianglePredicate.java
+
 //! Zero-tolerance Delaunay subdivision derived from JTS 1.20.0 under EDL-1.0.
 //! Copyright (c) 2016 Vivid Solutions; Copyright (c) 2016 Martin Davis.
 //! Sources: DelaunayTriangulationBuilder,

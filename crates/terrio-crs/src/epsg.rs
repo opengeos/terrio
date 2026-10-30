@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrct.cpp
+//   PROJ 9.8.1:
+//     data/sql (proj.db)
+// No code is translated from these sources.
+
 //! The EPSG table terrio carries: official names, WKT, coordinate conversions as PROJ strings,
 //! the datum transformations GDAL uses (without and with grids), vertical and compound CRSs and
 //! geoid models, generated from GDAL and PROJ by `scripts/gen_epsg_table.py`. The ESRI table

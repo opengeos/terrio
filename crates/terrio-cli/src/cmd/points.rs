@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PDAL 2.10.2:
+//     doc/stages/
+// No code is translated from these sources.
+
 //! Options shared by the commands that read point clouds, and `terrio convert` for them.
 
 use terrio::crs::SpatialRef;

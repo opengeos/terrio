@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/aaigrid/aaigriddataset.cpp
+// No code is translated from these sources.
+
 //! Esri ASCII grids (`.asc`), with a `.prj` CRS. Typed as GDAL types them: Int32 unless the
 //! values or the nodata value have decimals, then Float32 (Float64 for out-of-range nodata).
 

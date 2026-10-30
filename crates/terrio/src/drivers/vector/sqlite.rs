@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     src/btree.c
+// No code is translated from these sources.
+
 //! A writer of SQLite database files, enough for GeoPackages: tables (rowid b-trees, any size,
 //! with overflow pages) and small indexes (the automatic indexes of UNIQUE and PRIMARY KEY
 //! constraints), written in one go.

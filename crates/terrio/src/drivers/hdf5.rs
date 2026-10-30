@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/hdf5/hdf5dataset.cpp
+//     frmts/hdf5/hdf5imagedataset.cpp
+// No code is translated from these sources.
+
 //! HDF5 rasters, read with the pure-Rust `hdf5-reader` crate as GDAL's HDF5 driver reads them.
 //!
 //! A file is a container of subdatasets: every two- or three-dimensional dataset of a numeric

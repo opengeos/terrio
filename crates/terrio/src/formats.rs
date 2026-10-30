@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/*, ogr/ogrsf_frmts/*
+// No code is translated from these sources.
+
 //! The format drivers terrio knows, named as GDAL names them.
 
 use serde::Serialize;

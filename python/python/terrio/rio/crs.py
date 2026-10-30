@@ -1,3 +1,8 @@
+# Written to match the behavior of:
+#   rasterio 1.5.2:
+#     rasterio/
+# No code is translated from these sources.
+
 """Coordinate reference systems, with rasterio's `CRS` class.
 
 CRSs are parsed and identified by terrio (EPSG codes, WKT, PROJ strings); WKT exported for an EPSG

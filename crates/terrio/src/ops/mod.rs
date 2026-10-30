@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     gcore/gdal_priv.h
+//     alg/gdalwarpkernel.cpp
+//     ogr/ogr_srs_api / ogrct.cpp
+// No code is translated from these sources.
+
 //! GDAL-style processing operations: [`translate`] (`gdal_translate`), [`warp`] (`gdalwarp`),
 //! [`mosaic`] (`gdalbuildvrt` and `gdal_merge.py`), [`vrt`] (GDAL's virtual raster format),
 //! [`rasterize`] (`gdal_rasterize`), [`polygonize`] (`gdal_polygonize`), [`dem`] (`gdaldem`),

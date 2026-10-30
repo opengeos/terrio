@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_driver_parquet_create_metadata_file.rst
+// No code is translated from these sources.
+
 //! Metadata-only Parquet aggregation, also exposed through MCP.
 #[derive(clap::Args)]
 pub struct Args {

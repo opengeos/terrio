@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/gtiff/gt_wkt_srs.cpp
+//   libgeotiff newest:
+//     libgeotiff/geo_normalize.c
+// No code is translated from these sources.
+
 //! User-defined coordinate reference systems in GeoTIFF GeoKeys: the projection method and its
 //! parameters, as GDAL writes them for CRSs without an EPSG code, and ESRI PE citations.
 

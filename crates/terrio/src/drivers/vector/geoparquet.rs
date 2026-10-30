@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/parquet/ogrparquetlayer.cpp
+//     ogr/ogrsf_frmts/parquet/ogrparquetwriterlayer.cpp
+// No code is translated from these sources.
+
 //! GeoParquet, read and written with the Arrow interface of the `parquet` crate.
 //!
 //! Reading follows GDAL's Parquet driver: the bounding-box covering columns are hidden, struct

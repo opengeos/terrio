@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_vector_concat.cpp
+//     ogr/ogrsf_frmts/generic/ogrunionlayer.cpp
+//     swig/python/gdal-utils/osgeo_utils/ogrmerge.py
+// No code is translated from these sources.
+
 //! Concatenating vector layers, as `gdal vector concat` (and `ogrmerge.py`) do: layers of the
 //! same name merged (`merge-per-layer-name`), every layer kept apart under a name built from a
 //! template (`stack`), or everything merged into one layer (`single`), with the union or the

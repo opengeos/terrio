@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalinfo_lib.cpp, apps/ogrinfo_lib.cpp
+// No code is translated from these sources.
+
 //! Dataset summaries, like `gdalinfo` and `ogrinfo`: [`info`] for an open dataset, [`info_path`]
 //! for a path (reading GeoTIFFs and point clouds by their headers). Summaries print as text
 //! ([`Info::to_text`]) and serialize to JSON.

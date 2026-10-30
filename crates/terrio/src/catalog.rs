@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/gti/gdaltileindexdataset.cpp
+// No code is translated from these sources.
+
 //! Indexed raster catalogs (GDAL GTI): lazy, spatially selected mosaics.
 //!
 //! GeoPackage and FlatGeobuf indexes are queried through their spatial indexes for every

@@ -1,3 +1,13 @@
+// SPDX-FileCopyrightText: Copyright 2008-2009  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2008-2009  David G. Lowe (lowe@cs.ubc.ca). All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2011-2016  Jose Luis Blanco (joseluisblancoc@gmail.com). All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-2-Clause
+//
+// Derived from (translated to Rust and modified):
+//   nanoflann, as vendored by PDAL 2.10.2:
+//     vendor/nanoflann/nanoflann.hpp
+
 //! A static k-d tree over 2D or 3D points, for nearest-neighbour and radius searches.
 
 /// The most points in a leaf.
@@ -411,8 +421,10 @@ impl<const D: usize> NanoKdTree<D> {
 
 impl<const D: usize> NanoKdTree<D> {
     /// The points closer than `r` to `q` (squared distance below `r²`), nearest first, as PDAL's
-    /// radius searches return them: in the order nanoflann finds them, then sorted by distance
-    /// with libstdc++'s `std::sort` (so that points as near come in PDAL's order).
+    /// radius searches return them: in the order nanoflann finds them, then sorted by distance.
+    /// The sort is stable, so points as near keep the order nanoflann found them in. PDAL sorts
+    /// with `std::sort`; libstdc++'s sorts up to 16 elements stably, larger result sets may order
+    /// points at exactly the same distance differently.
     pub fn radius(&self, q: &[f64; D], r: f64, out: &mut Vec<(usize, f64)>) {
         out.clear();
         if self.points.is_empty() {
@@ -431,7 +443,7 @@ impl<const D: usize> NanoKdTree<D> {
             }
         }
         self.radius_level(out, q, r * r, 0, distsq, &mut dists);
-        libstdcxx_sort(out, |a, b| a.1 < b.1);
+        out.sort_by(|a, b| a.1.total_cmp(&b.1));
     }
 
     fn radius_level(&self, out: &mut Vec<(usize, f64)>, q: &[f64; D], r2: f64, node: usize, mut mindistsq: f64, dists: &mut [f64]) {
@@ -461,140 +473,6 @@ impl<const D: usize> NanoKdTree<D> {
                 dists[divfeat] = dst;
             }
         }
-    }
-}
-
-/// Sorts as libstdc++'s `std::sort` does (introsort, median-of-three pivots, heapsort past the
-/// depth limit, a final insertion sort), so that elements that compare equal end in the same
-/// order.
-pub(crate) fn libstdcxx_sort<T: Copy>(v: &mut [T], less: impl Fn(&T, &T) -> bool + Copy) {
-    const THRESHOLD: usize = 16;
-    fn introsort<T: Copy>(v: &mut [T], mut depth: u32, less: impl Fn(&T, &T) -> bool + Copy) {
-        let mut last = v.len();
-        while last > THRESHOLD {
-            if depth == 0 {
-                heap_sort(&mut v[..last], less);
-                return;
-            }
-            depth -= 1;
-            let s = &mut v[..last];
-            let mid = s.len() / 2;
-            // __move_median_to_first(first, first + 1, mid, last - 1).
-            let (a, b, c) = (1, mid, s.len() - 1);
-            let m = if less(&s[a], &s[b]) {
-                if less(&s[b], &s[c]) {
-                    b
-                } else if less(&s[a], &s[c]) {
-                    c
-                } else {
-                    a
-                }
-            } else if less(&s[a], &s[c]) {
-                a
-            } else if less(&s[b], &s[c]) {
-                c
-            } else {
-                b
-            };
-            s.swap(0, m);
-            // __unguarded_partition(first + 1, last, first).
-            let (mut lo, mut hi) = (1, s.len());
-            let cut = loop {
-                while less(&s[lo], &s[0]) {
-                    lo += 1;
-                }
-                hi -= 1;
-                while less(&s[0], &s[hi]) {
-                    hi -= 1;
-                }
-                if lo >= hi {
-                    break lo;
-                }
-                s.swap(lo, hi);
-                lo += 1;
-            };
-            introsort(&mut s[cut..], depth, less);
-            last = cut;
-        }
-    }
-    fn heap_sort<T: Copy>(v: &mut [T], less: impl Fn(&T, &T) -> bool + Copy) {
-        // std::make_heap, then std::sort_heap, with libstdc++'s __adjust_heap.
-        fn adjust<T: Copy>(v: &mut [T], mut hole: usize, len: usize, value: T, less: impl Fn(&T, &T) -> bool) {
-            let top = hole;
-            let mut child = hole;
-            while child < (len.saturating_sub(1)) / 2 {
-                child = 2 * (child + 1);
-                if less(&v[child], &v[child - 1]) {
-                    child -= 1;
-                }
-                v[hole] = v[child];
-                hole = child;
-            }
-            if len.is_multiple_of(2) && len >= 2 && child == (len - 2) / 2 {
-                child = 2 * (child + 1);
-                v[hole] = v[child - 1];
-                hole = child - 1;
-            }
-            // __push_heap.
-            let mut parent = hole.wrapping_sub(1) / 2;
-            while hole > top && less(&v[parent], &value) {
-                v[hole] = v[parent];
-                hole = parent;
-                parent = hole.wrapping_sub(1) / 2;
-            }
-            v[hole] = value;
-        }
-        let len = v.len();
-        if len >= 2 {
-            let mut parent = (len - 2) / 2;
-            loop {
-                let value = v[parent];
-                adjust(v, parent, len, value, less);
-                if parent == 0 {
-                    break;
-                }
-                parent -= 1;
-            }
-        }
-        let mut last = len;
-        while last > 1 {
-            last -= 1;
-            let value = v[last];
-            v[last] = v[0];
-            adjust(v, 0, last, value, less);
-        }
-    }
-    fn linear_insert<T: Copy>(v: &mut [T], mut i: usize, less: impl Fn(&T, &T) -> bool) {
-        let val = v[i];
-        while less(&val, &v[i - 1]) {
-            v[i] = v[i - 1];
-            i -= 1;
-        }
-        v[i] = val;
-    }
-    fn insertion_sort<T: Copy>(v: &mut [T], less: impl Fn(&T, &T) -> bool + Copy) {
-        for i in 1..v.len() {
-            if less(&v[i], &v[0]) {
-                let val = v[i];
-                v.copy_within(0..i, 1);
-                v[0] = val;
-            } else {
-                linear_insert(v, i, less);
-            }
-        }
-    }
-    let n = v.len();
-    if n < 2 {
-        return;
-    }
-    introsort(v, 2 * n.ilog2(), less);
-    if n > THRESHOLD {
-        insertion_sort(&mut v[..THRESHOLD], less);
-        for i in THRESHOLD..n {
-            linear_insert(v, i, less);
-        }
-    } else {
-        insertion_sort(v, less);
     }
 }
 
@@ -673,25 +551,42 @@ mod tests {
     }
 
     #[test]
-    fn sorts_as_libstdcxx() {
-        // Sorted, whatever the length; up to 16 elements, by insertion (stably).
-        let mut s = 3u64;
-        for n in [0, 1, 2, 5, 16, 17, 40, 1000, 5000] {
-            let mut v: Vec<(u32, u32)> = (0..n)
-                .map(|i| {
-                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                    ((s >> 60) as u32, i)
-                })
-                .collect();
-            libstdcxx_sort(&mut v, |a, b| a.0 < b.0);
-            assert!(v.windows(2).all(|w| w[0].0 <= w[1].0), "{n}");
-            if n <= 16 {
-                assert!(v.windows(2).all(|w| w[0].0 < w[1].0 || w[0].1 < w[1].1), "{n}");
+    fn radius_keeps_the_found_order_of_points_as_near() {
+        // Terrio's order, which is not PDAL's here: one leaf, so nanoflann finds the points in
+        // index order, and twenty points at each of three distances, more than the 16 that
+        // libstdc++'s std::sort orders stably.
+        let pts: Vec<[f64; 3]> = (0..60).map(|i| [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]][i % 3]).collect();
+        let nano = NanoKdTree::new(pts, 100);
+        let mut near = Vec::new();
+        nano.radius(&[0.0; 3], 10.0, &mut near);
+        let want: Vec<usize> = (0..3).flat_map(|k| (0..60).filter(move |i| i % 3 == k)).collect();
+        assert_eq!(near.iter().map(|e| e.0).collect::<Vec<_>>(), want);
+    }
+
+    #[test]
+    fn radius_keeps_the_found_order_across_leaves() {
+        // Thirty points at exactly the same distance (5) from the origin, in a scrambled order,
+        // with leaves of 4: the tree reorders them, so the order found is not index order.
+        let mut pts: Vec<[f64; 3]> = Vec::new();
+        for (a, b) in [(3.0, 4.0), (4.0, 3.0)] {
+            for (sa, sb) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+                pts.extend([[sa * a, sb * b, 0.0], [sa * a, 0.0, sb * b], [0.0, sa * a, sb * b]]);
             }
         }
-        // Past the depth limit, heapsort: all equal but one, adversarial for the partition.
-        let mut v: Vec<(u32, u32)> = (0..300).map(|i| (u32::from(i % 2 == 0) * (i % 7), i)).collect();
-        libstdcxx_sort(&mut v, |a, b| a.0 < b.0);
-        assert!(v.windows(2).all(|w| w[0].0 <= w[1].0));
+        for s in [5.0, -5.0] {
+            pts.extend([[s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]]);
+        }
+        let n = pts.len();
+        let pts: Vec<[f64; 3]> = (0..n).map(|i| pts[(i * 7) % n]).collect();
+        let nano = NanoKdTree::new(pts, 4);
+        let q = [0.0; 3];
+        let mut found = Vec::new();
+        nano.radius_level(&mut found, &q, 36.0, 0, 0.0, &mut [0.0; 3]);
+        let found: Vec<usize> = found.iter().map(|e| e.0).collect();
+        assert_eq!(found.len(), n);
+        assert!(found.windows(2).any(|w| w[0] > w[1]), "the tree should reorder the points");
+        let mut near = Vec::new();
+        nano.radius(&q, 6.0, &mut near);
+        assert_eq!(near.iter().map(|e| e.0).collect::<Vec<_>>(), found);
     }
 }

@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   PROJ 9.8.1:
+//     src/iso19111/io.cpp
+//   GDAL v3.13.3:
+//     ogr/ogr_srs_api.h
+// No code is translated from these sources.
+
 //! PROJJSON (<https://proj.org/specifications/projjson.html>), the CRS encoding GeoParquet asks
 //! for, converted from and to OGC WKT1.
 //!

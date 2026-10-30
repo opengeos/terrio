@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrspatialreference.cpp, ogr/ogrct.cpp
+// No code is translated from these sources.
+
 //! Coordinate reference systems and transformations between them.
 //!
 //! Coordinates follow GDAL's traditional GIS order. East/north geographic axes are

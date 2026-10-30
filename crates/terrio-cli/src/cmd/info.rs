@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdalinfo.rst
+// No code is translated from these sources.
+
 //! `terrio info`.
 
 use terrio::info::InfoOptions;

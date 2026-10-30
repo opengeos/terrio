@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2021, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     frmts/stacit/stacitdataset.cpp
+
 //! SpatioTemporal Asset Catalog (STAC) documents as datasets, as GDAL's STACIT driver and its
 //! GeoJSON driver read them.
 //!

@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/libkml/ogrlibkmlstyle.cpp
+//     ogr/ogrfeaturestyle.cpp
+// No code is translated from these sources.
+
 //! KML styles and OGR feature style strings (`PEN(c:#FF0000FF,w:2.000000px);BRUSH(...)`), the
 //! form GDAL gives feature styles in and keeps in an `OGR_STYLE` field.
 //!

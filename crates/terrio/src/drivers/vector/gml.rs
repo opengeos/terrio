@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/gml/gmlreader.cpp
+//     ogr/ogrsf_frmts/gml/ogrgmldatasource.cpp
+// No code is translated from these sources.
+
 //! GML simple features, read and written as GDAL does.
 //!
 //! Reading makes one layer per feature type, with a `gml_id` field, field types from the

@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PROJ 9.8.1:
+//     src/iso19111/io.cpp (JSONFormatter)
+// No code is translated from these sources.
+
 //! PROJJSON v0.7 of a CRS: geographic 2D and 3D, geocentric, projected, vertical, compound and
 //! bound (`+towgs84`) CRSs, from the CRS's WKT (names, identifiers, axes) and its PROJ string
 //! (conversion parameters), as PROJ writes them for EPSG CRSs.

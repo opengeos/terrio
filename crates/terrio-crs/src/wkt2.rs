@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PROJ 9.8.1:
+//     src/iso19111/io.cpp
+// No code is translated from these sources.
+
 //! A WKT 2 (ISO 19162, 2015 and 2019) reader for geographic and projected CRSs, turning them
 //! into PROJ strings as [`super::wkt1`] does for WKT 1, so they go through terrio's projections.
 //!

@@ -1,3 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, Corteva Agriscience™
+# SPDX-FileCopyrightText: Copyright (c) 2018, Dymaxion Labs
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT AND Apache-2.0 AND BSD-2-Clause
+#
+# Derived from (adapted and modified):
+#   rioxarray 0.23.0:
+#     rioxarray/raster_writer.py
+#   dask-rasterio 8dd7fdece7ad094a41908c0ae6b4fe6ca49cf5e1:
+#     dask_rasterio/write.py
+
 """Writing DataArrays to raster files with terrio, as rioxarray's `to_raster` writes them.
 
 Metadata handling follows rioxarray's `raster_writer` (Apache-2.0, Copyright (c) 2019-2023

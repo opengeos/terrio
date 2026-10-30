@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     gcore/gdalpamdataset.cpp
+//     gcore/rawdataset.cpp
+//     ogr/ogr_srs_esri.cpp
+// No code is translated from these sources.
+
 //! Helpers shared by terrio's own raster drivers: raw sample decoding and encoding, sidecar
 //! files, and building rasters.
 

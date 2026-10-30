@@ -1,3 +1,8 @@
+# Written to match the behavior of:
+#   rioxarray 0.23.0:
+#     rioxarray/
+# No code is translated from these sources.
+
 """Exceptions of `terrio.xarray`, with rioxarray's names and hierarchy."""
 
 from __future__ import annotations
