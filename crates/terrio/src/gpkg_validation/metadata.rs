@@ -26,7 +26,7 @@ const SCOPES: &[&str] = &[
 ];
 
 /// SQLite INTEGER equality must not truncate a fractional REAL identifier.
-fn integer(value: &Value) -> Option<i64> {
+pub(super) fn integer(value: &Value) -> Option<i64> {
     match value {
         Value::Int(value) => Some(*value),
         Value::Real(value) if value.fract() == 0.0 && *value >= i64::MIN as f64 && *value < 9_223_372_036_854_775_808.0 => {

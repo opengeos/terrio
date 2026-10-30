@@ -4,6 +4,7 @@ mod content;
 mod extensions;
 mod features;
 mod geometry;
+mod gridded;
 mod metadata;
 mod relations;
 mod rtree;
@@ -505,6 +506,9 @@ fn check_core(bytes: &[u8]) -> CoreReport {
     checker.spatial_indexes();
     checker.relations();
     checker.schema_extension();
+    if let Err(error) = checker.gridded(bytes) {
+        checker.report.require(false, 6, error.to_string());
+    }
     if let Err(error) = checker.metadata(bytes) {
         checker.report.require(false, 6, error.to_string());
     }
