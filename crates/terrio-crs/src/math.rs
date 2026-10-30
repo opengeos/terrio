@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: PROJ contributors
 // SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
 // SPDX-FileCopyrightText: Copyright (c) 2025 Javier Jimenez Shaw
+// SPDX-FileCopyrightText: Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT AND SunPro
 //
 // Derived from (translated to Rust and modified):
 //   PROJ 9.8.1:
@@ -18,6 +19,10 @@
 //     src/latitudes.cpp
 //   PROJ 9.9.0:
 //     src/latitudes.cpp
+//   GNU C Library 2.39 (fdlibm code, under Sun Microsystems' notice):
+//     sysdeps/ieee754/dbl-64/s_asinh.c
+//   fdlibm 5.3:
+//     e_atanh.c
 
 //! Ellipsoids, units and the helper functions map projections share, after PROJ's
 //! (<https://proj.org>, MIT licence) definitions and algorithms; PROJ's notice is in `NOTICE`.
@@ -177,6 +182,18 @@ pub(crate) fn adjlon(lon: f64) -> f64 {
     if l == -PI && lon > 0.0 { PI } else { l }
 }
 
+// `asinh` is translated from the GNU C Library's `sysdeps/ieee754/dbl-64/s_asinh.c` (glibc 2.39),
+// fdlibm code that carries this notice:
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+
 /// `asin` clamped to [-1, 1].
 /// `asinh` as glibc 2.39 computes it (`sysdeps/ieee754/dbl-64/s_asinh.c`), which PROJ calls:
 /// Rust's `f64::asinh` has its own formula, which differs in the last bit for about a tenth of
@@ -216,28 +233,48 @@ pub(crate) fn asinh(x: f64) -> f64 {
     x.asinh()
 }
 
-/// `atanh` as glibc 2.39 computes it (`sysdeps/ieee754/dbl-64/e_atanh.c`), which PROJ calls;
-/// built on `ln_1p`, the C library's on linux-gnu (see [`asinh`]).
+// `atanh` is translated from fdlibm 5.3's `e_atanh.c` (https://www.netlib.org/fdlibm/), which
+// carries this notice:
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunSoft, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+
+/// `atanh` as fdlibm computes it (`e_atanh.c`), which gives glibc 2.39's results, which PROJ
+/// calls; built on `ln_1p`, the C library's on linux-gnu (see [`asinh`]).
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-// `(x - x) / (x - x)` is glibc's NaN for |x| > 1, computed at run time as glibc computes it.
+// `(x - x) / (x - x)` is fdlibm's NaN for |x| > 1, computed at run time as fdlibm computes it.
 #[allow(clippy::eq_op)]
 pub(crate) fn atanh(x: f64) -> f64 {
+    let hx = (x.to_bits() >> 32) as u32;
+    let lx = x.to_bits() as u32;
+    let ix = hx & 0x7fff_ffff;
+    // |x| > 1, or NaN.
+    if (ix | ((lx | lx.wrapping_neg()) >> 31)) > 0x3ff0_0000 {
+        return (x - x) / (x - x);
+    }
+    // |x| = 1.
+    if ix == 0x3ff0_0000 {
+        return x / 0.0;
+    }
+    // |x| < 2^-28: atanh(x) is x.
+    if ix < 0x3e30_0000 {
+        return x;
+    }
     let xa = x.abs();
-    let t = if xa < 0.5 {
-        // 2^-28
-        if xa < f64::from_bits(0x3e30_0000_0000_0000) {
-            return x;
-        }
+    let t = if ix < 0x3fe0_0000 {
+        // |x| < 0.5.
         let t = xa + xa;
         0.5 * (t + t * xa / (1.0 - xa)).ln_1p()
-    } else if xa < 1.0 {
-        0.5 * ((xa + xa) / (1.0 - xa)).ln_1p()
-    } else if xa > 1.0 {
-        return (x - x) / (x - x);
     } else {
-        return x / 0.0;
+        0.5 * ((xa + xa) / (1.0 - xa)).ln_1p()
     };
-    t.copysign(x)
+    if hx >> 31 == 0 { t } else { -t }
 }
 
 /// `atanh`: the C library's where its formula is not known.
