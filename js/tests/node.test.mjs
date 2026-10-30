@@ -2523,3 +2523,29 @@ test("checkDataset reads real raster, vector and scientific uploads", {skip: nee
     }
   }
 });
+
+test("validateGpkg reports complete verdicts for bytes and memory paths", {
+  skip: needs("sqlite") || (!DATA || !existsSync(join(DATA, "countries.gpkg")) ? "requires real GeoPackage data" : false),
+}, () => {
+  const bytes = new Uint8Array(readFileSync(join(DATA, "countries.gpkg")));
+  const before = bytes.slice();
+  const report = terrio.validateGpkg(bytes);
+  assert.equal(report.valid, true, JSON.stringify(report));
+  assert.equal(report.complete, true);
+  assert.deepEqual(report.errors, []);
+  const path = "/vsimem/js-gpkg-validation.gpkg";
+  terrio.vsiWrite(path, bytes);
+  try {
+    assert.deepEqual(terrio.validateGpkgPath(path), report);
+    assert.equal(terrio.validateGpkgPath(path, { fullCheck: true }).complete, true);
+    assert.deepEqual(terrio.vsiRead(path), before);
+  } finally {
+    terrio.vsiDelete(path);
+  }
+  assert.deepEqual(bytes, before);
+  const invalid = terrio.validateGpkg(new Uint8Array([1, 2, 3]));
+  assert.equal(invalid.valid, false);
+  assert.equal(invalid.complete, true);
+  assert.equal(invalid.errors[0].requirement, 1);
+  assert.throws(() => terrio.validateGpkg(bytes, { unknownOption: true }), /unknown field/);
+});

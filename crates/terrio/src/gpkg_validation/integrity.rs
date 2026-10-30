@@ -508,7 +508,7 @@ with sqlite3.connect(':memory:') as db:
             let bytes = writer::write_database(&tables, &[], 10400, 0x4750_4b47).unwrap();
             let mut checker = Checker { db: Snapshot::read(&bytes).unwrap(), report: CoreReport::default() };
             checker.foreign_keys(&bytes).unwrap();
-            assert_eq!(checker.report.errors.is_empty(), valid, "{:?}", checker.report.errors);
+            assert_eq!(checker.report.is_valid(), valid, "{:?}", checker.report.errors);
         }
     }
 
@@ -610,7 +610,7 @@ print(json.dumps(cases))
             let mut checker = Checker { db, report: CoreReport::default() };
             checker.foreign_keys(&bytes).unwrap();
             assert!(checker.report.errors.iter().all(|e| e.requirement == 7));
-            assert_eq!(checker.report.errors.is_empty(), case["valid"].as_bool().unwrap(), "{}: {:?}", case["name"], checker.report.errors);
+            assert_eq!(checker.report.is_valid(), case["valid"].as_bool().unwrap(), "{}: {:?}", case["name"], checker.report.errors);
         }
         eprintln!("{} SQLite foreign-key comparison cases passed", cases.len());
     }

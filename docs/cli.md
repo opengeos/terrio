@@ -2321,6 +2321,46 @@ RGB text channels; Terrio deliberately rejects those malformed inputs. Text
 Color-file XML is limited to 65,536 elements and 256 nesting levels; color files are limited to 10 MiB while streaming, including when their size
 is unavailable.
 
+### GeoPackage validation
+
+```sh
+terrio gpkg-validate countries.gpkg --json
+terrio gpkg-validate countries.gpkg --full-check --strict --json
+```
+
+`gpkg-validate` and its MCP tool validate self-contained native or `/vsimem/`
+GeoPackages. Rust exposes `validate_gpkg` and `validate_gpkg_bytes`; Python exposes
+`validate_gpkg(path_or_bytes, full_check=False, strict=False, unicode_case=False)`.
+JavaScript exposes `validateGpkg(bytes, {fullCheck, strict, unicodeCase})` and
+`validateGpkgPath(path, options)` for uploaded memory files.
+
+The shared JSON report contains `valid`, `complete`, encoded `version`, `errors`
+(each with a numeric or named extension `requirement` and `message`), `warnings`
+and `unsupported_checks`. CLI exit codes are 0 for valid, 1 for invalid/strict
+warnings, and 2 for incomplete checks. Unsupported SQL or codecs produce an
+incomplete verdict, never a successful validation.
+
+Checks cover SQLite pages/records/indexes/foreign keys, core GeoPackage metadata,
+feature declarations and geometry payloads, raster tile contents and metadata,
+R-trees, metadata references, schema constraints, related tables and gridded
+coverages. Supported views include projections, filters, DISTINCT, ordering,
+limits, joins and compound SELECTs. Aggregates, CTEs, subqueries, window functions,
+loaded extensions and unimplemented scalar functions are currently unsupported.
+`--full-check` adds advisory attribute type/range/length/date checks; `--strict`
+makes warnings prevent validity. `--unicode-case` selects ICU-style Unicode case
+functions; the default uses stock SQLite ASCII case behavior.
+
+Validation reads the whole image into memory and does not modify it. Close and
+checkpoint native database connections first: nonempty WAL or rollback-journal
+sidecars are refused. Uploaded bytes cannot include external transactions.
+Remote/archive images can be read through VSI and passed to the bytes API.
+Index and identifier keys, DISTINCT/set results and sorted candidates may require
+additional memory; finite sorted limits retain only the needed candidates.
+
+The validator follows GeoPackage 1.4/GDAL 3.13.3, with explicit stricter checks for
+complete geometry/image decoding, metadata references, date/text bounds and exact
+partial-index membership. It does not load SpatiaLite or other SQLite extensions.
+
 ### GeoPackage repacking
 
 `terrio gpkg-repack survey.gpkg --json` compacts a native GeoPackage in place.

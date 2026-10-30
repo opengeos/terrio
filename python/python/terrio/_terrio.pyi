@@ -22,6 +22,7 @@ __all__ = [
     "__version__",
     "gpkg_repack",
     "gpkg_repack_bytes",
+    "validate_gpkg",
     "Raster",
     "GeoTiffWriter",
     "Layer",
@@ -1928,3 +1929,10 @@ def check_dataset(
     overviews: bool = False,
     masks: bool = False,
 ) -> dict[str, int]: ...
+def validate_gpkg(
+    path: str | os.PathLike[str] | bytes,
+    *,
+    full_check: bool = False,
+    strict: bool = False,
+    unicode_case: bool = False,
+) -> dict[str, Any]: ...

@@ -1,4 +1,4 @@
-//! GeoPackage validation rules, built and tested before exposing the complete public validator.
+//! GeoPackage validation rules shared by the public image validator.
 //! Metadata requirements follow OGC GeoPackage 1.4 and GDAL 3.13.3 validate_gpkg.py.
 mod constraints;
 mod content;
@@ -24,37 +24,28 @@ use crate::{Error, Result};
 use schema::Schema;
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
-#[serde(untagged)]
-enum Requirement {
-    Core(u32),
-    Extension(&'static str),
-}
-impl Requirement {
-    fn number(self) -> Option<u32> {
-        match self {
-            Self::Core(number) => Some(number),
-            Self::Extension(_) => None,
-        }
-    }
-}
-impl PartialEq<u32> for Requirement {
-    fn eq(&self, other: &u32) -> bool {
-        self.number() == Some(*other)
-    }
-}
-#[derive(Debug)]
-struct Violation {
-    requirement: Requirement,
-    message: String,
-}
+use crate::gpkg_validate::{GpkgRequirement as Requirement, GpkgValidationOptions, GpkgViolation as Violation};
 #[derive(Debug, Default)]
-struct CoreReport {
-    version: Option<u32>,
-    errors: Vec<Violation>,
-    warnings: Vec<String>,
+pub(super) struct CoreReport {
+    pub(super) version: Option<u32>,
+    pub(super) errors: Vec<Violation>,
+    pub(super) warnings: Vec<String>,
+    pub(super) unsupported_checks: Vec<String>,
 }
 impl CoreReport {
+    #[cfg(test)]
+    fn is_valid(&self) -> bool {
+        self.errors.is_empty() && self.unsupported_checks.is_empty()
+    }
+    fn failure(&mut self, error: Error) {
+        if let Error::Unsupported(message) = error {
+            if !self.unsupported_checks.contains(&message) {
+                self.unsupported_checks.push(message);
+            }
+        } else {
+            self.require(false, 6, error.to_string());
+        }
+    }
     fn require(&mut self, condition: bool, requirement: u32, message: impl Into<String>) {
         self.require_rule(condition, Requirement::Core(requirement), message);
     }
@@ -71,9 +62,14 @@ struct Table {
     evaluator: Option<sqlite_expr::RowEvaluator>,
 }
 impl Table {
+    #[cfg(test)]
     fn from_sql(name: &str, sql: &str) -> Result<Self> {
+        Self::from_sql_with_case(name, sql, true)
+    }
+    fn from_sql_with_case(name: &str, sql: &str, unicode_case: bool) -> Result<Self> {
         let schema = Schema::parse(sql)?;
-        let evaluator = if schema.virtual_module.is_none() { Some(sqlite_expr::RowEvaluator::new(name, &schema)?) } else { None };
+        let evaluator =
+            if schema.virtual_module.is_none() { Some(sqlite_expr::RowEvaluator::new(name, &schema, unicode_case)?) } else { None };
         Ok(Self { schema, rows: Vec::new(), evaluator })
     }
     /// The logical SQLite row, including REAL read affinity and virtual generated
@@ -121,6 +117,7 @@ impl Table {
     }
 }
 struct Snapshot {
+    unicode_case: bool,
     objects: Vec<SchemaEntry>,
     tables: BTreeMap<String, Table>,
 }
@@ -174,7 +171,11 @@ fn literal_default(value: Option<&str>) -> Value {
     Value::Null
 }
 impl Snapshot {
+    #[cfg(test)]
     fn read(bytes: &[u8]) -> Result<Self> {
+        Self::read_with_case(bytes, true)
+    }
+    fn read_with_case(bytes: &[u8], unicode_case: bool) -> Result<Self> {
         let encoding = bytes
             .get(56..60)
             .and_then(|b| b.try_into().ok())
@@ -186,7 +187,7 @@ impl Snapshot {
                 return Ok(());
             }
             if !tables.contains_key(&entry.1) {
-                tables.insert(entry.1.clone(), Table::from_sql(&entry.1, &entry.4)?);
+                tables.insert(entry.1.clone(), Table::from_sql_with_case(&entry.1, &entry.4, unicode_case)?);
             }
             if metadata_table(&entry.1) {
                 let table = tables.get_mut(&entry.1).expect("inserted table");
@@ -197,10 +198,10 @@ impl Snapshot {
         })?;
         for entry in &objects {
             if entry.0 == "table" && !tables.contains_key(&entry.1) {
-                tables.insert(entry.1.clone(), Table::from_sql(&entry.1, &entry.4)?);
+                tables.insert(entry.1.clone(), Table::from_sql_with_case(&entry.1, &entry.4, unicode_case)?);
             }
         }
-        Ok(Self { objects, tables })
+        Ok(Self { objects, tables, unicode_case })
     }
     fn object(&self, name: &str) -> bool {
         self.objects.iter().any(|entry| matches!(entry.0.as_str(), "table" | "view") && entry.1.eq_ignore_ascii_case(name))
@@ -299,7 +300,7 @@ impl Checker {
 
     /// Dispatch registered physical attribute tables. Attribute views still need
     /// the separate view evaluator before the complete validator is exposed.
-    fn attributes(&mut self, bytes: &[u8]) -> Result<()> {
+    fn attributes(&mut self, bytes: &[u8], full_check: bool) -> Result<()> {
         let Some(contents) = self.db.tables.get("gpkg_contents") else { return Ok(()) };
         let names: Vec<_> = contents
             .rows
@@ -314,7 +315,7 @@ impl Checker {
         for name in &names {
             self.attribute_table(name);
         }
-        self.user_content(bytes, &names.iter().map(String::as_str).collect::<Vec<_>>())
+        if full_check { self.user_content(bytes, &names.iter().map(String::as_str).collect::<Vec<_>>()) } else { Ok(()) }
     }
 
     /// A second streaming inspection examines only requested user tables. Retain
@@ -495,7 +496,11 @@ fn valid_timestamp(value: &str) -> bool {
         && number(14, 16) < 60
         && number(17, 19) < 60
 }
+#[cfg(test)]
 fn check_core(bytes: &[u8]) -> CoreReport {
+    check_core_with_options(bytes, &GpkgValidationOptions { full_check: true, unicode_case: true, ..Default::default() })
+}
+pub(super) fn check_core_with_options(bytes: &[u8], options: &GpkgValidationOptions) -> CoreReport {
     let mut report = CoreReport::default();
     if bytes.len() < 100 || !bytes.starts_with(b"SQLite format 3\0") {
         report.require(false, 1, "not an SQLite database");
@@ -519,44 +524,63 @@ fn check_core(bytes: &[u8]) -> CoreReport {
             None
         }
     };
-    let db = match Snapshot::read(bytes) {
+    let db = match Snapshot::read_with_case(bytes, options.unicode_case) {
         Ok(db) => db,
         Err(error) => {
-            report.require(false, 6, error.to_string());
+            report.failure(error);
             return report;
         }
     };
     let mut checker = Checker { db, report };
     if let Err(error) = checker.constraints(bytes) {
-        checker.report.require(false, 6, error.to_string());
+        checker.report.failure(error);
     }
     if let Err(error) = checker.foreign_keys(bytes) {
-        checker.report.require(false, 6, error.to_string());
+        checker.report.failure(error);
     }
     checker.spatial_references();
     checker.contents();
     checker.extensions();
     checker.features();
     if let Err(error) = checker.views(bytes) {
-        checker.report.require(false, 6, error.to_string());
+        checker.report.failure(error);
     }
     checker.spatial_indexes();
     checker.relations();
     checker.schema_extension();
     if let Err(error) = checker.gridded(bytes) {
-        checker.report.require(false, 6, error.to_string());
+        checker.report.failure(error);
     }
     if let Err(error) = checker.metadata(bytes) {
-        checker.report.require(false, 6, error.to_string());
+        checker.report.failure(error);
     }
     if let Err(error) = checker.geometries(bytes) {
-        checker.report.require(false, 6, error.to_string());
+        checker.report.failure(error);
     }
-    if let Err(error) = checker.attributes(bytes) {
-        checker.report.require(false, 6, error.to_string());
+    if let Err(error) = checker.attributes(bytes, options.full_check) {
+        checker.report.failure(error);
     }
     if let Err(error) = checker.tiles(bytes) {
-        checker.report.require(false, 6, error.to_string());
+        checker.report.failure(error);
+    }
+    if options.full_check {
+        let names = checker
+            .db
+            .tables
+            .get("gpkg_contents")
+            .map(|contents| {
+                contents
+                    .rows
+                    .iter()
+                    .filter(|row| contents.get(row, "data_type").and_then(Value::as_str) == Some("features"))
+                    .filter_map(|row| contents.get(row, "table_name").and_then(Value::as_str))
+                    .filter_map(|name| checker.db.tables.keys().find(|key| key.eq_ignore_ascii_case(name)).cloned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if let Err(error) = checker.user_content(bytes, &names.iter().map(String::as_str).collect::<Vec<_>>()) {
+            checker.report.failure(error);
+        }
     }
     checker.report
 }
@@ -621,7 +645,7 @@ mod tests {
             assert_eq!(checker.report.warnings.len(), 1, "{:?}", checker.report);
             assert!(checker.report.warnings[0].contains("count"));
             checker.geometries(&bytes).unwrap();
-            assert_eq!(checker.report.errors.is_empty(), valid, "{:?}", checker.report);
+            assert_eq!(checker.report.is_valid(), valid, "{:?}", checker.report);
             assert!(checker.report.errors.iter().all(|e| e.requirement == 19));
         }
     }
@@ -668,12 +692,13 @@ mod tests {
             ("CREATE TABLE t(id INTEGER PRIMARY KEY, note TEXT DEFAULT '', extra TEXT)", false),
         ] {
             let db = Snapshot {
+                unicode_case: true,
                 objects: vec![],
                 tables: BTreeMap::from([("t".into(), Table { schema: Schema::parse(sql).unwrap(), rows: vec![], evaluator: None })]),
             };
             let mut checker = Checker { db, report: CoreReport::default() };
             checker.structure("t", 13, &rules, false);
-            assert_eq!(checker.report.errors.is_empty(), valid, "{sql}: {:?}", checker.report);
+            assert_eq!(checker.report.is_valid(), valid, "{sql}: {:?}", checker.report);
             assert!(checker.report.errors.iter().all(|e| e.requirement == 13));
         }
     }
@@ -690,12 +715,13 @@ mod tests {
             ("CREATE TABLE t(id INTEGER PRIMARY KEY, note TEXT(8), bytes BLOB(2))", true),
         ] {
             let db = Snapshot {
+                unicode_case: true,
                 objects: vec![],
                 tables: BTreeMap::from([("t".into(), Table { schema: Schema::parse(sql).unwrap(), rows: vec![], evaluator: None })]),
             };
             let mut checker = Checker { db, report: CoreReport::default() };
             checker.attribute_table("t");
-            assert_eq!(checker.report.errors.is_empty(), valid, "{sql}: {:?}", checker.report);
+            assert_eq!(checker.report.is_valid(), valid, "{sql}: {:?}", checker.report);
         }
     }
 
@@ -717,13 +743,14 @@ mod tests {
             .collect();
         let mut checker = Checker {
             db: Snapshot {
+                unicode_case: true,
                 objects: vec![],
                 tables: BTreeMap::from([("gpkg_spatial_ref_sys".into(), Table { schema, rows, evaluator: None })]),
             },
             report: CoreReport::default(),
         };
         checker.spatial_references();
-        assert!(checker.report.errors.is_empty(), "{:?}", checker.report);
+        assert!(checker.report.is_valid(), "{:?}", checker.report);
         let table = checker.db.tables.get_mut("gpkg_spatial_ref_sys").unwrap();
         table.rows.push(table.rows[0].clone());
         checker.spatial_references();
@@ -817,7 +844,7 @@ print(json.dumps(out))
         for case in cases.as_array().unwrap() {
             let bytes = std::fs::read(case["path"].as_str().unwrap()).unwrap();
             let report = check_core(&bytes);
-            assert_eq!(report.errors.is_empty(), case["valid"].as_bool().unwrap(), "{}: {report:?}", case["name"]);
+            assert_eq!(report.is_valid(), case["valid"].as_bool().unwrap(), "{}: {report:?}", case["name"]);
         }
     }
 

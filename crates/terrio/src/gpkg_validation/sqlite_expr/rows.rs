@@ -6,6 +6,7 @@ use super::*;
 pub(in super::super) struct RowEvaluator {
     pub checks: Vec<Expression>,
     virtuals: Vec<(usize, Expression)>,
+    unicode_case: bool,
 }
 impl Expression {
     pub(in super::super) fn dependencies(&self, name: &str, schema: &Schema, allow_rowid: bool) -> Result<Vec<usize>> {
@@ -32,7 +33,7 @@ impl Expression {
     }
 }
 impl RowEvaluator {
-    pub fn new(name: &str, schema: &Schema) -> Result<Self> {
+    pub fn new(name: &str, schema: &Schema, unicode_case: bool) -> Result<Self> {
         let mut checks = Vec::new();
         for sql in &schema.checks {
             let expression = Expression::parse(sql)?;
@@ -58,7 +59,7 @@ impl RowEvaluator {
             let (i, expr, _) = generated.remove(at);
             virtuals.push((i, expr));
         }
-        Ok(Self { checks, virtuals })
+        Ok(Self { checks, virtuals, unicode_case })
     }
     pub fn row(&self, name: &str, schema: &Schema, mut row: Vec<Value>, rowid: Option<i64>, encoding: u32) -> Result<Vec<Value>> {
         for (i, expr) in &self.virtuals {
@@ -69,7 +70,7 @@ impl RowEvaluator {
                 table: Some(name),
                 strict: schema.strict,
                 logical: false,
-                unicode_case: true,
+                unicode_case: self.unicode_case,
                 encoding,
             })?;
             row[*i] =

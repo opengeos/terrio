@@ -109,6 +109,7 @@ def main():
                     try:
                         report = json.loads(ours.stdout)
                         assert report["valid"] == valid
+                        assert report["complete"]
                         assert (ours.returncode == 0) == valid
                     except (ValueError, KeyError, AssertionError):
                         status = "differs"

@@ -312,7 +312,7 @@ mod tests {
     use super::*;
     #[test]
     fn compound_select_count_is_bounded() {
-        let mut db = Snapshot { objects: vec![], tables: BTreeMap::new() };
+        let mut db = Snapshot { unicode_case: true, objects: vec![], tables: BTreeMap::new() };
         for count in [2, 500, 501] {
             let sql = format!("CREATE VIEW v AS {}", vec!["SELECT 1"; count].join(" UNION ALL "));
             db.objects = vec![("view".into(), "v".into(), "v".into(), 0, sql)];
@@ -339,6 +339,7 @@ print(json.dumps(out))
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         let cases: Vec<(String, String)> = serde_json::from_slice(&output.stdout).unwrap();
         let mut db = Snapshot {
+            unicode_case: true,
             objects: vec![],
             tables: BTreeMap::from([(
                 "types".into(),

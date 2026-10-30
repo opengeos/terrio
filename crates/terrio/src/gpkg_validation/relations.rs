@@ -189,7 +189,7 @@ print(json.dumps(cases))
             checker.relations();
             assert!(checker.report.errors.iter().all(|e| e.requirement == RULE));
             if !case["reference_exception"].is_null() {
-                assert!(!checker.report.errors.is_empty(), "{case}");
+                assert!(!checker.report.is_valid(), "{case}");
                 continue;
             }
             assert_eq!(

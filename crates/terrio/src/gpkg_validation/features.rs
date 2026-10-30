@@ -136,6 +136,7 @@ mod tests {
             let table = |sql: &str, rows| Table { schema: Schema::parse(sql).unwrap(), rows, evaluator: None };
             let text = |value: &str| Value::Text(value.into());
             let db = Snapshot {
+                unicode_case: true,
                 objects: vec![],
                 tables: BTreeMap::from([
                     (

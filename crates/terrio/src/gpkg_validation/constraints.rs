@@ -256,7 +256,7 @@ impl Checker {
                         table: Some(&entry.1),
                         strict: table.schema.strict,
                         logical: false,
-                        unicode_case: true,
+                        unicode_case: self.db.unicode_case,
                         encoding,
                     })? {
                         invalid_values.insert(format!("{}: CHECK constraint {} failed", entry.1, i + 1));
@@ -290,7 +290,7 @@ impl Checker {
                 table: Some(&entry.1),
                 strict: table.schema.strict,
                 logical: false,
-                unicode_case: true,
+                unicode_case: self.db.unicode_case,
                 encoding,
             };
             for index in indexes.iter_mut().filter(|index| index.table == entry.1) {
@@ -503,7 +503,7 @@ print(json.dumps(cases))
                     let mut checker = Checker { db, report: CoreReport::default() };
                     let result = checker.constraints(&bytes);
                     assert!(checker.report.warnings.is_empty(), "{:?}", checker.report.warnings);
-                    (result.is_ok() && checker.report.errors.is_empty(), format!("{result:?}: {:?}", checker.report.errors))
+                    (result.is_ok() && checker.report.is_valid(), format!("{result:?}: {:?}", checker.report.errors))
                 }
                 Err(error) => (false, error.to_string()),
             };

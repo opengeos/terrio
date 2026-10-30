@@ -201,8 +201,8 @@ impl Window {
         }
         Ok(plan)
     }
-    pub fn evaluate(&self, encoding: u32) -> Result<(Option<usize>, usize)> {
-        fn integer(expr: &Expression, encoding: u32) -> Result<i64> {
+    pub fn evaluate(&self, encoding: u32, unicode_case: bool) -> Result<(Option<usize>, usize)> {
+        fn integer(expr: &Expression, encoding: u32, unicode_case: bool) -> Result<i64> {
             let v = expr.evaluate(&Context {
                 columns: &[],
                 row: &[],
@@ -211,7 +211,7 @@ impl Window {
                 encoding,
                 strict: false,
                 logical: false,
-                unicode_case: true,
+                unicode_case,
             })?;
             let v = if let Value::Text(s) = v { integrity::numeric(&s).unwrap_or(Value::Null) } else { v };
             match v {
@@ -223,14 +223,14 @@ impl Window {
         let count = self
             .count
             .as_ref()
-            .map(|e| integer(e, encoding))
+            .map(|e| integer(e, encoding, unicode_case))
             .transpose()?
             .filter(|n| *n >= 0)
             .map(|n| usize::try_from(n).unwrap_or(usize::MAX));
         if count == Some(0) {
             return Ok((count, 0));
         }
-        let offset = self.offset.as_ref().map(|e| integer(e, encoding)).transpose()?.unwrap_or(0).max(0);
+        let offset = self.offset.as_ref().map(|e| integer(e, encoding, unicode_case)).transpose()?.unwrap_or(0).max(0);
         Ok((count, usize::try_from(offset).unwrap_or(usize::MAX)))
     }
 }

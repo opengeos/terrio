@@ -373,7 +373,7 @@ impl Join {
                     encoding,
                     strict: false,
                     logical: true,
-                    unicode_case: true,
+                    unicode_case: db.unicode_case,
                 };
                 if let Some(on) = on
                     && truth(&on.evaluate(&context)?) != Some(true)
@@ -417,6 +417,7 @@ mod tests {
     #[test]
     fn joins_bind_names_and_bound_source_count() {
         let mut db = Snapshot {
+            unicode_case: true,
             objects: vec![],
             tables: BTreeMap::from([("t".into(), Table::from_sql("t", "CREATE TABLE t(id INTEGER)").unwrap())]),
         };

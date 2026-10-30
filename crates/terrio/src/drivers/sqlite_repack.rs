@@ -512,7 +512,6 @@ impl MapSource<'_> {
 
 /// Decode an encoded SQLite record with the database's declared text encoding. Unlike the
 /// permissive display reader, validation reports truncated fields and invalid text.
-#[cfg(test)]
 pub(crate) fn decode_record(record: &[u8], encoding: u32) -> Result<Vec<super::sqlite::Value>> {
     use super::sqlite::Value;
     let layout = fields(record)?;
@@ -546,7 +545,6 @@ pub(crate) fn decode_record(record: &[u8], encoding: u32) -> Result<Vec<super::s
 /// The visitor receives one record at a time; large table payloads are not retained.
 /// This is shared file-format inspection, not SQL
 /// constraint or collation/index-key validation; those checks belong to the caller.
-#[cfg(test)]
 pub(crate) fn inspect(
     bytes: &[u8],
     mut visit: impl FnMut(&super::sqlite::SchemaEntry, Option<i64>, &[u8]) -> Result<()>,
@@ -661,7 +659,6 @@ pub(crate) fn inspect(
     }
     Ok(schema)
 }
-#[cfg(test)]
 fn check_pointer_map(bytes: &[u8], layout: &Output, page: u32, role: u8, parent: u32) -> Result<()> {
     if !layout.auto || page == 1 {
         return Ok(());
@@ -677,14 +674,12 @@ fn check_pointer_map(bytes: &[u8], layout: &Output, page: u32, role: u8, parent:
     }
     Ok(())
 }
-#[cfg(test)]
 fn check_rowids(rows: &[(Option<i64>, Vec<u8>)]) -> Result<()> {
     if rows.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
         return Err(bad("unordered table rowids"));
     }
     Ok(())
 }
-#[cfg(test)]
 fn check_page_layout(bytes: &[u8], page: u32, size: usize) -> Result<()> {
     let h = if page == 1 { 100 } else { 0 };
     let kind = bytes[h];

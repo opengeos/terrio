@@ -325,7 +325,7 @@ print(json.dumps(cases))
             let mut checker = Checker { db, report: CoreReport::default() };
             checker.metadata(&bytes).unwrap();
             if case["reference_exception"].as_bool() == Some(true) {
-                assert!(!checker.report.errors.is_empty(), "{case}");
+                assert!(!checker.report.is_valid(), "{case}");
                 continue;
             }
             let mut actual: Vec<_> = checker.report.errors.iter().map(|e| e.requirement.number().expect("core requirement")).collect();

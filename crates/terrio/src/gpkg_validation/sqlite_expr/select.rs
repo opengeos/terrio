@@ -323,7 +323,7 @@ impl View {
     }
     pub(super) fn visit_control(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
         let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
-        let (count, offset) = self.window.evaluate(encoding)?;
+        let (count, offset) = self.window.evaluate(encoding, db.unicode_case)?;
         if count == Some(0) {
             return Ok(());
         }
@@ -344,7 +344,7 @@ impl View {
                 encoding,
                 strict: self.source_schema.strict,
                 logical: true,
-                unicode_case: true,
+                unicode_case: db.unicode_case,
             };
             if let Some(predicate) = &self.predicate
                 && truth(&predicate.evaluate(&context)?) != Some(true)

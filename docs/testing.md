@@ -1312,3 +1312,25 @@ cargo test -p terrio-cli --test inspection
 pytest python/tests/test_check.py
 TERRIO_TEST_DATA=../terrio-data node --test --test-name-pattern='checkDataset' js/tests/node.test.mjs
 ```
+
+## GeoPackage specification validation
+
+`gpkg-validate` in `scripts/conformance.py` compares the public CLI with GDAL
+3.13.3 on Natural Earth features and USGS raster-tile derivatives, using both
+default and full checks. Valid/invalid verdicts and completeness are checked;
+diagnostic wording is not compared. Internal comparisons additionally cover
+SQLite constraints/indexes/encodings, view schemas/values, extension metadata,
+geometry and tile payload corruption, and documented stricter specification
+checks. Unsupported query forms produce incomplete reports.
+
+```sh
+cargo test -p terrio gpkg_validation --lib -- --include-ignored
+cargo test -p terrio gpkg_validate --lib -- --include-ignored
+python scripts/conformance.py ../terrio-data --only gpkg-validate
+pytest python/tests/test_gpkg_validation.py
+node --test --test-name-pattern='validateGpkg' js/tests/node.test.mjs
+```
+
+Public API tests exercise byte/path/memory equivalence, advisory/strict options,
+ASCII/ICU case handling, incomplete SQL verdicts, filename checks and read-only
+WAL/journal refusal. All native fixtures must be closed/checkpointed first.

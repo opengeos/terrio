@@ -480,7 +480,7 @@ print(json.dumps(cases))
             let mut checker = Checker { db, report: CoreReport::default() };
             checker.gridded(&bytes).unwrap();
             if case["raises"].as_bool() == Some(true) {
-                assert!(!checker.report.errors.is_empty(), "{case}");
+                assert!(!checker.report.is_valid(), "{case}");
                 continue;
             }
             let mut actual: Vec<String> = checker

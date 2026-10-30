@@ -773,6 +773,28 @@ def suite_multidim(ctx):
     return suite
 
 
+def suite_gpkg_validate(ctx):
+    suite = Suite("gpkg-validate", "GeoPackage specification validation", "GDAL 3.13.3",
+                  "Natural Earth vector and USGS raster derivatives: valid/invalid verdicts, core requirement diagnostics, default and full checks. Incomplete SQL/codec checks must never report validity; diagnostic wording is not compared.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs osgeo"
+        return suite
+    if shutil.which("gdal") is None or run(["gdal", "driver", "gpkg", "validate", "--help"])[0] != 0:
+        suite.skipped = "needs gdal driver gpkg validate"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_gpkg_validation_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("GeoPackage validation", result["name"], IDENTICAL if result["status"] == "identical" else DIFFERS, result["reference"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_gpkg_repack(ctx):
     suite = Suite("gpkg-repack", "GeoPackage storage repacking", "GDAL 3.13.3 / SQLite VACUUM",
                 "Natural Earth and USGS derivatives: all SQL records/objects/rowids, GDAL features and raster pixels/masks, types, CRS and metadata. Covers arbitrary indexes, WITHOUT ROWID, encodings, auto-vacuum, page sizes and mutation guards. Physical page layouts may differ.")
@@ -2074,6 +2096,7 @@ SUITES = OrderedDict(
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("gpkg-repack", suite_gpkg_repack),
+        ("gpkg-validate", suite_gpkg_validate),
         ("pansharpen", suite_pansharpen),
         ("vector-grid", suite_vector_grid),
         ("lineref", suite_lineref),

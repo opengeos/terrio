@@ -171,10 +171,10 @@ print(json.dumps(cases))
             let mut checker = Checker { db: Snapshot::read(&bytes).unwrap(), report: CoreReport::default() };
             checker.views(&bytes).unwrap_or_else(|e| panic!("{}: {e}", case["name"]));
             checker.geometries(&bytes).unwrap();
-            assert_eq!(checker.report.errors.is_empty(), case["valid"].as_bool().unwrap(), "{}: {:?}", case["name"], checker.report);
+            assert_eq!(checker.report.is_valid(), case["valid"].as_bool().unwrap(), "{}: {:?}", case["name"], checker.report);
             assert!(checker.report.warnings.is_empty());
             let full = check_core(&bytes);
-            assert_eq!(full.errors.is_empty(), case["valid"].as_bool().unwrap(), "full validator {}: {full:?}", case["name"]);
+            assert_eq!(full.is_valid(), case["valid"].as_bool().unwrap(), "full validator {}: {full:?}", case["name"]);
         }
         eprintln!("{} registered view/GDAL comparisons passed", cases.len());
     }
@@ -192,6 +192,7 @@ print(json.dumps(cases))
             &deep_predicate,
         ] {
             let db = Snapshot {
+                unicode_case: true,
                 objects: vec![("view".into(), "v".into(), "v".into(), 0, sql.into())],
                 tables: BTreeMap::from([(
                     "sample".into(),

@@ -171,7 +171,7 @@ print(json.dumps(cases))
             Ok(db) => {
                 let mut checker = Checker { db, report: CoreReport::default() };
                 let result = checker.constraints(&bytes);
-                (result.is_ok() && checker.report.errors.is_empty(), format!("{result:?}: {:?}", checker.report.errors))
+                (result.is_ok() && checker.report.is_valid(), format!("{result:?}: {:?}", checker.report.errors))
             }
             Err(error) => (false, error.to_string()),
         };
