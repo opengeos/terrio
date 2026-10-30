@@ -1,6 +1,14 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a
 // copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
+//
+// Ported from Eigen 3.4.0 (https://gitlab.com/libeigen/eigen): SelfAdjointEigenSolver.h,
+// Tridiagonalization.h and Jacobi.h (JacobiRotation::makeGivens), whose notices read:
+//   Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+//   Copyright (C) 2010 Jitse Niesen <jitse@maths.leeds.ac.uk>
+//   Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+//   Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+//   Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
 
 //! A port of Eigen 3.4's eigensolver for symmetric 3x3 matrices, which PDAL's covariance-based
 //! filters use, kept in its own file because Eigen is licensed under the MPL-2.0: the rest of
