@@ -14,7 +14,15 @@ impl Token {
         }
     }
 }
+pub(super) struct Spanned {
+    pub tokens: Vec<Token>,
+    pub spans: Vec<(usize, usize)>,
+}
 pub(super) fn tokens(sql: &str) -> Result<Vec<Token>> {
+    spanned(sql).map(|result| result.tokens)
+}
+pub(super) fn spanned(sql: &str) -> Result<Spanned> {
+    let mut spans = Vec::new();
     let bytes = sql.as_bytes();
     let mut at = 0;
     let mut out = Vec::new();
@@ -32,6 +40,7 @@ pub(super) fn tokens(sql: &str) -> Result<Vec<Token>> {
             at += 2 + bytes[at + 2..].windows(2).position(|p| p == b"*/").ok_or_else(|| bad("unterminated comment"))? + 2;
             continue;
         }
+        let token_start = at;
         let blob = matches!(byte, b'x' | b'X') && bytes.get(at + 1) == Some(&b'\'');
         if blob || matches!(byte, b'\'' | b'"' | b'`' | b'[') {
             if blob {
@@ -69,6 +78,7 @@ pub(super) fn tokens(sql: &str) -> Result<Vec<Token>> {
             } else {
                 out.push(Token::Name(text, if open == b'"' { 2 } else { 1 }));
             }
+            spans.push((token_start, at));
             continue;
         }
         if byte.is_ascii_digit() || byte == b'.' && bytes.get(at + 1).is_some_and(u8::is_ascii_digit) {
@@ -94,6 +104,7 @@ pub(super) fn tokens(sql: &str) -> Result<Vec<Token>> {
                     Value::Int(u64::from_str_radix(&text, 16).map_err(|_| bad("invalid hexadecimal integer"))? as i64),
                     false,
                 ));
+                spans.push((token_start, at));
                 continue;
             }
             while bytes.get(at).is_some_and(|b| b.is_ascii_digit() || matches!(b, b'.' | b'_')) {
@@ -124,6 +135,7 @@ pub(super) fn tokens(sql: &str) -> Result<Vec<Token>> {
                 .or_else(|_| text.parse::<f64>().map(Value::Real))
                 .map_err(|_| bad("invalid numeric literal"))?;
             out.push(Token::Literal(value, integer && text == "9223372036854775808"));
+            spans.push((token_start, at));
             continue;
         }
         if byte.is_ascii_alphabetic() || byte == b'_' || byte >= 128 {
@@ -133,6 +145,7 @@ pub(super) fn tokens(sql: &str) -> Result<Vec<Token>> {
                 at += 1;
             }
             out.push(Token::Name(sql[start..at].into(), 0));
+            spans.push((token_start, at));
             continue;
         }
         let mut matched = false;
@@ -145,14 +158,16 @@ pub(super) fn tokens(sql: &str) -> Result<Vec<Token>> {
             }
         }
         if matched {
+            spans.push((token_start, at));
             continue;
         }
-        if b"()+-*/%~&|=<>.,".contains(&byte) {
+        if b"()+-*/%~&|=<>.,;".contains(&byte) {
             out.push(Token::Symbol((byte as char).to_string()));
             at += 1;
         } else {
             return Err(bad("unsupported SQL token"));
         }
+        spans.push((token_start, at));
     }
-    Ok(out)
+    Ok(Spanned { tokens: out, spans })
 }

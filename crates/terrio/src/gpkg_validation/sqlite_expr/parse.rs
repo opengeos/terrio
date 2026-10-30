@@ -2,15 +2,15 @@ use super::*;
 use lex::Token;
 
 pub(super) struct Parser {
-    tokens: Vec<Token>,
-    at: usize,
-    depth: usize,
+    pub(super) tokens: Vec<Token>,
+    pub(super) at: usize,
+    pub(super) depth: usize,
 }
 impl Parser {
-    fn is(&self, text: &str) -> bool {
+    pub(super) fn is(&self, text: &str) -> bool {
         self.tokens.get(self.at).is_some_and(|t| t.is(text))
     }
-    fn eat(&mut self, text: &str) -> bool {
+    pub(super) fn eat(&mut self, text: &str) -> bool {
         if self.is(text) {
             self.at += 1;
             true
@@ -18,10 +18,10 @@ impl Parser {
             false
         }
     }
-    fn expect(&mut self, text: &str) -> Result<()> {
+    pub(super) fn expect(&mut self, text: &str) -> Result<()> {
         if self.eat(text) { Ok(()) } else { Err(bad(&format!("expected {text}"))) }
     }
-    fn name(&mut self) -> Result<String> {
+    pub(super) fn name(&mut self) -> Result<String> {
         match self.tokens.get(self.at) {
             Some(Token::Name(name, _)) | Some(Token::Literal(Value::Text(name), _)) => {
                 let name = name.clone();
@@ -47,16 +47,20 @@ impl Parser {
         if parser.at != parser.tokens.len() {
             return Err(bad("unexpected trailing SQL"));
         }
-        let mut todo = vec![(&root, 0)];
+        Self::check_depth(&root)?;
+        Ok((root, descending))
+    }
+    pub(super) fn check_depth(root: &Expr) -> Result<()> {
+        let mut todo = vec![(root, 0)];
         while let Some((expr, depth)) = todo.pop() {
             if depth > 128 {
                 return Err(Error::Unsupported("SQLite expression depth exceeds 128".into()));
             }
             todo.extend(expr.children().into_iter().map(|e| (e, depth + 1)));
         }
-        Ok((root, descending))
+        Ok(())
     }
-    fn expression(&mut self, min: u8) -> Result<Expr> {
+    pub(super) fn expression(&mut self, min: u8) -> Result<Expr> {
         self.depth += 1;
         if self.depth > 128 {
             return Err(Error::Unsupported("SQLite expression depth exceeds 128".into()));

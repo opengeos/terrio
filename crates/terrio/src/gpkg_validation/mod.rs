@@ -14,6 +14,7 @@ mod schema;
 mod schema_extension;
 mod sqlite_expr;
 mod tiles;
+mod views;
 
 use crate::drivers::{
     sqlite::{SchemaEntry, Value},
@@ -528,6 +529,9 @@ fn check_core(bytes: &[u8]) -> CoreReport {
     checker.contents();
     checker.extensions();
     checker.features();
+    if let Err(error) = checker.views(bytes) {
+        checker.report.require(false, 6, error.to_string());
+    }
     checker.spatial_indexes();
     checker.relations();
     checker.schema_extension();

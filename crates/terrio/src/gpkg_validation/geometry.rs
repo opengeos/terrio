@@ -223,18 +223,11 @@ impl Checker {
         );
         let mut srids = BTreeSet::new();
         let mut types = BTreeSet::new();
-        sqlite_repack::inspect(bytes, |entry, rowid, record| {
-            if entry.0 != "table" {
-                return Ok(());
-            }
-            let Some(table) = self.db.tables.get(&entry.1) else { return Ok(()) };
-            if !registrations.iter().any(|r| r.name.eq_ignore_ascii_case(&entry.1)) {
-                return Ok(());
-            }
-            let row = table.decode(&entry.1, record, rowid, encoding)?;
-            for r in registrations.iter().filter(|r| r.name.eq_ignore_ascii_case(&entry.1)) {
-                let Some(value) = table.schema.columns.iter().position(|c| c.name.eq_ignore_ascii_case(&r.field)).and_then(|i| row.get(i))
-                else {
+        let db = &self.db;
+        let report = &mut self.report;
+        let mut check_row = |name: &str, rowid: Option<i64>, schema: &Schema, row: &[Value]| {
+            for r in registrations.iter().filter(|r| r.name.eq_ignore_ascii_case(name)) {
+                let Some(value) = schema.columns.iter().position(|c| c.name.eq_ignore_ascii_case(&r.field)).and_then(|i| row.get(i)) else {
                     continue;
                 };
                 if matches!(value, Value::Null) {
@@ -242,13 +235,13 @@ impl Checker {
                 }
                 let shape = if let Value::Blob(blob) = value { blob_shape(blob) } else { None };
                 let Some((shape, srs, empty, envelope)) = shape else {
-                    self.report.require(false, 19, format!("{}.{} row {rowid:?}: invalid GeoPackage geometry", r.name, r.field));
+                    report.require(false, 19, format!("{}.{} row {rowid:?}: invalid GeoPackage geometry", r.name, r.field));
                     continue;
                 };
                 if i64::from(srs) != r.srs && srids.insert((r.name.clone(), r.field.clone(), srs)) {
-                    self.report.require(false, 33, format!("{}: geometry SRS {srs} differs from {}", r.name, r.srs));
+                    report.require(false, 33, format!("{}: geometry SRS {srs} differs from {}", r.name, r.srs));
                 }
-                self.report.require(
+                report.require(
                     empty == shape.empty && (!empty || envelope == 0),
                     152,
                     format!("{}: inconsistent empty geometry flag/envelope", r.name),
@@ -261,12 +254,24 @@ impl Checker {
                     (!z || r.z > 0, "forbidden Z present"),
                     (!m || r.m > 0, "forbidden M present"),
                 ] {
-                    self.report.require(valid, 19, format!("{}: {message}", r.name));
+                    report.require(valid, 19, format!("{}: {message}", r.name));
                 }
                 types.insert((r.name.clone(), r.field.clone(), shape.kind));
             }
             Ok(())
+        };
+        sqlite_repack::inspect(bytes, |entry, rowid, record| {
+            if entry.0 == "table" && registrations.iter().any(|r| r.name.eq_ignore_ascii_case(&entry.1)) {
+                let table = &db.tables[&entry.1];
+                let row = table.decode(&entry.1, record, rowid, encoding)?;
+                check_row(&entry.1, rowid, &table.schema, &row)?;
+            }
+            Ok(())
         })?;
+        for object in db.objects.iter().filter(|o| o.0 == "view" && registrations.iter().any(|r| r.name.eq_ignore_ascii_case(&o.1))) {
+            let view = sqlite_expr::View::compile(db, &object.1)?;
+            view.visit(db, bytes, &mut |row| check_row(&object.1, None, &view.schema, row))?;
+        }
         for r in &registrations {
             let mut valid = true;
             for (_, _, kind) in types.iter().filter(|(name, field, _)| name == &r.name && field == &r.field) {

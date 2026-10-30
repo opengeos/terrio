@@ -2,9 +2,9 @@
 //! Rule numbering follows GDAL 3.13.3's validate_gpkg.py; see NOTICE.
 use super::*;
 
-const BASE: &[&str] =
+pub(super) const BASE: &[&str] =
     &["GEOMETRY", "POINT", "LINESTRING", "POLYGON", "MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON", "GEOMETRYCOLLECTION"];
-const EXTENDED: &[&str] = &["CIRCULARSTRING", "COMPOUNDCURVE", "CURVEPOLYGON", "MULTICURVE", "MULTISURFACE", "CURVE", "SURFACE"];
+pub(super) const EXTENDED: &[&str] = &["CIRCULARSTRING", "COMPOUNDCURVE", "CURVEPOLYGON", "MULTICURVE", "MULTISURFACE", "CURVE", "SURFACE"];
 
 impl Checker {
     /// Checks declarations only. Binary geometry and R-tree checks are separate
@@ -78,8 +78,6 @@ impl Checker {
                             );
                         }
                     }
-                } else if self.db.object(name) {
-                    self.report.warnings.push(format!("feature view {name} still needs view-schema and value validation"));
                 }
                 if kind.is_some_and(|kind| EXTENDED.contains(&kind)) {
                     let extension = format!("gpkg_geom_{}", kind.unwrap());

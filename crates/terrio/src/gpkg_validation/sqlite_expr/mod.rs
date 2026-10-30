@@ -5,6 +5,8 @@ mod functions;
 mod lex;
 mod parse;
 mod rows;
+mod select;
+pub(super) use select::View;
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests;
 use super::*;
