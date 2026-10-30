@@ -2,8 +2,8 @@ name: Release dry run
 
 # Builds and checks everything a release publishes, without publishing: the wheels for every
 # platform, the source distribution, the Pyodide wheel and the command-line binaries
-# (release-build.yml, as the release builds them), the Docker image, the crates as `cargo publish` packages and
-# verifies them, the npm package, and that LICENSE-THIRD-PARTY.md is up to date.
+# (release-build.yml, as the release builds them), the Docker image, the crates as `cargo publish`
+# packages and verifies them, the npm package, and that LICENSE-THIRD-PARTY.md is up to date.
 # Run by hand before tagging a release (Actions > Release dry run > Run workflow).
 # Pull requests use the normal CI build, API, Python and WASM packaging checks.
 on:
