@@ -37,46 +37,8 @@ fn expand(expr: &mut Expr, source: &Schema, output: &Schema, projections: &[Expr
         *expr = projections[i].0.clone();
         return;
     }
-    match expr {
-        Expr::Unary(_, e) | Expr::Collate(e, _) | Expr::Cast(e, _) => expand(e, source, output, projections),
-        Expr::Binary(_, a, b) => {
-            expand(a, source, output, projections);
-            expand(b, source, output, projections);
-        }
-        Expr::Call(_, args) => {
-            for arg in args {
-                expand(arg, source, output, projections);
-            }
-        }
-        Expr::Between(a, b, c, _) => {
-            expand(a, source, output, projections);
-            expand(b, source, output, projections);
-            expand(c, source, output, projections);
-        }
-        Expr::In(a, args, _) => {
-            expand(a, source, output, projections);
-            for arg in args {
-                expand(arg, source, output, projections);
-            }
-        }
-        Expr::Pattern(a, b, escape, ..) => {
-            expand(a, source, output, projections);
-            expand(b, source, output, projections);
-            if let Some(e) = escape {
-                expand(e, source, output, projections);
-            }
-        }
-        Expr::Case(base, arms, otherwise) => {
-            if let Some(e) = base {
-                expand(e, source, output, projections);
-            }
-            for (a, b) in arms {
-                expand(a, source, output, projections);
-                expand(b, source, output, projections);
-            }
-            expand(otherwise, source, output, projections);
-        }
-        _ => {}
+    for child in expr.children_mut() {
+        expand(child, source, output, projections);
     }
 }
 impl Order {
@@ -109,6 +71,52 @@ impl Order {
         }
         Ok(terms)
     }
+    pub fn bind_compound(mut self, compound: &compound::Compound, output: &Schema) -> Result<Self> {
+        fn normalize(expr: &mut Expr, schema: &Schema, binding: &str) {
+            if let Expr::Column(parts, quoted) = expr {
+                if parts.len() > 1 && !parts[parts.len() - 2].eq_ignore_ascii_case(binding) {
+                    return;
+                }
+                if let Some(i) = schema.columns.iter().position(|c| c.name.eq_ignore_ascii_case(parts.last().unwrap())) {
+                    *expr = Expr::Column(vec![i.to_string()], 1);
+                    return;
+                }
+                if *quoted == 2 && parts.len() == 1 {
+                    *expr = Expr::Literal(Value::Text(parts[0].clone()));
+                    return;
+                }
+            }
+            for child in expr.children_mut() {
+                normalize(child, schema, binding);
+            }
+        }
+        fn stripped(expr: &Expr) -> &Expr {
+            if let Expr::Collate(inner, _) = expr { stripped(inner) } else { expr }
+        }
+        let index = if let Some(n) = ordinal(&self.expr.0) {
+            usize::try_from(n).ok().and_then(|n| n.checked_sub(1)).filter(|i| *i < output.columns.len())
+        } else {
+            compound.arms.iter().find_map(|arm| {
+                if let Expr::Column(parts, _) = stripped(&self.expr.0)
+                    && parts.len() == 1
+                    && let Some(i) = arm.schema.columns.iter().position(|c| c.name.eq_ignore_ascii_case(&parts[0]))
+                {
+                    return Some(i);
+                }
+                let mut needle = stripped(&self.expr.0).clone();
+                normalize(&mut needle, &arm.source_schema, arm.qualifier.as_deref().unwrap_or(""));
+                arm.projections.iter().position(|p| {
+                    let mut p = stripped(&p.0).clone();
+                    normalize(&mut p, &arm.source_schema, arm.qualifier.as_deref().unwrap_or(""));
+                    p == needle
+                })
+            })
+        }
+        .ok_or_else(|| bad("compound ORDER BY term does not match a result column"))?;
+        self.collation = self.expr.0.explicit_collation().map_or_else(|| compound.column_collation(index).into(), str::to_owned);
+        self.expr = Expression(Expr::Column(vec![output.columns[index].name.clone()], 1));
+        Ok(self)
+    }
     pub fn bind(mut self, source: &Schema, output: &Schema, projections: &[Expression], binding: &str, rowid: bool) -> Result<Self> {
         let explicit = self.expr.0.explicit_collation().map(str::to_owned);
         if let Some(n) = ordinal(&self.expr.0) {
@@ -131,6 +139,28 @@ impl Order {
         }
         Ok(self)
     }
+}
+pub(super) fn storage_atom(value: &Value, collation: &str, encoding: u32) -> integrity::Atom {
+    if let Value::Text(s) = value
+        && collation == "BINARY"
+        && matches!(encoding, 2 | 3)
+    {
+        return integrity::Atom::Text(
+            s.encode_utf16().flat_map(|u| if encoding == 2 { u.to_le_bytes() } else { u.to_be_bytes() }).collect(),
+            0,
+        );
+    }
+    let metadata = schema::Column {
+        name: String::new(),
+        data_type: "BLOB".into(),
+        not_null: false,
+        primary_key: 0,
+        default: None,
+        collation: collation.into(),
+        not_null_declared: false,
+        generated: None,
+    };
+    integrity::atom(value, &metadata, false).unwrap_or(integrity::Atom::Null)
 }
 #[derive(Default)]
 pub(super) struct Window {
@@ -239,27 +269,7 @@ impl<'a> Sorter<'a> {
             .iter()
             .map(|term| {
                 let value = term.expr.evaluate(context)?;
-                let atom = if let Value::Text(s) = &value
-                    && term.collation == "BINARY"
-                    && matches!(self.encoding, 2 | 3)
-                {
-                    integrity::Atom::Text(
-                        s.encode_utf16().flat_map(|u| if self.encoding == 2 { u.to_le_bytes() } else { u.to_be_bytes() }).collect(),
-                        0,
-                    )
-                } else {
-                    let metadata = schema::Column {
-                        name: String::new(),
-                        data_type: "BLOB".into(),
-                        not_null: false,
-                        primary_key: 0,
-                        default: None,
-                        collation: term.collation.clone(),
-                        not_null_declared: false,
-                        generated: None,
-                    };
-                    integrity::atom(&value, &metadata, false).unwrap_or(integrity::Atom::Null)
-                };
+                let atom = storage_atom(&value, &term.collation, self.encoding);
                 Ok(Key { atom, descending: term.descending, nulls_last: term.nulls_last })
             })
             .collect()

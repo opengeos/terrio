@@ -1,6 +1,7 @@
 //! Read-only SQLite scalar expressions for integrity checks and view projections.
 //! SQLite affinity, collation and three-valued logic are intentionally separate
 //! from Terrio's OGR SQL dialect. Unknown functions/operators fail explicitly.
+mod compound;
 mod functions;
 mod lex;
 mod order;
@@ -17,7 +18,7 @@ use std::cmp::Ordering;
 fn bad(message: &str) -> Error {
     Error::InvalidData(format!("SQLite expression: {message}"))
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Expr {
     MinMagnitude,
     Literal(Value),
@@ -53,6 +54,29 @@ impl Expr {
                 .map(Box::as_ref)
                 .chain(arms.iter().flat_map(|(a, b)| [a, b]))
                 .chain(std::iter::once(otherwise.as_ref()))
+                .collect(),
+        }
+    }
+    fn children_mut(&mut self) -> Vec<&mut Expr> {
+        match self {
+            Self::MinMagnitude | Self::Literal(_) | Self::Column(..) => vec![],
+            Self::Unary(_, a) | Self::Collate(a, _) | Self::Cast(a, _) => vec![a],
+            Self::Binary(_, a, b) => vec![a, b],
+            Self::Call(_, args) => args.iter_mut().collect(),
+            Self::Between(a, b, c, _) => vec![a, b, c],
+            Self::In(a, args, _) => std::iter::once(a.as_mut()).chain(args.iter_mut()).collect(),
+            Self::Pattern(a, b, escape, ..) => {
+                let mut out = vec![a.as_mut(), b.as_mut()];
+                if let Some(e) = escape {
+                    out.push(e);
+                }
+                out
+            }
+            Self::Case(base, arms, otherwise) => base
+                .iter_mut()
+                .map(Box::as_mut)
+                .chain(arms.iter_mut().flat_map(|(a, b)| [a, b]))
+                .chain(std::iter::once(otherwise.as_mut()))
                 .collect(),
         }
     }

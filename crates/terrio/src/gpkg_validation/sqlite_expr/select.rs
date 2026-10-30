@@ -1,15 +1,17 @@
 //! Read-only, streaming view projections. Query forms not implemented here are
 //! rejected rather than silently omitting a registered view from validation.
 use super::*;
+use compound::Compound;
 use order::{Order, Sorter, Window};
 use parse::Parser;
 use std::cell::Cell;
 use std::collections::BTreeSet;
 
-enum Source {
+pub(super) enum Source {
     Table(String),
     View(Box<View>),
     Unit,
+    Compound(Compound),
 }
 enum Item {
     Star(Option<String>),
@@ -17,10 +19,10 @@ enum Item {
 }
 pub(in super::super) struct View {
     pub schema: Schema,
-    source_schema: Schema,
-    source: Source,
-    qualifier: Option<String>,
-    projections: Vec<Expression>,
+    pub(super) source_schema: Schema,
+    pub(super) source: Source,
+    pub(super) qualifier: Option<String>,
+    pub(super) projections: Vec<Expression>,
     predicate: Option<Expression>,
     distinct: bool,
     order: Vec<Order>,
@@ -32,6 +34,7 @@ pub(super) fn empty_schema() -> Schema {
         foreign_keys: vec![],
         unique: vec![],
         without_rowid: true,
+        is_view: true,
         rowid_alias: None,
         virtual_module: None,
         strict: false,
@@ -65,7 +68,11 @@ fn output_column(expr: &Expr, schema: &Schema, name: String) -> schema::Column {
         )
     }
     let data_type = if let Some(column) = column(expr, schema) {
-        column.data_type.clone()
+        if column.data_type.is_empty() && !schema.is_view || schema.strict && column.data_type == "ANY" {
+            "BLOB".into()
+        } else {
+            column.data_type.clone()
+        }
     } else if !schema.without_rowid
         && matches!(expr, Expr::Column(parts, _) if ["rowid","oid","_rowid_"].iter().any(|s| parts.last().unwrap().eq_ignore_ascii_case(s)))
     {
@@ -109,7 +116,11 @@ impl View {
         let object =
             db.objects.iter().find(|o| o.0 == "view" && o.1.eq_ignore_ascii_case(name)).ok_or_else(|| bad("view does not exist"))?;
         stack.push(object.1.clone());
-        let sql = &object.4;
+        let result = Self::compile_sql(db, &object.4, stack);
+        stack.pop();
+        result
+    }
+    pub(super) fn compile_sql(db: &Snapshot, sql: &str, stack: &mut Vec<String>) -> Result<Self> {
         let lex::Spanned { tokens, spans } = lex::spanned(sql)?;
         let mut p = Parser { tokens, at: 0, depth: 0 };
         p.expect("CREATE")?;
@@ -133,6 +144,29 @@ impl View {
             p.expect(")")?;
         }
         p.expect("AS")?;
+        if let Some(compound) = Compound::compile(db, sql, &mut p, &spans, stack)? {
+            let mut schema = compound.schema();
+            let projections: Vec<_> = schema.columns.iter().map(|c| Expression(Expr::Column(vec![c.name.clone()], 1))).collect();
+            let order = Order::parse(&mut p)?.into_iter().map(|term| term.bind_compound(&compound, &schema)).collect::<Result<Vec<_>>>()?;
+            let window = Window::parse(&mut p)?;
+            p.eat(";");
+            if p.at != p.tokens.len() {
+                return Err(Error::Unsupported("SQLite compound view clause".into()));
+            }
+            let source_schema = schema.clone();
+            Self::rename(&mut schema, &names)?;
+            return Ok(Self {
+                schema,
+                source_schema,
+                source: Source::Compound(compound),
+                qualifier: None,
+                projections,
+                predicate: None,
+                distinct: false,
+                order,
+                window,
+            });
+        }
         p.expect("SELECT")?;
         let distinct = p.eat("DISTINCT");
         if !distinct {
@@ -240,6 +274,13 @@ impl View {
             .into_iter()
             .map(|term| term.bind(&source_schema, &schema, &projections, binding, allow_rowid))
             .collect::<Result<Vec<_>>>()?;
+        Self::rename(&mut schema, &names)?;
+        if distinct && schema.columns.iter().any(|c| !matches!(c.collation.as_str(), "BINARY" | "NOCASE" | "RTRIM")) {
+            return Err(Error::Unsupported("SQLite view DISTINCT collation".into()));
+        }
+        Ok(Self { schema, source_schema, source, qualifier, projections, predicate, distinct, order, window })
+    }
+    fn rename(schema: &mut Schema, names: &[String]) -> Result<()> {
         if !names.is_empty() && names.len() != schema.columns.len() {
             return Err(bad("view column count differs from SELECT"));
         }
@@ -263,11 +304,7 @@ impl View {
             }
             used.push(column.name.clone());
         }
-        if distinct && schema.columns.iter().any(|c| !matches!(c.collation.as_str(), "BINARY" | "NOCASE" | "RTRIM")) {
-            return Err(Error::Unsupported("SQLite view DISTINCT collation".into()));
-        }
-        stack.pop();
-        Ok(Self { schema, source_schema, source, qualifier, projections, predicate, distinct, order, window })
+        Ok(())
     }
     pub fn visit(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<()>) -> Result<()> {
         self.visit_control(db, bytes, &mut |row| {
@@ -275,7 +312,7 @@ impl View {
             Ok(true)
         })
     }
-    fn visit_control(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
+    pub(super) fn visit_control(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
         let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
         let (count, offset) = self.window.evaluate(encoding)?;
         if count == Some(0) {
@@ -344,6 +381,7 @@ impl View {
             Source::Unit => {
                 project(&[], None)?;
             }
+            Source::Compound(compound) => compound.visit(db, bytes, &mut |row| project(row, None))?,
             Source::View(view) => view.visit_control(db, bytes, &mut |row| project(row, None))?,
             Source::Table(name) => {
                 sqlite_repack::inspect(bytes, |entry, rowid, record| {
@@ -405,6 +443,40 @@ queries=[
  'SELECT id,CAST(b AS INTEGER),CAST(b AS REAL),CAST(b AS NUMERIC) FROM sample',
  "SELECT CAST(X'31003200' AS TEXT),CAST(X'31003200' AS INTEGER),CAST(X'31003200' AS REAL),CAST(X'31003200' AS NUMERIC)",
  "SELECT CAST(X'31' AS TEXT),CAST(X'31' AS INTEGER),CAST(X'31' AS REAL),CAST(X'31' AS NUMERIC)",
+
+ 'SELECT id,v FROM sample WHERE id<4 UNION ALL SELECT id,v FROM sample WHERE id>8',
+ 'SELECT id,v FROM sample WHERE id<4 UNION SELECT id,v FROM sample WHERE id<6',
+ 'SELECT id,v FROM sample WHERE id<4 INTERSECT SELECT id,v FROM sample WHERE id>1',
+ 'SELECT id,v FROM sample WHERE id<4 EXCEPT SELECT id,v FROM sample WHERE id>1',
+ 'SELECT id,v FROM sample UNION ALL SELECT id,v FROM sample EXCEPT SELECT id,v FROM sample WHERE id<4',
+ 'SELECT id,v FROM sample WHERE id<4 UNION SELECT id,v FROM sample WHERE id>8 INTERSECT SELECT id,v FROM sample WHERE id<10',
+ 'SELECT id AS x FROM sample WHERE id<3 UNION ALL SELECT id AS y FROM sample WHERE id>8 ORDER BY y DESC LIMIT 2 OFFSET 1',
+ 'SELECT s.id FROM sample s UNION SELECT id FROM sample ORDER BY s.id DESC LIMIT 3',
+ 'SELECT id+1 AS x FROM sample UNION SELECT id+1 AS y FROM sample ORDER BY id+1 DESC LIMIT 2',
+ 'SELECT id FROM sample UNION ALL SELECT id FROM sample ORDER BY 1 DESC LIMIT 4',
+ 'SELECT v FROM sample UNION SELECT v FROM sample ORDER BY v DESC LIMIT 5',
+ 'SELECT v FROM sample INTERSECT SELECT lower(v) FROM sample ORDER BY 1',
+ 'SELECT w FROM sample UNION SELECT w FROM sample',
+ 'SELECT b FROM sample UNION SELECT b FROM sample',
+ 'SELECT w FROM sample INTERSECT SELECT id FROM sample',
+ 'SELECT id FROM sample UNION SELECT w FROM sample',
+ 'SELECT w FROM sample UNION ALL SELECT id FROM sample',
+ 'SELECT id FROM sample WHERE 0 UNION SELECT id FROM sample WHERE id<3',
+ 'SELECT * FROM compounded ORDER BY id DESC LIMIT 2',
+ 'SELECT 1 AS x UNION ALL SELECT abs(-9223372036854775808) LIMIT 1',
+ "SELECT 'A' AS v INTERSECT SELECT 'a' UNION SELECT 'b' COLLATE NOCASE",
+ "SELECT 'A' COLLATE NOCASE AS v UNION ALL SELECT 'a' EXCEPT SELECT 'z'",
+ "SELECT 'A' COLLATE NOCASE AS v UNION SELECT 'a' EXCEPT SELECT 'z'",
+ "SELECT 'a' COLLATE NOCASE AS v UNION ALL SELECT 'A' INTERSECT SELECT 'a'",
+ "SELECT 'A' COLLATE BINARY AS x UNION ALL SELECT 'a' COLLATE NOCASE AS y ORDER BY y",
+ "SELECT 'b' COLLATE BINARY AS x UNION ALL SELECT 'A' COLLATE NOCASE AS y UNION ALL SELECT 'a' COLLATE NOCASE ORDER BY y",
+ 'SELECT 1 AS x UNION ALL SELECT 2 AS y ORDER BY y+0',
+ 'SELECT id FROM sample UNION SELECT id,v FROM sample',
+ 'SELECT id FROM sample ORDER BY id UNION SELECT id FROM sample',
+ 'SELECT id FROM sample UNION SELECT id FROM sample ORDER BY 2',
+ 'SELECT id FROM sample UNION SELECT id FROM sample ORDER BY wrong.id',
+ 'SELECT CASE WHEN id>2 THEN id ELSE 0 END AS x FROM sample UNION SELECT 0 ORDER BY CASE WHEN ID>2 THEN ID ELSE 0 END',
+ "SELECT 'foo' AS x UNION SELECT 'bar' ORDER BY \"foo\"",
  'SELECT id FROM empty',
  'SELECT id,v,w FROM sample ORDER BY v DESC NULLS FIRST,w ASC,id DESC',
  'SELECT id,v FROM sample ORDER BY lower(v) COLLATE RTRIM DESC LIMIT 2 OFFSET 1',
@@ -454,16 +526,24 @@ queries=[
  'SELECT id FROM sample ORDER BY missing',
 
 ]
+for left,right in [('NULL','NULL'),('1','1.0'),("'1'",'1'),("X'31'","'1'"),("'A'","'a' COLLATE NOCASE"),("'A' COLLATE BINARY","'a' COLLATE NOCASE"),("'Ā'","'é'"),("'a '","'a' COLLATE RTRIM")]:
+ for op in ['UNION','UNION ALL','INTERSECT','EXCEPT']:
+  query='SELECT '+left+' AS x '+op+' SELECT '+right
+  queries.extend([query,query+' ORDER BY 1',query+' ORDER BY 1 DESC'])
 for encoding in ['UTF-8','UTF-16le','UTF-16be']:
  template=root/(encoding+'.gpkg')
  with sqlite3.connect(template) as db:
   db.execute("PRAGMA encoding='"+encoding+"'");db.executescript(dump)
-  db.executescript('CREATE TABLE sample(id INTEGER PRIMARY KEY,v TEXT COLLATE NOCASE,w REAL,b BLOB,extra INTEGER AS(id+1));CREATE TABLE empty(id INTEGER PRIMARY KEY);CREATE VIEW middle AS SELECT * FROM sample;CREATE VIEW limited AS SELECT * FROM sample ORDER BY id DESC LIMIT 3 OFFSET 1;')
+  db.executescript('CREATE TABLE sample(id INTEGER PRIMARY KEY,v TEXT COLLATE NOCASE,w REAL,b BLOB,extra INTEGER AS(id+1));CREATE TABLE empty(id INTEGER PRIMARY KEY);CREATE VIEW middle AS SELECT * FROM sample;CREATE VIEW limited AS SELECT * FROM sample ORDER BY id DESC LIMIT 3 OFFSET 1;CREATE VIEW compounded AS SELECT id,v FROM sample WHERE id<3 UNION ALL SELECT id,v FROM sample WHERE id>8;')
   db.executemany('INSERT INTO sample(id,v,w,b) VALUES(?,?,?,?)',[(1,'a',2,b'\x00\xff'),(2,'A',0,b''),(3,'b ',None,None),(4,None,2,None),(5,'Ā',1.5,b'zz'),(6,'é','text',b'a'),(7,'水',b'\x01',None),(8,'😁',-1,b'00'),(9,'a\x00x',.5,None),(10,'a\x00y',1.5,None)])
  for query in queries:
   path=root/(str(len(cases))+'.gpkg');shutil.copyfile(template,path)
   with sqlite3.connect(path) as db:
-   db.execute('CREATE VIEW v AS '+query)
+   try:db.execute('CREATE VIEW v AS '+query)
+   except sqlite3.Error:
+    db.execute('CREATE VIEW v AS SELECT 1');db.execute('PRAGMA writable_schema=ON')
+    db.execute("UPDATE sqlite_master SET sql=? WHERE name='v'",('CREATE VIEW v AS '+query,))
+    cases.append(dict(name=encoding+' '+query,path=str(path),columns=[],rows=[],error=True));continue
    try:
     columns=[[r[1],r[2]] for r in db.execute('PRAGMA table_info(v)')]
     rows=[[value(v) for v in row] for row in db.execute('SELECT * FROM v')];error=False

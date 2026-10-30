@@ -779,3 +779,24 @@ https://github.com/OSGeo/gdal/blob/v3.13.3/ogr/ogrcurvepolygon.cpp
   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+SQLite view type inference
+-------------------------------------------------------------------------------
+
+View and compound-query column type inference in
+crates/terrio/src/gpkg_validation/sqlite_expr/compound.rs follows SQLite 3.54.1:
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/select.c
+(sqlite3SubqueryColumnTypes)
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/expr.c
+(sqlite3ExprAffinity, sqlite3ExprDataType)
+
+SQLite is in the public domain: https://www.sqlite.org/copyright.html
+The source files carry this notice:
+
+  The author disclaims copyright to this source code.  In place of
+  a legal notice, here is a blessing:
+
+    May you do good and not evil.
+    May you find forgiveness for yourself and forgive others.
+    May you share freely, never taking more than you give.
