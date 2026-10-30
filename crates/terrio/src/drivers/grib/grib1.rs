@@ -714,4 +714,17 @@ mod tests {
         assert_eq!(t.params.len(), TABLE_NAMES.len() * 256);
         assert_eq!(t.levels.len(), 256);
     }
+
+    #[test]
+    fn rejects_a_grid_longer_than_its_message() {
+        let valid = include_bytes!("../../../tests/data/grib/Sample_QuikSCAT.grb");
+        let mut msg = [0; 52];
+        msg[..36].copy_from_slice(&valid[..36]);
+        msg[4..7].copy_from_slice(&[0, 0, 52]);
+        msg[15] = 0x80;
+        msg[38] = 32;
+        msg[48..].copy_from_slice(b"7777");
+        assert!(matches!(crate::memory::open_raster_lazy_bytes(msg.to_vec(), "truncated.grb"),
+            Err(Error::InvalidData(e)) if e.contains("invalid grid definition section")));
+    }
 }
