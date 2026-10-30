@@ -473,6 +473,21 @@ after construction; mosaic views keep the source data alive. See
 [Multidimensional mosaics](cli.md#multidimensional-mosaics) for alignment,
 priority, Int64/UInt64 handling and snapshot formats.
 
+### Seek-optimized ZIP archives
+
+```javascript
+terrio.sozipCreate(["/vsimem/roads.gpkg", "/vsimem/dem.tif"], "/vsimem/data.zip",
+  { junkPaths: true, enable: "yes", chunkSize: 65536 });
+terrio.sozipList("/vsimem/data.zip");
+terrio.sozipValidate("/vsimem/data.zip");
+terrio.sozipOptimize("/vsimem/data.zip", "/vsimem/optimized.zip");
+```
+
+These synchronous functions operate on uploaded `/vsimem/` files in WebAssembly.
+Creation and optimization return `added`, `seek_optimized` and `bytes` counts;
+validation returns `valid`, `sozip_files`, `messages` and `errors`. See the
+[supported options and limitations](cli.md#vsi-sozip).
+
 ## Dataset file management
 
 `datasetFiles(path, {format})` returns the owned file set. `datasetCopy(source,

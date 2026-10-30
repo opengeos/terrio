@@ -1,4 +1,4 @@
-//! Seek-Optimized ZIP (SOZip, specification 1.0): creating, optimizing, listing and validating
+//! Seek-Optimized ZIP (SOZip, index version 1): creating, optimizing, listing and validating
 //! archives, and reading their members at random positions, as GDAL's `gdal vsi sozip` does.
 //!
 //! A SOZip member is Deflate-compressed in independent chunks (a sync flush and a full flush
@@ -185,11 +185,14 @@ impl Index {
         if uncompressed_size <= chunk_size as u64 {
             return Err("uncompress_size is not larger than chunk_size".into());
         }
-        let count = ((uncompressed_size - 1) / chunk_size as u64) as usize;
-        let start = 32 + skip;
-        if b.len() < start + 8 * count {
-            return Err(format!("index of {} bytes, too short for {count} offsets", b.len()));
+        let count = (uncompressed_size - 1) / u64::from(chunk_size);
+        let expected = count.checked_mul(8).and_then(|n| n.checked_add(32 + skip as u64));
+        if expected != Some(b.len() as u64) {
+            return Err(format!("index of {} bytes does not contain exactly {count} offsets", b.len()));
         }
+        // The exact byte-length check also bounds both conversions on 32-bit targets.
+        let count = usize::try_from(count).map_err(|_| "index offset count exceeds address space")?;
+        let start = 32usize.checked_add(skip).ok_or("index header size exceeds address space")?;
         let offsets: Vec<u64> = (0..count).map(|i| u64_at(start + 8 * i)).collect();
         let mut last = 0;
         for (i, &o) in offsets.iter().enumerate() {
@@ -226,7 +229,10 @@ pub(crate) fn read_index(r: &mut dyn ReadSeek, e: &CdEntry) -> Result<std::resul
         return Ok(Ok(None));
     }
     let start = zipdir::data_offset(r, e)?;
-    let mut at = start + e.compressed_size;
+    let archive_end = r.seek(SeekFrom::End(0))?;
+    let Some(mut at) = start.checked_add(e.compressed_size).filter(|end| *end <= archive_end) else {
+        return Ok(Err("member compressed data extends beyond the archive".into()));
+    };
     // A data descriptor (with or without its signature, sizes of 4 or 8 bytes).
     if e.flags & 8 != 0 {
         r.seek(SeekFrom::Start(at))?;
@@ -260,7 +266,15 @@ pub(crate) fn read_index(r: &mut dyn ReadSeek, e: &CdEntry) -> Result<std::resul
     if size > 1 << 31 {
         return Ok(Err("index file too large".into()));
     }
-    let mut b = vec![0u8; size as usize];
+    let index_start = r.stream_position()?;
+    let archive_end = r.seek(SeekFrom::End(0))?;
+    if size > archive_end.saturating_sub(index_start) {
+        return Ok(Err("index data extends beyond the archive".into()));
+    }
+    r.seek(SeekFrom::Start(index_start))?;
+    let mut b = Vec::new();
+    b.try_reserve_exact(size as usize).map_err(|_| Error::InvalidData("cannot allocate SOZip index".into()))?;
+    b.resize(size as usize, 0);
     r.read_exact(&mut b)?;
     Ok(Index::parse(&b, e).map(Some))
 }
@@ -768,6 +782,9 @@ pub fn create(inputs: &[&str], output: &str, options: &SozipOptions) -> Result<S
 /// decompressed and recompressed (seek-optimized as `options.enable` says), names, dates and
 /// properties kept, hidden indexes of the input dropped.
 pub fn optimize(input: &str, output: &str, options: &SozipOptions) -> Result<SozipReport> {
+    if options.chunk_size == 0 {
+        return Err(Error::InvalidArgument("the chunk size must not be 0".into()));
+    }
     let in_node = Node::parse(input)?;
     let out_node = Node::parse(output)?;
     if super::is_same(&in_node, &out_node) {
@@ -903,26 +920,47 @@ fn check_chunks(r: &mut dyn ReadSeek, data_start: u64, index: &Index, bytes: &[u
 fn inflate_chunk(r: &mut dyn ReadSeek, data_start: u64, index: &Index, k: usize, len: usize) -> std::io::Result<Vec<u8>> {
     let from = index.offset(k);
     let to = if k + 1 < index.chunks() { index.offset(k + 1) } else { index.compressed_size };
-    r.seek(SeekFrom::Start(data_start + from))?;
-    let mut compressed = vec![0u8; (to - from) as usize];
+    let invalid = |message| std::io::Error::new(std::io::ErrorKind::InvalidData, message);
+    let offset = data_start.checked_add(from).ok_or_else(|| invalid("chunk offset overflow"))?;
+    let size = usize::try_from(to - from).map_err(|_| invalid("chunk exceeds address space"))?;
+    r.seek(SeekFrom::Start(offset))?;
+    let mut compressed = Vec::new();
+    compressed.try_reserve_exact(size).map_err(|_| invalid("cannot allocate compressed chunk"))?;
+    compressed.resize(size, 0);
     r.read_exact(&mut compressed)?;
-    let mut d = flate2::Decompress::new(false);
-    let mut out = vec![0u8; len];
-    let mut produced = 0;
-    let mut consumed = 0;
-    while produced < len {
-        let (bi, bo) = (d.total_in(), d.total_out());
-        let status = d
-            .decompress(&compressed[consumed..], &mut out[produced..], flate2::FlushDecompress::Sync)
+    if k + 1 < index.chunks() {
+        // Annex F of the SOZip specification: turn the byte-aligned full-flush
+        // block into a final block, then require complete independent decoding.
+        if !compressed.ends_with(&[0, 0, 0, 255, 255]) {
+            return Err(invalid("chunk does not end with the SOZip full-flush marker"));
+        }
+        compressed[size - 5] = 1;
+    }
+    let capacity = len.checked_add(1).ok_or_else(|| invalid("chunk output size overflow"))?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(capacity).map_err(|_| invalid("cannot allocate decoded chunk"))?;
+    out.resize(capacity, 0);
+    let mut decoder = flate2::Decompress::new(false);
+    loop {
+        let before = (decoder.total_in(), decoder.total_out());
+        let status = decoder
+            .decompress(
+                &compressed[decoder.total_in() as usize..],
+                &mut out[decoder.total_out() as usize..],
+                flate2::FlushDecompress::Finish,
+            )
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        consumed += (d.total_in() - bi) as usize;
-        produced += (d.total_out() - bo) as usize;
-        if d.total_out() == bo && d.total_in() == bi || status == flate2::Status::StreamEnd {
-            break;
+        if status == flate2::Status::StreamEnd {
+            if decoder.total_in() != size as u64 || decoder.total_out() != len as u64 {
+                return Err(invalid("chunk compressed or decoded size mismatch"));
+            }
+            out.truncate(len);
+            return Ok(out);
+        }
+        if before == (decoder.total_in(), decoder.total_out()) || decoder.total_out() >= capacity as u64 {
+            return Err(invalid("chunk stream is truncated or has excess output"));
         }
     }
-    out.truncate(produced);
-    Ok(out)
 }
 
 // --- Random access -------------------------------------------------------------------------------

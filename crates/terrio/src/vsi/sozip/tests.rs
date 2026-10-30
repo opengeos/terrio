@@ -163,3 +163,89 @@ fn reads_geotiffs_in_seek_optimized_archives_in_place() {
     assert_eq!(w.raster.get(0, 0, 0), 150_250.0);
     assert_eq!(w.raster.get(0, 4, 9), 154_259.0);
 }
+
+#[test]
+fn rejects_zero_chunk_size_before_replacing_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("input.txt");
+    let archive = tmp.path().join("in.zip");
+    let output = tmp.path().join("out.zip");
+    fs::write(&source, data(2000)).unwrap();
+    create(&[&s(&source)], &s(&archive), &yes(100)).unwrap();
+    fs::write(&output, b"preserve existing output").unwrap();
+    let options = SozipOptions { overwrite: true, ..yes(0) };
+    for result in [create(&[&s(&source)], &s(&output), &options), optimize(&s(&archive), &s(&output), &options)] {
+        assert!(matches!(result, Err(Error::InvalidArgument(_))));
+        assert_eq!(fs::read(&output).unwrap(), b"preserve existing output");
+    }
+}
+
+#[test]
+fn rejects_oversized_and_trailing_index_tables() {
+    let member = CdEntry {
+        name: "x".into(),
+        flags: 0,
+        method: 8,
+        dos_time: 0,
+        dos_date: 0,
+        crc32: 0,
+        compressed_size: 10,
+        uncompressed_size: u64::MAX,
+        local_offset: 0,
+        extra: Vec::new(),
+        raw: Vec::new(),
+    };
+    let mut header = Index { chunk_size: 1, uncompressed_size: u64::MAX, compressed_size: 10, offsets: Vec::new() }.to_bytes();
+    assert!(Index::parse(&header, &member).is_err());
+    header[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(Index::parse(&header, &member).is_err());
+    let member = CdEntry { uncompressed_size: 2, ..member };
+    let index = Index { chunk_size: 1, uncompressed_size: 2, compressed_size: 10, offsets: vec![5] };
+    assert!(Index::parse(&index.to_bytes(), &member).is_ok());
+    let mut trailing = index.to_bytes();
+    trailing.push(0);
+    assert!(Index::parse(&trailing, &member).is_err());
+}
+
+#[test]
+fn rejects_incomplete_or_trailing_chunk_streams() {
+    let mut deflater = Deflater::new(Vec::new(), Some(4096));
+    let bytes = data(10_000);
+    deflater.write_all(&bytes).unwrap();
+    let (compressed, compressed_size, offsets, _) = deflater.finish().unwrap();
+    let index = Index { chunk_size: 4096, uncompressed_size: bytes.len() as u64, compressed_size, offsets };
+    let mut reader = std::io::Cursor::new(&compressed);
+    assert_eq!(inflate_chunk(&mut reader, 0, &index, 0, 4096).unwrap(), bytes[..4096]);
+    assert_eq!(inflate_chunk(&mut reader, 0, &index, 2, 1808).unwrap(), bytes[8192..]);
+    let mut bad_marker = compressed.clone();
+    bad_marker[index.offset(1) as usize - 1] = 0;
+    assert!(inflate_chunk(&mut std::io::Cursor::new(bad_marker), 0, &index, 0, 4096).is_err());
+    let mut short = index.clone();
+    short.compressed_size -= 1;
+    assert!(inflate_chunk(&mut std::io::Cursor::new(&compressed), 0, &short, 2, 1808).is_err());
+    let mut trailing = compressed.clone();
+    trailing.push(0);
+    let mut extra = index.clone();
+    extra.compressed_size += 1;
+    assert!(inflate_chunk(&mut std::io::Cursor::new(trailing), 0, &extra, 2, 1808).is_err());
+}
+
+#[test]
+fn rejects_member_range_overflow_before_reading_an_index() {
+    let mut bytes = vec![0u8; 30];
+    bytes[..4].copy_from_slice(&zipdir::LOCAL.to_le_bytes());
+    let member = CdEntry {
+        name: "x".into(),
+        flags: 0,
+        method: 8,
+        dos_time: 0,
+        dos_date: 0,
+        crc32: 0,
+        compressed_size: u64::MAX,
+        uncompressed_size: 10_000,
+        local_offset: 0,
+        extra: Vec::new(),
+        raw: Vec::new(),
+    };
+    assert!(read_index(&mut std::io::Cursor::new(bytes), &member).unwrap().unwrap_err().contains("beyond the archive"));
+}

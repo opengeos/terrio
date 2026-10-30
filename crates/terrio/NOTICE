@@ -771,3 +771,14 @@ f7aa0b8880185d095c9886e85ed2cbf64e23cbdc.
 The original Rust SQLite page/overflow layout and pointer-map implementations in
 crates/terrio/src/drivers/sqlite_edit.rs and sqlite_repack.rs follow SQLite's
 file-format documentation: https://www.sqlite.org/fileformat2.html
+
+SOZip specification
+-------------------
+The independent implementation in crates/terrio/src/vsi/sozip.rs follows version 0.5.0
+of the SOZip specification by Even Rouault (2023):
+https://github.com/sozip/sozip-spec/blob/master/sozip_specification.md
+The specification is licensed under CC BY 4.0:
+https://creativecommons.org/licenses/by/4.0/
+Its license notice explicitly excludes source and binary code derived from the
+specification from the scope of its copyrighted material.
+The independent chunk decoding step adapts Annex F under its offered CC0-1.0 option.

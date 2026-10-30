@@ -578,13 +578,13 @@ def sozip_cases(terrio: str, data: Path, work: Path) -> None:
             p = run(tool + ["sozip", "validate", str(work / archive)])
             ok = p.returncode == 0 and "contains 1 SOZip-enabled file(s)" in p.stdout
             record(f"sozip validate of {archive.split('_')[1].split('.')[0]}'s archive by {name}", ok, (p.stdout.strip().splitlines() or [p.stderr.strip()])[-1][-200:])
-    # Optimize: GDAL 3.12 adds the input archive itself as a member too (a bug): not compared.
+    # Optimize: GDAL 3.13.3 adds the input archive itself as a member too (a bug): not compared.
     for name, tool in [("terrio", [terrio, "vsi"]), ("gdal", ["gdal", "vsi"])]:
         run(tool + ["sozip", "optimize", "-q", str(data / "ne_places.zip"), str(work / f"opt_{name}.zip")])
     try:
         ours = sozip_lines([terrio, "vsi"], str(work / "opt_terrio.zip"))
         theirs = [l for l in sozip_lines(["gdal", "vsi"], str(work / "opt_gdal.zip")) if not l.endswith("ne_places.zip")]
-        record("sozip optimize of ne_places.zip", ours == theirs, f"{len(ours)} members identical (names, sizes, stored dates, SOZip status); GDAL 3.12 also adds the input archive as a member" if ours == theirs else f"{ours} vs {theirs}")
+        record("sozip optimize of ne_places.zip", ours == theirs, f"{len(ours)} members identical (names, sizes, stored dates, SOZip status); GDAL 3.13.3 also adds the input archive as a member" if ours == theirs else f"{ours} vs {theirs}")
     except RuntimeError as e:
         record("sozip optimize", False, str(e))
     # A GeoTIFF in a seek-optimized archive, read in place over HTTP.

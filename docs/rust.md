@@ -455,6 +455,22 @@ S3, Google Cloud Storage, Azure, HTTP and zip/tar locations (see [vsi](cli.md#vs
 `vsi::RemoteLister` plans a remote listing without doing I/O, for hosts that send the requests
 themselves (WebAssembly's `fetch`).
 
+### Seek-optimized ZIP archives
+
+```rust,no_run
+use terrio::vsi::sozip::{self, SozipOptions};
+let options = SozipOptions { junk_paths: true, ..Default::default() };
+sozip::create(&["roads.gpkg", "dem.tif"], "data.zip", &options)?;
+let members = sozip::list("data.zip")?;
+let validation = sozip::validate("data.zip")?;
+sozip::optimize("plain.zip", "optimized.zip", &options)?;
+# Ok::<(), terrio::Error>(())
+```
+
+Native outputs use atomic replacement on success. Existing archives are appended to by
+`create`; `optimize` requires `overwrite` to replace an output. See the
+[supported options and limitations](cli.md#vsi-sozip).
+
 ## Coordinate systems
 
 ```rust,no_run

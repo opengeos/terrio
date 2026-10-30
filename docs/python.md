@@ -363,6 +363,19 @@ copy, sync, move and delete functions return a report (`copied`, `bytes`, `uncha
 `deleted`, `errors`). `/vsimem/` files last as long as the process. Locations, semantics and the
 refusals of dangerous deletions are those of [vsi](cli.md#vsi).
 
+### Seek-optimized ZIP archives
+
+```python
+terrio.sozip_create(["roads.gpkg", "dem.tif"], "data.zip", junk_paths=True)
+terrio.sozip_list("data.zip")  # dictionaries with names, sizes and SOZip chunk sizes
+terrio.sozip_validate("data.zip")  # valid, sozip_files, messages, errors
+terrio.sozip_optimize("plain.zip", "seek.zip", enable="yes", chunk_size=65536)
+```
+
+The four functions share the [CLI options and limitations](cli.md#vsi-sozip).
+Creation and optimization return `added`, `seek_optimized` and `bytes` counts.
+Native outputs are replaced only after the entire operation succeeds.
+
 ## COG validation
 
 ```python

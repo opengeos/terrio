@@ -1886,7 +1886,7 @@ terrio vsi sozip list /vsicurl/https://host/data.zip          # gdal vsi sozip l
 terrio vsi sozip validate -v data.zip                         # gdal vsi sozip validate
 ```
 
-Seek-Optimized ZIP (SOZip 1.0): a Deflate member compressed in independent chunks, with a hidden
+Seek-Optimized ZIP (SOZip index version 1): a Deflate member compressed in independent chunks, with a hidden
 index (`.name.sozip.idx`) of their offsets, so that readers can start decompressing anywhere.
 `create` adds files (directories with `-r`; `-j` drops their directories) to a new archive, or to
 an existing one unless `--overwrite`; `--enable-sozip auto` (the default) seek-optimizes files of
@@ -1902,8 +1902,11 @@ window reads of `/vsizip/archive.zip/dem.tif` (or of a remote archive, by range 
 only the chunks they need instead of extracting the archive. Other members, and other formats,
 are extracted to a temporary directory first.
 
-GDAL 3.12's `sozip optimize` also adds the input archive itself to its output (a bug); terrio
-does not. Not supported: `sozip create` progress bars and multithreaded compression.
+GDAL 3.13.3's `sozip optimize` also adds the input archive itself to its output (a bug); terrio
+does not. Creation and optimization assemble the output archive in memory, and validation
+materializes each member to compare its independent chunks. Compressed-member spools larger
+than 64 MiB use temporary files on native builds. Not supported: `sozip create` progress bars
+and multithreaded compression.
 
 ## fill-nodata
 
