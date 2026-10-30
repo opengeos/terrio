@@ -67,6 +67,15 @@ class ReferenceHullComparison(unittest.TestCase):
 
 
 class StrOrderComparison(unittest.TestCase):
+    def test_null_envelopes_must_follow_non_null_envelopes(self):
+        envelopes = [None, (0, 0, 0, 0), (1, 1, 1, 1), None]
+        self.assertTrue(valid_str_order([1, 2, 0, 3], envelopes))
+        for order in [[0, 1, 2, 3], [1, 0, 2, 3]]:
+            with self.subTest(order=order):
+                self.assertFalse(valid_str_order(order, envelopes))
+        self.assertTrue(valid_str_order([0, 3], envelopes))
+        self.assertFalse(valid_str_order([0, 1, 3], envelopes))
+
     def test_reversed_extreme_x_slices_are_not_ties(self):
         points = [Point(1e308 + i * 1e306, i) for i in range(24)]
         case = {"operation": "strtree", "input": GeometryCollection(points).wkb_hex}

@@ -112,6 +112,14 @@ grouping; no area tolerance applies to them. They are reported separately from
 valid output matches. These checks make no equivalence claim for
 MakeValid, invalid polygon hull input, or every possible floating-point input.
 
+Polygon hulls require valid, non-overlapping polygonal input. For a square mixed
+with a two-distinct-vertex shell, Terrio returns an argument error while GEOS
+3.14.1 retains an invalid degenerate component; other collinear components can
+be ignored. Crossing rectangle parts return bounded errors in both observed
+implementations. Repeated directed edges or more than two faces on an edge are
+rejected when building the hull mesh. This consistency check is not a general
+polygon validation or repair operation.
+
 Point triangulation retains JTS's subdivision traversal order. Equal-size,
 equal-area erosion candidates also require the observed Linux heap order.
 Hole seeds are sorted by increasing size with an independently written introsort

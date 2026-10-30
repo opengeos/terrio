@@ -100,23 +100,29 @@ struct Mesh {
 }
 
 impl Mesh {
-    fn new(coords: Vec<Coord>, faces: Vec<[usize; 3]>) -> Self {
+    fn new(coords: Vec<Coord>, faces: Vec<[usize; 3]>) -> Result<Self> {
         let mut triangles: Vec<Triangle> =
             faces.into_iter().map(|vertices| Triangle { vertices, adjacent: [None; 3], alive: true }).collect();
-        let mut edges = HashMap::new();
+        // Retain the first face after pairing an undirected edge, so a third
+        // incident face or repeated direction cannot overwrite its adjacency.
+        let mut edges: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
         for t in 0..triangles.len() {
             for i in 0..3 {
                 let a = triangles[t].vertices[i];
                 let b = triangles[t].vertices[(i + 1) % 3];
-                if let Some((s, j)) = edges.remove(&(b, a)) {
+                let key = (a.min(b), a.max(b));
+                if let Some(&(s, j)) = edges.get(&key) {
+                    if triangles[s].vertices[j] == a || triangles[s].adjacent[j].is_some() {
+                        return Err(Error::InvalidArgument("cannot construct a consistent hull triangulation".into()));
+                    }
                     triangles[t].adjacent[i] = Some(s);
                     triangles[s].adjacent[j] = Some(t);
                 } else {
-                    edges.insert((a, b), (t, i));
+                    edges.insert(key, (t, i));
                 }
             }
         }
-        Self { coords, triangles }
+        Ok(Self { coords, triangles })
     }
     fn length(&self, t: usize, i: usize) -> f64 {
         let v = self.triangles[t].vertices;
@@ -370,7 +376,7 @@ pub fn concave_hull(g: &Geometry, ratio: f64, allow_holes: bool) -> Result<Geome
     if faces.is_empty() {
         return convex_hull(g);
     }
-    let mut mesh = Mesh::new(coords, faces);
+    let mut mesh = Mesh::new(coords, faces)?;
     let target = threshold(&mesh, ratio, |_, _| true);
     let mut queue = BinaryHeap::new();
     for t in 0..mesh.triangles.len() {
@@ -397,12 +403,15 @@ pub fn concave_hull(g: &Geometry, ratio: f64, allow_holes: bool) -> Result<Geome
 
 /// JTS ConcaveHullOfPolygons: erode the triangulated space between polygon shells,
 /// then join the retained fill with the original polygons. Original holes remain holes.
+/// Input should contain valid, non-overlapping polygons. Mixed degenerate shells
+/// can fail triangulation; inconsistent mesh edges return an argument error.
+/// Invalid inputs have no equivalence or repair guarantee.
 pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_holes: bool) -> Result<Geometry> {
     validate_ratio(ratio)?;
     let mut coords = vertices(g)?;
-    let polygons = match g {
-        Geometry::Polygon { exterior, interiors } => vec![(exterior.clone(), interiors.clone())],
-        Geometry::MultiPolygon(ps) => ps.clone(),
+    let polygons: Vec<(&Ring, &[Ring])> = match g {
+        Geometry::Polygon { exterior, interiors } => vec![(exterior, interiors.as_slice())],
+        Geometry::MultiPolygon(ps) => ps.iter().map(|(r, h)| (r, h.as_slice())).collect(),
         _ => return Err(Error::InvalidArgument("the polygon hull requires polygonal input".into())),
     };
     let ring_area = |r: &Ring| signed_area(&r.0.iter().map(xy).collect::<Vec<_>>()).abs();
@@ -460,7 +469,7 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
             !shell_index.locate_in_envelope_intersecting(bounds).any(|entry| {
                 entry.data != *i
                     && shell_bounds[entry.data].is_some_and(|outer| outer.contains_envelope(&bounds))
-                    && ring_nested(ring, &polygons[entry.data].0)
+                    && ring_nested(ring, polygons[entry.data].0)
             })
         })
         .map(|(_, (r, _))| ring_ids(r))
@@ -474,7 +483,7 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
             faces.extend(triangulator.triangulate(ring_ids(shell), holes.iter().map(ring_ids).collect())?);
         }
     }
-    let mut mesh = Mesh::new(coords, faces);
+    let mut mesh = Mesh::new(coords, faces)?;
     let input = (0..mesh.triangles.len()).map(|t| t >= frame_face_count).collect::<Vec<_>>();
     let fill = mesh
         .triangles
@@ -619,6 +628,7 @@ fn boundary_geometry(coords: &[Coord], faces: &[[usize; 3]]) -> Result<Geometry>
     for &(a, b) in &edges {
         outgoing.entry(a).or_default().push(b);
     }
+    // Preserve absolute-angle ordering when turn keys compare equal below.
     for (&a, bs) in &mut outgoing {
         bs.sort_by(|&b, &c| {
             let p = xy(&coords[a]);
@@ -799,6 +809,34 @@ mod tests {
             candidates.iter().map(|c| c.id).collect::<Vec<_>>(),
             [10, 19, 18, 17, 16, 15, 14, 13, 12, 11, 0, 9, 8, 7, 6, 5, 4, 3, 2, 1]
         );
+    }
+
+    #[test]
+    fn unsupported_polygon_hull_inputs_fail_explicitly() {
+        let ring = |p: &[(f64, f64)]| Ring(p.iter().map(|&(x, y)| Coord::xy(x, y)).collect());
+        let square = ring(&[(4., 0.), (4., 4.), (0., 4.), (0., 0.), (4., 0.)]);
+        // Captured GEOS 3.14.1 observations retain invalid parts for the first
+        // two cases and reject crossing squares. Native invalid-input behavior
+        // is explicitly outside parity guarantees; these cases fail boundedly.
+        for part in
+            [ring(&[(0., 0.), (1., 1.), (0., 0.), (0., 0.)]), square.clone(), ring(&[(6., 2.), (6., 6.), (2., 6.), (2., 2.), (6., 2.)])]
+        {
+            for tight in [false, true] {
+                for holes in [false, true] {
+                    let input = Geometry::MultiPolygon(vec![(square.clone(), vec![]), (part.clone(), vec![])]);
+                    assert!(matches!(concave_hull_of_polygons(&input, 0.3, tight, holes), Err(Error::InvalidArgument(_))));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_mesh_edges_are_rejected() {
+        let coords = [(0., 0.), (4., 0.), (0., 4.), (1., 2.), (0., -4.)].iter().map(|&(x, y)| Coord::xy(x, y)).collect::<Vec<_>>();
+        assert!(Mesh::new(coords.clone(), vec![[0, 1, 2], [1, 0, 4]]).is_ok());
+        for faces in [vec![[0, 1, 2], [0, 1, 3]], vec![[0, 1, 2], [1, 0, 4], [0, 1, 3]]] {
+            assert!(matches!(Mesh::new(coords.clone(), faces), Err(Error::InvalidArgument(_))));
+        }
     }
 
     #[test]

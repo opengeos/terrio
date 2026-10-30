@@ -13,8 +13,10 @@
   ring starts, orientation and some geometries. The
   [compatibility record](docs/jts-provenance.md) describes the observed behavior
   and numeric limits. Polygon hulls can return an error when no non-degenerate
-  finite frame can be constructed. Invalid mesh boundaries also return an error
-  instead of silently dropping an unclosed walk.
+  finite frame can be constructed. Repeated mesh edges and unclosed boundary
+  walks also return errors instead of overwriting adjacency or losing components.
+  Polygon hulls require valid, non-overlapping input; mixed degenerate components
+  can error, and invalid-input output is not guaranteed to match GEOS.
 - Tile conversion now fails explicitly on repair invariant violations instead
   of silently dropping a feature or emitting unrepaired geometry. One such
   failure stops the conversion, including a multi-zoom run.

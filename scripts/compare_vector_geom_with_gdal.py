@@ -581,7 +581,15 @@ def valid_str_order(order, envelopes):
     Returns:
         True when the order is valid.
     """
-    items = [i for i in order if envelopes[i] is not None]
+    items = []
+    seen_null = False
+    for i in order:
+        if envelopes[i] is None:
+            seen_null = True
+        elif seen_null:
+            return False
+        else:
+            items.append(i)
     n = len(items)
     if n <= 1:
         return True
