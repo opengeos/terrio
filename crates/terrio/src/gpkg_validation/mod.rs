@@ -4,8 +4,10 @@ mod content;
 mod extensions;
 mod features;
 mod geometry;
+mod metadata;
 mod rtree;
 mod schema;
+mod schema_extension;
 mod tiles;
 
 use crate::drivers::{
@@ -471,6 +473,10 @@ fn check_core(bytes: &[u8]) -> CoreReport {
     checker.extensions();
     checker.features();
     checker.spatial_indexes();
+    checker.schema_extension();
+    if let Err(error) = checker.metadata(bytes) {
+        checker.report.require(false, 6, error.to_string());
+    }
     if let Err(error) = checker.geometries(bytes) {
         checker.report.require(false, 6, error.to_string());
     }

@@ -743,14 +743,11 @@ fn check_page_layout(bytes: &[u8], page: u32, size: usize) -> Result<()> {
     let mut end = content;
     let mut fragments = 0;
     for (start, next) in ranges {
-        if start - end >= 4 {
-            return Err(bad("unlinked free space"));
-        }
+        // SQLite can leave adjacent fragments after resizing schema records
+        // (e.g. ALTER TABLE RENAME COLUMN). Their contiguous span may exceed
+        // three bytes. Its integrity checker checks the total, not each gap.
         fragments += start - end;
         end = next;
-    }
-    if size - end >= 4 {
-        return Err(bad("unlinked free space"));
     }
     fragments += size - end;
     if fragments != usize::from(bytes[h + 7]) {
@@ -762,6 +759,25 @@ fn check_page_layout(bytes: &[u8], page: u32, size: usize) -> Result<()> {
 #[cfg(test)]
 mod validation_tests {
     use super::*;
+    #[test]
+    fn adjacent_fragments_require_an_exact_bounded_total() {
+        let mut page = vec![0u8; 512];
+        page[0] = 13;
+        page[3..5].copy_from_slice(&1u16.to_be_bytes());
+        page[5..7].copy_from_slice(&503u16.to_be_bytes());
+        page[7] = 4;
+        page[8..10].copy_from_slice(&507u16.to_be_bytes());
+        page[507..].copy_from_slice(&[3, 1, 2, 15, b'a']);
+        check_page_layout(&page, 2, 512).unwrap();
+        page[7] = 3;
+        assert!(check_page_layout(&page, 2, 512).unwrap_err().to_string().contains("fragmented byte count"));
+        page[7] = 61;
+        assert!(check_page_layout(&page, 2, 512).is_err());
+        page[7] = 4;
+        page[1..3].copy_from_slice(&503u16.to_be_bytes());
+        page[503..507].copy_from_slice(&[0, 0, 0, 8]);
+        assert!(check_page_layout(&page, 2, 512).unwrap_err().to_string().contains("overlapping"));
+    }
     #[test]
     fn streamed_inspection_preserves_rows_overflow_and_index_dividers() {
         use writer::{Table, Value};
