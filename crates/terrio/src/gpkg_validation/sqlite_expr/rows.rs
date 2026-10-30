@@ -68,6 +68,7 @@ impl RowEvaluator {
                 rowid,
                 table: Some(name),
                 strict: schema.strict,
+                logical: false,
                 unicode_case: true,
                 encoding,
             })?;

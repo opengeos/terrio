@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn sqlite_check_null_is_success_and_false_is_failure() {
-    let ctx = Context { columns: &[], row: &[], rowid: None, table: None, encoding: 1, strict: false, unicode_case: false };
+    let ctx = Context { columns: &[], row: &[], rowid: None, table: None, encoding: 1, strict: false, logical: false, unicode_case: false };
     assert!(Expression::parse("NULL").unwrap().check(&ctx).unwrap());
     assert!(!Expression::parse("0").unwrap().check(&ctx).unwrap());
     assert!(Expression::parse("NULL OR 1").unwrap().check(&ctx).unwrap());
@@ -12,7 +12,8 @@ fn sqlite_check_null_is_success_and_false_is_failure() {
 }
 #[test]
 fn ascii_and_unicode_case_profiles_are_explicit() {
-    let mut ctx = Context { columns: &[], row: &[], rowid: None, table: None, encoding: 1, strict: false, unicode_case: false };
+    let mut ctx =
+        Context { columns: &[], row: &[], rowid: None, table: None, encoding: 1, strict: false, logical: false, unicode_case: false };
     assert_eq!(Expression::parse("lower('ÄA')").unwrap().evaluate(&ctx).unwrap(), Value::Text("Äa".into()));
     assert_eq!(Expression::parse("'Ä' LIKE 'ä'").unwrap().evaluate(&ctx).unwrap(), Value::Int(0));
     ctx.unicode_case = true;
@@ -93,6 +94,7 @@ print(json.dumps(cases))
             table: Some("sample"),
             encoding: 1,
             strict: schema.strict,
+            logical: false,
             unicode_case: true,
         };
         let actual = Expression::parse(sql).and_then(|expr| expr.evaluate(&ctx));

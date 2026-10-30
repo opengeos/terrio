@@ -68,6 +68,13 @@ fn expression_affinity(expr: &Expr, schema: &Schema) -> Option<Decl> {
         }
         Expr::Collate(inner, _) => expression_affinity(inner, schema),
         Expr::Cast(_, kind) => Some(declared(kind)),
+        Expr::Using(_, _, kind) => {
+            if kind.is_empty() {
+                None
+            } else {
+                Some(declared(kind))
+            }
+        }
         _ => None,
     }
 }
@@ -96,7 +103,7 @@ fn possible_types(expr: &Expr, schema: &Schema) -> u8 {
             _ => 7,
         },
         Expr::Binary(op, _, _) if op == "||" => 6,
-        Expr::Call(..) => 7,
+        Expr::Call(..) | Expr::Using(..) => 7,
         Expr::Case(_, arms, otherwise) => {
             arms.iter().fold(possible_types(otherwise, schema), |m, (_, value)| m | possible_types(value, schema))
         }
@@ -220,6 +227,22 @@ impl Compound {
         &self.collations[index]
     }
     pub fn visit(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
+        let schema = self.schema();
+        let mut emit = |row: &[Value]| {
+            if row.iter().zip(&schema.columns).any(|(v, c)| matches!(v, Value::Int(_)) && affinity(&c.data_type) == Affinity::Real) {
+                let mut row = row.to_vec();
+                for (v, c) in row.iter_mut().zip(&schema.columns) {
+                    if affinity(&c.data_type) == Affinity::Real
+                        && let Value::Int(n) = v
+                    {
+                        *v = Value::Real(*n as f64);
+                    }
+                }
+                visitor(&row)
+            } else {
+                visitor(row)
+            }
+        };
         if self.operations.iter().all(|op| *op == Operation::All) {
             let mut active = true;
             for arm in &self.arms {
@@ -227,7 +250,7 @@ impl Compound {
                     break;
                 }
                 arm.visit_control(db, bytes, &mut |row| {
-                    active = visitor(row)?;
+                    active = emit(row)?;
                     Ok(active)
                 })?;
             }
@@ -276,7 +299,7 @@ impl Compound {
             result = sorted.into_iter().map(|(_, row)| row).collect();
         }
         for row in result {
-            if !visitor(&row)? {
+            if !emit(&row)? {
                 break;
             }
         }

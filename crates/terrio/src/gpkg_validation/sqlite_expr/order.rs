@@ -27,7 +27,7 @@ fn alias<'a>(expr: &Expr, schema: &Schema, projections: &'a [Expression]) -> Opt
         _ => None,
     }
 }
-fn expand(expr: &mut Expr, source: &Schema, output: &Schema, projections: &[Expression]) {
+pub(super) fn expand(expr: &mut Expr, source: &Schema, output: &Schema, projections: &[Expression]) {
     // Within an expression, source columns take precedence over SELECT aliases.
     if let Expr::Column(parts, _) = expr
         && parts.len() == 1
@@ -104,6 +104,11 @@ impl Order {
                     return Some(i);
                 }
                 let mut needle = stripped(&self.expr.0).clone();
+                if let select::Source::Join(join) = &arm.source
+                    && join.bind(&mut needle).is_err()
+                {
+                    return None;
+                }
                 normalize(&mut needle, &arm.source_schema, arm.qualifier.as_deref().unwrap_or(""));
                 arm.projections.iter().position(|p| {
                     let mut p = stripped(&p.0).clone();
@@ -117,7 +122,15 @@ impl Order {
         self.expr = Expression(Expr::Column(vec![output.columns[index].name.clone()], 1));
         Ok(self)
     }
-    pub fn bind(mut self, source: &Schema, output: &Schema, projections: &[Expression], binding: &str, rowid: bool) -> Result<Self> {
+    pub fn bind(
+        mut self,
+        source: &Schema,
+        output: &Schema,
+        projections: &[Expression],
+        binding: &str,
+        rowid: bool,
+        join: Option<&joins::Join>,
+    ) -> Result<Self> {
         let explicit = self.expr.0.explicit_collation().map(str::to_owned);
         if let Some(n) = ordinal(&self.expr.0) {
             let expr = usize::try_from(n)
@@ -129,6 +142,9 @@ impl Order {
         } else if let Some(expr) = alias(&self.expr.0, output, projections) {
             self.expr = expr.clone();
         } else {
+            if let Some(join) = join {
+                join.bind(&mut self.expr.0)?;
+            }
             expand(&mut self.expr.0, source, output, projections);
         }
         Parser::check_depth(&self.expr.0)?;
@@ -187,8 +203,16 @@ impl Window {
     }
     pub fn evaluate(&self, encoding: u32) -> Result<(Option<usize>, usize)> {
         fn integer(expr: &Expression, encoding: u32) -> Result<i64> {
-            let v =
-                expr.evaluate(&Context { columns: &[], row: &[], rowid: None, table: None, encoding, strict: false, unicode_case: true })?;
+            let v = expr.evaluate(&Context {
+                columns: &[],
+                row: &[],
+                rowid: None,
+                table: None,
+                encoding,
+                strict: false,
+                logical: false,
+                unicode_case: true,
+            })?;
             let v = if let Value::Text(s) = v { integrity::numeric(&s).unwrap_or(Value::Null) } else { v };
             match v {
                 Value::Int(n) => Ok(n),
@@ -309,6 +333,7 @@ mod tests {
                 table: Some("sample"),
                 encoding: 1,
                 strict: false,
+                logical: false,
                 unicode_case: true,
             };
             let keys = sorter.keys(&context).unwrap();

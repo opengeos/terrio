@@ -3,6 +3,7 @@
 //! from Terrio's OGR SQL dialect. Unknown functions/operators fail explicitly.
 mod compound;
 mod functions;
+mod joins;
 mod lex;
 mod order;
 mod parse;
@@ -27,6 +28,7 @@ enum Expr {
     Binary(String, Box<Expr>, Box<Expr>),
     Collate(Box<Expr>, String),
     Cast(Box<Expr>, String),
+    Using(Box<Expr>, Box<Expr>, String),
     Call(String, Vec<Expr>),
     Between(Box<Expr>, Box<Expr>, Box<Expr>, bool),
     In(Box<Expr>, Vec<Expr>, bool),
@@ -38,7 +40,7 @@ impl Expr {
         match self {
             Self::MinMagnitude | Self::Literal(_) | Self::Column(..) => vec![],
             Self::Unary(_, a) | Self::Collate(a, _) | Self::Cast(a, _) => vec![a],
-            Self::Binary(_, a, b) => vec![a, b],
+            Self::Binary(_, a, b) | Self::Using(a, b, _) => vec![a, b],
             Self::Call(_, args) => args.iter().collect(),
             Self::Between(a, b, c, _) => vec![a, b, c],
             Self::In(a, list, _) => std::iter::once(a.as_ref()).chain(list).collect(),
@@ -61,7 +63,7 @@ impl Expr {
         match self {
             Self::MinMagnitude | Self::Literal(_) | Self::Column(..) => vec![],
             Self::Unary(_, a) | Self::Collate(a, _) | Self::Cast(a, _) => vec![a],
-            Self::Binary(_, a, b) => vec![a, b],
+            Self::Binary(_, a, b) | Self::Using(a, b, _) => vec![a, b],
             Self::Call(_, args) => args.iter_mut().collect(),
             Self::Between(a, b, c, _) => vec![a, b, c],
             Self::In(a, args, _) => std::iter::once(a.as_mut()).chain(args.iter_mut()).collect(),
@@ -99,6 +101,8 @@ pub(super) struct Context<'a> {
     /// ICU-style Unicode case handling, as in the GDAL reference build.
     /// False selects stock SQLite's ASCII case handling.
     pub unicode_case: bool,
+    /// True when the reader has already applied physical REAL read conversion.
+    pub logical: bool,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum Affinity {
@@ -119,6 +123,9 @@ fn affinity(kind: &str) -> Affinity {
     } else {
         Affinity::Numeric
     }
+}
+pub(super) fn has_real_affinity(kind: &str) -> bool {
+    affinity(kind) == Affinity::Real
 }
 #[derive(Clone)]
 struct Operand {
@@ -382,7 +389,8 @@ fn evaluate(expr: &Expr, ctx: &Context<'_>) -> Result<Operand> {
             if let Some(index) = ctx.columns.iter().position(|c| c.name.eq_ignore_ascii_case(name)) {
                 let column = &ctx.columns[index];
                 let mut value = ctx.row.get(index).cloned().unwrap_or(Value::Null);
-                if affinity(&column.data_type) == Affinity::Real
+                if !ctx.logical
+                    && affinity(&column.data_type) == Affinity::Real
                     && let Value::Int(i) = value
                 {
                     value = Value::Real(i as f64);
@@ -405,6 +413,13 @@ fn evaluate(expr: &Expr, ctx: &Context<'_>) -> Result<Operand> {
             } else {
                 return Err(bad(&format!("no column named {name}")));
             }
+        }
+        Expr::Using(left, right, _) => {
+            let mut source = eval(left)?;
+            if matches!(source.value, Value::Null) {
+                source.value = eval(right)?.value;
+            }
+            source
         }
         Expr::Collate(e, _) => eval(e)?,
         Expr::Cast(e, kind) => {

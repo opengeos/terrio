@@ -76,10 +76,18 @@ impl Table {
         let evaluator = if schema.virtual_module.is_none() { Some(sqlite_expr::RowEvaluator::new(name, &schema)?) } else { None };
         Ok(Self { schema, rows: Vec::new(), evaluator })
     }
-    /// The logical SQLite row, including virtual generated values. All streaming
+    /// The logical SQLite row, including REAL read affinity and virtual generated
+    /// values. All streaming
     /// validation passes share the plan compiled once while loading the schema.
     fn decode(&self, name: &str, record: &[u8], rowid: Option<i64>, encoding: u32) -> Result<Vec<Value>> {
-        let values = self.decode_physical(record, rowid, encoding)?;
+        let mut values = self.decode_physical(record, rowid, encoding)?;
+        for (value, column) in values.iter_mut().zip(&self.schema.columns) {
+            if sqlite_expr::has_real_affinity(&column.data_type)
+                && let Value::Int(n) = value
+            {
+                *value = Value::Real(*n as f64);
+            }
+        }
         match &self.evaluator {
             Some(evaluator) => evaluator.row(name, &self.schema, values, rowid, encoding),
             None => Ok(values),
@@ -556,6 +564,27 @@ fn check_core(bytes: &[u8]) -> CoreReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn logical_real_reads_honor_text_and_integer_affinity_precedence() {
+        use crate::drivers::vector::sqlite::{self as writer, Table as OutputTable, Value as OutputValue};
+        let sql = "CREATE TABLE sample(a REAL,b DOUBLE,c FLOAT,d TEXTREAL,e CHARREAL,f CLOBREAL,g FLOATING POINT)";
+        let tables =
+            [OutputTable { name: "sample".into(), sql: sql.into(), rows: vec![(1, vec![OutputValue::Int(1); 7])], autoindexes: vec![] }];
+        let bytes = writer::write_database(&tables, &[], 10400, 0x4750_4b47).unwrap();
+        let db = Snapshot::read(&bytes).unwrap();
+        sqlite_repack::inspect(&bytes, |entry, rowid, record| {
+            if entry.1 == "sample" {
+                let row = db.tables["sample"].decode("sample", record, rowid, 1)?;
+                assert_eq!(
+                    row,
+                    [Value::Real(1.), Value::Real(1.), Value::Real(1.), Value::Int(1), Value::Int(1), Value::Int(1), Value::Int(1)]
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn generated_rows_reach_metadata_content_and_geometry_checks() {

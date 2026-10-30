@@ -126,6 +126,13 @@ add('INTERSECT identifiers','SELECT id,v FROM src INTERSECT SELECT id,v FROM src
 add('EXCEPT identifiers','SELECT id,v FROM src EXCEPT SELECT id,v FROM src WHERE id>1')
 add('compound limited identifiers','SELECT id,v FROM src UNION ALL SELECT id,v FROM src ORDER BY id LIMIT 1')
 add('compound NULL identifier','SELECT id,v FROM src UNION SELECT id,v FROM src WHERE id>0',rows=[(None,'null'),(1,'one')])
+lookup="CREATE TABLE lookup(id INTEGER,note TEXT);INSERT INTO lookup VALUES(1,'one'),(2,'two'),(4,'four')"
+add('inner joined attributes','SELECT s.id,s.v,l.note FROM src s JOIN lookup l ON s.id=l.id',extra=lookup)
+add('left joined attributes','SELECT s.id,s.v,l.note FROM src s LEFT JOIN lookup l ON s.id=l.id',extra=lookup)
+add('right joined attributes NULL key','SELECT s.id,s.v,l.note FROM src s RIGHT JOIN lookup l ON s.id=l.id',extra=lookup)
+add('full joined attributes merged key is INT','SELECT id,v,note FROM src FULL JOIN lookup USING(id)',extra=lookup)
+add('joined duplicate identifiers','SELECT s.id,s.v FROM src s JOIN lookup l ON s.id=l.id',extra=lookup+";INSERT INTO lookup VALUES(1,'extra')")
+add('DISTINCT joined identifiers','SELECT DISTINCT s.id,s.v FROM src s JOIN lookup l ON s.id=l.id',extra=lookup+";INSERT INTO lookup VALUES(1,'extra')")
 add('duplicate identifiers','SELECT * FROM src',rows=[(1,'one'),(1,'two')])
 add('NULL identifier','SELECT * FROM src',rows=[(None,'one')])
 add('DISTINCT removes duplicate ids','SELECT DISTINCT * FROM src',rows=[(1,'one'),(1,'one')])
@@ -146,6 +153,10 @@ add('feature UNION','SELECT * FROM src UNION SELECT * FROM src',feature=True)
 add('feature UNION ALL duplicates','SELECT * FROM src UNION ALL SELECT * FROM src',feature=True)
 add('feature INTERSECT','SELECT * FROM src INTERSECT SELECT * FROM src WHERE id>1',feature=True)
 add('feature EXCEPT','SELECT * FROM src EXCEPT SELECT * FROM src WHERE id>1',feature=True)
+for join in ['JOIN','LEFT JOIN','RIGHT JOIN','FULL JOIN']:
+ add('feature '+join,'SELECT s.id,s.v,s.geom FROM src s '+join+' lookup l ON s.id=l.id',feature=True,extra=lookup)
+ add('filtered feature '+join,'SELECT s.id,s.v,s.geom FROM src s '+join+' lookup l ON s.id=l.id WHERE s.id IS NOT NULL',feature=True,extra=lookup)
+add('joined feature invalid geometry','SELECT s.id,s.v,s.geom FROM src s JOIN lookup l ON s.id=l.id',feature=True,extra=lookup+";UPDATE src SET geom=X'000102030405060708090a0b0c0d0e0f' WHERE id=1")
 add('feature geometry type mismatch','SELECT * FROM src',feature=True,geometry_kind='BLOB')
 add('feature missing geometry','SELECT id,v FROM src',feature=True)
 add('feature computed geometry loses declaration','SELECT id,v,CASE WHEN id>0 THEN geom END AS geom FROM src',feature=True)
@@ -176,7 +187,6 @@ print(json.dumps(cases))
             "CREATE VIEW v AS SELECT * FROM v",
             "CREATE VIEW v AS SELECT * FROM missing",
             "CREATE VIEW v AS SELECT count(*) FROM sample",
-            "CREATE VIEW v AS SELECT * FROM sample JOIN sample AS other ON sample.id=other.id",
             "CREATE VIEW v(a,b) AS SELECT id FROM sample",
             &deep,
             &deep_predicate,

@@ -75,7 +75,7 @@ fn row_key(context: &sqlite_expr::Context<'_>, table: &Table, slots: &[Slot]) ->
                 index_atom(&expression.evaluate(context)?, slot, encoding)
             } else if let Some(i) = slot.column {
                 let source = &table.schema.columns[i];
-                let real = !source.data_type.contains("INT") && ["REAL", "FLOA", "DOUB"].iter().any(|s| source.data_type.contains(s));
+                let real = sqlite_expr::has_real_affinity(&source.data_type);
                 if real && let Value::Int(value) = row[i] {
                     index_atom(&Value::Real(value as f64), slot, encoding)
                 } else {
@@ -255,6 +255,7 @@ impl Checker {
                         rowid,
                         table: Some(&entry.1),
                         strict: table.schema.strict,
+                        logical: false,
                         unicode_case: true,
                         encoding,
                     })? {
@@ -288,6 +289,7 @@ impl Checker {
                 rowid,
                 table: Some(&entry.1),
                 strict: table.schema.strict,
+                logical: false,
                 unicode_case: true,
                 encoding,
             };

@@ -2,6 +2,7 @@
 //! rejected rather than silently omitting a registered view from validation.
 use super::*;
 use compound::Compound;
+use joins::Join;
 use order::{Order, Sorter, Window};
 use parse::Parser;
 use std::cell::Cell;
@@ -12,6 +13,7 @@ pub(super) enum Source {
     View(Box<View>),
     Unit,
     Compound(Compound),
+    Join(Box<Join>),
 }
 enum Item {
     Star(Option<String>),
@@ -41,7 +43,7 @@ pub(super) fn empty_schema() -> Schema {
         checks: vec![],
     }
 }
-fn output_column(expr: &Expr, schema: &Schema, name: String) -> schema::Column {
+pub(super) fn output_column(expr: &Expr, schema: &Schema, name: String) -> schema::Column {
     fn column<'a>(expr: &Expr, schema: &'a Schema) -> Option<&'a schema::Column> {
         if let Expr::Column(parts, _) = expr {
             schema.columns.iter().find(|c| c.name.eq_ignore_ascii_case(parts.last().unwrap()))
@@ -73,6 +75,8 @@ fn output_column(expr: &Expr, schema: &Schema, name: String) -> schema::Column {
         } else {
             column.data_type.clone()
         }
+    } else if let Expr::Using(_, _, kind) = expr {
+        kind.clone()
     } else if !schema.without_rowid
         && matches!(expr, Expr::Column(parts, _) if ["rowid","oid","_rowid_"].iter().any(|s| parts.last().unwrap().eq_ignore_ascii_case(s)))
     {
@@ -101,7 +105,7 @@ pub(super) fn expression_collation(expr: &Expr, schema: &Schema) -> String {
             .iter()
             .find(|c| c.name.eq_ignore_ascii_case(parts.last().unwrap()))
             .map_or_else(|| "BINARY".into(), |c| c.collation.clone()),
-        Expr::Cast(inner, _) | Expr::Unary(_, inner) => expression_collation(inner, schema),
+        Expr::Cast(inner, _) | Expr::Unary(_, inner) | Expr::Using(inner, _, _) => expression_collation(inner, schema),
         _ => "BINARY".into(),
     }
 }
@@ -109,7 +113,7 @@ impl View {
     pub fn compile(db: &Snapshot, name: &str) -> Result<Self> {
         Self::compile_inner(db, name, &mut Vec::new())
     }
-    fn compile_inner(db: &Snapshot, name: &str, stack: &mut Vec<String>) -> Result<Self> {
+    pub(super) fn compile_inner(db: &Snapshot, name: &str, stack: &mut Vec<String>) -> Result<Self> {
         if stack.len() >= 128 || stack.iter().any(|n| n.eq_ignore_ascii_case(name)) {
             return Err(bad("recursive view dependency"));
         }
@@ -195,35 +199,9 @@ impl View {
                 break;
             }
         }
-        let (source, source_schema, qualifier) = if p.eat("FROM") {
-            let mut table = p.name()?;
-            if p.eat(".") {
-                if !table.eq_ignore_ascii_case("main") {
-                    return Err(bad("view references another database"));
-                }
-                table = p.name()?;
-            }
-            let alias = if p.eat("AS")
-                || matches!(p.tokens.get(p.at),Some(lex::Token::Name(n,q)) if *q != 0 || !["WHERE","GROUP","HAVING","ORDER","LIMIT","UNION","INTERSECT","EXCEPT","WINDOW","JOIN","LEFT","RIGHT","FULL","INNER","CROSS","NATURAL","ON","USING"].iter().any(|s|n.eq_ignore_ascii_case(s)))
-            {
-                p.name()?
-            } else {
-                table.clone()
-            };
-            if let Some((name, table)) = db.tables.iter().find(|(n, _)| n.eq_ignore_ascii_case(&table)) {
-                if table.schema.virtual_module.is_some() {
-                    return Err(Error::Unsupported("virtual-table view source".into()));
-                }
-                (Source::Table(name.clone()), table.schema.clone(), Some(alias))
-            } else {
-                let view = Self::compile_inner(db, &table, stack)?;
-                let schema = view.schema.clone();
-                (Source::View(Box::new(view)), schema, Some(alias))
-            }
-        } else {
-            (Source::Unit, empty_schema(), None)
-        };
-        let predicate = if p.eat("WHERE") {
+        let (source, source_schema, qualifier) =
+            if p.eat("FROM") { Join::parse(db, &mut p, stack)? } else { (Source::Unit, empty_schema(), None) };
+        let mut predicate = if p.eat("WHERE") {
             let expr = p.expression(0)?;
             Parser::check_depth(&expr)?;
             Some(Expression(expr))
@@ -243,6 +221,13 @@ impl View {
         for item in items {
             match item {
                 Item::Star(prefix) => {
+                    if let Source::Join(join) = &source {
+                        for (name, expr) in join.star(prefix.as_deref())? {
+                            schema.columns.push(output_column(&expr.0, &source_schema, name));
+                            projections.push(expr);
+                        }
+                        continue;
+                    }
                     if qualifier.is_none() || prefix.as_deref().is_some_and(|s| !s.eq_ignore_ascii_case(binding)) {
                         return Err(bad("unknown star qualifier"));
                     }
@@ -252,9 +237,19 @@ impl View {
                         projections.push(expression);
                     }
                 }
-                Item::Expression(expr, mut label, aliased) => {
+                Item::Expression(mut expr, mut label, aliased) => {
+                    if let Source::Join(join) = &source {
+                        if !aliased && let Some(name) = join.label(&expr.0)? {
+                            label = name;
+                        }
+                        join.bind(&mut expr.0)?;
+                    }
+                    Parser::check_depth(&expr.0)?;
                     expr.dependencies(binding, &source_schema, allow_rowid)?;
-                    if !aliased && let Expr::Column(parts, _) = &expr.0 {
+                    if !matches!(source, Source::Join(_))
+                        && !aliased
+                        && let Expr::Column(parts, _) = &expr.0
+                    {
                         let field = parts.last().unwrap();
                         if let Some(column) = source_schema.columns.iter().find(|c| c.name.eq_ignore_ascii_case(field)) {
                             label = column.name.clone();
@@ -267,12 +262,26 @@ impl View {
                 }
             }
         }
-        if let Some(predicate) = &predicate {
+        if let Some(predicate) = &mut predicate {
+            if let Source::Join(join) = &source {
+                join.bind(&mut predicate.0)?;
+            }
+            order::expand(&mut predicate.0, &source_schema, &schema, &projections);
+            Parser::check_depth(&predicate.0)?;
             predicate.dependencies(binding, &source_schema, allow_rowid)?;
         }
         let order = raw_order
             .into_iter()
-            .map(|term| term.bind(&source_schema, &schema, &projections, binding, allow_rowid))
+            .map(|term| {
+                term.bind(
+                    &source_schema,
+                    &schema,
+                    &projections,
+                    binding,
+                    allow_rowid,
+                    if let Source::Join(join) = &source { Some(join.as_ref()) } else { None },
+                )
+            })
             .collect::<Result<Vec<_>>>()?;
         Self::rename(&mut schema, &names)?;
         if distinct && schema.columns.iter().any(|c| !matches!(c.collation.as_str(), "BINARY" | "NOCASE" | "RTRIM")) {
@@ -334,6 +343,7 @@ impl View {
                 table: self.qualifier.as_deref(),
                 encoding,
                 strict: self.source_schema.strict,
+                logical: true,
                 unicode_case: true,
             };
             if let Some(predicate) = &self.predicate
@@ -381,6 +391,7 @@ impl View {
             Source::Unit => {
                 project(&[], None)?;
             }
+            Source::Join(join) => join.visit(db, bytes, &mut |row| project(row, None))?,
             Source::Compound(compound) => compound.visit(db, bytes, &mut |row| project(row, None))?,
             Source::View(view) => view.visit_control(db, bytes, &mut |row| project(row, None))?,
             Source::Table(name) => {
@@ -477,6 +488,43 @@ queries=[
  'SELECT id FROM sample UNION SELECT id FROM sample ORDER BY wrong.id',
  'SELECT CASE WHEN id>2 THEN id ELSE 0 END AS x FROM sample UNION SELECT 0 ORDER BY CASE WHEN ID>2 THEN ID ELSE 0 END',
  "SELECT 'foo' AS x UNION SELECT 'bar' ORDER BY \"foo\"",
+
+ 'SELECT s.id,l.label FROM sample s JOIN lookup l ON s.id=l.id',
+ 'SELECT s.id,l.label FROM sample s,lookup l WHERE s.id=l.id',
+ 'SELECT s.id,l.label FROM sample s CROSS JOIN lookup l ON s.id=l.id',
+ 'SELECT s.id,l.label FROM sample s LEFT JOIN lookup l ON s.id=l.id ORDER BY s.id,l.label',
+ 'SELECT s.id,l.id,l.label FROM sample s RIGHT JOIN lookup l ON s.id=l.id',
+ 'SELECT s.id,l.id,l.label FROM sample s FULL OUTER JOIN lookup l ON s.id=l.id',
+ 'SELECT s.id,l.id,m.id FROM sample s LEFT JOIN lookup l ON s.id=l.id LEFT JOIN lookup m ON l.id=m.id',
+ 'SELECT s.rowid,l.rowid FROM sample s JOIN lookup l ON s.id=l.id',
+ 'SELECT main.s.id,l.label FROM sample s JOIN lookup l ON s.id=l.id',
+ 'SELECT s.id,length(l.label) AS n FROM sample s LEFT JOIN lookup l ON s.id=l.id WHERE n>2 ORDER BY n DESC,s.id',
+ 'SELECT s.id,length(l.label) AS n FROM sample s LEFT JOIN lookup l ON s.id=l.id ORDER BY n+1,s.id',
+ 'SELECT s.id AS id,l.label FROM sample s JOIN lookup l ON s.id=l.id ORDER BY id DESC',
+ 'SELECT s.*,l.* FROM sample s JOIN lookup l ON s.id=l.id',
+ 'SELECT s.id,l.label FROM sample s JOIN lookup_view l ON s.id=l.id ORDER BY s.id,l.label',
+ 'SELECT s.id,l.label FROM sample s LEFT JOIN lookup l ON 0',
+ 'SELECT s.id,l.label FROM sample s RIGHT JOIN lookup l ON 0',
+ 'SELECT s.id,l.label FROM sample s FULL JOIN lookup l ON 0',
+ 'SELECT s.id,l.label FROM sample s LEFT JOIN lookup l ON NULL',
+ 'SELECT DISTINCT s.id FROM sample s JOIN lookup l ON s.id=l.id ORDER BY 1',
+ 'SELECT s.id,l.id FROM sample s JOIN lookup l USING(id) UNION SELECT id,id FROM lookup ORDER BY 1,2',
+ 'SELECT r.id,typeof(r.id) AS kind FROM real_joined r',
+ 'SELECT id FROM sample s JOIN lookup l ON s.id=l.id',
+ 'SELECT rowid FROM sample s JOIN lookup l ON s.id=l.id',
+ 'SELECT s.* FROM sample s JOIN lookup s ON 1',
+ 'SELECT * FROM sample s JOIN lookup s ON 1',
+ 'SELECT wrong.s.id FROM sample s JOIN lookup l ON s.id=l.id',
+ 'SELECT s.id FROM sample s JOIN lookup l USING(missing)',
+ 'SELECT s.id FROM sample s NATURAL JOIN lookup l ON 1',
+ 'SELECT id,v,2 AS chosen FROM sample WHERE id>1 AND chosen=2 LIMIT 2',
+ 'SELECT * FROM sample s JOIN lookup s USING(id)',
+ 'SELECT s.* FROM sample s JOIN disjoint s ON 1',
+ 'SELECT * FROM sample s JOIN disjoint s ON 1',
+ 'SELECT rowid FROM sample s JOIN no_rowid w ON s.id=w.id',
+ 'SELECT rowid FROM sample s JOIN rowid_shadow r ON 1',
+ 'SELECT _rowid_ FROM sample s JOIN rowid_shadow r ON 1',
+ 'SELECT r,t,p,typeof(r),typeof(t),typeof(p) FROM affinity_precedence',
  'SELECT id FROM empty',
  'SELECT id,v,w FROM sample ORDER BY v DESC NULLS FIRST,w ASC,id DESC',
  'SELECT id,v FROM sample ORDER BY lower(v) COLLATE RTRIM DESC LIMIT 2 OFFSET 1',
@@ -526,6 +574,13 @@ queries=[
  'SELECT id FROM sample ORDER BY missing',
 
 ]
+for join in ['JOIN','LEFT JOIN','RIGHT JOIN','FULL JOIN','NATURAL JOIN','NATURAL LEFT JOIN','NATURAL FULL JOIN']:
+ suffix='' if join.startswith('NATURAL') else ' USING(id)'
+ queries.extend(['SELECT * FROM sample s '+join+' lookup l'+suffix,
+                 'SELECT id,v,label FROM sample s '+join+' lookup l'+suffix+' ORDER BY id,label',
+                 'SELECT s.id,l.id FROM sample s '+join+' lookup l'+suffix])
+for join in ['JOIN','LEFT JOIN','RIGHT JOIN','FULL JOIN']:
+ queries.append('SELECT k,a,b FROM caseleft '+join+' caseright USING(k) ORDER BY k,a,b')
 for left,right in [('NULL','NULL'),('1','1.0'),("'1'",'1'),("X'31'","'1'"),("'A'","'a' COLLATE NOCASE"),("'A' COLLATE BINARY","'a' COLLATE NOCASE"),("'Ā'","'é'"),("'a '","'a' COLLATE RTRIM")]:
  for op in ['UNION','UNION ALL','INTERSECT','EXCEPT']:
   query='SELECT '+left+' AS x '+op+' SELECT '+right
@@ -534,8 +589,12 @@ for encoding in ['UTF-8','UTF-16le','UTF-16be']:
  template=root/(encoding+'.gpkg')
  with sqlite3.connect(template) as db:
   db.execute("PRAGMA encoding='"+encoding+"'");db.executescript(dump)
-  db.executescript('CREATE TABLE sample(id INTEGER PRIMARY KEY,v TEXT COLLATE NOCASE,w REAL,b BLOB,extra INTEGER AS(id+1));CREATE TABLE empty(id INTEGER PRIMARY KEY);CREATE VIEW middle AS SELECT * FROM sample;CREATE VIEW limited AS SELECT * FROM sample ORDER BY id DESC LIMIT 3 OFFSET 1;CREATE VIEW compounded AS SELECT id,v FROM sample WHERE id<3 UNION ALL SELECT id,v FROM sample WHERE id>8;')
+  db.executescript('CREATE TABLE sample(id INTEGER PRIMARY KEY,v TEXT COLLATE NOCASE,w REAL,b BLOB,extra INTEGER AS(id+1));CREATE TABLE empty(id INTEGER PRIMARY KEY);CREATE VIEW middle AS SELECT * FROM sample;CREATE VIEW limited AS SELECT * FROM sample ORDER BY id DESC LIMIT 3 OFFSET 1;CREATE VIEW compounded AS SELECT id,v FROM sample WHERE id<3 UNION ALL SELECT id,v FROM sample WHERE id>8;CREATE TABLE lookup(id INTEGER,label TEXT);CREATE TABLE no_rowid(id INTEGER PRIMARY KEY) WITHOUT ROWID;INSERT INTO no_rowid VALUES(1);CREATE TABLE rowid_shadow(rowid TEXT);INSERT INTO rowid_shadow VALUES(\'shadow\');CREATE TABLE disjoint(z INTEGER);INSERT INTO disjoint VALUES(100);CREATE VIEW lookup_view AS SELECT * FROM lookup ORDER BY label LIMIT 4;CREATE TABLE caseleft(k TEXT COLLATE NOCASE,a INT);CREATE TABLE caseright(k TEXT COLLATE RTRIM,b INT);CREATE TABLE realleft(id REAL);CREATE TABLE realright(id INTEGER);INSERT INTO realright VALUES(1);CREATE VIEW real_joined AS SELECT id FROM realleft FULL JOIN realright USING(id);')
   db.executemany('INSERT INTO sample(id,v,w,b) VALUES(?,?,?,?)',[(1,'a',2,b'\x00\xff'),(2,'A',0,b''),(3,'b ',None,None),(4,None,2,None),(5,'Ā',1.5,b'zz'),(6,'é','text',b'a'),(7,'水',b'\x01',None),(8,'😁',-1,b'00'),(9,'a\x00x',.5,None),(10,'a\x00y',1.5,None)])
+  db.executescript("CREATE TABLE affinity_precedence(r BLOB,t BLOB,p BLOB);INSERT INTO affinity_precedence VALUES(1,1,1);PRAGMA writable_schema=ON;UPDATE sqlite_master SET sql='CREATE TABLE affinity_precedence(r REAL,t TEXTREAL,p FLOATING POINT)' WHERE name='affinity_precedence';PRAGMA writable_schema=OFF;")
+  db.executemany('INSERT INTO lookup VALUES(?,?)',[(1,'one'),(2,'two'),(2,'duplicate'),(12,'unmatched'),(None,'null')])
+  db.executemany('INSERT INTO caseleft VALUES(?,?)',[('A',1),('a ',2),('B',3),(None,4)])
+  db.executemany('INSERT INTO caseright VALUES(?,?)',[('a',1),('A ',2),('b',3),(None,4)])
  for query in queries:
   path=root/(str(len(cases))+'.gpkg');shutil.copyfile(template,path)
   with sqlite3.connect(path) as db:
@@ -548,7 +607,7 @@ for encoding in ['UTF-8','UTF-16le','UTF-16be']:
     columns=[[r[1],r[2]] for r in db.execute('PRAGMA table_info(v)')]
     rows=[[value(v) for v in row] for row in db.execute('SELECT * FROM v')];error=False
    except sqlite3.Error:columns=[];rows=[];error=True
-  cases.append(dict(name=encoding+' '+query,path=str(path),columns=columns,rows=rows,error=error))
+  cases.append(dict(name=encoding+' '+query,path=str(path),columns=columns,rows=rows,error=error,ordered=' ORDER BY ' in query.upper() or ' LIMIT ' in query.upper()))
  path=root/(str(len(cases))+'.gpkg');shutil.copyfile(template,path)
  with sqlite3.connect(path) as db:
   db.execute('CREATE VIEW v("renamed id","renamed value") AS SELECT id,v FROM sample')
@@ -587,7 +646,13 @@ print(json.dumps(cases))
                 Ok(())
             })
             .unwrap();
-            assert_eq!(serde_json::json!(rows), case["rows"], "{}", case["name"]);
+            let mut actual = rows.into_iter().map(|row| serde_json::json!(row)).collect::<Vec<_>>();
+            let mut expected = case["rows"].as_array().unwrap().clone();
+            if !case["ordered"].as_bool().unwrap_or(false) {
+                actual.sort_by_key(|row| row.to_string());
+                expected.sort_by_key(|row| row.to_string());
+            }
+            assert_eq!(actual, expected, "{}", case["name"]);
         }
         eprintln!("{} SQLite view schema/row comparisons passed", cases.len());
     }
