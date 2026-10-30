@@ -221,8 +221,9 @@ terrio convert utm.laz itrf.laz --t-srs EPSG:7912           # EPSG:6343+5703 thr
 ```
 
 The neighbourhood filters find neighbours as PDAL does: nanoflann's k-d tree and its order of
-neighbours as far as each other, radius searches sorted as libstdc++'s `std::sort` sorts them,
-covariances with PDAL's running means and offsets rounded to floats, and eigenvalues and
+neighbours as far as each other, radius searches sorted by distance with a stable sort (as
+libstdc++'s `std::sort` orders up to 16 points; larger results may order points at exactly the
+same distance differently), covariances with PDAL's running means and offsets rounded to floats, and eigenvalues and
 eigenvectors as Eigen's `SelfAdjointEigenSolver` computes them, operation for operation, so that
 their features are PDAL's to the bit. Two differ by rounding: `Omnivariance` takes the cube root
 of Rust rather than of the C library (within an ulp), and `filters.miniball` finds the smallest
