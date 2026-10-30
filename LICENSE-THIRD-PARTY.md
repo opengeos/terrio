@@ -9425,6 +9425,47 @@ SOFTWARE.
 
 Used by:
 
+- terrio (terrio's own crate)
+- terrio-cli (terrio's own crate)
+- terrio-crs (terrio's own crate)
+- terrio-py (terrio's own crate)
+
+```text
+MIT License
+
+Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+terrio ports and adapts code and data from other projects, among them GDAL,
+PROJ and PDAL. The copyright in that code and data remains with its authors.
+NOTICE lists them with their licenses, and LICENSE-THIRD-PARTY.md lists the
+licenses of the Rust crates terrio is built with.
+
+```
+
+## MIT License
+
+Used by:
+
 - terrio-js (terrio's own crate)
 - [gdal-sys 0.12.0](https://github.com/georust/gdal)
 - [gdal 0.19.0](https://github.com/georust/gdal)
@@ -9515,45 +9556,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-```
-
-## MIT License
-
-Used by:
-
-- terrio (terrio's own crate)
-- terrio-cli (terrio's own crate)
-- terrio-crs (terrio's own crate)
-- terrio-py (terrio's own crate)
-
-```text
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
----
-
-terrio ports and adapts code and data from other projects, among them GDAL,
-PROJ and PDAL. The copyright in that code and data remains with its authors.
-NOTICE lists them with their licenses, and LICENSE-THIRD-PARTY.md lists the
-licenses of the Rust crates terrio is built with.
 
 ```
 
