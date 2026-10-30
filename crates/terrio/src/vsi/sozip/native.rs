@@ -1,5 +1,8 @@
 //! Native archive snapshots. File identity must not be inferred from timestamps:
 //! distinct files can have identical lengths, modification times and creation times.
+//! Windows checks rely on the filesystem provider supplying stable, unique file
+//! IDs (including the legacy file index). Providers that do not honor that
+//! contract cannot offer reliable replacement detection.
 
 use std::fs::{File, Metadata};
 use std::io;
@@ -68,7 +71,7 @@ enum WindowsIdentity {
 #[cfg(windows)]
 fn windows_identity(file: &File) -> io::Result<WindowsIdentity> {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::{ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED};
+    use windows_sys::Win32::Foundation::{ERROR_INVALID_FUNCTION, ERROR_INVALID_LEVEL, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED};
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
     };
@@ -87,10 +90,9 @@ fn windows_identity(file: &File) -> io::Result<WindowsIdentity> {
         return Ok(WindowsIdentity::Full { volume: information.VolumeSerialNumber, id: information.FileId.Identifier });
     }
     let error = io::Error::last_os_error();
-    if !error
-        .raw_os_error()
-        .is_some_and(|code| [ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED].contains(&(code as u32)))
-    {
+    if !error.raw_os_error().is_some_and(|code| {
+        [ERROR_INVALID_FUNCTION, ERROR_INVALID_LEVEL, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED].contains(&(code as u32))
+    }) {
         return Err(error);
     }
     // Older filesystem providers may not implement 128-bit IDs. The legacy API
