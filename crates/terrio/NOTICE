@@ -135,13 +135,15 @@ behavioral reference for these replacements.
   POSSIBILITY OF SUCH DAMAGE.
 
 -------------------------------------------------------------------------------
-Deferred geometry repair provenance
+Independent tile polygon repair
 -------------------------------------------------------------------------------
-The linework MakeValid implementation and its private helpers in
-crates/terrio/src/tiles/valid.rs predate the JTS replacements described above.
-They were explicitly excluded from that replacement and require a separate,
-independent implementation and licensing review. They are NOT covered by the
-JTS attribution above. No claim of complete GEOS provenance remediation is made.
+The deferred linework MakeValid implementation and its helpers formerly in
+crates/terrio/src/tiles/valid.rs have been removed. The replacement in
+crates/terrio/src/tiles/repair/ was independently implemented against a behavioral
+specification and executable reference observations, under a documented isolated
+process. It is part of Terrio's MIT-licensed code, not part of the JTS ports above.
+See docs/make-valid-implementation.md for task-local provenance, validation and
+limitations. This record makes no repository-wide licensing certification.
 -------------------------------------------------------------------------------
 GDAL vector geometry operations
 -------------------------------------------------------------------------------

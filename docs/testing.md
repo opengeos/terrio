@@ -1298,4 +1298,24 @@ continues to compare the public CLI with GDAL/GEOS on real data.
 
 `scripts/compare_jts_behavior.py` refreshes or checks the synthetic observations
 against executable GEOS APIs and optionally JTS; see the provenance document for
-commands and tolerances. MakeValid is excluded from this replacement boundary.
+commands and tolerances. MakeValid was excluded from the JTS replacement boundary; its later independent
+replacement and dedicated checks are documented in
+[the repair implementation record](make-valid-implementation.md).
+
+The independent repair regressions run with
+`cargo test -p terrio --lib tiles::repair`; encoder overflow/error propagation
+checks run with `cargo test -p terrio --lib tiles::vector`. The 51-case observed
+fixture is packaged in `crates/terrio/tests/data/make-valid.json` and matches the
+reviewed JSON in `docs/`. No native GEOS library is needed by these Rust tests.
+
+`scripts/compare_make_valid_tiles.py` compares every feature geometry and presence
+against GDAL across countries (Antarctica excluded), US counties and independently
+authored invalid inputs. It requires a GDAL/Shapely environment and explicit
+`--terrio`, `--data` (countries.geojson and UScounties.gpkg), and a fresh `--scratch`
+directory. `--baseline-dir` can identify unchanged pre-existing synthetic clipping
+differences by comparing the actual per-key geometries with frozen old outputs;
+it does not waive every future difference for those keys. Reference-invalid
+quantized geometries are compared structurally and reported as invalid. A separate
+reported category permits only reassociation of an identical collinear ring: all
+oriented integer rings and all non-collinear polygon groups must still match.
+`scripts/reference/test_make_valid_tile_comparison.py` rejects broader changes.

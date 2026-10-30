@@ -26,6 +26,8 @@
 #[cfg(feature = "tiles")]
 mod archive;
 #[cfg(feature = "tiles")]
+mod boxes;
+#[cfg(feature = "tiles")]
 pub(crate) mod clip;
 #[cfg(feature = "tiles")]
 pub(crate) mod mbtiles;
@@ -40,9 +42,9 @@ pub(crate) mod pyramid;
 #[cfg(feature = "tiles")]
 pub(crate) mod raster;
 #[cfg(feature = "tiles")]
-pub(crate) mod source;
+mod repair;
 #[cfg(feature = "tiles")]
-pub(crate) mod valid;
+pub(crate) mod source;
 #[cfg(feature = "tiles")]
 mod validity;
 #[cfg(feature = "tiles")]

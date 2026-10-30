@@ -325,9 +325,9 @@ and data terrio adapts from them:
 - [PROJ](https://proj.org) and [PDAL](https://pdal.io), with GDAL the reference terrio tests
   against; its projections are ported from PROJ, its point cloud filters follow PDAL's (the cloth
   simulation filter of Zhang et al., 2016, is a port of the CSF code PDAL vendors).
-- [GEOS](https://libgeos.org) and the [JTS Topology Suite](https://github.com/locationtech/jts),
-  whose simplification, hull and polygon validity algorithms terrio follows (with documented
-  differences, for example in concave hulls), and [GeoRust](https://georust.org)'s `geo`, which
+- The [JTS Topology Suite](https://github.com/locationtech/jts), the source of terrio's
+  simplification, hull and tile-validity ports; [GEOS](https://libgeos.org), their executable
+  behavior reference; and [GeoRust](https://georust.org)'s `geo`, which
   its vector processing is built on.
 - The [EPSG Geodetic Parameter Dataset](https://epsg.org) of IOGP and Esri's
   [projection engine data](https://github.com/Esri/projection-engine-db-doc), for the coordinate

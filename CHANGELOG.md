@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Geometry implementation provenance
+
+- Replace the GEOS-derived simplification, hull, tile-validity, spatial-packing
+  and clipping-envelope kernels with attributed JTS 1.20.0 implementations under
+  EDL-1.0. Replace the tile writer's linework repair independently, preserving its
+  isolated implementation and behavioral evidence. The complete old repair
+  module and helpers are removed. Public geometry APIs remain unchanged.
+- Polygon tile encoding reports an error when a signed cursor delta cannot fit
+  in 32 bits. The [provenance inventory](docs/geos-retirement-audit.md) records
+  reference comparisons, collinear-ring ordering differences and the existing
+  approximate clipping-failure predictor.
+
 ### Terrain
 
 - `terrio dem color-relief` and Python's `terrio.dem(path, ..., dst=path)` read the DEM and write

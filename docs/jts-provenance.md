@@ -19,9 +19,11 @@ All JTS paths below are relative to `modules/core/src/main/java/org/locationtech
 
 The Rust sources retain their existing public entry points. Geometry traversal,
 ring closure and rebuilding adapters, and GDAL-derived segmentization are retained.
-The separate MakeValid implementation and all code below its section marker in
-`tiles/valid.rs` are excluded, including its private STR ordering helper. No
-MakeValid source was used to write the new validity checker.
+The separate MakeValid implementation and its helpers formerly in
+`tiles/valid.rs` were excluded from the JTS replacement, including its private
+STR ordering helper. They have since been removed by the
+[independent repair replacement](make-valid-implementation.md). No MakeValid
+source was used to write the JTS-derived validity checker.
 
 `ops/jts_delaunay.rs` additionally derives from JTS's
 `triangulate/DelaunayTriangulationBuilder.java`,
@@ -45,23 +47,26 @@ unprocessed components retain their original second-coordinate probes.
 ## Boundary of this change
 
 **This is not a claim that Terrio is fully license-compliant.** Linework MakeValid
-in `tiles/valid.rs` is still deferred for an independent replacement. Its earlier
-inclusion under the JTS notice was inaccurate; the notice now explicitly separates
-it. This branch does not relicense that code or change the repair API in
-`ops/topology.rs` (which uses the `geo` crate).
+was deferred by the JTS change and has since been replaced independently; its
+[separate provenance record](make-valid-implementation.md) describes that work.
+Its earlier inclusion under the JTS notice was inaccurate. The repair API in
+`ops/topology.rs` (which uses the `geo` crate) remains a separate implementation.
 
 The MVT failure predictor in `tiles/vector.rs` remains a compatibility heuristic,
 not a full overlay implementation. Its clipping-envelope calculation is now a
 separate, explicitly attributed JTS port. The crossing and omission policy retains
 its documented limitation: the original random probes agreed with GEOS 3.14 on
 97% of self-crossing and overlapping inputs. This patch does not claim universal
-equivalence for that policy or replace MakeValid. Tile output comparisons exercise
+equivalence for that policy. The later independent replacement addresses only the
+post-quantization repair. Tile output comparisons exercise
 the production writer separately from the geometry-kernel corpus.
 
 The `pointcloud/filters/hexbin.rs` call site uses the replaced simplifier.
 Other references to GEOS in shapefile normalization and linear referencing describe
 compatibility behavior. This change does not certify every other algorithm or
 transitive dependency.
+The [retirement inventory](geos-retirement-audit.md) records the combined JTS and
+independent-repair scope, remaining references and release follow-through.
 
 ## Behavioral references and replay
 
@@ -128,8 +133,10 @@ produce every GEOS compatibility outcome.
 The MVT writer also passed **15 zoom comparisons** against GDAL: Natural Earth
 countries at zooms 0–6 (excluding Antarctica, outside Mercator), US counties at
 zooms 0–3, and synthetic invalid polygons at zooms 0–3. Feature counts agree and
-per-key relative area differences are at most 1e-10. The deferred MakeValid code
-is exercised by these checks but remains unchanged.
+per-key relative area differences were at most 1e-10 in that JTS validation run.
+At that stage the deferred MakeValid code remained unchanged. The later
+[independent replacement record](make-valid-implementation.md) reports current
+feature-by-feature comparisons and retained pre-existing differences.
 
 The strict public-CLI real-data run passed **66 comparisons** on Tennessee
 and US counties, Las Vegas roads, Natural Earth countries and populated places.

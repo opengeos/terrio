@@ -1,0 +1,4 @@
+/target/
+/notes/*.json
+__pycache__/
+*.pyc

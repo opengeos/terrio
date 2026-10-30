@@ -6,7 +6,7 @@
 //! Tile ordinates are i32, so i128 determinants and doubled-coordinate midpoint
 //! probes are exact, including at the extremes of the tile coordinate type.
 
-use super::valid::{IPt, Polygon};
+use super::repair::{IPt, Polygon};
 use rstar::{
     AABB, RTree,
     primitives::{GeomWithData, Rectangle},

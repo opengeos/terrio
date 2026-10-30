@@ -1,0 +1,91 @@
+{
+  "changes": [
+    {
+      "source": "candidate/src/arrangement.rs",
+      "source_sha256": "8ebd05eafbab7eb56f1675080369a45a90a334eda494a309f3024bd9c78cb75d",
+      "destination": "crates/terrio/src/tiles/repair/arrangement.rs",
+      "destination_sha256": "e3f8e8efb372e22d8b881af18988da928361605794c1197a72891958afa20409",
+      "adaptation": "crate imports changed to super module imports only"
+    },
+    {
+      "source": "candidate/src/exact.rs",
+      "source_sha256": "bf7cdc551682a0d449528e32ecb3508d1a6ef65abb5dab9a05ffe0d8f3bd8b7e",
+      "destination": "crates/terrio/src/tiles/repair/exact.rs",
+      "destination_sha256": "bf7cdc551682a0d449528e32ecb3508d1a6ef65abb5dab9a05ffe0d8f3bd8b7e",
+      "adaptation": "crate imports changed to super module imports only"
+    },
+    {
+      "source": "candidate/src/topology.rs",
+      "source_sha256": "5d231f519c5bda7dae7ef50a3d880765ee04cb319d4d4cf654d0076b822d7236",
+      "destination": "crates/terrio/src/tiles/repair/topology.rs",
+      "destination_sha256": "65f3fcf996ffc89f54e08e2612996e5612b33f809d5f839db803da2e6ef145fe",
+      "adaptation": "crate imports changed to super module imports only"
+    },
+    {
+      "source": "candidate/src/lib.rs",
+      "source_sha256": "ac6060c3d7574b5e5feb1d950e36a8a9201ce53786481905c093cabf78fc6f3d",
+      "destination": "crates/terrio/src/tiles/repair/mod.rs",
+      "destination_sha256": "cdb4908d7be133028577873ceef113d3863c6248bcbc743c405106084ca23d10",
+      "adaptation": "retain the identical independently authored try_make_valid body and RepairError formatting; remove harness registration, panicking compatibility wrapper and unused message accessor; change doc link/visibility; attach test module",
+      "initial_import_source_sha256": "504582db54afbff724574d468cb24f79c1ad55bf2caf2473f35f24271875669f"
+    },
+    {
+      "source": "candidate/tests/properties.rs",
+      "source_sha256": "fe9459a9e5d64abd07389f4f2f71021bfc0bd1b48c5dc2bca0bc58351e3ea2f9",
+      "destination": "crates/terrio/src/tiles/repair/tests.rs",
+      "destination_sha256": "671d31cae473431b1bd90dd5d18cd0aa2d7e4a0cd28c40ebe69c1a59b119a5b4",
+      "adaptation": "module imports; fallible API test helper; remove standalone registration and wrapper-equivalence tests; compile-time packaged fixture path",
+      "previously_recorded_source_sha256": "36c4ee04c810b1a2d090026631caf2e5b6b20a49044a6f6d856e8a3f368008d1",
+      "source_hash_correction": "Use final sealed implementer delivery as source identity. Earlier test-source hash is retained for audit; production tests are unchanged. Final standalone-only fallible-registration and wrapper-equivalence tests are absent from production as documented."
+    }
+  ],
+  "verified_final_kernel_files": [
+    {
+      "source": "candidate/src/arrangement.rs",
+      "source_sha256": "8ebd05eafbab7eb56f1675080369a45a90a334eda494a309f3024bd9c78cb75d",
+      "destination": "crates/terrio/src/tiles/repair/arrangement.rs",
+      "destination_sha256": "e3f8e8efb372e22d8b881af18988da928361605794c1197a72891958afa20409",
+      "verified_adaptation": "crate -> super imports and rustfmt only; equality checked"
+    },
+    {
+      "source": "candidate/src/exact.rs",
+      "source_sha256": "bf7cdc551682a0d449528e32ecb3508d1a6ef65abb5dab9a05ffe0d8f3bd8b7e",
+      "destination": "crates/terrio/src/tiles/repair/exact.rs",
+      "destination_sha256": "bf7cdc551682a0d449528e32ecb3508d1a6ef65abb5dab9a05ffe0d8f3bd8b7e",
+      "verified_adaptation": "crate -> super imports and rustfmt only; equality checked"
+    },
+    {
+      "source": "candidate/src/topology.rs",
+      "source_sha256": "5d231f519c5bda7dae7ef50a3d880765ee04cb319d4d4cf654d0076b822d7236",
+      "destination": "crates/terrio/src/tiles/repair/topology.rs",
+      "destination_sha256": "65f3fcf996ffc89f54e08e2612996e5612b33f809d5f839db803da2e6ef145fe",
+      "verified_adaptation": "crate -> super imports and rustfmt only; equality checked"
+    }
+  ],
+  "custodian_additions": [
+    "fallible production encoder/caller integration",
+    "checked polygon cursor deltas and overflow regression",
+    "rstar adapter replacing the legacy grid helper",
+    "test module and fixture path adaptation; removal of standalone-only registration tests"
+  ],
+  "removed_legacy_file": {
+    "path": "crates/terrio/src/tiles/valid.rs",
+    "baseline": "0281ec0add52008c051cd024ab9a23ca855055d7",
+    "baseline_sha256": "88a1323edba8163ef74aefb9db3da7875e3f0ea478e8c184ce3520473add952f",
+    "entire_file_removed": true,
+    "scope": "repair, graph/face helpers, private ordering helpers, Env/orient/in_box and shared box_pairs; only plain point/polygon aliases are redefined in the independent module"
+  },
+  "fallible_entry_body_identical": true,
+  "final_integration_file_hashes": {
+    "crates/terrio/src/tiles/vector.rs": "f5fc9f2a7b4437558a5a73bfd99a79ae82d97a7c8b8b2955fdc7d0f7b0bc42d6",
+    "crates/terrio/src/tiles/boxes.rs": "7f6a3334e5b9beaba22adb1126848c24a4b62f42585ff27409786da15d63909f",
+    "crates/terrio/src/tiles/validity.rs": "44c399307e22d9d2d0ca38dda6ee64b867ce08616fd2c4fdeef3029e3bf5f2a6",
+    "crates/terrio/src/tiles/mod.rs": "c5acfb23ad2bbd45c07020e2520b6f8bd34a788490188134878cfba80e7a5eb3"
+  },
+  "sealed_delivery": {
+    "archive": "opus5.5-2026-10-30.tar.gz",
+    "sha256": "5257385a86089d787eee6adf80102872d5fd84c3e0858828bc2ccac1a99cc1ab",
+    "member_prefix": "opus5.5-2026-10-30/package/",
+    "verification": "All source hashes checked against sealed archive; the three kernel module files also compared byte-for-byte after crate -> super imports and rustfmt."
+  }
+}

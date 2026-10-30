@@ -3,6 +3,7 @@
 
 use super::clip::{self, Pt, Rect};
 use super::mvt::{self, MvtFeature, MvtLayer, MvtValue, TileGeom};
+use super::repair::{IPt, Polygon};
 use super::{MAX_GM, TileArchive, TileOpenOptions, TileWriteOptions};
 use crate::{Error, Result};
 use serde_json::{Value as Json, json};
@@ -552,11 +553,20 @@ impl ToTile<'_> {
     }
 }
 
+/// MVT deltas are signed 32-bit values even when both endpoints fit in i32.
+/// Ring starts and component order must not turn an unsupported span into a panic.
+fn polygon_delta(coordinate: i32, origin: i32) -> Result<u32> {
+    coordinate
+        .checked_sub(origin)
+        .map(mvt::zigzag)
+        .ok_or_else(|| Error::InvalidData("tile polygon coordinate delta exceeds signed 32-bit encoding".into()))
+}
+
 /// Encodes a polygon ring (closed) as GDAL's `EncodeLineString` does: exteriors clockwise on
 /// screen and holes counter-clockwise (judged on the ring in tile coordinates), a hole dropped
 /// when rounding flips its orientation, repeated points dropped, and the ring dropped when fewer
 /// than three points are left. Returns the ring as encoded (closed), and moves the cursor.
-fn encode_ring(out: &mut Vec<u32>, ring: &[Pt], to: ToTile, exterior: bool, cursor: &mut (i32, i32)) -> Option<Vec<(i32, i32)>> {
+fn encode_ring(out: &mut Vec<u32>, ring: &[Pt], to: ToTile, exterior: bool, cursor: &mut (i32, i32)) -> Result<Option<Vec<(i32, i32)>>> {
     let n = ring.len();
     let np = n - 1;
     // The winding order, in integer coordinates (y up).
@@ -573,7 +583,7 @@ fn encode_ring(out: &mut Vec<u32>, ring: &[Pt], to: ToTile, exterior: bool, curs
         ri.push(ri[0]);
     }
     if ri.len() < 4 {
-        return None;
+        return Ok(None);
     }
     let cw = ogr_is_clockwise(&ri);
     let reverse = if exterior {
@@ -582,7 +592,7 @@ fn encode_ring(out: &mut Vec<u32>, ring: &[Pt], to: ToTile, exterior: bool, curs
         let original = ogr_is_clockwise(ring);
         let truncate = matches!(to, ToTile::Truncate);
         if (!truncate && cw != original) || (truncate && cw == original) {
-            return None;
+            return Ok(None);
         }
         cw
     };
@@ -597,13 +607,13 @@ fn encode_ring(out: &mut Vec<u32>, ring: &[Pt], to: ToTile, exterior: bool, curs
                 lineto += 1;
                 if lineto == 1 {
                     out.push(mvt::MOVE_TO | (1 << 3));
-                    out.push(mvt::zigzag(last.0 - origin.0));
-                    out.push(mvt::zigzag(last.1 - origin.1));
+                    out.push(polygon_delta(last.0, origin.0)?);
+                    out.push(polygon_delta(last.1, origin.1)?);
                     out.push(mvt::LINE_TO);
                     pts.push(last);
                 }
-                out.push(mvt::zigzag(q.0 - last.0));
-                out.push(mvt::zigzag(q.1 - last.1));
+                out.push(polygon_delta(q.0, last.0)?);
+                out.push(polygon_delta(q.1, last.1)?);
                 pts.push(q);
             } else {
                 first = q;
@@ -620,53 +630,53 @@ fn encode_ring(out: &mut Vec<u32>, ring: &[Pt], to: ToTile, exterior: bool, curs
     }
     if lineto < 2 {
         out.truncate(start);
-        return None;
+        return Ok(None);
     }
     out[start + 3] = mvt::LINE_TO | (lineto << 3);
     out.push(mvt::CLOSE_PATH | (1 << 3));
     *cursor = last;
     pts.push(pts[0]);
-    Some(pts)
+    Ok(Some(pts))
 }
 
 /// Encodes a polygon's rings as GDAL's `EncodePolygon` does: `false` (and nothing encoded) when
 /// its exterior is dropped. Returns the polygon as encoded.
-fn encode_polygon(out: &mut Vec<u32>, rings: &[Vec<Pt>], to: ToTile, cursor: &mut (i32, i32)) -> (bool, Vec<Vec<(i32, i32)>>) {
+fn encode_polygon(out: &mut Vec<u32>, rings: &[Vec<Pt>], to: ToTile, cursor: &mut (i32, i32)) -> Result<(bool, Polygon<IPt>)> {
     let mut encoded = Vec::new();
     for (i, r) in rings.iter().enumerate() {
         let ok = r.len() >= 4 && r.first() == r.last();
-        match ok.then(|| encode_ring(out, r, to, i == 0, cursor)).flatten() {
+        match if ok { encode_ring(out, r, to, i == 0, cursor)? } else { None } {
             Some(pts) => encoded.push(pts),
-            None if i == 0 => return (false, encoded),
+            None if i == 0 => return Ok((false, encoded)),
             None => {}
         }
     }
-    (true, encoded)
+    Ok((true, encoded))
 }
 
 /// Encodes polygons in a tile as GDAL's MVT writer does: each polygon encoded, and when the
 /// polygons encoded are not valid (rounding to the grid made rings cross or touch, parts
 /// overlap), GEOS's `MakeValid` of them encoded instead.
-fn encode_polygons(polys: &[Vec<Vec<Pt>>], f: &TileFrame, extent: u32) -> Option<Vec<u32>> {
+fn encode_polygons(polys: &[Vec<Vec<Pt>>], f: &TileFrame, extent: u32) -> Result<Option<Vec<u32>>> {
     let mut out = Vec::new();
     let mut cursor = (0, 0);
     let mut ok = false;
     let mut encoded = Vec::with_capacity(polys.len());
     for rings in polys {
-        let (o, e) = encode_polygon(&mut out, rings, ToTile::Grid(f, extent), &mut cursor);
+        let (o, e) = encode_polygon(&mut out, rings, ToTile::Grid(f, extent), &mut cursor)?;
         ok |= o;
         encoded.push(e);
     }
-    if !super::valid::is_valid(&encoded) {
-        let fixed = super::valid::make_valid(&encoded);
+    if !super::validity::is_valid(&encoded) {
+        let fixed = super::repair::try_make_valid(&encoded).map_err(|error| Error::InvalidData(error.to_string()))?;
         out.clear();
         cursor = (0, 0);
         ok = false;
         for rings in &fixed {
-            ok |= encode_polygon(&mut out, rings, ToTile::Truncate, &mut cursor).0;
+            ok |= encode_polygon(&mut out, rings, ToTile::Truncate, &mut cursor)?.0;
         }
     }
-    (ok && !out.is_empty()).then_some(out)
+    Ok((ok && !out.is_empty()).then_some(out))
 }
 
 /// A place where a polygonal geometry is invalid in a way GEOS's overlay cannot handle: a point,
@@ -704,7 +714,7 @@ fn ring_crossings(polys: &[Vec<Vec<Pt>>]) -> Vec<Crossing> {
         }
     };
     let mut out = Vec::new();
-    for (s, t_) in super::valid::box_pairs(&boxes) {
+    for (s, t_) in super::boxes::intersecting_pairs(&boxes) {
         let (a, b) = (&segs[s], &segs[t_]);
         if a.0 == b.0 && (a.1.abs_diff(b.1) == 1 || a.1.abs_diff(b.1) == a.2 - 1) {
             continue;
@@ -800,11 +810,11 @@ fn encode_for_tile(
     buffer: f64,
     tolerance: f64,
     crossings: &[Crossing],
-) -> Option<(u32, Vec<u32>)> {
+) -> Result<Option<(u32, Vec<u32>)>> {
     let r: Rect = (f.top_x - buffer, f.top_y - f.dim - buffer, f.top_x + f.dim + buffer, f.top_y + buffer);
     let xy = |c: &Coord| (c.x, c.y);
     let simplify = |pts: Vec<Pt>| if tolerance > 0.0 { clip::simplify(&pts, tolerance) } else { pts };
-    match g {
+    Ok(match g {
         Geometry::Point(c) => {
             let p = xy(c);
             (p.0 >= r.0 && p.0 <= r.2 && p.1 >= r.1 && p.1 <= r.3).then(|| (mvt::POINT, mvt::encode_points(&quantize(&[p], f, extent))))
@@ -829,7 +839,7 @@ fn encode_for_tile(
                 Geometry::MultiLineString(ls) => ls.iter().map(|l| l.iter().map(xy).collect()).collect(),
                 _ => unreachable!(),
             };
-            let all = clip::bbox(lines.iter().flatten())?;
+            let Some(all) = clip::bbox(lines.iter().flatten()) else { return Ok(None) };
             let lines: Vec<Vec<Pt>> =
                 if clip::contains(r, all) { lines } else { lines.iter().flat_map(|l| clip::clip_line(l, r)).collect() };
             let mut out = Vec::new();
@@ -843,11 +853,11 @@ fn encode_for_tile(
             (!out.is_empty()).then_some((mvt::LINESTRING, out))
         }
         Geometry::Polygon { .. } | Geometry::MultiPolygon(_) => {
-            let polys = polygon_rings(g)?;
-            let all = clip::bbox(polys.iter().flatten().flatten())?;
+            let Some(polys) = polygon_rings(g) else { return Ok(None) };
+            let Some(all) = clip::bbox(polys.iter().flatten().flatten()) else { return Ok(None) };
             let inside = clip::contains(r, all);
             if !inside && clip_fails(&polys, crossings, all, r) {
-                return None;
+                return Ok(None);
             }
             let mut parts: Vec<Vec<Vec<Pt>>> = Vec::new();
             for mut p in polys {
@@ -860,10 +870,10 @@ fn encode_for_tile(
                 let clipped: Vec<Vec<Vec<Pt>>> = if inside { vec![p] } else { clip::clip_polygon(&p, r) };
                 parts.extend(clipped.into_iter().map(|rings| rings.into_iter().map(simplify).collect()));
             }
-            encode_polygons(&parts, f, extent).map(|out| (mvt::POLYGON, out))
+            encode_polygons(&parts, f, extent)?.map(|out| (mvt::POLYGON, out))
         }
         Geometry::GeometryCollection(_) => None,
-    }
+    })
 }
 
 /// Statistics of a layer, for the metadata.
@@ -967,7 +977,7 @@ fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
                     for tx in tx0..=tx1 {
                         for ty in ty0..=ty1 {
                             let frame = TileFrame::new(z, tx as u32, ty as u32);
-                            let Some((geom_type, geometry)) = encode_for_tile(g, &frame, o.extent, buffer, tol, &crossings) else {
+                            let Some((geom_type, geometry)) = encode_for_tile(g, &frame, o.extent, buffer, tol, &crossings)? else {
                                 continue;
                             };
                             stats.geom_counts[geom_type as usize] += 1;
@@ -1310,6 +1320,17 @@ pub(crate) fn metadata_items(vt: &VectorTiles, o: &TileWriteOptions, name: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polygon_encoding_reports_delta_overflow() {
+        let ring = vec![(i32::MIN as f64, 0.), (i32::MAX as f64, 0.), (i32::MAX as f64, 4.), (i32::MIN as f64, 0.)];
+        let result = encode_polygon(&mut Vec::new(), &[ring], ToTile::Truncate, &mut (0, 0));
+        assert!(matches!(result, Err(Error::InvalidData(message)) if message.contains("coordinate delta")));
+        assert_eq!(polygon_delta(i32::MIN, 0).unwrap(), mvt::zigzag(i32::MIN));
+        assert_eq!(polygon_delta(i32::MAX, 0).unwrap(), mvt::zigzag(i32::MAX));
+        assert!(polygon_delta(i32::MIN, i32::MAX).is_err());
+        assert!(polygon_delta(i32::MAX, i32::MIN).is_err());
+    }
 
     #[test]
     fn inverted_rectangles_cover_no_tile() {

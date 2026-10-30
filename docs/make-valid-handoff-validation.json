@@ -1,0 +1,338 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-29",
+  "scope": "Package preparation only; no replacement repair or implementation agent started",
+  "workspace": "/home/mavrick/projects/terrio-make-valid-clean-room",
+  "baseline": "0281ec0add52008c051cd024ab9a23ca855055d7",
+  "manifest_sha256": "33c1ebc1acb655a7bd5b5f8434d150843faa2d42fd3569b327f819046fd27411",
+  "archive": {
+    "path": "/mnt/scratch/keep/terrio-clean-room/terrio-make-valid-clean-room-v1.tar.gz",
+    "bytes": 1280904,
+    "sha256": "fd991b1b358fd7359008ffd633d730aad886d97b7d00acee7ea74f17caed9453",
+    "all_members_match_manifest": true
+  },
+  "inventory": {
+    "files": 505,
+    "symlinks": 0,
+    "history": false,
+    "legacy_repair": false,
+    "custodian_source_or_process_notes": false
+  },
+  "custodian_adapter_ledger": {
+    "baseline": "0281ec0add52008c051cd024ab9a23ca855055d7",
+    "source_files": [
+      {
+        "path": "crates/terrio/src/tiles/vector.rs",
+        "sha256": "7e38112485e32e9c9d6c80a57a7ecddfbe86090b56a3de255b9e36f2ffea9f73"
+      },
+      {
+        "path": "crates/terrio/src/tiles/mvt.rs",
+        "sha256": "bc529bde9f9cbcaf75678519995c9bb3ed3c2460b930f48a08bd9950c27e537e"
+      }
+    ],
+    "exact_extractions": {
+      "orientation": "0fc7f283d8f2b4ea22572550ed70ba78dddd9245970bf40ea7db2830c115c52e",
+      "coordinate_adapter": "5b31fd5df0d4a9cc10813495a5631bb766c9c34dc5cc5d519be5c962b9ba3904",
+      "ring_encoder": "7ff5c98727f8049f0a2c63c10e69d0ff48f73f05010744f54e62ceb6966a2f93",
+      "polygon_encoder": "248f34eb69dabb5248fbcf8da9f680f59ab2fbe72b28c2d3c9f5da27538accae",
+      "zigzag": "a48ae171cd8ae27420180b5ef130b499228bf1ceda79e0be61e4c52c36dcea33"
+    },
+    "source_sha256": "95b0f2a672fc6b2469d053e18f7bb2c7c758000d07cd46b20bcc15a4063ce249",
+    "excluded": "No deferred repair module, repair helper, validity implementation, source history, or unreviewed fixture was read or copied by this builder.",
+    "license_basis": "Terrio MIT caller; orientation/encoding follows GDAL MIT code. Attribution is retained in package NOTICE. Test reference only.",
+    "dependencies": [
+      {
+        "name": "itoa",
+        "version": "1.0.18",
+        "license": "MIT OR Apache-2.0",
+        "selected_license": "MIT"
+      },
+      {
+        "name": "memchr",
+        "version": "2.8.3",
+        "license": "Unlicense OR MIT",
+        "selected_license": "MIT"
+      },
+      {
+        "name": "proc-macro2",
+        "version": "1.0.107",
+        "license": "MIT OR Apache-2.0",
+        "selected_license": "MIT"
+      },
+      {
+        "name": "quote",
+        "version": "1.0.47",
+        "license": "MIT OR Apache-2.0",
+        "selected_license": "MIT"
+      },
+      {
+        "name": "serde",
+        "version": "1.0.229",
+        "license": "MIT OR Apache-2.0",
+        "selected_license": "MIT"
+      },
+      {
+        "name": "serde_core",
+        "version": "1.0.229",
+        "license": "MIT OR Apache-2.0",
+        "selected_license": "MIT"
+      },
+      {
+        "name": "serde_derive",
+        "version": "1.0.229",
+        "license": "MIT OR Apache-2.0",
+        "selected_license": "MIT"
+      },
+      {
+        "name": "serde_json",
+        "version": "1.0.154",
+        "license": "MIT OR Apache-2.0",
+        "selected_license": "MIT"
+      },
+      {
+        "name": "syn",
+        "version": "3.0.9",
+        "license": "MIT OR Apache-2.0",
+        "selected_license": "MIT"
+      },
+      {
+        "name": "unicode-ident",
+        "version": "1.0.27",
+        "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+        "selected_license": "MIT AND Unicode-3.0"
+      },
+      {
+        "name": "zmij",
+        "version": "1.0.23",
+        "license": "MIT",
+        "selected_license": "MIT"
+      }
+    ],
+    "builder_sha256": "6a66b370ea172e3396992307fb195116e5c8055eed0103d260e0b0942fa7a00c",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "binary_sha256": "da04be3b96fb160ade4c77e04d758c6f30e49214be70fbf9fe43f2f0723f24af",
+    "binary_profile": "release; overflow-checks=true; no debug symbols; stripped; generated-source paths remapped",
+    "generated_source_directory": "/mnt/scratch/terrio/make-valid-handoff/prepare-gkeu5o26/custodian-adapter",
+    "manifest_sha256": "e10051b41e774d896cc2842d1be5a3a3aa1c02592f137740e8cdfd461235bc1d"
+  },
+  "post_validation_change": "README clarification only; final manifest and scratch marker refreshed; initial hashes and archive contents verified again. Runtime/code/fixture bytes unchanged.",
+  "independent_review": {
+    "findings": "Build directory reuse, extra immutable files, broad /usr mount, missing explicit topology checks",
+    "resolution": "All addressed; external runtime bindings also hashed; negative controls and command-stream decoding added"
+  },
+  "validation": {
+    "checks": [
+      {
+        "name": "initial-hashes",
+        "command": [
+          "python3",
+          "tools/verify_package.py",
+          "--initial"
+        ],
+        "expected_exit": 0,
+        "exit": 0,
+        "seconds": 0.099,
+        "passed": true,
+        "stdout": "PASS: approved package hashes including original scaffold\n",
+        "stderr": ""
+      },
+      {
+        "name": "boundary",
+        "command": [
+          "python3",
+          "tools/isolate.py",
+          "--",
+          "python3",
+          "tools/check_boundary.py"
+        ],
+        "expected_exit": 0,
+        "exit": 0,
+        "seconds": 0.977,
+        "passed": true,
+        "stdout": "PASS: approved package hashes (mutable candidate excluded)\nPASS: source/home/network hidden; references read-only; candidate/build writable; Shapely 2.2.0, GEOS 3.14.1, NumPy 2.5.4\n",
+        "stderr": "hq: 'terrio clean-room python3' finished with status 0 in the gate slot: queued 0s, executed 1s, peak 0 MiB anon+swap\n"
+      },
+      {
+        "name": "native-build",
+        "command": [
+          "python3",
+          "tools/isolate.py",
+          "--slot",
+          "heavy",
+          "--",
+          "cargo",
+          "build",
+          "--locked",
+          "--offline"
+        ],
+        "expected_exit": 0,
+        "exit": 0,
+        "seconds": 3.554,
+        "passed": true,
+        "stdout": "PASS: approved package hashes (mutable candidate excluded)\n",
+        "stderr": "   Compiling serde_core v1.0.229\n   Compiling zmij v1.0.23\n   Compiling serde_json v1.0.154\n   Compiling itoa v1.0.18\n   Compiling memchr v2.8.3\n   Compiling tile-repair-candidate v0.0.0 (/work/candidate)\n    Finished `dev` profile [unoptimized] target(s) in 2.63s\nhq: 'terrio clean-room cargo' finished with status 0 in the heavy slot: queued 0s, executed 3s, peak 0 MiB anon+swap\n"
+      },
+      {
+        "name": "scaffold",
+        "command": [
+          "python3",
+          "tools/isolate.py",
+          "--",
+          "python3",
+          "tools/check_scaffold.py"
+        ],
+        "expected_exit": 0,
+        "exit": 0,
+        "seconds": 0.902,
+        "passed": true,
+        "stdout": "PASS: approved package hashes (mutable candidate excluded)\nPASS: 51 scaffold inputs explicitly unimplemented; invalid input reports error\n",
+        "stderr": "hq: 'terrio clean-room python3' finished with status 0 in the gate slot: queued 0s, executed 0s, peak 0 MiB anon+swap\n"
+      },
+      {
+        "name": "harness-controls",
+        "command": [
+          "python3",
+          "tools/isolate.py",
+          "--",
+          "python3",
+          "tools/check_harness.py"
+        ],
+        "expected_exit": 0,
+        "exit": 0,
+        "seconds": 0.962,
+        "passed": true,
+        "stdout": "PASS: approved package hashes (mutable candidate excluded)\nPASS: 50 encoded command streams independently decoded; missing area/hole, tiny extra hole and truncation-threshold controls rejected\n",
+        "stderr": "hq: 'terrio clean-room python3' finished with status 0 in the gate slot: queued 0s, executed 0s, peak 0 MiB anon+swap\n"
+      },
+      {
+        "name": "reference-replay",
+        "command": [
+          "python3",
+          "tools/isolate.py",
+          "--",
+          "python3",
+          "tools/replay.py",
+          "--reference-self-check"
+        ],
+        "expected_exit": 0,
+        "exit": 0,
+        "seconds": 1.032,
+        "passed": true,
+        "results": 51,
+        "failures": 0,
+        "encoder_domain_exclusions": [
+          "wide-i32-bowtie"
+        ],
+        "stderr": "hq: 'terrio clean-room python3' finished with status 0 in the gate slot: queued 0s, executed 0s, peak 0 MiB anon+swap\n"
+      },
+      {
+        "name": "expected-unimplemented-failure",
+        "command": [
+          "python3",
+          "tools/isolate.py",
+          "--",
+          "python3",
+          "tools/replay.py"
+        ],
+        "expected_exit": 1,
+        "exit": 1,
+        "seconds": 0.969,
+        "passed": true,
+        "results": 0,
+        "failures": 51,
+        "stderr": "hq: 'terrio clean-room python3' finished with status 1 in the gate slot: queued 0s, executed 0s, peak 0 MiB anon+swap\n"
+      },
+      {
+        "name": "rust-tests",
+        "command": [
+          "python3",
+          "tools/isolate.py",
+          "--",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline"
+        ],
+        "expected_exit": 0,
+        "exit": 0,
+        "seconds": 1.008,
+        "passed": true,
+        "stdout": "PASS: approved package hashes (mutable candidate excluded)\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+        "stderr": "   Compiling tile-repair-candidate v0.0.0 (/work/candidate)\n    Finished `test` profile [unoptimized] target(s) in 0.17s\n     Running unittests src/lib.rs (/build/debug/deps/tile_repair_candidate-c66529ba041a9fd9)\n     Running unittests src/main.rs (/build/debug/deps/candidate-6cc8754251518f04)\n   Doc-tests tile_repair_candidate\nhq: 'terrio clean-room cargo' finished with status 0 in the gate slot: queued 0s, executed 0s, peak 0 MiB anon+swap\n"
+      },
+      {
+        "name": "clippy",
+        "command": [
+          "python3",
+          "tools/isolate.py",
+          "--",
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--locked",
+          "--offline",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "expected_exit": 0,
+        "exit": 0,
+        "seconds": 2.503,
+        "passed": true,
+        "stdout": "PASS: approved package hashes (mutable candidate excluded)\n",
+        "stderr": "    Checking serde_core v1.0.229\n    Checking zmij v1.0.23\n    Checking memchr v2.8.3\n    Checking itoa v1.0.18\n    Checking serde_json v1.0.154\n    Checking tile-repair-candidate v0.0.0 (/work/candidate)\n    Finished `dev` profile [unoptimized] target(s) in 1.65s\nhq: 'terrio clean-room cargo' finished with status 0 in the gate slot: queued 0s, executed 1s, peak 0 MiB anon+swap\n"
+      },
+      {
+        "name": "format",
+        "command": [
+          "python3",
+          "tools/isolate.py",
+          "--",
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "expected_exit": 0,
+        "exit": 0,
+        "seconds": 0.888,
+        "passed": true,
+        "stdout": "PASS: approved package hashes (mutable candidate excluded)\n",
+        "stderr": "hq: 'terrio clean-room cargo' finished with status 0 in the gate slot: queued 0s, executed 0s, peak 0 MiB anon+swap\n"
+      },
+      {
+        "name": "wasm-build",
+        "command": [
+          "python3",
+          "tools/isolate.py",
+          "--slot",
+          "heavy",
+          "--",
+          "cargo",
+          "build",
+          "--locked",
+          "--offline",
+          "--lib",
+          "--target",
+          "wasm32-unknown-unknown"
+        ],
+        "expected_exit": 0,
+        "exit": 0,
+        "seconds": 2.907,
+        "passed": true,
+        "stdout": "PASS: approved package hashes (mutable candidate excluded)\n",
+        "stderr": "   Compiling zmij v1.0.23\n   Compiling serde_core v1.0.229\n   Compiling serde_json v1.0.154\n   Compiling itoa v1.0.18\n   Compiling memchr v2.8.3\n   Compiling tile-repair-candidate v0.0.0 (/work/candidate)\n    Finished `dev` profile [unoptimized] target(s) in 2.08s\nhq: 'terrio clean-room cargo' finished with status 0 in the heavy slot: queued 0s, executed 2s, peak 0 MiB anon+swap\n"
+      }
+    ],
+    "complete": true,
+    "passed": true
+  },
+  "limitations": [
+    "Bubblewrap constrains launched commands; agent-wide T3/tool isolation has not been configured",
+    "wide-i32-bowtie kernel reference succeeds; tile encoder grid comparison explicitly excluded for i32 delta overflow",
+    "Reference runtime is externally mounted and machine-specific; archive does not redistribute GEOS or Python runtime",
+    "Generated/stress repair tests and production integration remain work for the independent implementation"
+  ]
+}
