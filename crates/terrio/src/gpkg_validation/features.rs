@@ -206,7 +206,8 @@ print(json.dumps(cases))
             let bytes = std::fs::read(case["path"].as_str().unwrap()).unwrap();
             let mut checker = Checker { db: Snapshot::read(&bytes).unwrap(), report: CoreReport::default() };
             checker.features();
-            let mut actual: Vec<_> = checker.report.errors.iter().map(|error| error.requirement).collect();
+            let mut actual: Vec<_> =
+                checker.report.errors.iter().map(|error| error.requirement.number().expect("core requirement")).collect();
             actual.sort_unstable();
             let expected: Vec<u32> = serde_json::from_value(case["requirements"].clone()).unwrap();
             assert_eq!(actual, expected, "{}: {:?}", case["name"], checker.report.errors);

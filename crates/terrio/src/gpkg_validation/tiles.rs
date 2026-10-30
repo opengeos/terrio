@@ -432,7 +432,9 @@ print(json.dumps(cases))
             let mut requirements: Vec<_> = report
                 .errors
                 .iter()
-                .filter_map(|error| matches!(error.requirement, 19 | 35 | 36 | 38..=57 | 88 | 91 | 147).then_some(error.requirement))
+                .filter_map(|error| {
+                    matches!(error.requirement.number(), Some(19 | 35 | 36 | 38..=57 | 88 | 91 | 147)).then_some(error.requirement)
+                })
                 .collect();
             requirements.sort_unstable();
             assert_eq!(serde_json::json!(requirements), case["requirements"], "{case}: {report:?}");

@@ -176,7 +176,8 @@ print(json.dumps(cases))
         for case in cases {
             let bytes = std::fs::read(case["path"].as_str().unwrap()).unwrap();
             let report = super::super::check_core(&bytes);
-            let errors = report.errors.iter().filter(|error| matches!(error.requirement, 58 | 60 | 61 | 62 | 63 | 64 | 75)).count();
+            let errors =
+                report.errors.iter().filter(|error| matches!(error.requirement.number(), Some(58 | 60 | 61 | 62 | 63 | 64 | 75))).count();
             assert_eq!(errors as u64, case["errors"].as_u64().unwrap() + case["delta"].as_u64().unwrap(), "{case}: {report:?}");
         }
     }

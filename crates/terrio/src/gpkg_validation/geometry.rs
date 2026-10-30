@@ -471,7 +471,7 @@ print(json.dumps(cases))
                 assert!(checker.report.errors.iter().any(|e| e.requirement == 19), "{case}: {:?}", checker.report);
                 continue;
             }
-            let mut actual: Vec<_> = checker.report.errors.iter().map(|e| e.requirement).collect();
+            let mut actual: Vec<_> = checker.report.errors.iter().map(|e| e.requirement.number().expect("core requirement")).collect();
             actual.sort_unstable();
             let expected: Vec<u32> = serde_json::from_value(case["requirements"].clone()).unwrap();
             assert_eq!(actual, expected, "{}: {:?}", case["name"], checker.report.errors);

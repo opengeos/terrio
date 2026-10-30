@@ -5,6 +5,7 @@ mod extensions;
 mod features;
 mod geometry;
 mod metadata;
+mod relations;
 mod rtree;
 mod schema;
 mod schema_extension;
@@ -18,9 +19,28 @@ use crate::{Error, Result};
 use schema::Schema;
 use std::collections::BTreeMap;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(untagged)]
+enum Requirement {
+    Core(u32),
+    Extension(&'static str),
+}
+impl Requirement {
+    fn number(self) -> Option<u32> {
+        match self {
+            Self::Core(number) => Some(number),
+            Self::Extension(_) => None,
+        }
+    }
+}
+impl PartialEq<u32> for Requirement {
+    fn eq(&self, other: &u32) -> bool {
+        self.number() == Some(*other)
+    }
+}
 #[derive(Debug)]
 struct Violation {
-    requirement: u32,
+    requirement: Requirement,
     message: String,
 }
 #[derive(Debug, Default)]
@@ -31,6 +51,9 @@ struct CoreReport {
 }
 impl CoreReport {
     fn require(&mut self, condition: bool, requirement: u32, message: impl Into<String>) {
+        self.require_rule(condition, Requirement::Core(requirement), message);
+    }
+    fn require_rule(&mut self, condition: bool, requirement: Requirement, message: impl Into<String>) {
         if !condition {
             self.errors.push(Violation { requirement, message: message.into() });
         }
@@ -188,23 +211,30 @@ struct Checker {
 }
 impl Checker {
     fn structure(&mut self, name: &str, requirement: u32, expected: &[ColumnRule], legacy_wkt_defaults: bool) {
+        self.structure_rule(name, Requirement::Core(requirement), expected, legacy_wkt_defaults);
+    }
+    fn structure_rule(&mut self, name: &str, requirement: Requirement, expected: &[ColumnRule], legacy_wkt_defaults: bool) {
         let Some(table) = self.db.tables.get(name) else {
-            self.report.require(false, requirement, format!("missing table {name}"));
+            self.report.require_rule(false, requirement, format!("missing table {name}"));
             return;
         };
-        self.report.require(table.schema.columns.len() == expected.len(), requirement, format!("{name}: wrong column count"));
+        self.report.require_rule(table.schema.columns.len() == expected.len(), requirement, format!("{name}: wrong column count"));
         for rule in expected {
             let Some(actual) = table.schema.columns.iter().find(|c| c.name == rule.name) else {
-                self.report.require(false, requirement, format!("{name}: missing column {}", rule.name));
+                self.report.require_rule(false, requirement, format!("{name}: missing column {}", rule.name));
                 continue;
             };
-            self.report.require(
+            self.report.require_rule(
                 actual.data_type == rule.data_type,
                 requirement,
                 format!("{name}.{}: expected {}, got {}", rule.name, rule.data_type, actual.data_type),
             );
-            self.report.require(actual.not_null == rule.not_null, requirement, format!("{name}.{}: wrong NOT NULL constraint", rule.name));
-            self.report.require(
+            self.report.require_rule(
+                actual.not_null == rule.not_null,
+                requirement,
+                format!("{name}.{}: wrong NOT NULL constraint", rule.name),
+            );
+            self.report.require_rule(
                 actual.primary_key == rule.primary_key,
                 requirement,
                 format!("{name}.{}: wrong primary-key position", rule.name),
@@ -217,7 +247,7 @@ impl Checker {
             } else {
                 actual.default.as_deref()
             };
-            self.report.require(
+            self.report.require_rule(
                 same_default(default, rule.default),
                 requirement,
                 format!("{name}.{}: wrong default expression", rule.name),
@@ -473,6 +503,7 @@ fn check_core(bytes: &[u8]) -> CoreReport {
     checker.extensions();
     checker.features();
     checker.spatial_indexes();
+    checker.relations();
     checker.schema_extension();
     if let Err(error) = checker.metadata(bytes) {
         checker.report.require(false, 6, error.to_string());
@@ -492,6 +523,16 @@ fn check_core(bytes: &[u8]) -> CoreReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn extension_requirements_keep_their_names_in_reports() {
+        let core = Requirement::Core(19);
+        let extension = Requirement::Extension("gpkg_2d_gridded_coverage#13");
+        assert_eq!(serde_json::to_value(core).unwrap(), serde_json::json!(19));
+        assert_eq!(serde_json::to_value(extension).unwrap(), serde_json::json!("gpkg_2d_gridded_coverage#13"));
+        assert_eq!(core.number(), Some(19));
+        assert_eq!(extension.number(), None);
+        assert_ne!(extension, 0);
+    }
     #[test]
     fn timestamps_match_reference_calendar_and_fraction_rules() {
         for value in ["2024-02-29T23:59:59.1Z", "2026-10-29T00:00:00.123456Z"] {
@@ -790,7 +831,10 @@ print(json.dumps(dict(path=str(path),cases=cases,encodings=[str(root/(encoding+'
                 attributes.iter().map(|case| case["errors"].as_u64().unwrap() + case["error_delta"].as_u64().unwrap()).sum();
             let expected_warnings: u64 =
                 attributes.iter().map(|case| case["warnings"].as_u64().unwrap() + case["warning_delta"].as_u64().unwrap()).sum();
-            assert_eq!(report.errors.iter().filter(|error| matches!(error.requirement, 5 | 119)).count() as u64, expected_errors);
+            assert_eq!(
+                report.errors.iter().filter(|error| matches!(error.requirement.number(), Some(5 | 119))).count() as u64,
+                expected_errors
+            );
             assert_eq!(report.warnings.len() as u64, expected_warnings);
         }
     }
