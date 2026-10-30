@@ -221,7 +221,10 @@ fn oversized_tiled_windows_are_rejected_before_fetching_chunks() {
     assert_eq!(bytes_fetched, 0);
 }
 
+// The strips are read under a two-thread pool of the test's own, as a caller may read them: the
+// disallowed methods of clippy.toml are for terrio's own work, which runs on its own pool.
 #[test]
+#[allow(clippy::disallowed_methods)]
 fn eager_reads_apply_selected_limits_to_reopened_decoders() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("strips.tif");
@@ -232,10 +235,9 @@ fn eager_reads_apply_selected_limits_to_reopened_decoders() {
     image.rows_per_strip(2).unwrap();
     image.write_data(&values).unwrap();
     drop(encoder);
-    // Four 64-byte strips exercise the decoder-reopen path: terrio decodes them on threads of its
-    // own, each with a decoder it reopens (not on rayon's global pool, which a forked child cannot
-    // use: see `par`), so the test needs no pool of its own.
-    {
+    // Four 64-byte strips exercise the decoder-reopen path under a two-thread pool.
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    pool.install(|| {
         let path = path.to_str().unwrap();
         let read = |limit| terrio::open_raster_with_tiff_limits(path, TiffReadLimits { chunk_bytes: limit });
         assert!(matches!(read(63), Err(terrio::Error::DecodedLimitExceeded { limit: 63, .. })));
@@ -248,7 +250,7 @@ fn eager_reads_apply_selected_limits_to_reopened_decoders() {
         }
         assert_eq!(terrio::open_raster(path).unwrap().raster.data.len(), values.len());
         assert!(matches!(terrio::open(path).unwrap(), terrio::Dataset::Raster(_)));
-    }
+    });
 }
 
 /// A little-endian classic TIFF of 256 x 256 pixels of `samples` samples per pixel, 8 bits, coded
