@@ -423,6 +423,11 @@ impl LazyRaster {
     /// [`LazyRaster::open_tiff`] with other decoding limits than the defaults.
     pub fn open_tiff_with_limits(path: &str, limits: TiffReadLimits) -> Result<Option<Self>> {
         let loc = Location::parse(path);
+        let resolve_file = || {
+            let local = vfs::resolve(path)?;
+            let file = local.path().to_path_buf();
+            Ok::<_, Error>((Source::File(BufReader::new(std::fs::File::open(&file)?)), Some(local), Some(file)))
+        };
         let (mut source, local, file) = match &loc {
             #[cfg(remote)]
             Location::Url(_) | Location::S3 { .. } => {
@@ -434,16 +439,14 @@ impl LazyRaster {
             // A member of a zip archive, stored or seek-optimized: read in place, without
             // extracting the archive (remote archives by range requests).
             #[cfg(not(target_family = "wasm"))]
-            Location::Zip { archive, inner: Some(inner) }
-                if let Some(member) = crate::vsi::sozip::open_member(archive, inner.trim_start_matches('/'))? =>
-            {
-                (Source::Zip(Box::new(member)), None, None)
+            Location::Zip { archive, inner: Some(inner) } => {
+                if let Some(member) = crate::vsi::sozip::open_member(archive, inner.trim_start_matches('/'))? {
+                    (Source::Zip(Box::new(member)), None, None)
+                } else {
+                    resolve_file()?
+                }
             }
-            _ => {
-                let local = vfs::resolve(path)?;
-                let file = local.path().to_path_buf();
-                (Source::File(BufReader::new(std::fs::File::open(&file)?)), Some(local), Some(file))
-            }
+            _ => resolve_file()?,
         };
         if !is_tiff(&mut source) {
             return Ok(None);
