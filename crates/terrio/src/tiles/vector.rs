@@ -939,7 +939,7 @@ fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
             _ => crate::vector::reproject_layer(layer, &web)?,
         };
         let mut stats = LayerStats::default();
-        for f in &l.features {
+        for (feature_index, f) in l.features.iter().enumerate() {
             let Some(g) = &f.geometry else { continue };
             let parts: Vec<&Geometry> = match g {
                 Geometry::GeometryCollection(gs) => gs.iter().collect(),
@@ -976,7 +976,14 @@ fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
                     for tx in tx0..=tx1 {
                         for ty in ty0..=ty1 {
                             let frame = TileFrame::new(z, tx as u32, ty as u32);
-                            let Some((geom_type, geometry)) = encode_for_tile(g, &frame, o.extent, buffer, tol, &crossings)? else {
+                            let encoded = encode_for_tile(g, &frame, o.extent, buffer, tol, &crossings).map_err(|error| match error {
+                                Error::InvalidData(message) => Error::InvalidData(format!(
+                                    "layer {:?}, feature {} (index {}), tile {z}/{tx}/{ty}: {message}",
+                                    l.name, f.fid, feature_index
+                                )),
+                                other => other,
+                            })?;
+                            let Some((geom_type, geometry)) = encoded else {
                                 continue;
                             };
                             stats.geom_counts[geom_type as usize] += 1;
@@ -1346,7 +1353,12 @@ mod tests {
             .unwrap();
         let options =
             TileWriteOptions { min_zoom: Some(0), max_zoom: Some(0), extent: i32::MAX as u32, buffer: u32::MAX, ..Default::default() };
-        assert!(matches!(make_tiles(&[layer], &options), Err(Error::InvalidData(message)) if message.contains("coordinate delta")));
+        layer.features[0].fid = 42;
+        let Err(Error::InvalidData(message)) = make_tiles(&[layer], &options) else { panic!("expected encoding failure") };
+        assert!(message.contains("coordinate delta"));
+        assert!(message.contains("layer \"wide\""), "{message}");
+        assert!(message.contains("feature 42 (index 0)"), "{message}");
+        assert!(message.contains("tile 0/0/0"), "{message}");
     }
 
     #[test]

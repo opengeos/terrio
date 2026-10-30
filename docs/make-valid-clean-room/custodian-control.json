@@ -1,9 +1,0 @@
-{
-  "time": "2026-10-30T03:17:32Z",
-  "action": "interrupt optional stress oracle only",
-  "pid": 2676780,
-  "message": "\nCUSTODIAN PROCESS MESSAGE: The optional extended stress oracle is being interrupted after several CPU minutes. Read /work/notes/custodian-response.md for the approved fallible interface and final validation priorities. This message provides no algorithm details.\n",
-  "reason": "prioritize required final gates after completed stress measurements and seeded comparisons",
-  "termination_signal": "SIGTERM after SIGINT did not exit native reference call",
-  "termination_utc": "2026-10-30T03:18:07Z"
-}

@@ -179,8 +179,11 @@ containment and integer-validity candidates. Polygon hole joining sorts only the
 current polygon's candidate vertices once and maintains active sorted ranks as
 holes join the ring. A boundary-segment R-tree prunes visibility tests without
 changing the exact conflict predicate or descending candidate order. Ring
-splices, join-position scans and ear clipping can still take quadratic work;
-these indexes do not promise linear overall triangulation. An unclosed mesh
+splices, join-position scans and ear clipping can still take quadratic work.
+For H holes and up to N vertices in the growing joined ring, splices cost
+O(HN), and candidate traversal can examine O(HN) sites in addition to the
+indexed conflict queries. These indexes do not promise linear overall
+triangulation. An unclosed mesh
 boundary returns an error instead of silently discarding that component.
 Boundary hole assignment caches shell areas and queries a shell-envelope index
 before running the original point-in-ring test. Candidate IDs are restored to

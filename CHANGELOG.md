@@ -20,6 +20,7 @@
 - Tile conversion now fails explicitly on repair invariant violations instead
   of silently dropping a feature or emitting unrepaired geometry. One such
   failure stops the conversion, including a multi-zoom run.
+  Tile encoding errors identify the layer, feature ID and index, and tile Z/X/Y.
 - Polygon tile encoding reports an error when a signed cursor delta cannot fit
   in 32 bits. The [provenance inventory](docs/geos-retirement-audit.md) records
   reference comparisons, collinear-ring ordering differences and the existing

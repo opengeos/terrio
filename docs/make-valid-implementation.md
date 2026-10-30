@@ -111,9 +111,11 @@ The original [design](make-valid-clean-room/design.md),
 [standalone validation](make-valid-clean-room/validation.md),
 [approved manifest](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room/approved-manifest.json),
 [run metadata](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room/run.json) and
-[process-control message](make-valid-clean-room/custodian-control.json) are
+[process-control message](https://github.com/Mavrick-F/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/custodian-control.json) are
 preserved, with verbose one-off setup records pinned to the original reviewed
-commit. The [custodian process research](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room-process.md)
+commit. The [implementation brief](https://github.com/Mavrick-F/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/implementation-brief.txt) and
+[custodian interface decision](https://github.com/Mavrick-F/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/custodian-response.md) are also
+historical evidence, removed from the maintained tree. The [custodian process research](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room-process.md)
 and [package-preparation checks](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-handoff-validation.json)
 are historical references rather than setup instructions for Terrio contributors.
 The standalone validation predates production integration and its

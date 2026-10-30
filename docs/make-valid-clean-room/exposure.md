@@ -61,6 +61,6 @@ history; this record describes task-local inputs and observed access.
 No accidental prohibited-source exposure was reported. During implementation,
 one source-exposed integrator message conveyed only the approved fallible API
 and validation priorities; it supplied no algorithm details. The
-[interface decision](custodian-response.md) remains recorded. Detailed process
+[interface decision](https://github.com/Mavrick-F/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/custodian-response.md) remains recorded. Detailed process
 paths and transport configuration are historical evidence in the pinned
 original, not contributor setup requirements.
