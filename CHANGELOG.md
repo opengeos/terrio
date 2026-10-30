@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Geometry implementation provenance
+
+- Replace the GEOS-derived simplification, hull, tile-validity, spatial-packing
+  and clipping-envelope kernels with attributed JTS 1.20.0 implementations under
+  EDL-1.0. Replace the tile writer's linework repair independently, preserving its
+  isolated implementation and behavioral evidence. The complete old repair
+  module and helpers are removed. Public signatures are unchanged; simplification,
+  hull and tile-validity outputs can differ from earlier releases, including
+  ring starts, orientation and some geometries. The
+  [compatibility record](docs/jts-provenance.md) describes the observed behavior
+  and numeric limits. Polygon hulls can return an error when no non-degenerate
+  finite frame can be constructed. Repeated mesh edges and unclosed boundary
+  walks also return errors instead of overwriting adjacency or losing components.
+  Polygon hulls require valid, non-overlapping input; mixed degenerate components
+  can error, and invalid-input output is not guaranteed to match GEOS.
+  The previous upfront ring-crossing rejection is not preserved: invalid inputs
+  are not guaranteed to return the former "run make-valid first" error.
+- Polygon hulls keep holes on their containing outer shell when an island
+  touches a hole vertex, rather than assigning the hole to that smaller island.
+- Tile conversion now fails explicitly on repair invariant violations instead
+  of silently dropping a feature or emitting unrepaired geometry. One such
+  failure stops the conversion, including a multi-zoom run.
+  Tile encoding errors identify the layer, feature ID and index, and tile Z/X/Y.
+- Polygon tile encoding reports an error when a signed cursor delta cannot fit
+  in 32 bits. The [provenance inventory](docs/geos-retirement-audit.md) records
+  reference comparisons, collinear-ring ordering differences and the existing
+  approximate clipping-failure predictor.
+
 ### Terrain
 
 - `terrio dem color-relief` and Python's `terrio.dem(path, ..., dst=path)` read the DEM and write
