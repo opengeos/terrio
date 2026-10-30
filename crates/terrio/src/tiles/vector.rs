@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2018, Even Rouault <even dot rouault at spatialys dot com>
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):

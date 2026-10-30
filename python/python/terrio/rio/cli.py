@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
 # SPDX-FileCopyrightText: Copyright 2022 Planet Labs PBC
 # SPDX-FileCopyrightText: Copyright (c) 2014 Mapbox
-# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT AND BSD-3-Clause AND Apache-2.0
 #
 # Derived from (translated to Python and modified):

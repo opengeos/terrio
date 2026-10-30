@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2019 Joe Drago. All rights reserved.
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT AND BSD-2-Clause
 //
 // Derived from (translated to Rust and modified):

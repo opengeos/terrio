@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024 William M. Katzenmeyer
-# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT
 #
 # Derived from (adapted and modified):

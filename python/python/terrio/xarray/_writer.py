@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2019-2025, Corteva Agriscience™
 # SPDX-FileCopyrightText: Copyright (c) 2018, Dymaxion Labs
-# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT AND Apache-2.0 AND BSD-2-Clause
 #
 # Derived from (adapted and modified):

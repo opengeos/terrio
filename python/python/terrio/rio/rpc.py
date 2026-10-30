@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
 # SPDX-FileCopyrightText: Copyright (c) HER MAJESTY THE QUEEN IN RIGHT OF CANADA (2008) as represented by the Canadian Nuclear Safety Commission
 # SPDX-FileCopyrightText: Copyright (c) 2014-2015, NextGIS info@nextgis.ru
-# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT AND BSD-3-Clause
 #
 # Derived from (translated to Python and modified):

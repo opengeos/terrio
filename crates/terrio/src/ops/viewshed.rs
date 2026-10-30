@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: (c) 2024 info@hobu.co
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):

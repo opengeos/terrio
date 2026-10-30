@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
-# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT AND BSD-3-Clause
 #
 # Derived from (adapted and modified):

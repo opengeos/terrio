@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2012, Frank Warmerdam
 // SPDX-FileCopyrightText: Copyright (c) 2021, Idan Miara <idan@miara.com>
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):

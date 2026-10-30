@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2007, Frank Warmerdam <warmerdam@pobox.com>
 // SPDX-FileCopyrightText: Copyright (c) 2007-2011, Even Rouault <even dot rouault at spatialys.com>
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):

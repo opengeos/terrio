@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2021  The Blosc Developers <blosc@blosc.org>
 // SPDX-FileCopyrightText: Copyright (C) 2005-2020 Ariya Hidayat <ariya.hidayat@gmail.com>
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT AND BSD-3-Clause
 //
 // Derived from (translated to Rust and modified):

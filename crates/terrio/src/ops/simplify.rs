@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2016 Vivid Solutions, and others.
 // SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
 // SPDX-FileCopyrightText: Copyright (c) 2008-2014, Even Rouault <even dot rouault at spatialys.com>
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT AND BSD-3-Clause
 //
 // Derived from (translated to Rust and modified):

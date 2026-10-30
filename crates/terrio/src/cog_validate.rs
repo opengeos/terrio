@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2021, cogeotiff
 // SPDX-FileCopyrightText: Copyright (c) 2017, Even Rouault
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT AND BSD-3-Clause
 //
 // Derived from (translated to Rust and modified):

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2016 Vivid Solutions.
 // SPDX-FileCopyrightText: Copyright (c) 2021 Martin Davis.
 // SPDX-FileCopyrightText: Copyright (c) 2022 Martin Davis.
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT AND BSD-3-Clause
 //
 // Derived from (translated to Rust and modified):

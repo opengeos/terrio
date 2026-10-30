@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2008-2009  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
 // SPDX-FileCopyrightText: Copyright 2008-2009  David G. Lowe (lowe@cs.ubc.ca). All rights reserved.
 // SPDX-FileCopyrightText: Copyright 2011-2016  Jose Luis Blanco (joseluisblancoc@gmail.com). All rights reserved.
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT AND BSD-2-Clause
 //
 // Derived from (translated to Rust and modified):

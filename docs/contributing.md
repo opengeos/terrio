@@ -50,8 +50,9 @@ to a Rust release less than six months old, and from 1.0 on only in a minor rele
 - Credit what you port. terrio follows the [REUSE specification](https://reuse.software), checked
   in CI with `reuse lint`. A file translated or adapted from another project's source files
   starts with SPDX headers: those files' copyright lines, copied verbatim, an
-  `SPDX-FileCopyrightText: Terrio contributors` line, the `SPDX-License-Identifier` of the
-  licenses that apply, and the source files it derives from, with the version. A file written to
+  `SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors` line, the
+  `SPDX-License-Identifier` of the licenses that apply, and the source files it derives from,
+  with the version. A file written to
   match another program's behavior without translating its code says so in a comment instead.
   Add the project to `NOTICE` and [Acknowledgements](acknowledgements.md), and data files from
   elsewhere to `REUSE.toml`.

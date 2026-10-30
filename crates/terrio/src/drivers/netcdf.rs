@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2007-2016, Even Rouault <even.rouault at spatialys.com>
 // SPDX-FileCopyrightText: Copyright (c) 2010, Kyle Shannon <kyle at pobox dot com>
 // SPDX-FileCopyrightText: Copyright (c) 2021, CLS
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):

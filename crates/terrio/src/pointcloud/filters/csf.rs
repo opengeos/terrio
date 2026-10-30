@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2017 State Key Laboratory of Remote Sensing Science, Institute of Remote Sensing Science and Engineering, Beijing Normal University
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 //
 // Derived from (translated to Rust and modified):

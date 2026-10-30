@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2006-2018, Jeffrey Whitaker.
 # SPDX-FileCopyrightText: Copyright (c) 2019-2024, Open source contributors.
-# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT
 #
 # Derived from (adapted and modified):

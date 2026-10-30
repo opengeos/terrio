@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
 # SPDX-FileCopyrightText: Copyright (c) 2003, Frank Warmerdam
 # SPDX-FileCopyrightText: Copyright (c) 2007-2008, Even Rouault <even dot rouault at spatialys.com>
-# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT AND BSD-3-Clause
 #
 # Derived from (translated to Python and modified):

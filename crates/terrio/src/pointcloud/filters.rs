@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2016-2017, Bradley J Chambers (brad.chambers@gmail.com)
 // SPDX-FileCopyrightText: Copyright (c) 2017, Bradley J Chambers (brad.chambers@gmail.com)
 // SPDX-FileCopyrightText: Copyright (c) 2019, Helix.re
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT AND BSD-3-Clause
 //
 // Derived from (translated to Rust and modified):

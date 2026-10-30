@@ -10,7 +10,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2017-2019 Heidelberg University
 // SPDX-FileCopyrightText: Copyright (c) 2018, Even Rouault <even dot rouault at spatialys dot com>
 // SPDX-FileCopyrightText: Copyright (c) 2025 Javier Jimenez Shaw
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 1999-2001, Daniel Morissette
 // SPDX-FileCopyrightText: Copyright 1999-2003, Daniel Morissette
 // SPDX-FileCopyrightText: Copyright (c) 1999-2001, Frank Warmerdam
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):

@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2018-2024, Even Rouault, <even.rouault at spatialys.com>
 # SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
-# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT
 #
 # Derived from (translated to Python and modified):

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
 // SPDX-FileCopyrightText: Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
 // SPDX-FileCopyrightText: Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MPL-2.0
 //
 // Derived from (translated to Rust and modified):

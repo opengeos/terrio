@@ -7,14 +7,14 @@ SPDX-PackageDownloadLocation = "https://github.com/opengeos/terrio"
 [[annotations]]
 path = "**"
 precedence = "closest"
-SPDX-FileCopyrightText = "Terrio contributors"
+SPDX-FileCopyrightText = "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"
 SPDX-License-Identifier = "MIT"
 
 # The notices reproduce other projects' copyright lines and licence texts.
 [[annotations]]
 path = ["NOTICE", "crates/terrio/NOTICE", "crates/terrio-crs/NOTICE", "LICENSE-THIRD-PARTY.md"]
 precedence = "override"
-SPDX-FileCopyrightText = "Terrio contributors"
+SPDX-FileCopyrightText = "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"
 SPDX-License-Identifier = "MIT"
 
 # GRIB files from GDAL's test suite (autotest/gdrivers/data/grib, GDAL v3.13.3), unchanged.
@@ -44,7 +44,7 @@ SPDX-License-Identifier = "MIT"
 [[annotations]]
 path = "crates/terrio/data/grib_tables.txt.zst"
 precedence = "override"
-SPDX-FileCopyrightText = ["Copyright © 2020-2024", "Copyright (C) 2021 Even Rouault", "Terrio contributors"]
+SPDX-FileCopyrightText = ["Copyright © 2020-2024", "Copyright (C) 2021 Even Rouault", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "MIT"
 
 # The EPSG Geodetic Parameter Dataset, owned by IOGP, through PROJ 9.8.1 and GDAL.
@@ -55,27 +55,27 @@ path = [
     "crates/terrio-crs/data/point_motion.tsv",
 ]
 precedence = "override"
-SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Terrio contributors"]
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND MIT"
 
 # EPSG datums with the Esri datum names (Esri projection engine data, Apache-2.0, via PROJ 9.7.1).
 [[annotations]]
 path = "crates/terrio-crs/data/datums.tsv.zst"
 precedence = "override"
-SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Terrio contributors"]
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
 
 [[annotations]]
 path = "crates/terrio-crs/data/esri.tsv.zst"
 precedence = "override"
-SPDX-FileCopyrightText = ["Copyright © 2010-2025 Esri", "International Association of Oil & Gas Producers (IOGP)", "Terrio contributors"]
+SPDX-FileCopyrightText = ["Copyright © 2010-2025 Esri", "International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "Apache-2.0 AND LicenseRef-EPSG AND MIT"
 
 # IAU_2015 definitions from PROJ 9.8.1's data/sql/iau.sql (scripts/build_db_from_iau.py).
 [[annotations]]
 path = ["crates/terrio-crs/data/iau.tsv.zst", "crates/terrio-crs/data/iau-source.json"]
 precedence = "override"
-SPDX-FileCopyrightText = ["Copyright (c) 2021, Hobu Inc", "Terrio contributors"]
+SPDX-FileCopyrightText = ["Copyright (c) 2021, Hobu Inc", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "MIT"
 
 # HEC-RAS files from ras-commander-fast-hdf, unchanged.
@@ -100,7 +100,7 @@ path = [
     "crates/terrio/tests/data/hecras/large_root_attribute.h5",
 ]
 precedence = "override"
-SPDX-FileCopyrightText = ["Copyright (c) 2024 CLB Engineering Corporation", "Terrio contributors"]
+SPDX-FileCopyrightText = ["Copyright (c) 2024 CLB Engineering Corporation", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "MIT"
 
 # Numeric fixtures from rust-proj-capability, which carries no license yet (see NOTICE).

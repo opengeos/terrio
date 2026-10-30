@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2018, Oslandia <infos at oslandia dot com>
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):

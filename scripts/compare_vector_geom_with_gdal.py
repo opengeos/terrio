@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2018-2020, Björn Harrtell <bjorn at wololo dot org>
-# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT
 #
 # Derived from (translated to Python and modified):

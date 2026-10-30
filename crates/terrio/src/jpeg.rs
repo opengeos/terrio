@@ -11,7 +11,7 @@
 // SPDX-FileCopyrightText: Copyright (C) 1994-1998, Thomas G. Lane.
 // SPDX-FileCopyrightText: Copyright (C) 1999, Ken Murchison.
 // SPDX-FileCopyrightText: Copyright (C) 2016, 2022, 2024-2026, D. R. Commander.
-// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT AND IJG
 //
 // Derived from (translated to Rust and modified):
