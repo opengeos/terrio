@@ -893,9 +893,10 @@ python scripts/conformance.py ../terrio-data --only isea --strict
 ## Vector geometry commands (#289)
 
 `simplify`, `segmentize`, `convex-hull`, `concave-hull`, `swap-xy`, `set-geom-type`,
-`combine` and `sort` have unit tests of the GEOS/OGR behaviours they port (ring endpoint
+`combine` and `sort` have unit tests of GEOS/OGR behavior, with the simplifier, hulls
+and STR packing implemented from JTS (see [provenance](jts-provenance.md)): ring endpoint
 simplification, jump checks, OGR's segmentize direction and Z/M copies, `forceTo` dimensions,
-Graham scan ring order, concave hull areas, Hilbert codes from GDAL's C code), CLI tests of the
+Graham scan ring order, concave hull areas and Hilbert codes from GDAL's C code. There are CLI tests of the
 streamed and whole-layer paths and refusals, and Python, Node/WASM and MCP tests. The
 `vector-geom` conformance suite compares them on Tennessee and US counties, Las Vegas roads and
 Natural Earth countries and places with `gdal vector` (GDAL 3.12.2) for simplify, segmentize,
@@ -903,7 +904,8 @@ swap-xy, set-geom-type and `ogr2ogr -simplify/-segmentize`, coordinate by coordi
 OGR's `ConvexHull` (canonical WKB), `ConcaveHull` (edge sets) and GEOS's `GEOSConcaveHullOfPolygons_r` (ctypes) for polygon hulls,
 by edge sets; and, as GDAL 3.12 has no combine or sort, with Python references of GDAL 3.13's
 algorithms (GEOS's own STR tree for `--method strtree`). It needs the `gdal` command and the
-osgeo bindings.
+osgeo bindings and Shapely. Concave hulls must be valid, with relative symmetric-difference
+area at most 1e-10 and scaled Hausdorff distance at most 1e-10 when edges differ.
 
 ```sh
 cargo test -p terrio --lib -- ops::simplify ops::hull ops::vector_geom
@@ -1505,3 +1507,38 @@ uppercase metadata tables/columns, inline descending integer primary keys, nativ
 file identity checks and non-UTF-8 CLI paths. Metadata/schema declarations follow
 GeoPackage requirement 140/141 starting at version 1.2.1. Missing declared R-tree
 objects and UNIQUE constraints are rejected even where GDAL misses them.
+
+## JTS provenance replacement regressions
+
+`docs/jts-provenance.md` maps the geometry replacements to pinned JTS 1.20.0
+sources. `cargo test -p terrio --test jts_behavior` replays the captured GEOS
+simplification, convex/concave hull and STR ordering observations without native
+reference libraries. `cargo test -p terrio --lib tiles::validity` checks recorded
+integer-grid validity decisions. The existing `vector-geom` conformance suite
+continues to compare the public CLI with GDAL/GEOS on real data.
+
+`scripts/compare_jts_behavior.py` refreshes or checks the synthetic observations
+against executable GEOS APIs and optionally JTS; see the provenance document for
+commands and tolerances. MakeValid was excluded from the JTS replacement boundary; its later independent
+replacement and dedicated checks are documented in
+[the repair implementation record](make-valid-implementation.md).
+
+The independent repair regressions run with
+`cargo test -p terrio --lib tiles::repair`; encoder overflow/error propagation
+checks run with `cargo test -p terrio --lib tiles::vector`. The 51-case observed
+fixture is packaged once in `crates/terrio/tests/data/make-valid.json`; it is the
+unchanged reviewed observation set from the independent handoff. No native GEOS
+library is needed by these Rust tests. The normal fixture collector and tile
+comparator are maintained; the one-off agent launcher and scaffold are archived.
+
+`scripts/compare_make_valid_tiles.py` compares every feature geometry and presence
+against GDAL across countries (Antarctica excluded), US counties and independently
+authored invalid inputs. It requires a GDAL/Shapely environment and explicit
+`--terrio`, `--data` (countries.geojson and UScounties.gpkg), and a fresh `--scratch`
+directory. `--baseline-dir` can identify unchanged pre-existing synthetic clipping
+differences by comparing the actual per-key geometries with frozen old outputs;
+it does not waive every future difference for those keys. Reference-invalid
+quantized geometries are compared structurally and reported as invalid. A separate
+reported category permits only reassociation of an identical collinear ring: all
+oriented integer rings and all non-collinear polygon groups must still match.
+`scripts/reference/test_make_valid_tile_comparison.py` rejects broader changes.

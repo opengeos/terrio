@@ -214,8 +214,9 @@ features at a time when the input and output formats allow it, as `convert` does
 `sort` read whole layers, as GDAL does. The `vector-geom` conformance suite
 (`scripts/compare_vector_geom_with_gdal.py`) compares them with GDAL and GEOS on real data.
 
-`simplify --tolerance` is a port of GEOS 3.14's `TopologyPreservingSimplifier`, which GDAL runs
-(`OGRGeometry::SimplifyPreserveTopology`): Douglas-Peucker simplification of every line and
+`simplify --tolerance` ports JTS 1.20.0's `TopologyPreservingSimplifier`, with adaptations
+checked against GDAL's GEOS-backed `OGRGeometry::SimplifyPreserveTopology`:
+Douglas-Peucker simplification of every line and
 ring, where a section is flattened only when the new segment crosses no other segment of the
 feature and moves no other part (a hole, say) to its other side. Rings keep at least four
 points and their start point may move. Simplification is per feature, so shared boundaries
@@ -234,15 +235,17 @@ Segmentization allows at most ten million output vertices per feature across its
 lines, rings and collection members. It checks each component against the remaining
 budget before allocating its output. This limit does not cap a whole layer's total output.
 
-`convex-hull` is GEOS's Graham scan: a polygon starting at the lowest, then leftmost, vertex,
+`convex-hull` ports JTS's Graham scan: a polygon starting at the lowest, then leftmost, vertex,
 clockwise; a line string for collinear input and a point for one distinct vertex. The layer's
-type becomes unknown. `concave-hull --ratio R` (0 most concave, 1 convex) follows GEOS's
+type becomes unknown. `concave-hull --ratio R` (0 most concave, 1 convex) ports JTS's
 `ConcaveHull` for points and lines (erosion of the Delaunay triangulation of the vertices, by
 longest border edge) and `ConcaveHullOfPolygons` for polygons (erosion of the constrained
 Delaunay triangulation of the space between them, united with them); `--allow-holes` allows
-holes and `--tight` makes polygon hulls follow the polygons' outer boundaries. Triangulations
-come from the `spade` crate: ring start and orientation may differ from GEOS's, and inputs with
-co-circular vertices (grids) can triangulate, and so erode, differently. As GDAL 3.13, polygon
+holes and `--tight` makes polygon hulls follow the polygons' outer boundaries. The point and
+constrained polygon triangulations also port JTS, retaining construction and traversal order
+with compatibility adaptations tested against executable GEOS 3.14.1. Hull regressions include
+co-circular grids and multipart polygons; tolerances and source revisions are recorded in
+[the provenance record](jts-provenance.md). As GDAL 3.13, polygon
 and multipolygon layers keep their declared type and hulls are forced to it, which can join
 several polygons into one invalid polygon in a layer declared POLYGON; other layers' type
 becomes unknown.
@@ -272,7 +275,7 @@ sequential from 1.
 
 `sort --method hilbert` (default) orders features by GDAL's Hilbert code of the centre of each
 bounding box on a 65535 × 65535 grid over the layer's extent; `--method strtree` by the leaf
-order of GEOS's sort-tile-recursive tree with nodes of 10 (slices by box centre X, each sorted
+order of JTS's sort-tile-recursive packing with nodes of 10 (slices by box centre X, each sorted
 by box centre Y). Null and empty geometries go last. terrio's sorts are stable, GDAL's are not:
 features whose keys tie may come in another order. Writing a sorted layer to FlatGeobuf
 re-sorts it for the spatial index.

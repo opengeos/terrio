@@ -1,0 +1,14 @@
+{
+  "model": [
+    "claude-opus-5-5"
+  ],
+  "successful_requests": 65,
+  "actual_tools": [
+    "Bash",
+    "Edit",
+    "Read"
+  ],
+  "gateway_transport_errors": 1,
+  "credentials_archived": false,
+  "first_run_launcher_snapshot": false
+}

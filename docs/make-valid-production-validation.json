@@ -1,0 +1,822 @@
+{
+  "status": "complete with documented invalid-ring serialization differences",
+  "baseline": "0281ec0add52008c051cd024ab9a23ca855055d7",
+  "implementer": {
+    "model": "claude-opus-5-5",
+    "session": "591d41e0-232b-4e2e-9080-504dd41b4d81",
+    "exit_code": 0,
+    "model_audit": {
+      "model": [
+        "claude-opus-5-5"
+      ],
+      "successful_requests": 65,
+      "actual_tools": [
+        "Bash",
+        "Edit",
+        "Read"
+      ],
+      "gateway_transport_errors": 1,
+      "credentials_archived": false,
+      "first_run_launcher_snapshot": false
+    }
+  },
+  "checks": [
+    {
+      "label": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 3.14,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/fmt.log"
+    },
+    {
+      "label": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 15.07,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/clippy.log"
+    },
+    {
+      "label": "tiles-unit",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "terrio",
+        "--lib",
+        "tiles::vector::"
+      ],
+      "exit_code": 0,
+      "seconds": 18.49,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/tiles-unit.log"
+    },
+    {
+      "label": "tiles-integration",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "terrio",
+        "--test",
+        "tiles",
+        "--",
+        "--skip",
+        "gdal_raster_mbtiles",
+        "--skip",
+        "single_tiles_and_layers_of_gdal_archives",
+        "--skip",
+        "tippecanoe_pmtiles"
+      ],
+      "exit_code": 0,
+      "seconds": 23.88,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/tiles-integration.log"
+    },
+    {
+      "label": "jts-regression",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "terrio",
+        "--test",
+        "jts_behavior"
+      ],
+      "exit_code": 0,
+      "seconds": 1.8,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/jts-regression.log"
+    },
+    {
+      "label": "release-cli",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "-p",
+        "terrio-cli"
+      ],
+      "exit_code": 0,
+      "seconds": 250.8,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/release-cli.log"
+    },
+    {
+      "label": "wasm-binding",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "terrio-js",
+        "--target",
+        "wasm32-unknown-unknown"
+      ],
+      "exit_code": 0,
+      "seconds": 43.01,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/wasm-binding.log"
+    },
+    {
+      "label": "node-wrapper",
+      "command": [
+        "/mnt/scratch/terrio/bin/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl/wasm-bindgen",
+        "--target",
+        "nodejs",
+        "--out-dir",
+        "/mnt/scratch/terrio/clean-room-production-validation/js",
+        "--out-name",
+        "terrio",
+        "/mnt/scratch/terrio/target/wasm32-unknown-unknown/debug/terrio_js.wasm"
+      ],
+      "exit_code": 0,
+      "seconds": 17.53,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/node-wrapper.log"
+    },
+    {
+      "label": "node-tiles",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=PMTiles and MBTiles:",
+        "js/tests/node.test.mjs"
+      ],
+      "exit_code": 0,
+      "seconds": 1.45,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/node-tiles.log"
+    },
+    {
+      "label": "python-wheel",
+      "command": [
+        "maturin",
+        "build",
+        "--release",
+        "--locked",
+        "-m",
+        "python/Cargo.toml",
+        "--out",
+        "/mnt/scratch/terrio/clean-room-production-validation/wheels"
+      ],
+      "exit_code": 0,
+      "seconds": 266.87,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/python-wheel.log"
+    },
+    {
+      "label": "python-install",
+      "command": [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        "/mnt/scratch/terrio/tools/.pixi/envs/default/bin/python",
+        "--no-deps",
+        "--reinstall",
+        "/mnt/scratch/terrio/clean-room-production-validation/wheels/terrio-0.5.0-cp310-abi3-manylinux_2_39_x86_64.whl"
+      ],
+      "exit_code": 0,
+      "seconds": 0.28,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/python-install.log"
+    },
+    {
+      "label": "wheel-licenses",
+      "command": [
+        "python",
+        ".github/scripts/check-license-files.py",
+        "/mnt/scratch/terrio/clean-room-production-validation/wheels/terrio-0.5.0-cp310-abi3-manylinux_2_39_x86_64.whl"
+      ],
+      "exit_code": 0,
+      "seconds": 0.04,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/wheel-licenses.log"
+    },
+    {
+      "label": "python-tiles",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "python/tests/test_tiles.py",
+        "-k",
+        "vector_tiles_round_trip"
+      ],
+      "exit_code": 0,
+      "seconds": 0.44,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/python-tiles.log"
+    },
+    {
+      "label": "binding-invalid-smoke",
+      "command": [
+        "python",
+        "/mnt/scratch/terrio/binding_clean_room_smoke.py"
+      ],
+      "exit_code": 0,
+      "seconds": 1.0,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/binding-invalid-smoke.log"
+    },
+    {
+      "label": "tile-differential",
+      "command": [
+        "python",
+        "scripts/compare_make_valid_tiles.py",
+        "--terrio",
+        "/mnt/scratch/terrio/target/release/terrio",
+        "--data",
+        "/mnt/scratch/terrio/tile-conformance",
+        "--scratch",
+        "/mnt/scratch/terrio/clean-room-production-validation/tile-differential",
+        "--baseline-dir",
+        "/mnt/scratch/terrio/clean-room-baseline-verified"
+      ],
+      "exit_code": 1,
+      "seconds": 29.14,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/tile-differential.log",
+      "resolution": "superseded by final comparison: invalid collinear-ring associations are explicitly classified after exact oriented-ring/non-collinear-group checks; original failure retained"
+    },
+    {
+      "label": "tile-differential-final",
+      "command": [
+        "scripts/compare_make_valid_tiles.py",
+        "--terrio",
+        "/mnt/scratch/terrio/target/release/terrio",
+        "--data",
+        "/mnt/scratch/terrio/tile-conformance",
+        "--scratch",
+        "/mnt/scratch/terrio/clean-room-production-validation/tile-differential-final",
+        "--baseline-dir",
+        "/mnt/scratch/terrio/clean-room-baseline-verified"
+      ],
+      "exit_code": 0,
+      "log": "/mnt/scratch/terrio/clean-room-production-validation/tile-differential-final.log"
+    }
+  ],
+  "additional_controls": {
+    "tile_comparator_unittests": 9,
+    "gateway_security_unittests": 2,
+    "initial_full_tile_unit_tests": 41,
+    "affected_final_vector_unit_tests": 3,
+    "initial_dataset_failure_record": "checks-initial.json",
+    "initial_delta_type_complexity_record": "checks-before-type-alias.json"
+  },
+  "artifacts": [
+    {
+      "path": "/mnt/scratch/terrio/target/release/terrio",
+      "sha256": "2a795867d15fe12300d849a3d26ea780a90232791afe68f812e80a56db012cbc",
+      "bytes": 83863880
+    },
+    {
+      "path": "/mnt/scratch/terrio/clean-room-production-validation/wheels/terrio-0.5.0-cp310-abi3-manylinux_2_39_x86_64.whl",
+      "sha256": "844f9a85f0ad1a66cf3268f9f9bc65741e07d88df80ce1198aae2e63a828113e",
+      "bytes": 28225281
+    },
+    {
+      "path": "/mnt/scratch/terrio/tools/.pixi/envs/default/lib/python3.13/site-packages/terrio/_terrio.abi3.so",
+      "sha256": "7e777392a0494922f80d13851ac6a65ca0b94a2478939b389ed8779134e768b3",
+      "bytes": 87690368
+    },
+    {
+      "path": "/mnt/scratch/terrio/clean-room-production-validation/js/terrio_bg.wasm",
+      "sha256": "d739382bc0399fcce8cfcf02450cfa54d7806809a052b87a59c31b50434f5d34",
+      "bytes": 136633888
+    }
+  ],
+  "data_hashes": {
+    "/mnt/scratch/terrio/tile-conformance/countries.geojson": "514133eaeeb87f94c585d7c071c0565964f093bc70e6d809b9478c4a319da8eb",
+    "/mnt/scratch/terrio/tile-conformance/UScounties.gpkg": "11b1006277135366f1f4bb46dacf6b14a8c67c57068a0d53e38d4e82d982d8e4",
+    "/mnt/scratch/terrio/clean-room-baseline-verified/countries.geojson": "97fe0673943c89a25b766c1c7ef621ccfa2f1be111951471a0fc79ae0ac41a16"
+  },
+  "bindings": {
+    "source_features": 47,
+    "comparisons": [
+      {
+        "binding": "python",
+        "zoom": 0,
+        "features": 45,
+        "failures": [],
+        "worst_symmetric_difference_ratio": 0.0
+      },
+      {
+        "binding": "wasm-node",
+        "zoom": 0,
+        "features": 45,
+        "failures": [],
+        "worst_symmetric_difference_ratio": 0.0
+      },
+      {
+        "binding": "python",
+        "zoom": 1,
+        "features": 96,
+        "failures": [],
+        "worst_symmetric_difference_ratio": 0.0
+      },
+      {
+        "binding": "wasm-node",
+        "zoom": 1,
+        "features": 96,
+        "failures": [],
+        "worst_symmetric_difference_ratio": 0.0
+      },
+      {
+        "binding": "python",
+        "zoom": 2,
+        "features": 110,
+        "failures": [],
+        "worst_symmetric_difference_ratio": 0.0
+      },
+      {
+        "binding": "wasm-node",
+        "zoom": 2,
+        "features": 110,
+        "failures": [],
+        "worst_symmetric_difference_ratio": 0.0
+      },
+      {
+        "binding": "python",
+        "zoom": 3,
+        "features": 110,
+        "failures": [],
+        "worst_symmetric_difference_ratio": 0.0
+      },
+      {
+        "binding": "wasm-node",
+        "zoom": 3,
+        "features": 110,
+        "failures": [],
+        "worst_symmetric_difference_ratio": 0.0
+      }
+    ]
+  },
+  "gdal_tiles": {
+    "gdal": "3.13.3",
+    "geos": "3.14.1",
+    "shapely": "2.2.0",
+    "comparisons": [
+      {
+        "dataset": "countries",
+        "zoom": 0,
+        "reference_features": 176,
+        "actual_features": 176,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {}
+      },
+      {
+        "dataset": "countries",
+        "zoom": 1,
+        "reference_features": 217,
+        "actual_features": 217,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {}
+      },
+      {
+        "dataset": "countries",
+        "zoom": 2,
+        "reference_features": 231,
+        "actual_features": 231,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {}
+      },
+      {
+        "dataset": "countries",
+        "zoom": 3,
+        "reference_features": 294,
+        "actual_features": 294,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {}
+      },
+      {
+        "dataset": "countries",
+        "zoom": 4,
+        "reference_features": 454,
+        "actual_features": 454,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {}
+      },
+      {
+        "dataset": "countries",
+        "zoom": 5,
+        "reference_features": 837,
+        "actual_features": 837,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {}
+      },
+      {
+        "dataset": "countries",
+        "zoom": 6,
+        "reference_features": 1913,
+        "actual_features": 1913,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {}
+      },
+      {
+        "dataset": "UScounties",
+        "zoom": 0,
+        "reference_features": 3199,
+        "actual_features": 3199,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {
+          "02110": 1
+        }
+      },
+      {
+        "dataset": "UScounties",
+        "zoom": 1,
+        "reference_features": 3216,
+        "actual_features": 3216,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [
+          {
+            "key": "02060",
+            "features": 1,
+            "reason": "identical oriented integer rings; only collinear-ring association differs"
+          },
+          {
+            "key": "02110",
+            "features": 1,
+            "reason": "identical oriented integer rings; only collinear-ring association differs"
+          },
+          {
+            "key": "12033",
+            "features": 1,
+            "reason": "identical oriented integer rings; only collinear-ring association differs"
+          },
+          {
+            "key": "42027",
+            "features": 1,
+            "reason": "identical oriented integer rings; only collinear-ring association differs"
+          }
+        ],
+        "reference_invalid_geometries": {
+          "02110": 1,
+          "02060": 1,
+          "02198": 1,
+          "42027": 1,
+          "12033": 1
+        }
+      },
+      {
+        "dataset": "UScounties",
+        "zoom": 2,
+        "reference_features": 3639,
+        "actual_features": 3639,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [
+          {
+            "key": "22057",
+            "features": 1,
+            "reason": "identical oriented integer rings; only collinear-ring association differs"
+          }
+        ],
+        "reference_invalid_geometries": {
+          "54001": 1,
+          "22057": 1
+        }
+      },
+      {
+        "dataset": "UScounties",
+        "zoom": 3,
+        "reference_features": 3876,
+        "actual_features": 3876,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [
+          {
+            "key": "22109",
+            "features": 2,
+            "reason": "identical oriented integer rings; only collinear-ring association differs"
+          }
+        ],
+        "reference_invalid_geometries": {
+          "24011": 1,
+          "47179": 1,
+          "51077": 1,
+          "21107": 1,
+          "28059": 1,
+          "12037": 1,
+          "22109": 2
+        }
+      },
+      {
+        "dataset": "original-invalid",
+        "zoom": 0,
+        "reference_features": 45,
+        "actual_features": 45,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {}
+      },
+      {
+        "dataset": "original-invalid",
+        "zoom": 1,
+        "reference_features": 105,
+        "actual_features": 96,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [
+          {
+            "key": "collinear-subdivision-overlap",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "duplicate-holes",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "hole-outside",
+            "reason": "feature count",
+            "reference": 3,
+            "actual": 4
+          },
+          {
+            "key": "hole-outside-reverse-rings",
+            "reason": "feature count",
+            "reference": 3,
+            "actual": 4
+          },
+          {
+            "key": "hole-outside-rotate-rings",
+            "reason": "feature count",
+            "reference": 3,
+            "actual": 4
+          },
+          {
+            "key": "hole-shares-shell-edge",
+            "reason": "no matching feature geometry",
+            "bounds": [
+              0.0,
+              0.0,
+              391357.5848201029,
+              670199.8640044257
+            ]
+          },
+          {
+            "key": "identical-components",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "identical-components-reversed",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "outward-spike",
+            "reason": "no matching feature geometry",
+            "bounds": [
+              0.0,
+              0.0,
+              391357.5848201029,
+              670199.8640044257
+            ]
+          }
+        ],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {}
+      },
+      {
+        "dataset": "original-invalid",
+        "zoom": 2,
+        "reference_features": 119,
+        "actual_features": 110,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [
+          {
+            "key": "collinear-subdivision-overlap",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "duplicate-holes",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "hole-outside",
+            "reason": "feature count",
+            "reference": 3,
+            "actual": 4
+          },
+          {
+            "key": "hole-outside-reverse-rings",
+            "reason": "feature count",
+            "reference": 3,
+            "actual": 4
+          },
+          {
+            "key": "hole-outside-rotate-rings",
+            "reason": "feature count",
+            "reference": 3,
+            "actual": 4
+          },
+          {
+            "key": "identical-components",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "identical-components-reversed",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "outward-spike",
+            "reason": "no matching feature geometry",
+            "bounds": [
+              0.0,
+              0.0,
+              195678.79241005145,
+              670199.8640044257
+            ]
+          }
+        ],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {}
+      },
+      {
+        "dataset": "original-invalid",
+        "zoom": 3,
+        "reference_features": 119,
+        "actual_features": 110,
+        "worst_symmetric_difference_ratio": 0.0,
+        "failures": [],
+        "unchanged_baseline_differences": [
+          {
+            "key": "collinear-subdivision-overlap",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "duplicate-holes",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "hole-outside",
+            "reason": "feature count",
+            "reference": 3,
+            "actual": 4
+          },
+          {
+            "key": "hole-outside-reverse-rings",
+            "reason": "feature count",
+            "reference": 3,
+            "actual": 4
+          },
+          {
+            "key": "hole-outside-rotate-rings",
+            "reason": "feature count",
+            "reference": 3,
+            "actual": 4
+          },
+          {
+            "key": "identical-components",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "identical-components-reversed",
+            "reason": "feature count",
+            "reference": 4,
+            "actual": 1
+          },
+          {
+            "key": "outward-spike",
+            "reason": "no matching feature geometry",
+            "bounds": [
+              -9.313225746154785e-10,
+              9.313225746154785e-10,
+              97839.3962050248,
+              668976.8715518638
+            ]
+          }
+        ],
+        "invalid_collinear_order_differences": [],
+        "reference_invalid_geometries": {}
+      }
+    ]
+  },
+  "exclusions": {
+    "external_fixture_tests": [
+      "gdal_raster_mbtiles",
+      "single_tiles_and_layers_of_gdal_archives",
+      "tippecanoe_pmtiles"
+    ],
+    "network_tests": [
+      "remote_terrarium_window",
+      "remote_webp_tiles"
+    ],
+    "geographic_subset": "Natural Earth countries without Antarctica, outside Web Mercator",
+    "stress_oracle": "incomplete; custodian stopped the oversized optional comparison",
+    "msrv": "Rust 1.90 unavailable; used installed 1.99"
+  },
+  "kernel_source_files": {
+    "crates/terrio/src/tiles/repair/arrangement.rs": "e3f8e8efb372e22d8b881af18988da928361605794c1197a72891958afa20409",
+    "crates/terrio/src/tiles/repair/exact.rs": "bf7cdc551682a0d449528e32ecb3508d1a6ef65abb5dab9a05ffe0d8f3bd8b7e",
+    "crates/terrio/src/tiles/repair/mod.rs": "cdb4908d7be133028577873ceef113d3863c6248bcbc743c405106084ca23d10",
+    "crates/terrio/src/tiles/repair/tests.rs": "671d31cae473431b1bd90dd5d18cd0aa2d7e4a0cd28c40ebe69c1a59b119a5b4",
+    "crates/terrio/src/tiles/repair/topology.rs": "65f3fcf996ffc89f54e08e2612996e5612b33f809d5f839db803da2e6ef145fe"
+  },
+  "production_guard": "checked signed i32 deltas return Error::InvalidData through the writer; no panic compatibility wrapper imported",
+  "notices_match": true,
+  "durable_case": "/mnt/scratch/keep/terrio-clean-room/opus5.5-2026-10-30",
+  "legal_scope": "task-local provenance evidence; no repository-wide legal clearance or model-pretraining attestation",
+  "final_pr_packaging": {
+    "date_utc": "2026-10-30T04:09:45.952540+00:00",
+    "scope": "Combined JTS and independent-repair branch; runtime source unchanged from recorded production delivery.",
+    "checks": {
+      "cargo fmt --all -- --check": "pass",
+      "cargo clippy --locked --workspace --all-targets -- -D warnings": "pass",
+      "cargo test --locked --workspace": {
+        "status": "pass",
+        "passed": 1668,
+        "ignored": 16
+      },
+      "python -m unittest discover -s scripts/reference -p 'test_*.py'": {
+        "status": "pass",
+        "tests": 11
+      },
+      "python geometry/tile checks": {
+        "status": "pass",
+        "passed": 7,
+        "skipped_external_fixture_tests": 2,
+        "deselected": 10
+      },
+      "Node geometry/tile checks with final WASM binding": {
+        "status": "pass",
+        "passed": 2
+      },
+      "source archive, wheel notices and crate package file list": "pass; synchronized current notices; all new repair source and Rust fixture present; retired valid.rs absent",
+      "sealed independent delivery": "all five source hashes verified; three runtime kernel modules mechanically equal after crate -> super imports and rustfmt; ledger test-source hash corrected transparently",
+      "Cargo resolution and Linux CLI ELF inventory": "385 resolved packages with no GEOS/geos-sys; no native GEOS/GDAL CLI dependency"
+    },
+    "packaging_command_correction": {
+      "initial": "maturin sdist --locked is unsupported by installed maturin; archive phase did not run",
+      "resolution": "maturin sdist -m python/Cargo.toml --out /mnt/scratch/terrio/provenance-sdists passed; completed Rust and binding checks reused"
+    },
+    "sdist": {
+      "path": "/mnt/scratch/terrio/provenance-sdists/terrio-0.5.0.tar.gz",
+      "sha256": "1187a4539eb95ae589da29638da4dad9d0d5f61e4308c754a57703cc15cd2f03"
+    },
+    "logs": {
+      "/mnt/scratch/terrio/provenance-package-checks.log": "6939aa9d676c0aa016cc4f5f0ad52301666cd06329b428a78bb9b44064314aa5",
+      "/mnt/scratch/terrio/provenance-archive-checks.log": "428201656bff590cc883bfd79a74ee1c102692498058fa973ae49b97dac57266"
+    }
+  }
+}
