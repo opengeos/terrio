@@ -61,15 +61,6 @@ per-dataset masks weighting the samples as in GDAL, and the masks given overview
 Row-streamed COG output computes the same pixels, whatever the input row chunk size, without
 retaining the whole source image.
 
-Set the creation option `COG_OVERVIEW_POLICY=GDAL_3_13` to recursively reduce
-previously rounded levels and truncate halved dimensions as GDAL 3.13 does. This
-profile supports nearest and average, with nodata, without alpha bands or explicit
-masks. It retains bounded row streaming; `SOURCE` remains the default policy above.
-Recursive levels consume the previous level in order, instead of reducing levels
-independently in parallel. Input slabs and pending rows are copied between stages;
-this has a throughput cost that depends on the workload. Compression and each
-level's row reductions still use native parallelism. No speed advantage is implied.
-
 Native WebP TIFF output supports pixel-interleaved Byte RGB and RGBA.
 `WEBP_LOSSLESS=YES` preserves all samples, including transparent colors;
 `WEBP_LEVEL=0..100` controls lossy quality (default 75). Lossy RGBA retains alpha

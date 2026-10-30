@@ -25,13 +25,10 @@ geometry gates remain exact.
 - **Populated places to GeoPackage:** DBF numeric fields with declared width ten
   or more retain Integer64 columns, even when current values fit 32 bits. All
   7,342 features, field definitions, attributes and normalized geometries agree.
-- **COG overview pyramid:** `COG_OVERVIEW_POLICY=GDAL_3_13` recursively reduces
-  rounded levels and truncates halved dimensions. Every USGS base/overview pixel
-  now agrees, including the final 451² level. An odd-sized real optical crop also
-  has a complete, exact pyramid. The default `SOURCE` policy retains independent
-  source reduction. The new profile supports nearest/average and nodata, without
-  alpha bands or explicit masks. Its streamed implementation retains the current
-  slab and an unfinished resampling footprint, rather than the whole raster;
+- **COG overview pyramid:** COG overviews recursively reduce rounded levels and
+  truncate halved dimensions, as GDAL's COG driver does. Every USGS base/overview
+  pixel agreed, including the final 451² level. An odd-sized real optical crop also
+  had a complete, exact pyramid. Streamed writes do not retain the whole raster;
   one-row and uneven slabs produce byte-identical files.
 - **Slope and hillshade:** explicit `--kernel-version 3.13` reproduces GDAL's
   Float32 terrain arithmetic for slope and standard hillshade, Horn and

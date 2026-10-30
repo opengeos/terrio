@@ -921,10 +921,7 @@ terrio convert INPUT OUTPUT [-f FORMAT] [options]
 
 GeoTIFF/COG WebP output accepts `--compress WEBP --co WEBP_LOSSLESS=YES` or
 `--co WEBP_LEVEL=0..100` for lossy quality. Supported inputs are Byte RGB/RGBA;
-alpha is retained losslessly. COG output accepts
-`--co COG_OVERVIEW_POLICY=GDAL_3_13` for recursive, floor-sized overviews with
-`--co RESAMPLING=NEAREST|AVERAGE` and nodata, without alpha or explicit masks. The default
-`SOURCE` policy reduces each overview directly from source samples.
+alpha is retained losslessly.
 `QUALITY` aliases WebP quality (0–100) or JPEG quality (1–100).
 `JPEG_QUALITY` always accepts 1–100. For compatibility, quality keys are validated
 even when an unrelated codec ignores them. Invalid `WEBP_LOSSLESS` values are
