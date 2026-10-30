@@ -13,10 +13,11 @@ use crate::{Error, Result};
 use flate2::{Compress, Compression, FlushCompress, Status};
 use serde::Serialize;
 use std::collections::HashSet;
-mod native;
-use native::NativeSnapshot;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
+
+mod native;
+use native::NativeSnapshot;
 
 /// When members are seek-optimized.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

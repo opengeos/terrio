@@ -604,14 +604,10 @@ fn append_rejects_replaced_native_or_memory_snapshots() {
     fs::write(&output, &first).unwrap();
     fs::write(&replacement, &second).unwrap();
     for path in [&output, &replacement] {
-        fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
-            .unwrap();
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH)).unwrap();
         #[cfg(windows)]
-        matching_windows_timestamps(path);
+        matching_windows_timestamps(&file);
     }
     let (out, _) = Output::open(&s(&output), false).unwrap();
     fs::rename(replacement, &output).unwrap();
@@ -627,14 +623,13 @@ fn append_rejects_replaced_native_or_memory_snapshots() {
 }
 
 #[cfg(windows)]
-fn matching_windows_timestamps(path: &Path) {
+fn matching_windows_timestamps(file: &fs::File) {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::Storage::FileSystem::SetFileTime;
     // 1970-01-01 in Windows' 100 ns intervals since 1601-01-01.
     let epoch = 116_444_736_000_000_000u64;
     let timestamp = FILETIME { dwLowDateTime: epoch as u32, dwHighDateTime: (epoch >> 32) as u32 };
-    let file = fs::OpenOptions::new().write(true).open(path).unwrap();
     // SAFETY: the handle is live and writable; the input FILETIME remains valid
     // throughout the call. A null access-time pointer leaves that field unchanged.
     assert_ne!(unsafe { SetFileTime(file.as_raw_handle(), &timestamp, std::ptr::null(), &timestamp) }, 0);
@@ -648,8 +643,9 @@ fn windows_archive_snapshots_reject_matching_metadata_replacements() {
     let replacement = root.path().join("replacement.zip");
     fs::write(&path, stored_archive(b"old!")).unwrap();
     fs::write(&replacement, stored_archive(b"new!")).unwrap();
-    matching_windows_timestamps(&path);
-    matching_windows_timestamps(&replacement);
+    for path in [&path, &replacement] {
+        matching_windows_timestamps(&fs::OpenOptions::new().write(true).open(path).unwrap());
+    }
     let original = fs::File::open(&path).unwrap();
     let other = fs::File::open(&replacement).unwrap();
     let before = original.metadata().unwrap();

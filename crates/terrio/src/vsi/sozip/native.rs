@@ -32,8 +32,11 @@ impl NativeSnapshot {
     pub(super) fn matches_path(&self, path: &Path) -> io::Result<bool> {
         #[cfg(windows)]
         {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
             // Query the file currently named by the path, not the retained old handle.
-            self.matches_file(&File::open(path)?)
+            // Snapshot validation needs attributes and identity, not data access.
+            self.matches_file(&std::fs::OpenOptions::new().access_mode(FILE_READ_ATTRIBUTES).open(path)?)
         }
         #[cfg(not(windows))]
         {
