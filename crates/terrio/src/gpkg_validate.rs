@@ -19,6 +19,14 @@ impl GpkgRequirement {
         }
     }
 }
+impl std::fmt::Display for GpkgRequirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Core(number) => write!(f, "requirement {number}"),
+            Self::Extension(name) => write!(f, "extension requirement {name}"),
+        }
+    }
+}
 impl PartialEq<u32> for GpkgRequirement {
     fn eq(&self, n: &u32) -> bool {
         self.number() == Some(*n)
@@ -68,7 +76,8 @@ pub struct GpkgValidation {
 /// geometry binaries, tile payloads and supported read-only views. Unsupported view
 /// forms/functions produce `is_complete=false`; they are not reported as valid.
 /// The encoded image is retained by the caller; user rows are streamed, with index,
-/// identifier, DISTINCT/set and sorted-result keys retained as needed.
+/// identifier, DISTINCT/set and sorted-result keys retained as needed. Join views also
+/// retain their right-hand input rows once per evaluation, including geometry blobs.
 pub fn validate_gpkg_bytes(bytes: &[u8], options: &GpkgValidationOptions) -> Result<GpkgValidation> {
     #[cfg(feature = "sqlite")]
     {

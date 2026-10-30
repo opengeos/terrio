@@ -42,7 +42,7 @@ pub fn validate(args: ValidateArgs) -> terrio::Result<()> {
         println!("{}", serde_json::to_string_pretty(&report).map_err(|e| terrio::Error::InvalidData(e.to_string()))?);
     } else {
         for error in &report.errors {
-            println!("Error {:?}: {}", error.requirement, error.message);
+            println!("Error {}: {}", error.requirement, error.message);
         }
         for warning in &report.warnings {
             println!("Warning: {warning}");

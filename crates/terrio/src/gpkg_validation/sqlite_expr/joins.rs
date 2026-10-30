@@ -1,6 +1,6 @@
 //! Joined view sources, with explicit name binding and streaming nested loops.
-//! Only one row per source is retained. RIGHT/FULL joins retain matched row
-//! ordinals, rather than caching the right table's values or geometry blobs.
+//! The left input streams; right inputs are materialized once per evaluation so
+//! nested loops do not repeat whole-database integrity scans or view evaluation.
 use super::*;
 use parse::Parser;
 use select::{Source, View, empty_schema};
@@ -43,6 +43,10 @@ fn column(index: usize) -> Expr {
 }
 fn hidden(name: &str) -> bool {
     ["rowid", "_rowid_", "oid"].iter().any(|s| name.eq_ignore_ascii_case(s))
+}
+#[cfg(test)]
+thread_local! {
+    static RELATION_SCANS: Cell<usize> = const { Cell::new(0) };
 }
 impl Relation {
     fn parse(db: &Snapshot, p: &mut Parser, stack: &mut Vec<String>) -> Result<Self> {
@@ -92,6 +96,8 @@ impl Relation {
         self.schema.columns.len() + usize::from(self.hidden.is_some())
     }
     fn visit(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
+        #[cfg(test)]
+        RELATION_SCANS.with(|count| count.set(count.get() + 1));
         let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
         match &self.source {
             Source::Table(name) => {
@@ -340,7 +346,16 @@ impl Join {
     }
     pub fn visit(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
         let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
-        self.visit_node(&self.root, db, bytes, encoding, visitor)
+        let mut right_rows = Vec::with_capacity(self.relations.len().saturating_sub(1));
+        for relation in self.relations.iter().skip(1) {
+            let mut rows = Vec::new();
+            relation.visit(db, bytes, &mut |row| {
+                rows.push(row.to_vec());
+                Ok(true)
+            })?;
+            right_rows.push(rows);
+        }
+        self.visit_node(&self.root, db, bytes, encoding, &right_rows, visitor)
     }
     fn visit_node(
         &self,
@@ -348,6 +363,7 @@ impl Join {
         db: &Snapshot,
         bytes: &[u8],
         encoding: u32,
+        right_rows: &[Vec<Vec<Value>>],
         visitor: &mut dyn FnMut(&[Value]) -> Result<bool>,
     ) -> Result<()> {
         let Node::Pair { left, right, kind, left_width, on } = node else {
@@ -355,14 +371,12 @@ impl Join {
             return self.relations[*i].visit(db, bytes, visitor);
         };
         let relation = &self.relations[*right];
+        let rows = &right_rows[*right - 1];
         let mut matched = BTreeSet::new();
         let active = Cell::new(true);
-        self.visit_node(left, db, bytes, encoding, &mut |left_row| {
+        self.visit_node(left, db, bytes, encoding, right_rows, &mut |left_row| {
             let mut found = false;
-            let mut ordinal = 0;
-            relation.visit(db, bytes, &mut |right_row| {
-                let current = ordinal;
-                ordinal += 1;
+            for (current, right_row) in rows.iter().enumerate() {
                 let mut row = left_row.to_vec();
                 row.extend_from_slice(right_row);
                 let context = Context {
@@ -378,15 +392,17 @@ impl Join {
                 if let Some(on) = on
                     && truth(&on.evaluate(&context)?) != Some(true)
                 {
-                    return Ok(true);
+                    continue;
                 }
                 found = true;
                 if matches!(kind, Kind::Right | Kind::Full) {
                     matched.insert(current);
                 }
                 active.set(visitor(&row)?);
-                Ok(active.get())
-            })?;
+                if !active.get() {
+                    break;
+                }
+            }
             if !found && matches!(kind, Kind::Left | Kind::Full) && active.get() {
                 let mut row = left_row.to_vec();
                 row.resize(left_row.len() + relation.width(), Value::Null);
@@ -395,17 +411,16 @@ impl Join {
             Ok(active.get())
         })?;
         if active.get() && matches!(kind, Kind::Right | Kind::Full) {
-            let mut ordinal = 0;
-            relation.visit(db, bytes, &mut |right_row| {
-                let current = ordinal;
-                ordinal += 1;
+            for (current, right_row) in rows.iter().enumerate() {
                 if matched.contains(&current) {
-                    return Ok(true);
+                    continue;
                 }
                 let mut row = vec![Value::Null; *left_width];
                 row.extend_from_slice(right_row);
-                visitor(&row)
-            })?;
+                if !visitor(&row)? {
+                    break;
+                }
+            }
         }
         Ok(())
     }
@@ -414,6 +429,38 @@ impl Join {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires the local Python SQLite reference"]
+    fn joined_sources_are_scanned_once_per_evaluation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("joins.sqlite");
+        let script = r#"
+import sqlite3,sys
+with sqlite3.connect(sys.argv[1]) as db:
+    db.executescript("CREATE TABLE a(id INTEGER); CREATE TABLE b(id INTEGER); CREATE VIEW vb AS SELECT id FROM b;")
+    db.executemany("INSERT INTO a VALUES(?)", [(i,) for i in range(2000)])
+    db.executemany("INSERT INTO b VALUES(?)", [(i,) for i in range(3)])
+    db.executescript("CREATE VIEW direct AS SELECT a.id,b.id AS right_id FROM a LEFT JOIN b ON a.id=b.id; CREATE VIEW nested AS SELECT a.id,vb.id AS right_id FROM a LEFT JOIN vb ON a.id=vb.id;")
+"#;
+        assert!(std::process::Command::new("python").arg("-c").arg(script).arg(&path).status().unwrap().success());
+        let bytes = std::fs::read(path).unwrap();
+        let db = Snapshot::read(&bytes).unwrap();
+        for name in ["direct", "nested"] {
+            RELATION_SCANS.with(|count| count.set(0));
+            let mut rows = 0;
+            View::compile(&db, name)
+                .unwrap()
+                .visit_control(&db, &bytes, &mut |row| {
+                    assert_eq!(row[0], Value::Int(rows));
+                    assert_eq!(row[1], if rows < 3 { Value::Int(rows) } else { Value::Null });
+                    rows += 1;
+                    Ok(true)
+                })
+                .unwrap();
+            assert_eq!(rows, 2000);
+            assert_eq!(RELATION_SCANS.with(Cell::get), 2, "{name}");
+        }
+    }
     #[test]
     fn joins_bind_names_and_bound_source_count() {
         let mut db = Snapshot {

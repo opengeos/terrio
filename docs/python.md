@@ -626,3 +626,16 @@ passed to unsupported writers are rejected. Any raster with a dataset mask, incl
 since that streaming path supports alpha bands rather than separate masks.
 Normal raster writes materialize the full raster and its mask; remote inputs
 therefore fetch the selected image blocks and mask blocks.
+
+## GeoPackage validation
+
+```python
+report = terrio.validate_gpkg("data.gpkg", full_check=True, strict=False)
+report_from_bytes = terrio.validate_gpkg(gpkg_bytes, unicode_case=False)
+print(report["valid"], report["complete"], report["errors"])
+```
+
+Returns a dictionary with `valid`, `complete`, `version`, `errors`, `warnings` and
+`unsupported_checks`. Paths accept native or `/vsimem/` files; uploaded bytes are
+also supported. The [CLI reference](cli.md#geopackage-validation) documents the
+supported rules, SQL subset, case options, memory use and checkpoint requirement.

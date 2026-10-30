@@ -569,3 +569,19 @@ pixels. `parse_color_table`, `color_table_from_bytes` and native
 `read_color_table` accept indexed text/QGIS tables or raster palettes. See
 [Palette conversion](cli.md#palette-conversion) for channel selection,
 quantization settings, supported formats and GDAL differences.
+
+## GeoPackage validation
+
+```rust,no_run
+use terrio::{GpkgValidationOptions, validate_gpkg, validate_gpkg_bytes};
+let options = GpkgValidationOptions { full_check: true, ..Default::default() };
+let report = validate_gpkg("data.gpkg", &options)?;
+let from_bytes = validate_gpkg_bytes(&std::fs::read("data.gpkg")?, &options)?;
+assert!(report.is_complete && from_bytes.is_complete);
+# Ok::<(), terrio::Error>(())
+```
+
+`GpkgValidation` exposes validity, completeness, version, requirement-numbered
+errors, warnings and unsupported checks. It serializes validity/completeness as
+`valid`/`complete`. The `sqlite` feature is required. See the
+[supported checks and limitations](cli.md#geopackage-validation).

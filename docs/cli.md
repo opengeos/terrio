@@ -2612,3 +2612,43 @@ offset, units and nodata. Numeric integer/float metadata compares by value.
 An array present in only some inputs is retained; regions belonging to other
 inputs use that array's nodata value, or zero when it has none.
 >
+
+## GeoPackage validation
+
+```sh
+terrio gpkg-validate data.gpkg --json
+terrio gpkg-validate data.gpkg --full-check --strict
+terrio gpkg-validate icu-created.gpkg --unicode-case
+```
+
+The pure Rust validator reports `valid`, `complete`, `version`, `errors` (a numeric
+core or named extension `requirement` and `message`), `warnings` and
+`unsupported_checks`. Exit status is 0 for a valid image, 1 for invalid data or
+strict-mode warnings, and 2 when unsupported checks prevent completing validation.
+The MCP `gpkg-validate` tool is read-only: a completed query returns its structured
+verdict with `isError=false`; CLI verdict statuses are appended as diagnostic text.
+Execution failures still return `isError=true`.
+
+Checks cover SQLite structure, foreign keys and indexes; GeoPackage core and
+extension metadata; geometry WKB; raster tile payloads and registered views.
+`--full-check` adds advisory attribute storage, range, length and date checks;
+`--strict` makes warnings invalidate the verdict. Stock ASCII case functions are
+the default; `--unicode-case` selects Unicode lower/upper/LIKE behavior for images
+created with ICU SQLite. NOCASE collation retains SQLite's ASCII behavior.
+
+Native paths and `/vsimem/` images must be closed/checkpointed. Validation reads
+the complete database image and refuses nonempty WAL or rollback-journal sidecars;
+it never checkpoints or modifies the file. Uploaded bytes are supported by the
+Rust/Python/JavaScript APIs. Filename requirement 3 applies only to path inputs.
+
+Supported views include projections, filters, DISTINCT, ORDER/LIMIT/OFFSET,
+nested views, inner/cross/left/right/full/natural joins and compound SELECTs.
+Aggregates, CTEs, subqueries, window functions, extension loading and unimplemented
+functions yield an explicitly incomplete verdict. The image stays in memory;
+ordinary user rows stream, while metadata, integrity keys, DISTINCT/set values
+and sorted candidates are retained. Join views additionally retain all right-hand
+input rows, including geometry blobs, once per evaluation. Nested-loop comparisons
+can still be quadratic, but inputs are not rescanned for each outer row.
+
+Checks are stricter than GDAL for some malformed geometry, image and metadata
+payloads. See [validation details and known differences](testing.md#geopackage-specification-validation).
