@@ -20,7 +20,8 @@ pub fn repack(args: RepackArgs) -> terrio::Result<()> {
 /// Read-only GeoPackage validation, also exposed as an MCP tool.
 #[derive(clap::Args)]
 pub struct ValidateArgs {
-    /// Closed/checkpointed native GeoPackage or /vsimem/ image.
+    /// Closed/checkpointed native GeoPackage or /vsimem/ image. Retains the complete
+    /// image in memory and makes multiple record passes.
     input: std::path::PathBuf,
     /// Add advisory attribute range, length, date and storage-class checks.
     #[arg(long)]

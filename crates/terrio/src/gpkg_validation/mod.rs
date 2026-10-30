@@ -274,6 +274,8 @@ impl Checker {
         };
         self.report.require_rule(table.schema.columns.len() == expected.len(), requirement, format!("{name}: wrong column count"));
         for rule in expected {
+            // GDAL 3.13.3 _check_structure requires the prescribed spelling of
+            // standard columns; SQL identifier lookup elsewhere ignores case.
             let Some(actual) = table.schema.columns.iter().find(|c| c.name == rule.name) else {
                 self.report.require_rule(false, requirement, format!("{name}: missing column {}", rule.name));
                 continue;

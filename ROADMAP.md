@@ -108,7 +108,8 @@ commands. Command-group progress:
 - [ ] GeoPackage validation: SQLite integrity, core and extension metadata, geometries,
       raster tiles and supported registered views through Rust, CLI/MCP, Python and JavaScript.
       Proposed in [#403](https://github.com/opengeos/terrio/pull/403), with explicit incomplete
-      reports for unsupported SQL and 50 GDAL 3.13.3 comparisons registered as `gpkg-validate`.
+      reports for unsupported SQL; 50 GDAL 3.13.3 validation attempts (34 compared,
+      16 not compared because GDAL refuses the malformed inputs), registered as `gpkg-validate`.
 
 - [x] Dataset identification: bounded 16 KiB headers, ordered input batches, recursive local
       discovery and explicit companion-file reader fallback through Rust, CLI/MCP, Python and
