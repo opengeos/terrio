@@ -1,0 +1,131 @@
+name: Docker
+
+# Builds the `terrio` image (Dockerfile) for linux/amd64 and linux/arm64, each on a native runner,
+# and publishes it to the GitHub Container Registry as ghcr.io/opengeos/terrio. release.yml calls
+# this on version tags (tags 0.5.0, 0.5 and latest); it can also be run by hand (Actions > Docker),
+# which from a branch publishes a tag named after the branch. Pull requests changing the image and
+# release-dry-run.yml build and check it without publishing. Authenticates with GITHUB_TOKEN, so
+# there are no secrets to set up.
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: Publish the image, rather than only building and checking it
+        required: false
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      push:
+        description: Publish the image, rather than only building and checking it
+        required: false
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker.yml
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    name: build (${{ matrix.platform.arch }})
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { os: ubuntu-latest, arch: amd64 }
+          - { os: ubuntu-24.04-arm, arch: arm64 }
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.platform.arch }}
+          load: true
+          tags: terrio:test
+      - name: Check the image runs
+        run: |
+          docker run --rm terrio:test --version
+          docker run --rm terrio:test formats > /dev/null
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request' && inputs.push
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # By digest: the merge job names the two images with one set of tags. Reuses the build above.
+      - name: Push
+        id: push
+        if: github.event_name != 'pull_request' && inputs.push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.platform.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Record the digest
+        if: github.event_name != 'pull_request' && inputs.push
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir digests
+          touch "digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request' && inputs.push
+        with:
+          name: docker-digest-${{ matrix.platform.arch }}
+          path: digests/*
+          if-no-files-found: error
+
+  merge:
+    needs: [build]
+    if: github.event_name != 'pull_request' && inputs.push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: docker-digest-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # latest follows the highest release: the metadata action leaves it off pre-releases.
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+      - name: Publish the multi-platform image
+        working-directory: digests
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          args=()
+          while read -r tag; do args+=(--tag "$tag"); done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" $(printf "$IMAGE@sha256:%s " *)
+      - name: Show the published image
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "$IMAGE:$VERSION"
