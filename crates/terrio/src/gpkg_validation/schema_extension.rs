@@ -21,7 +21,7 @@ fn int_real_cmp(integer: i64, real: f64) -> Option<Ordering> {
 }
 /// SQLite's stored-value order for two NUMERIC-affinity columns. Preserve
 /// integer precision when comparing an INTEGER to a REAL near 2^53 or 2^63.
-fn compare(a: &Value, b: &Value) -> Option<Ordering> {
+pub(super) fn compare(a: &Value, b: &Value) -> Option<Ordering> {
     match (a, b) {
         (Value::Null, _) | (_, Value::Null) => None,
         (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),

@@ -5,7 +5,8 @@ use super::*;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Atom {
+pub(super) enum Atom {
+    Null,
     Integer(i64),
     Real(u64),
     Text(Vec<u8>, usize),
@@ -245,7 +246,7 @@ fn real_text(real: f64) -> String {
     out
 }
 
-fn atom(value: &Value, column: &schema::Column, stored: bool) -> Option<Atom> {
+pub(super) fn atom(value: &Value, column: &schema::Column, stored: bool) -> Option<Atom> {
     let a = affinity(&column.data_type);
     let value = if stored {
         if a == Affinity::Real

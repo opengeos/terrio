@@ -9,11 +9,25 @@ pub(super) struct Column {
     pub primary_key: usize,
     pub default: Option<String>,
     pub collation: String,
+    pub not_null_declared: bool,
+    pub generated: Option<GeneratedColumn>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GeneratedColumn {
+    pub expression: String,
+    pub stored: bool,
 }
 #[derive(Debug, Clone)]
 pub(super) struct UniqueKey {
     pub columns: Vec<String>,
     pub collations: Vec<Option<String>>,
+    pub descending: Vec<bool>,
+    pub primary: bool,
+}
+#[derive(Debug, Clone)]
+pub(super) struct IndexDeclaration {
+    pub key: UniqueKey,
+    pub unique: bool,
 }
 #[derive(Debug, Clone)]
 pub(super) struct ForeignKey {
@@ -29,6 +43,7 @@ pub(super) struct Schema {
     pub without_rowid: bool,
     pub rowid_alias: Option<usize>,
     pub virtual_module: Option<String>,
+    pub strict: bool,
 }
 #[derive(Debug, Clone)]
 struct Token {
@@ -147,7 +162,7 @@ fn reference(tokens: &[Token], columns: Vec<String>) -> Result<ForeignKey> {
     Ok(ForeignKey { columns, table, parent_columns })
 }
 fn unique_key(tokens: &[Token]) -> Option<UniqueKey> {
-    let mut key = UniqueKey { columns: Vec::new(), collations: Vec::new() };
+    let mut key = UniqueKey { columns: Vec::new(), collations: Vec::new(), descending: Vec::new(), primary: false };
     let mut at = 0;
     while at < tokens.len() {
         let start = at;
@@ -159,6 +174,7 @@ fn unique_key(tokens: &[Token]) -> Option<UniqueKey> {
         }
         let mut term = &tokens[start..at];
         at += 1;
+        key.descending.push(term.last().is_some_and(|t| t.is("DESC")));
         if term.last().is_some_and(|t| t.is("ASC") || t.is("DESC")) {
             term = &term[..term.len() - 1];
         }
@@ -180,16 +196,21 @@ fn unique_key(tokens: &[Token]) -> Option<UniqueKey> {
 }
 impl Schema {
     pub(super) fn unique_index(sql: &str) -> Result<Option<UniqueKey>> {
+        Ok(Self::index(sql)?.filter(|index| index.unique).map(|index| index.key))
+    }
+    /// Plain-column indexes; expression and partial indexes need the SQL evaluator.
+    pub(super) fn index(sql: &str) -> Result<Option<IndexDeclaration>> {
         let all = tokens(sql)?;
-        if !all.get(1).is_some_and(|t| t.is("UNIQUE")) {
-            return Ok(None);
+        let keyword = if all.get(1).is_some_and(|t| t.is("UNIQUE")) { 2 } else { 1 };
+        if !all.first().is_some_and(|t| t.is("CREATE")) || !all.get(keyword).is_some_and(|t| t.is("INDEX")) {
+            return Err(bad("malformed index declaration"));
         }
         let Some(open) = all.iter().position(|t| t.is("(")) else { return Ok(None) };
         let end = close(&all, open)?;
         if all[end + 1..].iter().any(|t| t.is("WHERE")) {
             return Ok(None);
         }
-        Ok(unique_key(&all[open + 1..end]))
+        Ok(unique_key(&all[open + 1..end]).map(|key| IndexDeclaration { key, unique: all.get(1).is_some_and(|t| t.is("UNIQUE")) }))
     }
     pub fn parse(sql: &str) -> Result<Self> {
         let all = tokens(sql)?;
@@ -202,6 +223,7 @@ impl Schema {
             without_rowid: all[end + 1..].windows(2).any(|p| p[0].is("WITHOUT") && p[1].is("ROWID")),
             rowid_alias: None,
             virtual_module: all[..open].windows(2).find(|pair| pair[0].is("USING")).map(|pair| pair[1].value.to_ascii_lowercase()),
+            strict: all[end + 1..].iter().any(|token| token.is("STRICT")),
         };
         let mut primary = Vec::new();
         let mut descending_aliases = Vec::new();
@@ -228,8 +250,9 @@ impl Schema {
                     primary = columns.clone();
                 }
                 if (first.is("UNIQUE") || first.is("PRIMARY"))
-                    && let Some(key) = unique_key(&part[begin + 1..finish])
+                    && let Some(mut key) = unique_key(&part[begin + 1..finish])
                 {
+                    key.primary = first.is("PRIMARY");
                     schema.unique.push(key);
                 }
                 if first.is("FOREIGN") {
@@ -265,28 +288,54 @@ impl Schema {
                 .replace(" )", ")")
                 .to_ascii_uppercase();
             let rest = &part[kind_end..];
-            let mut column =
-                Column { name: name.clone(), data_type, not_null: false, primary_key: 0, default: None, collation: "BINARY".into() };
+            let mut column = Column {
+                name: name.clone(),
+                data_type,
+                not_null: false,
+                primary_key: 0,
+                default: None,
+                collation: "BINARY".into(),
+                not_null_declared: false,
+                generated: None,
+            };
             let mut i = 0;
             while i < rest.len() {
                 if rest[i].is("NOT") && rest.get(i + 1).is_some_and(|t| t.is("NULL")) {
                     column.not_null = true;
+                    column.not_null_declared = true;
                 }
                 if rest[i].is("PRIMARY") && rest.get(i + 1).is_some_and(|t| t.is("KEY")) {
                     primary.push(name.clone());
                     if rest.get(i + 2).is_some_and(|t| t.is("DESC")) {
                         descending_aliases.push(name.clone());
                     }
-                    schema.unique.push(UniqueKey { columns: vec![name.clone()], collations: vec![None] });
+                    schema.unique.push(UniqueKey {
+                        columns: vec![name.clone()],
+                        collations: vec![None],
+                        descending: vec![rest.get(i + 2).is_some_and(|t| t.is("DESC"))],
+                        primary: true,
+                    });
                 }
                 if rest[i].is("UNIQUE") {
-                    schema.unique.push(UniqueKey { columns: vec![name.clone()], collations: vec![None] });
+                    schema.unique.push(UniqueKey {
+                        columns: vec![name.clone()],
+                        collations: vec![None],
+                        descending: vec![false],
+                        primary: false,
+                    });
                 }
                 if rest[i].is("COLLATE") {
                     column.collation = rest.get(i + 1).ok_or_else(|| bad("missing collation"))?.value.to_ascii_uppercase();
                 }
                 if rest[i].is("REFERENCES") {
                     schema.foreign_keys.push(reference(&rest[i + 1..], vec![name.clone()])?);
+                }
+                if rest[i].is("AS") && rest.get(i + 1).is_some_and(|t| t.is("(")) {
+                    let end = close(rest, i + 1)?;
+                    column.generated = Some(GeneratedColumn {
+                        expression: sql[rest[i + 1].end..rest[end].start].trim().into(),
+                        stored: rest[end + 1..].iter().any(|t| t.is("STORED")),
+                    });
                 }
                 if rest[i].is("DEFAULT") {
                     i += 1;

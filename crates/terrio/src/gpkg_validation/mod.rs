@@ -1,5 +1,6 @@
 //! GeoPackage validation rules, built and tested before exposing the complete public validator.
 //! Metadata requirements follow OGC GeoPackage 1.4 and GDAL 3.13.3 validate_gpkg.py.
+mod constraints;
 mod content;
 mod extensions;
 mod features;
@@ -70,14 +71,15 @@ impl Table {
     fn decode(&self, record: &[u8], rowid: Option<i64>, encoding: u32) -> Result<Vec<Value>> {
         let stored = sqlite_repack::decode_record(record, encoding)?;
         let mut values = vec![Value::Null; self.schema.columns.len()];
-        let mut order: Vec<_> = (0..values.len()).collect();
+        let mut order: Vec<_> =
+            (0..values.len()).filter(|i| !self.schema.columns[*i].generated.as_ref().is_some_and(|g| !g.stored)).collect();
         if self.schema.without_rowid {
             order.sort_by_key(|i| {
                 let pk = self.schema.columns[*i].primary_key;
                 if pk == 0 { values.len() + *i } else { pk - 1 }
             });
         }
-        if stored.len() > values.len() {
+        if stored.len() > order.len() {
             return Err(Error::InvalidData("SQLite record has more fields than its table".into()));
         }
         for (field, column) in order.iter().enumerate() {
@@ -500,6 +502,9 @@ fn check_core(bytes: &[u8]) -> CoreReport {
         }
     };
     let mut checker = Checker { db, report };
+    if let Err(error) = checker.constraints(bytes) {
+        checker.report.require(false, 6, error.to_string());
+    }
     if let Err(error) = checker.foreign_keys(bytes) {
         checker.report.require(false, 6, error.to_string());
     }
