@@ -12,6 +12,7 @@ mod relations;
 mod rtree;
 mod schema;
 mod schema_extension;
+mod sqlite_expr;
 mod tiles;
 
 use crate::drivers::{

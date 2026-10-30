@@ -44,6 +44,7 @@ pub(super) struct Schema {
     pub rowid_alias: Option<usize>,
     pub virtual_module: Option<String>,
     pub strict: bool,
+    pub checks: Vec<String>,
 }
 #[derive(Debug, Clone)]
 struct Token {
@@ -224,6 +225,7 @@ impl Schema {
             rowid_alias: None,
             virtual_module: all[..open].windows(2).find(|pair| pair[0].is("USING")).map(|pair| pair[1].value.to_ascii_lowercase()),
             strict: all[end + 1..].iter().any(|token| token.is("STRICT")),
+            checks: Vec::new(),
         };
         let mut primary = Vec::new();
         let mut descending_aliases = Vec::new();
@@ -262,6 +264,9 @@ impl Schema {
                 continue;
             }
             if first.is("CHECK") {
+                let begin = part.iter().position(|t| t.is("(")).ok_or_else(|| bad("missing CHECK expression"))?;
+                let end = close(part, begin)?;
+                schema.checks.push(sql[part[begin].end..part[end].start].trim().into());
                 continue;
             }
             let name = first.value.clone();
@@ -329,6 +334,10 @@ impl Schema {
                 }
                 if rest[i].is("REFERENCES") {
                     schema.foreign_keys.push(reference(&rest[i + 1..], vec![name.clone()])?);
+                }
+                if rest[i].is("CHECK") && rest.get(i + 1).is_some_and(|t| t.is("(")) {
+                    let end = close(rest, i + 1)?;
+                    schema.checks.push(sql[rest[i + 1].end..rest[end].start].trim().into());
                 }
                 if rest[i].is("AS") && rest.get(i + 1).is_some_and(|t| t.is("(")) {
                     let end = close(rest, i + 1)?;

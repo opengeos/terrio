@@ -1,5 +1,6 @@
 //! SQLite required values, unique keys and ordinary index records (requirement 6).
-//! CHECK, generated expressions and partial/expression indexes require SQL evaluation.
+//! CHECK and virtual generated columns use the SQLite scalar evaluator.
+//! Partial/expression index projections are planned separately.
 use super::*;
 use integrity::Atom;
 use std::cmp::Ordering;
@@ -149,14 +150,18 @@ fn make_index(name: String, table_name: &str, table: &Table, mut key: Vec<Slot>,
 }
 impl Checker {
     pub(super) fn constraints(&mut self, bytes: &[u8]) -> Result<()> {
+        let evaluators = self
+            .db
+            .tables
+            .iter()
+            .filter(|(_, t)| t.schema.virtual_module.is_none())
+            .map(|(name, table)| sqlite_expr::RowEvaluator::new(name, &table.schema).map(|plan| (name.clone(), plan)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
         let mut indexes = Vec::new();
         let mut primary_order = BTreeMap::new();
         for (name, table) in &self.db.tables {
             if table.schema.virtual_module.is_some() {
                 continue;
-            }
-            if table.schema.columns.iter().any(|c| c.generated.is_some()) {
-                self.report.warnings.push(format!("{name}: generated expressions still need SQL evaluation"));
             }
             if table.schema.without_rowid {
                 primary_order.insert(name.clone(), PrimaryOrder { slots: primary(table)?, previous: None, bad: false });
@@ -179,9 +184,6 @@ impl Checker {
                 if is_primary && table.schema.without_rowid {
                     continue;
                 }
-                if fields.iter().any(|s| s.metadata.generated.as_ref().is_some_and(|g| !g.stored)) {
-                    continue;
-                }
                 let index_name = format!("sqlite_autoindex_{name}_{}", i + 1);
                 let mut index = make_index(index_name.clone(), name, table, fields, true, true)?;
                 index.bad = !self.db.objects.iter().any(|object| object.0 == "index" && object.1 == index_name);
@@ -195,22 +197,13 @@ impl Checker {
             };
             if let Some(declaration) = Schema::index(&object.4)? {
                 let fields = slots(table, &declaration.key)?;
-                if fields.iter().any(|s| s.metadata.generated.as_ref().is_some_and(|g| !g.stored)) {
-                    continue;
-                }
                 indexes.push(make_index(object.1.clone(), name, table, fields, declaration.unique, false)?);
             } else {
                 self.report.warnings.push(format!("{}: partial/expression index still needs SQL evaluation", object.1));
             }
         }
         for object in self.db.objects.iter().filter(|entry| entry.0 == "index" && entry.4.is_empty()) {
-            let generated =
-                self.db.tables.get(&object.2).is_some_and(|table| table.schema.columns.iter().any(|column| column.generated.is_some()));
-            self.report.require(
-                generated || indexes.iter().any(|index| index.name == object.1),
-                6,
-                format!("{}: orphan automatic index", object.1),
-            );
+            self.report.require(indexes.iter().any(|index| index.name == object.1), 6, format!("{}: orphan automatic index", object.1));
         }
         let encoding = u32::from_be_bytes(
             bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| Error::InvalidData("truncated SQLite header".into()))?,
@@ -221,11 +214,28 @@ impl Checker {
                 return Ok(());
             }
             let table = &self.db.tables[&entry.1];
-            let row = table.decode(record, rowid, encoding)?;
-            for (i, column) in table.schema.columns.iter().enumerate() {
-                if column.generated.as_ref().is_some_and(|g| !g.stored) {
-                    continue;
+            let physical = table.decode(record, rowid, encoding)?;
+            let row = if let Some(evaluator) = evaluators.get(&entry.1) {
+                evaluator.row(&entry.1, &table.schema, physical, rowid, encoding)?
+            } else {
+                physical
+            };
+            if let Some(evaluator) = evaluators.get(&entry.1) {
+                for (i, check) in evaluator.checks.iter().enumerate() {
+                    if !check.check(&sqlite_expr::Context {
+                        columns: &table.schema.columns,
+                        row: &row,
+                        rowid,
+                        table: Some(&entry.1),
+                        strict: table.schema.strict,
+                        unicode_case: true,
+                        encoding,
+                    })? {
+                        invalid_values.insert(format!("{}: CHECK constraint {} failed", entry.1, i + 1));
+                    }
                 }
+            }
+            for (i, column) in table.schema.columns.iter().enumerate() {
                 let null = matches!(row[i], Value::Null) || matches!(row[i],Value::Real(v) if v.is_nan());
                 let required = column.not_null_declared || (table.schema.without_rowid || table.schema.strict) && column.primary_key > 0;
                 if null && required {

@@ -32,7 +32,7 @@ fn affinity(kind: &str) -> Affinity {
         Affinity::Numeric
     }
 }
-fn numeric(text: &str) -> Option<Value> {
+pub(super) fn numeric(text: &str) -> Option<Value> {
     // SQLite's numeric conversion reads up to the first NUL and recognizes
     // all six ASCII whitespace characters (including vertical tab).
     let text = text.split('\0').next()?.trim_matches(|c: char| matches!(c, '\t'..='\r' | ' '));
@@ -161,7 +161,7 @@ fn decimal_digits(value: f64) -> (Vec<u8>, i32) {
 
 /// SQLite 3.54's %!.17g rendering, including its round-trip shortening.
 /// The digit rounding/shortening follows sqlite3FpDecode (see NOTICE).
-fn real_text(real: f64) -> String {
+pub(super) fn real_text(real: f64) -> String {
     if real == 0.0 {
         return "0.0".into();
     }
