@@ -2845,3 +2845,16 @@ test("rasterTiles keeps valid floating zero tiles with nonzero nodata", () => {
   assert.equal(report.written, 4);
   raster.free();
 });
+
+test("rasterTiles handles per-channel nodata without hiding valid RGB channels", () => {
+  const raster = terrio.createRaster(null, {size: [2, 2], bandCount: 3, ot: "Byte", burn: [255, 20, 30], nodata: 255, crs: "EPSG:4326", bbox: [0, 0, 2, 2]});
+  const report = terrio.rasterTiles(raster, {tilingScheme: "raster", grid: {tileSize: 2}, format: "GTiff", alpha: true, resampling: "nearest"}, (name, bytes) => {
+    const tile = terrio.open(bytes, name);
+    for (const [band, value] of [[1, 0], [2, 20], [3, 30], [4, 255]]) {
+      assert.deepEqual(Array.from(tile.readBand(band)), [value, value, value, value]);
+    }
+    tile.free();
+  });
+  assert.equal(report.written, 1);
+  raster.free();
+});

@@ -168,6 +168,8 @@ impl TileLevel {
 /// A compact plan containing one descriptor per zoom, not per tile.
 #[derive(Debug, Clone, Serialize)]
 pub struct TilePlan {
+    /// Requested or automatically chosen maximum zoom, even if limits exclude it.
+    pub max_zoom: u8,
     /// Selected levels, ordered from lowest to highest zoom.
     pub levels: Vec<TileLevel>,
 }
@@ -220,7 +222,7 @@ impl TilePlan {
                 levels.push(TileLevel { matrix, range });
             }
         }
-        finish(levels, options)
+        finish(levels, options, max_zoom)
     }
 
     /// A raster-adapted matrix. The maximum zoom always has the source resolution;
@@ -250,7 +252,7 @@ impl TilePlan {
                 levels.push(TileLevel { matrix, range });
             }
         }
-        finish(levels, options)
+        finish(levels, options, max_zoom)
     }
 
     /// The total number of output tiles, without enumerating them.
@@ -330,6 +332,9 @@ pub fn render_cell(
         fn info(&mut self) -> Result<WarpSourceInfo> {
             self.inner.info()
         }
+        fn read_mask(&mut self, window: crate::Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+            self.inner.read_mask(window, overview)
+        }
         fn read_window(&mut self, window: crate::Window, options: &crate::WindowOptions) -> Result<crate::RasterDataset> {
             let bands = if options.bands.is_empty() { self.bands } else { options.bands.len() };
             let needed =
@@ -342,6 +347,7 @@ pub fn render_cell(
             self.inner.read_window(window, options)
         }
     }
+    let masked = source.has_mask()?;
     let mut bounded = Bounded { inner: source, bands, value_bytes: dtype.size_bytes(), limit: limits.max_source_window_bytes };
     let mut options = options.clone();
     options.dst_transform = Some(cell.geo_transform);
@@ -350,7 +356,7 @@ pub fn render_cell(
     options.extent_srs = None;
     options.resolution = None;
     options.target_aligned_pixels = false;
-    super::warp::warp_sources(&mut [&mut bounded], &options)
+    if masked { super::warp::warp_reader_masked(&mut bounded, &options) } else { super::warp::warp_sources(&mut [&mut bounded], &options) }
 }
 
 fn invalid(message: &str) -> Error {
@@ -418,11 +424,11 @@ fn restrict(mut range: TileRange, limits: &TileLimits, shift: u8) -> Option<Tile
     (range.min_x <= range.max_x && range.min_y <= range.max_y).then_some(range)
 }
 
-fn finish(levels: Vec<TileLevel>, options: &GridOptions) -> Result<TilePlan> {
+fn finish(levels: Vec<TileLevel>, options: &GridOptions, max_zoom: u8) -> Result<TilePlan> {
     if levels.is_empty() && !options.no_intersection_ok {
         return Err(invalid("the input extent and requested tile coordinates do not intersect"));
     }
-    let plan = TilePlan { levels };
+    let plan = TilePlan { levels, max_zoom };
     plan.count()?;
     Ok(plan)
 }

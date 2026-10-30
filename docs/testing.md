@@ -1611,10 +1611,10 @@ oriented integer rings and all non-collinear polygon groups must still match.
 ## Separate-file raster tiles (#289)
 
 `raster-tiles` in `scripts/conformance.py` compares XYZ/TMS folder output with
-GDAL 3.13.3 on real Landsat RGB derivatives and USGS elevation. The 36 cases
-include 34 exact comparisons of filenames, pixels, sample types, nodata/masks
+GDAL 3.13.3 on real Landsat RGB derivatives and USGS elevation. The 43 cases
+include 41 exact comparisons of filenames, pixels, sample types, nodata/masks
 and GeoTIFF grids/CRS, plus two explicitly reported policy differences.
-That pyramid's 1,146,880 samples independently match GDAL direct-source per-tile
+The lower-zoom pyramid's 1,146,880 samples independently match GDAL direct-source per-tile
 warps exactly. Terrio resamples every level directly from the source; GDAL's
 previously generated image pyramid can give different lower-level values/masks.
 GDAL's `--no-alpha` output retains 15 zero-filled tiles even when all source
@@ -1625,13 +1625,18 @@ agreement is not claimed by these nearest-neighbor checks.
 
 Fixture preparation clears inherited nodata on the RGB source so explicit mask
 and alpha behavior can be checked separately. The nodata derivative sets its own
-nodata and hole. GDAL 3.13.3 ignores a per-dataset mask when a source also has
+nodata and hole. A separate derivative sets nodata in only one RGB channel;
+missing channels must become zero while the remaining valid channels keep the
+pixel opaque. UInt16 RGB and Float32 DEM mask derivatives are cross-checked
+against independent GDAL alpha warps, including stored masks, values/types and
+georeferencing. GDAL 3.13.3 ignores a per-dataset mask when a source also has
 nodata (and warns); Terrio combines those validity restrictions.
 
 The counted remote check serves a real USGS-derived 2048 x 2048 COG without
 stored overviews. One 128 x 128 tile transferred 196,608 bytes in three GETs
-from a 10,780,400-byte file and matched GDAL exactly. These counts cover HTTP
-response payloads, not HEAD requests, encoder memory or timing. This check
+from a 10,780,400-byte file and matched GDAL exactly. A masked variant retained
+its mask and values while also transferring 196,608 bytes in three GETs from a
+10,790,324-byte COG. These counts cover HTTP response payloads, not HEAD requests, encoder memory or timing. This check
 requires less than one quarter of the full file's bytes. Stored-overview policy
 is not compared here: a separate probe found GDAL 3.13.3's raster tile command
 reading a 512 x 512 stored overview for a native-resolution 2048 x 2048 raster
@@ -1644,10 +1649,13 @@ before any value-only exception can be reported.
 
 Rust regressions additionally check source-window/output budgets on a ten-billion
 pixel procedural source, nodata/padded-edge alpha, grid arithmetic,
-atomic new-directory publication, unfinished temporary files, non-overwriting resume and refusal of symlinked output
-descendants, plus premultiplied cubic interpolation of a default RGBA GeoTIFF. Python exercises lazy and loaded inputs; JavaScript exercises
-incremental callbacks and preservation of the original callback exception. Retile output layouts
-are not implemented yet.
+atomic publication, unfinished temporary files, non-overwriting resume and refusal
+of preexisting symlinked output descendants. Additional regressions cover cubic
+premultiplied RGBA, partial-channel nodata, typed masks with valid NaNs, mask
+retention when alpha is removed, and an excluded maximum zoom retaining the lower
+zoom's resampler. Python exercises loaded/lazy/path inputs and typed dataset masks;
+JavaScript exercises incremental callbacks, partial-channel nodata and preservation
+of the original callback exception. Retile output layouts are not implemented yet.
 
 ```sh
 python scripts/conformance.py ../terrio-data --only raster-tiles --strict

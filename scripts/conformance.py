@@ -1071,8 +1071,8 @@ def suite_raster_query(ctx):
 
 def suite_raster_tiles(ctx):
     """Folder tile pixels, filenames, masks and grids on real imagery/elevation."""
-    suite = Suite("raster-tiles", "Separate-file raster tiles", "GDAL 3.13.3 raster tile",
-                  "Real Landsat and USGS derivatives; XYZ/TMS, raster/global grids, Byte PNG alpha/nodata/masks and typed GeoTIFF tiles. Exact nearest-neighbor samples, names, masks, types and TIFF georeferencing. Lower zooms resample directly from source. Generated-pyramid and no-alpha blank-tile differences are independently checked and reported; interpolating-kernel agreement is not asserted.")
+    suite = Suite("raster-tiles", "Separate-file raster tiles", "GDAL 3.13.3 raster tile / alpha warp",
+                  "Real Landsat and USGS derivatives; XYZ/TMS, raster/global grids, Byte PNG alpha/nodata/masks and typed GeoTIFF tiles. Exact nearest-neighbor samples, names, masks, types and TIFF georeferencing; independent GDAL alpha warps check masked UInt16/Float32 outputs, and two remote COG probes measure payload reads. Lower zooms resample directly from source. Generated-pyramid and no-alpha blank-tile differences are independently checked and reported; interpolating-kernel agreement is not asserted.")
     if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None:
         suite.skipped = "needs GDAL 3.13 commands/bindings and NumPy"
         return suite

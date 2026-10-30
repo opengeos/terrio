@@ -53,3 +53,38 @@ def test_valid_zero_tiff_samples_are_preserved(tmp_path):
         tile = terrio.open_raster(str(path))
         assert tile.nodata == -999999
         np.testing.assert_array_equal(tile.read(1), np.zeros((2, 2), dtype="float32"))
+
+
+@pytest.mark.parametrize("dtype", ["uint16", "float32"])
+@pytest.mark.parametrize("alpha_source", [False, True])
+def test_geotiff_dataset_masks_are_retained(tmp_path, gdal, dtype, alpha_source):
+    source = tmp_path / "masked.tif"
+    pixels = np.full((2 if alpha_source else 1, 3, 5), 7, dtype=dtype)
+    if alpha_source:
+        pixels[1] = 65535 if dtype == "uint16" else 255
+    raster = terrio.Raster.from_array(pixels, (0, 1, 0, 3, 0, -1), crs="EPSG:4326")
+    raster.write(str(source))
+    dataset = gdal.Open(str(source), gdal.GA_Update)
+    if alpha_source:
+        dataset.GetRasterBand(2).SetColorInterpretation(gdal.GCI_AlphaBand)
+    dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+    mask = np.full((3, 5), 255, dtype="uint8")
+    mask[0, 1] = 0
+    dataset.GetRasterBand(1).GetMaskBand().WriteArray(mask)
+    dataset = None
+    output = tmp_path / "tiles"
+    terrio.raster_tiles(
+        source,
+        output,
+        tiling_scheme="raster",
+        grid={"tile_size": 2},
+        format="GTiff",
+        alpha=False,
+        resampling="nearest",
+    )
+    tile = terrio.open_raster(str(output / "1/0/0.tif"), lazy=True)
+    assert tile.count == 1
+    assert tile.read(1).dtype == np.dtype(dtype)
+    np.testing.assert_array_equal(tile.read(1), [[7, 0], [7, 7]])
+    np.testing.assert_array_equal(tile.read_mask(), [[255, 0], [255, 255]])
+    assert tile.nodata is None

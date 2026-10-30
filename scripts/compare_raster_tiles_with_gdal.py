@@ -86,17 +86,63 @@ def compare_direct_pyramid(source, actual, plan):
                 if np.all(expected[-1] == 255):
                     expected = expected[:-1]
                 tile = gdal.Open(str(actual / str(matrix['zoom']) / str(col) / f'{row}.png'))
-                if not np.array_equal(expected, tile.ReadAsArray()):
+                if not np.array_equal(expected, tile.ReadAsArray(), equal_nan=True):
                     raise AssertionError(f'direct-source GDAL warp mismatch at {matrix["zoom"]}/{col}/{row}')
                 total += expected.size
     return f'{total} samples exactly match independent GDAL per-tile direct-source warps'
 
 
-def remote_probe(data, root, terrio):
+def compare_masked_tiff(source, actual, plan):
+    """Cross-check stored masks/data against independent GDAL alpha warps."""
+    original = gdal.Open(str(source))
+    samples = 0
+    for level in plan['levels']:
+        matrix, limits = level['matrix'], level['range']
+        size = matrix['tile_size']
+        dx, dy = matrix['resolution']
+        for row in range(limits['min_y'], limits['max_y'] + 1):
+            for col in range(limits['min_x'], limits['max_x'] + 1):
+                left = matrix['origin'][0] + col*size*dx
+                top = matrix['origin'][1] - row*size*dy
+                ref = gdal.Warp('', original, format='MEM', outputBounds=[left, top-size*dy, left+size*dx, top],
+                                width=size, height=size, resampleAlg='near', dstAlpha=True, errorThreshold=0, overviewLevel='NONE')
+                values = ref.ReadAsArray()
+                tile = gdal.Open(str(actual / str(matrix['zoom']) / str(col) / f'{row}.tif'))
+                expected = values[:-1] if original.RasterCount > 1 else values[0]
+                if tile.RasterCount != original.RasterCount or not np.array_equal(expected, tile.ReadAsArray(), equal_nan=True):
+                    raise AssertionError('masked GeoTIFF samples/band counts differ from GDAL')
+                mask = (values[-1] != 0).astype('uint8')*255
+                for band in range(1, tile.RasterCount + 1):
+                    a, b = tile.GetRasterBand(band), original.GetRasterBand(band)
+                    if a.DataType != b.DataType or a.GetNoDataValue() is not None:
+                        raise AssertionError('masked GeoTIFF type/nodata changed')
+                    if not a.GetMaskFlags() & gdal.GMF_PER_DATASET or not np.array_equal(a.GetMaskBand().ReadAsArray(), mask):
+                        raise AssertionError('dataset mask was not preserved in the GeoTIFF')
+                if not np.allclose(tile.GetGeoTransform(), ref.GetGeoTransform(), rtol=1e-12, atol=1e-8):
+                    raise AssertionError('masked GeoTIFF grid differs')
+                actual_crs, expected_crs = osr.SpatialReference(wkt=tile.GetProjection()), osr.SpatialReference(wkt=ref.GetProjection())
+                if not actual_crs.IsSame(expected_crs):
+                    raise AssertionError('masked GeoTIFF CRS differs')
+                samples += expected.size
+    return f'{samples} exact samples; matching GDAL validity, types, grid/CRS with internal dataset masks'
+
+
+def remote_probe(data, root, terrio, masked=False):
     """Count response payloads for one tile of an actual USGS-derived COG."""
-    cog = root / 'remote.tif'
-    gdal.Translate(str(cog), str(data / 'usgs_dem.tif'), format='COG',
-                   width=2048, height=2048, creationOptions=['BLOCKSIZE=128', 'COMPRESS=DEFLATE', 'OVERVIEWS=NONE'])
+    label = 'remote-masked' if masked else 'remote'
+    cog = root / (label + '.tif')
+    source = data / 'usgs_dem.tif'
+    if masked:
+        source = root / 'remote-mask-source.tif'
+        ds = gdal.Translate(str(source), str(data / 'usgs_dem.tif'), width=2048, height=2048)
+        ds.GetRasterBand(1).DeleteNoDataValue()
+        ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+        mask = np.full((2048, 2048), 255, dtype='uint8')
+        mask[550:580, 400:430] = 0
+        ds.GetRasterBand(1).GetMaskBand().WriteArray(mask)
+        ds = None
+    gdal.Translate(str(cog), str(source), format='COG', width=2048, height=2048,
+                   creationOptions=['BLOCKSIZE=128', 'COMPRESS=DEFLATE', 'OVERVIEWS=NONE'])
     size = cog.stat().st_size
     counts = {'bytes': 0, 'requests': 0}
 
@@ -133,14 +179,17 @@ def remote_probe(data, root, terrio):
 
     opts = ['--tiling-scheme', 'raster', '--format', 'GTiff', '--no-alpha', '--tile-size', '128',
             '--max-zoom', '4', '--min-x', '3', '--max-x', '3', '--min-y', '4', '--max-y', '4', '--resampling', 'nearest']
-    reference, actual = root / 'remote-ref', root / 'remote-out'
-    run(['gdal', 'raster', 'tile', cog, reference, '--webviewer', 'none', '--num-threads', '1', *opts])
+    reference, actual = root / (label + '-ref'), root / (label + '-out')
+    if masked:
+        plan = json.loads(run([terrio, 'tile', cog, actual, '--dry-run', *opts]))
+    else:
+        run(['gdal', 'raster', 'tile', cog, reference, '--webviewer', 'none', '--num-threads', '1', *opts])
     with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
             run([terrio, 'tile', f'http://127.0.0.1:{server.server_port}/dem.tif', actual, *opts])
-            detail = compare_folders(reference, actual, 'tif')
+            detail = compare_masked_tiff(cog, actual, plan) if masked else compare_folders(reference, actual, 'tif')
         finally:
             server.shutdown()
             worker.join()
@@ -168,17 +217,19 @@ def main():
         ds = gdal.Translate(str(dem), str(args.data / 'usgs_dem.tif'), srcWin=[600, 500, 513, 299])
         ds = None
         sources = {'rgb': rgb, 'dem': dem}
-        for kind in ['nodata', 'mask', 'alpha']:
+        for kind in ['nodata', 'partial-nodata', 'mask', 'alpha']:
             path = root / f'{kind}.tif'
             ds = gdal.Translate(str(path), str(rgb), bandList=[1, 2, 3, 1] if kind == 'alpha' else [1, 2, 3])
             valid = np.full((299, 513), 255, dtype='uint8')
             valid[:25, :30] = 0
-            if kind == 'nodata':
+            if kind in ['nodata', 'partial-nodata']:
                 for i in range(1, 4):
                     values = ds.GetRasterBand(i).ReadAsArray()
-                    values[:25, :30] = 0
+                    nodata = 255 if kind == 'partial-nodata' else 0
+                    if kind == 'nodata' or i == 1:
+                        values[:25, :30] = nodata
                     ds.GetRasterBand(i).WriteArray(values)
-                    ds.GetRasterBand(i).SetNoDataValue(0)
+                    ds.GetRasterBand(i).SetNoDataValue(nodata)
             elif kind == 'mask':
                 ds.CreateMaskBand(gdal.GMF_PER_DATASET)
                 ds.GetRasterBand(1).GetMaskBand().WriteArray(valid)
@@ -253,10 +304,33 @@ def main():
                     results.append(dict(name=name, status='identical', detail=detail))
             except Exception as error:
                 results.append(dict(name=name, status='differs', detail=str(error)))
+        for label, source, dtype in [('RGB UInt16', rgb, gdal.GDT_UInt16), ('DEM Float32', dem, gdal.GDT_Float32)]:
+            try:
+                masked = root / ('masked-' + label.replace(' ', '-') + '.tif')
+                ds = gdal.Translate(str(masked), str(source), outputType=dtype)
+                for band in range(1, ds.RasterCount + 1):
+                    ds.GetRasterBand(band).DeleteNoDataValue()
+                ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+                mask = np.full((299, 513), 255, dtype='uint8')
+                mask[:25, :30] = 0
+                ds.GetRasterBand(1).GetMaskBand().WriteArray(mask)
+                ds = None
+                actual = root / ('masked-out-' + label.replace(' ', '-'))
+                opts = ['--tiling-scheme', 'raster', '--format', 'GTiff', '--max-zoom', '2', '--tile-size', '128', '--resampling', 'nearest']
+                run([args.terrio, 'tile', masked, actual, *opts])
+                plan = json.loads(run([args.terrio, 'tile', masked, actual, '--dry-run', *opts]))
+                detail = compare_masked_tiff(masked, actual, plan)
+                results.append(dict(name='masked GeoTIFF ' + label, status='identical', detail=detail))
+            except Exception as error:
+                results.append(dict(name='masked GeoTIFF ' + label, status='differs', detail=str(error)))
         try:
             results.append(dict(name='remote USGS single-tile I/O', status='identical', detail=remote_probe(args.data, root, args.terrio)))
         except Exception as error:
             results.append(dict(name='remote USGS single-tile I/O', status='differs', detail=str(error)))
+        try:
+            results.append(dict(name='remote masked USGS single-tile I/O', status='identical', detail=remote_probe(args.data, root, args.terrio, masked=True)))
+        except Exception as error:
+            results.append(dict(name='remote masked USGS single-tile I/O', status='differs', detail=str(error)))
     print(json.dumps(results, indent=2) if args.json else '\n'.join(f'{r["status"]}: {r["name"]}: {r["detail"]}' for r in results))
     return int(any(r['status'] == 'differs' for r in results))
 

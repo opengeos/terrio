@@ -2759,7 +2759,7 @@ an incomplete verdict; this includes the cost of character-class ranges.
 Checks are stricter than GDAL for some malformed geometry, image and metadata
 payloads. See [validation details and known differences](testing.md#geopackage-specification-validation).
 
-### Separate-file raster tiles
+## Separate-file raster tiles
 
 `terrio tile INPUT OUTPUT_DIR` writes separate `z/x/y.png` tiles. The default
 `WebMercatorQuad` grid uses EPSG:3857; `--tiling-scheme WorldCRS84Quad` uses
@@ -2778,12 +2778,15 @@ terrio tile rgb.tif ignored --dry-run
 
 PNG requires Byte gray/RGB/palette input, optionally with alpha; scale other
 inputs first, or select `--format GTiff` to retain their types and bands.
-PNG tiles get alpha for nodata, dataset masks and padded edges. Fully opaque
+PNG tiles get alpha for nodata, dataset masks and padded edges. Each color
+channel's nodata is excluded before interpolation; the pixel remains opaque when
+other channels are valid. GeoTIFF outputs without alpha retain dataset masks and
+exclude masked samples from resampling. Fully opaque
 tiles omit automatic alpha; `--add-alpha` retains it on every tile and
 `--no-alpha` removes it. `--output-nodata` sets the background when alpha is
 disabled. `--skip-blank` omits fully transparent/nodata-only tiles, including
 without alpha (GDAL 3.13.3 can retain zero-filled nodata-only tiles with
-`--no-alpha`). Plain GeoTIFF blank detection uses a separate validity rendering
+`--no-alpha`). GeoTIFF mask/blank processing uses a separate validity rendering
 pass; it can read source windows again while retaining the same buffer budgets.
 PNG output contains image pixels only, without world files, CRS sidecars or
 web viewers. Use the JSON grid from `--dry-run` to obtain tile georeferencing;
@@ -2813,7 +2816,9 @@ contents or options. Symlinked descendant paths are refused. A failure can leave
 completed tiles and unfinished hidden temporary files. Each final filename is
 published atomically only after its contents are synced; resume ignores unfinished
 temporary files and fills the missing tiles. Use a fresh directory when
-changing generation options.
+changing generation options. The caller must control the output tree throughout
+generation; hostile concurrent replacement of its directories requires separate
+filesystem confinement.
 
 Directory writes require a native filesystem; WebAssembly callers use the
 incremental tile sink instead. The command is also the MCP `tile` tool. Rust callers use

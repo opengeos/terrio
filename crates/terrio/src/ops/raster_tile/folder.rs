@@ -164,9 +164,10 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
         return Err(invalid("the plan exceeds max_tiles"));
     }
     let (alpha, color, methods) = validate_rendering(&info.raster, options, extension)?;
+    let preserve_mask = extension == "tif" && !alpha && source.has_mask()?;
     let mut report = TileReport { planned, ..Default::default() };
     for level in &plan.levels {
-        let method = methods[usize::from(level.matrix.zoom != plan.levels.last().unwrap().matrix.zoom)];
+        let method = methods[usize::from(level.matrix.zoom != plan.max_zoom)];
         for cell in level.cells(options.convention) {
             let name = format!("{}/{}/{}.{}", cell.zoom, cell.x, cell.y, extension);
             if sink.exists(&name)? {
@@ -181,6 +182,7 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
                 ..Default::default()
             };
             let mut color_blank = false;
+            let mut output_mask = None;
             let mut tile = if color {
                 warp.src_nodata = Nodata::None;
                 warp.dst_nodata = Nodata::Values(vec![0.0]);
@@ -199,7 +201,7 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
                 }
                 out
             };
-            if options.skip_blank && !color {
+            if (options.skip_blank && !color) || preserve_mask {
                 // The output's zero padding is distinct from its source nodata tag.
                 // Render validity independently so valid zero-valued tiles survive.
                 let mut coverage = ColorSource { source, info: info.clone(), only_alpha: true };
@@ -211,6 +213,10 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
                 };
                 let density = render_cell(&mut coverage, &cell, &coverage_options, RenderLimits::default())?;
                 color_blank = (0..density.raster.data.len()).all(|i| density.raster.data.get_f64(i) == 0.0);
+                if preserve_mask {
+                    output_mask =
+                        Some((0..density.raster.data.len()).map(|i| if density.raster.data.get_f64(i) != 0.0 { 255 } else { 0 }).collect());
+                }
             }
             // GDAL omits an automatically generated alpha channel on fully opaque tiles.
             if extension == "png" && options.alpha.is_none() {
@@ -238,7 +244,11 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
                 if crate::dataset::needs_nodata_pam(&tile) {
                     return Err(Error::Unsupported("folder GeoTIFF tiles currently require a single shared nodata value".into()));
                 }
-                crate::memory::write_raster_bytes(&tile, &name, &RasterWriteOptions { driver: Some(driver), ..Default::default() })?
+                crate::memory::write_raster_bytes(
+                    &tile,
+                    &name,
+                    &RasterWriteOptions { driver: Some(driver), mask: output_mask, ..Default::default() },
+                )?
             };
             sink.put(&name, &bytes)?;
             report.written += 1;
@@ -249,6 +259,7 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
 
 /// Premultiplied Float64 data and alpha are resampled together. Zero-alpha pixels
 /// contribute zero density and cannot bleed their colors into neighboring pixels.
+/// Per-band densities also exclude each channel's nodata before normalization.
 struct ColorSource<'a> {
     source: &'a mut dyn WarpSource,
     info: WarpSourceInfo,
@@ -259,10 +270,11 @@ impl WarpSource for ColorSource<'_> {
         let mut info = self.info.clone();
         let ds = &mut info.raster;
         let bands = if self.only_alpha { 0 } else { color_bands(ds)? };
-        ds.raster.bands = bands + 1;
+        let output_bands = if self.only_alpha { 1 } else { 2 * bands + 1 };
+        ds.raster.bands = output_bands;
         ds.raster.data_type = DataType::F64;
         ds.has_nodata = false;
-        ds.band_nodata = vec![None; bands + 1];
+        ds.band_nodata = vec![None; output_bands];
         ds.band_metadata.clear();
         ds.color_table.clear();
         Ok(info)
@@ -287,16 +299,17 @@ impl WarpSource for ColorSource<'_> {
             &input
         };
         let bands = data_bands(ds);
-        let output_bands = if self.only_alpha { 1 } else { bands + 1 };
+        let output_bands = if self.only_alpha { 1 } else { 2 * bands + 1 };
         let n = window.width * window.height;
         let mut values = vec![0.0; n * output_bands];
         for i in 0..n {
-            let nodata = (0..bands).all(|b| {
+            let invalid_band = |b: usize| {
                 ds.band_nodata(b + 1).is_some_and(|nd| {
                     let v = ds.raster.data.get_f64(b * n + i);
                     v == nd || (v.is_nan() && nd.is_nan())
                 })
-            });
+            };
+            let nodata = (0..bands).all(invalid_band);
             let a = if nodata || mask.as_ref().is_some_and(|m| m[i] == 0) {
                 0.0
             } else if bands < ds.raster.bands {
@@ -307,7 +320,9 @@ impl WarpSource for ColorSource<'_> {
             values[(output_bands - 1) * n + i] = a;
             if !self.only_alpha {
                 for b in 0..bands {
-                    values[b * n + i] = if a > 0.0 { ds.raster.data.get_f64(b * n + i) * a } else { 0.0 };
+                    let density = if invalid_band(b) { 0.0 } else { a };
+                    values[b * n + i] = if density > 0.0 { ds.raster.data.get_f64(b * n + i) * density } else { 0.0 };
+                    values[(bands + b) * n + i] = density;
                 }
             }
         }
@@ -338,13 +353,14 @@ fn alpha_max(dtype: DataType) -> f64 {
     }
 }
 fn finish_color(ds: &RasterDataset, dtype: DataType, alpha: bool, nodata: Option<f64>) -> Result<RasterDataset> {
-    let bands = ds.raster.bands - 1;
+    let bands = (ds.raster.bands - 1) / 2;
     let n = ds.raster.cols * ds.raster.rows;
     let mut values = vec![0.0; n * (bands + usize::from(alpha))];
     for i in 0..n {
-        let a = ds.raster.data.get_f64(bands * n + i);
+        let a = ds.raster.data.get_f64(2 * bands * n + i);
         for b in 0..bands {
-            values[b * n + i] = if a > 1e-10 { ds.raster.data.get_f64(b * n + i) / a } else { nodata.unwrap_or(0.0) };
+            let density = ds.raster.data.get_f64((bands + b) * n + i);
+            values[b * n + i] = if density > 1e-10 { ds.raster.data.get_f64(b * n + i) / density } else { nodata.unwrap_or(0.0) };
         }
         if alpha {
             values[bands * n + i] = a.clamp(0.0, 1.0) * alpha_max(dtype);
@@ -599,6 +615,134 @@ mod tests {
             }
         }
         assert!(partial > 0);
+    }
+
+    #[test]
+    fn partially_nodata_channels_are_zero_without_hiding_other_channels() {
+        let config = crate::RasterConfig {
+            cols: 2,
+            rows: 2,
+            bands: 3,
+            data_type: DataType::U8,
+            x_min: 0.,
+            y_min: 0.,
+            cell_size: 1.,
+            nodata: 255.,
+            ..Default::default()
+        };
+        let values = vec![255., 10., 10., 255., 20., 20., 20., 255., 30., 30., 30., 255.];
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, values).unwrap(), true);
+        let mut sink = Collect::default();
+        generate(&mut crate::LazyRaster::from(dataset), &options(), &mut sink).unwrap();
+        let tile = crate::memory::open_raster_bytes(sink.0["0/0/0.png"].clone(), "tile.png").unwrap();
+        assert_eq!(tile.raster.data.to_f64_vec(), [0., 10., 10., 0., 20., 20., 20., 0., 30., 30., 30., 0., 255., 255., 255., 0.]);
+    }
+
+    #[test]
+    fn masked_uint16_geotiff_keeps_validity_and_zeros_masked_samples() {
+        let config = crate::RasterConfig {
+            cols: 2,
+            rows: 2,
+            bands: 1,
+            data_type: DataType::U16,
+            x_min: 0.,
+            y_min: 0.,
+            cell_size: 1.,
+            ..Default::default()
+        };
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, vec![10., 999., 30., 40.]).unwrap(), false);
+        let mut source = crate::LazyRaster::from_masked_dataset(dataset, vec![255, 0, 255, 255]).unwrap();
+        let mut sink = Collect::default();
+        let options = TileOptions { format: "GTiff".into(), ..options() };
+        generate(&mut source, &options, &mut sink).unwrap();
+        let mut tile = crate::memory::open_raster_lazy_bytes(sink.0["0/0/0.tif"].clone(), "tile.tif").unwrap();
+        assert_eq!(tile.data_type(), DataType::U16);
+        assert_eq!(tile.read().unwrap().raster.data.to_f64_vec(), [10., 0., 30., 40.]);
+        assert_eq!(tile.read_mask(Window::full(2, 2), None).unwrap(), Some(vec![255, 0, 255, 255]));
+    }
+
+    #[test]
+    fn removing_alpha_still_keeps_an_explicit_dataset_mask() {
+        let config = crate::RasterConfig {
+            cols: 2,
+            rows: 2,
+            bands: 2,
+            data_type: DataType::U8,
+            x_min: 0.,
+            y_min: 0.,
+            cell_size: 1.,
+            ..Default::default()
+        };
+        let mut dataset =
+            RasterDataset::new(crate::Raster::from_data(config, vec![10., 20., 30., 40., 255., 255., 255., 255.]).unwrap(), false);
+        dataset.band_metadata =
+            ["Gray", "Alpha"].iter().map(|c| crate::BandMetadata { color_interp: Some((*c).into()), ..Default::default() }).collect();
+        let mut source = crate::LazyRaster::from_masked_dataset(dataset, vec![255, 0, 255, 255]).unwrap();
+        let mut sink = Collect::default();
+        generate(&mut source, &TileOptions { format: "GTiff".into(), alpha: Some(false), ..options() }, &mut sink).unwrap();
+        let mut tile = crate::memory::open_raster_lazy_bytes(sink.0["0/0/0.tif"].clone(), "tile.tif").unwrap();
+        assert_eq!(tile.band_count(), 1);
+        assert_eq!(tile.read().unwrap().raster.data.to_f64_vec(), [10., 0., 30., 40.]);
+        assert_eq!(tile.read_mask(Window::full(2, 2), None).unwrap(), Some(vec![255, 0, 255, 255]));
+    }
+
+    #[test]
+    fn masked_float_data_keeps_valid_nan_samples_without_a_nodata_tag() {
+        let config = crate::RasterConfig {
+            cols: 2,
+            rows: 2,
+            bands: 1,
+            data_type: DataType::F32,
+            x_min: 0.,
+            y_min: 0.,
+            cell_size: 1.,
+            ..Default::default()
+        };
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, vec![f64::NAN, 999., 7., 8.]).unwrap(), false);
+        let mut source = crate::LazyRaster::from_masked_dataset(dataset, vec![255, 0, 255, 255]).unwrap();
+        let mut sink = Collect::default();
+        generate(&mut source, &TileOptions { format: "GTiff".into(), ..options() }, &mut sink).unwrap();
+        let mut tile = crate::memory::open_raster_lazy_bytes(sink.0["0/0/0.tif"].clone(), "tile.tif").unwrap();
+        let dataset = tile.read().unwrap();
+        assert!(dataset.raster.data.get_f64(0).is_nan());
+        assert_eq!(dataset.raster.data.to_f64_vec()[1..], [0., 7., 8.]);
+        assert_eq!(dataset.nodata(), None);
+        assert_eq!(tile.read_mask(Window::full(2, 2), None).unwrap(), Some(vec![255, 0, 255, 255]));
+    }
+
+    #[test]
+    fn excluded_maximum_zoom_still_uses_the_lower_zoom_resampler() {
+        let config = crate::RasterConfig {
+            cols: 1,
+            rows: 1,
+            bands: 1,
+            data_type: DataType::U8,
+            x_min: 0.,
+            y_min: 0.,
+            cell_size: 1.,
+            ..Default::default()
+        };
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, vec![7.]).unwrap(), false);
+        let options = TileOptions {
+            format: "GTiff".into(),
+            overview_resampling: Some("average".into()),
+            grid: GridOptions {
+                tile_size: 1,
+                min_zoom: Some(0),
+                max_zoom: Some(1),
+                limits: TileLimits { min_x: Some(1), max_x: Some(1), ..Default::default() },
+                ..Default::default()
+            },
+            ..options()
+        };
+        let (plan, _) = plan(&dataset, &options).unwrap();
+        assert_eq!(plan.max_zoom, 1);
+        assert_eq!(plan.levels.len(), 1);
+        assert_eq!(plan.levels[0].matrix.zoom, 0);
+        let mut sink = Collect::default();
+        generate(&mut crate::LazyRaster::from(dataset), &options, &mut sink).unwrap();
+        let tile = crate::memory::open_raster_bytes(sink.0["0/0/0.tif"].clone(), "tile.tif").unwrap();
+        assert_eq!(tile.raster.data.to_f64_vec(), [7.]);
     }
 
     #[test]
