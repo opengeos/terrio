@@ -549,4 +549,16 @@ mod tests {
             assert_eq!(idx, want);
         }
     }
+
+    #[test]
+    fn radius_keeps_the_found_order_of_points_as_near() {
+        // One leaf, so nanoflann finds the points in index order. Twenty points at each of three
+        // distances: more than the 16 libstdc++ sorts by insertion.
+        let pts: Vec<[f64; 3]> = (0..60).map(|i| [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]][i % 3]).collect();
+        let nano = NanoKdTree::new(pts, 100);
+        let mut near = Vec::new();
+        nano.radius(&[0.0; 3], 10.0, &mut near);
+        let want: Vec<usize> = (0..3).flat_map(|k| (0..60).filter(move |i| i % 3 == k)).collect();
+        assert_eq!(near.iter().map(|e| e.0).collect::<Vec<_>>(), want);
+    }
 }
