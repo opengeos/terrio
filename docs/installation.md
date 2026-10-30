@@ -55,6 +55,17 @@ The command also comes with the Python package (`python -m terrio` runs it too):
 pip install terrio      # or: uv tool install terrio, pipx install terrio
 ```
 
+A Docker image for linux/amd64 and linux/arm64 is published to the
+[GitHub Container Registry](https://github.com/opengeos/terrio/pkgs/container/terrio) with each
+release after 0.5.0, tagged with the version (`X.Y.Z`, `X.Y`) and `latest`. It runs as a non-root user in
+`/data`, so mount your data there and pass your own user to write to it:
+
+```sh
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/data" ghcr.io/opengeos/terrio info input.tif
+```
+
+With rootless Docker, use `--user 0:0` instead: the container's root is your own user there.
+
 [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) installs the release binaries
 (`cargo binstall terrio-cli`), and with [Rust](https://rustup.rs) installed, `cargo install
 terrio-cli` builds it from source.

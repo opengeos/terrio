@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Docker image
+
+- Publish the `terrio` command-line tool as a Docker image for linux/amd64 and
+  linux/arm64 to the GitHub Container Registry (`ghcr.io/opengeos/terrio`) with
+  each release.
+
 ### Geometry implementation provenance
 
 - Replace the GEOS-derived simplification, hull, tile-validity, spatial-packing

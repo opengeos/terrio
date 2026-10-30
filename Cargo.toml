@@ -92,7 +92,7 @@ zune-core = "0.5"
 jxl-oxide = { version = "0.12", default-features = false }
 # AVIF tiles: a pure-Rust port of dav1d, without its assembly so that it builds for WebAssembly.
 rusty_av1d = { version = "1.2", default-features = false, features = ["bitdepth_8"] }
-lzma-rust2 = { version = "0.23", default-features = false, features = ["std", "xz"] }
+lzma-rust2 = { version = "0.24", default-features = false, features = ["std", "xz"] }
 zstd = "0.14"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
