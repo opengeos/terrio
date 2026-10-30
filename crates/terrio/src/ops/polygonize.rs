@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/gdal_polygonize.py
+//     alg/polygonize.cpp
+// No code is translated from these sources.
+
 //! Turning a raster band into polygons, the equivalent of `gdal_polygonize`.
 //!
 //! Each connected region of pixels with the same value becomes one polygon feature, with holes

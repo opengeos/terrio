@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_pansharpen.rst
+// No code is translated from these sources.
+
 //! `terrio pansharpen`.
 use super::rasterout::{OutputArgs, open_lazy};
 use terrio::Error;

@@ -1,3 +1,13 @@
+// SPDX-FileCopyrightText: Copyright (c) 1998, 2002, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2015, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2015, Faza Mahamood
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     apps/gdal_translate_lib.cpp
+
 //! Subsetting, resizing, rescaling and type conversion: an equivalent of `gdal_translate`.
 //!
 //! As in GDAL, the output is a window of the source (`srcwin`, or `projwin` in georeferenced

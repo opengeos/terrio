@@ -1,3 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, Corteva Agriscience™
+# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-License-Identifier: MIT AND Apache-2.0
+#
+# Derived from (adapted and modified):
+#   rioxarray 0.23.0:
+#     rioxarray/merge.py
+
 """Merging DataArrays and Datasets, as rioxarray's `merge_arrays` and `merge_datasets` do.
 
 They follow rioxarray's `merge` module (Apache-2.0, Copyright (c) 2019-2023 rioxarray

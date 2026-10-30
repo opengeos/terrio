@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/gtiff/
+// No code is translated from these sources.
+
 //! GDAL's internal TIFF masks: 1-bit transparency mask images (`NewSubfileType` 4,
 //! `PhotometricInterpretation` 4) holding a per-dataset validity mask, for the full-resolution
 //! image and, with `NewSubfileType` 5, for overviews. The tiff crate does not decode them; terrio

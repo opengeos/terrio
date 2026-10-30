@@ -1,3 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2006, MapShots Inc (www.mapshots.com)
+// SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2023, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.2 (checked against v3.13.3):
+//     apps/nearblack_lib.cpp
+//     apps/nearblack_lib_floodfill.cpp
+
 //! Collar cleaning: an equivalent of `nearblack` and `gdal raster clean-collar` (GDAL 3.12).
 //!
 //! Nearly black (or white, or another color) pixels along the edges of an image, such as the

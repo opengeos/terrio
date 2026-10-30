@@ -60,6 +60,14 @@ jobs:
             echo "Real-data job skipped: no file it depends on changed."
           fi
 
+  # REUSE (https://reuse.software): every file states its copyright and licence, in an SPDX
+  # header (files derived from other projects) or in REUSE.toml.
+  reuse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: fsfe/reuse-action@v6
+
   # Linux only: macOS and Windows run in ci-platforms.yml, on every push to main and, for pull
   # requests, by hand or with the label ci:macos, ci:windows or ci:all.
   # The npm package and the conformance report run in ci-extended.yml, on the same terms (labels

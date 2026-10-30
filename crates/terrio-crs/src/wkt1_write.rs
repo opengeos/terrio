@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PROJ 9.8.1:
+//     src/iso19111/io.cpp
+// No code is translated from these sources.
+
 //! The WKT 1 of a PROJ string, as PROJ writes it for GDAL (`WKT1_GDAL`): built from terrio's
 //! own reading of the PROJ string, with PROJ's default for every parameter the string omits.
 //! What WKT 1 cannot describe (a projection without a WKT 1 method, a datum grid, a parameter

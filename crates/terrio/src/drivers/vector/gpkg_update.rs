@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/ogr2ogr_lib.cpp
+// No code is translated from these sources.
+
 //! Updating GeoPackage files, as `ogr2ogr -append`, `-overwrite` and `-update` do: features added
 //! to an existing layer (feature ids continuing its sequence, its R-tree index, extent in
 //! `gpkg_contents` and feature count in `gpkg_ogr_contents` updated), a layer replaced, layers

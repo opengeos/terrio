@@ -1,3 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 1998, Frank Warmerdam
+# SPDX-FileCopyrightText: Copyright (c) 2007-2014, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-License-Identifier: MIT
+#
+# Derived from (translated to Python and modified):
+#   GDAL v3.12.2:
+#     gcore/rasterio.cpp
+
 """Reading pixels as GDAL's `RasterIO` does.
 
 Windows may be fractional, buffers of another size (decimation through overviews, then

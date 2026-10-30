@@ -1,3 +1,8 @@
+# Written to match the behavior of:
+#   rasterio 1.5.2:
+#     rasterio/
+# No code is translated from these sources.
+
 """`WarpedVRT`: a dataset reprojected on the fly, as rasterio's warped VRT."""
 
 from __future__ import annotations

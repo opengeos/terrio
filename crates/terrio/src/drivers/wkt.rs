@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrspatialreference.cpp
+// No code is translated from these sources.
+
 //! OGC WKT1 as GDAL writes it, so that GDAL (and PROJ) recognize the CRSs terrio writes into
 //! text headers (`.prj` files, ENVI headers, Zarr and netCDF attributes).
 //!

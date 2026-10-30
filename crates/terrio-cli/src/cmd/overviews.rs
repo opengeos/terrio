@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdaladdo.rst
+//     doc/source/programs/gdal_raster_overview_add.rst
+// No code is translated from these sources.
+
 //! `terrio overviews`: build, delete or refresh the overviews of a GeoTIFF (GDAL's `gdaladdo` and
 //! `gdal raster overview add/delete/refresh`).
 

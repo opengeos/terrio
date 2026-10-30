@@ -1,3 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (c) 1998, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2014, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2004, Andrey Kiselev <dron@ak4719.spb.edu>
+// SPDX-FileCopyrightText: Copyright (c) 2008-2009, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2023, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     port/cpl_conv.cpp
+//     ogr/ogr_srs_usgs.cpp
+//     frmts/hdf5/hdf5eosparser.cpp
+
 //! HDF-EOS5 structural metadata, as GDAL's HDF5 driver reads it (`HDF5EOSParser`): the grids and
 //! swaths that `HDFEOS INFORMATION/StructMetadata.0` describes in ODL.
 //!

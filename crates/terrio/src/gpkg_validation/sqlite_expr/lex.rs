@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     src/tokenize.c
+// No code is translated from these sources.
+
 use super::*;
 
 #[derive(Debug, Clone)]

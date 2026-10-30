@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/gdal2xyz.py
+// No code is translated from these sources.
+
 //! `terrio xyz` (also exposed automatically as an MCP tool).
 use std::io::Write;
 use terrio::ops::xyz::{XyzOptions, write_xyz};

@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   rio-cogeo 7.0.4:
+//     rio_cogeo/cogeo.py
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/samples/validate_cloud_optimized_geotiff.py
+// No code is translated from these sources.
+
 //! `terrio validate-cog` (also exposed automatically as an MCP tool).
 
 #[derive(clap::Args)]

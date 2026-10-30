@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2012, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2021, Idan Miara <idan@miara.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/gdalmove.py
+
 //! Editing a GeoTIFF in place, as `gdal_edit.py` and `gdal raster edit` do: its CRS,
 //! geotransform (or ground control points), nodata value, metadata, band statistics and
 //! histograms ([`edit_raster`]); and moving its georeferencing to another CRS without resampling,

@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/arrow/, ogr/ogrsf_frmts/parquet/
+// No code is translated from these sources.
+
 //! Vector layers as Apache Arrow record batches, with GeoArrow geometries, and back.
 //!
 //! [`layer_to_arrow`] turns a layer into a schema and record batches: the attributes as typed

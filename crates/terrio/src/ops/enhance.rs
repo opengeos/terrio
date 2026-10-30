@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2007, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2007-2011, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.2 (checked against v3.13.3):
+//     apps/gdalenhance.cpp
+
 //! Lookup-table contrast enhancement: an equivalent of `gdalenhance` (GDAL 3.12).
 //!
 //! Each band has a scale range (`ScaleMin`, `ScaleMax`) divided into `bins` bins (256 in GDAL)

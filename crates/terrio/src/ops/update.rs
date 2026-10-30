@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_raster_update.cpp
+//     frmts/gtiff/gtiffdataset_write.cpp
+// No code is translated from these sources.
+
 //! Writing a raster into an existing GeoTIFF, reprojected to its grid, as `gdal raster update`
 //! does ([`update_raster`]): the source is warped onto the destination's grid over the part of it
 //! the source covers (optionally within a clipping geometry), its valid pixels replace the

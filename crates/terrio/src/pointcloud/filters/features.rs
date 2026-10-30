@@ -1,3 +1,23 @@
+// SPDX-FileCopyrightText: Copyright (c) 2016, Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2019, Helix Re Inc. nicolas@helix.re
+// SPDX-FileCopyrightText: Copyright (c) 2016, 2017, 2019, 2020 Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2016-2017, Bradley J. Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2020, Hobu Inc.
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   PDAL 2.10.2:
+//     pdal/private/MathUtils.cpp
+//     filters/CovarianceFeaturesFilter.cpp
+//     filters/NormalFilter.cpp
+//     filters/EigenvaluesFilter.cpp
+//     filters/ApproximateCoplanarFilter.cpp
+//     filters/EstimateRankFilter.cpp
+//     filters/ClusterFilter.cpp
+//     filters/private/Segmentation.hpp
+//     pdal/private/KDImpl.hpp
+
 //! Filters that compute features of each point's neighbourhood: PDAL's `filters.normal`
 //! (normals and curvature), `filters.cluster` (Euclidean clusters), and those of the covariance
 //! of the neighbours: `filters.covariancefeatures`, `filters.eigenvalues`,

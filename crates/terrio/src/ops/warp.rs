@@ -1,3 +1,21 @@
+// SPDX-FileCopyrightText: Copyright (c) 2002, i3 - information integration and imaging Fort Collin, CO
+// SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2021, CLS
+// SPDX-FileCopyrightText: Copyright (c) 2003, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2007-2012, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2002, i3 - information integration and imaging Fort Collins, CO
+// SPDX-FileCopyrightText: Copyright (c) 2007-2015, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2015, Faza Mahamood
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     alg/gdaltransformer.cpp
+//     alg/gdalwarpoperation.cpp
+//     alg/gdalwarpkernel.cpp
+//     apps/gdalwarp_lib.cpp
+
 //! Reprojection and resampling: an equivalent of `gdalwarp`.
 //!
 //! The output grid, the coordinate transformation and the resampling kernels follow GDAL's warper

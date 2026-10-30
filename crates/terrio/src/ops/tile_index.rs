@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdaltindex_lib.cpp
+//     apps/gdalalg_raster_index.cpp
+//     frmts/gti/gdaltileindexdataset.cpp
+// No code is translated from these sources.
+
 //! Dataset footprint indexes, including metadata for GDAL's GTI raster driver.
 //!
 //! Raster footprints are computed from source headers. Lazy-capable drivers avoid

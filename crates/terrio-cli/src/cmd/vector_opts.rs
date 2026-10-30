@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/ogr2ogr.rst
+// No code is translated from these sources.
+
 //! The `ogr2ogr`-style options of `terrio convert` for vector inputs.
 
 use terrio::crs::SpatialRef;

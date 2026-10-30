@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/gpkg/ogrgeopackagetablelayer.cpp
+// No code is translated from these sources.
+
 //! GeoPackage reading, on terrio's SQLite reader: the feature and attribute tables (layers) and
 //! the raster tables of a file, read as GDAL reads them.
 //!

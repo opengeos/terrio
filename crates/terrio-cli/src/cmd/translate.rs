@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_translate.rst
+// No code is translated from these sources.
+
 //! `terrio translate`.
 
 use super::rasterout::{OutputArgs, open, srs};

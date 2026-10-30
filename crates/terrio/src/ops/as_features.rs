@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_raster_as_features.cpp
+// No code is translated from these sources.
+
 //! One vector feature per pixel: an equivalent of `gdal raster as-features`.
 //!
 //! Features follow the pixels row by row. Their fields are, in this order, `CENTER_X` and

@@ -1,3 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2001, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2007, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     alg/gdalmediancut.cpp
+//     alg/gdaldither.cpp
+
 //! RGB quantization and palette mapping following GDAL 3.13.3.
 //! Median-cut ordering and integer diffusion follow gdalmediancut.cpp/gdaldither.cpp (NOTICE).
 use crate::{BandMetadata, Error, RasterDataset, Result};

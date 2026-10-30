@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/vrt/vrtwarped.cpp
+//     frmts/vrt/pixelfunctions.cpp
+//     frmts/vrt/vrtfilters.cpp
+// No code is translated from these sources.
+
 //! Lazy, serialized VRT operations and supplied-source resolution for WebAssembly.
 
 use super::{VrtDataset, VrtSource, xml};

@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/gdal_calc.py
+//   Python n/a:
+//     expression grammar
+// No code is translated from these sources.
+
 //! The expression language of [`calc`](super::calc): a parser for the subset of Python syntax
 //! `gdal_calc.py` expressions use.
 //!

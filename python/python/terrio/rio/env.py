@@ -1,3 +1,8 @@
+# Written to match the behavior of:
+#   rasterio 1.5.2:
+#     rasterio/
+# No code is translated from these sources.
+
 """`Env`: a context for configuration options and credentials.
 
 terrio reads its network settings and cloud credentials from environment variables named as

@@ -1,3 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (c) 1999-2002, Daniel Morissette
+// SPDX-FileCopyrightText: Copyright (c) 2014, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 1999-2001, Daniel Morissette
+// SPDX-FileCopyrightText: Copyright 1999-2003, Daniel Morissette
+// SPDX-FileCopyrightText: Copyright (c) 1999-2001, Frank Warmerdam
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/mitab/mitab_mapheaderblock.cpp
+//     ogr/ogrsf_frmts/mitab/mitab_utils.cpp
+//     ogr/ogrmitabspatialref.cpp
+
 //! MapInfo TAB (native tables): a `.tab` header, attributes in a `.dat` file (dBase-like with
 //! binary MapInfo types), objects in a `.map` file and their offsets in a `.id` file.
 //!

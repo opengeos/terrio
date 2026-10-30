@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2005, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2007-2011, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     frmts/srtmhgt/srtmhgtdataset.cpp
+
 //! SRTM HGT tiles, as GDAL's SRTMHGT driver reads and writes them: one-degree tiles of big-endian
 //! samples, named after their south-west corner (`N37W120.hgt`), without a header. The file's
 //! size gives the grid (1201 x 1201 for 3", 3601 x 3601 for 1"...) and its name the location.

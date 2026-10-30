@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Copyright (c) 2010, Chris Yesson <chris.yesson@ioz.ac.uk>
+// SPDX-FileCopyrightText: Copyright (c) 2010-2011, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2016, Piers Titus van der Torren <pierstitus@gmail.com>
+// SPDX-FileCopyrightText: Copyright (c) 2020, Idan Miara <idan@miara.com>
+// SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/gdal_calc.py
+//     swig/python/gdal-utils/osgeo_utils/auxiliary/rectangle.py
+//     gcore/gdal_misc.cpp
+
 //! Raster algebra: an equivalent of `gdal_calc.py`.
 //!
 //! Expressions are evaluated band by band over named inputs with NumPy's typing rules (see

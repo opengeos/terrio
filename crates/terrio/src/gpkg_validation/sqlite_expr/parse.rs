@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     src/parse.y
+// No code is translated from these sources.
+
 use super::*;
 use lex::Token;
 

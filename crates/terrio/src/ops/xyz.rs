@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2002, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2020-2021, Idan Miara <idan@miara.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/gdal2xyz.py
+
 //! Raster to XYZ text, as GDAL's `gdal2xyz.py`: a line per pixel with the X and Y of its center
 //! and the values of the selected bands. The raster is read a strip of rows at a time and the
 //! text written as it is made, so that neither is ever held whole.

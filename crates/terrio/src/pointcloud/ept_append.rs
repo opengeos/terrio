@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   Entwine 3.2.1:
+//     append semantics (manifest.json, list.json)
+// No code is translated from these sources.
+
 //! Appending points to an EPT dataset in place, as Entwine does when it builds into an existing
 //! output: the new points go into the dataset's octree (its cube, `bounds`, unchanged), each node
 //! keeping the first new point to land in each free cell of its `span`³ grid and passing the

@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/gtiff/gtiffdataset_write.cpp
+//     swig/python/gdal-utils/osgeo_utils/gdal_edit.py
+// No code is translated from these sources.
+
 //! Updating GeoTIFFs in place, as GDAL's GTiff driver does: new or changed images (overviews, the
 //! changed blocks of an image) and directories are appended at the end of the file, and the
 //! header is pointed at the new chain of directories. No byte already in the file changes but the

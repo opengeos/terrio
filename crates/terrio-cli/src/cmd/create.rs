@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_create.rst
+//     doc/source/programs/gdal_raster_create.rst
+// No code is translated from these sources.
+
 //! `terrio create-raster`: create a raster from scratch or like a template (GDAL's `gdal raster create`
 //! and `gdal_create`).
 

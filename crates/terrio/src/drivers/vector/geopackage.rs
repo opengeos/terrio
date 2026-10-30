@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/gpkg/ogrgeopackagedatasource.cpp
+//     ogr/ogrsf_frmts/gpkg/ogrgeopackagetablelayer.cpp
+// No code is translated from these sources.
+
 //! GeoPackage writing, on terrio's SQLite file writer.
 //!
 //! Tables are laid out as GDAL lays them out: an `fid INTEGER PRIMARY KEY AUTOINCREMENT` column, a

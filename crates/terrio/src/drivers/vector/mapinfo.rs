@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 1999-2003, Daniel Morissette
+// SPDX-FileCopyrightText: Copyright (c) 1999-2001, Frank Warmerdam
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     ogr/ogrmitabspatialref.cpp
+
 //! MapInfo Interchange Format (`.mif` + `.mid`).
 //!
 //! Reading skips the style clauses (`Pen`, `Brush`, `Symbol`...), turns regions into polygons by

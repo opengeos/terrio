@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2007-2016, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     apps/gdalbuildvrt_lib.cpp
+
 //! Mosaics: an equivalent of `gdalbuildvrt` (a [`VrtDataset`] over many rasters) and of
 //! `gdal_merge.py` (the same, read into one raster). Sources in different CRSs are reprojected
 //! with [`warp`].

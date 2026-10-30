@@ -1,3 +1,22 @@
+// SPDX-FileCopyrightText: Copyright (c) 1992, Michigan State University
+// SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2004, VIZRT Inc.
+// SPDX-FileCopyrightText: Copyright (c) 2008-2014, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2004, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2011-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2025, Nathan Olson <nathanmolson at gmail dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2023, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.2:
+//     alg/gdal_crs.cpp
+//     alg/thinplatespline.cpp
+//     alg/gdal_tps.cpp
+//     alg/gdal_homography.cpp
+//     alg/gdalgenericinverse.cpp
+
 //! Georeferencing by ground control points, as GDAL's GCP transformers compute it: polynomials of
 //! order 1 to 3 fitted by least squares (`GDALCreateGCPTransformer`, from GRASS's `CRS.c`), and
 //! thin plate splines (`GDALCreateTPSTransformer`), each fitted both ways (pixel to georeferenced

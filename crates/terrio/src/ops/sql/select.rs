@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/generic/ogr_gensql.cpp
+// No code is translated from these sources.
+
 //! SELECT planning and execution. Input features are borrowed until a result row is emitted.
 use super::*;
 use wbvector::{FieldDef, FieldType};

@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2018, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/mvt/ogrmvtdataset.cpp
+
 //! Vector tiles as vector layers, and vector layers as vector tiles, as GDAL's MVT, MBTiles and
 //! PMTiles drivers read and write them.
 

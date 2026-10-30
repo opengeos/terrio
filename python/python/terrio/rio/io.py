@@ -1,3 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Copyright (c) 2003, Frank Warmerdam
+# SPDX-FileCopyrightText: Copyright (c) 2007-2008, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause
+#
+# Derived from (translated to Python and modified):
+#   rasterio 1.5.2:
+#     rasterio/_io.pyx
+#     rasterio/_base.pyx
+#   GDAL v3.12.2:
+#     alg/gdalchecksum.cpp
+
 """Datasets: `DatasetReader`, `DatasetWriter` and `MemoryFile`, as rasterio defines them.
 
 Readers read GeoTIFFs and JPEG 2000 files (local or remote) lazily, by window, through terrio;

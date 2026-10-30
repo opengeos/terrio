@@ -1,3 +1,26 @@
+// SPDX-FileCopyrightText: Copyright (c) 2003, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2009-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) HER MAJESTY THE QUEEN IN RIGHT OF CANADA (2008) as represented by the Canadian Nuclear Safety Commission
+// SPDX-FileCopyrightText: Copyright (c) 2014-2015, NextGIS info@nextgis.ru
+// SPDX-FileCopyrightText: Copyright (c) 1998, 2002, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2007-2015, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2001, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2008-2012, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2024, Javier Jimenez Shaw
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     alg/gdal_rpc.cpp
+//     gcore/gdal_misc.cpp
+//     gcore/gdal_mdreader.cpp
+//     frmts/gtiff/geotiff.cpp
+//     alg/gdal_interpolateatpoint.cpp
+//     alg/gdalresamplingkernels.h
+
 //! Georeferencing by rational polynomial coefficients (RPCs), as GDAL's RPC transformer
 //! (`GDALCreateRPCTransformerV2`, `alg/gdal_rpc.cpp`) computes it: longitude, latitude and height
 //! to pixel/line by evaluating the polynomials, and pixel/line back to longitude and latitude by

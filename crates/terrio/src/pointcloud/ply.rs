@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PDAL 2.10.2:
+//     io/PlyReader.cpp, io/PlyWriter.cpp
+// No code is translated from these sources.
+
 //! PLY (Polygon File Format, Stanford): the vertices of ASCII and binary (little- and big-endian)
 //! files, read and written as PDAL's `readers.ply` and `writers.ply` do.
 //!

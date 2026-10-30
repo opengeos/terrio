@@ -1,3 +1,14 @@
+// SPDX-FileCopyrightText: GDAL contributors
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL (bundled NOAA MDL degrib) v3.12.2 (public domain):
+//     frmts/grib/degrib/degrib/metaname.cpp
+//     frmts/grib/degrib/degrib/grib1tab.cpp
+//   GDAL v3.12.2:
+//     frmts/grib/data/*.csv
+
 //! The tables GDAL's GRIB driver names messages with, and its naming rules: a port of degrib's
 //! `metaname.cpp` (element names, comments, units and level names) as GDAL 3.12 ships it.
 //!

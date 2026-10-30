@@ -1,3 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+# SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause
+#
+# Derived from (translated to Python and modified):
+#   rasterio 1.5.2:
+#     rasterio/transform.py
+#   GDAL v3.12.2:
+#     gcore/gdal_misc.cpp
+
 """Affine transformations between pixel and map coordinates.
 
 Transforms are `affine.Affine` objects, as in rasterio.

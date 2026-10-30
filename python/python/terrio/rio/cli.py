@@ -1,3 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Copyright 2022 Planet Labs PBC
+# SPDX-FileCopyrightText: Copyright (c) 2014 Mapbox
+# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause AND Apache-2.0
+#
+# Derived from (translated to Python and modified):
+#   rasterio 1.5.2:
+#     rasterio/rio/
+#   rasterio (vendored snuggs) 1.5.2:
+#     rasterio/_vendor/snuggs.py
+
 """A `rio` command line on top of terrio.rio: ``terrio-rio info dem.tif``.
 
 The commands, options, defaults and outputs are those of rasterio's ``rio`` command line

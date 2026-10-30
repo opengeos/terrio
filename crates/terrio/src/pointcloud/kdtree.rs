@@ -1,3 +1,13 @@
+// SPDX-FileCopyrightText: Copyright 2008-2009  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2008-2009  David G. Lowe (lowe@cs.ubc.ca). All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2011-2016  Jose Luis Blanco (joseluisblancoc@gmail.com). All rights reserved.
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-2-Clause
+//
+// Derived from (translated to Rust and modified):
+//   nanoflann, as vendored by PDAL 2.10.2:
+//     vendor/nanoflann/nanoflann.hpp
+
 //! A static k-d tree over 2D or 3D points, for nearest-neighbour and radius searches.
 
 /// The most points in a leaf.

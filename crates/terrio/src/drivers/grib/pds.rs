@@ -1,3 +1,15 @@
+// SPDX-FileCopyrightText: Copyright (c) 2007, ITC
+// SPDX-FileCopyrightText: Copyright (c) 2008-2017, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL (bundled NCEP g2clib) v3.12.2 (public domain):
+//     frmts/grib/degrib/g2clib/pdstemplates.c
+//     frmts/grib/degrib/g2clib/gbits.c
+//   GDAL v3.12.2:
+//     frmts/grib/gribdataset.cpp
+
 //! The product definition templates of GRIB2 section 4, as g2clib (GDAL's copy, `pdstemplates.c`)
 //! describes them: the octet width of each value (negative for signed values, stored as sign and
 //! magnitude), for GDAL's `GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES`.

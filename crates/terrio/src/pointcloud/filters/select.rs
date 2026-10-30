@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   PDAL 2.10.2:
+//     filters/CropFilter.cpp
+//     filters/DecimationFilter.cpp
+//     filters/ExpressionFilter.cpp, AssignFilter.cpp, MergeFilter.cpp, HeadFilter.cpp, TailFilter.cpp, SortFilter.cpp, LocateFilter.cpp, IQRFilter.cpp, MADFilter.cpp
+// No code is translated from these sources.
+
 //! Filters that select, order, combine or change points: PDAL's `filters.crop`,
 //! `filters.decimation`, `filters.expression`, `filters.assign`, `filters.merge`,
 //! `filters.head`, `filters.tail`, `filters.sort`, `filters.locate`, `filters.iqr` and
