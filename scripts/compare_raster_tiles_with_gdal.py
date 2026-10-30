@@ -95,7 +95,7 @@ def compare_direct_pyramid(source, actual, plan):
 def remote_probe(data, root, terrio):
     """Count response payloads for one tile of an actual USGS-derived COG."""
     cog = root / 'remote.tif'
-    gdal.Translate(str(cog), str(data / 'USGS_1_n40w106.tif'), format='COG',
+    gdal.Translate(str(cog), str(data / 'usgs_dem.tif'), format='COG',
                    width=2048, height=2048, creationOptions=['BLOCKSIZE=128', 'COMPRESS=DEFLATE', 'OVERVIEWS=NONE'])
     size = cog.stat().st_size
     counts = {'bytes': 0, 'requests': 0}
@@ -165,7 +165,7 @@ def main():
             ds.GetRasterBand(i).DeleteNoDataValue()
         ds = None
         dem = root / 'usgs.tif'
-        ds = gdal.Translate(str(dem), str(args.data / 'USGS_1_n40w106.tif'), srcWin=[600, 500, 513, 299])
+        ds = gdal.Translate(str(dem), str(args.data / 'usgs_dem.tif'), srcWin=[600, 500, 513, 299])
         ds = None
         sources = {'rgb': rgb, 'dem': dem}
         for kind in ['nodata', 'mask', 'alpha']:
