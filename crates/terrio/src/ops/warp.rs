@@ -1469,6 +1469,7 @@ fn warp_data_with_storage(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOpti
 }
 
 /// Metadata for a window-readable warp source. Pixels may remain unloaded.
+#[derive(Clone)]
 pub struct WarpSourceInfo {
     /// Full-resolution raster metadata, including its georeferencing and shared nodata.
     pub raster: RasterDataset,
@@ -1489,11 +1490,18 @@ pub trait WarpSource {
     }
     /// Returns full-resolution metadata and the available overview dimensions.
     fn info(&mut self) -> Result<WarpSourceInfo>;
+    /// Optional per-dataset validity mask for a window (zero means invalid).
+    fn read_mask(&mut self, _window: crate::Window, _overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
     /// Reads valid raster data for this window and overview, with the requested bands.
     fn read_window(&mut self, window: crate::Window, options: &crate::WindowOptions) -> Result<RasterDataset>;
 }
 
 impl WarpSource for crate::LazyRaster {
+    fn read_mask(&mut self, window: crate::Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+        crate::LazyRaster::read_mask(self, window, overview)
+    }
     fn with_dataset(&self, visit: &mut dyn FnMut(&RasterDataset)) -> Result<bool> {
         if let Some(dataset) = self.dataset() {
             visit(dataset);

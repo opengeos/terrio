@@ -1607,3 +1607,47 @@ quantized geometries are compared structurally and reported as invalid. A separa
 reported category permits only reassociation of an identical collinear ring: all
 oriented integer rings and all non-collinear polygon groups must still match.
 `scripts/reference/test_make_valid_tile_comparison.py` rejects broader changes.
+
+## Separate-file raster tiles (#289)
+
+`raster-tiles` in `scripts/conformance.py` compares XYZ/TMS folder output with
+GDAL 3.13.3 on real Landsat RGB derivatives and USGS elevation. The 36 cases
+include 34 exact comparisons of filenames, pixels, sample types, nodata/masks
+and GeoTIFF grids/CRS, plus two explicitly reported policy differences.
+That pyramid's 1,146,880 samples independently match GDAL direct-source per-tile
+warps exactly. Terrio resamples every level directly from the source; GDAL's
+previously generated image pyramid can give different lower-level values/masks.
+GDAL's `--no-alpha` output retains 15 zero-filled tiles even when all source
+pixels are nodata and `--skip-blank` is requested. Terrio omits those tiles;
+independent checks verify the source mask and both results. Valid zero-valued
+GeoTIFF tiles must retain their zeros and remain present. Interpolating-kernel
+agreement is not claimed by these nearest-neighbor checks.
+
+Fixture preparation clears inherited nodata on the RGB source so explicit mask
+and alpha behavior can be checked separately. The nodata derivative sets its own
+nodata and hole. GDAL 3.13.3 ignores a per-dataset mask when a source also has
+nodata (and warns); Terrio combines those validity restrictions.
+
+The counted remote check serves a real USGS-derived 2048 x 2048 COG without
+stored overviews. One 128 x 128 tile transferred 196,608 bytes in three GETs
+from a 10,780,400-byte file and matched GDAL exactly. These counts cover HTTP
+response payloads, not HEAD requests, encoder memory or timing. This check
+requires less than one quarter of the full file's bytes. Stored-overview policy
+is not compared here: a separate probe found GDAL 3.13.3's raster tile command
+reading a 512 x 512 stored overview for a native-resolution 2048 x 2048 raster
+plan, whereas Terrio reads the native pixels.
+
+Rust regressions additionally check source-window/output budgets on a ten-billion
+pixel procedural source, nodata/padded-edge alpha, grid arithmetic, retile planning,
+new-directory publication, non-overwriting resume and refusal of symlinked output
+descendants. Python exercises lazy and loaded inputs; JavaScript exercises
+incremental callbacks and propagation of callback failures. Retile output layouts
+are not implemented yet.
+
+```sh
+python scripts/conformance.py ../terrio-data --only raster-tiles --strict
+cargo test -p terrio --lib ops::raster_tile
+cargo test -p terrio-cli --test raster_tiles
+pytest python/tests/test_raster_tiles.py
+node --test --test-name-pattern='rasterTiles' js/tests/node.test.mjs
+```

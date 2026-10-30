@@ -2758,3 +2758,71 @@ an incomplete verdict; this includes the cost of character-class ranges.
 
 Checks are stricter than GDAL for some malformed geometry, image and metadata
 payloads. See [validation details and known differences](testing.md#geopackage-specification-validation).
+
+### Separate-file raster tiles
+
+`terrio tile INPUT OUTPUT_DIR` writes separate `z/x/y.png` tiles. The default
+`WebMercatorQuad` grid uses EPSG:3857; `--tiling-scheme WorldCRS84Quad` uses
+longitude/latitude with two columns at zoom zero, and `--tiling-scheme raster`
+retains a north-up source grid. `--convention tms` reverses filename rows while
+retaining the same pixel grids. `--tile-size`, `--min-zoom`, `--max-zoom` and
+`--min-x/--max-x/--min-y/--max-y` restrict generation. Coordinate restrictions
+use top-origin coordinates at the maximum zoom, including with TMS filenames.
+
+```sh
+terrio tile rgb.tif tiles --min-zoom 5 --max-zoom 8 --resampling nearest
+terrio tile dem.tif dem-tiles --tiling-scheme raster --format GTiff --tile-size 512
+terrio tile rgb.tif tiles --resume
+terrio tile rgb.tif ignored --dry-run
+```
+
+PNG requires Byte gray/RGB/palette input, optionally with alpha; scale other
+inputs first, or select `--format GTiff` to retain their types and bands.
+PNG tiles get alpha for nodata, dataset masks and padded edges. Fully opaque
+tiles omit automatic alpha; `--add-alpha` retains it on every tile and
+`--no-alpha` removes it. `--output-nodata` sets the background when alpha is
+disabled. `--skip-blank` omits fully transparent/nodata-only tiles, including
+without alpha (GDAL 3.13.3 can retain zero-filled nodata-only tiles with
+`--no-alpha`). Plain GeoTIFF blank detection uses a separate validity rendering
+pass; it can read source windows again while retaining the same buffer budgets.
+PNG output contains image pixels only, without world files, CRS sidecars or
+web viewers. Use the JSON grid from `--dry-run` to obtain tile georeferencing;
+GeoTIFF tiles embed their grids and CRS. Distinct per-band nodata requiring PAM
+sidecars is currently refused for GeoTIFF folder output.
+
+Maximum-zoom resampling defaults to cubic; `--overview-resampling` selects the
+method at lower zooms. Every zoom is rendered directly from the source (using
+its stored overviews when appropriate), rather than downsampling previously
+encoded tiles. This can differ from GDAL's generated-image pyramid. Image/alpha
+tiles support nearest, bilinear, cubic, cubicspline, lanczos and average;
+plain GeoTIFF tiles also support the warp engine's statistical methods.
+Interpolating kernels use premultiplied alpha; exact GDAL agreement is currently
+validated for nearest-neighbor tiling. Affine georeferencing is required;
+additional GDAL matrix sets, KML/viewer publication and `gdal_retile` file layouts
+are not currently implemented.
+
+Rendering holds one output tile and bounded source windows. By default a decoded
+source window may use at most 64 MiB and the output buffer 256 MiB; requests
+exceeding those limits fail before the source window read. Decoder caches,
+already-loaded sources and PNG/GeoTIFF encoder buffers are additional. A plan
+exceeding `--max-tiles` (default one million) is rejected before rendering.
+
+Output directories must be new unless `--resume` is given. Existing files are
+never overwritten; resume trusts existing tiles without validating their
+contents or options. Symlinked descendant paths are refused. A failure can leave
+completed tiles; resume can fill the missing ones. Use a fresh directory when
+changing generation options.
+
+The command is also the MCP `tile` tool. Rust callers use
+`ops::raster_tile::{plan, generate, to_directory, FolderSink, TileOptions}`.
+Python `terrio.raster_tiles(source, output, **options)` accepts a raster path or
+an open `Raster`, including lazy rasters. Options use snake_case; grid options
+are nested, for example `grid={"tile_size": 128, "min_zoom": 0}`. Pass
+`dry_run=True` for the plan or `resume=True` to fill missing files.
+JavaScript `planRasterTiles(input, options)` returns the plan and
+`rasterTiles(input, options, onTile)` calls the synchronous
+`onTile(relativePath, Uint8Array)` callback once per encoded tile. JavaScript
+options accept camelCase, including `grid: {tileSize: 128, minZoom: 0}`. Uploaded
+bytes and shared `Dataset` handles retain window reads. A thrown callback stops
+generation; consumers are responsible for saving files and for any bytes retained
+by their callback.
