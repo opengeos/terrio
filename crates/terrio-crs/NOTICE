@@ -81,6 +81,67 @@ Copyright information can be found in source files.
  DEALINGS IN THE SOFTWARE.
 
 -------------------------------------------------------------------------------
+GDAL (https://github.com/OSGeo/gdal)
+-------------------------------------------------------------------------------
+
+Terrio files derived from GDAL source files (each file's header names them):
+  crates/terrio-crs/src/lib.rs
+
+The copyright notices of those source files:
+  Copyright (c) 2000, Frank Warmerdam
+  Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+
+In general GDAL/OGR is licensed under an MIT style license with the
+following terms:
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+fdlibm (https://www.netlib.org/fdlibm/)
+-------------------------------------------------------------------------------
+
+Terrio files derived from fdlibm source files (each file's header names them):
+  crates/terrio-crs/src/math.rs
+
+The copyright notices of those source files:
+  Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+asinh is translated from the GNU C Library's sysdeps/ieee754/dbl-64/s_asinh.c (glibc 2.39),
+fdlibm code that carries this notice:
+
+  Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+  Developed at SunPro, a Sun Microsystems, Inc. business.
+  Permission to use, copy, modify, and distribute this
+  software is freely granted, provided that this notice
+  is preserved.
+
+atanh is translated from fdlibm 5.3's e_atanh.c, which carries this notice:
+
+  Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+  Developed at SunSoft, a Sun Microsystems, Inc. business.
+  Permission to use, copy, modify, and distribute this
+  software is freely granted, provided that this notice
+  is preserved.
+
+-------------------------------------------------------------------------------
 EPSG Geodetic Parameter Dataset
 -------------------------------------------------------------------------------
 
@@ -93,6 +154,9 @@ LICENSES/LicenseRef-EPSG.txt), with this attribution. They are not the EPSG Data
 terrio is not endorsed by IOGP. The EPSG method and parameter names and codes in
 crates/terrio-crs/src/projjson_write.rs and crates/terrio/src/drivers/vector/projjson.rs come
 from the same dataset.
+crates/terrio-crs/src/projjson_db.tsv.zst is derived from the same dataset (EPSG v12.029), through
+PROJ 9.7.1's database, under the same terms; the EPSG method and parameter names and codes in
+crates/terrio-crs/src/projjson_gdal.rs come from it too.
 
 -------------------------------------------------------------------------------
 Esri projection engine data

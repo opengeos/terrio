@@ -68,6 +68,14 @@ precedence = "override"
 SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
 SPDX-License-Identifier = "LicenseRef-EPSG AND MIT"
 
+# What PROJ's database adds to the PROJJSON of EPSG CRSs: the EPSG Geodetic Parameter Dataset
+# v12.029, owned by IOGP, through PROJ 9.7.1's proj.db (scripts/gen_projjson_table.py).
+[[annotations]]
+path = "crates/terrio-crs/src/projjson_db.tsv.zst"
+precedence = "override"
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "LicenseRef-EPSG AND MIT"
+
 # EPSG datums with the Esri datum names (Esri projection engine data, Apache-2.0, via PROJ 9.7.1).
 [[annotations]]
 path = "crates/terrio-crs/data/datums.tsv.zst"
