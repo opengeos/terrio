@@ -141,6 +141,11 @@ a different tie policy; a stable replacement requires checking those fixtures.
 The recorded reference is Linux GEOS 3.14.1, not a claim about every platform or
 future library version.
 
+For the recorded 20-item all-equal-key probe, input IDs `0..20` are emitted as
+`[10, 19, 18, 17, 16, 15, 14, 13, 12, 11, 0, 9, 8, 7, 6, 5, 4, 3, 2, 1]`.
+The `hole_seed_ties_match_the_recorded_sort_observation` regression pins this
+list; the polygon/point hull fixtures additionally check its geometric effects.
+
 The polygon path also preserves JTS's hole-join, ear-creation and Delaunay-flip
 sequence (`triangulate/polygon/{ConstrainedDelaunayTriangulator,PolygonHoleJoiner,
 PolygonNoder,PolygonEarClipper,TriDelaunayImprover}.java`, with `Tri` and
@@ -164,6 +169,10 @@ changing the exact conflict predicate or descending candidate order. Ring
 splices, join-position scans and ear clipping can still take quadratic work;
 these indexes do not promise linear overall triangulation. An unclosed mesh
 boundary returns an error instead of silently discarding that component.
+Boundary hole assignment caches shell areas and queries a shell-envelope index
+before running the original point-in-ring test. Candidate IDs are restored to
+shell order so equal-area owners keep the existing tie behavior. Overlapping
+envelopes can still require a containment walk for every candidate.
 Tight erosion intersects per-vertex
 shell memberships, retaining every owner of a shared contact vertex. Boundary walks are
 split at every repeated vertex so a hole touching its shell remains a separate simple ring.

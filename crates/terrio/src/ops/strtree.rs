@@ -8,6 +8,7 @@ type Envelope = (f64, f64, f64, f64);
 
 /// Returns packed leaf item IDs. Equal centres retain input order; GEOS's
 /// unstable ordering of ties is deliberately not reproduced.
+/// Callers supply finite boxes. Numeric comparison keeps signed zeros tied.
 pub(crate) fn leaf_order(boxes: &[Envelope]) -> Vec<usize> {
     const CAPACITY: usize = 10;
     let mut items: Vec<usize> = (0..boxes.len()).collect();
@@ -31,6 +32,12 @@ pub(crate) fn leaf_order(boxes: &[Envelope]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_zero_centres_remain_tied() {
+        let boxes = [(0., 0., 0., 0.), (0., -0., 0., -0.)];
+        assert_eq!(leaf_order(&boxes), [0, 1]);
+    }
 
     #[test]
     fn packing_preserves_distinct_centres_near_coordinate_limits() {

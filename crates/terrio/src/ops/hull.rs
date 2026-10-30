@@ -696,28 +696,39 @@ fn boundary_geometry(coords: &[Coord], faces: &[[usize; 3]]) -> Result<Geometry>
         }
     }
     let mut shells: Vec<(Ring, Vec<Ring>)> = Vec::new();
+    let mut shell_areas = Vec::new();
     let mut holes = Vec::new();
     for ids in loops {
         let r = ids.iter().map(|&i| xy(&coords[i])).collect::<Vec<_>>();
         let ring = open_ring(ids.iter().map(|&i| coords[i].clone()).collect());
-        if signed_area(&r) > 0.0 {
+        let area = signed_area(&r);
+        if area > 0.0 {
             shells.push((ring, Vec::new()));
+            shell_areas.push(area);
         } else {
             holes.push(ring);
         }
     }
-    for hole in holes {
-        let owner = shells
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| hole.0.iter().any(|c| in_ring(xy(c), &s.0.0)))
-            .min_by(|(_, a), (_, b)| {
-                let area = |r: &Ring| signed_area(&r.0.iter().map(xy).collect::<Vec<_>>()).abs();
-                area(&a.0).total_cmp(&area(&b.0))
-            })
-            .map(|(i, _)| i);
-        if let Some(i) = owner {
-            shells[i].1.push(hole);
+    if !holes.is_empty() {
+        let shell_index = RTree::bulk_load(
+            shells
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (ring, _))| ring_bounds(ring).map(|b| GeomWithData::new(Rectangle::from_corners(b.lower(), b.upper()), i)))
+                .collect(),
+        );
+        for hole in holes {
+            let Some(bounds) = ring_bounds(&hole) else { continue };
+            let mut candidates = shell_index.locate_in_envelope_intersecting(bounds).map(|entry| entry.data).collect::<Vec<_>>();
+            // Restore shell order so equal-area owners keep the original tie.
+            candidates.sort_unstable();
+            let owner = candidates
+                .into_iter()
+                .filter(|&i| hole.0.iter().any(|c| in_ring(xy(c), &shells[i].0.0)))
+                .min_by(|&a, &b| shell_areas[a].total_cmp(&shell_areas[b]));
+            if let Some(i) = owner {
+                shells[i].1.push(hole);
+            }
         }
     }
     Ok(if shells.len() == 1 {
@@ -831,10 +842,35 @@ mod tests {
     }
 
     #[test]
+    fn boundary_holes_stay_with_their_disconnected_shells() {
+        let mut coords = Vec::new();
+        let mut faces = Vec::new();
+        for i in 0..1024 {
+            let (x, y) = ((i % 32) as f64 * 8., (i / 32) as f64 * 8.);
+            let base = coords.len();
+            coords.extend(
+                [(0., 0.), (4., 0.), (4., 4.), (0., 4.), (1., 1.), (3., 1.), (3., 3.), (1., 3.)].map(|(a, b)| Coord::xy(x + a, y + b)),
+            );
+            faces.extend(
+                [[0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]].map(|f| f.map(|v| v + base)),
+            );
+        }
+        let Geometry::MultiPolygon(parts) = boundary_geometry(&coords, &faces).unwrap() else { panic!("expected disconnected polygons") };
+        assert_eq!(parts.len(), 1024);
+        for (shell, holes) in parts {
+            assert_eq!(holes.len(), 1);
+            let bounds = ring_bounds(&shell).unwrap();
+            let inner = ring_bounds(&holes[0]).unwrap();
+            assert_eq!(inner.lower(), bounds.lower().map(|v| v + 1.));
+            assert_eq!(inner.upper(), bounds.upper().map(|v| v - 1.));
+        }
+    }
+
+    #[test]
     fn repeated_mesh_edges_are_rejected() {
         let coords = [(0., 0.), (4., 0.), (0., 4.), (1., 2.), (0., -4.)].iter().map(|&(x, y)| Coord::xy(x, y)).collect::<Vec<_>>();
         assert!(Mesh::new(coords.clone(), vec![[0, 1, 2], [1, 0, 4]]).is_ok());
-        for faces in [vec![[0, 1, 2], [0, 1, 3]], vec![[0, 1, 2], [1, 0, 4], [0, 1, 3]]] {
+        for faces in [vec![[0, 1, 2], [0, 1, 3]], vec![[0, 1, 2], [1, 0, 4], [0, 1, 3]], vec![[0, 1, 2], [1, 0, 4], [1, 0, 3]]] {
             assert!(matches!(Mesh::new(coords.clone(), faces), Err(Error::InvalidArgument(_))));
         }
     }
