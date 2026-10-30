@@ -100,10 +100,15 @@ commands. Command-group progress:
       `terrio lineref`. Landed in [#305](https://github.com/opengeos/terrio/pull/305), through Rust,
       CLI/MCP, Python and JavaScript, with real-data comparisons registered in conformance.
 
-- [ ] GeoPackage repacking: encoded-record B-tree rebuilds, preserved rowids and SQL objects,
+- [x] GeoPackage repacking: encoded-record B-tree rebuilds, preserved rowids and SQL objects,
       auto-vacuum maps and journaled native replacement through Rust, CLI/MCP, Python and
-      JavaScript. Proposed in [#384](https://github.com/opengeos/terrio/pull/384); real-data
+      JavaScript. Landed in [#384](https://github.com/opengeos/terrio/pull/384); real-data
       comparisons are registered as `gpkg-repack`.
+
+- [ ] GeoPackage validation: SQLite integrity, core and extension metadata, geometries,
+      raster tiles and supported registered views through Rust, CLI/MCP, Python and JavaScript.
+      Proposed in [#403](https://github.com/opengeos/terrio/pull/403), with explicit incomplete
+      reports for unsupported SQL and 50 GDAL 3.13.3 comparisons registered as `gpkg-validate`.
 
 - [x] Dataset identification: bounded 16 KiB headers, ordered input batches, recursive local
       discovery and explicit companion-file reader fallback through Rust, CLI/MCP, Python and
