@@ -2229,7 +2229,7 @@ mod tests {
     // ("Range downloading not supported by this server!"), its body unread, and a smaller file is
     // taken from that body.
     #[test]
-    fn bounded_prefixes_of_servers_that_ignore_ranges_are_read_as_gdal_reads_them() {
+    fn bounded_prefixes_stop_even_when_ranges_are_ignored() {
         let data = test_data();
         for (mode, len) in [(Mode::Ranges, data.len()), (Mode::NoRanges, 100_000)] {
             let (url, count) = serve(data[..len].to_vec(), mode);
@@ -2379,7 +2379,7 @@ mod tests {
     }
 
     #[test]
-    fn server_without_ranges_downloads_a_small_file_once() {
+    fn server_without_ranges_downloads_once() {
         // At most ten times the first range (4096 bytes), as GDAL accepts.
         let data = test_data()[..40_000].to_vec();
         let (url, count) = serve(data.clone(), Mode::NoRanges);
