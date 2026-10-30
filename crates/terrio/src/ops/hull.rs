@@ -710,16 +710,24 @@ fn boundary_geometry(coords: &[Coord], faces: &[[usize; 3]]) -> Result<Geometry>
         }
     }
     if !holes.is_empty() {
+        let shell_bounds = shells.iter().map(|(ring, _)| ring_bounds(ring)).collect::<Vec<_>>();
         let shell_index = RTree::bulk_load(
-            shells
+            shell_bounds
                 .iter()
                 .enumerate()
-                .filter_map(|(i, (ring, _))| ring_bounds(ring).map(|b| GeomWithData::new(Rectangle::from_corners(b.lower(), b.upper()), i)))
+                .filter_map(|(i, bounds)| bounds.map(|b| GeomWithData::new(Rectangle::from_corners(b.lower(), b.upper()), i)))
                 .collect(),
         );
         for hole in holes {
             let Some(bounds) = ring_bounds(&hole) else { continue };
-            let mut candidates = shell_index.locate_in_envelope_intersecting(bounds).map(|entry| entry.data).collect::<Vec<_>>();
+            // A point contact can make the parity test accept a vertex on a
+            // smaller island's boundary. An owner must contain the whole hole
+            // envelope, rather than merely intersecting it at that contact.
+            let mut candidates = shell_index
+                .locate_in_envelope_intersecting(bounds)
+                .filter(|entry| shell_bounds[entry.data].is_some_and(|outer| outer.contains_envelope(&bounds)))
+                .map(|entry| entry.data)
+                .collect::<Vec<_>>();
             // Restore shell order so equal-area owners keep the original tie.
             candidates.sort_unstable();
             let owner = candidates
@@ -975,6 +983,26 @@ mod tests {
         let empty = Geometry::GeometryCollection(vec![]);
         assert!(matches!(convex_hull(&empty).unwrap(), Geometry::GeometryCollection(_)));
         assert!(matches!(concave_hull(&empty, 0.5, false).unwrap(), Geometry::Polygon { exterior, .. } if exterior.0.is_empty()));
+    }
+
+    #[test]
+    fn polygon_hull_keeps_a_touching_islands_hole_on_the_outer_shell() {
+        let ring = |points: &[(f64, f64)]| Ring(points.iter().map(|&(x, y)| Coord::xy(x, y)).collect());
+        let outer = ring(&[(0., 0.), (10., 0.), (10., 10.), (0., 10.)]);
+        let hole = ring(&[(2., 2.), (8., 1.), (9., 9.), (1., 8.)]);
+        let island = ring(&[(2., 2.), (4., 2.), (4., 4.), (2., 4.)]);
+        let input = Geometry::MultiPolygon(vec![(outer, vec![hole]), (island, vec![])]);
+        // Executable GEOS 3.14.1 preserves the outer hole and the island.
+        // The island touches the hole at (2,2), without sharing an edge.
+        for tight in [false, true] {
+            let result = concave_hull_of_polygons(&input, 0., tight, true).unwrap();
+            let Geometry::MultiPolygon(polygons) = &result else { panic!("{result:?}") };
+            assert_eq!(polygons.len(), 2);
+            let (shell, holes) = polygons.iter().find(|(_, holes)| !holes.is_empty()).unwrap();
+            assert_eq!(ring_bounds(shell), Some(AABB::from_corners([0., 0.], [10., 10.])));
+            assert_eq!(holes.len(), 1);
+            assert_eq!(ring_bounds(&holes[0]), Some(AABB::from_corners([1., 1.], [9., 9.])));
+        }
     }
 
     #[test]

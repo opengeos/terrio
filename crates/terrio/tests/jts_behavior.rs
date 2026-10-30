@@ -149,8 +149,8 @@ fn str_comparator_rejects_reversed_extreme_slices() {
     assert!(!legal_str_order(&(0..10).rev().collect::<Vec<_>>(), &layer));
 }
 
-fn corpus(text: &str) {
-    let fixture: Value = serde_json::from_str(text).unwrap();
+fn corpus(compressed: &[u8]) {
+    let fixture: Value = serde_json::from_reader(flate2::read::GzDecoder::new(compressed)).unwrap();
     for c in fixture["cases"].as_array().unwrap() {
         let g = decode(c["input"].as_str().unwrap());
         let ratio = c["ratio"].as_f64().unwrap();
@@ -207,21 +207,21 @@ fn corpus(text: &str) {
 }
 #[test]
 fn simplification_observations() {
-    corpus(include_str!("data/jts/simplify.json"));
+    corpus(include_bytes!("data/jts/simplify.json.gz"));
 }
 #[test]
 fn convex_hull_observations() {
-    corpus(include_str!("data/jts/convex.json"));
+    corpus(include_bytes!("data/jts/convex.json.gz"));
 }
 #[test]
 fn concave_hull_observations() {
-    corpus(include_str!("data/jts/concave.json"));
+    corpus(include_bytes!("data/jts/concave.json.gz"));
 }
 #[test]
 fn polygon_hull_observations() {
-    corpus(include_str!("data/jts/polygon_hull.json"));
+    corpus(include_bytes!("data/jts/polygon_hull.json.gz"));
 }
 #[test]
 fn str_order_observations() {
-    corpus(include_str!("data/jts/strtree.json"));
+    corpus(include_bytes!("data/jts/strtree.json.gz"));
 }

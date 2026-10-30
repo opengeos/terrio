@@ -1908,6 +1908,17 @@ test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom
   const pinchedHull = terrio.concaveHull(pinched, 0.3, { tight: true, allowHoles: true }).toGeoJSON().features[0].geometry;
   assert.equal(pinchedHull.type, "Polygon");
   assert.deepEqual(pinchedHull.coordinates.map((ring) => ring.length), [6, 4]);
+  const touchingIsland = {
+    type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: [
+      [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]], [[2, 2], [8, 1], [9, 9], [1, 8], [2, 2]]],
+      [[[2, 2], [4, 2], [4, 4], [2, 4], [2, 2]]],
+    ] },
+  };
+  const touchingHull = terrio.concaveHull(touchingIsland, 0, { tight: true, allowHoles: true }).toGeoJSON().features[0].geometry;
+  assert.equal(touchingHull.type, "MultiPolygon");
+  assert.deepEqual(touchingHull.coordinates.map((polygon) => polygon.length).sort(), [1, 2]);
+  const holeOwner = touchingHull.coordinates.find((polygon) => polygon.length === 2);
+  assert.deepEqual([...new Set(holeOwner[0].map((point) => point.join(",")))].sort(), ["0,0", "0,10", "10,0", "10,10"]);
   // GEOS observation: polygon erosion at 0.1 keeps both triangles separate.
   const triangles = {
     type: "Feature", properties: {},

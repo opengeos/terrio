@@ -109,6 +109,27 @@ def test_hulls():
     ]
     assert repaired["type"] == "Polygon"
     assert [len(ring) for ring in repaired["coordinates"]] == [6, 4]
+    touching = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [
+                [
+                    [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
+                    [[2, 2], [8, 1], [9, 9], [1, 8], [2, 2]],
+                ],
+                [[[2, 2], [4, 2], [4, 4], [2, 4], [2, 2]]],
+            ],
+        },
+    }
+    result = features(terrio.concave_hull(touching, 0.0, tight=True, allow_holes=True))[0][
+        "geometry"
+    ]
+    assert result["type"] == "MultiPolygon"
+    assert sorted(map(len, result["coordinates"])) == [1, 2]
+    owner = next(polygon for polygon in result["coordinates"] if len(polygon) == 2)
+    assert set(map(tuple, owner[0])) == {(0, 0), (10, 0), (10, 10), (0, 10)}
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.concave_hull(POINTS, 2.0)
 

@@ -315,7 +315,8 @@ mod tests {
 
     #[test]
     fn observed_validity() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!("../../tests/data/jts/valid.json")).unwrap();
+        let fixture: serde_json::Value =
+            serde_json::from_reader(flate2::read::GzDecoder::new(include_bytes!("../../tests/data/jts/valid.json.gz").as_slice())).unwrap();
         for c in fixture["cases"].as_array().unwrap() {
             let hex = c["input"].as_str().unwrap();
             let bytes = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect::<Vec<_>>();

@@ -10,6 +10,7 @@ implementation source is read. --fixtures writes replayable GEOS observations;
 from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
+import gzip
 import json
 import math
 from pathlib import Path
@@ -519,13 +520,14 @@ def main():
                 f"GEOS {shapely.geos_version_string}; GDAL {gdal.VersionInfo('RELEASE_NAME')}"
                 + ("; JTS 1.20.0" if args.jts_classpath else "")
             )
-            (args.fixtures / f"{op}.json").write_text(
+            data = (
                 '{"reference":'
                 + json.dumps(reference_name)
                 + ',"cases":[\n'
                 + ",\n".join(json.dumps(c, separators=(",", ":")) for c in group)
                 + "\n]}\n"
             )
+            (args.fixtures / f"{op}.json.gz").write_bytes(gzip.compress(data.encode(), mtime=0))
     summary = defaultdict(Counter)
     differences = []
     if args.probe:

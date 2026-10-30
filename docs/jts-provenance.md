@@ -100,6 +100,11 @@ implementation. Reference libraries and build products are not committed.
 `scripts/compare_jts_behavior.py` deterministically generates adversarial cases,
 compares the geometry probe against GEOS, and can refresh the recorded WKB
 observations in `crates/terrio/tests/data/jts/`. Its fixed seed is `0x4A5453`.
+The six corpora are deterministic gzip-compressed JSON (`*.json.gz`, timestamp
+zero). They retain all 1,645 observations and every original JSON byte while
+reducing the tracked data from 2,521,571 to 177,440 bytes (93%). Rust replays use
+the existing pure-Rust gzip dependency; no external decompressor is needed.
+For inspection, use `gzip -dc crates/terrio/tests/data/jts/concave.json.gz`.
 The Maven Central `jts-core-1.20.0.jar` used for executable checks has SHA256
 `6a783d8f9dba3d3cf7265435f134402f63c05838aa6cbcc4297ad3a5b2842baf`.
 The adapter checks the loaded JTS version before refreshing observations.
@@ -165,6 +170,12 @@ comparison intentionally uses size alone; area remains a tie-break in the
 erosion heap, which is a separate ordering. The unequal-area executable probe
 produces the same permutation. The polygon/point hull fixtures additionally
 check its geometric effects.
+
+Boundary hole assignment requires the candidate shell's envelope to contain the
+entire hole envelope. An envelope intersection alone admits an island touching
+one hole vertex, and the parity test can then assign the hole to that island.
+A valid slanted-hole/point-contact-island regression checks that the larger
+outer shell retains the hole, matching executable GEOS 3.14.1.
 
 Ring-endpoint simplification removes both replaced segments from the input and
 output indexes, including original leaf segments, as JTS's

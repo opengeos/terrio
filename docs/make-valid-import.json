@@ -79,7 +79,7 @@
   "final_integration_file_hashes": {
     "crates/terrio/src/tiles/vector.rs": "9e12ea4e84891651bb333e2cc9902edc84edf5fba762f3f23a8c6f92e1030ab1",
     "crates/terrio/src/tiles/boxes.rs": "7f6a3334e5b9beaba22adb1126848c24a4b62f42585ff27409786da15d63909f",
-    "crates/terrio/src/tiles/validity.rs": "995e87d0a968c04a01c594d184957b028db8c01f5e91ae8a99cc46485e2ad2be",
+    "crates/terrio/src/tiles/validity.rs": "2a92665bf454c1840937e68d956dd2cee04410f0b12ac069c607465b8dd2821c",
     "crates/terrio/src/tiles/mod.rs": "d8b8223bd3469a09a9433bbf4ddc5539f8ec72f32cb9d775b5d4ca5a65a3c665"
   },
   "sealed_delivery": {
@@ -94,5 +94,5 @@
     "crates/terrio/src/tiles/validity.rs": "44c399307e22d9d2d0ca38dda6ee64b867ce08616fd2c4fdeef3029e3bf5f2a6",
     "crates/terrio/src/tiles/mod.rs": "c5acfb23ad2bbd45c07020e2520b6f8bd34a788490188134878cfba80e7a5eb3"
   },
-  "review_followup": "Delivered repair kernel and original tests unchanged. Added integration-side ring-connectivity checks in tiles/repair_checks.rs with the tiles feature guard, an end-to-end delta-overflow regression, and ring-envelope candidate indexing in the separate JTS validity checker. Clipping integration comments/readability updated. Tile encoder InvalidData errors include layer, feature ID/index and tile Z/X/Y at the caller; delivered repair kernel unchanged."
+  "review_followup": "Delivered repair kernel and original tests unchanged. Added integration-side ring-connectivity checks in tiles/repair_checks.rs with the tiles feature guard, an end-to-end delta-overflow regression, and ring-envelope candidate indexing in the separate JTS validity checker. Clipping integration comments/readability updated. Tile encoder InvalidData errors include layer, feature ID/index and tile Z/X/Y at the caller; delivered repair kernel unchanged. JTS validity replay reads the losslessly compressed corpus using existing flate2; production validity code and sealed repair kernel remain unchanged."
 }
