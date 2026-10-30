@@ -1637,11 +1637,16 @@ is not compared here: a separate probe found GDAL 3.13.3's raster tile command
 reading a 512 x 512 stored overview for a native-resolution 2048 x 2048 raster
 plan, whereas Terrio reads the native pixels.
 
+`python -m unittest discover -s scripts/reference -p test_raster_tile_comparison.py`
+checks that value-policy exceptions cannot hide missing tiles, shape/type/nodata
+changes or dataset-mask differences. All tile structures and metadata are checked
+before any value-only exception can be reported.
+
 Rust regressions additionally check source-window/output budgets on a ten-billion
-pixel procedural source, nodata/padded-edge alpha, grid arithmetic, retile planning,
-new-directory publication, non-overwriting resume and refusal of symlinked output
-descendants. Python exercises lazy and loaded inputs; JavaScript exercises
-incremental callbacks and propagation of callback failures. Retile output layouts
+pixel procedural source, nodata/padded-edge alpha, grid arithmetic,
+atomic new-directory publication, unfinished temporary files, non-overwriting resume and refusal of symlinked output
+descendants, plus premultiplied cubic interpolation of a default RGBA GeoTIFF. Python exercises lazy and loaded inputs; JavaScript exercises
+incremental callbacks and preservation of the original callback exception. Retile output layouts
 are not implemented yet.
 
 ```sh

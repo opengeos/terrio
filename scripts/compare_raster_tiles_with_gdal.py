@@ -22,20 +22,26 @@ def run(args):
     return result.stdout
 
 
+class PixelDifference(AssertionError):
+    """A value-only mismatch after every tile's structure/metadata was checked."""
+
+
 def compare_folders(reference, actual, extension):
     refs = {p.relative_to(reference) for p in reference.rglob('*.' + extension)}
     outs = {p.relative_to(actual) for p in actual.rglob('*.' + extension)}
     if refs != outs:
         raise AssertionError(f'tile names differ: reference-only={refs-outs}, terrio-only={outs-refs}')
     samples = 0
+    differences = []
     for name in sorted(refs):
         a, b = (gdal.Open(str(root / name)) for root in (reference, actual))
         x, y = a.ReadAsArray(), b.ReadAsArray()
-        if x.shape != y.shape or not np.array_equal(x, y, equal_nan=True):
-            if x.shape == y.shape:
-                count = np.count_nonzero(~np.isclose(x, y, atol=0, rtol=0, equal_nan=True))
-                raise AssertionError(f'{name}: {count}/{x.size} different samples; max delta {np.nanmax(abs(x.astype(float)-y))}')
+        if x.shape != y.shape:
             raise AssertionError(f'{name}: shapes {x.shape} != {y.shape}')
+        pixels_differ = not np.array_equal(x, y, equal_nan=True)
+        if pixels_differ:
+            count = np.count_nonzero(~np.isclose(x, y, atol=0, rtol=0, equal_nan=True))
+            differences.append(f'{name}: {count}/{x.size} different samples; max delta {np.nanmax(abs(x.astype(float)-y))}')
         samples += x.size
         if extension == 'tif':
             if not np.allclose(a.GetGeoTransform(), b.GetGeoTransform(), atol=1e-8, rtol=1e-12):
@@ -48,7 +54,17 @@ def compare_folders(reference, actual, extension):
             if ra.DataType != rb.DataType or ra.GetNoDataValue() != rb.GetNoDataValue():
                 raise AssertionError(f'{name}: type/nodata differs')
             if not np.array_equal(ra.GetMaskBand().ReadAsArray(), rb.GetMaskBand().ReadAsArray()):
-                raise AssertionError(f'{name}: masks differ')
+                # Alpha sample differences also change the derived RGB masks.
+                alpha_diff = any(
+                    a.GetRasterBand(j).GetColorInterpretation() == gdal.GCI_AlphaBand
+                    and b.GetRasterBand(j).GetColorInterpretation() == gdal.GCI_AlphaBand
+                    and not np.array_equal(a.GetRasterBand(j).ReadAsArray(), b.GetRasterBand(j).ReadAsArray())
+                    for j in range(1, a.RasterCount + 1))
+                derived_alpha_masks = (ra.GetMaskFlags() & gdal.GMF_ALPHA) and (rb.GetMaskFlags() & gdal.GMF_ALPHA)
+                if not (alpha_diff and derived_alpha_masks):
+                    raise AssertionError(f'{name}: masks differ')
+    if differences:
+        raise PixelDifference(f'{len(differences)} tiles differ in values; ' + differences[0])
     return f'{len(refs)} tiles; {samples} exact samples, matching types/nodata/masks and TIFF georeferencing'
 
 
@@ -229,7 +245,7 @@ def main():
                     try:
                         compare_folders(reference, actual, 'png')
                         detail = direct + '; GDAL generated pyramid also matches'
-                    except AssertionError as difference:
+                    except PixelDifference as difference:
                         detail = direct + '; documented generated-pyramid difference: ' + str(difference)
                     results.append(dict(name=name, status='tolerance', detail=detail))
                 else:

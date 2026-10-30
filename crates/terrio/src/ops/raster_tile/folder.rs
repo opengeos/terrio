@@ -116,10 +116,9 @@ pub fn plan(source: &RasterDataset, options: &TileOptions) -> Result<(TilePlan, 
 }
 
 fn validate_rendering(source: &RasterDataset, options: &TileOptions, extension: &str) -> Result<(bool, bool, [Resampling; 2])> {
-    let alpha = options.alpha.unwrap_or(extension == "png");
-    let color = extension == "png"
-        || alpha
-        || (options.alpha == Some(false) && source.band_color_interp(source.raster.bands).eq_ignore_ascii_case("Alpha"));
+    let source_alpha = source.band_color_interp(source.raster.bands).eq_ignore_ascii_case("Alpha");
+    let alpha = options.alpha.unwrap_or(extension == "png" || source_alpha);
+    let color = extension == "png" || alpha || source_alpha;
     let methods = [
         Resampling::parse(&options.resampling)?,
         Resampling::parse(options.overview_resampling.as_deref().unwrap_or(&options.resampling))?,
@@ -406,7 +405,7 @@ fn blank(ds: &RasterDataset) -> bool {
 /// Generate to a new local directory, or fill missing tiles in an existing directory
 /// with `resume`. Existing tiles are never overwritten. A failed run may leave completed
 /// tiles; `resume` trusts their contents and does not verify that options match.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 pub fn to_directory(source: &mut dyn WarpSource, options: &TileOptions, output: &std::path::Path, resume: bool) -> Result<TileReport> {
     // Validate before creating output directories.
     let info = source.info()?;
@@ -458,13 +457,7 @@ pub fn to_directory(source: &mut dyn WarpSource, options: &TileOptions, output: 
             use std::io::Write;
             let path = self.path(name)?;
             std::fs::create_dir_all(path.parent().unwrap())?;
-            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
-            if let Err(e) = file.write_all(bytes).and_then(|_| file.sync_all()) {
-                drop(file);
-                let _ = std::fs::remove_file(path);
-                return Err(e.into());
-            }
-            Ok(())
+            crate::vsi::write_local_atomic_with_replace(&path, false, |file| Ok(file.write_all(bytes)?))
         }
     }
     generate(source, options, &mut Local { root: output, resume })
@@ -554,6 +547,61 @@ mod tests {
     }
 
     #[test]
+    fn default_rgba_geotiff_uses_premultiplied_cubic_resampling() {
+        let config = crate::RasterConfig {
+            cols: 4,
+            rows: 4,
+            bands: 4,
+            data_type: DataType::U8,
+            x_min: 0.2,
+            y_min: 0.2,
+            cell_size: 1.0,
+            crs: wbraster::CrsInfo::from_epsg(4326),
+            ..Default::default()
+        };
+        let mut values = vec![0.0; 64];
+        for i in 0..16 {
+            let transparent = i % 4 >= 2;
+            for (band, color) in [10., 20., 30.].into_iter().enumerate() {
+                values[band * 16 + i] = if transparent { 200. } else { color };
+            }
+            values[48 + i] = match i % 4 {
+                0 => 255.,
+                1 => 128.,
+                _ => 0.,
+            };
+        }
+        let mut dataset = RasterDataset::new(crate::Raster::from_data(config, values).unwrap(), false);
+        dataset.band_metadata = ["Red", "Green", "Blue", "Alpha"]
+            .iter()
+            .map(|name| crate::BandMetadata { color_interp: Some((*name).into()), ..Default::default() })
+            .collect();
+        let options = TileOptions {
+            format: "GTiff".into(),
+            tiling_scheme: "WorldCRS84Quad".into(),
+            grid: GridOptions { tile_size: 2, max_zoom: Some(7), ..Default::default() },
+            ..Default::default()
+        };
+        let mut sink = Collect::default();
+        generate(&mut crate::LazyRaster::from(dataset), &options, &mut sink).unwrap();
+        let mut partial = 0;
+        for bytes in sink.0.values() {
+            let tile = crate::memory::open_raster_bytes(bytes.clone(), "tile.tif").unwrap();
+            assert_eq!(tile.raster.bands, 4);
+            for i in 0..4 {
+                let alpha = tile.raster.data.get_f64(12 + i);
+                if alpha > 0. {
+                    for (band, color) in [10., 20., 30.].into_iter().enumerate() {
+                        assert_eq!(tile.raster.data.get_f64(band * 4 + i), color);
+                    }
+                    partial += usize::from(alpha < 255.);
+                }
+            }
+        }
+        assert!(partial > 0);
+    }
+
+    #[test]
     fn tile_limit_and_bad_options_do_not_emit_tiles() {
         let mut sink = Collect::default();
         let mut opts = options();
@@ -577,6 +625,21 @@ mod tests {
         assert_eq!((report.written, report.resumed), (0, 4));
         assert_eq!(std::fs::read(path).unwrap(), b"existing tile");
     }
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn resume_ignores_interrupted_atomic_temporary_files() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("tiles");
+        let parent = output.join("0/0");
+        std::fs::create_dir_all(&parent).unwrap();
+        let unfinished = parent.join(format!(".terrio-partial-{}-0", std::process::id()));
+        std::fs::write(&unfinished, b"partial PNG").unwrap();
+        let report = to_directory(&mut source(), &options(), &output, true).unwrap();
+        assert_eq!((report.written, report.resumed), (4, 0));
+        assert!(std::fs::read(parent.join("0.png")).unwrap().starts_with(b"\x89PNG"));
+        assert_eq!(std::fs::read(unfinished).unwrap(), b"partial PNG");
+    }
+
     #[test]
     #[cfg(unix)]
     fn directory_resume_refuses_symlinked_tile_directories() {

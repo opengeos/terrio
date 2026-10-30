@@ -2830,7 +2830,8 @@ test("rasterTiles streams encoded files and planRasterTiles reads metadata", () 
     tile.free();
   });
   assert.equal(uploaded, 6);
-  assert.throws(() => terrio.rasterTiles(raster, options, () => { throw new Error("stop"); }), /callback/);
+  const failure = new Error("save failed");
+  assert.throws(() => terrio.rasterTiles(raster, options, () => { throw failure; }), (error) => error === failure);
   raster.free();
 });
 

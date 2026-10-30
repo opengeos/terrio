@@ -15,17 +15,27 @@ pub fn plan_raster_tiles(input: &JsValue, options: JsValue) -> Result<JsValue, J
 /// The callback is synchronous. A thrown exception stops generation. Use the callback
 /// to save/download each tile; Terrio does not retain the encoded pyramid in WASM memory.
 #[wasm_bindgen(js_name = rasterTiles)]
-pub fn raster_tiles(input: &JsValue, options: JsValue, on_tile: &js_sys::Function) -> Result<JsValue, JsError> {
-    let options: TileOptions = crate::parse_options(&options)?;
-    let mut source = crate::ops::tile_input(input)?;
-    struct Callback<'a>(&'a js_sys::Function);
+pub fn raster_tiles(input: &JsValue, options: JsValue, on_tile: &js_sys::Function) -> Result<JsValue, JsValue> {
+    let options: TileOptions = crate::parse_options(&options).map_err(JsValue::from)?;
+    let mut source = crate::ops::tile_input(input).map_err(JsValue::from)?;
+    struct Callback<'a> {
+        function: &'a js_sys::Function,
+        exception: Option<JsValue>,
+    }
     impl FolderSink for Callback<'_> {
         fn put(&mut self, name: &str, bytes: &[u8]) -> terrio::Result<()> {
-            self.0
-                .call2(&JsValue::NULL, &JsValue::from_str(name), &js_sys::Uint8Array::from(bytes))
-                .map_err(|_| terrio::Error::InvalidArgument("tile callback threw an exception".into()))?;
+            if let Err(exception) = self.function.call2(&JsValue::NULL, &JsValue::from_str(name), &js_sys::Uint8Array::from(bytes)) {
+                self.exception = Some(exception);
+                return Err(terrio::Error::InvalidArgument("tile callback failed".into()));
+            }
             Ok(())
         }
     }
-    crate::to_js(&tile::generate(&mut source, &options, &mut Callback(on_tile)).map_err(crate::js_err)?)
+    let mut callback = Callback { function: on_tile, exception: None };
+    let result = tile::generate(&mut source, &options, &mut callback);
+    if let Some(exception) = callback.exception {
+        return Err(exception);
+    }
+    let report = result.map_err(|error| JsValue::from(crate::js_err(error)))?;
+    crate::to_js(&report).map_err(JsValue::from)
 }

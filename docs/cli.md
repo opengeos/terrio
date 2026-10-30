@@ -2810,10 +2810,13 @@ exceeding `--max-tiles` (default one million) is rejected before rendering.
 Output directories must be new unless `--resume` is given. Existing files are
 never overwritten; resume trusts existing tiles without validating their
 contents or options. Symlinked descendant paths are refused. A failure can leave
-completed tiles; resume can fill the missing ones. Use a fresh directory when
+completed tiles and unfinished hidden temporary files. Each final filename is
+published atomically only after its contents are synced; resume ignores unfinished
+temporary files and fills the missing tiles. Use a fresh directory when
 changing generation options.
 
-The command is also the MCP `tile` tool. Rust callers use
+Directory writes require a native filesystem; WebAssembly callers use the
+incremental tile sink instead. The command is also the MCP `tile` tool. Rust callers use
 `ops::raster_tile::{plan, generate, to_directory, FolderSink, TileOptions}`.
 Python `terrio.raster_tiles(source, output, **options)` accepts a raster path or
 an open `Raster`, including lazy rasters. Options use snake_case; grid options
@@ -2824,5 +2827,5 @@ JavaScript `planRasterTiles(input, options)` returns the plan and
 `onTile(relativePath, Uint8Array)` callback once per encoded tile. JavaScript
 options accept camelCase, including `grid: {tileSize: 128, minZoom: 0}`. Uploaded
 bytes and shared `Dataset` handles retain window reads. A thrown callback stops
-generation; consumers are responsible for saving files and for any bytes retained
+generation and is rethrown with its original JavaScript value; consumers are responsible for saving files and for any bytes retained
 by their callback.

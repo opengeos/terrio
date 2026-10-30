@@ -1,4 +1,4 @@
-//! Raster tile grids shared by directory tiling and retiling.
+//! Raster tile grids for bounded directory generation.
 //!
 //! Grid planning does not read pixels or enumerate every tile into memory. Coordinates
 //! use top-left rows internally; TMS changes the stored row number, not georeferencing.
@@ -259,69 +259,6 @@ impl TilePlan {
     }
 }
 
-/// A retiling grid retaining the raster's CRS and resolution, with cropped edge tiles.
-#[derive(Debug, Clone)]
-pub struct RetileGrid {
-    width: usize,
-    height: usize,
-    gt: [f64; 6],
-    tile_size: [usize; 2],
-    overlap: usize,
-    columns: usize,
-    rows: usize,
-    level: u8,
-}
-
-impl RetileGrid {
-    /// Plan one pyramid level directly from the original raster grid, as gdal_retile
-    /// does. Level zero is full resolution; each subsequent level doubles pixel size.
-    pub fn new(width: usize, height: usize, gt: [f64; 6], tile_size: [usize; 2], overlap: usize, level: u8) -> Result<Self> {
-        validate_grid(width, height, gt)?;
-        if level > MAX_ZOOM || tile_size.iter().any(|&v| v == 0 || v > MAX_TILE_SIZE || overlap >= v) {
-            return Err(invalid("invalid retile size, overlap or pyramid level"));
-        }
-        let factor = 1usize << level;
-        let width = (width / factor).max(1);
-        let height = (height / factor).max(1);
-        let count = |n: usize, tile: usize| 1 + n.saturating_sub(tile).div_ceil(tile - overlap);
-        let columns = count(width, tile_size[0]);
-        let rows = count(height, tile_size[1]);
-        (columns as u64).checked_mul(rows as u64).ok_or_else(|| invalid("tile count overflow"))?;
-        let gt = [gt[0], gt[1] * factor as f64, 0.0, gt[3], 0.0, gt[5] * factor as f64];
-        validate_grid(width, height, gt)?;
-        Ok(Self { width, height, gt, tile_size, overlap, columns, rows, level })
-    }
-
-    /// Number of files at this level.
-    pub fn count(&self) -> u64 {
-        self.columns as u64 * self.rows as u64
-    }
-
-    /// Iterate cropped tiles row by row. `x` and `y` are zero-based column/row numbers.
-    pub fn cells(&self) -> impl Iterator<Item = TileCell> + '_ {
-        (0..self.rows).flat_map(move |row| {
-            (0..self.columns).map(move |col| {
-                let x = col * (self.tile_size[0] - self.overlap);
-                let y = row * (self.tile_size[1] - self.overlap);
-                TileCell {
-                    zoom: self.level,
-                    x: col as u64,
-                    y: row as u64,
-                    size: [self.tile_size[0].min(self.width - x), self.tile_size[1].min(self.height - y)],
-                    geo_transform: [
-                        self.gt[0] + x as f64 * self.gt[1],
-                        self.gt[1],
-                        0.0,
-                        self.gt[3] + y as f64 * self.gt[5],
-                        0.0,
-                        self.gt[5],
-                    ],
-                }
-            })
-        })
-    }
-}
-
 /// Pixel-buffer budgets for rendering a single tile. Decoder caches and already-loaded
 /// caller-owned datasets are additional to these budgets.
 #[derive(Debug, Clone, Copy)]
@@ -556,26 +493,8 @@ mod tests {
     }
 
     #[test]
-    fn retile_crops_edges_and_preserves_overlap_at_each_level() {
-        for (overlap, counts, final_size) in [(0, [15, 4, 1], [1, 43]), (16, [15, 6, 1], [65, 75])] {
-            for level in 0..=2 {
-                let grid = RetileGrid::new(513, 299, GT, [128, 128], overlap, level).unwrap();
-                assert_eq!(grid.count(), counts[level as usize]);
-                let last = grid.cells().last().unwrap();
-                if level == 0 {
-                    assert_eq!(last.size, final_size);
-                }
-                if level == 2 {
-                    assert_eq!(last.size, [128, 74]);
-                }
-            }
-        }
-    }
-
-    #[test]
     fn bad_grids_and_nonintersection_are_rejected_before_rendering() {
         assert!(TilePlan::raster(0, 1, GT, &Default::default()).is_err());
-        assert!(RetileGrid::new(10, 10, GT, [128, 128], 128, 0).is_err());
         assert!(TilePlan::global(GlobalScheme::WorldCrs84Quad, [190.0, 0.0, 200.0, 1.0], 1.0, &Default::default()).is_err());
         let p = TilePlan::global(
             GlobalScheme::WorldCrs84Quad,
