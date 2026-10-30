@@ -405,12 +405,12 @@ mod tests {
         Server::new(vec!["terrio".into()], std::sync::mpsc::channel().0)
     }
 
-    /// `Server::handle` on a thread with the stack of `run_as`: building the command catalog (any
-    /// tool call, `tools/list`) overflows the default test-thread stack. The catalog exceeds
-    /// Windows' default test-thread stack too, so this is the same reason `run_as` uses this size.
-    fn handle_on_big_stack(s: &mut Server, msg: &str) -> Option<String> {
+    /// `Server::handle` on a thread with the stack of `run_as`. Building the command catalog (any
+    /// tool call, `tools/list`) needs more than the 2 MiB default of a test thread, so this runs it
+    /// on the production worker's stack.
+    fn handle_on_big_stack(s: &mut Server, message: &str) -> Option<String> {
         std::thread::scope(|scope| {
-            std::thread::Builder::new().stack_size(crate::STACK_SIZE).spawn_scoped(scope, || s.handle(msg)).unwrap().join().unwrap()
+            std::thread::Builder::new().stack_size(crate::STACK_SIZE).spawn_scoped(scope, || s.handle(message)).unwrap().join().unwrap()
         })
     }
 
