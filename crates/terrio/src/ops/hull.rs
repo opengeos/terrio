@@ -829,13 +829,17 @@ mod tests {
     #[test]
     fn hole_seed_ties_match_the_recorded_sort_observation() {
         // Linux std::sort executable observation, Debian g++ 14.2.0-19.
-        // All keys are equal; a stable sort changes this erosion seed order.
-        let mut candidates = (0..20).map(|id| Candidate { id, size: 1., area: 1. }).collect::<Vec<_>>();
-        sort_hole_candidates(&mut candidates);
-        assert_eq!(
-            candidates.iter().map(|c| c.id).collect::<Vec<_>>(),
-            [10, 19, 18, 17, 16, 15, 14, 13, 12, 11, 0, 9, 8, 7, 6, 5, 4, 3, 2, 1]
-        );
+        // Equal sizes tie even when areas differ. The seed sort compares size
+        // only; the erosion heap separately uses size and area.
+        for unequal_areas in [false, true] {
+            let mut candidates =
+                (0..20).map(|id| Candidate { id, size: 1., area: if unequal_areas { (20 - id) as f64 } else { 1. } }).collect::<Vec<_>>();
+            sort_hole_candidates(&mut candidates);
+            assert_eq!(
+                candidates.iter().map(|c| c.id).collect::<Vec<_>>(),
+                [10, 19, 18, 17, 16, 15, 14, 13, 12, 11, 0, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+            );
+        }
     }
 
     #[test]

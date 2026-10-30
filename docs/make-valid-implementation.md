@@ -109,15 +109,18 @@ scope and points here for the later repair replacement.
 The original [design](make-valid-clean-room/design.md),
 [exposure summary and pinned original](make-valid-clean-room/exposure.md),
 [standalone validation](make-valid-clean-room/validation.md),
-[approved manifest](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room/approved-manifest.json),
-[run metadata](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room/run.json) and
-[process-control message](https://github.com/Mavrick-F/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/custodian-control.json) are
+[approved manifest](https://github.com/opengeos/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room/approved-manifest.json),
+[run metadata](https://github.com/opengeos/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room/run.json) and
+[process-control message](https://github.com/opengeos/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/custodian-control.json) are
 preserved, with verbose one-off setup records pinned to the original reviewed
-commit. The [implementation brief](https://github.com/Mavrick-F/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/implementation-brief.txt) and
-[custodian interface decision](https://github.com/Mavrick-F/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/custodian-response.md) are also
-historical evidence, removed from the maintained tree. The [custodian process research](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room-process.md)
-and [package-preparation checks](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-handoff-validation.json)
+commit. The [implementation brief](https://github.com/opengeos/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/implementation-brief.txt) and
+[custodian interface decision](https://github.com/opengeos/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/custodian-response.md) are also
+historical evidence, removed from the maintained tree. The [custodian process research](https://github.com/opengeos/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room-process.md)
+and [package-preparation checks](https://github.com/opengeos/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-handoff-validation.json)
 are historical references rather than setup instructions for Terrio contributors.
+These immutable links use the upstream repository's commit URLs. All eight
+linked records were retrieved through upstream and checked byte-for-byte against
+the retained commits; contributors do not need the personal fork to read them.
 The standalone validation predates production integration and its
 outstanding integration list is historical; the production results below apply.
 
@@ -222,8 +225,15 @@ encodable with signed 32-bit cursor deltas. The eight candidate-only overflow
 cases remain output-order differences from the reference; production now returns
 an error on such an unsupported delta. No claim of matching the reference's
 private traversal order is made. The implementer's validation also records the
-unproved edge case of distinct exact nodes coalescing under binary64 rounding,
-and unguarded allocator exhaustion. The MSRV 1.90 toolchain was not available;
+edge case of distinct exact nodes coalescing under binary64 rounding,
+and unguarded allocator exhaustion. A subsequent integer-input regression reaches
+the rounding case: a self-crossing ring has four polygonal components near the
+origin, including a triangle of area about 8.3e-18. Translating it by 1e9 makes
+that triangle's three exact nodes round to one binary64 point. Executable GEOS
+3.14.1 and the replacement both return three polygons; the integration regression
+requires exact normalized coordinates and ring connectivity for both offsets.
+This confirms one reachable case, not every possible rounding collision.
+The MSRV 1.90 toolchain was not available;
 builds used the installed Rust 1.99 toolchain.
 
 The existing pre-quantization clipping-failure heuristic and other geometry

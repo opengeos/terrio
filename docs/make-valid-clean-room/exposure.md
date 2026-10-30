@@ -2,7 +2,7 @@
 
 This is a maintainer summary of the implementing agent's record from
 2026-10-30 (~02:48 UTC), not a replacement attestation. The
-[unabridged record](https://github.com/Mavrick-F/terrio/blob/a2d85cb49c231c1d13653b9170f03bdc74cd9404/docs/make-valid-clean-room/exposure.md)
+[unabridged record](https://github.com/opengeos/terrio/blob/a2d85cb49c231c1d13653b9170f03bdc74cd9404/docs/make-valid-clean-room/exposure.md)
 remains pinned to the reviewed commit (SHA256 `70fa76cec4f90f36c1b809e5acf9aee903830f56c4beb7d865b2c8105c3c5a5e`). The sealed delivery
 archive has SHA256
 `5257385a86089d787eee6adf80102872d5fd84c3e0858828bc2ccac1a99cc1ab`.
@@ -61,6 +61,6 @@ history; this record describes task-local inputs and observed access.
 No accidental prohibited-source exposure was reported. During implementation,
 one source-exposed integrator message conveyed only the approved fallible API
 and validation priorities; it supplied no algorithm details. The
-[interface decision](https://github.com/Mavrick-F/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/custodian-response.md) remains recorded. Detailed process
+[interface decision](https://github.com/opengeos/terrio/blob/3a2df9cc469a3883eba7968d98e13e07fda46a9d/docs/make-valid-clean-room/custodian-response.md) remains recorded. Detailed process
 paths and transport configuration are historical evidence in the pinned
 original, not contributor setup requirements.

@@ -55,3 +55,17 @@ fn repair_fixture_ring_connectivity_matches_observations() {
         assert_eq!(canonical_polygons(&actual), canonical_polygons(&expected), "{}: ring connectivity", case["id"]);
     }
 }
+
+#[test]
+fn sub_ulp_component_rounding_matches_observed_linework_repair() {
+    let fixture: Value = serde_json::from_str(include_str!("../../tests/data/make-valid-rounding.json")).unwrap();
+    let cases = fixture["observations"].as_array().unwrap();
+    assert_eq!(cases.len(), 2);
+    for (case, count) in cases.iter().zip([4, 3]) {
+        let input: Vec<Polygon<IPt>> = serde_json::from_value(case["input_polygons"].clone()).unwrap();
+        let expected: Vec<Polygon<P>> = serde_json::from_value(case["polygonal_coordinates"].clone()).unwrap();
+        let actual = try_make_valid(&input).unwrap();
+        assert_eq!(actual.len(), count, "{}: polygon count", case["id"]);
+        assert_eq!(canonical_polygons(&actual), canonical_polygons(&expected), "{}: rounded coordinates and connectivity", case["id"]);
+    }
+}

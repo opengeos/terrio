@@ -160,7 +160,11 @@ future library version.
 For the recorded 20-item all-equal-key probe, input IDs `0..20` are emitted as
 `[10, 19, 18, 17, 16, 15, 14, 13, 12, 11, 0, 9, 8, 7, 6, 5, 4, 3, 2, 1]`.
 The `hole_seed_ties_match_the_recorded_sort_observation` regression pins this
-list; the polygon/point hull fixtures additionally check its geometric effects.
+list with both equal areas and distinct areas in reverse ID order. The seed
+comparison intentionally uses size alone; area remains a tie-break in the
+erosion heap, which is a separate ordering. The unequal-area executable probe
+produces the same permutation. The polygon/point hull fixtures additionally
+check its geometric effects.
 
 Ring-endpoint simplification removes both replaced segments from the input and
 output indexes, including original leaf segments, as JTS's
