@@ -46,7 +46,11 @@ fn validation_accepts_non_utf8_native_paths() {
     use std::os::unix::ffi::OsStringExt;
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join(std::ffi::OsString::from_vec(b"bad-\xff.gpkg".to_vec()));
-    std::fs::write(&path, b"not sqlite").unwrap();
+    // APFS and HFS+ refuse names that are not valid UTF-8 (EILSEQ), so no such file can exist there.
+    if let Err(error) = std::fs::write(&path, b"not sqlite") {
+        assert!(cfg!(target_os = "macos") && error.raw_os_error() == Some(92), "{error}");
+        return;
+    }
     let output = Command::new(env!("CARGO_BIN_EXE_terrio")).arg("gpkg-validate").arg(&path).arg("--json").output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
