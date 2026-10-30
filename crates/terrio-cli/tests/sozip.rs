@@ -61,3 +61,13 @@ fn validation_diagnostics_redact_query_credentials() {
         assert!(text.contains("redacted"), "{text}");
     }
 }
+
+#[test]
+fn optimize_rejects_remote_outputs_before_probing_them() {
+    let result = run(&["optimize", "/no/such/input.zip", "https://127.0.0.1:1/output.zip?sig=TEST_SECRET"]);
+    assert!(!result.status.success());
+    let text = String::from_utf8_lossy(&result.stderr);
+    assert!(text.contains("local files or /vsimem/"), "{text}");
+    assert!(text.contains("redacted"), "{text}");
+    assert!(!text.contains("TEST_SECRET"), "{text}");
+}

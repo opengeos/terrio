@@ -583,7 +583,7 @@ def sozip_cases(terrio: str, data: Path, work: Path) -> None:
     try:
         ours, theirs = sozip_lines([terrio, "vsi"], str(work / "places_terrio.zip")), sozip_lines(["gdal", "vsi"], str(work / "places_gdal.zip"))
         record("sozip create, listed by each tool (ne_places, 7 files)", ours == theirs, f"{len(ours)} lines identical (sizes, UTC dates, SOZip chunk sizes)" if ours == theirs else f"{ours} vs {theirs}")
-        cross = sozip_lines(["gdal", "vsi"], str(work / "places_terrio.zip")) == sozip_lines([terrio, "vsi"], str(work / "places_gdal.zip"))
+        cross = sozip_lines(["gdal", "vsi"], str(work / "places_terrio.zip")) == ours and sozip_lines([terrio, "vsi"], str(work / "places_gdal.zip")) == theirs
         record("sozip list of the other tool's archive", cross and ours == theirs, "each tool lists the other's archive identically")
     except RuntimeError as e:
         record("sozip list", False, str(e))

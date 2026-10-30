@@ -876,7 +876,10 @@ fn inputs_of(input: &str, options: &SozipOptions) -> Result<Vec<InputFile>> {
         return Ok(vec![(node, stored(input), stat.size.unwrap_or(0), stat.modified)]);
     }
     if !options.recursive {
-        return Err(Error::InvalidArgument(format!("'{input}' is a directory: use the recursive option")));
+        return Err(Error::InvalidArgument(format!(
+            "'{}' is a directory: use the recursive option",
+            super::redact_diagnostic_location(input)
+        )));
     }
     let base = input.trim_end_matches('/');
     Ok(super::read_dir(&node, true, None)?
@@ -932,10 +935,10 @@ pub fn optimize(input: &str, output: &str, options: &SozipOptions) -> Result<Soz
     if super::is_same(&in_node, &out_node) {
         return Err(Error::InvalidArgument("the input and output archives are the same".into()));
     }
-    if !options.overwrite && super::stat_node(&out_node)?.is_some() {
-        return Err(Error::InvalidArgument(format!("'{output}' exists: use the overwrite option")));
-    }
     let (out, _) = Output::open(output, true)?;
+    if !options.overwrite && super::stat_node(&out_node)?.is_some() {
+        return Err(Error::InvalidArgument(format!("'{}' exists: use the overwrite option", super::redact_diagnostic_location(output))));
+    }
     out.build(|zip| {
         let mut report = SozipReport::default();
         super::with_archive_reader(&in_node, false, |r| {
