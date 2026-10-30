@@ -2548,7 +2548,9 @@ column data-page locations; it does not copy those payloads into `_metadata`.
 
 ## GeoPackage repacking
 
-`terrio gpkg-repack survey.gpkg --json` compacts a native GeoPackage in place.
+`terrio gpkg-repack survey.gpkg --json` compacts a native GeoPackage in place. Repacking
+rejects malformed table key ordering and child keys outside their parent divider
+ranges, matching the stricter shared SQLite traversal used by validation.
 The `gpkg-repack` MCP tool accepts the same arguments. JSON reports original and compacted
 byte/page counts and the preserved SQLite page size.
 
@@ -2675,3 +2677,67 @@ offset, units and nodata. Numeric integer/float metadata compares by value.
 An array present in only some inputs is retained; regions belonging to other
 inputs use that array's nodata value, or zero when it has none.
 >
+
+## GeoPackage validation
+
+```sh
+terrio gpkg-validate data.gpkg --json
+terrio gpkg-validate data.gpkg --full-check --strict
+terrio gpkg-validate icu-created.gpkg --unicode-case
+```
+
+The pure Rust validator reports `valid`, `complete`, `version`, `errors` (a numeric
+core or named extension `requirement` and `message`), `warnings` and
+`unsupported_checks`. Exit status is 0 for a valid image, 1 for invalid data or
+strict-mode warnings, and 2 when unsupported checks prevent completing validation
+(even when another check has already proven the image invalid). Text summaries
+identify both invalidity and incompleteness when both apply. Execution errors,
+including missing inputs and refusals caused by live sidecars, exit with status 1
+and return an error diagnostic rather than a JSON verdict.
+The MCP `gpkg-validate` tool is read-only: a completed query returns its structured
+verdict with `isError=false`; CLI verdict statuses are appended as diagnostic text.
+Execution failures still return `isError=true`.
+
+Checks cover SQLite structure, foreign keys and indexes; GeoPackage core and
+extension metadata; geometry WKB; raster tile payloads and registered views.
+`--full-check` adds advisory attribute storage, range, length and date checks;
+`--strict` makes warnings invalidate the verdict. Stock ASCII case functions are
+the default; `--unicode-case` selects Unicode lower/upper/LIKE behavior for images
+created with ICU SQLite. NOCASE collation retains SQLite's ASCII behavior.
+
+Native paths and `/vsimem/` images must be closed/checkpointed. Validation reads
+the complete database image once, then makes multiple in-memory record passes for
+different rule groups. It refuses nonempty WAL or rollback-journal sidecars;
+it never checkpoints or modifies the file. Uploaded bytes are supported by the
+Rust/Python/JavaScript APIs. Filename requirement 3 applies only to path inputs.
+
+Supported views include projections, filters, DISTINCT, ORDER/LIMIT/OFFSET,
+nested views, inner/cross/left/right/full/natural joins and compound SELECTs.
+Aggregates, CTEs, subqueries, window functions, extension loading and unimplemented
+functions yield an explicitly incomplete verdict. The image stays in memory;
+there is no configured input-size ceiling, so reserve memory for the entire file
+plus the retained validation state before validating large databases.
+Ordinary user rows stream, while metadata, integrity keys, DISTINCT/set values
+and sorted candidates are retained. Join views additionally retain all right-hand
+input rows, including geometry blobs, once per evaluation. Each join evaluation is
+limited to 1,000,000 work units, counting retained right-input rows and candidate
+row pairs across all join levels and nested views. A shared 128 MiB budget covers right-input caches, candidate
+rows, sorted rows, DISTINCT keys and compound-set working rows, including text/blob
+payloads. Key/set reservations are conservative and can exceed the eventual retained
+result size; compound reservations last until evaluation ends. A separate 1 GiB
+cumulative candidate-copy budget bounds repeated copying of large join payloads,
+and is charged before the candidate is constructed. Reservations are released on
+success or failure. Exceeding a budget yields an incomplete verdict;
+multi-way nested-loop combinations can otherwise grow as the product of row counts.
+Inputs are not rescanned for each outer row. Extension/metadata/R-tree/schema rules
+that have not evaluated a referenced view, and tile views not evaluated by the tile
+validator, are explicitly incomplete. Unsupported schema declarations are also
+reported as incomplete, rather than proven SQLite corruption. The same applies to
+CHECK/generated expressions outside the implemented expression subset, including
+JSON extraction operators. `json_valid` supports SQLite's 1,000-level JSON nesting
+limit without constructing a recursive JSON value. LIKE/GLOB matching reuses its
+state buffers and refuses estimated work above 10,000,000 units per call, yielding
+an incomplete verdict; this includes the cost of character-class ranges.
+
+Checks are stricter than GDAL for some malformed geometry, image and metadata
+payloads. See [validation details and known differences](testing.md#geopackage-specification-validation).

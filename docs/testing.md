@@ -1497,6 +1497,74 @@ stored-member size/range checks, unexpected EOF and offset overflow. Append/opti
 share compression/index emission; validation and random readers reset reusable decoders.
 
 
+## GeoPackage specification validation
+
+`gpkg-validate` in `scripts/conformance.py` compares the public CLI with GDAL
+3.13.3 on Natural Earth features and USGS raster-tile derivatives, using both
+default and full checks. The reference must finish validation before its verdict
+can be compared. Validity, completeness and every numeric requirement reported by
+GDAL are checked, including under `python -O`; Terrio may report additional violations.
+Cases where the GDAL CLI refuses to open the malformed input are marked not
+compared; Terrio still checks the fixture's expected verdict. Diagnostic wording
+is not compared. Internal comparisons additionally cover
+SQLite constraints/indexes/encodings, view schemas/values, extension metadata,
+geometry and tile payload corruption, and documented stricter specification
+checks. Unsupported query forms produce incomplete reports.
+
+```sh
+cargo test -p terrio gpkg_validation --lib -- --include-ignored
+cargo test -p terrio gpkg_validate --lib -- --include-ignored
+python scripts/conformance.py ../terrio-data --only gpkg-validate
+pytest python/tests/test_gpkg_validation.py
+node --test --test-name-pattern='validateGpkg' js/tests/node.test.mjs
+```
+
+Public API tests exercise byte/path/memory equivalence, advisory/strict options,
+ASCII/ICU case handling, incomplete SQL verdicts, filename checks and read-only
+WAL/journal refusal. All native fixtures must be closed/checkpointed first.
+
+Join evaluation scans each right-hand input once and retains its logical rows,
+including geometry blobs; the leftmost source streams. The 2,000-row direct-table
+and nested-view join regression checks result rows and actual full-image/root/page
+walk counters. A 2 MiB unrelated BLOB must remain unvisited during query evaluation,
+and a LIMIT 1 projection stops its single-table B-tree traversal early. This fixture
+uses the Rust SQLite writer and runs in the default test suite without Python. A three-way Cartesian product also
+must stop with an unsupported/incomplete result after the join's 1,000,000 work-unit
+budget, counting cached right rows and candidate pairs across all levels. Multi-way
+nested loops can otherwise grow as the product of input row counts. Regressions also
+check that unevaluated view references and unsupported schema syntax cannot produce
+a complete, valid verdict. Join work and the 128 MiB working-row budget are shared
+across nested views and compound arms; regressions check both shared limits and
+release of cached-byte reservations on failure.
+
+GeoPackage review regressions additionally cover both required metadata/schema
+extension targets, orphan registrations, Related Tables declaration targets and names,
+uppercase metadata tables/columns, inline descending integer primary keys, native
+file identity checks and non-UTF-8 CLI paths. Metadata/schema declarations follow
+GeoPackage requirement 140/141 starting at version 1.2.1. Missing declared R-tree
+objects and UNIQUE constraints are rejected even where GDAL misses them.
+
+View-memory regressions cover ORDER BY, DISTINCT and compound sets inside a
+right-hand view before its output reaches a join cache. An injected small budget
+rejects each path and checks reservation release after failure. A large-payload
+join also checks that cumulative candidate-copy accounting stops repeated BLOB
+copies before exhausting the row-work allowance. Sorted LIMIT queries release
+evicted rows while preserving top-k behavior.
+
+Further payload regressions reject non-finite curve endpoints, partially NaN empty
+points, short/open polygon rings, reversed/non-finite envelopes and coordinates
+outside XY/Z/M envelope bounds. Tile dimensions are read from PNG/JPEG/WebP/TIFF
+headers and compared with their matrix; tiny real PNG/TIFF replacements must fail.
+Coverage ancillary rows are checked per registered coverage, with unit scale and
+zero offset for float data. These checks are intentionally stricter than GDAL
+where its validator only recognizes a signature or compares aggregate row counts.
+`json_valid` uses iterative validation with SQLite's 1,000-container nesting limit;
+real SQLite CHECK constraints are compared at depths 129, 1000 and 1001. A raw
+NaN REAL record is normalized to SQLite NULL before view evaluation; min/max and
+predicate behavior are compared with SQLite on a patched real GeoPackage. An
+expensive LIKE predicate returns an incomplete verdict under the documented work
+limit, while wildcard-only patterns use the direct matching path.
+
 ## JTS provenance replacement regressions
 
 `docs/jts-provenance.md` maps the geometry replacements to pinned JTS 1.20.0

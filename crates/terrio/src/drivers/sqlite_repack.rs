@@ -136,6 +136,43 @@ fn replace_root(record: &[u8], page: u32) -> Result<Vec<u8>> {
     Ok(result)
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct InspectionStats {
+    pub whole_images: usize,
+    pub table_roots: usize,
+    pub pages: usize,
+}
+#[cfg(test)]
+thread_local! {
+    static INSPECTION_STATS: std::cell::Cell<InspectionStats> = const { std::cell::Cell::new(InspectionStats { whole_images: 0, table_roots: 0, pages: 0 }) };
+}
+#[cfg(test)]
+pub(crate) fn take_inspection_stats() -> InspectionStats {
+    INSPECTION_STATS.with(|stats| stats.replace(InspectionStats::default()))
+}
+
+/// Visit only one table's B-tree in an image whose global ownership/integrity
+/// has already been checked by `inspect`. A false visitor result stops the walk.
+pub(crate) fn inspect_table(bytes: &[u8], root: u32, mut visit: impl FnMut(Option<i64>, &[u8]) -> Result<bool>) -> Result<()> {
+    #[cfg(test)]
+    INSPECTION_STATS.with(|stats| {
+        let mut value = stats.get();
+        value.table_roots += 1;
+        stats.set(value);
+    });
+    let mut source = Source::validated(bytes)?;
+    if root < 2 {
+        return Err(bad("invalid table root"));
+    }
+    let index = matches!(source.page(root)?[0], 2 | 10);
+    source.walk(root, index, 0, (None, None), &mut |rowid, record| {
+        fields(&record)?;
+        visit(rowid, &record)
+    })?;
+    Ok(())
+}
+
 struct Source<'a> {
     bytes: &'a [u8],
     size: usize,
@@ -143,6 +180,29 @@ struct Source<'a> {
     seen: BTreeSet<u32>,
 }
 impl<'a> Source<'a> {
+    fn validated(bytes: &'a [u8]) -> Result<Self> {
+        if bytes.len() < 100 || !bytes.starts_with(b"SQLite format 3\0") {
+            return Err(bad("not an SQLite file"));
+        }
+        let size = match u16::from_be_bytes([bytes[16], bytes[17]]) {
+            1 => 65536,
+            n => usize::from(n),
+        };
+        if !(512..=65536).contains(&size) || !size.is_power_of_two() || !bytes.len().is_multiple_of(size) {
+            return Err(bad("invalid page size or truncated database"));
+        }
+        if bytes[20] != 0 {
+            return Err(Error::Unsupported("SQLite validation: reserved/encrypted page bytes are unsupported".into()));
+        }
+        if !matches!(bytes[18], 1 | 2) || !matches!(bytes[19], 1 | 2) || bytes[21..24] != [64, 32, 32] {
+            return Err(bad("invalid SQLite header format"));
+        }
+        let count = u32::try_from(bytes.len() / size).map_err(|_| bad("too many pages"))?;
+        if be(bytes, 24)? == be(bytes, 92)? && be(bytes, 28)? != 0 && be(bytes, 28)? != count {
+            return Err(bad("database page count does not match its length"));
+        }
+        Ok(Self { bytes, size, count, seen: BTreeSet::new() })
+    }
     fn page(&self, page: u32) -> Result<&'a [u8]> {
         if page == 0 || page > self.count {
             return Err(bad(format!("page {page} out of range")));
@@ -154,6 +214,12 @@ impl<'a> Source<'a> {
         if !self.seen.insert(page) {
             return Err(bad(format!("page {page} is referenced more than once")));
         }
+        #[cfg(test)]
+        INSPECTION_STATS.with(|stats| {
+            let mut value = stats.get();
+            value.pages += 1;
+            stats.set(value);
+        });
         self.page(page)
     }
     fn payload(&mut self, page: &[u8], at: usize, kind: u8) -> Result<(Option<i64>, Vec<u8>)> {
@@ -192,7 +258,14 @@ impl<'a> Source<'a> {
         Ok((rowid, value))
     }
     /// In-order traversal: index divider records are values too; table dividers are not.
-    fn tree(&mut self, page: u32, index: bool, out: &mut Vec<(Option<i64>, Vec<u8>)>, depth: usize) -> Result<()> {
+    fn walk(
+        &mut self,
+        page: u32,
+        index: bool,
+        depth: usize,
+        bounds: (Option<i64>, Option<i64>),
+        visit: &mut impl FnMut(Option<i64>, Vec<u8>) -> Result<bool>,
+    ) -> Result<bool> {
         if depth > 128 {
             return Err(bad("b-tree depth exceeds 128"));
         }
@@ -208,6 +281,7 @@ impl<'a> Source<'a> {
         if offset + header + count * 2 > self.size {
             return Err(bad("cell pointer array exceeds page"));
         }
+        let mut lower = bounds.0;
         for i in 0..count {
             let pointer = offset + header + i * 2;
             let cell = u16::from_be_bytes([bytes[pointer], bytes[pointer + 1]]) as usize;
@@ -215,16 +289,46 @@ impl<'a> Source<'a> {
                 return Err(bad("cell pointer bounds"));
             }
             if interior {
-                self.tree(be(bytes, cell)?, index, out, depth + 1)?;
+                let upper = if kind == 5 {
+                    let key = varint(bytes, cell + 4).ok_or_else(|| bad("invalid table divider"))?.0;
+                    if lower.is_some_and(|min| key <= min) || bounds.1.is_some_and(|max| key > max) {
+                        return Err(bad("table divider outside parent range"));
+                    }
+                    Some(key)
+                } else {
+                    None
+                };
+                if !self.walk(be(bytes, cell)?, index, depth + 1, (lower, upper), visit)? {
+                    return Ok(false);
+                }
+                if kind == 5 {
+                    lower = upper;
+                }
             }
             if kind != 5 {
-                out.push(self.payload(bytes, cell + if interior { 4 } else { 0 }, kind)?);
+                let (rowid, record) = self.payload(bytes, cell + if interior { 4 } else { 0 }, kind)?;
+                if let Some(rowid) = rowid {
+                    if lower.is_some_and(|min| rowid <= min) || bounds.1.is_some_and(|max| rowid > max) {
+                        return Err(bad("table key outside parent range"));
+                    }
+                    lower = Some(rowid);
+                }
+                if !visit(rowid, record)? {
+                    return Ok(false);
+                }
             }
         }
         if interior {
-            self.tree(be(bytes, offset + 8)?, index, out, depth + 1)?;
+            return self.walk(be(bytes, offset + 8)?, index, depth + 1, (lower, bounds.1), visit);
         }
-        Ok(())
+        Ok(true)
+    }
+    fn tree(&mut self, page: u32, index: bool, out: &mut Vec<(Option<i64>, Vec<u8>)>, depth: usize) -> Result<()> {
+        self.walk(page, index, depth, (None, None), &mut |rowid, record| {
+            out.push((rowid, record));
+            Ok(true)
+        })
+        .map(|_| ())
     }
 }
 
@@ -482,6 +586,426 @@ impl MapSource<'_> {
     }
 }
 
+/// Decode an encoded SQLite record with the database's declared text encoding. Unlike the
+/// permissive display reader, validation reports truncated fields and invalid text.
+pub(crate) fn decode_record(record: &[u8], encoding: u32) -> Result<Vec<super::sqlite::Value>> {
+    use super::sqlite::Value;
+    let layout = fields(record)?;
+    let mut values = super::sqlite::Db::record_values(record);
+    // SQLite exposes a stored NaN REAL as SQL NULL, including in view expressions.
+    for value in &mut values {
+        if matches!(value, Value::Real(number) if number.is_nan()) {
+            *value = Value::Null;
+        }
+    }
+    for (value, (serial, range)) in values.iter_mut().zip(layout) {
+        if serial >= 13 && serial % 2 == 1 {
+            let text = &record[range];
+            let decoded = match encoding {
+                1 => String::from_utf8(text.to_vec()).map_err(|_| bad("invalid UTF-8 record text"))?,
+                2 | 3 => {
+                    if !text.len().is_multiple_of(2) {
+                        return Err(bad("odd UTF-16 record length"));
+                    }
+                    let words: Vec<_> = text
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|pair| if encoding == 2 { u16::from_le_bytes(*pair) } else { u16::from_be_bytes(*pair) })
+                        .collect();
+                    String::from_utf16(&words).map_err(|_| bad("invalid UTF-16 record text"))?
+                }
+                _ => return Err(bad("unknown text encoding")),
+            };
+            *value = Value::Text(decoded);
+        }
+    }
+    Ok(values)
+}
+
+/// Inspect every encoded table/index and page owner without allocating a replacement image.
+/// The visitor receives one record at a time; large table payloads are not retained.
+/// This is shared file-format inspection, not SQL
+/// constraint or collation/index-key validation; those checks belong to the caller.
+pub(crate) fn inspect(
+    bytes: &[u8],
+    mut visit: impl FnMut(&super::sqlite::SchemaEntry, Option<i64>, &[u8]) -> Result<()>,
+) -> Result<Vec<super::sqlite::SchemaEntry>> {
+    use super::sqlite::Value;
+    #[cfg(test)]
+    INSPECTION_STATS.with(|stats| {
+        let mut value = stats.get();
+        value.whole_images += 1;
+        stats.set(value);
+    });
+    let mut source = Source::validated(bytes)?;
+    let (size, count) = (source.size, source.count);
+    let encoding = be(bytes, 56)?;
+    let mut encoded = Vec::new();
+    source.tree(1, false, &mut encoded, 0)?;
+    check_rowids(&encoded)?;
+    let mut schema = Vec::new();
+    for (_, record) in &encoded {
+        let values = decode_record(record, encoding)?;
+        if values.len() != 5 {
+            return Err(bad("invalid sqlite_schema record"));
+        }
+        let [Value::Text(kind), Value::Text(name), Value::Text(table), Value::Int(page), sql] = values.as_slice() else {
+            return Err(bad("invalid schema field types"));
+        };
+        let page = u32::try_from(*page).map_err(|_| bad("invalid schema root page"))?;
+        let sql = match sql {
+            Value::Text(sql) => sql.clone(),
+            Value::Null => String::new(),
+            _ => return Err(bad("invalid schema SQL")),
+        };
+        schema.push((kind.clone(), name.clone(), table.clone(), page, sql));
+    }
+    let mut roots = BTreeSet::from([1]);
+    for entry in &schema {
+        let (kind, _, _, root, _) = entry;
+        if *root == 0 {
+            continue;
+        }
+        if !matches!(kind.as_str(), "table" | "index") || !roots.insert(*root) {
+            return Err(bad("invalid or shared schema root"));
+        }
+        let index = matches!(source.page(*root)?[0], 2 | 10);
+        let mut last_rowid = None;
+        source.walk(*root, index, 0, (None, None), &mut |rowid, record| {
+            if !index {
+                let rowid = rowid.ok_or_else(|| bad("missing table rowid"))?;
+                if last_rowid.is_some_and(|last| last >= rowid) {
+                    return Err(bad("unordered table rowids"));
+                }
+                last_rowid = Some(rowid);
+            }
+            fields(&record)?;
+            visit(entry, rowid, &record)?;
+            Ok(true)
+        })?;
+    }
+    let auto = be(bytes, 52)? != 0;
+    let special = Output { data: Vec::new(), size, auto };
+    let mut trunk = be(bytes, 32)?;
+    let mut free = 0u32;
+    while trunk != 0 {
+        let page = source.claim(trunk)?;
+        check_pointer_map(bytes, &special, trunk, 2, 0)?;
+        free = free.checked_add(1).ok_or_else(|| bad("freelist count overflow"))?;
+        let leaves = be(page, 4)? as usize;
+        if leaves > (size - 8) / 4 {
+            return Err(bad("freelist trunk is too long"));
+        }
+        for i in 0..leaves {
+            let leaf = be(page, 8 + i * 4)?;
+            source.claim(leaf)?;
+            check_pointer_map(bytes, &special, leaf, 2, 0)?;
+            free = free.checked_add(1).ok_or_else(|| bad("freelist count overflow"))?;
+        }
+        trunk = be(page, 0)?;
+    }
+    if free != be(bytes, 36)? {
+        return Err(bad("freelist count mismatch"));
+    }
+    for page in 1..=count {
+        if special.special(page) {
+            if source.seen.contains(&page) {
+                return Err(bad("special page used as data"));
+            }
+        } else if !source.seen.contains(&page) {
+            return Err(bad(format!("unaccounted page {page}")));
+        }
+    }
+    let mut maps = MapSource { bytes, size, mappings: Vec::new(), seen: BTreeSet::new() };
+    for root in roots {
+        maps.tree(root, 0, 1, 0)?;
+    }
+    for (page, role, parent) in maps.mappings {
+        if matches!(role, 1 | 5) {
+            check_page_layout(source.page(page)?, page, size)?;
+        }
+        check_pointer_map(bytes, &special, page, role, parent)?;
+    }
+    Ok(schema)
+}
+fn check_pointer_map(bytes: &[u8], layout: &Output, page: u32, role: u8, parent: u32) -> Result<()> {
+    if !layout.auto || page == 1 {
+        return Ok(());
+    }
+    let map = layout.ptrmap(page);
+    let relative = page.checked_sub(map).and_then(|n| n.checked_sub(1)).ok_or_else(|| bad("invalid pointer-map page reference"))?;
+    let offset = (map as usize - 1)
+        .checked_mul(layout.size)
+        .and_then(|start| start.checked_add(relative as usize * 5))
+        .ok_or_else(|| bad("pointer-map offset overflows"))?;
+    if bytes.get(offset) != Some(&role) || be(bytes, offset + 1)? != parent {
+        return Err(bad("incorrect auto-vacuum pointer map"));
+    }
+    Ok(())
+}
+fn check_rowids(rows: &[(Option<i64>, Vec<u8>)]) -> Result<()> {
+    if rows.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+        return Err(bad("unordered table rowids"));
+    }
+    Ok(())
+}
+fn check_page_layout(bytes: &[u8], page: u32, size: usize) -> Result<()> {
+    let h = if page == 1 { 100 } else { 0 };
+    let kind = bytes[h];
+    let interior = matches!(kind, 2 | 5);
+    let count = u16::from_be_bytes([bytes[h + 3], bytes[h + 4]]) as usize;
+    let pointer_end = h + if interior { 12 } else { 8 } + count * 2;
+    let content = match u16::from_be_bytes([bytes[h + 5], bytes[h + 6]]) {
+        0 if size == 65536 => 65536,
+        n => usize::from(n),
+    };
+    if content < pointer_end || content > size || bytes[h + 7] > 60 {
+        return Err(bad("invalid cell content area"));
+    }
+    let mut ranges = Vec::new();
+    for i in 0..count {
+        let at = h + if interior { 12 } else { 8 } + i * 2;
+        let start = u16::from_be_bytes([bytes[at], bytes[at + 1]]) as usize;
+        let offset = start + if interior { 4 } else { 0 };
+        let length = if kind == 5 {
+            let (_, n) = varint(bytes, offset).ok_or_else(|| bad("table divider"))?;
+            4 + n
+        } else {
+            let (payload, n1) = varint(bytes, offset).ok_or_else(|| bad("cell payload"))?;
+            let payload = usize::try_from(payload).map_err(|_| bad("negative payload length"))?;
+            let n2 = if kind == 13 { varint(bytes, offset + n1).ok_or_else(|| bad("rowid"))?.1 } else { 0 };
+            let (max, min) = if kind == 13 { writer::table_local_limits(size) } else { writer::index_local_limits(size) };
+            let local = if payload <= max {
+                payload
+            } else {
+                let k = min + (payload - min) % (size - 4);
+                if k <= max { k } else { min }
+            };
+            (if interior { 4 } else { 0 }) + n1 + n2 + local + if local < payload { 4 } else { 0 }
+        }
+        .max(4);
+        if start < content || start.checked_add(length).is_none_or(|end| end > size) {
+            return Err(bad("cell crosses content bounds"));
+        }
+        ranges.push((start, start + length));
+    }
+    let mut block = u16::from_be_bytes([bytes[h + 1], bytes[h + 2]]) as usize;
+    while block != 0 {
+        let header = bytes.get(block..block + 4).ok_or_else(|| bad("freeblock bounds"))?;
+        let next = u16::from_be_bytes([header[0], header[1]]) as usize;
+        let length = u16::from_be_bytes([header[2], header[3]]) as usize;
+        if block < content || length < 4 || block + length > size || next != 0 && next <= block + length {
+            return Err(bad("invalid freeblock chain"));
+        }
+        ranges.push((block, block + length));
+        block = next;
+    }
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|p| p[0].1 > p[1].0) {
+        return Err(bad("overlapping cells or freeblocks"));
+    }
+    let mut end = content;
+    let mut fragments = 0;
+    for (start, next) in ranges {
+        // SQLite can leave adjacent fragments after resizing schema records
+        // (e.g. ALTER TABLE RENAME COLUMN). Their contiguous span may exceed
+        // three bytes. Its integrity checker checks the total, not each gap.
+        fragments += start - end;
+        end = next;
+    }
+    fragments += size - end;
+    if fragments != usize::from(bytes[h + 7]) {
+        return Err(bad("fragmented byte count mismatch"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+    #[test]
+    fn gpkg_record_nan_reals_are_sql_null() {
+        let mut record = vec![2, 7];
+        record.extend(f64::NAN.to_be_bytes());
+        assert!(matches!(decode_record(&record, 1).unwrap().as_slice(), [super::super::sqlite::Value::Null]));
+        record[2..].copy_from_slice(&f64::INFINITY.to_be_bytes());
+        assert!(matches!(decode_record(&record,1).unwrap().as_slice(),[super::super::sqlite::Value::Real(number)] if number.is_infinite()));
+    }
+    #[test]
+    fn adjacent_fragments_require_an_exact_bounded_total() {
+        let mut page = vec![0u8; 512];
+        page[0] = 13;
+        page[3..5].copy_from_slice(&1u16.to_be_bytes());
+        page[5..7].copy_from_slice(&503u16.to_be_bytes());
+        page[7] = 4;
+        page[8..10].copy_from_slice(&507u16.to_be_bytes());
+        page[507..].copy_from_slice(&[3, 1, 2, 15, b'a']);
+        check_page_layout(&page, 2, 512).unwrap();
+        page[7] = 3;
+        assert!(check_page_layout(&page, 2, 512).unwrap_err().to_string().contains("fragmented byte count"));
+        page[7] = 61;
+        assert!(check_page_layout(&page, 2, 512).is_err());
+        page[7] = 4;
+        page[1..3].copy_from_slice(&503u16.to_be_bytes());
+        page[503..507].copy_from_slice(&[0, 0, 0, 8]);
+        assert!(check_page_layout(&page, 2, 512).unwrap_err().to_string().contains("overlapping"));
+    }
+    #[test]
+    fn streamed_inspection_preserves_rows_overflow_and_index_dividers() {
+        use writer::{Table, Value};
+        let rows: Vec<_> = (0..2000)
+            .map(|id| {
+                (
+                    id,
+                    vec![
+                        Value::Null,
+                        Value::Text(format!("entry-{id:06}")),
+                        Value::Blob(vec![id as u8; if id == 7 { 20000 } else { 100 }]),
+                    ],
+                )
+            })
+            .collect();
+        let table = Table {
+            name: "items".into(),
+            sql: "CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT UNIQUE, payload BLOB)".into(),
+            rows: rows.clone(),
+            autoindexes: vec![vec![1]],
+        };
+        let tables = [
+            table,
+            Table { name: "gpkg_contents".into(), sql: "CREATE TABLE gpkg_contents(name TEXT)".into(), rows: vec![], autoindexes: vec![] },
+            Table {
+                name: "gpkg_spatial_ref_sys".into(),
+                sql: "CREATE TABLE gpkg_spatial_ref_sys(id INTEGER)".into(),
+                rows: vec![],
+                autoindexes: vec![],
+            },
+        ];
+        let bytes = writer::write_database(&tables, &[], 10400, 0x4750_4b47).unwrap();
+        let mut next = 0i64;
+        let mut index_rows = 0;
+        let schema = inspect(&bytes, |entry, rowid, record| {
+            let values = decode_record(record, 1)?;
+            if entry.0 == "table" {
+                assert_eq!(rowid, Some(next));
+                assert_eq!(values[1], super::super::sqlite::Value::Text(format!("entry-{next:06}")));
+                assert_eq!(values[2], super::super::sqlite::Value::Blob(vec![next as u8; if next == 7 { 20000 } else { 100 }]));
+                next += 1;
+            } else {
+                index_rows += 1;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(next, 2000);
+        assert_eq!(index_rows, 2000);
+        assert_eq!(schema.len(), 4);
+        // The same walker remains the source for repacking, without a second record copy.
+        let after = compact(&bytes).unwrap();
+        let mut count = 0;
+        inspect(&after, |_, _, _| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, 4000);
+        let root = schema.iter().find(|entry| entry.1 == "items").unwrap().3;
+        let start = (root as usize - 1) * 4096;
+        assert_eq!(bytes[start], 5);
+        let cell = u16::from_be_bytes([bytes[start + 12], bytes[start + 13]]) as usize;
+        let mut corrupt = bytes.clone();
+        corrupt[start + cell + 4] = 0;
+        assert!(inspect(&corrupt, |_, _, _| Ok(())).unwrap_err().to_string().contains("parent range"));
+    }
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    #[ignore = "requires Python sqlite3 for independent file-format conformance"]
+    fn independent_sqlite_encodings_vacuum_modes_and_corrupt_pointer_maps() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = r#"
+import sqlite3, pathlib, sys, json
+root=pathlib.Path(sys.argv[1]); cases=[]
+for mode in ['NONE','FULL','INCREMENTAL']:
+ for encoding in ['UTF-8','UTF-16le','UTF-16be']:
+  path=root/(mode+'-'+encoding+'.db')
+  with sqlite3.connect(path) as db:
+   db.execute('PRAGMA page_size=512'); db.execute('PRAGMA auto_vacuum='+mode)
+   db.execute("PRAGMA encoding='"+encoding+"'")
+   db.execute('CREATE TABLE gpkg_contents(table_name TEXT)')
+   db.execute('CREATE TABLE gpkg_spatial_ref_sys(srs_id INTEGER PRIMARY KEY)')
+   db.execute('CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT, payload BLOB)')
+   db.execute('CREATE INDEX names ON items(name COLLATE NOCASE DESC)')
+   db.execute('CREATE TABLE words(k TEXT PRIMARY KEY, v BLOB) WITHOUT ROWID')
+   db.executemany('INSERT INTO items VALUES(?,?,?)', [(i,'entry-'+str(i),bytes([i%256])*900) for i in [-2**63, -1, *range(100), 2**63-1]])
+   db.executemany('INSERT INTO words VALUES(?,?)', [('水-'+str(i),bytes([i%256])*700) for i in range(80)])
+   db.execute('CREATE TABLE discarded(payload BLOB)')
+   db.executemany('INSERT INTO discarded VALUES(?)',[(bytes(1200),)]*30)
+   db.execute('DROP TABLE discarded'); db.commit()
+   assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+  cases.append({'path':str(path),'valid':True})
+  data=bytearray(path.read_bytes()); trunk=int.from_bytes(data[32:36],'big')
+  if mode=='INCREMENTAL' and trunk:
+   page_size=512; stride=page_size//5+1; map_page=2+((trunk-2)//stride)*stride
+   at=(map_page-1)*page_size+(trunk-map_page-1)*5
+   assert data[at]==2; data[at]=5
+   broken=path.with_name('bad-'+path.name);broken.write_bytes(data)
+   with sqlite3.connect(broken) as db:
+    assert db.execute('PRAGMA integrity_check').fetchone()[0]!='ok'
+   cases.append({'path':str(broken),'valid':False})
+print(json.dumps(cases))
+"#;
+        let output = std::process::Command::new("python3").arg("-c").arg(script).arg(dir.path()).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let cases: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        for case in cases.as_array().unwrap() {
+            let bytes = std::fs::read(case["path"].as_str().unwrap()).unwrap();
+            let encoding = be(&bytes, 56).unwrap();
+            let result = inspect(&bytes, |_, _, record| {
+                decode_record(record, encoding)?;
+                Ok(())
+            });
+            assert_eq!(result.is_ok(), case["valid"].as_bool().unwrap(), "{}: {result:?}", case["path"]);
+            if case["valid"].as_bool().unwrap() {
+                let repacked = dir.path().join("repacked.db");
+                std::fs::write(&repacked, compact(&bytes).unwrap()).unwrap();
+                let compare = r#"
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as a, sqlite3.connect(sys.argv[2]) as b:
+ assert b.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+ assert a.execute('PRAGMA encoding').fetchone()==b.execute('PRAGMA encoding').fetchone()
+ for table, key in [('items','id'),('words','k')]:
+  query='SELECT * FROM '+table+' ORDER BY '+key
+  assert a.execute(query).fetchall()==b.execute(query).fetchall()
+"#;
+                let output = std::process::Command::new("python3")
+                    .arg("-c")
+                    .arg(compare)
+                    .arg(case["path"].as_str().unwrap())
+                    .arg(&repacked)
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+    }
+    #[test]
+    fn record_text_encoding_is_strict_and_supports_utf16() {
+        use writer::Value;
+        for encoding in [2, 3] {
+            let text = "水🌍";
+            let data: Vec<_> = text.encode_utf16().flat_map(|v| if encoding == 2 { v.to_le_bytes() } else { v.to_be_bytes() }).collect();
+            let mut record = writer::record(&[Value::Blob(data)]);
+            record[1] += 1; // Change the blob serial type to text with the same byte length.
+            assert_eq!(decode_record(&record, encoding).unwrap(), [super::super::sqlite::Value::Text(text.into())]);
+        }
+        let mut odd = writer::record(&[Value::Blob(vec![0])]);
+        odd[1] += 1;
+        assert!(decode_record(&odd, 2).is_err());
+        assert!(decode_record(&odd, 1).is_ok());
+    }
+}
+
 #[cfg(test)]
 mod growth_tests {
     #[test]
@@ -497,5 +1021,37 @@ mod growth_tests {
             assert!(reserves <= 4, "doubling capacity required {reserves} reserves");
             assert!(capacity <= target + target / 4, "over-allocation exceeds one quarter");
         }
+    }
+}
+
+#[cfg(test)]
+mod rowid_bounds_tests {
+    use super::*;
+    #[test]
+    fn gpkg_repack_rejects_a_child_key_outside_its_divider_range() {
+        let table = writer::Table {
+            name: "records".into(),
+            sql: "CREATE TABLE records(id INTEGER PRIMARY KEY)".into(),
+            rows: (1..=2000).map(|id| (id, vec![writer::Value::Null])).collect(),
+            autoindexes: vec![],
+        };
+        let mut bytes = writer::write_database(&[table], &[], 0, 0).unwrap();
+        let root = inspect(&bytes, |_, _, _| Ok(())).unwrap().into_iter().find(|entry| entry.1 == "records").unwrap().3;
+        let size = u16::from_be_bytes([bytes[16], bytes[17]]) as usize;
+        let at = (root as usize - 1) * size;
+        assert_eq!(bytes[at], 5);
+        let cell = u16::from_be_bytes([bytes[at + 12], bytes[at + 13]]) as usize;
+        let leaf = be(&bytes, at + cell).unwrap();
+        let at = (leaf as usize - 1) * size;
+        assert_eq!(bytes[at], 13);
+        let cells = u16::from_be_bytes([bytes[at + 3], bytes[at + 4]]) as usize;
+        let last = at + 8 + 2 * (cells - 1);
+        let cell = at + u16::from_be_bytes([bytes[last], bytes[last + 1]]) as usize;
+        let (_, payload_length) = varint(&bytes, cell).unwrap();
+        let key_at = cell + payload_length;
+        assert_eq!(varint(&bytes, key_at).unwrap().1, 2);
+        bytes[key_at..key_at + 2].copy_from_slice(&[255, 127]); // 16383 exceeds the first divider.
+        assert!(compact(&bytes).unwrap_err().to_string().contains("outside parent range"));
+        assert!(inspect(&bytes, |_, _, _| Ok(())).unwrap_err().to_string().contains("outside parent range"));
     }
 }

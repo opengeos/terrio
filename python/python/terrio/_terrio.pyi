@@ -17,6 +17,7 @@ __all__ = [
     "refresh_overviews",
     "update_raster",
     "validate_cog",
+    "validate_gpkg",
     "check_dataset",
     "identify",
     "dataset_copy",
@@ -2052,3 +2053,11 @@ def sozip_list(input: str) -> list[_SozipMember]:
 def sozip_validate(input: str) -> _SozipValidation:
     """Validate a zip archive and its SOZip indexes, like `gdal vsi sozip validate`."""
     ...
+
+def validate_gpkg(
+    path: str | os.PathLike[str] | bytes,
+    *,
+    full_check: bool = False,
+    strict: bool = False,
+    unicode_case: bool = False,
+) -> dict[str, Any]: ...

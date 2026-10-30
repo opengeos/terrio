@@ -204,6 +204,10 @@ pub use drivers::hecras;
 pub mod gdal_backend;
 mod geotiff;
 pub mod gpkg_maintenance;
+mod gpkg_validate;
+#[cfg(feature = "sqlite")]
+mod gpkg_validation;
+pub use gpkg_validate::{GpkgRequirement, GpkgValidation, GpkgValidationOptions, GpkgViolation, validate_gpkg, validate_gpkg_bytes};
 mod histogram;
 #[cfg(remote)]
 #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
