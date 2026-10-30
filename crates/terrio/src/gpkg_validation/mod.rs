@@ -69,8 +69,14 @@ impl Table {
     fn from_sql_with_case(name: &str, sql: &str, unicode_case: bool) -> Result<Self> {
         let schema = Schema::parse(sql)
             .map_err(|error| Error::Unsupported(format!("SQLite schema declaration for {name} is not supported: {error}")))?;
-        let evaluator =
-            if schema.virtual_module.is_none() { Some(sqlite_expr::RowEvaluator::new(name, &schema, unicode_case)?) } else { None };
+        let evaluator = if schema.virtual_module.is_none() {
+            Some(
+                sqlite_expr::RowEvaluator::new(name, &schema, unicode_case)
+                    .map_err(|error| Error::Unsupported(format!("SQLite row expressions for {name} are not supported: {error}")))?,
+            )
+        } else {
+            None
+        };
         Ok(Self { schema, rows: Vec::new(), evaluator })
     }
     /// The logical SQLite row, including REAL read affinity and virtual generated

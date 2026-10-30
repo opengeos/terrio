@@ -88,3 +88,19 @@ def test_case_options_and_sidecar_refusal(geopackage):
             assert sidecar.read_bytes() == b"uncheckpointed"
         finally:
             sidecar.unlink()
+
+
+def test_unsupported_generated_expression_is_incomplete(geopackage):
+    with closing(sqlite3.connect(geopackage)) as db:
+        db.executescript(
+            "CREATE TABLE derived(a TEXT,b TEXT AS(a ->> '$.x'));"
+            'INSERT INTO derived(a) VALUES(\'{"x":"ok"}\')'
+        )
+        assert db.execute("SELECT b FROM derived").fetchone()[0] == "ok"
+        db.commit()
+    before = geopackage.read_bytes()
+    report = terrio.validate_gpkg(geopackage)
+    assert not report["valid"] and not report["complete"], report
+    assert not report["errors"], report
+    assert any("row expressions" in message for message in report["unsupported_checks"])
+    assert geopackage.read_bytes() == before

@@ -2654,7 +2654,9 @@ multi-way nested-loop combinations can otherwise grow as the product of row coun
 Inputs are not rescanned for each outer row. Extension/metadata/R-tree/schema rules
 that have not evaluated a referenced view, and tile views not evaluated by the tile
 validator, are explicitly incomplete. Unsupported schema declarations are also
-reported as incomplete, rather than proven SQLite corruption.
+reported as incomplete, rather than proven SQLite corruption. The same applies to
+CHECK/generated expressions outside the implemented expression subset, including
+JSON extraction operators.
 
 Checks are stricter than GDAL for some malformed geometry, image and metadata
 payloads. See [validation details and known differences](testing.md#geopackage-specification-validation).
