@@ -1491,6 +1491,11 @@ reopens, forced ZIP64 descriptors on small members, archive comments, central ex
 limits, DOS date bounds, directory local headers and credential-redacted diagnostics.
 Validation uses streamed CRC checks and independent bounded decoders; it does not retain
 whole uncompressed members or index offset tables.
+Additional review regressions check recursive output exclusion, native/memory append
+snapshot changes, actual-length Auto chunking, credential-free remote member names,
+stored-member size/range checks, unexpected EOF and offset overflow. Append/optimize
+share compression/index emission; validation and random readers reset reusable decoders.
+
 
 ## JTS provenance replacement regressions
 

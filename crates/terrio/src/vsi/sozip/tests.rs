@@ -525,3 +525,129 @@ fn central_extra_lengths_dates_and_directory_headers_are_checked() {
     fs::write(&path, bytes).unwrap();
     assert!(!validate(&s(&path)).unwrap().valid);
 }
+
+fn stored_archive(payload: &[u8]) -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file("data", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+    zip.write_all(payload).unwrap();
+    zip.finish().unwrap().into_inner()
+}
+
+#[test]
+fn recursive_create_excludes_existing_and_temporary_outputs() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("a.csv");
+    let output = root.path().join("out.zip");
+    fs::write(&input, data(10_000)).unwrap();
+    let options = SozipOptions { recursive: true, ..yes(4096) };
+    assert_eq!(create(&[&s(root.path())], &s(&output), &options).unwrap().added, 1);
+    assert_eq!(list(&s(&output)).unwrap().iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["a.csv"]);
+    fs::remove_file(input).unwrap();
+    fs::write(root.path().join("b.csv"), data(12_000)).unwrap();
+    assert_eq!(create(&[&s(root.path())], &s(&output), &options).unwrap().added, 1);
+    assert_eq!(list(&s(&output)).unwrap().iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["a.csv", "b.csv"]);
+    assert!(validate(&s(&output)).unwrap().valid);
+    assert_eq!(create(&[&s(root.path())], &s(&output), &SozipOptions { overwrite: true, ..options }).unwrap().added, 1);
+    assert_eq!(list(&s(&output)).unwrap()[0].name, "b.csv");
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+}
+
+#[test]
+fn remote_member_names_omit_userinfo_queries_and_fragments() {
+    for prefix in ["https://", "/vsicurl/https://"] {
+        let input = format!("{prefix}user:TEST_SECRET@example.com/data/file.csv?sig=TEST_TOKEN#fragment");
+        assert_eq!(stored_input_name(&input, true, false), "example.com/data/file.csv");
+        assert_eq!(stored_input_name(&input, true, true), "file.csv");
+    }
+    assert_eq!(stored_input_name("https://USER_SECRET@[::1]:8080/file@name", true, false), "[::1]:8080/file@name");
+    assert_eq!(stored_input_name("local/name?literal", false, false), "local/name?literal");
+}
+
+#[test]
+fn auto_chunking_uses_the_streamed_length_with_an_unknown_size_hint() {
+    let root = tempfile::tempdir().unwrap();
+    for (length, indexed) in [(6000, false), (12000, true)] {
+        let payload = data(length);
+        let options = SozipOptions { enable: EnableSozip::Auto, chunk_size: 4096, min_file_size: 8000, ..Default::default() };
+        let mut bytes = Vec::new();
+        let mut zip = ZipOut::new(&mut bytes, 0, Vec::new());
+        let result = add_member(&mut zip, "data", 0, dos_time(None), &options, Vec::new(), |out| {
+            out.write_all(&payload)?;
+            Ok(payload.len() as u64)
+        })
+        .unwrap();
+        assert_eq!(result, (length as u64, indexed));
+        zip.finish().unwrap();
+        let path = root.path().join(format!("{length}.zip"));
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(list(&s(&path)).unwrap()[0].sozip_chunk_size.is_some(), indexed);
+        assert!(validate(&s(&path)).unwrap().valid);
+        assert_eq!(crate::vsi::read(&format!("/vsizip/{}/data", s(&path))).unwrap(), payload);
+    }
+}
+
+#[test]
+fn append_rejects_replaced_native_or_memory_snapshots() {
+    let root = tempfile::tempdir().unwrap();
+    let output = root.path().join("archive.zip");
+    let replacement = root.path().join("replacement.zip");
+    let first = stored_archive(b"old!");
+    let second = stored_archive(b"new!");
+    assert_eq!(first.len(), second.len());
+    fs::write(&output, &first).unwrap();
+    fs::write(&replacement, &second).unwrap();
+    for path in [&output, &replacement] {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
+    }
+    let (out, _) = Output::open(&s(&output), false).unwrap();
+    fs::rename(replacement, &output).unwrap();
+    assert!(out.build(|_| Ok(SozipReport::default())).unwrap_err().to_string().contains("changed"));
+    assert_eq!(fs::read(&output).unwrap(), second);
+    let path = "/vsimem/sozip-append-version-regression.zip";
+    crate::vsi::write(path, &first).unwrap();
+    let (out, _) = Output::open(path, false).unwrap();
+    crate::vsi::write(path, &second).unwrap();
+    assert!(out.build(|_| Ok(SozipReport::default())).unwrap_err().to_string().contains("changed"));
+    assert_eq!(crate::vsi::read(path).unwrap(), second);
+    crate::vsi::delete(path, false).unwrap();
+}
+
+#[test]
+fn stored_members_reject_mismatched_sizes_and_out_of_file_extents() {
+    let original = stored_archive(b"data");
+    let at = original.windows(4).position(|part| part == b"PK\x01\x02").unwrap();
+    for both in [false, true] {
+        let mut bytes = original.clone();
+        bytes[at + 24..at + 28].copy_from_slice(&1000u32.to_le_bytes());
+        if both {
+            bytes[at + 20..at + 24].copy_from_slice(&1000u32.to_le_bytes());
+        }
+        assert!(MemberReader::open(Box::new(std::io::Cursor::new(bytes)), "data").unwrap().is_none());
+    }
+}
+
+#[test]
+fn stored_reads_report_truncation_and_checked_offset_overflow() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("stored.zip");
+    fs::write(&path, stored_archive(b"data")).unwrap();
+    let mut reader = MemberReader::open(Box::new(fs::File::open(&path).unwrap()), "data").unwrap().unwrap();
+    fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(reader.data_start + 2).unwrap();
+    assert_eq!(reader.read_to_end(&mut Vec::new()).unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+    let mut reader = MemberReader {
+        inner: Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+        data_start: u64::MAX,
+        size: 2,
+        index: None,
+        pos: 1,
+        cached: None,
+        decoder: None,
+        reopen: None,
+    };
+    assert_eq!(reader.read(&mut [0]).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+}

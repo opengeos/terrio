@@ -129,7 +129,6 @@ impl AsRef<[u8]> for SharedBytes {
 
 /// Atomically replace exactly the immutable image read earlier. A deletion or a newer
 /// write must not be undone by a transformation computed outside the store lock.
-#[cfg(feature = "sqlite")]
 pub(crate) fn replace_if_unchanged(p: &Path, expected: &SharedBytes, bytes: Vec<u8>) -> std::io::Result<()> {
     let key = key(p).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "expected an in-memory path"))?;
     let mut store = files();

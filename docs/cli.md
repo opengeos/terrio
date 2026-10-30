@@ -1921,6 +1921,22 @@ including unsafe paths present in an input archive; extraction enforces its own 
 Create-only options (`recursive`, `junk_paths`, `content_type`) are rejected by optimize. Not supported: `sozip create` progress bars
 and multithreaded compression.
 
+Append copies every payload byte before the old central directory into the replacement,
+then rewrites central records: adding a small file costs a full archive rewrite. The
+central records and prefix come from one retained input handle/snapshot; detected native
+file changes abort publication, and in-memory append uses a version-checked replacement.
+Recursive creation enumerates inputs before opening the temporary output and excludes
+an existing output from its own input tree. Remote member names omit URL userinfo,
+queries and fragments. Auto chunking uses streamed length even without a size hint.
+
+`list` intentionally checks every index offset: its index-table work is eight bytes per
+additional chunk (plus a 32-byte header), so remote listings can fetch whole offset tables.
+Random member opens check the header and requested chunks to keep window reads lazy;
+a malformed requested chunk raises an error. `validate` performs the complete index,
+independent-decoding and checksum checks. Decoder state and buffers are reused between
+chunks; the offset cache mutex is released before archive I/O.
+
+
 ## fill-nodata
 
 ```sh

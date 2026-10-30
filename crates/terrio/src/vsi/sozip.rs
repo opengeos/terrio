@@ -233,13 +233,14 @@ impl Index {
                 return Err(chunk_error("chunk offset outside index"));
             }
             let index = k - 1;
-            let mut cache = table.cache.lock().map_err(|_| chunk_error("offset cache poisoned"))?;
+            let cache = table.cache.lock().map_err(|_| chunk_error("offset cache poisoned"))?;
             if let Some((start, values)) = &*cache
                 && index >= *start
                 && index - *start < values.len()
             {
                 return Ok(values[index - *start]);
             }
+            drop(cache);
             let first = index / 8192 * 8192;
             let n = (table.count - first).min(8192);
             let at = table.start.checked_add(first as u64 * 8).ok_or_else(|| chunk_error("index offset overflow"))?;
@@ -248,7 +249,7 @@ impl Index {
             r.read_exact(&mut bytes)?;
             let values = bytes.as_chunks::<8>().0.iter().copied().map(u64::from_le_bytes).collect::<Vec<_>>();
             let value = values[index - first];
-            *cache = Some((first, values));
+            *table.cache.lock().map_err(|_| chunk_error("offset cache poisoned"))? = Some((first, values));
             Ok(value)
         } else {
             self.offsets.get(k - 1).copied().ok_or_else(|| chunk_error("chunk offset outside index"))
@@ -749,49 +750,76 @@ impl Spool {
     }
 }
 
-/// Adds one member, compressing what `fill` writes: seek-optimized when `sozip` is the chunk
-/// size, stored when empty.
+/// Compresses one streamed member and decides index eligibility from its actual length.
 #[allow(clippy::too_many_arguments)]
 fn add_member<W: Write>(
     zip: &mut ZipOut<W>,
     name: &str,
     size: u64,
-    modified: Option<i64>,
-    sozip: Option<u32>,
+    time: (u16, u16),
+    options: &SozipOptions,
     extra: Vec<u8>,
     fill: impl FnOnce(&mut dyn Write) -> Result<u64>,
-) -> Result<u64> {
-    let time = dos_time(modified);
-    let mut d = Deflater::new(Spool::new(size)?, sozip);
+) -> Result<(u64, bool)> {
+    // Auto inputs can have unknown or stale stat lengths. Flush chunks provisionally;
+    // an ordinary Deflate member may contain flush markers without a seek index.
+    let chunk = (options.enable != EnableSozip::No).then_some(options.chunk_size);
+    let mut d = Deflater::new(Spool::new(size)?, chunk);
     let n = fill(&mut d)?;
     let (spool, compressed, offsets, crc) = d.finish()?;
-    let index = match sozip {
-        Some(chunk_size) if n > chunk_size as u64 => {
-            Some(Index { chunk_size, uncompressed_size: n, compressed_size: compressed, offsets, table: None })
-        }
-        _ => None,
-    };
+    let eligible = n > u64::from(options.chunk_size)
+        && (options.enable == EnableSozip::Yes || options.enable == EnableSozip::Auto && n >= options.min_file_size);
+    let index = chunk.filter(|_| eligible).map(|chunk_size| Index {
+        chunk_size,
+        uncompressed_size: n,
+        compressed_size: compressed,
+        offsets,
+        table: None,
+    });
     zip.add(name, 8, time, crc, n, &mut *spool.reader()?, compressed, extra, index.as_ref())?;
-    Ok(n)
+    Ok((n, index.is_some()))
 }
 
-fn sozip_for(size: u64, options: &SozipOptions) -> Option<u32> {
-    let big_enough = size > options.chunk_size as u64;
-    match options.enable {
-        EnableSozip::No => None,
-        EnableSozip::Yes => Some(options.chunk_size),
-        EnableSozip::Auto => (big_enough && size >= options.min_file_size).then_some(options.chunk_size),
+#[derive(Clone)]
+enum AppendVersion {
+    Native(std::path::PathBuf, std::fs::Metadata),
+    Memory(std::path::PathBuf, crate::memfs::SharedBytes),
+}
+impl AppendVersion {
+    fn check(&self) -> Result<()> {
+        if let Self::Native(path, before) = self {
+            let after = std::fs::metadata(path)?;
+            let unchanged = before.len() == after.len()
+                && before.modified().ok() == after.modified().ok()
+                && before.created().ok() == after.created().ok();
+            #[cfg(unix)]
+            let unchanged = {
+                use std::os::unix::fs::MetadataExt;
+                unchanged
+                    && (before.dev(), before.ino(), before.ctime(), before.ctime_nsec())
+                        == (after.dev(), after.ino(), after.ctime(), after.ctime_nsec())
+            };
+            if !unchanged {
+                return Err(Error::Unsupported("archive changed while preparing an append".into()));
+            }
+        }
+        Ok(())
     }
 }
+struct AppendSource {
+    reader: Box<dyn ReadSeek>,
+    version: AppendVersion,
+}
 
-/// Native outputs stream into an atomic temporary file. In-memory outputs use
-/// a Vec, as required by /vsimem/. Only central records are retained for append.
+/// Native outputs stream into an atomic temporary file. Appends retain one source
+/// handle/snapshot for both central records and the copied payload prefix.
 struct Output {
     node: Node,
     path: String,
     prefix: u64,
     kept: Vec<Vec<u8>>,
     comment: Vec<u8>,
+    source: Option<AppendSource>,
 }
 impl Output {
     fn open(path: &str, overwrite: bool) -> Result<(Self, Vec<String>)> {
@@ -802,36 +830,59 @@ impl Output {
                 super::redact_diagnostic_location(path)
             )));
         }
-        let (mut prefix, mut kept, mut names, mut comment) = (0, Vec::new(), Vec::new(), Vec::new());
+        if let Some(reason) = node.read_only_reason() {
+            return Err(Error::Unsupported(format!("'{}': {reason}", super::redact_diagnostic_location(path))));
+        }
+        let (mut prefix, mut kept, mut names, mut comment, mut source) = (0, Vec::new(), Vec::new(), Vec::new(), None);
         if !overwrite && super::stat_node(&node)?.is_some_and(|stat| !stat.dir) {
-            let (entries, offset, old_comment) = super::with_archive_reader(&node, true, zipdir::central_directory_at)?;
+            let mut snapshot = match &node {
+                Node::Local(path) => {
+                    let file = std::fs::File::open(path)?;
+                    let version = AppendVersion::Native(path.clone(), file.metadata()?);
+                    AppendSource { reader: Box::new(std::io::BufReader::new(file)), version }
+                }
+                Node::Mem(path) => {
+                    let bytes = crate::memfs::read_shared(Path::new(path))?;
+                    AppendSource {
+                        reader: Box::new(std::io::Cursor::new(bytes.clone())),
+                        version: AppendVersion::Memory(path.into(), bytes),
+                    }
+                }
+                _ => unreachable!(),
+            };
+            let (entries, offset, old_comment) = zipdir::central_directory_at(&mut *snapshot.reader)?;
+            snapshot.version.check()?;
             prefix = offset;
             comment = old_comment;
             kept = entries.iter().map(|entry| entry.raw.clone()).collect();
             names = entries.into_iter().map(|entry| entry.name).collect();
+            source = Some(snapshot);
         }
-        Ok((Self { node, path: path.into(), prefix, kept, comment }, names))
+        Ok((Self { node, path: path.into(), prefix, kept, comment, source }, names))
     }
     fn build(self, fill: impl FnOnce(&mut ZipOut<&mut dyn Write>) -> Result<SozipReport>) -> Result<SozipReport> {
-        let Self { node, path, prefix, kept, comment } = self;
+        let Self { node, path, prefix, kept, comment, mut source } = self;
+        let version = source.as_ref().map(|source| source.version.clone());
         let run = |writer: &mut dyn Write| -> Result<SozipReport> {
-            if prefix > 0 {
-                super::with_archive_reader(&node, false, |reader| {
-                    let mut remaining = prefix;
-                    let mut buffer = vec![0; 64 * 1024];
-                    while remaining > 0 {
-                        let n = remaining.min(buffer.len() as u64) as usize;
-                        reader.read_exact(&mut buffer[..n])?;
-                        writer.write_all(&buffer[..n])?;
-                        remaining -= n as u64;
-                    }
-                    Ok(())
-                })?;
+            if let Some(source) = &mut source {
+                source.version.check()?;
+                source.reader.seek(SeekFrom::Start(0))?;
+                let mut remaining = prefix;
+                let mut buffer = vec![0; 64 * 1024];
+                while remaining > 0 {
+                    let n = remaining.min(buffer.len() as u64) as usize;
+                    source.reader.read_exact(&mut buffer[..n])?;
+                    writer.write_all(&buffer[..n])?;
+                    remaining -= n as u64;
+                }
             }
             let mut zip = ZipOut::new(writer, prefix, kept);
             zip.comment = comment;
             let report = fill(&mut zip)?;
             zip.finish()?;
+            if let Some(source) = &source {
+                source.version.check()?;
+            }
             Ok(report)
         };
         match &node {
@@ -848,11 +899,32 @@ impl Output {
             _ => {
                 let mut bytes = Vec::new();
                 let report = run(&mut bytes)?;
-                super::write(&path, &bytes)?;
+                if let Some(AppendVersion::Memory(path, expected)) = version {
+                    crate::memfs::replace_if_unchanged(&path, &expected, bytes)?;
+                } else {
+                    super::write(&path, &bytes)?;
+                }
                 Ok(report)
             }
         }
     }
+}
+
+fn stored_input_name(path: &str, remote: bool, junk_paths: bool) -> String {
+    let mut path = if remote { path.split(['?', '#']).next().unwrap_or(path).to_string() } else { path.to_string() };
+    if remote && let Some(scheme) = path.find("://") {
+        let authority = scheme + 3;
+        let end = path[authority..].find('/').map_or(path.len(), |end| authority + end);
+        if let Some(userinfo) = path[authority..end].rfind('@') {
+            path.replace_range(authority..authority + userinfo + 1, "");
+        }
+    }
+    let path = path.replace('\\', "/");
+    if junk_paths {
+        return path.rsplit('/').next().unwrap_or(&path).to_string();
+    }
+    let path = path.split_once(":/").map_or(path.as_str(), |(_, rest)| rest);
+    path.split('/').filter(|component| !component.is_empty() && *component != "." && *component != "..").collect::<Vec<_>>().join("/")
 }
 
 type InputFile = (Node, String, u64, Option<i64>);
@@ -862,16 +934,7 @@ fn inputs_of(input: &str, options: &SozipOptions) -> Result<Vec<InputFile>> {
     let node = Node::parse(input)?;
     let stat = super::stat_node(&node)?.ok_or_else(|| not_found(input))?;
     let remote = matches!(node, Node::Url { .. });
-    let stored = |path: &str| -> String {
-        let path = if remote { path.split('?').next().unwrap_or(path) } else { path };
-        let p = path.replace('\\', "/");
-        if options.junk_paths {
-            return p.rsplit('/').next().unwrap_or(&p).to_string();
-        }
-        // As GDAL stores them: without a leading `/` or drive, `.` and `..` components.
-        let p = p.split_once(":/").map_or(p.as_str(), |(_, r)| r);
-        p.split('/').filter(|c| !c.is_empty() && *c != "." && *c != "..").collect::<Vec<_>>().join("/")
-    };
+    let stored = |path: &str| stored_input_name(path, remote, options.junk_paths);
     if !stat.dir {
         return Ok(vec![(node, stored(input), stat.size.unwrap_or(0), stat.modified)]);
     }
@@ -881,7 +944,8 @@ fn inputs_of(input: &str, options: &SozipOptions) -> Result<Vec<InputFile>> {
             super::redact_diagnostic_location(input)
         )));
     }
-    let base = input.trim_end_matches('/');
+    let base = if remote { input.split(['?', '#']).next().unwrap_or(input) } else { input };
+    let base = base.trim_end_matches('/');
     Ok(super::read_dir(&node, true, None)?
         .into_iter()
         .filter(|e| !e.is_dir())
@@ -902,19 +966,27 @@ pub fn create(inputs: &[&str], output: &str, options: &SozipOptions) -> Result<S
     let (out, existing) = Output::open(output, options.overwrite)?;
     let mut names: HashSet<String> = existing.into_iter().collect();
     let extra = options.content_type.as_deref().map(|c| kv_extra(&[("Content-Type", c)])).transpose()?.unwrap_or_default();
+    // Enumerate before creating the temporary output, and exclude an existing output
+    // from recursive inputs. Otherwise the archive could include itself while growing.
+    let mut files = Vec::new();
+    for input in inputs {
+        for file in inputs_of(input, options)? {
+            if super::is_same(&file.0, &out.node) {
+                continue;
+            }
+            if !names.insert(file.1.clone()) {
+                return Err(Error::InvalidArgument(format!("'{}' is already in '{}'", file.1, super::redact_diagnostic_location(output))));
+            }
+            files.push(file);
+        }
+    }
     out.build(|zip| {
         let mut report = SozipReport::default();
-        for input in inputs {
-            for (node, name, size, modified) in inputs_of(input, options)? {
-                if !names.insert(name.clone()) {
-                    return Err(Error::InvalidArgument(format!("'{name}' is already in '{}'", super::redact_diagnostic_location(output))));
-                }
-                let sozip = sozip_for(size, options);
-                let n = add_member(zip, &name, size, modified, sozip, extra.clone(), |writer| read_into(&node, writer))?;
-                report.bytes += n;
-                report.added += 1;
-                report.seek_optimized += u64::from(sozip.is_some_and(|chunk| n > u64::from(chunk)));
-            }
+        for (node, name, size, modified) in files {
+            let (n, indexed) = add_member(zip, &name, size, dos_time(modified), options, extra.clone(), |writer| read_into(&node, writer))?;
+            report.bytes += n;
+            report.added += 1;
+            report.seek_optimized += u64::from(indexed);
         }
         Ok(report)
     })
@@ -949,23 +1021,13 @@ pub fn optimize(input: &str, output: &str, options: &SozipOptions) -> Result<Soz
                     zip.add(&e.name, 0, (e.dos_time, e.dos_date), 0, 0, &mut std::io::empty(), 0, Vec::new(), None)?;
                     continue;
                 }
-                let kv: Vec<u8> = keep_kv(&e.extra);
-                let sozip = sozip_for(e.uncompressed_size, options);
-                let time = (e.dos_time, e.dos_date);
-                let mut d = Deflater::new(Spool::new(e.uncompressed_size)?, sozip);
-                let n = zipdir::extract(r, &e, &mut d)?;
-                let (spool, compressed, offsets, crc) = d.finish()?;
-                let index = sozip.filter(|c| n > *c as u64).map(|chunk_size| Index {
-                    chunk_size,
-                    uncompressed_size: n,
-                    compressed_size: compressed,
-                    offsets,
-                    table: None,
-                });
-                zip.add(&e.name, 8, time, crc, n, &mut *spool.reader()?, compressed, kv, index.as_ref())?;
+                let (n, indexed) =
+                    add_member(zip, &e.name, e.uncompressed_size, (e.dos_time, e.dos_date), options, keep_kv(&e.extra), |writer| {
+                        zipdir::extract(r, &e, writer)
+                    })?;
                 report.added += 1;
                 report.bytes += n;
-                report.seek_optimized += u64::from(index.is_some());
+                report.seek_optimized += u64::from(indexed);
             }
             Ok(())
         })?;
@@ -1077,6 +1139,11 @@ struct ChunkDecoder {
 }
 impl ChunkDecoder {
     fn new(r: &mut dyn ReadSeek, data_start: u64, index: &Index, k: usize) -> std::io::Result<Self> {
+        let mut decoder = Self::whole(data_start, 0, 0)?;
+        decoder.reset_chunk(r, data_start, index, k)?;
+        Ok(decoder)
+    }
+    fn reset_chunk(&mut self, r: &mut dyn ReadSeek, data_start: u64, index: &Index, k: usize) -> std::io::Result<()> {
         if k >= index.chunks() {
             return Err(chunk_error("chunk outside index"));
         }
@@ -1104,18 +1171,16 @@ impl ChunkDecoder {
         let start = (k as u64).checked_mul(u64::from(index.chunk_size)).ok_or_else(|| chunk_error("chunk position overflow"))?;
         let expected =
             index.uncompressed_size.checked_sub(start).ok_or_else(|| chunk_error("chunk outside member"))?.min(u64::from(index.chunk_size));
-        Ok(Self {
-            decoder: flate2::Decompress::new(false),
-            input: vec![0; 64 * 1024],
-            at: 0,
-            len: 0,
-            next,
-            end,
-            patch,
-            compressed_size: to - from,
-            expected,
-            finished: false,
-        })
+        self.decoder.reset(false);
+        self.at = 0;
+        self.len = 0;
+        self.next = next;
+        self.end = end;
+        self.patch = patch;
+        self.compressed_size = to - from;
+        self.expected = expected;
+        self.finished = false;
+        Ok(())
     }
     fn whole(data_start: u64, compressed_size: u64, expected: u64) -> std::io::Result<Self> {
         let end = data_start.checked_add(compressed_size).ok_or_else(|| chunk_error("member end overflow"))?;
@@ -1192,8 +1257,11 @@ fn check_chunks(r: &mut dyn ReadSeek, data_start: u64, index: &Index, expected_c
     let mut crc = flate2::Crc::new();
     let mut expected = vec![0; 64 * 1024];
     let mut actual = vec![0; 64 * 1024];
+    let mut decoder = ChunkDecoder::new(r, data_start, index, 0).map_err(|e| format!("chunk 0: {e}"))?;
     for k in 0..index.chunks() {
-        let mut decoder = ChunkDecoder::new(r, data_start, index, k).map_err(|e| format!("chunk {k}: {e}"))?;
+        if k > 0 {
+            decoder.reset_chunk(r, data_start, index, k).map_err(|e| format!("chunk {k}: {e}"))?;
+        }
         loop {
             let n = decoder.read(r, &mut actual).map_err(|e| format!("chunk {k}: {e}"))?;
             if n == 0 {
@@ -1293,7 +1361,14 @@ impl MemberReader {
         let e = cd.iter().find(|e| super::clean_member(&e.name) == member).ok_or_else(|| not_found(member))?;
         let data_start = zipdir::data_offset(&mut *inner, e)?;
         let index = match e.method {
-            0 => None,
+            0 => {
+                let archive_end = inner.seek(SeekFrom::End(0))?;
+                if e.compressed_size != e.uncompressed_size || data_start.checked_add(e.compressed_size).is_none_or(|end| end > archive_end)
+                {
+                    return Ok(None);
+                }
+                None
+            }
             8 => match read_index_mode(&mut *inner, e, false)? {
                 Ok(Some(i)) => Some(i),
                 _ => return Ok(None),
@@ -1314,8 +1389,12 @@ impl Read for MemberReader {
         }
         let Some(index) = &self.index else {
             let n = (buf.len() as u64).min(self.size - self.pos) as usize;
-            self.inner.seek(SeekFrom::Start(self.data_start + self.pos))?;
+            let at = self.data_start.checked_add(self.pos).ok_or_else(|| chunk_error("stored member offset overflow"))?;
+            self.inner.seek(SeekFrom::Start(at))?;
             let n = self.inner.read(&mut buf[..n])?;
+            if n == 0 {
+                return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "short stored ZIP member"));
+            }
             self.pos += n as u64;
             return Ok(n);
         };
@@ -1323,19 +1402,24 @@ impl Read for MemberReader {
         let k = (self.pos / cs) as usize;
         if self.cached.as_ref().is_none_or(|(start, bytes)| self.pos < *start || self.pos >= *start + bytes.len() as u64) {
             let relative = self.pos - k as u64 * cs;
-            if self.decoder.as_ref().is_none_or(|(chunk, decoder)| *chunk != k || decoder.position() > relative) {
+            if self.decoder.is_none() {
                 self.decoder = Some((k, ChunkDecoder::new(&mut *self.inner, self.data_start, index, k)?));
             }
-            let (_, decoder) = self.decoder.as_mut().unwrap();
-            let mut scratch = vec![0; 64 * 1024];
+            let (chunk, decoder) = self.decoder.as_mut().unwrap();
+            if *chunk != k || decoder.position() > relative {
+                decoder.reset_chunk(&mut *self.inner, self.data_start, index, k)?;
+                *chunk = k;
+            }
+            let mut bytes = self.cached.take().map_or_else(|| vec![0; 64 * 1024], |(_, bytes)| bytes);
+            bytes.resize(decoder.expected.min(64 * 1024) as usize, 0);
             while decoder.position() < relative {
-                let take = (relative - decoder.position()).min(scratch.len() as u64) as usize;
-                if decoder.read(&mut *self.inner, &mut scratch[..take])? == 0 {
+                let take = (relative - decoder.position()).min(bytes.len() as u64) as usize;
+                if decoder.read(&mut *self.inner, &mut bytes[..take])? == 0 {
                     return Err(chunk_error("short SOZip chunk"));
                 }
             }
             let wanted = (decoder.expected - relative).min(64 * 1024) as usize;
-            let mut bytes = vec![0; wanted];
+            bytes.resize(wanted, 0);
             let mut n = 0;
             while n < wanted {
                 let made = decoder.read(&mut *self.inner, &mut bytes[n..])?;
