@@ -1501,7 +1501,7 @@ impl Seek for MemberReader {
 /// Opens a member of a zip archive for random access (see [`MemberReader`]): a local archive,
 /// or a remote one read by range requests.
 pub(crate) fn open_member(archive: &crate::vfs::Location, member: &str) -> Result<Option<MemberReader>> {
-    let mut first: Option<Box<dyn ReadSeek + Send + Sync>> = None;
+    let first: Option<Box<dyn ReadSeek + Send + Sync>>;
     let (open, native_path): (std::sync::Arc<ArchiveOpener>, Option<std::path::PathBuf>) = match archive {
         crate::vfs::Location::Local(path) => {
             if !path.is_file() {
@@ -1522,6 +1522,7 @@ pub(crate) fn open_member(archive: &crate::vfs::Location, member: &str) -> Resul
         }
         #[cfg(remote)]
         crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => {
+            first = None;
             let remote = archive.remote().ok_or_else(|| Error::InvalidArgument("not remote".into()))?;
             let mut options = crate::http::HttpOptions::from_env();
             if std::env::var_os("TERRIO_HTTP_BLOCK_SIZE").is_none() && std::env::var_os("CPL_VSIL_CURL_CHUNK_SIZE").is_none() {
