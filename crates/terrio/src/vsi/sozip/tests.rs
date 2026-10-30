@@ -695,19 +695,25 @@ fn legacy_cp437_hidden_index_names_match_the_member() {
 }
 
 #[test]
-fn optimize_preserves_directory_kv_properties() {
+fn optimize_preserves_all_kv_fields_on_files_and_directories() {
     let tmp = tempfile::tempdir().unwrap();
     let input = tmp.path().join("directory.zip");
     let output = tmp.path().join("optimized.zip");
-    let extra = kv_extra(&[("Content-Type", "inode/directory")]).unwrap();
+    let mut extra = kv_extra(&[("Content-Type", "inode/directory")]).unwrap();
+    extra.extend_from_slice(&kv_extra(&[("Other", "second field")]).unwrap());
     let mut zip = ZipOut::new(Vec::new(), 0, vec![]);
-    zip.add("dir/", 0, (0, 0), 0, 0, &mut std::io::empty(), 0, extra, None).unwrap();
+    zip.add("dir/", 0, (0, 0), 0, 0, &mut std::io::empty(), 0, extra.clone(), None).unwrap();
+    zip.add("dir/empty", 0, (0, 0), 0, 0, &mut std::io::empty(), 0, extra.clone(), None).unwrap();
     fs::write(&input, zip.finish().unwrap()).unwrap();
     optimize(&s(&input), &s(&output), &SozipOptions { junk_paths: false, ..yes(4096) }).unwrap();
     let (entries, _, _) = zipdir::central_directory_at(&mut fs::File::open(&output).unwrap()).unwrap();
-    assert_eq!(entries.len(), 1);
+    assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].name, "dir/");
-    assert_eq!(keep_kv(&entries[0].extra), kv_extra(&[("Content-Type", "inode/directory")]).unwrap());
+    for entry in entries {
+        assert_eq!(keep_kv(&entry.extra), extra);
+        assert_eq!(kv_properties(&entry.extra), ["Content-Type=inode/directory", "Other=second field"]);
+    }
+    assert_eq!(list(&s(&output)).unwrap()[0].properties, ["Content-Type=inode/directory", "Other=second field"]);
     assert!(validate(&s(&output)).unwrap().valid);
 }
 

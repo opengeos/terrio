@@ -1467,7 +1467,7 @@ The `vsi` conformance suite includes SOZip create/list/optimize/validate cross-r
 against GDAL 3.13.3 using the real Natural Earth places files. A USGS DEM archived
 with SOZip is served over local HTTP; a 256 x 256 window must match GDAL's source
 window exactly, and the measured response bytes must be below one quarter of the
-archive size. The local GDAL 3.13.3 run transferred 3,028,167 bytes in 183 requests
+archive size. The local Terrio run compared with GDAL 3.13.3 transferred 3,028,167 bytes in 183 requests
 from a 48,788,679-byte archive. This verifies lazy compressed-member access without
 full extraction; these are I/O counts, not timing claims.
 

@@ -1079,17 +1079,18 @@ pub fn optimize(input: &str, output: &str, options: &SozipOptions) -> Result<Soz
     })
 }
 
-/// The `KV` extra field of a member's extra fields, if any.
+/// Every `KV` extra field of a member, preserving their order.
 fn keep_kv(mut extra: &[u8]) -> Vec<u8> {
+    let mut kept = Vec::new();
     while extra.len() >= 4 {
         let size = u16::from_le_bytes([extra[2], extra[3]]) as usize;
         let end = (4 + size).min(extra.len());
         if &extra[..2] == b"KV" {
-            return extra[..end].to_vec();
+            kept.extend_from_slice(&extra[..end]);
         }
         extra = &extra[end..];
     }
-    Vec::new()
+    kept
 }
 
 /// Lists a zip archive's members with their SOZip status, as `gdal vsi sozip list` does.
