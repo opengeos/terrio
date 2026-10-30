@@ -264,7 +264,7 @@ impl VirtualRaster {
             xml::escape(&srs(&dst_srs)),
             gt(dstgt),
             options.memory_limit,
-            xml::escape(&source)
+            xml::escape_filename(&source)
         ))
     }
 
@@ -429,7 +429,7 @@ pub(crate) fn source_input_paths(path: &str) -> Result<Vec<String>> {
 
 // Parse the filename once for both relative-reference resolution and overwrite inventory.
 // Zarr's unquoted form denotes an entire store; quoted forms may select an array.
-fn subdataset_parts(name: &str) -> Result<Option<(&str, &str, &str)>> {
+pub(crate) fn subdataset_parts(name: &str) -> Result<Option<(&str, &str, &str)>> {
     for prefix in ["NETCDF:", "HDF5:", "ZARR:", "GPKG:"] {
         if name.get(..prefix.len()).is_some_and(|v| v.eq_ignore_ascii_case(prefix)) {
             let rest = &name[prefix.len()..];
@@ -904,9 +904,9 @@ impl Reader {
             options.dst_nodata = Nodata::Values(vec![nd]);
         }
         Ok(ParsedWarp {
-            source: source.text.trim().to_string(),
+            source: source.text.clone(),
             source_overview,
-            relative: source.attr("relativeToVRT") == Some("1"),
+            relative: super::relative_reference_flag(source.attr("relativeToVRT"), false),
             options,
             pairs,
             source_nodata,
@@ -923,16 +923,17 @@ impl WindowSource for Reader {
     fn input_paths(&self) -> Result<Vec<String>> {
         let _inventory = SourceInventoryScope::enter();
         let _depth = ReadDepth::enter()?;
-        fn references<'a>(element: &'a xml::Element, out: &mut Vec<(&'a str, bool)>) {
+        fn references<'a>(element: &'a xml::Element, raw: bool, out: &mut Vec<(&'a str, bool)>) {
+            let raw = if element.name == "VRTRasterBand" { element.attr("subClass") == Some("VRTRawRasterBand") } else { raw };
             if matches!(element.name.as_str(), "SourceFilename" | "SourceDataset") {
-                out.push((element.text.trim(), element.attr("relativeToVRT") == Some("1")));
+                out.push((element.text.as_str(), super::relative_reference_flag(element.attr("relativeToVRT"), raw)));
             }
             for child in &element.children {
-                references(child, out);
+                references(child, raw, out);
             }
         }
         let mut refs = Vec::new();
-        references(&self.description.root, &mut refs);
+        references(&self.description.root, false, &mut refs);
         refs.sort_unstable();
         refs.dedup();
         let mut paths = Vec::new();

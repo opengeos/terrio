@@ -249,6 +249,30 @@ fn pansharpen_tool_uses_all_spectral_bands() {
     assert_eq!(out.raster.get(1, 0, 0), 107.0);
 }
 
+/// The HECRAS driver through the CLI-derived tools: `info` (read-only) and `convert`, with open
+/// options, as an MCP client calls them.
+#[test]
+fn hec_ras_files_through_the_tools() {
+    let plan = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../terrio/tests/data/hecras/results_mesh_xs.h5");
+    let plan = plan.to_string_lossy();
+    let dir = tempfile::tempdir().unwrap();
+    let dst = dir.path().join("sections.fgb");
+    let dst = dst.to_string_lossy();
+    let replies = session(&[
+        json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        call(1, "info", &["--json", &plan]),
+        call(2, "convert", &[&plan, &dst, "-l", "cross_sections", "--oo", "XS_SUMMARIES=Maximum Water Surface"]),
+    ]);
+    let info = &replies[&1]["result"];
+    assert_eq!(info["isError"], false, "{info}");
+    let v: Value = serde_json::from_str(info["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(v["driver"], "HECRAS");
+    assert_eq!(replies[&2]["result"]["isError"], false, "{}", replies[&2]);
+    let back = terrio::open_vector(&dst, &Default::default()).unwrap();
+    assert!(back.layers[0].schema.fields().iter().any(|f| f.name == "maximum_water_surface_flow_at_max_wsel"));
+}
+
 #[test]
 fn coordinate_operation_warnings_and_controls_reach_mcp() {
     let replies = session(&[

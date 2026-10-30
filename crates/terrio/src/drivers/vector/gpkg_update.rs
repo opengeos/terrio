@@ -742,8 +742,15 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn symlinked_append_rewrite_preserves_the_link_and_updates_its_target() {
-        use std::os::unix::ffi::OsStringExt;
-        for target_name in [std::ffi::OsString::from("target.gpkg"), std::ffi::OsString::from_vec(b"caf\xe9.gpkg".to_vec())] {
+        #[allow(unused_mut)] // The invalid-byte case is added only outside macOS.
+        let mut target_names = vec![std::ffi::OsString::from("target.gpkg"), std::ffi::OsString::from("café.gpkg")];
+        // APFS rejects invalid UTF-8 filenames before Terrio can open them.
+        #[cfg(not(target_os = "macos"))]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            target_names.push(std::ffi::OsString::from_vec(b"caf\xe9.gpkg".to_vec()));
+        }
+        for target_name in target_names {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(&target_name);
             let link = dir.path().join("alias.gpkg");

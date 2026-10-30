@@ -43,6 +43,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Area | Script | Checks |
 |---|---|---|
 | Dataset summaries | `scripts/compare_with_gdal.py` (`--pixels`) | size, bands, data types, nodata, geotransform, EPSG code, statistics, pixels; layers, feature counts, fields, extents, geometry types |
+| Multidimensional mosaics | `scripts/compare_mdmosaic_with_gdal.py` | NOAA wind spatial tiles, gaps, overlap/nodata priority, irregular time ranges, nested selection, netCDF/Zarr snapshots and all ten numeric types. Exact values/coordinates/types/nodata/units; source-group and Float32 coordinate-type preservation reported within tolerance. Descending GDAL reference inputs are normalized for its invalid-VRT size/offset bug. Registered as `mdmosaic`. |
 | Native multidimensional arrays | `scripts/compare_multidim_with_gdal.py` | GDAL MD and xarray: named axes, indexing variables, native slices/transposes, netCDF/Zarr coordinate/chunk preservation and damaged-unselected-chunk checks |
 | NetCDF and HDF5 subdatasets | `scripts/compare_with_gdal.py --subdatasets` | the subdataset lists of netCDF (groups included) and HDF5 files, HDF5 metadata, then every subdataset's summary and pixels |
 | Histograms | `scripts/compare_hist_with_gdal.py` | `terrio info --hist` vs `gdalinfo -hist` and `-json -hist`, byte for byte, with `-stats` and with histograms stored in `.aux.xml` sidecars, on every data type |
@@ -535,6 +536,16 @@ the reference is GDAL 3.13.1's reading, frozen in the script. One case is within
 tolerance rather than identical: a hole part enclosing an island gives the same valid
 polygons, but GEOS `MakeValid` returns both rings in the other direction and from
 another start vertex.
+
+With GDAL 3.13 or later, the suite also reads every record with
+`OGR_ORGANIZE_POLYGONS` set to `DEFAULT`, `CCW_INNER_JUST_AFTER_CW_OUTER` and `SKIP`
+(terrio: `--oo ORGANIZE_POLYGONS=...`), which GDAL splits the rings for too. With GDAL
+3.13.3, 52 of these 54 cases are identical or within tolerance (the hole part enclosing
+an island again, polygon by polygon for `SKIP`). Two `CCW_INNER_JUST_AFTER_CW_OUTER`
+cases are known differences, reported as not compared: when GDAL splits a ring it
+switches to `DEFAULT`, but the rings before the split one have no area, so they
+enclose no other ring; terrio organizes the record as for `ONLY_CCW`. In one of them
+GDAL also takes a ring whose first vertex is repeated for a self-touching ring.
 
 ## PMTiles decoded-byte limits (#279)
 
@@ -1234,7 +1245,11 @@ checking exact recovery including truncated pages. Set `TERRIO_SQLITE_REFERENCE_
 Python interpreter with the standard sqlite3 module to additionally recover these journals
 with SQLite itself, for both rollback- and checkpointed-WAL file headers. Separate regressions
 check renamed database refusal before journal creation, directory-sync failure before page
-writes, planted journal links, and concurrent in-memory writes.
+writes, planted journal links, and concurrent in-memory writes. The Python
+`test_repack_refuses_database_locked_by_another_process` holds an exclusive SQLite
+transaction in a separate process, verifies refusal without changing database bytes,
+and retries successfully after release. It runs on the native macOS/Windows CI matrix
+as well as Linux, exercising Windows byte-range locking when that matrix runs.
 
 A local repack memory check used a Natural Earth GeoPackage derivative with 2,048 one-MiB
 zero-filled BLOB rows and incremental auto-vacuum (2,155,819,008 bytes). Peak RSS measured
@@ -1244,6 +1259,59 @@ Both before/after implementations passed SQLite integrity checks and streamed ha
 every table value. These are single local observations, not a general memory bound; record
 materialization still depends on the largest tree and row shape. The large generated files
 are excluded from commits and CI.
+
+## Multidimensional mosaic validation
+
+The multidimensional mosaic HTTP regression serves two chunked numeric Zarr
+stores and counts response bodies after coordinate planning. Reading the full
+6 × 2 × 4 Int64 mosaic fetches 384 bytes in 12 chunk requests/files; reading one
+time step and two X samples fetches 32 bytes in one chunk request/file. Values
+are checked exactly. A separate damaged-chunk regression proves that metadata
+and views outside that source extent do not read the damaged payload.
+
+The multidimensional mosaic suite includes a Float32 0.1-degree coordinate grid
+near 40 degrees with four missing rows, and CF bounds arrays with a shared,
+unindexed size-two axis. Data values require zero tolerance. Float32 coordinate
+preservation checks input samples exactly and permits reference-rounded generated gap
+coordinate values; numeric differences and their maximum magnitude are reported.
+Descending duplicate coordinates, coordinate memory limits before payload reads,
+packing/unit mismatches and scalar Python input rejection have dedicated regressions.
+
+Mosaic regressions reject mismatched CF validity bounds, missing-value markers,
+unsigned interpretation and grid-mapping references. An off-grid singleton mixed
+with a regular series is rejected by both GDAL 3.13.3 and Terrio, while axes
+made entirely from singleton slices retain irregular-coordinate support. The
+registered suite verifies this refusal without creating a Terrio destination.
+
+Mosaic coordinate regressions preserve every supplied Float64 coordinate bit. The GDAL
+comparison checks source coordinate samples exactly; generated gap coordinates match the
+reference after rounding to the source type. GDAL's regenerated grid can differ from stored
+Float32 samples by 3.05e-05 in the NOAA derivative; those coordinate-only differences are
+reported within tolerance, while payload values still require exact equality.
+
+Mosaic selection retains CF coordinate bounds and their indexing variables, rejecting
+missing bounds targets. Nonzero per-row bounds are compared with GDAL's complete
+output: GDAL 3.13.3 drops these dependencies for explicit array selection. Duplicate
+and unsorted common axes are refused by both implementations. Nested selection checks
+require the original `/science/wind` path and exclude a second eligible payload.
+Equivalent integer/float metadata values are accepted without rounding large integers;
+conflicting or missing `_CRS` attributes are rejected.
+
+Mosaic dependency planning retains two-dimensional auxiliary coordinates, bounds and
+scalar CRS definitions before accessing payloads. Bounds/auxiliary references must resolve
+to consistent array paths across contributors; scalar CRS aliases are accepted only when
+their metadata agrees. Extended grid-mapping coordinate tuples retain their declared order.
+Tests cover conflicting CRS aliases, shadowed group names, missing dependencies and damaged
+auxiliary payloads that remain unread until requested. Python/Node tests and netCDF/Zarr
+round trips verify the dependency closure. The GDAL comparison checks actual bounds links,
+source samples even where GDAL agrees, and exclusion of unselected two-dimensional arrays.
+
+References retain local names when unambiguous and use absolute paths to prevent rebinding
+by merged groups, following [CF group scoping](https://cfconventions.org/Data/cf-conventions/cf-conventions-1.8/cf-conventions.html#groups).
+Terrio reopens these paths correctly. GDAL 3.13.3's `GetCoordinateVariables` does not resolve
+absolute coordinate names; automatic discovery can omit such cross-group references,
+although the arrays and reference attributes remain readable. Same-group auxiliary
+coordinate discovery is checked independently through GDAL for both snapshot formats.
 
 ## Dataset identification (#289)
 
@@ -1270,6 +1338,84 @@ cargo test -p terrio-cli --test inspection
 pytest python/tests/test_inspection.py
 node --test --test-name-pattern='identify inspects' js/tests/node.test.mjs
 ```
+
+
+## Dataset file management (#289)
+
+The `dataset-files` suite uses GDAL 3.13.3 and real Landsat/Natural Earth derivatives.
+It compares encoded payload bytes, owned file inventories, every pixel or feature,
+field types, nodata, masks, overviews, CRS, transforms and metadata after copies and
+renames into a different folder, then checks deletion and unrelated siblings.
+Coverage includes TIFF/PAM/overviews/masks, world-file-only TIFFs, RPCs, EHdr, ENVI
+(including `.img` data), ERS, SAGA, Idrisi, HFA spill files, PNG/JPEG world files,
+ASCII and Surfer grids, Zarr, Shapefile, MapInfo TAB/MIF, CSV, GeoPackage, GML,
+MVT pyramids and VRT TIFF/netCDF references. GDAL reads MVT zoom-level directories;
+the whole-pyramid reference copy uses `gdal vsi copy --recursive`.
+
+The local run has 51 cases: 46 identical and five explicit metadata/reference
+corrections. GDAL's generic copy loses the CSV CRS `.prj`, omits GML XSD schemas,
+leaves the Idrisi reference-system name stale, and does not make the two VRT
+reference cases independent of their originals. Terrio preserves source values
+and metadata in those cases; they are reported within tolerance as behavior
+differences rather than as identical. The derived WGS84 Idrisi fixture explicitly
+sets zero WGS84 deltas because GDAL's writer can emit uninitialized tiny values.
+
+A local HTTP server serves a padded 8 MiB real TIFF with overview, mask and PAM
+sidecars. The suite measures successful/missing requests, bytes served and distinct
+existing files, and bounds metadata overhead without assuming a content type.
+The data, masks, overviews, georeferencing and metadata must remain exact.
+
+GDAL source-resolution comparisons cover both integer `relativeToVRT` flags for sourced
+bands and boolean flags for raw bands (relative by default when omitted), with distinct same-named assets in the working
+and VRT directories. Native paths and encoded filename whitespace retain exact identity.
+
+Core regressions cover source/hard-link aliases, batch preflight, stale sidecars,
+file/directory collisions, nonregular inputs, symlink deletion, partial-stage
+rollback, unavailable VRT references, raw VRT sources and CDATA/entity handling.
+CLI/MCP, release-wheel Python and release WASM tests exercise the public surfaces.
+
+VRT rename moves owned definitions but copies referenced assets, preserving other
+users of those assets. The suite verifies native and read-only HTTP dependencies; HTTP references use
+explicit external-reference permission. Core and binding regressions reject default
+outside-tree references, symlink escapes, linked directory payloads and unrecognized
+non-raw files. A permission-denied cleanup regression checks successful committed
+copy/delete reports and structured recovery paths. Shared companion overwrite tests
+include an absent target primary with a `.prj` still owned by another dataset.
+VRT/GML definitions with no rebased references retain their original bytes.
+
+Archive inventory probes serve the same padded 8 MiB TIFF from stored and deflated
+ZIPs. The stored ZIP metadata probe transferred 360,684 bytes in 16 GETs, compared
+with 8,716,760 bytes in 142 GETs before the bounded member reader. The deflated
+probe transferred 120,211 bytes in 13 GETs. These are fixture-specific metadata
+measurements; partial probes do not validate whole-member CRCs. The reader caches
+at most 16 KiB of member content and streams/discards preceding bytes when a
+compressed member needs a noncontiguous read. Complete copies retain archive
+extractor integrity checks.
+
+A separate local benchmark uses a generated 2,000-tile VRT from real 32×32 Landsat
+subsets. Copying its 2,001 files took 155.04 seconds before path indexing and
+2.62 seconds afterward, with all GDAL-read pixels and checksum 32088 unchanged.
+Batch deletion of the 2,000 TIFFs took 13.66 versus 0.28 seconds and preserved an
+unrelated file. These are local observations rather than general timing guarantees.
+
+```sh
+python scripts/conformance.py ../terrio-data --only dataset-files --strict
+python -m pytest python/tests/test_dataset_files.py
+```
+
+## Parquet metadata aggregation
+
+`scripts/compare_parquet_metadata_with_gdal.py` is registered as `parquet-metadata`.
+With GDAL 3.13.3 and PyArrow, it compares Natural Earth partitions' row groups, column
+paths/offsets/statistics, all Arrow values and GDAL properties/geometries. GeoParquet bounds
+and encoded Arrow schema metadata are checked separately. GDAL's loss of CRS/type metadata
+is reported as a reference correction rather than metadata-identical agreement. A local S3
+server measures GET requests and downloaded bytes for a larger real-data derivative and
+checks the uploaded metadata file by reading every value through Arrow.
+
+The metadata command was [added in GDAL 3.13](https://gdal.org/en/stable/programs/gdal_driver_parquet_create_metadata_file.html).
+The comparison suite explicitly skips its reference when that command is unavailable;
+Rust and binding regressions remain independent of that reference command.
 
 ## Dataset content checking (#289)
 

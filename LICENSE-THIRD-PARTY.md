@@ -10,8 +10,8 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 ## Overview
 
 - Apache License 2.0 (267)
-- MIT License (75)
-- ISC License (19)
+- MIT License (80)
+- ISC License (20)
 - BSD 3-Clause "New" or "Revised" License (14)
 - BSD 2-Clause "Simplified" License (8)
 - Do What The F*ck You Want To Public License (4)
@@ -6471,10 +6471,6 @@ limitations under the License.
 
 Used by:
 
-- [hdf5-core 0.9.1](https://github.com/roteiro-gis/netcdf-rust)
-- [hdf5-reader 0.9.1](https://github.com/roteiro-gis/netcdf-rust)
-- [netcdf-core 0.9.1](https://github.com/roteiro-gis/netcdf-rust)
-- [netcdf-reader 0.9.1](https://github.com/roteiro-gis/netcdf-rust)
 - [allocator-api2 0.2.21](https://github.com/zakarumych/allocator-api2)
 - [android_system_properties 0.1.6](https://github.com/nical/android_system_properties)
 - [anyhow 1.0.104](https://github.com/dtolnay/anyhow)
@@ -6487,6 +6483,8 @@ Used by:
 - [geo 0.33.1](https://github.com/georust/geo)
 - [geozero 0.15.1](https://github.com/georust/geozero)
 - [half 2.7.1](https://github.com/VoidStarKat/half-rs)
+- [hdf5-core 0.10.1](https://github.com/roteiro-gis/netcdf-rust)
+- [hdf5-reader 0.10.1](https://github.com/roteiro-gis/netcdf-rust)
 - [i_overlay 4.5.2](https://github.com/iShape-Rust/iOverlay)
 - [image-webp 0.2.4](https://github.com/image-rs/image-webp)
 - [itoa 1.0.18](https://github.com/dtolnay/itoa)
@@ -6510,6 +6508,8 @@ Used by:
 - [libc 0.2.191](https://github.com/rust-lang/libc)
 - [miniz_oxide 0.8.9](https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
 - [miniz_oxide 0.9.1](https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
+- [netcdf-core 0.10.1](https://github.com/roteiro-gis/netcdf-rust)
+- [netcdf-reader 0.10.1](https://github.com/roteiro-gis/netcdf-rust)
 - [paste 1.0.15](https://github.com/dtolnay/paste)
 - [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite)
 - [portable-atomic-util 0.2.8](https://github.com/taiki-e/portable-atomic-util)
@@ -8423,6 +8423,66 @@ THIS SOFTWARE.
 
 ```
 
+## ISC License
+
+Used by:
+
+- [ras-commander-fast-hdf 0.2.4](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+
+```text
+Supercluster 8.0.1: ISC License
+Copyright (c) 2021, Mapbox
+
+KDBush 4.1.0: ISC License
+Copyright (c) 2026, Vladimir Agafonkin
+
+For each of the above works:
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+```
+
+## MIT License
+
+Used by:
+
+- [ras-commander-fast-hdf 0.2.4](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+
+```text
+# MIT License
+
+Copyright (c) 2026 Kyle Walker
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
 ## MIT License
 
 Used by:
@@ -9303,6 +9363,37 @@ SOFTWARE.
 
 Used by:
 
+- [ras-commander-fast-hdf 0.2.4](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+
+```text
+MIT License
+
+Copyright (c) 2024 William M. Katzenmeyer
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+## MIT License
+
+Used by:
+
 - [i_tree 0.18.0](https://github.com/iShape-Rust/iTree)
 
 ```text
@@ -9500,6 +9591,37 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+```
+
+## MIT License
+
+Used by:
+
+- [ras-commander-fast-hdf 0.2.4](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+
+```text
+MIT License
+
+Copyright (c) 2024 CLB Engineering Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ```
 
@@ -9884,6 +10006,38 @@ all copies or substantial portions of the Software.
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+```
+
+## MIT License
+
+Used by:
+
+- [same-file 1.0.6](https://github.com/BurntSushi/same-file)
+- [winapi-util 0.1.11](https://github.com/BurntSushi/winapi-util)
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2017 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN

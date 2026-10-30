@@ -161,18 +161,32 @@ fn open_raster(py: Python<'_>, path: &str, lazy: bool) -> PyResult<PyRaster> {
 ///         max_x, max_y)`, in the layer's CRS. GeoPackages find them through their R-tree
 ///         index and GeoParquet files through their bounding-box columns, without reading the
 ///         other features; other formats are read whole, then filtered.
+///     options: Driver open options by their GDAL names, as `terrio convert --oo` takes them:
+///         the CSV options (`X_POSSIBLE_NAMES`, ...), the tile archive options (`ZOOM_LEVEL`,
+///         ...) and the HECRAS options of HEC-RAS geometry and plan files (`CELL_SUMMARIES`,
+///         `TIME_STEP`, ...; see the HEC-RAS page of the documentation).
 ///
 /// Returns:
 ///     VectorDataset: The dataset.
 ///
 /// Raises:
-///     UnsupportedError: If the dataset is not a vector dataset.
-///     InvalidArgumentError: If a layer does not exist.
+///     UnsupportedError: If the dataset is not a vector dataset, or the HEC-RAS engine refuses
+///         a layer named in `layers`.
+///     InvalidArgumentError: If a layer or an open option does not exist.
 #[pyfunction]
-#[pyo3(signature = (path, layers=None, bbox=None))]
-fn open_vector(py: Python<'_>, path: &str, layers: Option<Vec<String>>, bbox: Option<(f64, f64, f64, f64)>) -> PyResult<PyVectorDataset> {
-    let options = VectorOpenOptions { layers: layers.unwrap_or_default(), spatial_filter: bbox, ..Default::default() };
-    let mut ds = py.detach(|| terrio::open_vector(path, &options)).py()?;
+#[pyo3(signature = (path, layers=None, bbox=None, options=None))]
+fn open_vector(
+    py: Python<'_>,
+    path: &str,
+    layers: Option<Vec<String>>,
+    bbox: Option<(f64, f64, f64, f64)>,
+    options: Option<std::collections::BTreeMap<String, String>>,
+) -> PyResult<PyVectorDataset> {
+    let mut open = VectorOpenOptions { layers: layers.unwrap_or_default(), spatial_filter: bbox, ..Default::default() };
+    set_open_options(&mut open, options)?;
+    let options = open;
+    // The HECRAS driver reports the layers it leaves out as warnings: issue them as UserWarnings.
+    let mut ds = crate::with_warnings(py, || terrio::open_vector(path, &options))?;
     // Formats without a spatial index are read whole: filter them the same way.
     if let Some((x0, y0, x1, y1)) = bbox {
         for layer in &mut ds.layers {
@@ -183,6 +197,16 @@ fn open_vector(py: Python<'_>, path: &str, layers: Option<Vec<String>>, bbox: Op
         }
     }
     PyVectorDataset::new(py, ds)
+}
+
+/// Sets driver open options by their GDAL names (`KEY` to `VALUE`).
+fn set_open_options(o: &mut VectorOpenOptions, options: Option<std::collections::BTreeMap<String, String>>) -> PyResult<()> {
+    for (key, value) in options.unwrap_or_default() {
+        if !o.set(&key, &value).py()? {
+            return Err(invalid(format!("unknown open option '{key}'")));
+        }
+    }
+    Ok(())
 }
 
 /// Opens a dataset from its bytes, such as a download or an upload.
@@ -202,7 +226,7 @@ fn open_bytes(py: Python<'_>, data: Vec<u8>, filename: &str, lazy: bool) -> PyRe
         let r = py.detach(|| terrio::memory::open_raster_lazy_bytes(data, filename)).py()?;
         return Ok(Py::new(py, PyRaster { inner: r })?.into_any());
     }
-    let ds = py.detach(|| terrio::memory::open_bytes(data, filename)).py()?;
+    let ds = crate::with_warnings(py, || terrio::memory::open_bytes(data, filename))?;
     dataset_to_py(py, ds)
 }
 
@@ -229,6 +253,7 @@ fn list_layers(py: Python<'_>, path: &str) -> PyResult<Vec<String>> {
 ///     layers: Only these layers of a vector dataset.
 ///     hist: Compute band histograms as `gdalinfo -hist` does (each band's `histogram`:
 ///         `count`, `min`, `max` and `buckets`).
+///     options: Vector driver open options by their GDAL names, as for `open_vector`.
 ///
 /// Returns:
 ///     dict: The summary: driver, size, bands, CRS, extent... for rasters (with the
@@ -237,18 +262,28 @@ fn list_layers(py: Python<'_>, path: &str) -> PyResult<Vec<String>> {
 ///     dimensions, VLRs and the COPC octree for point clouds (LAS, LAZ, COPC), with
 ///     classification and return counts when `stats` is true.
 #[pyfunction]
-#[pyo3(signature = (path, stats=false, layers=None, hist=false))]
-fn info<'py>(py: Python<'py>, path: &str, stats: bool, layers: Option<Vec<String>>, hist: bool) -> PyResult<Bound<'py, PyAny>> {
-    let options = terrio::info::InfoOptions { statistics: stats, histogram: hist };
-    let summary = py
-        .detach(|| match layers {
-            Some(layers) => {
-                let ds = terrio::open_vector(path, &VectorOpenOptions { layers, ..Default::default() })?;
-                Ok(terrio::info::info(&Dataset::Vector(ds), &options))
-            }
-            None => terrio::info::info_path(path, &options),
-        })
-        .py()?;
+#[pyo3(signature = (path, stats=false, layers=None, hist=false, options=None))]
+fn info<'py>(
+    py: Python<'py>,
+    path: &str,
+    stats: bool,
+    layers: Option<Vec<String>>,
+    hist: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let info_options = terrio::info::InfoOptions { statistics: stats, histogram: hist };
+    // An empty options mapping asks for nothing: a raster still gets its summary.
+    let vector = layers.is_some() || options.as_ref().is_some_and(|o| !o.is_empty());
+    let mut open = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
+    set_open_options(&mut open, options)?;
+    let summary = crate::with_warnings(py, || {
+        if vector {
+            let ds = terrio::open_vector(path, &open)?;
+            Ok(terrio::info::info(&Dataset::Vector(ds), &info_options))
+        } else {
+            terrio::info::info_path(path, &info_options)
+        }
+    })?;
     let text = serde_json::to_string(&summary).map_err(|e| invalid(e.to_string()))?;
     py.import("json")?.call_method1("loads", (text,))
 }

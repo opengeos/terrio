@@ -726,6 +726,73 @@ swig/python/gdal-utils/osgeo_utils/samples/validate_cloud_optimized_geotiff.py
 (https://github.com/OSGeo/gdal). Copyright (c) 2017, Even Rouault.
 Licensed under the MIT permission and warranty terms reproduced above for GDAL.
 
+-------------------------------------------------------------------------------
+ras-commander-fast-hdf test fixtures
+-------------------------------------------------------------------------------
+
+The following files in crates/terrio/tests/data/hecras/ are copied unchanged
+from ras-commander-fast-hdf:
+https://github.com/gpt-cmdr/ras-commander-fast-hdf
+
+- coverage_mesh.h5, coverage_mesh_nogroups.h5 and coverage_mesh_nogeometry.h5:
+  tests/fixtures/coverage/ at commit
+  d6d52f41cb0ef0d4170f60db25d28e01dd543ecd.
+- pipes.h5 and terrain.h5:
+  tests/fixtures/terrio_io/ at commit
+  794b8f949f2179f0f9fcdb51417e3c97778c2358.
+
+results_mesh_xs.h5 is derived from coverage_mesh.h5 by
+scripts/make_hecras_fixture.py, results_two_areas.h5 from results_mesh_xs.h5 by
+scripts/make_hecras_area_fixture.py, and large_projection.h5 and
+large_root_attribute.h5 from pipes.h5 by scripts/make_hecras_root_fixtures.py.
+These fixtures are synthetic and contain no model data.
+
+  Copyright (c) 2024 CLB Engineering Corporation
+
+  Licensed under the MIT permission and warranty terms reproduced above for GDAL.
+
+-------------------------------------------------------------------------------
+ras-commander (scripts/hecras_oracle.py)
+-------------------------------------------------------------------------------
+
+scripts/hecras_oracle.py adapts the h5py reading of HEC-RAS HDF files of
+ras-commander: https://github.com/gpt-cmdr/ras-commander
+Its face polylines (start face point, the stored Faces Perimeter Values
+rows, end face point) follow HdfMesh.get_mesh_cell_faces in
+ras_commander/hdf/HdfMesh.py at commit
+f7aa0b8880185d095c9886e85ed2cbf64e23cbdc.
+
+  Copyright (c) 2024 William M. Katzenmeyer
+
+  Licensed under the MIT permission and warranty terms reproduced above for GDAL.
+
+-------------------------------------------------------------------------------
+
+The original Rust SQLite page/overflow layout and pointer-map implementations in
+crates/terrio/src/drivers/sqlite_edit.rs and sqlite_repack.rs follow SQLite's
+file-format documentation: https://www.sqlite.org/fileformat2.html
+
+-------------------------------------------------------------------------------
+SQLite numeric rendering
+-------------------------------------------------------------------------------
+
+The foreign-key checker in crates/terrio/src/gpkg_validation/integrity.rs adapts
+SQLite 3.54.1's scaled binary-to-decimal conversion, digit rounding and
+round-trip shortening rules, including its power-of-ten tables:
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/util.c
+(powerOfTen, sqlite3Fp2Convert10, sqlite3FpDecode)
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/vdbemem.c (vdbeMemRenderNum)
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/printf.c
+
+SQLite is in the public domain: https://www.sqlite.org/copyright.html
+The source files carry this notice:
+
+  The author disclaims copyright to this source code.  In place of
+  a legal notice, here is a blessing:
+
+    May you do good and not evil.
+    May you find forgiveness for yourself and forgive others.
+    May you share freely, never taking more than you give.
 
 -------------------------------------------------------------------------------
 GDAL GeoPackage validation
@@ -734,6 +801,12 @@ GDAL GeoPackage validation
 The GeoPackage validation rules in crates/terrio/src/gpkg_validation/ follow
 OGC GeoPackage 1.4 and GDAL 3.13.3's validate_gpkg.py, reimplemented in Rust:
 https://github.com/OSGeo/gdal/blob/v3.13.3/swig/python/gdal-utils/osgeo_utils/samples/validate_gpkg.py
+
+Binary curve membership and joining checks also follow GDAL 3.13.3:
+https://github.com/OSGeo/gdal/blob/v3.13.3/ogr/ogrcompoundcurve.cpp
+https://github.com/OSGeo/gdal/blob/v3.13.3/ogr/ogrcurvepolygon.cpp
+
+  Copyright (c) 2014, Even Rouault <even dot rouault at spatialys dot com>
 
   Copyright (c) 2017, Even Rouault <even.rouault at spatialys.com>
 

@@ -173,17 +173,17 @@ impl Editor {
             options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
         }
         let mut file = options.open(path)?;
+        let metadata = file.metadata()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() > 1 {
+                return Err(bad("database handle has hard-link aliases"));
+            }
+        }
         if repack {
-            let metadata = file.metadata()?;
             if !metadata.is_file() {
                 return Err(bad("repack handle is not a regular file"));
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                if metadata.nlink() > 1 {
-                    return Err(bad("repack handle has hard-link aliases"));
-                }
             }
             #[cfg(windows)]
             {
@@ -240,11 +240,11 @@ impl Editor {
             }
         }
         ensure_path_identity(&file, path)?;
-        recover(&mut file, path)?;
         let wal = with_suffix(path, "-wal");
         if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
             return Ok(Err(NotInPlace("the database has a write-ahead log".into())));
         }
+        recover(&mut file, path)?;
         let mut header = [0u8; 100];
         file.seek(SeekFrom::Start(0))?;
         file.read_exact(&mut header).map_err(|_| bad("not an SQLite database"))?;
@@ -300,6 +300,7 @@ impl Editor {
 
     /// Install a rebuilt image through the normal rollback-journal transaction. Truncated
     /// original pages must be journaled too, so interruption can restore the complete file.
+    /// `old` must be the original snapshot from this editor's locked handle (`image`).
     pub(crate) fn replace_image(&mut self, old: Vec<u8>, image: Vec<u8>) -> Result<()> {
         if image.is_empty() || !image.len().is_multiple_of(self.page_size) || old.len() != self.orig_pages as usize * self.page_size {
             return Err(bad("replacement image size"));
@@ -967,7 +968,14 @@ impl Editor {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
             Err(error) => return Err(error.into()),
         }
-        let mut journal = OpenOptions::new().write(true).create_new(true).open(&journal_path)?;
+        let mut journal_options = OpenOptions::new();
+        journal_options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+            journal_options.mode(self.file.metadata()?.mode() & 0o777);
+        }
+        let mut journal = journal_options.open(&journal_path)?;
         let mut header = vec![0u8; SECTOR];
         header[..8].copy_from_slice(&JOURNAL_MAGIC);
         header[12..16].copy_from_slice(&nonce.to_be_bytes());
@@ -1297,6 +1305,10 @@ fn lock(file: &File, path: &Path) -> Result<()> {
         // SAFETY: `fd` is an open file descriptor and `fl` a valid `flock`.
         let r = unsafe { libc::fcntl(fd, libc::F_SETLK, &fl) };
         if r != 0 {
+            let error = std::io::Error::last_os_error();
+            if !matches!(error.raw_os_error(), Some(libc::EAGAIN) | Some(libc::EACCES)) {
+                return Err(error.into());
+            }
             return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 format!("{}: the database is locked by another connection", path.display()),
@@ -1322,6 +1334,10 @@ fn lock(file: &File, path: &Path) -> Result<()> {
         let ok =
             unsafe { LockFileEx(file.as_raw_handle(), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, length, 0, &mut overlap) };
         if ok == 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32) {
+                return Err(error.into());
+            }
             return Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 format!("{}: the database is locked by another connection", path.display()),
@@ -1331,13 +1347,11 @@ fn lock(file: &File, path: &Path) -> Result<()> {
     Ok(())
 }
 
-// In-place changes are made where SQLite's locks are taken.
-#[cfg(all(test, unix, not(target_os = "emscripten")))]
-mod tests {
+#[cfg(all(test, any(all(unix, not(target_os = "emscripten")), windows)))]
+mod native_repack_tests {
     use super::*;
-    use crate::drivers::sqlite::Db;
 
-    fn sample(rows: i64) -> Vec<u8> {
+    pub(super) fn sample(rows: i64) -> Vec<u8> {
         let t = w::Table {
             name: "t".into(),
             sql: "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)".into(),
@@ -1346,6 +1360,32 @@ mod tests {
         };
         w::write_database(&[t], &[], 0, 0).unwrap()
     }
+
+    #[test]
+    fn repack_refuses_hard_link_alias_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.db");
+        let alias = dir.path().join("alias.db");
+        let wal = dir.path().join("alias.db-wal");
+        let original = sample(100);
+        std::fs::write(&path, &original).unwrap();
+        std::fs::hard_link(&path, &alias).unwrap();
+        std::fs::write(&wal, b"pending frames under another name").unwrap();
+        assert!(Editor::open_repack(&path).is_err(), "hard links must be refused before relying on path-based WAL checks");
+        #[cfg(unix)]
+        assert!(Editor::open(&path).is_err(), "append/update must also refuse aliases before checking only the named WAL");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read(&alias).unwrap(), original);
+        assert_eq!(std::fs::read(&wal).unwrap(), b"pending frames under another name");
+    }
+}
+
+// In-place changes are made where SQLite's locks are taken.
+#[cfg(all(test, unix, not(target_os = "emscripten")))]
+mod tests {
+    use super::native_repack_tests::sample;
+    use super::*;
+    use crate::drivers::sqlite::Db;
 
     fn root_of(path: &Path) -> u32 {
         let db = Db::new(std::fs::read(path).unwrap()).unwrap();
@@ -1383,6 +1423,32 @@ mod tests {
         assert!(Editor::open(&path).unwrap().is_ok());
     }
     #[test]
+    fn repack_commit_bumps_the_change_counter_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repack.db");
+        let original = sample(2000);
+        std::fs::write(&path, &original).unwrap();
+        let counter = |bytes: &[u8]| u32::from_be_bytes(bytes[24..28].try_into().unwrap());
+        let compact = crate::drivers::sqlite_repack::compact(&original).unwrap();
+        assert_eq!(counter(&compact), counter(&original));
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        editor.replace_image(original.clone(), compact).unwrap();
+        editor.commit().unwrap();
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(counter(&after), counter(&original).wrapping_add(1));
+        assert_eq!(after[92..96], after[24..28]);
+    }
+    #[test]
+    fn lock_keeps_os_error_that_is_not_contention() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db");
+        std::fs::write(&path, sample(1)).unwrap();
+        // A read-only descriptor cannot take a write lock: F_SETLK fails with EBADF, not contention.
+        let file = File::open(&path).unwrap();
+        let Err(Error::Io(error)) = lock(&file, &path) else { panic!("write lock accepted a read-only descriptor") };
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+    }
+    #[test]
     fn repack_open_refuses_a_symlink_even_without_path_preflight() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("keep.db");
@@ -1410,6 +1476,42 @@ mod tests {
         assert!(!with_suffix(&path, "-journal").exists(), "journal attached to replacement");
         assert_eq!(std::fs::read(&moved).unwrap(), original);
         assert_eq!(std::fs::read(&path).unwrap(), b"replacement must remain untouched");
+    }
+
+    #[test]
+    fn repack_wal_refusal_preserves_hot_journal_and_image() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wal-and-journal.db");
+        std::fs::write(&path, sample(3)).unwrap();
+        let root = root_of(&path);
+        let mut editor = Editor::open(&path).unwrap().unwrap();
+        editor.insert(root, 4, &w::record(&[w::Value::Null, w::Value::Text("interrupted".into())])).unwrap();
+        editor.commit_until(Stage::Written).unwrap();
+        let image = std::fs::read(&path).unwrap();
+        let journal_path = with_suffix(&path, "-journal");
+        let journal = std::fs::read(&journal_path).unwrap();
+        let wal_path = with_suffix(&path, "-wal");
+        std::fs::write(&wal_path, b"active WAL must remain untouched").unwrap();
+        assert!(Editor::open_repack(&path).unwrap().is_err());
+        assert!(std::fs::read(&path).unwrap() == image, "WAL refusal replayed database pages");
+        assert!(std::fs::read(&journal_path).unwrap() == journal, "WAL refusal changed the journal");
+        assert_eq!(std::fs::read(&wal_path).unwrap(), b"active WAL must remain untouched");
+    }
+
+    #[test]
+    fn repack_journal_does_not_broaden_database_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private.db");
+        let original = sample(3);
+        std::fs::write(&path, &original).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut editor = Editor::open_repack(&path).unwrap().unwrap();
+        editor.replace_image(original.clone(), crate::drivers::sqlite_repack::compact(&original).unwrap()).unwrap();
+        editor.commit_until(Stage::Journal).unwrap();
+        let journal = with_suffix(&path, "-journal");
+        assert_eq!(std::fs::metadata(journal).unwrap().permissions().mode() & 0o077, 0, "private database leaked into a broader journal");
+        assert_eq!(std::fs::read(path).unwrap(), original);
     }
 
     #[test]
@@ -1518,24 +1620,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(unix, windows))]
-    fn review_regression_repack_refuses_hard_link_alias_wal() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("main.db");
-        let alias = dir.path().join("alias.db");
-        let wal = dir.path().join("alias.db-wal");
-        let original = sample(100);
-        std::fs::write(&path, &original).unwrap();
-        std::fs::hard_link(&path, &alias).unwrap();
-        std::fs::write(&wal, b"pending frames under another name").unwrap();
-        assert!(Editor::open_repack(&path).is_err(), "hard links must be refused before relying on path-based WAL checks");
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert_eq!(std::fs::read(&alias).unwrap(), original);
-        assert_eq!(std::fs::read(&wal).unwrap(), b"pending frames under another name");
-    }
-
-    #[test]
-    fn review_regression_torn_unchanged_page_is_recoverable() {
+    fn torn_unchanged_page_is_recoverable() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("torn.db");
         let original = sample(2000);
@@ -1576,7 +1661,17 @@ mod tests {
         file.write_all(&[original[at as usize] ^ 0xff]).unwrap();
         file.sync_all().unwrap();
         drop(file);
-        let output=std::process::Command::new(python).args(["-c","import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); assert db.execute('PRAGMA integrity_check').fetchall()==[('ok',)]; db.close()"]).arg(&path).output().unwrap();
+        let output = std::process::Command::new(python)
+            .args([
+                "-c",
+                concat!(
+                    "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); ",
+                    "assert db.execute('PRAGMA integrity_check').fetchall()==[('ok',)]; db.close()"
+                ),
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         assert!(std::fs::read(&path).unwrap() == original, "SQLite must restore every original byte beyond the lock page too");
     }

@@ -124,6 +124,10 @@ pub enum VectorDriver {
     MapInfo,
     /// OpenStreetMap PBF and XML.
     OSM,
+    /// HEC-RAS geometry (`.g##.hdf`) and plan (`.p##.hdf`) HDF5 files, read only (the `hecras`
+    /// feature and its `terrio::hecras` module). Recognized by content: an HDF5 signature and the
+    /// root `File Type` HEC-RAS writes, so that other HDF5 files stay rasters.
+    HECRAS,
     /// Comma-separated values with X/Y or WKT geometry columns.
     CSV,
     /// MBTiles vector tiles, see [`crate::tiles`].
@@ -362,6 +366,7 @@ impl VectorDriver {
         Self::DWG,
         Self::MapInfo,
         Self::OSM,
+        Self::HECRAS,
         Self::CSV,
         Self::MBTiles,
         Self::PMTiles,
@@ -388,6 +393,8 @@ impl VectorDriver {
             Self::DWG => ("DWG", "AutoCAD DWG", &["dwg"], true, true),
             Self::MapInfo => ("MapInfo File", "MapInfo TAB and Interchange Format", &["mif", "tab"], true, true),
             Self::OSM => ("OSM", "OpenStreetMap PBF and XML", &["pbf", "osm"], true, false),
+            // No extension of its own: HEC-RAS files share `.hdf` and `.h5` with other HDF5 files.
+            Self::HECRAS => ("HECRAS", "HEC-RAS geometry and plan HDF5", &[], true, false),
             Self::CSV => ("CSV", "Comma Separated Value", &["csv", "tsv"], true, true),
             Self::MBTiles => ("MBTiles", "MBTiles", &["mbtiles"], true, true),
             Self::PMTiles => ("PMTiles", "ProtoMap Tiles", &["pmtiles"], true, true),
@@ -406,6 +413,7 @@ impl VectorDriver {
             Self::FlatGeobuf => ("flatgeobuf", cfg!(feature = "flatgeobuf")),
             Self::DXF | Self::DWG => ("cad", cfg!(feature = "cad")),
             Self::OSM => ("osm", cfg!(feature = "osm")),
+            Self::HECRAS => ("hecras", cfg!(feature = "hecras")),
             Self::MBTiles | Self::PMTiles | Self::MVT => ("tiles", cfg!(feature = "tiles")),
             _ => return None,
         };
@@ -433,6 +441,7 @@ impl VectorDriver {
             "libkml" => Some(Self::KML),
             "mapinfo" | "mif" => Some(Self::MapInfo),
             "json" => Some(Self::GeoJSON),
+            "hec-ras" | "hec_ras" | "hecras_hdf" => Some(Self::HECRAS),
             _ => None,
         };
         alias.or_else(|| Self::ALL.iter().copied().find(|d| d.name().eq_ignore_ascii_case(name)))
@@ -470,7 +479,15 @@ impl VectorDriver {
             Self::Parquet => return None,
             #[cfg(not(feature = "osm"))]
             Self::OSM => return None,
-            Self::DXF | Self::DWG | Self::GeoJSONSeq | Self::CSV | Self::MBTiles | Self::PMTiles | Self::MVT | Self::Gdal => return None,
+            Self::DXF
+            | Self::DWG
+            | Self::GeoJSONSeq
+            | Self::CSV
+            | Self::MBTiles
+            | Self::PMTiles
+            | Self::MVT
+            | Self::HECRAS
+            | Self::Gdal => return None,
         })
     }
 }

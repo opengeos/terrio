@@ -1,5 +1,7 @@
 """Serialized VRT inputs preserve lazy windows, source maps and georeferencing."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -66,3 +68,36 @@ def test_vrt_mixed_band_types_keep_fractional_precision(tmp_path):
     np.testing.assert_array_equal(result.read(1), [[1, 3]])
     np.testing.assert_array_equal(result.read(2), values.astype("float32"))
     np.testing.assert_array_equal(result.read(3), values)
+
+
+def test_vrt_preserves_filename_whitespace_in_native_and_uploaded_sources(tmp_path):
+    values = {"source.tif": 1, "source.tif ": 9, " source.tif ": 7}
+    uploaded = {
+        name: terrio.Raster.from_array(
+            np.array([[value]], dtype="uint8"), transform=(0, 1, 0, 1, 0, -1)
+        ).to_bytes()
+        for name, value in values.items()
+    }
+    source_maps = [uploaded]
+    if os.name == "posix":
+        native = {}
+        for name, data in uploaded.items():
+            path = tmp_path / name
+            path.write_bytes(data)
+            native[name] = path
+        source_maps.append(native)
+    for text, expected in [
+        ("source.tif ", 9),
+        (" source.tif", 1),
+        ("&#32;source.tif ", 7),
+        ("<![CDATA[ source.tif ]]>", 7),
+        ("<![CDATA[source.tif]]> ", 1),
+    ]:
+        xml = (
+            '<VRTDataset rasterXSize="1" rasterYSize="1">'
+            '<VRTRasterBand dataType="Byte" band="1"><SimpleSource>'
+            f"<SourceFilename>{text}</SourceFilename><SourceBand>1</SourceBand>"
+            "</SimpleSource></VRTRasterBand></VRTDataset>"
+        )
+        for sources in source_maps:
+            np.testing.assert_array_equal(terrio.open_vrt(xml, sources).read(1), [[expected]])

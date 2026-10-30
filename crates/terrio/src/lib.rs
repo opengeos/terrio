@@ -192,9 +192,13 @@ mod cog;
 mod cog_validate;
 pub mod crs;
 mod dataset;
+pub mod dataset_files;
 mod drivers;
 mod error;
 pub mod formats;
+#[cfg(feature = "hecras")]
+#[cfg_attr(docsrs, doc(cfg(feature = "hecras")))]
+pub use drivers::hecras;
 #[cfg(feature = "gdal")]
 #[cfg_attr(docsrs, doc(cfg(feature = "gdal")))]
 pub mod gdal_backend;
@@ -218,6 +222,7 @@ pub mod multidim;
 mod ndarray_ext;
 pub mod ops;
 mod par;
+pub mod parquet_metadata;
 mod pixel;
 #[cfg(feature = "pointcloud")]
 #[cfg_attr(docsrs, doc(cfg(feature = "pointcloud")))]
@@ -258,7 +263,10 @@ pub use dataset::{
 };
 pub use drivers::gtiff_write::GeoTiffWriter;
 pub use drivers::vector::csv::{CsvGeometry, CsvOptions};
-pub use drivers::vector::geojson::GeoJsonOptions;
+pub use drivers::vector::geojson::{GeoJsonIdType, GeoJsonOptions};
+pub use drivers::vector::hecras_options::HecRasOpenOptions;
+pub use drivers::vector::kml::KmzOptions;
+pub use drivers::vector::shapefile::{OrganizePolygons, ShapefileOptions};
 pub use error::{Error, Result};
 /// The `ndarray` crate, of the version terrio's array views of raster pixels use.
 #[cfg(feature = "ndarray")]

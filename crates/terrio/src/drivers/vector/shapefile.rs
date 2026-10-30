@@ -23,8 +23,75 @@ fn sidecar(base: &Path, ext: &str) -> Option<PathBuf> {
     [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| base.with_extension(e)).find(|p| p.exists())
 }
 
+/// How the rings of a polygon record make polygons: the methods of GDAL's
+/// `OGR_ORGANIZE_POLYGONS`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OrganizePolygons {
+    /// Clockwise rings are exteriors and each counter-clockwise ring a hole of the smallest
+    /// exterior containing it (`ONLY_CCW`, GDAL's default for shapefiles).
+    #[default]
+    OnlyCcw,
+    /// By containment, whatever their winding (`DEFAULT`): a ring inside an odd number of others
+    /// is a hole of the smallest ring containing it. For files that wind every ring one way.
+    Containment,
+    /// Each counter-clockwise ring is a hole of the clockwise ring before it
+    /// (`CCW_INNER_JUST_AFTER_CW_OUTER`). When the first ring is not clockwise, as `ONLY_CCW`.
+    CcwInnerJustAfterCwOuter,
+    /// Every ring is a polygon of its own (`SKIP`).
+    Skip,
+}
+
+impl OrganizePolygons {
+    /// The method GDAL names `name` (`ONLY_CCW`, `DEFAULT`, `CCW_INNER_JUST_AFTER_CW_OUTER` or
+    /// `SKIP`), in any letter case.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.trim().to_ascii_uppercase().as_str() {
+            "ONLY_CCW" => Self::OnlyCcw,
+            "DEFAULT" => Self::Containment,
+            "CCW_INNER_JUST_AFTER_CW_OUTER" => Self::CcwInnerJustAfterCwOuter,
+            "SKIP" => Self::Skip,
+            _ => return None,
+        })
+    }
+}
+
+/// Options for reading shapefiles.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShapefileOptions {
+    /// How the rings of a polygon record make polygons. By default, the method the
+    /// `TERRIO_ORGANIZE_POLYGONS` or `OGR_ORGANIZE_POLYGONS` environment variable names, and
+    /// otherwise `ONLY_CCW`, as in GDAL.
+    pub organize_polygons: Option<OrganizePolygons>,
+}
+
+impl ShapefileOptions {
+    /// Sets an option by name: `ORGANIZE_POLYGONS`, one of the methods of GDAL's
+    /// `OGR_ORGANIZE_POLYGONS` (`ONLY_CCW`, `DEFAULT`, `CCW_INNER_JUST_AFTER_CW_OUTER`, `SKIP`).
+    /// Returns `false` for other names.
+    pub fn set(&mut self, key: &str, value: &str) -> Result<bool> {
+        if !key.eq_ignore_ascii_case("ORGANIZE_POLYGONS") {
+            return Ok(false);
+        }
+        let method = OrganizePolygons::from_name(value)
+            .ok_or_else(|| Error::InvalidArgument(format!("unknown ORGANIZE_POLYGONS method '{value}'")))?;
+        self.organize_polygons = Some(method);
+        Ok(true)
+    }
+
+    /// The method in effect: the option, else the environment's, else `ONLY_CCW`.
+    pub(crate) fn method(&self) -> OrganizePolygons {
+        self.organize_polygons.or_else(|| method_from_env(|name| std::env::var(name).ok())).unwrap_or_default()
+    }
+}
+
+/// The method of the first of `TERRIO_ORGANIZE_POLYGONS` and `OGR_ORGANIZE_POLYGONS` that names
+/// one, so a variable set to an unknown method does not hide the next.
+fn method_from_env(get: impl Fn(&str) -> Option<String>) -> Option<OrganizePolygons> {
+    ["TERRIO_ORGANIZE_POLYGONS", "OGR_ORGANIZE_POLYGONS"].iter().find_map(|&name| get(name).and_then(|v| OrganizePolygons::from_name(&v)))
+}
+
 /// Reads a shapefile. `path` names the `.shp` file.
-pub fn read(path: &str) -> Result<Layer> {
+pub fn read(path: &str, options: &ShapefileOptions) -> Result<Layer> {
     let base = Path::new(path).with_extension("");
     let shp = std::fs::read(path)?;
     let dbf = sidecar(&base, "dbf").map(std::fs::read).transpose()?;
@@ -34,7 +101,7 @@ pub fn read(path: &str) -> Result<Layer> {
     }
     let cpg = sidecar(&base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
     let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("layer");
-    parse(&shp, dbf.as_deref(), prj.as_deref(), cpg.as_deref(), name).map_err(|e| match e {
+    parse(&shp, dbf.as_deref(), prj.as_deref(), cpg.as_deref(), name, options).map_err(|e| match e {
         Error::InvalidData(m) if m == "not a shapefile" => Error::InvalidData(format!("'{path}' is not a shapefile")),
         e => e,
     })
@@ -42,15 +109,23 @@ pub fn read(path: &str) -> Result<Layer> {
 
 /// Reads a shapefile from the contents of its `.shp`, `.dbf`, `.prj` and `.cpg` files. `name`
 /// names the layer.
-pub fn parse(shp: &[u8], dbf: Option<&[u8]>, prj: Option<&str>, cpg: Option<&str>, name: &str) -> Result<Layer> {
+pub fn parse(
+    shp: &[u8],
+    dbf: Option<&[u8]>,
+    prj: Option<&str>,
+    cpg: Option<&str>,
+    name: &str,
+    options: &ShapefileOptions,
+) -> Result<Layer> {
     let mut layer = header_layer(shp, name)?;
+    let method = options.method();
 
     let mut geometries = Vec::new();
     let mut pos = 100;
     while pos + 8 <= shp.len() {
         let words = u32::from_be_bytes([shp[pos + 4], shp[pos + 5], shp[pos + 6], shp[pos + 7]]) as usize;
         let end = (pos + 8 + 2 * words).min(shp.len());
-        geometries.push(parse_shape(&shp[pos + 8..end]));
+        geometries.push(parse_shape(&shp[pos + 8..end], method));
         pos = end;
     }
 
@@ -105,11 +180,11 @@ pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
 }
 
 /// Decodes a `.shp` record's content (after its 8-byte record header).
-pub(crate) fn decode_shape(rec: &[u8]) -> Option<Geometry> {
-    parse_shape(rec)
+pub(crate) fn decode_shape(rec: &[u8], method: OrganizePolygons) -> Option<Geometry> {
+    parse_shape(rec, method)
 }
 
-fn parse_shape(rec: &[u8]) -> Option<Geometry> {
+fn parse_shape(rec: &[u8], method: OrganizePolygons) -> Option<Geometry> {
     let i32_at = |o: usize| rec.get(o..o + 4).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     let f64_at = |o: usize| rec.get(o..o + 8).map(|b| f64::from_le_bytes(b.try_into().unwrap_or([0; 8])));
     let st = i32_at(0)?;
@@ -162,8 +237,79 @@ fn parse_shape(rec: &[u8]) -> Option<Geometry> {
         8 => Geometry::MultiPoint(coords),
         3 if parts.len() == 1 => Geometry::LineString(parts.into_iter().next()?),
         3 => Geometry::MultiLineString(parts),
-        _ => organize_rings(parts),
+        _ => organize(parts, method)?,
     })
+}
+
+/// Groups a polygon record's rings into polygons by `method`. Since 3.13, GDAL first splits the
+/// self-touching rings of a record of several parts, whatever the method (see [`split_parts`]).
+fn organize(parts: Vec<Vec<Coord>>, method: OrganizePolygons) -> Option<Geometry> {
+    let clockwise = |cs: &[Coord]| Ring::new(cs.to_vec()).signed_area() <= 0.0;
+    match method {
+        OrganizePolygons::OnlyCcw => Some(organize_rings(parts)),
+        OrganizePolygons::Containment => super::polygons_from_rings(split_parts(parts).0),
+        // As GDAL, which takes this method only when the first ring is clockwise, and which, when
+        // it splits a ring, organizes them as it does for ONLY_CCW.
+        OrganizePolygons::CcwInnerJustAfterCwOuter if !parts.first().is_some_and(|cs| clockwise(cs)) || split_parts(parts.clone()).1 => {
+            Some(organize_rings(parts))
+        }
+        OrganizePolygons::CcwInnerJustAfterCwOuter => {
+            let mut polygons: Vec<(Ring, Vec<Ring>)> = Vec::new();
+            for cs in parts {
+                let exterior = clockwise(&cs);
+                match polygons.last_mut() {
+                    Some((_, holes)) if !exterior => holes.push(open_ring(cs)),
+                    _ => polygons.push((open_ring(cs), Vec::new())),
+                }
+            }
+            Some(polygon_or_multi(polygons))
+        }
+        OrganizePolygons::Skip => Some(polygon_or_multi(split_parts(parts).0.into_iter().map(|cs| (open_ring(cs), Vec::new())).collect())),
+    }
+}
+
+/// The rings of a record as GDAL's `organizePolygons` takes them since 3.13: in a record of
+/// several parts, each ring that touches itself to enclose loops (see [`split_self_touching`]) is
+/// replaced by its pieces, after the other rings. Also whether a ring was split.
+fn split_parts(parts: Vec<Vec<Coord>>) -> (Vec<Vec<Coord>>, bool) {
+    if parts.len() < 2 {
+        return (parts, false);
+    }
+    let mut rings = Vec::with_capacity(parts.len());
+    let mut pieces = Vec::new();
+    for mut cs in parts {
+        if cs.len() > 1 && (cs[0].x, cs[0].y) == (cs[cs.len() - 1].x, cs[cs.len() - 1].y) {
+            cs.pop();
+        }
+        match split_self_touching(cs) {
+            (ring, loops) if loops.is_empty() => rings.push(ring),
+            (ring, loops) => {
+                pieces.push(ring);
+                pieces.extend(loops);
+            }
+        }
+    }
+    let split = !pieces.is_empty();
+    rings.extend(pieces);
+    (rings, split)
+}
+
+/// A ring without the closing vertex its record repeats.
+fn open_ring(mut cs: Vec<Coord>) -> Ring {
+    if cs.len() > 1 && (cs[0].x, cs[0].y) == (cs[cs.len() - 1].x, cs[cs.len() - 1].y) {
+        cs.pop();
+    }
+    Ring::new(cs)
+}
+
+/// One polygon as a polygon, several as a multipolygon.
+fn polygon_or_multi(mut polygons: Vec<(Ring, Vec<Ring>)>) -> Geometry {
+    if polygons.len() == 1 {
+        let (exterior, interiors) = polygons.pop().unwrap_or_default();
+        Geometry::Polygon { exterior, interiors }
+    } else {
+        Geometry::MultiPolygon(polygons)
+    }
 }
 
 /// Groups rings into polygons: clockwise rings are exteriors, and each counter-clockwise ring is
@@ -207,12 +353,7 @@ fn organize_rings(parts: Vec<Vec<Coord>>) -> Geometry {
             None => polygons.push((Ring::new(h.0.into_iter().rev().collect()), Vec::new())),
         }
     }
-    if polygons.len() == 1 {
-        let (exterior, interiors) = polygons.pop().unwrap_or_default();
-        Geometry::Polygon { exterior, interiors }
-    } else {
-        Geometry::MultiPolygon(polygons)
-    }
+    polygon_or_multi(polygons)
 }
 
 /// Splits off the loops of an Esri ring that touches itself at a vertex to enclose them. Esri
@@ -950,7 +1091,7 @@ mod tests {
         let value = |i| f64::from_le_bytes(record[i..i + 8].try_into().unwrap());
         assert_eq!((value(at), value(at + 8)), (3.0, 8.0));
         assert_eq!((value(at + 16), value(at + 24), value(at + 32)), (3.0, -1e39, 8.0));
-        assert_eq!(parse_shape(&record).unwrap(), shape);
+        assert_eq!(parse_shape(&record, OrganizePolygons::default()).unwrap(), shape);
     }
 
     #[test]
@@ -1004,7 +1145,7 @@ mod tests {
         let g = Geometry::MultiPolygon(vec![(ring(0.0, 10.0), vec![ring(1.0, 2.0)]), (ring(20.0, 5.0), vec![])]);
         l.push(Feature { fid: 0, geometry: Some(g.clone()), attributes: vec![FieldValue::Text("Zürich".into())] });
         write(&l, path).unwrap();
-        let back = read(path).unwrap();
+        let back = read(path, &ShapefileOptions::default()).unwrap();
         let Some(Geometry::MultiPolygon(ps)) = &back.features[0].geometry else { panic!("not a multipolygon") };
         assert_eq!(ps.len(), 2);
         assert_eq!(ps[0].1.len(), 1);
@@ -1019,7 +1160,7 @@ mod tests {
         latin1.extend_from_slice(b"Z\xfcrich ");
         latin1.extend_from_slice(&bytes[at + 7..]);
         std::fs::write(&dbf, latin1).unwrap();
-        assert_eq!(read(path).unwrap().features[0].attributes[0], FieldValue::Text("Zürich".into()));
+        assert_eq!(read(path, &ShapefileOptions::default()).unwrap().features[0].attributes[0], FieldValue::Text("Zürich".into()));
     }
 
     /// The x/y of the rings of each polygon, exterior first.
@@ -1030,6 +1171,100 @@ mod tests {
             Geometry::MultiPolygon(polygons) => polygons.iter().map(|(e, is)| std::iter::once(e).chain(is).map(xy).collect()).collect(),
             _ => panic!("not polygonal: {g:?}"),
         }
+    }
+
+    #[test]
+    fn organizes_rings_by_each_of_gdals_methods() {
+        let cw = |x0: f64, y0: f64, x1: f64, y1: f64| vec![(x0, y0), (x0, y1), (x1, y1), (x1, y0)];
+        let ccw = |x0: f64, y0: f64, x1: f64, y1: f64| vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+        // Records of rings stored as given, and the polygons GDAL 3.12.2 reads from them with
+        // OGR_ORGANIZE_POLYGONS set to ONLY_CCW, DEFAULT, CCW_INNER_JUST_AFTER_CW_OUTER and SKIP,
+        // each polygon as the indices of its rings.
+        type Polygons<'a> = &'a [&'a [usize]];
+        type Case<'a> = (&'a str, Vec<Vec<(f64, f64)>>, [Polygons<'a>; 4]);
+        let cases: Vec<Case> = vec![
+            (
+                "a hole wound as its exterior",
+                vec![cw(0., 0., 10., 10.), cw(2., 2., 8., 8.)],
+                [&[&[0], &[1]], &[&[0, 1]], &[&[0], &[1]], &[&[0], &[1]]],
+            ),
+            (
+                "both counter-clockwise",
+                vec![ccw(0., 0., 10., 10.), ccw(2., 2., 8., 8.)],
+                [&[&[0], &[1]], &[&[0, 1]], &[&[0], &[1]], &[&[0], &[1]]],
+            ),
+            (
+                "an island in a hole, all clockwise",
+                vec![cw(0., 0., 10., 10.), cw(2., 2., 8., 8.), cw(4., 4., 6., 6.)],
+                [&[&[0], &[1], &[2]], &[&[0, 1], &[2]], &[&[0], &[1], &[2]], &[&[0], &[1], &[2]]],
+            ),
+            (
+                "two exteriors, the second with a hole, all clockwise",
+                vec![cw(0., 0., 4., 4.), cw(6., 0., 16., 10.), cw(8., 2., 14., 8.)],
+                [&[&[0], &[1], &[2]], &[&[0], &[1, 2]], &[&[0], &[1], &[2]], &[&[0], &[1], &[2]]],
+            ),
+            ("properly wound", vec![cw(0., 0., 10., 10.), ccw(2., 2., 8., 8.)], [&[&[0, 1]], &[&[0, 1]], &[&[0, 1]], &[&[0], &[1]]]),
+            (
+                "a hole after another exterior",
+                vec![cw(0., 0., 10., 10.), cw(20., 0., 30., 10.), ccw(2., 2., 8., 8.)],
+                [&[&[0, 2], &[1]], &[&[0, 2], &[1]], &[&[0], &[1, 2]], &[&[0], &[1], &[2]]],
+            ),
+            ("the hole first", vec![ccw(2., 2., 8., 8.), cw(0., 0., 10., 10.)], [&[&[1, 0]], &[&[1, 0]], &[&[1, 0]], &[&[0], &[1]]]),
+            (
+                "two exteriors, each followed by its hole",
+                vec![cw(0., 0., 10., 10.), ccw(2., 2., 8., 8.), cw(20., 0., 30., 10.), ccw(22., 2., 28., 8.)],
+                [&[&[0, 1], &[2, 3]], &[&[0, 1], &[2, 3]], &[&[0, 1], &[2, 3]], &[&[0], &[1], &[2], &[3]]],
+            ),
+        ];
+        let methods =
+            [OrganizePolygons::OnlyCcw, OrganizePolygons::Containment, OrganizePolygons::CcwInnerJustAfterCwOuter, OrganizePolygons::Skip];
+        for (name, rings, expected) in &cases {
+            for (method, polygons) in methods.iter().zip(expected) {
+                let g = organize(rings.iter().map(|r| closed(r)).collect(), *method).unwrap();
+                let want: Vec<Vec<Vec<(f64, f64)>>> = polygons.iter().map(|p| p.iter().map(|&i| rings[i].clone()).collect()).collect();
+                assert_eq!(polygon_rings(&g), want, "{name}, {method:?}");
+            }
+        }
+        for (name, method) in
+            [("only_ccw", OrganizePolygons::OnlyCcw), ("Default", OrganizePolygons::Containment), ("SKIP", OrganizePolygons::Skip)]
+        {
+            let mut options = ShapefileOptions::default();
+            assert!(options.set("organize_polygons", name).unwrap());
+            assert_eq!(options.method(), method);
+        }
+        assert!(ShapefileOptions::default().set("ORGANIZE_POLYGONS", "SOMETIMES").is_err());
+        assert!(!ShapefileOptions::default().set("ENCODING", "UTF-8").unwrap());
+    }
+
+    #[test]
+    fn splits_self_touching_rings_for_every_method() {
+        // An Esri hole hanging from the bottom edge, and a stored hole: GDAL 3.13.3 splits the
+        // ring whatever OGR_ORGANIZE_POLYGONS is, putting its pieces after the other rings.
+        let esri = [(0., 0.), (0., 10.), (10., 10.), (10., 0.), (5., 0.), (6., 2.), (4., 2.), (5., 0.)];
+        let hole = [(2., 6.), (3., 6.), (3., 7.), (2., 7.)];
+        let rest = vec![(0., 10.), (10., 10.), (10., 0.), (5., 0.), (0., 0.)];
+        let lp = vec![(6., 2.), (4., 2.), (5., 0.)];
+        let polygon = vec![vec![rest.clone(), hole.to_vec(), lp.clone()]];
+        for (method, want) in [
+            (OrganizePolygons::OnlyCcw, polygon.clone()),
+            (OrganizePolygons::Containment, polygon.clone()),
+            (OrganizePolygons::CcwInnerJustAfterCwOuter, polygon),
+            (OrganizePolygons::Skip, vec![vec![hole.to_vec()], vec![rest], vec![lp]]),
+        ] {
+            let g = organize(vec![closed(&esri), closed(&hole)], method).unwrap();
+            assert_eq!(polygon_rings(&g), want, "{method:?}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_environment_method_does_not_hide_the_next() {
+        let env = |name: &str| match name {
+            "TERRIO_ORGANIZE_POLYGONS" => Some("garbage".to_string()),
+            "OGR_ORGANIZE_POLYGONS" => Some("DEFAULT".to_string()),
+            _ => None,
+        };
+        assert_eq!(method_from_env(env), Some(OrganizePolygons::Containment));
+        assert_eq!(method_from_env(|_| None), None);
     }
 
     fn closed(xy: &[(f64, f64)]) -> Vec<Coord> {
@@ -1183,13 +1418,13 @@ mod tests {
         write(&l, path).unwrap();
         let esri = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
         std::fs::write(dir.path().join("p.prj"), esri).unwrap();
-        let back = read(path).unwrap();
+        let back = read(path, &ShapefileOptions::default()).unwrap();
         assert_eq!(back.crs_epsg(), Some(4326));
         assert_eq!(super::super::trusted_epsg(&back), Some(4326));
         // A .prj matching no EPSG CRS is kept as it is.
         let custom = r#"PROJCS["custom",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",123456.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",7.3],PARAMETER["Scale_Factor",0.9991],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
         std::fs::write(dir.path().join("p.prj"), custom).unwrap();
-        let back = read(path).unwrap();
+        let back = read(path, &ShapefileOptions::default()).unwrap();
         assert_eq!(back.crs_epsg(), None);
         assert_eq!(back.crs_wkt(), Some(custom));
     }

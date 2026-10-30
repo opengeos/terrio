@@ -25,9 +25,19 @@ enum Command {
     GpkgRepack(cmd::gpkg::RepackArgs),
     /// Validate a self-contained GeoPackage against core and extension requirements.
     GpkgValidate(cmd::gpkg::ValidateArgs),
-
     /// Identify many datasets from bounded headers, without decoding their payloads.
     Identify(cmd::inspection::IdentifyArgs),
+    /// Copy a dataset and every associated file, preserving encoded data.
+    DatasetCopy(cmd::dataset_files::TransferArgs),
+    /// Rename a dataset and its associated files; directory datasets include the complete subtree.
+    DatasetRename(cmd::dataset_files::TransferArgs),
+    /// Delete owned dataset files, preserving referenced VRT assets.
+    /// Directory datasets include the complete subtree, including extra files.
+    DatasetDelete(cmd::dataset_files::DeleteArgs),
+    /// List the owned files of a dataset.
+    DatasetFiles(cmd::dataset_files::FilesArgs),
+    /// Create a Parquet metadata-only file from explicit partitions.
+    ParquetCreateMetadata(cmd::parquet_metadata::Args),
     /// Read all exposed dataset content to detect decoding failures.
     Check(cmd::inspection::CheckArgs),
     /// Inspect native scientific groups, named dimensions and arrays without reading payloads.
@@ -36,6 +46,8 @@ enum Command {
     Mdread(cmd::multidim::ReadArgs),
     /// Snapshot native numeric groups, coordinates and chunks between netCDF-4 and Zarr.
     Mdconvert(cmd::multidim::ConvertArgs),
+    /// Mosaic multidimensional arrays by their dimension coordinates.
+    Mdmosaic(cmd::multidim::MosaicArgs),
     /// Convert a dataset to another format, optionally reprojecting it. Point clouds convert to
     /// LAS, LAZ, COPC or vector point layers.
     Convert(cmd::convert::Args),
@@ -277,12 +289,17 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Info(a) => cmd::info::run(a),
         Command::GpkgRepack(a) => cmd::gpkg::repack(a),
         Command::GpkgValidate(a) => cmd::gpkg::validate(a),
-
         Command::Identify(a) => cmd::inspection::identify(a),
+        Command::DatasetCopy(a) => cmd::dataset_files::transfer(a, false),
+        Command::DatasetRename(a) => cmd::dataset_files::transfer(a, true),
+        Command::DatasetDelete(a) => cmd::dataset_files::delete(a),
+        Command::DatasetFiles(a) => cmd::dataset_files::files(a),
+        Command::ParquetCreateMetadata(a) => cmd::parquet_metadata::run(a),
         Command::Check(a) => cmd::inspection::check(a),
         Command::Mdinfo(a) => cmd::multidim::info(a),
         Command::Mdread(a) => cmd::multidim::read(a),
         Command::Mdconvert(a) => cmd::multidim::convert(a),
+        Command::Mdmosaic(a) => cmd::multidim::mosaic(a),
         Command::Convert(a) => cmd::convert::run(a),
         Command::Formats(a) => cmd::formats::run(a),
         Command::Crs(a) => cmd::crs::run(a),
@@ -396,6 +413,12 @@ mod tests {
     #[test]
     fn the_command_line_is_well_formed() {
         // Clap's checks: unique argument names across flattened option groups, among others.
-        <super::Cli as clap::CommandFactory>::command().debug_assert();
+        // Use the production CLI worker's stack, including on Windows test threads.
+        std::thread::Builder::new()
+            .stack_size(super::STACK_SIZE)
+            .spawn(|| <super::Cli as clap::CommandFactory>::command().debug_assert())
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

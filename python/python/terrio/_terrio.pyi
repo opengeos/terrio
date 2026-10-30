@@ -17,12 +17,16 @@ __all__ = [
     "refresh_overviews",
     "update_raster",
     "validate_cog",
+    "validate_gpkg",
     "check_dataset",
     "identify",
+    "dataset_copy",
+    "dataset_delete",
+    "dataset_files",
+    "dataset_rename",
     "__version__",
     "gpkg_repack",
     "gpkg_repack_bytes",
-    "validate_gpkg",
     "Raster",
     "GeoTiffWriter",
     "Layer",
@@ -58,6 +62,7 @@ __all__ = [
     "MultidimDataset",
     "MultidimArray",
     "open_multidim",
+    "mosaic_multidim",
     "dem",
     "calc",
     "proximity",
@@ -122,6 +127,7 @@ __all__ = [
     "vsi_move",
     "vsi_sync",
     "concat",
+    "parquet_create_metadata",
     "partition",
     "set_field_type",
     "make_point",
@@ -317,8 +323,20 @@ class Layer:
         name: str | None = None,
         crs: str | None = None,
     ) -> Layer: ...
-    def write(self, path: str, driver: str | None = None) -> None: ...
-    def to_bytes(self, filename: str = "layer.geojson", driver: str | None = None) -> bytes: ...
+    def write(
+        self,
+        path: str,
+        driver: str | None = None,
+        *,
+        kmz_resources: Mapping[str, bytes] | None = None,
+    ) -> None: ...
+    def to_bytes(
+        self,
+        filename: str = "layer.geojson",
+        driver: str | None = None,
+        *,
+        kmz_resources: Mapping[str, bytes] | None = None,
+    ) -> bytes: ...
 
 @final
 class VectorDataset:
@@ -333,7 +351,13 @@ class VectorDataset:
     def __len__(self) -> int: ...
     def __getitem__(self, key: int | str, /) -> Layer: ...
     def __iter__(self) -> Iterator[Layer]: ...
-    def write(self, path: str, driver: str | None = None) -> None: ...
+    def write(
+        self,
+        path: str,
+        driver: str | None = None,
+        *,
+        kmz_resources: Mapping[str, bytes] | None = None,
+    ) -> None: ...
 
 @final
 class ArrowTable:
@@ -703,14 +727,21 @@ def open(path: str) -> Raster | VectorDataset: ...
 def open_raster(path: str, lazy: bool = False) -> Raster: ...
 def open_vrt(xml: str, sources: Mapping[str, bytes | str | os.PathLike[str]]) -> Raster: ...
 def open_vector(
-    path: str, layers: Sequence[str] | None = None, bbox: _Bounds | None = None
+    path: str,
+    layers: Sequence[str] | None = None,
+    bbox: _Bounds | None = None,
+    options: Mapping[str, str] | None = None,
 ) -> VectorDataset: ...
 def open_bytes(
     data: bytes | bytearray, filename: str, lazy: bool = False
 ) -> Raster | VectorDataset: ...
 def list_layers(path: str) -> list[str]: ...
 def info(
-    path: str, stats: bool = False, layers: Sequence[str] | None = None, hist: bool = False
+    path: str,
+    stats: bool = False,
+    layers: Sequence[str] | None = None,
+    hist: bool = False,
+    options: Mapping[str, str] | None = None,
 ) -> dict[str, Any]: ...
 def drivers() -> list[dict[str, Any]]: ...
 def write_raster(
@@ -1865,6 +1896,12 @@ def blend(
 
 def gpkg_repack(path: str | os.PathLike[str]) -> dict[str, Any]: ...
 def gpkg_repack_bytes(data: bytes) -> bytes: ...
+def mosaic_multidim(
+    sources: Sequence[MultidimDataset | str | os.PathLike[str] | bytes | dict[str, bytes]],
+    dst: str | os.PathLike[str] | None = None,
+    *,
+    arrays: Sequence[str] | None = None,
+) -> MultidimDataset: ...
 
 _PaletteSource: TypeAlias = Raster | str | os.PathLike[str] | bytes | Sequence[Sequence[int]]
 
@@ -1922,6 +1959,34 @@ def identify(
     """
     ...
 
+def dataset_files(
+    source: str | os.PathLike[str], *, format: str | None = None
+) -> dict[str, Any]: ...
+def dataset_copy(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    format: str | None = None,
+    overwrite: bool = False,
+    allow_external_references: bool = False,
+) -> dict[str, Any]: ...
+def dataset_rename(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    format: str | None = None,
+    overwrite: bool = False,
+    allow_external_references: bool = False,
+) -> dict[str, Any]: ...
+def dataset_delete(
+    sources: str | os.PathLike[str] | Iterable[str | os.PathLike[str]], *, format: str | None = None
+) -> list[dict[str, Any]]: ...
+def parquet_create_metadata(
+    inputs: Sequence[str | os.PathLike[str]],
+    output: str | os.PathLike[str],
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]: ...
 def check_dataset(
     source: str | os.PathLike[str] | bytes,
     *,

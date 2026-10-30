@@ -12,6 +12,7 @@
 //! const points = readPoints(lazBytes, "lidar.laz", { classes: [2] }); // LAS, LAZ, COPC
 //! ```
 
+mod dataset_files;
 mod gpkg_maintenance;
 mod grid;
 mod inspection;
@@ -19,6 +20,7 @@ mod manage;
 mod multidim;
 mod ops;
 mod palette;
+mod parquet_metadata;
 mod pixel;
 #[cfg(feature = "pointcloud")]
 mod pointcloud;
@@ -70,6 +72,7 @@ const FEATURES: &[(&str, bool)] = &[
     ("cad", cfg!(feature = "cad")),
     ("flatgeobuf", cfg!(feature = "flatgeobuf")),
     ("grib", cfg!(feature = "grib")),
+    ("hecras", cfg!(feature = "hecras")),
     ("jp2", cfg!(feature = "jp2")),
     ("lerc", cfg!(feature = "lerc")),
     ("lzma", cfg!(feature = "lzma")),
@@ -121,6 +124,48 @@ pub(crate) fn parse_options<T: serde::de::DeserializeOwned + Default>(options: &
     }
     let text: String = js_sys::JSON::stringify(options).map_err(|_| JsError::new("invalid options"))?.into();
     serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))
+}
+
+/// A shallow copy of an options object without `key`, whose value is not read (the value itself
+/// when it is not an object).
+fn without_key(options: &JsValue, key: &str) -> Result<JsValue, JsError> {
+    use wasm_bindgen::JsCast;
+    if !options.is_object() {
+        return Ok(options.clone());
+    }
+    let copy = js_sys::Object::new();
+    let object: &js_sys::Object = options.unchecked_ref();
+    for name in js_sys::Object::keys(object).iter().filter(|name| name.as_string().as_deref() != Some(key)) {
+        let value = js_sys::Reflect::get(options, &name).map_err(|_| JsError::new("invalid options"))?;
+        js_sys::Reflect::set(&copy, &name, &value).map_err(|_| JsError::new("invalid options"))?;
+    }
+    Ok(copy.into())
+}
+
+/// The files of a `kmzResources` option, `{ "icons/pin.png": Uint8Array }`, read from the options
+/// object itself rather than through JSON, which writes each of their bytes as a separate entry.
+fn kmz_resources(options: &JsValue) -> Result<Vec<(String, Vec<u8>)>, JsError> {
+    use wasm_bindgen::JsCast;
+    if !options.is_object() {
+        return Ok(Vec::new());
+    }
+    let files = js_sys::Reflect::get(options, &JsValue::from_str("kmzResources")).map_err(|_| JsError::new("invalid options"))?;
+    if files.is_undefined() || files.is_null() {
+        return Ok(Vec::new());
+    }
+    let files = files.dyn_into::<js_sys::Object>().map_err(|_| JsError::new("kmzResources: an object of Uint8Arrays"))?;
+    js_sys::Object::entries(&files)
+        .iter()
+        .map(|entry| {
+            let entry: js_sys::Array = entry.unchecked_into();
+            let path = entry.get(0).as_string().unwrap_or_default();
+            let bytes = entry
+                .get(1)
+                .dyn_into::<js_sys::Uint8Array>()
+                .map_err(|_| JsError::new(&format!("kmzResources: '{path}' is not a Uint8Array")))?;
+            Ok((path, bytes.to_vec()))
+        })
+        .collect()
 }
 
 /// Pixels as a typed array of their own type.
@@ -323,6 +368,48 @@ pub fn open(bytes: Vec<u8>, filename: &str) -> Result<Dataset, JsError> {
         terrio::Dataset::Raster(r) => Dataset::from_raster(r),
         terrio::Dataset::Vector(v) => Dataset::from_layers(v.layers, v.driver),
     })
+}
+
+/// Options for [`open_vector`], as a JavaScript object.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct VectorOpenOptions {
+    /// Only these layers, by name.
+    layers: Option<Vec<String>>,
+    /// Driver open options by their GDAL names (`{ CELL_SUMMARIES: "Maximum Water Surface",
+    /// TIME_STEP: "12" }`), as `terrio convert --oo` takes them.
+    open_options: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+}
+
+/// Opens a vector dataset from its bytes, with driver open options. `filename` names the file
+/// (its extension tells the format when the content does not); `options` takes `layers` (names)
+/// and `openOptions`, the driver's open options by their GDAL names: the CSV options, the tile
+/// archive options and those of the HECRAS driver for HEC-RAS geometry and plan HDF files
+/// (`CELL_SUMMARIES`, `TIME_STEP`, ...). A list option takes a comma-separated string or an
+/// array of names.
+///
+/// A HEC-RAS file is read whole from memory: it must fit in the module's memory (4 GiB at most
+/// for wasm32) and opening briefly needs about twice its size. Layers the engine refuses are
+/// errors when named in `layers`, and left out with a warning otherwise.
+#[wasm_bindgen(js_name = openVector)]
+pub fn open_vector(bytes: Vec<u8>, filename: &str, options: JsValue) -> Result<Dataset, JsError> {
+    let o: VectorOpenOptions = parse_options(&options)?;
+    let mut open = terrio::VectorOpenOptions { layers: o.layers.unwrap_or_default(), ..Default::default() };
+    for (key, value) in o.open_options.unwrap_or_default() {
+        // A list option may be given as an array of names, joined as its comma-separated form.
+        let value = match &value {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Array(items) => {
+                items.iter().map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string)).collect::<Vec<_>>().join(",")
+            }
+            other => other.to_string(),
+        };
+        if !open.set(&key, &value).map_err(js_err)? {
+            return Err(JsError::new(&format!("unknown open option '{key}'")));
+        }
+    }
+    let v = terrio::memory::open_vector_bytes(bytes, filename, &open).map_err(js_err)?;
+    Ok(Dataset::from_layers(v.layers, v.driver))
 }
 
 /// Opens a Zarr store (v2 or v3, GeoZarr conventions included) from its files: a `Map` or an
@@ -610,7 +697,8 @@ impl Dataset {
 
     /// Writes the dataset in a format, to bytes: the format of `filename`'s extension, or
     /// `options.format`. Options: `format`, `tSrs` (reproject), and for vector datasets `layers`,
-    /// `where`, `select` and `limit`, for rasters `srcwin`, `overview`, `bands`, `compress`
+    /// `where`, `select`, `limit` and `kmzResources` (files packed into a KMZ, such as icon images:
+    /// `{ "icons/pin.png": Uint8Array }`), for rasters `srcwin`, `overview`, `bands`, `compress`
     /// (GeoTIFF/COG: `NONE`, `LZW`, `DEFLATE`, `PACKBITS`, `ZSTD`, `LERC`, `LERC_DEFLATE`,
     /// `LERC_ZSTD`, `JXL`, `JPEG`), `tileSize` and `creationOptions` (GDAL's: `MAX_Z_ERROR`,
     /// `JPEG_QUALITY`, `PREDICTOR`, `FORMAT=NC4` for netCDF, `FORMAT=ZARR_V3` for Zarr...),
@@ -623,7 +711,9 @@ impl Dataset {
     /// Text over 254 UTF-8 bytes and unsupported DBF values are explicit errors.
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
-        let o: WriteOptions = parse_options(&options)?;
+        let resources = kmz_resources(&options)?;
+        // Without the resource bytes, which JSON would write one entry per byte.
+        let o: WriteOptions = parse_options(&without_key(&options, "kmzResources")?)?;
         let transform_options = TransformOptions {
             allow_ballpark: o.allow_ballpark,
             only_best: o.only_best,
@@ -633,8 +723,8 @@ impl Dataset {
         let t_srs = o.t_srs.as_deref().map(SpatialRef::parse).transpose().map_err(js_err)?;
         match &mut *self.inner.borrow_mut() {
             Inner::Raster(r) => {
-                if o.layers.is_some() || o.r#where.is_some() || o.select.is_some() || o.limit.is_some() {
-                    return Err(JsError::new("layers, where, select and limit apply to vector datasets"));
+                if o.layers.is_some() || o.r#where.is_some() || o.select.is_some() || o.limit.is_some() || !resources.is_empty() {
+                    return Err(JsError::new("layers, where, select, limit and kmzResources apply to vector datasets"));
                 }
                 let driver = o
                     .format
@@ -716,6 +806,7 @@ impl Dataset {
                 let mut options = VectorWriteOptions { driver, ..Default::default() };
                 options.tiles.min_zoom = o.minzoom;
                 options.tiles.max_zoom = o.maxzoom;
+                options.kmz.resources = resources;
                 terrio::memory::write_vector_bytes(&out, filename, &options).map_err(js_err)
             }
         }

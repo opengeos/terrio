@@ -22,6 +22,7 @@ nav = [
   { "Formats" = "formats.md" },
   { "Multidimensional Arrays" = "multidim.md" },
   { "Point Clouds" = "point-clouds.md" },
+  { "HEC-RAS" = "hecras.md" },
   { "Remote Data" = "remote-data.md" },
   { "Coordinate Systems" = "crs.md" },
   { "Coming from GDAL" = "gdal.md" },

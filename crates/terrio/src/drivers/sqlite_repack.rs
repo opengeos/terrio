@@ -261,6 +261,10 @@ impl<'a> Source<'a> {
     }
 }
 
+fn extra_capacity(capacity: usize) -> usize {
+    (capacity / 4).max(1 << 24)
+}
+
 struct Output {
     data: Vec<u8>,
     size: usize,
@@ -297,9 +301,10 @@ impl PageStore for Output {
             let page = u32::try_from(self.data.len() / self.size + 1).map_err(|_| bad("too many output pages"))?;
             if self.data.len() + self.size > self.data.capacity() {
                 // Initial capacity equals the input image size. If repacking
-                // outgrows it, bound extra capacity instead of doubling a GiB
-                // buffer; allocators without in-place growth may copy here.
-                self.data.reserve_exact(1 << 24);
+                // outgrows it, grow by a quarter of the buffer: extra capacity
+                // stays bounded instead of doubling a GiB buffer, and copies on
+                // allocators without in-place growth stay amortized.
+                self.data.reserve_exact(extra_capacity(self.data.capacity()));
             }
             self.data.resize(self.data.len() + self.size, 0);
             if !self.special(page) {
@@ -406,8 +411,7 @@ pub(crate) fn compact(bytes: &[u8]) -> Result<Vec<u8>> {
             return Err(bad("freelist trunk is too long"));
         }
         for i in 0..leaves {
-            let leaf = be(page, 8 + i * 4)?;
-            source.claim(leaf)?;
+            source.claim(be(page, 8 + i * 4)?)?;
             free = free.checked_add(1).ok_or_else(|| bad("freelist count overflow"))?;
         }
         trunk = be(page, 0)?;
@@ -428,7 +432,8 @@ pub(crate) fn compact(bytes: &[u8]) -> Result<Vec<u8>> {
     let header = &mut output.data[..size];
     header[28..32].copy_from_slice(&n.to_be_bytes());
     header[32..40].fill(0);
-    let counter = be(bytes, 24)?.wrapping_add(1);
+    // The commit bumps the change counter once, as it does for in-place changes.
+    let counter = be(bytes, 24)?;
     header[24..28].copy_from_slice(&counter.to_be_bytes());
     header[92..96].copy_from_slice(&counter.to_be_bytes());
     header[40..44].copy_from_slice(&be(bytes, 40)?.wrapping_add(1).to_be_bytes());
@@ -925,5 +930,23 @@ with sqlite3.connect(sys.argv[1]) as a, sqlite3.connect(sys.argv[2]) as b:
         odd[1] += 1;
         assert!(decode_record(&odd, 2).is_err());
         assert!(decode_record(&odd, 1).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod growth_tests {
+    #[test]
+    fn large_output_growth_is_amortized() {
+        for initial in [128usize << 20, 1usize << 30] {
+            let target = initial * 2;
+            let mut capacity = initial;
+            let mut reserves = 0;
+            while capacity < target {
+                capacity += super::extra_capacity(capacity);
+                reserves += 1;
+            }
+            assert!(reserves <= 4, "doubling capacity required {reserves} reserves");
+            assert!(capacity <= target + target / 4, "over-allocation exceeds one quarter");
+        }
     }
 }

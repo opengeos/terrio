@@ -26,6 +26,7 @@
 //! archive and ordinary sources. Same-device directory renames do not walk the tree and
 //! report zero copied files/bytes, since no file payloads were copied.
 
+pub(crate) mod dataset;
 pub(crate) mod listing;
 pub(crate) mod md5;
 pub(crate) mod zipdir;
@@ -184,7 +185,7 @@ pub struct Report {
 }
 
 /// The kind of an archive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ArchiveKind {
     Zip,
     Tar,
@@ -192,7 +193,7 @@ enum ArchiveKind {
 }
 
 /// A location, parsed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Node {
     Local(PathBuf),
     /// A `/vsimem/` path, without a trailing slash.
@@ -2167,6 +2168,11 @@ fn check_copy_move_source(node: &Node) -> Result<()> {
 /// fallbacks refuse symbolic links and non-UTF-8 names they cannot faithfully preserve.
 /// Sources must not be changed concurrently during a copy-delete move.
 pub fn rename(src: &str, dst: &str) -> Result<Report> {
+    rename_counted(src, dst, true)
+}
+
+// Dataset operations account for bytes copied, rather than the logical bytes moved by VSI.
+fn rename_counted(src: &str, dst: &str, count_native_bytes: bool) -> Result<Report> {
     let _cache = OperationScope::new();
     let src_node = Node::parse(src)?;
     let dst_node = Node::parse(dst)?;
@@ -2214,7 +2220,7 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
             Ok(()) => {
                 return Ok(Report {
                     copied: u64::from(!stat.dir),
-                    bytes: if stat.dir { 0 } else { stat.size.unwrap_or(0) },
+                    bytes: if stat.dir || !count_native_bytes { 0 } else { stat.size.unwrap_or(0) },
                     ..Default::default()
                 });
             }
@@ -2228,7 +2234,7 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
     {
         // Re-keyed in place, not copied.
         let bytes = crate::memfs::rename(Path::new(a), Path::new(b))?;
-        return Ok(Report { copied: 1, bytes, ..Default::default() });
+        return Ok(Report { copied: 1, bytes: if count_native_bytes { bytes } else { 0 }, ..Default::default() });
     }
     // Copy, then delete what was copied. Local rename above preserves native links/names;
     // the fallback must reject anything its portable copy cannot faithfully represent.

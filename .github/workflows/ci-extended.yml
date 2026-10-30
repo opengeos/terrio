@@ -1,10 +1,12 @@
 name: CI (npm and conformance)
 
-# The two slowest Linux jobs, about half an hour each: the npm package as the release builds it,
-# and the comparison scripts with GDAL, laspy and PDAL. They run on every push to main and, for
-# pull requests, on demand only, by hand (Actions > CI (npm and conformance) > Run workflow) or
-# with the label ci:npm, ci:conformance or ci:all (when the label is added, and on each push while
-# it stays). ci.yml's wasm job builds and tests the Node.js package on every pull request.
+# The slowest Linux jobs: the npm package as the release builds it and the comparison scripts with
+# GDAL, laspy and PDAL (about half an hour each), and the HEC-RAS files of a public corpus compared
+# with h5py. They run on every push to main and, for pull requests, on demand only, by hand
+# (Actions > CI (npm and conformance) > Run workflow) or with the label ci:npm, ci:conformance,
+# ci:hecras or ci:all (when the label is added, and on each push while it stays). ci.yml's wasm job
+# builds and tests the Node.js package on every pull request, and its test jobs run the HECRAS
+# driver's tests on synthetic files.
 on:
   push:
     branches: [main]
@@ -15,7 +17,7 @@ on:
       jobs:
         description: "Jobs to run"
         type: choice
-        options: [all, npm, conformance]
+        options: [all, npm, conformance, hecras]
         default: all
 
 permissions:
@@ -33,6 +35,7 @@ jobs:
     outputs:
       npm: ${{ steps.pick.outputs.npm }}
       conformance: ${{ steps.pick.outputs.conformance }}
+      hecras: ${{ steps.pick.outputs.hecras }}
     steps:
       - id: pick
         env:
@@ -54,7 +57,7 @@ jobs:
               echo "$LABELS" | jq -e --arg l "ci:$1" 'index($l) != null or index("ci:all") != null' > /dev/null
             fi
           }
-          for job in npm conformance; do
+          for job in npm conformance hecras; do
             if want "$job"; then echo "$job=true"; else echo "$job=false"; fi >> "$GITHUB_OUTPUT"
           done
           cat "$GITHUB_OUTPUT"
@@ -198,3 +201,53 @@ jobs:
           path: |
             conformance.md
             conformance.json
+
+  # HEC-RAS files compared with h5py (scripts/compare_hecras_with_h5py.py): the HEC-RAS 7.0.1
+  # files of the public golden corpus gpt-cmdr/ras-hdf-test-corpus. Its `smoke` profile (about
+  # 24 MB compressed) is fetched at a pinned release tag, its archive checked against the
+  # release's SHA256SUMS and every file against the release manifest, and cached by tag. The
+  # fetch script is taken from the tag's commit and checked against its hash before it runs,
+  # and the manifest against its hash at that release, so a moved tag or a replaced release
+  # asset fails the job.
+  hecras:
+    name: HEC-RAS 7.0.1 corpus vs h5py
+    needs: pick
+    if: needs.pick.outputs.hecras == 'true'
+    concurrency:
+      group: ci-extended-hecras-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    env:
+      CORPUS_REPO: gpt-cmdr/ras-hdf-test-corpus
+      CORPUS_TAG: v1.0.1
+      CORPUS_COMMIT: 6be647713da1abc9af72a56fc42c630a6a54f1e2 # v1.0.1
+      FETCH_SHA256: 2ffd5f820e10631d95af39e6bfc8f6f56ed72d3c9214bc44d8e1d29310d7d197
+      MANIFEST_SHA256: f3be980317bf514babf4fd2f3a15986898a38a6d90657f869e55c909517f622a
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install h5py numpy
+      - uses: actions/cache@v6
+        with:
+          path: .hecras-corpus
+          key: hecras-corpus-smoke-${{ env.CORPUS_TAG }}
+      - name: Fetch the HEC-RAS corpus (smoke) and verify its hashes
+        run: |
+          curl -fsSL -o fetch_corpus.py "https://raw.githubusercontent.com/$CORPUS_REPO/$CORPUS_COMMIT/scripts/fetch_corpus.py"
+          echo "$FETCH_SHA256  fetch_corpus.py" | sha256sum -c -
+          python fetch_corpus.py --repo "$CORPUS_REPO" --tag "$CORPUS_TAG" --profile smoke --dest .hecras-corpus
+          echo "$MANIFEST_SHA256  .hecras-corpus/manifest.json" | sha256sum -c -
+      - name: Compare the corpus with h5py
+        run: |
+          set -o pipefail
+          python scripts/compare_hecras_with_h5py.py .hecras-corpus/fixtures --version 7.0.1 | tee hecras.txt
+      - name: Publish the HEC-RAS comparison summary
+        if: always()
+        run: |
+          if [ -f hecras.txt ]; then
+            { echo '```'; cat hecras.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi

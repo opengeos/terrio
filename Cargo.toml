@@ -59,8 +59,15 @@ weezl = "0.2"
 png = "0.18"
 lz4_flex = { version = "0.14", default-features = false, features = ["alloc", "safe-decode", "checked-decode"] }
 ruzstd = "0.9"
-netcdf-reader = { version = "0.9", default-features = false, features = ["netcdf4"] }
-hdf5-reader = { version = "0.9", default-features = false }
+# 0.10 reads HDF5 files written in the earliest format with version 1/2 compound datatypes
+# (every HEC-RAS geometry and plan file, among others) and old fill value messages
+# (roteiro-gis/netcdf-rust#95). The HEC-RAS engine uses the same hdf5-reader 0.10.1, so a build
+# compiles one HDF5 reader.
+netcdf-reader = { version = "0.10.1", default-features = false, features = ["netcdf4"] }
+hdf5-reader = { version = "0.10.1", default-features = false }
+# HEC-RAS geometry and plan HDF files (the `hecras` feature): the read-only engine behind
+# ras-commander. It owns every HEC-RAS rule; terrio's driver only translates its values.
+ras-commander-fast-hdf = { version = "0.2.4", default-features = false, features = ["hdf", "mesh", "results"] }
 # The portable decoder: the same pixels on every platform, closer to libjpeg's than its SIMD paths.
 jpeg-decoder = { version = "0.3", default-features = false, features = ["platform_independent"] }
 # GeoPackage JPEG tiles; the version wbraster already uses.
@@ -91,6 +98,7 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
+same-file = "1.0.6"
 tar = { version = "0.4", default-features = false }
 # POSIX file locks for in-place SQLite updates (Unix).
 libc = "0.2"
@@ -168,14 +176,3 @@ laz = { opt-level = 3 }
 rusty_av1d = { opt-level = 3 }
 image-webp = { opt-level = 3 }
 lz4_flex = { opt-level = 3 }
-
-# HDF5 files written in the earliest format with version 1/2 compound datatypes (every HEC-RAS
-# geometry and plan file, among others) fail in hdf5-reader 0.9.1, and old fill value messages
-# read wrong. Fixed in roteiro-gis/netcdf-rust#95; until a release carries it, build against that
-# branch. All four crates come from the same commit so their shared types agree. (`cargo publish`
-# ignores this section: a published terrio uses the crates.io release.)
-[patch.crates-io]
-hdf5-core = { git = "https://github.com/gpt-cmdr/netcdf-rust", rev = "24ff6fcfcc79a35c30aa5d8cb3028ab4d9d00564" }
-hdf5-reader = { git = "https://github.com/gpt-cmdr/netcdf-rust", rev = "24ff6fcfcc79a35c30aa5d8cb3028ab4d9d00564" }
-netcdf-core = { git = "https://github.com/gpt-cmdr/netcdf-rust", rev = "24ff6fcfcc79a35c30aa5d8cb3028ab4d9d00564" }
-netcdf-reader = { git = "https://github.com/gpt-cmdr/netcdf-rust", rev = "24ff6fcfcc79a35c30aa5d8cb3028ab4d9d00564" }

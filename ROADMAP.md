@@ -86,6 +86,11 @@ commands. Command-group progress:
       Landed in [#374](https://github.com/opengeos/terrio/pull/374), with real-data
       conformance and measured remote header/full-check I/O.
 
+- [ ] Multidimensional mosaics: lazy coordinate-aligned numeric arrays across
+      Rust, CLI/MCP, Python and JavaScript, with netCDF/Zarr output and real
+      NOAA wind comparisons registered as `mdmosaic`. Proposed in
+      [#373](https://github.com/opengeos/terrio/pull/373), pending review and merge.
+
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
       [#306](https://github.com/opengeos/terrio/pull/306), through Rust, CLI/MCP, Python and
@@ -104,6 +109,17 @@ commands. Command-group progress:
       discovery and explicit companion-file reader fallback through Rust, CLI/MCP, Python and
       JavaScript. Landed in [#375](https://github.com/opengeos/terrio/pull/375);
       real-data GDAL comparisons are registered as `identify`.
+
+- [x] Dataset file management: encoded copies, renames and deletion of owned companions,
+      with staged replacement and source alias protection through Rust, CLI/MCP, Python and
+      WebAssembly. Landed in [#382](https://github.com/opengeos/terrio/pull/382);
+      real Landsat and Natural Earth comparisons are registered as `dataset-files`.
+
+- [x] Parquet metadata aggregation: explicit compatible partitions, relative column paths,
+      merged GeoParquet metadata and overwrite guards through Rust, CLI/MCP, Python and
+      JavaScript. Landed in [#382](https://github.com/opengeos/terrio/pull/382), including
+      [#383](https://github.com/opengeos/terrio/pull/383); real-data
+      and measured S3 range-read comparisons are registered as `parquet-metadata`.
 
 - [x] Dataset content checks: all exposed raster bands, vector layers, numeric scientific
       arrays and point records, with optional raster overviews and masks. Rust, CLI/MCP,
@@ -443,6 +459,21 @@ WebAssembly (the `terrio-js` npm package):
 
 ## Later
 
+- [x] HEC-RAS geometry and plan HDF files as vector layers (the `HECRAS` driver, `hecras` feature).
+      Done: the 2D mesh cells, cell centres, faces and perimeters, the 1D cross
+      sections, rivers, structures and storage areas, boundary-condition lines, reference lines and
+      points, through the `ras-commander-fast-hdf` engine, with the stored results joined by open
+      options (summaries, static mesh arrays, time-step values, series extremes, cross-section,
+      structure, boundary and reference series); the stored projection text as the CRS, never a
+      guessed EPSG code; refusals as errors. Recognized by content, so HDF5 rasters are unchanged.
+      CLI (`info --oo`, `convert --oo`), MCP, Python (`options=`) and JavaScript (`openVector`,
+      in memory). Tested on HEC-RAS 7.0.1 files against h5py, bit for bit
+      (`scripts/compare_hecras_with_h5py.py`, the `hecras` conformance suite); older versions best
+      effort.
+- [ ] HEC-RAS files read in place over HTTP and S3 by range requests: needs an engine byte-source
+      interface (plan the ranges from the HDF5 metadata, fetch them, then decode, as
+      `sparse::SparseFile` reads).
+- [x] One HDF5 reader for terrio and the HEC-RAS engine: both on crates.io `hdf5-reader` 0.10.1.
 - [x] CRS: datum shift grids (NTv2, GeoTIFF grids), vertical datums, time-dependent transformations
       between dynamic datums (coordinate epochs). Done: PROJ's GeoTIFF grids (PROJ-data), NTv2 and GTX
       read in pure Rust and interpolated as PROJ does (`hgridshift`, `vgridshift`, NADCON5's

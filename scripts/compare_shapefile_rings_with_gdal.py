@@ -6,11 +6,17 @@ it in ``organizePolygons``, for records of several parts; GDAL 3.12 keeps it as 
 is a synthetic Shapefile written by OGR, which stores the rings as given (checked in the
 ``.shp``), read by OGR and converted by terrio to GeoPackage. With GDAL 3.12, terrio is compared
 with GDAL 3.13.1's reading, frozen below. Identical: the same ISO WKB bytes. Within tolerance:
-geometries equal under GEOS, both valid, but rings in another direction or from another start.
+geometries equal under GEOS, both valid, but rings in another direction or from another start
+(polygon by polygon for SKIP, whose polygons may overlap).
+
+With GDAL 3.13 or later, each record is also read with ``OGR_ORGANIZE_POLYGONS`` set to
+``DEFAULT``, ``CCW_INNER_JUST_AFTER_CW_OUTER`` and ``SKIP``, which GDAL splits the rings for as
+well. The cases in ``KNOWN`` are reported as not compared.
 """
 
 import argparse
 import json
+import os
 import struct
 import subprocess
 import tempfile
@@ -73,6 +79,19 @@ CASES = [
      "POLYGON ((0 0,0 10,10 10,10 0,5 0,0 0),(2 6,3 6,3 7,2 7,2 6),(6 2,6 4,5 5,4 4,4 2,5 0,6 2))"),
 ]
 
+# The methods compared besides the default, ONLY_CCW, with GDAL 3.13 or later.
+METHODS = ["DEFAULT", "CCW_INNER_JUST_AFTER_CW_OUTER", "SKIP"]
+
+# (method, case) pairs terrio reads differently, and why.
+CCW_INNER_AREAS = ("GDAL switches from CCW_INNER_JUST_AFTER_CW_OUTER to DEFAULT when it splits a ring, "
+                   "with no area for the rings before it, which then enclose no other ring; "
+                   "terrio organizes them as for ONLY_CCW")
+KNOWN = {
+    ("CCW_INNER_JUST_AFTER_CW_OUTER", "hole part enclosing an island"): CCW_INNER_AREAS,
+    ("CCW_INNER_JUST_AFTER_CW_OUTER", "stored hole touching the exterior, first vertex repeated"):
+        CCW_INNER_AREAS + "; GDAL also takes a repeated first vertex for a self-touching ring",
+}
+
 
 def write(path, polygons):
     """Writes one feature of the given polygons to a Shapefile and returns the rings as stored."""
@@ -106,24 +125,41 @@ def read(path):
     return feature.GetGeometryRef().Clone()
 
 
-def compare(terrio, directory, name, polygons, frozen, live):
+def geos_equal(a, b):
+    """Whether two valid geometries are equal under GEOS: an empty symmetric difference."""
+    return a.IsValid() and b.IsValid() and a.SymDifference(b).IsEmpty()
+
+
+def parts(g):
+    """The polygons of a geometry."""
+    return [g.GetGeometryRef(i) for i in range(g.GetGeometryCount())] if g.GetGeometryType() == ogr.wkbMultiPolygon else [g]
+
+
+def compare(terrio, directory, name, polygons, frozen, live, method=None):
     path = directory / (name.replace(" ", "_").replace(",", "") + ".shp")
     stored = write(path, polygons)
     given = [[(float(x), float(y)) for x, y in ring + [ring[0]]] for rings in polygons for ring in rings]
     if stored != given:
         raise RuntimeError("OGR did not store the rings as given")
     output = path.with_suffix(".gpkg")
-    result = subprocess.run([terrio, "convert", str(path), str(output)], capture_output=True, text=True)
+    command = [terrio, "convert", str(path), str(output)] + (["--oo", f"ORGANIZE_POLYGONS={method}"] if method else [])
+    result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(f"terrio convert failed: {result.stderr.strip()}")
-    reference = read(path) if live else ogr.CreateGeometryFromWkt(frozen)
+    gdal.SetConfigOption("OGR_ORGANIZE_POLYGONS", method)
+    try:
+        reference = read(path) if live else ogr.CreateGeometryFromWkt(frozen)
+    finally:
+        gdal.SetConfigOption("OGR_ORGANIZE_POLYGONS", None)
     actual = read(output)
     against = "" if live else "GDAL 3.13.1's reading (frozen); "
     if bytes(actual.ExportToIsoWkb()) == bytes(reference.ExportToIsoWkb()):
         return "identical", against.rstrip("; ")
-    # OGR's Equals compares the structure; an empty symmetric difference is GEOS's equality.
-    if reference.IsValid() and actual.IsValid() and reference.SymDifference(actual).IsEmpty():
+    # OGR's Equals compares the structure; GEOS's equality ignores ring direction and start.
+    if geos_equal(reference, actual):
         return "within tolerance", f"{against}equal under GEOS, both valid; rings in another direction or from another start"
+    if method == "SKIP" and len(parts(reference)) == len(parts(actual)) and all(map(geos_equal, parts(reference), parts(actual))):
+        return "within tolerance", "polygon by polygon equal under GEOS, each valid; rings in another direction or from another start"
     return "differs", f"{against}GDAL {reference.ExportToWkt()}; terrio {actual.ExportToWkt()}"
 
 
@@ -133,18 +169,28 @@ def main():
     parser.add_argument("--terrio", default=str(ROOT / "target/release/terrio"))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    # Each run picks its method itself: an inherited one would change terrio's default or GDAL's.
+    for name in ("OGR_ORGANIZE_POLYGONS", "TERRIO_ORGANIZE_POLYGONS"):
+        os.environ.pop(name, None)
     ogr.UseExceptions()
     # GDAL warns about the wrongly wound rings of some cases; they are part of the comparison.
     gdal.PushErrorHandler("CPLQuietErrorHandler")
     live = int(gdal.VersionInfo("VERSION_NUM")) >= 3130000
     results = []
-    with tempfile.TemporaryDirectory(prefix="terrio-shapefile-rings-") as tmp:
-        for name, polygons, frozen in CASES:
+    runs = [(None, name, polygons, frozen) for name, polygons, frozen in CASES]
+    if live:
+        runs += [(method, name, polygons, None) for method in METHODS for name, polygons, _ in CASES]
+    for method, name, polygons, frozen in runs:
+        label = f"{name}, {method}" if method else name
+        if (method, name) in KNOWN:
+            results.append({"name": label, "status": "not compared", "detail": f"known difference: {KNOWN[method, name]}"})
+            continue
+        with tempfile.TemporaryDirectory(prefix="terrio-shapefile-rings-") as tmp:
             try:
-                status, detail = compare(args.terrio, Path(tmp), name, polygons, frozen, live)
+                status, detail = compare(args.terrio, Path(tmp), name, polygons, frozen, live, method)
             except Exception as error:
                 status, detail = "differs", repr(error)
-            results.append({"name": name, "status": status, "detail": detail})
+        results.append({"name": label, "status": status, "detail": detail})
     print(json.dumps(results, indent=2) if args.json else "\n".join(f"{r['name']}: {r['status']} {r['detail']}" for r in results))
     return int(any(r["status"] == "differs" for r in results))
 

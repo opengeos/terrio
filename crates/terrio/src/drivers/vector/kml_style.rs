@@ -185,55 +185,69 @@ fn value_num(v: &str) -> Option<f64> {
 }
 
 /// The KML of a style: the body of a `<Style>` element (its sub-styles), empty when the string
-/// sets nothing KML can hold.
+/// sets nothing KML can hold. The OGR null brush (`BRUSH(id:"ogr-brush-1")`) and null pen
+/// (`PEN(id:"ogr-pen-1")`) are written as PolyStyle `<fill>0</fill>` and `<outline>0</outline>`.
 pub fn to_kml(style: &str) -> String {
     let mut s = String::new();
     let get = |p: &[(String, String)], k: &str| p.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
-    for (tool, p) in tools(style) {
+    let tools = tools(style);
+    let null = |name: &str, id: &str| tools.iter().any(|(t, p)| t == name && get(p, "id").as_deref() == Some(id));
+    let (null_pen, has_brush) = (null("PEN", "ogr-pen-1"), tools.iter().any(|(t, _)| t == "BRUSH"));
+    for (tool, p) in &tools {
+        let p = p.as_slice();
         match tool.as_str() {
             "SYMBOL" => {
                 s.push_str("<IconStyle>");
-                if let Some(c) = get(&p, "c").and_then(|c| kml_color(&c)) {
+                if let Some(c) = get(p, "c").and_then(|c| kml_color(&c)) {
                     let _ = write!(s, "<color>{c}</color>");
                 }
-                if let Some(v) = get(&p, "s").and_then(|v| value_num(&v)) {
+                if let Some(v) = get(p, "s").and_then(|v| value_num(&v)) {
                     let _ = write!(s, "<scale>{v}</scale>");
                 }
-                if let Some(v) = get(&p, "a").and_then(|v| value_num(&v)) {
+                if let Some(v) = get(p, "a").and_then(|v| value_num(&v)) {
                     let _ = write!(s, "<heading>{v}</heading>");
                 }
-                if let Some(id) = get(&p, "id").filter(|id| !id.starts_with("ogr-sym-")) {
+                if let Some(id) = get(p, "id").filter(|id| !id.starts_with("ogr-sym-")) {
                     let _ = write!(s, "<Icon><href>{}</href></Icon>", xml::escape(&id));
                 }
-                if let (Some(x), Some(y)) = (get(&p, "dx").and_then(|v| value_num(&v)), get(&p, "dy").and_then(|v| value_num(&v))) {
+                if let (Some(x), Some(y)) = (get(p, "dx").and_then(|v| value_num(&v)), get(p, "dy").and_then(|v| value_num(&v))) {
                     let _ = write!(s, "<hotSpot x=\"{x}\" y=\"{y}\" xunits=\"fraction\" yunits=\"fraction\"/>");
                 }
                 s.push_str("</IconStyle>");
             }
             "LABEL" => {
                 s.push_str("<LabelStyle>");
-                if let Some(c) = get(&p, "c").and_then(|c| kml_color(&c)) {
+                if let Some(c) = get(p, "c").and_then(|c| kml_color(&c)) {
                     let _ = write!(s, "<color>{c}</color>");
                 }
-                if let Some(v) = get(&p, "w").and_then(|v| value_num(&v)) {
+                if let Some(v) = get(p, "w").and_then(|v| value_num(&v)) {
                     let _ = write!(s, "<scale>{}</scale>", v / 100.0);
                 }
                 s.push_str("</LabelStyle>");
             }
             "PEN" => {
                 s.push_str("<LineStyle>");
-                if let Some(c) = get(&p, "c").and_then(|c| kml_color(&c)) {
+                if let Some(c) = get(p, "c").and_then(|c| kml_color(&c)) {
                     let _ = write!(s, "<color>{c}</color>");
                 }
-                if let Some(v) = get(&p, "w").and_then(|v| value_num(&v)) {
+                if let Some(v) = get(p, "w").and_then(|v| value_num(&v)) {
                     let _ = write!(s, "<width>{v}</width>");
                 }
                 s.push_str("</LineStyle>");
+                if null_pen && !has_brush {
+                    s.push_str("<PolyStyle><outline>0</outline></PolyStyle>");
+                }
             }
             "BRUSH" => {
                 s.push_str("<PolyStyle>");
-                if let Some(c) = get(&p, "fc").and_then(|c| kml_color(&c)) {
+                if let Some(c) = get(p, "fc").and_then(|c| kml_color(&c)) {
                     let _ = write!(s, "<color>{c}</color>");
+                }
+                if get(p, "id").as_deref() == Some("ogr-brush-1") {
+                    s.push_str("<fill>0</fill>");
+                }
+                if null_pen {
+                    s.push_str("<outline>0</outline>");
                 }
                 s.push_str("</PolyStyle>");
             }
@@ -279,5 +293,36 @@ mod tests {
         assert_eq!(from_kml(&back).as_deref(), get("s1"));
         let back = xml::parse(&format!("<Style>{}</Style>", to_kml(get("s2").unwrap()))).unwrap();
         assert_eq!(from_kml(&back).as_deref(), get("s2"));
+    }
+
+    #[test]
+    fn null_brush_and_pen_turn_fill_and_outline_off() {
+        let body = to_kml(r#"PEN(c:#FF0000FF,w:2px,id:"ogr-pen-1");BRUSH(fc:#00FF007F,id:"ogr-brush-1")"#);
+        let style = xml::parse(&format!("<Style>{body}</Style>")).unwrap();
+        let poly = style.child("PolyStyle").unwrap();
+        assert_eq!(
+            (poly.child_text("color"), poly.child_text("fill"), poly.child_text("outline")),
+            (Some("7f00ff00"), Some("0"), Some("0"))
+        );
+        assert_eq!(style.child("LineStyle").unwrap().child_text("width"), Some("2"));
+        // A null pen alone still turns a polygon's outline off.
+        assert!(to_kml(r#"PEN(id:"ogr-pen-1")"#).ends_with("<PolyStyle><outline>0</outline></PolyStyle>"));
+        // A null brush beside an ordinary pen turns only the fill off; a null pen beside an
+        // ordinary brush, only the outline.
+        for (ogr, fill, outline) in [
+            (r#"PEN(c:#FF0000FF);BRUSH(fc:#00FF007F,id:"ogr-brush-1")"#, Some("0"), None),
+            (r#"PEN(id:"ogr-pen-1");BRUSH(fc:#00FF007F)"#, None, Some("0")),
+        ] {
+            let style = xml::parse(&format!("<Style>{}</Style>", to_kml(ogr))).unwrap();
+            let poly = style.child("PolyStyle").unwrap();
+            assert_eq!(
+                (poly.child_text("color"), poly.child_text("fill"), poly.child_text("outline")),
+                (Some("7f00ff00"), fill, outline),
+                "{ogr}"
+            );
+        }
+        // Other brushes and pens write neither flag.
+        let plain = to_kml("PEN(c:#FF0000FF);BRUSH(fc:#00FF007F)");
+        assert!(!plain.contains("<fill>") && !plain.contains("<outline>"), "{plain}");
     }
 }

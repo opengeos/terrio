@@ -172,6 +172,13 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
     ds = terrio.open_vector(gpkg, layers=names)
     inside = terrio.open_vector(gpkg, bbox=(0.0, 0.0, 5.0, 5.0))
     print(len(inside[0]))
+    # Driver open options by their GDAL names (CSV, tile archives, HECRAS).
+    csv = tmp / "places.csv"
+    csv.write_text("name,lon,lat\nwest,1.5,2.5\n")
+    csv_options = {"X_POSSIBLE_NAMES": "lon", "Y_POSSIBLE_NAMES": "lat"}
+    opened = terrio.open_vector(str(csv), options=csv_options)
+    summary: dict[str, Any] = terrio.info(str(csv), options=csv_options)
+    print(len(opened), summary["driver"])
     print(ds.driver, ds.layer_names, len(ds), repr(ds))
     first: terrio.Layer = ds[0]
     by_name: terrio.Layer = ds["parcels"]

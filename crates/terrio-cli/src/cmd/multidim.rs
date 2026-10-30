@@ -45,6 +45,22 @@ pub struct ConvertArgs {
     /// New .nc (netCDF-4) file or .zarr (Zarr v2) store; must not exist.
     output: String,
 }
+#[derive(clap::Args)]
+pub struct MosaicArgs {
+    /// Input netCDF/HDF5 files or Zarr stores, in priority order (last wins).
+    #[arg(required = true, num_args = 1..)]
+    inputs: Vec<String>,
+    /// New .nc file or .zarr store; must not exist.
+    output: String,
+    /// Array name or full path to mosaic; repeat to select several arrays.
+    #[arg(long = "array")]
+    arrays: Vec<String>,
+}
+pub fn mosaic(args: MosaicArgs) -> Result<()> {
+    let datasets = args.inputs.iter().map(|p| multidim::open(p)).collect::<Result<Vec<_>>>()?;
+    multidim::mosaic(&datasets, &multidim::MosaicOptions { arrays: args.arrays })?.write(&args.output)
+}
+
 fn invalid(message: impl std::fmt::Display) -> Error {
     Error::InvalidArgument(format!("multidim: {message}"))
 }

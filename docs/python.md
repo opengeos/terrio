@@ -80,6 +80,20 @@ terrio.write_vector(layer, "world.gpkg", append=True)
 terrio.convert("more.shp", "world.gpkg", layer_name="countries", overwrite=True)
 ```
 
+Driver open options go in `options`, by their GDAL names, as `terrio convert --oo` takes them.
+HEC-RAS geometry and plan HDF files (the package is built with the `hecras` feature) read as
+vector layers this way, with the results HEC-RAS stored joined by open options
+(see [HEC-RAS](hecras.md)):
+
+```python
+plan = terrio.open_vector(
+    "BaldEagleDamBrk.p03.hdf",
+    layers=["mesh_cells", "cross_sections"],
+    options={"CELL_SUMMARIES": "Maximum Water Surface", "XS_RESULTS": "Water Surface", "TIME_STEP": "12"},
+)
+terrio.info("BaldEagleDamBrk.p03.hdf", layers=["mesh_cells"], options={"CELL_ATTRIBUTES": "MINIMUM_ELEVATION"})
+```
+
 The file is changed in place, as SQLite changes it: only the pages that change are written (new
 rows, R-tree nodes, the tables describing the layer), in a transaction protected by a rollback
 journal, so appending to a large GeoPackage costs about as much as the features appended, and a
@@ -551,11 +565,43 @@ blocks need not be checked once the file is already invalid.
 The GDAL profile limits total parsed GDAL metadata to 4 MiB per file and XML nesting
 to 128 levels. The default rio-cogeo profile ignores this metadata tag.
 
+### GeoPackage maintenance
+
 `gpkg_repack(path)` compacts a native or `/vsimem/` GeoPackage in place and returns
 `bytes_before`, `bytes_after`, `page_size`, `pages_before` and `pages_after`.
 `gpkg_repack_bytes(data)` returns a compacted `bytes` copy of a self-contained GeoPackage,
 leaving the input unchanged. Both preserve encoded table/index records and schema SQL.
 See [supported scope and storage safety](cli.md#geopackage-repacking).
+
+### Multidimensional mosaics
+
+`terrio.mosaic_multidim(sources, dst=None, *, arrays=None)` builds a lazy
+coordinate-aligned mosaic. Each source can be a `MultidimDataset`, a scientific
+path/bytes, or a Zarr key/value dictionary. Read coordinate-aligned views through
+`output.array(name)`, or write a new netCDF/Zarr snapshot with `dst` or `write`.
+Source handles stay alive through the mosaic. See
+[Multidimensional mosaics](cli.md#multidimensional-mosaics) for alignment,
+priority, type preservation and supported scope.
+
+## Dataset file management
+
+`terrio.dataset_files(path, *, format=None)` returns the driver, owned files and a
+`directory` flag. `dataset_copy(source, destination, *, format=None, overwrite=False, allow_external_references=False)`
+and `dataset_rename(source, destination, *, format=None, overwrite=False, allow_external_references=False)` manage the complete file set and return affected paths
+and copied bytes. Paths may be strings or `os.PathLike` values, including VSI paths.
+`dataset_delete(path_or_iterable, *, format=None)` preflights all inputs and returns a
+list of reports. VRT references stay in the source directory tree by default;
+`allow_external_references=True` permits trusted external assets. Deleting a VRT
+preserves referenced rasters. Reports include `recovery_files`: a nonempty list
+means the operation committed but cleanup left staged files. I/O releases the GIL.
+See the CLI file-management section for staging, rollback, overwrite and format rules.
+
+`parquet_create_metadata(inputs, output, *, overwrite=False)` accepts a sequence of string
+or pathlib partition paths and returns a dictionary containing `files`, `row_groups`,
+`rows`, `bytes` and `omitted_metadata_keys`. It writes a metadata-only file with relative
+partition references, merged GeoParquet bounds/types and regenerated Arrow schema metadata.
+Inputs, including referenced column files, are protected from overwrite. Schemas and CRS
+must agree; data pages are not validated. See [CLI supported scope](cli.md#parquet-metadata-files).
 
 ### Indexed color conversion
 
