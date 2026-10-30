@@ -29,3 +29,12 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # The base images in the Dockerfile, pinned by digest.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ["*"]

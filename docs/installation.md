@@ -57,7 +57,7 @@ pip install terrio      # or: uv tool install terrio, pipx install terrio
 
 A Docker image for linux/amd64 and linux/arm64 is published to the
 [GitHub Container Registry](https://github.com/opengeos/terrio/pkgs/container/terrio) with each
-release, tagged with the version (`0.6.0`, `0.6`) and `latest`. It runs as a non-root user in
+release after 0.5.0, tagged with the version (`X.Y.Z`, `X.Y`) and `latest`. It runs as a non-root user in
 `/data`, so mount your data there and pass your own user to write to it:
 
 ```sh
