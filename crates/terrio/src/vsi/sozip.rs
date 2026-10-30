@@ -13,6 +13,8 @@ use crate::{Error, Result};
 use flate2::{Compress, Compression, FlushCompress, Status};
 use serde::Serialize;
 use std::collections::HashSet;
+mod native;
+use native::NativeSnapshot;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
@@ -797,29 +799,15 @@ fn add_member<W: Write>(
     Ok((n, index.is_some()))
 }
 
-fn same_native_file(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
-    let unchanged =
-        before.len() == after.len() && before.modified().ok() == after.modified().ok() && before.created().ok() == after.created().ok();
-    #[cfg(unix)]
-    let unchanged = {
-        use std::os::unix::fs::MetadataExt;
-        unchanged
-            && (before.dev(), before.ino(), before.ctime(), before.ctime_nsec())
-                == (after.dev(), after.ino(), after.ctime(), after.ctime_nsec())
-    };
-    unchanged
-}
-
 #[derive(Clone)]
 enum AppendVersion {
-    Native(std::path::PathBuf, std::fs::Metadata),
+    Native(std::path::PathBuf, NativeSnapshot),
     Memory(std::path::PathBuf, crate::memfs::SharedBytes),
 }
 impl AppendVersion {
     fn check(&self) -> Result<()> {
         if let Self::Native(path, before) = self {
-            let after = std::fs::metadata(path)?;
-            let unchanged = same_native_file(before, &after);
+            let unchanged = before.matches_path(path)?;
             if !unchanged {
                 return Err(Error::Unsupported("archive changed while preparing an append".into()));
             }
@@ -869,7 +857,7 @@ impl Output {
                             return Err(std::io::Error::last_os_error().into());
                         }
                     }
-                    let version = AppendVersion::Native(path.clone(), file.metadata()?);
+                    let version = AppendVersion::Native(path.clone(), NativeSnapshot::capture(&file)?);
                     AppendSource { reader: Box::new(std::io::BufReader::new(file)), version }
                 }
                 Node::Mem(path) => {
@@ -1510,11 +1498,11 @@ pub(crate) fn open_member(archive: &crate::vfs::Location, member: &str) -> Resul
             }
             let source = path.clone();
             let file = std::fs::File::open(path)?;
-            let expected = file.metadata()?;
+            let expected = NativeSnapshot::capture(&file)?;
             first = Some(Box::new(std::io::BufReader::new(file)));
             let open: std::sync::Arc<ArchiveOpener> = std::sync::Arc::new(move || {
                 let file = std::fs::File::open(&source)?;
-                if !same_native_file(&expected, &file.metadata()?) {
+                if !expected.matches_file(&file)? {
                     return Err(Error::Unsupported("native ZIP archive changed since the member was opened".into()));
                 }
                 Ok(Box::new(std::io::BufReader::new(file)))
