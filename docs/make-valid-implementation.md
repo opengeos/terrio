@@ -141,6 +141,16 @@ inputs was interrupted after several CPU minutes, before a result, and is
 explicitly **incomplete**. The control message provided only process priorities
 and the fallible interface decision, with no algorithm or prohibited source.
 
+The retained kernel's `notes/design.md` reference names its original delivery
+path; that document is packaged here as
+[`docs/make-valid-clean-room/design.md`](make-valid-clean-room/design.md).
+Its complexity section states the quadratic worst case for iterative fill:
+each pass traces the current rotation, and the number of passes is bounded by
+the edge count. The source comment gives the cost **per iteration**, not the
+total. The [stress record](make-valid-clean-room/validation.md) includes 401
+iterations for crossing squares/diamonds (9.3 s) and 467 for a dense random
+ring (47.6 s). The delivered kernel and its original tests remain unchanged.
+
 ## Production validation
 
 The [production evidence](make-valid-production-validation.json) preserves exact

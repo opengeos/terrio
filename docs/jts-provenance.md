@@ -146,6 +146,19 @@ For the recorded 20-item all-equal-key probe, input IDs `0..20` are emitted as
 The `hole_seed_ties_match_the_recorded_sort_observation` regression pins this
 list; the polygon/point hull fixtures additionally check its geometric effects.
 
+Ring-endpoint simplification removes both replaced segments from the input and
+output indexes, including original leaf segments, as JTS's
+`TaggedLineStringSimplifier.simplifyRingEndpoint` specifies. The replacement
+segment remains indexed. A regression checks that a later component's shortcut
+still sees this boundary and cannot cross it.
+
+The on-edge insertion regression inserts `(4, 0)` after `(0, 0)`, `(8, 0)` and
+`(0, 8)` in an existing subdivision. Both the native port and executable JTS
+1.20 return the two non-degenerate triangles covering area 32. Native area-mesh
+extraction ignores zero-area faces; this fixture does not show the hypothesized
+gap or extra hole. It does not establish that JTS omits every possible
+collinear face.
+
 The polygon path also preserves JTS's hole-join, ear-creation and Delaunay-flip
 sequence (`triangulate/polygon/{ConstrainedDelaunayTriangulator,PolygonHoleJoiner,
 PolygonNoder,PolygonEarClipper,TriDelaunayImprover}.java`, with `Tri` and

@@ -274,6 +274,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inserting_a_site_on_an_existing_edge_keeps_the_covered_area() {
+        let mut s = Subdivision {
+            points: vec![(0., 0.), (8., 0.), (0., 8.), (4., 0.), (4., 88.), (-80., -80.), (88., -80.)],
+            input_count: 4,
+            edges: Vec::new(),
+            last: 0,
+        };
+        let a = s.make(4, 5);
+        let b = s.make(5, 6);
+        s.splice(sym(a), b);
+        let c = s.make(6, 4);
+        s.splice(sym(b), c);
+        s.splice(sym(c), a);
+        for i in 0..3 {
+            s.insert(i).unwrap();
+        }
+        let edge = s.locate(3).unwrap();
+        let (a, b) = (s.points[s.origin(edge)], s.points[s.dest(edge)]);
+        assert_ne!(s.points[3], a);
+        assert_ne!(s.points[3], b);
+        assert_eq!(orient(a, b, s.points[3]), 0);
+        s.insert(3).unwrap();
+        let faces = s.triangles().unwrap();
+        // JTS 1.20's executable returns the same two non-degenerate triangles.
+        let mut expected = vec![vec![0, 2, 3], vec![1, 2, 3]];
+        expected.sort();
+        let mut actual = faces
+            .iter()
+            .map(|f| {
+                let mut f = f.to_vec();
+                f.sort();
+                f
+            })
+            .collect::<Vec<_>>();
+        actual.sort();
+        assert_eq!(actual, expected);
+        let area = faces
+            .iter()
+            .map(|f| {
+                let (a, b, c) = (s.points[f[0]], s.points[f[1]], s.points[f[2]]);
+                ((b.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (b.1 - a.1)).abs() / 2.
+            })
+            .sum::<f64>();
+        assert_eq!(area, 32.);
+    }
+
+    #[test]
     fn underflowing_sites_return_a_bounded_reference_failure() {
         // Executable GEOS 3.14.1 also reports a locate failure here. This
         // source-compatible port does not claim exact predicates at every scale.

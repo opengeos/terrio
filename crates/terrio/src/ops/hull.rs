@@ -754,6 +754,22 @@ mod tests {
     }
 
     #[test]
+    fn empty_shell_with_a_nonempty_hole_has_an_empty_hull() {
+        let input = Geometry::Polygon {
+            exterior: Ring(Vec::new()),
+            interiors: vec![Ring([(0., 0.), (4., 0.), (4., 4.), (0., 4.)].map(|(x, y)| Coord::xy(x, y)).to_vec())],
+        };
+        for ratio in [0., 0.3, 1.] {
+            for tight in [false, true] {
+                for holes in [false, true] {
+                    let result = concave_hull_of_polygons(&input, ratio, tight, holes).unwrap();
+                    assert!(matches!(result, Geometry::Polygon { exterior, interiors } if exterior.0.is_empty() && interiors.is_empty()));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn zero_area_polygon_hulls_are_empty() {
         // GEOS 3.14.1 returns POLYGON EMPTY at both zero and nonzero extent.
         for pts in [

@@ -480,6 +480,23 @@ fn segmentize_line_forward(cs: &[Coord], max_length: f64, remaining: &mut usize)
 mod tests {
     use super::*;
 
+    #[test]
+    fn ring_endpoint_replacement_keeps_a_leaf_segment_barrier() {
+        let coords = |p: &[(f64, f64)]| p.iter().map(|&(x, y)| Coord::xy(x, y)).collect::<Vec<_>>();
+        let ring = coords(&[(0., 10.), (0., 0.), (20., 0.), (20., 20.), (0., 20.), (0., 10.)]);
+        let line = coords(&[(-2., 1.), (-1., 3.), (1., 1.)]);
+        let mut simplifier = TaggedSimplifier::new(&[(ring, true), (line, false)]);
+        let first = simplifier.original[0][0];
+        let last = *simplifier.original[0].last().unwrap();
+        assert_eq!(simplifier.line(0, 2.), [4, 1, 2, 3, 4]);
+        assert!(!simplifier.segments[first].active);
+        assert!(!simplifier.segments[last].active);
+        // The replacement covers both removed leaves, so a later component's
+        // shortcut must still see the boundary that it would cross.
+        assert!(simplifier.intersects((-2., 1.), (1., 1.), |s| s.owner == 1));
+        assert_eq!(simplifier.line(1, 2.), [0, 1, 2]);
+    }
+
     fn line(pts: &[(f64, f64)]) -> Vec<Coord> {
         pts.iter().map(|&(x, y)| Coord::xy(x, y)).collect()
     }

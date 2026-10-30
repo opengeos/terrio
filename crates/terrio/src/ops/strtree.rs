@@ -40,6 +40,17 @@ mod tests {
     }
 
     #[test]
+    fn signed_zero_x_centres_remain_tied_across_slices() {
+        let boxes = (0..24)
+            .map(|i| {
+                let x = if i < 12 { 0. } else { -0. };
+                (x, 0., x, 0.)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(leaf_order(&boxes), (0..24).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn packing_preserves_distinct_centres_near_coordinate_limits() {
         // More than one slice is essential: its X partition must be correct
         // before Y sorting, even when the unhalved centre sum overflows.
