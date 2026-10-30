@@ -273,6 +273,27 @@ impl SozipJsOptions {
     }
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct SozipOptimizeJsOptions {
+    enable: Option<String>,
+    chunk_size: Option<u32>,
+    min_file_size: Option<u64>,
+    overwrite: bool,
+}
+impl SozipOptimizeJsOptions {
+    fn options(self) -> Result<vsi::sozip::SozipOptions, JsError> {
+        SozipJsOptions {
+            enable: self.enable,
+            chunk_size: self.chunk_size,
+            min_file_size: self.min_file_size,
+            overwrite: self.overwrite,
+            ..Default::default()
+        }
+        .options()
+    }
+}
+
 /// Creates a Seek-Optimized ZIP archive in `/vsimem/` from `/vsimem/` files (or adds to it),
 /// as `gdal vsi sozip create` does. Options: `enable` (`auto`, `yes`, `no`), `chunkSize`,
 /// `minFileSize`, `overwrite`, `recursive`, `junkPaths`, `contentType`.
@@ -283,10 +304,10 @@ pub fn sozip_create(inputs: Vec<String>, output: &str, options: JsValue) -> Resu
     to_js(&vsi::sozip::create(&inputs, output, &o).map_err(js_err)?)
 }
 
-/// Rewrites a `/vsimem/` zip archive as a SOZip archive. Options as `sozipCreate`.
+/// Rewrites a `/vsimem/` zip archive as a SOZip archive. Options: `enable`, `chunkSize`, `minFileSize` and `overwrite`. Creation-only options are rejected.
 #[wasm_bindgen(js_name = sozipOptimize)]
 pub fn sozip_optimize(input: &str, output: &str, options: JsValue) -> Result<JsValue, JsError> {
-    let o = parse_options::<SozipJsOptions>(&options)?.options()?;
+    let o = parse_options::<SozipOptimizeJsOptions>(&options)?.options()?;
     to_js(&vsi::sozip::optimize(input, output, &o).map_err(js_err)?)
 }
 

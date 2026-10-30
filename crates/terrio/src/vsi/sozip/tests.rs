@@ -121,18 +121,20 @@ fn optimizes_and_detects_corruption() {
     }
     assert!(validate(&s(&plain)).unwrap().sozip_files.is_empty());
     let out = tmp.path().join("opt.zip");
-    let r = optimize(&s(&plain), &s(&out), &yes(8192)).unwrap();
+    let r = optimize(&s(&plain), &s(&out), &SozipOptions { junk_paths: false, ..yes(8192) }).unwrap();
     assert_eq!((r.added, r.seek_optimized), (2, 1));
     let v = validate(&s(&out)).unwrap();
     assert!(v.valid && v.sozip_files == ["dir/big.csv"], "{v:?}");
     assert_eq!(crate::vsi::read(&format!("/vsizip/{}/dir/big.csv", s(&out))).unwrap(), data(300_000));
-    assert!(optimize(&s(&plain), &s(&out), &yes(8192)).is_err(), "an existing output needs overwrite");
+    assert!(
+        optimize(&s(&plain), &s(&out), &SozipOptions { junk_paths: false, ..yes(8192) }).is_err(),
+        "an existing output needs overwrite"
+    );
     assert!(optimize(&s(&out), &s(&out), &SozipOptions { overwrite: true, ..yes(8192) }).is_err());
 
     // A corrupted offset in the index is reported.
     let mut bytes = fs::read(&out).unwrap();
-    let idx =
-        bytes.windows(23).position(|w| w == b".big.csv.sozip.idx\x01\x00\x00\x00" || w.starts_with(b"dir/.big.csv.sozip.idx")).unwrap();
+    let idx = bytes.windows("dir/.big.csv.sozip.idx".len()).position(|w| w == b"dir/.big.csv.sozip.idx").unwrap();
     let header = idx + "dir/.big.csv.sozip.idx".len();
     // The first offset, after the 32-byte header: point it past the data.
     bytes[header + 32..header + 40].copy_from_slice(&u64::MAX.to_le_bytes());
@@ -162,6 +164,25 @@ fn reads_geotiffs_in_seek_optimized_archives_in_place() {
     let w = lazy.read_window(crate::Window { x: 250, y: 150, width: 10, height: 5 }, &Default::default()).unwrap();
     assert_eq!(w.raster.get(0, 0, 0), 150_250.0);
     assert_eq!(w.raster.get(0, 4, 9), 154_259.0);
+    assert!(lazy.input_paths().unwrap().contains(&s(&zip)), "archive alias was omitted from input paths");
+    let output = tmp.path().join("streamed.tif");
+    lazy.write(&s(&output), &Default::default()).unwrap();
+    let mut written = crate::open_raster_lazy(&s(&output)).unwrap();
+    let window = written.read_window(crate::Window { x: 250, y: 150, width: 10, height: 5 }, &Default::default()).unwrap();
+    assert_eq!(window.raster.get(0, 4, 9), 154_259.0);
+    let options = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::GTiff), ..Default::default() };
+    let before = fs::read(&zip).unwrap();
+    assert!(lazy.write(&s(&zip), &options).is_err(), "container output paths are refused");
+    assert_eq!(fs::read(&zip).unwrap(), before);
+    #[cfg(unix)]
+    {
+        let alias = tmp.path().join("archive-alias.tif");
+        std::os::unix::fs::symlink(&zip, &alias).unwrap();
+        lazy.write(&s(&alias), &options).unwrap();
+        let mut replaced = crate::open_raster_lazy(&s(&alias)).unwrap();
+        let window = replaced.read_window(crate::Window { x: 250, y: 150, width: 10, height: 5 }, &Default::default()).unwrap();
+        assert_eq!(window.raster.get(0, 4, 9), 154_259.0);
+    }
 }
 
 #[test]
@@ -195,12 +216,12 @@ fn rejects_oversized_and_trailing_index_tables() {
         extra: Vec::new(),
         raw: Vec::new(),
     };
-    let mut header = Index { chunk_size: 1, uncompressed_size: u64::MAX, compressed_size: 10, offsets: Vec::new() }.to_bytes();
+    let mut header = Index { chunk_size: 1, uncompressed_size: u64::MAX, compressed_size: 10, offsets: Vec::new(), table: None }.to_bytes();
     assert!(Index::parse(&header, &member).is_err());
     header[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(Index::parse(&header, &member).is_err());
     let member = CdEntry { uncompressed_size: 2, ..member };
-    let index = Index { chunk_size: 1, uncompressed_size: 2, compressed_size: 10, offsets: vec![5] };
+    let index = Index { chunk_size: 1, uncompressed_size: 2, compressed_size: 10, offsets: vec![5], table: None };
     assert!(Index::parse(&index.to_bytes(), &member).is_ok());
     let mut trailing = index.to_bytes();
     trailing.push(0);
@@ -213,7 +234,7 @@ fn rejects_incomplete_or_trailing_chunk_streams() {
     let bytes = data(10_000);
     deflater.write_all(&bytes).unwrap();
     let (compressed, compressed_size, offsets, _) = deflater.finish().unwrap();
-    let index = Index { chunk_size: 4096, uncompressed_size: bytes.len() as u64, compressed_size, offsets };
+    let index = Index { chunk_size: 4096, uncompressed_size: bytes.len() as u64, compressed_size, offsets, table: None };
     let mut reader = std::io::Cursor::new(&compressed);
     assert_eq!(inflate_chunk(&mut reader, 0, &index, 0, 4096).unwrap(), bytes[..4096]);
     assert_eq!(inflate_chunk(&mut reader, 0, &index, 2, 1808).unwrap(), bytes[8192..]);
@@ -305,7 +326,7 @@ fn small_chunk_does_not_allocate_its_forged_decoded_size() {
     let mut deflater = Deflater::new(Vec::new(), None);
     deflater.write_all(b"hello").unwrap();
     let (compressed, compressed_size, _, _) = deflater.finish().unwrap();
-    let index = Index { chunk_size: u32::MAX, uncompressed_size: u32::MAX as u64, compressed_size, offsets: vec![] };
+    let index = Index { chunk_size: u32::MAX, uncompressed_size: u32::MAX as u64, compressed_size, offsets: vec![], table: None };
     assert!(inflate_chunk(&mut std::io::Cursor::new(compressed), 0, &index, 0, u32::MAX as usize - 1).is_err());
 }
 
@@ -334,9 +355,173 @@ fn chunks_larger_than_the_decode_scratch_buffer_remain_supported() {
     let mut deflater = Deflater::new(Vec::new(), Some(262_144));
     deflater.write_all(&bytes).unwrap();
     let (compressed, compressed_size, offsets, _) = deflater.finish().unwrap();
-    let index = Index { chunk_size: 262_144, uncompressed_size: bytes.len() as u64, compressed_size, offsets };
+    let index = Index { chunk_size: 262_144, uncompressed_size: bytes.len() as u64, compressed_size, offsets, table: None };
     for k in 0..index.chunks() {
         let expected = &bytes[k * 262_144..((k + 1) * 262_144).min(bytes.len())];
         assert_eq!(inflate_chunk(&mut std::io::Cursor::new(&compressed), 0, &index, k, expected.len()).unwrap(), expected);
     }
+}
+
+struct CountedReader {
+    bytes: std::io::Cursor<Vec<u8>>,
+    count: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+impl Read for CountedReader {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.bytes.read(bytes)?;
+        self.count.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(n)
+    }
+}
+impl Seek for CountedReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.bytes.seek(pos)
+    }
+}
+
+#[test]
+fn index_header_is_checked_before_fetching_a_large_claimed_table() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("data");
+    let archive = tmp.path().join("data.zip");
+    fs::write(&source, data(10_000)).unwrap();
+    create(&[&s(&source)], &s(&archive), &yes(4096)).unwrap();
+    let mut bytes = std::io::Cursor::new(fs::read(archive).unwrap());
+    let entry = zipdir::central_directory(&mut bytes).unwrap().remove(0);
+    let header = (zipdir::data_offset(&mut bytes, &entry).unwrap() + entry.compressed_size) as usize;
+    let mut bytes = bytes.into_inner();
+    let claimed = 8 * 1024 * 1024u32;
+    bytes[header + 18..header + 22].copy_from_slice(&claimed.to_le_bytes());
+    bytes[header + 22..header + 26].copy_from_slice(&claimed.to_le_bytes());
+    bytes.resize(header + 30 + index_name("data").len() + claimed as usize, 0);
+    let count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut reader = CountedReader { bytes: std::io::Cursor::new(bytes), count: count.clone() };
+    assert!(read_index(&mut reader, &entry).unwrap().is_err());
+    assert!(count.load(std::sync::atomic::Ordering::Relaxed) < 512, "index body was downloaded before rejecting its header");
+}
+
+#[test]
+fn a_small_read_from_a_large_chunk_has_bounded_io_and_reopens_independently() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("data");
+    let archive = tmp.path().join("data.zip");
+    let expected = data(3 * 1024 * 1024);
+    fs::write(&source, &expected).unwrap();
+    create(&[&s(&source)], &s(&archive), &yes(1024 * 1024)).unwrap();
+    let bytes = fs::read(&archive).unwrap();
+    let length = bytes.len() as u64;
+    let count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut reader =
+        MemberReader::open(Box::new(CountedReader { bytes: std::io::Cursor::new(bytes), count: count.clone() }), "data").unwrap().unwrap();
+    count.store(0, std::sync::atomic::Ordering::Relaxed);
+    let mut tiny = [0; 16];
+    reader.read_exact(&mut tiny).unwrap();
+    assert_eq!(tiny, expected[..16]);
+    assert!(count.load(std::sync::atomic::Ordering::Relaxed) < 128 * 1024, "a tiny read decoded/fetched a full MiB chunk");
+    reader.seek(SeekFrom::Start(0)).unwrap();
+    count.store(0, std::sync::atomic::Ordering::Relaxed);
+    let mut back = Vec::new();
+    reader.read_to_end(&mut back).unwrap();
+    assert_eq!(back, expected);
+    assert!(count.load(std::sync::atomic::Ordering::Relaxed) < length + 8192, "sequential reads re-decompressed earlier windows");
+    let location = crate::vfs::Location::Local(archive.clone());
+    let original = open_member(&location, "data").unwrap().unwrap();
+    let reopen = original.reopen().unwrap();
+    let handles = [17u64, 1_500_000]
+        .into_iter()
+        .map(|at| {
+            let reopen = reopen.clone();
+            std::thread::spawn(move || {
+                let mut reader = reopen.open().unwrap();
+                reader.seek(SeekFrom::Start(at)).unwrap();
+                let mut bytes = [0; 32];
+                reader.read_exact(&mut bytes).unwrap();
+                (at, bytes)
+            })
+        })
+        .collect::<Vec<_>>();
+    for handle in handles {
+        let (at, bytes) = handle.join().unwrap();
+        assert_eq!(bytes, expected[at as usize..at as usize + 32]);
+    }
+}
+
+#[test]
+fn append_and_optimize_preserve_comments_and_cached_indexes_are_small() {
+    let tmp = tempfile::tempdir().unwrap();
+    let archive = tmp.path().join("comment.zip");
+    {
+        let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+        zip.set_comment("keep this archive note").unwrap();
+        zip.start_file("a", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"hello").unwrap();
+        zip.finish().unwrap();
+    }
+    let source = tmp.path().join("b");
+    fs::write(&source, b"world").unwrap();
+    create(&[&s(&source)], &s(&archive), &yes(4096)).unwrap();
+    let zip = zip::ZipArchive::new(fs::File::open(&archive).unwrap()).unwrap();
+    assert_eq!(zip.comment(), b"keep this archive note");
+    let output = tmp.path().join("optimized.zip");
+    optimize(&s(&archive), &s(&output), &Default::default()).unwrap();
+    let zip = zip::ZipArchive::new(fs::File::open(&output).unwrap()).unwrap();
+    assert_eq!(zip.comment(), b"keep this archive note");
+    let entries = zipdir::central_directory(&mut fs::File::open(&archive).unwrap()).unwrap();
+    assert!(entries.iter().all(|entry| entry.raw.is_empty() && entry.extra.is_empty()));
+}
+
+#[test]
+fn forced_zip64_descriptors_on_small_members_keep_their_indexes() {
+    let data = data(10_000);
+    let mut deflater = Deflater::new(Vec::new(), Some(4096));
+    deflater.write_all(&data).unwrap();
+    let (compressed, size, offsets, crc) = deflater.finish().unwrap();
+    let index = Index { chunk_size: 4096, uncompressed_size: data.len() as u64, compressed_size: size, offsets, table: None };
+    let mut zip = ZipOut::new(Vec::new(), 0, vec![]);
+    zip.add("data", 8, (0, 0), crc, data.len() as u64, &mut std::io::Cursor::new(&compressed), size, vec![], Some(&index)).unwrap();
+    let mut bytes = zip.finish().unwrap();
+    let old_end = bytes.len() - 22;
+    let old_cd = u32::from_le_bytes(bytes[old_end + 16..old_end + 20].try_into().unwrap()) as usize;
+    let mut extra = vec![1, 0, 16, 0];
+    extra.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    extra.extend_from_slice(&size.to_le_bytes());
+    bytes.splice(34..34, extra);
+    let descriptor_at = 34 + 20 + size as usize;
+    let mut descriptor = 0x08074b50u32.to_le_bytes().to_vec();
+    descriptor.extend_from_slice(&crc.to_le_bytes());
+    descriptor.extend_from_slice(&size.to_le_bytes());
+    descriptor.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    bytes.splice(descriptor_at..descriptor_at, descriptor);
+    bytes[4..6].copy_from_slice(&45u16.to_le_bytes());
+    bytes[6..8].copy_from_slice(&8u16.to_le_bytes());
+    bytes[18..26].fill(255);
+    bytes[28..30].copy_from_slice(&20u16.to_le_bytes());
+    let cd = old_cd + 44;
+    bytes[cd + 6..cd + 8].copy_from_slice(&45u16.to_le_bytes());
+    bytes[cd + 8..cd + 10].copy_from_slice(&8u16.to_le_bytes());
+    let end = old_end + 44;
+    bytes[end + 16..end + 20].copy_from_slice(&(cd as u32).to_le_bytes());
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("forced.zip");
+    fs::write(&path, &bytes).unwrap();
+    assert_eq!(list(&s(&path)).unwrap()[0].sozip_chunk_size, Some(4096));
+    assert!(validate(&s(&path)).unwrap().valid);
+}
+
+#[test]
+fn central_extra_lengths_dates_and_directory_headers_are_checked() {
+    let mut zip = ZipOut::new(Vec::new(), u32::MAX as u64, vec![]);
+    zip.add("x", 0, (0, 0), 0, 0, &mut std::io::empty(), 0, vec![0; 65520], None).unwrap();
+    assert!(matches!(zip.finish(), Err(Error::InvalidArgument(_))));
+    assert_eq!(dos_time(Some(i64::MAX)), ((23 << 11) | (59 << 5) | 29, (127 << 9) | (12 << 5) | 31));
+    assert_eq!(dos_time(Some(i64::MIN)), (0, (1 << 5) | 1));
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("directory.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+    zip.add_directory("dir/", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.finish().unwrap();
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[..4].fill(0);
+    fs::write(&path, bytes).unwrap();
+    assert!(!validate(&s(&path)).unwrap().valid);
 }

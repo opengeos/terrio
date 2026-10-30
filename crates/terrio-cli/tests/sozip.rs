@@ -50,3 +50,14 @@ fn commands_round_trip_and_preserve_failed_outputs() {
     assert_eq!(report["valid"], true);
     assert_eq!(report["sozip_files"], json!(["numbers.csv"]));
 }
+
+#[test]
+fn validation_diagnostics_redact_query_credentials() {
+    let result = run(&["validate", "/no/such/file.zip?sig=TEST_SECRET"]);
+    assert!(!result.status.success());
+    for bytes in [&result.stdout, &result.stderr] {
+        let text = String::from_utf8_lossy(bytes);
+        assert!(!text.contains("TEST_SECRET"), "{text}");
+        assert!(text.contains("redacted"), "{text}");
+    }
+}

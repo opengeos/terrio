@@ -318,7 +318,13 @@ impl LazyRaster {
 
     pub(crate) fn input_paths(&self) -> Result<Vec<String>> {
         let mut paths = match &self.inner {
-            Inner::Tiff(t) => t.file.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+            Inner::Tiff(t) => {
+                let mut paths = t.file.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>();
+                if let Some(path) = t.zip.as_ref().and_then(|zip| zip.native_archive()) {
+                    paths.push(path.to_string_lossy().into_owned());
+                }
+                paths
+            }
             Inner::Memory(_) => Vec::new(),
             Inner::Source(_, source) => match source.streamed() {
                 Some(source) => source.checked_inputs()?,
@@ -849,8 +855,9 @@ impl LazyRaster {
         }
         let Inner::Tiff(t) = &self.inner else { return crate::write_raster_dataset(&self.read()?, path, options) };
         // An output that replaces the input is written from the input read whole.
-        let inputs: Vec<String> = t.file.iter().map(|f| f.to_string_lossy().into_owned()).collect();
-        if t.file.is_none() || crate::ops::strips::overwrites(path, &inputs) {
+        let inputs = self.input_paths()?;
+        let zip = t.zip.is_some();
+        if (t.file.is_none() && !zip) || crate::ops::strips::overwrites(path, &inputs) {
             return crate::write_raster_dataset(&self.read()?, path, options);
         }
         // The header the whole raster is read with.
@@ -1244,6 +1251,8 @@ struct TiffRaster {
     /// The local file the TIFF is read from, which more decoders can open to decode chunks in
     /// parallel.
     file: Option<std::path::PathBuf>,
+    /// Reopening and native archive alias information for an in-place ZIP member.
+    zip: Option<crate::vsi::sozip::MemberReopen>,
     /// The decoders' limits.
     limits: TiffReadLimits,
     /// The files [`LazyRaster::file_list`] lists: the TIFF as it was named, and the sidecars read.
@@ -1258,6 +1267,7 @@ struct TiffRaster {
 enum Reopened<'a> {
     File(&'a std::path::Path),
     Memory(SharedBytes),
+    Zip(crate::vsi::sozip::MemberReopen),
 }
 
 fn tiff_err(e: tiff::TiffError) -> Error {
@@ -1269,6 +1279,10 @@ fn tiff_err(e: tiff::TiffError) -> Error {
 
 impl TiffRaster {
     fn new(mut source: Source, local: Option<vfs::LocalPath>, limits: TiffReadLimits) -> Result<Self> {
+        let zip = match &source {
+            Source::Zip(member) => member.reopen(),
+            _ => None,
+        };
         let tags = read_geo_tags_from(&mut source).ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
         let masks = crate::tiff_mask::find_masks(&mut source);
         source.seek(SeekFrom::Start(0))?;
@@ -1324,6 +1338,7 @@ impl TiffRaster {
             current_ifd: 0,
             _local: local,
             file: None,
+            zip,
             limits,
             files: Vec::new(),
             ovr: None,
@@ -1457,6 +1472,7 @@ impl TiffRaster {
         let source = match (self.file.as_deref(), dec.inner().get_ref()) {
             (Some(path), _) => Some(Reopened::File(path)),
             (None, Source::Memory(m)) => Some(Reopened::Memory(m.get_ref().clone())),
+            (None, Source::Zip(member)) => member.reopen().map(Reopened::Zip),
             _ => None,
         };
         let reopen = source.map(|source| {
@@ -1464,6 +1480,7 @@ impl TiffRaster {
                 let s = match &source {
                     Reopened::File(path) => Source::File(BufReader::new(std::fs::File::open(path)?)),
                     Reopened::Memory(bytes) => Source::Memory(std::io::Cursor::new(bytes.clone())),
+                    Reopened::Zip(member) => Source::Zip(Box::new(member.open()?)),
                 };
                 Ok(Decoder::new(PatchedReader::new(s, tags)).map_err(tiff_err)?.with_limits(limits.tiff()))
             }

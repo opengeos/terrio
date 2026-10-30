@@ -463,7 +463,7 @@ let options = SozipOptions { junk_paths: true, ..Default::default() };
 sozip::create(&["roads.gpkg", "dem.tif"], "data.zip", &options)?;
 let members = sozip::list("data.zip")?;
 let validation = sozip::validate("data.zip")?;
-sozip::optimize("plain.zip", "optimized.zip", &options)?;
+sozip::optimize("plain.zip", "optimized.zip", &SozipOptions::default())?;
 # Ok::<(), terrio::Error>(())
 ```
 

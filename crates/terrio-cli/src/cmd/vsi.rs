@@ -191,6 +191,7 @@ fn sozip(args: SozipArgs) -> terrio::Result<()> {
         }
         SozipCommand::Validate(a) => {
             let v = sozip::validate(&a.input)?;
+            let displayed = vsi::redact_diagnostic_location(&a.input);
             if a.json {
                 println!("{}", serde_json::to_string_pretty(&v).map_err(|e| Error::InvalidArgument(e.to_string()))?);
             } else {
@@ -208,13 +209,13 @@ fn sozip(args: SozipArgs) -> terrio::Result<()> {
                 }
                 println!("-----");
                 match (v.valid, v.sozip_files.len()) {
-                    (false, _) => println!("{} is not a valid .zip file, or has invalid SOZip indexes.", a.input),
-                    (true, 0) => println!("{} is a valid .zip file, but does not contain any SOZip-enabled files.", a.input),
-                    (true, n) => println!("{} is a valid .zip file, and contains {n} SOZip-enabled file(s).", a.input),
+                    (false, _) => println!("{} is not a valid .zip file, or has invalid SOZip indexes.", displayed),
+                    (true, 0) => println!("{} is a valid .zip file, but does not contain any SOZip-enabled files.", displayed),
+                    (true, n) => println!("{} is a valid .zip file, and contains {n} SOZip-enabled file(s).", displayed),
                 }
             }
             if !v.valid {
-                return Err(Error::InvalidData(format!("'{}': not a valid SOZip archive", a.input)));
+                return Err(Error::InvalidData(format!("'{}': not a valid SOZip archive", displayed)));
             }
         }
     }

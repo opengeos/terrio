@@ -2722,6 +2722,7 @@ test("sozip: create, list, validate and optimize in memory", () => {
   assert.throws(() => terrio.sozipCreate(["/vsimem/jssozip/big.csv"], "/vsimem/jssozip/out.zip", { overwrite: true, chunkSize: 0 }), /chunk size/);
   assert.throws(() => terrio.sozipOptimize("/vsimem/jssozip/out.zip", "/vsimem/jssozip/opt.zip", { chunkSize: 0 }), /chunk size/);
   assert.deepEqual(terrio.vsiRead("/vsimem/jssozip/out.zip"), before);
+  assert.throws(() => terrio.sozipOptimize("/vsimem/jssozip/out.zip", "/vsimem/jssozip/opt.zip", { junkPaths: true }), /unknown field/);
   const v = terrio.sozipValidate("/vsimem/jssozip/out.zip");
   assert.ok(v.valid);
   assert.deepEqual(v.sozip_files, ["big.csv"]);

@@ -1900,13 +1900,22 @@ chunk decompresses on its own; it exits with status 1 when the archive is not va
 GeoTIFFs in a zip archive are read in place when stored or seek-optimized: `terrio info` and
 window reads of `/vsizip/archive.zip/dem.tif` (or of a remote archive, by range requests) read
 only the chunks they need instead of extracting the archive. Other members, and other formats,
-are extracted to a temporary directory first. In-place ZIP readers currently use a shared
-seekable member reader rather than the temporary-file reopen path for parallel decoding.
+are extracted to a temporary directory first. ZIP readers reopen independently for parallel
+TIFF decoding while sharing remote range caches. Native ZIP-member raster exports stream
+strips and treat the containing archive as an input when checking overwrite aliases.
+Random reads check requested chunk structure; they do not read the whole member to check its
+CRC-32. Use `vsi sozip validate` for the complete checksum and independent-chunk checks.
 
 GDAL 3.13.3's `sozip optimize` also adds the input archive itself to its output (a bug); terrio
-does not. Creation and optimization assemble the output archive in memory, and validation
-materializes each member to compare its independent chunks. Compressed-member spools larger
-than 64 MiB use temporary files on native builds. Not supported: `sozip create` progress bars
+does not. Native creation and optimization stream to an atomic temporary output; compressed
+payload spools spill to disk after 64 MiB even when the source size was unknown. Central
+records and writer chunk offsets remain in memory. `/vsimem/` output size bounds its memory
+use. Validation streams every member, and index tables are checked with a fixed buffer and
+read by offset when needed. Lazy readers retain a 64 KiB decoded window and decoder state,
+including for large chunk sizes. `list` performs index header/offset checks; only `validate`
+checks every independent compressed chunk. Optimization preserves member names verbatim,
+including unsafe paths present in an input archive; extraction enforces its own path checks.
+Create-only options (`recursive`, `junk_paths`, `content_type`) are rejected by optimize. Not supported: `sozip create` progress bars
 and multithreaded compression.
 
 ## fill-nodata

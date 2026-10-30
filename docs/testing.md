@@ -1482,3 +1482,10 @@ and overwrite behavior, ordinary ZIP interoperability, metadata properties, dama
 index offsets, index size arithmetic, and zero chunk sizes. Failed additions and
 invalid optimization options must leave existing output bytes unchanged. The CLI
 integration test exercises command parsing, exit statuses, JSON and MCP dispatch.
+
+SOZip review regressions cover header-first index rejection with counted reads, small reads
+from MiB chunks without full-chunk fetches, linear sequential reads, independent concurrent
+reopens, forced ZIP64 descriptors on small members, archive comments, central extra-field
+limits, DOS date bounds, directory local headers and credential-redacted diagnostics.
+Validation uses streamed CRC checks and independent bounded decoders; it does not retain
+whole uncompressed members or index offset tables.
