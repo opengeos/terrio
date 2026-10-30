@@ -7,6 +7,7 @@
 //   GDAL (bundled NOAA MDL degrib) v3.12.2 (public domain):
 //     frmts/grib/degrib/degrib/inventory.cpp
 //     frmts/grib/degrib/degrib/metaname.cpp
+//     frmts/grib/degrib/degrib/metaparse.cpp
 //   GDAL v3.12.2:
 //     frmts/grib/gribdataset.cpp
 

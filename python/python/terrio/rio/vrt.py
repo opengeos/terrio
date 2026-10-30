@@ -1,7 +1,28 @@
-# Written to match the behavior of:
+# SPDX-FileCopyrightText: Copyright (c) 2004, Frank Warmerdam <warmerdam@pobox.com>
+# SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright (c) 2003, Frank Warmerdam <warmerdam@pobox.com>
+# SPDX-FileCopyrightText: Copyright (c) 2007-2012, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright (c) 1998, Frank Warmerdam
+# SPDX-FileCopyrightText: Copyright (c) 2007-2014, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright (c) 1998, 2003, Frank Warmerdam
+# SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+# SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright (c) 2007, Frank Warmerdam
+# SPDX-FileCopyrightText: Copyright (c) 2008-2012, Even Rouault <even dot rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause
+#
+# Derived from (translated to Python and modified):
+#   GDAL v3.12.1:
+#     frmts/vrt/vrtwarped.cpp
+#     alg/gdalwarpoperation.cpp
+#     gcore/rasterio.cpp
+#     gcore/gdaldataset.cpp
+#     gcore/gdal_misc.cpp
+#     gcore/gdalnodatamaskband.cpp
 #   rasterio 1.5.2:
-#     rasterio/
-# No code is translated from these sources.
+#     rasterio/_warp.pyx
 
 """`WarpedVRT`: a dataset reprojected on the fly, as rasterio's (GDAL's `VRTWarpedDataset`).
 

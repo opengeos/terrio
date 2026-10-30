@@ -6,6 +6,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2002, i3 - information integration and imaging Fort Collins, CO
 // SPDX-FileCopyrightText: Copyright (c) 2007-2015, Even Rouault <even dot rouault at spatialys.com>
 // SPDX-FileCopyrightText: Copyright (c) 2015, Faza Mahamood
+// SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2008-2012, Even Rouault <even dot rouault at spatialys.com>
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
@@ -15,6 +18,9 @@
 //     alg/gdalwarpoperation.cpp
 //     alg/gdalwarpkernel.cpp
 //     apps/gdalwarp_lib.cpp
+//   GDAL v3.12.1:
+//     gcore/gdal_misc.cpp
+//     alg/gdalwarper.cpp
 
 //! Reprojection and resampling: an equivalent of `gdalwarp`.
 //!

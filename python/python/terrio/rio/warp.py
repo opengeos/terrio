@@ -5,6 +5,7 @@
 # Derived from (adapted and modified):
 #   rasterio 1.5.2:
 #     rasterio/warp.py
+#     rasterio/_features.pyx
 
 """Reprojection: coordinates, geometries, bounds and rasters, with rasterio's functions.
 

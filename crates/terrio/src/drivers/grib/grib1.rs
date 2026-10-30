@@ -9,6 +9,7 @@
 //     frmts/grib/degrib/degrib/grib1tab.cpp
 //     frmts/grib/degrib/degrib/inventory.cpp
 //     frmts/grib/degrib/degrib/metaparse.cpp
+//     frmts/grib/degrib/degrib/clock.c
 //   GDAL v3.12.2:
 //     frmts/grib/gribdataset.cpp
 

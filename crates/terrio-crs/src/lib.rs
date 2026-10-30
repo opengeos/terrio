@@ -1,6 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.1:
+//     ogr/ogrct.cpp
+//
 // Written to match the behavior of:
 //   GDAL v3.13.3:
-//     ogr/ogrct.cpp
 //     ogr/ogrspatialreference.cpp
 //   PROJ 9.8.1:
 //     src/trans.cpp
