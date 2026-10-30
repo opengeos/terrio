@@ -1,6 +1,6 @@
-//! SQLite required values, unique keys and ordinary index records (requirement 6).
+//! SQLite required values, unique keys and index records (requirement 6).
 //! CHECK and virtual generated columns use the SQLite scalar evaluator.
-//! Partial/expression index projections are planned separately.
+//! Expression keys and partial predicates use the same scalar evaluator.
 use super::*;
 use integrity::Atom;
 use std::cmp::Ordering;
@@ -8,6 +8,7 @@ use std::cmp::Ordering;
 #[derive(Clone)]
 struct Slot {
     column: Option<usize>,
+    expression: Option<sqlite_expr::Expression>,
     metadata: schema::Column,
     descending: bool,
 }
@@ -17,6 +18,7 @@ struct Index {
     slots: Vec<Slot>,
     key_len: usize,
     unique: bool,
+    predicate: Option<sqlite_expr::Expression>,
     expected: BTreeMap<Vec<Atom>, usize>,
     previous: Option<Vec<Atom>>,
     bad: bool,
@@ -45,7 +47,7 @@ fn slots(table: &Table, key: &schema::UniqueKey) -> Result<Vec<Slot>> {
             if !matches!(metadata.collation.as_str(), "BINARY" | "NOCASE" | "RTRIM") {
                 return Err(Error::Unsupported(format!("index collation {}", metadata.collation)));
             }
-            Ok(Slot { column: Some(column), metadata, descending: key.descending[i] })
+            Ok(Slot { column: Some(column), expression: None, metadata, descending: key.descending[i] })
         })
         .collect()
 }
@@ -62,11 +64,16 @@ fn index_atom(value: &Value, slot: &Slot, encoding: u32) -> Atom {
     }
     integrity::atom(value, &slot.metadata, false).unwrap_or(Atom::Null)
 }
-fn row_key(row: &[Value], rowid: Option<i64>, table: &Table, slots: &[Slot], encoding: u32) -> Vec<Atom> {
+fn row_key(context: &sqlite_expr::Context<'_>, table: &Table, slots: &[Slot]) -> Result<Vec<Atom>> {
+    let row = context.row;
+    let rowid = context.rowid;
+    let encoding = context.encoding;
     slots
         .iter()
         .map(|slot| {
-            if let Some(i) = slot.column {
+            Ok(if let Some(expression) = &slot.expression {
+                index_atom(&expression.evaluate(context)?, slot, encoding)
+            } else if let Some(i) = slot.column {
                 let source = &table.schema.columns[i];
                 let real = !source.data_type.contains("INT") && ["REAL", "FLOA", "DOUB"].iter().any(|s| source.data_type.contains(s));
                 if real && let Value::Int(value) = row[i] {
@@ -76,7 +83,7 @@ fn row_key(row: &[Value], rowid: Option<i64>, table: &Table, slots: &[Slot], enc
                 }
             } else {
                 index_atom(&rowid.map_or(Value::Null, Value::Int), slot, encoding)
-            }
+            })
         })
         .collect()
 }
@@ -144,9 +151,19 @@ fn make_index(name: String, table_name: &str, table: &Table, mut key: Vec<Slot>,
             not_null_declared: false,
             generated: None,
         };
-        key.push(Slot { column: None, metadata, descending: false });
+        key.push(Slot { column: None, expression: None, metadata, descending: false });
     }
-    Ok(Index { name, table: table_name.into(), slots: key, key_len, unique, expected: BTreeMap::new(), previous: None, bad: false })
+    Ok(Index {
+        name,
+        table: table_name.into(),
+        slots: key,
+        key_len,
+        unique,
+        predicate: None,
+        expected: BTreeMap::new(),
+        previous: None,
+        bad: false,
+    })
 }
 impl Checker {
     pub(super) fn constraints(&mut self, bytes: &[u8]) -> Result<()> {
@@ -195,12 +212,34 @@ impl Checker {
                 self.report.require(false, 6, format!("{}: index has no owning table", object.1));
                 continue;
             };
-            if let Some(declaration) = Schema::index(&object.4)? {
-                let fields = slots(table, &declaration.key)?;
-                indexes.push(make_index(object.1.clone(), name, table, fields, declaration.unique, false)?);
-            } else {
-                self.report.warnings.push(format!("{}: partial/expression index still needs SQL evaluation", object.1));
+            let declaration = Schema::expression_index(&object.4)?;
+            let mut fields = Vec::new();
+            for sql in declaration.terms {
+                let (expression, descending) = sqlite_expr::Expression::index_term(&sql)?;
+                expression.dependencies(name, &table.schema, false)?;
+                let (column, collation) = expression.index_column(&table.schema.columns);
+                if !matches!(collation.as_str(), "BINARY" | "NOCASE" | "RTRIM") {
+                    return Err(Error::Unsupported(format!("index collation {collation}")));
+                }
+                let metadata = schema::Column {
+                    name: sql,
+                    data_type: "BLOB".into(),
+                    not_null: false,
+                    primary_key: 0,
+                    default: None,
+                    collation,
+                    not_null_declared: false,
+                    generated: None,
+                };
+                fields.push(Slot { column, expression: column.is_none().then_some(expression), metadata, descending });
             }
+            let mut index = make_index(object.1.clone(), name, table, fields, declaration.unique, false)?;
+            if let Some(sql) = declaration.predicate {
+                let predicate = sqlite_expr::Expression::parse(&sql)?;
+                predicate.dependencies(name, &table.schema, false)?;
+                index.predicate = Some(predicate);
+            }
+            indexes.push(index);
         }
         for object in self.db.objects.iter().filter(|entry| entry.0 == "index" && entry.4.is_empty()) {
             self.report.require(indexes.iter().any(|index| index.name == object.1), 6, format!("{}: orphan automatic index", object.1));
@@ -255,12 +294,26 @@ impl Checker {
                     }
                 }
             }
+            let context = sqlite_expr::Context {
+                columns: &table.schema.columns,
+                row: &row,
+                rowid,
+                table: Some(&entry.1),
+                strict: table.schema.strict,
+                unicode_case: true,
+                encoding,
+            };
             for index in indexes.iter_mut().filter(|index| index.table == entry.1) {
-                let key = row_key(&row, rowid, table, &index.slots, encoding);
+                if let Some(predicate) = &index.predicate
+                    && sqlite_expr::truth(&predicate.evaluate(&context)?) != Some(true)
+                {
+                    continue;
+                }
+                let key = row_key(&context, table, &index.slots)?;
                 *index.expected.entry(key).or_default() += 1;
             }
             if let Some(PrimaryOrder { slots, previous, bad }) = primary_order.get_mut(&entry.1) {
-                let key = row_key(&row, rowid, table, slots, encoding);
+                let key = row_key(&context, table, slots)?;
                 if previous.as_ref().is_some_and(|old| compare(old, &key, slots) != Ordering::Less) {
                     *bad = true;
                 }
@@ -419,6 +472,19 @@ for encoding in ['UTF-8','UTF-16le','UTF-16be']:
  add('WITHOUT ROWID different PK collation suffix','CREATE TABLE sample(a TEXT,b INT,c TEXT,PRIMARY KEY(a DESC,b)) WITHOUT ROWID;INSERT INTO sample VALUES(\'a\',1,\'x\'),(\'b\',2,\'y\');CREATE INDEX idx ON sample(a COLLATE NOCASE,c)')
  add('STRICT valid storage classes','CREATE TABLE sample(a INTEGER PRIMARY KEY,b REAL,c TEXT,d BLOB,e ANY) STRICT;INSERT INTO sample VALUES(1,2,\'text\',X\'00ff\',\'uncoerced\')')
  add('generated fields preserve physical indexes','CREATE TABLE sample(a INTEGER,b INTEGER AS (a+1),c TEXT NOT NULL UNIQUE,d REAL AS (a*2) STORED);INSERT INTO sample(a,c) VALUES(1,\'one\'),(2,\'two\');CREATE INDEX idx ON sample(d DESC,c)')
+ for expression in ['lower(v)', '+v', 'CAST(v AS TEXT)', 'lower(v COLLATE RTRIM)', '(v COLLATE NOCASE) COLLATE RTRIM', "coalesce(w,0)+length(v)", "CASE WHEN w>0 THEN v ELSE NULL END"]:
+  add('expression '+expression,"CREATE TABLE sample(id INTEGER PRIMARY KEY,v TEXT COLLATE NOCASE,w REAL);INSERT INTO sample VALUES(1,'a',2),(2,'A',-1),(3,'b ',NULL),(4,NULL,0);CREATE INDEX idx ON sample("+expression+" DESC,w ASC)")
+ for expression in ['desc', 'asc', 'a+desc', 'a+asc', '+desc', 'desc DESC', 'asc ASC']:
+  add('direction keyword column '+expression,'CREATE TABLE sample(a INT,desc INT UNIQUE,asc INT);INSERT INTO sample VALUES(1,3,2),(2,2,3);CREATE INDEX idx ON sample('+expression+')')
+ for predicate in ['w>0', 'v IS NOT NULL', 'w IN (0,2,NULL)', 'w AND v IS NOT NULL', 'NULL', '0', '1', "v COLLATE NOCASE='a'"]:
+  add('partial '+predicate,"CREATE TABLE sample(id INTEGER PRIMARY KEY,v TEXT,w INT);INSERT INTO sample VALUES(1,'a',2),(2,'A',-1),(3,'b',NULL),(4,NULL,0);CREATE INDEX idx ON sample(lower(v) DESC) WHERE "+predicate)
+ add('partial UNIQUE nullable keys',"CREATE TABLE sample(v TEXT,w INT);INSERT INTO sample VALUES(NULL,1),(NULL,2),('A',1),('a',0);CREATE UNIQUE INDEX idx ON sample(lower(v)) WHERE w>0")
+ add('generated expression and predicate',"CREATE TABLE sample(a INT,b INT AS(a+1),c INT AS(b*2));INSERT INTO sample(a) VALUES(1),(2),(3),(NULL);CREATE INDEX idx ON sample(c+1 DESC,b) WHERE b>2")
+ for expression in ['a', '+a', 'a COLLATE RTRIM', 'lower(a)', 'b+0']:
+  add('WITHOUT ROWID expression '+expression,"CREATE TABLE sample(a TEXT COLLATE NOCASE,b INT,c TEXT,PRIMARY KEY(a DESC,b)) WITHOUT ROWID;INSERT INTO sample VALUES('a',1,'x'),('A',2,'y'),('b',3,'z');CREATE INDEX idx ON sample("+expression+" DESC) WHERE b>=2")
+ add('stale expression keys',"CREATE TABLE sample(v INT);INSERT INTO sample VALUES(1),(2),(3);CREATE INDEX idx ON sample(v+1);PRAGMA writable_schema=ON;UPDATE sqlite_master SET sql=replace(sql,'v+1','v+2') WHERE name='idx'")
+ add('stale partial membership',"CREATE TABLE sample(v INT);INSERT INTO sample VALUES(1),(2),(3);CREATE INDEX idx ON sample(v) WHERE v>1;PRAGMA writable_schema=ON;UPDATE sqlite_master SET sql=replace(sql,'v>1','v>2') WHERE name='idx'")
+ add('stale partial missing keys',"CREATE TABLE sample(v INT);INSERT INTO sample VALUES(1),(2),(3);CREATE INDEX idx ON sample(v) WHERE v>2;PRAGMA writable_schema=ON;UPDATE sqlite_master SET sql=replace(sql,'v>2','v>1') WHERE name='idx'")
  for collation in ['BINARY','NOCASE','RTRIM']:
   add('Unicode '+collation,'CREATE TABLE sample(id INTEGER PRIMARY KEY,v TEXT);CREATE INDEX idx ON sample(v COLLATE '+collation+')', [('INSERT INTO sample(v) VALUES(?)',(value,)) for value in ['Ā','é','a','水','😁','A','a ','a\x00x','a\x00y']])
  add('required value violated',"CREATE TABLE sample(v TEXT);INSERT INTO sample VALUES(NULL);PRAGMA writable_schema=ON;UPDATE sqlite_master SET sql=replace(sql,'v TEXT','v TEXT NOT NULL') WHERE name='sample'")
@@ -446,11 +512,20 @@ print(json.dumps(cases))
                     assert!(db.tables["countries"].rows.is_empty());
                     let mut checker = Checker { db, report: CoreReport::default() };
                     let result = checker.constraints(&bytes);
+                    assert!(checker.report.warnings.is_empty(), "{:?}", checker.report.warnings);
                     (result.is_ok() && checker.report.errors.is_empty(), format!("{result:?}: {:?}", checker.report.errors))
                 }
                 Err(error) => (false, error.to_string()),
             };
-            assert_eq!(valid, case["valid"].as_bool().unwrap(), "{}: {details}", case["name"]);
+            // SQLite 3.54.1 checks missing partial-index entries but overlooks
+            // surplus entries excluded by a changed predicate. Require exact
+            // membership here, including that independently reproduced case.
+            let stale_partial = case["name"].as_str().unwrap().ends_with(" stale partial membership");
+            let reference = case["valid"].as_bool().unwrap();
+            if stale_partial {
+                assert!(reference, "reference behavior changed: {case}");
+            }
+            assert_eq!(valid, reference && !stale_partial, "{}: {details}", case["name"]);
         }
         eprintln!("{} SQLite constraint/index comparison cases passed", cases.len());
     }

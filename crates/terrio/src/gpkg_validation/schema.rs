@@ -30,6 +30,12 @@ pub(super) struct IndexDeclaration {
     pub unique: bool,
 }
 #[derive(Debug, Clone)]
+pub(super) struct ExpressionIndex {
+    pub terms: Vec<String>,
+    pub predicate: Option<String>,
+    pub unique: bool,
+}
+#[derive(Debug, Clone)]
 pub(super) struct ForeignKey {
     pub columns: Vec<String>,
     pub table: String,
@@ -175,8 +181,8 @@ fn unique_key(tokens: &[Token]) -> Option<UniqueKey> {
         }
         let mut term = &tokens[start..at];
         at += 1;
-        key.descending.push(term.last().is_some_and(|t| t.is("DESC")));
-        if term.last().is_some_and(|t| t.is("ASC") || t.is("DESC")) {
+        key.descending.push(term.len() > 1 && term.last().is_some_and(|t| t.is("DESC")));
+        if term.len() > 1 && term.last().is_some_and(|t| t.is("ASC") || t.is("DESC")) {
             term = &term[..term.len() - 1];
         }
         let mut collation = None;
@@ -212,6 +218,43 @@ impl Schema {
             return Ok(None);
         }
         Ok(unique_key(&all[open + 1..end]).map(|key| IndexDeclaration { key, unique: all.get(1).is_some_and(|t| t.is("UNIQUE")) }))
+    }
+    pub(super) fn expression_index(sql: &str) -> Result<ExpressionIndex> {
+        let all = tokens(sql)?;
+        let keyword = if all.get(1).is_some_and(|t| t.is("UNIQUE")) { 2 } else { 1 };
+        if !all.first().is_some_and(|t| t.is("CREATE")) || !all.get(keyword).is_some_and(|t| t.is("INDEX")) {
+            return Err(bad("malformed index declaration"));
+        }
+        let open = all.iter().position(|t| t.is("(")).ok_or_else(|| bad("index has no terms"))?;
+        let end = close(&all, open)?;
+        let mut terms = Vec::new();
+        let mut start = open + 1;
+        let mut at = start;
+        while at <= end {
+            if at == end || all[at].is(",") {
+                if at == start {
+                    return Err(bad("empty index term"));
+                }
+                terms.push(sql[all[start].start..all[at - 1].end].to_owned());
+                start = at + 1;
+            } else if all[at].is("(") {
+                at = close(&all, at)?;
+            }
+            at += 1;
+        }
+        let mut tail = &all[end + 1..];
+        if tail.last().is_some_and(|t| t.is(";")) {
+            tail = &tail[..tail.len() - 1];
+        }
+        let predicate = if tail.is_empty() {
+            None
+        } else {
+            if !tail[0].is("WHERE") || tail.len() < 2 {
+                return Err(bad("invalid index predicate"));
+            }
+            Some(sql[tail[1].start..tail.last().unwrap().end].to_owned())
+        };
+        Ok(ExpressionIndex { terms, predicate, unique: keyword == 2 })
     }
     pub fn parse(sql: &str) -> Result<Self> {
         let all = tokens(sql)?;

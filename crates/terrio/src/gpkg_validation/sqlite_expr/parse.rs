@@ -32,8 +32,18 @@ impl Parser {
         }
     }
     pub fn parse(sql: &str) -> Result<Expr> {
+        Self::parse_inner(sql, false).map(|(expr, _)| expr)
+    }
+    pub fn index_term(sql: &str) -> Result<(Expr, bool)> {
+        Self::parse_inner(sql, true)
+    }
+    fn parse_inner(sql: &str, index: bool) -> Result<(Expr, bool)> {
         let mut parser = Self { tokens: lex::tokens(sql)?, at: 0, depth: 0 };
         let root = parser.expression(0)?;
+        let descending = index && parser.eat("DESC");
+        if index && !descending {
+            parser.eat("ASC");
+        }
         if parser.at != parser.tokens.len() {
             return Err(bad("unexpected trailing SQL"));
         }
@@ -44,7 +54,7 @@ impl Parser {
             }
             todo.extend(expr.children().into_iter().map(|e| (e, depth + 1)));
         }
-        Ok(root)
+        Ok((root, descending))
     }
     fn expression(&mut self, min: u8) -> Result<Expr> {
         self.depth += 1;

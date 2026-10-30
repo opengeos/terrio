@@ -8,7 +8,7 @@ pub(in super::super) struct RowEvaluator {
     virtuals: Vec<(usize, Expression)>,
 }
 impl Expression {
-    fn dependencies(&self, name: &str, schema: &Schema, allow_rowid: bool) -> Result<Vec<usize>> {
+    pub(in super::super) fn dependencies(&self, name: &str, schema: &Schema, allow_rowid: bool) -> Result<Vec<usize>> {
         let mut deps = Vec::new();
         let mut stack = vec![&self.0];
         while let Some(expr) = stack.pop() {

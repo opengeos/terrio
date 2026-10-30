@@ -309,6 +309,28 @@ fn math(op: &str, a: Value, b: Value) -> Value {
     })
 }
 impl Expression {
+    /// Index key collation comes only from the outer COLLATE or a bare column.
+    /// SQLite does not propagate operand collations through index expressions.
+    pub(super) fn index_column(&self, columns: &[schema::Column]) -> (Option<usize>, String) {
+        fn column(expr: &Expr, columns: &[schema::Column]) -> Option<usize> {
+            match expr {
+                Expr::Collate(inner, _) => column(inner, columns),
+                Expr::Column(parts, _) => columns.iter().position(|c| c.name.eq_ignore_ascii_case(parts.last().unwrap())),
+                _ => None,
+            }
+        }
+        let index = column(&self.0, columns);
+        let collation = match &self.0 {
+            Expr::Collate(_, name) => name.clone(),
+            Expr::Column(..) => index.map_or_else(|| "BINARY".into(), |i| columns[i].collation.clone()),
+            _ => "BINARY".into(),
+        };
+        (index, collation)
+    }
+
+    pub(super) fn index_term(sql: &str) -> Result<(Self, bool)> {
+        parse::Parser::index_term(sql).map(|(expr, descending)| (Self(expr), descending))
+    }
     pub(super) fn parse(sql: &str) -> Result<Self> {
         parse::Parser::parse(sql).map(Self)
     }
