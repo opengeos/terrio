@@ -1,3 +1,21 @@
+// SPDX-FileCopyrightText: Copyright (c) 2016-2017, 2020 Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2016, Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2016-2017, Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2017, Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2019, Helix.re
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   PDAL 2.10.2:
+//     filters/SMRFilter.cpp
+//     pdal/private/MathUtils.cpp
+//     pdal/private/MathUtils.hpp
+//     filters/OutlierFilter.cpp
+//     filters/SampleFilter.cpp
+//     filters/VoxelCenterNearestNeighborFilter.cpp
+//     filters/VoxelDownsizeFilter.cpp
+
 //! Point cloud filters, as PDAL's: `filters.range`, `filters.sample`,
 //! `filters.voxelcenternearestneighbor`, `filters.voxeldownsize`, `filters.outlier`,
 //! `filters.smrf`, `filters.pmf`, `filters.csf` and `filters.skewnessbalancing` (ground
@@ -19,6 +37,7 @@ mod hexbin;
 mod neighbourhood;
 mod overlay;
 mod select;
+mod selfadjoint;
 mod tiles;
 
 pub use csf::{CsfOptions, csf, csf_classes};

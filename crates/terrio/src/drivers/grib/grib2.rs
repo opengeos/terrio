@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Copyright (c) 2007, ITC
+// SPDX-FileCopyrightText: Copyright (c) 2008-2017, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL (bundled NOAA MDL degrib) v3.12.2 (public domain):
+//     frmts/grib/degrib/degrib/inventory.cpp
+//     frmts/grib/degrib/degrib/degrib2.cpp
+//     frmts/grib/degrib/degrib/metaparse.cpp
+//     frmts/grib/degrib/degrib/clock.c
+//     frmts/grib/degrib/degrib/grib2api.c
+//   GDAL v3.12.2:
+//     frmts/grib/gribdataset.cpp
+
 //! GRIB2 messages: their fields (one band each, several when a message repeats sections 2 to 7),
 //! named and described as GDAL's GRIB driver does (degrib's inventory, and the `GRIB_*` band
 //! metadata of `GRIBRasterBand`), and decoded as degrib decodes them (`ReadGrib2Record` and

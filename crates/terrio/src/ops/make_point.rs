@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_vector_make_point.cpp
+// No code is translated from these sources.
+
 //! Point geometries from coordinate fields, as `gdal vector make-point` makes them, for any
 //! vector input.
 

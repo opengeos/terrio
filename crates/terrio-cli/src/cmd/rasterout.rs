@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_translate.rst
+// No code is translated from these sources.
+
 //! Output options shared by the raster processing commands.
 
 use terrio::formats::RasterDriver;

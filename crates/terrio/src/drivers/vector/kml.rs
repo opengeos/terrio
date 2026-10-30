@@ -1,3 +1,11 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/libkml/ogrlibkmllayer.cpp
+//     ogr/ogrsf_frmts/libkml/ogrlibkmlfield.cpp
+//   libkml newest:
+//     src/kml/engine/feature_view.cc
+// No code is translated from these sources.
+
 //! KML and KMZ, read as GDAL's LIBKML driver reads them.
 //!
 //! Every Folder or Document below the root is a layer, and the root container is one too when it

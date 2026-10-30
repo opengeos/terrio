@@ -1,3 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause
+#
+# Derived from (adapted and modified):
+#   rasterio 1.5.2:
+#     docs/api/rasterio.merge.rst
+
 """Merging tiles into a mosaic, after rasterio's merge example.
 
 Usage: python merge_tiles.py DATA_DIR OUT_DIR

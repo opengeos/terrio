@@ -1,3 +1,16 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025, Hobu, Inc. (howard@hobu.co)
+// SPDX-FileCopyrightText: Copyright (c) 2013, Andrew Bell (andrew.bell.ia@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   PDAL (vendored hexer) fa80ee0a922716ad5c4f86de4b8ba26e94ae294e:
+//     filters/private/hexer/HexGrid.cpp
+//     filters/private/hexer/BaseGrid.cpp
+//     filters/private/hexer/HexId.hpp
+//   PDAL fa80ee0a922716ad5c4f86de4b8ba26e94ae294e:
+//     filters/HexBinFilter.cpp
+
 //! The boundary and density of points on a grid of hexagons, as PDAL's `filters.hexbin`.
 //!
 //! The points are counted in flat-topped hexagons of a given edge length (PDAL's

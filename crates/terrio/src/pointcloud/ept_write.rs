@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   Entwine 3.2.1:
+//     output layout (ept.json, ept-data, ept-hierarchy)
+// No code is translated from these sources.
+
 //! Writing EPT (Entwine Point Tile) datasets: the points organized in an octree whose nodes are
 //! files of their own, as Entwine writes them (<https://entwine.io/entwine-point-tile.html>).
 //!

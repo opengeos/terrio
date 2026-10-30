@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdalenhance.rst
+// No code is translated from these sources.
+
 //! `terrio enhance`.
 
 use super::rasterout::{OutputArgs, open_lazy, same_file};

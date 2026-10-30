@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     port/cpl_vsil_curl.cpp, port/cpl_http.cpp
+// No code is translated from these sources.
+
 //! Reading remote files in place, over HTTP(S) range requests.
 //!
 //! [`RangeReader`] reads a remote file through `Read` and `Seek` and fetches only the blocks that

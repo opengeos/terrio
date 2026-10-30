@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdalmanage.rst
+// No code is translated from these sources.
+
 //! Dataset-aware file operations; CLI commands also provide the MCP tools.
 use terrio::dataset_files::{self, FileOptions};
 

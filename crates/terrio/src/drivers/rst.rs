@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/idrisi/IdrisiDataset.cpp
+// No code is translated from these sources.
+
 //! Idrisi / TerrSet rasters: a `.rst` data file with a `.rdc` text header.
 
 use super::common::{self, Interleave, Layout, RawRaster};

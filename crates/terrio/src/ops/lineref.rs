@@ -1,3 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (C) 2014 NextGIS
+// SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2008-2014, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     apps/ogrlineref.cpp
+//     ogr/ogrlinestring.cpp
+
 //! Linear referencing, the equivalent of GDAL's `ogrlineref`: dividing a route into parts of
 //! equal reference length from reference points (repers, milestones) with known positions, and
 //! converting between positions and coordinates with those parts.

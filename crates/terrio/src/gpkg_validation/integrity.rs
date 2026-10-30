@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   SQLite version-3.54.1 (public domain):
+//     src/util.c
+//     src/vdbemem.c
+//     src/printf.c
+
 //! SQLite foreign-key integrity (GeoPackage requirement 7).
 //! Parent affinities and collations follow SQLite's foreign-key comparison rules.
 //! Only referenced keys are retained; unrelated columns and complete rows are not cached.

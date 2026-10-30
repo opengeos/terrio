@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_raster_compare.rst
+//     doc/source/programs/gdalcompare.rst
+// No code is translated from these sources.
+
 //! `terrio compare` (also exposed automatically as an MCP tool).
 use terrio::ops::compare::{CompareOptions, compare};
 

@@ -1,3 +1,13 @@
+// SPDX-FileCopyrightText: Copyright (c) 2008, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2009-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2015, Sean Gillies <sean@mapbox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.2:
+//     alg/rasterfill.cpp
+
 //! Fill raster holes with GDAL's four-quadrant interpolation and optional 3×3 smoothing.
 //!
 //! Adapted from GDAL 3.12.2's `alg/rasterfill.cpp` (MIT; see NOTICE). Searches and

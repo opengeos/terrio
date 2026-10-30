@@ -349,8 +349,10 @@ commands. Command-group progress:
       `filters.skewnessbalancing`, `filters.head`, `filters.tail`, `filters.sort`, `filters.locate`,
       `filters.iqr`, `filters.mad`, `filters.dem`, `filters.colorization`, `filters.overlay` and
       `filters.hexbin` (boundaries on hexer's hexagons; not its H3 grids), identical to PDAL's on
-      autzen (nanoflann's neighbours, libstdc++'s sort and Eigen's
-      eigensolver as PDAL runs them; `terrio filter`, Python and JavaScript).
+      autzen (nanoflann's neighbours, sorted radius results and Eigen's
+      eigensolver as PDAL runs them; in radius results of more than 16 points, points at exactly
+      the same distance may be ordered differently, see Point clouds; `terrio filter`, Python and
+      JavaScript).
 - [ ] PDAL's long tail of filters (`filters.optimalneighborhood`, `filters.neighborclassifier`,
       `filters.radiusassign`, `filters.hag_dem`, `filters.voxelcentroidnearestneighbor`,
       `filters.farthestpointsampling`, `filters.transformation`, `filters.ferry`, `filters.returns`,

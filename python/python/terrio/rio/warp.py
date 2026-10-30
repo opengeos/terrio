@@ -1,3 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause
+#
+# Derived from (adapted and modified):
+#   rasterio 1.5.2:
+#     rasterio/warp.py
+
 """Reprojection: coordinates, geometries, bounds and rasters, with rasterio's functions.
 
 Rasters are warped by terrio's `warp`, which follows GDAL's warper (the default output grid of

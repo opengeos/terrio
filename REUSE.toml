@@ -1,0 +1,111 @@
+version = 1
+SPDX-PackageName = "terrio"
+SPDX-PackageDownloadLocation = "https://github.com/opengeos/terrio"
+
+# Terrio's own files. Files derived from other projects carry their own SPDX headers, which
+# take precedence: the upstream copyright lines, the licences and the sources they derive from.
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"
+SPDX-License-Identifier = "MIT"
+
+# The notices reproduce other projects' copyright lines and licence texts.
+[[annotations]]
+path = ["NOTICE", "crates/terrio/NOTICE", "crates/terrio-crs/NOTICE", "LICENSE-THIRD-PARTY.md"]
+precedence = "override"
+SPDX-FileCopyrightText = "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"
+SPDX-License-Identifier = "MIT"
+
+# GRIB files from GDAL's test suite (autotest/gdrivers/data/grib, GDAL v3.13.3), unchanged.
+# The files carry no copyright line; GDAL's test data is distributed under GDAL's licence.
+[[annotations]]
+path = [
+    "crates/terrio/tests/data/grib/MRMS_EchoTop_18_00.50_20161015-133230.grib2",
+    "crates/terrio/tests/data/grib/Sample_QuikSCAT.grb",
+    "crates/terrio/tests/data/grib/gfs.t06z.pgrb2.1p0.grib2",
+    "crates/terrio/tests/data/grib/ieee754_single.grb2",
+    "crates/terrio/tests/data/grib/jpeg2000_nbits_zero_decimal_scaled.grb2",
+    "crates/terrio/tests/data/grib/lambert_conformal_conic.grb2",
+    "crates/terrio/tests/data/grib/png_nbits_zero_decimal_scaled.grb2",
+    "crates/terrio/tests/data/grib/polar_stereographic.grb2",
+    "crates/terrio/tests/data/grib/rotated_pole.grb2.begin",
+    "crates/terrio/tests/data/grib/simple_packing_nbits_zero_decimal_scaled.grb2",
+    "crates/terrio/tests/data/grib/spatial_differencing_order_1.grb2",
+    "crates/terrio/tests/data/grib/subgrids_reuse_bitmap.grib2",
+    "crates/terrio/tests/data/grib/two_bands_with_bitmap.grib2",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "GDAL contributors"
+SPDX-License-Identifier = "MIT"
+
+# GRIB tables: GDAL's GRIB tables (frmts/grib/data, GDAL v3.12.2), merged from NOAA's degrib
+# tables (public domain) and the WMO's GRIB2 tables (wmo-im/GRIB2, MIT).
+[[annotations]]
+path = "crates/terrio/data/grib_tables.txt.zst"
+precedence = "override"
+SPDX-FileCopyrightText = ["Copyright © 2020-2024", "Copyright (C) 2021 Even Rouault", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "MIT"
+
+# The EPSG Geodetic Parameter Dataset, owned by IOGP, through PROJ 9.8.1 and GDAL.
+[[annotations]]
+path = [
+    "crates/terrio-crs/data/epsg.tsv.zst",
+    "crates/terrio-crs/data/epsg_vertical.tsv.zst",
+    "crates/terrio-crs/data/point_motion.tsv",
+]
+precedence = "override"
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "LicenseRef-EPSG AND MIT"
+
+# EPSG datums with the Esri datum names (Esri projection engine data, Apache-2.0, via PROJ 9.7.1).
+[[annotations]]
+path = "crates/terrio-crs/data/datums.tsv.zst"
+precedence = "override"
+SPDX-FileCopyrightText = ["International Association of Oil & Gas Producers (IOGP)", "Copyright © 2010-2025 Esri", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "LicenseRef-EPSG AND Apache-2.0 AND MIT"
+
+[[annotations]]
+path = "crates/terrio-crs/data/esri.tsv.zst"
+precedence = "override"
+SPDX-FileCopyrightText = ["Copyright © 2010-2025 Esri", "International Association of Oil & Gas Producers (IOGP)", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "Apache-2.0 AND LicenseRef-EPSG AND MIT"
+
+# IAU_2015 definitions from PROJ 9.8.1's data/sql/iau.sql (scripts/build_db_from_iau.py).
+[[annotations]]
+path = ["crates/terrio-crs/data/iau.tsv.zst", "crates/terrio-crs/data/iau-source.json"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Copyright (c) 2021, Hobu Inc", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "MIT"
+
+# HEC-RAS files from ras-commander-fast-hdf, unchanged.
+[[annotations]]
+path = [
+    "crates/terrio/tests/data/hecras/coverage_mesh.h5",
+    "crates/terrio/tests/data/hecras/coverage_mesh_nogroups.h5",
+    "crates/terrio/tests/data/hecras/coverage_mesh_nogeometry.h5",
+    "crates/terrio/tests/data/hecras/pipes.h5",
+    "crates/terrio/tests/data/hecras/terrain.h5",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "Copyright (c) 2024 CLB Engineering Corporation"
+SPDX-License-Identifier = "MIT"
+
+# HEC-RAS files Terrio derived from the ras-commander-fast-hdf files (see hecras/README.md).
+[[annotations]]
+path = [
+    "crates/terrio/tests/data/hecras/results_mesh_xs.h5",
+    "crates/terrio/tests/data/hecras/results_two_areas.h5",
+    "crates/terrio/tests/data/hecras/large_projection.h5",
+    "crates/terrio/tests/data/hecras/large_root_attribute.h5",
+]
+precedence = "override"
+SPDX-FileCopyrightText = ["Copyright (c) 2024 CLB Engineering Corporation", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "MIT"
+
+# Numeric fixtures from rust-proj-capability, which carries no license yet (see NOTICE).
+[[annotations]]
+path = "crates/terrio-crs/tests/data/*_benchmark.json"
+precedence = "override"
+SPDX-FileCopyrightText = "Michael Sumner"
+SPDX-License-Identifier = "LicenseRef-rust-proj-capability"

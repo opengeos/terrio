@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_vsi.rst
+//     doc/source/programs/gdal_vsi_sozip.rst
+// No code is translated from these sources.
+
 //! `terrio vsi`: file management on local, in-memory, remote and archive locations (GDAL's
 //! `gdal vsi`).
 

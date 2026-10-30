@@ -1,3 +1,13 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrgeometryfactory.cpp
+//     ogr/ogrsf_frmts/shape/ogrshapelayer.cpp
+//     apps/ogr2ogr_lib.cpp
+//     ogr/ogrsf_frmts/shape/shape2ogr.cpp
+//   GEOS newest:
+//     src/operation/polygonize/
+// No code is translated from these sources.
+
 //! Esri Shapefile: `.shp`, `.shx`, `.dbf`, `.cpg` and `.prj`.
 //!
 //! Reading keeps Z and M values, groups polygon rings into polygons by orientation and

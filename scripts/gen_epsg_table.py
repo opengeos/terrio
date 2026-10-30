@@ -1,3 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2018-2024, Even Rouault, <even.rouault at spatialys.com>
+# SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+#
+# Derived from (translated to Python and modified):
+#   PROJ 9.8.1:
+#     src/coord_operation.cpp
+#     src/datums.cpp
+
 """Generate terrio's EPSG table from GDAL and PROJ.
 
 Writes ``crates/terrio-crs/data/epsg.tsv.zst``, a zstd-compressed text table with these lines:

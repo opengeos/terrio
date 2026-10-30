@@ -1,3 +1,24 @@
+// SPDX-FileCopyrightText: PROJ contributors
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2025 Javier Jimenez Shaw
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   PROJ 9.8.1:
+//     src/ellps.cpp
+//     src/units.cpp
+//     src/datums.cpp
+//     src/adjlon.cpp
+//     src/aasincos.cpp
+//     src/tsfn.cpp
+//     src/msfn.cpp
+//     src/phi2.cpp
+//     src/mlfn.cpp
+//     src/latitudes.cpp
+//   PROJ 9.9.0:
+//     src/latitudes.cpp
+
 //! Ellipsoids, units and the helper functions map projections share, after PROJ's
 //! (<https://proj.org>, MIT licence) definitions and algorithms; PROJ's notice is in `NOTICE`.
 

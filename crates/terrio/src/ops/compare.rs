@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     apps/gdalalg_raster_compare.cpp
+
 //! Compare two rasters, as GDAL's `gdal raster compare` (and `gdalcompare.py`) do: their files
 //! byte for byte, CRS, geotransform, sizes, bands (description, data type, nodata, color
 //! interpretation, pixels), overviews, masks, metadata (default, `RPC` and `GEOLOCATION`

@@ -1,3 +1,8 @@
+# Written to match the behavior of:
+#   rasterio 1.5.2:
+#     rasterio/
+# No code is translated from these sources.
+
 """Errors and warnings, named as rasterio names them.
 
 Errors about files derive from `OSError` and errors about arguments from `ValueError`, as in

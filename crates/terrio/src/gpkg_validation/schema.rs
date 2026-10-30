@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     PRAGMA table_info / CREATE TABLE parsing
+// No code is translated from these sources.
+
 //! SQLite CREATE TABLE declarations, inspected without executing SQL or loading extensions.
 use crate::{Error, Result};
 

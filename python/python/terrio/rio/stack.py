@@ -1,3 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause
+#
+# Derived from (adapted and modified):
+#   rasterio 1.5.2:
+#     rasterio/stack.py
+#     rasterio/merge.py
+
 """Stacking the bands of rasters into one, with rasterio's `stack` and its algorithm.
 
 Each source's bands (or the bands chosen with `indexes`) become successive bands of the output,

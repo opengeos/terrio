@@ -1,3 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, Corteva Agriscience™
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT AND Apache-2.0
+#
+# Derived from (adapted and modified):
+#   rioxarray 0.23.0:
+#     rioxarray/rioxarray.py
+#     rioxarray/raster_array.py
+#     rioxarray/raster_dataset.py
+
 """The `.terrio` accessors of xarray DataArrays and Datasets, with rioxarray's `.rio` API.
 
 The methods, their arguments and their output follow rioxarray (Apache-2.0, Copyright (c)

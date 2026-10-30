@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     apps/gdalalg_vector_partition.cpp
+
 //! Partitioning a vector dataset into files by field values, as `gdal vector partition` does:
 //! Hive-style directories (`field=value/part_0000000001.ext`) or flat file names
 //! (`{LAYER_NAME}_{FIELD_VALUE}_0000000001.ext`), with parts limited in feature count or

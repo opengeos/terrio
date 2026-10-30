@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     port/cpl_vsil_curl.cpp, cpl_vsil_s3.cpp, cpl_vsil_az.cpp
+// No code is translated from these sources.
+
 //! Listing object stores and HTTP directory index pages, without doing any I/O: what to request
 //! and how to read the answers. Native builds send the requests with [`crate::http`] (signing S3
 //! ones); WebAssembly hosts send them with `fetch` (see [`RemoteLister`]).

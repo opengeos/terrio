@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     src/btree.c
+//     src/pager.c / src/os_unix.c
+// No code is translated from these sources.
+
 //! Changing an SQLite database file in place, as SQLite does: pages are read when needed and
 //! changed in memory, then written back in one transaction protected by a rollback journal.
 //!

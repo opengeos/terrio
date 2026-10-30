@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Copyright 2017 State Key Laboratory of Remote Sensing Science, Institute of Remote Sensing Science and Engineering, Beijing Normal University
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND Apache-2.0
+//
+// Derived from (translated to Rust and modified):
+//   PDAL (vendored CSF) 2.10.2:
+//     filters/private/csf/CSF.cpp
+//     filters/private/csf/Cloth.cpp
+//     filters/private/csf/Cloth.h
+//     filters/private/csf/Particle.cpp
+//     filters/private/csf/Particle.h
+//     filters/private/csf/Rasterization.cpp
+//     filters/private/csf/c2cdist.cpp
+//     filters/private/csf/point_cloud.cpp
+
 //! Ground classification by cloth simulation (PDAL's `filters.csf`, Zhang et al. 2016): the
 //! points are turned upside down and a cloth of particles, joined by springs, falls onto them
 //! under gravity; the points close to where the cloth rests are ground.

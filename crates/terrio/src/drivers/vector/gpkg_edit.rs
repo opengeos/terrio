@@ -1,3 +1,11 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_vector_rename_layer.cpp
+//     apps/gdalalg_vector_edit.cpp
+//     apps/gdalalg_vector_update.cpp
+//     ogr/ogrsf_frmts/gpkg/ogrgeopackagedatasource.cpp
+// No code is translated from these sources.
+
 //! Editing GeoPackage files in place: renaming layers, changing a layer's CRS (without
 //! reprojecting) or declared geometry type, dataset and layer metadata (GDAL's
 //! `<GDALMultiDomainMetadata>` in `gpkg_metadata`), and updating features matched by feature

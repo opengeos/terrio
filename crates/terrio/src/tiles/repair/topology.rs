@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GEOS 3.14.1:
+//     src/operation/valid/MakeValid.cpp
+// No code is translated from these sources.
+
 //! Planar subdivision of the noded linework, the iterative linework fill and
 //! polygon assembly. See notes/design.md for the behavioural model.
 

@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2021  The Blosc Developers <blosc@blosc.org>
+// SPDX-FileCopyrightText: Copyright (C) 2005-2020 Ariya Hidayat <ariya.hidayat@gmail.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   c-blosc v1.21.6:
+//     blosc/blosclz.c (itself based on FastLZ, MIT: c-blosc's LICENSES/FASTLZ.txt)
+
 //! Zarr v2 and v3 stores, as GDAL writes them (an array in a group, `_ARRAY_DIMENSIONS`, X/Y
 //! coordinate arrays, the CRS in a `_CRS` attribute) and as xarray writes them (a `grid_mapping`
 //! variable with `crs_wkt` and `GeoTransform`).

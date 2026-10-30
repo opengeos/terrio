@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/mbtiles/mbtilesdataset.cpp
+// No code is translated from these sources.
+
 //! MBTiles: tiles in an SQLite database, read and written with terrio's own SQLite reader and
 //! writer (the ones GeoPackage uses).
 //!

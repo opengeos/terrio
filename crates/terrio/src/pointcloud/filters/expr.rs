@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PDAL 2.10.2:
+//     filters/private/expr/ (expression language)
+// No code is translated from these sources.
+
 //! PDAL's expression language, for `filters.expression` and `filters.assign`'s `value`:
 //! conditions such as `Classification == 2 && Z > 100` and assignments such as
 //! `Classification = 2 WHERE HeightAboveGround < 0.5`.

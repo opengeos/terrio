@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     (generated columns)
+// No code is translated from these sources.
+
 use super::*;
 
 /// Expressions are parsed once per table. Virtual generated columns are evaluated

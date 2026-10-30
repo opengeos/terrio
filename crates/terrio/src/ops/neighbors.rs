@@ -1,3 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2003, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2025, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.2 (checked against v3.13.3):
+//     frmts/vrt/vrtfilters.cpp
+//     apps/gdalalg_raster_neighbors.cpp
+
 //! Focal statistics and convolution kernels: an equivalent of `gdal raster neighbors` (GDAL 3.12).
 //!
 //! Each output band is one kernel applied to one input band (every band by default, or the one

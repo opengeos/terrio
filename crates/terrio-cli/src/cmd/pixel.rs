@@ -1,3 +1,11 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_raster_unscale.rst
+//     doc/source/programs/gdal_raster_nodata_to_alpha.rst
+//     doc/source/programs/gdal_raster_reclassify.rst
+//     doc/source/programs/gdal_raster_as_features.rst
+// No code is translated from these sources.
+
 //! `terrio unscale`, `terrio nodata-to-alpha`, `terrio reclassify` and `terrio as-features`.
 
 use super::rasterout::{OutputArgs, open};

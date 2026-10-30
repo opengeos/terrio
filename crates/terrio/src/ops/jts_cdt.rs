@@ -1,3 +1,24 @@
+// SPDX-FileCopyrightText: Copyright (c) 2021 Martin Davis.
+// SPDX-FileCopyrightText: Copyright (c) 2022 Martin Davis.
+// SPDX-FileCopyrightText: Copyright (c) 2016 Vivid Solutions.
+// SPDX-FileCopyrightText: Copyright (c) 2016 Martin Davis.
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   JTS 1.20.0 (commit 6e95fe82feb986a7aa657f4ffa406d8c290af509):
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/polygon/PolygonHoleJoiner.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/polygon/PolygonNoder.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/polygon/PolygonEarClipper.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/polygon/TriDelaunayImprover.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/polygon/ConstrainedDelaunayTriangulator.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/tri/Tri.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/tri/TriangulationBuilder.java
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/PolygonNodeTopology.java
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/Orientation.java
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/Angle.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/quadedge/TrianglePredicate.java
+
 //! Constrained polygon triangulation from JTS 1.20.0 under EDL-1.0.
 //! Sources: PolygonHoleJoiner, PolygonNoder, PolygonEarClipper,
 //! TriDelaunayImprover, Tri, TriangulationBuilder, PolygonNodeTopology,

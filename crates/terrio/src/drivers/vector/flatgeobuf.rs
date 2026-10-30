@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/flatgeobuf/ogrflatgeobuflayer.cpp
+// No code is translated from these sources.
+
 //! FlatGeobuf, read and written with the flatbuffers schema of the `flatgeobuf` crate.
 //!
 //! The whole file is held in memory. Writing sorts the features along a Hilbert curve and writes

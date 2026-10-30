@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2017, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/samples/validate_gpkg.py
+
 //! Schema-extension declarations and constraints, GeoPackage 1.4 requirements 103–114/141.
 //! GDAL 3.13.3 validate_gpkg.py is the reference (see NOTICE); spec corrections
 //! cover dangling constraint names, NULL range inclusivity and NULL glob values.

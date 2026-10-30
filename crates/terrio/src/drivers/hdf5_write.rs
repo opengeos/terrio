@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   HDF5 1.8 file format:
+//     src/H5*
+// No code is translated from these sources.
+
 //! A small HDF5 writer: what netCDF-4 files need, laid out as the HDF5 library lays out files
 //! compatible with HDF5 1.8 (superblock version 2, version 2 object headers, version 1 B-trees
 //! for chunks), so that the netCDF-C library and h5py read them.

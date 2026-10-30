@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/gdal_calc.py
+//   NumPy n/a:
+//     type promotion rules, NEP 50 weak scalars
+// No code is translated from these sources.
+
 //! A vectorized evaluator of [`Expr`]essions with NumPy's typing rules, so that results match
 //! `gdal_calc.py`, which evaluates its expressions with NumPy:
 //!

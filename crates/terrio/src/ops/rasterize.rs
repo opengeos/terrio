@@ -1,3 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2011, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2005, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2008-2015, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     alg/llrasterize.cpp
+//     alg/gdalrasterize.cpp
+//     apps/gdal_rasterize_lib.cpp
+
 //! Burning vector geometries into a raster, the equivalent of `gdal_rasterize`.
 //!
 //! The scanline polygon filler, the Bresenham line drawer and the "all touched" line walker are

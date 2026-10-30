@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/png/pngdataset.cpp
+//     frmts/jpeg/jpgdataset.cpp
+// No code is translated from these sources.
+
 //! PNG rasters, read and written as GDAL does: 8- or 16-bit, 1 to 4 bands (gray, gray and
 //! alpha, RGB, RGBA; palette indices as one band), a world file for the georeferencing, the
 //! CRS in a `.aux.xml` sidecar, and a single-value `tRNS` chunk as the nodata value.

@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     src/where.c/select.c
+// No code is translated from these sources.
+
 //! Joined view sources, with explicit name binding and streaming nested loops.
 //! The left input streams; right inputs are materialized once per evaluation so
 //! nested loops do not repeat whole-database integrity scans or view evaluation.

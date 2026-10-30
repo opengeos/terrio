@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/saga/sagadataset.cpp
+// No code is translated from these sources.
+
 //! SAGA binary grids: a `.sdat` data file and a `.sgrd` header (with a `.prj` CRS).
 
 use super::common::{self, Interleave, Layout, RawRaster};

@@ -1,3 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, Corteva Agriscience™
+# SPDX-FileCopyrightText: Copyright 2014-2019, xarray Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT AND Apache-2.0
+#
+# Derived from (adapted and modified):
+#   rioxarray 0.23.0:
+#     rioxarray/_io.py
+#   xarray 1d7bcbdc75b6d556c04e2c7d7a042e4379e15303:
+#     xarray/backends/rasterio_.py
+
 """Opening rasters as xarray objects: `open_rasterio` and the lazy array behind it.
 
 The output follows rioxarray's `open_rasterio` (Apache-2.0, Copyright (c) 2019-2023 rioxarray

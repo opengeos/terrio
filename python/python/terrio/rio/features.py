@@ -1,3 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause
+#
+# Derived from (adapted and modified):
+#   rasterio 1.5.2:
+#     rasterio/features.py
+
 """Rasterizing geometries and polygonizing rasters, with rasterio's functions.
 
 The work is done by terrio's `rasterize` and `polygonize`, which follow GDAL's algorithms.

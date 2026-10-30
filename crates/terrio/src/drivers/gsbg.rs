@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/gsg/gsbgdataset.cpp
+// No code is translated from these sources.
+
 //! Golden Software Surfer 6 binary grids (`DSBB`), as GDAL's GSBG driver writes them. Surfer's
 //! ASCII and Surfer 7 grids are read by wbraster.
 

@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PDAL 2.10.2:
+//     doc/stages/filters.*.md
+// No code is translated from these sources.
+
 //! `terrio filter`: PDAL's point cloud filters.
 
 use terrio::formats::VectorDriver;

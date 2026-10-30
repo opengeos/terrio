@@ -1,3 +1,15 @@
+// SPDX-FileCopyrightText: Copyright (c) 2007, ITC
+// SPDX-FileCopyrightText: Copyright (c) 2008-2017, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL (bundled NOAA MDL degrib) v3.12.2 (public domain):
+//     frmts/grib/degrib/degrib/degrib1.cpp
+//     frmts/grib/degrib/degrib/metaparse.cpp
+//   GDAL v3.12.2:
+//     frmts/grib/gribdataset.cpp
+
 //! GRIB1 messages, read as GDAL's GRIB driver reads them (degrib's `degrib1.cpp`): the product
 //! definition (parameter tables of NCEP, ECMWF, DWD, CPTEC and others, level types, times), the
 //! grid (lat/lon, Gaussian, rotated lat/lon, polar stereographic, Lambert conformal, Mercator),

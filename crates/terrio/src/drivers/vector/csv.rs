@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/csv/ogrcsvlayer.cpp
+// No code is translated from these sources.
+
 //! Comma-separated values with point geometries in X/Y columns or any geometry in a WKT column.
 //!
 //! Reading behaves like GDAL's CSV driver opened with `AUTODETECT_TYPE=YES` and the

@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/ogrlineref.rst
+// No code is translated from these sources.
+
 //! `terrio lineref`: linear referencing, like GDAL's `ogrlineref`.
 
 use terrio::formats::VectorDriver;

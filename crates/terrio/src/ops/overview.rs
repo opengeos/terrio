@@ -1,3 +1,15 @@
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2000, 2007, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.0:
+//     gcore/overview.cpp
+//     gcore/gdaldefaultoverviews.cpp
+
 //! Overviews: their selection for warping, following GDAL's `-ovr` choices, and their management
 //! in GeoTIFFs as `gdaladdo` and `gdal raster overview add/delete/refresh` manage them
 //! ([`add_overviews`], [`delete_overviews`], [`refresh_overviews`]).

@@ -1,3 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2012-2016, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     frmts/mbtiles/mbtilesdataset.cpp
+//     gcore/overview.cpp
+
 //! Raster tiles as rasters: reading a zoom level (and the lower ones as overviews) by window, and
 //! writing rasters as tile pyramids, as GDAL's MBTiles and PMTiles drivers do.
 

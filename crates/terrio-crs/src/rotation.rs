@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: PROJ contributors
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   PROJ 9.8.1:
+//     src/projections/ob_tran.cpp
+
 //! PROJ's general oblique transformation, `+proj=ob_tran`: rotated-pole grids
 //! (`+o_proj=longlat`, the form CF's `rotated_latitude_longitude` and GRIB's rotated grids take)
 //! and other projections on a rotated sphere or ellipsoid.

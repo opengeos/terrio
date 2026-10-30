@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: (c) 2024 info@hobu.co
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     alg/viewshed/viewshed_executor.cpp
+
 //! Single-observer viewsheds using GDAL's Wang (2000) edge recurrence.
 //!
 //! Requires a north-up projected DEM whose horizontal and vertical units agree. Numeric

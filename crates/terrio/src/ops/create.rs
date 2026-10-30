@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_raster_create.cpp
+//     apps/gdal_create.cpp
+// No code is translated from these sources.
+
 //! Creating a raster from scratch or like a template, as `gdal_create` and `gdal raster create`
 //! do: its size, bands, data type, CRS, extent, nodata value and metadata, every band filled with
 //! a burn value (else the nodata value, else 0).
