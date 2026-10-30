@@ -49,6 +49,16 @@ adaptation to JTS: once a component is complete, its first retained coordinate
 replaces its original second coordinate as the jump-check representative. The
 unprocessed components retain their original second-coordinate probes.
 
+The component jump check retains JTS 1.20's linear scan of component
+representatives. The R-tree substitution applies to segment-conflict queries,
+not to this check. For a candidate span of S segments and C components, the
+current caller allocates O(S) window storage and computes its envelope in O(S).
+It scans C representatives; each of the R representatives inside that envelope
+can require another O(S) crossing-count walk. The cost is O(S + C + RS), up to
+O(CS) per candidate, and no near-linear overall simplification bound is claimed.
+C counts components within one geometry; layer operations simplify separate
+features separately.
+
 ## Boundary of this change
 
 **This is not a claim that Terrio is fully license-compliant.** Linework MakeValid
@@ -65,6 +75,12 @@ its documented limitation: the original random probes agreed with GEOS 3.14 on
 equivalence for that policy. The later independent replacement addresses only the
 post-quantization repair. Tile output comparisons exercise
 the production writer separately from the geometry-kernel corpus.
+
+For a feature with recorded crossings, the envelope predictor scans its S total
+ring segments for each candidate tile. Across K tiles this adds O(KS) work,
+plus the crossing checks. With no crossings it returns before the envelope scan.
+The result depends on the tile rectangle, so it cannot be cached once per
+feature. No dense-input speed or indexed-envelope-query claim is made.
 
 The `pointcloud/filters/hexbin.rs` call site uses the replaced simplifier.
 Other references to GEOS in shapefile normalization and linear referencing describe
