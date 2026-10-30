@@ -8,7 +8,7 @@ pub(super) const EXTENDED: &[&str] = &["CIRCULARSTRING", "COMPOUNDCURVE", "CURVE
 
 impl Checker {
     /// Checks declarations only. Binary geometry and R-tree checks are separate
-    /// rule groups, required before the complete validator becomes public.
+    /// rule groups invoked by the shared validator.
     pub(super) fn features(&mut self) {
         let Some(contents) = self.db.tables.get("gpkg_contents") else { return };
         let names: Vec<_> = contents

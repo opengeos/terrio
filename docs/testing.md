@@ -1484,5 +1484,9 @@ WAL/journal refusal. All native fixtures must be closed/checkpointed first.
 Join evaluation scans each right-hand input once and retains its logical rows,
 including geometry blobs; the leftmost source streams. The 2,000-row direct-table
 and nested-view join regression checks result rows and counts source scans to
-prevent a full integrity pass per outer row. Nested-loop comparisons can remain
-quadratic; this is not a general SQL optimizer.
+prevent a full integrity pass per outer row. A three-way Cartesian product also
+must stop with an unsupported/incomplete result after the join's 1,000,000 work-unit
+budget, counting cached right rows and candidate pairs across all levels. Multi-way
+nested loops can otherwise grow as the product of input row counts. Regressions also
+check that unevaluated view references and unsupported schema syntax cannot produce
+a complete, valid verdict.

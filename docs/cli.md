@@ -2647,8 +2647,14 @@ Aggregates, CTEs, subqueries, window functions, extension loading and unimplemen
 functions yield an explicitly incomplete verdict. The image stays in memory;
 ordinary user rows stream, while metadata, integrity keys, DISTINCT/set values
 and sorted candidates are retained. Join views additionally retain all right-hand
-input rows, including geometry blobs, once per evaluation. Nested-loop comparisons
-can still be quadratic, but inputs are not rescanned for each outer row.
+input rows, including geometry blobs, once per evaluation. Each join evaluation is
+limited to 1,000,000 work units, counting retained right-input rows and candidate
+row pairs across all join levels. Exceeding the limit yields an incomplete verdict;
+multi-way nested-loop combinations can otherwise grow as the product of row counts.
+Inputs are not rescanned for each outer row. Extension/metadata/R-tree/schema rules
+that have not evaluated a referenced view, and tile views not evaluated by the tile
+validator, are explicitly incomplete. Unsupported schema declarations are also
+reported as incomplete, rather than proven SQLite corruption.
 
 Checks are stricter than GDAL for some malformed geometry, image and metadata
 payloads. See [validation details and known differences](testing.md#geopackage-specification-validation).

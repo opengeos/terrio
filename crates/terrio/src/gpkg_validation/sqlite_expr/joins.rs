@@ -119,6 +119,21 @@ impl Relation {
         }
     }
 }
+// Includes retained right-input rows and candidate row pairs across all join levels.
+const MAX_JOIN_WORK: usize = 1_000_000;
+struct JoinInputs {
+    rows: Vec<Vec<Vec<Value>>>,
+    remaining: Cell<usize>,
+}
+impl JoinInputs {
+    fn charge(&self) -> Result<()> {
+        let Some(remaining) = self.remaining.get().checked_sub(1) else {
+            return Err(Error::Unsupported(format!("SQLite joined-view evaluation exceeds {MAX_JOIN_WORK} row-work units")));
+        };
+        self.remaining.set(remaining);
+        Ok(())
+    }
+}
 impl Join {
     pub fn parse(db: &Snapshot, p: &mut Parser, stack: &mut Vec<String>) -> Result<(Source, Schema, Option<String>)> {
         let first = Relation::parse(db, p, stack)?;
@@ -346,16 +361,18 @@ impl Join {
     }
     pub fn visit(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
         let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
-        let mut right_rows = Vec::with_capacity(self.relations.len().saturating_sub(1));
+        let mut inputs =
+            JoinInputs { rows: Vec::with_capacity(self.relations.len().saturating_sub(1)), remaining: Cell::new(MAX_JOIN_WORK) };
         for relation in self.relations.iter().skip(1) {
             let mut rows = Vec::new();
             relation.visit(db, bytes, &mut |row| {
+                inputs.charge()?;
                 rows.push(row.to_vec());
                 Ok(true)
             })?;
-            right_rows.push(rows);
+            inputs.rows.push(rows);
         }
-        self.visit_node(&self.root, db, bytes, encoding, &right_rows, visitor)
+        self.visit_node(&self.root, db, bytes, encoding, &inputs, visitor)
     }
     fn visit_node(
         &self,
@@ -363,7 +380,7 @@ impl Join {
         db: &Snapshot,
         bytes: &[u8],
         encoding: u32,
-        right_rows: &[Vec<Vec<Value>>],
+        inputs: &JoinInputs,
         visitor: &mut dyn FnMut(&[Value]) -> Result<bool>,
     ) -> Result<()> {
         let Node::Pair { left, right, kind, left_width, on } = node else {
@@ -371,12 +388,13 @@ impl Join {
             return self.relations[*i].visit(db, bytes, visitor);
         };
         let relation = &self.relations[*right];
-        let rows = &right_rows[*right - 1];
+        let rows = &inputs.rows[*right - 1];
         let mut matched = BTreeSet::new();
         let active = Cell::new(true);
-        self.visit_node(left, db, bytes, encoding, right_rows, &mut |left_row| {
+        self.visit_node(left, db, bytes, encoding, inputs, &mut |left_row| {
             let mut found = false;
             for (current, right_row) in rows.iter().enumerate() {
+                inputs.charge()?;
                 let mut row = left_row.to_vec();
                 row.extend_from_slice(right_row);
                 let context = Context {
@@ -437,7 +455,7 @@ mod tests {
         let script = r#"
 import sqlite3,sys
 with sqlite3.connect(sys.argv[1]) as db:
-    db.executescript("CREATE TABLE a(id INTEGER); CREATE TABLE b(id INTEGER); CREATE VIEW vb AS SELECT id FROM b;")
+    db.executescript("CREATE TABLE a(id INTEGER); CREATE TABLE b(id INTEGER); CREATE VIEW vb AS SELECT id FROM b; CREATE VIEW expensive AS SELECT x.id FROM a x CROSS JOIN a y CROSS JOIN a z;")
     db.executemany("INSERT INTO a VALUES(?)", [(i,) for i in range(2000)])
     db.executemany("INSERT INTO b VALUES(?)", [(i,) for i in range(3)])
     db.executescript("CREATE VIEW direct AS SELECT a.id,b.id AS right_id FROM a LEFT JOIN b ON a.id=b.id; CREATE VIEW nested AS SELECT a.id,vb.id AS right_id FROM a LEFT JOIN vb ON a.id=vb.id;")
@@ -460,6 +478,8 @@ with sqlite3.connect(sys.argv[1]) as db:
             assert_eq!(rows, 2000);
             assert_eq!(RELATION_SCANS.with(Cell::get), 2, "{name}");
         }
+        let error = View::compile(&db, "expensive").unwrap().visit_control(&db, &bytes, &mut |_| Ok(true)).unwrap_err();
+        assert!(matches!(error, Error::Unsupported(ref message) if message.contains("row-work units")));
     }
     #[test]
     fn joins_bind_names_and_bound_source_count() {

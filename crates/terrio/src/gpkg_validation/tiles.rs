@@ -178,7 +178,7 @@ impl Checker {
             self.report.require(set_rows == 1, 40, format!("{name}: expected one tile matrix set registration"));
             let Some(physical) = self.db.tables.keys().find(|key| key.eq_ignore_ascii_case(&name)).cloned() else {
                 if self.db.object(&name) {
-                    self.report.warnings.push(format!("tile view {name} still needs view-schema and value validation"));
+                    self.report.unsupported_checks.push(format!("tile view {name} still needs view-schema and value validation"));
                 } else {
                     self.report.require(false, 54, format!("missing tile table {name}"));
                 }

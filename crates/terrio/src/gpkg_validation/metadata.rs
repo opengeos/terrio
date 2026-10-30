@@ -158,7 +158,7 @@ impl Checker {
                         "metadata reference column does not exist",
                     );
                 } else if name.is_some_and(|name| self.db.object(name)) {
-                    self.report.warnings.push(format!("metadata reference to view {name:?} still needs view-column validation"));
+                    self.report.unsupported_checks.push(format!("metadata reference to view {name:?} still needs view-column validation"));
                 } else {
                     self.report.require(false, 98, "metadata reference column does not exist");
                 }
@@ -176,7 +176,7 @@ impl Checker {
                         self.report.require(false, 99, "metadata reference row does not exist");
                     }
                 } else if name.is_some_and(|name| self.db.object(name)) {
-                    self.report.warnings.push(format!("metadata reference to view {name:?} still needs view-row validation"));
+                    self.report.unsupported_checks.push(format!("metadata reference to view {name:?} still needs view-row validation"));
                 } else {
                     self.report.require(false, 99, "metadata reference row does not exist");
                 }

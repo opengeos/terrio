@@ -58,7 +58,7 @@ impl Checker {
                     self.report.require(column.primary_key == 0, 77, format!("{index}.{expected}: unexpected primary key"));
                 }
             } else {
-                self.report.warnings.push(format!("R-tree view {index} still needs view-schema validation"));
+                self.report.unsupported_checks.push(format!("R-tree view {index} still needs view-schema validation"));
             }
             let expected: &[u32] = if self.report.version.unwrap_or(10400) < 10400 { &[1, 2, 3, 4] } else { &[2, 4, 5, 6, 7] };
             let prefix = format!("{index}_update");

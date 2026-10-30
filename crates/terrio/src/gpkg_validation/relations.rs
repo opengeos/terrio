@@ -101,7 +101,9 @@ impl Checker {
                 format!("related-tables column {name:?}.{field:?} does not exist"),
             );
         } else if name.is_some_and(|name| self.db.object(name)) {
-            self.report.warnings.push(format!("related-tables reference to view {name:?}.{field:?} still needs view-schema validation"));
+            self.report
+                .unsupported_checks
+                .push(format!("related-tables reference to view {name:?}.{field:?} still needs view-schema validation"));
         } else {
             self.report.require_rule(false, RULE, format!("related-tables column {name:?}.{field:?} does not exist"));
         }

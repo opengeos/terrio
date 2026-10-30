@@ -67,7 +67,8 @@ impl Table {
         Self::from_sql_with_case(name, sql, true)
     }
     fn from_sql_with_case(name: &str, sql: &str, unicode_case: bool) -> Result<Self> {
-        let schema = Schema::parse(sql)?;
+        let schema = Schema::parse(sql)
+            .map_err(|error| Error::Unsupported(format!("SQLite schema declaration for {name} is not supported: {error}")))?;
         let evaluator =
             if schema.virtual_module.is_none() { Some(sqlite_expr::RowEvaluator::new(name, &schema, unicode_case)?) } else { None };
         Ok(Self { schema, rows: Vec::new(), evaluator })
@@ -298,8 +299,8 @@ impl Checker {
         }
     }
 
-    /// Dispatch registered physical attribute tables. Attribute views still need
-    /// the separate view evaluator before the complete validator is exposed.
+    /// Dispatch registered physical attribute tables. Registered attribute views
+    /// are checked by the separate view evaluator.
     fn attributes(&mut self, bytes: &[u8], full_check: bool) -> Result<()> {
         let Some(contents) = self.db.tables.get("gpkg_contents") else { return Ok(()) };
         let names: Vec<_> = contents
@@ -587,6 +588,18 @@ pub(super) fn check_core_with_options(bytes: &[u8], options: &GpkgValidationOpti
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unsupported_schema_syntax_is_not_a_complete_integrity_violation() {
+        let error = super::Table::from_sql_with_case("v", "CREATE VIRTUAL TABLE v USING fts4", false)
+            .err()
+            .expect("unsupported module declaration");
+        assert!(matches!(error, crate::Error::Unsupported(_)));
+        let mut report = super::CoreReport::default();
+        report.failure(error);
+        assert!(report.errors.is_empty());
+        assert_eq!(report.unsupported_checks.len(), 1);
+        assert!(!report.is_valid());
+    }
     use super::*;
     #[cfg(not(target_family = "wasm"))]
     #[test]

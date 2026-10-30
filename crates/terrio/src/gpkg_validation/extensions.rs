@@ -69,9 +69,10 @@ impl Checker {
                             format!("extension references missing column {target}.{field}"),
                         );
                     } else if self.db.object(target) {
-                        // The public validator remains unexposed until view schemas
-                        // and evaluation are implemented for every affected rule group.
-                        self.report.warnings.push(format!("extension view column {target}.{field} still needs view-schema validation"));
+                        // This extension rule has not evaluated the target view schema.
+                        self.report
+                            .unsupported_checks
+                            .push(format!("extension view column {target}.{field} still needs view-schema validation"));
                     } else {
                         self.report.require(false, 61, format!("extension column references missing table {target}"));
                     }
@@ -112,6 +113,28 @@ impl Checker {
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
+    use super::*;
+    #[test]
+    fn unchecked_view_extension_columns_make_the_report_incomplete() {
+        let mut extension = Table::from_sql("gpkg_extensions", "CREATE TABLE gpkg_extensions(table_name TEXT,column_name TEXT,extension_name TEXT NOT NULL,definition TEXT NOT NULL,scope TEXT NOT NULL,UNIQUE(table_name,column_name,extension_name))").unwrap();
+        extension
+            .rows
+            .push(["v", "x", "ACME_test", "Extension Title: ACME test", "read-write"].into_iter().map(|s| Value::Text(s.into())).collect());
+        let mut checker = Checker {
+            db: Snapshot {
+                unicode_case: false,
+                objects: vec![("view".into(), "v".into(), "v".into(), 0, "CREATE VIEW v AS SELECT 1 AS x".into())],
+                tables: BTreeMap::from([("gpkg_extensions".into(), extension)]),
+            },
+            report: CoreReport::default(),
+        };
+        checker.db.objects.push(("table".into(), "gpkg_extensions".into(), "gpkg_extensions".into(), 0, String::new()));
+        checker.extensions();
+        assert!(checker.report.errors.is_empty(), "{:?}", checker.report);
+        assert!(checker.report.warnings.is_empty());
+        assert_eq!(checker.report.unsupported_checks.len(), 1);
+        assert!(!checker.report.is_valid());
+    }
     #[test]
     #[ignore = "requires GDAL 3.13.3 and real comparison data"]
     fn extension_declarations_match_gdal_with_documented_spec_corrections() {

@@ -128,7 +128,7 @@ impl Checker {
                         "schema references a missing column",
                     );
                 } else if name.is_some_and(|name| self.db.object(name)) {
-                    self.report.warnings.push(format!("schema reference to view {name:?} still needs view-column validation"));
+                    self.report.unsupported_checks.push(format!("schema reference to view {name:?} still needs view-column validation"));
                 } else {
                     self.report.require(false, 105, "schema references a missing column");
                 }
