@@ -1,7 +1,9 @@
 //! Read-only, streaming view projections. Query forms not implemented here are
 //! rejected rather than silently omitting a registered view from validation.
 use super::*;
+use order::{Order, Sorter, Window};
 use parse::Parser;
+use std::cell::Cell;
 use std::collections::BTreeSet;
 
 enum Source {
@@ -21,8 +23,10 @@ pub(in super::super) struct View {
     projections: Vec<Expression>,
     predicate: Option<Expression>,
     distinct: bool,
+    order: Vec<Order>,
+    window: Window,
 }
-fn empty_schema() -> Schema {
+pub(super) fn empty_schema() -> Schema {
     Schema {
         columns: vec![],
         foreign_keys: vec![],
@@ -60,14 +64,6 @@ fn output_column(expr: &Expr, schema: &Schema, name: String) -> schema::Column {
             .into(),
         )
     }
-    fn collation(expr: &Expr, schema: &Schema) -> String {
-        match expr {
-            Expr::Column(..) => column(expr, schema).map_or_else(|| "BINARY".into(), |c| c.collation.clone()),
-            Expr::Collate(_, name) => name.clone(),
-            Expr::Cast(inner, _) | Expr::Unary(_, inner) => collation(inner, schema),
-            _ => "BINARY".into(),
-        }
-    }
     let data_type = if let Some(column) = column(expr, schema) {
         column.data_type.clone()
     } else if !schema.without_rowid
@@ -83,9 +79,23 @@ fn output_column(expr: &Expr, schema: &Schema, name: String) -> schema::Column {
         not_null: false,
         primary_key: 0,
         default: None,
-        collation: collation(expr, schema),
+        collation: expression_collation(expr, schema),
         not_null_declared: false,
         generated: None,
+    }
+}
+pub(super) fn expression_collation(expr: &Expr, schema: &Schema) -> String {
+    if let Some(name) = expr.explicit_collation() {
+        return name.into();
+    }
+    match expr {
+        Expr::Column(parts, _) => schema
+            .columns
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(parts.last().unwrap()))
+            .map_or_else(|| "BINARY".into(), |c| c.collation.clone()),
+        Expr::Cast(inner, _) | Expr::Unary(_, inner) => expression_collation(inner, schema),
+        _ => "BINARY".into(),
     }
 }
 impl View {
@@ -186,6 +196,8 @@ impl View {
         } else {
             None
         };
+        let raw_order = Order::parse(&mut p)?;
+        let window = Window::parse(&mut p)?;
         p.eat(";");
         if p.at != p.tokens.len() {
             return Err(Error::Unsupported("SQLite view query clause".into()));
@@ -224,6 +236,10 @@ impl View {
         if let Some(predicate) = &predicate {
             predicate.dependencies(binding, &source_schema, allow_rowid)?;
         }
+        let order = raw_order
+            .into_iter()
+            .map(|term| term.bind(&source_schema, &schema, &projections, binding, allow_rowid))
+            .collect::<Result<Vec<_>>>()?;
         if !names.is_empty() && names.len() != schema.columns.len() {
             return Err(bad("view column count differs from SELECT"));
         }
@@ -251,12 +267,29 @@ impl View {
             return Err(Error::Unsupported("SQLite view DISTINCT collation".into()));
         }
         stack.pop();
-        Ok(Self { schema, source_schema, source, qualifier, projections, predicate, distinct })
+        Ok(Self { schema, source_schema, source, qualifier, projections, predicate, distinct, order, window })
     }
     pub fn visit(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<()>) -> Result<()> {
+        self.visit_control(db, bytes, &mut |row| {
+            visitor(row)?;
+            Ok(true)
+        })
+    }
+    fn visit_control(&self, db: &Snapshot, bytes: &[u8], visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
         let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
+        let (count, offset) = self.window.evaluate(encoding)?;
+        if count == Some(0) {
+            return Ok(());
+        }
         let mut seen = BTreeSet::new();
+        let mut skipped = 0;
+        let mut emitted = 0;
+        let active = Cell::new(true);
+        let mut sorter = Sorter::new(&self.order, count.map(|n| n.saturating_add(offset)), encoding);
         let mut project = |row: &[Value], rowid| {
+            if !active.get() {
+                return Ok(false);
+            }
             let context = Context {
                 columns: &self.source_schema.columns,
                 row,
@@ -269,7 +302,15 @@ impl View {
             if let Some(predicate) = &self.predicate
                 && truth(&predicate.evaluate(&context)?) != Some(true)
             {
-                return Ok(());
+                return Ok(true);
+            }
+            if !self.distinct && self.order.is_empty() && skipped < offset {
+                skipped += 1;
+                return Ok(true);
+            }
+            let keys = sorter.keys(&context)?;
+            if !self.distinct && !self.order.is_empty() && !sorter.admits(&keys) {
+                return Ok(true);
             }
             let result = self.projections.iter().map(|e| e.evaluate(&context)).collect::<Result<Vec<_>>>()?;
             if self.distinct {
@@ -283,22 +324,44 @@ impl View {
                     })
                     .collect();
                 if !seen.insert(key) {
-                    return Ok(());
+                    return Ok(true);
                 }
             }
-            visitor(&result)
+            if !self.order.is_empty() {
+                sorter.push(keys, result);
+                return Ok(true);
+            }
+            if skipped < offset {
+                skipped += 1;
+                return Ok(true);
+            }
+            emitted += 1;
+            let more = visitor(&result)? && count.is_none_or(|n| emitted < n);
+            active.set(more);
+            Ok(more)
         };
         match &self.source {
-            Source::Unit => project(&[], None),
-            Source::View(view) => view.visit(db, bytes, &mut |row| project(row, None)),
-            Source::Table(name) => sqlite_repack::inspect(bytes, |entry, rowid, record| {
-                if entry.0 == "table" && entry.1 == *name {
-                    project(&db.tables[name].decode(name, record, rowid, encoding)?, rowid)?;
-                }
-                Ok(())
-            })
-            .map(|_| ()),
+            Source::Unit => {
+                project(&[], None)?;
+            }
+            Source::View(view) => view.visit_control(db, bytes, &mut |row| project(row, None))?,
+            Source::Table(name) => {
+                sqlite_repack::inspect(bytes, |entry, rowid, record| {
+                    if active.get() && entry.0 == "table" && entry.1 == *name {
+                        project(&db.tables[name].decode(name, record, rowid, encoding)?, rowid)?;
+                    }
+                    Ok(())
+                })?;
+            }
         }
+        if !self.order.is_empty() {
+            for row in sorter.finish().into_iter().skip(offset).take(count.unwrap_or(usize::MAX)) {
+                if !visitor(&row)? {
+                    break;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -339,21 +402,73 @@ queries=[
  'SELECT 1 AS id,\'constant\' AS value',
  'SELECT id,lower(v) FROM sample',
  'SELECT id,b FROM sample WHERE b IS NOT NULL',
+ 'SELECT id,CAST(b AS INTEGER),CAST(b AS REAL),CAST(b AS NUMERIC) FROM sample',
+ "SELECT CAST(X'31003200' AS TEXT),CAST(X'31003200' AS INTEGER),CAST(X'31003200' AS REAL),CAST(X'31003200' AS NUMERIC)",
+ "SELECT CAST(X'31' AS TEXT),CAST(X'31' AS INTEGER),CAST(X'31' AS REAL),CAST(X'31' AS NUMERIC)",
  'SELECT id FROM empty',
+ 'SELECT id,v,w FROM sample ORDER BY v DESC NULLS FIRST,w ASC,id DESC',
+ 'SELECT id,v FROM sample ORDER BY lower(v) COLLATE RTRIM DESC LIMIT 2 OFFSET 1',
+ 'SELECT id,v FROM sample ORDER BY 2,1 DESC LIMIT 2',
+ 'SELECT id,v FROM sample ORDER BY 2 COLLATE BINARY DESC LIMIT 3',
+ 'SELECT id,v FROM sample ORDER BY +2 DESC LIMIT 3',
+ 'SELECT id,v FROM sample ORDER BY 2147483648 LIMIT 3',
+ 'SELECT id,v FROM sample ORDER BY -2147483648 LIMIT 3',
+ 'SELECT id,-id AS v FROM sample ORDER BY v',
+ 'SELECT id,-id AS v FROM sample ORDER BY +v',
+ 'SELECT id,-id AS v FROM sample ORDER BY abs(v),id DESC',
+ 'SELECT id,-id AS x FROM sample ORDER BY +x',
+ 'SELECT id,-id AS x FROM sample ORDER BY abs(x) DESC LIMIT 2',
+ 'SELECT id FROM sample ORDER BY w ASC NULLS LAST',
+ 'SELECT id FROM sample ORDER BY w DESC NULLS FIRST',
+ 'SELECT id,b FROM sample ORDER BY b DESC,id',
+ 'SELECT id,v FROM sample ORDER BY v COLLATE BINARY',
+ 'SELECT id,v FROM sample ORDER BY v COLLATE RTRIM',
+ 'SELECT id,v FROM sample ORDER BY v COLLATE NOCASE',
+ 'SELECT DISTINCT v FROM sample ORDER BY v DESC LIMIT 2 OFFSET 1',
+ 'SELECT DISTINCT lower(v COLLATE RTRIM) AS v FROM sample ORDER BY v',
+ 'SELECT DISTINCT v FROM sample LIMIT 2 OFFSET 1',
+ 'SELECT id FROM sample LIMIT 2',
+ 'SELECT id FROM sample LIMIT -1 OFFSET 2',
+ 'SELECT id FROM sample LIMIT 2 OFFSET -5',
+ 'SELECT id FROM sample LIMIT 1,2',
+ "SELECT id FROM sample LIMIT '2.0' OFFSET 1.0",
+ "SELECT id FROM sample LIMIT 0 OFFSET 'bad'",
+ "SELECT id FROM sample ORDER BY id LIMIT 0 OFFSET NULL",
+ 'SELECT id FROM sample LIMIT 100 OFFSET 100',
+ 'SELECT id FROM sample LIMIT abs(-2) OFFSET 1+1',
+ 'SELECT id FROM sample LIMIT 9223372036854775807 OFFSET 9223372036854775807',
+ 'SELECT id FROM sample WHERE CASE WHEN id=3 THEN abs(-9223372036854775808) ELSE 1 END LIMIT 1',
+ 'SELECT CASE WHEN id=1 THEN abs(-9223372036854775808) ELSE id END AS x FROM sample LIMIT 1 OFFSET 1',
+ 'SELECT CASE WHEN id=3 THEN abs(-9223372036854775808) ELSE id END AS x FROM sample ORDER BY id LIMIT 1',
+ 'SELECT CASE WHEN id=3 THEN abs(-9223372036854775808) ELSE id END AS x FROM sample ORDER BY id LIMIT 1 OFFSET 1',
+ 'SELECT id FROM limited ORDER BY id DESC LIMIT 1',
+ 'SELECT id FROM sample ORDER BY 0',
+ 'SELECT id FROM sample ORDER BY 2',
+ 'SELECT id FROM sample LIMIT NULL',
+ "SELECT id FROM sample LIMIT 'bad'",
+ 'SELECT id FROM sample LIMIT 1.5',
+ "SELECT id FROM sample LIMIT X'31'",
+ 'SELECT id FROM sample LIMIT 9223372036854775808',
+ 'SELECT id FROM sample LIMIT 2 OFFSET NULL',
+ 'SELECT id FROM sample LIMIT id',
+ 'SELECT id FROM sample ORDER BY missing',
+
 ]
 for encoding in ['UTF-8','UTF-16le','UTF-16be']:
  template=root/(encoding+'.gpkg')
  with sqlite3.connect(template) as db:
   db.execute("PRAGMA encoding='"+encoding+"'");db.executescript(dump)
-  db.executescript('CREATE TABLE sample(id INTEGER PRIMARY KEY,v TEXT COLLATE NOCASE,w REAL,b BLOB,extra INTEGER AS(id+1));CREATE TABLE empty(id INTEGER PRIMARY KEY);CREATE VIEW middle AS SELECT * FROM sample;')
-  db.executemany('INSERT INTO sample(id,v,w,b) VALUES(?,?,?,?)',[(1,'a',2,b'\x00\xff'),(2,'A',0,b''),(3,'b ',None,None),(4,None,2,None)])
+  db.executescript('CREATE TABLE sample(id INTEGER PRIMARY KEY,v TEXT COLLATE NOCASE,w REAL,b BLOB,extra INTEGER AS(id+1));CREATE TABLE empty(id INTEGER PRIMARY KEY);CREATE VIEW middle AS SELECT * FROM sample;CREATE VIEW limited AS SELECT * FROM sample ORDER BY id DESC LIMIT 3 OFFSET 1;')
+  db.executemany('INSERT INTO sample(id,v,w,b) VALUES(?,?,?,?)',[(1,'a',2,b'\x00\xff'),(2,'A',0,b''),(3,'b ',None,None),(4,None,2,None),(5,'Ā',1.5,b'zz'),(6,'é','text',b'a'),(7,'水',b'\x01',None),(8,'😁',-1,b'00'),(9,'a\x00x',.5,None),(10,'a\x00y',1.5,None)])
  for query in queries:
   path=root/(str(len(cases))+'.gpkg');shutil.copyfile(template,path)
   with sqlite3.connect(path) as db:
    db.execute('CREATE VIEW v AS '+query)
-   columns=[[r[1],r[2]] for r in db.execute('PRAGMA table_info(v)')]
-   rows=[[value(v) for v in row] for row in db.execute('SELECT * FROM v')]
-  cases.append(dict(name=encoding+' '+query,path=str(path),columns=columns,rows=rows))
+   try:
+    columns=[[r[1],r[2]] for r in db.execute('PRAGMA table_info(v)')]
+    rows=[[value(v) for v in row] for row in db.execute('SELECT * FROM v')];error=False
+   except sqlite3.Error:columns=[];rows=[];error=True
+  cases.append(dict(name=encoding+' '+query,path=str(path),columns=columns,rows=rows,error=error))
  path=root/(str(len(cases))+'.gpkg');shutil.copyfile(template,path)
  with sqlite3.connect(path) as db:
   db.execute('CREATE VIEW v("renamed id","renamed value") AS SELECT id,v FROM sample')
@@ -367,7 +482,13 @@ print(json.dumps(cases))
             let bytes = std::fs::read(case["path"].as_str().unwrap()).unwrap();
             let db = Snapshot::read(&bytes).unwrap();
             assert!(db.tables["sample"].rows.is_empty());
-            let view = View::compile(&db, "v").unwrap_or_else(|e| panic!("{}: {e}", case["name"]));
+            let plan = View::compile(&db, "v");
+            if case["error"].as_bool().unwrap_or(false) {
+                let result = plan.and_then(|view| view.visit(&db, &bytes, &mut |_| Ok(())));
+                assert!(result.is_err(), "{} incorrectly succeeded", case["name"]);
+                continue;
+            }
+            let view = plan.unwrap_or_else(|e| panic!("{}: {e}", case["name"]));
             let columns: Vec<_> = view.schema.columns.iter().map(|c| serde_json::json!([c.name, c.data_type])).collect();
             assert_eq!(serde_json::json!(columns), case["columns"], "{}", case["name"]);
             let mut rows = Vec::new();

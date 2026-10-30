@@ -3,6 +3,7 @@
 //! from Terrio's OGR SQL dialect. Unknown functions/operators fail explicitly.
 mod functions;
 mod lex;
+mod order;
 mod parse;
 mod rows;
 mod select;

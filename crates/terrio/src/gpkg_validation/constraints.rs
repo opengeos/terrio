@@ -87,7 +87,7 @@ fn row_key(context: &sqlite_expr::Context<'_>, table: &Table, slots: &[Slot]) ->
         })
         .collect()
 }
-fn compare_atom(a: &Atom, b: &Atom) -> Ordering {
+pub(super) fn compare_atom(a: &Atom, b: &Atom) -> Ordering {
     match (a, b) {
         (Atom::Null, Atom::Null) => Ordering::Equal,
         (Atom::Null, _) => Ordering::Less,

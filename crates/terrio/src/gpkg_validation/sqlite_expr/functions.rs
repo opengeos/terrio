@@ -64,6 +64,36 @@ pub(super) fn cast(value: &Value, kind: &str, encoding: u32) -> Result<Value> {
     if matches!(value, Value::Null) {
         return Ok(Value::Null);
     }
+    // SQLite interprets a BLOB cast using the database's text encoding.
+    // Numeric casts only inspect a prefix, so malformed later code units need
+    // not be representable as a Rust string. TEXT casts fail explicitly there.
+    let decoded;
+    let value = if let Value::Blob(bytes) = value
+        && affinity(kind) != Affinity::Blob
+    {
+        let strict = affinity(kind) == Affinity::Text;
+        let string = if matches!(encoding, 2 | 3) {
+            let units: Vec<_> = bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| if encoding == 2 { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) })
+                .collect();
+            if strict {
+                String::from_utf16(&units).map_err(|_| Error::Unsupported("non-Unicode SQLite UTF16 blob-to-text cast".into()))?
+            } else {
+                String::from_utf16_lossy(&units)
+            }
+        } else if strict {
+            String::from_utf8(bytes.clone()).map_err(|_| Error::Unsupported("non-UTF8 SQLite blob-to-text cast".into()))?
+        } else {
+            String::from_utf8_lossy(bytes).into_owned()
+        };
+        decoded = Value::Text(string);
+        &decoded
+    } else {
+        value
+    };
     if kind.contains("INT") {
         let result = match value {
             Value::Text(s) => integer_prefix(s),

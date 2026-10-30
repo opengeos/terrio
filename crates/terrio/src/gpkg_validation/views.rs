@@ -115,6 +115,10 @@ add('attribute star','SELECT * FROM src')
 add('filtered attribute','SELECT s.id,s.v FROM src s WHERE id>1')
 add('empty attributes','SELECT * FROM src WHERE 0')
 add('nested attributes','SELECT * FROM middle',extra='CREATE VIEW middle AS SELECT id,v FROM src')
+add('limit excludes duplicate identifiers','SELECT * FROM src ORDER BY id LIMIT 1',rows=[(1,'one'),(1,'two')])
+add('offset excludes duplicate identifiers','SELECT * FROM src ORDER BY v LIMIT 2 OFFSET 1',rows=[(1,'a'),(1,'b'),(2,'c')])
+add('limit excludes NULL identifier','SELECT * FROM src ORDER BY id NULLS LAST LIMIT 1',rows=[(None,'one'),(1,'two')])
+add('nested ordering and limits','SELECT * FROM middle ORDER BY id LIMIT 1',extra='CREATE VIEW middle AS SELECT * FROM src ORDER BY id DESC LIMIT 2')
 add('duplicate identifiers','SELECT * FROM src',rows=[(1,'one'),(1,'two')])
 add('NULL identifier','SELECT * FROM src',rows=[(None,'one')])
 add('DISTINCT removes duplicate ids','SELECT DISTINCT * FROM src',rows=[(1,'one'),(1,'one')])
@@ -129,6 +133,8 @@ add('cast attribute type','SELECT id,CAST(v AS TEXT) AS v FROM src')
 add('duplicate IDs use collation','SELECT * FROM src',definition='id TEXT COLLATE NOCASE,v TEXT',rows=[('a','one'),('A','two')])
 for query in ['SELECT * FROM src','SELECT s.id,s.v,s.geom FROM src s WHERE id>0','SELECT * FROM src WHERE 0','SELECT id,v,geom FROM middle']:
  add('feature '+query,query,feature=True,extra='CREATE VIEW middle AS SELECT * FROM src')
+add('limit excludes invalid geometry','SELECT * FROM src ORDER BY id LIMIT 2',feature=True,extra="UPDATE src SET geom=X'000102030405060708090a0b0c0d0e0f' WHERE id=(SELECT MAX(id) FROM src)")
+add('limit includes invalid geometry','SELECT * FROM src ORDER BY id DESC LIMIT 1',feature=True,extra="UPDATE src SET geom=X'000102030405060708090a0b0c0d0e0f' WHERE id=(SELECT MAX(id) FROM src)")
 add('feature geometry type mismatch','SELECT * FROM src',feature=True,geometry_kind='BLOB')
 add('feature missing geometry','SELECT id,v FROM src',feature=True)
 add('feature computed geometry loses declaration','SELECT id,v,CASE WHEN id>0 THEN geom END AS geom FROM src',feature=True)
@@ -159,7 +165,6 @@ print(json.dumps(cases))
             "CREATE VIEW v AS SELECT * FROM v",
             "CREATE VIEW v AS SELECT * FROM missing",
             "CREATE VIEW v AS SELECT count(*) FROM sample",
-            "CREATE VIEW v AS SELECT * FROM sample ORDER BY id",
             "CREATE VIEW v AS SELECT * FROM sample JOIN sample AS other ON sample.id=other.id",
             "CREATE VIEW v AS SELECT * FROM sample UNION ALL SELECT * FROM sample",
             "CREATE VIEW v(a,b) AS SELECT id FROM sample",
