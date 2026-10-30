@@ -122,6 +122,14 @@ source; its provenance is separate from the attributed JTS ports. It is checked
 against executable reference results;
 a stable seed sort produced materially different holes on regular grids.
 This compatibility code does not use GEOS or C++ library implementation source.
+The 2026-10-30 reference check used Linux GEOS 3.14.1 with the conda-forge
+`libstdcxx` 16.2.0 runtime (`libstdc++.so.6.0.36`, SHA256
+`10f0d3c46c070acd4abea2ccf2500ff0ec77e9b90154b82ea2720dba05510cb9`).
+The standalone `std::sort` observation probe used Debian g++ 14.2.0-19. Runtime
+identity does not establish which compiler built GEOS or its inlined sort.
+Revisit this compatibility sort if a supported reference build changes the
+recorded equal-edge hull results, or if the public contract deliberately adopts
+a different tie policy; a stable replacement requires checking those fixtures.
 The recorded reference is Linux GEOS 3.14.1, not a claim about every platform or
 future library version.
 
@@ -141,7 +149,14 @@ triangle remains eligible as a neighbor. Reaching that limit retains the last
 mesh, as JTS does, without guaranteeing convergence for every floating-point
 input. Polygon hole-seed scans advance monotonically because triangle degrees
 only decrease and edge lengths stay fixed. Ring-envelope indexes prune frame
-containment and integer-validity candidates. Tight erosion intersects per-vertex
+containment and integer-validity candidates. Polygon hole joining sorts only the
+current polygon's candidate vertices once and maintains active sorted ranks as
+holes join the ring. A boundary-segment R-tree prunes visibility tests without
+changing the exact conflict predicate or descending candidate order. Ring
+splices, join-position scans and ear clipping can still take quadratic work;
+these indexes do not promise linear overall triangulation. An unclosed mesh
+boundary returns an error instead of silently discarding that component.
+Tight erosion intersects per-vertex
 shell memberships, retaining every owner of a shared contact vertex. Boundary walks are
 split at every repeated vertex so a hole touching its shell remains a separate simple ring.
 Observed zero-area polygon inputs, including both zero and nonzero extents,
@@ -163,6 +178,13 @@ before the frame calculation. STR centres use overflow-safe binary64 midpoints,
 with multi-slice regressions near the largest finite coordinate and across
 opposite-sign extreme bounds.
 
+Both circle predicates use JTS 1.20's normalized binary64 determinant:
+`jts_delaunay::Subdivision::in_circle` resolves point IDs for incremental site
+insertion, while `jts_cdt::in_circle` receives coordinates for constrained-mesh
+flips. Their arithmetic has the same precision and product order; the separate
+callers preserve their own construction/flip ordering. Neither is an exact or
+double-double predicate.
+
 The polygon circle predicate deliberately retains JTS 1.20 arithmetic. At
 1e90, its degree-four products can overflow and miss a circle inclusion. The
 JTS executable reproduces this limit; rescaling changed six of eight captured
@@ -175,12 +197,25 @@ four-coordinate 1e155 example. This compatibility behavior is tested explicitly;
 the API does not promise a mathematical distance bound when its arithmetic
 overflows.
 
-A single paired performance run retained identical normalized geometry hashes
+An earlier paired performance run for shell-membership and validity indexing
+retained identical normalized geometry hashes
 for 32/128/512-shell tight hulls and 1,024/4,096/16,384-island tile features.
 The 512-shell debug hull took 1.758s before and 1.404s after; the 16,384-island
 release tile write took 1.382s before and 0.808s after. At 1,024 islands it took
 0.043s before and 0.063s after, so this is evidence for pruning at larger sizes,
 not a claim of universal speedup or linear overall complexity.
+
+The subsequent hole-joining run retained identical geometry hashes for
+128, 512 and 1,024 shells. At 1,024 shells the debug probe took 4.393s before
+and 1.309s after; the 10,000-shell case exceeded a 20-second limit in both runs.
+The sorting/visibility indexes improve the completed cases while vector splices,
+join-position walks and the rest of triangulation retain scale limits.
+
+The Python and Rust STR comparators also use overflow-safe center keys on both
+axes. Negative controls reject reversed X slices and Y order near 1e308 without
+collapsing distinct subnormal centers. One retained JTS ordering is consequently
+classified as a difference instead of a legal tie; native GEOS comparison
+classifications are unchanged.
 
 ## Validation of this replacement
 

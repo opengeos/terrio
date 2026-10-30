@@ -106,6 +106,49 @@ fn canonical_components(g: &Geometry) -> Vec<Vec<Vec<Point>>> {
     result.sort();
     result
 }
+fn legal_str_order(actual: &[u64], layer: &Layer) -> bool {
+    if actual.len() < 2 {
+        return true;
+    }
+    let centre = |id: u64, x: bool| {
+        let b = layer.features[id as usize].geometry.as_ref().unwrap().bbox().unwrap();
+        if x { b.min_x.midpoint(b.max_x) } else { b.min_y.midpoint(b.max_y) }
+    };
+    let slices = (actual.len().div_ceil(10) as f64).sqrt().ceil() as usize;
+    let chunks = actual.chunks(actual.len().div_ceil(slices)).collect::<Vec<_>>();
+    chunks.windows(2).all(|pair| {
+        let max = pair[0].iter().map(|&i| centre(i, true)).fold(f64::NEG_INFINITY, f64::max);
+        let min = pair[1].iter().map(|&i| centre(i, true)).fold(f64::INFINITY, f64::min);
+        max <= min
+    }) && chunks.iter().all(|chunk| chunk.windows(2).all(|p| centre(p[0], false) <= centre(p[1], false)))
+}
+
+#[test]
+fn str_comparator_rejects_reversed_extreme_slices() {
+    let layer = |points: Vec<(f64, f64)>| {
+        let mut layer = Layer::new("comparator");
+        layer.features = points
+            .into_iter()
+            .enumerate()
+            .map(|(i, (x, y))| Feature::with_geometry(i as u64, Geometry::Point(Coord::xy(x, y)), 0))
+            .collect();
+        layer
+    };
+    let order = (0..24).collect::<Vec<_>>();
+    let reversed = order[12..].iter().chain(&order[..12]).copied().collect::<Vec<_>>();
+    for points in [
+        (0..24).map(|i| (1e308 + i as f64 * 1e306, i as f64)).collect(),
+        (0..24).map(|i| (if i < 12 { 0. } else { f64::from_bits(1) }, 0.)).collect(),
+    ] {
+        let layer = layer(points);
+        assert!(legal_str_order(&order, &layer));
+        assert!(!legal_str_order(&reversed, &layer));
+    }
+    let layer = layer((0..10).map(|i| (0., 1e308 + i as f64 * 1e306)).collect());
+    assert!(legal_str_order(&(0..10).collect::<Vec<_>>(), &layer));
+    assert!(!legal_str_order(&(0..10).rev().collect::<Vec<_>>(), &layer));
+}
+
 fn corpus(text: &str) {
     let fixture: Value = serde_json::from_str(text).unwrap();
     for c in fixture["cases"].as_array().unwrap() {
@@ -126,20 +169,7 @@ fn corpus(text: &str) {
                 let mut permutation = actual.clone();
                 permutation.sort_unstable();
                 assert_eq!(permutation, (0..layer.features.len() as u64).collect::<Vec<_>>());
-                let centre = |id: u64, x: bool| {
-                    let b = layer.features[id as usize].geometry.as_ref().unwrap().bbox().unwrap();
-                    if x { b.min_x + b.max_x } else { b.min_y + b.max_y }
-                };
-                let slices = (actual.len().div_ceil(10) as f64).sqrt().ceil() as usize;
-                let chunks = actual.chunks(actual.len().div_ceil(slices)).collect::<Vec<_>>();
-                for pair in chunks.windows(2) {
-                    let max = pair[0].iter().map(|&i| centre(i, true)).fold(f64::NEG_INFINITY, f64::max);
-                    let min = pair[1].iter().map(|&i| centre(i, true)).fold(f64::INFINITY, f64::min);
-                    assert!(max <= min, "{}: invalid X slice", c["name"]);
-                }
-                for chunk in chunks {
-                    assert!(chunk.windows(2).all(|p| centre(p[0], false) <= centre(p[1], false)), "{}: invalid Y order", c["name"]);
-                }
+                assert!(legal_str_order(&actual, &layer), "{}: invalid STR slice order", c["name"]);
             }
             continue;
         }

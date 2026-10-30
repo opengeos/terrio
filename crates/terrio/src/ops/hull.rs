@@ -198,7 +198,7 @@ impl Mesh {
             }
         }
     }
-    fn geometry(&self, selected: &[bool]) -> Geometry {
+    fn geometry(&self, selected: &[bool]) -> Result<Geometry> {
         let faces = self.triangles.iter().zip(selected).filter(|(_, keep)| **keep).map(|(t, _)| t.vertices).collect::<Vec<_>>();
         boundary_geometry(&self.coords, &faces)
     }
@@ -338,7 +338,7 @@ fn validate_ratio(ratio: f64) -> Result<()> {
     if ratio.is_finite() && (0.0..=1.0).contains(&ratio) {
         Ok(())
     } else {
-        Err(Error::InvalidArgument("the hull edge length ratio must be between 0 and 1".into()))
+        Err(Error::InvalidArgument("the concave hull ratio must be between 0 and 1".into()))
     }
 }
 fn threshold(mesh: &Mesh, ratio: f64, eligible: impl Fn(usize, usize) -> bool) -> f64 {
@@ -392,7 +392,7 @@ pub fn concave_hull(g: &Geometry, ratio: f64, allow_holes: bool) -> Result<Geome
             mesh.erode_points(&mut queue, target, true, Some(c.id));
         }
     }
-    Ok(mesh.geometry(&mesh.triangles.iter().map(|t| t.alive).collect::<Vec<_>>()))
+    mesh.geometry(&mesh.triangles.iter().map(|t| t.alive).collect::<Vec<_>>())
 }
 
 /// JTS ConcaveHullOfPolygons: erode the triangulated space between polygon shells,
@@ -549,7 +549,7 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
         mesh.remove(t);
     }
     let keep = input.iter().zip(&mesh.triangles).map(|(a, t)| *a || t.alive).collect::<Vec<_>>();
-    Ok(mesh.geometry(&keep))
+    mesh.geometry(&keep)
 }
 
 fn signed_area(r: &[P]) -> f64 {
@@ -601,7 +601,7 @@ fn in_ring(p: P, ring: &[Coord]) -> bool {
 /// Cancels interior triangle edges and traces the remaining half-edges with the
 /// selected region on their left. At point contacts, take the next clockwise edge
 /// from the incoming edge's reverse; this separates rings without recursion.
-fn boundary_geometry(coords: &[Coord], faces: &[[usize; 3]]) -> Geometry {
+fn boundary_geometry(coords: &[Coord], faces: &[[usize; 3]]) -> Result<Geometry> {
     let mut edges = HashSet::new();
     for face in faces {
         let mut v = *face;
@@ -659,7 +659,10 @@ fn boundary_geometry(coords: &[Coord], faces: &[[usize; 3]]) -> Geometry {
             };
             edge = (edge.1, c);
         }
-        if ring.len() >= 4 && ring.first() == ring.last() {
+        if ring.first() != ring.last() {
+            return Err(Error::InvalidData("hull boundary walk did not close".into()));
+        }
+        if ring.len() >= 4 {
             // A region may meet its own hole at a point away from the walk's
             // start. Split every closed subcycle at repeated vertex IDs so
             // the shell and hole remain separate simple rings.
@@ -707,14 +710,14 @@ fn boundary_geometry(coords: &[Coord], faces: &[[usize; 3]]) -> Geometry {
             shells[i].1.push(hole);
         }
     }
-    if shells.len() == 1 {
+    Ok(if shells.len() == 1 {
         let (exterior, interiors) = shells.remove(0);
         Geometry::Polygon { exterior, interiors }
     } else if shells.is_empty() {
         Geometry::Polygon { exterior: Ring(Vec::new()), interiors: Vec::new() }
     } else {
         Geometry::MultiPolygon(shells)
-    }
+    })
 }
 
 #[cfg(test)]
@@ -787,9 +790,29 @@ mod tests {
     }
 
     #[test]
+    fn hole_seed_ties_match_the_recorded_sort_observation() {
+        // Linux std::sort executable observation, Debian g++ 14.2.0-19.
+        // All keys are equal; a stable sort changes this erosion seed order.
+        let mut candidates = (0..20).map(|id| Candidate { id, size: 1., area: 1. }).collect::<Vec<_>>();
+        sort_hole_candidates(&mut candidates);
+        assert_eq!(
+            candidates.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [10, 19, 18, 17, 16, 15, 14, 13, 12, 11, 0, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+        );
+    }
+
+    #[test]
+    fn malformed_mesh_boundary_returns_an_error() {
+        // Overlapping faces share a directed edge, leaving an unbalanced
+        // boundary after duplicate edges collapse. No component may vanish.
+        let coords = [(0., 0.), (4., 0.), (0., 4.), (1., 2.)].iter().map(|&(x, y)| Coord::xy(x, y)).collect::<Vec<_>>();
+        assert!(matches!(boundary_geometry(&coords, &[[0, 1, 2], [0, 1, 3]]), Err(Error::InvalidData(_))));
+    }
+
+    #[test]
     fn traces_regions_touching_at_one_vertex_separately() {
         let coords = [(0., 0.), (2., 0.), (1., 2.), (4., 0.), (3., 2.)].iter().map(|&(x, y)| Coord::xy(x, y)).collect::<Vec<_>>();
-        let g = boundary_geometry(&coords, &[[0, 1, 2], [1, 3, 4]]);
+        let g = boundary_geometry(&coords, &[[0, 1, 2], [1, 3, 4]]).unwrap();
         let Geometry::MultiPolygon(ps) = g else { panic!("{g:?}") };
         assert_eq!(ps.len(), 2);
         assert!(ps.iter().all(|(e, h)| e.0.len() == 3 && h.is_empty()));

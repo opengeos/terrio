@@ -587,8 +587,16 @@ def valid_str_order(order, envelopes):
         return True
     slices = math.ceil(math.sqrt(math.ceil(n / 10)))
     per = math.ceil(n / slices)
-    x = lambda i: envelopes[i][0] + envelopes[i][1]  # noqa: E731
-    y = lambda i: envelopes[i][2] + envelopes[i][3]  # noqa: E731
+
+    def centre(i, axis):
+        lo, hi = envelopes[i][axis : axis + 2]
+        total = lo + hi
+        # Finite sums preserve subnormal midpoints; only an overflowing sum
+        # needs half-before-add (where both terms are far from underflow).
+        return total / 2 if math.isfinite(total) else lo / 2 + hi / 2
+
+    x = lambda i: centre(i, 0)  # noqa: E731
+    y = lambda i: centre(i, 2)  # noqa: E731
     chunks = [items[k : k + per] for k in range(0, n, per)]
     for a, b in zip(chunks, chunks[1:]):
         if max(map(x, a)) > min(map(x, b)):

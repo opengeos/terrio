@@ -5,12 +5,16 @@
 //! Solutions; Copyright (c) 2016, 2021 Martin Davis. See NOTICE.
 //!
 //! Arena indices retain JTS's triangle construction and flip order.
-//! Immutable R-trees index vertices; join visibility scans boundary segments.
+//! R-trees index vertices and prune join-visibility boundary candidates.
+//! Active joined vertices retain JTS lexicographic candidate order.
 //! Every topology walk is bounded.
 use super::simplify::{conflicts, orient};
 use crate::{Error, Result};
-use rstar::{AABB, RTree, primitives::GeomWithData};
-use std::collections::HashMap;
+use rstar::{
+    AABB, RTree,
+    primitives::{GeomWithData, Rectangle},
+};
+use std::collections::{BTreeSet, HashMap};
 use wbvector::Coord;
 
 type P = (f64, f64);
@@ -117,6 +121,9 @@ fn nodes(r: &[usize], pts: &[P], index: &RTree<GeomWithData<[f64; 2], usize>>) -
     result
 }
 fn joined(shell: Vec<usize>, mut holes: Vec<Vec<usize>>, pts: &[P]) -> Result<Vec<usize>> {
+    if holes.is_empty() {
+        return Ok(shell);
+    }
     let bounds = |r: &Vec<usize>| {
         r.iter().fold((f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |e, &i| {
             let p = pts[i];
@@ -132,23 +139,46 @@ fn joined(shell: Vec<usize>, mut holes: Vec<Vec<usize>>, pts: &[P]) -> Result<Ve
         .chain(&holes)
         .flat_map(|r| (0..r.len()).map(|i| (pts[r[i]], pts[r[(i + 1) % r.len()]])))
         .collect::<Vec<_>>();
+    let boundary_index = RTree::bulk_load(
+        boundaries
+            .iter()
+            .enumerate()
+            .map(|(id, &(a, b))| {
+                let e = envelope(a, b);
+                GeomWithData::new(Rectangle::from_corners(e.lower(), e.upper()), id)
+            })
+            .collect(),
+    );
+    // Sort only this polygon's vertices once, not the triangulator's global
+    // coordinate arena. The active ranks grow with the joined ring, so future
+    // holes cannot become candidates before they have been spliced in.
+    let mut ordered = std::iter::once(&shell).chain(&holes).flatten().copied().collect::<Vec<_>>();
+    ordered.sort_by(|&a, &b| compare(pts[a], pts[b]));
+    ordered.dedup();
+    let rank = ordered.iter().enumerate().map(|(rank, &id)| (id, rank)).collect::<HashMap<_, _>>();
+    let mut joined_points = shell.iter().map(|id| rank[id]).collect::<BTreeSet<_>>();
     let mut ring = shell;
     for hole in holes {
         if hole.len() < 3 {
             return Err(failure());
         }
-        let touching = hole.iter().position(|p| ring.contains(p));
+        let touching = hole.iter().position(|id| joined_points.contains(&rank[id]));
         let (h, join_point, line_point) = if let Some(h) = touching {
             (h, hole[h], hole[(h + hole.len() - 1) % hole.len()])
         } else {
             let h = (0..hole.len()).min_by(|&a, &b| compare(pts[hole[a]], pts[hole[b]])).ok_or_else(failure)?;
             let p = pts[hole[h]];
-            let mut candidates = ring.clone();
-            candidates.sort_by(|&a, &b| compare(pts[b], pts[a]));
-            candidates.dedup();
-            let join = candidates
-                .into_iter()
-                .find(|&id| pts[id].0 <= p.0 && !boundaries.iter().any(|&(a, b)| conflicts(p, pts[id], a, b)))
+            let end = ordered.partition_point(|&id| pts[id].0 <= p.0);
+            let join = joined_points
+                .range(..end)
+                .rev()
+                .map(|&r| ordered[r])
+                .find(|&id| {
+                    !boundary_index.locate_in_envelope_intersecting(envelope(p, pts[id])).any(|entry| {
+                        let (a, b) = boundaries[entry.data];
+                        conflicts(p, pts[id], a, b)
+                    })
+                })
                 .ok_or_else(failure)?;
             (h, join, hole[h])
         };
@@ -166,6 +196,7 @@ fn joined(shell: Vec<usize>, mut holes: Vec<Vec<usize>>, pts: &[P]) -> Result<Ve
         if touching.is_none() {
             section.push(join_point);
         }
+        joined_points.extend(hole.iter().map(|id| rank[id]));
         ring.splice(join + 1..join + 1, section);
     }
     Ok(ring)

@@ -107,7 +107,7 @@ scope and points here for the later repair replacement.
 ## Implementer delivery and checks
 
 The original [design](make-valid-clean-room/design.md),
-[exposure record](make-valid-clean-room/exposure.md),
+[exposure summary and pinned original](make-valid-clean-room/exposure.md),
 [standalone validation](make-valid-clean-room/validation.md),
 [approved manifest](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room/approved-manifest.json),
 [run metadata](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room/run.json) and

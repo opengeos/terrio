@@ -8,7 +8,16 @@
   and clipping-envelope kernels with attributed JTS 1.20.0 implementations under
   EDL-1.0. Replace the tile writer's linework repair independently, preserving its
   isolated implementation and behavioral evidence. The complete old repair
-  module and helpers are removed. Public geometry APIs remain unchanged.
+  module and helpers are removed. Public signatures are unchanged; simplification,
+  hull and tile-validity outputs can differ from earlier releases, including
+  ring starts, orientation and some geometries. The
+  [compatibility record](docs/jts-provenance.md) describes the observed behavior
+  and numeric limits. Polygon hulls can return an error when no non-degenerate
+  finite frame can be constructed. Invalid mesh boundaries also return an error
+  instead of silently dropping an unclosed walk.
+- Tile conversion now fails explicitly on repair invariant violations instead
+  of silently dropping a feature or emitting unrepaired geometry. One such
+  failure stops the conversion, including a multi-zoom run.
 - Polygon tile encoding reports an error when a signed cursor delta cannot fit
   in 32 bits. The [provenance inventory](docs/geos-retirement-audit.md) records
   reference comparisons, collinear-ring ordering differences and the existing
