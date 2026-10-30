@@ -2102,7 +2102,7 @@ def suite_vector_dataset(ctx):
     if tools:
         s.skipped = "needs the GDAL command-line tools (" + ", ".join(tools) + ")"
         return s
-    needed = ("countries.gpkg", "UScounties.gpkg", "multi.gpkg", "TN_Counties.geojson", "las_vegas_roads.geojson", "hike_gps_trace.csv", "ne_places/ne_10m_populated_places_simple.shp", "usgs_dem.tif")
+    needed = ("countries.gpkg", "UScounties.gpkg", "multi.gpkg", "TN_Counties.geojson", "las_vegas_roads.geojson", "hike_gps_trace.csv", "ne_places/ne_10m_populated_places_simple.shp")
     if any(not os.path.isfile(os.path.join(ctx.data, name)) for name in needed):
         s.skipped = "needs the vector test data (scripts/fetch_test_data.sh)"
         return s

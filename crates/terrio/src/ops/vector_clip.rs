@@ -5,8 +5,9 @@
 //! interpolate source Z/M. Polygon topology is constructed in XY.
 use crate::crs::SpatialRef;
 use crate::{Error, Feature, Geometry, GeometryType, Layer, RasterDataset, Result};
+use geo::algorithm::kernels::{Kernel, Orientation, RobustKernel};
 use geo::algorithm::line_intersection::{LineIntersection, line_intersection};
-use geo::{Area, BooleanOps, CoordsIter, Intersects};
+use geo::{Area, BooleanOps, BoundingRect, CoordsIter, Intersects};
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{AABB, RTree};
 use wbvector::{Coord, Ring};
@@ -175,9 +176,8 @@ impl ClipRegion {
 /// Invalid geometries and explicit known/unknown CRS mismatches are errors.
 pub fn clip(layer: &Layer, region: &ClipRegion) -> Result<Layer> {
     require_valid(&region.geometry, 0)?;
-    polygons(&region.geometry, 0)?;
     let target = SpatialRef::from_layer(layer);
-    let geometry = if let Some(crs) = &region.crs {
+    let transformed = if let Some(crs) = &region.crs {
         if crs.is_unknown() != target.is_unknown() {
             return Err(Error::Crs("cannot transform a clipping region between known and unknown CRSs".into()));
         }
@@ -185,15 +185,20 @@ pub fn clip(layer: &Layer, region: &ClipRegion) -> Result<Layer> {
             let mut template = Layer::new("clip");
             crs.apply_to_layer(&mut template);
             template.features.push(Feature { fid: 1, geometry: Some(region.geometry.clone()), attributes: vec![] });
-            crate::vector::reproject_layer(&template, &target)?.features.remove(0).geometry.unwrap()
+            Some(crate::vector::reproject_layer(&template, &target)?.features.remove(0).geometry.unwrap())
         } else {
-            region.geometry.clone()
+            None
         }
     } else {
-        region.geometry.clone()
+        None
     };
-    require_valid(&geometry, 0)?;
-    let mask = Mask::new(polygons(&geometry, 0)?);
+    let geometry = transformed.as_ref().unwrap_or(&region.geometry);
+    // The original region was already checked above. Reprojection can change
+    // topology, so only transformed geometry needs a second validation.
+    if transformed.is_some() {
+        require_valid(geometry, 0)?;
+    }
+    let mask = Mask::new(polygons(geometry, 0)?);
     let keep_lower = matches!(layer.geom_type, None | Some(GeometryType::GeometryCollection));
     let mut out = super::geometry::header(layer, layer.geom_type);
     for f in &layer.features {
@@ -212,6 +217,7 @@ pub fn clip(layer: &Layer, region: &ClipRegion) -> Result<Layer> {
 
 struct Mask {
     area: geo::MultiPolygon<f64>,
+    bounds: Option<geo::Rect<f64>>,
     edges: Vec<geo::Line<f64>>,
     index: RTree<GeomWithData<Rectangle<[f64; 2]>, usize>>,
 }
@@ -251,7 +257,38 @@ impl Mask {
         let edges: Vec<_> = area.iter().flat_map(|p| std::iter::once(p.exterior()).chain(p.interiors())).flat_map(|r| r.lines()).collect();
         let index =
             RTree::bulk_load(edges.iter().enumerate().map(|(i, l)| GeomWithData::new(Rectangle::from_aabb(envelope(*l)), i)).collect());
-        Self { area, edges, index }
+        let bounds = area.bounding_rect();
+        Self { area, bounds, edges, index }
+    }
+    fn covers(&self, p: geo::Coord<f64>) -> bool {
+        let Some(bounds) = self.bounds else {
+            return false;
+        };
+        if p.x < bounds.min().x || p.x > bounds.max().x || p.y < bounds.min().y || p.y > bounds.max().y {
+            return false;
+        }
+        let ray = AABB::from_corners([p.x, p.y], [bounds.max().x, p.y]);
+        let mut inside = false;
+        for entry in self.index.locate_in_envelope_intersecting(ray) {
+            let edge = self.edges[entry.data];
+            let orientation = RobustKernel::orient2d(edge.start, edge.end, p);
+            if orientation == Orientation::Collinear
+                && p.x >= edge.start.x.min(edge.end.x)
+                && p.x <= edge.start.x.max(edge.end.x)
+                && p.y >= edge.start.y.min(edge.end.y)
+                && p.y <= edge.start.y.max(edge.end.y)
+            {
+                return true;
+            }
+            // Half-open vertical intervals count shared vertices only once.
+            if (edge.start.y > p.y) != (edge.end.y > p.y)
+                && ((edge.start.y < edge.end.y && orientation == Orientation::CounterClockwise)
+                    || (edge.start.y > edge.end.y && orientation == Orientation::Clockwise))
+            {
+                inside = !inside;
+            }
+        }
+        inside
     }
     fn edges_at(&self, line: geo::Line<f64>) -> impl Iterator<Item = geo::Line<f64>> + '_ {
         self.index.locate_in_envelope_intersecting(envelope(line)).map(|e| self.edges[e.data])
@@ -283,7 +320,7 @@ impl Mask {
             cuts.dedup_by(|a, b| a.0 == b.0);
             for cut in cuts.windows(2) {
                 let mid = geo::Point::new(cut[0].1.x * 0.5 + cut[1].1.x * 0.5, cut[0].1.y * 0.5 + cut[1].1.y * 0.5);
-                if self.area.intersects(&mid) {
+                if self.covers(mid.0) {
                     let start = &cut[0].1;
                     let end = &cut[1].1;
                     if let Some(last) = lines.last_mut().filter(|l| same(l.last().unwrap(), start)) {
@@ -294,7 +331,7 @@ impl Mask {
                 }
             }
             if keep_lower {
-                contacts.extend(cuts.into_iter().map(|(_, c)| c).filter(|c| self.area.intersects(&point(c))));
+                contacts.extend(cuts.into_iter().map(|(_, c)| c).filter(|c| self.covers(xy(c))));
             }
         }
         for c in contacts {
@@ -309,7 +346,7 @@ impl Mask {
     fn intersection(&self, g: &Geometry, keep_lower: bool, out: &mut Vec<Geometry>) -> Result<()> {
         match g {
             Geometry::Point(c) => {
-                if self.area.intersects(&point(c)) {
+                if self.covers(xy(c)) {
                     out.push(g.clone());
                 }
             }
@@ -349,8 +386,9 @@ impl Mask {
         // vertices from the original floating coordinates and robust segment
         // intersections, so shallow-angle cuts do not amplify grid rounding.
         // Every vertex of a linear polygon intersection belongs to this set.
-        let mut exact: Vec<[f64; 2]> = shape.coords_iter().filter(|c| self.area.intersects(&geo::Point(*c))).map(|c| [c.x, c.y]).collect();
-        exact.extend(self.area.coords_iter().filter(|c| shape.intersects(&geo::Point(*c))).map(|c| [c.x, c.y]));
+        let source_index = Mask::new(shape.clone());
+        let mut exact: Vec<[f64; 2]> = shape.coords_iter().filter(|c| self.covers(*c)).map(|c| [c.x, c.y]).collect();
+        exact.extend(self.area.coords_iter().filter(|c| source_index.covers(*c)).map(|c| [c.x, c.y]));
         for ring in shape.iter().flat_map(|p| std::iter::once(p.exterior()).chain(p.interiors())) {
             for line in ring.lines() {
                 for edge in self.edges_at(line) {
@@ -369,6 +407,7 @@ impl Mask {
     }
 
     fn polygon_contacts(&self, shape: &geo::MultiPolygon<f64>, area: &geo::MultiPolygon<f64>, out: &mut Vec<Geometry>) {
+        let result_index = Mask::new(area.clone());
         let mut contacts = Vec::new();
         for ring in shape.iter().flat_map(|p| std::iter::once(p.exterior()).chain(p.interiors())) {
             for line in ring.lines() {
@@ -376,12 +415,12 @@ impl Mask {
                     if let Some(hit) = line_intersection(line, edge) {
                         match hit {
                             LineIntersection::SinglePoint { intersection: c, .. } => {
-                                if !area.intersects(&geo::Point(c)) {
+                                if !result_index.covers(c) {
                                     contacts.push(Geometry::Point(Coord::xy(c.x, c.y)));
                                 }
                             }
                             LineIntersection::Collinear { intersection: l } => {
-                                if !area.intersects(&geo::Point::new(l.start.x * 0.5 + l.end.x * 0.5, l.start.y * 0.5 + l.end.y * 0.5)) {
+                                if !result_index.covers(geo::coord! {x:l.start.x * 0.5 + l.end.x * 0.5,y:l.start.y * 0.5 + l.end.y * 0.5}) {
                                     contacts.push(Geometry::LineString(vec![Coord::xy(l.start.x, l.start.y), Coord::xy(l.end.x, l.end.y)]));
                                 }
                             }
@@ -615,6 +654,19 @@ mod tests {
         let region = ClipRegion::bbox([0., 0., 2., 2.], Some(SpatialRef::from_epsg(4326).unwrap())).unwrap();
         assert!(clip(&input, &region).unwrap_err().to_string().contains("known and unknown"));
     }
+    #[test]
+    fn indexed_point_predicate_matches_independent_geometry_predicate() {
+        let region =
+            ClipRegion::parse("MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0),(1 1,1 3,3 3,3 1,1 1)),((5 0,6 0,6 4,5 4,5 0)))", None).unwrap();
+        let mask = Mask::new(polygons(&region.geometry, 0).unwrap());
+        for x in -4..=28 {
+            for y in -4..=20 {
+                let p = geo::coord! {x:x as f64/4.,y:y as f64/4.};
+                assert_eq!(mask.covers(p), mask.area.intersects(&geo::Point(p)), "{p:?}");
+            }
+        }
+    }
+
     #[test]
     fn shallow_polygon_cuts_restore_original_floating_vertices() {
         use geo::Area;

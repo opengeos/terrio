@@ -1633,3 +1633,21 @@ difference: GDAL includes latitude 2 at a projected upper edge while Terrio's
 inverse Web Mercator produces 1.9999999999999996. The independent `terrio crs`
 result, unchanged interior point and exact source IDs/metadata are checked;
 arbitrary missing points cannot use this exception.
+
+Dense-template performance can be checked with
+`scripts/bench_vector_clip.py ../terrio-data --kind roads` (or `--kind counties`).
+The benchmark clips the real Las Vegas roads or Tennessee counties against a
+10,001-vertex circular template, times only the CLI operations and verifies each
+result against GDAL. Region and source point-in-polygon tests use indexed,
+boundary-inclusive ray crossings. Untransformed regions are validated once per
+clip call; a transformed region is validated again after reprojection.
+
+One local optimized run with a 10,001-vertex template measured:
+
+| Input | Features | Before | After |
+|---|---:|---:|---:|
+| Las Vegas roads | 78 | 1.56 s | 1.12 s |
+| Tennessee counties | 95 | 1.73 s | 1.19 s |
+
+Both outputs retain their GDAL comparison results. These timings are observations
+from one local run; fixture preparation and comparison reads are excluded.
