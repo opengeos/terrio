@@ -1,5 +1,7 @@
 //! Bounded, allocation-free inspection of GeoPackage binary geometries.
 //! GeoPackage 1.4 requirements 19, 32, 33, 68 and 152; GDAL rule attribution in NOTICE.
+//! Compound-curve membership follows GDAL 3.13.3 ogrcompoundcurve.cpp;
+//! curve-polygon ring lengths follow ogrcurvepolygon.cpp (see NOTICE).
 use super::*;
 use std::collections::BTreeSet;
 
@@ -28,6 +30,12 @@ struct Shape {
     kind: u32,
     dimension: u32,
     empty: bool,
+    points: usize,
+    ends: Option<([f64; 3], [f64; 3])>,
+}
+// GDAL's relative XYZ join tolerance. It also accepts a reversed next segment.
+fn joined(end: [f64; 3], start: [f64; 3]) -> bool {
+    end.into_iter().zip(start).all(|(a, b)| (a - b).abs().partial_cmp(&(1e-14 * b.abs())) != Some(std::cmp::Ordering::Greater))
 }
 impl Wkb<'_> {
     fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
@@ -50,6 +58,9 @@ impl Wkb<'_> {
         self.position = end;
         Some(())
     }
+    fn endpoint(&mut self, little: bool, z: bool) -> Option<[f64; 3]> {
+        Some([self.number(little)?, self.number(little)?, if z { self.number(little)? } else { 0.0 }])
+    }
     fn shape(&mut self, depth: usize) -> Option<Shape> {
         if depth > 64 {
             return None;
@@ -66,6 +77,8 @@ impl Wkb<'_> {
             return None;
         }
         let dimensions = 2 + usize::from(dimension == 1 || dimension == 3) + usize::from(dimension >= 2);
+        let mut points = 0;
+        let mut ends = None;
         let empty = if kind == 1 {
             let x = self.number(little)?;
             let y = self.number(little)?;
@@ -77,7 +90,18 @@ impl Wkb<'_> {
                 if kind == 8 && count != 0 && (count < 3 || count.is_multiple_of(2)) {
                     return None;
                 }
+                let start = self.position;
                 self.coordinates(count, dimensions)?;
+                let end = self.position;
+                if count > 0 {
+                    self.position = start;
+                    let first = self.endpoint(little, dimension == 1 || dimension == 3)?;
+                    self.position = end - dimensions * 8;
+                    let last = self.endpoint(little, dimension == 1 || dimension == 3)?;
+                    self.position = end;
+                    ends = Some((first, last));
+                }
+                points = count;
                 count == 0
             } else {
                 // Each ring or member needs at least a count/header. Refuse huge
@@ -86,7 +110,7 @@ impl Wkb<'_> {
                     return None;
                 }
                 let mut empty = true;
-                for _ in 0..count {
+                for index in 0..count {
                     if kind == 3 {
                         let points = self.integer(little)? as usize;
                         self.coordinates(points, dimensions)?;
@@ -106,13 +130,39 @@ impl Wkb<'_> {
                         if !compatible {
                             return None;
                         }
+                        if kind == 9 {
+                            if member.points == 1 {
+                                return None;
+                            }
+                            if index > 0 {
+                                let (first, previous) = ends?;
+                                let (start, end) = member.ends?;
+                                ends = Some((
+                                    first,
+                                    if joined(previous, start) {
+                                        end
+                                    } else if joined(previous, end) {
+                                        start
+                                    } else {
+                                        return None;
+                                    },
+                                ));
+                                points = points.checked_add(member.points)?.checked_sub(1)?;
+                            } else {
+                                ends = member.ends;
+                                points = member.points;
+                            }
+                        }
+                        if kind == 10 && member.kind == 2 && member.points < 4 {
+                            return None;
+                        }
                         empty &= member.empty;
                     }
                 }
                 empty
             }
         };
-        Some(Shape { kind, dimension, empty })
+        Some(Shape { kind, dimension, empty, points, ends })
     }
 }
 
@@ -256,6 +306,57 @@ impl Checker {
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires GDAL 3.13.3 Python bindings"]
+    fn curve_membership_matches_ogr() {
+        let script = r#"
+import json,struct
+from osgeo import ogr,gdal
+gdal.UseExceptions(); gdal.PushErrorHandler('CPLQuietErrorHandler')
+cases=[]
+for endian in [0,1]:
+ for dim in [0,1,2,3]:
+  fmt='<' if endian else '>'
+  def header(kind,n): return struct.pack(fmt+'BII',endian,kind+1000*dim,n)
+  def line(points,kind=2):
+   return header(kind,len(points))+b''.join(struct.pack(fmt+'d'*(2+(dim==1 or dim==3)+(dim>=2)),*(p[:2]+((p[2],) if dim in (1,3) else ())+((0.,) if dim>=2 else ()))) for p in points)
+  def collection(kind,members): return header(kind,len(members))+b''.join(members)
+  def add(name,b):
+   try: valid=ogr.CreateGeometryFromWkb(b) is not None
+   except RuntimeError: valid=False
+   cases.append(dict(name=name+' dim '+str(dim)+' endian '+str(endian),blob=b.hex(),valid=valid))
+  a=(0.,0.,0.); b=(1.,2.,3.); c=(4.,5.,6.)
+  for n in range(6): add('circular point count '+str(n),line([a]*n,8))
+  for first in [[],[a],[a,b]]:
+   for second in [[],[b],[b,c],[c,b],[a,c]]:
+    add('compound segments '+str(first)+str(second),collection(9,[line(first),line(second)]))
+  add('single empty compound member',collection(9,[line([])]))
+  add('single one-point compound member',collection(9,[line([a])]))
+  add('nested compound member',collection(9,[collection(9,[line([a,b])])]))
+  for delta in [1e-16,1e-14,1e-12]:
+   add('relative join '+str(delta),collection(9,[line([a,b]),line([(1.+delta,2.,3.),c])]))
+  for delta in [1e-16,1e-12]:
+   add('Z join '+str(delta),collection(9,[line([a,b]),line([(1.,2.,3.+delta),c])]))
+  for points in [[],[a],[a,b],[a,b,a],[a,b,c,a],[a,b,c,b]]:
+   add('linear curvepolygon ring '+str(len(points)),collection(10,[line(points)]))
+  add('circular curvepolygon ring',collection(10,[line([a,b,c,b,a],8)]))
+  add('empty circular ring',collection(10,[line([],8)]))
+  add('compound curvepolygon ring',collection(10,[collection(9,[line([a,b]),line([b,c,a])])]))
+print(json.dumps(cases))
+"#;
+        let output = std::process::Command::new("python3").arg("-c").arg(script).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(cases.len() > 200);
+        for case in cases {
+            let hex = case["blob"].as_str().unwrap();
+            let bytes: Vec<_> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+            let mut wkb = Wkb { bytes: &bytes, position: 0 };
+            let valid = wkb.shape(0).is_some() && wkb.position == bytes.len();
+            assert_eq!(valid, case["valid"].as_bool().unwrap(), "{}", case["name"]);
+        }
+    }
 
     #[test]
     fn rejects_truncation_counts_reserved_flags_and_trailing_bytes() {

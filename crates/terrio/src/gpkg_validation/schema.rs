@@ -22,6 +22,7 @@ pub(super) struct Schema {
     pub unique: Vec<Vec<String>>,
     pub without_rowid: bool,
     pub rowid_alias: Option<usize>,
+    pub virtual_module: Option<String>,
 }
 #[derive(Debug, Clone)]
 struct Token {
@@ -150,6 +151,7 @@ impl Schema {
             unique: Vec::new(),
             without_rowid: all[end + 1..].windows(2).any(|p| p[0].is("WITHOUT") && p[1].is("ROWID")),
             rowid_alias: None,
+            virtual_module: all[..open].windows(2).find(|pair| pair[0].is("USING")).map(|pair| pair[1].value.to_ascii_lowercase()),
         };
         let mut primary = Vec::new();
         let mut descending_aliases = Vec::new();

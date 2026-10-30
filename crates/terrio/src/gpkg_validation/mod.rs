@@ -4,6 +4,7 @@ mod content;
 mod extensions;
 mod features;
 mod geometry;
+mod rtree;
 mod schema;
 mod tiles;
 
@@ -469,6 +470,7 @@ fn check_core(bytes: &[u8]) -> CoreReport {
     checker.contents();
     checker.extensions();
     checker.features();
+    checker.spatial_indexes();
     if let Err(error) = checker.geometries(bytes) {
         checker.report.require(false, 6, error.to_string());
     }
@@ -635,7 +637,8 @@ for name,path,_ in cases:
  raw=path.read_bytes(); app=raw[68:72]; version=int.from_bytes(raw[60:64],'big')
  header=app in (b'GP10',b'GP11') or app==b'GPKG' and version>=10200
  checker=GPKGChecker(str(path),abort_at_first_error=False,warning_msg=False)
- checker.extended_pragma_info=True;checker.version=(1,4,0)
+ checker.extended_pragma_info=True
+ checker.version=(1,0,0) if app==b'GP10' else (1,1,0) if app==b'GP11' else (version//10000,(version//100)%100,version%100)
  failed=False
  try:
   with sqlite3.connect(path) as db:
