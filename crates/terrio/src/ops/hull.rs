@@ -399,7 +399,9 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
         Geometry::MultiPolygon(ps) => ps.clone(),
         _ => return Err(Error::InvalidArgument("the polygon hull requires polygonal input".into())),
     };
-    if coords.is_empty() {
+    let ring_area = |r: &Ring| signed_area(&r.0.iter().map(xy).collect::<Vec<_>>()).abs();
+    let area = polygons.iter().map(|(shell, holes)| ring_area(shell) - holes.iter().map(ring_area).sum::<f64>()).sum::<f64>();
+    if coords.is_empty() || area == 0.0 {
         return Ok(Geometry::Polygon { exterior: Ring(Vec::new()), interiors: Vec::new() });
     }
     let input_count = coords.len();
@@ -434,11 +436,12 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
         .map(|(_, (r, _))| ring_ids(r))
         .filter(|r| !r.is_empty())
         .collect::<Vec<_>>();
-    let mut faces = super::jts_cdt::triangulate(&coords, (input_count..input_count + 4).collect(), frame_holes)?;
+    let triangulator = super::jts_cdt::Triangulator::new(&coords);
+    let mut faces = triangulator.triangulate((input_count..input_count + 4).collect(), frame_holes)?;
     let frame_face_count = faces.len();
     for (shell, holes) in &polygons {
         if !shell.0.is_empty() {
-            faces.extend(super::jts_cdt::triangulate(&coords, ring_ids(shell), holes.iter().map(ring_ids).collect())?);
+            faces.extend(triangulator.triangulate(ring_ids(shell), holes.iter().map(ring_ids).collect())?);
         }
     }
     let mut mesh = Mesh::new(coords, faces);
@@ -474,6 +477,7 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
         }
         mesh.remove(t);
     }
+    let mut seed_from = 0;
     loop {
         while let Some(t) = queue.pop() {
             if !mesh.triangles[t].alive {
@@ -494,11 +498,14 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
         if !allow_holes {
             break;
         }
-        let seed = (0..mesh.triangles.len())
+        // Degrees only decrease and edge lengths are fixed, so a rejected
+        // seed cannot become eligible later. Never rescan a discarded prefix.
+        let seed = (seed_from..mesh.triangles.len())
             .find(|&t| mesh.triangles[t].alive && mesh.degree(t) == 3 && (0..3).any(|i| mesh.length(t, i) > target));
         let Some(t) = seed else {
             break;
         };
+        seed_from = t + 1;
         for n in mesh.triangles[t].adjacent.into_iter().flatten() {
             if let Some(i) = mesh.triangles[n].adjacent.iter().position(|v| *v == Some(t)) {
                 border[n].get_or_insert(i);
@@ -598,7 +605,26 @@ fn boundary_geometry(coords: &[Coord], faces: &[[usize; 3]]) -> Geometry {
             edge = (edge.1, c);
         }
         if ring.len() >= 4 && ring.first() == ring.last() {
-            loops.push(ring);
+            // A region may meet its own hole at a point away from the walk's
+            // start. Split every closed subcycle at repeated vertex IDs so
+            // the shell and hole remain separate simple rings.
+            let mut path = Vec::new();
+            let mut at = HashMap::new();
+            for vertex in ring {
+                if let Some(&start) = at.get(&vertex) {
+                    let mut cycle = path[start..].to_vec();
+                    cycle.push(vertex);
+                    if cycle.len() >= 4 {
+                        loops.push(cycle);
+                    }
+                    for removed in path.drain(start + 1..) {
+                        at.remove(&removed);
+                    }
+                } else {
+                    at.insert(vertex, path.len());
+                    path.push(vertex);
+                }
+            }
         }
     }
     let mut shells: Vec<(Ring, Vec<Ring>)> = Vec::new();
@@ -646,6 +672,41 @@ mod tests {
 
     fn points(pts: &[(f64, f64)]) -> Geometry {
         Geometry::MultiPoint(pts.iter().map(|&(x, y)| Coord::xy(x, y)).collect())
+    }
+
+    #[test]
+    fn zero_area_polygon_hulls_are_empty() {
+        // GEOS 3.14.1 returns POLYGON EMPTY at both zero and nonzero extent.
+        for pts in [
+            vec![(1., 1.); 4],
+            vec![(0., 0.), (1., 1.), (2., 2.), (0., 0.)],
+            vec![(0., 0.), (2., 2.), (0., 2.), (2., 0.), (0., 0.)],
+            vec![(0., 0.), (1e-200, 0.), (0., 1e-200)],
+        ] {
+            let input = Geometry::polygon(pts.iter().map(|&(x, y)| Coord::xy(x, y)).collect(), vec![]);
+            for tight in [false, true] {
+                for holes in [false, true] {
+                    let actual = concave_hull_of_polygons(&input, 0.3, tight, holes).unwrap();
+                    assert!(matches!(actual, Geometry::Polygon { exterior, interiors } if exterior.0.is_empty() && interiors.is_empty()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn polygon_hull_preserves_a_hole_pinched_at_a_nonstart_vertex() {
+        let coords = |pts: &[(f64, f64)]| pts.iter().map(|&(x, y)| Coord::xy(x, y)).collect();
+        let input = Geometry::polygon(
+            coords(&[(0., 0.), (10., 0.), (10., 10.), (0., 10.), (0., 5.)]),
+            vec![coords(&[(0., 5.), (3., 3.), (3., 7.)])],
+        );
+        let result = concave_hull_of_polygons(&input, 0.3, true, true).unwrap();
+        let Geometry::Polygon { exterior, interiors } = result else { panic!("{result:?}") };
+        assert_eq!(exterior.0.len(), 5);
+        assert_eq!(interiors.len(), 1);
+        assert_eq!(interiors[0].0.len(), 3);
+        assert_eq!(signed_area(&exterior.0.iter().map(xy).collect::<Vec<_>>()).abs(), 100.);
+        assert_eq!(signed_area(&interiors[0].0.iter().map(xy).collect::<Vec<_>>()).abs(), 6.);
     }
 
     #[test]

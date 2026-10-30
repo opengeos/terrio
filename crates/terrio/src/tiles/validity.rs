@@ -56,6 +56,7 @@ fn crossing(o: IPt, a: IPt, b: IPt, c: IPt, d: IPt) -> bool {
 
 struct Ring {
     points: Vec<IPt>,
+    bounds: (IPt, IPt),
     polygon: usize,
     hole: bool,
 }
@@ -102,6 +103,11 @@ fn locate(p: Wide, ring: &[IPt]) -> Location {
 /// After intersection checks, every non-boundary probe has the same location.
 /// Midpoints replace JTS's incident-segment corner test without precision loss.
 fn nested(test: &Ring, target: &Ring) -> bool {
+    let ((lo_x, lo_y), (hi_x, hi_y)) = test.bounds;
+    let ((target_lo_x, target_lo_y), (target_hi_x, target_hi_y)) = target.bounds;
+    if lo_x < target_lo_x || lo_y < target_lo_y || hi_x > target_hi_x || hi_y > target_hi_y {
+        return false;
+    }
     for edge in test.points.windows(2) {
         for p in [(2 * edge[0].0 as i64, 2 * edge[0].1 as i64), (edge[0].0 as i64 + edge[1].0 as i64, edge[0].1 as i64 + edge[1].1 as i64)]
         {
@@ -145,7 +151,10 @@ pub(crate) fn is_valid(polygons: &[Polygon<IPt>]) -> bool {
                 return false;
             }
             by_polygon[polygon].push(rings.len());
-            rings.push(Ring { points, polygon, hole: index != 0 });
+            let bounds = points.iter().fold(((i32::MAX, i32::MAX), (i32::MIN, i32::MIN)), |(lo, hi), p| {
+                ((lo.0.min(p.0), lo.1.min(p.1)), (hi.0.max(p.0), hi.1.max(p.1)))
+            });
+            rings.push(Ring { points, bounds, polygon, hole: index != 0 });
         }
     }
     let mut segments = Vec::new();

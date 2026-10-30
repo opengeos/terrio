@@ -1305,8 +1305,10 @@ replacement and dedicated checks are documented in
 The independent repair regressions run with
 `cargo test -p terrio --lib tiles::repair`; encoder overflow/error propagation
 checks run with `cargo test -p terrio --lib tiles::vector`. The 51-case observed
-fixture is packaged in `crates/terrio/tests/data/make-valid.json` and matches the
-reviewed JSON in `docs/`. No native GEOS library is needed by these Rust tests.
+fixture is packaged once in `crates/terrio/tests/data/make-valid.json`; it is the
+unchanged reviewed observation set from the independent handoff. No native GEOS
+library is needed by these Rust tests. The normal fixture collector and tile
+comparator are maintained; the one-off agent launcher and scaffold are archived.
 
 `scripts/compare_make_valid_tiles.py` compares every feature geometry and presence
 against GDAL across countries (Antarctica excluded), US counties and independently

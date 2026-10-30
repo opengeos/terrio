@@ -1896,6 +1896,18 @@ test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom
     geometry: { type: "MultiPoint", coordinates: [[0, 0], [10, 1], [11, 10], [1, 12], [5, 5], [5, 9], [2, 3], [8, 3]] },
   };
   assert.equal(terrio.concaveHull(pts, 0, { allowHoles: false }).toGeoJSON().features[0].geometry.type, "Polygon");
+  const hugeCoordinates = [[0, 0], [1e155, 1e155], [2e155, 0]];
+  const hugeLine = { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: hugeCoordinates } };
+  assert.deepEqual(terrio.simplify(hugeLine, 0.3).toGeoJSON().features[0].geometry.coordinates, hugeCoordinates);
+  const pinched = {
+    type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [
+      [[0, 0], [10, 0], [10, 10], [0, 10], [0, 5], [0, 0]],
+      [[0, 5], [3, 3], [3, 7], [0, 5]],
+    ] },
+  };
+  const pinchedHull = terrio.concaveHull(pinched, 0.3, { tight: true, allowHoles: true }).toGeoJSON().features[0].geometry;
+  assert.equal(pinchedHull.type, "Polygon");
+  assert.deepEqual(pinchedHull.coordinates.map((ring) => ring.length), [6, 4]);
   // GEOS observation: polygon erosion at 0.1 keeps both triangles separate.
   const triangles = {
     type: "Feature", properties: {},

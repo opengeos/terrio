@@ -2,9 +2,13 @@
 
 The implementation replaces the deferred tile-grid repair formerly in
 `crates/terrio/src/tiles/valid.rs`. The public `ops/topology.rs` operation is a
-separate path and is outside this replacement. The behavioral contract and
-research are in [the specification](make-valid-clean-room-spec.md) and
-[the process record](make-valid-clean-room-process.md).
+separate path and is outside this replacement. The behavioral contract is in
+[the specification](make-valid-clean-room-spec.md). This record
+preserves the implementation's provenance; the one-off agent launcher and package
+scaffold are not part of Terrio's maintained tooling. Runtime and regression
+tests do not depend on an AI provider, a sandbox launcher or login credentials.
+The specification's original observation filename now refers to the unchanged
+canonical fixture at `crates/terrio/tests/data/make-valid.json`.
 
 ## Information boundary and authorship
 
@@ -30,13 +34,21 @@ initial tools were Bash, Read and Edit. Only candidate source, notes, scratch
 build output and fresh agent state are writable.
 
 Model inference uses a private Unix socket exposed to the sandbox. A host broker
-forwards only approved Messages API routes and the exact model to Anthropic;
-provider credentials remain on the host. The sandbox has a local loopback relay
+forwards only approved Messages API routes and the exact model to Anthropic.
+The provider credential is used by that broker for its HTTPS requests and is
+not mounted into the implementer's sandbox. The sandbox has a local loopback relay
 inside its private network namespace, with no host web listener or general proxy.
 The broker audit records model, tool names and request hashes, never credentials.
 The first run used the initial route/model/tool restrictions; subsequent gateway
 hardening also rejects URL-backed documents and remote MCP inputs. These later
 source edits do not retroactively change the policy of an already running process.
+
+The original run used a saved Claude CLI OAuth access token in the host broker
+for requests to Anthropic. That credential handling was inappropriate for a
+reusable repository script. The launcher, gateway and standalone package tooling
+were removed from the maintained tree. The original setup and authentication
+remain documented as historical facts; no token value or credential file was
+included in the PR. The original sealed archive is retained separately.
 
 The source-exposed custodian authored the behavioral package, isolation tools,
 reference adapter and production integration. The implementer authored the
@@ -72,6 +84,14 @@ files were compared against the final implementer delivery after changing only
 body was checked for exact equality. The custodian authored the caller error
 propagation, checked encoder arithmetic, R-tree adapter and test wiring.
 
+Review follow-up adds checks outside the delivered kernel: `tiles/repair_checks.rs`
+compares complete fixture rings after normalizing ring starts, directions and
+polygon/hole order, preserving connectivity and grouping. Valid-input fixtures
+are excluded from that exact comparison because their contract permits added
+contact nodes. A writer-entry regression also checks propagation of unsupported
+coordinate deltas with large extent and buffer options. The delivered kernel and
+its original tests remain unchanged.
+
 Final PR packaging rechecked every source hash against the sealed delivery
 archive (SHA256 `5257385a86089d787eee6adf80102872d5fd84c3e0858828bc2ccac1a99cc1ab`).
 The original ledger had retained an earlier hash for the standalone test file;
@@ -89,10 +109,14 @@ scope and points here for the later repair replacement.
 The original [design](make-valid-clean-room/design.md),
 [exposure record](make-valid-clean-room/exposure.md),
 [standalone validation](make-valid-clean-room/validation.md),
-[approved manifest](make-valid-clean-room/approved-manifest.json),
-[run metadata](make-valid-clean-room/run.json) and
+[approved manifest](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room/approved-manifest.json),
+[run metadata](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room/run.json) and
 [process-control message](make-valid-clean-room/custodian-control.json) are
-preserved. The standalone validation predates production integration and its
+preserved, with verbose one-off setup records pinned to the original reviewed
+commit. The [custodian process research](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room-process.md)
+and [package-preparation checks](https://github.com/Mavrick-F/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-handoff-validation.json)
+are historical references rather than setup instructions for Terrio contributors.
+The standalone validation predates production integration and its
 outstanding integration list is historical; the production results below apply.
 
 The independent design uses an exact planar arrangement, rational intersection

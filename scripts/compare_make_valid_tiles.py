@@ -147,7 +147,7 @@ def main():
     parser.add_argument("--terrio", required=True, type=Path)
     parser.add_argument("--data", required=True, type=Path, help="directory containing countries.geojson and UScounties.gpkg")
     parser.add_argument("--scratch", required=True, type=Path)
-    parser.add_argument("--fixtures", type=Path, default=Path("docs/make-valid-clean-room-observations.json"))
+    parser.add_argument("--fixtures", type=Path, default=Path("crates/terrio/tests/data/make-valid.json"))
     parser.add_argument("--baseline-dir", type=Path, help="previous binary's frozen tile archives; unchanged known GDAL differences are reported separately")
     args = parser.parse_args()
     args.scratch.mkdir(parents=True, exist_ok=True)

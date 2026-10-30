@@ -268,3 +268,16 @@ pub(crate) fn triangles(coords: &[Coord]) -> Result<Vec<[usize; 3]>> {
     }
     s.triangles()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn underflowing_sites_return_a_bounded_reference_failure() {
+        // Executable GEOS 3.14.1 also reports a locate failure here. This
+        // source-compatible port does not claim exact predicates at every scale.
+        let coords = [Coord::xy(0., 0.), Coord::xy(1e-200, 0.), Coord::xy(0., 1e-200)];
+        assert!(matches!(triangles(&coords), Err(Error::InvalidArgument(message)) if message.contains("failed to converge")));
+    }
+}

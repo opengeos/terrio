@@ -20,9 +20,10 @@ technical inventory, not a repository-wide legal clearance.
 
 The two implementation stages remain separate commits. The second stage includes
 the complete repair retirement, independent design and exposure records, approved
-input manifest, import hashes, behavioral fixtures, reproducible handoff tools
-and production comparison reports. Root and crate `NOTICE` distinguish the
-EDL-1.0 JTS ports from the independent MIT repair. The CLI guide, README and
+input manifest, import hashes, behavioral fixtures and production comparison
+reports. One-off agent launchers, package scaffolding and verbose setup records
+are archived rather than included as maintained tooling. Root and crate `NOTICE`
+distinguish the EDL-1.0 JTS ports from the independent MIT repair. The CLI guide, README and
 acknowledgements describe the final implementation rather than the retired port.
 
 ## Remaining references and boundaries

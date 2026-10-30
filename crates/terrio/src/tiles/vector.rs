@@ -1333,6 +1333,24 @@ mod tests {
     }
 
     #[test]
+    fn tile_writer_propagates_polygon_delta_overflow() {
+        let half = tile_dim(0) / 2.0;
+        let mut layer = Layer::new("wide").with_epsg(3857);
+        layer
+            .add_feature(
+                Some(Geometry::polygon(
+                    vec![Coord::xy(-3.0 * half, 0.0), Coord::xy(half, 0.0), Coord::xy(half, half), Coord::xy(-3.0 * half, half)],
+                    vec![],
+                )),
+                &[],
+            )
+            .unwrap();
+        let options =
+            TileWriteOptions { min_zoom: Some(0), max_zoom: Some(0), extent: i32::MAX as u32, buffer: u32::MAX, ..Default::default() };
+        assert!(matches!(make_tiles(&[layer], &options), Err(Error::InvalidData(message)) if message.contains("coordinate delta")));
+    }
+
+    #[test]
     fn inverted_rectangles_cover_no_tile() {
         assert_eq!(tiles_in_rect(4, (1e6, 0.0, -1e6, 1e6)), Some(Vec::new()));
         assert_eq!(tiles_in_rect(4, (0.0, 1e6, 1e6, -1e6)), Some(Vec::new()));

@@ -16,7 +16,7 @@ pub(crate) fn leaf_order(boxes: &[Envelope]) -> Vec<usize> {
     }
     let centre = |id: usize, axis: usize| {
         let b = boxes[id];
-        if axis == 0 { (b.0 + b.2) / 2.0 } else { (b.1 + b.3) / 2.0 }
+        if axis == 0 { b.0.midpoint(b.2) } else { b.1.midpoint(b.3) }
     };
     items.sort_by(|&a, &b| centre(a, 0).partial_cmp(&centre(b, 0)).unwrap_or(std::cmp::Ordering::Equal));
     let leaf_count = items.len().div_ceil(CAPACITY);
@@ -26,4 +26,24 @@ pub(crate) fn leaf_order(boxes: &[Envelope]) -> Vec<usize> {
         slice.sort_by(|&a, &b| centre(a, 1).partial_cmp(&centre(b, 1)).unwrap_or(std::cmp::Ordering::Equal));
     }
     items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packing_preserves_distinct_centres_near_coordinate_limits() {
+        // More than one slice is essential: its X partition must be correct
+        // before Y sorting, even when the unhalved centre sum overflows.
+        let boxes = (0..24)
+            .rev()
+            .map(|i| {
+                let x = 1e308 + i as f64 * 1e306;
+                (x, i as f64, x, i as f64)
+            })
+            .collect::<Vec<_>>();
+        let normalized = boxes.iter().map(|b| (b.0 * 0.5, b.1, b.2 * 0.5, b.3)).collect::<Vec<_>>();
+        assert_eq!(leaf_order(&boxes), leaf_order(&normalized));
+    }
 }

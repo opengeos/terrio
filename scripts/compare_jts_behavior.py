@@ -45,6 +45,55 @@ def cases():
             tight=tight,
         )
 
+    # Overflow must not turn an unmeasurable section into a within-tolerance
+    # simplification. GEOS retains the middle coordinate of this original input.
+    yield case(
+        "overflow-distance",
+        "simplify",
+        LineString([(0, 0), (1e155, 1e155), (2e155, 0)]),
+        0.3,
+    )
+
+    # Observed empty-result contract, including invalid zero-area polygons.
+    for name, polygon in [
+        ("point", Polygon([(1, 1)] * 4)),
+        ("collinear", Polygon([(0, 0), (1, 1), (2, 2)])),
+        ("bowtie", Polygon([(0, 0), (2, 2), (0, 2), (2, 0)])),
+        ("underflow", Polygon([(0, 0), (1e-200, 0), (0, 1e-200)])),
+    ]:
+        for tight in (False, True):
+            for holes in (False, True):
+                yield case(
+                    f"zero-area-{name}-{tight}-{holes}",
+                    "polygon_hull",
+                    polygon,
+                    0.3,
+                    holes,
+                    tight,
+                )
+
+    # A valid hole touching its shell at a point away from the traversal start
+    # must remain a separate ring. Reflect and cycle the exterior independently.
+    shell = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 5)]
+    for reflected in (False, True):
+        sign = -1 if reflected else 1
+        for start in range(len(shell)):
+            exterior = shell[start:] + shell[:start]
+            polygon = Polygon(
+                [(sign * x, y) for x, y in exterior],
+                [[(0, 5), (sign * 3, 3), (sign * 3, 7)]],
+            )
+            for tight in (False, True):
+                for holes in (False, True):
+                    yield case(
+                        f"pinched-hole-{reflected}-{start}-{tight}-{holes}",
+                        "polygon_hull",
+                        polygon,
+                        0.3,
+                        holes,
+                        tight,
+                    )
+
     # Observed component-jump probes: processed and unprocessed components use
     # different representative points. Cycle ring starts and reverse part order.
     triangle = [(0, 0), (1, 0), (-43, 2)]
@@ -248,6 +297,12 @@ def cases():
             ]
         )
         yield case(f"str-{n}", "strtree", g)
+
+    yield case(
+        "str-overflow-centres",
+        "strtree",
+        GeometryCollection([Point(1e308 + i * 1e306, i) for i in reversed(range(24))]),
+    )
 
     for name, parts in [
         ("str-ties", [Point((i % 3) * 10, (i // 3) % 3) for i in range(35)]),

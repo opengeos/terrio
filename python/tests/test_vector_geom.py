@@ -51,6 +51,15 @@ def test_simplify_and_segmentize():
     assert simple[0]["geometry"]["coordinates"] == [[0, 0], [10, 0]]
     assert simple[2]["geometry"] is None
     assert simple[0]["properties"] == {"k": "a", "v": 1}
+    huge_coordinates = [[0, 0], [1e155, 1e155], [2e155, 0]]
+    huge = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {"type": "LineString", "coordinates": huge_coordinates},
+    }
+    result = features(terrio.simplify(huge, 0.3))[0]["geometry"]["coordinates"]
+    # GeoJSON may serialize integral binary64 coordinates as JSON integers.
+    assert [[float(value) for value in point] for point in result] == huge_coordinates
     dense = features(terrio.segmentize(LINES, 3.0))
     assert len(dense[0]["geometry"]["coordinates"]) == 5
     with pytest.raises(terrio.InvalidArgumentError):
@@ -79,10 +88,27 @@ def test_hulls():
     }
     result = features(terrio.concave_hull(triangles, 0.1))[0]["geometry"]
     assert result["type"] == "MultiPolygon"
+    assert len(result["coordinates"]) == 2
     assert all(len(polygon) == 1 for polygon in result["coordinates"])
     assert {frozenset(map(tuple, p[0])) for p in result["coordinates"]} == {
         frozenset(map(tuple, p[0])) for p in triangles["geometry"]["coordinates"]
     }
+    pinched = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+                [[0, 0], [10, 0], [10, 10], [0, 10], [0, 5], [0, 0]],
+                [[0, 5], [3, 3], [3, 7], [0, 5]],
+            ],
+        },
+    }
+    repaired = features(terrio.concave_hull(pinched, 0.3, tight=True, allow_holes=True))[0][
+        "geometry"
+    ]
+    assert repaired["type"] == "Polygon"
+    assert [len(ring) for ring in repaired["coordinates"]] == [6, 4]
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.concave_hull(POINTS, 2.0)
 

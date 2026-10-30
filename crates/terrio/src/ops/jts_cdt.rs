@@ -283,6 +283,11 @@ fn in_circle(a: P, b: P, c: P, p: P) -> bool {
 }
 fn improve(faces: &mut [[usize; 3]], pts: &[P]) {
     let mut adj = adjacency(faces);
+    // JTS 1.20.0 TriDelaunayImprover uses 200 passes and scans size - 1
+    // source triangles, including the final triangle only as a neighbor.
+    // Preserve that order: concave erosion depends on triangle construction.
+    // As in JTS, exhausting the cap retains the last mesh; full convergence
+    // is not guaranteed for every floating-point input.
     for _ in 0..200 {
         let mut changed = false;
         for t in 0..faces.len().saturating_sub(1) {
@@ -331,18 +336,32 @@ fn improve(faces: &mut [[usize; 3]], pts: &[P]) {
         }
     }
 }
-/// Triangulates one polygon, preserving JTS's ear creation and Delaunay flip order.
-/// Ring IDs refer to `coords`; rings may be open or closed. Empty holes are ignored.
-pub(crate) fn triangulate(coords: &[Coord], shell: Vec<usize>, holes: Vec<Vec<usize>>) -> Result<Vec<[usize; 3]>> {
-    let pts = coords.iter().map(xy).collect::<Vec<_>>();
-    let sites = RTree::bulk_load(pts.iter().enumerate().map(|(i, p)| GeomWithData::new([p.0, p.1], i)).collect());
-    let shell = nodes(&normalize(shell, &pts, true), &pts, &sites);
-    if shell.len() < 3 {
-        return Err(failure());
+/// Shared immutable sites for all polygons in one hull computation.
+pub(crate) struct Triangulator {
+    pts: Vec<P>,
+    sites: RTree<GeomWithData<[f64; 2], usize>>,
+}
+
+impl Triangulator {
+    pub(crate) fn new(coords: &[Coord]) -> Self {
+        let pts = coords.iter().map(xy).collect::<Vec<_>>();
+        let sites = RTree::bulk_load(pts.iter().enumerate().map(|(i, p)| GeomWithData::new([p.0, p.1], i)).collect());
+        Self { pts, sites }
     }
-    let holes = holes.into_iter().filter(|h| !h.is_empty()).map(|h| nodes(&normalize(h, &pts, false), &pts, &sites)).collect::<Vec<_>>();
-    let ring = joined(shell, holes, &pts)?;
-    let mut faces = ears(&ring, &pts)?;
-    improve(&mut faces, &pts);
-    Ok(faces)
+
+    /// Preserves JTS's ear creation and flip order. Ring IDs refer to the
+    /// constructor's coordinates; rings may be open or closed. Empty holes are ignored.
+    pub(crate) fn triangulate(&self, shell: Vec<usize>, holes: Vec<Vec<usize>>) -> Result<Vec<[usize; 3]>> {
+        let pts = &self.pts;
+        let shell = nodes(&normalize(shell, pts, true), pts, &self.sites);
+        if shell.len() < 3 {
+            return Err(failure());
+        }
+        let holes =
+            holes.into_iter().filter(|h| !h.is_empty()).map(|h| nodes(&normalize(h, pts, false), pts, &self.sites)).collect::<Vec<_>>();
+        let ring = joined(shell, holes, pts)?;
+        let mut faces = ears(&ring, pts)?;
+        improve(&mut faces, pts);
+        Ok(faces)
+    }
 }

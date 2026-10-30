@@ -207,6 +207,7 @@ impl TaggedSimplifier {
             let size = if output.is_empty() { 0 } else { output.len() + 1 };
             let enough = size >= minimum || depth + 1 >= minimum;
             let valid = enough
+                && distance >= 0.0
                 && distance <= tolerance
                 && !self.intersects(p, q, |s| s.owner == owner && s.start >= a && s.start < b)
                 && !self.jumps(owner, &self.points[owner][a..=b].windows(2).map(|s| (s[0], s[1])).collect::<Vec<_>>(), (p, q));
@@ -485,6 +486,14 @@ mod tests {
 
     fn xy(cs: &[Coord]) -> Vec<(f64, f64)> {
         cs.iter().map(|c| (c.x, c.y)).collect()
+    }
+
+    #[test]
+    fn simplification_keeps_unmeasurable_sections() {
+        // Executable GEOS 3.14.1 retains the middle vertex when the
+        // point-to-segment arithmetic overflows, rather than ignoring it.
+        let input = Geometry::LineString(line(&[(0., 0.), (1e155, 1e155), (2e155, 0.)]));
+        assert_eq!(simplify_preserve_topology(&input, 0.3).unwrap(), input);
     }
 
     #[test]

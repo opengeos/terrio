@@ -38,6 +38,11 @@ segments into an initially empty output index. A generated 387-vertex polygon
 reproduced an `rstar` panic when insertion was mixed with bulk loading; its captured
 GEOS simplification is replayed by a dedicated regression.
 
+If all point-to-segment distances are uncomparable after floating-point overflow,
+the simplifier subdivides the section rather than interpreting its initial
+distance sentinel as within tolerance. A three-coordinate line around 1e155
+records the executable GEOS behavior.
+
 A real multipart contact case minimized to a triangle and quadrilateral. Cyclic
 ring starts, reflections and component-order probes establish a behavioral
 adaptation to JTS: once a component is complete, its first retained coordinate
@@ -88,7 +93,7 @@ rather than silently treating JTS/GEOS differences as identical.
 ```sh
 cargo build -p terrio --example geometry_probe
 python scripts/compare_jts_behavior.py \
-  --probe "$CARGO_TARGET_DIR/debug/examples/geometry_probe" \
+  --probe "${CARGO_TARGET_DIR:-target}/debug/examples/geometry_probe" \
   --output /path/to/comparison.json
 # Optional JTS observations: compile the Java adapter against jts-core 1.20.0,
 # then pass --java /path/to/java --jts-classpath classes:jts-core-1.20.0.jar.
@@ -120,10 +125,30 @@ Natural Earth hull differences and a two-triangle regression isolated this order
 requirement: an equivalent constrained triangle set with another construction
 sequence can retain materially different fill.
 
+The polygon triangulator shares its immutable coordinate copy and vertex R-tree
+across the frame and all original polygons. Its Delaunay improvement deliberately
+retains JTS 1.20.0's `size - 1` source-triangle scan and 200-pass limit; the final
+triangle remains eligible as a neighbor. Reaching that limit retains the last
+mesh, as JTS does, without guaranteeing convergence for every floating-point
+input. Polygon hole-seed scans advance monotonically because triangle degrees
+only decrease and edge lengths stay fixed. Integer validity containment probes
+reject non-covering ring envelopes before scanning points. Boundary walks are
+split at every repeated vertex so a hole touching its shell remains a separate simple ring.
+Observed zero-area polygon inputs, including both zero and nonzero extents,
+return an empty polygon before triangulation.
+
+Numeric limits are tested explicitly. A triangle of sites around 1e-200 makes
+both executable GEOS 3.14.1 and this point triangulator report a locate failure;
+Terrio returns a bounded error. Rescaling only one orientation test would not
+provide scale-independent incircle, frame, distance and area calculations. The
+polygon API returns the observed empty result when area underflows to zero,
+before the frame calculation. STR centres use overflow-safe binary64 midpoints,
+with a multi-slice regression near the largest finite coordinate.
+
 ## Validation of this replacement
 
 The final Linux reference run used GEOS 3.14.1, GDAL 3.13.3 and JTS 1.20.0.
-The fixed-seed corpus contains **1,554 observations**: 1,240 native
+The fixed-seed corpus contains **1,612 observations**: 1,298 native
 geometry/ordering results match exactly, 3 STR results differ only in legal equal-key
 ordering, and 311 integer validity decisions are replayed by Rust unit tests.
 The separate index-panic regression adds one captured simplification observation.

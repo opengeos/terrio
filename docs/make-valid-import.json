@@ -77,15 +77,22 @@
   },
   "fallible_entry_body_identical": true,
   "final_integration_file_hashes": {
-    "crates/terrio/src/tiles/vector.rs": "f5fc9f2a7b4437558a5a73bfd99a79ae82d97a7c8b8b2955fdc7d0f7b0bc42d6",
+    "crates/terrio/src/tiles/vector.rs": "f479efd1cb81a2819ab755f9de089891bb6a3f38fa885042eb6fc6824242a16a",
     "crates/terrio/src/tiles/boxes.rs": "7f6a3334e5b9beaba22adb1126848c24a4b62f42585ff27409786da15d63909f",
-    "crates/terrio/src/tiles/validity.rs": "44c399307e22d9d2d0ca38dda6ee64b867ce08616fd2c4fdeef3029e3bf5f2a6",
-    "crates/terrio/src/tiles/mod.rs": "c5acfb23ad2bbd45c07020e2520b6f8bd34a788490188134878cfba80e7a5eb3"
+    "crates/terrio/src/tiles/validity.rs": "e956750a75dbba17becead609a720cad0d2379b4cbbd6acfb54868d4da57eb44",
+    "crates/terrio/src/tiles/mod.rs": "9f877279722dc2476b75c1bfc3dc24d37a6f6168581efdf1b8047a0442d73257"
   },
   "sealed_delivery": {
     "archive": "opus5.5-2026-10-30.tar.gz",
     "sha256": "5257385a86089d787eee6adf80102872d5fd84c3e0858828bc2ccac1a99cc1ab",
     "member_prefix": "opus5.5-2026-10-30/package/",
     "verification": "All source hashes checked against sealed archive; the three kernel module files also compared byte-for-byte after crate -> super imports and rustfmt."
-  }
+  },
+  "pre_review_integration_file_hashes": {
+    "crates/terrio/src/tiles/vector.rs": "f5fc9f2a7b4437558a5a73bfd99a79ae82d97a7c8b8b2955fdc7d0f7b0bc42d6",
+    "crates/terrio/src/tiles/boxes.rs": "7f6a3334e5b9beaba22adb1126848c24a4b62f42585ff27409786da15d63909f",
+    "crates/terrio/src/tiles/validity.rs": "44c399307e22d9d2d0ca38dda6ee64b867ce08616fd2c4fdeef3029e3bf5f2a6",
+    "crates/terrio/src/tiles/mod.rs": "c5acfb23ad2bbd45c07020e2520b6f8bd34a788490188134878cfba80e7a5eb3"
+  },
+  "review_followup": "Delivered repair kernel and original tests unchanged. Added integration-side ring-connectivity checks in tiles/repair_checks.rs, an end-to-end delta-overflow regression, and an envelope prefilter in the separate JTS validity checker."
 }
