@@ -135,7 +135,7 @@ mod tests {
             ("fid INTEGER, geom POINT, PRIMARY KEY(fid,geom)", false),
             ("geom INTEGER PRIMARY KEY", false),
         ] {
-            let table = |sql: &str, rows| Table { schema: Schema::parse(sql).unwrap(), rows };
+            let table = |sql: &str, rows| Table { schema: Schema::parse(sql).unwrap(), rows, evaluator: None };
             let text = |value: &str| Value::Text(value.into());
             let db = Snapshot {
                 objects: vec![],

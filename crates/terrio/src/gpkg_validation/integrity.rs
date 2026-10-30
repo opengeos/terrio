@@ -392,7 +392,7 @@ impl Checker {
                 if entry.0 != "table" || !plans.iter().any(|p| p.child == entry.1) {
                     return Ok(());
                 }
-                let row = self.db.tables[&entry.1].decode(record, rowid, encoding)?;
+                let row = self.db.tables[&entry.1].decode(&entry.1, record, rowid, encoding)?;
                 for p in plans.iter_mut().filter(|p| p.child == entry.1) {
                     if p.child_columns.iter().any(|i| matches!(row[*i], Value::Null) || matches!(row[*i],Value::Real(v) if v.is_nan())) {
                         continue;
@@ -430,7 +430,7 @@ impl Checker {
                 if entry.0 != "table" || !plans.iter().any(|p| p.parent.as_deref() == Some(entry.1.as_str()) && !p.missing.is_empty()) {
                     return Ok(());
                 }
-                let row = self.db.tables[&entry.1].decode(record, rowid, encoding)?;
+                let row = self.db.tables[&entry.1].decode(&entry.1, record, rowid, encoding)?;
                 for p in plans.iter_mut().filter(|p| p.parent.as_deref() == Some(entry.1.as_str()) && !p.missing.is_empty()) {
                     let key =
                         p.parent_columns.iter().zip(&p.columns).map(|(i, column)| atom(&row[*i], column, true)).collect::<Option<Vec<_>>>();
@@ -563,6 +563,11 @@ add('missing country','CREATE TABLE child(id INTEGER PRIMARY KEY,country_id INTE
 for rows in ['',"INSERT INTO child VALUES(NULL)","INSERT INTO child VALUES(1)"]:
  add('absent parent '+rows,'CREATE TABLE child(a REFERENCES missing(a));'+rows)
  add('nonunique parent '+rows,'CREATE TABLE p(a);CREATE TABLE child(a REFERENCES p(a));'+rows)
+for storage in ['VIRTUAL','STORED']:
+ for value in ['1','2','NULL']:
+  add('generated child '+storage+' '+value,'CREATE TABLE p(a INTEGER PRIMARY KEY);CREATE TABLE child(seed INT,a INT AS(seed+1) '+storage+' REFERENCES p);INSERT INTO p VALUES(2);INSERT INTO child(seed) VALUES('+value+')')
+  add('generated parent '+storage+' '+value,'CREATE TABLE p(seed INT,a INT AS(seed+1) '+storage+' UNIQUE);CREATE TABLE child(a REFERENCES p(a));INSERT INTO p(seed) VALUES(1);INSERT INTO child VALUES('+value+')')
+add('generated parent text affinity and collation',"CREATE TABLE p(seed INT,a TEXT COLLATE NOCASE AS(seed||'x') UNIQUE);CREATE TABLE child(a REFERENCES p(a));INSERT INTO p(seed) VALUES(1);INSERT INTO child VALUES('1X')")
 add('implicit primary key','CREATE TABLE p(a INTEGER PRIMARY KEY);CREATE TABLE child(x REFERENCES p);INSERT INTO p VALUES(-1);INSERT INTO child VALUES(-1)')
 add('no implicit primary key','CREATE TABLE p(a UNIQUE);CREATE TABLE child(x REFERENCES p)')
 add('composite key','CREATE TABLE p(a TEXT,b INTEGER,PRIMARY KEY(a,b));CREATE TABLE child(x,y,FOREIGN KEY(x,y) REFERENCES p);INSERT INTO p VALUES(\'one\',1);INSERT INTO child VALUES(\'one\',1)')

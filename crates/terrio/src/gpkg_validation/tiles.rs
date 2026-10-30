@@ -274,7 +274,7 @@ impl Checker {
                 return Ok(());
             };
             let table = &self.db.tables[&entry.1];
-            let values = table.decode(record, rowid, text_encoding)?;
+            let values = table.decode(&entry.1, record, rowid, text_encoding)?;
             let zoom = table.get(&values, "zoom_level").and_then(Value::as_i64);
             let matrix = zoom.and_then(|zoom| pyramid.matrices.iter().find(|matrix| matrix.zoom == zoom));
             if let Some(matrix) = matrix {

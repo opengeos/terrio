@@ -209,7 +209,10 @@ impl Checker {
                 // A column named ROWID shadows SQLite's hidden rowid. Preserve
                 // SQLite lookup semantics without retaining the user's rows.
                 let id = if let Some(index) = table.schema.columns.iter().position(|c| c.name.eq_ignore_ascii_case("rowid")) {
-                    table.decode(record, rowid, encoding)?.get(index).and_then(|value| row_identifier(&table.schema.columns[index], value))
+                    table
+                        .decode(&entry.1, record, rowid, encoding)?
+                        .get(index)
+                        .and_then(|value| row_identifier(&table.schema.columns[index], value))
                 } else {
                     rowid
                 };

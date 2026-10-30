@@ -285,7 +285,7 @@ impl Checker {
                 return Ok(());
             };
             let table = &self.db.tables[&entry.1];
-            let row = table.decode(record, rowid, encoding)?;
+            let row = table.decode(&entry.1, record, rowid, encoding)?;
             c.tiles += 1;
             if let Some(id) = table.get(&row, "id").and_then(metadata::integer) {
                 c.missing_ids.remove(&id);

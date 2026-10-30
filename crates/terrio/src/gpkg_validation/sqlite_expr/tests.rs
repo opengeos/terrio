@@ -165,11 +165,15 @@ print(json.dumps(cases))
     assert!(cases.len() > 25);
     for case in &cases {
         let bytes = std::fs::read(case["path"].as_str().unwrap()).unwrap();
-        let db = Snapshot::read(&bytes).unwrap();
-        let mut checker = Checker { db, report: CoreReport::default() };
-        let result = checker.constraints(&bytes);
-        let valid = result.is_ok() && checker.report.errors.is_empty();
-        assert_eq!(valid, case["valid"].as_bool().unwrap(), "{}: {result:?}: {:?}", case["name"], checker.report.errors);
+        let (valid, details) = match Snapshot::read(&bytes) {
+            Ok(db) => {
+                let mut checker = Checker { db, report: CoreReport::default() };
+                let result = checker.constraints(&bytes);
+                (result.is_ok() && checker.report.errors.is_empty(), format!("{result:?}: {:?}", checker.report.errors))
+            }
+            Err(error) => (false, error.to_string()),
+        };
+        assert_eq!(valid, case["valid"].as_bool().unwrap(), "{}: {details}", case["name"]);
     }
     eprintln!("{} SQLite CHECK/generated comparison cases passed", cases.len());
 }

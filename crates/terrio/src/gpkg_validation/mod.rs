@@ -67,9 +67,24 @@ impl CoreReport {
 struct Table {
     schema: Schema,
     rows: Vec<Vec<Value>>,
+    evaluator: Option<sqlite_expr::RowEvaluator>,
 }
 impl Table {
-    fn decode(&self, record: &[u8], rowid: Option<i64>, encoding: u32) -> Result<Vec<Value>> {
+    fn from_sql(name: &str, sql: &str) -> Result<Self> {
+        let schema = Schema::parse(sql)?;
+        let evaluator = if schema.virtual_module.is_none() { Some(sqlite_expr::RowEvaluator::new(name, &schema)?) } else { None };
+        Ok(Self { schema, rows: Vec::new(), evaluator })
+    }
+    /// The logical SQLite row, including virtual generated values. All streaming
+    /// validation passes share the plan compiled once while loading the schema.
+    fn decode(&self, name: &str, record: &[u8], rowid: Option<i64>, encoding: u32) -> Result<Vec<Value>> {
+        let values = self.decode_physical(record, rowid, encoding)?;
+        match &self.evaluator {
+            Some(evaluator) => evaluator.row(name, &self.schema, values, rowid, encoding),
+            None => Ok(values),
+        }
+    }
+    fn decode_physical(&self, record: &[u8], rowid: Option<i64>, encoding: u32) -> Result<Vec<Value>> {
         let stored = sqlite_repack::decode_record(record, encoding)?;
         let mut values = vec![Value::Null; self.schema.columns.len()];
         let mut order: Vec<_> =
@@ -162,18 +177,18 @@ impl Snapshot {
                 return Ok(());
             }
             if !tables.contains_key(&entry.1) {
-                tables.insert(entry.1.clone(), Table { schema: Schema::parse(&entry.4)?, rows: Vec::new() });
+                tables.insert(entry.1.clone(), Table::from_sql(&entry.1, &entry.4)?);
             }
             if metadata_table(&entry.1) {
                 let table = tables.get_mut(&entry.1).expect("inserted table");
-                let values = table.decode(record, rowid, encoding)?;
+                let values = table.decode(&entry.1, record, rowid, encoding)?;
                 table.rows.push(values);
             }
             Ok(())
         })?;
         for entry in &objects {
             if entry.0 == "table" && !tables.contains_key(&entry.1) {
-                tables.insert(entry.1.clone(), Table { schema: Schema::parse(&entry.4)?, rows: Vec::new() });
+                tables.insert(entry.1.clone(), Table::from_sql(&entry.1, &entry.4)?);
             }
         }
         Ok(Self { objects, tables })
@@ -311,7 +326,7 @@ impl Checker {
             }
             let Some(warned) = warned.get_mut(entry.1.as_str()) else { return Ok(()) };
             let table = &self.db.tables[&entry.1];
-            let values = table.decode(record, rowid, encoding)?;
+            let values = table.decode(&entry.1, record, rowid, encoding)?;
             for ((column, value), warned) in table.schema.columns.iter().zip(&values).zip(warned) {
                 if !*warned && let Some(warning) = content::warning(column, value) {
                     self.report.warnings.push(format!("{}: {warning}", entry.1));
@@ -537,6 +552,46 @@ fn check_core(bytes: &[u8]) -> CoreReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn generated_rows_reach_metadata_content_and_geometry_checks() {
+        use crate::drivers::vector::sqlite::{self as writer, Table as OutputTable, Value as OutputValue};
+        let mut point = b"GP\0\x01".to_vec();
+        point.extend(4326i32.to_le_bytes());
+        point.push(1);
+        point.extend(1u32.to_le_bytes());
+        point.extend(1f64.to_le_bytes());
+        point.extend(2f64.to_le_bytes());
+        for (blob, valid) in [(point, true), (vec![0, 1, 2], false)] {
+            let text = |value: &str| OutputValue::Text(value.into());
+            let tables = [
+                OutputTable {
+                    name: "sample".into(),
+                    sql: "CREATE TABLE sample(id INTEGER PRIMARY KEY,raw BLOB,geom POINT AS(raw),count SMALLINT AS(id+40000))".into(),
+                    rows: vec![(1, vec![OutputValue::Null, OutputValue::Blob(blob)])],
+                    autoindexes: vec![],
+                },
+                OutputTable {
+                    name: "gpkg_geometry_columns".into(),
+                    sql: "CREATE TABLE gpkg_geometry_columns(table_name TEXT,column_name TEXT,geometry_type_name TEXT,srs_id INTEGER AS(4326),z INTEGER,m INTEGER)".into(),
+                    rows: vec![(1, vec![text("sample"), text("geom"), text("POINT"), OutputValue::Int(0), OutputValue::Int(0)])],
+                    autoindexes: vec![],
+                },
+            ];
+            let bytes = writer::write_database(&tables, &[], 10400, 0x4750_4b47).unwrap();
+            let db = Snapshot::read(&bytes).unwrap();
+            assert!(db.tables["sample"].rows.is_empty());
+            let registry = &db.tables["gpkg_geometry_columns"];
+            assert_eq!(registry.get(&registry.rows[0], "srs_id"), Some(&Value::Int(4326)));
+            let mut checker = Checker { db, report: CoreReport::default() };
+            checker.user_content(&bytes, &["sample"]).unwrap();
+            assert_eq!(checker.report.warnings.len(), 1, "{:?}", checker.report);
+            assert!(checker.report.warnings[0].contains("count"));
+            checker.geometries(&bytes).unwrap();
+            assert_eq!(checker.report.errors.is_empty(), valid, "{:?}", checker.report);
+            assert!(checker.report.errors.iter().all(|e| e.requirement == 19));
+        }
+    }
     #[test]
     fn extension_requirements_keep_their_names_in_reports() {
         let core = Requirement::Core(19);
@@ -581,7 +636,7 @@ mod tests {
         ] {
             let db = Snapshot {
                 objects: vec![],
-                tables: BTreeMap::from([("t".into(), Table { schema: Schema::parse(sql).unwrap(), rows: vec![] })]),
+                tables: BTreeMap::from([("t".into(), Table { schema: Schema::parse(sql).unwrap(), rows: vec![], evaluator: None })]),
             };
             let mut checker = Checker { db, report: CoreReport::default() };
             checker.structure("t", 13, &rules, false);
@@ -603,7 +658,7 @@ mod tests {
         ] {
             let db = Snapshot {
                 objects: vec![],
-                tables: BTreeMap::from([("t".into(), Table { schema: Schema::parse(sql).unwrap(), rows: vec![] })]),
+                tables: BTreeMap::from([("t".into(), Table { schema: Schema::parse(sql).unwrap(), rows: vec![], evaluator: None })]),
             };
             let mut checker = Checker { db, report: CoreReport::default() };
             checker.attribute_table("t");
@@ -628,7 +683,10 @@ mod tests {
             })
             .collect();
         let mut checker = Checker {
-            db: Snapshot { objects: vec![], tables: BTreeMap::from([("gpkg_spatial_ref_sys".into(), Table { schema, rows })]) },
+            db: Snapshot {
+                objects: vec![],
+                tables: BTreeMap::from([("gpkg_spatial_ref_sys".into(), Table { schema, rows, evaluator: None })]),
+            },
             report: CoreReport::default(),
         };
         checker.spatial_references();

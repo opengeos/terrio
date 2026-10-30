@@ -231,7 +231,7 @@ impl Checker {
             if !registrations.iter().any(|r| r.name.eq_ignore_ascii_case(&entry.1)) {
                 return Ok(());
             }
-            let row = table.decode(record, rowid, encoding)?;
+            let row = table.decode(&entry.1, record, rowid, encoding)?;
             for r in registrations.iter().filter(|r| r.name.eq_ignore_ascii_case(&entry.1)) {
                 let Some(value) = table.schema.columns.iter().position(|c| c.name.eq_ignore_ascii_case(&r.field)).and_then(|i| row.get(i))
                 else {

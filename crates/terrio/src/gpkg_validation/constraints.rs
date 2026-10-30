@@ -167,13 +167,6 @@ fn make_index(name: String, table_name: &str, table: &Table, mut key: Vec<Slot>,
 }
 impl Checker {
     pub(super) fn constraints(&mut self, bytes: &[u8]) -> Result<()> {
-        let evaluators = self
-            .db
-            .tables
-            .iter()
-            .filter(|(_, t)| t.schema.virtual_module.is_none())
-            .map(|(name, table)| sqlite_expr::RowEvaluator::new(name, &table.schema).map(|plan| (name.clone(), plan)))
-            .collect::<Result<BTreeMap<_, _>>>()?;
         let mut indexes = Vec::new();
         let mut primary_order = BTreeMap::new();
         for (name, table) in &self.db.tables {
@@ -253,13 +246,8 @@ impl Checker {
                 return Ok(());
             }
             let table = &self.db.tables[&entry.1];
-            let physical = table.decode(record, rowid, encoding)?;
-            let row = if let Some(evaluator) = evaluators.get(&entry.1) {
-                evaluator.row(&entry.1, &table.schema, physical, rowid, encoding)?
-            } else {
-                physical
-            };
-            if let Some(evaluator) = evaluators.get(&entry.1) {
+            let row = table.decode(&entry.1, record, rowid, encoding)?;
+            if let Some(evaluator) = &table.evaluator {
                 for (i, check) in evaluator.checks.iter().enumerate() {
                     if !check.check(&sqlite_expr::Context {
                         columns: &table.schema.columns,
@@ -410,7 +398,7 @@ mod tests {
         let snapshot = Snapshot::read(&bytes).unwrap();
         sqlite_repack::inspect(&bytes, |entry, rowid, record| {
             if entry.1 == "t" {
-                let row = snapshot.tables["t"].decode(record, rowid, 1)?;
+                let row = snapshot.tables["t"].decode_physical(record, rowid, 1)?;
                 assert_eq!(row, [Value::Int(3), Value::Null, Value::Text("three".into()), Value::Int(6)]);
             }
             Ok(())
