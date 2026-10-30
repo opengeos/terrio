@@ -868,3 +868,18 @@ The source files carry this notice:
     May you do good and not evil.
     May you find forgiveness for yourself and forgive others.
     May you share freely, never taking more than you give.
+
+-------------------------------------------------------------------------------
+Eigen
+-------------------------------------------------------------------------------
+
+The symmetric 3x3 eigensolver in crates/terrio/src/pointcloud/filters/selfadjoint.rs
+(eigen_selfadjoint, qr_step and givens) is a port to Rust of Eigen 3.4's SelfAdjointEigenSolver,
+Tridiagonalization and JacobiRotation::makeGivens (https://gitlab.com/libeigen/eigen), which
+PDAL's covariance filters use. As Eigen is, that file is licensed under the Mozilla Public
+License, v. 2.0 (https://mozilla.org/MPL/2.0/); its source is at
+https://github.com/opengeos/terrio.
+
+  Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+  Copyright (C) 2010 Jitse Niesen <jitse@maths.leeds.ac.uk>
+  Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
