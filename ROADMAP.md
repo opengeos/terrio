@@ -86,6 +86,11 @@ commands. Command-group progress:
       Landed in [#374](https://github.com/opengeos/terrio/pull/374), with real-data
       conformance and measured remote header/full-check I/O.
 
+- [ ] Seek-optimized ZIP archives: create, append, list, optimize and validate through
+      Rust, CLI/MCP, Python and JavaScript, with lazy native/HTTP GeoTIFF member reads.
+      Proposed in [#404](https://github.com/opengeos/terrio/pull/404); 33 GDAL 3.13.3
+      VSI comparisons include eight SOZip archive/window checks and measured HTTP I/O.
+
 - [ ] Multidimensional mosaics: lazy coordinate-aligned numeric arrays across
       Rust, CLI/MCP, Python and JavaScript, with netCDF/Zarr output and real
       NOAA wind comparisons registered as `mdmosaic`. Proposed in
@@ -100,10 +105,16 @@ commands. Command-group progress:
       `terrio lineref`. Landed in [#305](https://github.com/opengeos/terrio/pull/305), through Rust,
       CLI/MCP, Python and JavaScript, with real-data comparisons registered in conformance.
 
-- [ ] GeoPackage repacking: encoded-record B-tree rebuilds, preserved rowids and SQL objects,
+- [x] GeoPackage repacking: encoded-record B-tree rebuilds, preserved rowids and SQL objects,
       auto-vacuum maps and journaled native replacement through Rust, CLI/MCP, Python and
-      JavaScript. Proposed in [#384](https://github.com/opengeos/terrio/pull/384); real-data
+      JavaScript. Landed in [#384](https://github.com/opengeos/terrio/pull/384); real-data
       comparisons are registered as `gpkg-repack`.
+
+- [ ] GeoPackage validation: SQLite integrity, core and extension metadata, geometries,
+      raster tiles and supported registered views through Rust, CLI/MCP, Python and JavaScript.
+      Proposed in [#403](https://github.com/opengeos/terrio/pull/403), with explicit incomplete
+      reports for unsupported SQL; 50 GDAL 3.13.3 validation attempts (34 compared,
+      16 not compared because GDAL refuses the malformed inputs), registered as `gpkg-validate`.
 
 - [x] Dataset identification: bounded 16 KiB headers, ordered input batches, recursive local
       discovery and explicit companion-file reader fallback through Rust, CLI/MCP, Python and
@@ -221,7 +232,8 @@ commands. Command-group progress:
       zoom levels as overviews, and vector tiles (MVT) as layers, as GDAL's MBTiles, PMTiles and MVT
       drivers read them; PMTiles read in place over HTTP; rasters written as tile pyramids and vector
       layers as MVT tiles (archives or directories), as GDAL writes them; invalid polygons repaired
-      as GDAL's MVT writer repairs them with GEOS; AVIF tiles; existing archives updated (rasters
+      by an independent tile-grid implementation, checked against GDAL/GEOS with documented
+      [compatibility limits](docs/make-valid-implementation.md); AVIF tiles; existing archives updated (rasters
       and vector layers appended). Checked against GDAL (`scripts/compare_tiles_with_gdal.py`).
 - [x] STAC items and collections as datasets. Done: items, item collections, collections and STAC
       API searches (local or remote, following `next` links) as footprint layers read as GDAL reads

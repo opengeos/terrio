@@ -29,9 +29,16 @@
 pub(crate) mod dataset;
 pub(crate) mod listing;
 pub(crate) mod md5;
+pub mod sozip;
 pub(crate) mod zipdir;
 
 pub use listing::RemoteLister;
+
+/// Redact credential-bearing query strings when displaying locations in diagnostics.
+/// The returned value is only for display, never for issuing I/O requests.
+pub fn redact_diagnostic_location(location: &str) -> std::borrow::Cow<'_, str> {
+    listing::redact_url(location)
+}
 
 use crate::{Error, Result};
 use serde::Serialize;
@@ -891,7 +898,7 @@ fn zip_index(archive: &Node, reader: &mut dyn ReadSeek) -> Result<std::rc::Rc<Zi
     if let Some(index) = ZIP_INDEX.with(|cache| cache.borrow().as_ref().filter(|(node, _)| node == archive).map(|(_, i)| i.clone())) {
         return Ok(index);
     }
-    let entries = zipdir::central_directory(reader, &crate::vfs::ZipLimits::from_config())?;
+    let entries = zipdir::central_directory_within(reader, &crate::vfs::ZipLimits::from_config())?;
     let mut by_name = std::collections::HashMap::new();
     by_name.try_reserve(entries.len()).map_err(|_| Error::InvalidData("zip: cannot allocate the index of the archive's entries".into()))?;
     for (i, entry) in entries.iter().enumerate().filter(|(_, e)| !e.is_dir()) {
@@ -1309,6 +1316,16 @@ pub(crate) fn transform_memory<T>(path: &str, operation: impl FnOnce(&[u8]) -> R
 /// Writes a local file through a temporary file in the same directory, renamed into place once
 /// complete: a failure leaves any existing file as it was.
 pub(crate) fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Result<()>) -> Result<()> {
+    write_local_atomic_with_replace(path, true, fill)
+}
+
+/// A synced atomic write that can also require the destination to remain absent.
+/// Hard-link publication in that mode fails atomically if another writer won.
+pub(crate) fn write_local_atomic_with_replace(
+    path: &Path,
+    replace: bool,
+    fill: impl FnOnce(&mut std::fs::File) -> Result<()>,
+) -> Result<()> {
     if cfg!(target_family = "wasm") {
         return Err(Error::Unsupported(format!("'{}': WebAssembly builds have no local files (use /vsimem/)", path.display())));
     }
@@ -1347,7 +1364,15 @@ pub(crate) fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::Fi
         Ok(file.sync_all()?)
     });
     drop(file);
-    match result.and_then(|()| Ok(std::fs::rename(&tmp, path)?)) {
+    match result.and_then(|()| {
+        if replace {
+            std::fs::rename(&tmp, path)?;
+        } else {
+            std::fs::hard_link(&tmp, path)?;
+            let _ = std::fs::remove_file(&tmp);
+        }
+        Ok(())
+    }) {
         Ok(()) => Ok(()),
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);

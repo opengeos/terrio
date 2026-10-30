@@ -316,8 +316,7 @@ mod tests {
     }
 
     /// A paletted Byte band's color table is carried by GeoTIFF and COG writes as GDAL 3.12.1's
-    /// `CreateCopy` carries it: whole, by window (lazy) and in memory, and by the row writer; JPEG
-    /// compression of it is refused on every path, as GDAL refuses it.
+    /// `CreateCopy` carries it: whole, by window (lazy) and in memory, and by the row writer.
     #[test]
     fn palette_writes_inherit_as_gdal_3_12_does() {
         let dir = tempfile::tempdir().unwrap();
@@ -336,7 +335,6 @@ mod tests {
         crate::write_raster_dataset(&source, input, &crate::RasterWriteOptions { color_table: palette.clone(), ..Default::default() })
             .unwrap();
         let source = crate::open_raster(input).unwrap();
-        let jpeg = |o: crate::RasterWriteOptions| (o, false);
         for (case, (options, written)) in [
             ("plain", (crate::RasterWriteOptions::default(), true)),
             ("cog", (crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), ..Default::default() }, true)),
@@ -346,11 +344,6 @@ mod tests {
                     crate::RasterWriteOptions { creation_options: vec![("PHOTOMETRIC".into(), "PALETTE".into())], ..Default::default() },
                     true,
                 ),
-            ),
-            ("jpeg", jpeg(crate::RasterWriteOptions { compression: Some("JPEG".into()), ..Default::default() })),
-            (
-                "jpeg-co",
-                jpeg(crate::RasterWriteOptions { creation_options: vec![("COMPRESS".into(), "JPEG".into())], ..Default::default() }),
             ),
         ] {
             for lazy in [false, true] {
@@ -383,12 +376,7 @@ mod tests {
         assert_eq!(&crate::open_raster_lazy(file.to_str().unwrap()).unwrap().header().color_table[..2], &palette);
     }
 
-    /// GDAL 3.12.1 refuses JPEG compression of a paletted band ("JPEG compression not supported
-    /// with paletted image") and keeps the color table under `PHOTOMETRIC=MINISBLACK` (measured
-    /// with rasterio 1.5.0's `shutil.copy`): GeoTIFF and COG writes follow GDAL's `CreateCopy`
-    /// rule, pinned by `palette_writes_inherit_as_gdal_3_12_does`.
     #[test]
-    #[ignore = "GDAL 3.12.1 refuses JPEG compression of a paletted band (see palette_writes_inherit_as_gdal_3_12_does)"]
     fn palette_writes_inherit_consistently_and_allow_grayscale_jpeg() {
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("input.tif");

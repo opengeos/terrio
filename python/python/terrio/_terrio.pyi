@@ -17,6 +17,7 @@ __all__ = [
     "refresh_overviews",
     "update_raster",
     "validate_cog",
+    "validate_gpkg",
     "check_dataset",
     "identify",
     "dataset_copy",
@@ -122,6 +123,10 @@ __all__ = [
     "vsi_stat",
     "vsi_read",
     "vsi_write",
+    "sozip_create",
+    "sozip_list",
+    "sozip_optimize",
+    "sozip_validate",
     "vsi_copy",
     "vsi_delete",
     "vsi_move",
@@ -2151,3 +2156,66 @@ def check_dataset(
     overviews: bool = False,
     masks: bool = False,
 ) -> dict[str, int]: ...
+
+class _SozipReport(TypedDict):
+    added: int
+    seek_optimized: int
+    bytes: int
+
+class _SozipMember(TypedDict):
+    name: str
+    size: int
+    compressed_size: int
+    modified: int | None
+    method: int
+    sozip_chunk_size: int | None
+    properties: list[str]
+
+class _SozipValidation(TypedDict):
+    valid: bool
+    sozip_files: list[str]
+    messages: list[str]
+    errors: list[str]
+
+def sozip_create(
+    inputs: list[str] | tuple[str, ...],
+    output: str,
+    *,
+    enable: Literal["auto", "yes", "no"] = "auto",
+    chunk_size: int = 32768,
+    min_file_size: int = 1048576,
+    overwrite: bool = False,
+    recursive: bool = False,
+    junk_paths: bool = False,
+    content_type: str | None = None,
+) -> _SozipReport:
+    """Create a Seek-Optimized ZIP archive, like `gdal vsi sozip create`."""
+    ...
+
+def sozip_optimize(
+    input: str,
+    output: str,
+    *,
+    enable: Literal["auto", "yes", "no"] = "auto",
+    chunk_size: int = 32768,
+    min_file_size: int = 1048576,
+    overwrite: bool = False,
+) -> _SozipReport:
+    """Rewrite a zip archive as a SOZip archive, like `gdal vsi sozip optimize`."""
+    ...
+
+def sozip_list(input: str) -> list[_SozipMember]:
+    """List a zip archive's members with their SOZip status, like `gdal vsi sozip list`."""
+    ...
+
+def sozip_validate(input: str) -> _SozipValidation:
+    """Validate a zip archive and its SOZip indexes, like `gdal vsi sozip validate`."""
+    ...
+
+def validate_gpkg(
+    path: str | os.PathLike[str] | bytes,
+    *,
+    full_check: bool = False,
+    strict: bool = False,
+    unicode_case: bool = False,
+) -> dict[str, Any]: ...

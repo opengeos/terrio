@@ -95,17 +95,19 @@ crates/terrio/src/ops/contour.rs are adapted from GDAL's alg/marching_squares
 JTS Topology Suite
 -------------------------------------------------------------------------------
 
-The topology-preserving simplification in crates/terrio/src/ops/simplify.rs and the convex and
-concave hulls in crates/terrio/src/ops/hull.rs follow the algorithms of the JTS Topology Suite
-(https://github.com/locationtech/jts: TopologyPreservingSimplifier, ConvexHull, ConcaveHull and
-ConcaveHullOfPolygons, by Martin Davis), reimplemented in Rust. Their behaviour was checked
-against GEOS 3.14 (https://libgeos.org), the C++ port of JTS that GDAL uses. The polygon
-validity checks and repair in crates/terrio/src/tiles/valid.rs follow what GEOS's IsValid
-and MakeValid (the JTS IsValidOp and GEOS's linework MakeValid) do in GDAL's MVT writer, and the
-spatial sort in crates/terrio/src/ops/vector_geom.rs follows the STR packing of GEOS's
-TemplateSTRtree (JTS's STRtree). JTS is available under the Eclipse Distribution License 1.0:
-
-  Copyright (c) 2016 Vivid Solutions and others.
+The topology-preserving simplification in crates/terrio/src/ops/simplify.rs, hulls in
+crates/terrio/src/ops/hull.rs, tile validity checks in crates/terrio/src/tiles/validity.rs
+and STR leaf packing in crates/terrio/src/ops/strtree.rs, with the point triangulation
+in crates/terrio/src/ops/jts_delaunay.rs and constrained polygon triangulation in
+crates/terrio/src/ops/jts_cdt.rs, and floating overlay clipping envelopes
+in crates/terrio/src/tiles/overlay_envelope.rs, are derived directly from the
+JTS Topology Suite 1.20.0 (https://github.com/locationtech/jts), commit
+6e95fe82feb986a7aa657f4ffa406d8c290af509, modified for Rust and Terrio's data model.
+Sources and adaptations are listed in docs/jts-provenance.md. These adaptations use
+JTS under the Eclipse Distribution License 1.0. GEOS is used only as an executable
+behavioral reference for these replacements.
+  Copyright (c) 2016 Vivid Solutions, and others.
+  Copyright (c) 2016, 2019, 2020, 2021, 2022, 2023 Martin Davis.
   All rights reserved.
 
   Redistribution and use in source and binary forms, with or without modification, are permitted
@@ -132,6 +134,16 @@ TemplateSTRtree (JTS's STRtree). JTS is available under the Eclipse Distribution
   OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
   POSSIBILITY OF SUCH DAMAGE.
 
+-------------------------------------------------------------------------------
+Independent tile polygon repair
+-------------------------------------------------------------------------------
+The deferred linework MakeValid implementation and its helpers formerly in
+crates/terrio/src/tiles/valid.rs have been removed. The replacement in
+crates/terrio/src/tiles/repair/ was independently implemented against a behavioral
+specification and executable reference observations, under a documented isolated
+process. It is part of Terrio's MIT-licensed code, not part of the JTS ports above.
+See docs/make-valid-implementation.md for task-local provenance, validation and
+limitations. This record makes no repository-wide licensing certification.
 -------------------------------------------------------------------------------
 GDAL vector geometry operations
 -------------------------------------------------------------------------------
@@ -773,3 +785,88 @@ f7aa0b8880185d095c9886e85ed2cbf64e23cbdc.
 The original Rust SQLite page/overflow layout and pointer-map implementations in
 crates/terrio/src/drivers/sqlite_edit.rs and sqlite_repack.rs follow SQLite's
 file-format documentation: https://www.sqlite.org/fileformat2.html
+
+SOZip specification
+-------------------
+The independent implementation in crates/terrio/src/vsi/sozip.rs follows version 0.5.0
+of the SOZip specification by Even Rouault (2023):
+https://github.com/sozip/sozip-spec/blob/master/sozip_specification.md
+The specification is licensed under CC BY 4.0:
+https://creativecommons.org/licenses/by/4.0/
+Its license notice explicitly excludes source and binary code derived from the
+specification from the scope of its copyrighted material.
+The independent chunk decoding step adapts Annex F under its offered CC0-1.0 option.
+
+-------------------------------------------------------------------------------
+SQLite numeric rendering
+-------------------------------------------------------------------------------
+
+The foreign-key checker in crates/terrio/src/gpkg_validation/integrity.rs adapts
+SQLite 3.54.1's scaled binary-to-decimal conversion, digit rounding and
+round-trip shortening rules, including its power-of-ten tables:
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/util.c
+(powerOfTen, sqlite3Fp2Convert10, sqlite3FpDecode)
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/vdbemem.c (vdbeMemRenderNum)
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/printf.c
+
+SQLite is in the public domain: https://www.sqlite.org/copyright.html
+The source files carry this notice:
+
+  The author disclaims copyright to this source code.  In place of
+  a legal notice, here is a blessing:
+
+    May you do good and not evil.
+    May you find forgiveness for yourself and forgive others.
+    May you share freely, never taking more than you give.
+
+-------------------------------------------------------------------------------
+GDAL GeoPackage validation
+-------------------------------------------------------------------------------
+
+The GeoPackage validation rules in crates/terrio/src/gpkg_validation/ follow
+OGC GeoPackage 1.4 and GDAL 3.13.3's validate_gpkg.py, reimplemented in Rust:
+https://github.com/OSGeo/gdal/blob/v3.13.3/swig/python/gdal-utils/osgeo_utils/samples/validate_gpkg.py
+
+Binary curve membership and joining checks also follow GDAL 3.13.3:
+https://github.com/OSGeo/gdal/blob/v3.13.3/ogr/ogrcompoundcurve.cpp
+https://github.com/OSGeo/gdal/blob/v3.13.3/ogr/ogrcurvepolygon.cpp
+
+  Copyright (c) 2014, Even Rouault <even dot rouault at spatialys dot com>
+
+  Copyright (c) 2017, Even Rouault <even.rouault at spatialys.com>
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+  and associated documentation files (the "Software"), to deal in the Software without
+  restriction, including without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+  Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies or
+  substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+  BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+SQLite view type inference
+-------------------------------------------------------------------------------
+
+View and compound-query column type inference in
+crates/terrio/src/gpkg_validation/sqlite_expr/compound.rs follows SQLite 3.54.1:
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/select.c
+(sqlite3SubqueryColumnTypes)
+https://github.com/sqlite/sqlite/blob/version-3.54.1/src/expr.c
+(sqlite3ExprAffinity, sqlite3ExprDataType)
+
+SQLite is in the public domain: https://www.sqlite.org/copyright.html
+The source files carry this notice:
+
+  The author disclaims copyright to this source code.  In place of
+  a legal notice, here is a blessing:
+
+    May you do good and not evil.
+    May you find forgiveness for yourself and forgive others.
+    May you share freely, never taking more than you give.

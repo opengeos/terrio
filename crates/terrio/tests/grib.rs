@@ -231,3 +231,38 @@ mod grib_fixtures {
         }
     }
 }
+
+const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/grib");
+
+/// A band's item of the metadata (`BAND_<n>#<key>`, or terrio's own `TERRIO#BAND_<n>_<key>`).
+fn item(meta: &[(String, String)], key: &str) -> Option<String> {
+    meta.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+}
+
+#[test]
+fn grib_metadata_items_as_gdal() {
+    let ds = terrio::open_raster(&format!("{DIR}/gfs.t06z.pgrb2.1p0.grib2")).unwrap();
+    let meta = &ds.raster.metadata;
+    let expected = [
+        ("GRIB_UNIT", "[Pa]"),
+        ("GRIB_COMMENT", "Pressure reduced to MSL [Pa]"),
+        ("GRIB_DISCIPLINE", "0(Meteorological)"),
+        ("GRIB_PDS_PDTN", "0"),
+        ("GRIB_REF_TIME", "1632031200"),
+        ("GRIB_VALID_TIME", "1632031200"),
+        ("GRIB_FORECAST_SECONDS", "0"),
+    ];
+    for (k, v) in expected {
+        assert_eq!(item(meta, &format!("BAND_1#{k}")).as_deref(), Some(v), "{k}");
+    }
+    let ids = item(meta, "BAND_1#GRIB_IDS").unwrap();
+    assert!(
+        ids.starts_with(
+            "CENTER=7(US-NCEP) SUBCENTER=0 MASTER_TABLE=2 LOCAL_TABLE=0 SIGNF_REF_TIME=1(Start_of_Forecast) REF_TIME=2021-09-19T06:00:00Z"
+        ),
+        "{ids}"
+    );
+    // Kelvin as Celsius.
+    let t = terrio::open_raster(&format!("{DIR}/spatial_differencing_order_1.grb2")).unwrap();
+    assert_eq!(item(&t.raster.metadata, "BAND_1#GRIB_UNIT").as_deref(), Some("[C]"));
+}

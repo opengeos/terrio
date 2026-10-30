@@ -62,6 +62,16 @@ count = 1
 origin = "existing"
 reason = "libc::flock on a file descriptor owned for as long as the lock: the lock of an EPT dataset appended to"
 
+[files."crates/terrio/src/vsi/sozip.rs"]
+count = 1
+origin = "existing"
+reason = "libc::flock (LOCK_EX | LOCK_NB) on the descriptor of a zip archive appended to, which the append reader owns: an advisory lock held until the new archive is published (Unix)"
+
+[files."crates/terrio/src/vsi/sozip/native.rs"]
+count = 2
+origin = "existing"
+reason = "Windows file identity of an archive's open handle: GetFileInformationByHandleEx (FileIdInfo) and, where unsupported, GetFileInformationByHandle, each into a correctly sized buffer"
+
 [files."js/src/lib.rs"]
 count = 3
 origin = "existing"

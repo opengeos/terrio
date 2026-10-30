@@ -6,7 +6,8 @@ and of tar archives made from it; trees copied, extracted and synchronized by bo
 and the same uploads, listings, server-side copies and bounded deletions against a local
 S3-compatible server, with the requests each tool sends. With ``--remote``, listings of public
 Amazon S3, Google Cloud Storage, HTTP index pages and a remote zip archive, with requests and
-bytes.
+bytes. SOZip archives (``vsi sozip``) created, optimized, listed and validated by each tool and
+checked by the other, and a GeoTIFF window read in place from a seek-optimized archive over HTTP.
 
 Compared: entry names, types and file sizes exactly; local modification dates to the second;
 zip member dates as stored. Entry order is not compared (GDAL prints local directories in the
@@ -486,6 +487,170 @@ def record_zip_transfer(process):
                f"terrio: {match.group(1)} requests, {match.group(2)} bytes of a 4,930,492-byte archive", tolerance=True)
 
 
+class RangeServer:
+    """Serves the files of a directory over HTTP with range requests, counting bytes sent."""
+
+    def __init__(self, root: Path):
+        self.sent = 0
+        self.requests = 0
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):  # noqa: D401 - silence
+                pass
+
+            def do_HEAD(self):
+                self.do_GET(head=True)
+
+            def do_GET(self, head: bool = False):
+                path = (root / urllib.parse.unquote(self.path.lstrip("/").split("?")[0])).resolve()
+                if not path.is_relative_to(root.resolve()) or not path.is_file():
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                size = path.stat().st_size
+                rng = self.headers.get("Range")
+                status, start, length, extra = 200, 0, size, {}
+                if rng:
+                    match = re.fullmatch(r"bytes=(\d*)-(\d*)", rng)
+                    if match and (match[1] or match[2]) and size:
+                        if match[1]:
+                            a = int(match[1])
+                            b = min(int(match[2]) if match[2] else size - 1, size - 1)
+                        else:
+                            a, b = max(0, size - int(match[2])), size - 1
+                        valid = a <= b and a < size
+                    else:
+                        valid = False
+                    if not valid:
+                        self.send_response(416)
+                        self.send_header("Content-Length", "0")
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.end_headers()
+                        return
+                    status, start, length, extra = 206, a, b - a + 1, {"Content-Range": f"bytes {a}-{b}/{size}"}
+                self.send_response(status)
+                self.send_header("Content-Length", str(length))
+                self.send_header("Accept-Ranges", "bytes")
+                for k, v in extra.items():
+                    self.send_header(k, v)
+                self.end_headers()
+                if not head:
+                    with path.open("rb") as stream:
+                        stream.seek(start)
+                        remaining = length
+                        while remaining:
+                            block = stream.read(min(remaining, 64 * 1024))
+                            if not block:
+                                break
+                            self.wfile.write(block)
+                            outer.sent += len(block)
+                            remaining -= len(block)
+                outer.requests += 1
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+
+def sozip_lines(tool: list[str], archive: str) -> list[str]:
+    """The member lines of ``sozip list`` (after the two header lines), trailing spaces cut.
+
+    Args:
+        tool: The program and ``vsi`` prefix.
+        archive: The archive.
+
+    Returns:
+        list[str]: The lines.
+    """
+    p = run(tool + ["sozip", "list", archive])
+    if p.returncode:
+        raise RuntimeError(p.stderr.strip()[-300:])
+    return [l.rstrip() for l in p.stdout.splitlines()[2:] if l.strip()]
+
+
+def sozip_cases(terrio: str, data: Path, work: Path) -> None:
+    """SOZip archives created, optimized, listed and validated by both tools, and a GeoTIFF read
+    in place from a seek-optimized archive over HTTP.
+
+    Args:
+        terrio: The terrio executable.
+        data: The test data directory.
+        work: A scratch directory.
+    """
+    places = sorted((data / "ne_places").glob("*"))
+    inputs = [str(p) for p in places]
+    for name, tool in [("terrio", [terrio, "vsi"]), ("gdal", ["gdal", "vsi"])]:
+        p = run(tool + ["sozip", "create", "-q", "-j", *inputs, str(work / f"places_{name}.zip")])
+        if p.returncode:
+            record(f"sozip create ({name})", False, p.stderr.strip()[-300:])
+            return
+    try:
+        ours, theirs = sozip_lines([terrio, "vsi"], str(work / "places_terrio.zip")), sozip_lines(["gdal", "vsi"], str(work / "places_gdal.zip"))
+        record("sozip create, listed by each tool (ne_places, 7 files)", ours == theirs, f"{len(ours)} lines identical (sizes, UTC dates, SOZip chunk sizes)" if ours == theirs else f"{ours} vs {theirs}")
+        cross = sozip_lines(["gdal", "vsi"], str(work / "places_terrio.zip")) == ours and sozip_lines([terrio, "vsi"], str(work / "places_gdal.zip")) == theirs
+        record("sozip list of the other tool's archive", cross and ours == theirs, "each tool lists the other's archive identically")
+    except RuntimeError as e:
+        record("sozip list", False, str(e))
+    for archive in ["places_terrio.zip", "places_gdal.zip"]:
+        for name, tool in [("terrio", [terrio, "vsi"]), ("gdal", ["gdal", "vsi"])]:
+            p = run(tool + ["sozip", "validate", str(work / archive)])
+            ok = p.returncode == 0 and "contains 1 SOZip-enabled file(s)" in p.stdout
+            record(f"sozip validate of {archive.split('_')[1].split('.')[0]}'s archive by {name}", ok, (p.stdout.strip().splitlines() or [p.stderr.strip()])[-1][-200:])
+    # Existing empty output files are often produced by temporary-file APIs.
+    empty_ok = True
+    for name, tool in [("terrio", [terrio, "vsi"]), ("gdal", ["gdal", "vsi"])]:
+        output = work / f"empty_{name}.zip"
+        output.touch()
+        p = run(tool + ["sozip", "create", "-q", "-j", str(places[0]), str(output)])
+        if p.returncode:
+            empty_ok = False
+        else:
+            with zipfile.ZipFile(output) as archive:
+                empty_ok = empty_ok and archive.namelist() == [places[0].name] and archive.read(places[0].name) == places[0].read_bytes()
+    record("sozip create into an existing empty output", empty_ok, "both tools create a readable archive containing the original real-data member")
+    # Optimize: GDAL 3.13.3 adds the input archive itself as a member too (a bug): not compared.
+    for name, tool in [("terrio", [terrio, "vsi"]), ("gdal", ["gdal", "vsi"])]:
+        run(tool + ["sozip", "optimize", "-q", str(data / "ne_places.zip"), str(work / f"opt_{name}.zip")])
+    try:
+        ours = sozip_lines([terrio, "vsi"], str(work / "opt_terrio.zip"))
+        theirs = [l for l in sozip_lines(["gdal", "vsi"], str(work / "opt_gdal.zip")) if not l.endswith("ne_places.zip")]
+        record("sozip optimize of ne_places.zip", ours == theirs, f"{len(ours)} members identical (names, sizes, stored dates, SOZip status); GDAL 3.13.3 also adds the input archive as a member" if ours == theirs else f"{ours} vs {theirs}")
+    except RuntimeError as e:
+        record("sozip optimize", False, str(e))
+    # A GeoTIFF in a seek-optimized archive, read in place over HTTP.
+    dem = data / "USGS_1_n40w106.tif"
+    if dem.is_file():
+        served = work / "served"
+        served.mkdir()
+        run([terrio, "vsi", "sozip", "create", "-q", "-j", "--enable-sozip", "yes", str(dem), str(served / "dem.zip")])
+        server = RangeServer(served)
+        try:
+            url = f"/vsizip//vsicurl/{server.url}/dem.zip/{dem.name}"
+            p = run([terrio, "translate", url, str(work / "w_terrio.tif"), "--srcwin", "1000", "2000", "256", "256"])
+            sent = server.sent
+            q = run(["gdal_translate", "-q", "-srcwin", "1000", "2000", "256", "256", str(dem), str(work / "w_gdal.tif")])
+            if p.returncode or q.returncode:
+                record("GeoTIFF window from a SOZip archive over HTTP", False, (p.stderr or q.stderr).strip()[-300:])
+            else:
+                from osgeo import gdal
+
+                a = gdal.Open(str(work / "w_terrio.tif")).ReadAsArray()
+                b = gdal.Open(str(work / "w_gdal.tif")).ReadAsArray()
+                size = (served / "dem.zip").stat().st_size
+                same = a.shape == b.shape and bool((a == b).all())
+                record("GeoTIFF window from a SOZip archive over HTTP", same and sent < size / 4,
+                       f"256x256 window pixel-identical to gdal_translate's of the original; {server.requests} requests, {sent:,} bytes of a {size:,}-byte archive")
+        finally:
+            server.server.shutdown()
+            server.server.server_close()
+    else:
+        record("GeoTIFF window from a SOZip archive over HTTP", False, f"{dem.name} not found in {data}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("data", type=Path)
@@ -532,6 +697,7 @@ def main() -> int:
         compare_trees("sync of ne_places (directory itself)", work / "sync_terrio", work / "sync_gdal")
         compare_trees("sync of ne_places/ (contents)", work / "syncc_terrio", work / "syncc_gdal")
         s3_cases(terrio, source, work)
+        sozip_cases(terrio, data, work)
         if args.remote:
             unsigned = {"AWS_NO_SIGN_REQUEST": "YES"}
             compare_listing("public S3 (hrrrzarr, a Zarr array)", terrio,

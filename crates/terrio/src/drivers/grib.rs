@@ -181,6 +181,14 @@ fn header(bands: &[Band]) -> Result<(RasterDataset, usize)> {
     let mut ds = RasterDataset::with_driver(raster, RasterDriver::GRIB, nodata.is_some());
     ds.set_geo_transform(georef.gt);
     ds.band_metadata = bands.iter().map(Band::metadata).collect::<Result<_>>()?;
+    // Each band's items in the dataset's metadata too, as `BAND_<n>#<key>`, as the GRIB driver of
+    // #232 gave them (and as the netCDF driver gives its bands').
+    ds.raster.metadata = ds
+        .band_metadata
+        .iter()
+        .enumerate()
+        .flat_map(|(i, b)| b.items.iter().map(move |(k, v)| (format!("BAND_{}#{k}", i + 1), v.clone())))
+        .collect();
     if band_nodata.iter().any(|n| n.map(f64::to_bits) != nodata.map(f64::to_bits)) {
         ds.band_nodata = band_nodata;
     }

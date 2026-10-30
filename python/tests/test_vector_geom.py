@@ -51,6 +51,15 @@ def test_simplify_and_segmentize():
     assert simple[0]["geometry"]["coordinates"] == [[0, 0], [10, 0]]
     assert simple[2]["geometry"] is None
     assert simple[0]["properties"] == {"k": "a", "v": 1}
+    huge_coordinates = [[0, 0], [1e155, 1e155], [2e155, 0]]
+    huge = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {"type": "LineString", "coordinates": huge_coordinates},
+    }
+    result = features(terrio.simplify(huge, 0.3))[0]["geometry"]["coordinates"]
+    # GeoJSON may serialize integral binary64 coordinates as JSON integers.
+    assert [[float(value) for value in point] for point in result] == huge_coordinates
     dense = features(terrio.segmentize(LINES, 3.0))
     assert len(dense[0]["geometry"]["coordinates"]) == 5
     with pytest.raises(terrio.InvalidArgumentError):
@@ -65,6 +74,64 @@ def test_hulls():
     assert concave["type"] == "Polygon"
     # GEOS 3.14 gives the same 8 vertices and an area of 61.
     assert len(concave["coordinates"][0]) == 9
+    # GEOS observation: ratio 0.1 leaves these two triangles disconnected.
+    triangles = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [
+                [[[18, -5], [15, -6], [12, -2], [18, -5]]],
+                [[[8, 3], [13, 3], [10, 4], [8, 3]]],
+            ],
+        },
+    }
+    result = features(terrio.concave_hull(triangles, 0.1))[0]["geometry"]
+    assert result["type"] == "MultiPolygon"
+    assert len(result["coordinates"]) == 2
+    assert all(len(polygon) == 1 for polygon in result["coordinates"])
+    assert {frozenset(map(tuple, p[0])) for p in result["coordinates"]} == {
+        frozenset(map(tuple, p[0])) for p in triangles["geometry"]["coordinates"]
+    }
+    pinched = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+                [[0, 0], [10, 0], [10, 10], [0, 10], [0, 5], [0, 0]],
+                [[0, 5], [3, 3], [3, 7], [0, 5]],
+            ],
+        },
+    }
+    repaired = features(terrio.concave_hull(pinched, 0.3, tight=True, allow_holes=True))[0][
+        "geometry"
+    ]
+    assert repaired["type"] == "Polygon"
+    assert [len(ring) for ring in repaired["coordinates"]] == [6, 4]
+    touching = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+            "type": "MultiPolygon",
+            "coordinates": [
+                [
+                    [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
+                    [[2, 2], [8, 1], [9, 9], [1, 8], [2, 2]],
+                ],
+                [[[2, 2], [4, 2], [4, 4], [2, 4], [2, 2]]],
+            ],
+        },
+    }
+    result = features(terrio.concave_hull(touching, 0.0, tight=True, allow_holes=True))[0][
+        "geometry"
+    ]
+    assert result["type"] == "MultiPolygon"
+    assert sorted(map(len, result["coordinates"])) == [1, 2]
+    owner = next(polygon for polygon in result["coordinates"] if len(polygon) == 2)
+    assert set(map(tuple, owner[0])) == {(0, 0), (10, 0), (10, 10), (0, 10)}
+    assert len(owner[1]) == 5 and owner[1][0] == owner[1][-1]
+    assert set(map(tuple, owner[1])) == {(2, 2), (8, 1), (9, 9), (1, 8)}
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.concave_hull(POINTS, 2.0)
 

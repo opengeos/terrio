@@ -138,12 +138,22 @@ impl AsRef<[u8]> for SharedBytes {
 
 /// Atomically replace exactly the immutable image read earlier. A deletion or a newer
 /// write must not be undone by a transformation computed outside the store lock.
-#[cfg(feature = "sqlite")]
 pub(crate) fn replace_if_unchanged(p: &Path, expected: &SharedBytes, bytes: Vec<u8>) -> std::io::Result<()> {
     let key = key(p).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "expected an in-memory path"))?;
     let mut store = files();
     if !store.get(&key).is_some_and(|current| Arc::ptr_eq(current, &expected.0)) {
         return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, format!("{key}: file changed while being transformed")));
+    }
+    store.insert(key, Arc::new(bytes));
+    Ok(())
+}
+
+/// Publish a new memory file without replacing an intervening write.
+pub(crate) fn write_if_absent(p: &Path, bytes: Vec<u8>) -> std::io::Result<()> {
+    let key = key(p).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "expected an in-memory path"))?;
+    let mut store = files();
+    if store.contains_key(&key) {
+        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{key}: file appeared while being written")));
     }
     store.insert(key, Arc::new(bytes));
     Ok(())

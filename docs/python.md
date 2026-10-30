@@ -363,6 +363,19 @@ copy, sync, move and delete functions return a report (`copied`, `bytes`, `uncha
 `deleted`, `errors`). `/vsimem/` files last as long as the process. Locations, semantics and the
 refusals of dangerous deletions are those of [vsi](cli.md#vsi).
 
+### Seek-optimized ZIP archives
+
+```python
+terrio.sozip_create(["roads.gpkg", "dem.tif"], "data.zip", junk_paths=True)
+terrio.sozip_list("data.zip")  # dictionaries with names, sizes and SOZip chunk sizes
+terrio.sozip_validate("data.zip")  # valid, sozip_files, messages, errors
+terrio.sozip_optimize("plain.zip", "seek.zip", enable="yes", chunk_size=65536)
+```
+
+The four functions share the [CLI options and limitations](cli.md#vsi-sozip).
+Creation and optimization return `added`, `seek_optimized` and `bytes` counts.
+Native outputs are replaced only after the entire operation succeeds.
+
 ## COG validation
 
 ```python
@@ -626,3 +639,16 @@ passed to unsupported writers are rejected. Any raster with a dataset mask, incl
 since that streaming path supports alpha bands rather than separate masks.
 Normal raster writes materialize the full raster and its mask; remote inputs
 therefore fetch the selected image blocks and mask blocks.
+
+## GeoPackage validation
+
+```python
+report = terrio.validate_gpkg("data.gpkg", full_check=True, strict=False)
+report_from_bytes = terrio.validate_gpkg(gpkg_bytes, unicode_case=False)
+print(report["valid"], report["complete"], report["errors"])
+```
+
+Returns a dictionary with `valid`, `complete`, `version`, `errors`, `warnings` and
+`unsupported_checks`. Paths accept native or `/vsimem/` files; uploaded bytes are
+also supported. The [CLI reference](cli.md#geopackage-validation) documents the
+supported rules, SQL subset, case options, memory use and checkpoint requirement.

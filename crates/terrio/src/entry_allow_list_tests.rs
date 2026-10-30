@@ -699,3 +699,20 @@ fn geopackages_are_repacked_only_with_gpkg_allowed() {
     assert_eq!(under(Some("GPKG"), repack), Ok(()));
     assert_eq!(under(Some("GPKG"), repack_bytes), Ok(()));
 }
+
+/// GeoPackages are validated, on disk and as bytes, only with GPKG allowed.
+#[cfg(feature = "sqlite")]
+#[test]
+fn geopackages_are_validated_only_with_gpkg_allowed() {
+    let dir = tempfile::tempdir().unwrap();
+    let gpkg = dir.path().join("x.gpkg").to_str().unwrap().to_string();
+    crate::write_vector(&[points()], &gpkg, &VectorWriteOptions::default()).unwrap();
+    let bytes = std::fs::read(&gpkg).unwrap();
+    let options = crate::GpkgValidationOptions::default();
+    let validate = || outcome(crate::validate_gpkg(&gpkg, &options));
+    let validate_bytes = || outcome(crate::validate_gpkg_bytes(&bytes, &options));
+    assert_eq!(under(Some("GeoJSON"), validate), holds(&gpkg, "GPKG", "GEOJSON"));
+    assert_eq!(under(Some("GeoJSON"), validate_bytes), holds("a GeoPackage in memory", "GPKG", "GEOJSON"));
+    assert_eq!(under(Some("GPKG"), validate), Ok(()));
+    assert_eq!(under(Some("GPKG"), validate_bytes), Ok(()));
+}

@@ -894,9 +894,10 @@ python scripts/conformance.py ../terrio-data --only isea --strict
 ## Vector geometry commands (#289)
 
 `simplify`, `segmentize`, `convex-hull`, `concave-hull`, `swap-xy`, `set-geom-type`,
-`combine` and `sort` have unit tests of the GEOS/OGR behaviours they port (ring endpoint
+`combine` and `sort` have unit tests of GEOS/OGR behavior, with the simplifier, hulls
+and STR packing implemented from JTS (see [provenance](jts-provenance.md)): ring endpoint
 simplification, jump checks, OGR's segmentize direction and Z/M copies, `forceTo` dimensions,
-Graham scan ring order, concave hull areas, Hilbert codes from GDAL's C code), CLI tests of the
+Graham scan ring order, concave hull areas and Hilbert codes from GDAL's C code. There are CLI tests of the
 streamed and whole-layer paths and refusals, and Python, Node/WASM and MCP tests. The
 `vector-geom` conformance suite compares them on Tennessee and US counties, Las Vegas roads and
 Natural Earth countries and places with `gdal vector` (GDAL 3.12.2) for simplify, segmentize,
@@ -904,7 +905,8 @@ swap-xy, set-geom-type and `ogr2ogr -simplify/-segmentize`, coordinate by coordi
 OGR's `ConvexHull` (canonical WKB), `ConcaveHull` (edge sets) and GEOS's `GEOSConcaveHullOfPolygons_r` (ctypes) for polygon hulls,
 by edge sets; and, as GDAL 3.12 has no combine or sort, with Python references of GDAL 3.13's
 algorithms (GEOS's own STR tree for `--method strtree`). It needs the `gdal` command and the
-osgeo bindings.
+osgeo bindings and Shapely. Concave hulls must be valid, with relative symmetric-difference
+area at most 1e-10 and scaled Hausdorff distance at most 1e-10 when edges differ.
 
 ```sh
 cargo test -p terrio --lib -- ops::simplify ops::hull ops::vector_geom
@@ -986,7 +988,7 @@ recursively without touching the sibling `data2/` and `dirkeep` keys, and the wh
 refused. GDAL 3.13.3 review regressions also compare a query-bearing remote ZIP listing
 and extracted real-file bytes, and recursive S3 deletion when an exact object and its
 `prefix/` children coexist: only children are deleted, preserving the exact object and
-neighboring prefixes. File moves remove the exact source object and preserve coexisting prefix children. Recursive deletion of a lone object fails without deleting it, matching GDAL 3.13.3. A missing local destination with a trailing slash fails without creating the directory. The local suite has 25 cases. Uploading the 7-file Natural Earth tree took terrio 10 requests and GDAL 20; the
+neighboring prefixes. File moves remove the exact source object and preserve coexisting prefix children. Recursive deletion of a lone object fails without deleting it, matching GDAL 3.13.3. A missing local destination with a trailing slash fails without creating the directory. The local suite has 33 cases, including SOZip. Uploading the 7-file Natural Earth tree took terrio 10 requests and GDAL 20; the
 recursive listing 3 requests each. With `--remote`, listings of public S3 (hrrrzarr), Google
 Cloud Storage (CMIP6), Azure (Daymet, with a Planetary Computer SAS token), an HTML index page
 (download.osgeo.org) and a remote zip archive compare identically; GDAL omits the directories
@@ -1459,3 +1461,150 @@ cargo test -p terrio-cli --test inspection
 pytest python/tests/test_check.py
 TERRIO_TEST_DATA=../terrio-data node --test --test-name-pattern='checkDataset' js/tests/node.test.mjs
 ```
+
+## Seek-optimized ZIP archives (#289)
+
+The `vsi` conformance suite includes SOZip create/list/optimize/validate cross-reads
+against GDAL 3.13.3 using the real Natural Earth places files. A USGS DEM archived
+with SOZip is served over local HTTP; a 256 x 256 window must match GDAL's source
+window exactly, and the measured response bytes must be below one quarter of the
+archive size. The local Terrio run compared with GDAL 3.13.3 transferred 3,028,167 bytes in 183 requests
+from a 48,788,679-byte archive. This verifies lazy compressed-member access without
+full extraction; these are I/O counts, not timing claims.
+
+```sh
+python scripts/conformance.py ../terrio-data --only vsi --strict
+cargo test -p terrio --lib sozip
+cargo test -p terrio-cli --test sozip
+pytest python/tests/test_vsi.py
+node --test --test-name-pattern='sozip' js/tests/node.test.mjs
+```
+
+Rust regressions cover exact and partial chunks, independent random reads, append
+and overwrite behavior, ordinary ZIP interoperability, metadata properties, damaged
+index offsets, index size arithmetic, and zero chunk sizes. Failed additions and
+invalid optimization options must leave existing output bytes unchanged. The CLI
+integration test exercises command parsing, exit statuses, JSON and MCP dispatch.
+
+SOZip review regressions cover header-first index rejection with counted reads, small reads
+from MiB chunks without full-chunk fetches, linear sequential reads, independent concurrent
+reopens, forced ZIP64 descriptors on small members, archive comments, central extra-field
+limits, DOS date bounds, directory local headers and credential-redacted diagnostics.
+Validation uses streamed CRC checks and independent bounded decoders; it does not retain
+whole uncompressed members or index offset tables.
+Additional review regressions check recursive output exclusion, native/memory append
+snapshot changes, actual-length Auto chunking, credential-free remote member names,
+stored-member size/range checks, unexpected EOF and offset overflow. Append/optimize
+share compression/index emission; validation and random readers reset reusable decoders.
+Further regressions cover CP437 hidden-index names, Unix/remote literal backslashes
+and directory KV properties retained during optimization. Empty native/memory output
+placeholders are accepted as new archives and compared with GDAL using a real member.
+Review regressions also cover non-leading ZIP64 index extra fields, the writer offset
+budget, native advisory append locks, absent-output races in native/memory storage,
+colon-containing path components and stale native reopens (including equal-length,
+restored-mtime replacements). Native first opens retain their original handle; identity
+checks add metadata checks without extra archive opens.
+
+
+## GeoPackage specification validation
+
+`gpkg-validate` in `scripts/conformance.py` compares the public CLI with GDAL
+3.13.3 on Natural Earth features and USGS raster-tile derivatives, using both
+default and full checks. The reference must finish validation before its verdict
+can be compared. Validity, completeness and every numeric requirement reported by
+GDAL are checked, including under `python -O`; Terrio may report additional violations.
+Cases where the GDAL CLI refuses to open the malformed input are marked not
+compared; Terrio still checks the fixture's expected verdict. Diagnostic wording
+is not compared. Internal comparisons additionally cover
+SQLite constraints/indexes/encodings, view schemas/values, extension metadata,
+geometry and tile payload corruption, and documented stricter specification
+checks. Unsupported query forms produce incomplete reports.
+
+```sh
+cargo test -p terrio gpkg_validation --lib -- --include-ignored
+cargo test -p terrio gpkg_validate --lib -- --include-ignored
+python scripts/conformance.py ../terrio-data --only gpkg-validate
+pytest python/tests/test_gpkg_validation.py
+node --test --test-name-pattern='validateGpkg' js/tests/node.test.mjs
+```
+
+Public API tests exercise byte/path/memory equivalence, advisory/strict options,
+ASCII/ICU case handling, incomplete SQL verdicts, filename checks and read-only
+WAL/journal refusal. All native fixtures must be closed/checkpointed first.
+
+Join evaluation scans each right-hand input once and retains its logical rows,
+including geometry blobs; the leftmost source streams. The 2,000-row direct-table
+and nested-view join regression checks result rows and actual full-image/root/page
+walk counters. A 2 MiB unrelated BLOB must remain unvisited during query evaluation,
+and a LIMIT 1 projection stops its single-table B-tree traversal early. This fixture
+uses the Rust SQLite writer and runs in the default test suite without Python. A three-way Cartesian product also
+must stop with an unsupported/incomplete result after the join's 1,000,000 work-unit
+budget, counting cached right rows and candidate pairs across all levels. Multi-way
+nested loops can otherwise grow as the product of input row counts. Regressions also
+check that unevaluated view references and unsupported schema syntax cannot produce
+a complete, valid verdict. Join work and the 128 MiB working-row budget are shared
+across nested views and compound arms; regressions check both shared limits and
+release of cached-byte reservations on failure.
+
+GeoPackage review regressions additionally cover both required metadata/schema
+extension targets, orphan registrations, Related Tables declaration targets and names,
+uppercase metadata tables/columns, inline descending integer primary keys, native
+file identity checks and non-UTF-8 CLI paths. Metadata/schema declarations follow
+GeoPackage requirement 140/141 starting at version 1.2.1. Missing declared R-tree
+objects and UNIQUE constraints are rejected even where GDAL misses them.
+
+View-memory regressions cover ORDER BY, DISTINCT and compound sets inside a
+right-hand view before its output reaches a join cache. An injected small budget
+rejects each path and checks reservation release after failure. A large-payload
+join also checks that cumulative candidate-copy accounting stops repeated BLOB
+copies before exhausting the row-work allowance. Sorted LIMIT queries release
+evicted rows while preserving top-k behavior.
+
+Further payload regressions reject non-finite curve endpoints, partially NaN empty
+points, short/open polygon rings, reversed/non-finite envelopes and coordinates
+outside XY/Z/M envelope bounds. Tile dimensions are read from PNG/JPEG/WebP/TIFF
+headers and compared with their matrix; tiny real PNG/TIFF replacements must fail.
+Coverage ancillary rows are checked per registered coverage, with unit scale and
+zero offset for float data. These checks are intentionally stricter than GDAL
+where its validator only recognizes a signature or compares aggregate row counts.
+`json_valid` uses iterative validation with SQLite's 1,000-container nesting limit;
+real SQLite CHECK constraints are compared at depths 129, 1000 and 1001. A raw
+NaN REAL record is normalized to SQLite NULL before view evaluation; min/max and
+predicate behavior are compared with SQLite on a patched real GeoPackage. An
+expensive LIKE predicate returns an incomplete verdict under the documented work
+limit, while wildcard-only patterns use the direct matching path.
+
+## JTS provenance replacement regressions
+
+`docs/jts-provenance.md` maps the geometry replacements to pinned JTS 1.20.0
+sources. `cargo test -p terrio --test jts_behavior` replays the captured GEOS
+simplification, convex/concave hull and STR ordering observations without native
+reference libraries. `cargo test -p terrio --lib tiles::validity` checks recorded
+integer-grid validity decisions. The existing `vector-geom` conformance suite
+continues to compare the public CLI with GDAL/GEOS on real data.
+
+`scripts/compare_jts_behavior.py` refreshes or checks the synthetic observations
+against executable GEOS APIs and optionally JTS; see the provenance document for
+commands and tolerances. MakeValid was excluded from the JTS replacement boundary; its later independent
+replacement and dedicated checks are documented in
+[the repair implementation record](make-valid-implementation.md).
+
+The independent repair regressions run with
+`cargo test -p terrio --lib tiles::repair`; encoder overflow/error propagation
+checks run with `cargo test -p terrio --lib tiles::vector`. The 51-case observed
+fixture is packaged once in `crates/terrio/tests/data/make-valid.json`; it is the
+unchanged reviewed observation set from the independent handoff. No native GEOS
+library is needed by these Rust tests. The normal fixture collector and tile
+comparator are maintained; the one-off agent launcher and scaffold are archived.
+
+`scripts/compare_make_valid_tiles.py` compares every feature geometry and presence
+against GDAL across countries (Antarctica excluded), US counties and independently
+authored invalid inputs. It requires a GDAL/Shapely environment and explicit
+`--terrio`, `--data` (countries.geojson and UScounties.gpkg), and a fresh `--scratch`
+directory. `--baseline-dir` can identify unchanged pre-existing synthetic clipping
+differences by comparing the actual per-key geometries with frozen old outputs;
+it does not waive every future difference for those keys. Reference-invalid
+quantized geometries are compared structurally and reported as invalid. A separate
+reported category permits only reassociation of an identical collinear ring: all
+oriented integer rings and all non-collinear polygon groups must still match.
+`scripts/reference/test_make_valid_tile_comparison.py` rejects broader changes.

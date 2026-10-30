@@ -14,8 +14,8 @@ Data from scripts/fetch_test_data.sh: Tennessee counties (projected to EPSG:5070
 Geometries are compared coordinate by coordinate (as WKB); single and multi-part storage of the
 same polygons or lines counts as identical, as terrio's GeoPackage writer stores the layer's
 declared multi type. Hulls are compared by their sets of undirected edges, which ignores ring
-start vertices and orientation; when they differ, by the symmetric-difference area relative to
-the GEOS hull. Sorted orders are compared position by position; positions where the sort keys
+start vertices and orientation. Hulls must be valid; differing edges require relative
+symmetric-difference area and scaled Hausdorff distance both at most 1e-10. Sorted orders are compared position by position; positions where the sort keys
 tie are not counted as differences (GDAL's sorts are not stable). Writes a JSON report.
 """
 
@@ -33,6 +33,7 @@ import subprocess
 import sys
 
 from osgeo import gdal, ogr
+import shapely
 
 gdal.UseExceptions()
 ogr.UseExceptions()
@@ -242,19 +243,32 @@ class Runner:
         """
         assert len(actual) == len(expected), f"{name}: feature counts differ"
         same, worst, differing = 0, 0.0, 0
+        worst_distance = 0.0
+        valid = True
         for a, b in zip(actual, expected):
             if (a is None) != (b is None):
                 raise AssertionError(f"{name}: null geometry differs")
-            if a is None or edges(a) == edges(b):
+            if a is None:
                 same += 1
                 continue
+            valid = valid and bool(a.IsValid()) and bool(b.IsValid())
+            if edges(a) == edges(b):
+                same += 1
+                continue
+            sa = shapely.from_wkb(bytes(a.ExportToWkb()))
+            sb = shapely.from_wkb(bytes(b.ExportToWkb()))
+            scale = max(1.0, *(abs(v) for v in sb.bounds))
+            distance = sa.hausdorff_distance(sb) / scale
+            worst_distance = max(worst_distance, distance if math.isfinite(distance) else math.inf)
             differing += 1
             if b.GetDimension() == 2:
                 difference = relative_difference(b, a)
                 worst = max(worst, difference if math.isfinite(difference) else math.inf)
             else:
                 worst = math.inf
-        if same == len(actual):
+        if not valid or worst_distance > 1e-10:
+            status = DIFFERS
+        elif same == len(actual):
             status = IDENTICAL
         elif worst <= tolerance:
             status = TOLERANCE
@@ -265,6 +279,8 @@ class Runner:
             status,
             features=len(actual),
             same_edges=same,
+            valid=valid,
+            max_scaled_hausdorff_distance=worst_distance,
             max_relative_symmetric_difference=worst,
             tolerance=tolerance,
         )
@@ -293,6 +309,10 @@ def prepare(data, work):
             path.unlink()
         src = source if source.startswith("/vsizip/") else str(data / source)
         options = ["-nln", name] + (["-t_srs", srs] if srs else [])
+        # Natural Earth declares Polygon despite containing multipart features.
+        # Keep that topology when writing the test layer and subsequent hulls.
+        if name == "ne":
+            options += ["-nlt", "PROMOTE_TO_MULTI"]
         gdal.VectorTranslate(
             str(path), src, options=options + ["-lco", "SPATIAL_INDEX=NO"]
         )
@@ -395,6 +415,8 @@ class Geos:
         gg = self.read(g)
         out = self.lib.GEOSConcaveHullOfPolygons_r(self.h, gg, ratio, tight, holes)
         self.lib.GEOSGeom_destroy_r(self.h, gg)
+        if not out:
+            raise RuntimeError("GEOS polygon hull returned no geometry")
         return self.write(out)
 
     def strtree_order(self, envelopes):
@@ -520,9 +542,11 @@ def combine_reference(features, group_by, multi):
     """
     groups = {}
     for g, attrs in features:
-        key = tuple(field_string(attrs[k]) for k in group_by)
+        fields = {k.casefold(): k for k in attrs}
+        actual = [fields[k.casefold()] for k in group_by]
+        key = tuple(field_string(attrs[k]) for k in actual)
         if key not in groups:
-            groups[key] = (ogr.Geometry(multi), {k: attrs[k] for k in group_by})
+            groups[key] = (ogr.Geometry(multi), {k: attrs[k] for k in actual})
         out = groups[key][0]
         if g is None or g.IsEmpty():
             continue
@@ -557,14 +581,30 @@ def valid_str_order(order, envelopes):
     Returns:
         True when the order is valid.
     """
-    items = [i for i in order if envelopes[i] is not None]
+    items = []
+    seen_null = False
+    for i in order:
+        if envelopes[i] is None:
+            seen_null = True
+        elif seen_null:
+            return False
+        else:
+            items.append(i)
     n = len(items)
     if n <= 1:
         return True
     slices = math.ceil(math.sqrt(math.ceil(n / 10)))
     per = math.ceil(n / slices)
-    x = lambda i: envelopes[i][0] + envelopes[i][1]  # noqa: E731
-    y = lambda i: envelopes[i][2] + envelopes[i][3]  # noqa: E731
+
+    def centre(i, axis):
+        lo, hi = envelopes[i][axis : axis + 2]
+        total = lo + hi
+        # Finite sums preserve subnormal midpoints; only an overflowing sum
+        # needs half-before-add (where both terms are far from underflow).
+        return total / 2 if math.isfinite(total) else lo / 2 + hi / 2
+
+    x = lambda i: centre(i, 0)  # noqa: E731
+    y = lambda i: centre(i, 2)  # noqa: E731
     chunks = [items[k : k + per] for k in range(0, n, per)]
     for a, b in zip(chunks, chunks[1:]):
         if max(map(x, a)) > min(map(x, b)):
@@ -650,10 +690,10 @@ def main():
                 options = ["--ratio", str(ratio)] + (["--allow-holes"] if holes else [])
                 out = r.terrio_run(["concave-hull", src_path, *options], name)
                 expected = [g.ConcaveHull(ratio, holes) if g else None for g, _ in source]
-                r.compare_hulls(name, [g for g, _ in load(out)], expected, 0.2)
-    # Concave hulls of polygons: GEOS's ConcaveHullOfPolygons, which OGR 3.13 calls. Natural
-    # Earth's layer is declared POLYGON: GDAL then forces the hulls to polygons, as terrio does,
-    # so the edges are compared on the raw GEOS hulls.
+                r.compare_hulls(name, [g for g, _ in load(out)], expected, 1e-10)
+    # Concave hulls of polygons: GEOS's ConcaveHullOfPolygons, which OGR 3.13 calls.
+    # prepare() promotes the mixed Natural Earth input to a MultiPolygon layer,
+    # so neither writer coerces disjoint hull components into polygon holes.
     ne = load(paths["ne"])
     for ratio, tight, holes in [
         (0.0, False, False),
@@ -668,7 +708,7 @@ def main():
         options = ["--ratio", str(ratio)] + (["--tight"] if tight else []) + (["--allow-holes"] if holes else [])
         out = r.terrio_run(["concave-hull", paths["ne"], *options], name)
         expected = [geos.concave_hull_of_polygons(g, ratio, tight, holes) for g, _ in ne]
-        r.compare_hulls(name, [g for g, _ in load(out)], expected, 0.2)
+        r.compare_hulls(name, [g for g, _ in load(out)], expected, 1e-10)
 
     # A notched shell exposes erosion triangles on two sides: GEOS keeps the first
     # exposed edge in its map, rather than replacing it with the longest edge.
@@ -680,7 +720,7 @@ def main():
         options = ["--ratio", "0.3"] + (["--tight"] if tight else [])
         out = r.terrio_run(["concave-hull", str(notch_path), *options], name)
         expected = [geos.concave_hull_of_polygons(notch, 0.3, tight, False)]
-        r.compare_hulls(name, [g for g, _ in load(out)], expected, 0.2)
+        r.compare_hulls(name, [g for g, _ in load(out)], expected, 1e-10)
 
     # Four shells touching only at vertices enclose an exterior gap, not an
     # input polygon hole. GEOS fills that gap even without --allow-holes.

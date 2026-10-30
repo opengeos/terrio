@@ -214,8 +214,9 @@ features at a time when the input and output formats allow it, as `convert` does
 `sort` read whole layers, as GDAL does. The `vector-geom` conformance suite
 (`scripts/compare_vector_geom_with_gdal.py`) compares them with GDAL and GEOS on real data.
 
-`simplify --tolerance` is a port of GEOS 3.14's `TopologyPreservingSimplifier`, which GDAL runs
-(`OGRGeometry::SimplifyPreserveTopology`): Douglas-Peucker simplification of every line and
+`simplify --tolerance` ports JTS 1.20.0's `TopologyPreservingSimplifier`, with adaptations
+checked against GDAL's GEOS-backed `OGRGeometry::SimplifyPreserveTopology`:
+Douglas-Peucker simplification of every line and
 ring, where a section is flattened only when the new segment crosses no other segment of the
 feature and moves no other part (a hole, say) to its other side. Rings keep at least four
 points and their start point may move. Simplification is per feature, so shared boundaries
@@ -234,15 +235,17 @@ Segmentization allows at most ten million output vertices per feature across its
 lines, rings and collection members. It checks each component against the remaining
 budget before allocating its output. This limit does not cap a whole layer's total output.
 
-`convex-hull` is GEOS's Graham scan: a polygon starting at the lowest, then leftmost, vertex,
+`convex-hull` ports JTS's Graham scan: a polygon starting at the lowest, then leftmost, vertex,
 clockwise; a line string for collinear input and a point for one distinct vertex. The layer's
-type becomes unknown. `concave-hull --ratio R` (0 most concave, 1 convex) follows GEOS's
+type becomes unknown. `concave-hull --ratio R` (0 most concave, 1 convex) ports JTS's
 `ConcaveHull` for points and lines (erosion of the Delaunay triangulation of the vertices, by
 longest border edge) and `ConcaveHullOfPolygons` for polygons (erosion of the constrained
 Delaunay triangulation of the space between them, united with them); `--allow-holes` allows
-holes and `--tight` makes polygon hulls follow the polygons' outer boundaries. Triangulations
-come from the `spade` crate: ring start and orientation may differ from GEOS's, and inputs with
-co-circular vertices (grids) can triangulate, and so erode, differently. As GDAL 3.13, polygon
+holes and `--tight` makes polygon hulls follow the polygons' outer boundaries. The point and
+constrained polygon triangulations also port JTS, retaining construction and traversal order
+with compatibility adaptations tested against executable GEOS 3.14.1. Hull regressions include
+co-circular grids and multipart polygons; tolerances and source revisions are recorded in
+[the provenance record](jts-provenance.md). As GDAL 3.13, polygon
 and multipolygon layers keep their declared type and hulls are forced to it, which can join
 several polygons into one invalid polygon in a layer declared POLYGON; other layers' type
 becomes unknown.
@@ -272,7 +275,7 @@ sequential from 1.
 
 `sort --method hilbert` (default) orders features by GDAL's Hilbert code of the centre of each
 bounding box on a 65535 × 65535 grid over the layer's extent; `--method strtree` by the leaf
-order of GEOS's sort-tile-recursive tree with nodes of 10 (slices by box centre X, each sorted
+order of JTS's sort-tile-recursive packing with nodes of 10 (slices by box centre X, each sorted
 by box centre Y). Null and empty geometries go last. terrio's sorts are stable, GDAL's are not:
 features whose keys tie may come in another order. Writing a sorted layer to FlatGeobuf
 re-sorts it for the spatial index.
@@ -1732,6 +1735,7 @@ terrio vsi copy /vsizip//vsicurl/https://host/a.zip/a.shp .
 terrio vsi sync -r --strategy ETag data/ s3://bucket/prefix   # gdal vsi sync
 terrio vsi move s3://bucket/old s3://bucket/new        # gdal vsi move (mv, ren, rename)
 terrio vsi delete -r s3://bucket/prefix                # gdal vsi delete (rm, rmdir, del)
+terrio vsi sozip create -j big.gpkg big.gpkg.zip         # gdal vsi sozip (see below)
 ```
 
 File management across locations, as GDAL's `gdal vsi` commands do on its virtual file systems:
@@ -1873,6 +1877,82 @@ Byte copies and copy-delete moves refuse pipes, sockets and devices. Recursive c
 `--skip-errors` report those entries and continue with regular files. ZIP member names retain
 valid UTF-8; unflagged non-UTF-8 legacy names are decoded as CP437 into Unicode. GDAL can instead emit
 raw non-UTF-8 bytes for those names.
+
+
+### vsi sozip
+
+```sh
+terrio vsi sozip create -j roads.gpkg dem.tif data.zip        # gdal vsi sozip create
+terrio vsi sozip create -r --enable-sozip yes --sozip-chunk-size 64K dir/ data.zip
+terrio vsi sozip optimize plain.zip seek.zip                  # gdal vsi sozip optimize
+terrio vsi sozip list /vsicurl/https://host/data.zip          # gdal vsi sozip list
+terrio vsi sozip validate -v data.zip                         # gdal vsi sozip validate
+```
+
+Seek-Optimized ZIP (SOZip index version 1): a Deflate member compressed in independent chunks, with a hidden
+index (`.name.sozip.idx`) of their offsets, so that readers can start decompressing anywhere.
+`create` adds files (directories with `-r`; `-j` drops their directories) to a new archive, or to
+an existing one unless `--overwrite`; `--enable-sozip auto` (the default) seek-optimizes files of
+at least `--sozip-min-file-size` (1 MB), `yes` every file larger than a chunk
+(`--sozip-chunk-size`, 32 KB), `no` none; `--content-type` stores GDAL's `KV` property. Inputs
+can be any location `vsi` reads; outputs are local or `/vsimem/`. `optimize` rewrites an archive's
+members. `list` prints GDAL's table (`--json` for JSON); `validate` decompresses every member
+and checks its CRC-32, each index's header against its member and its offsets, and that every
+chunk decompresses on its own; it exits with status 1 when the archive is not valid.
+
+GeoTIFFs in a zip archive are read in place when stored or seek-optimized: `terrio info` and
+window reads of `/vsizip/archive.zip/dem.tif` (or of a remote archive, by range requests) read
+only the chunks they need instead of extracting the archive. Other members, and other formats,
+are extracted to a temporary directory first. ZIP readers reopen independently for parallel
+TIFF decoding while sharing remote range caches. Native ZIP-member raster exports stream
+strips and treat the containing archive as an input when checking overwrite aliases.
+Random reads check requested chunk structure; they do not read the whole member to check its
+CRC-32. Use `vsi sozip validate` for the complete checksum and independent-chunk checks.
+
+GDAL 3.13.3's `sozip optimize` also adds the input archive itself to its output (a bug); terrio
+does not. Native creation and optimization stream to an atomic temporary output; compressed
+payload spools spill to disk after 64 MiB even when the source size was unknown. Central
+records and writer chunk offsets remain in memory. `/vsimem/` output size bounds its memory
+use. Validation streams every member, and index tables are checked with a fixed buffer and
+read by offset when needed. Lazy readers retain a 64 KiB decoded window and decoder state,
+including for large chunk sizes. `list` performs index header/offset checks; only `validate`
+checks every independent compressed chunk. Optimization preserves member names verbatim,
+including unsafe paths present in an input archive; extraction enforces its own path checks.
+Create-only options (`recursive`, `junk_paths`, `content_type`) are rejected by optimize. Not supported: `sozip create` progress bars
+and multithreaded compression.
+
+Create accepts existing empty placeholders as new archives. Append copies every
+payload byte before the old central directory into the replacement,
+then rewrites central records: adding a small file costs a full archive rewrite. The
+central records and prefix come from one retained input handle/snapshot; detected native
+file changes abort publication, and in-memory append uses a version-checked replacement.
+Unix appends hold an advisory exclusive archive lock through flush, sync and publication;
+other append attempts fail while that lock is held. Writers that ignore advisory locks
+and non-Unix native writers are not serialized. A destination that was initially absent
+is published only if it remains absent, including in-memory destinations.
+Recursive creation enumerates inputs before opening the temporary output and excludes
+an existing output from its own input tree. Remote member names omit URL userinfo,
+queries and fragments. Auto chunking uses streamed length even without a size hint.
+Its provisional full-flush boundaries reset the compression dictionary even for members
+below the indexing threshold. On the real 11,146,182-byte Natural Earth places DBF, with
+a threshold above its size, Auto produced 529,185 compressed bytes versus 482,152 with
+`--enable-sozip no` (9.75% larger); payload bytes agree. Use `no` to avoid that tradeoff.
+Writers retain at most 1,048,576 chunk offsets (8 MiB) per member; exceeding this budget
+fails before adding an offset. Use a larger chunk size or disable indexing for larger members.
+
+`list` intentionally checks every index offset: its index-table work is eight bytes per
+additional chunk (plus a 32-byte header), so remote listings can fetch whole offset tables.
+A local HTTP listing of the 48,788,679-byte USGS archive transferred 29,895 bytes
+in two requests, including its 12,600-byte index (32 KiB chunks).
+Random member opens check the header and requested chunks to keep window reads lazy;
+a malformed requested chunk raises an error. `validate` performs the complete index,
+independent-decoding and checksum checks. Decoder state and buffers are reused between
+chunks; the offset cache mutex is released before archive I/O. TIFF prefetch hints are
+not yet coalesced across ZIP chunks, so remote windows use on-demand range reads.
+Native parallel member reopens reject changed archive identity, size or timestamps
+without reparsing offsets against a different archive. When keeping paths, literal backslashes in Unix/remote names are preserved;
+`--junk-paths` flattens either separator. Optimize preserves directory KV properties.
+
 
 ## fill-nodata
 
@@ -2485,7 +2565,9 @@ column data-page locations; it does not copy those payloads into `_metadata`.
 
 ## GeoPackage repacking
 
-`terrio gpkg-repack survey.gpkg --json` compacts a native GeoPackage in place.
+`terrio gpkg-repack survey.gpkg --json` compacts a native GeoPackage in place. Repacking
+rejects malformed table key ordering and child keys outside their parent divider
+ranges, matching the stricter shared SQLite traversal used by validation.
 The `gpkg-repack` MCP tool accepts the same arguments. JSON reports original and compacted
 byte/page counts and the preserved SQLite page size.
 
@@ -2612,3 +2694,67 @@ offset, units and nodata. Numeric integer/float metadata compares by value.
 An array present in only some inputs is retained; regions belonging to other
 inputs use that array's nodata value, or zero when it has none.
 >
+
+## GeoPackage validation
+
+```sh
+terrio gpkg-validate data.gpkg --json
+terrio gpkg-validate data.gpkg --full-check --strict
+terrio gpkg-validate icu-created.gpkg --unicode-case
+```
+
+The pure Rust validator reports `valid`, `complete`, `version`, `errors` (a numeric
+core or named extension `requirement` and `message`), `warnings` and
+`unsupported_checks`. Exit status is 0 for a valid image, 1 for invalid data or
+strict-mode warnings, and 2 when unsupported checks prevent completing validation
+(even when another check has already proven the image invalid). Text summaries
+identify both invalidity and incompleteness when both apply. Execution errors,
+including missing inputs and refusals caused by live sidecars, exit with status 1
+and return an error diagnostic rather than a JSON verdict.
+The MCP `gpkg-validate` tool is read-only: a completed query returns its structured
+verdict with `isError=false`; CLI verdict statuses are appended as diagnostic text.
+Execution failures still return `isError=true`.
+
+Checks cover SQLite structure, foreign keys and indexes; GeoPackage core and
+extension metadata; geometry WKB; raster tile payloads and registered views.
+`--full-check` adds advisory attribute storage, range, length and date checks;
+`--strict` makes warnings invalidate the verdict. Stock ASCII case functions are
+the default; `--unicode-case` selects Unicode lower/upper/LIKE behavior for images
+created with ICU SQLite. NOCASE collation retains SQLite's ASCII behavior.
+
+Native paths and `/vsimem/` images must be closed/checkpointed. Validation reads
+the complete database image once, then makes multiple in-memory record passes for
+different rule groups. It refuses nonempty WAL or rollback-journal sidecars;
+it never checkpoints or modifies the file. Uploaded bytes are supported by the
+Rust/Python/JavaScript APIs. Filename requirement 3 applies only to path inputs.
+
+Supported views include projections, filters, DISTINCT, ORDER/LIMIT/OFFSET,
+nested views, inner/cross/left/right/full/natural joins and compound SELECTs.
+Aggregates, CTEs, subqueries, window functions, extension loading and unimplemented
+functions yield an explicitly incomplete verdict. The image stays in memory;
+there is no configured input-size ceiling, so reserve memory for the entire file
+plus the retained validation state before validating large databases.
+Ordinary user rows stream, while metadata, integrity keys, DISTINCT/set values
+and sorted candidates are retained. Join views additionally retain all right-hand
+input rows, including geometry blobs, once per evaluation. Each join evaluation is
+limited to 1,000,000 work units, counting retained right-input rows and candidate
+row pairs across all join levels and nested views. A shared 128 MiB budget covers right-input caches, candidate
+rows, sorted rows, DISTINCT keys and compound-set working rows, including text/blob
+payloads. Key/set reservations are conservative and can exceed the eventual retained
+result size; compound reservations last until evaluation ends. A separate 1 GiB
+cumulative candidate-copy budget bounds repeated copying of large join payloads,
+and is charged before the candidate is constructed. Reservations are released on
+success or failure. Exceeding a budget yields an incomplete verdict;
+multi-way nested-loop combinations can otherwise grow as the product of row counts.
+Inputs are not rescanned for each outer row. Extension/metadata/R-tree/schema rules
+that have not evaluated a referenced view, and tile views not evaluated by the tile
+validator, are explicitly incomplete. Unsupported schema declarations are also
+reported as incomplete, rather than proven SQLite corruption. The same applies to
+CHECK/generated expressions outside the implemented expression subset, including
+JSON extraction operators. `json_valid` supports SQLite's 1,000-level JSON nesting
+limit without constructing a recursive JSON value. LIKE/GLOB matching reuses its
+state buffers and refuses estimated work above 10,000,000 units per call, yielding
+an incomplete verdict; this includes the cost of character-class ranges.
+
+Checks are stricter than GDAL for some malformed geometry, image and metadata
+payloads. See [validation details and known differences](testing.md#geopackage-specification-validation).

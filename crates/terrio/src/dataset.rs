@@ -938,7 +938,7 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<()> {
-    // The palette, PHOTOMETRIC=RGB and ALPHA=YES GDAL's CreateCopy takes from the source bands.
+    // PHOTOMETRIC=RGB and ALPHA=YES, as GDAL's CreateCopy takes them from the source bands.
     let derived = color_options(ds, path, options);
     let options = derived.as_ref().unwrap_or(options);
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
@@ -978,21 +978,16 @@ pub(crate) fn needs_nodata_pam(ds: &RasterDataset) -> bool {
 }
 
 /// The options a GeoTIFF or COG is written with from its source dataset, as GDAL's `CreateCopy`
-/// takes them from the source bands: the color table of a single Byte or UInt16 band (GDAL also
-/// copies a two-band one, which the writer does not write as a palette); `PHOTOMETRIC=RGB` for
-/// red, green and blue first bands, `ALPHA=YES` for an alpha last band besides the colour ones
-/// (it then weights the overviews); each unless the caller gave it, the last two only when the
-/// caller gave no band colour interpretations. `None` when nothing is added, or for other
-/// formats.
+/// takes them from the source bands: `PHOTOMETRIC=RGB` for red, green and blue first bands,
+/// `ALPHA=YES` for an alpha last band besides the colour ones (it then weights the overviews);
+/// each unless the caller gave it, and only when the caller gave no band colour interpretations.
+/// The color table is inherited as `RasterWriteOptions::inherited_from` decides. `None` when
+/// nothing is added, or for other formats.
 fn color_options(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Option<RasterWriteOptions> {
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
     if !matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
         return None;
     }
-    let table = options.color_table.is_empty()
-        && !ds.color_table.is_empty()
-        && ds.raster.bands == 1
-        && matches!(ds.raster.data_type, wbraster::DataType::U8 | wbraster::DataType::U16);
     let interps_given = options.band_metadata.iter().any(|b| b.color_interp.is_some());
     let given = |k: &str| options.creation_options.iter().find(|(o, _)| o.eq_ignore_ascii_case(k)).map(|(_, v)| v.to_ascii_uppercase());
     let ci = |b: usize| ds.band_metadata.get(b).and_then(|m| m.color_interp.as_deref()).map(str::to_ascii_lowercase);
@@ -1013,12 +1008,9 @@ fn color_options(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -
     if !interps_given && given("ALPHA").is_none() && bands > color_samples && ci(bands - 1).as_deref() == Some("alpha") {
         extra.push(("ALPHA".to_string(), "YES".to_string()));
     }
-    (table || !extra.is_empty()).then(|| {
+    (!extra.is_empty()).then(|| {
         let mut o = options.clone();
         o.creation_options.extend(extra);
-        if table {
-            o.color_table = ds.color_table.clone();
-        }
         o
     })
 }
@@ -1252,20 +1244,9 @@ impl RasterWriteOptions {
     pub(crate) fn inherited_from(&self, ds: &RasterDataset, driver: Option<RasterDriver>) -> Self {
         let co = |key: &str| self.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
         let compression = self.compression.as_deref().or_else(|| co("COMPRESS")).unwrap_or_default();
-        // GeoTIFF and COG take GDAL 3.12.1's `CreateCopy` rule (see `color_options`): the color table
-        // of a single Byte or UInt16 band, whatever the compression (GDAL then refuses JPEG
-        // compression of a paletted band, as the writer does). Other drivers: unless JPEG or WEBP
-        // compression or a photometric other than a palette is asked for.
-        let palette_allowed = match driver {
-            Some(RasterDriver::GTiff | RasterDriver::Cog) => {
-                ds.raster.bands == 1 && matches!(ds.raster.data_type, wbraster::DataType::U8 | wbraster::DataType::U16)
-            }
-            _ => {
-                !compression.eq_ignore_ascii_case("JPEG")
-                    && !compression.eq_ignore_ascii_case("WEBP")
-                    && co("PHOTOMETRIC").is_none_or(|p| p.eq_ignore_ascii_case("PALETTE"))
-            }
-        };
+        let palette_allowed = !compression.eq_ignore_ascii_case("JPEG")
+            && !compression.eq_ignore_ascii_case("WEBP")
+            && co("PHOTOMETRIC").is_none_or(|p| p.eq_ignore_ascii_case("PALETTE"));
         let color_table = if self.color_table.is_empty() && palette_allowed { ds.color_table.clone() } else { self.color_table.clone() };
         let mut band_metadata = if self.band_metadata.is_empty() { ds.band_metadata.clone() } else { self.band_metadata.clone() };
         // A caller requesting grayscale/unsupported palette compression writes indices

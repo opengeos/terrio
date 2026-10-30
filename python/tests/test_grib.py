@@ -1172,6 +1172,24 @@ def test_truncated_grib_fixture_is_refused():
         trio.open(path)
 
 
+DATA = Path(__file__).resolve().parents[2] / "crates" / "terrio" / "tests" / "data" / "grib"
+
+
+def test_open_raster():
+    """A GRIB2 message of two fields, the second reusing the first's bitmap."""
+    r = terrio.open_raster(str(DATA / "subgrids_reuse_bitmap.grib2"), lazy=True)
+    assert r.driver == "GRIB"
+    assert (r.count, r.height, r.width) == (2, 20, 20)
+    assert r.dtype == "float64"
+    assert r.nodata == 9999.0
+    meta = dict(r.metadata)
+    assert meta["BAND_1#GRIB_ELEMENT"] == "UGRD"
+    assert meta["BAND_2#GRIB_ELEMENT"] == "VGRD"
+    assert meta["BAND_1#GRIB_DISCIPLINE"] == "0(Meteorological)"
+    # The sums of GDAL's values.
+    assert [float(r.read(b).sum()) for b in (1, 2)] == [50706.0, 51294.0]
+
+
 def test_rio_descriptions_tags_and_nodata():
     """The test of #232 (`python/tests/test_grib.py`), unchanged: `terrio.rio` gives GDAL's
     band descriptions, tags and nodata values."""

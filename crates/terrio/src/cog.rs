@@ -338,7 +338,13 @@ impl LazyRaster {
 
     pub(crate) fn input_paths(&self) -> Result<Vec<String>> {
         let mut paths = match &self.inner {
-            Inner::Tiff(t) => t.file.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+            Inner::Tiff(t) => {
+                let mut paths = t.file.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>();
+                if let Some(path) = t.zip.as_ref().and_then(|zip| zip.native_archive()) {
+                    paths.push(path.to_string_lossy().into_owned());
+                }
+                paths
+            }
             Inner::Memory(_) => Vec::new(),
             Inner::Source(_, source) => match source.streamed() {
                 Some(source) => source.checked_inputs()?,
@@ -452,6 +458,11 @@ impl LazyRaster {
     /// [`LazyRaster::open_tiff`] with other decoding limits than the defaults.
     pub fn open_tiff_with_limits(path: &str, limits: TiffReadLimits) -> Result<Option<Self>> {
         let loc = Location::parse(path);
+        let resolve_file = || {
+            let local = vfs::resolve(path)?;
+            let file = local.path().to_path_buf();
+            Ok::<_, Error>((Source::File(BufReader::new(std::fs::File::open(&file)?)), Some(local), Some(file)))
+        };
         let (mut source, local, file) = match &loc {
             #[cfg(remote)]
             Location::Url(_) | Location::S3 { .. } => {
@@ -460,11 +471,17 @@ impl LazyRaster {
             }
             Location::Local(p) if !p.is_file() => return Ok(None),
             Location::Local(p) => (Source::File(BufReader::new(std::fs::File::open(p)?)), None, Some(p.clone())),
-            _ => {
-                let local = vfs::resolve(path)?;
-                let file = local.path().to_path_buf();
-                (Source::File(BufReader::new(std::fs::File::open(&file)?)), Some(local), Some(file))
+            // A member of a zip archive, stored or seek-optimized: read in place, without
+            // extracting the archive (remote archives by range requests).
+            #[cfg(not(target_family = "wasm"))]
+            Location::Zip { archive, inner: Some(inner) } => {
+                if let Some(member) = crate::vsi::sozip::open_member(archive, inner.trim_start_matches('/'))? {
+                    (Source::Zip(Box::new(member)), None, None)
+                } else {
+                    resolve_file()?
+                }
             }
+            _ => resolve_file()?,
         };
         if !is_tiff(&mut source) {
             return Ok(None);
@@ -943,8 +960,9 @@ impl LazyRaster {
         }
         let Inner::Tiff(t) = &self.inner else { return crate::write_raster_dataset(&self.read()?, path, options) };
         // An output that replaces the input is written from the input read whole.
-        let inputs: Vec<String> = t.file.iter().map(|f| f.to_string_lossy().into_owned()).collect();
-        if t.file.is_none() || crate::ops::strips::overwrites(path, &inputs) {
+        let inputs = self.input_paths()?;
+        let zip = t.zip.is_some();
+        if (t.file.is_none() && !zip) || crate::ops::strips::overwrites(path, &inputs) {
             return crate::write_raster_dataset(&self.read()?, path, options);
         }
         // The header the whole raster is read with.
@@ -1332,6 +1350,8 @@ enum Source {
     Http(crate::http::RangeReader),
     /// A remote file whose bytes the caller fetches (see [`crate::sparse`]).
     Sparse(crate::sparse::SparseFile),
+    /// A zip archive member read in place: stored, or seek-optimized (SOZip).
+    Zip(Box<crate::vsi::sozip::MemberReader>),
 }
 
 impl Source {
@@ -1339,7 +1359,7 @@ impl Source {
     #[cfg_attr(not(remote), allow(unused_variables))]
     fn prefetch(&self, ranges: &[(u64, u64)]) -> Result<()> {
         match self {
-            Source::File(_) | Source::Memory(_) => Ok(()),
+            Source::File(_) | Source::Memory(_) | Source::Zip(_) => Ok(()),
             #[cfg(remote)]
             Source::Http(r) => Ok(r.prefetch(ranges)?),
             Source::Sparse(s) => Ok(s.prefetch(ranges)?),
@@ -1355,6 +1375,7 @@ impl Read for Source {
             #[cfg(remote)]
             Source::Http(r) => r.read(buf),
             Source::Sparse(s) => s.read(buf),
+            Source::Zip(z) => z.read(buf),
         }
     }
 }
@@ -1367,6 +1388,7 @@ impl Seek for Source {
             #[cfg(remote)]
             Source::Http(r) => r.seek(pos),
             Source::Sparse(s) => s.seek(pos),
+            Source::Zip(z) => z.seek(pos),
         }
     }
 }
@@ -1416,6 +1438,8 @@ struct TiffRaster {
     /// The local file the TIFF is read from, which more decoders can open to decode chunks in
     /// parallel.
     file: Option<std::path::PathBuf>,
+    /// Reopening and native archive alias information for an in-place ZIP member.
+    zip: Option<crate::vsi::sozip::MemberReopen>,
     /// The decoders' limits.
     limits: TiffReadLimits,
     /// The length of the TIFF, in bytes.
@@ -1432,6 +1456,7 @@ struct TiffRaster {
 enum Reopened<'a> {
     File(&'a std::path::Path),
     Memory(SharedBytes),
+    Zip(crate::vsi::sozip::MemberReopen),
 }
 
 fn tiff_err(e: tiff::TiffError) -> Error {
@@ -1443,6 +1468,10 @@ fn tiff_err(e: tiff::TiffError) -> Error {
 
 impl TiffRaster {
     fn new(mut source: Source, local: Option<vfs::LocalPath>, limits: TiffReadLimits) -> Result<Self> {
+        let zip = match &source {
+            Source::Zip(member) => member.reopen(),
+            _ => None,
+        };
         let tags = read_geo_tags_from(&mut source).ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
         // A directory libtiff cannot read is refused here, before any pixel is decoded.
         tags.check_structure()?;
@@ -1509,6 +1538,7 @@ impl TiffRaster {
             current_ifd: 0,
             _local: local,
             file: None,
+            zip,
             limits,
             file_len: len,
             files: Vec::new(),
@@ -1671,6 +1701,7 @@ impl TiffRaster {
         let source = match (self.file.as_deref(), dec.inner().get_ref()) {
             (Some(path), _) => Some(Reopened::File(path)),
             (None, Source::Memory(m)) => Some(Reopened::Memory(m.get_ref().clone())),
+            (None, Source::Zip(member)) => member.reopen().map(Reopened::Zip),
             _ => None,
         };
         let reopen = source.map(|source| {
@@ -1683,6 +1714,12 @@ impl TiffRaster {
                         (Source::File(BufReader::new(file)), len)
                     }
                     Reopened::Memory(bytes) => (Source::Memory(std::io::Cursor::new(bytes.clone())), bytes.as_ref().len() as u64),
+                    Reopened::Zip(member) => {
+                        let mut s = Source::Zip(Box::new(member.open()?));
+                        let len = s.seek(SeekFrom::End(0))?;
+                        s.seek(SeekFrom::Start(0))?;
+                        (s, len)
+                    }
                 };
                 Ok(Decoder::new(PatchedReader::new(s, tags)).map_err(tiff_err)?.with_limits(limits.tiff_within(len)))
             }

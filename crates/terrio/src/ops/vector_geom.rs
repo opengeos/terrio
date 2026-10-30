@@ -885,7 +885,7 @@ pub enum SortMethod {
     #[default]
     Hilbert,
     /// In the order of the leaves of a sort-tile-recursive tree of the bounding boxes, with nodes
-    /// of 10 (GEOS's `TemplateSTRtree`): vertical slices by the boxes' X centres, each sorted by
+    /// of 10 (JTS's `STRtree`): vertical slices by the boxes' X centres, each sorted by
     /// the Y centres.
     StrTree,
 }
@@ -979,20 +979,10 @@ pub fn sort(layer: &Layer, method: SortMethod) -> Layer {
             order
         }
         SortMethod::StrTree => {
-            let mut items: Vec<usize> = (0..boxes.len()).filter(|&i| boxes[i].is_some()).collect();
-            let b = |i: usize| boxes[i].expect("a bounding box");
-            let n = items.len();
-            if n > 1 {
-                // GEOS EnvelopeTraits::sortX/sortY use sums as well, including
-                // their overflow/tie behavior for extreme finite coordinates.
-                items.sort_by(|&p, &q| (b(p).0 + b(p).2).total_cmp(&(b(q).0 + b(q).2)));
-                let slices = ((n as f64 / 10.0).ceil().sqrt()).ceil() as usize;
-                let per_slice = (n as f64 / slices as f64).ceil() as usize;
-                for slice in items.chunks_mut(per_slice.max(1)) {
-                    slice.sort_by(|&p, &q| (b(p).1 + b(p).3).total_cmp(&(b(q).1 + b(q).3)));
-                }
-            }
-            items.extend((0..boxes.len()).filter(|&i| boxes[i].is_none()));
+            let finite: Vec<_> = boxes.iter().enumerate().filter_map(|(id, b)| b.map(|b| (id, b))).collect();
+            let envelopes: Vec<_> = finite.iter().map(|(_, b)| *b).collect();
+            let mut items: Vec<_> = super::strtree::leaf_order(&envelopes).into_iter().map(|i| finite[i].0).collect();
+            items.extend(boxes.iter().enumerate().filter_map(|(i, b)| b.is_none().then_some(i)));
             items
         }
     };

@@ -187,3 +187,37 @@ def test_a_remote_file_larger_than_the_memory_is_refused_after_its_first_respons
     assert terrio.vsi_stat("/vsimem/declared/copy.bin") is None
     # Nothing past the first response's bytes was asked for.
     assert [r for r in ranges if r] == ["bytes=0-16383", "bytes=0-0", "bytes=0-16383"]
+
+
+def test_sozip(tmp_path):
+    big = tmp_path / "big.csv"
+    big.write_bytes(b"".join(f"{i},{i * 7919 % 10007}\n".encode() for i in range(20000)))
+    (tmp_path / "small.txt").write_text("small")
+    archive = tmp_path / "out.zip"
+    archive.touch()  # Existing empty placeholders are accepted, like GDAL.
+    r = terrio.sozip_create(
+        [str(big), str(tmp_path / "small.txt")],
+        str(archive),
+        enable="yes",
+        chunk_size=4096,
+        junk_paths=True,
+    )
+    assert (r["added"], r["seek_optimized"]) == (2, 1)
+    members = terrio.sozip_list(str(archive))
+    assert [(m["name"], m["sozip_chunk_size"]) for m in members] == [
+        ("big.csv", 4096),
+        ("small.txt", None),
+    ]
+    v = terrio.sozip_validate(str(archive))
+    assert v["valid"] and v["sozip_files"] == ["big.csv"]
+    with zipfile.ZipFile(archive) as z:
+        assert z.namelist() == ["big.csv", "small.txt"]
+        assert z.read("big.csv") == big.read_bytes()
+    plain = tmp_path / "plain.zip"
+    with zipfile.ZipFile(plain, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(big, "big.csv")
+    terrio.sozip_optimize(str(plain), str(tmp_path / "opt.zip"), enable="yes", chunk_size=8192)
+    assert terrio.sozip_list(str(tmp_path / "opt.zip"))[0]["sozip_chunk_size"] == 8192
+    gdal = pytest.importorskip("osgeo.gdal")
+    # GDAL reads terrio's seek-optimized member and its index.
+    assert gdal.GetFileMetadata(f"/vsizip/{archive}/big.csv", "ZIP").get("SOZIP_VALID") == "YES"

@@ -1925,6 +1925,47 @@ test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom
     geometry: { type: "MultiPoint", coordinates: [[0, 0], [10, 1], [11, 10], [1, 12], [5, 5], [5, 9], [2, 3], [8, 3]] },
   };
   assert.equal(terrio.concaveHull(pts, 0, { allowHoles: false }).toGeoJSON().features[0].geometry.type, "Polygon");
+  const hugeCoordinates = [[0, 0], [1e155, 1e155], [2e155, 0]];
+  const hugeLine = { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: hugeCoordinates } };
+  assert.deepEqual(terrio.simplify(hugeLine, 0.3).toGeoJSON().features[0].geometry.coordinates, hugeCoordinates);
+  const pinched = {
+    type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [
+      [[0, 0], [10, 0], [10, 10], [0, 10], [0, 5], [0, 0]],
+      [[0, 5], [3, 3], [3, 7], [0, 5]],
+    ] },
+  };
+  const pinchedHull = terrio.concaveHull(pinched, 0.3, { tight: true, allowHoles: true }).toGeoJSON().features[0].geometry;
+  assert.equal(pinchedHull.type, "Polygon");
+  assert.deepEqual(pinchedHull.coordinates.map((ring) => ring.length), [6, 4]);
+  const touchingIsland = {
+    type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: [
+      [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]], [[2, 2], [8, 1], [9, 9], [1, 8], [2, 2]]],
+      [[[2, 2], [4, 2], [4, 4], [2, 4], [2, 2]]],
+    ] },
+  };
+  const touchingHull = terrio.concaveHull(touchingIsland, 0, { tight: true, allowHoles: true }).toGeoJSON().features[0].geometry;
+  assert.equal(touchingHull.type, "MultiPolygon");
+  assert.deepEqual(touchingHull.coordinates.map((polygon) => polygon.length).sort(), [1, 2]);
+  const holeOwner = touchingHull.coordinates.find((polygon) => polygon.length === 2);
+  assert.deepEqual([...new Set(holeOwner[0].map((point) => point.join(",")))].sort(), ["0,0", "0,10", "10,0", "10,10"]);
+  assert.equal(holeOwner[1].length, 5);
+  assert.deepEqual(holeOwner[1][0], holeOwner[1].at(-1));
+  assert.deepEqual([...new Set(holeOwner[1].map((point) => point.join(",")))].sort(), ["1,8", "2,2", "8,1", "9,9"]);
+  // GEOS observation: polygon erosion at 0.1 keeps both triangles separate.
+  const triangles = {
+    type: "Feature", properties: {},
+    geometry: { type: "MultiPolygon", coordinates: [
+      [[[18, -5], [15, -6], [12, -2], [18, -5]]],
+      [[[8, 3], [13, 3], [10, 4], [8, 3]]],
+    ] },
+  };
+  const polygonHull = terrio.concaveHull(triangles, 0.1).toGeoJSON().features[0].geometry;
+  const triangleVertices = (geometry) => geometry.coordinates.map((polygon) => {
+    assert.equal(polygon.length, 1);
+    return [...new Set(polygon[0].map((p) => JSON.stringify(p)))].sort().join(";");
+  }).sort();
+  assert.equal(polygonHull.type, "MultiPolygon");
+  assert.deepEqual(triangleVertices(polygonHull), triangleVertices(triangles.geometry));
   assert.deepEqual(terrio.swapXy(line).toGeoJSON().features[1].geometry.coordinates, [2, 1]);
   const multi = terrio.setGeomType(line, { multi: true }).toGeoJSON();
   assert.equal(multi.features[0].geometry.type, "MultiLineString");
@@ -2705,4 +2746,56 @@ test("dataset memory paths preserve edge spaces without aliasing", () => {
   } finally {
     terrio.vsiDelete(root, true);
   }
+});
+
+test("sozip: create, list, validate and optimize in memory", () => {
+  const lines = [];
+  for (let i = 0; i < 20000; i++) lines.push(`${i},${(i * 7919) % 10007}`);
+  const big = new TextEncoder().encode(lines.join("\n"));
+  terrio.vsiWrite("/vsimem/jssozip/big.csv", big);
+  terrio.vsiWrite("/vsimem/jssozip/small.txt", new TextEncoder().encode("small"));
+  terrio.vsiWrite("/vsimem/jssozip/out.zip", new Uint8Array());
+  const r = terrio.sozipCreate(["/vsimem/jssozip/big.csv", "/vsimem/jssozip/small.txt"], "/vsimem/jssozip/out.zip",
+    { enable: "yes", chunkSize: 4096, junkPaths: true });
+  assert.equal(r.seek_optimized, 1);
+  const members = terrio.sozipList("/vsimem/jssozip/out.zip");
+  assert.deepEqual(members.map(m => [m.name, m.sozip_chunk_size]), [["big.csv", 4096], ["small.txt", null]]);
+  const before = terrio.vsiRead("/vsimem/jssozip/out.zip");
+  assert.throws(() => terrio.sozipCreate(["/vsimem/jssozip/big.csv"], "/vsimem/jssozip/out.zip", { overwrite: true, chunkSize: 0 }), /chunk size/);
+  assert.throws(() => terrio.sozipOptimize("/vsimem/jssozip/out.zip", "/vsimem/jssozip/opt.zip", { chunkSize: 0 }), /chunk size/);
+  assert.deepEqual(terrio.vsiRead("/vsimem/jssozip/out.zip"), before);
+  assert.throws(() => terrio.sozipOptimize("/vsimem/jssozip/out.zip", "/vsimem/jssozip/opt.zip", { junkPaths: true }), /unknown field/);
+  const v = terrio.sozipValidate("/vsimem/jssozip/out.zip");
+  assert.ok(v.valid);
+  assert.deepEqual(v.sozip_files, ["big.csv"]);
+  assert.deepEqual(terrio.vsiRead("/vsizip//vsimem/jssozip/out.zip/big.csv"), big);
+  terrio.sozipOptimize("/vsimem/jssozip/out.zip", "/vsimem/jssozip/opt.zip", { enable: "yes", chunkSize: 8192 });
+  assert.equal(terrio.sozipList("/vsimem/jssozip/opt.zip")[0].sozip_chunk_size, 8192);
+  terrio.vsiDelete("/vsimem/jssozip", true);
+});
+
+test("validateGpkg reports complete verdicts for bytes and memory paths", {
+  skip: needs("sqlite") || (!DATA || !existsSync(join(DATA, "countries.gpkg")) ? "requires real GeoPackage data" : false),
+}, () => {
+  const bytes = new Uint8Array(readFileSync(join(DATA, "countries.gpkg")));
+  const before = bytes.slice();
+  const report = terrio.validateGpkg(bytes);
+  assert.equal(report.valid, true, JSON.stringify(report));
+  assert.equal(report.complete, true);
+  assert.deepEqual(report.errors, []);
+  const path = "/vsimem/js-gpkg-validation.gpkg";
+  terrio.vsiWrite(path, bytes);
+  try {
+    assert.deepEqual(terrio.validateGpkgPath(path), report);
+    assert.equal(terrio.validateGpkgPath(path, { fullCheck: true }).complete, true);
+    assert.deepEqual(terrio.vsiRead(path), before);
+  } finally {
+    terrio.vsiDelete(path);
+  }
+  assert.deepEqual(bytes, before);
+  const invalid = terrio.validateGpkg(new Uint8Array([1, 2, 3]));
+  assert.equal(invalid.valid, false);
+  assert.equal(invalid.complete, true);
+  assert.equal(invalid.errors[0].requirement, 1);
+  assert.throws(() => terrio.validateGpkg(bytes, { unknownOption: true }), /unknown field/);
 });
