@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     PRAGMA integrity_check
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/samples/validate_gpkg.py
+// No code is translated from these sources.
+
 //! SQLite required values, unique keys and index records (requirement 6).
 //! CHECK and virtual generated columns use the SQLite scalar evaluator.
 //! Expression keys and partial predicates use the same scalar evaluator.

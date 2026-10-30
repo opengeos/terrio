@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+// SPDX-FileCopyrightText: PROJ contributors
+// SPDX-FileCopyrightText: Copyright (c) 2018, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2023, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   PROJ 9.8.1:
+//     src/datums.cpp
+//     src/ell_set.cpp
+//     src/iso19111/datum.cpp
+//     include/proj/internal/datum_internal.hpp
+//     src/iso19111/operation/coordinateoperationfactory.cpp
+
 //! A CRS as terrio transforms coordinates in it: a projection on an ellipsoid with linear and
 //! angular units, axis order, prime meridian and its datum transformations to WGS 84, built from
 //! the EPSG table, a PROJ string or a WKT definition.

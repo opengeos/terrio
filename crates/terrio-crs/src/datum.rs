@@ -1,3 +1,25 @@
+// SPDX-FileCopyrightText: Copyright (c) 2016, Thomas Knudsen / SDFE
+// SPDX-FileCopyrightText: Copyright (c) 2017, Kristian Evers
+// SPDX-FileCopyrightText: Copyright (c) 2019, Even Rouault, <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2022, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: PROJ contributors
+// SPDX-FileCopyrightText: Copyright (c) 2018-2024, Even Rouault, <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2016, 2017 Thomas Knudsen/SDFE
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   PROJ 9.7.0:
+//     src/conversions/cart.cpp
+//   PROJ 9.8.1:
+//     src/transformations/helmert.cpp
+//     src/transformations/deformation.cpp
+//     src/transformations/xyzgridshift.cpp
+//     src/transformations/vertoffset.cpp
+//     src/transformations/hgridshift.cpp
+//     src/coord_operation.cpp
+//     src/trans.cpp
+
 //! Datum transformations: the geodetic steps of PROJ pipelines (geocentric conversion, Helmert
 //! with or without rates of change, Molodensky-Badekas, geographic offsets and the grid-based
 //! steps `hgridshift`, `vgridshift`, `gridshift`, `xyzgridshift` and `deformation`), run as PROJ

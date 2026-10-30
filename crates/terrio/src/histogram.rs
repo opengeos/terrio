@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 1998, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2016, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     gcore/gdalrasterband.cpp
+
 //! Band histograms as `gdalinfo -hist` computes them (`GDALRasterBand::GetDefaultHistogram()`).
 //!
 //! - Byte bands: 256 buckets from -0.5 to 255.5; Int8 bands: from -128.5 to 127.5.

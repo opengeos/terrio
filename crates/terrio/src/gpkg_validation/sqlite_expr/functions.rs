@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     src/func.c
+// No code is translated from these sources.
+
 use super::*;
 
 // SQLite accepts at most 1000 container levels. IgnoredAny validates JSON with

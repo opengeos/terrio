@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/xyz/xyzdataset.cpp
+// No code is translated from these sources.
+
 //! XYZ ASCII grids: one `x y z` line per cell centre, rows in order. Typed as GDAL types them.
 
 use super::common;

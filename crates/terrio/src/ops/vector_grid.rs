@@ -1,3 +1,19 @@
+// SPDX-FileCopyrightText: Copyright (c) 2007, Andrey Kiselev <dron@ak4719.spb.edu>
+// SPDX-FileCopyrightText: Copyright (c) 2009-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2015, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2015, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 1999-2008, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2008-2014, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     alg/gdalgrid.cpp
+//     apps/gdal_grid_lib.cpp
+//     alg/delaunay.c
+//     port/cpl_quad_tree.cpp
+
 //! Gridding scattered points into a raster: the equivalent of `gdal_grid` and of GDAL 3.13's
 //! `gdal vector grid`.
 //!

@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   SQLite version-3.54.1 (public domain):
+//     src/select.c
+//     src/expr.c
+
 //! Left-associative SQLite compound SELECTs. Set equality does not apply affinity;
 //! NULLs compare equal, and the first available collation governs each column.
 use super::joins::ViewBudget;

@@ -1,3 +1,8 @@
+# Written to match the behavior of:
+#   GDAL v3.12.2:
+#     frmts/gtiff/
+# No code is translated from these sources.
+
 """The structure and metadata of a raster as GDAL reports them.
 
 Block shapes, compression, interleaving, color interpretation, color tables, tags, band

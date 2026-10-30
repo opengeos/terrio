@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/geojson/ogrtopojsonreader.cpp
+// No code is translated from these sources.
+
 //! TopoJSON, read as GDAL reads it and written without shared arcs.
 //!
 //! Each GeometryCollection object is a layer of its geometries; the other objects form a layer

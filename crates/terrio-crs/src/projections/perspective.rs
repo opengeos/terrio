@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: PROJ contributors
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   PROJ 9.8.1:
+//     src/projections/nsper.cpp
+
 //! Spherical near-sided and tilted perspective, ported from PROJ 9.8.1
 //! src/projections/nsper.cpp. See NOTICE for the PROJ license and attribution.
 

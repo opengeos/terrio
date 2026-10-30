@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2010, Andrew Bell
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   PDAL 2.10.2:
+//     filters/ChipperFilter.cpp
+
 //! Filters that split points into tiles: PDAL's `filters.splitter` (a square grid) and
 //! `filters.chipper` (squarish chips of at most a number of points).
 

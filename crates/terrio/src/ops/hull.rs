@@ -1,3 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (c) 2016 Vivid Solutions.
+// SPDX-FileCopyrightText: Copyright (c) 2021 Martin Davis.
+// SPDX-FileCopyrightText: Copyright (c) 2022 Martin Davis.
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   JTS 1.20.0 (commit 6e95fe82feb986a7aa657f4ffa406d8c290af509):
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/ConvexHull.java
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/hull/ConcaveHull.java
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/hull/ConcaveHullOfPolygons.java
+//     modules/core/src/main/java/org/locationtech/jts/algorithm/hull/HullTri.java
+//     modules/core/src/main/java/org/locationtech/jts/triangulate/tri/Tri.java
+
 //! Convex and concave hulls derived from JTS 1.20.0 under EDL-1.0.
 //!
 //! Sources: `algorithm/ConvexHull`, `algorithm/hull/{ConcaveHull,

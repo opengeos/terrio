@@ -1,3 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause
+#
+# Derived from (adapted and modified):
+#   rasterio 1.5.2:
+#     rasterio/__init__.py
+
 """A rasterio-compatible API on top of terrio: `import terrio.rio as rasterio`.
 
 Typical rasterio scripts switch with an import change::

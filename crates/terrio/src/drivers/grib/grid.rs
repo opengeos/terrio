@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Copyright (c) 2007, ITC
+// SPDX-FileCopyrightText: Copyright (c) 2008-2017, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL (bundled NOAA MDL degrib) v3.12.2 (public domain):
+//     frmts/grib/degrib/degrib/metaparse.cpp
+//     frmts/grib/degrib/degrib/scan.c
+//     frmts/grib/degrib/degrib/grib2api.c
+//   GDAL (bundled NCEP g2clib) v3.12.2 (public domain):
+//     frmts/grib/degrib/g2clib/gridtemplates.c
+//   GDAL v3.12.2:
+//     frmts/grib/gribdataset.cpp
+
 //! GRIB2 grid definitions (section 3) and their georeferencing as GDAL's GRIB driver computes it
 //! (degrib's `ParseSect3`, then `GRIBDataset::SetGribMetaData`): the CRS, with GDAL's earth
 //! shapes, and the geotransform of north-up rasters, global grids from 0 to 360 degrees shifted

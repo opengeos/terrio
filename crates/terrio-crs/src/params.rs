@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PROJ 9.8.1:
+//     src/param.cpp / src/dmstor.cpp
+// No code is translated from these sources.
+
 //! The `+key=value` parameters of a PROJ string.
 
 /// The parameters of a PROJ string, in order.

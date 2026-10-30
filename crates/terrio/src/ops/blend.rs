@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2009, Frank Warmerdam
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     apps/gdalalg_raster_blend.cpp
+
 //! Byte image composition compatible with GDAL's raster blend command.
 //! Integer formulas ported from GDAL 3.13.3 (see NOTICE).
 use crate::{Error, RasterDataset, Result};

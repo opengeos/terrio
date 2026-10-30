@@ -1,3 +1,16 @@
+// SPDX-FileCopyrightText: Copyright (c) 2011, Andrey Kiselev <dron@ak4719.spb.edu>
+// SPDX-FileCopyrightText: Copyright (c) 2008, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2011-2014, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2008-2012, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT AND ISC
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     port/cpl_recode.cpp
+//     port/cpl_path.cpp
+
 //! Editing vector datasets, in place or on output, as GDAL 3.13's `gdal vector rename-layer`,
 //! `gdal vector edit` and `gdal vector update` do: renaming layers (to a given name, or with
 //! ASCII, lower-case, file-name and length rules), changing a layer's CRS (without

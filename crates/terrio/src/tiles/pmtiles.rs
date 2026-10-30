@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   geolibre-rust (geolibre-pmtiles) v1.7.1:
+//     crates/geolibre-pmtiles/src/format.rs, tilemath.rs, writer.rs
+
 //! PMTiles v3 archives: the header, directories and tile ids, read from any byte source (a file,
 //! bytes in memory, or a remote file through HTTP range requests) and written in one go.
 //!

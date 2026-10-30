@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2016 Vivid Solutions.
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   JTS 1.20.0 (commit 6e95fe82feb986a7aa657f4ffa406d8c290af509):
+//     modules/core/src/main/java/org/locationtech/jts/index/strtree/STRtree.java
+
 //! Leaf packing from JTS 1.20.0 `index/strtree/STRtree.java`.
 //! Copyright (c) 2016 Vivid Solutions. Distributed under EDL-1.0 (see NOTICE).
 //!

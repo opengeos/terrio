@@ -1,3 +1,20 @@
+// SPDX-FileCopyrightText: Copyright (c) 2015-2017, 2020 Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2017, Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2019, Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2016, Bradley J Chambers (brad.chambers@gmail.com)
+// SPDX-FileCopyrightText: Copyright (c) 2025, Hobu, Inc. (howard@hobu.co)
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   PDAL 2.10.2:
+//     filters/PMFFilter.cpp
+//     filters/ELMFilter.cpp
+//     filters/SkewnessBalancingFilter.cpp
+//     filters/HagNnFilter.cpp
+//     filters/HagDelaunayFilter.cpp
+//     pdal/private/MathUtils.cpp
+
 //! Ground and terrain filters: PDAL's `filters.pmf` (progressive morphological filter),
 //! `filters.elm` (extended local minimum), `filters.hag_nn` and `filters.hag_delaunay` (height
 //! above ground) and `filters.skewnessbalancing`.

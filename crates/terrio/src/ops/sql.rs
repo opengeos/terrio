@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/swq.cpp
+//     ogr/ogrsf_frmts/generic/ogr_gensql.cpp
+// No code is translated from these sources.
+
 //! A subset of OGR SQL: attribute filter expressions (`-where`) and simple `SELECT` statements.
 //!
 //! Expressions support comparisons (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`), `AND`, `OR`, `NOT`,

@@ -1,3 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2024 William M. Katzenmeyer
+# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-License-Identifier: MIT
+#
+# Derived from (adapted and modified):
+#   ras-commander f7aa0b8880185d095c9886e85ed2cbf64e23cbdc:
+#     ras_commander/hdf/HdfMesh.py
+
 """Independent h5py oracle for terrio's HECRAS driver (crates/terrio/tests/hecras_corpus.rs).
 
 Reads HEC-RAS geometry/plan HDF files with h5py and NumPy only (not terrio or its HEC-RAS engine)

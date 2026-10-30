@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     gcore/overview.cpp
+
 //! Tile pyramids built a row at a time: the full-resolution level is read from the top in strips,
 //! each tile row is encoded as soon as its rows are there, and each lower zoom level is
 //! downsampled from the rows of the level above as they come. Only the rows still needed by a

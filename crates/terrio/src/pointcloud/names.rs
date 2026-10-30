@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PDAL 2.10.2:
+//     pdal/Dimension.json (dimension names)
+// No code is translated from these sources.
+
 //! Dimension names: PDAL's (`ReturnNumber`, `GpsTime`, `NormalX`) and terrio's, which are laspy's
 //! for the LAS dimensions (`return_number`, `gps_time`) and PDAL's in snake case for the others
 //! (`normal_x`, `origin_id`).

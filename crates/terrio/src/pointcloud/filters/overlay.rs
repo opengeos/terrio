@@ -1,3 +1,13 @@
+// SPDX-FileCopyrightText: Copyright (c) 2002, i3 - information integration and imaging Fort Collin, CO
+// SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2021, CLS
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     alg/gdaltransformer.cpp
+
 //! Filters that take values from rasters and vector layers at the points: PDAL's `filters.dem`
 //! (the points near a raster's surface), `filters.colorization` (dimensions from raster bands)
 //! and `filters.overlay` (a dimension from the attribute of the polygons the points are in).

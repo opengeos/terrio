@@ -1,3 +1,69 @@
+// SPDX-FileCopyrightText: PROJ contributors
+// SPDX-FileCopyrightText: Copyright (c) 1995, Gerald Evenden
+// SPDX-FileCopyrightText: Copyright (c) 2003   Gerald I. Evenden
+// SPDX-FileCopyrightText: Changes to handle +over are: Copyright 2011-2014 Morelli Informatik
+// SPDX-FileCopyrightText: Copyright (c) 2003, 2006   Gerald I. Evenden
+// SPDX-FileCopyrightText: Copyright (c) 2001, Thomas Flemming, tf@ttqv.com
+// SPDX-FileCopyrightText: Copyright (c) 2004   Gerald I. Evenden
+// SPDX-FileCopyrightText: Copyright (c) 2012   Martin Raspaud
+// SPDX-FileCopyrightText: Copyright (c) 2011, 2012  Martin Lambers <marlam@marlam.de>
+// SPDX-FileCopyrightText: Copyright (c) 2017-2019 Heidelberg University
+// SPDX-FileCopyrightText: Copyright (c) 2018, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2025 Javier Jimenez Shaw
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   PROJ 9.8.1:
+//     src/projections/tmerc.cpp
+//     src/projections/lcc.cpp
+//     src/projections/merc.cpp
+//     src/projections/aea.cpp
+//     src/projections/eqdc.cpp
+//     src/projections/laea.cpp
+//     src/projections/stere.cpp
+//     src/projections/sterea.cpp
+//     src/gauss.cpp
+//     src/projections/somerc.cpp
+//     src/projections/cass.cpp
+//     src/projections/poly.cpp
+//     src/projections/eqc.cpp
+//     src/projections/gn_sinu.cpp
+//     src/projections/bonne.cpp
+//     src/projections/mill.cpp
+//     src/projections/vandg.cpp
+//     src/projections/gnom.cpp
+//     src/projections/cea.cpp
+//     src/projections/eqearth.cpp
+//     src/projections/omerc.cpp
+//     src/projections/krovak.cpp
+//     src/projections/labrd.cpp
+//     src/projections/nzmg.cpp
+//     src/zpoly1.cpp
+//     src/projections/col_urban.cpp
+//     src/projections/aeqd.cpp
+//     src/projections/ortho.cpp
+//     src/projections/geos.cpp
+//     src/projections/robin.cpp
+//     src/projections/healpix.cpp
+//     src/projections/igh.cpp
+//     src/projections/qsc.cpp
+//     src/projections/isea.cpp
+//     src/projections/aitoff.cpp
+//     src/projections/wink1.cpp
+//     src/projections/wink2.cpp
+//     src/projections/gall.cpp
+//     src/projections/gstmerc.cpp
+//     src/projections/fouc_s.cpp
+//     src/projections/putp4p.cpp
+//     src/projections/sconics.cpp
+//     src/generic_inverse.cpp
+//     src/latitudes.cpp
+//     src/ell_set.cpp
+//     src/aasincos.cpp
+//   PROJ 5fa31c29f0a806568ed7bc76c1a557604db4a804:
+//     src/projections/moll.cpp
+
 //! The map projections EPSG CRSs use, ported from PROJ (<https://proj.org>, MIT licence) so that
 //! terrio's results match GDAL's. PROJ's copyright and permission notice is in `NOTICE`.
 //!

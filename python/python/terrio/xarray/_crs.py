@@ -1,3 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2006-2018, Jeffrey Whitaker.
+# SPDX-FileCopyrightText: Copyright (c) 2019-2024, Open source contributors.
+# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-License-Identifier: MIT
+#
+# Derived from (adapted and modified):
+#   pyproj 3.8.0:
+#     pyproj/crs/_cf1x8.py
+
 """CRS helpers: parsing user input, and CF grid mapping attributes as rioxarray writes them.
 
 rioxarray writes the attributes `pyproj.CRS.to_cf()` gives for a rasterio CRS (built from its

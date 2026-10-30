@@ -1,3 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2008-2014, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2018-2020, Björn Harrtell <bjorn at wololo dot org>
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026, ISciences LLC
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     ogr/ogrgeometryfactory.cpp
+//     alg/hilbert.cpp
+//     apps/gdalalg_vector_combine.cpp
+//     apps/gdalalg_vector_sort.cpp
+
 //! Vector geometry operations, the equivalents of GDAL 3.13's `gdal vector simplify`,
 //! `segmentize`, `convex-hull`, `concave-hull`, `swap-xy`, `set-geom-type`, `combine` and `sort`.
 //!
@@ -210,7 +224,7 @@ fn single(t: GeometryType) -> GeometryType {
 /// A per-feature geometry operation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GeometryOp {
-    /// `gdal vector simplify`: topology-preserving simplification (GEOS's
+    /// `gdal vector simplify`: topology-preserving simplification (JTS's
     /// `TopologyPreservingSimplifier`, see [`crate::ops::simplify`]). Z is kept, M dropped.
     Simplify {
         /// The distance tolerance, in CRS units (non-negative).

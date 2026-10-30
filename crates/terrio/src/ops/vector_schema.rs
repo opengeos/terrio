@@ -1,3 +1,13 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_vector_set_field_type.cpp
+//     apps/gdalalg_vector_export_schema.cpp
+//     apps/gdalalg_vector_create.cpp
+//     ogr/ogrfeature.cpp
+//     port/cpl_string.cpp
+//     ogr/ogrutils.cpp
+// No code is translated from these sources.
+
 //! Layer schemas as GDAL describes them: OGR field types and subtypes, the `OGR_SCHEMA` JSON
 //! document (`gdal vector export-schema`), layers created from a schema (`gdal vector create`),
 //! and field type changes with GDAL's value conversions (`gdal vector set-field-type`).

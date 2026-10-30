@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/mbtiles/mbtilesdataset.cpp; ogr/ogrsf_frmts/mvt/ogrmvtdataset.cpp; frmts/pmtiles/
+// No code is translated from these sources.
+
 //! Tile archives: PMTiles (v3) and MBTiles, holding raster tiles (PNG, JPEG, WebP, AVIF) or Mapbox
 //! Vector Tiles, in the Web Mercator tiling scheme (EPSG:3857, 256-pixel tiles).
 //!

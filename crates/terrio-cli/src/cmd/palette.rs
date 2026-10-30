@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/rgb2pct.rst
+//     doc/source/programs/pct2rgb.rst
+//     doc/source/programs/gdal_raster_rgb_to_palette.rst
+// No code is translated from these sources.
+
 //! Indexed color conversion and palette attachment.
 use super::rasterout::{OutputArgs, open_lazy};
 use terrio::Result;

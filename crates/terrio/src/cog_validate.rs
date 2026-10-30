@@ -1,3 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2021, cogeotiff
+// SPDX-FileCopyrightText: Copyright (c) 2017, Even Rouault
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   rio-cogeo 7.0.4:
+//     rio_cogeo/cogeo.py
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/samples/validate_cloud_optimized_geotiff.py
+
 //! Cloud Optimized GeoTIFF validation: the checks of rio-cogeo's `cog_validate`, itself the
 //! rasterio port of GDAL's `validate_cloud_optimized_geotiff.py`, read from the TIFF structure
 //! (headers and chunk offsets only, so a remote file costs a few range requests).

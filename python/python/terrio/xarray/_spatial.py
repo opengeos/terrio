@@ -1,3 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2019-2025, Corteva Agriscience™
+# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-License-Identifier: MIT AND Apache-2.0
+#
+# Derived from (adapted and modified):
+#   rioxarray 0.23.0:
+#     rioxarray/_spatial_utils.py
+#     rioxarray/raster_array.py
+
 """Spatial helpers of the accessors: coordinates from transforms, attributes, clipping.
 
 They follow rioxarray's `_spatial_utils` (Apache-2.0, Copyright (c) 2019-2023 rioxarray

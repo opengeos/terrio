@@ -1,3 +1,15 @@
+// SPDX-FileCopyrightText: Copyright (c) 2015, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2015, Airbus DS Geo SA (weighted Brovey algorithm)
+// SPDX-FileCopyrightText: Copyright (c) 1998, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2014, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.2:
+//     alg/gdalpansharpen.cpp
+//     gcore/rasterio.cpp
+
 //! Bounded working buffers shared by materialized and virtual pansharpening.
 use super::{PansharpenExtent, PansharpenNodata, PansharpenOptions, Plan, SourceLayout, SpectralBand, bad, process_aligned};
 use crate::ops::{BandView, Grid, build_raster};

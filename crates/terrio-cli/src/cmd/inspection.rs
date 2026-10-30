@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdalmanage.rst
+// No code is translated from these sources.
+
 //! Read-only dataset format identification.
 use terrio::inspection::{IdentifyOptions, identify_many};
 

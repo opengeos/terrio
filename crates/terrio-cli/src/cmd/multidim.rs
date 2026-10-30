@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdalmdiminfo.rst
+//     doc/source/programs/gdalmdimtranslate.rst
+// No code is translated from these sources.
+
 //! Native multidimensional inspection, hyperslab reading and scientific-format snapshots.
 use terrio::{Error, Result, multidim};
 

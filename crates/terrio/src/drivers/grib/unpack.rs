@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL (bundled NCEP g2clib) v3.12.2 (public domain):
+//     frmts/grib/degrib/g2clib/comunpack.c
+//     frmts/grib/degrib/g2clib/simunpack.c
+//     frmts/grib/degrib/g2clib/gbits.c
+//     frmts/grib/degrib/g2clib/int_power.c
+//     frmts/grib/degrib/g2clib/rdieee.c
+//     frmts/grib/degrib/g2clib/jpcunpack.c
+//     frmts/grib/degrib/g2clib/pngunpack.c
+//   GDAL v3.12.2 (a file GDAL added to its bundled g2clib):
+//     frmts/grib/degrib/g2clib/aecunpack.c
+
 //! The data representations of GRIB2 (section 5) decoded as GDAL's GRIB driver (its copy of NCEP's
 //! g2clib) decodes them, in single precision with g2clib's arithmetic, so that the values are
 //! GDAL's to the bit: simple packing (5.0), complex packing with and without spatial differencing

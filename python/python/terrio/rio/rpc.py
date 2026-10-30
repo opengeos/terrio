@@ -1,3 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2013-2021, Mapbox
+# SPDX-FileCopyrightText: Copyright (c) HER MAJESTY THE QUEEN IN RIGHT OF CANADA (2008) as represented by the Canadian Nuclear Safety Commission
+# SPDX-FileCopyrightText: Copyright (c) 2014-2015, NextGIS info@nextgis.ru
+# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-License-Identifier: MIT AND BSD-3-Clause
+#
+# Derived from (translated to Python and modified):
+#   rasterio 1.5.2:
+#     rasterio/rpc.py
+#   GDAL v3.12.2:
+#     gcore/gdal_mdreader.cpp
+
 """Rational polynomial coefficients, as `rasterio.rpc`."""
 
 from __future__ import annotations

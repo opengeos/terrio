@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     gcore/gdalpamdataset.cpp
+//     frmts/hfa/hfadataset.cpp
+// No code is translated from these sources.
+
 //! Fixes for rasters read by wbraster's drivers: whether the file declares a nodata value (the
 //! drivers default to -9999 when it does not), and CRSs the drivers miss.
 

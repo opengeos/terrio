@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PROJ 9.8.1:
+//     data/projjson.schema.json / src/iso19111/io.cpp
+// No code is translated from these sources.
+
 //! Strict PROJJSON v0.7 subset translated to the shared WKT2 reader.
 use serde_json::Value;
 

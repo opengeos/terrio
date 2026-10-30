@@ -1,3 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// SPDX-FileCopyrightText: Copyright (C) 2010 Jitse Niesen <jitse@maths.leeds.ac.uk>
+// SPDX-FileCopyrightText: Copyright (C) 2008 Gael Guennebaud <gael.guennebaud@inria.fr>
+// SPDX-FileCopyrightText: Copyright (C) 2009 Benoit Jacob <jacob.benoit.1@gmail.com>
+// SPDX-FileCopyrightText: Copyright (C) 2009 Gael Guennebaud <gael.guennebaud@inria.fr>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MPL-2.0
+//
+// Derived from (translated to Rust and modified):
+//   Eigen 3.4.0:
+//     Eigen/src/Eigenvalues/SelfAdjointEigenSolver.h
+//     Eigen/src/Eigenvalues/Tridiagonalization.h
+//     Eigen/src/Jacobi/Jacobi.h
+
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a
 // copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.

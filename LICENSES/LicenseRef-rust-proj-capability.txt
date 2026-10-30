@@ -1,0 +1,4 @@
+These files come from Michael Sumner's rust-proj-capability
+(https://github.com/mdsumner/rust-proj-capability), revision
+ddd9fac70ec370acd9651ebb8b46035207347ad5, which does not carry a license.
+No license has been granted for them yet; terrio has asked the author for one.

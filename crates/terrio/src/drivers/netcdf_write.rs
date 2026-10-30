@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     frmts/netcdf/netcdfdataset.cpp
+//     frmts/netcdf/netcdfsrs.cpp
+// No code is translated from these sources.
+
 //! NetCDF writing: the classic formats (CDF-1, CDF-2 with 64-bit offsets, and CDF-5 for 64-bit
 //! integers) and netCDF-4 (an HDF5 file, see [`super::hdf5_write`]), laid out as GDAL's netCDF
 //! driver writes rasters, following the CF conventions.

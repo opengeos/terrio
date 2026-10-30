@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2020, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     frmts/stacta/stactadataset.cpp
+
 //! STAC items with tiled assets (STACTA), read as GDAL's STACTA driver reads them.
 //!
 //! An item of the [tiled-assets extension](https://github.com/stac-extensions/tiled-assets)

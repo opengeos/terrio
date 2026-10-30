@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Copyright (c) 2018, Even Rouault <even dot rouault at spatialys dot com>
+// SPDX-FileCopyrightText: Copyright (c) 2018-2024, Even Rouault, <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2016, 2017 Thomas Knudsen/SDFE
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   PROJ 9.8.1:
+//     src/iso19111/metadata.cpp
+//     src/iso19111/operation/coordinateoperationfactory.cpp
+//     src/iso19111/factory.cpp
+//     src/iso19111/operation/oputils.cpp
+//     src/coord_operation.cpp
+//     src/trans.cpp
+
 //! How a transformation moves points between two datums, as PROJ (and so GDAL) does: from the
 //! transformations GDAL lists for the pair (sorted again for the CRSs' area of interest), or,
 //! when PROJ's database has none between the two datums, by chaining two of the transformations

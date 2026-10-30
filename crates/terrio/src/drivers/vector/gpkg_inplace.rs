@@ -1,3 +1,10 @@
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   SQLite version-3.54.1 (public domain):
+//     ext/rtree/rtree.c
+
 //! GeoPackage updates in place, as GDAL makes them through SQLite: features appended to a
 //! layer's table (new b-tree cells and pages), its R-tree index grown by inserting boxes and
 //! splitting nodes, and the tables describing layers (`gpkg_contents`, `gpkg_ogr_contents`,

@@ -1,3 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (c) 2016, Hobu Inc. (info@hobu.co)
+// SPDX-FileCopyrightText: Copyright (c) 2015, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2007, Andrey Kiselev <dron@ak4719.spb.edu>
+// SPDX-FileCopyrightText: Copyright (c) 2009-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   PDAL 2.10.2:
+//     io/private/GDALGrid.cpp
+//   GDAL v3.13.3:
+//     alg/delaunay.c
+//     alg/gdalgrid.cpp
+
 //! Gridding points into rasters (DEMs, DSMs, intensity or density grids), as PDAL's
 //! `writers.gdal` does, or by interpolation, as GDAL's `gdal_grid` does.
 //!

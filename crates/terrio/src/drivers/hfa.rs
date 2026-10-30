@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 1999, Intergraph Corporation
+// SPDX-FileCopyrightText: Copyright (c) 2007-2012, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     frmts/hfa/hfaband.cpp
+
 //! ERDAS Imagine (`.img`, HFA) rasters: the node tree, raster layers in uncompressed or
 //! run-length compressed blocks, nodata, the map info and the ESRI PE string that GDAL writes
 //! for the CRS.

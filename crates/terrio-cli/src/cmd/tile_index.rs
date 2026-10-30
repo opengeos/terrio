@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdaltindex.rst
+//     doc/source/programs/gdal_raster_index.rst
+//     doc/source/programs/gdal_vector_index.rst
+// No code is translated from these sources.
+
 //! Raster/vector footprint indexes and GTI-compatible metadata.
 use terrio::crs::SpatialRef;
 use terrio::formats::VectorDriver;

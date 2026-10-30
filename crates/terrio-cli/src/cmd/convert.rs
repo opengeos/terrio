@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/ogr2ogr.rst
+//     doc/source/programs/gdal_translate.rst
+// No code is translated from these sources.
+
 //! `terrio convert`.
 
 use terrio::crs::SpatialRef;

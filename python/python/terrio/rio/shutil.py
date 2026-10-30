@@ -1,3 +1,8 @@
+# Written to match the behavior of:
+#   rasterio 1.5.2:
+#     rasterio/
+# No code is translated from these sources.
+
 """Raster file management, as `rasterio.shutil`.
 
 Whether a dataset exists, copying a dataset to another format or its files to another place, and

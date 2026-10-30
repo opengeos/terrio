@@ -1,3 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     gcore/overview.cpp
+
 //! A GeoTIFF and Cloud Optimized GeoTIFF writer.
 //!
 //! wbraster's writer lays COGs out in the wrong order and skips overview levels, so terrio writes

@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_raster_neighbors.rst
+// No code is translated from these sources.
+
 //! `terrio neighbors`.
 
 use super::rasterout::{OutputArgs, open, open_lazy, same_file};

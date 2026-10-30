@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     port/cpl_vsil_*.cpp
+// No code is translated from these sources.
+
 //! Locating datasets: local paths, HTTP(S) URLs, cloud object storage and zip archives.
 //!
 //! Accepted forms:

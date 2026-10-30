@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   PDAL 2.10.2:
+//     plugins/e57/io/ (readers.e57)
+// No code is translated from these sources.
+
 //! E57 (ASTM E2807): laser scans, read as PDAL's `readers.e57` reads them and written with the
 //! pure-Rust [`e57`] crate.
 //!

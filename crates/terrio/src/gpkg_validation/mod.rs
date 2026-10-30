@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2017, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/samples/validate_gpkg.py
+
 //! GeoPackage validation rules shared by the public image validator.
 //! Metadata requirements follow OGC GeoPackage 1.4 and GDAL 3.13.3 validate_gpkg.py.
 mod constraints;

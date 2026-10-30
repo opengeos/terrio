@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   PDAL 2.10.2:
+//     doc/stages/writers.gdal.md
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_grid.rst
+// No code is translated from these sources.
+
 //! `terrio grid`: points to a raster, like PDAL's `writers.gdal`, or interpolated like GDAL's
 //! `gdal_grid`.
 

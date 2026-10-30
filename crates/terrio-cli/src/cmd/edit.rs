@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_edit.rst
+//     doc/source/programs/gdalmove.rst
+//     doc/source/programs/gdal_raster_edit.rst
+// No code is translated from these sources.
+
 //! `terrio edit-raster`: edit a GeoTIFF in place (GDAL's `gdal raster edit` and `gdal_edit.py`), or move
 //! its georeferencing to another CRS (`gdalmove.py`).
 

@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GEOS 3.14.1:
+//     src/operation/valid/MakeValid.cpp
+// No code is translated from these sources.
+
 //! Independent integer-tile polygon repair reproducing the polygonal content of
 //! GEOS linework MakeValid (see docs/make-valid-implementation.md for provenance and validation).
 #![forbid(unsafe_code)]

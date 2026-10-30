@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_grid.rst
+//     doc/source/programs/gdal_vector_grid.rst
+// No code is translated from these sources.
+
 //! `terrio vector-grid`: scattered vector points to a raster, like `gdal vector grid` and
 //! `gdal_grid`.
 

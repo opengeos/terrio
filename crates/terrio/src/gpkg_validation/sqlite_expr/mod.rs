@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   SQLite version-3.54.1:
+//     (expression evaluation)
+//   GDAL v3.13.3:
+//     reference build
+// No code is translated from these sources.
+
 //! Read-only SQLite scalar expressions for integrity checks and view projections.
 //! SQLite affinity, collation and three-valued logic are intentionally separate
 //! from Terrio's OGR SQL dialect. Unknown functions/operators fail explicitly.

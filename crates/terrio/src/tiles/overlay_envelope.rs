@@ -1,3 +1,13 @@
+// SPDX-FileCopyrightText: Copyright (c) 2020 Martin Davis.
+// SPDX-FileCopyrightText: Copyright (c) 2019 Martin Davis.
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT AND BSD-3-Clause
+//
+// Derived from (translated to Rust and modified):
+//   JTS 1.20.0 (commit 6e95fe82feb986a7aa657f4ffa406d8c290af509):
+//     modules/core/src/main/java/org/locationtech/jts/operation/overlayng/OverlayUtil.java
+//     modules/core/src/main/java/org/locationtech/jts/operation/overlayng/RobustClipEnvelopeComputer.java
+
 //! Floating-precision intersection envelopes from JTS 1.20.0
 //! `operation/overlayng/{OverlayUtil,RobustClipEnvelopeComputer}`.
 //! Copyright (c) 2019, 2020 Martin Davis. EDL-1.0; see NOTICE.

@@ -1,3 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2018-2020, Björn Harrtell <bjorn at wololo dot org>
+# SPDX-FileCopyrightText: Terrio contributors
+# SPDX-License-Identifier: MIT
+#
+# Derived from (translated to Python and modified):
+#   GDAL v3.13.3:
+#     alg/hilbert.cpp
+
 """Compare terrio's vector geometry commands with GDAL/GEOS on real data.
 
 Usage: python scripts/compare_vector_geom_with_gdal.py ../terrio-data --terrio target/release/terrio

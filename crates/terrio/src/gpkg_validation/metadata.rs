@@ -1,3 +1,11 @@
+// SPDX-FileCopyrightText: Copyright (c) 2017, Even Rouault <even.rouault at spatialys.com>
+// SPDX-FileCopyrightText: Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.13.3:
+//     swig/python/gdal-utils/osgeo_utils/samples/validate_gpkg.py
+
 //! GeoPackage metadata and metadata references, requirements 93–102 and 140.
 //! Rules follow OGC GeoPackage 1.4 and GDAL 3.13.3 validate_gpkg.py; see NOTICE.
 use super::*;
