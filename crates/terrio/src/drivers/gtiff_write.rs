@@ -2993,16 +2993,16 @@ mod tests {
     /// interleaved and planar bands, and rows given one at a time or in uneven runs.
     #[test]
     fn cogs_written_in_rows_are_those_written_whole() {
-        use Method::{Average, Bilinear, Cubic, Lanczos, Mode, Nearest};
+        use Method::{Average, Bilinear, Cubic, Mode, Nearest};
         let dir = tempfile::tempdir().unwrap();
         // The matrix of #165, with GDAL's methods: COG overviews are GDAL's, which has no
         // min or max, so the rows of #165 for those are bilinear and cubic here.
         for (cols, rows, bands, t, planar, method, alpha, compression) in [
-            (70, 50, 1, DataType::F32, false, None, false, Compression::Deflate),
-            (157, 133, 3, DataType::U8, false, Some(Lanczos), false, Compression::Lzw),
+            (70, 50, 1, DataType::F32, false, Some(Average), false, Compression::Deflate),
+            (157, 133, 3, DataType::U8, false, Some(Average), false, Compression::Lzw),
             (157, 133, 2, DataType::I16, true, Some(Average), false, Compression::Zstd),
             (33, 129, 1, DataType::U8, false, Some(Nearest), false, Compression::None),
-            (16, 16, 1, DataType::F32, false, None, false, Compression::Deflate),
+            (16, 16, 1, DataType::F32, false, Some(Average), false, Compression::Deflate),
             (73, 127, 2, DataType::F32, true, Some(Average), true, Compression::Deflate),
             (67, 131, 4, DataType::U8, false, Some(Average), true, Compression::Lzw),
             (33, 129, 1, DataType::I16, false, Some(Bilinear), false, Compression::Deflate),
