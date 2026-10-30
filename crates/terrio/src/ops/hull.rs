@@ -851,6 +851,37 @@ mod tests {
     }
 
     #[test]
+    fn hole_seed_sort_preserves_candidates_and_size_order() {
+        let mut state = 0x4A54_5353_u64;
+        for len in [0, 1, 2, 15, 16, 17, 20, 31, 64, 127, 200, 513] {
+            for pattern in 0..5 {
+                let mut candidates = (0..len)
+                    .map(|id| {
+                        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let size = match pattern {
+                            0 => id as f64,
+                            1 => (len - id) as f64,
+                            2 => 1.,
+                            3 => (state % 7) as f64,
+                            _ => (state >> 11) as f64,
+                        };
+                        Candidate { id, size, area: (id % 11) as f64 }
+                    })
+                    .collect::<Vec<_>>();
+                let records = |items: &[Candidate]| {
+                    let mut keys = items.iter().map(|c| (c.id, c.size.to_bits(), c.area.to_bits())).collect::<Vec<_>>();
+                    keys.sort_unstable();
+                    keys
+                };
+                let expected = records(&candidates);
+                sort_hole_candidates(&mut candidates);
+                assert_eq!(records(&candidates), expected, "length {len}, pattern {pattern}: permutation");
+                assert!(candidates.windows(2).all(|pair| pair[0].size <= pair[1].size), "length {len}, pattern {pattern}: size order");
+            }
+        }
+    }
+
+    #[test]
     fn unsupported_polygon_hull_inputs_fail_explicitly() {
         let ring = |p: &[(f64, f64)]| Ring(p.iter().map(|&(x, y)| Coord::xy(x, y)).collect());
         let square = ring(&[(4., 0.), (4., 4.), (0., 4.), (0., 0.), (4., 0.)]);
@@ -1002,6 +1033,14 @@ mod tests {
             assert_eq!(ring_bounds(shell), Some(AABB::from_corners([0., 0.], [10., 10.])));
             assert_eq!(holes.len(), 1);
             assert_eq!(ring_bounds(&holes[0]), Some(AABB::from_corners([1., 1.], [9., 9.])));
+            let mut coordinates = holes[0].0.iter().map(xy).collect::<Vec<_>>();
+            assert_eq!(coordinates.len(), 4);
+            let start = coordinates.iter().position(|&p| p == (2., 2.)).unwrap();
+            coordinates.rotate_left(start);
+            if coordinates[1] != (8., 1.) {
+                coordinates[1..].reverse();
+            }
+            assert_eq!(coordinates, [(2., 2.), (8., 1.), (9., 9.), (1., 8.)]);
         }
     }
 

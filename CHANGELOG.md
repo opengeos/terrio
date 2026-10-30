@@ -17,6 +17,8 @@
   walks also return errors instead of overwriting adjacency or losing components.
   Polygon hulls require valid, non-overlapping input; mixed degenerate components
   can error, and invalid-input output is not guaranteed to match GEOS.
+  The previous upfront ring-crossing rejection is not preserved: invalid inputs
+  are not guaranteed to return the former "run make-valid first" error.
 - Polygon hulls keep holes on their containing outer shell when an island
   touches a hole vertex, rather than assigning the hole to that smaller island.
 - Tile conversion now fails explicitly on repair invariant violations instead

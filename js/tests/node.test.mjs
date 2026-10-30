@@ -1919,6 +1919,9 @@ test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom
   assert.deepEqual(touchingHull.coordinates.map((polygon) => polygon.length).sort(), [1, 2]);
   const holeOwner = touchingHull.coordinates.find((polygon) => polygon.length === 2);
   assert.deepEqual([...new Set(holeOwner[0].map((point) => point.join(",")))].sort(), ["0,0", "0,10", "10,0", "10,10"]);
+  assert.equal(holeOwner[1].length, 5);
+  assert.deepEqual(holeOwner[1][0], holeOwner[1].at(-1));
+  assert.deepEqual([...new Set(holeOwner[1].map((point) => point.join(",")))].sort(), ["1,8", "2,2", "8,1", "9,9"]);
   // GEOS observation: polygon erosion at 0.1 keeps both triangles separate.
   const triangles = {
     type: "Feature", properties: {},

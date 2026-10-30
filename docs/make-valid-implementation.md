@@ -12,49 +12,26 @@ canonical fixture at `crates/terrio/tests/data/make-valid.json`.
 
 ## Information boundary and authorship
 
-The implementing model is **Claude Opus 5.5**, requested as
-`claude-opus-5-5` without fallback. Its first implementation session is
-`591d41e0-232b-4e2e-9080-504dd41b4d81`. It began in a new native Claude CLI
-process, with no parent transcript, saved sessions or host Claude configuration.
-The earlier T3 thread that declined the work did not supply implementation code.
+The implementer was configured as Claude Opus 5.5 (`claude-opus-5-5` without
+fallback) in a fresh process without inherited transcripts or saved project
+state. Its checked isolation boundary excluded the original checkout, repository
+history, host home, other conversations, browser and MCP access. Approved inputs
+were the behavioral specification, recorded observations, reference adapters,
+compiler tools, vendored dependencies and hashed executable reference libraries.
+Reference implementations were executed through public APIs, not supplied as
+source. The [exposure summary](make-valid-clean-room/exposure.md) records the
+reported access and its limits.
 
-An ordinary agent running shell commands through a sandbox is insufficient:
-other tools can still read the original checkout or conversations. The actual
-implementation process, including every tool it starts, runs inside Bubblewrap
-with new user, mount, PID, IPC and network namespaces, cleared environment,
-private process visibility and disabled nested user namespaces. The original
-checkout, host home, repository history, other conversations, browser and MCP
-servers are absent. Only reviewed handoff files, vendored dependencies, selected
-compiler/system executables, and hashed executable reference libraries are
-available. The implementer checked and recorded the boundary before designing.
+The implementer authored the replacement kernel, design and original tests.
+The source-exposed custodian authored the behavioral package, reference adapter
+and production integration. The custodian supplied an error-policy and fallible
+API decision, not a repair algorithm from the retired source.
 
-The CLI runs in `--bare` mode with empty MCP configuration, empty setting sources,
-disabled hooks, disabled session persistence and nonessential traffic. Its actual
-initial tools were Bash, Read and Edit. Only candidate source, notes, scratch
-build output and fresh agent state are writable.
-
-Model inference uses a private Unix socket exposed to the sandbox. A host broker
-forwards only approved Messages API routes and the exact model to Anthropic.
-The provider credential is used by that broker for its HTTPS requests and is
-not mounted into the implementer's sandbox. The sandbox has a local loopback relay
-inside its private network namespace, with no host web listener or general proxy.
-The broker audit records model, tool names and request hashes, never credentials.
-The first run used the initial route/model/tool restrictions; subsequent gateway
-hardening also rejects URL-backed documents and remote MCP inputs. These later
-source edits do not retroactively change the policy of an already running process.
-
-The original run used a saved Claude CLI OAuth access token in the host broker
-for requests to Anthropic. That credential handling was inappropriate for a
-reusable repository script. The launcher, gateway and standalone package tooling
-were removed from the maintained tree. The original setup and authentication
-remain documented as historical facts; no token value or credential file was
-included in the PR. The original sealed archive is retained separately.
-
-The source-exposed custodian authored the behavioral package, isolation tools,
-reference adapter and production integration. The implementer authored the
-replacement kernel and its design and generated tests. The custodian did not
-supply an algorithm from the retired source. A behavior-only interface decision
-approved a fallible repair API so invariant failures can propagate to callers.
+The original run identifier, isolation/transport setup and authentication history
+are retained in the pinned [historical integration record](https://github.com/opengeos/terrio/blob/a430e7efe6f712cefe0671b51d072c06c681088b/docs/make-valid-implementation.md).
+They describe the completed implementation run, not tooling contributors must
+operate or maintain. The launcher, gateway and handoff scaffold are absent from
+the maintained tree. No credential file or token value was included in the PR.
 
 These are documented task-local access and provenance controls. They cannot
 establish what a pretrained model previously encountered or constitute a legal
@@ -118,7 +95,7 @@ commit. The [implementation brief](https://github.com/opengeos/terrio/blob/3a2df
 historical evidence, removed from the maintained tree. The [custodian process research](https://github.com/opengeos/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-clean-room-process.md)
 and [package-preparation checks](https://github.com/opengeos/terrio/blob/db3e102aff48854ab77d487ecdc5892c01404a97/docs/make-valid-handoff-validation.json)
 are historical references rather than setup instructions for Terrio contributors.
-These immutable links use the upstream repository's commit URLs. All eight
+Historical links use the upstream repository's immutable commit URLs. The
 linked records were retrieved through upstream and checked byte-for-byte against
 the retained commits; contributors do not need the personal fork to read them.
 The standalone validation predates production integration and its
