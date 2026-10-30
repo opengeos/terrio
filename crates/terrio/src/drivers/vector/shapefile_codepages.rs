@@ -1,3 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023 Python Software Foundation; All Rights Reserved
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT AND PSF-2.0
+//
+// Derived from (translated to Rust and modified):
+//   CPython 3.12.12:
+//     Lib/encodings/cp*.py
+//     Lib/encodings/koi8_r.py
+//     Lib/encodings/koi8_u.py
+//     Lib/encodings/iso8859_*.py
+
 //! The upper halves (bytes 0x80 to 0xFF) of the single-byte code pages GDAL's Shapefile driver
 //! recodes DBF text from (through iconv), keyed by the names `DbfEncoding` resolves to.
 //! Generated from CPython's codecs by a script outside this repository. Bytes a code page leaves
