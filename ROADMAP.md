@@ -86,15 +86,21 @@ commands. Command-group progress:
       Landed in [#374](https://github.com/opengeos/terrio/pull/374), with real-data
       conformance and measured remote header/full-check I/O.
 
-- [ ] Seek-optimized ZIP archives: create, append, list, optimize and validate through
+- [x] Seek-optimized ZIP archives: create, append, list, optimize and validate through
       Rust, CLI/MCP, Python and JavaScript, with lazy native/HTTP GeoTIFF member reads.
-      Proposed in [#404](https://github.com/opengeos/terrio/pull/404); 33 GDAL 3.13.3
-      VSI comparisons include eight SOZip archive/window checks and measured HTTP I/O.
+      Landed in [#404](https://github.com/opengeos/terrio/pull/404); 34 GDAL 3.13.3
+      VSI comparisons include nine SOZip archive/window checks and measured HTTP I/O.
 
-- [ ] Multidimensional mosaics: lazy coordinate-aligned numeric arrays across
+- [x] Multidimensional mosaics: lazy coordinate-aligned numeric arrays across
       Rust, CLI/MCP, Python and JavaScript, with netCDF/Zarr output and real
-      NOAA wind comparisons registered as `mdmosaic`. Proposed in
-      [#373](https://github.com/opengeos/terrio/pull/373), pending review and merge.
+      NOAA wind comparisons registered as `mdmosaic`. Landed in
+      [#373](https://github.com/opengeos/terrio/pull/373).
+
+- [ ] Separate-file raster tiles: XYZ/TMS PNG and typed GeoTIFF output through
+      Rust, CLI/MCP, Python and JavaScript, with bounded source windows and
+      non-overwriting resume. Real Landsat/USGS comparisons are registered as
+      `raster-tiles`; direct-source lower zooms differ from GDAL's generated-image
+      pyramid. Retile file layouts and publication helpers remain unimplemented.
 
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
@@ -110,9 +116,9 @@ commands. Command-group progress:
       JavaScript. Landed in [#384](https://github.com/opengeos/terrio/pull/384); real-data
       comparisons are registered as `gpkg-repack`.
 
-- [ ] GeoPackage validation: SQLite integrity, core and extension metadata, geometries,
+- [x] GeoPackage validation: SQLite integrity, core and extension metadata, geometries,
       raster tiles and supported registered views through Rust, CLI/MCP, Python and JavaScript.
-      Proposed in [#403](https://github.com/opengeos/terrio/pull/403), with explicit incomplete
+      Landed in [#403](https://github.com/opengeos/terrio/pull/403), with explicit incomplete
       reports for unsupported SQL; 50 GDAL 3.13.3 validation attempts (34 compared,
       16 not compared because GDAL refuses the malformed inputs), registered as `gpkg-validate`.
 

@@ -153,12 +153,36 @@ fn tuple4(v: Option<[f64; 4]>) -> Option<(f64, f64, f64, f64)> {
 }
 
 /// A file or a shared dataset, borrowed only for each metadata/window request.
-enum WarpInput {
+pub(crate) enum WarpInput {
     File(Box<terrio::LazyRaster>),
     Shared(std::rc::Rc<std::cell::RefCell<Inner>>),
 }
 
 impl terrio::ops::warp::WarpSource for WarpInput {
+    fn has_mask(&mut self) -> terrio::Result<bool> {
+        match self {
+            Self::File(reader) => Ok(reader.has_mask()),
+            Self::Shared(inner) => {
+                let inner = inner.try_borrow().map_err(|_| terrio::Error::InvalidArgument("raster is already in use".into()))?;
+                match &*inner {
+                    Inner::Raster(reader) => Ok(reader.has_mask()),
+                    _ => Err(terrio::Error::InvalidArgument("expected a raster".into())),
+                }
+            }
+        }
+    }
+    fn read_mask(&mut self, window: terrio::Window, overview: Option<usize>) -> terrio::Result<Option<Vec<u8>>> {
+        match self {
+            Self::File(reader) => reader.read_mask(window, overview),
+            Self::Shared(inner) => {
+                let mut inner = inner.try_borrow_mut().map_err(|_| terrio::Error::InvalidArgument("raster is already in use".into()))?;
+                match &mut *inner {
+                    Inner::Raster(reader) => reader.read_mask(window, overview),
+                    _ => Err(terrio::Error::InvalidArgument("expected a raster".into())),
+                }
+            }
+        }
+    }
     fn with_dataset(&self, visit: &mut dyn FnMut(&terrio::RasterDataset)) -> terrio::Result<bool> {
         match self {
             Self::File(reader) => terrio::ops::warp::WarpSource::with_dataset(reader.as_ref(), visit),
@@ -1533,4 +1557,15 @@ pub fn check_coverage(src: JsValue, options: JsValue) -> Result<Dataset, JsError
     let input = input_layers(&src)?;
     let layers = terrio::ops::coverage::check_coverage_layers(&input, &options).map_err(js_err)?;
     Ok(Dataset::from_layers(layers, VectorDriver::GeoJSON))
+}
+
+/// A tile/window source without eagerly reading uploaded or shared datasets.
+pub(crate) fn tile_input(input: &JsValue) -> Result<WarpInput, JsError> {
+    if let Some(inner) = Dataset::lookup(input) {
+        return Ok(WarpInput::Shared(inner));
+    }
+    if let Some((bytes, name)) = file_bytes(input) {
+        return terrio::memory::open_raster_lazy_bytes(bytes, &name).map(Box::new).map(WarpInput::File).map_err(js_err);
+    }
+    Err(invalid("expected a raster Dataset, Uint8Array or { bytes, filename }"))
 }

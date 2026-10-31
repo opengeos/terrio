@@ -2825,3 +2825,62 @@ test("checkCoverage emits XY diagnostics for elevated polygons", () => {
   assert.equal(output.length, 2);
   assert.ok(output.every(f => f.geometry.coordinates.flat().every(point => point.length === 2)));
 });
+
+test("rasterTiles streams encoded files and planRasterTiles reads metadata", () => {
+  const raster = terrio.createRaster(null, {size: [5, 3], ot: "Byte", burn: [7], crs: "EPSG:4326", bbox: [0, 0, 5, 3]});
+  const options = {tilingScheme: "raster", grid: {tileSize: 2}, resampling: "nearest"};
+  const plan = terrio.planRasterTiles(raster, options);
+  assert.equal(plan.levels.length, 1);
+  let count = 0;
+  const report = terrio.rasterTiles(raster, options, (name, bytes) => {
+    assert.match(name, /^1\/\d+\/\d+\.png$/);
+    assert.deepEqual(Array.from(bytes.slice(0, 8)), [137, 80, 78, 71, 13, 10, 26, 10]);
+    const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    assert.equal(header.getUint32(16), 2);
+    assert.equal(header.getUint32(20), 2);
+    count++;
+  });
+  assert.equal(report.written, 6);
+  assert.equal(count, 6);
+  terrio.rasterTiles(raster, {...options, format: "GTiff"}, (name, bytes) => {
+    const tile = terrio.open(bytes, name);
+    assert.equal(tile.readBand(1)[0], 7);
+    assert.equal(tile.readBand(1).length, 4);
+    tile.free();
+  });
+  let uploaded = 0;
+  terrio.rasterTiles({bytes: raster.toBytes("input.tif"), filename: "input.tif"}, {...options, format: "GTiff"}, (name, bytes) => {
+    const tile = terrio.open(bytes, name);
+    assert.equal(tile.readBand(1)[0], 7);
+    uploaded++;
+    tile.free();
+  });
+  assert.equal(uploaded, 6);
+  const failure = new Error("save failed");
+  assert.throws(() => terrio.rasterTiles(raster, options, () => { throw failure; }), (error) => error === failure);
+  raster.free();
+});
+
+test("rasterTiles keeps valid floating zero tiles with nonzero nodata", () => {
+  const raster = terrio.createRaster(null, {size: [3, 3], ot: "Float32", burn: [0], nodata: -999999, crs: "EPSG:4326", bbox: [0, 0, 3, 3]});
+  const report = terrio.rasterTiles(raster, {tilingScheme: "raster", grid: {tileSize: 2}, format: "GTiff", resampling: "nearest", skipBlank: true}, (name, bytes) => {
+    const tile = terrio.open(bytes, name);
+    assert.deepEqual(Array.from(tile.readBand(1)), [0, 0, 0, 0]);
+    tile.free();
+  });
+  assert.equal(report.written, 4);
+  raster.free();
+});
+
+test("rasterTiles handles per-channel nodata without hiding valid RGB channels", () => {
+  const raster = terrio.createRaster(null, {size: [2, 2], bandCount: 3, ot: "Byte", burn: [255, 20, 30], nodata: 255, crs: "EPSG:4326", bbox: [0, 0, 2, 2]});
+  const report = terrio.rasterTiles(raster, {tilingScheme: "raster", grid: {tileSize: 2}, format: "GTiff", alpha: true, resampling: "nearest"}, (name, bytes) => {
+    const tile = terrio.open(bytes, name);
+    for (const [band, value] of [[1, 0], [2, 20], [3, 30], [4, 255]]) {
+      assert.deepEqual(Array.from(tile.readBand(band)), [value, value, value, value]);
+    }
+    tile.free();
+  });
+  assert.equal(report.written, 1);
+  raster.free();
+});

@@ -49,6 +49,7 @@ __all__ = [
     "sql",
     "rasterize",
     "raster_index",
+    "raster_tiles",
     "vector_index",
     "DatasetIndex",
     "pansharpen",
@@ -2036,6 +2037,17 @@ class DatasetIndex:
 
 def raster_index(sources: Any, dst: str | None = None, **kwargs: Any) -> DatasetIndex:
     """Create raster extent polygons; keyword options use CLI names with underscores."""
+    ...
+
+def raster_tiles(
+    source: str | os.PathLike[str] | Raster,
+    output: str | os.PathLike[str],
+    *,
+    resume: bool = False,
+    dry_run: bool = False,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Plan or write separate raster tiles, with nested grid options."""
     ...
 
 def vector_index(sources: Any, dst: str | None = None, **kwargs: Any) -> DatasetIndex:

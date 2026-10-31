@@ -21,6 +21,7 @@ mod pointcloud;
 mod pyogrio;
 mod query;
 mod raster;
+mod raster_tile;
 mod rio;
 mod stream;
 mod terrain;
@@ -238,6 +239,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     multidim::register(m)?;
     terrain::register(m)?;
     tile_index::register(m)?;
+    raster_tile::register(m)?;
     query::register(m)?;
     pixel::register(m)?;
     palette::register(m)?;
