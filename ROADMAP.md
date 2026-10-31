@@ -117,6 +117,11 @@ commands. Command-group progress:
       and active-layer copying across the public APIs. Part of
       [#289](https://github.com/opengeos/terrio/issues/289); pending review and merge.
 
+- [ ] Coverage cleaning: snapping, progressive overlap assignment and enclosed-gap
+      filling across Rust, CLI/MCP, Python and JavaScript. Implemented for
+      [#289](https://github.com/opengeos/terrio/issues/289); pending review and merge.
+      Ordering-dependent ownership differences are documented and independently checked.
+
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
       [#306](https://github.com/opengeos/terrio/pull/306), through Rust, CLI/MCP, Python and

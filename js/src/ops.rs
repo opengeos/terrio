@@ -1601,3 +1601,46 @@ pub(crate) fn tile_input(input: &JsValue) -> Result<WarpInput, JsError> {
     }
     Err(invalid("expected a raster Dataset, Uint8Array or { bytes, filename }"))
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct CleanCoverageArgs {
+    layer: Option<String>,
+    snapping_distance: f64,
+    merge_strategy: String,
+    maximum_gap_width: f64,
+    active_layer: Option<String>,
+}
+impl Default for CleanCoverageArgs {
+    fn default() -> Self {
+        Self { layer: None, snapping_distance: -1., merge_strategy: "longest-border".into(), maximum_gap_width: 0., active_layer: None }
+    }
+}
+/// Clean polygon coverage boundaries. Options: snappingDistance (-1 selects the
+/// extent-based default, 0 disables proximity snapping), mergeStrategy
+/// (longest-border|max-area|min-area|min-index), maximumGapWidth (0), layer, activeLayer.
+/// layer selects one output layer and is mutually exclusive with activeLayer.
+/// Topology uses XY; representative Z is retained/interpolated and active M is dropped.
+/// Attributes and CRS remain. Inactive layers are copied.
+#[wasm_bindgen(js_name = cleanCoverage)]
+pub fn clean_coverage(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    let args: CleanCoverageArgs = parse_options(&options)?;
+    if args.layer.is_some() && args.active_layer.is_some() {
+        return Err(invalid("layer and activeLayer are mutually exclusive"));
+    }
+    let options = terrio::ops::coverage_clean::CoverageCleanOptions {
+        snapping_distance: args.snapping_distance,
+        merge_strategy: args.merge_strategy.parse().map_err(js_err)?,
+        maximum_gap_width: args.maximum_gap_width,
+    };
+    let input = input_layers(&src)?;
+    let mut input = input;
+    if let Some(name) = args.layer {
+        input.retain(|l| l.name == name);
+        if input.is_empty() {
+            return Err(invalid(format!("layer {name:?} not found")));
+        }
+    }
+    let layers = terrio::ops::coverage_clean::clean_coverage_layers(&input, args.active_layer.as_deref(), &options).map_err(js_err)?;
+    Ok(Dataset::from_layers(layers, VectorDriver::GeoJSON))
+}

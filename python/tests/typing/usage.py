@@ -147,6 +147,9 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
     simplified.to_bytes("coverage.gpkg", preserve_declared_geometry_type=True)
     copied: terrio.VectorDataset = terrio.simplify_coverage([layer], 1.0, active_layer="parcels")
     copied.write(str(tmp / "coverage-copy.gpkg"), preserve_declared_geometry_type=True)
+    cleaned: terrio.Layer = terrio.clean_coverage(layer, snapping_distance=0, maximum_gap_width=1)
+    clean_copied: terrio.VectorDataset = terrio.clean_coverage([layer], active_layer="parcels")
+    print(len(cleaned), clean_copied.layer_names)
     layer.name = "parcels"
     print(layer.name, layer.crs, layer.crs_wkt is not None, layer.geometry_type, len(layer))
     fields: dict[str, str] = layer.fields

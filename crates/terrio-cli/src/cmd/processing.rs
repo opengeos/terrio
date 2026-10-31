@@ -491,3 +491,34 @@ pub fn simplify_coverage(a: SimplifyCoverageArgs) -> Result<()> {
     let layers = terrio::ops::coverage_simplify::simplify_coverage_layers(&input, &options, a.active_layer.as_deref())?;
     a.output.write_with_geometry_types(layers, true)
 }
+
+/// Polygon coverage cleaning, with inactive-layer copying.
+#[derive(clap::Args)]
+pub struct CleanCoverageArgs {
+    #[command(flatten)]
+    input: VectorInput,
+    #[command(flatten)]
+    output: VectorOutput,
+    /// Clean only this layer and copy all other selected layers unchanged.
+    #[arg(long)]
+    active_layer: Option<String>,
+    /// Snap nodes in input CRS units. Negative uses extent diameter / 1e8; zero disables proximity snapping.
+    #[arg(long, default_value_t = -1.0, allow_hyphen_values = true)]
+    snapping_distance: f64,
+    /// Assign overlaps by longest-border, max-area, min-area or min-index.
+    #[arg(long, default_value = "longest-border")]
+    merge_strategy: terrio::ops::coverage_clean::CoverageMergeStrategy,
+    /// Fill enclosed gaps with inscribed diameter at most this width; zero disables filling.
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+    maximum_gap_width: f64,
+}
+pub fn clean_coverage(a: CleanCoverageArgs) -> Result<()> {
+    let input = a.input.open()?;
+    let options = terrio::ops::coverage_clean::CoverageCleanOptions {
+        snapping_distance: a.snapping_distance,
+        merge_strategy: a.merge_strategy,
+        maximum_gap_width: a.maximum_gap_width,
+    };
+    let layers = terrio::ops::coverage_clean::clean_coverage_layers(&input, a.active_layer.as_deref(), &options)?;
+    a.output.write(layers)
+}

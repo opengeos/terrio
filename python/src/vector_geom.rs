@@ -18,6 +18,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(check_coverage, m)?)?;
     m.add_function(wrap_pyfunction!(simplify_coverage, m)?)?;
+    m.add_function(wrap_pyfunction!(clean_coverage, m)?)?;
     m.add_function(wrap_pyfunction!(segmentize, m)?)?;
     m.add_function(wrap_pyfunction!(convex_hull, m)?)?;
     m.add_function(wrap_pyfunction!(concave_hull, m)?)?;
@@ -402,5 +403,41 @@ fn simplify_coverage(
     }
     let input = one_layer(py, src, layer)?;
     let inner = py.detach_result(|| terrio::ops::coverage_simplify::simplify_coverage(&input, &options)).py()?;
+    Ok(Py::new(py, PyLayer { inner })?.into_any())
+}
+
+/// Snap and node polygon coverage boundaries, assigning overlaps and filling enclosed narrow gaps.
+/// Distances use planar input CRS units. Negative snapping_distance selects the default;
+/// zero disables proximity snapping. Topology is XY; Z survives/interpolates and M
+/// is dropped on cleaned layers. With active_layer, return a
+/// VectorDataset containing the cleaned selection and unchanged inactive layers.
+#[pyfunction]
+#[pyo3(signature = (src, *, snapping_distance=-1.0, merge_strategy="longest-border", maximum_gap_width=0.0, layer=None, active_layer=None))]
+#[allow(clippy::too_many_arguments)]
+fn clean_coverage(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    snapping_distance: f64,
+    merge_strategy: &str,
+    maximum_gap_width: f64,
+    layer: Option<String>,
+    active_layer: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let options = terrio::ops::coverage_clean::CoverageCleanOptions {
+        snapping_distance,
+        merge_strategy: merge_strategy.parse().py()?,
+        maximum_gap_width,
+    };
+    if let Some(active) = active_layer {
+        if layer.is_some() {
+            return Err(invalid("layer and active_layer are mutually exclusive"));
+        }
+        let input = input_layers(py, src, None)?;
+        let layers = py.detach_result(|| terrio::ops::coverage_clean::clean_coverage_layers(&input, Some(&active), &options)).py()?;
+        let dataset = terrio::VectorDataset { layers, driver: terrio::formats::VectorDriver::GeoJSON };
+        return Ok(Py::new(py, PyVectorDataset::new(py, dataset)?)?.into_any());
+    }
+    let input = one_layer(py, src, layer)?;
+    let inner = py.detach_result(|| terrio::ops::coverage_clean::clean_coverage(&input, &options)).py()?;
     Ok(Py::new(py, PyLayer { inner })?.into_any())
 }

@@ -353,6 +353,7 @@ JTS Topology Suite (https://github.com/locationtech/jts)
 Terrio files derived from JTS source files (each file's header names them):
   crates/terrio/src/ops/coverage.rs
   crates/terrio/src/ops/coverage_simplify.rs
+  crates/terrio/src/ops/coverage_clean.rs
   crates/terrio/src/ops/hull.rs
   crates/terrio/src/ops/jts_cdt.rs
   crates/terrio/src/ops/jts_delaunay.rs
@@ -367,6 +368,7 @@ The copyright notices of those source files:
   Copyright (c) 2022 Martin Davis.
   Copyright (c) 2016 Martin Davis.
   Copyright (c) 2023 Martin Davis.
+  Copyright (c) 2025 Martin Davis.
   Copyright (c) 2016 Vivid Solutions, and others.
   Copyright (c) 2020 Martin Davis.
   Copyright (c) 2019 Martin Davis.
