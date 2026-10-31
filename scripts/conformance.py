@@ -668,8 +668,8 @@ def suite_raster_masks(ctx):
                   "Synthetic Byte and real Landsat rasters with internal and sidecar masks: "
                   "every pixel, mask, type, nodata, CRS and geotransform, including regenerated COG "
                   "overviews, extracted windows/levels and single/multiple-source/cutline warps. "
-                  "Byte forced-overview interpolation allows one value of rounding difference and must "
-                  "also match GDAL -wt Float32 exactly. Cutlines use the same binary mask as alpha "
+                  "Landsat forced-overview bilinear and average warps allow one value of rounding "
+                  "difference and must also match GDAL -wt Float32 exactly. Cutlines use the same binary mask as alpha "
                   "because GDAL 3.13.2 drops a per-dataset mask when adding a cutline. "
                   "A local masked COG counts HTTP payload bytes and requires small windows to fetch less than whole conversion.")
     code, out, err = run([sys.executable, str(SCRIPTS / "compare_raster_masks_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])

@@ -9,7 +9,8 @@
   and use them when generating COG overviews. Lazy warps, CLI output and Python
   inputs now apply source masks, including multiple sources and cutlines (#431).
 - Masked inputs are refused, rather than written without their mask, by
-  PMTiles and MBTiles output, `convert --append` and `convert --t-srs`. Write an
+  `convert` to any output other than GeoTIFF and COG (PMTiles, MBTiles and GDAL
+  drivers included), by `convert --append` and by `convert --t-srs`. Write an
   explicit alpha band to keep the validity.
 
 ### Docker image

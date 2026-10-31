@@ -316,6 +316,11 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                     _ => None,
                 };
                 if let Some(d) = gdal_driver {
+                    if output_mask.is_some() {
+                        return Err(terrio::Error::InvalidArgument(format!(
+                            "GDAL's {d} driver does not preserve dataset masks; use an explicit alpha band"
+                        )));
+                    }
                     return terrio::gdal_backend::write_raster(&r, &a.output, &d, &creation_options);
                 }
             }
@@ -325,9 +330,9 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 .map(|f| RasterDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{f}'"))))
                 .transpose()?;
             let output_driver = driver.or_else(|| RasterDriver::for_extension(&a.output));
-            if matches!(output_driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && output_mask.is_some() {
+            if output_mask.is_some() && !matches!(output_driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
                 return Err(terrio::Error::InvalidArgument(
-                    "tile archive writes do not preserve dataset masks; use an explicit alpha band".into(),
+                    "this output format does not preserve dataset masks; use an explicit alpha band".into(),
                 ));
             }
             let opts = RasterWriteOptions {
@@ -336,7 +341,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 tile_size: a.tile_size,
                 bigtiff: a.bigtiff,
                 creation_options,
-                mask: output_mask.filter(|_| matches!(output_driver, Some(RasterDriver::GTiff | RasterDriver::Cog))),
+                mask: output_mask,
                 ..Default::default()
             };
             terrio::write_raster_dataset(&r, &a.output, &opts)

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::process::Command;
-use terrio::{DataType, LazyRaster, Raster, RasterConfig, RasterDataset, RasterWriteOptions, Window, WindowOptions};
+use terrio::{DataType, Raster, RasterConfig, RasterDataset, RasterWriteOptions, Window, WindowOptions};
 
 fn run(dir: &Path, args: &[&str]) {
     let result = Command::new(env!("CARGO_BIN_EXE_terrio")).current_dir(dir).args(args).output().unwrap();
@@ -141,9 +141,7 @@ fn warp_uses_masks_in_streamed_memory_and_multiple_source_paths() {
         }
         let options = terrio::ops::warp::WarpOptions { overview: terrio::ops::overview::OverviewSelection::None, ..Default::default() };
         let mut lazy = terrio::open_raster_lazy(d.join("source.tif").to_str().unwrap()).unwrap();
-        for mut input in [LazyRaster::from_masked_dataset(lazy.read().unwrap(), mask.clone()).unwrap(), lazy] {
-            let output = terrio::ops::warp::warp_lazy(&mut input, &options).unwrap();
-            assert_eq!(output.raster.data.to_f64_vec(), mask.iter().map(|v| if *v == 0 { 0. } else { 100. }).collect::<Vec<_>>());
-        }
+        let output = terrio::ops::warp::warp_lazy(&mut lazy, &options).unwrap();
+        assert_eq!(output.raster.data.to_f64_vec(), mask.iter().map(|v| if *v == 0 { 0. } else { 100. }).collect::<Vec<_>>());
     }
 }

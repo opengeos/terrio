@@ -3609,7 +3609,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (cols, rows) = (131, 259);
         let data = RasterData::U8((0..cols * rows).map(|i| (i * 7 % 251) as u8).collect());
-        let mask: Vec<u8> = (0..cols * rows).map(|i| if i % cols < 31 || i % 13 < 5 { 0 } else if i % 3 == 0 { 255 } else { 1 }).collect();
+        let mask: Vec<u8> = (0..cols * rows)
+            .map(|i| {
+                if i % cols < 31 || i % 13 < 5 {
+                    0
+                } else if i % 3 == 0 {
+                    255
+                } else {
+                    1
+                }
+            })
+            .collect();
         let normalized: Vec<u8> = mask.iter().map(|v| if *v != 0 { 255 } else { 0 }).collect();
         let raster = Raster::from_data_native(
             wbraster::RasterConfig { cols, rows, bands: 1, data_type: DataType::U8, ..Default::default() },
