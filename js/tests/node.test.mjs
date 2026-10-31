@@ -3248,3 +3248,19 @@ test("rasterTiles emits publication companions with uniform STACTA bands", () =>
   assert.deepEqual([...files.get("0/0/0.png").slice(0,8)],[137,80,78,71,13,10,26,10]);
   assert.equal(files.get("0/0/0.png")[25],4); // PNG gray + alpha color type.
 });
+
+
+test("multi-layer analysis output cannot silently drop layers in single-layer formats", () => {
+  const point = marker => ({type:"FeatureCollection", features:[{type:"Feature",properties:{marker},geometry:{type:"Point",coordinates:[0,0]}}]});
+  const a=terrio.fromGeoJSON(point("a"),"a"), b=terrio.fromGeoJSON(point("b"),"b");
+  const source=terrio.concat([a,b],{mode:"stack"});
+  const result=terrio.buffer(source,1);
+  const names=result.layerNames();assert.equal(names.length,2);
+  for (const filename of ["all.geojson","all.geojsonl","all.csv","all.gml"]) {
+    assert.throws(()=>result.toBytes(filename),/one layer/);
+  }
+  const selected=JSON.parse(new TextDecoder().decode(result.toBytes("selected.geojson",{layers:[names[1]]})));
+  assert.equal(selected.features.length,1);assert.equal(selected.features[0].properties.marker,"b");
+  const restored=terrio.open(result.toBytes("all.topojson"),"all.topojson");
+  assert.equal(restored.layerNames().length,2);
+});
