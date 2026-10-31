@@ -333,6 +333,9 @@ pub fn render_cell(
             self.inner.info()
         }
         fn read_mask(&mut self, window: crate::Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+            if window.width.checked_mul(window.height).is_none_or(|n| n > self.limit) {
+                return Err(Error::Unsupported("the source mask window exceeds the pixel-buffer budget".into()));
+            }
             self.inner.read_mask(window, overview)
         }
         fn read_window(&mut self, window: crate::Window, options: &crate::WindowOptions) -> Result<crate::RasterDataset> {
@@ -583,6 +586,40 @@ mod tests {
             assert!(render_cell(&mut source, &cell, &Default::default(), limits).is_err());
             assert!(source.windows.is_empty());
         }
+    }
+
+    #[test]
+    fn rendering_budgets_reject_mask_windows_before_accessing_either_reader() {
+        use crate::ops::warp::{WarpSource, WarpSourceInfo};
+        struct Masked {
+            source: Procedural,
+            masks: Vec<crate::Window>,
+        }
+        impl WarpSource for Masked {
+            fn info(&mut self) -> Result<WarpSourceInfo> {
+                self.source.info()
+            }
+            fn has_mask(&mut self) -> Result<bool> {
+                Ok(true)
+            }
+            fn read_mask(&mut self, window: crate::Window, _: Option<usize>) -> Result<Option<Vec<u8>>> {
+                self.masks.push(window);
+                Ok(Some(vec![255; window.width * window.height]))
+            }
+            fn read_window(&mut self, window: crate::Window, options: &crate::WindowOptions) -> Result<crate::RasterDataset> {
+                self.source.read_window(window, options)
+            }
+        }
+        let cell = TileCell { zoom: 0, x: 0, y: 0, size: [256, 128], geo_transform: [2000.0, 1.0, 0.0, 97000.0, 0.0, -1.0] };
+        let mut source = Masked { source: Procedural::new(), masks: vec![] };
+        let limits = RenderLimits { max_source_window_bytes: 1, ..Default::default() };
+        assert!(render_cell(&mut source, &cell, &Default::default(), limits).is_err());
+        assert!(source.masks.is_empty());
+        assert!(source.source.windows.is_empty());
+        let result = render_cell(&mut source, &cell, &Default::default(), RenderLimits::default()).unwrap();
+        assert_eq!(result.raster.data.get_f64(0), 5000.0);
+        assert!(!source.masks.is_empty());
+        assert!(!source.source.windows.is_empty());
     }
 
     #[test]
