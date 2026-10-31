@@ -22,10 +22,10 @@
 //! points transformed; or, with `TERRIO_GRID_DOWNLOAD=YES`, downloaded whole into the cache
 //! (`TERRIO_GRID_CACHE`, default `~/.cache/terrio/grids`), where later runs find it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::{
-    Arc, Mutex, OnceLock,
+    Arc, Mutex, OnceLock, PoisonError,
     atomic::{AtomicU64, Ordering},
 };
 
@@ -226,7 +226,7 @@ impl TiffImage {
             return Some(b);
         }
         let decoded = {
-            let mut guard = self.file.decoder.lock().ok()?;
+            let mut guard = self.file.decoder.lock().unwrap_or_else(PoisonError::into_inner);
             let (dec, current) = &mut *guard;
             if *current != self.ifd {
                 dec.seek_to_image(self.ifd).ok()?;
@@ -729,6 +729,7 @@ struct Config {
 }
 
 fn config() -> &'static Mutex<Config> {
+    crate::host::before_lock();
     static C: OnceLock<Mutex<Config>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(Config::default()))
 }
@@ -738,7 +739,8 @@ fn config() -> &'static Mutex<Config> {
 /// terrio's download cache); `None` goes back to the environment's. As PROJ's
 /// `proj_context_set_search_paths`. Transformers created afterwards use them.
 pub fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
-    if let Ok(mut c) = config().lock() {
+    {
+        let mut c = config().lock().unwrap_or_else(PoisonError::into_inner);
         c.paths = paths;
     }
     reset_grid_cache();
@@ -748,7 +750,8 @@ pub fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
 /// `TERRIO_NETWORK` (or `PROJ_NETWORK`) environment variable; `None` goes back to it. As PROJ's
 /// `proj_context_set_enable_network`.
 pub fn set_network_enabled(enabled: Option<bool>) {
-    if let Ok(mut c) = config().lock() {
+    {
+        let mut c = config().lock().unwrap_or_else(PoisonError::into_inner);
         c.network = enabled;
     }
     reset_grid_cache();
@@ -756,6 +759,7 @@ pub fn set_network_enabled(enabled: Option<bool>) {
 
 /// Grids registered in memory, by name.
 fn registered() -> &'static Mutex<HashMap<String, Arc<[u8]>>> {
+    crate::host::before_lock();
     static R: OnceLock<Mutex<HashMap<String, Arc<[u8]>>>> = OnceLock::new();
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -770,30 +774,33 @@ fn cache_generation() -> u64 {
 /// Files read, by name (`None` when not found or not readable) and cache generation.
 type FileCache = Mutex<HashMap<String, (u64, Option<Arc<GridFile>>)>>;
 fn files() -> &'static FileCache {
+    crate::host::before_lock();
     static F: OnceLock<FileCache> = OnceLock::new();
     F.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// A late lookup must not overwrite a result cached after a reset. Check while
 /// holding the cache lock so reset either invalidates this write or clears it.
-fn cache_file_result(name: &str, generation: u64, file: Option<Arc<GridFile>>) -> Option<()> {
-    let mut cache = files().lock().ok()?;
+fn cache_file_result(name: &str, generation: u64, file: Option<Arc<GridFile>>) {
+    let mut cache = files().lock().unwrap_or_else(PoisonError::into_inner);
     if generation == cache_generation() {
         cache.insert(name.to_string(), (generation, file));
     }
-    Some(())
 }
 
 /// Makes a grid file available under a name (such as `us_noaa_conus.tif`), from its bytes: for
 /// WebAssembly, where there is no file system, or to use a grid without installing it.
 pub fn register_grid(name: &str, bytes: Vec<u8>) {
-    if let Ok(mut r) = registered().lock() {
+    {
+        let mut r = registered().lock().unwrap_or_else(PoisonError::into_inner);
         r.insert(name.to_string(), Arc::from(bytes));
     }
-    if let Ok(mut f) = files().lock() {
+    {
+        let mut f = files().lock().unwrap_or_else(PoisonError::into_inner);
         f.remove(name);
     }
-    if let Ok(mut a) = availability().lock() {
+    {
+        let mut a = availability().lock().unwrap_or_else(PoisonError::into_inner);
         a.clear();
     }
 }
@@ -805,16 +812,13 @@ fn old_names(name: &str) -> Vec<String> {
 
 /// Whether network access to the PROJ CDN is enabled.
 pub(crate) fn network_enabled() -> bool {
-    if let Some(n) = config().lock().ok().and_then(|c| c.network) {
+    if let Some(n) = config().lock().unwrap_or_else(PoisonError::into_inner).network {
         return n;
     }
     let on = |v: String| matches!(v.trim().to_ascii_uppercase().as_str(), "ON" | "YES" | "TRUE" | "1");
     #[cfg(not(target_family = "wasm"))]
     {
-        if let Ok(v) = std::env::var("TERRIO_NETWORK") {
-            return on(v);
-        }
-        if let Ok(v) = std::env::var("PROJ_NETWORK") {
+        if let Some(v) = crate::host::config_any(&["TERRIO_NETWORK", "PROJ_NETWORK"]) {
             return on(v);
         }
     }
@@ -847,7 +851,7 @@ pub(crate) fn cache_dir() -> Option<std::path::PathBuf> {
 /// The directories grids are looked up in.
 #[cfg(not(target_family = "wasm"))]
 fn search_dirs() -> Vec<std::path::PathBuf> {
-    if let Some(p) = config().lock().ok().and_then(|c| c.paths.clone()) {
+    if let Some(p) = config().lock().unwrap_or_else(PoisonError::into_inner).paths.clone() {
         return p;
     }
     // Unit tests do not see the grids installed on the machine (PROJ's directories, terrio's
@@ -886,7 +890,7 @@ fn machine_search_dirs() -> Vec<std::path::PathBuf> {
 
 /// The bytes of a grid file, by name or path, from memory or the local directories.
 fn find_local(name: &str) -> Option<Arc<[u8]>> {
-    if let Some(b) = registered().lock().ok()?.get(name) {
+    if let Some(b) = registered().lock().unwrap_or_else(PoisonError::into_inner).get(name) {
         return Some(b.clone());
     }
     #[cfg(not(target_family = "wasm"))]
@@ -907,7 +911,7 @@ fn find_local(name: &str) -> Option<Arc<[u8]>> {
 
 /// Whether a grid file is present locally (by its name or an old name).
 fn present_locally(name: &str) -> bool {
-    if registered().lock().is_ok_and(|r| r.contains_key(name)) {
+    if registered().lock().unwrap_or_else(PoisonError::into_inner).contains_key(name) {
         return true;
     }
     #[cfg(not(target_family = "wasm"))]
@@ -931,9 +935,8 @@ fn cdn_url(name: &str) -> Option<String> {
     if name.contains(['/', '\\']) || !name.ends_with(".tif") {
         return None;
     }
-    let endpoint = std::env::var("TERRIO_CDN_ENDPOINT")
-        .or_else(|_| std::env::var("PROJ_NETWORK_ENDPOINT"))
-        .unwrap_or_else(|_| "https://cdn.proj.org".into());
+    let endpoint =
+        crate::host::config_any(&["TERRIO_CDN_ENDPOINT", "PROJ_NETWORK_ENDPOINT"]).unwrap_or_else(|| "https://cdn.proj.org".into());
     Some(format!("{}/{name}", endpoint.trim_end_matches('/')))
 }
 
@@ -975,7 +978,7 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         return Some(NULL.get_or_init(|| Arc::new(null_file())).clone());
     }
     let generation = cache_generation();
-    if let Some((_, f)) = files().lock().ok()?.get(name).filter(|(g, _)| *g == generation) {
+    if let Some((_, f)) = files().lock().unwrap_or_else(PoisonError::into_inner).get(name).filter(|(g, _)| *g == generation) {
         return f.clone();
     }
     let bytes = find_local(name);
@@ -983,7 +986,7 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         for old in old_names(name) {
             if let Some(b) = find_local(&old) {
                 let file = read_file(&old, b).map(Arc::new);
-                cache_file_result(name, generation, file.clone())?;
+                cache_file_result(name, generation, file.clone());
                 return file;
             }
         }
@@ -995,26 +998,66 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         match open_remote(name) {
             Ok(file) => {
                 let file = Arc::new(file);
-                cache_file_result(name, generation, Some(file.clone()))?;
+                cache_file_result(name, generation, Some(file.clone()));
                 return Some(file);
             }
             Err(true) => {
-                cache_file_result(name, generation, None)?;
+                fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
+                cache_file_result(name, generation, None);
                 return None;
             }
             Err(false) => {}
         }
     }
     #[cfg(remote)]
-    let bytes = if bytes.is_none() && network_enabled() { download(name) } else { bytes };
+    let bytes = match bytes {
+        None if network_enabled() => {
+            let got = download(name);
+            if got.is_none() {
+                fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
+            }
+            got
+        }
+        b => b,
+    };
     let file = bytes.and_then(|b| read_file(name, b)).map(Arc::new);
-    cache_file_result(name, generation, file.clone())?;
+    cache_file_result(name, generation, file.clone());
     file
 }
 
+/// The grids the network was asked for and did not give (the CDN does not have them, or the
+/// request failed).
+fn fetch_failures() -> &'static Mutex<HashSet<String>> {
+    crate::host::before_lock();
+    static F: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    F.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Whether a grid was asked for on the network and not obtained: an operation needing it fails
+/// without another taking its place, as PROJ's `proj_trans` stops on a network error (with the
+/// network on and the grid missing on the CDN, PROJ 9.7.1 and 9.8.1 fail the point).
+pub(crate) fn fetch_failed(name: &str) -> bool {
+    fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).contains(name)
+}
+
 fn availability() -> &'static Mutex<HashMap<String, (u64, bool)>> {
+    crate::host::before_lock();
     static A: OnceLock<Mutex<HashMap<String, (u64, bool)>>> = OnceLock::new();
     A.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Holds the grids' process-wide locks (settings, grids registered in memory, files read, failed
+/// fetches, availability, grid sets built) across a fork, for [`crate::host::hold_for_fork`]: the forking thread
+/// takes them before the process is copied and lets them go after, so that the child never starts
+/// with one held by a thread it does not have.
+#[cfg(all(unix, not(target_family = "wasm")))]
+pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+    held.push(Box::new(config().lock().unwrap_or_else(PoisonError::into_inner)));
+    held.push(Box::new(registered().lock().unwrap_or_else(PoisonError::into_inner)));
+    held.push(Box::new(files().lock().unwrap_or_else(PoisonError::into_inner)));
+    held.push(Box::new(fetch_failures().lock().unwrap_or_else(PoisonError::into_inner)));
+    held.push(Box::new(availability().lock().unwrap_or_else(PoisonError::into_inner)));
+    held.push(Box::new(sets_cache().lock().unwrap_or_else(PoisonError::into_inner)));
 }
 
 /// Whether a grid can be used: present locally, or (with network access enabled) on the PROJ
@@ -1024,14 +1067,16 @@ pub(crate) fn available(name: &str) -> bool {
         return true;
     }
     let generation = cache_generation();
-    if let Some((_, a)) = availability().lock().ok().and_then(|a| a.get(name).copied()).filter(|(g, _)| *g == generation) {
+    if let Some((_, a)) = availability().lock().unwrap_or_else(PoisonError::into_inner).get(name).copied().filter(|(g, _)| *g == generation)
+    {
         return a;
     }
     let a = present_locally(name) || (network_enabled() && name.ends_with(".tif") && !name.contains(['/', '\\']));
-    if let Ok(mut m) = availability().lock()
-        && generation == cache_generation()
     {
-        m.insert(name.to_string(), (generation, a));
+        let mut m = availability().lock().unwrap_or_else(PoisonError::into_inner);
+        if generation == cache_generation() {
+            m.insert(name.to_string(), (generation, a));
+        }
     }
     a
 }
@@ -1040,12 +1085,15 @@ pub(crate) fn available(name: &str) -> bool {
 /// directories or network setting change).
 pub fn reset_grid_cache() {
     CACHE_GENERATION.fetch_add(1, Ordering::SeqCst);
-    if let Ok(mut a) = availability().lock() {
+    {
+        let mut a = availability().lock().unwrap_or_else(PoisonError::into_inner);
         a.clear();
     }
-    if let Ok(mut f) = files().lock() {
+    {
+        let mut f = files().lock().unwrap_or_else(PoisonError::into_inner);
         f.clear();
     }
+    fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).clear();
     sets_cache().lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
@@ -1130,6 +1178,7 @@ fn hierarchy(file: &GridFile, keep: impl Fn(&Source, usize) -> Option<Use>) -> V
 type SetsCache = Mutex<HashMap<(String, char), (u64, Arc<GridSet>)>>;
 
 fn sets_cache() -> &'static SetsCache {
+    crate::host::before_lock();
     static CACHE: OnceLock<SetsCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -1142,14 +1191,16 @@ where
     let mut out = Vec::new();
     for (name, optional) in grid_names(spec) {
         let generation = cache_generation();
-        if let Some((_, s)) = cache.lock().ok()?.get(&(name.clone(), kind)).filter(|(g, _)| *g == generation) {
+        if let Some((_, s)) =
+            cache.lock().unwrap_or_else(PoisonError::into_inner).get(&(name.clone(), kind)).filter(|(g, _)| *g == generation)
+        {
             out.push(s.clone());
             continue;
         }
         match load(&name).and_then(|f| build(&f)).filter(|g| !g.is_empty()) {
             Some(grids) => {
                 let s = Arc::new(GridSet { grids });
-                let mut cache = cache.lock().ok()?;
+                let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
                 if generation == cache_generation() {
                     cache.insert((name, kind), (generation, s.clone()));
                 }
@@ -1934,6 +1985,39 @@ pub(crate) fn gridshift_apply(
 
 #[cfg(test)]
 mod tests {
+    /// Every process-wide lock of the grids is one `host::hold_for_fork` takes across a fork (an
+    /// embedding library's fork handlers hold them), so that a child never starts with one held
+    /// by a thread it does not have.
+    #[test]
+    #[cfg(all(unix, not(target_family = "wasm")))]
+    fn hold_for_fork_takes_every_grid_lock() {
+        use crate::host::assert_held_for_fork as held;
+        held("settings", |wait| {
+            let _g = config().lock().unwrap_or_else(PoisonError::into_inner);
+            wait();
+        });
+        held("registered grids", |wait| {
+            let _g = registered().lock().unwrap_or_else(PoisonError::into_inner);
+            wait();
+        });
+        held("files", |wait| {
+            let _g = files().lock().unwrap_or_else(PoisonError::into_inner);
+            wait();
+        });
+        held("failed fetches", |wait| {
+            let _g = fetch_failures().lock().unwrap_or_else(PoisonError::into_inner);
+            wait();
+        });
+        held("availability", |wait| {
+            let _g = availability().lock().unwrap_or_else(PoisonError::into_inner);
+            wait();
+        });
+        held("grid sets", |wait| {
+            let _g = sets_cache().lock().unwrap_or_else(PoisonError::into_inner);
+            wait();
+        });
+    }
+
     use super::*;
 
     #[test]

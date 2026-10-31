@@ -43,13 +43,39 @@ impl std::fmt::Debug for TileArchive {
     }
 }
 
+/// The kinds of dataset an archive opened without a kind may hold: whether its tiles are images or
+/// vectors is known only once it is opened.
+const EITHER_KIND: [crate::formats::Kind; 2] = [crate::formats::Kind::Raster, crate::formats::Kind::Vector];
+
+/// Refuses an archive `driver` (MBTiles or PMTiles) is about to open when the process-wide
+/// allow-list of any of `kinds` leaves the driver out, as a de-registered GDAL driver opens nothing.
+fn check_archive_driver(driver: &str, shown: &str, kinds: &[crate::formats::Kind]) -> Result<()> {
+    kinds.iter().try_for_each(|&kind| crate::formats::check_driver_allowed(driver, shown, kind))
+}
+
 impl TileArchive {
     /// Opens an archive: a local path, or a URL, `s3://`, `gs://` or `az://` object. PMTiles are
-    /// read in place (only the header and root directory now); MBTiles are read whole.
+    /// read in place (only the header and root directory now); MBTiles are read whole. Under a
+    /// process-wide allow-list, the archive's driver (by its name, or its content for other names)
+    /// must be allowed for both kinds of dataset, whose tiles it may hold.
     pub fn open(path: &str) -> Result<Self> {
+        Self::open_judged(path, Some(&EITHER_KIND))
+    }
+
+    /// [`TileArchive::open`] for terrio's opens of a dataset, which judged the archive's name
+    /// against the allow-list of their kind first: only an MBTiles archive found by its content is
+    /// judged here.
+    pub(crate) fn open_named(path: &str) -> Result<Self> {
+        Self::open_judged(path, None)
+    }
+
+    /// Opens an archive, judging the driver it is opened with against the allow-lists of `kinds`
+    /// (`None`: only a driver found by content, against both kinds').
+    fn open_judged(path: &str, kinds: Option<&[crate::formats::Kind]>) -> Result<Self> {
         let kind = archive_kind(&crate::vfs::Location::parse(path).file_name()).or_else(|| archive_kind(path));
         match kind {
             Some(ArchiveKind::MBTiles) => {
+                check_archive_driver("MBTiles", path, kinds.unwrap_or_default())?;
                 let local = crate::vfs::resolve(path)?;
                 let bytes = std::fs::read(local.path())?;
                 Ok(Self { inner: Inner::Mb(mbtiles::MbTiles::from_bytes(bytes)?), _local: None })
@@ -59,19 +85,32 @@ impl TileArchive {
                 let head = source.read_at(0, source.len().min(16))?;
                 if head.starts_with(b"SQLite format 3\0") {
                     drop(source);
+                    // An MBTiles archive under another name, found by its content: read only if
+                    // the MBTiles driver is allowed, by the list of each kind it serves.
+                    check_archive_driver("MBTiles", path, kinds.unwrap_or(&EITHER_KIND))?;
                     let local = crate::vfs::resolve(path)?;
                     return Ok(Self { inner: Inner::Mb(mbtiles::MbTiles::from_bytes(std::fs::read(local.path())?)?), _local: None });
                 }
+                check_archive_driver("PMTiles", path, kinds.unwrap_or_default())?;
                 Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open(source)?)), _local: local })
             }
         }
     }
 
-    /// Opens an archive held in memory (PMTiles or MBTiles, told apart by their content).
+    /// Opens an archive held in memory (PMTiles or MBTiles, told apart by their content). Under a
+    /// process-wide allow-list, its driver must be allowed for both kinds of dataset.
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        Self::from_bytes_judged(bytes, &EITHER_KIND)
+    }
+
+    /// [`TileArchive::from_bytes`], judging the driver against the allow-lists of `kinds` (none for
+    /// terrio's opens of bytes, which judged them first, and for archives terrio made itself).
+    pub(crate) fn from_bytes_judged(bytes: Vec<u8>, kinds: &[crate::formats::Kind]) -> Result<Self> {
         if bytes.starts_with(b"SQLite format 3\0") {
+            check_archive_driver("MBTiles", "an archive in memory", kinds)?;
             return Ok(Self { inner: Inner::Mb(mbtiles::MbTiles::from_bytes(bytes)?), _local: None });
         }
+        check_archive_driver("PMTiles", "an archive in memory", kinds)?;
         Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open(ByteSource::Memory(bytes))?)), _local: None })
     }
 
@@ -88,6 +127,7 @@ impl TileArchive {
     /// Missing ranges retain [`crate::sparse`] retry/fill behavior; this does not fetch the
     /// whole archive. Brotli remains unsupported. Limits are retained for later leaf/tile reads.
     pub fn from_sparse_with_limits(file: crate::sparse::SparseFile, limits: PmTilesReadLimits) -> Result<Self> {
+        check_archive_driver("PMTiles", "a remote archive", &EITHER_KIND)?;
         Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open_with_limits(ByteSource::Sparse(file), limits)?)), _local: None })
     }
 
@@ -253,6 +293,14 @@ pub fn open_dataset(path: &str, options: &crate::VectorOpenOptions) -> Result<cr
     archive_dataset(archive, &name, options)
 }
 
+/// [`open_dataset`] for terrio's opens of a dataset, which judged its name first (see
+/// [`TileArchive::open_named`]).
+pub(crate) fn open_named_dataset(path: &str, options: &crate::VectorOpenOptions) -> Result<crate::Dataset> {
+    let archive = TileArchive::open_named(path)?;
+    let name = crate::vfs::Location::parse(path).file_name();
+    archive_dataset(archive, &name, options)
+}
+
 /// A dataset of an opened archive.
 pub(crate) fn archive_dataset(mut archive: TileArchive, name: &str, options: &crate::VectorOpenOptions) -> Result<crate::Dataset> {
     if archive.is_vector() {
@@ -275,7 +323,7 @@ pub(crate) fn archive_dataset(mut archive: TileArchive, name: &str, options: &cr
 
 /// Opens a tile archive held in memory as a dataset.
 pub(crate) fn open_dataset_bytes(bytes: Vec<u8>, name: &str, options: &crate::VectorOpenOptions) -> Result<crate::Dataset> {
-    archive_dataset(TileArchive::from_bytes(bytes)?, name, options)
+    archive_dataset(TileArchive::from_bytes_judged(bytes, &[])?, name, options)
 }
 
 // ─── Writing ────────────────────────────────────────────────────────────────────────────────────
@@ -515,7 +563,7 @@ fn options_of(archive: &TileArchive, o: &TileWriteOptions) -> (TileWriteOptions,
 /// hold it, and the lower zoom levels are computed again. The tiles keep their format (PNG, JPEG
 /// or WebP); the archive keeps its metadata.
 pub fn update_raster_bytes(bytes: Vec<u8>, ds: &crate::RasterDataset, o: &TileWriteOptions) -> Result<Vec<u8>> {
-    let archive = TileArchive::from_bytes(bytes)?;
+    let archive = TileArchive::from_bytes_judged(bytes, &[crate::formats::Kind::Raster])?;
     let kind = archive.kind();
     let (o, items) = options_of(&archive, o);
     let rt = raster::update_tiles(archive, ds, &o)?;
@@ -528,7 +576,7 @@ pub fn update_raster_bytes(bytes: Vec<u8>, ds: &crate::RasterDataset, o: &TileWr
 /// (`vector_layers`, `tilestats`, bounds, zoom levels) is merged. GDAL's MBTiles and PMTiles
 /// drivers cannot update vector tiles: the result is what writing all the layers at once gives.
 pub fn update_vector_bytes(bytes: Vec<u8>, layers: &[wbvector::Layer], o: &TileWriteOptions, overwrite: bool) -> Result<Vec<u8>> {
-    let mut archive = TileArchive::from_bytes(bytes)?;
+    let mut archive = TileArchive::from_bytes_judged(bytes, &[crate::formats::Kind::Vector])?;
     let kind = archive.kind();
     let (o, items) = options_of(&archive, o);
     let vt = vector::update_tiles(&mut archive, layers, &o, overwrite)?;
@@ -631,7 +679,7 @@ pub(crate) fn read_mvt_dir(path: &std::path::Path, options: &crate::VectorOpenOp
     items.retain(|(k, _)| k != "minzoom" && k != "maxzoom");
     items.push(("minzoom".into(), min_z.to_string()));
     items.push(("maxzoom".into(), max_z.to_string()));
-    let mut archive = TileArchive::from_bytes(mbtiles::write(&items, tiles)?)?;
+    let mut archive = TileArchive::from_bytes_judged(mbtiles::write(&items, tiles)?, &[])?;
     vector::read_layers(&mut archive, &options.tiles, &options.layers, options.spatial_filter)
 }
 
@@ -703,10 +751,13 @@ pub(crate) fn is_mvt(b: &[u8]) -> bool {
 /// directory of tiles with a `metadata.json`. `None` when the path is neither.
 pub(crate) fn open_mvt_local(path: &str, options: &crate::VectorOpenOptions) -> Option<Result<Vec<wbvector::Layer>>> {
     let p = std::path::Path::new(path);
+    // Found by the `metadata.json` beside its tiles, or by the content of a `.pbf` (OpenStreetMap's
+    // extension), whatever driver the name points to: read only if the MVT driver is allowed.
+    let allowed = || crate::formats::check_driver_allowed("MVT", path, crate::formats::Kind::Vector);
     #[cfg(not(target_family = "wasm"))]
     if p.is_dir() {
         if p.join("metadata.json").is_file() {
-            return Some(read_mvt_dir(p, options));
+            return Some(allowed().and_then(|()| read_mvt_dir(p, options)));
         }
         // A zoom level directory of such a directory.
         let zoom = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u8>().ok());
@@ -715,7 +766,7 @@ pub(crate) fn open_mvt_local(path: &str, options: &crate::VectorOpenOptions) -> 
         {
             let mut o = options.clone();
             o.tiles.zoom_level = Some(z);
-            return Some(read_mvt_dir(parent, &o));
+            return Some(allowed().and_then(|()| read_mvt_dir(parent, &o)));
         }
     }
     let lower = path.to_ascii_lowercase();
@@ -730,12 +781,12 @@ pub(crate) fn open_mvt_local(path: &str, options: &crate::VectorOpenOptions) -> 
     if !is_mvt(&bytes) {
         return None;
     }
-    Some(vector::read_tile_file(&bytes, path, &options.tiles))
+    Some(allowed().and_then(|()| vector::read_tile_file(&bytes, path, &options.tiles)))
 }
 
 /// The layer names of a vector tile archive, from its metadata (without reading tiles).
 pub(crate) fn layer_names(path: &str) -> Result<Vec<String>> {
-    let a = TileArchive::open(path)?;
+    let a = TileArchive::open_named(path)?;
     let names: Vec<String> = a
         .json()
         .get("vector_layers")

@@ -101,6 +101,7 @@ pub struct GpkgValidation {
 pub fn validate_gpkg_bytes(bytes: &[u8], options: &GpkgValidationOptions) -> Result<GpkgValidation> {
     #[cfg(feature = "sqlite")]
     {
+        crate::formats::check_driver_allowed("GPKG", "a GeoPackage in memory", crate::formats::Kind::Vector)?;
         let report = crate::gpkg_validation::check_core_with_options(bytes, options);
         let is_complete = report.unsupported_checks.is_empty();
         Ok(GpkgValidation {
@@ -135,6 +136,7 @@ pub fn validate_gpkg(path: impl AsRef<std::path::Path>, options: &GpkgValidation
     #[cfg(feature = "sqlite")]
     {
         let path = path.as_ref();
+        crate::formats::check_driver_allowed("GPKG", &path.to_string_lossy(), crate::formats::Kind::Vector)?;
         let bytes = if crate::memfs::is_virtual(path) {
             crate::memfs::read(path)?
         } else {

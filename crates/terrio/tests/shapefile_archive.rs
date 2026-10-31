@@ -32,7 +32,11 @@ fn shapefile_zip_public_round_trips() {
         let back = open_vector_bytes(bytes, "places.shp.zip", &Default::default()).unwrap();
         let layer = &back.layers[0];
         assert_eq!(layer.name, "places");
-        assert_eq!(layer.crs_epsg(), Some(4326));
+        // GeoJSON with heights is in EPSG:4979, as GDAL's GeoJSON driver reads it, and the .prj
+        // keeps that CRS: it reads back as EPSG:4979. (GDAL 3.12.4 writes ESRI "WGS_1984_3D" and
+        // reads back a 3D WGS 84 it matches to no EPSG code; not EPSG:4326.)
+        let expected = if geometry.contains("123.5") { 4979 } else { 4326 };
+        assert_eq!(layer.crs_epsg(), Some(expected));
         assert_eq!(layer.features.len(), 2);
         assert_eq!(layer.features[0].geometry, input.layers[0].features[0].geometry);
         assert_eq!(layer.features[0].attributes, input.layers[0].features[0].attributes);

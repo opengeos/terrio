@@ -1,133 +1,100 @@
-"""Generate terrio's GRIB tables from GDAL's GRIB driver.
+"""Generate the GRIB2 code tables terrio names GRIB bands with, as GDAL's GRIB driver names them.
 
-Writes ``crates/terrio/data/grib_tables.txt.zst``, a zstd-compressed text file holding the tables
-GDAL's GRIB driver (its copy of NOAA's degrib) names GRIB messages with:
+Writes ``crates/terrio/data/grib2.tsv.zst``, a zstd-compressed text table built from GDAL's GRIB2
+CSV files (``grib2_*.csv`` in ``GDAL_DATA``: degrib's tables merged with the WMO's), with lines:
 
-- the GRIB2 CSV tables of ``frmts/grib/data`` (parameters by discipline and category, the NCEP,
-  NDFD, MRMS, Canadian and HPC local parameters, fixed surfaces, centers and subcenters), each
-  as a line ``@<file name>`` followed by the file as it is;
-- the GRIB1 parameter tables of ``frmts/grib/degrib/degrib/grib1tab.cpp`` (NCEP, ECMWF, NOHRSC,
-  CPTEC, DWD, ...), each as a line ``@grib1:<table>`` followed by ``code<TAB>name<TAB>comment
-  <TAB>unit<TAB>conversion`` lines, and its table of level types (``@grib1:surface``, lines
-  ``code<TAB>name<TAB>comment<TAB>unit<TAB>two-part flag``).
+- ``P<TAB>discipline<TAB>category<TAB>first<TAB>last<TAB>short_name<TAB>name<TAB>unit<TAB>unit_conv``:
+  parameters ``first`` to ``last`` of a category of code table 4.2 (``grib2_table_4_2_D_C.csv``),
+  runs of identical rows merged; rows "Reserved for local use" are left out, as GDAL then looks
+  in the center's local table;
+- ``I<TAB>center<TAB>subcenter<TAB>table``: the local table of a center (any subcenter when
+  empty), in GDAL's order (``grib2_table_4_2_local_index.csv``);
+- ``L<TAB>table<TAB>discipline<TAB>category<TAB>number<TAB>short_name<TAB>name<TAB>unit<TAB>unit_conv``:
+  the rows of a local table;
+- ``V<TAB>code<TAB>short_name<TAB>name<TAB>unit``: code table 4.5, fixed surfaces;
+- ``C<TAB>code<TAB>name`` and ``S<TAB>center<TAB>subcenter<TAB>name``: originating centers and
+  subcenters.
 
-The tables are the WMO's and NOAA's (public domain), as GDAL distributes them (MIT license), so
-that terrio names GRIB bands as GDAL does (``GRIB_ELEMENT``, ``GRIB_COMMENT``, ``GRIB_UNIT``,
-``GRIB_SHORT_NAME``, ``GRIB_IDS``).
+Usage: python scripts/gen_grib_tables.py [GDAL_DATA directory]
 
-Usage: python scripts/gen_grib_tables.py [GDAL_SOURCE_DIR]
-
-Reads the files from a GDAL source tree when one is given, otherwise from GitHub at the GDAL
-version below. Needs the ``zstd`` command.
+The directory defaults to rasterio's bundled ``gdal_data``. Needs the ``zstd`` command.
 """
 
+import csv
+import glob
 import os
 import re
 import subprocess
 import sys
-import urllib.request
 
-GDAL_VERSION = "v3.12.2"
-RAW = f"https://raw.githubusercontent.com/OSGeo/gdal/{GDAL_VERSION}"
-OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio", "data", "grib_tables.txt.zst")
-
-# The CSV files of frmts/grib/data that degrib reads (grib2_process.csv is unused by GDAL).
-CSV_FILES = (
-    ["grib2_center.csv", "grib2_subcenter.csv", "grib2_table_4_5.csv", "grib2_table_4_2_local_index.csv"]
-    + [f"grib2_table_4_2_local_{c}.csv" for c in ("Canada", "HPC", "MRMS", "NCEP", "NDFD")]
-    + [
-        f"grib2_table_4_2_{d}_{c}.csv"
-        for d, cats in (
-            (0, (0, 1, 2, 3, 4, 5, 6, 7, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 190, 191)),
-            (1, (0, 1, 2)),
-            (2, (0, 3, 4, 5, 6, 7)),
-            (3, (0, 1, 2, 3, 4, 5, 6)),
-            (4, (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)),
-            (10, (0, 1, 2, 3, 4, 191)),
-            (20, (0, 1, 2, 3)),
-        )
-        for c in cats
-    ]
-)
+OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio", "data", "grib2.tsv.zst")
 
 
-def read(path, source):
-    """Reads a file of GDAL's source tree.
+def gdal_data() -> tuple[str, str]:
+    """The `GDAL_DATA` directory and a name for its GDAL."""
+    if len(sys.argv) > 1:
+        return sys.argv[1], sys.argv[1]
+    import rasterio
 
-    Args:
-        path: The path in the source tree.
-        source: The local source tree, or None to read from GitHub.
-
-    Returns:
-        The file's text.
-    """
-    if source:
-        with open(os.path.join(source, path), encoding="utf-8") as f:
-            return f.read()
-    with urllib.request.urlopen(f"{RAW}/{path}") as r:  # noqa: S310 (a fixed https URL)
-        return r.read().decode("utf-8")
+    return os.path.join(os.path.dirname(rasterio.__file__), "gdal_data"), f"GDAL {rasterio.__gdal_version__}"
 
 
-def c_string(s):
-    """Decodes the escapes of a C string literal's contents.
-
-    Args:
-        s: The text between the quotes.
-
-    Returns:
-        The string.
-    """
-    return s.replace('\\"', '"').replace("\\\\", "\\")
+def rows(path: str) -> list[list[str]]:
+    with open(path, newline="", encoding="utf-8") as f:
+        out = list(csv.reader(f))
+    # The header, then GDAL's comment rows (negative codes).
+    return [r for r in out[1:] if r and not r[0].startswith("-")]
 
 
-def grib1_tables(text):
-    """Parses the tables of grib1tab.cpp.
-
-    Args:
-        text: The file's text.
-
-    Returns:
-        A list of ``(name, lines)`` pairs: the parameter tables (``code, name, comment, unit,
-        conversion``) and the level table (``surface``: ``code, name, comment, unit, two-part flag``).
-    """
-    out = []
-    string = r'"((?:[^"\\]|\\.)*)"'
-    for m in re.finditer(r"const GRIB1(ParmTable|SurfTable) (\w+)\[256\] = \{(.*?)\n\};", text, re.S):
-        kind, name, body = m.groups()
-        # Comments are ignored: entries are numbered by position, from 0.
-        body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
-        # Adjacent string literals ("a" "b") are one string.
-        body = re.sub(r'"\s+"', "", body)
-        lines = []
-        if kind == "ParmTable":
-            entries = re.findall(r"\{\s*" + string + r"\s*,\s*" + string + r"\s*,\s*" + string + r"\s*,\s*(\w+)\s*\}", body)
-            for code, (n, comment, unit, conv) in enumerate(entries):
-                lines.append(f"{code}\t{c_string(n)}\t{c_string(comment)}\t{c_string(unit)}\t{conv}")
-            out.append((name, lines, len(entries)))
-        else:
-            entries = re.findall(r"\{\s*" + string + r"\s*,\s*" + string + r"\s*,\s*" + string + r"\s*,\s*(\d+)\s*\}", body)
-            for code, (n, comment, unit, two_part) in enumerate(entries):
-                lines.append(f"{code}\t{c_string(n)}\t{c_string(comment)}\t{c_string(unit)}\t{two_part}")
-            out.append(("surface" if name == "GRIB1Surface" else name, lines, len(entries)))
-    return out
+def clean(v: str) -> str:
+    return v.replace("\t", " ").replace("\n", " ")
 
 
-def main():
-    """Writes the tables."""
-    source = sys.argv[1] if len(sys.argv) > 1 else None
-    parts = []
-    for name in CSV_FILES:
-        text = read(f"frmts/grib/data/{name}", source)
-        parts.append(f"@{name}\n{text.rstrip(chr(10))}\n")
-    for name, lines, count in grib1_tables(read("frmts/grib/degrib/degrib/grib1tab.cpp", source)):
-        if count != 256:
-            raise SystemExit(f"grib1tab.cpp: {name} has {count} entries, not 256")
-        parts.append(f"@grib1:{name}\n" + "\n".join(lines) + "\n")
-    data = "".join(parts).encode("utf-8")
-    out = subprocess.run(["zstd", "-19", "-q", "-c"], input=data, capture_output=True, check=True).stdout
+def main() -> None:
+    d, name = gdal_data()
+    lines = [f"# GRIB2 code tables of {name}: see scripts/gen_grib_tables.py"]
+    for path in sorted(glob.glob(os.path.join(d, "grib2_table_4_2_*_*.csv"))):
+        m = re.match(r"grib2_table_4_2_(\d+)_(\d+)\.csv$", os.path.basename(path))
+        if not m:
+            continue
+        disc, cat = m.groups()
+        run = None
+        for r in rows(path):
+            num = int(r[0])
+            key = tuple(clean(v) for v in r[1:5])
+            if key[1] == "Reserved for local use":
+                if run:
+                    lines.append("\t".join(["P", disc, cat, str(run[0]), str(run[1]), *run[2]]))
+                run = None
+                continue
+            if run and run[2] == key and run[1] + 1 == num:
+                run[1] = num
+                continue
+            if run:
+                lines.append("\t".join(["P", disc, cat, str(run[0]), str(run[1]), *run[2]]))
+            run = [num, num, key]
+        if run:
+            lines.append("\t".join(["P", disc, cat, str(run[0]), str(run[1]), *run[2]]))
+    tables = []
+    for r in rows(os.path.join(d, "grib2_table_4_2_local_index.csv")):
+        table = r[2].removeprefix("grib2_table_4_2_local_").removesuffix(".csv")
+        lines.append("\t".join(["I", r[0], r[1], table]))
+        if table not in tables:
+            tables.append(table)
+    for table in tables:
+        for r in rows(os.path.join(d, f"grib2_table_4_2_local_{table}.csv")):
+            lines.append("\t".join(["L", table, *(clean(v) for v in r[:7])]))
+    for r in rows(os.path.join(d, "grib2_table_4_5.csv")):
+        lines.append("\t".join(["V", *(clean(v) for v in r[:4])]))
+    for r in rows(os.path.join(d, "grib2_center.csv")):
+        lines.append("\t".join(["C", r[0], clean(r[1])]))
+    for r in rows(os.path.join(d, "grib2_subcenter.csv")):
+        lines.append("\t".join(["S", r[0], r[1], clean(r[2])]))
+    text = "\n".join(lines) + "\n"
+    data = subprocess.run(["zstd", "-19", "-q", "-c"], input=text.encode(), capture_output=True, check=True).stdout
     with open(OUT, "wb") as f:
-        f.write(out)
-    print(f"{OUT}: {len(data)} bytes, {len(out)} compressed")
+        f.write(data)
+    print(f"{len(lines)} lines, {len(text)} bytes, {len(data)} compressed -> {OUT}")
 
 
 if __name__ == "__main__":

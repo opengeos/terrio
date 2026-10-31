@@ -18,14 +18,14 @@ GDAL (https://github.com/OSGeo/gdal)
 -------------------------------------------------------------------------------
 
 Terrio files derived from GDAL source files (each file's header names them):
+  crates/terrio-crs/src/lib.rs
   crates/terrio/src/cog_validate.rs
+  crates/terrio/src/drivers/gdal_overview.rs
+  crates/terrio/src/drivers/grib.rs
   crates/terrio/src/drivers/grib/grib1.rs
-  crates/terrio/src/drivers/grib/grib2.rs
-  crates/terrio/src/drivers/grib/grid.rs
-  crates/terrio/src/drivers/grib/mod.rs
-  crates/terrio/src/drivers/grib/pds.rs
+  crates/terrio/src/drivers/grib/names.rs
   crates/terrio/src/drivers/grib/tables.rs
-  crates/terrio/src/drivers/grib/unpack.rs
+  crates/terrio/src/drivers/grib/write.rs
   crates/terrio/src/drivers/gtiff_write.rs
   crates/terrio/src/drivers/hdfeos.rs
   crates/terrio/src/drivers/hfa.rs
@@ -89,10 +89,15 @@ Terrio files derived from GDAL source files (each file's header names them):
   crates/terrio/src/tiles/pyramid.rs
   crates/terrio/src/tiles/raster.rs
   crates/terrio/src/tiles/vector.rs
+  python/python/terrio/pyogrio/_read.py
+  python/python/terrio/pyogrio/_write.py
+  python/python/terrio/rio/_boundless.py
+  python/python/terrio/rio/_jpeg_quality.py
   python/python/terrio/rio/_resample.py
   python/python/terrio/rio/io.py
   python/python/terrio/rio/rpc.py
   python/python/terrio/rio/transform.py
+  python/python/terrio/rio/vrt.py
   scripts/compare_vector_dataset_with_gdal.py
   scripts/compare_vector_geom_with_gdal.py
 
@@ -192,6 +197,13 @@ The copyright notices of those source files:
   Copyright (c) 2018, Even Rouault <even dot rouault at spatialys dot com>
   Copyright (c) 2003, Frank Warmerdam
   Copyright (c) 2007-2008, Even Rouault <even dot rouault at spatialys.com>
+  Copyright (c) 2019, Even Rouault <even dot rouault at spatialys dot com>
+  Copyright (c) 2007, Frank Warmerdam
+  Copyright (c) 2017, Even Rouault <even dot rouault at spatialys dot com>
+  Copyright (c) 1998, 2003, Frank Warmerdam
+  Copyright 2007, Mateusz Loskot
+  Copyright 2008-2024, Even Rouault <even.rouault at spatialys.com>
+  Copyright (c) 2007, Mateusz Loskot
 
 In general GDAL/OGR is licensed under an MIT style license with the
 following terms:
@@ -213,6 +225,12 @@ THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+The GRIB driver in crates/terrio/src/drivers/grib.rs and crates/terrio/src/drivers/grib/ ports
+the rules of GDAL's frmts/grib/gribdataset.cpp, of its copy of NOAA MDL's degrib (naming, levels,
+units, grids) and of NCEP's g2clib (the GRIB2 unpacking and template tables).
+Its GRIB2 writer, crates/terrio/src/drivers/grib/write.rs, ports GDAL's
+frmts/grib/gribcreatecopy.cpp and g2clib's simple packing.
 
 The degrib and g2clib code GDAL bundles (frmts/grib/degrib), from which the GRIB driver's
 rules are ported, is in the public domain. GDAL's LICENSE.TXT says:
@@ -268,6 +286,7 @@ Terrio files derived from PROJ source files (each file's header names them):
   crates/terrio-crs/src/projections/perspective.rs
   crates/terrio-crs/src/rotation.rs
   crates/terrio-crs/src/route.rs
+  crates/terrio/src/drivers/grib.rs
   scripts/gen_epsg_table.py
 
 The copyright notices of those source files:
@@ -531,6 +550,7 @@ rasterio (https://github.com/rasterio/rasterio)
 
 Terrio files derived from rasterio source files (each file's header names them):
   python/python/terrio/rio/__init__.py
+  python/python/terrio/rio/_boundless.py
   python/python/terrio/rio/cli.py
   python/python/terrio/rio/control.py
   python/python/terrio/rio/dtypes.py
@@ -541,11 +561,14 @@ Terrio files derived from rasterio source files (each file's header names them):
   python/python/terrio/rio/merge.py
   python/python/terrio/rio/plot.py
   python/python/terrio/rio/profiles.py
+  python/python/terrio/rio/rio/helpers.py
+  python/python/terrio/rio/rio/overview.py
   python/python/terrio/rio/rpc.py
   python/python/terrio/rio/sample.py
   python/python/terrio/rio/session.py
   python/python/terrio/rio/stack.py
   python/python/terrio/rio/transform.py
+  python/python/terrio/rio/vrt.py
   python/python/terrio/rio/warp.py
   python/python/terrio/rio/windows.py
   scripts/rio_examples/mask_by_polygon.py
@@ -586,6 +609,31 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
 LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
 OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+-------------------------------------------------------------------------------
+python-geojson (through rasterio) (https://github.com/jazzband/geojson)
+-------------------------------------------------------------------------------
+
+Terrio files derived from python-geojson source files (each file's header names them):
+  python/python/terrio/rio/rio/helpers.py
+
+The copyright notices of those source files:
+  Copyright © 2014, contributors of python-geojson
+
+rasterio's coords() comes from python-geojson's geojson/coords.py (commit
+e82d2827110c9fccc5eb51d57076fd707c9a35be), whose LICENSE.rst reads:
+
+Copyright © 2014, contributors of python-geojson
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+-  Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+-  Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+-  Neither the name of the python-geojson nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE CONTRIBUTORS OF PYTHON-GEOJSON BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 -------------------------------------------------------------------------------
 rioxarray (https://github.com/corteva/rioxarray)
@@ -687,6 +735,40 @@ PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIG
 HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+pyogrio (https://github.com/geopandas/pyogrio)
+-------------------------------------------------------------------------------
+
+Terrio files derived from pyogrio source files (each file's header names them):
+  python/python/terrio/pyogrio/__init__.py
+  python/python/terrio/pyogrio/_read.py
+  python/python/terrio/pyogrio/errors.py
+
+The copyright notices of those source files:
+  Copyright (c) 2020-2024 Brendan C. Ward and pyogrio contributors
+
+MIT License
+
+Copyright (c) 2020-2024 Brendan C. Ward and pyogrio contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 -------------------------------------------------------------------------------
 rio-cogeo (https://github.com/cogeotiff/rio-cogeo)
@@ -1118,6 +1200,101 @@ LIABILITY, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
 OF THIS SOFTWARE.
 
 -------------------------------------------------------------------------------
+fdlibm (https://www.netlib.org/fdlibm/)
+-------------------------------------------------------------------------------
+
+Terrio files derived from fdlibm source files (each file's header names them):
+  crates/terrio-crs/src/math.rs
+
+The copyright notices of those source files:
+  Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+asinh is translated from the GNU C Library's sysdeps/ieee754/dbl-64/s_asinh.c (glibc 2.39),
+fdlibm code that carries this notice:
+
+  Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+  Developed at SunPro, a Sun Microsystems, Inc. business.
+  Permission to use, copy, modify, and distribute this
+  software is freely granted, provided that this notice
+  is preserved.
+
+atanh is translated from fdlibm 5.3's e_atanh.c, which carries this notice:
+
+  Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+  Developed at SunSoft, a Sun Microsystems, Inc. business.
+  Permission to use, copy, modify, and distribute this
+  software is freely granted, provided that this notice
+  is preserved.
+
+-------------------------------------------------------------------------------
+CPython (https://github.com/python/cpython)
+-------------------------------------------------------------------------------
+
+Terrio files derived from CPython source files (each file's header names them):
+  crates/terrio/src/drivers/vector/shapefile_codepages.rs
+
+The copyright notices of those source files:
+  Copyright (c) 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013,
+  2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023 Python Software Foundation; All
+  Rights Reserved
+
+The single-byte code page tables of the Shapefile driver are the decoding tables of CPython
+3.12.12's codecs (Lib/encodings). The changes made to them: only their upper halves (bytes 0x80
+to 0xFF) are kept, written as Rust arrays, and the bytes a code page leaves undefined (U+FFFE in
+CPython's tables) are U+FFFF. They are used under the Python Software Foundation License Version 2:
+
+PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
+--------------------------------------------
+
+1. This LICENSE AGREEMENT is between the Python Software Foundation
+("PSF"), and the Individual or Organization ("Licensee") accessing and
+otherwise using this software ("Python") in source or binary form and
+its associated documentation.
+
+2. Subject to the terms and conditions of this License Agreement, PSF hereby
+grants Licensee a nonexclusive, royalty-free, world-wide license to reproduce,
+analyze, test, perform and/or display publicly, prepare derivative works,
+distribute, and otherwise use Python alone or in any derivative version,
+provided, however, that PSF's License Agreement and PSF's notice of copyright,
+i.e., "Copyright (c) 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010,
+2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023 Python Software Foundation;
+All Rights Reserved" are retained in Python alone or in any derivative version
+prepared by Licensee.
+
+3. In the event Licensee prepares a derivative work that is based on
+or incorporates Python or any part thereof, and wants to make
+the derivative work available to others as provided herein, then
+Licensee hereby agrees to include in any such work a brief summary of
+the changes made to Python.
+
+4. PSF is making Python available to Licensee on an "AS IS"
+basis.  PSF MAKES NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR
+IMPLIED.  BY WAY OF EXAMPLE, BUT NOT LIMITATION, PSF MAKES NO AND
+DISCLAIMS ANY REPRESENTATION OR WARRANTY OF MERCHANTABILITY OR FITNESS
+FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF PYTHON WILL NOT
+INFRINGE ANY THIRD PARTY RIGHTS.
+
+5. PSF SHALL NOT BE LIABLE TO LICENSEE OR ANY OTHER USERS OF PYTHON
+FOR ANY INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES OR LOSS AS
+A RESULT OF MODIFYING, DISTRIBUTING, OR OTHERWISE USING PYTHON,
+OR ANY DERIVATIVE THEREOF, EVEN IF ADVISED OF THE POSSIBILITY THEREOF.
+
+6. This License Agreement will automatically terminate upon a material
+breach of its terms and conditions.
+
+7. Nothing in this License Agreement shall be deemed to create any
+relationship of agency, partnership, or joint venture between PSF and
+Licensee.  This License Agreement does not grant permission to use PSF
+trademarks or trade name in a trademark sense to endorse or promote
+products or services of Licensee, or any third party.
+
+8. By copying, installing or otherwise using Python, Licensee
+agrees to be bound by the terms and conditions of this License
+Agreement.
+
+-------------------------------------------------------------------------------
 Independent implementations
 -------------------------------------------------------------------------------
 
@@ -1148,10 +1325,11 @@ documentation: https://www.sqlite.org/fileformat2.html
 GRIB tables and test files
 -------------------------------------------------------------------------------
 
-crates/terrio/data/grib_tables.txt.zst holds the GRIB tables GDAL distributes (frmts/grib/data
-in GDAL 3.12.2, and degrib's GRIB1 tables from grib1tab.cpp), which GDAL's
-merge_degrib_and_wmo_tables.py (Copyright (C) 2021 Even Rouault, MIT) generates from NOAA's
-degrib tables (public domain; see the GDAL section) and the WMO's GRIB2 tables
+crates/terrio/data/grib2.tsv.zst and crates/terrio/src/drivers/grib/grib1.tsv.zst hold the GRIB
+tables GDAL distributes: its GRIB2 CSV tables (frmts/grib/data), and degrib's GRIB1 tables from
+grib1tab.cpp. GDAL's merge_degrib_and_wmo_tables.py (Copyright (C) 2021 Even Rouault, MIT)
+generates the GRIB2 tables from NOAA's degrib tables (public domain; see the GDAL section) and the
+WMO's GRIB2 tables
 (https://github.com/wmo-im/GRIB2), whose license reads:
 
   Copyright © 2020-2024
@@ -1174,7 +1352,7 @@ degrib tables (public domain; see the GDAL section) and the WMO's GRIB2 tables
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
 
-Thirteen GRIB files of GDAL's test suite (autotest/gdrivers/data/grib in GDAL 3.13.3), listed in
+Twenty-three GRIB files of GDAL's test suite (autotest/gdrivers/data/grib in GDAL 3.13.3), listed in
 REUSE.toml, are among terrio's test files in crates/terrio/tests/data/grib. They carry no
 copyright line and are distributed under GDAL's license. The other four, complex_missing.grib2,
 complex_sd2_missing.grib2, jpeg2000_lcc.grib2 and png_vis.grib2, were written with GDAL from a
@@ -1193,6 +1371,9 @@ LICENSES/LicenseRef-EPSG.txt), with this attribution. They are not the EPSG Data
 terrio is not endorsed by IOGP. The EPSG method and parameter names and codes in
 crates/terrio-crs/src/projjson_write.rs and crates/terrio/src/drivers/vector/projjson.rs come
 from the same dataset.
+crates/terrio-crs/src/projjson_db.tsv.zst is derived from the same dataset (EPSG v12.029), through
+PROJ 9.7.1's database, under the same terms; the EPSG method and parameter names and codes in
+crates/terrio-crs/src/projjson_gdal.rs come from it too.
 
 -------------------------------------------------------------------------------
 Esri projection engine data

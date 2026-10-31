@@ -49,6 +49,7 @@ __all__ = [
     "sql",
     "rasterize",
     "raster_index",
+    "raster_tiles",
     "vector_index",
     "DatasetIndex",
     "pansharpen",
@@ -106,6 +107,7 @@ __all__ = [
     "crs_info",
     "crs_to_projjson",
     "suggested_grid",
+    "warped_vrt_type",
     "gcp_transform",
     "RpcTransformer",
     "FeatureStream",
@@ -143,6 +145,30 @@ __all__ = [
     "edit_vector",
     "update_vector",
     "cli_main",
+    "CogWriter",
+    "_panic_for_tests",
+    "usable_memory",
+    "_set_http_retry_logger",
+    "_set_warp_nodata_logger",
+    "RegionWarp",
+    "config_push",
+    "config_pop",
+    "config_get",
+    "set_path_specific_option",
+    "clear_path_specific_options",
+    "get_path_specific_option",
+    "set_allowed_drivers",
+    "allowed_drivers",
+    "check_drivers",
+    "identify_drivers",
+    "network_stats",
+    "reset_network_stats",
+    "clear_http_cache",
+    "config_options",
+    "pyogrio_read",
+    "resampled_region",
+    "resampled_read",
+    "crs_projjson",
 ]
 
 __version__: str
@@ -201,6 +227,34 @@ class GeoTiffWriter:
     def close(self) -> None: ...
 
 @final
+class CogWriter:
+    def __new__(
+        cls,
+        path: str,
+        width: int,
+        height: int,
+        count: int,
+        dtype: str,
+        transform: Sequence[float],
+        crs: str | None = None,
+        nodata: float | None = None,
+        metadata: Mapping[str, Any] | Sequence[tuple[Any, Any]] | None = None,
+        *,
+        compress: str | None = None,
+        bigtiff: bool = False,
+        options: Mapping[str, str] | None = None,
+        band_metadata: Sequence[Mapping[str, Any]] | None = None,
+        colormap: Sequence[tuple[int, int, int, int]] | None = None,
+        gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
+        rpc: Sequence[float] | None = None,
+        overview_resampling: str | None = None,
+    ) -> CogWriter: ...
+    @property
+    def rows_written(self) -> int: ...
+    def write(self, array: NDArray[Any]) -> None: ...
+    def close(self) -> None: ...
+
+@final
 class Raster:
     """A raster dataset: a grid of pixels in one or more bands, with georeferencing."""
 
@@ -215,7 +269,17 @@ class Raster:
     @property
     def dtype(self) -> str: ...
     @property
+    def data_type(self) -> str: ...
+    @property
     def geolocation(self) -> list[tuple[str, str]] | None: ...
+    @property
+    def band_metadata(self) -> list[dict[str, Any]]: ...
+    @property
+    def band_nodata(self) -> list[float | None]: ...
+    @property
+    def metadata_domains(self) -> list[tuple[int, str, list[tuple[str, str]]]]: ...
+    @property
+    def color_table(self) -> list[tuple[int, int, int, int]] | None: ...
     @property
     def metadata(self) -> list[tuple[str, str]]: ...
     @property
@@ -226,6 +290,8 @@ class Raster:
     def crs_wkt(self) -> str | None: ...
     @property
     def transform(self) -> tuple[float, float, float, float, float, float]: ...
+    @property
+    def has_transform(self) -> bool | None: ...
     @property
     def res(self) -> tuple[float, float]: ...
     @property
@@ -246,6 +312,13 @@ class Raster:
         window: _Window | None = None,
         overview: int | None = None,
     ) -> NDArray[Any]: ...
+    def read_sampled(
+        self,
+        bands: Sequence[int],
+        cols: Sequence[int],
+        rows: Sequence[int],
+        overview: int | None = None,
+    ) -> NDArray[Any] | None: ...
     def read_mask(
         self, window: _Window | None = None, overview: int | None = None
     ) -> NDArray[Any] | None: ...
@@ -741,6 +814,12 @@ def open_vector(
     bbox: _Bounds | None = None,
     options: Mapping[str, str] | None = None,
 ) -> VectorDataset: ...
+def pyogrio_read(
+    path: str,
+    skip_features: int = 0,
+    max_features: int | None = None,
+    read_geometry: bool = True,
+) -> dict[str, Any]: ...
 def open_bytes(
     data: bytes | bytearray, filename: str, lazy: bool = False
 ) -> Raster | VectorDataset: ...
@@ -830,6 +909,8 @@ def convert(
     a_srs: str | None = None,
     append: bool = False,
     overwrite: bool = False,
+    options: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
+    overview_resampling: str | None = None,
     ct_opt: Mapping[str, str] | None = None,
 ) -> None: ...
 
@@ -900,6 +981,26 @@ def transform_points(
     only_best: bool = False,
     promote_to_3d: bool = False,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]: ...
+def config_push(options: dict[str, str | None]) -> None: ...
+def config_pop() -> bool: ...
+def usable_memory() -> int | None: ...
+def _set_http_retry_logger(callback: object) -> None: ...
+def _set_warp_nodata_logger(callback: object) -> None: ...
+def _panic_for_tests(message: str) -> None: ...
+def config_get(key: str) -> str | None: ...
+def set_path_specific_option(prefix: str, key: str, value: str | None = None) -> None: ...
+def clear_path_specific_options(prefix: str | None = None) -> None: ...
+def get_path_specific_option(path: str, key: str) -> str | None: ...
+def set_allowed_drivers(
+    drivers: Sequence[str] | None, kind: Literal["raster", "vector"] | None = None
+) -> None: ...
+def allowed_drivers(kind: Literal["raster", "vector"] | None = None) -> list[str] | None: ...
+def check_drivers(path: str, drivers: Sequence[str]) -> None: ...
+def identify_drivers(path: str) -> tuple[list[str], str | None]: ...
+def network_stats() -> dict[str, Any]: ...
+def reset_network_stats() -> None: ...
+def clear_http_cache() -> None: ...
+def config_options() -> dict[str, str | None]: ...
 def set_grid_search_paths(paths: Sequence[str | os.PathLike[str]] | None) -> None: ...
 def set_network_enabled(enabled: bool | None) -> None: ...
 def translate(
@@ -957,6 +1058,7 @@ def warp(
     geoloc: bool = False,
     geolocation: Mapping[str, Any] | None = None,
     kernel_version: str = "3.12",
+    init: Raster | None = None,
 ) -> Raster: ...
 def mosaic(
     srcs: _RasterSource | Sequence[_RasterSource],
@@ -1424,8 +1526,31 @@ def grid_points(
 # Helpers of terrio.rio.
 
 def tiff_tags(path: str) -> list[dict[int, str | bytes | list[int] | list[float]]] | None: ...
+def resampled_region(
+    resampling: str,
+    raster_size: tuple[int, int],
+    window: tuple[int, int, int, int],
+    fwindow: tuple[float, float, float, float],
+    buf: tuple[int, int],
+    block_width: int,
+    dataset: bool = False,
+) -> tuple[int, int, int, int]: ...
+def resampled_read(
+    data: Any,
+    region: tuple[int, int, int, int],
+    resampling: str,
+    raster_size: tuple[int, int],
+    window: tuple[int, int, int, int],
+    fwindow: tuple[float, float, float, float],
+    buf: tuple[int, int],
+    block_width: int,
+    nodata: float | None = None,
+    masks: Any = None,
+    dataset: bool = False,
+) -> Any: ...
 def crs_info(crs: str) -> dict[str, Any]: ...
 def crs_to_projjson(crs: str) -> str: ...
+def crs_projjson(crs: str, database: bool) -> str: ...
 def gcp_transform(
     gcps: Sequence[tuple[float, float, float, float, float]],
     xs: Sequence[float],
@@ -1446,6 +1571,40 @@ def suggested_grid(
     rpc: Mapping[str, str] | None = None,
     rpc_options: Mapping[str, str] | None = None,
 ) -> tuple[tuple[float, float, float, float, float, float], int, int]: ...
+def warped_vrt_type(
+    src_type: str, src_nodata: Sequence[float | None], dst_nodata: Sequence[float | None]
+) -> tuple[str, list[float | None]]: ...
+@final
+class RegionWarp:
+    def __new__(
+        cls,
+        src_size: tuple[int, int],
+        src_transform: Sequence[float],
+        src_crs: str,
+        dst_crs: str,
+        dst_transform: Sequence[float],
+        resampling: str,
+        error_threshold: float,
+        dtype: str,
+        src_nodata: Sequence[float | None],
+        dst_nodata: float | None = None,
+        gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
+        gcp_order: int = 0,
+        gcp_method: str = "auto",
+        rpc: Mapping[str, str] | None = None,
+        rpc_options: Mapping[str, str] | None = None,
+    ) -> RegionWarp: ...
+    def source_window(self, region: _Window) -> _Window | None: ...
+    def warp(
+        self,
+        region: _Window,
+        window: _Window,
+        data: NDArray[Any],
+        mask: NDArray[Any] | None = None,
+        init: float = 0.0,
+        padded_scale: bool = False,
+    ) -> tuple[NDArray[Any], NDArray[np.bool_]]: ...
+
 @final
 class RpcTransformer:
     def __new__(
@@ -1886,6 +2045,17 @@ def raster_index(sources: Any, dst: str | None = None, **kwargs: Any) -> Dataset
     """Create raster extent polygons; keyword options use CLI names with underscores."""
     ...
 
+def raster_tiles(
+    source: str | os.PathLike[str] | Raster,
+    output: str | os.PathLike[str],
+    *,
+    resume: bool = False,
+    dry_run: bool = False,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Plan or write separate raster tiles, with nested grid options."""
+    ...
+
 def vector_index(sources: Any, dst: str | None = None, **kwargs: Any) -> DatasetIndex:
     """Create source layer envelope polygons, retaining original layer indexes."""
     ...
@@ -2075,7 +2245,7 @@ def check_coverage(
     include_valid: bool = False,
     layer: str | None = None,
 ) -> Layer:
-    """Invalid coverage edges, retaining CRS and edge Z/M; empty schema and new IDs."""
+    """Invalid coverage edges, retaining CRS; XY diagnostics, empty schema and new IDs."""
     ...
 
 def simplify_coverage(

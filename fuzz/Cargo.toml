@@ -1,0 +1,37 @@
+[package]
+name = "terrio-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+terrio = { path = "../crates/terrio", default-features = false, features = ["geotiff", "remote", "lerc", "lzma"] }
+
+# Not a member of terrio's workspace: built with a nightly toolchain by `cargo fuzz`.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "tiff"
+path = "fuzz_targets/tiff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jpeg_png"
+path = "fuzz_targets/jpeg_png.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vector"
+path = "fuzz_targets/vector.rs"
+test = false
+doc = false
+bench = false

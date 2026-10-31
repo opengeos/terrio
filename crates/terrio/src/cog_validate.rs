@@ -316,8 +316,10 @@ fn tile_interleave(data: &[u8]) -> Result<bool> {
     }
 }
 
-/// Reads the IFDs of a TIFF. `None` when the stream is not a TIFF.
-fn read_tiff<R: Read + Seek>(f: &mut R, read_metadata: bool) -> Result<Option<Tiff>> {
+/// Reads the IFDs of a TIFF. `None` when the stream is not a TIFF. A TIFF is read only if the
+/// process-wide raster allow-list has the GTiff driver (`shown` names it in the refusal), as GDAL's
+/// validation opens it with that driver.
+fn read_tiff<R: Read + Seek>(f: &mut R, shown: &str, read_metadata: bool) -> Result<Option<Tiff>> {
     let mut header = [0u8; 16];
     f.seek(SeekFrom::Start(0))?;
     let mut n = 0;
@@ -338,6 +340,7 @@ fn read_tiff<R: Read + Seek>(f: &mut R, read_metadata: bool) -> Result<Option<Ti
         43 => true,
         _ => return Ok(None),
     };
+    crate::formats::check_driver_allowed("GTiff", shown, crate::formats::Kind::Raster)?;
     let mut next = if big {
         f.read_exact(&mut header[8..16])?;
         e.u64(&header[8..16])
@@ -350,6 +353,8 @@ fn read_tiff<R: Read + Seek>(f: &mut R, read_metadata: bool) -> Result<Option<Ti
     // Value arrays must lie within the stream, checked before they are allocated or fetched.
     let stream_len = f.seek(SeekFrom::End(0))?;
     let (entry_len, count_len, inline) = if big { (20usize, 8usize, 8usize) } else { (12, 2, 4) };
+    // The bytes of the arrays read so far, of every image: see below.
+    let mut stored_bytes: u64 = 0;
     let mut ifds: Vec<Ifd> = Vec::new();
     let mut metadata_bytes = 0u64;
     while next != 0 && ifds.len() < MAX_IFDS {
@@ -406,6 +411,13 @@ fn read_tiff<R: Read + Seek>(f: &mut R, read_metadata: bool) -> Result<Option<Ti
                 let off = if big { e.u64(value) } else { e.u32(value) as u64 };
                 if off.checked_add(len as u64).is_none_or(|end| end > stream_len) {
                     return Err(invalid(format!("TIFF tag {tag}'s {n} values run past the end of the file")));
+                }
+                // The images of a file do not share their arrays, which together fit in it: more
+                // is refused, before it is read. Every image's offsets and byte counts are held,
+                // so images pointing to one array would hold it once per image.
+                stored_bytes += len as u64;
+                if stored_bytes > stream_len {
+                    return Err(invalid(format!("the TIFF's tag arrays take more than its {stream_len} bytes")));
                 }
                 stored.push((tag, typ, off, len));
             }
@@ -499,7 +511,7 @@ pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> 
         #[cfg(remote)]
         Location::Url(_) | Location::S3 { .. } => {
             let remote = loc.remote().ok_or_else(|| Error::InvalidArgument(format!("'{path}' is not remote")))?;
-            validate_reader(&mut crate::http::RangeReader::open(&remote)?, None, options, false)
+            validate_reader(&mut crate::http::RangeReader::open(&remote)?, path, None, options, false)
         }
         Location::Local(p) => {
             let mut file = std::fs::File::open(p)?;
@@ -507,11 +519,12 @@ pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> 
             ovr.push(".ovr");
             let ovr = std::path::Path::new(&ovr);
             let sidecar = if ovr.is_file() {
-                Some(read_tiff(&mut std::io::BufReader::new(std::fs::File::open(ovr)?), false).ok().flatten().unwrap_or(Tiff {
-                    ifds: Vec::new(),
-                    ghost: None,
-                    expected_ifd_offset: 8,
-                }))
+                Some(
+                    read_tiff(&mut std::io::BufReader::new(std::fs::File::open(ovr)?), &ovr.to_string_lossy(), false)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(Tiff { ifds: Vec::new(), ghost: None, expected_ifd_offset: 8 }),
+                )
             } else {
                 None
             };
@@ -519,14 +532,14 @@ pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> 
             // A BufReader refills after each absolute seek and reads payload bytes
             // that validation does not need. Read the local file directly here.
             if options.profile == CogValidationProfile::Gdal && options.full_check.unwrap_or(true) {
-                validate_reader(&mut file, sidecar, options, true)
+                validate_reader(&mut file, path, sidecar, options, true)
             } else {
-                validate_reader(&mut std::io::BufReader::new(file), sidecar, options, true)
+                validate_reader(&mut std::io::BufReader::new(file), path, sidecar, options, true)
             }
         }
         _ => {
             let local = crate::vfs::resolve(path)?;
-            validate_reader(&mut std::io::BufReader::new(std::fs::File::open(local.path())?), None, options, false)
+            validate_reader(&mut std::io::BufReader::new(std::fs::File::open(local.path())?), path, None, options, false)
         }
     }
 }
@@ -534,7 +547,7 @@ pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> 
 /// Validates an uploaded TIFF without decoding pixels or creating a temporary file.
 /// External `.ovr` sidecars are unavailable for a standalone byte buffer.
 pub fn validate_cog_bytes(bytes: &[u8], options: &CogValidationOptions) -> Result<CogValidation> {
-    validate_reader(&mut std::io::Cursor::new(bytes), None, options, true)
+    validate_reader(&mut std::io::Cursor::new(bytes), "a GeoTIFF in memory", None, options, true)
 }
 
 /// Remote full checks are opt-in, but still bound their boundary-read workload.
@@ -566,6 +579,7 @@ impl<R: Seek> Seek for BoundaryReader<'_, R> {
 
 fn validate_reader<R: Read + Seek>(
     reader: &mut R,
+    shown: &str,
     sidecar: Option<Tiff>,
     options: &CogValidationOptions,
     local: bool,
@@ -574,7 +588,7 @@ fn validate_reader<R: Read + Seek>(
         return Err(Error::InvalidArgument("full_check requires the gdal validation profile".into()));
     }
     let full = options.profile == CogValidationProfile::Gdal && options.full_check.unwrap_or(local);
-    let tiff = read_tiff(reader, full)?;
+    let tiff = read_tiff(reader, shown, full)?;
     let mut full_errors = Vec::new();
     if full && let Some(tiff) = &tiff {
         if local {
@@ -1125,6 +1139,45 @@ mod tests {
         assert!(validate_bytes(&crafted(&e, &[])).is_err());
     }
 
+    /// A little-endian classic TIFF of `images` image directories after two arrays of 64 LONGs
+    /// (offsets at byte 8, byte counts at byte 264) that every directory points to.
+    fn sharing_arrays(images: u32) -> Vec<u8> {
+        let (offsets, counts, first, ifd_len): (u32, u32, u32, u32) = (8, 8 + 256, 8 + 512, 2 + 6 * 12 + 4);
+        let mut b = b"II*\0".to_vec();
+        b.extend(first.to_le_bytes());
+        b.extend((0..64u32).flat_map(|i| (first + images * ifd_len + i).to_le_bytes()));
+        b.extend((0..64u32).flat_map(|_| 1u32.to_le_bytes()));
+        for i in 0..images {
+            let entries: [(u16, u16, u32, u32); 6] =
+                [(256, 4, 1, 2048), (257, 4, 1, 2048), (322, 3, 1, 256), (323, 3, 1, 256), (324, 4, 64, offsets), (325, 4, 64, counts)];
+            b.extend(6u16.to_le_bytes());
+            for (tag, typ, count, value) in entries {
+                b.extend(tag.to_le_bytes());
+                b.extend(typ.to_le_bytes());
+                b.extend(count.to_le_bytes());
+                b.extend(value.to_le_bytes());
+            }
+            let next = if i + 1 < images { first + (i + 1) * ifd_len } else { 0 };
+            b.extend(next.to_le_bytes());
+        }
+        b.extend([0u8; 64]);
+        b
+    }
+
+    #[test]
+    fn tag_arrays_shared_by_images_are_refused_before_reading() {
+        // One directory: its two arrays (512 bytes) fit in the file (662 bytes).
+        let one = sharing_arrays(1);
+        assert_eq!(one.len(), 662);
+        let v = validate_bytes(&one).unwrap();
+        assert_eq!(v.data_offsets, vec![598], "{v:?}");
+        // Two directories pointing to the same arrays: 1,024 bytes of arrays in a file of 740.
+        let two = sharing_arrays(2);
+        assert_eq!(two.len(), 740);
+        let err = validate_bytes(&two).unwrap_err();
+        assert_eq!(err.to_string(), "the TIFF's tag arrays take more than its 740 bytes");
+    }
+
     #[test]
     fn metadata_is_streamed_bounded_and_ignored_by_legacy_profile() {
         let large = crafted(&[(256, 4, 1, 1), (257, 4, 1, 1), (42112, 2, (1 << 22) + 1, 100)], &[]);
@@ -1170,7 +1223,7 @@ mod tests {
         let bytes = std::fs::read(path).unwrap();
         let options = CogValidationOptions { profile: CogValidationProfile::Gdal, ..Default::default() };
         assert!(validate_cog_bytes(&bytes, &options).unwrap().is_valid);
-        let tiff = read_tiff(&mut std::io::Cursor::new(&bytes), true).unwrap().unwrap();
+        let tiff = read_tiff(&mut std::io::Cursor::new(&bytes), "t.tif", true).unwrap().unwrap();
         let mut cursor = std::io::Cursor::new(&bytes);
         let error = full_check(&mut BoundaryReader { inner: &mut cursor, remaining: 1 }, &tiff, &mut Vec::new()).unwrap_err();
         assert!(error.to_string().contains("boundary reads"));
@@ -1200,7 +1253,7 @@ mod tests {
         let result = validate_cog_bytes(&bytes, &options).unwrap();
         assert!(!result.errors.iter().any(|error| error.contains("not tiled")), "{result:?}");
         assert!(validate_cog_bytes(&bytes, &Default::default()).unwrap().errors.iter().any(|error| error.contains("not tiled")));
-        let mut tiff = read_tiff(&mut std::io::Cursor::new(&bytes), true).unwrap().unwrap();
+        let mut tiff = read_tiff(&mut std::io::Cursor::new(&bytes), "t.tif", true).unwrap().unwrap();
         tiff.ifds[0].offset = 10;
         assert!(validate(Some(tiff), None, false, true).errors.iter().any(|error| error.contains("should be 8")));
         assert!(validate_cog_bytes(&bytes, &CogValidationOptions { full_check: Some(true), ..Default::default() }).is_err());
@@ -1234,7 +1287,7 @@ mod tests {
     #[test]
     fn ascii_numeric_tags_are_ignored_and_ghost_offsets_use_raw_bytes() {
         let ascii = crafted(&[(256, 4, 1, 20), (257, 4, 1, 20), (322, 2, 1, 65), (323, 3, 1, 16)], &[]);
-        assert!(read_tiff(&mut std::io::Cursor::new(ascii), false).unwrap().unwrap().ifds[0].tile.is_none());
+        assert!(read_tiff(&mut std::io::Cursor::new(ascii), "t.tif", false).unwrap().unwrap().ifds[0].tile.is_none());
         let original = crafted(&[(256, 4, 1, 1), (257, 4, 1, 1)], &[]);
         let ghost = b"GDAL_STRUCTURAL_METADATA_SIZE=000001 bytes\n\xff";
         let offset = (8 + ghost.len()).next_multiple_of(2);
@@ -1243,7 +1296,7 @@ mod tests {
         bytes.extend_from_slice(ghost);
         bytes.resize(offset, 0);
         bytes.extend_from_slice(&original[8..]);
-        let tiff = read_tiff(&mut std::io::Cursor::new(bytes), true).unwrap().unwrap();
+        let tiff = read_tiff(&mut std::io::Cursor::new(bytes), "t.tif", true).unwrap().unwrap();
         assert_eq!(tiff.expected_ifd_offset, offset as u64);
     }
     #[test]
@@ -1403,10 +1456,10 @@ mod tests {
             write(&raster(2048, 2048), &driver(crate::formats::RasterDriver::Cog, &[("COMPRESS", "DEFLATE"), ("BLOCKSIZE", "128")]));
         let options = CogValidationOptions { profile: CogValidationProfile::Gdal, ..Default::default() };
         let mut buffered = std::io::BufReader::new(Measured { file: std::fs::File::open(&path).unwrap(), bytes: 0 });
-        let reference = validate_reader(&mut buffered, None, &options, true).unwrap();
+        let reference = validate_reader(&mut buffered, "t.tif", None, &options, true).unwrap();
         let buffered_bytes = buffered.get_ref().bytes;
         let mut direct = Measured { file: std::fs::File::open(&path).unwrap(), bytes: 0 };
-        let actual = validate_reader(&mut direct, None, &options, true).unwrap();
+        let actual = validate_reader(&mut direct, "t.tif", None, &options, true).unwrap();
         assert!(actual.is_valid, "{actual:?}");
         assert_eq!(actual, reference);
         assert!(direct.bytes < buffered_bytes);

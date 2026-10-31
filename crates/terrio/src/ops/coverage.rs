@@ -46,9 +46,9 @@ pub struct CoverageCheckOptions {
 /// CRS is retained. Attributes are omitted and output feature IDs are sequential,
 /// matching GDAL. With `include_valid`, empty line geometries maintain the
 /// correspondence with valid inputs. The output layer is named
-/// `invalid_edge`; its geometry type is MultiLineString. Original edge coordinates
-/// (including Z/M) are retained after consecutive XY repeats are normalized,
-/// matching JTS/GEOS. Overlapping interiors,
+/// `invalid_edge`; its geometry type is MultiLineString. Original XY edge
+/// coordinates are retained after consecutive XY repeats are normalized.
+/// Diagnostic lines are always XY, matching GDAL. Overlapping interiors,
 /// equal polygons and non-matching shared-edge nodes are invalid.
 ///
 /// ```no_run
@@ -109,13 +109,13 @@ pub fn check_coverage(layer: &Layer, options: &CoverageCheckOptions) -> Result<L
         if states[i].known() {
             continue;
         }
-        let query = expanded(envelope(target.line), gap)?;
+        let query = expanded(envelope(target.line), gap);
         for other in edge_index.locate_in_envelope_intersecting(query) {
             let adj = &edges[other.data];
             if target.feature == adj.feature || key(target.line) == key(adj.line) {
                 continue;
             }
-            if invalid_interaction(target.line, adj, &rings, gap) {
+            if invalid_interaction(target.line, adj, &rings, gap)? {
                 states[i].invalid = true;
                 break;
             }
@@ -147,7 +147,13 @@ pub fn check_coverage(layer: &Layer, options: &CoverageCheckOptions) -> Result<L
     let mut out = super::geometry::header(layer, Some(GeometryType::MultiLineString));
     out.name = "invalid_edge".into();
     out.schema = Default::default();
-    for lines in errors {
+    for mut lines in errors {
+        // Coverage diagnostics describe XY topology; GEOS emits two-dimensional
+        // lines even when the source polygons carry elevations or measures.
+        for coordinate in lines.iter_mut().flatten() {
+            coordinate.z = None;
+            coordinate.m = None;
+        }
         if !lines.is_empty() || options.include_valid {
             out.features.push(Feature {
                 fid: out.features.len() as u64 + 1,
@@ -186,6 +192,22 @@ struct Polygon {
     locator: Locator,
 }
 
+/// Checks each layer independently, sharing the CLI/JavaScript naming rule.
+/// A single output is `invalid_edge`; multiple outputs use `invalid_edge_{name}`.
+pub fn check_coverage_layers(layers: &[Layer], options: &CoverageCheckOptions) -> Result<Vec<Layer>> {
+    let multiple = layers.len() > 1;
+    layers
+        .iter()
+        .map(|layer| {
+            let mut output = check_coverage(layer, options)?;
+            if multiple {
+                output.name = format!("invalid_edge_{}", layer.name);
+            }
+            Ok(output)
+        })
+        .collect()
+}
+
 fn xy(c: &Coord) -> C {
     geo::coord! {x:c.x,y:c.y}
 }
@@ -206,16 +228,14 @@ fn envelope(line: geo::Line<f64>) -> AABB<[f64; 2]> {
         [line.start.x.max(line.end.x), line.start.y.max(line.end.y)],
     )
 }
-fn expanded(bounds: AABB<[f64; 2]>, d: f64) -> Result<AABB<[f64; 2]>> {
+fn expanded(bounds: AABB<[f64; 2]>, d: f64) -> AABB<[f64; 2]> {
     let low = bounds.lower();
     let high = bounds.upper();
-    let lo = [low[0] - d, low[1] - d];
-    let hi = [high[0] + d, high[1] + d];
-    if lo.iter().chain(&hi).any(|v| !v.is_finite()) {
-        return Err(Error::InvalidArgument("coverage gap search exceeds finite coordinate bounds".into()));
-    }
-    Ok(AABB::from_corners(lo, hi))
+    let lo = [low[0] - d, low[1] - d].map(|v| v.clamp(-f64::MAX, f64::MAX));
+    let hi = [high[0] + d, high[1] + d].map(|v| v.clamp(-f64::MAX, f64::MAX));
+    AABB::from_corners(lo, hi)
 }
+
 fn make_index(entries: impl Iterator<Item = (AABB<[f64; 2]>, usize)>) -> Index {
     RTree::bulk_load(entries.map(|(b, i)| GeomWithData::new(Rectangle::from_aabb(b), i)).collect())
 }
@@ -300,20 +320,20 @@ impl Locator {
     }
 }
 
-fn invalid_interaction(target: geo::Line<f64>, adj: &Edge, rings: &[CovRing], gap: f64) -> bool {
+fn invalid_interaction(target: geo::Line<f64>, adj: &Edge, rings: &[CovRing], gap: f64) -> Result<bool> {
     if let Some(hit) = line_intersection(target, adj.line) {
         let p = match hit {
-            LineIntersection::Collinear { intersection } if !same(intersection.start, intersection.end) => return true,
+            LineIntersection::Collinear { intersection } if !same(intersection.start, intersection.end) => return Ok(true),
             LineIntersection::Collinear { intersection } => intersection.start,
             LineIntersection::SinglePoint { intersection, is_proper } => {
                 if is_proper {
-                    return true;
+                    return Ok(true);
                 }
                 intersection
             }
         };
         if (!same(p, target.start) && !same(p, target.end)) || (!same(p, adj.line.start) && !same(p, adj.line.end)) {
-            return true;
+            return Ok(true);
         }
         let end = if same(p, target.start) { target.end } else { target.start };
         let ring = &rings[adj.ring];
@@ -329,11 +349,14 @@ fn invalid_interaction(target: geo::Line<f64>, adj: &Edge, rings: &[CovRing], ga
                 std::mem::swap(&mut prev, &mut next);
             }
             if interior_corner(p, prev, next, end) {
-                return true;
+                return Ok(true);
             }
         }
     }
-    gap > 0.0 && nearly_parallel(target, adj.line, gap)
+    if gap <= 0.0 {
+        return Ok(false);
+    }
+    nearly_parallel(target, adj.line, gap)
 }
 fn quadrant(o: C, p: C) -> u8 {
     if p.x >= o.x {
@@ -355,42 +378,79 @@ fn interior_corner(o: C, mut low: C, mut high: C, p: C) -> bool {
     }
     (angle_greater(o, p, low) && !angle_greater(o, p, high)) == between_interior
 }
-fn project(a: geo::Line<f64>, b: geo::Line<f64>) -> Option<geo::Line<f64>> {
+fn project(a: geo::Line<f64>, b: geo::Line<f64>) -> Result<Option<geo::Line<f64>>> {
     let dx = a.end.x - a.start.x;
     let dy = a.end.y - a.start.y;
-    let factor = |p: C| ((p.x - a.start.x) * dx + (p.y - a.start.y) * dy) / (dx * dx + dy * dy);
-    let (f0, f1) = (factor(b.start), factor(b.end));
-    if (f0 > 1.0 && f1 > 1.0) || (f0 < 0.0 && f1 < 0.0) {
-        return None;
+    let squared = dx * dx + dy * dy;
+    let mut scale = dx.abs().max(dy.abs());
+    if !scale.is_finite() {
+        scale = a.start.x.abs().max(a.start.y.abs()).max(a.end.x.abs()).max(a.end.y.abs());
     }
-    let p = |f: f64| {
-        if f < 0.0 {
-            a.start
-        } else if f > 1.0 {
-            a.end
+    if scale == 0.0 {
+        return Ok(None);
+    }
+    let offset = |p: f64, origin: f64| {
+        let difference = p - origin;
+        if difference.is_finite() { difference / scale } else { p / scale - origin / scale }
+    };
+    let ux = offset(a.end.x, a.start.x);
+    let uy = offset(a.end.y, a.start.y);
+    let factor = |p: C| {
+        let numerator = (p.x - a.start.x) * dx + (p.y - a.start.y) * dy;
+        if squared.is_normal() && numerator.is_finite() {
+            numerator / squared
         } else {
-            geo::coord! {x:a.start.x+f*dx,y:a.start.y+f*dy}
+            let x = if ux == 0.0 { 0.0 } else { offset(p.x, a.start.x) * ux };
+            let y = if uy == 0.0 { 0.0 } else { offset(p.y, a.start.y) * uy };
+            (x + y) / (ux * ux + uy * uy)
         }
     };
-    Some(geo::Line::new(p(f0), p(f1)))
+    let (f0, f1) = (factor(b.start), factor(b.end));
+    if f0.is_nan() || f1.is_nan() {
+        return Err(Error::InvalidArgument("coverage gap projection exceeds finite coordinate precision".into()));
+    }
+    if (f0 > 1.0 && f1 > 1.0) || (f0 < 0.0 && f1 < 0.0) {
+        return Ok(None);
+    }
+    let p = |f: f64| {
+        if f <= 0.0 {
+            a.start
+        } else if f >= 1.0 {
+            a.end
+        } else {
+            let point = geo::coord! { x: a.start.x + f * dx, y: a.start.y + f * dy };
+            if point.x.is_finite() && point.y.is_finite() {
+                point
+            } else {
+                geo::coord! { x: (1.0-f) * a.start.x + f * a.end.x, y: (1.0-f) * a.start.y + f * a.end.y }
+            }
+        }
+    };
+    let line = geo::Line::new(p(f0), p(f1));
+    if ![line.start.x, line.start.y, line.end.x, line.end.y].iter().all(|v| v.is_finite()) {
+        return Err(Error::InvalidArgument("coverage gap projection exceeds finite coordinate precision".into()));
+    }
+    Ok(Some(line))
 }
 fn distance(a: C, b: C) -> f64 {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
-    (dx * dx + dy * dy).sqrt()
+    let squared = dx * dx + dy * dy;
+    if squared.is_normal() { squared.sqrt() } else { dx.hypot(dy) }
 }
-fn nearly_parallel(a: geo::Line<f64>, b: geo::Line<f64>, gap: f64) -> bool {
-    let (Some(pa), Some(mut pb)) = (project(a, b), project(b, a)) else {
-        return false;
+fn nearly_parallel(a: geo::Line<f64>, b: geo::Line<f64>, gap: f64) -> Result<bool> {
+    let (Some(pa), Some(mut pb)) = (project(a, b)?, project(b, a)?) else {
+        return Ok(false);
     };
     if distance(pa.start, pa.end) <= gap || distance(pb.start, pb.end) <= gap {
-        return false;
+        return Ok(false);
     }
     if distance(pa.start, pb.end) < distance(pa.start, pb.start) {
         std::mem::swap(&mut pb.start, &mut pb.end);
     }
-    distance(pa.start, pb.start) <= gap && distance(pa.end, pb.end) <= gap
+    Ok(distance(pa.start, pb.start) <= gap && distance(pa.end, pb.end) <= gap)
 }
+
 fn invalid_lines(ring: &CovRing, states: &[State], out: &mut Vec<Vec<Coord>>) {
     let n = ring.points.len() - 1;
     let flags = &states[ring.start..ring.start + n];
@@ -434,6 +494,37 @@ mod tests {
     const LEFT: &str = "POLYGON ((0 0,1 0,1 2,0 2,0 0))";
     const RIGHT: &str = "POLYGON ((1 0,2 0,2 2,1 2,1 0))";
     #[test]
+    fn batch_checks_share_layer_names_and_keep_per_layer_ids() {
+        let mut first = layer(&[LEFT]);
+        first.name = "first".into();
+        let mut second = first.clone();
+        second.name = "second".into();
+        let options = CoverageCheckOptions { include_valid: true, ..Default::default() };
+        let output = check_coverage_layers(&[first.clone(), second], &options).unwrap();
+        assert_eq!(output.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["invalid_edge_first", "invalid_edge_second"]);
+        assert!(output.iter().all(|l| l.features.len() == 1 && l.features[0].fid == 1));
+        assert_eq!(check_coverage_layers(&[first], &options).unwrap()[0].name, "invalid_edge");
+        assert!(check_coverage_layers(&[layer(&["POINT (0 0)"])], &options).is_err());
+    }
+
+    #[test]
+    fn finite_gap_search_and_long_edge_projection_do_not_overflow() {
+        let bounds = AABB::from_corners([1e308, -1e308], [1.1e308, -0.9e308]);
+        let search = expanded(bounds, 1e308);
+        assert_eq!(search.lower()[1], -f64::MAX);
+        assert_eq!(search.upper()[0], f64::MAX);
+        let edge = geo::Line::new(geo::coord! { x: 0., y: 0. }, geo::coord! { x: 1e200, y: 0. });
+        let other = geo::Line::new(geo::coord! { x: 0., y: 1. }, geo::coord! { x: 1e200, y: 1. });
+        let projection = project(edge, other).unwrap().unwrap();
+        assert_eq!(projection, edge);
+        assert!(nearly_parallel(edge, other, 2.).unwrap());
+        assert_eq!(distance(edge.start, edge.end), 1e200);
+        let source = layer(&["POLYGON ((0 0,1e200 0,1e200 1,0 1,0 0))", "POLYGON ((0 2,1e200 2,1e200 3,0 3,0 2))"]);
+        let out = check_coverage(&source, &CoverageCheckOptions { maximum_gap_width: 2., ..Default::default() }).unwrap();
+        assert_eq!(out.features.len(), 2);
+    }
+
+    #[test]
     fn shared_edges_and_holes_form_valid_coverages() {
         for source in
             [layer(&[LEFT, RIGHT]), layer(&["POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,1 3,3 3,3 1,1 1))", "POLYGON ((1 1,3 1,3 3,1 3,1 1))"])]
@@ -448,7 +539,7 @@ mod tests {
         }
     }
     #[test]
-    fn consecutive_xy_repeats_are_normalized_without_changing_retained_zm() {
+    fn consecutive_xy_repeats_are_normalized_in_xy_diagnostics() {
         let mut source = layer(&[LEFT, LEFT]);
         if let Some(Geometry::Polygon { exterior, .. }) = &mut source.features[0].geometry {
             for c in &mut exterior.0 {
@@ -464,7 +555,7 @@ mod tests {
         assert_eq!(out.features.len(), 2);
         let coords = out.features[0].geometry.as_ref().unwrap().all_coords();
         assert_eq!(coords.len(), 5);
-        assert!(coords.iter().all(|c| c.z == Some(10.) && c.m == Some(20.)));
+        assert!(coords.iter().all(|c| c.z.is_none() && c.m.is_none()));
     }
 
     #[test]
@@ -509,7 +600,7 @@ mod tests {
         }
     }
     #[test]
-    fn source_edge_dimensions_are_retained_and_nulls_are_rejected() {
+    fn diagnostics_are_xy_without_mutating_source_dimensions_and_nulls_are_rejected() {
         let mut source = layer(&[LEFT, LEFT]);
         if let Some(Geometry::Polygon { exterior, .. }) = &mut source.features[0].geometry {
             for c in &mut exterior.0 {
@@ -519,7 +610,8 @@ mod tests {
         }
         let out = check_coverage(&source, &CoverageCheckOptions { include_valid: true, ..Default::default() }).unwrap();
         assert_eq!(out.features.len(), 2);
-        assert!(out.features[0].geometry.as_ref().unwrap().all_coords().iter().all(|c| c.z == Some(10.) && c.m == Some(20.)));
+        assert!(out.features[0].geometry.as_ref().unwrap().all_coords().iter().all(|c| c.z.is_none() && c.m.is_none()));
+        assert!(source.features[0].geometry.as_ref().unwrap().all_coords().iter().all(|c| c.z == Some(10.) && c.m == Some(20.)));
         source.features.push(Feature { fid: 999, geometry: None, attributes: vec![] });
         assert!(check_coverage(&source, &Default::default()).unwrap_err().to_string().contains("not null"));
     }

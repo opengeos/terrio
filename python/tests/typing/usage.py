@@ -99,6 +99,16 @@ def rasters(tmp: Path) -> terrio.Raster:
     for out in (small, scaled, warped, merged, shade, slope, ratio, dist, clean):
         print(repr(out))
 
+    tiles: dict[str, Any] = terrio.raster_tiles(
+        r,
+        tmp / "tiles",
+        tiling_scheme="raster",
+        format="GTiff",
+        grid={"tile_size": 64},
+        resampling="nearest",
+    )
+    print(tiles["written"])
+
     info: dict[str, Any] = terrio.info(str(path), stats=True)
     drivers: list[dict[str, Any]] = terrio.drivers()
     print(info["driver"], len(drivers))
@@ -133,6 +143,8 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
         raster: A raster to polygonize.
     """
     layer = terrio.Layer.from_geojson(POLYGONS, name="parcels", crs="EPSG:32610")
+    simplified: terrio.Layer = terrio.simplify_coverage(layer, 1.0, preserve_boundary=True)
+    simplified.to_bytes("coverage.gpkg", preserve_declared_geometry_type=True)
     layer.name = "parcels"
     print(layer.name, layer.crs, layer.crs_wkt is not None, layer.geometry_type, len(layer))
     fields: dict[str, str] = layer.fields

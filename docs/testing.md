@@ -62,7 +62,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Terrain and raster algebra | `scripts/compare_dem_calc_with_gdal.py` | every `gdaldem` mode and option, `gdal_calc.py` expressions, types, nodata and extents, `gdal_proximity.py`, `gdal_sieve.py` |
 | STAC and GeoZarr | `scripts/compare_stac_geozarr.py` (`stac`, `stacta`, `geozarr`) | STACIT subdatasets, mosaic sizes, geotransforms, CRSs and windows on Earth Search; STACTA items (GDAL's test data and pyramids `gdal raster tile` writes from real rasters, local, over HTTP and with a missing tile): summaries, subdatasets, metadata, whole rasters, windows and overviews vs GDAL's STACTA driver; STAC footprint fields vs `ogrinfo`; GeoZarr stores read by GDAL and rioxarray, overviews vs `gdaladdo` |
 | Remote Zarr stores | `scripts/compare_remote_zarr.py` | public cloud stores read in place (EOPF Sentinel-2 Zarr v2, EOPF GeoZarr v3 with shards and value codecs, NOAA HRRR on S3, CMIP6 on Google Cloud Storage, Daymet on Azure, a sharded store on a local port): sizes, geotransforms, nodata vs `gdalinfo` (`/vsicurl/`, `/vsis3/`, `/vsigs/`, `/vsiaz/`), windows vs `gdal_translate` and xarray, overviews vs xarray, bytes and requests fetched |
-| GRIB | `scripts/compare_grib_with_gdal.py` | GDAL's GRIB test files, ecCodes' and real forecasts (GFS, HRRR, ECMWF open data), band by band: sizes, geotransforms, CRSs, descriptions, `GRIB_*` metadata, nodata values and pixels, with units normalized and as stored |
+| GRIB | `scripts/compare_grib_with_gdal.py` (`OUT_DIR URL[#REGEX] ...`; registered in conformance as `grib`, on the repository's GRIB fixtures and the test data's GRIB files) | real products by URL (subsets of NOAA's GFS and HRRR by their `.idx` lines, MRMS, files GDAL writes), band by band: band count, size, geotransform, CRS, pixels, nodata, mask, description and `GRIB_*` metadata, from a file and as a URL |
 | Tile archives | `scripts/compare_tiles_with_gdal.py` | MBTiles written by `gdal_translate`/`gdaladdo` and by terrio, pixel for pixel per zoom level; PMTiles pixels; vector tiles read by both tools and written by `ogr2ogr` and terrio: feature counts, areas, lengths per feature key |
 | Point clouds | `scripts/compare_pointclouds.py` | every value vs laspy; headers, COPC queries, `writers.gdal` grids and reprojection vs PDAL |
 | Arrow | `scripts/compare_arrow_with_gdal.py` | `Layer.to_arrow()` (WKB and native GeoArrow) vs GDAL's Arrow streams, through pyarrow and GeoPandas; `terrio.from_arrow()` of GDAL's, GeoPandas' and terrio's tables; GDAL's `WriteArrow` of terrio's tables |
@@ -98,6 +98,7 @@ The [Conformance](conformance.md) page has the full, generated results; in short
 | `polygonize` | Same polygon counts and areas per value; re-rasterizing reproduces the input |
 | `dem` | 81 of 81 cases identical (every mode and option, on four DEMs); color relief VRTs read identically by GDAL to `gdaldem`'s, and `gdaldem`'s read by terrio as by GDAL |
 | netCDF-4 and HDF5 | 116 of 116 subdataset checks identical (Sentinel-5P groups, JPSS ATMS and VIIRS products: lists, metadata, summaries, pixels); netCDF-4 written by terrio (`NC4`, `NC4C`, deflate) read by GDAL identically to the source and with the attributes GDAL writes |
+| GRIB2 | Every band identical to GDAL 3.12's (pixels, nodata, masks, description, `GRIB_*` metadata; geotransform and CRS equal) on files GDAL writes in each of its encodings (simple, complex with spatial differencing, IEEE, PNG, JPEG 2000 lossless and lossy), on latitude/longitude (0-360 and across the antimeridian), Lambert conformal and polar stereographic grids, with bitmaps, and on NOAA's GFS, GEFS, HRRR and MRMS products (154 bands) |
 | Histograms | 84 of 84 cases identical to `gdalinfo -hist` (21 rasters of every type) |
 | `calc` | 35 of 37 cases identical; the other two within one float32 rounding step (NumPy's vectorized float32 `sin`, `exp`, `log10`, `arctan2`) |
 | `proximity`, `sieve` | 13 of 13 cases identical |
@@ -1616,8 +1617,10 @@ The `coverage` conformance suite registers the same comparisons. It checks all
 95 Tennessee counties projected into EPSG:5070, and real-boundary splits,
 duplicated polygons, consecutive repeated county vertices, overlapping county
 parts, empty polygons and a ten-metre
-gap with detection disabled, below threshold and above threshold. Every fixture
-runs with and without `--include-valid`.
+gap with detection disabled, below threshold and above threshold. Duplicate Z, M
+and ZM polygons verify that diagnostic edges are always XY. The 24 cases cover
+each fixture
+with and without `--include-valid`.
 
 Invalid edge coordinates and multiplicity must match exactly. Line component
 order and direction are ignored; no distance tolerance or approximate matching
@@ -1627,7 +1630,7 @@ are omitted and output IDs are new. Empty polygon inputs remain valid.
 
 Rust regressions cover matching edges, hole fillers, unmatched shared nodes,
 duplicated and reversed rings, contained/overlapping polygons, narrow gaps,
-original Z/M values, null/non-polygon rejection and invalid distances. CLI tests
+XY diagnostics from Z/M inputs, null/non-polygon rejection and invalid distances. CLI tests
 exercise gap/include-valid output and automatic MCP discovery. Python and WASM
 checks exercise the shared validation API. Verifier regressions prove reordered
 edges are accepted while moved/duplicated edges, changed IDs and changed schemas
@@ -1660,3 +1663,63 @@ Linux run replaced a declaration in a 1,167,360-byte GeoPackage while preserving
 an untouched 1 MiB binary field and the inode; the process read-character delta
 was 184,520 bytes, including the measurement overhead. This checks retention of
 the existing bounded transaction path rather than whole-file replacement.
+
+## Separate-file raster tiles (#289)
+
+`raster-tiles` in `scripts/conformance.py` compares XYZ/TMS folder output with
+GDAL 3.13.3 on real Landsat RGB derivatives and USGS elevation. The 48 cases
+include 46 exact comparisons of filenames, pixels, sample types, nodata/masks
+and GeoTIFF grids/CRS, plus two explicitly reported policy differences.
+The lower-zoom pyramid's 1,146,880 samples independently match GDAL direct-source per-tile
+warps exactly. Terrio resamples every level directly from the source; GDAL's
+previously generated image pyramid can give different lower-level values/masks.
+GDAL's `--no-alpha` output retains 15 zero-filled tiles even when all source
+pixels are nodata and `--skip-blank` is requested. Terrio omits those tiles;
+independent checks verify the source mask and both results. Valid zero-valued
+GeoTIFF tiles must retain their zeros and remain present. Interpolating-kernel
+agreement is not claimed by these nearest-neighbor checks.
+
+Fixture preparation clears inherited nodata on the RGB source so explicit mask
+and alpha behavior can be checked separately. The nodata derivative sets its own
+nodata and hole. Interior Float32 nodata = -9999 and no-alpha PNG
+nodata/alpha sources also match GDAL, including zero-filled invalid samples.
+UInt32/Int32 alpha derivatives verify GDAL's 255-based alpha scale for wide
+integer samples. A separate derivative sets nodata in only one RGB channel;
+missing channels must become zero while the remaining valid channels keep the
+pixel opaque. UInt16 RGB and Float32 DEM mask derivatives are cross-checked
+against independent GDAL alpha warps, including stored masks, values/types and
+georeferencing. GDAL 3.13.3 ignores a per-dataset mask when a source also has
+nodata (and warns); Terrio combines those validity restrictions.
+
+The counted remote check serves a real USGS-derived 2048 x 2048 COG without
+stored overviews. One 128 x 128 tile transferred 196,608 bytes in three GETs
+from a 10,780,400-byte file and matched GDAL exactly. A masked variant retained
+its mask and values while also transferring 196,608 bytes in three GETs from a
+10,790,324-byte COG. These counts cover HTTP response payloads, not HEAD requests, encoder memory or timing. This check
+requires less than one quarter of the full file's bytes. Stored-overview policy
+is not compared here: a separate probe found GDAL 3.13.3's raster tile command
+reading a 512 x 512 stored overview for a native-resolution 2048 x 2048 raster
+plan, whereas Terrio reads the native pixels.
+
+`python -m unittest discover -s scripts/reference -p test_raster_tile_comparison.py`
+checks that value-policy exceptions cannot hide missing tiles, shape/type/nodata
+changes or dataset-mask differences. All tile structures and metadata are checked
+before any value-only exception can be reported.
+
+Rust regressions additionally check source-window/output budgets on a ten-billion
+pixel procedural source, nodata/padded-edge alpha, grid arithmetic,
+atomic publication, unfinished temporary files, non-overwriting resume and refusal
+of preexisting symlinked output descendants. Additional regressions cover cubic
+premultiplied RGBA, partial-channel nodata, typed masks with valid NaNs, mask
+retention when alpha is removed, and an excluded maximum zoom retaining the lower
+zoom's resampler. Python exercises loaded/lazy/path inputs and typed dataset masks;
+JavaScript exercises incremental callbacks, partial-channel nodata and preservation
+of the original callback exception. Retile output layouts are not implemented yet.
+
+```sh
+python scripts/conformance.py ../terrio-data --only raster-tiles --strict
+cargo test -p terrio --lib ops::raster_tile
+cargo test -p terrio-cli --test raster_tiles
+pytest python/tests/test_raster_tiles.py
+node --test --test-name-pattern='rasterTiles' js/tests/node.test.mjs
+```

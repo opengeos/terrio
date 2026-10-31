@@ -541,3 +541,15 @@ const fromPath = terrio.validateGpkgPath("/vsimem/data.gpkg", { unicodeCase: fal
 Both functions return `valid`, `complete`, `version`, `errors`, `warnings` and
 `unsupported_checks`. WebAssembly path inputs use `/vsimem/`; the bytes API accepts
 uploaded images directly. See the [supported rules and limitations](cli.md#geopackage-validation).
+
+### Separate raster tiles
+
+`planRasterTiles(src, options)` returns the grid and tile count without reading
+pixels. `rasterTiles(src, options, callback)` sends each encoded tile to
+`callback(name, bytes)` and returns generation counts. Options include `tilingScheme`
+(`raster`, `WebMercatorQuad`, `WorldCRS84Quad`), `grid` (for example
+`{tileSize: 128, minZoom: 0, maxZoom: 2}`),
+`format` (`PNG` or `GTiff`), `resampling`, `overviewResampling`, `alpha`,
+`outputNodata`, `skipBlank` and `maxTiles`. The caller stores the emitted bytes.
+See the [CLI tiling reference](cli.md#separate-file-raster-tiles) for supported output
+and transparency policies.

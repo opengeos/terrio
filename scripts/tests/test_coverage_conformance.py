@@ -39,6 +39,17 @@ class CoverageComparisonTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "schema/CRS/type/name differs"):
                 self.compare(a, b)
 
+    def test_feature_dimensions_and_typed_empty_geometries_are_checked(self):
+        xy = self.record("MULTILINESTRING ((0 0,1 1))")
+        measured = self.record("MULTILINESTRING M ((0 0 10,1 1 20))")
+        with self.assertRaisesRegex(AssertionError, "feature geometry type differs"):
+            self.compare(xy, measured)
+        empty = self.record("MULTILINESTRING EMPTY")
+        null = list(empty)
+        null[0] = {1: (1, {}, None)}
+        with self.assertRaisesRegex(AssertionError, "null/empty diagnostic geometry differs"):
+            self.compare(empty, tuple(null))
+
     def test_old_gdal_command_skips_before_dataset_access(self):
         with (patch.object(conformance, "missing_modules", return_value=False),
               patch.object(conformance.shutil, "which", return_value="gdal"),

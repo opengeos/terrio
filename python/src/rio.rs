@@ -1,6 +1,7 @@
 //! Helpers for `terrio.rio`, the rasterio-compatible API: the raw tags of a TIFF's images, CRS
 //! details, and the output grid GDAL suggests for a reprojection.
 
+use crate::Detach;
 use crate::raster::GcpTuple;
 use crate::{PyResultExt, invalid};
 use pyo3::prelude::*;
@@ -11,10 +12,14 @@ use terrio::vfs::Location;
 
 /// Registers the functions in the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(resampled_region, m)?)?;
+    m.add_function(wrap_pyfunction!(resampled_read, m)?)?;
     m.add_function(wrap_pyfunction!(tiff_tags, m)?)?;
     m.add_function(wrap_pyfunction!(crs_info, m)?)?;
+    m.add_function(wrap_pyfunction!(crs_projjson, m)?)?;
     m.add_function(wrap_pyfunction!(crs_to_projjson, m)?)?;
     m.add_function(wrap_pyfunction!(suggested_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(warped_vrt_type, m)?)?;
     m.add_function(wrap_pyfunction!(gcp_transform, m)?)?;
     m.add_class::<PyRpcTransformer>()?;
     Ok(())
@@ -180,6 +185,18 @@ impl Reader {
     }
 }
 
+/// Refuses a TIFF before its tags are read when the process-wide raster allow-list leaves out the
+/// GTiff driver, as terrio's GeoTIFF reader refuses it. Other files are not TIFFs to this reader.
+fn check_tiff<R: Read + Seek>(f: &mut R, path: &str) -> terrio::Result<()> {
+    let mut magic = [0u8; 4];
+    f.seek(SeekFrom::Start(0))?;
+    let n = f.read(&mut magic)?;
+    if terrio::formats::sniff(&magic[..n]) == Some("GTIFF") {
+        terrio::formats::check_driver_allowed("GTiff", path, terrio::formats::Kind::Raster)?;
+    }
+    Ok(())
+}
+
 /// Reads the tags of a TIFF's images, at a path or URL.
 fn tags_of(path: &str) -> terrio::Result<Option<Ifds>> {
     let loc = Location::parse(path);
@@ -189,15 +206,22 @@ fn tags_of(path: &str) -> terrio::Result<Option<Ifds>> {
         Location::Url(_) | Location::S3 { .. } => {
             let remote = loc.remote().ok_or_else(|| terrio::Error::InvalidArgument(format!("'{path}' is not remote")))?;
             let mut r = terrio::http::RangeReader::open(&remote)?;
+            check_tiff(&mut r, path)?;
             read_ifds(&mut r)?
         }
-        Location::Local(p) if p.is_file() => read_ifds(&mut std::io::BufReader::new(std::fs::File::open(p)?))?,
+        Location::Local(p) if p.is_file() => {
+            let mut f = std::io::BufReader::new(std::fs::File::open(p)?);
+            check_tiff(&mut f, path)?;
+            read_ifds(&mut f)?
+        }
         Location::Local(_) => None,
         #[cfg(target_arch = "wasm32")]
         Location::Url(_) | Location::S3 { .. } => None,
         _ => {
             let local = terrio::vfs::resolve(path)?;
-            read_ifds(&mut std::io::BufReader::new(std::fs::File::open(local.path())?))?
+            let mut f = std::io::BufReader::new(std::fs::File::open(local.path())?);
+            check_tiff(&mut f, path)?;
+            read_ifds(&mut f)?
         }
     };
     Ok(tags)
@@ -218,7 +242,7 @@ fn tags_of(path: &str) -> terrio::Result<Option<Ifds>> {
 ///     TerrioIOError: If the file cannot be read.
 #[pyfunction]
 fn tiff_tags<'py>(py: Python<'py>, path: &str) -> PyResult<Option<Bound<'py, PyList>>> {
-    let Some(ifds) = py.detach(|| tags_of(path)).py()? else { return Ok(None) };
+    let Some(ifds) = py.detach_result(|| tags_of(path)).py()? else { return Ok(None) };
     let out = PyList::empty(py);
     for tags in ifds {
         let d = PyDict::new(py);
@@ -259,6 +283,25 @@ fn crs_info<'py>(py: Python<'py>, crs: &str) -> PyResult<Bound<'py, PyDict>> {
     d.set_item("name", s.name())?;
     d.set_item("is_geographic", s.is_geographic())?;
     Ok(d)
+}
+
+/// A CRS as PROJJSON, as GDAL (3.12.1, with PROJ 9.7.1) writes it, without PROJ.
+///
+/// Args:
+///     crs: A CRS definition, as `crs_info` takes it.
+///     database: Whether the CRS is the one GDAL builds from its EPSG code (`CRS.from_epsg`), with
+///         what PROJ's database holds, rather than the one it reads from the CRS's WKT (a
+///         dataset's CRS, `CRS.from_wkt`).
+///
+/// Returns:
+///     str: The PROJJSON document.
+///
+/// Raises:
+///     CRSError: If the CRS cannot be parsed, or terrio cannot write it as PROJJSON.
+#[pyfunction]
+fn crs_projjson(crs: &str, database: bool) -> PyResult<String> {
+    let s = SpatialRef::parse(crs).py()?;
+    Ok(s.to_gdal_projjson(database).py()?.to_string())
 }
 
 /// The PROJJSON v0.7 of a CRS.
@@ -311,7 +354,7 @@ fn suggested_grid(
     if let Some(items) = rpc {
         let rpc = parse_rpc(items)?;
         let opts = parse_rpc_options(rpc_options)?;
-        let (g, w, h) = py.detach(|| terrio::ops::warp::suggested_grid_rpc(width, height, &rpc, &opts, &dst)).py()?;
+        let (g, w, h) = py.detach_result(|| terrio::ops::warp::suggested_grid_rpc(width, height, &rpc, &opts, &dst)).py()?;
         return Ok(((g[0], g[1], g[2], g[3], g[4], g[5]), w, h));
     }
     let src = SpatialRef::parse(src_crs).py()?;
@@ -321,7 +364,7 @@ fn suggested_grid(
         return Err(invalid("the source transform is degenerate"));
     }
     let (g, w, h) = py
-        .detach(|| {
+        .detach_result(|| {
             if gcps.is_empty() {
                 terrio::ops::warp::suggested_grid(width, height, transform, &src, &dst)
             } else {
@@ -330,6 +373,32 @@ fn suggested_grid(
         })
         .py()?;
     Ok(((g[0], g[1], g[2], g[3], g[4], g[5]), w, h))
+}
+
+/// The data type of the bands of a warped VRT created without one, and the source nodata values
+/// its warp uses, as GDAL's `GDALCreateWarpedVRT()` resolves them
+/// (`GDALWarpResolveWorkingDataType()`): the source's type widened to hold the nodata values.
+///
+/// Args:
+///     src_type: The source's data type, as GDAL names it (`"Byte"`...).
+///     src_nodata: One source nodata value (or None) per band.
+///     dst_nodata: The output nodata values (or None): one per band, or one for every band.
+///
+/// Returns:
+///     tuple: GDAL's name of the type, and the source nodata values (None for every band when no
+///     band's type holds its value: GDAL drops them).
+///
+/// Raises:
+///     ValueError: If the type is unknown.
+#[pyfunction]
+fn warped_vrt_type(
+    src_type: &str,
+    src_nodata: Vec<Option<f64>>,
+    dst_nodata: Vec<Option<f64>>,
+) -> PyResult<(&'static str, Vec<Option<f64>>)> {
+    let t = terrio::ops::parse_data_type(src_type).py()?;
+    let (w, src_nodata) = terrio::ops::warp::warped_vrt_type(t, src_nodata, &dst_nodata);
+    Ok((terrio::ops::data_type_name(w), src_nodata))
 }
 
 /// Transforms coordinates with GCPs, as GDAL's GCP transformers do: from pixel/line to
@@ -365,6 +434,110 @@ fn gcp_transform(
     let method = terrio::ops::gcp::GcpMethod::parse(method).py()?;
     let t = terrio::ops::gcp::GcpTransformer::new(&gcps, method, order).py()?;
     Ok(xs.iter().zip(&ys).map(|(&x, &y)| if inverse { t.to_pixel(x, y) } else { t.to_geo(x, y) }).unzip())
+}
+
+/// A resampled read's description (see `terrio::ops::rasterio::ResampledWindow`).
+#[allow(clippy::too_many_arguments)]
+fn resampled_window(
+    resampling: &str,
+    raster_size: (usize, usize),
+    window: (i64, i64, i64, i64),
+    fwindow: (f64, f64, f64, f64),
+    buf: (usize, usize),
+    block_width: usize,
+    dataset: bool,
+) -> terrio::ops::rasterio::ResampledWindow {
+    terrio::ops::rasterio::ResampledWindow {
+        resampling: resampling.to_string(),
+        raster: raster_size,
+        window,
+        fwindow,
+        buf,
+        block_width,
+        dataset,
+    }
+}
+
+/// The source region GDAL's resampled `RasterIO` reads for a window, `(x, y, width, height)`.
+///
+/// Args:
+///     resampling: `"bilinear"`, `"cubic"`, `"cubicspline"`, `"lanczos"`, `"average"`, `"rms"`
+///         or `"mode"`.
+///     raster_size: The `(width, height)` of the level read.
+///     window: The integer window GDAL is given, `(x, y, width, height)`.
+///     fwindow: The floating-point window.
+///     buf: The buffer's `(width, height)`.
+///     block_width: The band's block width.
+///     dataset: Resample as `GDALDataset::RasterIOResampled` does.
+#[pyfunction]
+#[pyo3(signature = (resampling, raster_size, window, fwindow, buf, block_width, dataset=false))]
+#[allow(clippy::too_many_arguments)]
+fn resampled_region(
+    resampling: &str,
+    raster_size: (usize, usize),
+    window: (i64, i64, i64, i64),
+    fwindow: (f64, f64, f64, f64),
+    buf: (usize, usize),
+    block_width: usize,
+    dataset: bool,
+) -> PyResult<(usize, usize, usize, usize)> {
+    resampled_window(resampling, raster_size, window, fwindow, buf, block_width, dataset).region().py()
+}
+
+/// Resamples bands of a source region into a buffer, as GDAL's `RasterIOResampled` does.
+///
+/// Args:
+///     data: The region's pixels, `(bands, height, width)`.
+///     region: The region, as `resampled_region` gives it.
+///     resampling: As for `resampled_region`.
+///     raster_size: As for `resampled_region`.
+///     window: As for `resampled_region`.
+///     fwindow: As for `resampled_region`.
+///     buf: As for `resampled_region`.
+///     block_width: As for `resampled_region`.
+///     nodata: The bands' nodata value.
+///     masks: Each band's mask over the region, `(bands, height, width)` uint8 (0 for invalid
+///         pixels, or alpha values). By default, the nodata masks.
+///     dataset: As for `resampled_region`.
+///
+/// Returns:
+///     numpy.ndarray: `(bands, buf_height, buf_width)`, of the data's type.
+#[pyfunction]
+#[pyo3(signature = (
+    data, region, resampling, raster_size, window, fwindow, buf, block_width, nodata=None, masks=None, dataset=false
+))]
+#[allow(clippy::too_many_arguments)]
+fn resampled_read<'py>(
+    py: Python<'py>,
+    data: &Bound<'py, numpy::PyUntypedArray>,
+    region: (usize, usize, usize, usize),
+    resampling: &str,
+    raster_size: (usize, usize),
+    window: (i64, i64, i64, i64),
+    fwindow: (f64, f64, f64, f64),
+    buf: (usize, usize),
+    block_width: usize,
+    nodata: Option<f64>,
+    masks: Option<numpy::PyReadonlyArray3<'py, u8>>,
+    dataset: bool,
+) -> PyResult<Bound<'py, PyAny>> {
+    use numpy::PyUntypedArrayMethods;
+    let bands = data.shape().first().copied().unwrap_or(0);
+    let src = crate::raster::from_numpy(data)?;
+    let n = region.2 * region.3;
+    let masks: Vec<Option<Vec<u8>>> = match masks {
+        Some(m) => {
+            let all: Vec<u8> = m.as_array().iter().copied().collect();
+            if all.len() != bands * n {
+                return Err(invalid("the masks do not match the region"));
+            }
+            all.chunks(n).map(|c| Some(c.to_vec())).collect()
+        }
+        None => Vec::new(),
+    };
+    let w = resampled_window(resampling, raster_size, window, fwindow, buf, block_width, dataset);
+    let out = py.detach_result(|| w.resample(&src, region, bands, masks, nodata)).py()?;
+    crate::raster::to_numpy(py, out, &[bands, buf.1, buf.0])
 }
 
 /// GDAL's `RPC` metadata items as RPCs.
@@ -407,7 +580,7 @@ impl PyRpcTransformer {
     ) -> PyResult<Self> {
         let rpc = parse_rpc(rpc)?;
         let opts = parse_rpc_options(options)?;
-        let inner = py.detach(|| terrio::ops::rpc::RpcTransformer::new(&rpc, &opts)).py()?;
+        let inner = py.detach_result(|| terrio::ops::rpc::RpcTransformer::new(&rpc, &opts)).py()?;
         Ok(Self { inner })
     }
 
@@ -435,7 +608,7 @@ impl PyRpcTransformer {
             return Err(invalid("xs, ys and zs differ in length"));
         }
         let t = &self.inner;
-        let ok = py.detach(|| {
+        let ok = py.detach_value(|| {
             let mut ok = vec![true; xs.len()];
             if to_pixel {
                 t.to_pixel_many(&mut xs, &mut ys, Some(&zs), &mut ok);
@@ -453,7 +626,7 @@ impl PyRpcTransformer {
                 }
             }
             ok
-        });
+        })?;
         Ok((xs, ys, ok))
     }
 }

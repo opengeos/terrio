@@ -1,11 +1,12 @@
 //! Module-level functions: opening, writing, information, conversion and the processing
 //! operations, with keyword arguments named after the command-line options.
 
+use crate::Detach;
 use crate::raster::GcpTuple;
 use crate::raster::{PyRaster, write_options};
 use crate::vector::{PyLayer, PyVectorDataset, layers_from_object};
 use crate::{PyResultExt, invalid};
-use numpy::{PyArray1, PyArrayMethods};
+use numpy::{PyArray1, PyArrayMethods, PyUntypedArray};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyTuple};
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};
@@ -16,7 +17,7 @@ use terrio::ops::polygonize::PolygonizeOptions;
 use terrio::ops::rasterize::{Grid, MergeAlg, RasterizeOptions};
 use terrio::ops::translate::{Scale, Size, TranslateOptions};
 use terrio::ops::vector_filter::{GeometryConversion, VectorTranslateOptions, WriteMode};
-use terrio::ops::warp::{Cutline, Nodata, WarpOptions};
+use terrio::ops::warp::{Cutline, Nodata, RegionWarp, WarpOptions};
 use terrio::{DataType, Dataset, RasterDataset, VectorOpenOptions, VectorWriteOptions, Window, WindowOptions};
 
 /// Registers the functions in the module.
@@ -44,6 +45,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(translate, m)?)?;
     m.add_function(wrap_pyfunction!(warp, m)?)?;
     m.add_function(wrap_pyfunction!(mosaic, m)?)?;
+    m.add_class::<PyRegionWarp>()?;
     Ok(())
 }
 
@@ -111,15 +113,15 @@ fn open_vrt(py: Python<'_>, xml: &str, sources: &Bound<'_, PyDict>) -> PyResult<
         let name = name.extract::<String>()?;
         let reader = if let Ok(bytes) = value.cast::<PyBytes>() {
             let bytes = bytes.as_bytes().to_vec();
-            py.detach(|| terrio::memory::open_raster_lazy_bytes(bytes, &name)).py()?
+            py.detach_result(|| terrio::memory::open_raster_lazy_bytes(bytes, &name)).py()?
         } else {
             let path = value.extract::<std::path::PathBuf>()?;
             let path = path.to_str().ok_or_else(|| invalid("source paths must be UTF-8"))?;
-            py.detach(|| terrio::open_raster_lazy(path)).py()?
+            py.detach_result(|| terrio::open_raster_lazy(path)).py()?
         };
         resolved.insert(name, reader);
     }
-    let inner = py.detach(|| description.into_lazy(std::path::Path::new(""), resolved)).py()?;
+    let inner = py.detach_result(|| description.into_lazy(std::path::Path::new(""), resolved)).py()?;
     Ok(PyRaster { inner })
 }
 
@@ -223,7 +225,7 @@ fn set_open_options(o: &mut VectorOpenOptions, options: Option<std::collections:
 #[pyo3(signature = (data, filename, lazy=false))]
 fn open_bytes(py: Python<'_>, data: Vec<u8>, filename: &str, lazy: bool) -> PyResult<Py<PyAny>> {
     if lazy {
-        let r = py.detach(|| terrio::memory::open_raster_lazy_bytes(data, filename)).py()?;
+        let r = py.detach_result(|| terrio::memory::open_raster_lazy_bytes(data, filename)).py()?;
         return Ok(Py::new(py, PyRaster { inner: r })?.into_any());
     }
     let ds = crate::with_warnings(py, || terrio::memory::open_bytes(data, filename))?;
@@ -239,7 +241,7 @@ fn open_bytes(py: Python<'_>, data: Vec<u8>, filename: &str, lazy: bool) -> PyRe
 ///     list[str]: The layer names.
 #[pyfunction]
 fn list_layers(py: Python<'_>, path: &str) -> PyResult<Vec<String>> {
-    py.detach(|| terrio::list_layers(path)).py()
+    py.detach_result(|| terrio::list_layers(path)).py()
 }
 
 /// Summarizes a dataset, as `terrio info --json` does.
@@ -321,7 +323,7 @@ fn write_raster(
     bigtiff: bool,
 ) -> PyResult<()> {
     let options = write_options(driver, compress, tile_size, bigtiff)?;
-    py.detach(|| raster.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+    py.detach_result(|| raster.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
 }
 
 /// Writes rasters into one netCDF-4 file, each in its group.
@@ -359,7 +361,7 @@ fn write_netcdf_groups(
     }
     let o = terrio::RasterWriteOptions { creation_options: options.unwrap_or_default().into_iter().collect(), ..Default::default() };
     let refs: Vec<(&str, &terrio::RasterDataset)> = datasets.iter().map(|(g, ds)| (g.as_str(), ds)).collect();
-    py.detach(|| terrio::write_netcdf_groups(&refs, path, &o)).py()
+    py.detach_result(|| terrio::write_netcdf_groups(&refs, path, &o)).py()
 }
 
 /// Writes vector data to a file.
@@ -397,7 +399,7 @@ fn write_vector(
     let mut options = vector_write_options(driver)?;
     options.preserve_declared_geometry_type = preserve_declared_geometry_type;
     let mode = write_mode(append, overwrite)?;
-    py.detach(|| terrio::ops::vector_filter::write_vector_with_mode(&layers, path, &options, mode)).py()
+    py.detach_result(|| terrio::ops::vector_filter::write_vector_with_mode(&layers, path, &options, mode)).py()
 }
 
 /// Converts a dataset to another format, optionally reprojecting, subsetting and filtering it,
@@ -433,6 +435,11 @@ fn write_vector(
 ///     a_srs: Assign this CRS to the output, without reprojecting.
 ///     append: Add the features to the layers of an existing output.
 ///     overwrite: Replace the layers of the same name in an existing output.
+///     options: Raster creation options, as GDAL names them (a mapping or `(key, value)` pairs),
+///         such as COG `OVERVIEW_RESAMPLING`, `RESAMPLING` and `OVERVIEW_COUNT`.
+///     overview_resampling: The resampling of COG overviews (`"cubic"`, the default, as GDAL's
+///         COG driver; `"nearest"`, `"average"`, `"rms"`, `"bilinear"`, `"cubicspline"`,
+///         `"lanczos"`, `"mode"`).
 ///
 /// Raises:
 ///     InvalidArgumentError: If an option does not apply to the input.
@@ -440,7 +447,8 @@ fn write_vector(
 #[pyo3(signature = (
     src, dst, *, format=None, layers=None, t_srs=None, compress=None, tile_size=None, bigtiff=false, srcwin=None,
     overview=None, r#where=None, spat=None, spat_srs=None, select=None, limit=None, sql=None, nln=None, nlt=None,
-    explodecollections=false, simplify=None, segmentize=None, s_srs=None, a_srs=None, append=false, overwrite=false, ct_opt=None
+    explodecollections=false, simplify=None, segmentize=None, s_srs=None, a_srs=None, append=false, overwrite=false,
+    options=None, overview_resampling=None, ct_opt=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn convert(
@@ -470,6 +478,8 @@ fn convert(
     a_srs: Option<&str>,
     append: bool,
     overwrite: bool,
+    options: Option<Bound<'_, PyAny>>,
+    overview_resampling: Option<String>,
     ct_opt: Option<std::collections::HashMap<String, String>>,
 ) -> PyResult<()> {
     use terrio::ops::vector_geom::GeometryOp;
@@ -480,6 +490,7 @@ fn convert(
     let geometry_op = GeometryOp::from_ogr2ogr(simplify, segmentize);
     let transform_options = TransformOptions::from_strict_options(&ct_opt.unwrap_or_default().into_iter().collect::<Vec<_>>()).py()?;
     let t_srs = srs(t_srs)?;
+    let creation_options = options.as_ref().map(crate::raster::string_pairs).transpose()?.unwrap_or_default();
     let vector_options = VectorTranslateOptions {
         where_clause: r#where,
         sql,
@@ -514,7 +525,12 @@ fn convert(
     let mode = write_mode(append, overwrite)?;
     let raster_options = match format.map(terrio::formats::RasterDriver::from_name) {
         Some(None) => None,
-        _ => Some(write_options(format, compress, tile_size, bigtiff)?),
+        _ => {
+            let mut o = write_options(format, compress, tile_size, bigtiff)?;
+            o.creation_options = creation_options;
+            o.overview_resampling = overview_resampling;
+            Some(o)
+        }
     };
     let vector_write = match format.map(VectorDriver::from_name) {
         Some(None) => None,
@@ -591,6 +607,7 @@ fn convert(
                 let options = raster_options
                     .ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{}'", format.unwrap_or_default())))?;
                 let mut r = r;
+                let mut options = options;
                 if let Some(dst_srs) = t_srs {
                     let o = terrio::ops::warp::WarpOptions {
                         dst_srs: Some(dst_srs),
@@ -598,6 +615,9 @@ fn convert(
                         ..Default::default()
                     };
                     r = terrio::ops::warp::warp(&[&r], &o)?;
+                } else if srcwin.is_none() && overview.is_none() {
+                    // GDAL computes COG overviews in blocks of the source's (square) blocks.
+                    options.source_block_size = terrio::LazyRaster::open_tiff(src).ok().flatten().and_then(|t| t.block_size());
                 }
                 terrio::write_raster_dataset(&r, dst, &options)
             }
@@ -616,7 +636,7 @@ pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Optio
     match src.extract::<String>() {
         Ok(path) => {
             let options = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
-            Ok(py.detach(|| terrio::open_vector(&path, &options)).py()?.layers)
+            Ok(py.detach_result(|| terrio::open_vector(&path, &options)).py()?.layers)
         }
         Err(_) => {
             let all = layers_from_object(src, None, None)?;
@@ -641,7 +661,7 @@ pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Optio
 #[pyo3(signature = (src, query, *, layers=None))]
 fn sql(py: Python<'_>, src: &Bound<'_, PyAny>, query: &str, layers: Option<Vec<String>>) -> PyResult<PyLayer> {
     let inputs = input_layers(py, src, layers)?;
-    let inner = py.detach(|| terrio::ops::sql::query(&inputs, query)).py()?;
+    let inner = py.detach_result(|| terrio::ops::sql::query(&inputs, query)).py()?;
     Ok(PyLayer { inner })
 }
 
@@ -742,7 +762,7 @@ fn rasterize(
     let to_burn = match &sql {
         Some(sql) => {
             let o = VectorTranslateOptions { sql: Some(sql.clone()), ..Default::default() };
-            py.detach(|| terrio::ops::vector_filter::translate(&all, &o)).py()?
+            py.detach_result(|| terrio::ops::vector_filter::translate(&all, &o)).py()?
         }
         None if !named_layers && all.len() != 1 => {
             let names: Vec<&str> = all.iter().map(|l| l.name.as_str()).collect();
@@ -769,7 +789,7 @@ fn rasterize(
     };
     let write = dst.map(|_| write_options(format, compress, None, false)).transpose()?;
     let out = py
-        .detach(|| -> terrio::Result<RasterDataset> {
+        .detach_result(|| -> terrio::Result<RasterDataset> {
             let out = terrio::ops::rasterize::rasterize(&to_burn, &options)?;
             if let (Some(path), Some(o)) = (dst, &write) {
                 terrio::write_raster_dataset(&out, path, o)?;
@@ -839,7 +859,7 @@ fn polygonize(
     let write = dst.map(|_| vector_write_options(format)).transpose()?;
     let mode = write_mode(append, overwrite)?;
     let layer = py
-        .detach(|| -> terrio::Result<terrio::Layer> {
+        .detach_result(|| -> terrio::Result<terrio::Layer> {
             let layer = terrio::ops::polygonize::polygonize(&ds, &options)?;
             if let (Some(path), Some(o)) = (dst, &write) {
                 terrio::ops::vector_filter::write_vector_with_mode(std::slice::from_ref(&layer), path, o, mode)?;
@@ -1014,7 +1034,7 @@ pub(crate) fn finish_raster(
 ) -> PyResult<PyRaster> {
     if let Some(path) = dst {
         let o = write_options(format, compress, tile_size, bigtiff)?;
-        py.detach(|| terrio::write_raster_dataset(&out, path, &o)).py()?;
+        py.detach_result(|| terrio::write_raster_dataset(&out, path, &o)).py()?;
     }
     Ok(PyRaster::from_dataset(out))
 }
@@ -1117,7 +1137,7 @@ fn translate(
         assign_ullr: a_ullr,
     };
     let ds = input_raster(py, src)?;
-    let out = py.detach(|| terrio::ops::translate::translate(&ds, &o)).py()?;
+    let out = py.detach_result(|| terrio::ops::translate::translate(&ds, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 
@@ -1169,6 +1189,9 @@ fn translate(
 ///         `pixel_offset`, `line_offset`, `pixel_step`, `line_step`, `pixel_center`.
 ///     wo: Warp options, as `gdalwarp -wo`: `SOURCE_EXTRA` and `SAMPLE_STEPS` (`ALL`); others
 ///         are ignored.
+///     init: A `Raster` holding the values the output starts from (all its bands, on the output
+///         grid, in any type), as GDAL warps without `INIT_DEST`: pixels no valid source pixel
+///         reaches keep them. By default the output starts at its nodata value, else 0.
 ///
 /// Returns:
 ///     Raster: The result, in memory.
@@ -1177,7 +1200,7 @@ fn translate(
     src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, dst_transform=None, tap=false,
     resampling="near", overview=None, srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
     format=None, compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto",
-    rpc=None, to=None, wo=None, geoloc=false, geolocation=None, kernel_version="3.12"
+    rpc=None, to=None, wo=None, geoloc=false, geolocation=None, kernel_version="3.12", init=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn warp(
@@ -1213,6 +1236,7 @@ fn warp(
     geoloc: bool,
     geolocation: Option<&Bound<'_, pyo3::types::PyDict>>,
     kernel_version: &str,
+    init: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyRaster> {
     if tap && tr.is_none() {
         return Err(invalid("tap needs tr"));
@@ -1269,6 +1293,22 @@ fn warp(
             _ => {}
         }
     }
+    // With initial values (rasterio's `reproject(init_dest_nodata=False)`), the sources are warped
+    // onto them in memory.
+    if let Some(init) = init {
+        if geolocation.is_some() {
+            return Err(invalid("init is not supported with geolocation arrays"));
+        }
+        let initial = input_raster(py, init)?;
+        let sources = input_rasters(py, src)?;
+        let out = py
+            .detach_result(|| {
+                let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| ds).collect();
+                terrio::ops::warp::warp_onto(&refs, &o, &initial.raster.data)
+            })
+            .py()?;
+        return finish_raster(py, out, dst, format, compress, tile_size, bigtiff);
+    }
     enum Input {
         File(Box<terrio::LazyRaster>),
         Python(Py<PyRaster>),
@@ -1298,7 +1338,7 @@ fn warp(
                 Self::Python(obj) => Python::attach(|py| {
                     let mut r = obj.bind(py).try_borrow_mut().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
                     let lazy = &mut r.inner;
-                    py.detach(|| lazy.read_window(window, options))
+                    py.detach_result(|| lazy.read_window(window, options))
                 }),
             }
         }
@@ -1337,8 +1377,8 @@ fn warp(
             _ => return Err(invalid("serialized warped VRT output needs a single source path")),
         };
         let options = write_options(format, compress, tile_size, bigtiff)?;
-        py.detach(|| terrio::ops::warp::warp_to_path(&[source], &o, path, &options)).py()?;
-        return Ok(PyRaster { inner: py.detach(|| terrio::open_raster_lazy(path)).py()? });
+        py.detach_result(|| terrio::ops::warp::warp_to_path(&[source], &o, path, &options)).py()?;
+        return Ok(PyRaster { inner: py.detach_result(|| terrio::open_raster_lazy(path)).py()? });
     }
     let first_path = match &args[0] {
         Arg::Path(path) => Some(path.clone()),
@@ -1347,7 +1387,7 @@ fn warp(
     let mut inputs = args
         .into_iter()
         .map(|arg| match arg {
-            Arg::Path(path) => py.detach(|| terrio::open_raster_lazy(&path)).py().map(Box::new).map(Input::File),
+            Arg::Path(path) => py.detach_result(|| terrio::open_raster_lazy(&path)).py().map(Box::new).map(Input::File),
             Arg::Raster(raster) => Ok(Input::Python(raster)),
         })
         .collect::<PyResult<Vec<_>>>()?;
@@ -1485,7 +1525,7 @@ fn mosaic(
         if inputs.iter().any(|(p, _)| p.starts_with(MEMORY_PREFIX)) {
             return Err(invalid("a .vrt mosaic references its sources: give them as paths"));
         }
-        py.detach(|| {
+        py.detach_result(|| {
             let sources: Vec<MosaicSource> = inputs.iter().map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
             let dir = std::path::Path::new(path).parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
             Ok(std::fs::write(path, terrio::ops::mosaic::build_vrt(&sources, &o, Some(dir))?.to_xml())?)
@@ -1494,12 +1534,168 @@ fn mosaic(
         return Ok(None);
     }
     let out = py
-        .detach(|| {
+        .detach_result(|| {
             let sources: Vec<MosaicSource> = inputs.iter().map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
             terrio::ops::mosaic::mosaic(&sources, &o)
         })
         .py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff).map(Some)
+}
+
+/// A source level (a raster or one of its overviews) warped into a grid one region at a time, as
+/// GDAL's warped VRT warps its blocks: each region is one `WarpRegionToBuffer()` from the source
+/// window GDAL's `ComputeSourceWindow()` gives for it. The engine of `terrio.rio.vrt.WarpedVRT`.
+///
+/// Args:
+///     src_size: The source level's `(width, height)`.
+///     src_transform: The source level's geotransform, in GDAL's order.
+///     src_crs: The source CRS.
+///     dst_crs: The grid's CRS.
+///     dst_transform: The grid's geotransform, in GDAL's order.
+///     resampling: The warp's resampling method (`"nearest"`, `"bilinear"`...).
+///     error_threshold: The approximate transformer's maximum error, in pixels (0: exact).
+///     dtype: The output data type, as GDAL names it (`"UInt16"`...).
+///     src_nodata: One source nodata value (or None) per band.
+///     dst_nodata: The output nodata value.
+///     gcps: GCPs georeferencing the source instead of `src_transform`, with `gcp_order` and
+///         `gcp_method`.
+///     rpc: GDAL's `RPC` metadata items georeferencing the source instead of `src_transform`
+///         (positions in `src_crs`, WGS 84 as GDAL has it), with the RPC transformer's
+///         `rpc_options` (`RPC_HEIGHT`, `RPC_DEM`...).
+#[pyclass(module = "terrio", name = "RegionWarp", frozen)]
+pub struct PyRegionWarp {
+    inner: RegionWarp,
+}
+
+#[pymethods]
+impl PyRegionWarp {
+    #[new]
+    #[pyo3(signature = (src_size, src_transform, src_crs, dst_crs, dst_transform, resampling, error_threshold, dtype, src_nodata, dst_nodata=None, gcps=None, gcp_order=0, gcp_method="auto", rpc=None, rpc_options=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        src_size: (usize, usize),
+        src_transform: [f64; 6],
+        src_crs: &str,
+        dst_crs: &str,
+        dst_transform: [f64; 6],
+        resampling: &str,
+        error_threshold: f64,
+        dtype: &str,
+        src_nodata: Vec<Option<f64>>,
+        dst_nodata: Option<f64>,
+        gcps: Option<Vec<crate::raster::GcpTuple>>,
+        gcp_order: u32,
+        gcp_method: &str,
+        rpc: Option<std::collections::HashMap<String, String>>,
+        rpc_options: Option<std::collections::HashMap<String, String>>,
+    ) -> PyResult<Self> {
+        let (src_srs, dst_srs) = (SpatialRef::parse(src_crs).py()?, SpatialRef::parse(dst_crs).py()?);
+        let (resampling, dtype) = (Resampling::parse(resampling).py()?, terrio::ops::parse_data_type(dtype).py()?);
+        if let (None, Some(rpc)) = (&gcps, rpc) {
+            // RPCs georeference the source instead of `src_transform` (a DEM is read here).
+            let rpc = crate::rio::parse_rpc(rpc)?;
+            let options = crate::rio::parse_rpc_options(rpc_options)?;
+            let t = py.detach_result(|| terrio::ops::rpc::RpcTransformer::new(&rpc, &options)).py()?;
+            let inner = RegionWarp::with_rpc(
+                src_size,
+                t,
+                &src_srs,
+                &dst_srs,
+                dst_transform,
+                resampling,
+                error_threshold,
+                dtype,
+                src_nodata,
+                dst_nodata,
+            )
+            .py()?;
+            return Ok(Self { inner });
+        }
+        let inner = match gcps {
+            // GCPs georeference the source instead of `src_transform`.
+            Some(gcps) => {
+                let gcps = crate::raster::parse_gcps(Some(gcps));
+                let method = terrio::ops::gcp::GcpMethod::parse(gcp_method).py()?;
+                let t = terrio::ops::gcp::GcpTransformer::new(&gcps, method, gcp_order).py()?;
+                RegionWarp::with_gcps(
+                    src_size,
+                    t,
+                    &src_srs,
+                    &dst_srs,
+                    dst_transform,
+                    resampling,
+                    error_threshold,
+                    dtype,
+                    src_nodata,
+                    dst_nodata,
+                )
+            }
+            None => RegionWarp::new(
+                src_size,
+                src_transform,
+                &src_srs,
+                &dst_srs,
+                dst_transform,
+                resampling,
+                error_threshold,
+                dtype,
+                src_nodata,
+                dst_nodata,
+            ),
+        }
+        .py()?;
+        Ok(Self { inner })
+    }
+
+    /// The source window `(x, y, width, height)` a region `(x, y, width, height)` of the grid
+    /// reads, or None when the region cannot be transformed. Empty outside the source.
+    fn source_window(&self, region: (usize, usize, usize, usize)) -> Option<(usize, usize, usize, usize)> {
+        self.inner.source_window(region)
+    }
+
+    /// Warps a region of the grid from its source window.
+    ///
+    /// Args:
+    ///     region: `(x, y, width, height)` in the grid.
+    ///     window: The region's source window, as `source_window` gives it.
+    ///     data: The window's pixels, `(bands, height, width)`, in the source's dtype.
+    ///     mask: The window's per-dataset mask (non-zero where valid), used without nodata.
+    ///     init: The value of pixels no valid source pixel reaches.
+    ///     padded_scale: Compute the kernel's scale from the padded source window, as GDAL's
+    ///         warped VRT does when it warps a read straight into the buffer.
+    ///
+    /// Returns:
+    ///     tuple: The region's pixels `(bands, height, width)` and a bool array `(height, width)`
+    ///     of the pixels warped.
+    #[pyo3(signature = (region, window, data, mask=None, init=0.0, padded_scale=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn warp<'py>(
+        &self,
+        py: Python<'py>,
+        region: (usize, usize, usize, usize),
+        window: (usize, usize, usize, usize),
+        data: &Bound<'py, PyUntypedArray>,
+        mask: Option<&Bound<'py, PyUntypedArray>>,
+        init: f64,
+        padded_scale: bool,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let data = crate::raster::from_numpy(data)?;
+        let mask: Option<Vec<bool>> = match mask {
+            None => None,
+            Some(m) => Some(match crate::raster::from_numpy(m)? {
+                wbraster::raster::RasterData::U8(v) => v.into_iter().map(|x| x != 0).collect(),
+                other => other.to_f64_vec().into_iter().map(|x| x != 0.0).collect(),
+            }),
+        };
+        let inner = &self.inner;
+        let (out, written) = py.detach_result(|| inner.warp(region, window, &data, mask.as_deref(), init, padded_scale)).py()?;
+        let (w, h) = (region.2, region.3);
+        let bands = out.len() / (w * h).max(1);
+        let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;
+        let written = PyArray1::from_vec(py, written).reshape([h, w])?.into_any();
+        Ok((arr, written))
+    }
 }
 
 /// Opens an indexed raster catalog lazily. `index` is a GTI/index path or a vector layer;
@@ -1543,7 +1739,7 @@ fn open_catalog(
     let catalog = if sources.is_none()
         && let Ok(path) = index.extract::<String>()
     {
-        py.detach(|| terrio::catalog::RasterCatalog::open(&path, options)).py()?
+        py.detach_result(|| terrio::catalog::RasterCatalog::open(&path, options)).py()?
     } else {
         let mut layers = input_layers(py, index, options.layer.clone().map(|name| vec![name]))?;
         if layers.len() != 1 {
@@ -1563,7 +1759,7 @@ fn open_catalog(
             }
         }
         let layer = layers.remove(0);
-        py.detach(|| terrio::catalog::RasterCatalog::from_sources(layer, rasters, options)).py()?
+        py.detach_result(|| terrio::catalog::RasterCatalog::from_sources(layer, rasters, options)).py()?
     };
     Ok(PyRaster { inner: catalog.into_lazy() })
 }

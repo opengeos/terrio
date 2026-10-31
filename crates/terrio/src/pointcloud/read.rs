@@ -217,6 +217,36 @@ impl std::fmt::Debug for PointCloudReader {
     }
 }
 
+/// Refuses a point cloud `driver` is about to open when the allow-list of point clouds leaves the
+/// driver out: `TERRIO_ALLOWED_DRIVERS`, which applies to every kind (point clouds have no list of
+/// their own, see [`crate::formats::allowed_drivers`]), as a de-registered driver opens nothing.
+pub(super) fn check_driver(driver: &str, name: &str) -> Result<()> {
+    crate::formats::check_driver_allowed(driver, name, crate::formats::Kind::PointCloud)
+}
+
+/// Reads the header (with its VLRs) of a file of the LAS family, which LAS, LAZ and COPC share:
+/// only if the allow-list of point clouds has one of them, and then refused unless it has the one
+/// the header shows (COPC, by its information record; LAZ, by its compressed points; else LAS).
+fn read_las_header<R: Read + Seek>(r: &mut R, name: &str) -> Result<LasHeader> {
+    if let Some(list) = crate::formats::allowed_drivers(Some(crate::formats::Kind::PointCloud))
+        && !["LAS", "LAZ", "COPC"].iter().any(|d| list.iter().any(|a| a == d))
+    {
+        check_driver("LAS", name)?;
+    }
+    let header = LasHeader::read(r)?;
+    check_driver(
+        if Copc::is_copc(&header) {
+            "COPC"
+        } else if header.compressed {
+            "LAZ"
+        } else {
+            "LAS"
+        },
+        name,
+    )?;
+    Ok(header)
+}
+
 /// The point cloud format of a path, by its name: `ept.json` (or an `ept://` path) is EPT,
 /// `.ply` PLY, `.e57` E57; others are read as LAS, LAZ or COPC.
 fn format_of(path: &str) -> &'static str {
@@ -246,10 +276,12 @@ pub fn open_points(path: &str) -> Result<PointCloudReader> {
     let inner: Box<dyn FormatReader> = match format_of(path) {
         "EPT" => Box::new(super::ept::EptReader::open(path)?),
         "PLY" => {
+            check_driver("PLY", path)?;
             let (source, local) = Source::open_local(path)?;
             Box::new(super::ply::PlyReader::new(source, Some(local))?)
         }
         "E57" => {
+            check_driver("E57", path)?;
             let (source, local) = Source::open_local(path)?;
             Box::new(super::e57::E57File::new(source, Some(local))?)
         }
@@ -262,12 +294,14 @@ pub fn open_points(path: &str) -> Result<PointCloudReader> {
 /// bytes.
 pub fn open_points_bytes(bytes: Vec<u8>, name: &str) -> Result<PointCloudReader> {
     let inner: Box<dyn FormatReader> = if bytes.starts_with(b"ply") {
+        check_driver("PLY", name)?;
         Box::new(super::ply::PlyReader::new(Source::Memory(Cursor::new(bytes)), None)?)
     } else if bytes.starts_with(b"ASTM-E57") {
+        check_driver("E57", name)?;
         Box::new(super::e57::E57File::new(Source::Memory(Cursor::new(bytes)), None)?)
     } else {
         let mut source = Source::Memory(Cursor::new(bytes));
-        let header = LasHeader::read(&mut source)?;
+        let header = read_las_header(&mut source, name)?;
         Box::new(LasReader::new(source, header, None, None)?)
     };
     Ok(PointCloudReader { inner, name: name.to_string() })
@@ -277,7 +311,7 @@ pub fn open_points_bytes(bytes: Vec<u8>, name: &str) -> Result<PointCloudReader>
 /// until the bytes they need are fetched, and are then run again. `name` is the file name.
 pub fn open_points_sparse(file: crate::sparse::SparseFile, name: &str) -> Result<PointCloudReader> {
     let mut source = Source::Sparse(file);
-    let header = LasHeader::read(&mut source)?;
+    let header = read_las_header(&mut source, name)?;
     if !Copc::is_copc(&header) {
         return Err(Error::Unsupported(format!("'{name}' is not a COPC file: only COPC point clouds are read in place")));
     }
@@ -472,14 +506,14 @@ impl LasReader {
         #[cfg(remote)]
         if let Some(remote) = crate::vfs::Location::parse(path).remote() {
             let mut http = crate::http::RangeReader::open(&remote)?;
-            let header = LasHeader::read(&mut http)?;
+            let header = read_las_header(&mut http, path)?;
             if Copc::is_copc(&header) {
                 return LasReader::new(Source::Http(http), header, None, None);
             }
             // A LAS or LAZ file is read whole: download it.
         }
         let (mut source, local) = Source::open_local(path)?;
-        let header = LasHeader::read(&mut source)?;
+        let header = read_las_header(&mut source, path)?;
         let wdp = local.path().with_extension("wdp");
         let wdp = (header.global_encoding & super::las::WAVEFORM_EXTERNAL_BIT != 0 && wdp.exists()).then_some(wdp);
         LasReader::new(source, header, wdp, Some(local))

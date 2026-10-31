@@ -154,11 +154,14 @@ impl VrtDataset {
     /// Reads a VRT file's description.
     #[cfg(not(target_family = "wasm"))]
     pub fn open(path: &str) -> Result<Self> {
+        crate::formats::check_driver_allowed("VRT", path, crate::formats::Kind::Raster)?;
         Self::from_xml(&std::fs::read_to_string(path)?)
     }
 
-    /// Parses a VRT description.
+    /// Parses a VRT description. Under a process-wide raster allow-list, only with the VRT driver
+    /// allowed, as GDAL's VRT driver reads one.
     pub fn from_xml(text: &str) -> Result<Self> {
+        crate::formats::check_driver_allowed("VRT", "a VRT description", crate::formats::Kind::Raster)?;
         let root = xml::parse(text)?;
         if root.name != "VRTDataset" {
             return Err(Error::InvalidData(format!("not a VRT: root element is <{}>", root.name)));

@@ -25,6 +25,7 @@ mod pixel;
 #[cfg(feature = "pointcloud")]
 mod pointcloud;
 mod query;
+mod raster_tile;
 mod remote;
 #[cfg(feature = "threads")]
 mod threads;

@@ -589,12 +589,10 @@ impl Def {
         if let Some(d) = super::proj4_extension(w).and_then(|p| Self::from_proj(&p).ok()) {
             return Ok(d);
         }
-        let root = wkt1::parse(w);
-        let converted = match &root {
-            Some(r) if wkt2::handles(r) => Some(wkt2::to_proj(r)?),
-            Some(r) => wkt1::to_proj(r),
-            None => None,
-        };
+        // Text the WKT reader refuses (not WKT, nested deeper or longer than GDAL reads) is not
+        // handed to wbprojection's parser either, whose recursion has no bound.
+        let root = wkt1::parse(w).ok_or_else(|| Error::Crs("not a WKT definition GDAL reads".into()))?;
+        let converted = if wkt2::handles(&root) { Some(wkt2::to_proj(&root)?) } else { wkt1::to_proj(&root) };
         if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;
             if d.ops.is_empty() && !c.proj.contains("+towgs84=") {
@@ -765,6 +763,7 @@ impl Def {
                 (lam + self.lam0, phi)
             }
             Some(p) => {
+                // PROJ's `inv_prepare()` multiplies by `ra = 1 / a`.
                 let inverse_a = 1.0 / self.projection_a;
                 let x = (e * self.to_meter - self.x0) * inverse_a;
                 let y = (n * self.to_meter - self.y0) * inverse_a;
@@ -807,6 +806,8 @@ impl Def {
                 if lat.abs() > HALFPI + 1e-12 {
                     return None;
                 }
+                // PROJ's `fwd_prepare()` clamps the latitude to the poles.
+                let lat = lat.clamp(-HALFPI, HALFPI);
                 let (x, y) = p.fwd(adjlon(lon - self.lam0), lat)?;
                 ((x * self.projection_a + self.x0) / self.to_meter, (y * self.projection_a + self.y0) / self.to_meter)
             }
@@ -1007,13 +1008,16 @@ fn wkt_towgs84(w: &str) -> Option<Vec<f64>> {
 
 /// The `GEOGCS[...]` part of a WKT 1 definition.
 fn geogcs_text(w: &str) -> Option<&str> {
-    let start = w.find("GEOGCS[")?;
-    let mut depth = 0;
+    // WKT 1 delimits nodes with brackets or parentheses, and either closer ends a node, as the
+    // WKT reader (and PROJ) reads it; brackets in quoted names do not count.
+    let start = w.find("GEOGCS[").or_else(|| w.find("GEOGCS("))?;
+    let (mut depth, mut quoted) = (0usize, false);
     for (i, c) in w[start..].char_indices() {
         match c {
-            '[' => depth += 1,
-            ']' => {
-                depth -= 1;
+            '"' => quoted = !quoted,
+            '[' | '(' if !quoted => depth += 1,
+            ']' | ')' if !quoted => {
+                depth = depth.checked_sub(1)?;
                 if depth == 0 {
                     return Some(&w[start..start + i + 1]);
                 }

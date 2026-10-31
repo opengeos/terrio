@@ -698,3 +698,24 @@ fn geopackage_streams_preserve_measures_and_register_them() {
         check(&multi);
     }
 }
+
+/// A GeoJSON collection without a `crs` member streams in the CRS GDAL gives it, as a whole read
+/// does: EPSG:4979 when its geometry type has heights; a text sequence stays in WGS 84.
+#[test]
+fn geojson_streams_take_gdals_default_crs() {
+    let dir = tempfile::tempdir().unwrap();
+    for (coords, epsg) in [("[10,20,30]", 4979), ("[10,20]", 4326)] {
+        let path = dir.path().join(format!("p{epsg}.geojson"));
+        let feature = format!(r#"{{"type":"Feature","properties":{{"a":1}},"geometry":{{"type":"Point","coordinates":{coords}}}}}"#);
+        std::fs::write(&path, format!(r#"{{"type":"FeatureCollection","features":[{feature}]}}"#)).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        let readers = open_layers(&path, &Default::default(), 4).unwrap();
+        assert_eq!(readers[0].layer().crs_epsg(), Some(epsg), "streamed {coords}");
+        assert_eq!(crate::open_vector(&path, &Default::default()).unwrap().layers[0].crs_epsg(), Some(epsg), "whole {coords}");
+    }
+    let seq = dir.path().join("p.geojsonl");
+    std::fs::write(&seq, "{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"Point\",\"coordinates\":[10,20,30]}}\n")
+        .unwrap();
+    let readers = open_layers(&seq.to_string_lossy(), &Default::default(), 4).unwrap();
+    assert_eq!(readers[0].layer().crs_epsg(), Some(4326), "sequence");
+}

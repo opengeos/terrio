@@ -66,6 +66,9 @@ pub async fn init_thread_pool(threads: usize) -> Result<(), JsError> {
 
 /// Builds the pool over the workers, which wait for their threads on `tx`'s channel.
 fn start(threads: usize, tx: mpsc::Sender<rayon::ThreadBuilder>) -> Result<(), JsError> {
+    // The pool terrio's `par` runs on in WebAssembly (`terrio::set_thread_pool`), which
+    // clippy.toml's rule against pools of one's own exempts.
+    #[allow(clippy::disallowed_methods)]
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .spawn_handler(move |thread| tx.send(thread).map_err(|_| std::io::Error::other("the workers are gone")))

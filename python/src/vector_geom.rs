@@ -4,7 +4,7 @@
 
 use crate::ops::input_layers;
 use crate::vector::PyLayer;
-use crate::{PyResultExt, invalid};
+use crate::{Detach, PyResultExt, invalid};
 use pyo3::prelude::*;
 use terrio::Layer;
 use terrio::ops::vector_geom::{
@@ -41,7 +41,7 @@ fn one_layer(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> P
 
 fn run(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>, op: GeometryOp) -> PyResult<PyLayer> {
     let input = one_layer(py, src, layer)?;
-    let inner = py.detach(|| vector_geom::apply(&input, &op)).py()?;
+    let inner = py.detach_result(|| vector_geom::apply(&input, &op)).py()?;
     Ok(PyLayer { inner })
 }
 
@@ -202,7 +202,7 @@ fn combine(
         add_extra_fields: ExtraFields::parse(add_extra_fields).py()?,
     };
     let input = one_layer(py, src, layer)?;
-    let inner = py.detach(|| vector_geom::combine(&input, &options)).py()?;
+    let inner = py.detach_result(|| vector_geom::combine(&input, &options)).py()?;
     Ok(PyLayer { inner })
 }
 
@@ -220,7 +220,7 @@ fn combine(
 fn sort(py: Python<'_>, src: &Bound<'_, PyAny>, method: &str, layer: Option<String>) -> PyResult<PyLayer> {
     let method = SortMethod::parse(method).py()?;
     let input = one_layer(py, src, layer)?;
-    let inner = py.detach(|| vector_geom::sort(&input, method));
+    let inner = py.detach_value(|| vector_geom::sort(&input, method))?;
     Ok(PyLayer { inner })
 }
 
@@ -245,7 +245,7 @@ fn check_coverage(
 ) -> PyResult<PyLayer> {
     let input = one_layer(py, src, layer)?;
     let options = terrio::ops::coverage::CoverageCheckOptions { maximum_gap_width, include_valid };
-    let inner = py.detach(|| terrio::ops::coverage::check_coverage(&input, &options)).py()?;
+    let inner = py.detach_result(|| terrio::ops::coverage::check_coverage(&input, &options)).py()?;
     Ok(PyLayer { inner })
 }
 
@@ -270,6 +270,6 @@ fn simplify_coverage(
 ) -> PyResult<PyLayer> {
     let input = one_layer(py, src, layer)?;
     let options = terrio::ops::coverage_simplify::CoverageSimplifyOptions { tolerance, preserve_boundary };
-    let inner = py.detach(|| terrio::ops::coverage_simplify::simplify_coverage(&input, &options)).py()?;
+    let inner = py.detach_result(|| terrio::ops::coverage_simplify::simplify_coverage(&input, &options)).py()?;
     Ok(PyLayer { inner })
 }

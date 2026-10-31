@@ -616,6 +616,11 @@ impl Op {
     pub fn available(&self) -> bool {
         self.grids().iter().all(|(name, optional)| *optional || grid::available(name))
     }
+
+    /// Whether a grid it requires was asked for on the network and not obtained.
+    pub fn network_failed(&self) -> bool {
+        self.grids().iter().any(|(name, optional)| !*optional && grid::fetch_failed(name))
+    }
 }
 
 /// A point being transformed: longitude and latitude in radians, height in metres, and time
@@ -693,7 +698,8 @@ pub(crate) fn pick_index<T: AsRef<Op>>(ops: &[T], excluded: &[usize], contains: 
 
 /// Transforms a point with the operations of a list as PROJ's `proj_trans` does: the best one
 /// for the point (see [`pick_index`]), and when it fails (outside its grid), the next best, up
-/// to three attempts; then the first operation that needs no grid.
+/// to three attempts; then the first operation that needs no grid. A failure to get a grid from
+/// the network fails the point, as a network error stops `proj_trans`.
 pub(crate) fn transform_with<T: AsRef<Op>>(
     ops: &[T],
     contains: impl Fn(&Op, usize) -> bool,
@@ -704,6 +710,9 @@ pub(crate) fn transform_with<T: AsRef<Op>>(
         let Some(i) = pick_index(ops, &excluded, &contains) else { break };
         if let Some(p) = apply(i) {
             return Some(p);
+        }
+        if ops[i].as_ref().network_failed() {
+            return None;
         }
         excluded.push(i);
     }

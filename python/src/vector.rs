@@ -1,5 +1,6 @@
 //! The `VectorDataset` and `Layer` classes.
 
+use crate::Detach;
 use crate::{PyResultExt, crs_string, invalid};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
@@ -334,7 +335,7 @@ impl PyLayer {
     fn to_crs(&self, py: Python<'_>, crs: &str) -> PyResult<Self> {
         let dst = SpatialRef::parse(crs).py()?;
         let inner = &self.inner;
-        Ok(Self { inner: py.detach(|| terrio::vector::reproject_layer(inner, &dst)).py()? })
+        Ok(Self { inner: py.detach_result(|| terrio::vector::reproject_layer(inner, &dst)).py()? })
     }
 
     /// Creates a layer from GeoJSON.
@@ -374,7 +375,7 @@ impl PyLayer {
         options.preserve_declared_geometry_type = preserve_declared_geometry_type;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layers = std::slice::from_ref(&self.inner);
-        py.detach(|| terrio::write_vector(layers, path, &options)).py()
+        py.detach_result(|| terrio::write_vector(layers, path, &options)).py()
     }
 
     /// Encodes the layer in a file format, in memory.
@@ -404,7 +405,7 @@ impl PyLayer {
         options.preserve_declared_geometry_type = preserve_declared_geometry_type;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layers = std::slice::from_ref(&self.inner);
-        let bytes = py.detach(|| terrio::memory::write_vector_bytes(layers, filename, &options)).py()?;
+        let bytes = py.detach_result(|| terrio::memory::write_vector_bytes(layers, filename, &options)).py()?;
         Ok(PyBytes::new(py, &bytes))
     }
 }
@@ -478,6 +479,6 @@ impl PyVectorDataset {
         options.preserve_declared_geometry_type = preserve_declared_geometry_type;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layers = self.layer_copies(py);
-        py.detach(|| terrio::write_vector(&layers, path, &options)).py()
+        py.detach_result(|| terrio::write_vector(&layers, path, &options)).py()
     }
 }

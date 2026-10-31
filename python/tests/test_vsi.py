@@ -1,6 +1,8 @@
 """File management with terrio.vsi_* (GDAL's ``gdal vsi``)."""
 
+import http.server
 import os
+import threading
 import zipfile
 
 import pytest
@@ -128,6 +130,63 @@ def test_recursive_copy_preserves_io_exception(tree, tmp_path):
         terrio.vsi_copy(str(tree), str(destination), recursive=True)
     assert (destination / "t" / "x.txt").is_dir()
     assert (tree / "x.txt").read_text() == "hello\n"
+
+
+@pytest.fixture
+def declaring_server():
+    """A loopback HTTP server of files it declares to hold 2**50 bytes, of which it sends at most
+    16,384 at a time: a range request is answered 206 with the declared total, a HEAD with the
+    length, anything else 404.
+
+    Returns:
+        tuple: The base URL, and the list of the ``Range`` headers of the GET requests.
+    """
+    size, ranges = 1 << 50, []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+
+        def do_GET(self):
+            rng = self.headers.get("Range")
+            ranges.append(rng)
+            if not rng:
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            start = int(rng[6:].partition("-")[0])
+            body = bytes(min(16384, size - start))
+            self.send_response(206)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Range", f"bytes {start}-{start + len(body) - 1}/{size}")
+            self.end_headers()
+            self.wfile.write(body)
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}", ranges
+    httpd.shutdown()
+
+
+def test_a_remote_file_larger_than_the_memory_is_refused_after_its_first_response(declaring_server):
+    url, ranges = declaring_server
+    refusal = (
+        r"^a file read into memory is too large to allocate: 1125899906842624 bytes, "
+        r"more than the \d+ bytes of memory the process can use$"
+    )
+    with pytest.raises(TerrioIOError, match=refusal):
+        terrio.vsi_read(url + "/read.bin")
+    with pytest.raises(TerrioIOError, match=refusal):
+        terrio.vsi_copy(url + "/copy.bin", "/vsimem/declared/copy.bin")
+    assert terrio.vsi_stat("/vsimem/declared/copy.bin") is None
+    # Nothing past the first response's bytes was asked for.
+    assert [r for r in ranges if r] == ["bytes=0-16383", "bytes=0-0", "bytes=0-16383"]
 
 
 def test_sozip(tmp_path):

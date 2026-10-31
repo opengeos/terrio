@@ -1,6 +1,7 @@
 //! The `PointCloud`, `PointCloudFile` and `PointCloudWriter` classes: LAS, LAZ, COPC, EPT, PLY
 //! and E57 point clouds.
 
+use crate::Detach;
 use crate::{PyResultExt, crs_string, invalid};
 use numpy::{PyArray1, PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::prelude::*;
@@ -121,7 +122,7 @@ fn read_options(
 ///     PointCloudFile: The open file.
 #[pyfunction]
 pub(crate) fn open_points(py: Python<'_>, path: &str) -> PyResult<PyPointCloudFile> {
-    let inner = py.detach(|| pointcloud::open_points(path)).py()?;
+    let inner = py.detach_result(|| pointcloud::open_points(path)).py()?;
     Ok(PyPointCloudFile { inner })
 }
 
@@ -156,7 +157,7 @@ pub(crate) fn read_points(
     max_points: Option<u64>,
 ) -> PyResult<PyPointCloud> {
     let options = read_options(bounds, z_range, classes, returns, max_level, resolution, max_points)?;
-    let inner = py.detach(|| pointcloud::read_points(path, &options)).py()?;
+    let inner = py.detach_result(|| pointcloud::read_points(path, &options)).py()?;
     Ok(PyPointCloud { inner })
 }
 
@@ -169,7 +170,7 @@ pub(crate) fn read_points(
 ///     PointCloud: The points.
 #[pyfunction]
 pub(crate) fn read_points_bytes(py: Python<'_>, data: Vec<u8>) -> PyResult<PyPointCloud> {
-    let inner = py.detach(|| pointcloud::open_points_bytes(data, "points.las")?.read(&PointReadOptions::default())).py()?;
+    let inner = py.detach_result(|| pointcloud::open_points_bytes(data, "points.las")?.read(&PointReadOptions::default())).py()?;
     Ok(PyPointCloud { inner })
 }
 
@@ -320,7 +321,7 @@ pub(crate) fn append_points(
     };
     let inputs: Vec<&str> = inputs.iter().map(String::as_str).collect();
     #[cfg(not(target_family = "wasm"))]
-    return py.detach(|| pointcloud::append_points(dataset, &inputs, &options)).py();
+    return py.detach_result(|| pointcloud::append_points(dataset, &inputs, &options)).py();
     // Appending updates an EPT dataset's files in place, which WebAssembly builds (Pyodide) do
     // not do.
     #[cfg(target_family = "wasm")]
@@ -363,7 +364,7 @@ impl PyPointCloudFile {
     ///     numpy.ndarray: The samples, as digitized (uint32); volts are
     ///         `digitizer_offset + digitizer_gain * samples`.
     fn waveform<'py>(&mut self, py: Python<'py>, index: u8, offset: u64, size: u32) -> PyResult<Bound<'py, PyAny>> {
-        let w = py.detach(|| self.inner.waveform(index, offset, size)).py()?;
+        let w = py.detach_result(|| self.inner.waveform(index, offset, size)).py()?;
         Ok(PyArray1::from_vec(py, w.samples).into_any())
     }
 
@@ -411,14 +412,14 @@ impl PyPointCloudFile {
     ///     dict: The summary.
     #[pyo3(signature = (stats=false))]
     fn info<'py>(&mut self, py: Python<'py>, stats: bool) -> PyResult<Bound<'py, PyAny>> {
-        let info = py.detach(|| pointcloud::info::point_cloud_info(&mut self.inner, stats)).py()?;
+        let info = py.detach_result(|| pointcloud::info::point_cloud_info(&mut self.inner, stats)).py()?;
         to_python(py, &info)
     }
 
     /// The COPC octree nodes, for COPC files: one dict per node with `key` (`level`, `x`, `y`,
     /// `z`), `offset`, `byte_size` and `point_count`.
     fn copc_nodes<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let nodes = py.detach(|| self.inner.copc_nodes()).py()?;
+        let nodes = py.detach_result(|| self.inner.copc_nodes()).py()?;
         to_python(py, &nodes)
     }
 
@@ -449,7 +450,7 @@ impl PyPointCloudFile {
         max_points: Option<u64>,
     ) -> PyResult<PyPointCloud> {
         let options = read_options(bounds, z_range, classes, returns, max_level, resolution, max_points)?;
-        let inner = py.detach(|| self.inner.read(&options)).py()?;
+        let inner = py.detach_result(|| self.inner.read(&options)).py()?;
         Ok(PyPointCloud { inner })
     }
 
@@ -485,7 +486,7 @@ impl PyPointCloudFile {
             let mut f = slf.borrow_mut();
             let py = slf.py();
             let reader = &mut f.inner;
-            py.detach(|| reader.start_chunks(&options, chunk_points)).py()?;
+            py.detach_result(|| reader.start_chunks(&options, chunk_points)).py()?;
         }
         Ok(PyPointChunks { file: slf.unbind() })
     }
@@ -496,7 +497,7 @@ impl PyPointCloudFile {
     /// Returns:
     ///     PointCloud: The template.
     fn template(&mut self, py: Python<'_>) -> PyResult<PyPointCloud> {
-        Ok(PyPointCloud { inner: py.detach(|| self.inner.template()).py()? })
+        Ok(PyPointCloud { inner: py.detach_result(|| self.inner.template()).py()? })
     }
 
     fn __repr__(&self) -> String {
@@ -527,7 +528,7 @@ impl PyPointChunks {
     fn __next__(&self, py: Python<'_>) -> PyResult<Option<PyPointCloud>> {
         let mut f = self.file.borrow_mut(py);
         let reader = &mut f.inner;
-        let chunk = py.detach(|| reader.next_chunk()).py()?;
+        let chunk = py.detach_result(|| reader.next_chunk()).py()?;
         Ok(chunk.map(|inner| PyPointCloud { inner }))
     }
 }
@@ -566,7 +567,7 @@ impl PyPointCloudWriter {
     ) -> PyResult<Self> {
         let options = write_options(format, point_format, minor_version, scale, offset)?;
         let t = &template.inner;
-        let inner = py.detach(|| PointWriter::create(path, t, &options)).py()?;
+        let inner = py.detach_result(|| PointWriter::create(path, t, &options)).py()?;
         Ok(Self { inner: Some(inner) })
     }
 
@@ -577,13 +578,13 @@ impl PyPointCloudWriter {
     fn write(&mut self, py: Python<'_>, points: PyRef<'_, PyPointCloud>) -> PyResult<()> {
         let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
         let c = &points.inner;
-        py.detach(|| w.write(c)).py()
+        py.detach_result(|| w.write(c)).py()
     }
 
     /// Finishes the file (its counts, bounds and, for COPC, octree).
     fn close(&mut self, py: Python<'_>) -> PyResult<()> {
         match self.inner.take() {
-            Some(w) => py.detach(|| w.finish()).py(),
+            Some(w) => py.detach_result(|| w.finish()).py(),
             None => Ok(()),
         }
     }
@@ -646,7 +647,7 @@ pub(crate) fn grid_points(
     let read = read_options(None, None, classes, returns, None, None, None)?;
     let srs = a_srs.map(SpatialRef::parse).transpose().py()?;
     let ds = py
-        .detach(|| {
+        .detach_result(|| {
             let mut r = pointcloud::open_points(path)?;
             pointcloud::grid::grid_reader(&mut r, &read, &options, srs.as_ref())
         })
@@ -890,7 +891,7 @@ impl PyPointCloud {
         options.ply_encoding = ply_encoding.map(PlyEncoding::parse).transpose().py()?.unwrap_or_default();
         options.ply_precision = ply_precision;
         options.dimensions = dimensions.unwrap_or_default();
-        py.detach(|| pointcloud::write_points(&self.inner, path, &options)).py()
+        py.detach_result(|| pointcloud::write_points(&self.inner, path, &options)).py()
     }
 
     /// The points as the bytes of a LAS, LAZ, COPC, PLY or E57 file.
@@ -904,7 +905,7 @@ impl PyPointCloud {
     #[pyo3(signature = (format="LAZ", point_format=None))]
     fn to_bytes<'py>(&self, py: Python<'py>, format: &str, point_format: Option<u8>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let options = write_options(Some(format), point_format, None, None, None)?;
-        let bytes = py.detach(|| pointcloud::write_points_bytes(&self.inner, "points", &options)).py()?;
+        let bytes = py.detach_result(|| pointcloud::write_points_bytes(&self.inner, "points", &options)).py()?;
         Ok(pyo3::types::PyBytes::new(py, &bytes))
     }
 
@@ -950,7 +951,7 @@ impl PyPointCloud {
         ot: Option<&str>,
     ) -> PyResult<crate::raster::PyRaster> {
         let options = grid_options(resolution, method, stat, dimension, radius, power, window_size, bin_mode, bounds, nodata, ot)?;
-        let ds = py.detach(|| pointcloud::grid::grid(&self.inner, &options)).py()?;
+        let ds = py.detach_result(|| pointcloud::grid::grid(&self.inner, &options)).py()?;
         Ok(crate::raster::PyRaster::from_dataset(ds))
     }
 
@@ -981,7 +982,7 @@ impl PyPointCloud {
     #[pyo3(signature = (radius=None, *, cell=None, origin=None))]
     fn sample(&self, py: Python<'_>, radius: Option<f64>, cell: Option<f64>, origin: Option<(f64, f64, f64)>) -> PyResult<Self> {
         let o = SampleOptions { cell, radius, origin: origin.map(|o| [o.0, o.1, o.2]) };
-        Ok(Self { inner: py.detach(|| filters::sample(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::sample(&self.inner, &o)).py()? })
     }
 
     /// The point nearest the center of each voxel, as PDAL's
@@ -994,7 +995,7 @@ impl PyPointCloud {
     ///     PointCloud: The points kept.
     #[pyo3(signature = (cell=1.0))]
     fn voxel_center_nearest_neighbor(&self, py: Python<'_>, cell: f64) -> PyResult<Self> {
-        Ok(Self { inner: py.detach(|| filters::voxel_center_nearest_neighbor(&self.inner, cell)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::voxel_center_nearest_neighbor(&self.inner, cell)).py()? })
     }
 
     /// The first point of each voxel, as PDAL's `filters.voxeldownsize`.
@@ -1008,7 +1009,7 @@ impl PyPointCloud {
     #[pyo3(signature = (cell=0.001, mode="center"))]
     fn voxel_downsize(&self, py: Python<'_>, cell: f64, mode: &str) -> PyResult<Self> {
         let mode = VoxelMode::parse(mode).py()?;
-        Ok(Self { inner: py.detach(|| filters::voxel_downsize(&self.inner, cell, mode)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::voxel_downsize(&self.inner, cell, mode)).py()? })
     }
 
     /// Classifies outliers as noise, as PDAL's `filters.outlier`: all points are kept, outliers
@@ -1037,7 +1038,7 @@ impl PyPointCloud {
         classification: u8,
     ) -> PyResult<Self> {
         let o = OutlierOptions { method: OutlierMethod::parse(method).py()?, min_k, radius, mean_k, multiplier, class: classification };
-        Ok(Self { inner: py.detach(|| filters::outlier(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::outlier(&self.inner, &o)).py()? })
     }
 
     /// Classifies ground points with the Simple Morphological Filter, as PDAL's `filters.smrf`:
@@ -1093,7 +1094,7 @@ impl PyPointCloud {
             other_class,
             only_ground,
         };
-        Ok(Self { inner: py.detach(|| filters::smrf(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::smrf(&self.inner, &o)).py()? })
     }
 
     /// Classifies ground points with the Progressive Morphological Filter, as PDAL's
@@ -1148,7 +1149,7 @@ impl PyPointCloud {
             other_class,
             only_ground,
         };
-        Ok(Self { inner: py.detach(|| filters::pmf(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::pmf(&self.inner, &o)).py()? })
     }
 
     /// Classifies ground points with the Cloth Simulation Filter, as PDAL's `filters.csf`: of
@@ -1206,7 +1207,7 @@ impl PyPointCloud {
             other_class,
             only_ground,
         };
-        Ok(Self { inner: py.detach(|| filters::csf(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::csf(&self.inner, &o)).py()? })
     }
 
     /// Classifies low noise with the Extended Local Minimum, as PDAL's `filters.elm`.
@@ -1221,7 +1222,7 @@ impl PyPointCloud {
     ///     PointCloud: The points, low noise classified.
     #[pyo3(signature = (*, cell=10.0, threshold=1.0, classification=7))]
     fn elm(&self, py: Python<'_>, cell: f64, threshold: f64, classification: u8) -> PyResult<Self> {
-        Ok(Self { inner: py.detach(|| filters::elm(&self.inner, cell, threshold, classification)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::elm(&self.inner, cell, threshold, classification)).py()? })
     }
 
     /// Heights above the nearest ground points, as PDAL's `filters.hag_nn`: the
@@ -1241,7 +1242,7 @@ impl PyPointCloud {
     #[pyo3(signature = (*, count=1, max_distance=0.0, allow_extrapolation=true, ground_class=2))]
     fn hag_nn(&self, py: Python<'_>, count: usize, max_distance: f64, allow_extrapolation: bool, ground_class: u8) -> PyResult<Self> {
         let o = HagOptions { count, max_distance, allow_extrapolation, class: ground_class };
-        Ok(Self { inner: py.detach(|| filters::hag_nn(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::hag_nn(&self.inner, &o)).py()? })
     }
 
     /// Heights above a Delaunay triangulation of the nearest ground points, as PDAL's
@@ -1258,7 +1259,7 @@ impl PyPointCloud {
     #[pyo3(signature = (*, count=10, allow_extrapolation=true, ground_class=2))]
     fn hag_delaunay(&self, py: Python<'_>, count: usize, allow_extrapolation: bool, ground_class: u8) -> PyResult<Self> {
         let o = HagOptions { count, allow_extrapolation, class: ground_class, ..HagOptions::delaunay() };
-        Ok(Self { inner: py.detach(|| filters::hag_delaunay(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::hag_delaunay(&self.inner, &o)).py()? })
     }
 
     /// The points in boxes, polygons, circles or spheres, as PDAL's `filters.crop`: for each
@@ -1295,7 +1296,7 @@ impl PyPointCloud {
             outside,
             a_srs: a_srs.map(SpatialRef::parse).transpose().py()?,
         };
-        Ok(Self { inner: py.detach(|| filters::crop(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::crop(&self.inner, &o)).py()? })
     }
 
     /// Every `step`-th point, as PDAL's `filters.decimation`.
@@ -1321,7 +1322,7 @@ impl PyPointCloud {
     /// Returns:
     ///     PointCloud: The points kept.
     fn expression(&self, py: Python<'_>, expression: String) -> PyResult<Self> {
-        Ok(Self { inner: py.detach(|| filters::expression(&self.inner, &[expression])).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::expression(&self.inner, &[expression])).py()? })
     }
 
     /// Assigns values to dimensions, as PDAL's `filters.assign`.
@@ -1347,7 +1348,7 @@ impl PyPointCloud {
             condition: condition.map(DimRange::parse).transpose().py()?,
             values: strings(value)?,
         };
-        Ok(Self { inner: py.detach(|| filters::assign(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::assign(&self.inner, &o)).py()? })
     }
 
     /// Splits the points into squares, as PDAL's `filters.splitter`.
@@ -1363,7 +1364,7 @@ impl PyPointCloud {
     #[pyo3(signature = (length=1000.0, *, origin=None, buffer=0.0))]
     fn splitter(&self, py: Python<'_>, length: f64, origin: Option<(f64, f64)>, buffer: f64) -> PyResult<Vec<Self>> {
         let o = SplitterOptions { length, origin: origin.map(|o| [o.0, o.1]), buffer };
-        let tiles = py.detach(|| filters::splitter(&self.inner, &o)).py()?;
+        let tiles = py.detach_result(|| filters::splitter(&self.inner, &o)).py()?;
         Ok(tiles.into_iter().map(|(_, c)| Self { inner: c }).collect())
     }
 
@@ -1377,7 +1378,7 @@ impl PyPointCloud {
     ///     list[PointCloud]: The chips, in PDAL's order.
     #[pyo3(signature = (capacity=5000))]
     fn chipper(&self, py: Python<'_>, capacity: usize) -> PyResult<Vec<Self>> {
-        let chips = py.detach(|| filters::chipper(&self.inner, capacity)).py()?;
+        let chips = py.detach_result(|| filters::chipper(&self.inner, capacity)).py()?;
         Ok(chips.into_iter().map(|c| Self { inner: c }).collect())
     }
 
@@ -1394,7 +1395,7 @@ impl PyPointCloud {
     #[pyo3(signature = (*, knn=8, viewpoint=None, always_up=true))]
     fn normal(&self, py: Python<'_>, knn: usize, viewpoint: Option<(f64, f64, f64)>, always_up: bool) -> PyResult<Self> {
         let o = NormalOptions { knn, viewpoint: viewpoint.map(|v| [v.0, v.1, v.2]), always_up };
-        Ok(Self { inner: py.detach(|| filters::normal(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::normal(&self.inner, &o)).py()? })
     }
 
     /// Labels Euclidean clusters, as PDAL's `filters.cluster`, in `cluster_id` (from 1; 0 for
@@ -1411,7 +1412,7 @@ impl PyPointCloud {
     #[pyo3(signature = (tolerance=1.0, *, min_points=1, max_points=None, is3d=true))]
     fn cluster(&self, py: Python<'_>, tolerance: f64, min_points: u64, max_points: Option<u64>, is3d: bool) -> PyResult<Self> {
         let o = ClusterOptions { min_points, max_points: max_points.unwrap_or(u64::MAX), tolerance, is_3d: is3d };
-        Ok(Self { inner: py.detach(|| filters::cluster(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::cluster(&self.inner, &o)).py()? })
     }
 
     /// Labels density-based clusters, as PDAL's `filters.dbscan`, in `cluster_id` (from 0; -1
@@ -1428,7 +1429,7 @@ impl PyPointCloud {
     #[pyo3(signature = (eps=1.0, *, min_points=6, dimensions=None))]
     fn dbscan(&self, py: Python<'_>, eps: f64, min_points: u64, dimensions: Option<Vec<String>>) -> PyResult<Self> {
         let o = DbscanOptions { min_points, eps, dimensions: dimensions.unwrap_or_else(|| DbscanOptions::default().dimensions) };
-        Ok(Self { inner: py.detach(|| filters::dbscan(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::dbscan(&self.inner, &o)).py()? })
     }
 
     /// Features of the covariance of each point's neighbours, as PDAL's
@@ -1471,7 +1472,7 @@ impl PyPointCloud {
             mode: FeatureMode::parse(mode).py()?,
             optimized,
         };
-        Ok(Self { inner: py.detach(|| filters::covariance_features(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::covariance_features(&self.inner, &o)).py()? })
     }
 
     /// The eigenvalues of the covariance of each point's neighbours, ascending, as PDAL's
@@ -1489,7 +1490,7 @@ impl PyPointCloud {
     #[pyo3(signature = (*, knn=8, normalize=false, stride=1, radius=None, min_k=3))]
     fn eigenvalues(&self, py: Python<'_>, knn: usize, normalize: bool, stride: usize, radius: Option<f64>, min_k: usize) -> PyResult<Self> {
         let o = EigenvaluesOptions { neighbours: Neighbourhood { knn, stride, radius, min_k }, normalize };
-        Ok(Self { inner: py.detach(|| filters::eigenvalues(&self.inner, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::eigenvalues(&self.inner, &o)).py()? })
     }
 
     /// Labels approximately coplanar points, as PDAL's `filters.approximatecoplanar`: 1 in
@@ -1505,7 +1506,7 @@ impl PyPointCloud {
     ///     PointCloud: The points, labeled.
     #[pyo3(signature = (*, knn=8, thresh1=25.0, thresh2=6.0))]
     fn approximate_coplanar(&self, py: Python<'_>, knn: usize, thresh1: f64, thresh2: f64) -> PyResult<Self> {
-        Ok(Self { inner: py.detach(|| filters::approximate_coplanar(&self.inner, knn, thresh1, thresh2)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::approximate_coplanar(&self.inner, knn, thresh1, thresh2)).py()? })
     }
 
     /// The rank of each point's neighbourhood, as PDAL's `filters.estimaterank`, in `rank`: the
@@ -1520,7 +1521,7 @@ impl PyPointCloud {
     ///     PointCloud: The points, with their ranks.
     #[pyo3(signature = (*, knn=8, thresh=0.01))]
     fn estimate_rank(&self, py: Python<'_>, knn: usize, thresh: f64) -> PyResult<Self> {
-        Ok(Self { inner: py.detach(|| filters::estimate_rank(&self.inner, knn, thresh)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::estimate_rank(&self.inner, knn, thresh)).py()? })
     }
 
     /// Local outlier factors, as PDAL's `filters.lof`: `nndistance`,
@@ -1533,7 +1534,7 @@ impl PyPointCloud {
     ///     PointCloud: The points, with their factors.
     #[pyo3(signature = (minpts=10))]
     fn lof(&self, py: Python<'_>, minpts: usize) -> PyResult<Self> {
-        Ok(Self { inner: py.detach(|| filters::lof(&self.inner, minpts)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::lof(&self.inner, minpts)).py()? })
     }
 
     /// The distance to each point's nearest neighbours, as PDAL's `filters.nndistance`, in
@@ -1548,7 +1549,7 @@ impl PyPointCloud {
     #[pyo3(signature = (k=10, *, mode="kth"))]
     fn nndistance(&self, py: Python<'_>, k: usize, mode: &str) -> PyResult<Self> {
         let mode = NnDistanceMode::parse(mode).py()?;
-        Ok(Self { inner: py.detach(|| filters::nndistance(&self.inner, k, mode)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::nndistance(&self.inner, k, mode)).py()? })
     }
 
     /// The density of the points around each point, as PDAL's `filters.radialdensity`, in
@@ -1561,7 +1562,7 @@ impl PyPointCloud {
     ///     PointCloud: The points, with their densities.
     #[pyo3(signature = (radius=1.0))]
     fn radial_density(&self, py: Python<'_>, radius: f64) -> PyResult<Self> {
-        Ok(Self { inner: py.detach(|| filters::radial_density(&self.inner, radius)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::radial_density(&self.inner, radius)).py()? })
     }
 
     /// The share of each point's nearest neighbours that do not have it among theirs, in
@@ -1574,7 +1575,7 @@ impl PyPointCloud {
     ///     PointCloud: The points, with their reciprocity.
     #[pyo3(signature = (knn=8))]
     fn reciprocity(&self, py: Python<'_>, knn: usize) -> PyResult<Self> {
-        Ok(Self { inner: py.detach(|| filters::reciprocity(&self.inner, knn)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::reciprocity(&self.inner, knn)).py()? })
     }
 
     /// How far each point is from the centre of the smallest ball enclosing its nearest
@@ -1587,7 +1588,7 @@ impl PyPointCloud {
     ///     PointCloud: The points, with their values.
     #[pyo3(signature = (knn=8))]
     fn miniball(&self, py: Python<'_>, knn: usize) -> PyResult<Self> {
-        Ok(Self { inner: py.detach(|| filters::miniball(&self.inner, knn)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::miniball(&self.inner, knn)).py()? })
     }
 
     /// Smoothed elevations, as PDAL's `filters.zsmooth`: a percentile of the `z` of the points
@@ -1602,7 +1603,7 @@ impl PyPointCloud {
     ///     PointCloud: The points, with the statistic.
     #[pyo3(signature = (dim, *, radius=1.0, medianpercent=50.0))]
     fn zsmooth(&self, py: Python<'_>, dim: &str, radius: f64, medianpercent: f64) -> PyResult<Self> {
-        Ok(Self { inner: py.detach(|| filters::zsmooth(&self.inner, dim, radius, medianpercent)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::zsmooth(&self.inner, dim, radius, medianpercent)).py()? })
     }
 
     /// Classifies ground points by skewness balancing, as PDAL's `filters.skewnessbalancing`;
@@ -1617,7 +1618,7 @@ impl PyPointCloud {
     ///     PointCloud: The points, classified.
     #[pyo3(signature = (*, ground_class=2, other_class=1, only_ground=false))]
     fn skewness_balancing(&self, py: Python<'_>, ground_class: u8, other_class: u8, only_ground: bool) -> PyResult<Self> {
-        Ok(Self { inner: py.detach(|| filters::skewness_balancing(&self.inner, ground_class, other_class, only_ground)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::skewness_balancing(&self.inner, ground_class, other_class, only_ground)).py()? })
     }
 
     /// The first `count` points, as PDAL's `filters.head`.
@@ -1663,7 +1664,7 @@ impl PyPointCloud {
             "DESC" => true,
             _ => return Err(invalid(format!("invalid order '{order}': use ASC or DESC"))),
         };
-        Ok(Self { inner: py.detach(|| filters::sort(&self.inner, &dims, descending)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::sort(&self.inner, &dims, descending)).py()? })
     }
 
     /// The point of the largest (or smallest) value of a dimension, as PDAL's `filters.locate`.
@@ -1727,7 +1728,7 @@ impl PyPointCloud {
     fn dem(&self, py: Python<'_>, raster: &Bound<'_, PyAny>, limits: &str, band: usize) -> PyResult<Self> {
         let ds = raster_arg(raster)?;
         let limits = DimRange::parse(limits).py()?;
-        Ok(Self { inner: py.detach(|| filters::dem(&self.inner, &ds, &limits, band)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::dem(&self.inner, &ds, &limits, band)).py()? })
     }
 
     /// Dimensions set from raster bands, as PDAL's `filters.colorization`; the raster is taken to
@@ -1745,7 +1746,7 @@ impl PyPointCloud {
         let ds = raster_arg(raster)?;
         let spec = strings(dimensions)?.join(",");
         let dims = if spec.trim().is_empty() { BandDimension::rgb() } else { BandDimension::parse_list(&spec).py()? };
-        Ok(Self { inner: py.detach(|| filters::colorization(&self.inner, &ds, &dims)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::colorization(&self.inner, &ds, &dims)).py()? })
     }
 
     /// A dimension set from an attribute of the polygons the points are in, as PDAL's
@@ -1771,7 +1772,7 @@ impl PyPointCloud {
     ) -> PyResult<Self> {
         let layer = layer_arg(py, datasource, layer)?;
         let o = OverlayOptions { dimension, column };
-        Ok(Self { inner: py.detach(|| filters::overlay(&self.inner, &layer, &o)).py()? })
+        Ok(Self { inner: py.detach_result(|| filters::overlay(&self.inner, &layer, &o)).py()? })
     }
 
     /// The boundary of the points on a grid of hexagons, as PDAL's `filters.hexbin`: the union
@@ -1830,7 +1831,7 @@ impl PyPointCloud {
             origin: origin.map(|o| [o.0, o.1]),
             precision,
         };
-        let r = py.detach(|| filters::hexbin(&self.inner, &o)).py()?;
+        let r = py.detach_result(|| filters::hexbin(&self.inner, &o)).py()?;
         let boundary_layer = r.boundary_layer(None);
         let geojson = py.import("json")?.call_method1("loads", (wbvector::geojson::to_string(&boundary_layer),))?;
         let d = PyDict::new(py);
