@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Qiusheng Wu
 // SPDX-FileCopyrightText: 2026 T-Kartor
 // SPDX-License-Identifier: MIT
-//! MIL-C-89038 CADRG grids. Formula reference: GDAL rpfframewriter.cpp (MIT).
+//! MIL-C-89038 CADRG grids. Formula reference: GDAL 3.13.3 rpfframewriter.cpp (MIT).
 use super::{RpfFrame, invalid};
 use crate::{Error, Result};
 
