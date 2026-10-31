@@ -1,5 +1,5 @@
 //! Folder raster tiles without materializing a lazy input.
-use crate::{PyResultExt, invalid};
+use crate::{Detach, PyResultExt, invalid};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use terrio::ops::raster_tile::{self as tile, TileOptions};
@@ -37,11 +37,11 @@ fn raster_tiles(
     let result = if let Ok(raster) = source.extract::<Py<crate::raster::PyRaster>>() {
         let mut raster = raster.bind(py).try_borrow_mut()?;
         let lazy = &mut raster.inner;
-        py.detach(|| run(lazy)).py()?
+        py.detach_result(|| run(lazy)).py()?
     } else {
         let path: std::path::PathBuf = source.extract().map_err(|_| invalid("expected a Raster or raster path"))?;
         let path = path.to_str().ok_or_else(|| invalid("input path must be UTF-8"))?;
-        py.detach(|| run(&mut terrio::open_raster_lazy(path)?)).py()?
+        py.detach_result(|| run(&mut terrio::open_raster_lazy(path)?)).py()?
     };
     Ok(json.call_method1("loads", (result,))?.unbind())
 }

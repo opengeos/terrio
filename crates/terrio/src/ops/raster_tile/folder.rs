@@ -198,7 +198,9 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
             let mut output_mask = None;
             let mut tile = if color {
                 warp.src_nodata = Nodata::None;
-                warp.dst_nodata = Nodata::Values(vec![0.0]);
+                // Zero is a valid synthetic color/density sample. Declaring it
+                // nodata makes the warp kernel nudge it to the next float.
+                warp.dst_nodata = Nodata::None;
                 let mut prepared = ColorSource { source, info: info.clone(), only_alpha: false };
                 let premult = render_cell(&mut prepared, &cell, &warp, RenderLimits::default())?;
                 let n = premult.raster.cols * premult.raster.rows;
@@ -220,7 +222,7 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
                 let mut coverage = ColorSource { source, info: info.clone(), only_alpha: true };
                 let coverage_options = WarpOptions {
                     src_nodata: Nodata::None,
-                    dst_nodata: Nodata::Values(vec![0.0]),
+                    dst_nodata: Nodata::None,
                     resampling: if method == Resampling::Nearest { Resampling::Nearest } else { Resampling::Max },
                     ..warp.clone()
                 };
