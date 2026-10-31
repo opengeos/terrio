@@ -12,7 +12,6 @@ import tempfile
 import numpy as np
 from osgeo import gdal, ogr, osr
 from shapely import from_geojson, from_wkb, hausdorff_distance, union_all
-import terrio
 
 from compare_topology_with_gdal import prepare
 
@@ -275,6 +274,8 @@ def fixtures(data, root):
 
 
 def main():
+    import terrio
+
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("data", type=Path)
     p.add_argument("--js", type=Path)
