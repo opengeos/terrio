@@ -236,6 +236,10 @@ fn publication_urls_accept_ports_relative_colons_and_case_insensitive_http() {
         "https://[::1]:8443/tiles",
         "//[::1]:8443/tiles",
         "https://reader@example.test:443/tiles",
+        "https://example.test:65535/tiles",
+        "https://example.test:0/tiles",
+        "https://example.test:/tiles",
+        "https://[::1]:65535/tiles",
     ] {
         let mut options = options();
         options.publication.url = Some(url.into());
@@ -316,6 +320,12 @@ fn invalid_http_hosts_and_obfuscated_schemes_fail_before_output() {
         "https://reader@/tiles",
         "https://[]/tiles",
         "https://[::1/tiles",
+        "https://[not-ip]/tiles",
+        "https://[::1]extra/tiles",
+        "https://example.test:abc/tiles",
+        "https://[::1]:abc/tiles",
+        "https://example.test:65536/tiles",
+        "https://example.test:+1/tiles",
         "//:443/tiles",
         "HTTP:/tiles",
         "\tjavascript:alert(1)",
@@ -373,7 +383,15 @@ fn finer_kml_cells_outside_geographic_bounds_fail_before_pixels_or_output() {
 #[test]
 fn oversized_publication_plans_fail_before_geographic_cell_validation() {
     let mut options = options();
-    options.grid.max_zoom = Some(1);
+    options.grid = GridOptions { tile_size: 256, min_zoom: Some(1), max_zoom: Some(2), ..Default::default() };
     options.max_tiles = 1;
-    assert!(tile::plan(&source().header(), &options).unwrap_err().to_string().contains("max_tiles"));
+    options.tiling_scheme = "raster".into();
+    options.publication.viewers.clear();
+    let mut header = source().header();
+    header.raster.cols = 1400;
+    header.raster.rows = 1000;
+    header.set_geo_transform([169., 0.01, 0., 10., 0., -0.01]);
+    assert!(tile::plan(&header, &options).unwrap_err().to_string().contains("max_tiles"));
+    options.max_tiles = 100;
+    assert!(tile::plan(&header, &options).unwrap_err().to_string().contains("geographic"));
 }

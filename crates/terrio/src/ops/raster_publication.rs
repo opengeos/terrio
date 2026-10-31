@@ -57,11 +57,17 @@ fn http_host(rest: &str) -> Option<&str> {
     let authority = rest.strip_prefix("//")?.split('/').next()?;
     let host_port = authority.rsplit('@').next()?;
     if let Some(literal) = host_port.strip_prefix('[') {
-        let (host, _) = literal.split_once(']')?;
-        (!host.is_empty()).then_some(host)
+        let (host, suffix) = literal.split_once(']')?;
+        host.parse::<std::net::Ipv6Addr>().ok()?;
+        if suffix.is_empty() || suffix.strip_prefix(':').is_some_and(valid_port) { Some(host) } else { None }
     } else {
-        host_port.split(':').next().filter(|host| !host.is_empty())
+        let (host, port) = host_port.split_once(':').unwrap_or((host_port, ""));
+        (!host.is_empty() && !host.contains(['[', ']']) && valid_port(port)).then_some(host)
     }
+}
+
+fn valid_port(port: &str) -> bool {
+    port.bytes().all(|c| c.is_ascii_digit()) && (port.is_empty() || port.parse::<u16>().is_ok())
 }
 
 impl<'a> Publication<'a> {
@@ -99,7 +105,7 @@ impl<'a> Publication<'a> {
                 })
             };
             if authority.is_some_and(|rest| http_host(rest).is_none()) {
-                return Err(invalid("HTTP(S) publication URLs must include a host"));
+                return Err(invalid("HTTP(S) publication URLs require a host and valid IPv6/port syntax"));
             }
         }
         if let Some(url) = &options.url
