@@ -2,6 +2,7 @@
 """Prepare real Landsat CADRG frames and GDAL's polar sample with GDAL 3.13.3."""
 
 import argparse
+import hashlib
 from pathlib import Path
 import urllib.request
 
@@ -10,9 +11,18 @@ from osgeo import gdal, osr
 
 gdal.UseExceptions()
 POLAR_URL = (
-    "https://raw.githubusercontent.com/OSGeo/gdal/v3.13.3/"
+    "https://raw.githubusercontent.com/OSGeo/gdal/c8b4c45fca87d3e6fbf80e7a7898b8a661ad0edc/"
     "autotest/gdrivers/data/rpftoc/zone9/RPF/ZONE9/00027010.ON9"
 )
+
+POLAR_SHA256 = "def957230fa374138b6275e8d4aeea2f53e0c1814c314f41cfe74c691e06eb64"
+
+
+def verify_polar(path):
+    if hashlib.sha256(path.read_bytes()).hexdigest() != POLAR_SHA256:
+        raise RuntimeError(
+            "GDAL polar fixture checksum differs from the pinned reference"
+        )
 
 
 def prepare(data):
@@ -56,12 +66,11 @@ def prepare(data):
         temporary = polar.with_suffix(".download")
         try:
             urllib.request.urlretrieve(POLAR_URL, temporary)
-            with temporary.open("rb") as stream:
-                if stream.read(9) not in [b"NITF02.00", b"NITF02.10"]:
-                    raise RuntimeError("downloaded polar fixture is not NITF")
+            verify_polar(temporary)
             temporary.replace(polar)
         finally:
             temporary.unlink(missing_ok=True)
+    verify_polar(polar)
 
     # Independent synthetic checks for frames containing the geographic poles.
     for label, zone, latitude in [("north", "9", 89.9), ("south", "J", -89.8)]:

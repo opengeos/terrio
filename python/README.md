@@ -268,7 +268,9 @@ pixels. `rpftoc_create` recursively scans a local directory, skips symlinks and
 atomically publishes the TOC after validation. Its default output is `input/A.TOC`;
 a supplied output must be in the input directory or an ancestor, so frame paths
 remain relative without `..`. Existing output requires `overwrite=True`. The
-report includes frame/group counts, metadata bytes read and output bytes.
+report includes frame/group counts, skipped non-NITF candidates, metadata bytes
+read and output bytes. New Unix output follows the process umask; overwrites
+preserve its existing mode.
 
 `rpftoc_bytes` borrows bounded metadata ranges from each named Python `bytes`
 value and returns a TOC; retain those frame files at the supplied relative paths

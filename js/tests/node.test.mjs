@@ -3208,7 +3208,7 @@ test("rpftocCreate indexes bounded frame metadata and rejects inconsistent optio
   const number = (value, width, setter) => { const b = new Uint8Array(width); new DataView(b.buffer)[setter](0, value, false); parts.push(b); };
   const u16 = value => number(value, 2, "setUint16"), u32 = value => number(value, 4, "setUint32");
   const f64 = value => number(value, 8, "setFloat64");
-  const prefix = new Uint8Array(360).fill(32); prefix.set(encoder.encode("NITF02.00")); parts.push(prefix);
+  const prefix = new Uint8Array(360).fill(32); prefix.set(encoder.encode("NITF02.00")); prefix[119]=85; parts.push(prefix);
   text("0010000000000000000000000000000000"); text("00062000RPFHDR00048");
   const location = parts.reduce((n, p) => n + p.length, 0) + 48 + 5;
   parts.push(new Uint8Array([0])); u16(48); text("000C9010.ON2"); parts.push(new Uint8Array([0]));
@@ -3225,6 +3225,7 @@ test("rpftocCreate indexes bounded frame metadata and rejects inconsistent optio
   bytes.set(encoder.encode(String(location).padStart(6,"0")),354);
   const frames = [{filename:"zone/000C9010.ON2",bytes}];
   const output = terrio.rpftocCreate(frames, {countryCode:"US"});
+  assert.notDeepStrictEqual(output,terrio.rpftocCreate(frames,{}));
   const ascii = data => new TextDecoder().decode(data);
   assert.equal(ascii(output.subarray(0,9)),"NITF02.00");
   assert.equal(Number(ascii(output.subarray(342,354))), output.length);
@@ -3234,4 +3235,8 @@ test("rpftocCreate indexes bounded frame metadata and rejects inconsistent optio
   assert.throws(()=>terrio.rpftocCreate([{filename:"../000C9010.ON2",bytes}],{}),/relative/);
   assert.throws(()=>terrio.rpftocCreate(frames.concat(frames),{}),/duplicate/);
   assert.throws(()=>terrio.rpftocCreate([{filename:"000C9010.ON2",bytes:[]}],{}),/Uint8Array/);
+  bytes[119]=83;
+  assert.throws(()=>terrio.rpftocCreate(frames,{}),/highest frame/);
+  assert.equal(terrio.rpftocCreate(frames,{classification:"S"})[119],83);
+
 });

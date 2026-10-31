@@ -30,6 +30,7 @@ def frame_metadata():
     ]
     header = bytearray(b" " * 360)
     header[:9] = b"NITF02.00"
+    header[119] = ord("U")
     header += b"0010000000000000000000000000000000"
     header += b"00062000RPFHDR00048"
     location = len(header) + 48 + 5
@@ -59,7 +60,13 @@ def test_named_frame_bytes_and_native_directory_agree(tmp_path):
     expected = terrio.rpftoc_bytes([("frames/zone/000C9010.ON2", data)], country_code="US")
     output = tmp_path / "A.TOC"
     report = terrio.rpftoc_create(frames, output, country_code="US")
-    assert report == dict(frames=1, groups=1, metadata_bytes=len(data), output_bytes=len(expected))
+    assert report == dict(
+        frames=1,
+        skipped_files=0,
+        groups=1,
+        metadata_bytes=len(data) + 9,
+        output_bytes=len(expected),
+    )
     assert output.read_bytes() == expected
     assert expected[:9] == b"NITF02.00"
     assert int(expected[342:354]) == len(expected)
@@ -83,3 +90,17 @@ def test_invalid_scale_and_paths_fail_without_overwriting(tmp_path):
         terrio.rpftoc_bytes([("000C9010.ON2", data)] * 2)
     with pytest.raises(ValueError, match="producer"):
         terrio.rpftoc_bytes([("000C9010.ON2", data)], producer_id="TOO LONG")
+
+
+def test_index_cannot_downgrade_the_nitf_frame_classification():
+    data = bytearray(frame_metadata())
+    data[119] = ord("S")
+    with pytest.raises(ValueError, match="highest frame"):
+        terrio.rpftoc_bytes([("000C9010.ON2", bytes(data))])
+    output = terrio.rpftoc_bytes([("000C9010.ON2", bytes(data))], classification="S")
+    assert output[119:120] == b"S"
+
+
+def test_frame_limit_is_checked_before_extracting_items():
+    with pytest.raises(ValueError, match="100000"):
+        terrio.rpftoc_bytes([object()] * 100001)

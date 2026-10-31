@@ -49,7 +49,7 @@ struct Indexed<'a> {
 }
 
 pub(super) fn encode(frames: &[RpfFrame], options: &RpfTocOptions) -> Result<Vec<u8>> {
-    class_rank(options.classification)?;
+    let index_classification = class_rank(options.classification)?;
     for (value, limit, name) in [
         (&options.producer_id, 5, "producer ID"),
         (&options.producer_name, 27, "producer name"),
@@ -94,6 +94,9 @@ pub(super) fn encode(frames: &[RpfFrame], options: &RpfTocOptions) -> Result<Vec
             return Err(invalid("TOC metadata exceeds 16 MiB"));
         }
         groups.entry((std::cmp::Reverse(scale), zone)).or_default().push(Indexed { frame: f, at });
+    }
+    if index_classification < highest {
+        return Err(Error::InvalidArgument("RPF classification must be at least the highest frame classification".into()));
     }
     if groups.len() > usize::from(u16::MAX) || directories.len() > usize::from(u16::MAX) {
         return Err(invalid("too many TOC groups or paths"));
@@ -258,6 +261,41 @@ mod tests {
         assert!(encode(&[frame], &options).is_err());
     }
     #[test]
+    fn index_classification_cannot_downgrade_frame_classification() {
+        let mut frame = example();
+        frame.classification = 'S';
+        for classification in ['U', 'R', 'C'] {
+            let options = RpfTocOptions { classification, ..Default::default() };
+            assert!(
+                matches!(encode(std::slice::from_ref(&frame),&options),Err(Error::InvalidArgument(message)) if message.contains("highest frame"))
+            );
+        }
+        for classification in ['S', 'T'] {
+            let options = RpfTocOptions { classification, ..Default::default() };
+            let bytes = encode(std::slice::from_ref(&frame), &options).unwrap();
+            assert_eq!(bytes[119], classification as u8);
+        }
+    }
+    #[test]
+    fn wrapped_and_unwrapped_antimeridian_corners_encode_identically() {
+        let grid = Grid::new(2, 1_000_000).unwrap();
+        for column in [0, 131] {
+            let mut frame = example();
+            frame.coverage = grid.coverage([column, 3], [column, 3]);
+            let expected = encode(std::slice::from_ref(&frame), &Default::default()).unwrap();
+            if column == 0 {
+                frame.coverage[1] -= 4e-14;
+                frame.coverage[3] -= 4e-14;
+            }
+            for i in [1, 3, 5, 7] {
+                frame.coverage[i] = (frame.coverage[i] + 180.).rem_euclid(360.) - 180.;
+            }
+            assert_eq!(frame.grid_position(1_000_000).unwrap(), [column, 3]);
+            assert_eq!(encode(&[frame], &Default::default()).unwrap(), expected);
+        }
+    }
+
+    #[test]
     fn pole_center_georef_uses_the_full_geographic_extent() {
         for (zone, suffix, expected) in [(9, '9', b"AMAP00"), (18, 'J', b"AAAA00")] {
             let grid = Grid::new(zone, 1_000_000).unwrap();
@@ -295,16 +333,15 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires prepared RPF fixtures; see docs/testing.md"]
     fn real_frames_encode_when_available() {
-        let Some(root) = std::env::var_os("TERRIO_TEST_DATA").map(std::path::PathBuf::from) else { return };
-        let root = root.join("rpftoc_landsat");
+        let root = std::path::PathBuf::from(std::env::var_os("TERRIO_TEST_DATA").expect("set TERRIO_TEST_DATA to prepared RPF fixtures"));
+        let paths = super::super::prepared_flat_frames(&root);
+        let input = root.join("rpftoc_landsat");
         let mut frames = Vec::new();
-        for name in ["ON/RPF/ZONE2/000C9010.ON2", "ON/RPF/ZONE2/000CA010.ON2", "TP/RPF/ZONE2/001DP010.TP2", "TP/RPF/ZONE2/001DQ010.TP2"] {
-            let path = root.join(name);
-            if !path.is_file() {
-                return;
-            }
-            frames.push(super::super::read_frame(name, &mut std::fs::File::open(path).unwrap()).unwrap());
+        for path in paths {
+            let name = path.strip_prefix(&input).unwrap().to_str().unwrap().replace(std::path::MAIN_SEPARATOR, "/");
+            frames.push(super::super::read_frame(&name, &mut std::fs::File::open(path).unwrap()).unwrap());
         }
         let bytes = encode(&frames, &Default::default()).unwrap();
         assert!(bytes.len() < 2048);

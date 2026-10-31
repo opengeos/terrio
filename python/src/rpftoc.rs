@@ -37,7 +37,13 @@ fn rpftoc_create<'py>(
     {
         let options = options(scale, producer_id, producer_name, country_code, classification);
         let report = py.detach_result(|| rpftoc::create(&input, output.as_deref(), &options, overwrite)).py()?;
-        py.import("json")?.call_method1("loads", (serde_json::to_string(&report).map_err(|e| crate::invalid(e.to_string()))?,))
+        let result = pyo3::types::PyDict::new(py);
+        result.set_item("frames", report.frames)?;
+        result.set_item("skipped_files", report.skipped_files)?;
+        result.set_item("groups", report.groups)?;
+        result.set_item("metadata_bytes", report.metadata_bytes)?;
+        result.set_item("output_bytes", report.output_bytes)?;
+        Ok(result.into_any())
     }
     #[cfg(target_family = "wasm")]
     {
@@ -51,7 +57,7 @@ fn rpftoc_create<'py>(
 #[pyo3(signature=(frames, *, scale=None, producer_id="TERRI", producer_name="Terrio", country_code="", classification='U'))]
 fn rpftoc_bytes<'py>(
     py: Python<'py>,
-    frames: Vec<(String, Py<PyBytes>)>,
+    frames: &Bound<'py, PyAny>,
     scale: Option<u32>,
     producer_id: &str,
     producer_name: &str,
@@ -59,9 +65,10 @@ fn rpftoc_bytes<'py>(
     classification: char,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let options = options(scale, producer_id, producer_name, country_code, classification);
-    if frames.len() > 100_000 {
+    if frames.len()? > 100_000 {
         return Err(crate::invalid("at most 100000 frames are accepted"));
     }
+    let frames: Vec<(String, Py<PyBytes>)> = frames.extract()?;
     // Borrow only the required metadata ranges from uploaded Python bytes.
     let frames = frames
         .iter()

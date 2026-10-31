@@ -82,7 +82,7 @@ pub(super) fn name_parts(relative_name: &str) -> Result<(u8, String)> {
         || relative_name.len() > 4096
         || relative_name.starts_with('/')
         || relative_name.contains(['\\', '\0', ':'])
-        || relative_name.split('/').any(|part| part.is_empty() || matches!(part, "." | ".."))
+        || relative_name.split('/').any(|part| part.is_empty() || part.ends_with(['.', ' ']))
     {
         return Err(Error::InvalidArgument("RPF frame names must be safe relative paths".into()));
     }
@@ -193,11 +193,50 @@ pub(super) fn read(relative_name: &str, reader: &mut (impl Read + Seek)) -> Resu
     {
         return Err(invalid("RPF input must be a 1536 by 1536 frame"));
     }
-    let classification = char::from(rpf[39]);
-    if !matches!(classification, 'U' | 'R' | 'C' | 'S' | 'T') {
-        return Err(invalid("unknown RPF frame classification"));
-    }
+    let classes = b"URCST";
+    let rpf_class = classes.iter().position(|value| *value == rpf[39]).ok_or_else(|| invalid("unknown RPF frame classification"))?;
+    let nitf_class = classes.iter().position(|value| *value == header[119]).ok_or_else(|| invalid("unknown NITF file classification"))?;
+    let classification = char::from(classes[rpf_class.max(nitf_class)]);
     Ok(RpfFrame { name: relative_name.into(), zone, series, classification, coverage: values })
+}
+
+#[cfg(test)]
+pub(super) fn test_frame(coverage: [f64; 12]) -> Vec<u8> {
+    let mut header = vec![b' '; 360];
+    header[..9].copy_from_slice(b"NITF02.00");
+    header[119] = b'U';
+    header.extend_from_slice(b"0010000000000000000000000000000000");
+    header.extend_from_slice(b"00062000RPFHDR00048");
+    let mut rpf = vec![0];
+    rpf.extend_from_slice(&48u16.to_be_bytes());
+    rpf.extend_from_slice(b"00000000.ON2");
+    rpf.push(0);
+    rpf.extend_from_slice(b"MIL-C-89038    19941006U    ");
+    let location = header.len() + 48 + 5;
+    rpf.extend_from_slice(&(location as u32).to_be_bytes());
+    assert_eq!(rpf.len(), 48);
+    header.extend(rpf);
+    header.extend_from_slice(b"00000");
+    assert_eq!(header.len(), location);
+    header[354..360].copy_from_slice(format!("{location:06}").as_bytes());
+    let mut bytes = header;
+    bytes.extend_from_slice(&34u16.to_be_bytes());
+    bytes.extend_from_slice(&14u32.to_be_bytes());
+    bytes.extend_from_slice(&2u16.to_be_bytes());
+    bytes.extend_from_slice(&10u16.to_be_bytes());
+    bytes.extend_from_slice(&116u32.to_be_bytes());
+    for (id, size, offset) in [(130u16, 96u32, location + 34), (136, 20, location + 34 + 96)] {
+        bytes.extend_from_slice(&id.to_be_bytes());
+        bytes.extend_from_slice(&size.to_be_bytes());
+        bytes.extend_from_slice(&(offset as u32).to_be_bytes());
+    }
+    for value in coverage {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+    bytes.extend_from_slice(&[0, 1, 0, 36, 0, 1, 0, 1, 0, 6, 0, 6]);
+    bytes.extend_from_slice(&256u32.to_be_bytes());
+    bytes.extend_from_slice(&256u32.to_be_bytes());
+    bytes
 }
 
 #[cfg(test)]
@@ -206,40 +245,7 @@ mod tests {
     use std::io::Cursor;
 
     fn fixture() -> Vec<u8> {
-        let mut header = vec![b' '; 360];
-        header[..9].copy_from_slice(b"NITF02.00");
-        header.extend_from_slice(b"0010000000000000000000000000000000");
-        header.extend_from_slice(b"00062000RPFHDR00048");
-        let mut rpf = vec![0];
-        rpf.extend_from_slice(&48u16.to_be_bytes());
-        rpf.extend_from_slice(b"00000000.ON2");
-        rpf.push(0);
-        rpf.extend_from_slice(b"MIL-C-89038    19941006U    ");
-        let location = header.len() + 48 + 5;
-        rpf.extend_from_slice(&(location as u32).to_be_bytes());
-        assert_eq!(rpf.len(), 48);
-        header.extend(rpf);
-        header.extend_from_slice(b"00000");
-        assert_eq!(header.len(), location);
-        header[354..360].copy_from_slice(format!("{location:06}").as_bytes());
-        let mut bytes = header;
-        bytes.extend_from_slice(&34u16.to_be_bytes());
-        bytes.extend_from_slice(&14u32.to_be_bytes());
-        bytes.extend_from_slice(&2u16.to_be_bytes());
-        bytes.extend_from_slice(&10u16.to_be_bytes());
-        bytes.extend_from_slice(&116u32.to_be_bytes());
-        for (id, size, offset) in [(130u16, 96u32, location + 34), (136, 20, location + 34 + 96)] {
-            bytes.extend_from_slice(&id.to_be_bytes());
-            bytes.extend_from_slice(&size.to_be_bytes());
-            bytes.extend_from_slice(&(offset as u32).to_be_bytes());
-        }
-        for value in [15.36f64, 0., 0., 0., 15.36, 15.36, 0., 15.36, 100., 100., 0.01, 0.01] {
-            bytes.extend_from_slice(&value.to_be_bytes());
-        }
-        bytes.extend_from_slice(&[0, 1, 0, 36, 0, 1, 0, 1, 0, 6, 0, 6]);
-        bytes.extend_from_slice(&256u32.to_be_bytes());
-        bytes.extend_from_slice(&256u32.to_be_bytes());
-        bytes
+        super::test_frame([15.36, 0., 0., 0., 15.36, 15.36, 0., 15.36, 100., 100., 0.01, 0.01])
     }
 
     #[test]
@@ -248,6 +254,17 @@ mod tests {
         assert_eq!((frame.zone, frame.classification, frame.series.as_str()), (2, 'U', "ON"));
         assert_eq!(frame.coverage[10..], [0.01, 0.01]);
         assert_eq!(frame.inferred_scale(), Some(1_000_000));
+    }
+
+    #[test]
+    fn frame_classification_keeps_the_stricter_nitf_or_rpf_label() {
+        for (nitf, rpf, expected) in [(b'S', b'U', 'S'), (b'U', b'S', 'S'), (b'C', b'R', 'C')] {
+            let mut bytes = fixture();
+            bytes[119] = nitf;
+            let start = bytes.windows(6).position(|v| v == b"RPFHDR").unwrap() + 11;
+            bytes[start + 39] = rpf;
+            assert_eq!(read("00000000.ON2", &mut Cursor::new(bytes)).unwrap().classification, expected);
+        }
     }
 
     #[test]
@@ -270,6 +287,13 @@ mod tests {
     }
 
     #[test]
+    fn windows_normalized_components_fail_before_metadata_reads() {
+        for name in [".. /00000000.ON2", "zone./00000000.ON2", "zone /00000000.ON2", "./00000000.ON2", "../00000000.ON2"] {
+            assert!(matches!(read(name, &mut Cursor::new(Vec::<u8>::new())), Err(Error::InvalidArgument(_))), "{name}");
+        }
+    }
+
+    #[test]
     fn declared_component_outside_file_is_rejected() {
         let mut bytes = fixture();
         let location = decimal(&bytes[354..360]).unwrap();
@@ -277,8 +301,9 @@ mod tests {
         assert!(read("00000000.ON2", &mut Cursor::new(bytes)).is_err());
     }
     #[test]
+    #[ignore = "requires prepared RPF fixtures; see docs/testing.md"]
     fn real_frame_metadata_reads_stay_below_one_kib_when_fixtures_are_available() {
-        let Some(root) = std::env::var_os("TERRIO_TEST_DATA").map(std::path::PathBuf::from) else { return };
+        let root = std::path::PathBuf::from(std::env::var_os("TERRIO_TEST_DATA").expect("set TERRIO_TEST_DATA to prepared RPF fixtures"));
         struct Counted {
             file: std::fs::File,
             bytes: usize,
@@ -295,18 +320,16 @@ mod tests {
                 self.file.seek(from)
             }
         }
-        for relative in
-            ["rpftoc_landsat/ON/RPF/ZONE2/000C9010.ON2", "rpftoc_landsat/TP/RPF/ZONE2/001DP010.TP2", "rpftoc_polar/RPF/ZONE9/00027010.ON9"]
-        {
-            let path = root.join(relative);
-            if !path.is_file() {
-                continue;
-            }
+        let mut paths = super::super::prepared_flat_frames(&root);
+        paths.push(root.join("rpftoc_polar/RPF/ZONE9/00027010.ON9"));
+        for path in paths {
+            assert!(path.is_file(), "missing RPF fixture {}", path.display());
+            let name = path.strip_prefix(&root).unwrap().to_str().unwrap().replace(std::path::MAIN_SEPARATOR, "/");
             let mut input = Counted { file: std::fs::File::open(path).unwrap(), bytes: 0 };
-            let frame = read(relative, &mut input).unwrap();
+            let frame = read(&name, &mut input).unwrap();
             assert_eq!(frame.classification, 'U');
             assert!(frame.inferred_scale().is_some());
-            assert!(input.bytes < 1024, "{} metadata bytes for {relative}", input.bytes);
+            assert!(input.bytes < 1024, "{} metadata bytes for {name}", input.bytes);
         }
     }
     #[test]

@@ -29,7 +29,7 @@ pub struct RpfFrame {
     pub zone: u8,
     /// Two-letter data series, used to infer scale unless explicitly supplied.
     pub series: String,
-    /// RPF frame classification, retained for the index-section classification.
+    /// Highest NITF/RPF frame classification, retained for the index section.
     pub classification: char,
     /// Four geographic corners (NW, SW, NE, SE), latitude then longitude,
     /// followed by latitude/longitude ground resolution and coordinate interval.
@@ -54,6 +54,7 @@ impl RpfFrame {
 
 /// Inspect an NITF 2.0/2.1 CADRG frame using bounded metadata reads.
 /// Names must be relative and contain a twelve-character frame basename.
+/// Components ending in a dot or space are rejected for Windows portability.
 /// NITF headers are limited to 1 MiB and location tables to 64 KiB.
 pub fn read_frame(relative_name: &str, reader: &mut (impl Read + Seek)) -> Result<RpfFrame> {
     frame::read(relative_name, reader)
@@ -75,7 +76,7 @@ pub struct RpfTocOptions {
     pub producer_name: String,
     /// Empty or two uppercase ISO country letters.
     pub country_code: String,
-    /// Index classification: U, R, C, S or T.
+    /// Index classification: U, R, C, S or T; must cover every frame classification.
     pub classification: char,
 }
 impl Default for RpfTocOptions {
@@ -98,6 +99,8 @@ pub fn encode(frames: &[RpfFrame], options: &RpfTocOptions) -> Result<Vec<u8>> {
 pub struct RpfTocReport {
     /// Number of indexed CADRG frame files.
     pub frames: usize,
+    /// Candidate filenames skipped because they are not NITF 2.0/2.1 files.
+    pub skipped_files: usize,
     /// Number of distinct reciprocal-scale/zone mosaics.
     pub groups: usize,
     /// Bytes read from frame headers and required metadata components.
@@ -113,4 +116,22 @@ pub struct RpfTocReport {
 #[cfg(not(target_family = "wasm"))]
 pub fn create(input: &std::path::Path, output: Option<&std::path::Path>, options: &RpfTocOptions, overwrite: bool) -> Result<RpfTocReport> {
     native::create(input, output, options, overwrite)
+}
+
+#[cfg(test)]
+pub(super) fn prepared_flat_frames(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    for (directory, extension) in [("ON/RPF/ZONE2", "ON2"), ("TP/RPF/ZONE2", "TP2")] {
+        let directory = root.join("rpftoc_landsat").join(directory);
+        let before = paths.len();
+        for entry in std::fs::read_dir(&directory).unwrap_or_else(|e| panic!("missing RPF fixture {}: {e}", directory.display())) {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|value| value == extension) {
+                paths.push(path);
+            }
+        }
+        assert!(paths.len() > before, "no {extension} fixtures in {}", directory.display());
+    }
+    paths.sort();
+    paths
 }

@@ -3399,13 +3399,22 @@ pixel windows; a box that rounds to an empty window is rejected.
 without decoding compressed pixel components. `OUTPUT` defaults to `INPUT/A.TOC`.
 The command is also an MCP tool. It supports `--scale`, `--producer-id` (five
 printable ASCII bytes), `--producer-name` (27), `--country-code` (two uppercase
-letters), `--classification U|R|C|S|T` and `--overwrite`. Scale is inferred per
+letters), `--classification U|R|C|S|T` and `--overwrite`. The index classification must be
+at least as high as every indexed frame. Scale is inferred per
 series unless overridden; mismatched corners, intervals or zones fail validation.
-The JSON report includes frame/group counts, metadata bytes read and output size.
+The JSON report includes frame/group counts, skipped non-NITF candidate counts,
+metadata bytes read and output size. On Unix, new output follows the process
+umask; overwrites preserve the existing file mode.
 
 The output parent must be the input directory or an ancestor. This preserves safe
 relative frame paths, including when the TOC is placed above a nested frame tree.
-Symlinks are skipped, and an output cannot replace an input frame. Validation
+Symlinks and non-NITF 2.0/2.1 candidates are skipped; the latter are counted in
+`skipped_files`. Malformed supported NITF frames still fail validation. An output
+cannot replace an input frame. Frame path
+components ending in dots or spaces are rejected to follow
+[Windows filename conventions](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file#naming-conventions).
+Duplicate paths or grid cells within one scale/zone are rejected. File opens
+refuse symlinks and verify the inventoried file identity before reading metadata. Validation
 finishes before atomic publication; an existing TOC is preserved on errors.
 CADRG NITF 2.0/2.1 metadata and northern/southern ARC/polar grids are supported;
 CIB, other RPF products and TRE overflow chains are unsupported. Limits include

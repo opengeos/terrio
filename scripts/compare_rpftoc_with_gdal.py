@@ -3,6 +3,10 @@
 
 import argparse
 import json
+import os
+import queue
+import signal
+import threading
 from pathlib import Path
 import shutil
 import struct
@@ -101,14 +105,16 @@ def compare(actual, reference):
     )
 
 
-def mcp_report(binary, arguments):
+def mcp_report(binary, arguments, timeout=30):
     process = subprocess.Popen(
         [str(binary), "mcp"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=os.name == "posix",
     )
+    reader = None
     try:
         messages = [
             dict(
@@ -132,10 +138,26 @@ def mcp_report(binary, arguments):
         for message in messages:
             process.stdin.write(json.dumps(message) + "\n")
         process.stdin.flush()
-        replies = {}
-        for _ in messages:
-            reply = json.loads(process.stdout.readline())
-            replies[reply["id"]] = reply
+        completed = queue.Queue()
+
+        def read_replies():
+            try:
+                replies = {}
+                for _ in messages:
+                    reply = json.loads(process.stdout.readline())
+                    replies[reply["id"]] = reply
+                completed.put((replies, None))
+            except Exception as error:
+                completed.put((None, error))
+
+        reader = threading.Thread(target=read_replies, daemon=True)
+        reader.start()
+        try:
+            replies, error = completed.get(timeout=timeout)
+        except queue.Empty as error:
+            raise AssertionError(f"MCP replies timed out after {timeout}s") from error
+        if error is not None:
+            raise error
         tool = next(
             tool
             for tool in replies[1]["result"]["tools"]
@@ -151,9 +173,19 @@ def mcp_report(binary, arguments):
             raise AssertionError("MCP server failed")
         return json.loads("".join(item["text"] for item in result["content"]))
     finally:
-        if process.poll() is None:
-            process.kill()
+        # EOF asks Terrio to cancel and reap its running tool children.
+        if not process.stdin.closed:
+            process.stdin.close()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
             process.wait()
+        if reader is not None:
+            reader.join(timeout=1)
 
 
 def run_case(kind, source, root, backend, options, args):

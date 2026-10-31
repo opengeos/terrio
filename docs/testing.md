@@ -42,7 +42,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 
 | Area | Script | Checks |
 |---|---|---|
-| RPF table of contents | `scripts/compare_rpftoc_with_gdal.py` (`rpftoc`) | Twenty-five cross-reads of flat two-scale Landsat mosaics, a historical polar frame, WI 3.5M and synthetic frames centered on both poles through CLI/MCP, Python native/bytes and Node. Exact samples, masks, palettes, types, nodata, CRS, GEOREF, classification and producer metadata; affine limit 1e-7 CRS units. Native reads stay below 1 KiB per frame. GDAL 3.13.3 requires an explicit 3.5M override to correct its verified fractional-scale truncation. Prepare external data with `scripts/make_rpftoc_fixtures.py DATA`; the suite requires GDAL 3.13 and current bindings. |
+| RPF table of contents | `scripts/compare_rpftoc_with_gdal.py` (`rpftoc`) | Twenty-five cross-reads of flat two-scale Landsat mosaics, a historical polar frame, WI 3.5M and synthetic frames centered on both poles through CLI/MCP, Python native/bytes and Node (20 cases without the optional Node package). Exact samples, masks, palettes, types, nodata, CRS, GEOREF, classification and producer metadata; affine limit 1e-7 CRS units. Native reads stay below 1 KiB per frame. GDAL 3.13.3 requires an explicit 3.5M override to correct its verified fractional-scale truncation. Prepare external data with `scripts/make_rpftoc_fixtures.py DATA`; the suite requires GDAL 3.13 and current bindings. |
 | Tile publication | `scripts/compare_tile_publication_with_gdal.py` (`tile-publication`) | Three real Landsat XYZ/TMS cases: exact PNG payloads, KML overlay bounds and complete local links, custom MapML substitutions, and GDAL cross-read STACTA grids and samples. One case corrects the independently verified GDAL default-256 scale defect for 64-pixel tiles. Seven Leaflet/OpenLayers pages were also checked in real Chrome on global XYZ/TMS, Mercator and anisotropic raster grids, including zoom changes, tile requests, rendered pixels and screenshots. Native tests cover typed STACTA in projected US feet and nondefault tile sizes. |
 | Retile layouts | `scripts/compare_retile_with_gdal.py` (`retile`) | 28 Landsat/USGS DEM cases: samples, masks, nodata, types, georeferencing, band properties, filenames, edge crops, overlap, row directories, three recursive levels, all five kernels, COG, Byte, CSV extents and Shapefile indexes. Fourteen exact; fourteen account explicitly for GDAL six-decimal index-origin rounding, one-ULP bilinear Float32 differences and its verified COG Byte-conversion defect. The defect workaround compares native COG samples with GDAL GTiff retile and validates all native COG layouts fully. Six verifier tests reject excessive roundoff, nonfinite, mask and grid changes and incorrect reference workarounds. |
 | Dataset summaries | `scripts/compare_with_gdal.py` (`--pixels`) | size, bands, data types, nodata, geotransform, EPSG code, statistics, pixels; layers, feature counts, fields, extents, geometry types |
@@ -118,6 +118,27 @@ The [Conformance](conformance.md) page has the full, generated results; in short
 | GeoPackage updates, `--spat` | 12 of 12 cases identical |
 | Coordinate transformations | Every EPSG CRS's forward and inverse points within 1 cm, without and with grids; 99.7 % of CRS-to-CRS points within 1 m |
 | Datum shift grids, geoids, epochs | 250 of 250 cases (50,000 points) within 0.02 mm of GDAL with the same grids |
+
+For all 25 RPF comparisons, build the Node package first:
+
+```sh
+wasm-pack build js --release --target nodejs --out-dir pkg-node --out-name terrio --no-opt
+```
+
+Without Node or `js/pkg-node/terrio.js`, the suite runs 20 CLI/MCP/Python cases.
+
+The four Rust RPF tests that consume prepared CADRG files are explicitly ignored in
+ordinary CI, whose reference is GDAL 3.12.2. Run them locally after preparation:
+
+```sh
+python scripts/make_rpftoc_fixtures.py ../terrio-data
+TERRIO_TEST_DATA=/absolute/path/to/terrio-data cargo test -p terrio --lib rpftoc -- --include-ignored
+python scripts/conformance.py ../terrio-data --only rpftoc --strict
+```
+
+Selecting these tests without the required files fails; it does not silently pass.
+The polar sample is pinned to the GDAL 3.13.3 commit and its SHA-256 digest is
+verified both after download and when using an existing fixture.
 
 ## Running the tests
 

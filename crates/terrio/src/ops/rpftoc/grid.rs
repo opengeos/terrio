@@ -96,13 +96,24 @@ impl Grid {
         out
     }
 
+    fn normalized_longitude(&self, longitude: f64) -> f64 {
+        let mut delta = (longitude + 180.).rem_euclid(360.);
+        // Keep tolerated roundoff just west of -180 on the first column.
+        if delta > 360. - FRAME * self.step[0] * 1e-3 {
+            delta = 0.;
+        }
+        delta - 180.
+    }
+
     /// Minimum geographic latitude/longitude of the entire frame, including
     /// polar edges, longitude discontinuities and an interior pole.
     pub(super) fn geographic_min(&self, frame: &RpfFrame) -> [f64; 2] {
         let corners = frame.coverage[..8].as_chunks::<2>().0;
         let min_lon = corners.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
         if !self.zone.is_multiple_of(9) {
-            return [corners.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min), min_lon];
+            let west = self.normalized_longitude(frame.coverage[3]);
+            let longitude = corners.iter().map(|p| west + (p[1] - west + 180.).rem_euclid(360.) - 180.).fold(f64::INFINITY, f64::min);
+            return [corners.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min), longitude];
         }
         let mut bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
         for p in corners {
@@ -128,7 +139,10 @@ impl Grid {
             return Err(invalid("frame zone or coverage is invalid"));
         }
         // The SW corner determines a bottom-up grid index in both hemispheres.
-        let sw = self.project(frame.coverage[2], frame.coverage[3]);
+        let mut sw = self.project(frame.coverage[2], frame.coverage[3]);
+        if !self.zone.is_multiple_of(9) {
+            sw[0] = self.normalized_longitude(sw[0]);
+        }
         let location = [(sw[0] - self.origin[0]) / (FRAME * self.step[0]), (sw[1] - self.origin[1]) / (FRAME * self.step[1])];
         let mut index = [0; 2];
         for i in 0..2 {
@@ -146,7 +160,9 @@ impl Grid {
             }
             let a = self.project(a[0], a[1]);
             let b = self.project(b[0], b[1]);
-            if (0..2).any(|i| (a[i] - b[i]).abs() > FRAME * self.step[i] * 1e-3) {
+            let longitude_error =
+                if self.zone.is_multiple_of(9) { (a[0] - b[0]).abs() } else { ((a[0] - b[0] + 180.).rem_euclid(360.) - 180.).abs() };
+            if longitude_error > FRAME * self.step[0] * 1e-3 || (a[1] - b[1]).abs() > FRAME * self.step[1] * 1e-3 {
                 return Err(invalid("frame size or corners do not match the selected CADRG scale/zone"));
             }
         }
@@ -180,19 +196,30 @@ mod tests {
         assert!(Grid::new(2, 0).is_err());
     }
     #[test]
+    #[ignore = "requires prepared RPF fixtures; see docs/testing.md"]
     fn real_gdal_frames_match_the_standard_grid_when_available() {
-        let Some(root) = std::env::var_os("TERRIO_TEST_DATA").map(std::path::PathBuf::from) else { return };
-        for (name, scale, at) in [
-            ("rpftoc_landsat/ON/RPF/ZONE2/000C9010.ON2", 1_000_000, [21, 3]),
-            ("rpftoc_landsat/TP/RPF/ZONE2/001DP010.TP2", 500_000, [43, 6]),
-            ("rpftoc_polar/RPF/ZONE9/00027010.ON9", 1_000_000, [9, 6]),
-        ] {
-            let path = root.join(name);
-            if !path.is_file() {
-                continue;
-            }
-            let frame = super::super::read_frame(name, &mut std::fs::File::open(path).unwrap()).unwrap();
-            assert_eq!(Grid::new(frame.zone, scale).unwrap().locate(&frame).unwrap(), at);
+        let root = std::path::PathBuf::from(std::env::var_os("TERRIO_TEST_DATA").expect("set TERRIO_TEST_DATA to prepared RPF fixtures"));
+        let mut paths = super::super::prepared_flat_frames(&root);
+        paths.push(root.join("rpftoc_polar/RPF/ZONE9/00027010.ON9"));
+        for path in paths {
+            assert!(path.is_file(), "missing RPF fixture {}", path.display());
+            let name = path.strip_prefix(&root).unwrap().to_str().unwrap().replace(std::path::MAIN_SEPARATOR, "/");
+            let frame = super::super::read_frame(&name, &mut std::fs::File::open(&path).unwrap()).unwrap();
+            let scale = frame.inferred_scale().unwrap();
+            // Independent GDAL naming oracle: base-34 frame number, with the
+            // known 1M/500K zone-2 and 1M polar column counts.
+            let alphabet = b"0123456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+            let number = path.file_name().unwrap().to_str().unwrap()[..5]
+                .bytes()
+                .fold(0u32, |n, c| n * 34 + alphabet.iter().position(|v| *v == c).unwrap() as u32);
+            let columns = if frame.zone == 9 {
+                11
+            } else if scale == 500_000 {
+                263
+            } else {
+                132
+            };
+            assert_eq!(Grid::new(frame.zone, scale).unwrap().locate(&frame).unwrap(), [number % columns, number / columns]);
         }
     }
 }
