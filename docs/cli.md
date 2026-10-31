@@ -2795,7 +2795,9 @@ pass. Non-nearest validity uses the maximum contributing source density, which
 can mark more edge pixels valid than a GDAL interpolating alpha warp; exact mask
 agreement is validated for nearest. It can read source windows again while retaining the same buffer budgets.
 PNG output contains image pixels only, without world files, CRS sidecars or
-web viewers. Use the JSON grid from `--dry-run` to obtain tile georeferencing;
+web viewers. The `--dry-run` JSON includes `crs` and the grid for georeferencing;
+`crs` is an authority code or full definition, and is null for an unknown source
+CRS on a raster grid.
 GeoTIFF tiles embed their grids and CRS. Distinct per-band nodata requiring PAM
 sidecars is currently refused for GeoTIFF folder output. The same restriction
 covers a shared Float32 nodata value whose raw value cannot be represented as
@@ -2827,8 +2829,9 @@ source window may use at most 64 MiB and the output buffer 256 MiB; requests
 exceeding those limits fail before the source window read. Decoder caches,
 already-loaded sources and PNG/GeoTIFF encoder buffers are additional. A plan
 exceeding `--max-tiles` (default one million) is rejected before rendering.
-`--dry-run` reports only the metadata grid; rendering-specific options and the
-maximum tile count are validated when generation runs.
+`--dry-run` reports a metadata-only plan, including CRS, and validates format,
+resampling, alpha and output-nodata choices available from that metadata. The
+maximum tile count, source reads and encoding checks are enforced during generation.
 
 Output directories must be new unless `--resume` is given. Existing files are
 never overwritten; resume trusts existing tiles without validating their

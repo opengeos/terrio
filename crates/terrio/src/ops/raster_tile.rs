@@ -170,6 +170,8 @@ impl TileLevel {
 pub struct TilePlan {
     /// Requested or automatically chosen maximum zoom, even if limits exclude it.
     pub max_zoom: u8,
+    /// Destination CRS as an authority code, WKT or PROJ definition; None if unspecified.
+    pub crs: Option<String>,
     /// Selected levels, ordered from lowest to highest zoom.
     pub levels: Vec<TileLevel>,
 }
@@ -222,7 +224,15 @@ impl TilePlan {
                 levels.push(TileLevel { matrix, range });
             }
         }
-        finish(levels, options, max_zoom)
+        let mut plan = finish(levels, options, max_zoom)?;
+        plan.crs = Some(
+            match scheme {
+                GlobalScheme::WebMercatorQuad => "EPSG:3857",
+                GlobalScheme::WorldCrs84Quad => "EPSG:4326",
+            }
+            .into(),
+        );
+        Ok(plan)
     }
 
     /// A raster-adapted matrix. The maximum zoom always has the source resolution;
@@ -433,7 +443,7 @@ fn finish(levels: Vec<TileLevel>, options: &GridOptions, max_zoom: u8) -> Result
     if levels.is_empty() && !options.no_intersection_ok {
         return Err(invalid("the input extent and requested tile coordinates do not intersect"));
     }
-    let plan = TilePlan { levels, max_zoom };
+    let plan = TilePlan { levels, max_zoom, crs: None };
     plan.count()?;
     Ok(plan)
 }
