@@ -3024,3 +3024,17 @@ reassembling shared edges: exterior/hole vertex direction can change with input
 feature order. Ring direction is not preserved; polygon roles and topology are
 preserved. For example, reversing the two-feature shared-zigzag fixture yields
 signed exterior areas +8 and -8 in both Terrio and GDAL.
+
+For `simplifyCoverage`, JavaScript `layer` selects a single output layer and is
+mutually exclusive with `activeLayer`, which copies inactive layers. Shared-span
+Z values follow the representative edge encountered first, as GDAL 3.13.3 /
+GEOS 3.14.1 does; neighbors with different source heights on identical XY spans
+can receive that edge's heights. Per-feature heights on shared spans are not
+independently preserved.
+
+With `preserve_declared_geometry_type` (JavaScript
+`preserveDeclaredGeometryType`), GeoPackage writers reject non-null features
+incompatible with a concrete declared type. Unknown declarations accept every
+geometry; GeometryCollection declarations also accept multipart subtypes.
+Mixed 2D/3D GeoPackage features use optional Z declarations, including append and
+update. Null geometries do not force either Z or M to optional.

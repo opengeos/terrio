@@ -1562,19 +1562,30 @@ pub fn check_coverage(src: JsValue, options: JsValue) -> Result<Dataset, JsError
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct SimplifyCoverageArgs {
+    layer: Option<String>,
     preserve_boundary: bool,
     active_layer: Option<String>,
 }
 
 /// Simplify shared polygon coverage edges while preserving topology. `tolerance`
 /// is the square root of the triangle-area threshold, in input CRS units.
-/// Options: `preserveBoundary`, `activeLayer` (copy other layers unchanged).
+/// Options: `preserveBoundary`, `layer` (select one), `activeLayer` (copy other layers unchanged).
+/// `layer` and `activeLayer` are mutually exclusive.
 /// Inputs must form a valid polygon coverage. Attributes and CRS are retained;
 /// output feature IDs are sequential from 1 in each layer.
 #[wasm_bindgen(js_name = simplifyCoverage)]
 pub fn simplify_coverage(src: JsValue, tolerance: f64, options: JsValue) -> Result<Dataset, JsError> {
     let args: SimplifyCoverageArgs = parse_options(&options)?;
-    let input = input_layers(&src)?;
+    if args.layer.is_some() && args.active_layer.is_some() {
+        return Err(invalid("layer and activeLayer are mutually exclusive"));
+    }
+    let mut input = input_layers(&src)?;
+    if let Some(name) = args.layer {
+        input.retain(|l| l.name == name);
+        if input.is_empty() {
+            return Err(invalid(format!("layer {name:?} not found")));
+        }
+    }
     let options = terrio::ops::coverage_simplify::CoverageSimplifyOptions { tolerance, preserve_boundary: args.preserve_boundary };
     let out = terrio::ops::coverage_simplify::simplify_coverage_layers(&input, &options, args.active_layer.as_deref()).map_err(js_err)?;
     Ok(Dataset::from_layers(out, VectorDriver::GeoJSON))

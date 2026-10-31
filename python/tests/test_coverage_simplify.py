@@ -167,3 +167,30 @@ def test_ring_direction_matches_gdal_when_feature_order_changes():
             )
         assert signed == expected
         assert len(terrio.check_coverage(output)) == 0
+
+
+def test_shared_span_z_matches_the_reference_representative_edge():
+    original = source()
+    for index, feature in enumerate(original["features"]):
+        ring = feature["geometry"]["coordinates"][0]
+        for vertex, point in enumerate(ring):
+            point.append((1 if index == 0 else 100) + vertex)
+    output = terrio.simplify_coverage(original, 0, preserve_boundary=True)
+    shared = []
+    for feature in output.to_geojson()["features"]:
+        shared.append(
+            sorted(tuple(p) for p in feature["geometry"]["coordinates"][0] if p[0] in (1.8, 2.2))
+        )
+    assert shared == [[(1.8, 1, 3), (1.8, 3, 5), (2.2, 2, 4)]] * 2
+
+
+def test_appending_mixed_height_layouts_promotes_the_declaration(tmp_path):
+    elevated = terrio.open_bytes(b'WKT\n"POINT Z (1 2 3)"\n', "points.csv").layers[0]
+    flat = terrio.open_bytes(b'WKT\n"POINT (4 5)"\n', "points.csv").layers[0]
+    for elevated_first in [False, True]:
+        first, second = (elevated, flat) if elevated_first else (flat, elevated)
+        path = tmp_path / f"append-z-{elevated_first}.gpkg"
+        first.write(str(path))
+        terrio.write_vector(second, str(path), append=True)
+        with closing(sqlite3.connect(path)) as db:
+            assert db.execute("SELECT z FROM gpkg_geometry_columns").fetchone() == (2,)

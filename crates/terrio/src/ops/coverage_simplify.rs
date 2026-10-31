@@ -44,7 +44,9 @@ pub struct CoverageSimplifyOptions {
 /// valid coverage; use coverage validation first. Attributes, layer name and CRS
 /// are retained, with output IDs sequential from 1. Polygon parts and holes are
 /// retained, matching GDAL/GEOS; rings can simplify to three distinct vertices.
-/// Retained vertices keep Z; measures are dropped, matching GEOS.
+/// Retained vertices keep the representative shared edge's Z; measures are
+/// dropped, matching GEOS. Conflicting heights from neighboring rings are not
+/// independently preserved along their shared span.
 /// This operation materializes the coverage and does not repair invalid coverages.
 pub fn simplify_coverage(layer: &Layer, options: &CoverageSimplifyOptions) -> Result<Layer> {
     if !options.tolerance.is_finite() || options.tolerance < 0.0 {

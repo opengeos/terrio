@@ -895,6 +895,7 @@ impl FeatureWriter {
 /// whose schema decisions (geometry type, Z, MEDIUMINT) are taken from the profile.
 #[cfg(feature = "sqlite")]
 struct GpkgSink {
+    preserve: bool,
     table: crate::drivers::vector::sqlite::StreamTable<BufWriter<File>>,
     builder: crate::drivers::vector::geopackage::Builder,
     cols: crate::drivers::vector::geopackage::LayerColumns,
@@ -908,6 +909,9 @@ impl GpkgSink {
     /// `None` when the layer has an integer field named fid (see `FeatureWriter::create`).
     fn create(path: &str, schema: &Layer, profile: &LayerProfile, preserve: bool) -> Result<Option<Self>> {
         use wbvector::FieldType;
+        if preserve {
+            crate::drivers::vector::profile::validate_geometry_profile(schema, profile)?;
+        }
         let fields = schema.schema.fields();
         if fields.iter().any(|f| f.name.eq_ignore_ascii_case("fid") && f.field_type == FieldType::Integer) {
             return Ok(None);
@@ -919,6 +923,7 @@ impl GpkgSink {
         let declared = if preserve || all_none { schema.geom_type } else { g.first.filter(|(_, same)| *same).map(|(t, _)| t) };
         let small = |i: usize| profile.fields.get(i).is_none_or(|f| f.no_int_beyond_int32);
         let mut cols = builder.layer_columns(schema, all_none, declared, g.any_z, None, small);
+        cols.z_hint = crate::drivers::vector::profile::dimension_hint(g.any_z, g.missing_z);
         cols.m_hint = crate::drivers::vector::profile::dimension_hint(g.has_m, g.missing_m);
         if preserve && declared.is_none() && g.any_z {
             cols.z_hint = 2;
@@ -930,6 +935,7 @@ impl GpkgSink {
             builder,
             cols,
             layer: schema.clone(),
+            preserve,
             extent: Default::default(),
             count: 0,
         }))
@@ -939,6 +945,9 @@ impl GpkgSink {
 #[cfg(feature = "sqlite")]
 impl FeatureSink for GpkgSink {
     fn write(&mut self, chunk: &Layer) -> Result<()> {
+        if self.preserve {
+            crate::drivers::vector::profile::validate_geometry_type(self.layer.geom_type, &chunk.features)?;
+        }
         let fields = self.layer.schema.fields();
         let first = self.count as i64 + 1;
         let (cols, features) = (&self.cols, &chunk.features);
@@ -955,7 +964,7 @@ impl FeatureSink for GpkgSink {
     }
 
     fn finish(self: Box<Self>) -> Result<()> {
-        let Self { table, mut builder, cols, layer, extent, count } = *self;
+        let Self { table, mut builder, cols, layer, extent, count, .. } = *self;
         let (root, mut next, mut out) = table.finish_with_output()?;
         let built = crate::drivers::vector::sqlite::BuiltTable { name: layer.name.clone(), sql: cols.sql.clone(), root };
         // The R-tree's tables follow the layer's.
@@ -1027,6 +1036,9 @@ impl GpkgLayersSink {
     /// Adds a chunk of features of layer `i`.
     pub(crate) fn write(&mut self, i: usize, chunk: &Layer) -> Result<()> {
         let l = &mut self.layers[i];
+        if self.preserve {
+            crate::drivers::vector::profile::validate_geometry_type(l.schema.geom_type, &chunk.features)?;
+        }
         l.profile.add(&chunk.features);
         let fields = l.schema.schema.fields();
         let first = l.count as i64 + 1;
@@ -1102,6 +1114,7 @@ impl GpkgLayersSink {
             let declared = if preserve || all_none { l.schema.geom_type } else { l.profile.uniform_type() };
             let small = |i: usize| l.profile.fields.get(i).is_none_or(|f| f.no_int_beyond_int32);
             let mut cols = builder.layer_columns(&l.schema, all_none, declared, g.any_z, None, small);
+            cols.z_hint = crate::drivers::vector::profile::dimension_hint(g.any_z, g.missing_z);
             cols.m_hint = crate::drivers::vector::profile::dimension_hint(g.has_m, g.missing_m);
             if preserve && declared.is_none() && g.any_z {
                 cols.z_hint = 2;

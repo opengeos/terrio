@@ -705,18 +705,21 @@ impl Builder {
     }
 
     pub(crate) fn add_layer_with_geometry_type(&mut self, layer: &Layer, preserve_declared_geometry_type: bool) -> Result<()> {
+        if preserve_declared_geometry_type {
+            super::profile::validate_geometry_type(layer.geom_type, &layer.features)?;
+        }
         self.claim(&layer.name)?;
         // A layer without geometries, a geometry type or a CRS is an attribute table, as GDAL
         // writes one.
         let all_none = layer.features.iter().all(|f| f.geometry.is_none());
         // The geometry type the features share, as GDAL declares it (GEOMETRY when they differ).
         let declared = if preserve_declared_geometry_type || all_none { layer.geom_type } else { super::uniform_type(layer) };
-        let (has_z, has_m, missing_m) = layer
+        let (has_z, missing_z, has_m, missing_m) = layer
             .features
             .iter()
             .filter_map(|f| f.geometry.as_ref())
             .map(crate::vector::geometry_dims)
-            .fold((false, false, false), |a, b| (a.0 || b.0, a.1 || b.1, a.2 || !b.1));
+            .fold((false, false, false, false), |a, b| (a.0 || b.0, a.1 || !b.0, a.2 || b.1, a.3 || !b.1));
         // Columns: a field named fid holding unique integers gives the feature ids, as in GDAL.
         let fields = layer.schema.fields();
         let fid_field =
@@ -729,6 +732,7 @@ impl Builder {
             });
         let small = |i: usize| layer.features.iter().filter_map(|ft| ft.attributes.get(i)?.as_i64()).all(|v| i32::try_from(v).is_ok());
         let mut cols = self.layer_columns(layer, all_none, declared, has_z, fid_field, small);
+        cols.z_hint = super::profile::dimension_hint(has_z, missing_z);
         if preserve_declared_geometry_type && declared.is_none() && cols.spatial && has_z {
             cols.z_hint = 2;
         }

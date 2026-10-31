@@ -2955,3 +2955,26 @@ test("rasterTiles handles per-channel nodata without hiding valid RGB channels",
   assert.equal(report.written, 1);
   raster.free();
 });
+
+
+test("simplifyCoverage selects one layer or copies inactive layers", () => {
+  const geometry={type:"Polygon",coordinates:[[[0,0],[2,0],[2,2],[0,2],[0,0]]]};
+  const data=name=>terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry}]},name);
+  const source=terrio.concat([data("a"),data("b")],{mode:"stack"});
+  const names=source.layerNames();
+  const selected=terrio.simplifyCoverage(source,0,{layer:names[0]});
+  assert.deepEqual(selected.layerNames(),[names[0]]);
+  const copied=terrio.simplifyCoverage(source,0,{activeLayer:names[0]});
+  assert.deepEqual(copied.layerNames(),names);
+  assert.throws(()=>terrio.simplifyCoverage(source,0,{layer:"missing"}),/not found/);
+  assert.throws(()=>terrio.simplifyCoverage(source,0,{layer:names[0],activeLayer:names[0]}),/mutually exclusive/);
+});
+
+test("GPKG toBytes registers optional Z for mixed height layouts", () => {
+  const source=terrio.open(new TextEncoder().encode('WKT\n"POINT Z (1 2 3)"\n"POINT (4 5)"\n'),"mixed.csv");
+  for(const preserve of [false,true]) {
+    const bytes=source.toBytes("mixed.gpkg",{preserveDeclaredGeometryType:preserve});
+    const report=terrio.validateGpkg(bytes,{fullCheck:true});
+    assert.equal(report.valid,true,JSON.stringify(report));
+  }
+});

@@ -701,6 +701,44 @@ fn geopackage_streams_register_optional_measures_across_chunks() {
 }
 
 #[test]
+fn geopackage_streams_register_optional_heights_across_chunks() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut layer = Layer::new("mixed").with_epsg(4326);
+    layer.features = vec![
+        Feature {
+            fid: 1,
+            attributes: vec![],
+            geometry: Some(Geometry::Point(wbvector::Coord { z: Some(3.), ..wbvector::Coord::xy(1., 2.) })),
+        },
+        Feature { fid: 2, attributes: vec![], geometry: Some(Geometry::point(4., 5.)) },
+    ];
+    layer.geom_type = Some(wbvector::GeometryType::Point);
+    let check = |path: &str| {
+        let db = crate::drivers::sqlite::Db::new(std::fs::read(path).unwrap()).unwrap();
+        let table = db.table("gpkg_geometry_columns").unwrap();
+        assert_eq!(table.get(&table.rows[0], "z").unwrap().as_i64(), Some(2));
+        let back = crate::open_vector(path, &Default::default()).unwrap();
+        for (a, b) in layer.features.iter().zip(&back.layers[0].features) {
+            assert_eq!(a.geometry, b.geometry);
+        }
+    };
+    let single = directory.path().join("single.gpkg").to_string_lossy().into_owned();
+    let mut writer = FeatureWriter::create(&single, &layer, Some(&LayerProfile::of(&layer)), &Default::default()).unwrap();
+    writer.write(&layer).unwrap();
+    writer.finish().unwrap();
+    check(&single);
+    let multi = directory.path().join("multi.gpkg").to_string_lossy().into_owned();
+    let mut sink = GpkgLayersSink::create(&multi, &[schema_of(&layer)], false).unwrap().unwrap();
+    for feature in &layer.features {
+        let mut chunk = schema_of(&layer);
+        chunk.features.push(feature.clone());
+        sink.write(0, &chunk).unwrap();
+    }
+    sink.finish().unwrap();
+    check(&multi);
+}
+
+#[test]
 fn geopackage_streams_register_z_found_after_the_first_coordinate() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("late-z.gpkg").to_string_lossy().into_owned();
@@ -779,4 +817,18 @@ fn geojson_streams_take_gdals_default_crs() {
         .unwrap();
     let readers = open_layers(&seq.to_string_lossy(), &Default::default(), 4).unwrap();
     assert_eq!(readers[0].layer().crs_epsg(), Some(4326), "sequence");
+}
+
+#[test]
+fn geopackage_streams_reject_incompatible_preserved_types() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut layer = polygons(1);
+    layer.geom_type = Some(wbvector::GeometryType::Point);
+    let options = VectorWriteOptions { preserve_declared_geometry_type: true, ..Default::default() };
+    let single = directory.path().join("bad.gpkg").to_string_lossy().into_owned();
+    assert!(FeatureWriter::create(&single, &layer, Some(&LayerProfile::of(&layer)), &options).is_err());
+    assert!(!std::path::Path::new(&single).exists());
+    let multi = directory.path().join("bad-multi.gpkg").to_string_lossy().into_owned();
+    let mut sink = GpkgLayersSink::create(&multi, &[schema_of(&layer)], true).unwrap().unwrap();
+    assert!(sink.write(0, &layer).unwrap_err().to_string().contains("does not match declared"));
 }
