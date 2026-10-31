@@ -114,7 +114,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
 /// time, on the crate's pool).
 pub(crate) fn read_bytes(bytes: &[u8]) -> Result<RasterDataset> {
     let bands = bands(bytes, normalize_units())?;
-    let (mut ds, split) = header(&bands)?;
+    let (mut ds, split) = header(&bands, bytes.len())?;
     let (cols, rows) = (ds.raster.cols, ds.raster.rows);
     let size =
         cols.checked_mul(rows).and_then(|n| n.checked_mul(bands.len())).ok_or_else(|| Error::InvalidData("grid too large".into()))?;
@@ -151,6 +151,37 @@ pub(crate) fn try_filled<T: Clone>(n: usize, v: T) -> Result<Vec<T>> {
     let mut out = try_vec(n)?;
     out.resize(n, v);
     Ok(out)
+}
+
+/// The default maximum points in a field: 128 MiB of Float64 values, before decoder buffers.
+const DEFAULT_MAX_POINTS: usize = 16 * 1024 * 1024;
+
+/// Validates a grid before allocating its decoded Float64 values.
+fn point_count(nx: usize, ny: usize, file_len: usize) -> Result<usize> {
+    let limit = match std::env::var("TERRIO_GRIB_MAX_POINTS") {
+        Ok(v) => v.trim().parse::<usize>().ok().filter(|n| *n > 0),
+        Err(std::env::VarError::NotPresent) => Some(DEFAULT_MAX_POINTS),
+        Err(_) => None,
+    }
+    .ok_or_else(|| Error::InvalidArgument("TERRIO_GRIB_MAX_POINTS must be a positive integer".into()))?;
+    checked_point_count(nx, ny, file_len, limit)
+}
+
+/// Validates the grid against the configured limit as well as platform and file sizes.
+fn checked_point_count(nx: usize, ny: usize, file_len: usize, limit: usize) -> Result<usize> {
+    let n = nx
+        .checked_mul(ny)
+        .filter(|n| n.checked_mul(8).is_some_and(|bytes| bytes <= isize::MAX as usize))
+        .ok_or_else(|| Error::InvalidData("GRIB grid larger than this platform's memory".into()))?;
+    if n > limit {
+        // A configured resource limit must not trigger the optional GDAL fallback.
+        return Err(Error::InvalidArgument(format!("GRIB grid of {n} points exceeds TERRIO_GRIB_MAX_POINTS={limit}")));
+    }
+    // A grid of more than 100 Mi points needs at least one byte of the file per 1,000 points.
+    if n > 100 * 1024 * 1024 && n / 1000 > file_len {
+        return Err(Error::InvalidData("file too short for its grid".into()));
+    }
+    Ok(n)
 }
 
 /// A band of a GRIB file: a field of a GRIB2 message, or a GRIB1 message.
@@ -194,11 +225,12 @@ impl Band<'_> {
 /// and CRS of the first band's grid, each band's description, metadata and nodata (GRIB2's from
 /// the sections, without decoding the data, as GDAL's `FindNoDataGrib2`), and the antimeridian
 /// split column.
-fn header(bands: &[Band]) -> Result<(RasterDataset, usize)> {
+fn header(bands: &[Band], file_len: usize) -> Result<(RasterDataset, usize)> {
     let first = bands.first().ok_or_else(|| Error::InvalidData("no GRIB message found".into()))?;
     let grid = first.grid()?;
     let georef = georeference(&grid);
     let (cols, rows) = (grid.nx as usize, grid.ny as usize);
+    point_count(cols, rows, file_len)?;
     let band_nodata: Vec<Option<f64>> = bands.iter().map(Band::nodata).collect::<Result<_>>()?;
     let nodata = band_nodata[0];
     let raster = wbraster::Raster {
@@ -281,7 +313,7 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
 /// Opens GRIB messages held in memory to be read band by band.
 pub(crate) fn open_lazy_bytes(bytes: std::sync::Arc<[u8]>) -> Result<crate::LazyRaster> {
     let normalize = normalize_units();
-    let (header, split) = header(&bands(&bytes, normalize)?)?;
+    let (header, split) = header(&bands(&bytes, normalize)?, bytes.len())?;
     let index = band_index(&bytes)?;
     let (cols, rows) = (header.raster.cols, header.raster.rows);
     let source = Source { store: Store::Bytes(bytes, index), cols, rows, split, normalize, cache: Vec::new() };
@@ -1426,11 +1458,7 @@ pub(crate) struct Decoded {
 fn decode_field(f: &Field, file_len: usize) -> Result<Decoded> {
     let grid = Grid::parse(f.sect3)?;
     let ngrdpts = uoct(f.sect3, 7, 4) as u32 as usize;
-    // degrib's guard against grids a short file cannot hold: at most 1000 points a byte above
-    // 100 Mi points.
-    if ngrdpts > 100 * 1024 * 1024 && ngrdpts / 1000 > file_len {
-        return Err(Error::InvalidData("file too short for its grid".into()));
-    }
+    point_count(grid.nx as usize, grid.ny as usize, file_len)?;
     let s5 = f.sect5;
     if s5.len() < 11 {
         return Err(Error::InvalidData("truncated data representation section".into()));
@@ -2211,6 +2239,92 @@ fn png_samples_sized(data: &[u8], ndpts: usize, nbits: u32) -> Option<(usize, us
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// A GRIB1 message of a constant field (no bits a value) on an `nx` x `ny` grid.
+    fn constant_grib1(nx: u16, ny: u16) -> Vec<u8> {
+        let valid = include_bytes!("../../tests/data/grib/Sample_QuikSCAT.grb");
+        let mut grib1 = valid[..68].to_vec();
+        grib1[4..7].copy_from_slice(&[0, 0, 83]);
+        grib1[15] = 0x80; // Grid definition, without a bitmap.
+        grib1[42..44].copy_from_slice(&nx.to_be_bytes());
+        grib1[44..46].copy_from_slice(&ny.to_be_bytes());
+        grib1.extend_from_slice(&[0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0]);
+        grib1.extend_from_slice(b"7777");
+        grib1
+    }
+
+    /// A GRIB2 message of a constant field (simple packing of no bits) on an `nx` x `ny` grid.
+    fn constant_grib2(nx: u32, ny: u32) -> Vec<u8> {
+        let mut grib2 = include_bytes!("../../tests/data/grib/simple_packing_nbits_zero_decimal_scaled.grb2").to_vec();
+        let mut pos = 16;
+        while pos + 5 < grib2.len() - 4 {
+            let len = u32::from_be_bytes(grib2[pos..pos + 4].try_into().unwrap()) as usize;
+            match grib2[pos + 4] {
+                3 => {
+                    grib2[pos + 6..pos + 10].copy_from_slice(&(nx * ny).to_be_bytes());
+                    grib2[pos + 30..pos + 34].copy_from_slice(&nx.to_be_bytes());
+                    grib2[pos + 34..pos + 38].copy_from_slice(&ny.to_be_bytes());
+                }
+                5 => grib2[pos + 5..pos + 9].copy_from_slice(&(nx * ny).to_be_bytes()),
+                _ => {}
+            }
+            pos += len;
+        }
+        grib2
+    }
+
+    #[test]
+    fn rejects_grids_that_cannot_be_allocated() {
+        assert!(checked_point_count(usize::MAX, 2, usize::MAX, usize::MAX).is_err());
+        assert!(checked_point_count(isize::MAX as usize / 8 + 1, 1, usize::MAX, usize::MAX).is_err());
+        assert!(checked_point_count(200_000_000, 1, 100, usize::MAX).is_err());
+        assert_eq!(checked_point_count(360, 181, 100_000, DEFAULT_MAX_POINTS).unwrap(), 65_160);
+    }
+
+    #[test]
+    fn caps_even_constant_fields_and_allows_an_explicit_larger_limit() {
+        assert!(matches!(checked_point_count(10_000, 10_000, 200, DEFAULT_MAX_POINTS),
+            Err(Error::InvalidArgument(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")));
+        assert_eq!(checked_point_count(DEFAULT_MAX_POINTS, 1, 200, DEFAULT_MAX_POINTS).unwrap(), DEFAULT_MAX_POINTS);
+        assert!(checked_point_count(DEFAULT_MAX_POINTS + 1, 1, 200, DEFAULT_MAX_POINTS).is_err());
+        assert_eq!(checked_point_count(10_000, 10_000, 200, 100_000_000).unwrap(), 100_000_000);
+    }
+
+    #[test]
+    fn rejects_oversized_constant_fields_while_opening_both_editions() {
+        for (bytes, name) in [(constant_grib1(10_000, 10_000), "large.grb"), (constant_grib2(10_000, 10_000), "large.grb2")] {
+            let error = crate::memory::open_raster_lazy_bytes(bytes, name).err();
+            assert!(matches!(&error, Some(Error::InvalidArgument(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")), "{name}: {error:?}");
+        }
+    }
+
+    /// Catches a field decoded without the limit: opening checks the raster's grid, the first
+    /// field's, so a later field is checked when it is read.
+    #[test]
+    fn rejects_oversized_constant_fields_before_decoding_both_editions() {
+        let files = [
+            ([constant_grib1(2, 2), constant_grib1(4097, 4097)].concat(), "two.grb"),
+            ([constant_grib2(2, 2), constant_grib2(4097, 4097)].concat(), "two.grb2"),
+        ];
+        for (bytes, name) in files {
+            let mut lazy = crate::memory::open_raster_lazy_bytes(bytes, name).unwrap();
+            let band = |b| crate::WindowOptions { bands: vec![b], overview: None };
+            assert!(lazy.read_window(crate::Window::new(0, 0, 2, 2), &band(1)).is_ok(), "{name}");
+            let error = lazy.read_window(crate::Window::new(0, 0, 2, 2), &band(2)).err();
+            assert!(matches!(&error, Some(Error::InvalidArgument(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")), "{name}: {error:?}");
+        }
+    }
+
+    #[cfg(feature = "gdal")]
+    #[test]
+    fn field_limit_errors_do_not_trigger_gdal_fallback() {
+        let error = checked_point_count(10_000, 10_000, 200, DEFAULT_MAX_POINTS).unwrap_err();
+        let result: Result<()> =
+            crate::dataset::gdal_fallback("large.grb2", Err(error), |_| panic!("a field-limit error must not be retried with GDAL"));
+        assert!(matches!(result, Err(Error::InvalidArgument(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")));
+    }
+
     /// WKT numbers as GDAL writes them (15 significant digits), as the Clarke 1866 grids of GDAL's
     /// test suite (`two_bands_with_bitmap.grib2`) show.
     #[test]

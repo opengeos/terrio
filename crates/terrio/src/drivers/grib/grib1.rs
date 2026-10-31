@@ -26,7 +26,7 @@
 //! assigns them. Like GDAL, not read: complex (second order) packing, spherical harmonics,
 //! predefined grids and bitmaps, quasi-regular grids.
 
-use super::{BitReader, Decoded, Grid, scan_index_to_xy, try_filled};
+use super::{BitReader, Decoded, Grid, point_count, scan_index_to_xy, try_filled};
 use crate::{BandMetadata, Error, Result};
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -357,12 +357,7 @@ impl<'a> Message<'a> {
     pub(crate) fn decode(&self) -> Result<(Decoded, Option<f64>)> {
         let grid = self.grid()?;
         let (nx, ny) = (grid.nx as usize, grid.ny as usize);
-        let npts = nx * ny;
-        // degrib's guard against grids a short file cannot hold: at most 1000 points a byte above
-        // 100 Mi points.
-        if npts > 100 * 1024 * 1024 && npts / 1000 > self.file_len {
-            return Err(bad("file too short for its grid"));
-        }
+        let npts = point_count(nx, ny, self.file_len)?;
         self.check_bitmap(npts)?;
         self.check_packing()?;
         let (r, e, d, nbits) = self.scaling();

@@ -117,6 +117,13 @@ as GDAL decodes them. Remote files are read by range, message by message as GDAL
 no `.idx` or `.index` sidecar: at open one 16 KiB block per message for its section headers, then a
 band's message when the band is read; a server that ignores range requests is refused.
 
+Terrio's GRIB driver limits each field to 16,777,216 points by default, including constant and
+compressed fields. This is 128 MiB of decoded Float64 values; decoder buffers and multi-band reads
+use additional memory. To allow larger fields, set the environment variable `TERRIO_GRIB_MAX_POINTS`
+to a larger positive integer. The limit is checked on the raster's grid (the first field's) when
+a file is opened, and on each field before it is decoded, for local, remote and in-memory files.
+A limit error does not trigger the optional GDAL fallback.
+
 GRIB2 is written as GDAL's GRIB driver writes it (`terrio.rio.open(path, "w", driver="GRIB")`,
 `terrio.rio.shutil.copy(..., driver="GRIB")`, `write_raster`), byte for byte: one message per band,
 on latitude/longitude (3.0), transverse Mercator (3.12, UTM included), Lambert conformal with two
