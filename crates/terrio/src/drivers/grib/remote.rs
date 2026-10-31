@@ -238,7 +238,7 @@ pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
             all.push(b);
         }
     }
-    let (ds, split) = header(&all)?;
+    let (ds, split) = header(&all, file_len)?;
     drop(all);
     let (cols, rows) = (ds.raster.cols, ds.raster.rows);
     let store = Store::Remote(Box::new(Messages { fetch, file_len, messages, bands }));
