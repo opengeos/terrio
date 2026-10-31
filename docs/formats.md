@@ -122,7 +122,7 @@ compressed fields. This is 128 MiB of decoded Float64 values; decoder buffers an
 use additional memory. To allow larger fields, set the environment variable `TERRIO_GRIB_MAX_POINTS`
 to a larger positive integer. The limit is checked on the raster's grid (the first field's) when
 a file is opened, and on each field before it is decoded, for local, remote and in-memory files.
-A limit error does not trigger the optional GDAL fallback.
+A limit error is not retried with GDAL, except for a file with no raster extension that `open` detects by its content.
 
 GRIB2 is written as GDAL's GRIB driver writes it (`terrio.rio.open(path, "w", driver="GRIB")`,
 `terrio.rio.shutil.copy(..., driver="GRIB")`, `write_raster`), byte for byte: one message per band,
