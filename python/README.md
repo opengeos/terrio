@@ -227,7 +227,9 @@ This stores the credential-free mapping key; readers need their own credentials.
 
 `terrio.pipeline(command, inputs=None, *, write=False, base_file=None, input_kind=None)` evaluates
 supported GDAL-style steps through the Rust pipeline engine. `command` is a step
-string or saved GDALG JSON text. Inputs can use native paths or aliases mapped to
+string or saved GDALG JSON text. Steps follow POSIX quoting, so a backslash outside
+quotes escapes the next character: quote Windows paths in single quotes
+(`'C:\data\in.tif'`) or use forward slashes. Inputs can use native paths or aliases mapped to
 `Raster`, vector objects, or paths:
 
 ```python

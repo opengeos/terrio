@@ -298,7 +298,7 @@ fn warp_inner(source: &mut LazyRaster, options: &WarpOptions, mask_pixels: bool)
         crate::ops::warp::warp_lazy(source, options)?
     };
     // Independent source metadata survives changes of grid; derived statistics do not.
-    output.raster.metadata = original.raster.metadata.iter().filter(|(k, _)| !k.starts_with("STATISTICS_")).cloned().collect();
+    output.raster.metadata = original.raster.metadata.clone();
     output.band_metadata = original.band_metadata.clone();
     clear_statistics(&mut output);
     output.color_table = original.color_table.clone();

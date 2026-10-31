@@ -54,7 +54,7 @@ impl From<Dataset> for PipelineData {
     }
 }
 impl PipelineData {
-    /// A shared read-only snapshot handle. Existing materialized buffers are shared.
+    /// A read-only handle for another consumer. Raster handles share the source; vector layers are cloned.
     pub fn shared(&mut self) -> Self {
         match self {
             Self::Raster(r) => Self::Raster(r.shared()),
@@ -156,6 +156,8 @@ pub struct Pipeline {
 }
 impl Pipeline {
     /// Parses a command string with POSIX quoting; no shell expansion is performed.
+    /// Outside quotes a backslash escapes the next character, so pass Windows paths in
+    /// single quotes (`'C:\data\in.tif'`) or with forward slashes.
     pub fn parse(command: &str) -> Result<Self> {
         let tokens = shlex::split(command).ok_or_else(|| invalid("unterminated command quoting"))?;
         Self::from_tokens(&tokens)
@@ -290,8 +292,9 @@ impl Pipeline {
                 Step::Materialize(spec) => {
                     current.materialize()?;
                     if let Some(spec) = spec {
-                        current.rename(&spec.layer)?;
-                        artifacts.push(Artifact::Data { spec: spec.clone(), data: current.shared() });
+                        let mut checkpoint = current.shared();
+                        checkpoint.rename(&spec.layer)?;
+                        artifacts.push(Artifact::Data { spec: spec.clone(), data: checkpoint });
                     }
                 }
                 step => apply(current, step)?,
@@ -376,6 +379,7 @@ impl PipelineResult {
                 Artifact::Data { spec, data } => match data {
                     PipelineData::Raster(r) => {
                         let mut options = raster_options(spec)?;
+                        keep_unreferenced(r, &mut options, &spec.path);
                         r.prepare_output_mask(&spec.path, &mut options, Window::full(r.width(), r.height()), None)?;
                         crate::memory::write_raster_bytes(&r.read()?, &spec.path, &options)?
                     }
@@ -431,6 +435,7 @@ impl PipelineResult {
                 Artifact::Data { spec, data } => match data {
                     PipelineData::Raster(r) => {
                         let mut options = raster_options(spec)?;
+                        keep_unreferenced(r, &mut options, &spec.path);
                         r.prepare_output_mask(&spec.path, &mut options, Window::full(r.width(), r.height()), None)?;
                         if options.mask.is_some() && options.driver == Some(RasterDriver::Cog) {
                             crate::write_raster_dataset(&r.read()?, &spec.path, &options)?;
@@ -454,6 +459,18 @@ impl PipelineResult {
             }
         }
         Ok(())
+    }
+}
+/// Keeps an unreferenced GeoTIFF/COG output unreferenced. Applied only to pipeline outputs, so
+/// other writers that share `prepare_output_mask` (such as `palette`) keep their own output.
+fn keep_unreferenced(raster: &LazyRaster, options: &mut crate::RasterWriteOptions, path: &str) {
+    let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+    if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog))
+        && !raster.geotransform_present()
+        && options.geo_transform.is_none()
+        && !options.creation_options.iter().any(|(key, _)| key.eq_ignore_ascii_case("GEOREFERENCED"))
+    {
+        options.creation_options.push(("GEOREFERENCED".into(), "NO".into()));
     }
 }
 fn raster_options(spec: &WriteSpec) -> Result<crate::RasterWriteOptions> {
@@ -574,6 +591,9 @@ fn apply(data: &mut PipelineData, step: &Step) -> Result<()> {
                 if size.is_some() || resolution.is_some() {
                     return Err(invalid("vector reproject does not accept a raster grid"));
                 }
+                if resampling.is_some() {
+                    return Err(invalid("vector reproject does not accept --resampling"));
+                }
                 *layers = crate::ops::vector_filter::translate(
                     layers,
                     &VectorTranslateOptions { dst_srs: Some(crs.clone()), ..Default::default() },
@@ -584,7 +604,7 @@ fn apply(data: &mut PipelineData, step: &Step) -> Result<()> {
                     r,
                     &WarpOptions {
                         dst_srs: Some(crs.clone()),
-                        resampling: *resampling,
+                        resampling: resampling.unwrap_or_default(),
                         size: *size,
                         resolution: *resolution,
                         ..Default::default()
@@ -718,6 +738,26 @@ mod tests {
         let bytes = result.output_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes["out.geojson"]).unwrap();
         assert_eq!(json["features"].as_array().unwrap().len(), 2);
+    }
+    #[test]
+    fn checkpoint_layer_names_apply_only_to_the_snapshot() {
+        let result = evaluate("read alias ! materialize --output checkpoint.geojson --output-layer checkpoint ! write final.geojson");
+        let Artifact::Data { data, .. } = &result.artifacts[0] else { panic!("checkpoint") };
+        assert_eq!(data.vectors().unwrap()[0].name, "checkpoint");
+        assert_eq!(result.artifacts[1].spec().layer, None);
+        assert_eq!(result.data.as_ref().unwrap().vectors().unwrap()[0].name, "places");
+    }
+    #[test]
+    fn vector_reproject_rejects_raster_resampling() {
+        let plan = Pipeline::parse("read alias ! reproject --output-crs EPSG:4326 --resampling bilinear").unwrap();
+        assert!(plan.evaluate_with(|_| Ok(vectors().into())).is_err());
+    }
+    #[test]
+    fn command_quoting_keeps_single_quoted_windows_paths_literal() {
+        let plan = Pipeline::parse(r"read 'C:\data\in.tif' ! write out.tif").unwrap();
+        assert!(matches!(&plan.blocks[0].step, Step::Read { source, .. } if source == r"C:\data\in.tif"));
+        let unquoted = Pipeline::parse(r"read C:\data\in.tif").unwrap();
+        assert!(matches!(&unquoted.blocks[0].step, Step::Read { source, .. } if source == r"C:datain.tif"));
     }
     #[test]
     fn dissolve_is_per_feature_and_unions_nodes_and_merges_components() {
@@ -947,6 +987,10 @@ mod tests {
         let mut png_options = crate::RasterWriteOptions::default();
         unreferenced.prepare_output_mask("unreferenced.png", &mut png_options, Window::full(2, 2), None).unwrap();
         assert!(!png_options.creation_options.iter().any(|(key, _)| key == "GEOREFERENCED"));
+        // Shared writers such as `palette` must not gain the pipeline's absent-transform option.
+        let mut tif_options = crate::RasterWriteOptions::default();
+        unreferenced.prepare_output_mask("unreferenced.tif", &mut tif_options, Window::full(2, 2), None).unwrap();
+        assert!(!tif_options.creation_options.iter().any(|(key, _)| key == "GEOREFERENCED"));
 
         for (index, middle) in [
             vec![],
@@ -1003,6 +1047,7 @@ mod tests {
             assert!(!reader.geotransform_present());
             let output = dir.path().join(format!("copy-{with_gcps}.tif"));
             let mut options = crate::RasterWriteOptions::default();
+            keep_unreferenced(&reader, &mut options, output.to_str().unwrap());
             reader.prepare_output_mask(output.to_str().unwrap(), &mut options, Window::full(2, 2), None).unwrap();
             reader.write(output.to_str().unwrap(), &options).unwrap();
             let mut copy = LazyRaster::open(output.to_str().unwrap()).unwrap();

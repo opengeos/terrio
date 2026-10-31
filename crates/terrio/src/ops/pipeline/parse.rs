@@ -23,7 +23,7 @@ pub(super) enum Step {
     Filter(vector_filter::VectorTranslateOptions),
     Select(Vec<String>),
     Clip { bbox: [f64; 4] },
-    Reproject { crs: SpatialRef, resampling: Resampling, size: Option<(usize, usize)>, resolution: Option<(f64, f64)> },
+    Reproject { crs: SpatialRef, resampling: Option<Resampling>, size: Option<(usize, usize)>, resolution: Option<(f64, f64)> },
     Resize { size: Option<(String, String)>, resolution: Option<(f64, f64)>, resampling: Resampling },
     SetType(wbraster::DataType),
     Buffer { distance: f64, quadrant_segments: usize },
@@ -129,7 +129,7 @@ fn parse_step(argv: &[String]) -> Result<Step> {
         }
         "reproject" => {
             let crs = SpatialRef::parse(&a.one("output-crs")?.ok_or_else(|| bad("reproject needs --output-crs"))?)?;
-            let resampling = resampling(&mut a)?;
+            let resampling = a.one("resampling")?.map(|v| Resampling::parse(&v)).transpose()?;
             let size = a.usize_pair("size")?;
             let resolution = a.pair("resolution")?;
             exclusive_grid(size.is_some(), resolution)?;
