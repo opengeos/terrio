@@ -764,3 +764,6 @@ mod tests {
 
 /// Attribute-preserving polygon, line and point layer algebra.
 pub mod layer_algebra;
+
+/// In-memory raster/vector pipelines and GDALG saved definitions.
+pub mod pipeline;

@@ -30,6 +30,7 @@ rstar.workspace = true
 spade.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+shlex.workspace = true
 # Keeps JSON object keys (properties, fields) in file order, and parses numbers exactly.
 serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip", "raw_value"] }
 zip.workspace = true

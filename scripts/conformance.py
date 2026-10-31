@@ -32,6 +32,7 @@ Suites:
                       (compare_vsi_with_gdal.py)
     vector-clip       points/lines/polygons against bbox, geometry and template clips vs GDAL
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
+    pipeline          composed raster/vector operations and saved GDALG definitions
     layer-algebra     seven polygon/line/point operations with schema and GDAL comparisons
 
     coverage-clean    polygon coverage cleaning: snapping, overlaps and enclosed narrow gaps
@@ -2388,6 +2389,32 @@ def suite_layer_algebra(ctx):
     return suite
 
 
+def suite_pipeline(ctx):
+    """Composed raster/vector operations and bidirectional saved definitions."""
+    suite = Suite("pipeline", "Raster/vector pipelines", "GDAL 3.13.3 pipelines",
+                  "Pixels, masks, types, nodata, color, CRS and affine transforms; vector schemas, "
+                  "attributes, validity and geometry. Polygon relative area tolerance 1e-7 (buffer 5e-4), "
+                  "line relative length 1e-8 and displacement 1e-7, point displacement 1e-8. "
+                  "Derived statistics and GDALG definitions produced by each implementation. "
+                  "A discrete GeoPackage writer-ID policy difference is explicitly recorded; native sequential IDs are independently checked.")
+    if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None or run(["gdal", "pipeline", "--help"])[0] != 0:
+        suite.skipped = "needs GDAL pipeline command, bindings and NumPy"
+        return suite
+    if not all(os.path.isfile(os.path.join(ctx.data, name)) for name in ["usgs_dem.tif", "TN_Counties.geojson"]):
+        suite.skipped = "needs real DEM and counties (scripts/fetch_test_data.sh)"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_pipeline_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        for row in json.loads(out):
+            suite.cases.append(Case("pipeline", row["name"], row["status"], row["detail"]))
+    except (ValueError, KeyError, TypeError) as error:
+        suite.error = f"{error}: {tail(err or out)}"
+        return suite
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or "pipeline comparison process failed")
+    return suite
+
+
 def suite_coverage_clean(ctx):
     """Coverage cleaning against GDAL on county boundaries and overlaps."""
     suite = Suite("coverage-clean", "Polygon coverage cleaning", "GDAL 3.13.3 gdal vector clean-coverage",
@@ -2462,6 +2489,7 @@ SUITES = OrderedDict(
         ("mdmosaic", suite_mdmosaic),
         ("topology", suite_topology),
         ("layer-algebra", suite_layer_algebra),
+        ("pipeline", suite_pipeline),
         ("coverage", suite_coverage),
         ("coverage-simplify", suite_coverage_simplify),
         ("coverage-clean", suite_coverage_clean),

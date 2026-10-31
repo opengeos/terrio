@@ -16,6 +16,7 @@ mod multidim;
 mod ops;
 mod palette;
 mod parquet_metadata;
+mod pipeline;
 mod pixel;
 mod pointcloud;
 mod pyogrio;
@@ -242,6 +243,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     raster_tile::register(m)?;
     query::register(m)?;
     pixel::register(m)?;
+    pipeline::register(m)?;
     palette::register(m)?;
     focal::register(m)?;
     pointcloud::register(m)?;

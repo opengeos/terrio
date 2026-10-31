@@ -21,6 +21,7 @@ mod multidim;
 mod ops;
 mod palette;
 mod parquet_metadata;
+mod pipeline;
 mod pixel;
 #[cfg(feature = "pointcloud")]
 mod pointcloud;
