@@ -101,8 +101,8 @@ pub fn pipeline(command: &str, inputs: JsValue, options: JsValue) -> Result<Pipe
     }
     let inner = plan
         .evaluate_with(|request| {
-            let value = sources
-                .get(if sources.contains_key(&request.source) { &request.source } else { &request.resolved })
+            let value = request
+                .find_input(&sources)
                 .ok_or_else(|| terrio::Error::InvalidArgument(format!("missing pipeline input alias: {}", request.source)))?;
             input(value, request.kind)
                 .map(Into::into)

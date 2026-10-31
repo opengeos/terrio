@@ -129,6 +129,16 @@ pub struct ReadRequest {
     /// Explicit or auto-detected input family.
     pub kind: InputKind,
 }
+impl ReadRequest {
+    /// Finds the caller's input for this request: by source token, then by resolved path.
+    pub fn find_input<'a, V>(&self, inputs: &'a BTreeMap<String, V>) -> Option<&'a V> {
+        inputs.get(&self.source).or_else(|| inputs.iter().find(|(name, _)| same_path(name, &self.resolved)).map(|(_, value)| value))
+    }
+}
+/// Resolved paths always join with `/`, so on Windows a native key names the same file.
+fn same_path(a: &str, b: &str) -> bool {
+    if cfg!(windows) { a.replace('\\', "/") == b.replace('\\', "/") } else { a == b }
+}
 /// A loaded input dataset. Nested checkpoint and write artifacts are discarded.
 pub struct PipelineInput {
     data: PipelineData,
@@ -892,6 +902,16 @@ mod tests {
         assert_eq!(result.data.unwrap().vectors().unwrap()[0].features.len(), 2);
         std::fs::write(&path, r#"{"type":"gdal_streamed_alg","command_line":"gdal vector pipeline read plan.gdalg.json"}"#).unwrap();
         assert!(Pipeline::open(path.to_str().unwrap()).unwrap().run().is_err());
+    }
+    #[test]
+    fn saved_definition_inputs_match_native_path_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("plan.gdalg.json");
+        let definition = r#"{"type":"gdal_streamed_alg","relative_paths_relative_to_this_file":true,"command_line":"gdal vector pipeline read source.geojson"}"#;
+        let plan = Pipeline::from_gdalg(definition, base.to_str()).unwrap();
+        let inputs = BTreeMap::from([(dir.path().join("source.geojson").to_string_lossy().into_owned(), 1)]);
+        let request = plan.request("source.geojson");
+        assert_eq!(request.find_input(&inputs), Some(&1));
     }
     #[test]
     fn nested_definitions_do_not_write_their_checkpoints() {

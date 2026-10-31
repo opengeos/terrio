@@ -74,8 +74,7 @@ fn pipeline(
     let mut input_error = None;
     let result = py.detach_result(|| {
         plan.evaluate_with(|request| {
-            let key = if sources.contains_key(&request.source) { &request.source } else { &request.resolved };
-            let Some(value) = sources.get(key) else { return PipelineInput::open(request) };
+            let Some(value) = request.find_input(&sources) else { return PipelineInput::open(request) };
             Python::attach(|py| -> PyResult<PipelineInput> {
                 let value = value.bind(py);
                 if let Ok(raster) = value.cast::<PyRaster>() {
