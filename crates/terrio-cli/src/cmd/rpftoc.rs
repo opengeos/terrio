@@ -5,6 +5,7 @@ use terrio::ops::rpftoc::{RpfTocOptions, create};
 #[derive(clap::Args)]
 pub struct Args {
     /// Directory recursively containing existing CADRG frames; symlinks are skipped.
+    /// Input/output directories must remain stable; synchronize concurrent directory changes.
     input: PathBuf,
     /// TOC filename, default input/A.TOC; parent must be input or an ancestor.
     output: Option<PathBuf>,
@@ -20,6 +21,7 @@ pub struct Args {
     #[arg(long, default_value="U", value_parser=["U","R","C","S","T"])]
     classification: String,
     /// Atomically replace any existing output file after validation; input frames are protected.
+    /// Preserves Unix mode bits, not ownership, extended ACLs or extended attributes.
     #[arg(long)]
     overwrite: bool,
 }

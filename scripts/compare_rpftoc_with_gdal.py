@@ -243,7 +243,7 @@ def run_case(kind, source, root, backend, options, args):
         for key, value in options.items():
             command += ["--" + key.replace("_", "-"), str(value)]
         report = (
-            json.loads(subprocess.check_output(command, text=True))
+            json.loads(subprocess.check_output(command, text=True, timeout=600))
             if backend == "cli"
             else mcp_report(args.terrio, command[2:])
         )
@@ -276,6 +276,7 @@ def run_case(kind, source, root, backend, options, args):
             check=True,
             capture_output=True,
             text=True,
+            timeout=600,
         )
     header = actual.read_bytes()
     if (

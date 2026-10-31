@@ -3414,7 +3414,8 @@ Symlinks and non-NITF 2.0/2.1 candidates are skipped; the latter are counted in
 cannot replace an input frame. Frame path
 components must be UTF-8 and cannot contain `:`, backslashes or NUL bytes.
 Unrepresentable paths fail rather than being silently omitted. Components ending
-in dots or spaces are rejected to follow
+in dots or spaces, or reserved Windows device names such as `CON`, `NUL`,
+`COM1` and `LPT1` (including extensions), are rejected to follow
 [Windows filename conventions](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file#naming-conventions).
 Duplicate paths or grid cells within one scale/zone are rejected. File opens
 refuse symlinks and verify the inventoried file identity before reading metadata. Validation
@@ -3422,7 +3423,16 @@ finishes before atomic publication; an existing TOC is preserved on errors.
 CADRG NITF 2.0/2.1 metadata and northern/southern ARC/polar grids are supported;
 CIB, other RPF products and TRE overflow chains are unsupported. A recognized
 NITF candidate that is unsupported or malformed aborts the run before publication;
-it is not counted as a skipped non-NITF file. Limits include
+it is not counted as a skipped non-NITF file. Declared NITF file size must match
+the actual size, so truncation after metadata is detected without reading pixels.
+
+Native creation requires a stable local directory tree: callers must synchronize
+concurrent changes to input and output directories. File identity checks detect
+replaced frames; they do not make pathname traversal or publication a confinement
+boundary against other local writers. Atomic overwrite preserves Unix mode bits;
+it creates a replacement file and does not preserve ownership, extended ACLs or
+other extended attributes. Applications requiring those properties should manage
+publication of `rpftoc_bytes` themselves. Limits include
 100,000 candidate frames, 200,000 directory entries, 64 directory levels, 1 MiB
 NITF headers, 64 KiB location tables and a 99,999-byte encoded TRE payload.
 Large indexes must be partitioned by the caller. Historical polar nominal

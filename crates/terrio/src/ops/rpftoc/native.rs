@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Qiusheng Wu
 // SPDX-License-Identifier: MIT
 //! Native directory discovery and atomic publication of a validated TOC.
+//! Caller contract: directory trees stay stable during creation; pathname operations
+//! are not a confinement boundary against hostile local writers. Atomic replacement
+//! preserves Unix mode bits, not ownership, extended ACLs or extended attributes.
 use super::{RpfTocOptions, RpfTocReport, encode, frame, invalid, read_frame};
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -144,9 +147,6 @@ pub(super) fn create(input: &Path, output: Option<&Path>, options: &RpfTocOption
     let mut paths = Vec::new();
     scan(&root, &mut paths, &mut 0, 0)?;
     paths.sort_by(|a, b| a.path.cmp(&b.path));
-    if paths.iter().any(|candidate| candidate.path == destination) {
-        return Err(Error::InvalidArgument("RPF output cannot replace an input frame".into()));
-    }
     let mut frames = Vec::new();
     let mut metadata_bytes = 0;
     let mut skipped_files = 0;
@@ -165,6 +165,14 @@ pub(super) fn create(input: &Path, output: Option<&Path>, options: &RpfTocOption
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => false,
             Err(error) => return Err(Error::Io(error)),
         };
+        if *path == destination {
+            // A custom 8.3 output name can pass the frame-name heuristic. It is
+            // not an input frame when it is a previous TOC or a non-NITF file.
+            if !supported || frame::is_toc(&mut reader)? {
+                continue;
+            }
+            return Err(Error::InvalidArgument("RPF output cannot replace an input frame".into()));
+        }
         if !supported {
             metadata_bytes += reader.bytes;
             skipped_files += 1;
@@ -230,6 +238,20 @@ mod tests {
         assert_eq!((report.frames, report.skipped_files), (1, 2));
         assert_eq!(report.metadata_bytes, length + 9 + 9 + 4);
     }
+    #[test]
+    fn custom_83_output_can_replace_an_old_toc_or_placeholder() {
+        let stage = tempfile::tempdir().unwrap();
+        valid_frame(stage.path());
+        let output = stage.path().join("INDEX001.TOC");
+        std::fs::write(&output, b"placeholder").unwrap();
+        let first = create(stage.path(), Some(&output), &Default::default(), true).unwrap();
+        assert_eq!((first.frames, first.skipped_files), (1, 0));
+        let second = create(stage.path(), Some(&output), &Default::default(), true).unwrap();
+        assert_eq!((second.frames, second.skipped_files), (1, 0));
+        assert_eq!(first.metadata_bytes, second.metadata_bytes);
+        assert!(std::fs::read(output).unwrap().starts_with(b"NITF02.00"));
+    }
+
     #[test]
     fn output_cannot_replace_a_frame_or_use_a_sibling_directory() {
         let stage = tempfile::tempdir().unwrap();
