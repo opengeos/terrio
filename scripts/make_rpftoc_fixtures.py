@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 import urllib.request
 
@@ -38,10 +39,11 @@ def install_frame_inventory(root, generated, pattern):
             target = root / path.relative_to(generated)
             if not target.exists():
                 target.parent.mkdir(parents=True, exist_ok=True)
+                candidate = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
                 temporary = None
                 try:
-                    with tempfile.NamedTemporaryFile(dir=target.parent, prefix=f".{target.name}.", suffix=".partial", delete=False) as output:
-                        temporary = Path(output.name)
+                    with candidate.open("xb") as output:
+                        temporary = candidate
                         with path.open("rb") as source:
                             shutil.copyfileobj(source, output)
                     temporary.replace(target)

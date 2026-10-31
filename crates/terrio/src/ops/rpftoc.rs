@@ -87,8 +87,9 @@ impl Default for RpfTocOptions {
 }
 
 /// Serialize a metadata-only NITF 2.0 A.TOC referring to existing CADRG frame files.
-/// Names are safe paths relative to the TOC directory. At most 100,000 frames and
-/// 16 MiB of metadata are accepted; the serialized TRE payload must fit 99,999 bytes. Conflicting grid cells and inconsistent scale,
+/// Names are safe paths relative to the TOC directory. The 100,000-frame inspection cap and
+/// 16 MiB metadata budget are resource limits; serialized capacity is lower and depends on the
+/// paths/groups fitting a 99,999-byte TRE payload. Conflicting grid cells and inconsistent scale,
 /// zone, corners, angular intervals or filename metadata fail before output.
 /// Output resolution is derived from scale; legacy polar pitch/interval fields are normalized.
 /// The file date-time is a fixed placeholder for reproducibility, not the creation time.
@@ -101,7 +102,7 @@ pub fn encode(frames: &[RpfFrame], options: &RpfTocOptions) -> Result<Vec<u8>> {
 pub struct RpfTocReport {
     /// Number of indexed CADRG frame files.
     pub frames: usize,
-    /// Candidate filenames skipped because they are not NITF 2.0/2.1 files.
+    /// Non-frame candidates skipped, including unrelated files and prior indexes other than the output.
     pub skipped_files: usize,
     /// Number of distinct reciprocal-scale/zone mosaics.
     pub groups: usize,
