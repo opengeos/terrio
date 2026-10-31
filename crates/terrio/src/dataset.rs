@@ -1540,8 +1540,8 @@ mod tests {
         assert!(crate::open(path).is_err());
         crate::config::push_scope([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))].into());
         let opened = crate::open(path);
-        let options = VectorOpenOptions { spatial_filter: Some((-5.5, -2.5, 5.5, 2.5)), ..Default::default() };
-        let filtered = open_local(path, &options);
+        let options = crate::VectorOpenOptions { spatial_filter: Some((-5.5, -2.5, 5.5, 2.5)), ..Default::default() };
+        let filtered = super::open_local(path, &options);
         crate::config::pop_scope();
         let crate::Dataset::Vector(v) = opened.unwrap() else { panic!("not a vector") };
         assert_eq!((v.driver, v.layers[0].len()), (crate::formats::VectorDriver::Parquet, 500));
