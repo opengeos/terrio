@@ -11,7 +11,7 @@ import terrio
 # Tests of the memory checks: their child processes set `RLIMIT_AS` and read `/proc`, or expect
 # `usable_memory`, which reads `/proc`.
 NEEDS_LINUX_MEMORY_LIMITS = {
-    "test_grib.py::test_huge_grid_is_an_error_not_an_abort",
+    "test_grib_gdal.py::test_huge_grid_is_an_error_not_an_abort",
     "test_hardening.py::test_a_jpeg2000_too_large_to_allocate_raises",
     "test_hardening.py::test_a_jpeg_too_large_to_allocate_raises",
     "test_hardening.py::test_a_png_too_large_to_allocate_raises",
@@ -35,8 +35,8 @@ BIT_EXACT_ON_LINUX = {
     "test_cog_overviews.py::test_masked_build_overviews_are_gdals",
     "test_cog_overviews.py::test_masked_overviews_are_gdals",
     "test_cog_overviews.py::test_overviews_are_gdals",
-    "test_grib.py::test_encodings",
-    "test_grib.py::test_grib_fixtures_read_as_gdal",
+    "test_grib_gdal.py::test_encodings",
+    "test_grib_gdal.py::test_grib_fixtures_read_as_gdal",
     "test_rasterio_call_parity.py::test_from_gcps_matches_gdal",
     "test_resampled_reads.py::test_resampled_reads_match_rasterio",
     "test_utm_parity.py::test_utm_transforms_are_gdal_s",
@@ -52,7 +52,7 @@ BIT_EXACT_ON_LINUX = {
 
 
 # The rasterio wheel for Windows cannot read CCSDS packing ("Out of memory" in GDAL).
-NO_CCSDS_IN_WINDOWS_RASTERIO = "test_grib.py::test_ccsds_packing"
+NO_CCSDS_IN_WINDOWS_RASTERIO = "test_grib_gdal.py::test_ccsds_packing"
 
 
 def pytest_collection_modifyitems(items):
