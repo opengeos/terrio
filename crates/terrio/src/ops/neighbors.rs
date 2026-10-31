@@ -672,8 +672,9 @@ mod tests {
         let out = filter(&[1., 1., f32::NAN, f32::NAN, f32::NAN, 2., 3., 4., 5.], 3, 3, &k, None);
         assert_eq!(out[4], 1.0);
     }
+    /// Reference: GDAL 3.13.
     #[test]
-    fn nan_nodata_center_is_interpolated_like_gdal_313() {
+    fn nan_nodata_center_is_interpolated_like_gdal() {
         let values = [1., 1., 1., 1., f32::NAN, 1., 1., 1., 1.];
         let out = filter(&values, 3, 3, &kernel(vec![1.; 9], true, None), Some(f32::NAN));
         assert_eq!(out[4], 1.);
@@ -688,8 +689,9 @@ mod tests {
         assert!(NeighborsNodata::parse("missing").is_err());
     }
 
+    /// Reference: GDAL 3.13.
     #[test]
-    fn all_nan_mode_without_nodata_matches_gdal_313() {
+    fn all_nan_mode_without_nodata_matches_gdal() {
         let out = filter(&[f32::NAN; 9], 3, 3, &kernel(vec![1.; 9], true, Some(NeighborMethod::Mode)), None);
         assert!(out.iter().all(|v| v.is_nan()));
     }

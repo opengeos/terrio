@@ -556,7 +556,7 @@ impl MultiDirectionalParams {
 
 /// GDAL 3.13 changed terrain arithmetic and parameters to Float32.
 #[derive(Clone, Copy)]
-struct Terrain313 {
+struct Float32Terrain {
     alg: GradientAlg,
     inv_ew: f32,
     inv_ns: f32,
@@ -569,7 +569,7 @@ struct Terrain313 {
     same_x: f32,
     same_y: f32,
 }
-impl Terrain313 {
+impl Float32Terrain {
     fn new(gt: &[f64; 6], o: &DemOptions, xs: f64, ys: f64) -> Self {
         let inv_ew = (1.0 / (gt[1] * xs)) as f32;
         let inv_ns = (1.0 / (gt[5] * ys)) as f32;
@@ -613,7 +613,7 @@ impl Terrain313 {
             let (x, y) = (x * self.inv_ew, y * self.inv_ns);
             (self.sin_alt - (y * self.cos_az - x * self.sin_az), 1.0 + self.square_z * (x * x + y * y))
         };
-        let ratio = divide_sqrt313(num, den, multi);
+        let ratio = divide_sqrt_f32(num, den, multi);
         if ratio <= 0.0 { 1.0 } else { 1.0 + ratio }
     }
 }
@@ -621,7 +621,7 @@ impl Terrain313 {
 /// Match the reference's x86 estimate/refinement path, not a cross-CPU bit pattern.
 /// Intel and AMD rsqrt estimates can differ; non-x86 uses exact division/sqrt.
 #[inline]
-fn divide_sqrt313(numerator: f32, denominator: f32, multi: bool) -> f32 {
+fn divide_sqrt_f32(numerator: f32, denominator: f32, multi: bool) -> f32 {
     if !multi {
         return numerator / denominator.sqrt();
     }
@@ -638,7 +638,8 @@ fn divide_sqrt313(numerator: f32, denominator: f32, multi: bool) -> f32 {
     }
 }
 
-fn slope313<T: Px>(w: &[T; 9], alg: GradientAlg, ew: f64, ns: f64, percent: bool) -> f32 {
+/// Slope, in degrees or percent, with GDAL 3.13's Float32 arithmetic.
+fn slope_f32<T: Px>(w: &[T; 9], alg: GradientAlg, ew: f64, ns: f64, percent: bool) -> f32 {
     let (x, y, div) = match alg {
         GradientAlg::Horn => {
             let (x, y) = horn(w);
@@ -1066,13 +1067,13 @@ impl Terrain {
             ($t:ty, $src:expr, $nd:expr) => {{
                 let hs = HillshadeParams::new(&gt, o, xscale, yscale);
                 let md = MultiDirectionalParams::new(&gt, o, xscale, yscale);
-                let modern = o.kernel_version == super::warp::KernelVersion::Gdal313;
-                let f313 = Terrain313::new(&gt, o, xscale, yscale);
+                let float32 = o.kernel_version == super::warp::KernelVersion::Gdal313;
+                let float32_terrain = Float32Terrain::new(&gt, o, xscale, yscale);
                 let same_res = gt[1] == -gt[5] && xscale == yscale;
                 let (ew, ns) = (gt[1] * xscale, gt[5] * yscale);
                 let azimuth = !o.trigonometric;
                 let f: Box<dyn Fn(&[$t; 9]) -> f32 + Sync> = match product {
-                    DemProduct::Hillshade if modern => Box::new(move |w| f313.shade(w, false)),
+                    DemProduct::Hillshade if float32 => Box::new(move |w| float32_terrain.shade(w, false)),
                     DemProduct::Hillshade => match o.shading {
                         Shading::MultiDirectional => Box::new(move |w| md.shade(w)),
                         Shading::Combined => Box::new(move |w| hs.combined(w)),
@@ -1082,7 +1083,7 @@ impl Terrain {
                     },
                     DemProduct::Slope => {
                         let (alg, percent) = (o.gradient, o.slope_percent);
-                        Box::new(move |w| if modern { slope313(w, alg, ew, ns, percent) } else { slope(w, alg, ew, ns, percent) })
+                        Box::new(move |w| if float32 { slope_f32(w, alg, ew, ns, percent) } else { slope(w, alg, ew, ns, percent) })
                     }
                     DemProduct::Aspect => {
                         let alg = o.gradient;
@@ -1094,7 +1095,7 @@ impl Terrain {
                     DemProduct::Roughness => Box::new(roughness::<$t>),
                 };
                 #[cfg(target_arch = "x86_64")]
-                let simd = move |w: &[$t; 9]| if modern { f313.shade(w, true) } else { hs.same_res_simd(w) };
+                let simd = move |w: &[$t; 9]| if float32 { float32_terrain.shade(w, true) } else { hs.same_res_simd(w) };
                 #[cfg(target_arch = "x86_64")]
                 let multi: Option<&(dyn Fn(&[$t; 9]) -> f32 + Sync)> =
                     (product == DemProduct::Hillshade && o.shading == Shading::Standard && o.gradient == GradientAlg::Horn && same_res)
@@ -2065,7 +2066,7 @@ nv 10 20 30 0
 
     /// Captured from GDAL 3.13.3 on this Float32 3x3 source, without SIMD columns.
     #[test]
-    fn modern_terrain_matches_gdal_float32_golden_values() {
+    fn float32_terrain_matches_gdal_golden_values() {
         let ds = dem_ds(vec![942.315, 946.702, 951.43, 945.132, 943.95, 959.37, 948.15, 954.318, 960.01], 3, 3, DataType::F32, None, 3.5);
         let options = DemOptions { kernel_version: super::super::warp::KernelVersion::Gdal313, ..Default::default() };
         let slope = slope_map(&ds, &options).unwrap();

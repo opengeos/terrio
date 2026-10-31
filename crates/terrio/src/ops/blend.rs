@@ -278,8 +278,9 @@ mod tests {
         )
         .unwrap()
     }
+    /// Frozen from GDAL 3.13.3.
     #[test]
-    fn operators_match_frozen_gdal_3_13_3_rgb_values() {
+    fn operators_match_frozen_gdal_rgb_values() {
         for (name, expected) in [
             ("src-over", [250., 20., 100.]),
             ("hsv-value", [44., 118., 250.]),

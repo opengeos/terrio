@@ -3145,7 +3145,7 @@ mod tests {
     }
 
     #[test]
-    fn gdal313_scales_follow_local_geometry() {
+    fn square_scales_follow_local_geometry() {
         assert_eq!(square_scales([(0.0, 0.0), (2.0, 0.0), (0.0, 4.0), (2.0, 4.0)]), Some((0.5, 0.25)));
         let rotated = square_scales([(0.0, 0.0), (2.0, 2.0), (-2.0, 2.0), (0.0, 4.0)]).unwrap();
         assert!((rotated.0 - 1.0 / 8.0_f64.sqrt()).abs() < 1e-15);
