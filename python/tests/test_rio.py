@@ -261,6 +261,33 @@ def test_memoryfile_and_file_objects(dem):
         assert ds.read().sum() == 50
 
 
+def test_memoryfile_names_bytes_by_their_signature():
+    """Bytes given without a file name or extension are named for the format they start with.
+
+    PNG, JPEG and WebP bytes, named `.tif`, failed to open, from a MemoryFile or from a file object
+    passed to `open`. Other bytes, and a MemoryFile created without bytes, are named `.tif`; an
+    extension given is kept.
+    """
+    data = np.arange(3 * 6 * 8, dtype="uint8").reshape(3, 6, 8)
+    for driver, ext in [("PNG", ".png"), ("JPEG", ".jpg"), ("WEBP", ".webp")]:
+        with rio.MemoryFile() as mem:
+            with mem.open(driver=driver, width=8, height=6, count=3, dtype="uint8") as dst:
+                dst.write(data)
+            raw = mem.read()
+        with rio.MemoryFile(raw) as mem, mem.open() as ds:
+            assert os.path.splitext(mem.name)[1] == ext
+            assert ds.driver == driver and ds.read().shape == (3, 6, 8)
+            if driver != "JPEG":
+                assert np.array_equal(ds.read(), data)
+        with rio.open(io.BytesIO(raw)) as ds:
+            assert ds.driver == driver
+        with rio.MemoryFile(raw, ext=".tif") as mem:
+            assert mem.name.endswith(".tif")
+    for mem in (rio.MemoryFile(b"not a raster"), rio.MemoryFile()):
+        with mem:
+            assert mem.name.endswith(".tif")
+
+
 @pytest.fixture
 def memfile_tmp(tmp_path, monkeypatch):
     """An empty directory that `tempfile`, and so `MemoryFile`, takes as TMPDIR in the test."""
