@@ -67,7 +67,10 @@ impl<'a> Publication<'a> {
         }
         if let Some(url) = &options.url
             && let Some((protocol, _)) = url.split_once(':')
-            && !matches!(protocol, "http" | "https")
+            && protocol.starts_with(|c: char| c.is_ascii_alphabetic())
+            && protocol.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            && !protocol.eq_ignore_ascii_case("http")
+            && !protocol.eq_ignore_ascii_case("https")
         {
             return Err(invalid("publication URLs must be HTTP(S) or relative"));
         }
@@ -105,11 +108,11 @@ impl<'a> Publication<'a> {
             return Err(invalid("mapml_template requires mapml publication"));
         }
         let bounds = plan.levels.last().map(level_bounds).unwrap_or([0.; 4]);
-        let srs = match &plan.crs {
-            Some(definition) => SpatialRef::parse(definition)?,
-            None => source.crs(),
-        };
-        let geographic = if options.kml || viewers.contains("stac") || viewers.contains("leaflet") {
+        let geographic = if !plan.levels.is_empty() && (options.kml || viewers.contains("stac") || viewers.contains("leaflet")) {
+            let srs = match &plan.crs {
+                Some(definition) => SpatialRef::parse(definition)?,
+                None => source.crs(),
+            };
             if srs.is_unknown() {
                 return Err(invalid("KML/STAC/geographic viewers require a known CRS"));
             }
@@ -124,7 +127,7 @@ impl<'a> Publication<'a> {
         if !plan.levels.is_empty() && publication.geographic.is_some() {
             publication.geo_bounds(bounds)?;
         }
-        if publication.viewers.contains("stac") {
+        if publication.viewers.contains("stac") && !plan.levels.is_empty() {
             publication.stac(source)?;
         }
         if publication.viewers.contains("mapml") && !plan.levels.is_empty() {
@@ -348,7 +351,7 @@ impl<'a> Publication<'a> {
         let crs = if self.scheme.eq_ignore_ascii_case("WorldCRS84Quad") { "L.CRS.EPSG4326" } else { "L.CRS.EPSG3857" };
         let limits: Vec<_> = self.plan.levels.iter().map(|l| [l.range.min_x, l.range.min_y, l.range.max_x, l.range.max_y]).collect();
         Ok(format!(
-            "{}<link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\"><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><script>const crs=L.extend({{}},{crs},{{scale:z=>{}*Math.pow(2,z),zoom:s=>Math.log2(s/{})}});const bounds=[[{},{}],[{},{}]];const limits={};const Tiles=L.TileLayer.extend({{getTileUrl(c){{const l=limits[c.z-{}];if(!l||c.x<l[0]||c.x>l[2]||c.y<l[1]||c.y>l[3])return L.Util.emptyImageUrl;return L.TileLayer.prototype.getTileUrl.call(this,c);}}}});const map=L.map('map',{{crs}});new Tiles({},{{minZoom:{},maxZoom:{},tileSize:{},tms:{},noWrap:true,bounds,attribution:{}}}).addTo(map);map.fitBounds(bounds);window.terrioMap=map;</script></body></html>",
+            "{}<link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\" integrity=\"sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H\" crossorigin=\"anonymous\"><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\" integrity=\"sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH\" crossorigin=\"anonymous\"></script><script>const crs=L.extend({{}},{crs},{{scale:z=>{}*Math.pow(2,z),zoom:s=>Math.log2(s/{})}});const bounds=[[{},{}],[{},{}]];const limits={};const Tiles=L.TileLayer.extend({{getTileUrl(c){{const l=limits[c.z-{}];if(!l||c.x<l[0]||c.x>l[2]||c.y<l[1]||c.y>l[3])return L.Util.emptyImageUrl;return L.TileLayer.prototype.getTileUrl.call(this,c);}}}});const map=L.map('map',{{crs}});new Tiles({},{{minZoom:{},maxZoom:{},tileSize:{},tms:{},noWrap:true,bounds,attribution:{}}}).addTo(map);map.fitBounds(bounds);window.terrioMap=map;</script></body></html>",
             html(&self.options.title),
             first.matrix.tile_size,
             first.matrix.tile_size,
@@ -380,7 +383,7 @@ impl<'a> Publication<'a> {
         let origins: Vec<_> = self.plan.levels.iter().map(|l| l.matrix.origin).collect();
         let limits: Vec<_> = self.plan.levels.iter().map(|l| [l.range.min_x, l.range.min_y, l.range.max_x, l.range.max_y]).collect();
         format!(
-            "{}<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/ol@10.11.0/ol.css\"><script src=\"https://cdn.jsdelivr.net/npm/ol@10.11.0/dist/ol.js\"></script><script>const grid=new ol.tilegrid.TileGrid({{resolutions:{},origins:{},sizes:{},tileSizes:{}}});const rows={};const limits={};const source=new ol.source.TileImage({{tileGrid:grid,wrapX:false,projection:new ol.proj.Projection({{code:'terrio-tiles',units:'m'}}),attributions:{},tileUrlFunction:c=>{{if(!c)return;const l=limits[c[0]];if(!l||c[1]<l[0]||c[1]>l[2]||c[2]<l[1]||c[2]>l[3])return;const z=c[0]+{};const y={} ? rows[c[0]][1]-1-c[2]:c[2];return {}.replace('{{z}}',z).replace('{{x}}',c[1]).replace('{{y}}',y);}}}});const map=new ol.Map({{target:'map',layers:[new ol.layer.Tile({{source}})],view:new ol.View({{projection:source.getProjection(),resolutions:{},center:[{},{}],zoom:0}})}});map.getView().fit({},{{size:map.getSize()}});window.terrioMap=map;</script></body></html>",
+            "{}<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/ol@10.11.0/ol.css\" integrity=\"sha384-Jpg1uvTciFJuHq+90Ly0/2SKRT9yS5OhbIN5FuFoFWji9fc44ok8xxO88CJi8Z5W\" crossorigin=\"anonymous\"><script src=\"https://cdn.jsdelivr.net/npm/ol@10.11.0/dist/ol.js\" integrity=\"sha384-rwbCGPbgxLkcQaFvIra1Vz3KBT1yBeF2/1VgLs/gCCNCJ61GHJGimHpkufVKcqap\" crossorigin=\"anonymous\"></script><script>const grid=new ol.tilegrid.TileGrid({{resolutions:{},origins:{},sizes:{},tileSizes:{}}});const rows={};const limits={};const source=new ol.source.TileImage({{tileGrid:grid,wrapX:false,projection:new ol.proj.Projection({{code:'terrio-tiles',units:'m'}}),attributions:{},tileUrlFunction:c=>{{if(!c)return;const l=limits[c[0]];if(!l||c[1]<l[0]||c[1]>l[2]||c[2]<l[1]||c[2]>l[3])return;const z=c[0]+{};const y={} ? rows[c[0]][1]-1-c[2]:c[2];return {}.replace('{{z}}',z).replace('{{x}}',c[1]).replace('{{y}}',y);}}}});const map=new ol.Map({{target:'map',layers:[new ol.layer.Tile({{source}})],view:new ol.View({{projection:source.getProjection(),resolutions:{},center:[{},{}],zoom:0}})}});map.getView().fit({},{{size:map.getSize()}});window.terrioMap=map;</script></body></html>",
             html(&self.options.title),
             js(&resolutions),
             js(&origins),

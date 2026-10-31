@@ -3231,7 +3231,9 @@ the expected dimensions, bands and type.
 
 Rendering uses bounded source windows and a parent cache limited to 64 MiB and
 256 tiles, in addition to one output tile and decoder/encoder buffers. Native
-directory output reads emitted parent files after eviction. Write-only callback
+directory output reads emitted parent files after eviction. Each cached parent
+is decoded from its emitted encoding, adding a decode pass so higher levels
+see the actual samples, including lossy writer effects. Write-only callback
 sinks regenerate evicted parents; callbacks can supply read-back to avoid this
 additional work. No full input mosaic is materialized.
 

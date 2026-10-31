@@ -214,3 +214,35 @@ fn typed_stacta_preserves_projected_feet_and_nondefault_tile_size() {
     assert!(published.geo_transform().iter().zip([980_000., 2., 0., 200_000., 0., -2.]).all(|(a, b)| (*a - b).abs() < 1e-8));
     assert_eq!(published.read().unwrap().raster.data.to_f64_vec(), vec![4000.; 128 * 64]);
 }
+
+#[test]
+fn empty_publication_plans_emit_no_companions() {
+    let mut dataset = source().read().unwrap();
+    dataset.set_geo_transform([190., 0.01, 0., 1., 0., -0.01]);
+    let mut options = options();
+    options.grid.no_intersection_ok = true;
+    let mut sink = Collect::default();
+    let report = tile::generate(&mut LazyRaster::from(dataset), &options, &mut sink).unwrap();
+    assert_eq!(report.planned, 0);
+    assert!(sink.0.is_empty());
+}
+
+#[test]
+fn publication_urls_accept_ports_relative_colons_and_case_insensitive_http() {
+    for url in ["//cdn.example.test:8443/tiles", "maps/2024:01/", "HTTPS://example.test/tiles"] {
+        let mut options = options();
+        options.publication.url = Some(url.into());
+        assert!(tile::plan(&source().header(), &options).is_ok(), "{url}");
+    }
+}
+
+#[test]
+fn browser_assets_are_pinned_with_subresource_integrity() {
+    let mut sink = Collect::default();
+    tile::generate(&mut source(), &options(), &mut sink).unwrap();
+    for name in ["leaflet.html", "openlayers.html"] {
+        let html = std::str::from_utf8(&sink.0[name]).unwrap();
+        assert_eq!(html.matches("integrity=\"sha384-").count(), 2, "{name}");
+        assert_eq!(html.matches("crossorigin=\"anonymous\"").count(), 2, "{name}");
+    }
+}
