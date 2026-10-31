@@ -211,6 +211,81 @@ def main():
                     overviews,
                 )
 
+        # A per-dataset internal mask in 64-pixel tiles, the smallest that GDAL's overviews
+        # keep: the first overview's last block row has 36 of 64 rows, and the others fit
+        # in a tile.
+        masked = work / "masked.tif"
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+        try:
+            gdal.Translate(
+                str(masked),
+                str(sample),
+                srcWin=[0, 0, 128, 100],
+                width=256,
+                height=200,
+                creationOptions=[
+                    "TILED=YES",
+                    "BLOCKXSIZE=64",
+                    "BLOCKYSIZE=64",
+                    "COMPRESS=DEFLATE",
+                ],
+            )
+            dataset = gdal.Open(str(masked), gdal.GA_Update)
+            dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+            rows, cols = np.indices((200, 256))
+            valid = (cols >= 25) & ((7 * cols + 3 * rows) % 13 != 0)
+            dataset.GetRasterBand(1).GetMaskBand().WriteArray(
+                valid.astype(np.uint8) * 255
+            )
+            transform = dataset.GetGeoTransform()
+            dataset = None
+        finally:
+            gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", None)
+        # The right half of the last 60 rows: the first overview's last block row.
+        x0, x1 = transform[0] + 128 * transform[1], transform[0] + 256 * transform[1]
+        y0, y1 = transform[3] + 200 * transform[5], transform[3] + 140 * transform[5]
+        bottom = ",".join(
+            repr(v) for v in [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
+        )
+
+        # terrio adds the overviews gdaladdo adds, or updates gdaladdo's: GDAL reads every
+        # mask overview, in GDAL's blocks, and the masks are gdaladdo's.
+        for name, from_gdal, options in [
+            ("added", False, ["-r", "nearest", 2, 4, 8]),
+            ("refreshed", True, ["--refresh"]),
+            (
+                "refreshed over the last block row",
+                True,
+                ["--refresh", "--bbox", bottom],
+            ),
+            ("added again", True, ["-r", "nearest", 2, 4, 8]),
+        ]:
+
+            def mask_overviews(name=name, from_gdal=from_gdal, options=options):
+                slug = name.replace(" ", "-")
+                a, b = (
+                    work / f"masked-gdal-{slug}.tif",
+                    work / f"masked-terrio-{slug}.tif",
+                )
+                shutil.copyfile(masked, a)
+                run(["gdaladdo", "-r", "nearest", a, 2, 4, 8])
+                shutil.copyfile(a if from_gdal else masked, b)
+                run([args.terrio, "overviews", b, *options])
+                status, detail = compare(a, b)
+                # The datasets stay open while their bands are used.
+                da, db = gdal.Open(str(a)), gdal.Open(str(b))
+                ba, bb = da.GetRasterBand(1), db.GetRasterBand(1)
+                for i in range(ba.GetOverviewCount()):
+                    expected = ba.GetOverview(i).GetMaskBand().GetBlockSize()
+                    actual = bb.GetOverview(i).GetMaskBand().GetBlockSize()
+                    if actual != expected:
+                        raise AssertionError(
+                            f"mask overview {i} blocks {actual}, not {expected}"
+                        )
+                return status, detail + "; mask overview blocks"
+
+            case(f"internal mask overviews {name}", mask_overviews)
+
         def metadata_edit():
             a, b = work / "edit-gdal.tif", work / "edit-terrio.tif"
             shutil.copyfile(sample, a)

@@ -525,8 +525,10 @@ def suite_indexes(ctx):
 def suite_raster_manage(ctx):
     """Real DEM raster management, cross-read and compared by GDAL."""
     suite = Suite("raster-manage", "Raster management", "GDAL 3.13.3",
-                  "Creation types/bands, metadata escaping, nodata, internal/external overview add/delete "
-                  "and real DEM subset updates: masks, type, nodata, CRS and geotransform exact; "
+                  "Creation types/bands, metadata escaping, nodata, internal/external overview add/delete, "
+                  "internal mask overviews added, refreshed (whole and over an extent) and added again over "
+                  "gdaladdo's, and real DEM subset updates: masks, mask blocks, type, nodata, CRS and "
+                  "geotransform exact; "
                   "pixel values exact or within 2e-7 relative and 1e-6 absolute tolerance.")
     missing = missing_modules("osgeo", "numpy")
     if missing:

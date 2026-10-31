@@ -349,3 +349,7 @@
   and later without Docker.
 - `terrio.rio.MemoryFile` removes its files when it is dropped unclosed, as
   rasterio's leaves nothing.
+- The internal mask overviews that `overviews` adds and refreshes keep the tile
+  height of the overview they mask in whole tiles, as GDAL writes them. Mask
+  overviews smaller than a tile had a `TileLength` that was not a multiple of 16,
+  and refreshed or re-added ones short tiles that GDAL failed to read.

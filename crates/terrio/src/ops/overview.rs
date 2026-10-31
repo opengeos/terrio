@@ -549,6 +549,13 @@ fn chunk_size(layout: &Layout, cols: usize) -> (usize, usize) {
     }
 }
 
+/// The block of a mask image of `rows` rows in chunks of `chunk`, for [`gw::mask_image`]: tiles
+/// keep their height, padded, however few rows there are (libtiff reads whole tiles, and TIFF 6.0
+/// requires a `TileLength` multiple of 16); strips span at most the rows.
+fn mask_block(chunk: (usize, usize), rows: usize, tiled: bool) -> (usize, usize, bool) {
+    (chunk.0, if tiled { chunk.1 } else { chunk.1.min(rows) }, tiled)
+}
+
 /// One overview level being computed: its pixels over rows `rows` (all columns), and its mask
 /// (255 valid) over the same rows when the raster has a per-dataset mask.
 pub(crate) struct Computed {
@@ -1227,8 +1234,8 @@ fn new_level_image(
     img.tags.push((42112, Value::Ascii(resampling_item(method))));
     let mask = match &c.mask {
         Some(m) => {
-            let (cw, ch) = chunk_size(&layout, c.size.0);
-            let mut mi = gw::mask_image(m, c.size.0, c.size.1, (cw, ch.min(c.size.1), layout.tile.is_some()))?;
+            let block = mask_block(chunk_size(&layout, c.size.0), c.size.1, layout.tile.is_some());
+            let mut mi = gw::mask_image(m, c.size.0, c.size.1, block)?;
             for (t, v) in &mut mi.tags {
                 if *t == 254 {
                     *v = Value::Longs(vec![5]);
@@ -1483,7 +1490,7 @@ pub(crate) fn replace_chunks<F: Write + Seek>(
             } else {
                 std::borrow::Cow::Owned(m.chunks(w).flat_map(|row| &row[x0..x1]).copied().collect())
             };
-            (gw::mask_image(&m, x1 - x0, rows_n, (chunk.0, chunk.1.min(rows_n), tiled))?, chunk)
+            (gw::mask_image(&m, x1 - x0, rows_n, mask_block(chunk, rows_n, tiled))?, chunk)
         }
     };
     let (cw, ch) = (chunk.0, chunk.1.min(h.max(1)));
