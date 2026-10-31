@@ -126,3 +126,14 @@ def test_missing_node_retains_python_comparisons(monkeypatch, tmp_path):
     assert len(suite.cases) == 7
     assert suite.cases[0].status == conformance.NOT_COMPARED
     assert all(case.status == conformance.IDENTICAL for case in suite.cases[1:])
+
+
+@pytest.mark.parametrize("wanted, got", [(1, True), (True, 1), (0, False), (False, 0)])
+def test_boolean_and_numeric_source_attributes_are_distinct(wanted, got):
+    result, expected, source = example()
+    source[0]["properties"]["original_flag"] = wanted
+    result["geojson"]["features"][0]["properties"]["original_flag"] = wanted
+    compare(result, expected, source, {})
+    result["geojson"]["features"][0]["properties"]["original_flag"] = got
+    with pytest.raises(AssertionError, match="attribute/count/null differs"):
+        compare(result, expected, source, {})

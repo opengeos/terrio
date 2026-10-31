@@ -44,11 +44,7 @@ def compare(result, expected, source, options):
         for key, value in wanted.items():
             got = fields[key]
             if key in original["properties"] or value is None or key.endswith("_count"):
-                if got != value or (
-                    key not in original["properties"]
-                    and key.endswith("_count")
-                    and isinstance(got, bool)
-                ):
+                if got != value or isinstance(got, bool) != isinstance(value, bool):
                     raise AssertionError(f"attribute/count/null differs: {key}")
             else:
                 places = options.get("decimal_places")
