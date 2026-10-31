@@ -922,15 +922,19 @@ def huge_grib1():
 @pytest.mark.parametrize("edition", [1, 2])
 def test_huge_grid_is_an_error_not_an_abort(tmp_path, edition):
     """Catches an allocation sized by a header that aborts the process when it fails (a Rust
-    `vec!` of 17 or 34 GB) instead of raising."""
+    `vec!` of 17 or 34 GB) instead of raising. The grids exceed the default
+    `TERRIO_GRIB_MAX_POINTS`, which is raised so that the allocation is attempted."""
     import subprocess
     import sys
 
     path = tmp_path / f"huge{edition}.grib"
     path.write_bytes(huge_grib1() if edition == 1 else huge_grib2(tmp_path))
-    p = subprocess.run([sys.executable, "-c", HUGE, str(path)], capture_output=True, text=True, timeout=300)
+    env = {**os.environ, "TERRIO_GRIB_MAX_POINTS": str(1 << 40)}
+    cmd = [sys.executable, "-c", HUGE, str(path)]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
     assert p.returncode == 0, (p.returncode, p.stdout[-500:], p.stderr[-500:])
     assert p.stdout.startswith("ERROR"), p.stdout
+    assert "TERRIO_GRIB_MAX_POINTS" not in p.stdout, p.stdout
 
 
 def test_allow_list_finds_grib_after_a_header(tmp_path):
