@@ -271,12 +271,13 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
             if let Some(dst) = t_srs {
+                if output_mask.is_some() {
+                    return Err(terrio::Error::InvalidArgument(
+                        "reprojection does not preserve dataset masks; use an explicit alpha band".into(),
+                    ));
+                }
                 let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), transform_options: coordinate_options, ..Default::default() };
-                r = if let Some(mask) = output_mask.take() {
-                    terrio::ops::warp::warp_lazy(&mut terrio::LazyRaster::from_masked_dataset(r, mask)?, &o)?
-                } else {
-                    terrio::ops::warp::warp(&[&r], &o)?
-                };
+                r = terrio::ops::warp::warp(&[&r], &o)?;
             }
             let mut creation_options: Vec<(String, String)> =
                 key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();

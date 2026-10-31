@@ -2541,6 +2541,8 @@ impl CogWriter {
                 l.cols
             )));
         }
+        // As the whole writer reads a mask: any nonzero value is valid, weighted as 255.
+        let mask: Option<Vec<u8>> = mask.map(|m| m.into_iter().map(|v| if v != 0 { 255 } else { 0 }).collect());
         if rows > 0 { self.push(0, data, rows, mask) } else { Ok(()) }
     }
 
@@ -3598,6 +3600,35 @@ mod tests {
     // An odd-sized source large enough for factors 2, 4 and 8 with 16-pixel COG tiles.
     fn overview_fixture(bands: usize, data_type: DataType, data: RasterData) -> Raster {
         Raster::from_data_native(wbraster::RasterConfig { cols: 65, rows: 35, bands, data_type, ..Default::default() }, data).unwrap()
+    }
+
+    /// Streamed mask values are read as the whole writer reads them: any nonzero value is valid
+    /// and weighted as 255, so mixed 1 and 255 valid values give the whole writer's overviews.
+    #[test]
+    fn streamed_mask_values_are_normalized_as_the_whole_writer_normalizes_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cols, rows) = (131, 259);
+        let data = RasterData::U8((0..cols * rows).map(|i| (i * 7 % 251) as u8).collect());
+        let mask: Vec<u8> = (0..cols * rows).map(|i| if i % cols < 31 || i % 13 < 5 { 0 } else if i % 3 == 0 { 255 } else { 1 }).collect();
+        let normalized: Vec<u8> = mask.iter().map(|v| if *v != 0 { 255 } else { 0 }).collect();
+        let raster = Raster::from_data_native(
+            wbraster::RasterConfig { cols, rows, bands: 1, data_type: DataType::U8, ..Default::default() },
+            data.clone(),
+        )
+        .unwrap();
+        let opts = TiffOptions {
+            cog: true,
+            tile_size: Some(16),
+            cog_resampling: Some(Method::Cubic),
+            mask: Some(normalized.clone()),
+            ..Default::default()
+        };
+        let whole = encode(&raster, &opts).unwrap();
+        let path = dir.path().join("masked.tif");
+        let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
+        writer.write_rows_masked(slice_rows(&data, rows, 0..rows, cols, 1), rows, Some(mask)).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), whole);
     }
 
     /// A mask without a dataset (rasterio's buffered COG writes hold it in a MEM dataset) has its

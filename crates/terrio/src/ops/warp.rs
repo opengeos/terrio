@@ -1629,7 +1629,8 @@ pub fn warp_lazy(src: &mut crate::LazyRaster, o: &WarpOptions) -> Result<RasterD
     warp_sources(&mut [src], o)
 }
 
-fn warp_reader(src: &mut dyn WarpSource, o: &WarpOptions) -> Result<RasterDataset> {
+/// Windowed renderer for one source; reads its dataset mask when it carries one.
+pub(crate) fn warp_reader(src: &mut dyn WarpSource, o: &WarpOptions) -> Result<RasterDataset> {
     warp_reader_selected(src, o, None, None, false, None)
 }
 
@@ -1646,11 +1647,6 @@ pub(crate) fn warp_lazy_bands_working(
         return Err(Error::InvalidArgument("invalid source band selection".into()));
     }
     warp_reader_selected(src, o, Some(bands), working, unified_sink, source_overview)
-}
-
-/// Windowed renderer used by tile generation when a source carries a dataset mask.
-pub(crate) fn warp_reader_masked(src: &mut dyn WarpSource, options: &WarpOptions) -> Result<RasterDataset> {
-    warp_reader(src, options)
 }
 
 fn warp_reader_selected(

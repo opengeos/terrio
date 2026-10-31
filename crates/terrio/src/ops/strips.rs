@@ -274,6 +274,10 @@ impl Tiff {
         }
         // Compressions only wbraster encodes are written whole.
         let Some(mut opts) = TiffOptions::from_write_options(options, cog, crate::dataset::tiff_nodata(header))? else { return Ok(None) };
+        // Copying a source's overviews needs the whole raster, as `cog_rows` requires.
+        if cog && opts.source_overviews.is_some() {
+            return Ok(None);
+        }
         crate::dataset::ensure_writable_location(path)?;
         if !cog {
             return Ok(Some(Self::GeoTiff(GeoTiffWriter::create(path, header, options)?)));
@@ -521,6 +525,19 @@ mod tests {
         drop(StripWriter::create(&source, path.to_str().unwrap(), &Default::default()).unwrap());
         assert!(!path.exists());
         assert!(!aux.exists());
+    }
+
+    /// A COG copying a source's overviews needs the whole raster, which copies them; the row
+    /// writer does not stream it, with or without a source mask.
+    #[test]
+    fn cog_copying_source_overviews_is_not_streamed() {
+        let options = RasterWriteOptions {
+            driver: Some(RasterDriver::Cog),
+            creation_options: vec![("@COPY_SRC_OVERVIEWS".into(), "source.tif".into())],
+            ..Default::default()
+        };
+        assert!(Tiff::create(&header(DataType::U8), "out.tif", &options, false).unwrap().is_none());
+        assert!(Tiff::create(&header(DataType::U8), "out.tif", &options, true).unwrap().is_none());
     }
 
     /// A raster of 300 x 200 Float32 values with nodata and metadata, in UTM.

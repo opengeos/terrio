@@ -71,8 +71,9 @@ def compare(reference, actual, tolerance=0):
     return f"{pixels}; exact masks and metadata ({levels} band levels)"
 
 
-def make_source(path, real, external):
-    """GDAL-authored internal and external masks, with an unaligned invalid edge."""
+def make_source(path, real, external, invert=False):
+    """GDAL-authored internal and external masks, with an unaligned invalid edge. `invert`
+    makes the valid pixels the complement of the default's."""
     with gdal.config_option("GDAL_TIFF_INTERNAL_MASK", "NO" if external else "YES"):
         if real:
             src = gdal.Open(str(real))
@@ -105,6 +106,8 @@ def make_source(path, real, external):
         mask = np.where((x < w // 2 + 1) | ((x * 31 + y * 7) % 101 < 4), 0, 255).astype(
             "uint8"
         )
+        if invert:
+            mask = np.where(mask == 0, 255, 0).astype("uint8")
         ds.CreateMaskBand(gdal.GMF_PER_DATASET)
         ds.GetRasterBand(1).GetMaskBand().WriteArray(mask)
         ds = None
@@ -116,6 +119,9 @@ def cases(work, real):
         for external in [False, True]:
             source = work / f"{label}-{'external' if external else 'internal'}.tif"
             make_source(source, scene, external)
+            # Its valid pixels are absent from `source`, so dropping either input changes the mosaic.
+            second = work / f"{label}-{'external' if external else 'internal'}-second.tif"
+            make_source(second, scene, external, invert=True)
             prefix = f"{label} {'sidecar' if external else 'internal'}"
             for method in ["nearest", "average", "bilinear", "cubic", "mode"]:
                 yield (
@@ -207,7 +213,7 @@ def cases(work, real):
             for choice in ["NONE", "AUTO", "0"]:
                 for method in ["near", "bilinear", "average"]:
                     for mode in ["single", "multiple", "cutline"]:
-                        inputs = [source, source] if mode == "multiple" else [source]
+                        inputs = [source, second] if mode == "multiple" else [source]
                         opts = {
                             "width": w if choice == "NONE" else w // 4,
                             "height": h if choice == "NONE" else h // 4,
