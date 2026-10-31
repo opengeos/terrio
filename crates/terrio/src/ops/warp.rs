@@ -3144,6 +3144,7 @@ mod tests {
         assert!(a.iter().zip(&b).all(|(x, y)| y == x || *y == 0.0));
     }
 
+    /// Reference: GDAL 3.13's local transformed-square scales.
     #[test]
     fn square_scales_follow_local_geometry() {
         assert_eq!(square_scales([(0.0, 0.0), (2.0, 0.0), (0.0, 4.0), (2.0, 4.0)]), Some((0.5, 0.25)));

@@ -1067,13 +1067,13 @@ impl Terrain {
             ($t:ty, $src:expr, $nd:expr) => {{
                 let hs = HillshadeParams::new(&gt, o, xscale, yscale);
                 let md = MultiDirectionalParams::new(&gt, o, xscale, yscale);
-                let float32 = o.kernel_version == super::warp::KernelVersion::Gdal313;
+                let use_float32 = o.kernel_version == super::warp::KernelVersion::Gdal313;
                 let float32_terrain = Float32Terrain::new(&gt, o, xscale, yscale);
                 let same_res = gt[1] == -gt[5] && xscale == yscale;
                 let (ew, ns) = (gt[1] * xscale, gt[5] * yscale);
                 let azimuth = !o.trigonometric;
                 let f: Box<dyn Fn(&[$t; 9]) -> f32 + Sync> = match product {
-                    DemProduct::Hillshade if float32 => Box::new(move |w| float32_terrain.shade(w, false)),
+                    DemProduct::Hillshade if use_float32 => Box::new(move |w| float32_terrain.shade(w, false)),
                     DemProduct::Hillshade => match o.shading {
                         Shading::MultiDirectional => Box::new(move |w| md.shade(w)),
                         Shading::Combined => Box::new(move |w| hs.combined(w)),
@@ -1083,7 +1083,7 @@ impl Terrain {
                     },
                     DemProduct::Slope => {
                         let (alg, percent) = (o.gradient, o.slope_percent);
-                        Box::new(move |w| if float32 { slope_f32(w, alg, ew, ns, percent) } else { slope(w, alg, ew, ns, percent) })
+                        Box::new(move |w| if use_float32 { slope_f32(w, alg, ew, ns, percent) } else { slope(w, alg, ew, ns, percent) })
                     }
                     DemProduct::Aspect => {
                         let alg = o.gradient;
@@ -1095,7 +1095,7 @@ impl Terrain {
                     DemProduct::Roughness => Box::new(roughness::<$t>),
                 };
                 #[cfg(target_arch = "x86_64")]
-                let simd = move |w: &[$t; 9]| if float32 { float32_terrain.shade(w, true) } else { hs.same_res_simd(w) };
+                let simd = move |w: &[$t; 9]| if use_float32 { float32_terrain.shade(w, true) } else { hs.same_res_simd(w) };
                 #[cfg(target_arch = "x86_64")]
                 let multi: Option<&(dyn Fn(&[$t; 9]) -> f32 + Sync)> =
                     (product == DemProduct::Hillshade && o.shading == Shading::Standard && o.gradient == GradientAlg::Horn && same_res)

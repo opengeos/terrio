@@ -672,6 +672,7 @@ mod tests {
         let out = filter(&[1., 1., f32::NAN, f32::NAN, f32::NAN, 2., 3., 4., 5.], 3, 3, &k, None);
         assert_eq!(out[4], 1.0);
     }
+
     /// Reference: GDAL 3.13.
     #[test]
     fn nan_nodata_center_is_interpolated_like_gdal() {
