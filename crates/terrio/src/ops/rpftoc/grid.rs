@@ -96,6 +96,33 @@ impl Grid {
         out
     }
 
+    /// Minimum geographic latitude/longitude of the entire frame, including
+    /// polar edges, longitude discontinuities and an interior pole.
+    pub(super) fn geographic_min(&self, frame: &RpfFrame) -> [f64; 2] {
+        let corners = frame.coverage[..8].as_chunks::<2>().0;
+        let min_lon = corners.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+        if !self.zone.is_multiple_of(9) {
+            return [corners.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min), min_lon];
+        }
+        let mut bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        for p in corners {
+            let [x, y] = self.project(p[0], p[1]);
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
+        }
+        let north = self.zone == 9;
+        let radius = if north {
+            bounds[0].abs().max(bounds[2].abs()).hypot(bounds[1].abs().max(bounds[3].abs()))
+        } else {
+            0f64.clamp(bounds[0], bounds[2]).hypot(0f64.clamp(bounds[1], bounds[3]))
+        };
+        let min_lat = if north { 90. - (radius / RADIUS).to_degrees() } else { -90. + (radius / RADIUS).to_degrees() };
+        let crosses_dateline = bounds[0] <= 0. && bounds[2] >= 0. && if north { bounds[3] > 0. } else { bounds[1] < 0. };
+        [min_lat, if crosses_dateline { -180. } else { min_lon }]
+    }
+
     pub(super) fn locate(&self, frame: &RpfFrame) -> Result<[u32; 2]> {
         if frame.zone != self.zone || frame.coverage.iter().any(|v| !v.is_finite()) || frame.coverage[8..].iter().any(|v| *v <= 0.) {
             return Err(invalid("frame zone or coverage is invalid"));

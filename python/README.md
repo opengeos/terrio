@@ -256,6 +256,30 @@ Use `input_kind="raster"` or `input_kind="vector"` to force the input family;
 `"auto"` chooses detection. A `raster` or `vector` prefix in the command string
 also selects a family. An explicit `input_kind` overrides that prefix.
 
+## RPF table of contents
+
+```python
+report = terrio.rpftoc_create("frames", "A.TOC", producer_id="ACME", country_code="US")
+toc = terrio.rpftoc_bytes([("zone/000C9010.ON2", frame_bytes)], classification="U")
+```
+
+These functions index existing CADRG frames without decoding their compressed
+pixels. `rpftoc_create` recursively scans a local directory, skips symlinks and
+atomically publishes the TOC after validation. Its default output is `input/A.TOC`;
+a supplied output must be in the input directory or an ancestor, so frame paths
+remain relative without `..`. Existing output requires `overwrite=True`. The
+report includes frame/group counts, metadata bytes read and output bytes.
+
+`rpftoc_bytes` borrows bounded metadata ranges from each named Python `bytes`
+value and returns a TOC; retain those frame files at the supplied relative paths
+beside it. Both accept `scale` (otherwise inferred per series), `producer_id`
+(up to five ASCII bytes), `producer_name` (27), `country_code` (two uppercase
+letters or empty) and `classification` (`U`, `R`, `C`, `S`, `T`). Frame corners
+must match the selected scale/zone. Historical polar interval fields are
+normalized to the standard grid. CIB and non-CADRG products are unsupported.
+The encoded TRE payload must fit 99,999 bytes; oversized indexes fail before
+publication. The operation creates an index rather than embedding frame images.
+
 ## Retile and publish raster folders
 
 ```python

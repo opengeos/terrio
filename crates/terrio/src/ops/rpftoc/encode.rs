@@ -135,7 +135,8 @@ pub(super) fn encode(frames: &[RpfFrame], options: &RpfTocOptions) -> Result<Vec
             b'J'
         });
         text(&mut boundaries, &options.producer_id, 5);
-        for v in Grid::new(zone, scale)?.coverage(min, max) {
+        let grid = Grid::new(zone, scale)?;
+        for v in grid.coverage(min, max) {
             boundaries.extend(v.to_be_bytes());
         }
         u32be(&mut boundaries, max[1] - min[1] + 1);
@@ -148,8 +149,7 @@ pub(super) fn encode(frames: &[RpfFrame], options: &RpfTocOptions) -> Result<Vec
             let (directory, basename) = f.name.rsplit_once('/').unwrap_or(("", &f.name));
             u32be(&mut records, offsets[directory]);
             records.extend(basename.as_bytes());
-            let min_lat = f.coverage[..8].as_chunks::<2>().0.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
-            let min_lon = f.coverage[..8].as_chunks::<2>().0.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+            let [min_lat, min_lon] = grid.geographic_min(f);
             records.extend(georef(min_lon, min_lat)?.as_bytes());
             records.push(f.classification as u8);
             text(&mut records, &options.country_code, 2);
@@ -257,6 +257,25 @@ mod tests {
         let options = RpfTocOptions { classification: 'X', ..Default::default() };
         assert!(encode(&[frame], &options).is_err());
     }
+    #[test]
+    fn pole_center_georef_uses_the_full_geographic_extent() {
+        for (zone, suffix, expected) in [(9, '9', b"AMAP00"), (18, 'J', b"AAAA00")] {
+            let grid = Grid::new(zone, 1_000_000).unwrap();
+            let frame = RpfFrame {
+                name: format!("00000000.ON{suffix}"),
+                zone,
+                series: "ON".into(),
+                classification: 'U',
+                coverage: grid.coverage([5, 5], [5, 5]),
+            };
+            let bytes = encode(&[frame], &Default::default()).unwrap();
+            let section = LOCATION as usize;
+            let location_record = section + 14 + 3 * 10;
+            let index = u32::from_be_bytes(bytes[location_record + 6..location_record + 10].try_into().unwrap()) as usize;
+            assert_eq!(&bytes[index + 22..index + 28], expected);
+        }
+    }
+
     #[test]
     fn oversized_tre_is_rejected_without_expanding_its_five_digit_field() {
         let grid = Grid::new(1, 500_000).unwrap();
