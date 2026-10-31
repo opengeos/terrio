@@ -195,11 +195,29 @@ pub(crate) fn read_parts(
 }
 
 /// Encodes layers with terrio's own driver for the format. `None` for formats made of several
-/// files (Shapefile, MapInfo). GML goes without its `.xsd`. Formats holding one layer take the
-/// first.
+/// files (Shapefile, MapInfo). GML goes without its `.xsd`. Single-layer formats reject
+/// multi-layer input rather than discarding later layers.
 pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &VectorWriteOptions) -> Result<Option<Vec<u8>>> {
     let Some(first) = layers.first() else { return Err(crate::Error::InvalidArgument("no layers to write".into())) };
     driver.ensure_built()?;
+    if layers.len() > 1
+        && matches!(
+            driver,
+            VectorDriver::GeoJSON
+                | VectorDriver::GeoJSONSeq
+                | VectorDriver::CSV
+                | VectorDriver::FlatGeobuf
+                | VectorDriver::Parquet
+                | VectorDriver::GML
+                | VectorDriver::Shapefile
+                | VectorDriver::MapInfo
+        )
+    {
+        return Err(crate::Error::InvalidArgument(format!(
+            "the {} format holds one layer: choose a layer, or write a GeoPackage",
+            driver.name()
+        )));
+    }
     Ok(Some(match driver {
         #[cfg(feature = "sqlite")]
         VectorDriver::GPKG => geopackage::to_bytes_with_geometry_types(layers, options.preserve_declared_geometry_type)?,
@@ -322,4 +340,33 @@ fn on_boundary(r: &wbvector::Ring, x: f64, y: f64) -> bool {
         let scale = (b.x - a.x).abs().max((b.y - a.y).abs()).max(1e-300);
         cross.abs() <= 1e-12 * scale && x >= a.x.min(b.x) && x <= a.x.max(b.x) && y >= a.y.min(b.y) && y <= a.y.max(b.y)
     })
+}
+
+#[cfg(test)]
+mod byte_writer_layer_tests {
+    use super::*;
+    #[test]
+    fn single_layer_byte_formats_refuse_to_drop_other_layers() {
+        let layers = [Layer::new("first"), Layer::new("second")];
+        for driver in [
+            VectorDriver::GeoJSON,
+            VectorDriver::GeoJSONSeq,
+            VectorDriver::CSV,
+            VectorDriver::FlatGeobuf,
+            VectorDriver::Parquet,
+            VectorDriver::GML,
+            VectorDriver::Shapefile,
+            VectorDriver::MapInfo,
+        ] {
+            if driver.ensure_built().is_ok() {
+                assert!(
+                    matches!(write_bytes(&layers,driver,&Default::default()),Err(crate::Error::InvalidArgument(message)) if message.contains("one layer")),
+                    "{driver:?}"
+                );
+            }
+        }
+        let output = write_bytes(&layers[..1], VectorDriver::GeoJSON, &Default::default()).unwrap().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["features"].as_array().unwrap().len(), 0);
+    }
 }

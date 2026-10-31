@@ -268,6 +268,42 @@ including `locationName`, `sourceCrsFieldName`, `sourceCrsFormat`, `fetchMetadat
 numbers. Acceptance flags and `datasetNameOnly` match the CLI. Strings represent
 non-finite nodata, e.g. `["nan"]`.
 
+### Contours, footprints and geometry analysis
+
+```js
+const lines = terrio.contour(raster, {interval: 10, withZ: true, fieldName: "elevation"});
+const area = terrio.footprint(raster, {bands: [1], singlepart: true, attributes: {source: "scene"}});
+const report = terrio.checkGeometry(vector);
+const repaired = terrio.makeValid(vector);
+const buffered = terrio.buffer(repaired, 100, {quadrantSegments: 30});
+const groups = terrio.dissolve(buffered, {fields: ["region"]});
+```
+
+Results are vector `Dataset` objects. Raster inputs accept uploaded bytes or
+shared datasets; contour/footprint hold full input pixels in memory. Contour
+also supports `band`, `levels`, `offset`, `nodata`, `ignoreNodata` and `layerName`. Nonfinite nodata overrides use strings `"nan"`,
+`"inf"` or `"-inf"`; raw nonfinite numbers and null are rejected.
+Footprint supports `intersection`, a same-grid `mask` dataset/upload and explicit
+text `attributes`; no source-path field is added automatically.
+
+Omitted or empty footprint bands selects every band, combined by union unless
+intersection is requested. Footprint attribute fields are sorted alphabetically.
+Footprint validity uses finite samples and the dataset nodata value. Alpha bands
+and external mask files are not interpreted implicitly; supply an explicit mask
+when those pixels should be excluded.
+
+Vector functions process every input layer, accepting datasets, uploaded files
+or GeoJSON. This deliberately differs from Python, whose analysis functions return
+one selected `Layer`; JavaScript returns a `Dataset` retaining all layers.
+When exporting with `toBytes`, single-layer formats require explicit selection
+(e.g. `{layers: ["roads"]}`); they now reject multi-layer input instead of
+silently writing the first layer. Layer-preserving formats retain every layer.
+Buffers use planar CRS units and preserve attributes/IDs. Dissolve
+can group by field names. `checkGeometry` retains geometry and appends validity
+and reason fields. `makeValid` keeps attributes/IDs/CRS and already-valid Z/M;
+repaired geometry is constructed in XY. These use the CLI's shared Rust engines
+and retain their documented scope and limits.
+
 ### Pipelines
 
 `pipeline(command, inputs?, options?)` uses the same Rust pipeline engine as the

@@ -3155,6 +3155,53 @@ test("pipeline definition saves and unused aliases do not decode inputs", () => 
   assert.throws(()=>terrio.pipeline("read unused",{unused:invalid}),/invalid|supported|recogniz|format/i);
 });
 
+test("contour exposes band selection, elevation fields and 3D vertices", () => {
+  const source=terrio.rasterFromArray(new Float32Array([0,10,0,10,0,20,0,20]),2,2,[0,1,0,2,0,-1],"EPSG:4326");
+  const result=terrio.contour(source,{band:2,levels:[10],withZ:true,fieldName:"height",layerName:"lines"}).toGeoJSON();
+  assert.equal(result.features.length,1);
+  const line=result.features[0];assert.equal(line.properties.height,10);
+  assert.ok(line.geometry.coordinates.every(p=>Math.abs(p[0]-1)<1e-6 && p[2]===10));
+  assert.deepEqual([Math.min(...line.geometry.coordinates.map(p=>p[1])),Math.max(...line.geometry.coordinates.map(p=>p[1]))],[0,2]);
+  assert.throws(()=>terrio.contour(source,{}),/interval or/);
+  assert.throws(()=>terrio.contour(source,{interval:10,nodata:-9999,ignoreNodata:true}),/cannot be used together/);
+  for (const nodata of [NaN,Infinity,-Infinity,null]) {
+    assert.throws(()=>terrio.contour(source,{levels:[10],nodata}),/non-finite number/);
+  }
+  for (const nodata of ["nan","inf","-inf"]) {
+    assert.equal(terrio.contour(source,{levels:[10],nodata}).toGeoJSON().features.length,1);
+    assert.throws(()=>terrio.contour(source,{levels:[10],nodata,ignoreNodata:true}),/cannot be used together/);
+  }
+  assert.throws(()=>terrio.contour(source,{levels:[10],interval:NaN}),/non-finite number/);
+
+});
+
+test("footprint exposes mask, band combination and explicit attributes", () => {
+  const source=terrio.rasterFromArray(new Uint8Array([1,0,0,0,0,1,0,0]),2,2,[0,1,0,2,0,-1],"EPSG:4326",0);
+  const geo=result=>result.toGeoJSON();
+  const both=geo(terrio.footprint(source,{singlepart:true,attributes:{source:"test"}}));
+  assert.equal(both.features.length,1);assert.deepEqual(both.features[0].properties,{source:"test"});
+  assert.equal(geo(terrio.footprint(source,{intersection:true})).features.length,0);
+  const mask=terrio.rasterFromArray(new Uint8Array([1,0,0,0]),2,2,[0,1,0,2,0,-1],"EPSG:4326");
+  const selected=geo(terrio.footprint(source,{mask,bands:[1]}));
+  const points=selected.features[0].geometry.coordinates[0][0].map(p=>p.join(","));
+  assert.deepEqual(new Set(points),new Set(["0,1","1,1","1,2","0,2"]));
+});
+
+test("geometry checks, repairs, buffer and grouped dissolve use the shared engines", () => {
+  const geo=result=>result.toGeoJSON();
+  const source={type:"FeatureCollection",features:[{type:"Feature",properties:{group:"a"},geometry:{type:"Polygon",coordinates:[[[0,0],[2,2],[0,2],[2,0],[0,0]]]}}]};
+  const before=geo(terrio.checkGeometry(source)).features[0];
+  assert.equal(before.properties.is_valid,false);assert.notEqual(before.properties.valid_reason,"Valid Geometry");
+  const after=geo(terrio.checkGeometry(terrio.makeValid(source))).features[0];
+  assert.equal(after.properties.is_valid,true);assert.equal(after.properties.group,"a");
+  assert.deepEqual(before.geometry,source.features[0].geometry);
+  const points={type:"FeatureCollection",features:[[0,"a"],[1,"a"],[5,"b"]].map(([x,group])=>({type:"Feature",properties:{group},geometry:{type:"Point",coordinates:[x,0]}}))};
+  const buffered=terrio.buffer(points,1,{quadrantSegments:4});assert.equal(geo(buffered).features.length,3);
+  assert.equal(geo(terrio.dissolve(buffered,{fields:["group"]})).features.length,2);
+  assert.ok(geo(terrio.checkGeometry(buffered)).features.every(f=>f.properties.is_valid));
+  assert.throws(()=>terrio.buffer(points,1,{quadrantSegments:0}));
+});
+
 
 test("retile callbacks and parent read-back agree after bounded cache eviction", () => {
   const source = terrio.rasterFromArray(Uint8Array.from({length:1056*1056},(_,i)=>i%251),1056,1056,[0,1,0,1056,0,-1],"EPSG:3857");
@@ -3200,4 +3247,20 @@ test("rasterTiles emits publication companions with uniform STACTA bands", () =>
   assert.equal(JSON.parse(text("stacta.json")).asset_templates.bands.bands.length,2);
   assert.deepEqual([...files.get("0/0/0.png").slice(0,8)],[137,80,78,71,13,10,26,10]);
   assert.equal(files.get("0/0/0.png")[25],4); // PNG gray + alpha color type.
+});
+
+
+test("multi-layer analysis output cannot silently drop layers in single-layer formats", () => {
+  const point = marker => ({type:"FeatureCollection", features:[{type:"Feature",properties:{marker},geometry:{type:"Point",coordinates:[0,0]}}]});
+  const a=terrio.fromGeoJSON(point("a"),"a"), b=terrio.fromGeoJSON(point("b"),"b");
+  const source=terrio.concat([a,b],{mode:"stack"});
+  const result=terrio.buffer(source,1);
+  const names=result.layerNames();assert.equal(names.length,2);
+  for (const filename of ["all.geojson","all.geojsonl","all.csv","all.gml"]) {
+    assert.throws(()=>result.toBytes(filename),/one layer/);
+  }
+  const selected=JSON.parse(new TextDecoder().decode(result.toBytes("selected.geojson",{layers:[names[1]]})));
+  assert.equal(selected.features.length,1);assert.equal(selected.features[0].properties.marker,"b");
+  const restored=terrio.open(result.toBytes("all.topojson"),"all.topojson");
+  assert.equal(restored.layerNames().length,2);
 });
