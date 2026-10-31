@@ -446,6 +446,22 @@ def main():
                             assert checkpoint.exists(), "native checkpoint missing"
                             compare(checkpoint, actual)
                             checkpoint.unlink()
+                            nested = root / f"nested-{label}.{extension}"
+                            run(
+                                [
+                                    binary,
+                                    "pipeline",
+                                    "read",
+                                    definition,
+                                    "!",
+                                    "write",
+                                    nested,
+                                ]
+                            )
+                            assert not checkpoint.exists(), (
+                                "nested input wrote a checkpoint"
+                            )
+                            compare(nested, actual)
                         config = (
                             {"GDAL_ALGORITHM_ALLOW_WRITES_IN_STREAM": "YES"}
                             if checkpoint_mode == "named"

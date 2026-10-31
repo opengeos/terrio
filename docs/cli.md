@@ -3193,3 +3193,13 @@ discrete writer-policy difference in its case details and checks the native
 sequence independently. Source identifiers needed as data should be retained in
 an ordinary attribute field. Writer option parity remains
 part of [#288](https://github.com/opengeos/terrio/issues/288).
+
+A saved definition used as a nested `read` input contributes its evaluated dataset;
+its checkpoint and write artifacts are discarded. Execute a definition directly
+with `--load` to request its own named checkpoints. Output preflight checks are
+completed before writing, but multi-file writes are not transactional: an
+encoding or I/O failure can leave earlier outputs in place. CLI runs without
+`write`, `--output`, or `--save` print a dataset summary without saving a file.
+Resize requires a north-up grid; reproject south-up, flipped or rotated grids first.
+Detached in-memory vector results report the GeoJSON memory-container driver;
+this value does not retain the source file driver's provenance.

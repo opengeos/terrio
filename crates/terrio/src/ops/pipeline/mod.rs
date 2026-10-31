@@ -485,7 +485,7 @@ fn load_path(request: &ReadRequest, depth: usize) -> Result<PipelineInput> {
         let plan = Pipeline::open(path)?;
         let mut result = plan.evaluate_with(|r| load_path(r, depth + 1))?;
         let data = result.data.take().ok_or_else(|| invalid("saved input pipeline has no dataset"))?;
-        return Ok(PipelineInput { data, artifacts: result.artifacts });
+        return Ok(data.into());
     }
     let data = match request.kind {
         InputKind::Raster => PipelineData::Raster(crate::open_raster_lazy(path)?),
@@ -596,8 +596,8 @@ fn apply(data: &mut PipelineData, step: &Step) -> Result<()> {
             let r = data.raster()?;
             let h = r.header();
             let gt = h.geo_transform();
-            if gt[2] != 0. || gt[4] != 0. {
-                return Err(invalid("resize of a rotated grid requires reproject first"));
+            if gt[2] != 0. || gt[4] != 0. || gt[1] <= 0. || gt[5] >= 0. {
+                return Err(invalid("resize requires a north-up grid; reproject first"));
             }
             let size = size.as_ref().map(|(x, y)| Ok::<_, Error>((pixels(x, r.width())?, pixels(y, r.height())?))).transpose()?;
             let bbox = (gt[0], gt[3] + r.height() as f64 * gt[5], gt[0] + r.width() as f64 * gt[1], gt[3]);
@@ -826,6 +826,59 @@ mod tests {
         assert!(Pipeline::open(path.to_str().unwrap()).unwrap().run().is_err());
     }
     #[test]
+    fn nested_definitions_do_not_write_their_checkpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.geojson");
+        crate::write_vector(vectors().vectors().unwrap(), input.to_str().unwrap(), &Default::default()).unwrap();
+        let protected = dir.path().join("protected.geojson");
+        std::fs::write(&protected, b"keep existing bytes").unwrap();
+        let definition = dir.path().join("nested.gdalg.json");
+        let plan = Pipeline::from_tokens(&[
+            "read".into(),
+            input.to_string_lossy().into_owned(),
+            "!".into(),
+            "materialize".into(),
+            "--output".into(),
+            protected.to_string_lossy().into_owned(),
+            "--overwrite".into(),
+        ])
+        .unwrap();
+        std::fs::write(&definition, plan.to_gdalg().unwrap()).unwrap();
+        let output = dir.path().join("output.geojson");
+        Pipeline::from_tokens(&[
+            "read".into(),
+            definition.to_string_lossy().into_owned(),
+            "!".into(),
+            "write".into(),
+            output.to_string_lossy().into_owned(),
+        ])
+        .unwrap()
+        .run()
+        .unwrap();
+        assert!(output.exists());
+        assert_eq!(std::fs::read(protected).unwrap(), b"keep existing bytes");
+    }
+    #[test]
+    fn resize_rejects_south_up_and_flipped_grids() {
+        for gt in [[0., 1., 0., 0., 0., 1.], [2., -1., 0., 2., 0., -1.]] {
+            let mut ds = crate::ops::raster_header(
+                crate::ops::Grid { width: 2, height: 2, geo_transform: [0., 1., 0., 2., 0., -1.] },
+                wbraster::DataType::U8,
+                1,
+                None,
+                &crate::crs::SpatialRef::default(),
+            )
+            .unwrap();
+            ds.affine = Some(gt);
+            let error = Pipeline::parse("read a ! resize --size 1,1")
+                .unwrap()
+                .evaluate_with(|_| Ok(PipelineData::Raster(LazyRaster::from(ds.clone())).into()))
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("north-up"));
+        }
+    }
+    #[test]
     fn crop_and_band_selection_only_read_requested_source_window() {
         use std::sync::{Arc, Mutex};
         type ReadLog = Arc<Mutex<Vec<(usize, Window, Vec<usize>)>>>;
@@ -923,6 +976,40 @@ mod tests {
             let mut encoded = crate::memory::open_raster_lazy_bytes(bytes[output.to_str().unwrap()].clone(), "result.tif").unwrap();
             assert!(!encoded.geotransform_present(), "encoded case {index}");
             assert_eq!(encoded.read_mask(Window::full(2, 2), None).unwrap(), Some(mask.clone()));
+        }
+    }
+    #[test]
+    fn direct_raster_exports_keep_absent_transforms_and_gcps() {
+        let dir = tempfile::tempdir().unwrap();
+        for with_gcps in [false, true] {
+            let mut ds = crate::ops::raster_header(
+                crate::ops::Grid { width: 2, height: 2, geo_transform: [0., 1., 0., 2., 0., -1.] },
+                wbraster::DataType::U8,
+                1,
+                None,
+                &crate::crs::SpatialRef::default(),
+            )
+            .unwrap();
+            ds.raster.data = wbraster::raster::RasterData::U8(vec![1, 2, 3, 4]);
+            if with_gcps {
+                ds.gcps.push(crate::Gcp { id: "control".into(), info: String::new(), pixel: 0.5, line: 0.5, x: 10., y: 20., z: 30. });
+            }
+            let input = dir.path().join(format!("source-{with_gcps}.tif"));
+            let options = crate::RasterWriteOptions { creation_options: vec![("GEOREFERENCED".into(), "NO".into())], ..Default::default() };
+            crate::write_raster_dataset(&ds, input.to_str().unwrap(), &options).unwrap();
+            let mut reader = LazyRaster::open(input.to_str().unwrap()).unwrap();
+            let original = reader.header();
+            assert_eq!(original.gcps.len(), usize::from(with_gcps));
+            assert!(!reader.geotransform_present());
+            let output = dir.path().join(format!("copy-{with_gcps}.tif"));
+            let mut options = crate::RasterWriteOptions::default();
+            reader.prepare_output_mask(output.to_str().unwrap(), &mut options, Window::full(2, 2), None).unwrap();
+            reader.write(output.to_str().unwrap(), &options).unwrap();
+            let mut copy = LazyRaster::open(output.to_str().unwrap()).unwrap();
+            assert!(!copy.geotransform_present());
+            assert_eq!(copy.header().gcps, original.gcps);
+            assert!(!copy.header().raster.metadata.iter().any(|(key, _)| key == "GEOREFERENCED"));
+            assert_eq!(copy.read().unwrap().raster.data.to_f64_vec(), [1., 2., 3., 4.]);
         }
     }
     #[test]

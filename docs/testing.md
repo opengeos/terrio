@@ -1781,3 +1781,9 @@ these are single-run observations, not memory limits or general guarantees.
 Both outputs passed full native COG validation and exact GDAL pixel/mask checks.
 Input crop/window/overview reads remain lazy; this whole-output encoding limit
 is distinct from the measured remote crop test.
+
+Per-feature pipeline dissolve currently nodes each segment against overlapping
+segment envelopes. High-degree hubs can therefore require quadratic work.
+Single local optimized CLI runs on 1,000 and 2,000 unit spokes meeting at one
+vertex took 0.279 and 1.358 seconds, including I/O. Both outputs retained all
+spokes and total length; these measurements do not establish a latency bound.
