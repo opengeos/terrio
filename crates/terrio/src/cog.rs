@@ -1182,13 +1182,6 @@ impl LazyRaster {
     ) -> Result<()> {
         use crate::formats::RasterDriver;
         let driver = options.driver.or_else(|| RasterDriver::for_extension(filename));
-        if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog))
-            && !self.geotransform_present()
-            && options.geo_transform.is_none()
-            && !options.creation_options.iter().any(|(key, _)| key.eq_ignore_ascii_case("GEOREFERENCED"))
-        {
-            options.creation_options.push(("GEOREFERENCED".into(), "NO".into()));
-        }
         if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && (self.has_mask() || options.mask.is_some()) {
             return Err(Error::InvalidArgument("tile archive writes do not preserve dataset masks; use an explicit alpha band".into()));
         }

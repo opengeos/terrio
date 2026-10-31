@@ -274,7 +274,9 @@ non-finite nodata, e.g. `["nan"]`.
 
 `pipeline(command, inputs?, options?)` uses the same Rust pipeline engine as the
 CLI and Python. `command` accepts supported GDAL-style steps or saved GDALG JSON
-text. Browser inputs are aliases mapped to `Dataset`, `Uint8Array`,
+text. Steps follow POSIX quoting, so a backslash outside quotes escapes the next
+character: quote Windows paths in single quotes (`'C:\data\in.tif'`) or use
+forward slashes. Browser inputs are aliases mapped to `Dataset`, `Uint8Array`,
 `{ bytes, filename }`, or GeoJSON values; no filesystem path is opened implicitly.
 
 ```js
