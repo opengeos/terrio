@@ -3035,10 +3035,11 @@ signed exterior areas +8 and -8 in both Terrio and GDAL.
 
 For `simplifyCoverage`, JavaScript `layer` selects a single output layer and is
 mutually exclusive with `activeLayer`, which copies inactive layers. Shared-span
-Z values follow the representative edge encountered first, as GDAL 3.13.3 /
-GEOS 3.14.1 does; neighbors with different source heights on identical XY spans
-can receive that edge's heights. Per-feature heights on shared spans are not
-independently preserved.
+Interior shared-span vertices take Z from the representative edge encountered
+first. Shared endpoints use the preceding output span's Z; the first ring
+vertex uses the following span's Z. Neighbors can therefore retain different
+endpoint heights. Per-feature heights on shared spans are not independently
+preserved.
 
 With `preserve_declared_geometry_type` (JavaScript
 `preserveDeclaredGeometryType`), GeoPackage writers reject non-null features
