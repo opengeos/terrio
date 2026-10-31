@@ -2382,7 +2382,7 @@ def footprint(
     singlepart: bool = False,
     attributes: Mapping[str, str] | None = None,
 ) -> Layer:
-    """Return valid-data polygons with explicit text attributes; reads full source pixels."""
+    """Return valid-data polygons; omitted/empty bands selects every band (union by default)."""
     ...
 
 def buffer(

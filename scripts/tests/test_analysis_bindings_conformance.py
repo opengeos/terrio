@@ -93,3 +93,12 @@ def test_dense_contour_length_error_does_not_get_a_vertex_count_allowance():
     actual = LineString([(i * 1e-8 / 1000, (i % 2) * 1e-8, 25) for i in range(1001)])
     with pytest.raises(AssertionError, match="position/length"):
         compare(case("contour", expected, {"ELEV": 25}), output(actual, {"ELEV": 25}))
+
+
+def test_contour_comparison_reports_missing_and_custom_elevation_fields():
+    geometry = LineString([(0, 0, 25), (10, 0, 25)])
+    with pytest.raises(AssertionError, match="elevation field"):
+        compare(case("contour", geometry, {"ELEV": 25}), output(geometry, {}))
+    reference = case("contour", geometry, {"height": 25})
+    reference["options"]["field_name"] = "height"
+    assert compare(reference, output(geometry, {"height": 25}))[0] == "tolerance"

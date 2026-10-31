@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare analysis binding outputs with GDAL on real DEM, imagery and vector data."""
+"""Compare analysis binding outputs with GDAL 3.13.3 on real DEM, imagery and vector data."""
 
 import argparse
 from collections import defaultdict
@@ -41,14 +41,18 @@ def compare(case, result):
         raise AssertionError("output CRS differs")
     if case["operation"] == "contour":
 
+        elevation_field = case["options"].get("field_name", "ELEV")
+
         def grouped(records):
             out = defaultdict(list)
             for geometry, fields in records:
-                out[fields["ELEV"]].append(geometry)
+                if elevation_field not in fields:
+                    raise AssertionError("contour elevation field is missing")
+                out[fields[elevation_field]].append(geometry)
                 if case["options"].get("with_z") and not geometry.has_z:
                     raise AssertionError("contour lost its Z coordinates")
                 if geometry.has_z:
-                    if not np.all(np.asarray(geometry.coords)[:, 2] == fields["ELEV"]):
+                    if not np.all(np.asarray(geometry.coords)[:, 2] == fields[elevation_field]):
                         raise AssertionError("contour Z does not equal its elevation")
             return out
 

@@ -288,7 +288,8 @@ also supports `band`, `levels`, `offset`, `nodata`, `ignoreNodata` and `layerNam
 Footprint supports `intersection`, a same-grid `mask` dataset/upload and explicit
 text `attributes`; no source-path field is added automatically.
 
-Footprint attribute fields are sorted alphabetically.
+Omitted or empty footprint bands selects every band, combined by union unless
+intersection is requested. Footprint attribute fields are sorted alphabetically.
 Footprint validity uses finite samples and the dataset nodata value. Alpha bands
 and external mask files are not interpreted implicitly; supply an explicit mask
 when those pixels should be excluded.

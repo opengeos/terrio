@@ -242,7 +242,8 @@ elevation/layer names. Footprint supports selected-band union or intersection,
 a mask on the same grid, singlepart output and explicit text attributes. No
 source-path attribute is added automatically in the bindings.
 
-Footprint attribute fields are sorted alphabetically.
+Omitted or empty footprint bands selects every band, combined by union unless
+intersection is requested. Footprint attribute fields are sorted alphabetically.
 Footprint validity uses finite samples and the dataset nodata value. Alpha bands
 and external mask files are not interpreted implicitly; supply an explicit mask
 when those pixels should be excluded.
