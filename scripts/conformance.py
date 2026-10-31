@@ -18,6 +18,7 @@ Suites:
                       (compare_windows_with_gdal.py)
     ops               translate, warp, mosaic vs GDAL's tools (compare_ops_with_gdal.py)
     raster-masks      per-dataset masks in convert/warp, including COG overviews
+    parquet-zstd      Zstandard GeoParquet pages read without the zstd C library vs GDAL
     catalogs          indexed real DEM mosaics and HTTP window I/O vs GDAL GTI
                       (compare_catalogs_with_gdal.py)
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
@@ -927,6 +928,39 @@ def suite_dataset_check(ctx):
     return suite
 
 
+def suite_parquet_zstd(ctx):
+    suite = Suite("parquet-zstd", "Zstandard GeoParquet pages", "GDAL 3.13.3 / Arrow",
+                  "Fixtures with v1, v2 and per-column compression: feature ids, attributes and points, read whole")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs osgeo"
+        return suite
+    from osgeo import ogr
+
+    ogr.UseExceptions()
+    fixtures = SCRIPTS.parent / "crates/terrio/tests/data/parquet_zstd"
+    for path in sorted(fixtures.glob("*.parquet")):
+        ds = ogr.Open(str(path))
+        reference = [
+            (f.GetField("id"), f.GetField("name"), f.GetField("value"), f.GetGeometryRef().GetX(), f.GetGeometryRef().GetY())
+            for f in ds.GetLayer(0)
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "out.geojson"
+            code, out, err = run([ctx.terrio, "convert", str(path), str(out_path)])
+            if code:
+                suite.cases.append(Case("GeoParquet", path.name, DIFFERS, tail(err or out)))
+                continue
+            features = json.loads(out_path.read_text())["features"]
+        got = [
+            (f["properties"]["id"], f["properties"]["name"], f["properties"]["value"], *f["geometry"]["coordinates"][:2])
+            for f in features
+        ]
+        status = IDENTICAL if got == reference else DIFFERS
+        detail = "" if got == reference else f"{len(got)} features, GDAL {len(reference)}"
+        suite.cases.append(Case("GeoParquet", path.name, status, detail))
+    return suite
+
+
 def suite_parquet_metadata(ctx):
     suite = Suite("parquet-metadata", "Parquet metadata aggregation", "GDAL 3.13.3 / Arrow dataset reader",
                   "Natural Earth partitions: row groups, column offsets/statistics, all values, CRS, geometry types and merged GeoParquet metadata; reference CRS loss explicitly reported.")
@@ -1099,6 +1133,58 @@ def suite_raster_query(ctx):
     for result in results:
         status = statuses.get(result["status"], DIFFERS)
         suite.cases.append(Case(result["operation"], result["name"], status, result.get("detail", "") if status != IDENTICAL else ""))
+    return suite
+
+
+def suite_retile(ctx):
+    """Traditional retile layouts on real Landsat and USGS derivatives."""
+    suite = Suite("retile", "Retile layouts", "GDAL 3.13.3 gdal_retile",
+                  "Real Landsat and USGS raster samples, types, nodata, masks and georeferencing; cropped edge tiles, overlap, row directories, recursive pyramid levels, per-level CSV extents and Shapefile footprint indexes.")
+    if missing_modules("osgeo", "numpy"):
+        suite.skipped = "needs GDAL bindings and NumPy"
+        return suite
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_retile_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    if len(results) != 29:
+        suite.cases.append(Case("Retile", "case count", DIFFERS, f"expected 29 results, got {len(results)}"))
+    for result in results:
+        suite.cases.append(Case("Retile", result["name"], {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_tile_publication(ctx):
+    """Publication semantics and cross-read mosaics on real Landsat imagery."""
+    suite = Suite("tile-publication", "Tile publication helpers", "GDAL 3.13.3 raster tile / STACTA",
+                  "Real imagery payloads, XYZ/TMS KML overlays and local links, custom MapML substitutions, and GDAL cross-read STACTA grids/samples. Nondefault tile-size reference scale defects are independently verified before normalization. HTML viewers are checked separately in a real browser.")
+    if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None:
+        suite.skipped = "needs GDAL 3.13 commands/bindings and NumPy"
+        return suite
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_tile_publication_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    if len(results) != 3:
+        suite.cases.append(Case("Tile publication", "case count", DIFFERS, f"expected 3 results, got {len(results)}"))
+    for result in results:
+        suite.cases.append(Case("Tile publication", result["name"], {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
     return suite
 
 
@@ -2478,10 +2564,13 @@ SUITES = OrderedDict(
         ("blend", suite_blend),
         ("palette", suite_palette),
         ("raster-tiles", suite_raster_tiles),
+        ("retile", suite_retile),
+        ("tile-publication", suite_tile_publication),
         ("cog-validate", suite_cog_validate),
         ("identify", suite_identify),
         ("dataset-files", suite_dataset_files),
         ("parquet-metadata", suite_parquet_metadata),
+        ("parquet-zstd", suite_parquet_zstd),
         ("dataset-check", suite_dataset_check),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),

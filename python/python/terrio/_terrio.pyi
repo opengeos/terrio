@@ -56,6 +56,7 @@ __all__ = [
     "raster_tiles",
     "rpftoc_create",
     "rpftoc_bytes",
+    "retile",
     "vector_index",
     "DatasetIndex",
     "pansharpen",
@@ -2061,6 +2062,17 @@ def raster_tiles(
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Plan or write separate raster tiles, with nested grid options."""
+    ...
+
+def retile(
+    sources: str | os.PathLike[str] | Raster | Sequence[str | os.PathLike[str] | Raster],
+    output: str | os.PathLike[str],
+    *,
+    resume: bool = False,
+    dry_run: bool = False,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Retile mosaics into overlapping files and recursive pyramid levels."""
     ...
 
 def vector_index(sources: Any, dst: str | None = None, **kwargs: Any) -> DatasetIndex:

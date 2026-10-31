@@ -16,6 +16,7 @@
 //! types, bounds and CRS.
 
 use super::datetime::{format_date, format_datetime, parse_date, parse_datetime};
+use super::geoparquet_zstd::{self, SharedInput};
 use super::profile::LayerProfile;
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
@@ -30,9 +31,9 @@ use arrow_array::{
     Array, ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StructArray, TimestampMillisecondArray,
 };
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
-use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::arrow_writer::{ArrowLeafColumn, ArrowRowGroupWriterFactory, compute_leaves};
+use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use serde_json::{Value, json};
@@ -170,7 +171,8 @@ impl ParquetStream {
         prefetch: Prefetch<'_>,
     ) -> Result<Self> {
         let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
-        let builder = ParquetRecordBatchReaderBuilder::try_new(open()?).map_err(|e| err(&e))?;
+        let input = SharedInput(Arc::new(open()?));
+        let builder = ParquetRecordBatchReaderBuilder::try_new(input.clone()).map_err(|e| err(&e))?;
         let num_groups = builder.metadata().num_row_groups();
         if let Some(g) = row_groups.and_then(|g| g.iter().find(|&&g| g >= num_groups)) {
             return Err(Error::InvalidArgument(format!("no row group {g}: the file has {num_groups}")));
@@ -217,7 +219,7 @@ impl ParquetStream {
         })();
 
         // With a filter: the row groups whose statistics overlap it, then the rows that do.
-        let mut builder = builder;
+        let mut row_selection = None;
         let mut fids: Option<Vec<u64>> = None;
         let meta = builder.metadata().clone();
         let mut groups: Vec<usize> = match row_groups {
@@ -230,9 +232,10 @@ impl ParquetStream {
             None => (0..num_groups).collect(),
         };
         if let Some(rect) = bbox {
-            let (kept_groups, selection, kept) = select_rows(&builder, open()?, covering, geom_index, &encoding, rect, &groups, prefetch)?;
+            let (kept_groups, selected, kept) =
+                select_rows(&builder, SharedInput(Arc::new(open()?)), covering, geom_index, &encoding, rect, &groups, prefetch)?;
             groups = kept_groups;
-            builder = builder.with_row_groups(groups.clone()).with_row_selection(selection);
+            row_selection = Some(selected);
             fids = Some(kept);
         } else if row_groups.is_some() {
             // Feature ids stay the row numbers in the file.
@@ -243,13 +246,21 @@ impl ParquetStream {
                 n += rg.num_rows() as u64;
             }
             fids = Some(groups.iter().flat_map(|&g| first[g]..first[g] + meta.row_group(g).num_rows() as u64).collect());
-            builder = builder.with_row_groups(groups.clone());
         }
         if let Some(p) = prefetch {
             let ranges: Vec<(u64, u64)> = groups.iter().flat_map(|&g| meta.row_group(g).columns().iter().map(|c| c.byte_range())).collect();
             p(&ranges)?;
         }
-        let reader = builder.with_batch_size(batch_size.max(1)).build().map_err(|e| err(&e))?;
+        let reader = if geoparquet_zstd::has_zstd(&meta, &groups, &ProjectionMask::all()) {
+            geoparquet_zstd::reader(input, &meta, &schema, ProjectionMask::all(), groups, row_selection, batch_size)
+        } else {
+            let mut builder = builder.with_row_groups(groups).with_batch_size(batch_size.max(1));
+            if let Some(selection) = row_selection {
+                builder = builder.with_row_selection(selection);
+            }
+            builder.build()
+        }
+        .map_err(|e| err(&e))?;
 
         match col.get("crs") {
             _ if geo.is_null() => {}
@@ -323,7 +334,6 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
     allowed: &[usize],
     prefetch: Prefetch<'_>,
 ) -> Result<(Vec<usize>, parquet::arrow::arrow_reader::RowSelection, Vec<u64>)> {
-    use parquet::arrow::ProjectionMask;
     use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
     use parquet::file::statistics::Statistics as S;
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
@@ -377,11 +387,16 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
             .collect();
         p(&ranges)?;
     }
-    let src = ParquetRecordBatchReaderBuilder::new_with_metadata(
-        input,
-        parquet::arrow::arrow_reader::ArrowReaderMetadata::try_new(meta.clone(), Default::default()).map_err(|e| err(&e))?,
-    );
-    let reader = src.with_row_groups(groups.clone()).with_projection(mask).with_batch_size(65536).build().map_err(|e| err(&e))?;
+    let reader = if geoparquet_zstd::has_zstd(&meta, &groups, &mask) {
+        geoparquet_zstd::reader(input, &meta, &schema, mask, groups.clone(), None, 65536)
+    } else {
+        let src = ParquetRecordBatchReaderBuilder::new_with_metadata(
+            input,
+            parquet::arrow::arrow_reader::ArrowReaderMetadata::try_new(meta.clone(), Default::default()).map_err(|e| err(&e))?,
+        );
+        src.with_row_groups(groups.clone()).with_projection(mask).with_batch_size(65536).build()
+    }
+    .map_err(|e| err(&e))?;
     let mut keep: Vec<bool> = Vec::new();
     for batch in reader {
         let batch = batch.map_err(|e| err(&e))?;

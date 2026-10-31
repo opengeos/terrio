@@ -72,6 +72,8 @@ pub mod pixel;
 pub mod pixel_info;
 pub mod polygonize;
 pub mod proximity;
+pub mod raster_publication;
+pub mod raster_retile;
 pub mod raster_tile;
 pub mod rasterio;
 pub mod rasterize;

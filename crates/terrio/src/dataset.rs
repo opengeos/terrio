@@ -684,6 +684,12 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         Err(raster_err) if !wbvector_fallback_allowed() => Err(Error::Unsupported(format!(
             "'{path}': format not recognized ({raster_err}; TERRIO_WBVECTOR_FALLBACK=YES lets wbvector detect it)"
         ))),
+        // GeoParquet by its magic number, with terrio's own driver: wbvector is built without it.
+        #[cfg(feature = "parquet")]
+        Err(_) if has_parquet_magic(path) => {
+            crate::formats::check_driver_allowed(VectorDriver::Parquet.name(), path, crate::formats::Kind::Vector)?;
+            read_vector_local(path, VectorDriver::Parquet, options).map(Dataset::Vector)
+        }
         Err(raster_err) => match wbvector::VectorFormat::detect(path) {
             Ok(format) => {
                 // Found by its content (an XML element anywhere in its first 4 KiB, a zip archive as
@@ -699,6 +705,14 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             Err(_) => Err(Error::Unsupported(format!("'{path}': format not recognized ({raster_err})"))),
         },
     }
+}
+
+/// Whether a file starts with Parquet's magic number.
+#[cfg(feature = "parquet")]
+fn has_parquet_magic(path: &str) -> bool {
+    use std::io::Read;
+    let mut magic = [0u8; 4];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && &magic == b"PAR1"
 }
 
 /// Whether a raster that neither its extension nor terrio's own drivers recognise may be handed
@@ -1512,6 +1526,27 @@ mod tests {
         crate::config::pop_scope();
         let ds = opened.expect("wbraster reads the grid when the option allows it");
         assert_eq!((ds.raster.cols, ds.raster.rows), (2, 2));
+    }
+
+    /// GeoParquet without its extension is found by its magic number when the option allows the
+    /// fallback, and read by terrio's driver.
+    #[cfg(all(feature = "parquet", not(feature = "gdal")))]
+    #[test]
+    fn geoparquet_is_detected_by_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("places.payload");
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/parquet_zstd/zstd_v1.parquet"), &path).unwrap();
+        let path = path.to_str().unwrap();
+        assert!(crate::open(path).is_err());
+        crate::config::push_scope([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))].into());
+        let opened = crate::open(path);
+        let options = crate::VectorOpenOptions { spatial_filter: Some((-5.5, -2.5, 5.5, 2.5)), ..Default::default() };
+        let filtered = super::open_local(path, &options);
+        crate::config::pop_scope();
+        let crate::Dataset::Vector(v) = opened.unwrap() else { panic!("not a vector") };
+        assert_eq!((v.driver, v.layers[0].len()), (crate::formats::VectorDriver::Parquet, 500));
+        let crate::Dataset::Vector(v) = filtered.unwrap() else { panic!("not a vector") };
+        assert_eq!(v.layers[0].len(), 30);
     }
 
     /// A vector file only `wbvector`'s detection recognises (GPX named `.payload`) is refused

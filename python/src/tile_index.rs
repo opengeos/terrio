@@ -247,7 +247,6 @@ fn raster_index(
 ) -> PyResult<PyDatasetIndex> {
     let args = Args::parse(py, kwargs)?;
     let options = args.raster().py()?;
-    #[cfg_attr(target_family = "wasm", allow(unused_mut, unused_variables))]
     let mut protected_paths: Vec<String> = Vec::new();
     #[cfg_attr(target_family = "wasm", allow(unused_mut))]
     let mut index = if let Ok(mapping) = sources.cast::<PyDict>() {
@@ -307,7 +306,6 @@ fn vector_index(
     let args = Args::parse(py, kwargs)?;
     let options = args.vector().py()?;
     let selection = args.selection();
-    #[cfg_attr(target_family = "wasm", allow(unused_mut, unused_variables))]
     let mut protected_paths: Vec<String> = Vec::new();
     #[cfg_attr(target_family = "wasm", allow(unused_mut))]
     let mut index = if let Ok(mapping) = sources.cast::<PyDict>() {
