@@ -37,6 +37,7 @@ pub mod points;
 pub mod polygonize;
 pub mod processing;
 pub mod proximity;
+pub mod raster_retile;
 pub mod raster_tile;
 pub mod rasterize;
 pub mod rasterout;

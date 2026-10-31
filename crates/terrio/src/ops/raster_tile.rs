@@ -661,5 +661,5 @@ mod tests {
     }
 }
 
-mod folder;
+pub(crate) mod folder;
 pub use folder::*;

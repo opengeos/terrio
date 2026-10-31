@@ -96,11 +96,14 @@ commands. Command-group progress:
       NOAA wind comparisons registered as `mdmosaic`. Landed in
       [#373](https://github.com/opengeos/terrio/pull/373).
 
-- [ ] Separate-file raster tiles: XYZ/TMS PNG and typed GeoTIFF output through
+- [x] Separate-file raster tiles: XYZ/TMS PNG and typed GeoTIFF output through
       Rust, CLI/MCP, Python and JavaScript, with bounded source windows and
       non-overwriting resume. Real Landsat/USGS comparisons are registered as
       `raster-tiles`; direct-source lower zooms differ from GDAL's generated-image
-      pyramid. Retile file layouts and publication helpers remain unimplemented.
+      pyramid. Retile layouts, recursive pyramids, CSV/vector indexes and
+      Leaflet/OpenLayers, MapML, STACTA and KML publication helpers are implemented
+      in [#440](https://github.com/opengeos/terrio/pull/440), with registered
+      `retile` and `tile-publication` comparisons against GDAL 3.13.3.
 
 - [x] Vector clipping: points, lines, polygons and collections, with bbox,
       geometry, filtered vector/raster templates and region CRS transforms through

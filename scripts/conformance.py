@@ -1136,6 +1136,58 @@ def suite_raster_query(ctx):
     return suite
 
 
+def suite_retile(ctx):
+    """Traditional retile layouts on real Landsat and USGS derivatives."""
+    suite = Suite("retile", "Retile layouts", "GDAL 3.13.3 gdal_retile",
+                  "Real Landsat and USGS raster samples, types, nodata, masks and georeferencing; cropped edge tiles, overlap, row directories, recursive pyramid levels, per-level CSV extents and Shapefile footprint indexes.")
+    if missing_modules("osgeo", "numpy"):
+        suite.skipped = "needs GDAL bindings and NumPy"
+        return suite
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_retile_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    if len(results) != 29:
+        suite.cases.append(Case("Retile", "case count", DIFFERS, f"expected 29 results, got {len(results)}"))
+    for result in results:
+        suite.cases.append(Case("Retile", result["name"], {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_tile_publication(ctx):
+    """Publication semantics and cross-read mosaics on real Landsat imagery."""
+    suite = Suite("tile-publication", "Tile publication helpers", "GDAL 3.13.3 raster tile / STACTA",
+                  "Real imagery payloads, XYZ/TMS KML overlays and local links, custom MapML substitutions, and GDAL cross-read STACTA grids/samples. Nondefault tile-size reference scale defects are independently verified before normalization. HTML viewers are checked separately in a real browser.")
+    if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None:
+        suite.skipped = "needs GDAL 3.13 commands/bindings and NumPy"
+        return suite
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_tile_publication_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    if len(results) != 3:
+        suite.cases.append(Case("Tile publication", "case count", DIFFERS, f"expected 3 results, got {len(results)}"))
+    for result in results:
+        suite.cases.append(Case("Tile publication", result["name"], {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_raster_tiles(ctx):
     """Folder tile pixels, filenames, masks and grids on real imagery/elevation."""
     suite = Suite("raster-tiles", "Separate-file raster tiles", "GDAL 3.13.3 raster tile / alpha warp",
@@ -2512,6 +2564,8 @@ SUITES = OrderedDict(
         ("blend", suite_blend),
         ("palette", suite_palette),
         ("raster-tiles", suite_raster_tiles),
+        ("retile", suite_retile),
+        ("tile-publication", suite_tile_publication),
         ("cog-validate", suite_cog_validate),
         ("identify", suite_identify),
         ("dataset-files", suite_dataset_files),
