@@ -504,8 +504,9 @@ integer counts and nulls must match exactly. Rust/CLI regressions cover positive
 and negative halfway rounding, huge finite values, Z/M preservation, precision
 limits and errors before output creation. Decimal places affect only computed
 numeric attributes, not coordinates or format-specific trailing-zero display.
-The options also apply to Python's bundled CLI and MCP; there are currently no
-direct point-sampling or zonal-statistics functions in Python/JavaScript bindings.
+The options also apply to Python's bundled CLI and MCP. Direct zonal statistics
+are exposed as Python `zonal_stats` and JavaScript `zonalStats`; direct
+point-sampling functions remain unavailable in the language bindings.
 
 ## Standalone CRS feature coverage
 

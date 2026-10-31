@@ -322,7 +322,9 @@ limits match Python/CLI: bands default to `[1]`; count/min/max/mean/sum/populati
 stddev default statistics, optional median; center or `allTouched` membership;
 per-raster CRS transforms; nodata/nonfinite exclusion; zero count/null statistics
 for empty zones; output reprojection and 0–15 decimal rounding. Default prefixes
-are `raster1`, `raster2`, etc., producing `PREFIX_bN_STATISTIC`. Explicit prefixes
+are `raster1`, `raster2`, etc., producing `PREFIX_bN_STATISTIC`; the CLI instead
+defaults to each input path stem. Set explicit prefixes for identical field names.
+Explicit prefixes
 must be nonblank, one per raster. Weighted/fractional statistics are unsupported.
 
 `singlepart` recursively splits collections/multipart geometry, preserving

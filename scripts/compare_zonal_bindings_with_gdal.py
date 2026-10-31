@@ -44,7 +44,11 @@ def compare(result, expected, source, options):
         for key, value in wanted.items():
             got = fields[key]
             if key in original["properties"] or value is None or key.endswith("_count"):
-                if got != value:
+                if got != value or (
+                    key not in original["properties"]
+                    and key.endswith("_count")
+                    and isinstance(got, bool)
+                ):
                     raise AssertionError(f"attribute/count/null differs: {key}")
             else:
                 places = options.get("decimal_places")
@@ -58,8 +62,10 @@ def compare(result, expected, source, options):
                         )
                         / scale
                     )
-                if not isinstance(got, (int, float)) or not math.isclose(
-                    got, value, rel_tol=1e-10, abs_tol=1e-9
+                if (
+                    isinstance(got, bool)
+                    or not isinstance(got, (int, float))
+                    or not math.isclose(got, value, rel_tol=1e-10, abs_tol=1e-9)
                 ):
                     raise AssertionError(
                         f"statistic differs: {key}: {got} versus {value}"
@@ -174,6 +180,13 @@ def prepare(data, work):
             if key.endswith("_count")
         ):
             raise AssertionError(f"{name} has no contributing real pixels")
+        if not any(
+            value == 0
+            for row in expected
+            for key, value in row.items()
+            if key.endswith("_count")
+        ):
+            raise AssertionError(f"{name} lacks a zero-count reference zone")
         requests.append(
             dict(
                 name=name,

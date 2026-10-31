@@ -134,16 +134,9 @@ fn zonal_stats(
     layer: Option<String>,
 ) -> PyResult<PyLayer> {
     use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions};
-    let zones = crate::vector_geom::one_layer(py, zones, layer)?;
-    let rasters: Vec<_> = crate::ops::input_rasters(py, rasters)?.into_iter().map(|(_, raster)| raster).collect();
-    let prefixes = prefixes.unwrap_or_else(|| (1..=rasters.len()).map(|i| format!("raster{i}")).collect());
-    if prefixes.iter().any(|p| p.trim().is_empty()) {
+    if prefixes.as_ref().is_some_and(|p| p.iter().any(|p| p.trim().is_empty())) {
         return Err(pyo3::exceptions::PyValueError::new_err("raster field prefixes cannot be empty"));
     }
-    if prefixes.len() != rasters.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err("give one prefix per raster, or omit prefixes"));
-    }
-    let bands = bands.unwrap_or_else(|| vec![1]);
     let options = ZonalOptions {
         stats: stats
             .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
@@ -154,6 +147,13 @@ fn zonal_stats(
         dst_srs: t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().py()?,
         decimal_places,
     };
+    let zones = crate::vector_geom::one_layer(py, zones, layer)?;
+    let rasters: Vec<_> = crate::ops::input_rasters(py, rasters)?.into_iter().map(|(_, raster)| raster).collect();
+    let prefixes = prefixes.unwrap_or_else(|| (1..=rasters.len()).map(|i| format!("raster{i}")).collect());
+    if prefixes.len() != rasters.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err("give one prefix per raster, or omit prefixes"));
+    }
+    let bands = bands.unwrap_or_else(|| vec![1]);
     let inner = py
         .detach_result(|| {
             let mut inputs = Vec::new();

@@ -164,13 +164,8 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
         }
     }
     let a: ZonalOptions = parse_options(&options)?;
-    let rasters = crate::ops::input_rasters(rasters)?;
-    let prefixes = a.prefixes.unwrap_or_else(|| (1..=rasters.len()).map(|i| format!("raster{i}")).collect());
-    if prefixes.iter().any(|p| p.trim().is_empty()) {
+    if a.prefixes.as_ref().is_some_and(|p| p.iter().any(|p| p.trim().is_empty())) {
         return Err(JsError::new("raster field prefixes cannot be empty"));
-    }
-    if prefixes.len() != rasters.len() {
-        return Err(JsError::new("give one prefix per raster, or omit prefixes"));
     }
     let options = terrio::ops::zonal::ZonalOptions {
         stats: a
@@ -183,6 +178,11 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
         dst_srs: a.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?,
         decimal_places: a.decimal_places,
     };
+    let rasters = crate::ops::input_rasters(rasters)?;
+    let prefixes = a.prefixes.unwrap_or_else(|| (1..=rasters.len()).map(|i| format!("raster{i}")).collect());
+    if prefixes.len() != rasters.len() {
+        return Err(JsError::new("give one prefix per raster, or omit prefixes"));
+    }
     let mut inputs = Vec::new();
     for (raster, prefix) in rasters.iter().zip(&prefixes) {
         for &band in &a.bands {

@@ -82,3 +82,26 @@ def test_zonal_comparison_rejects_regressions(change):
         feature["properties"]["r0_b1_mean"] = float("nan")
     with pytest.raises(AssertionError):
         compare(result, expected, source, {})
+
+
+@pytest.mark.parametrize("field", ["r0_b1_count", "r0_b1_mean"])
+def test_booleans_cannot_stand_in_for_numeric_statistics(field):
+    result, expected, source = example()
+    expected[0][field] = 1
+    result["geojson"]["features"][0]["properties"][field] = True
+    with pytest.raises(AssertionError):
+        compare(result, expected, source, {})
+
+
+def test_missing_data_skips_before_launching_comparison(monkeypatch, tmp_path):
+    import conformance
+    from types import SimpleNamespace
+    from osgeo import gdal
+
+    monkeypatch.setitem(
+        sys.modules, "terrio", SimpleNamespace(zonal_stats=True, singlepart=True)
+    )
+    monkeypatch.setattr(conformance, "missing_modules", lambda *args: [])
+    monkeypatch.setattr(gdal, "VersionInfo", lambda *args: "3130300")
+    suite = conformance.suite_zonal_bindings(SimpleNamespace(data=tmp_path))
+    assert "missing zonal comparison data" in suite.skipped and not suite.cases

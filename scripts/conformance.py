@@ -2119,6 +2119,21 @@ def suite_analysis_output(ctx):
     return suite
 
 
+def node_exports_available(module, names):
+    """An optional Node backend needs a complete package and the requested exports."""
+    if shutil.which("node") is None or not module.is_file() or not module.with_name("terrio_bg.wasm").is_file():
+        return False
+    try:
+        result = subprocess.run([
+            "node", "-e",
+            "const t=require(process.argv[1]);process.exit(process.argv.slice(2).every(n=>typeof t[n]==='function')?0:1)",
+            str(module.resolve()), *names,
+        ], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def suite_rpftoc(ctx):
     """All RPF TOC surfaces cross-read by GDAL 3.13.3 on prepared CADRG frames."""
     suite = Suite("rpftoc", "CADRG RPF table of contents", "GDAL 3.13.3 RPFTOC/NITF",
@@ -2164,14 +2179,21 @@ def suite_zonal_bindings(ctx):
         return suite
     import terrio
     from osgeo import gdal
-    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000 or not hasattr(terrio, "zonal_stats"):
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000 or any(not hasattr(terrio, name) for name in ["zonal_stats", "singlepart"]):
         suite.skipped = "needs GDAL >= 3.13 and current zonal bindings"
+        return suite
+    required = ["TN_Counties.geojson", "dem.tif", "nlcd_knoxville.tif", "landsat.tif", "countries.geojson", "countries.fgb"]
+    missing = [name for name in required if not (Path(ctx.data) / name).is_file()]
+    if missing:
+        suite.skipped = "missing zonal comparison data: " + ", ".join(missing)
         return suite
     command = [sys.executable, str(SCRIPTS / "compare_zonal_bindings_with_gdal.py"), ctx.data, "--json"]
     module = ROOT / "js" / "pkg-node" / "terrio.js"
-    node = shutil.which("node") is not None and module.is_file()
+    node = node_exports_available(module, ["zonalStats", "singlepart"])
     if node:
         command += ["--js", module]
+    else:
+        suite.cases.append(Case("Zonal bindings", "Node backend", SKIPPED, "needs a complete Node package exporting zonalStats and singlepart"))
     code, out, err = run(command)
     try:
         results = json.loads(out)

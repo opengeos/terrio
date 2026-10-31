@@ -3317,6 +3317,8 @@ test("zonalStats exposes multiple rasters, bands, nodata and membership controls
   assert.equal(terrio.zonalStats(small,[raster],{allTouched:true}).toGeoJSON().features[0].properties.raster1_b1_count,3);
   for(const options of [{prefixes:[]},{prefixes:[" "]},{bands:[]},{bands:[3]},{stats:[]},{stats:["mean","mean"]},{stats:["bad"]},{decimalPlaces:16},{decimalPlaces:NaN}])assert.throws(()=>terrio.zonalStats(zones,[raster],options));
   assert.throws(()=>terrio.zonalStats(zones,[],{}),/no input rasters/);
+  assert.throws(()=>terrio.zonalStats(zones,new Uint8Array([0]),{stats:["bad"]}),/unknown zonal/);
+  assert.throws(()=>terrio.zonalStats(zones,new Uint8Array([0]),{prefixes:[""]}),/cannot be empty/);
 });
 
 
@@ -3327,4 +3329,46 @@ test("singlepart recursively splits collections, retaining XYZ, attributes and n
  assert.deepEqual(result[0].geometry.coordinates,[1,2,3]);
  assert.deepEqual(result[2].geometry.coordinates,[[0,0,7],[1,1,8]]);
  assert.deepEqual(result[2].properties,{name:"parts"});assert.equal(result[3].geometry,null);
+});
+
+
+test("singlepart preserves measured ZM coordinates through GeoPackage", async (context) => {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import("node:sqlite"));
+  } catch {
+    context.skip("node:sqlite is unavailable");
+    return;
+  }
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const directory = mkdtempSync(join(tmpdir(), "terrio-singlepart-"));
+  let database;
+  try {
+    const source = terrio.open(new TextEncoder().encode(
+      'WKT,name\n"MULTIPOINT ZM ((1 2 3 4),(5 6 7 8))",parts\n'
+    ), "measured.csv");
+    const filename = join(directory, "parts.gpkg");
+    writeFileSync(filename, terrio.singlepart(source).toBytes("parts.gpkg"));
+    database = new DatabaseSync(filename, { readOnly: true });
+    const metadata = database.prepare("SELECT table_name, column_name FROM gpkg_geometry_columns").get();
+    const quote = (identifier) => '"' + identifier.replaceAll('"', '""') + '"';
+    const rows = database.prepare(
+      `SELECT ${quote(metadata.column_name)} AS geometry FROM ${quote(metadata.table_name)} ORDER BY fid`
+    ).all();
+    const coordinates = rows.map(({ geometry }) => {
+      const bytes = Buffer.from(geometry);
+      // GeoPackage header plus its optional envelope precedes ISO WKB.
+      const offset = 8 + [0, 4, 6, 6, 8][(bytes[3] >> 1) & 7] * 8;
+      const littleEndian = bytes[offset] === 1;
+      assert.equal(littleEndian ? bytes.readUInt32LE(offset + 1) : bytes.readUInt32BE(offset + 1), 3001);
+      return Array.from({ length: 4 }, (_, index) => littleEndian
+        ? bytes.readDoubleLE(offset + 5 + index * 8)
+        : bytes.readDoubleBE(offset + 5 + index * 8));
+    });
+    assert.deepEqual(coordinates, [[1, 2, 3, 4], [5, 6, 7, 8]]);
+  } finally {
+    database?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

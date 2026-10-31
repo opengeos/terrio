@@ -100,7 +100,7 @@ def test_zonal_pixel_membership_and_defaults():
         ({"stats": []}, "at least one"),
         ({"stats": ["mean", "mean"]}, "duplicate"),
         ({"stats": ["bad"]}, "unknown zonal"),
-        ({"decimal_places": 16}, "0"),
+        ({"decimal_places": 16}, "between 0 and 15"),
     ],
 )
 def test_zonal_invalid_options(options, message):
@@ -166,3 +166,33 @@ def test_pathlike_source_name_is_retained_for_vrt(tmp_path):
     vrt = tmp_path / "mosaic.vrt"
     assert terrio.mosaic(path, str(vrt)) is None
     np.testing.assert_array_equal(terrio.open_raster(str(vrt)).read(1), raster.read(1))
+
+
+def test_pathlike_is_resolved_once_for_vrt_metadata_and_reference(tmp_path):
+    _, raster = inputs()
+    first, second = tmp_path / "first.tif", tmp_path / "second.tif"
+    raster.write(str(first))
+    terrio.create_raster(str(second), size=(1, 1), burn=[99], crs="EPSG:4326", bbox=(0, 0, 1, 1))
+
+    class ChangingPath:
+        calls = 0
+
+        def __fspath__(self):
+            self.calls += 1
+            return str(first if self.calls == 1 else second)
+
+    source = ChangingPath()
+    output = tmp_path / "resolved.vrt"
+    assert terrio.mosaic(source, str(output)) is None
+    assert source.calls == 1
+    np.testing.assert_array_equal(terrio.open_raster(str(output)).read(1), raster.read(1))
+
+
+def test_invalid_zonal_options_precede_raster_reads():
+    zones, _ = inputs()
+    for options, message in [
+        ({"stats": ["bad"]}, "unknown zonal"),
+        ({"prefixes": [""]}, "cannot be empty"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            terrio.zonal_stats(zones, "not-a-real-raster.tif", **options)
