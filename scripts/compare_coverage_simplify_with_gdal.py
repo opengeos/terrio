@@ -8,12 +8,12 @@ GDAL independently checks output coverage validity.
 import argparse
 import json
 import sqlite3
-from pathlib import Path
 import tempfile
-
-from osgeo import ogr
+from contextlib import closing
+from pathlib import Path
 
 from compare_coverage_with_gdal import counties, run, write
+from osgeo import ogr
 
 
 def polygon_edges(geometry):
@@ -51,7 +51,7 @@ def read(path):
             rows.append(
                 (feature.GetFID(), feature.items(), g.GetGeometryType(), fingerprint)
             )
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection:
             dimensions = connection.execute(
                 "SELECT geometry_type_name,z,m FROM gpkg_geometry_columns WHERE table_name=?",
                 (layer.GetName(),),
