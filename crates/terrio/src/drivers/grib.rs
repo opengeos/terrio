@@ -2241,7 +2241,7 @@ fn png_samples_sized(data: &[u8], ndpts: usize, nbits: u32) -> Option<(usize, us
 mod tests {
     use super::*;
 
-    /// A GRIB1 message of a constant field (no bits a value) on an `nx` x `ny` grid.
+    /// A GRIB1 message of a constant field (zero bits per value) on an `nx` x `ny` grid.
     fn constant_grib1(nx: u16, ny: u16) -> Vec<u8> {
         let valid = include_bytes!("../../tests/data/grib/Sample_QuikSCAT.grb");
         let mut grib1 = valid[..68].to_vec();
