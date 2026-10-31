@@ -163,3 +163,24 @@ def test_missing_node_reports_not_compared_without_losing_other_results(monkeypa
     assert len(suite.cases) == 21
     assert suite.cases[0].status == conformance.NOT_COMPARED
     assert all(case.status == conformance.IDENTICAL for case in suite.cases[1:])
+
+
+def test_failed_fixture_copy_never_publishes_a_partial_frame(monkeypatch, tmp_path):
+    import shutil
+    from make_rpftoc_fixtures import install_frame_inventory
+
+    generated, target = tmp_path / "generated", tmp_path / "target"
+    generated.mkdir()
+    (generated / "00000000.ON2").write_bytes(b"complete frame")
+
+    def interrupted_copy(source, output):
+        output.write(b"partial")
+        raise OSError("interrupted fixture copy")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(shutil, "copyfileobj", interrupted_copy)
+        with pytest.raises(OSError, match="interrupted fixture copy"):
+            install_frame_inventory(target, generated, "*.ON2")
+    assert not list(target.iterdir())
+    install_frame_inventory(target, generated, "*.ON2")
+    assert (target / "00000000.ON2").read_bytes() == b"complete frame"

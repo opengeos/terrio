@@ -133,3 +133,62 @@ def test_custom_83_output_name_can_be_replaced(tmp_path):
     assert first == second
     assert first["frames"] == 1 and first["skipped_files"] == 0
     assert output.read_bytes().startswith(b"NITF02.00")
+
+
+def test_byte_metadata_parsing_releases_the_gil():
+    import sys
+    import threading
+    import time
+
+    original = frame_metadata()
+    old_header_length = int(original[354:360])
+    header = bytearray(original[: old_header_length - 5])
+    # Fill both valid NITF header TRE areas. Reusing one immutable bytes object
+    # stresses parsing, while argument extraction stays small and predictable.
+    user_size_offset = header.index(b"00062000RPFHDR")
+    header[user_size_offset : user_size_offset + 5] = b"99999"
+    header += b"PAD00199926" + bytes(99926)
+    header += b"99999000PAD00299985" + bytes(99985)
+    new_header_length = len(header)
+    header[354:360] = f"{new_header_length:06}".encode()
+    struct.pack_into(">I", header, header.index(b"RPFHDR") + 11 + 44, new_header_length)
+    sections = bytearray(original[old_header_length:])
+    struct.pack_into(">I", sections, 20, new_header_length + 34)
+    struct.pack_into(">I", sections, 30, new_header_length + 130)
+    data = header + sections
+    data[342:354] = f"{len(data):012}".encode()
+    data = bytes(data)
+    assert terrio.rpftoc_bytes([("000C9010.ON2", data)]).startswith(b"NITF02.00")
+    frames = [("000C9010.ON2", data)] * 100000
+    stop, ready = threading.Event(), threading.Event()
+    ticks = []
+
+    def ticker():
+        ticks.append(time.monotonic())
+        ready.set()
+        while not stop.wait(0.001):
+            ticks.append(time.monotonic())
+
+    previous = sys.getswitchinterval()
+    worker = threading.Thread(target=ticker)
+    try:
+        sys.setswitchinterval(5.0)
+        worker.start()
+        assert ready.wait(2)
+        start = time.monotonic()
+        with pytest.raises(ValueError, match="duplicate|metadata"):
+            terrio.rpftoc_bytes(frames)
+        finish = time.monotonic()
+    finally:
+        stop.set()
+        worker.join(timeout=2)
+        sys.setswitchinterval(previous)
+    assert not worker.is_alive()
+    duration = finish - start
+    if duration < 0.05:
+        pytest.skip("metadata parsing is too fast to measure thread scheduling")
+    stamps = [start, *(tick for tick in ticks if start < tick < finish), finish]
+    longest_gap = max(right - left for left, right in zip(stamps, stamps[1:], strict=False))
+    # Encoding may also release the GIL: total ticks alone would not detect
+    # holding it throughout the much larger header-parsing portion of the call.
+    assert longest_gap < duration * 0.6, (longest_gap, duration)

@@ -159,6 +159,11 @@ fn read_impl(relative_name: &str, reader: &mut (impl Read + Seek), allow_toc: bo
     if decimal(&header[360 + extra..363 + extra])? != 1 {
         return Err(invalid("RPF frame requires exactly one NITF image segment"));
     }
+    let subheader_length = decimal(header.get(363 + extra..369 + extra).ok_or_else(|| invalid("truncated NITF image length table"))?)?;
+    let data_length = decimal(header.get(369 + extra..379 + extra).ok_or_else(|| invalid("truncated NITF image length table"))?)?;
+    if header.len() as u64 + subheader_length as u64 + data_length as u64 > size {
+        return Err(invalid("NITF image segment lies outside the file"));
+    }
     let rpf = rpf_header(&header, 360 + extra)?;
     let standard = std::str::from_utf8(&rpf[16..31]).map_err(|_| invalid("invalid RPF standard identifier"))?.trim();
     if !matches!(standard, "MIL-C-89038" | "MIL-PRF-89038") {
@@ -353,6 +358,17 @@ mod tests {
         assert!(
             matches!(read("00000000.ON2", &mut Cursor::new(&bytes)), Err(Error::InvalidData(message)) if message.contains("file length"))
         );
+    }
+
+    #[test]
+    fn image_segment_cannot_extend_past_the_declared_file_size() {
+        let mut bytes = fixture();
+        bytes[363..369].copy_from_slice(b"000001");
+        let header_length = decimal(&bytes[354..360]).unwrap();
+        let data_length = bytes.len() - header_length;
+        bytes[369..379].copy_from_slice(format!("{data_length:010}").as_bytes());
+        assert!(matches!(read("00000000.ON2", &mut Cursor::new(bytes)),
+            Err(Error::InvalidData(message)) if message.contains("image segment")));
     }
 
     #[test]

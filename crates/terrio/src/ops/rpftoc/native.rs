@@ -216,11 +216,11 @@ pub(super) fn create(input: &Path, output: Option<&Path>, options: &RpfTocOption
         builder.permissions(std::fs::Permissions::from_mode(0o666));
     }
     let mut temporary = builder.tempfile_in(&parent)?;
+    temporary.write_all(&bytes)?;
     #[cfg(unix)]
     if let Some(permissions) = previous_permissions {
         temporary.as_file().set_permissions(permissions)?;
     }
-    temporary.write_all(&bytes)?;
     temporary.as_file().sync_all()?;
     if overwrite {
         temporary.persist(&destination).map_err(|e| Error::Io(e.error))?;
@@ -307,6 +307,20 @@ mod tests {
         assert!(create(&input, Some(&sibling.join("A.TOC")), &Default::default(), false).is_err());
         assert!(!sibling.join("A.TOC").exists());
     }
+    #[cfg(unix)]
+    #[test]
+    fn overwrite_preserves_special_unix_mode_bits_after_writing() {
+        use std::os::unix::fs::PermissionsExt;
+        let stage = tempfile::tempdir().unwrap();
+        valid_frame(stage.path());
+        let output = stage.path().join("A.TOC");
+        std::fs::write(&output, b"old index").unwrap();
+        std::fs::set_permissions(&output, std::fs::Permissions::from_mode(0o6604)).unwrap();
+        assert_eq!(std::fs::metadata(&output).unwrap().permissions().mode() & 0o7777, 0o6604);
+        create(stage.path(), Some(&output), &Default::default(), true).unwrap();
+        assert_eq!(std::fs::metadata(output).unwrap().permissions().mode() & 0o7777, 0o6604);
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinked_frames_are_not_indexed() {
