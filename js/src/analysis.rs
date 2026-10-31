@@ -65,6 +65,7 @@ struct FootprintOptions {
     attributes: BTreeMap<String, String>,
 }
 /// Exact valid-data footprint, with optional mask Dataset/upload and explicit text attributes.
+/// Validity uses finite samples and dataset nodata; alpha/external masks require an explicit mask.
 /// No source-path field is added automatically; input pixels are materialized.
 #[wasm_bindgen]
 pub fn footprint(src: &JsValue, options: JsValue) -> Result<Dataset, JsError> {

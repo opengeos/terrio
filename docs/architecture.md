@@ -58,9 +58,20 @@ and parallel iterators everywhere else.
 
 ## Pure Rust
 
-There are no C dependencies apart from the Zstandard codec, which compiles for WebAssembly too
-(the default `libzstd` feature, natively; without it, Zstandard is decoded and written with
-`ruzstd`).
+The default builds have no C dependencies, and CI builds them without a C compiler. Three choices
+keep it so:
+
+- Zstandard is decoded and written with `ruzstd`, GeoParquet's pages included. The optional
+  `libzstd` feature uses the zstd C library natively instead, which decodes faster and compresses
+  better: `ruzstd` writes at its fastest level, about zstd's level 1, whatever level is asked for.
+- HTTPS uses `rustls` with `rustls-graviola`, whose cryptography is Rust and assembly and needs no
+  C compiler. It requires `aes`, `pclmulqdq`, `ssse3`, `avx`, `avx2`, `adx`, `bmi1` and `bmi2` on
+  x86-64 (most CPUs since about 2014), and `aes`, `sha2`, `pmull` and `neon` on AArch64: without the
+  ones it checks, an HTTPS request panics, naming the missing feature. Other
+  architectures, for which no release is built, use `ring`, which needs a C compiler.
+- GeoParquet is written with Snappy, which needs no C. Reading also takes Zstandard, gzip, LZ4 and
+  Brotli.
+
 JPEG 2000 uses a Rust port of OpenJPEG, in WebAssembly too: terrio supplies the C allocator calls
 the port makes. JPEG is decoded by terrio's own decoder, which reproduces libjpeg's arithmetic;
 LERC, JPEG XL and LZMA by pure-Rust crates.

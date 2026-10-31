@@ -3066,7 +3066,8 @@ PNG tiles get alpha for nodata, dataset masks and padded edges. Each color
 channel's nodata is excluded before interpolation; the pixel remains opaque when
 other channels are valid. GeoTIFF outputs without alpha retain dataset masks and
 exclude masked samples from resampling. Fully opaque
-tiles omit automatic alpha; `--add-alpha` retains it on every tile and
+tiles omit automatic alpha unless STACTA publication requires a uniform band
+count; `--add-alpha` retains it on every tile and
 `--no-alpha` removes it. `--output-nodata` sets invalid-pixel backgrounds,
 including the color beneath fully transparent pixels when alpha is enabled. With `--no-alpha`, invalid image pixels become the background;
 PNG has no separate validity mask. A gray PNG with explicit output nodata uses
@@ -3108,8 +3109,8 @@ Interpolating kernels use premultiplied alpha; exact GDAL agreement is currently
 validated for nearest-neighbor tiling. Affine georeferencing is required;
 global schemes also require a known source CRS;
 image/alpha tiles refuse Int64/UInt64 input to avoid float conversion losses;
-additional GDAL matrix sets, KML/viewer publication and `gdal_retile` file layouts
-are not currently implemented.
+additional GDAL matrix sets are not currently implemented. Publication companions
+and the separate `retile` layout are described below.
 
 Rendering holds one output tile and bounded source windows. By default a decoded
 source window may use at most 64 MiB and the output buffer 256 MiB; requests
@@ -3153,6 +3154,115 @@ decimation factor, with a minimum of one pixel, matching GDAL 3.13.3. When a
 dimension is at least that factor, trailing native rows/columns that do not fill
 a decimated pixel are outside that lower zoom. Maximum zoom covers the full
 source. Output edge tiles may include padding.
+
+### Publishing folder tiles
+
+```sh
+terrio tile input.tif published --webviewer all --kml \
+  --url https://example.org/maps/published/ --title "Imagery"
+```
+
+`--webviewer` accepts `none` (default), `all`, `leaflet`, `openlayers`, `mapml`
+or `stac`. `all` selects the companions applicable to the chosen grid. Leaflet
+requires a global PNG grid; OpenLayers supports PNG grids, including raster
+grids with unequal X/Y resolution. MapML requires global XYZ tiles. STACTA
+(`stacta.json`) requires XYZ, a known CRS, square pixels and blank tiles retained, and can be reopened
+as a raster. Leaflet/OpenLayers pages fetch pinned public library distributions.
+Serve the generated directory over HTTP to view it in a browser.
+
+`--kml` requires a known CRS and writes `doc.kml` plus tile overlays and child
+links for either XYZ or TMS. `--url` names the tile directory itself; no output
+basename is appended. Omit it for relative links. `--copyright` supplies plain
+text attribution. Titles and attribution are escaped for HTML/XML.
+`--mapml-template FILE` reads template contents; Python/JavaScript instead pass
+the contents as `publication.mapml_template` / `publication.mapmlTemplate`.
+Substitution is single-pass, so placeholders inside a title remain literal.
+
+Python and JavaScript accept these options in a nested `publication` object,
+for example `publication={"viewers": ["all"], "kml": True}` in Python.
+The JavaScript callback receives companion files as well as encoded tiles.
+Unsupported explicitly requested companions fail during planning. Publication
+metadata is bounded to 16 MiB per file, strings have individual limits, and root
+KML links are limited to 20,000. Resume preserves existing companions as well
+as images; use a new directory after changing options.
+
+## retile
+
+```sh
+terrio retile west.tif east.tif -o retiled --tile-size 512 512 \
+  --overlap 16 --levels 3 --resampling bilinear \
+  --csv tiles.csv --tile-index tiles.gpkg
+terrio retile input.tif -o retiled --row-directories --pyramid-only --levels 2
+```
+
+`retile` implements `gdal_retile` file layouts through the shared Rust engine
+and the MCP `retile` tool. Inputs must have north-up affine grids, matching CRS
+and band counts, and noncomplex samples. `--source-srs` assigns a CRS without
+reprojecting; use `warp` for reprojection. Later inputs overwrite earlier
+inputs, including nodata. Physical dataset masks are ignored, matching classic
+`gdal_retile` behavior.
+
+Files use `PREFIX_ROW_COLUMN.tif`, with one-based, zero-padded row/column numbers
+from the top left. The prefix defaults to the first input's filename stem.
+Level zero is in the root; additional levels use `1/`, `2/`, etc.
+`--row-directories` instead writes `LEVEL/ROW/PREFIX_ROW_COLUMN.tif`, including
+level zero. Edge tiles are cropped. `--overlap` must be smaller than both tile
+dimensions. Each pyramid level floor-divides the original dimensions by its
+power of two; levels yielding zero width or height are rejected.
+
+Pyramids sample the preceding emitted level, with interpolation clipped to the
+tile footprint. Stored input overviews are ignored. `--pyramid-only` starts with
+level one sampled from the original mosaic. Supported resamplers are nearest
+(default), bilinear, cubic, cubicspline and lanczos. `--format` accepts GTiff
+or COG; `--output-type` changes sample type, and repeatable `--co NAME=VALUE`
+supplies writer options. Same-type aligned base tiles preserve native UInt64
+values. Source band scale/offset, descriptions, units and statistics are not
+copied; output color defaults, palette and nodata follow the retile policy.
+
+`--csv NAME.csv` creates a per-level filename/extent table, with `;` by default
+and `--csv-delimiter` for another single character. `--tile-index` accepts a
+`.shp`, `.geojson` or `.gpkg` basename; `--tile-index-field` defaults to `location`.
+Index filenames are relative to the level directory. Metadata is limited to
+100,000 records per level and CSV files to 16 MiB. `--max-tiles` defaults to one
+million; `--dry-run` validates metadata and reports the layout without reading
+pixels. Directory publication and `--resume` follow the same rules as `tile`.
+Missing pyramid tiles read existing parent files, so resumed parents must match
+the expected dimensions, bands and type.
+
+Rendering uses bounded source windows and a parent cache limited to 64 MiB and
+256 tiles, in addition to one output tile and decoder/encoder buffers. Planning checks the output and
+direct base-copy buffers from metadata, using cropped edge dimensions. Resampled
+source and previous-level windows retain a 64 MiB per-window runtime limit; a
+dry-run does not preflight every adaptive resampling window. Reduce tile sizes
+if sampling exceeds that limit. Native
+directory output reads emitted parent files after eviction. Each cached parent
+is decoded from its emitted encoding, adding a decode pass so higher levels
+see the actual samples, including lossy writer effects. Write-only callback
+sinks regenerate evicted parents; callbacks can supply read-back to avoid this
+additional work. Inputs must remain unchanged throughout generation, including
+across callbacks. Write-only regeneration assumes stable source samples; supply
+parent read-back when emitted parent bytes must be reused independently of the
+source. No full input mosaic is materialized.
+
+Rust exposes `ops::raster_retile::{plan, generate, to_directory, RetileOptions,
+RetileSource}`. Python `terrio.retile(source_or_sources, output, **options)`
+accepts paths or open rasters, including lazy readers; options use snake_case,
+with `dry_run=True` and `resume=True` as native controls. JavaScript exposes
+`planRetile(inputs, options)` and `retile(inputs, options, onFile, readFile?)`.
+Inputs are uploaded bytes, shared datasets or arrays of them; options accept
+camelCase. Both callbacks are synchronous. `onFile(path, Uint8Array)` stores
+each image/index/CSV file; optional `readFile(path)` returns earlier bytes or
+null. Callback exceptions propagate unchanged. JavaScript does not implement
+native filesystem resume.
+
+GDAL 3.13.3 real-data comparisons cover 28 Landsat/USGS DEM cases, including
+overlap, row directories, three recursive levels, all resamplers, COG and Byte
+output. Fourteen are exact. The other fourteen explicitly account for GDAL's
+six-decimal input-index origin rounding; bilinear DEM differences are bounded
+to one Float32 ULP (287 samples, maximum absolute delta 0.000244140625).
+The GDAL COG retile path incorrectly converts Float32 elevations through Byte;
+that defect is independently verified before using GDAL GTiff retile as the
+sample oracle. Native COGs preserve the elevations and pass full COG validation.
 
 ## Pipelines
 

@@ -127,18 +127,23 @@ static HTTP_RETRY_LOGGER: std::sync::Mutex<Option<Py<PyAny>>> = std::sync::Mutex
 /// `terrio.compat` logs them as rasterio logs GDAL's.
 #[pyfunction]
 fn _set_http_retry_logger(callback: Option<Py<PyAny>>) {
-    let on = callback.is_some();
+    #[cfg(not(target_family = "wasm"))]
+    terrio::http::record_retry_warnings(callback.is_some());
     // The previous callable is released last, after the lock (releasing it may run Python code).
     let _previous = std::mem::replace(&mut *HTTP_RETRY_LOGGER.lock().unwrap_or_else(std::sync::PoisonError::into_inner), callback);
-    terrio::http::record_retry_warnings(on);
 }
 
 /// Passes the HTTP retry warnings recorded so far to the callable [`_set_http_retry_logger`] set,
 /// called without the lock held; its errors are ignored, as rasterio's GDAL error handler cannot
 /// raise them either.
+#[cfg(not(target_family = "wasm"))]
 fn pass_on_http_retries(py: Python<'_>) {
     pass_on(py, terrio::http::take_retry_warnings(), &HTTP_RETRY_LOGGER);
 }
+
+/// WebAssembly has no network stack, hence no HTTP retries to pass on.
+#[cfg(target_family = "wasm")]
+fn pass_on_http_retries(_py: Python<'_>) {}
 
 /// The callable the warper's nodata warnings are passed to (see [`_set_warp_nodata_logger`]).
 static WARP_NODATA_LOGGER: std::sync::Mutex<Option<Py<PyAny>>> = std::sync::Mutex::new(None);

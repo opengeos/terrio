@@ -96,11 +96,14 @@ commands. Command-group progress:
       NOAA wind comparisons registered as `mdmosaic`. Landed in
       [#373](https://github.com/opengeos/terrio/pull/373).
 
-- [ ] Separate-file raster tiles: XYZ/TMS PNG and typed GeoTIFF output through
+- [x] Separate-file raster tiles: XYZ/TMS PNG and typed GeoTIFF output through
       Rust, CLI/MCP, Python and JavaScript, with bounded source windows and
       non-overwriting resume. Real Landsat/USGS comparisons are registered as
       `raster-tiles`; direct-source lower zooms differ from GDAL's generated-image
-      pyramid. Retile file layouts and publication helpers remain unimplemented.
+      pyramid. Retile layouts, recursive pyramids, CSV/vector indexes and
+      Leaflet/OpenLayers, MapML, STACTA and KML publication helpers are implemented
+      in [#440](https://github.com/opengeos/terrio/pull/440), with registered
+      `retile` and `tile-publication` comparisons against GDAL 3.13.3.
 
 - [x] Vector clipping: points, lines, polygons and collections, with bbox,
       geometry, filtered vector/raster templates and region CRS transforms through
@@ -228,6 +231,8 @@ commands. Command-group progress:
       point sampling across multiple rasters, through the Rust API, CLI and MCP.
 - [x] Polygonization preserves exterior rings and holes on south-up and rotated grids, and
       classifies rings correctly for small pixels at large coordinate origins.
+- [x] Python and WebAssembly contour, footprint, buffer, grouped dissolve, geometry validity
+      and repair functions, using the shared Rust engines.
 - [x] Contour lines with interval/fixed levels, nodata handling and optional elevations in Z;
       multi-raster zonal statistics with GDAL's centre/all-touched pixel rules and per-raster CRS
       transformations; a standalone read-only SQL command using the existing query engine.

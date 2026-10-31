@@ -275,6 +275,13 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
+The retile and publication modules (crates/terrio/src/ops/raster_retile.rs,
+crates/terrio/src/ops/raster_retile/pyramid.rs and
+crates/terrio/src/ops/raster_publication.rs) independently implement behavior
+checked against GDAL's gdal_retile.py and unified raster tile command. Their
+code is not translated from GDAL source. Resampling uses Terrio's shared warp
+kernels, whose source attribution is recorded separately in their headers.
+
 -------------------------------------------------------------------------------
 PROJ (https://github.com/OSGeo/PROJ)
 -------------------------------------------------------------------------------

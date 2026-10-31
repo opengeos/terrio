@@ -107,7 +107,10 @@ await micropip.install(
 
 Files are read from and written to Pyodide's in-memory file system, or from bytes
 (`terrio.open_bytes`); remote URLs are not read (there is no HTTP client in WebAssembly): fetch
-them with `pyodide.http` first.
+them with `pyodide.http` first. Palette functions take `Raster` objects, bytes or RGBA sequences
+for their color maps and do not write a `dst` (use `Raster.write`). `raster_index` and
+`vector_index` take a mapping of locations to in-memory datasets, and their results serialize with
+`DatasetIndex.to_bytes`: these paths rely on native output protection absent from this build.
 
 ### With the GDAL backend
 

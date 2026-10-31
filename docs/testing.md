@@ -42,6 +42,8 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 
 | Area | Script | Checks |
 |---|---|---|
+| Tile publication | `scripts/compare_tile_publication_with_gdal.py` (`tile-publication`) | Three real Landsat XYZ/TMS cases: exact PNG payloads, KML overlay bounds and complete local links, custom MapML substitutions, and GDAL cross-read STACTA grids and samples. One case corrects the independently verified GDAL default-256 scale defect for 64-pixel tiles. Seven Leaflet/OpenLayers pages were also checked in real Chrome on global XYZ/TMS, Mercator and anisotropic raster grids, including zoom changes, tile requests, rendered pixels and screenshots. Native tests cover typed STACTA in projected US feet and nondefault tile sizes. |
+| Retile layouts | `scripts/compare_retile_with_gdal.py` (`retile`) | 28 Landsat/USGS DEM cases: samples, masks, nodata, types, georeferencing, band properties, filenames, edge crops, overlap, row directories, three recursive levels, all five kernels, COG, Byte, CSV extents and Shapefile indexes. Fourteen exact; fourteen account explicitly for GDAL six-decimal index-origin rounding, one-ULP bilinear Float32 differences and its verified COG Byte-conversion defect. The defect workaround compares native COG samples with GDAL GTiff retile and validates all native COG layouts fully. Six verifier tests reject excessive roundoff, nonfinite, mask and grid changes and incorrect reference workarounds. |
 | Dataset summaries | `scripts/compare_with_gdal.py` (`--pixels`) | size, bands, data types, nodata, geotransform, EPSG code, statistics, pixels; layers, feature counts, fields, extents, geometry types |
 | Multidimensional mosaics | `scripts/compare_mdmosaic_with_gdal.py` | NOAA wind spatial tiles, gaps, overlap/nodata priority, irregular time ranges, nested selection, netCDF/Zarr snapshots and all ten numeric types. Exact values/coordinates/types/nodata/units; source-group and Float32 coordinate-type preservation reported within tolerance. Descending GDAL reference inputs are normalized for its invalid-VRT size/offset bug. Registered as `mdmosaic`. |
 | Native multidimensional arrays | `scripts/compare_multidim_with_gdal.py` | GDAL MD and xarray: named axes, indexing variables, native slices/transposes, netCDF/Zarr coordinate/chunk preservation and damaged-unselected-chunk checks |
@@ -61,7 +63,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Layer algebra | `scripts/compare_layer_algebra_with_gdal.py` (`layer-algebra`) | All seven operations, both lower-dimension settings, holes/collections/null/empty inputs and real projected Tennessee counties/Las Vegas roads. Schema, attributes, sequential IDs, CRS, geometry types and validity; exact normalized WKB or explicit polygon relative area tolerance 1e-7, line relative length 1e-8 with bidirectional vertex distance 1e-7 CRS units. |
 | Coverage cleaning | `scripts/compare_coverage_clean_with_gdal.py` (`coverage-clean`) | GDAL 3.13.3 / GEOS 3.14.1: real projected Tennessee counties, overlapping boundaries, duplicates, contained features, enclosed gaps/inlets, snapping and all four overlap merge strategies. Schema, attributes, IDs, feature types and CRS; exact normalized WKB when equal, otherwise relative symmetric-difference area tolerance 1e-8. GDAL independently checks output coverage validity. Ordering-dependent results are reported separately: exact equivalent cyclic-input references or independent legal greedy-merge witnesses on GDAL-polygonized faces, with unchanged union and output correspondence. These cases do not claim per-feature geometry equality. |
 | Vector topology | `scripts/compare_topology_with_gdal.py` | Tennessee county polygons and Las Vegas roads projected to metre-based CRSs: buffer, all four polygon overlays, dissolve, validity, repair of a deliberately corrupted county boundary and snap cleanup against GDAL/GEOS; attributes, source IDs and CRS, with relative symmetric-difference area tolerance 1e-7 (5e-4 for buffer curves). Registered in conformance as `topology`. |
-| Analysis bindings | scripts/compare_analysis_bindings_with_gdal.py | Direct Python and Node APIs on real DEM contours (levels, counts, Z, pixel-scaled Hausdorff distance and length), Landsat union/intersection footprints, county/road buffers, grouped dissolve, invalid-county diagnostics and repair. CRS and attributes are checked; relative symmetric-difference area limits are 5e-4 for buffer, 1e-7 for dissolve/repair and 1e-12 for footprints. Registered as analysis-bindings; optional Node checks require js/pkg-node/terrio.js. |
+| Analysis bindings | `scripts/compare_analysis_bindings_with_gdal.py` | Direct Python and Node APIs on real DEM contours (levels, counts, Z, pixel-scaled Hausdorff distance and length), Landsat union/intersection footprints, county/road buffers, grouped dissolve, invalid-county diagnostics and repair. CRS and attributes are checked; relative symmetric-difference area limits are 5e-4 for buffer, 1e-7 for dissolve/repair and 1e-12 for footprints. Registered as `analysis-bindings`; optional Node checks require `js/pkg-node/terrio.js`. |
 | Vector dataset commands | `scripts/compare_vector_dataset_with_gdal.py` | `concat` (all modes, source-layer fields, intersection, reprojection; also `ogrmerge.py -single`), `partition` (Hive and flat, string and integer fields, feature limits, patterns), `set-field-type` (a 77-conversion matrix of edge values, every type to every type, and conversions of real fields), `make-point` (GPS trace, places with Z), `create` (`--like`, `--schema`, fields) and `export-schema` (GeoPackage, Shapefile, GeoJSON, FlatGeobuf, GeoParquet) plus `rename-layer`, `edit` and `update`, against GDAL 3.13.3's vector commands/API, OGRLayer::Rename and `ogrinfo -json`; GeoPackage validity and R-tree checks: values exact, coordinates within 1e-9 degrees (or 1e-6 metres) after reprojection; Int16, Float32 and JSON subtypes are reported within tolerance. Registered in conformance as `vector-dataset`. |
 | Terrain and raster algebra | `scripts/compare_dem_calc_with_gdal.py` | every `gdaldem` mode and option, `gdal_calc.py` expressions, types, nodata and extents, `gdal_proximity.py`, `gdal_sieve.py` |
 | STAC and GeoZarr | `scripts/compare_stac_geozarr.py` (`stac`, `stacta`, `geozarr`) | STACIT subdatasets, mosaic sizes, geotransforms, CRSs and windows on Earth Search; STACTA items (GDAL's test data and pyramids `gdal raster tile` writes from real rasters, local, over HTTP and with a missing tile): summaries, subdatasets, metadata, whole rasters, windows and overviews vs GDAL's STACTA driver; STAC footprint fields vs `ogrinfo`; GeoZarr stores read by GDAL and rioxarray, overviews vs `gdaladdo` |
@@ -257,6 +259,31 @@ cargo test -p terrio-cli --test mcp vector_grid
 python -m pytest python/tests/test_vector_grid.py
 node --test --test-name-pattern='vectorGrid' js/tests/node.test.mjs
 ```
+
+### Raster dataset masks against GDAL
+
+```sh
+cargo test -p terrio-cli --test raster_masks
+cargo test -p terrio --lib masked_cogs_written_in_rows
+python -m pytest python/tests/test_dataset_masks.py
+python scripts/conformance.py ../terrio-data --only raster-masks --strict
+```
+
+The `raster-masks` suite compares synthetic Byte and real Landsat inputs with
+internal and `.msk` masks: whole conversion, window/overview extraction, five
+COG overview resamplers, and single-source, multiple-source and cutline warps.
+Masks, types, nodata, CRS and geotransforms must agree exactly. Landsat bilinear and
+average warps from a forced overview permit one value of rounding difference;
+those cases must also match GDAL's `-wt Float32` output exactly. The same rounding
+difference occurs without a source mask. GDAL 3.13.2 ignores a per-dataset mask
+when adding a cutline, so those references supply the same binary mask as alpha
+and compare the data bands exactly (or within the stated rounding bound).
+
+A masked Landsat COG served locally transferred 283,197 bytes in six GETs for
+whole conversion, 147,456 bytes in three GETs for a 17x19 window, and 65,536 bytes
+in two GETs for a 16x16 window of its second overview. Each read one source COG;
+the suite counts actual payload bytes and requires small reads to transfer less
+than whole conversion. These are fixture measurements, not universal bounds.
 
 ## Build size and iteration speed
 

@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 const require = createRequire(import.meta.url);
 // TERRIO_JS_LOAD: the npm package's `load.js` (js/pkg, built by js/build.mjs), whose module the
@@ -2510,9 +2511,15 @@ test("palette conversion APIs preserve colors, masks and serialized tables", () 
 });
 
 
-test("masked toBytes reprojection is refused explicitly", () => {
+test("masked sources warp with their mask and refuse reprojection", () => {
   const bytes = new Uint8Array(Buffer.from("SUkqAAgAAAANAAABAwABAAAAAgAAAAEBAwABAAAAAgAAAAIBAwABAAAACAAAAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAA8gAAABUBAwABAAAAAQAAABYBAwABAAAAAgAAABcBBAABAAAABAAAABwBAwABAAAAAQAAAFMBAwABAAAAAQAAAA6DDAADAAAAqgAAAIKEDAAGAAAAwgAAAPYAAAAAAAAAAADwPwAAAAAAAPA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAABAQEBDQD+AAQAAQAAAAQAAAAAAQMAAQAAAAIAAAABAQMAAQAAAAIAAAACAQMAAQAAAAEAAAADAQMAAQAAAAgAAAAGAQMAAQAAAAQAAAARAQQAAQAAAJgBAAAVAQMAAQAAAAEAAAAWAQMAAQAAAAIAAAAXAQQAAQAAAA0AAAAcAQMAAQAAAAEAAAA9AQMAAQAAAAEAAABTAQMAAQAAAAEAAAAAAAAAeJwBAgD9/0DAAUIBAQ==", "base64"));
   const dataset = terrio.open(bytes, "masked.tif");
+  // GDAL 3.13.2: the full-resolution path and repeated-source compositing use the mask.
+  for (const source of [dataset, bytes, [dataset, dataset]]) {
+    const warped = terrio.warp(source, {ts: [2, 2], overview: "NONE"});
+    assert.deepEqual([...warped.readBand(1)], [0, 1, 1, 1]);
+    warped.free();
+  }
   assert.throws(() => dataset.toBytes("output.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
   const copy = terrio.open(dataset.toBytes("output.tif"), "copy.tif");
   assert.throws(() => copy.toBytes("reprojected.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
@@ -3184,4 +3191,51 @@ test("geometry checks, repairs, buffer and grouped dissolve use the shared engin
   assert.equal(geo(terrio.dissolve(buffered,{fields:["group"]})).features.length,2);
   assert.ok(geo(terrio.checkGeometry(buffered)).features.every(f=>f.properties.is_valid));
   assert.throws(()=>terrio.buffer(points,1,{quadrantSegments:0}));
+});
+
+
+test("retile callbacks and parent read-back agree after bounded cache eviction", () => {
+  const source = terrio.rasterFromArray(Uint8Array.from({length:1056*1056},(_,i)=>i%251),1056,1056,[0,1,0,1056,0,-1],"EPSG:3857");
+  const options = {tileSize:[64,64],levels:1,resampling:"bilinear",csv:"tiles.csv"};
+  const first=new Map(); const second=new Map(); let reads=0;
+  const a=terrio.retile(source,options,(name,bytes)=>first.set(name,bytes));
+  const b=terrio.retile(source,options,(name,bytes)=>second.set(name,bytes),name=>{reads++;return second.get(name)||null;});
+  assert.equal(a.written,370);assert.equal(b.written,a.written);assert.ok(reads>0);
+  const foreign=new Map();
+  const c=terrio.retile(source,options,(name,bytes)=>foreign.set(name,bytes),name=>{const bytes=foreign.get(name);return bytes?runInNewContext("Object.defineProperty(new Uint8Array(bytes), Symbol.toStringTag, {value: 'custom'})",{bytes}):null;});
+  assert.equal(c.written,a.written);
+  for(const [name,bytes] of first)assert.deepEqual(foreign.get(name),bytes,name);
+  assert.deepEqual([...first.keys()],[...second.keys()]);
+  for(const [name,bytes] of first)assert.deepEqual(second.get(name),bytes,name);
+  const exception={message:"read-back sentinel"};
+  assert.throws(()=>terrio.retile(source,options,()=>{},()=>{throw exception;}),error=>error===exception);
+});
+
+test("retile plans recursive levels and preserves callback exceptions", () => {
+  const source=terrio.rasterFromArray(Uint16Array.from({length:64},(_,i)=>i+1),8,8,[0,1,0,8,0,-1],"EPSG:4326");
+  const options={tileSize:[4,4],levels:2,prefix:"sample"};
+  assert.equal(terrio.planRetile(source,options).planned,6);
+  const files=new Map();
+  const report=terrio.retile(source,options,(name,bytes)=>files.set(name,bytes));
+  assert.equal(report.written,6);
+  const top=terrio.open(files.get("2/sample_1_1.tif"),"tile.tif");
+  assert.deepEqual([...top.readBand(1)],[28,32,60,64]);
+  const exception={message:"write sentinel"};
+  assert.throws(()=>terrio.retile(source,options,()=>{throw exception;}),error=>error===exception);
+});
+
+test("rasterTiles emits publication companions with uniform STACTA bands", () => {
+  const source=terrio.rasterFromArray(new Uint8Array(128*64).fill(100),128,64,[-180,2.8125,0,90,0,-2.8125],"EPSG:4326");
+  const files=new Map();
+  const report=terrio.rasterTiles(source,{
+    tilingScheme:"WorldCRS84Quad",grid:{tileSize:64,minZoom:0,maxZoom:0},resampling:"nearest",
+    publication:{viewers:["all"],kml:true,title:"${URL} & map",mapmlTemplate:"<title>${TITLE}</title>"},
+  },(name,bytes)=>files.set(name,bytes));
+  assert.equal(report.written,2);
+  for(const name of ["leaflet.html","openlayers.html","mapml.mapml","doc.kml","stacta.json","0/0/0.kml"])assert.ok(files.has(name),name);
+  const text=name=>new TextDecoder().decode(files.get(name));
+  assert.equal(text("mapml.mapml"),"<title>${URL} &amp; map</title>");
+  assert.equal(JSON.parse(text("stacta.json")).asset_templates.bands.bands.length,2);
+  assert.deepEqual([...files.get("0/0/0.png").slice(0,8)],[137,80,78,71,13,10,26,10]);
+  assert.equal(files.get("0/0/0.png")[25],4); // PNG gray + alpha color type.
 });

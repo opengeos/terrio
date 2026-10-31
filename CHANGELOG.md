@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### No C dependencies
+
+- The default builds of the CLI, the Python package, the Rust crates and the JavaScript
+  package have no C dependencies, and CI builds them without a C compiler.
+- `libzstd` is no longer a default feature of `terrio`. Zstandard GeoTIFF and EPT tiles are decoded
+  and written with `ruzstd`, which decodes more slowly and writes at its fastest level (about zstd's
+  level 1) whatever level is asked for. Enable `libzstd` to use the zstd C library.
+- Zstandard GeoParquet is read with the same codec, rather than through the `parquet` crate's zstd.
+- HTTPS uses `rustls-graviola` rather than `ring` on x86-64 and AArch64. An HTTPS request panics on
+  a CPU without the features it needs; see [Architecture](docs/architecture.md#pure-rust).
+
+### Raster dataset masks
+
+- Preserve internal GeoTIFF and `.msk` validity masks in `convert`, including
+  extracted windows and overviews. Stream masks alongside GeoTIFF/COG pixels
+  and use them when generating COG overviews. Lazy warps, CLI output and Python
+  inputs now apply source masks, including multiple sources and cutlines (#431).
+- Masked inputs are refused, rather than written without their mask, by
+  `convert` to any output other than GeoTIFF and COG (PMTiles, MBTiles and GDAL
+  drivers included), by `convert --append` and by `convert --t-srs`. Write
+  GeoTIFF or COG to keep the validity, or use `warp` to apply it. The library,
+  Python and JavaScript writers refuse tile archives but keep the pixel, alpha
+  and nodata serialization of other non-GeoTIFF formats, which do not store the
+  mask.
+
 ### Docker image
 
 - Publish the `terrio` command-line tool as a Docker image for linux/amd64 and

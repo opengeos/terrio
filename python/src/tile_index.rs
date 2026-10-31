@@ -81,6 +81,7 @@ impl Args {
                 .collect(),
         })
     }
+    #[cfg(not(target_family = "wasm"))]
     fn inputs(&self) -> ti::IndexInputOptions {
         ti::IndexInputOptions {
             recursive: self.recursive,
@@ -187,9 +188,36 @@ impl PyDatasetIndex {
     #[pyo3(signature=(path, *, format=None, overwrite=false))]
     fn write(&self, py: Python<'_>, path: &str, format: Option<&str>, overwrite: bool) -> PyResult<()> {
         let options = write_options(format)?;
-        py.detach_result(|| self.inner.write(path, &options, overwrite)).py()
+        write_index(py, &self.inner, path, &options, overwrite)
     }
 }
+#[cfg(not(target_family = "wasm"))]
+fn write_index(
+    py: Python<'_>,
+    index: &ti::DatasetIndex,
+    path: &str,
+    options: &terrio::VectorWriteOptions,
+    overwrite: bool,
+) -> PyResult<()> {
+    py.detach_result(|| index.write(path, options, overwrite)).py()
+}
+/// Refuses the write: the check that an output does not replace a source is not available here.
+#[cfg(target_family = "wasm")]
+fn write_index(
+    _py: Python<'_>,
+    _index: &ti::DatasetIndex,
+    _path: &str,
+    _options: &terrio::VectorWriteOptions,
+    _overwrite: bool,
+) -> PyResult<()> {
+    Err(invalid("this build serializes indexes with DatasetIndex.to_bytes only"))
+}
+/// Indexing opens paths through native discovery and alias protection, absent from this build.
+#[cfg(target_family = "wasm")]
+fn paths_unavailable() -> PyErr {
+    invalid("this build indexes a mapping of locations to in-memory datasets only")
+}
+#[cfg(not(target_family = "wasm"))]
 fn paths(sources: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     let paths =
         if let Ok(path) = sources.extract::<std::path::PathBuf>() { vec![path] } else { sources.extract::<Vec<std::path::PathBuf>>()? };
@@ -198,7 +226,7 @@ fn paths(sources: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
 fn finish(py: Python<'_>, index: ti::DatasetIndex, dst: Option<&str>, args: &Args) -> PyResult<PyDatasetIndex> {
     if let Some(dst) = dst {
         let options = write_options(args.format.as_deref())?;
-        py.detach_result(|| index.write(dst, &options, args.overwrite)).py()?;
+        write_index(py, &index, dst, &options, args.overwrite)?;
     } else if args.format.is_some() || args.overwrite {
         return Err(invalid("format/overwrite require dst; otherwise use DatasetIndex.write/to_bytes"));
     }
@@ -219,7 +247,8 @@ fn raster_index(
 ) -> PyResult<PyDatasetIndex> {
     let args = Args::parse(py, kwargs)?;
     let options = args.raster().py()?;
-    let mut protected_paths = Vec::new();
+    let mut protected_paths: Vec<String> = Vec::new();
+    #[cfg_attr(target_family = "wasm", allow(unused_mut))]
     let mut index = if let Ok(mapping) = sources.cast::<PyDict>() {
         args.mapped_inputs()?;
         let mut headers = Vec::new();
@@ -227,7 +256,14 @@ fn raster_index(
             let location: String = location.extract()?;
             let header = if let Some(path) = crate::ops::raster_path(&source)? {
                 protected_paths.push(path.clone());
-                crate::with_warnings(py, || ti::RasterIndexSource::open_path(&path, location))?
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    crate::with_warnings(py, || ti::RasterIndexSource::open_path(&path, location))?
+                }
+                #[cfg(target_family = "wasm")]
+                {
+                    return Err(paths_unavailable());
+                }
             } else {
                 let raster = source
                     .cast::<PyRaster>()
@@ -240,9 +276,17 @@ fn raster_index(
         }
         crate::with_warnings(py, || ti::raster_index(&headers, &options))?
     } else {
-        let paths = paths(sources)?;
-        crate::with_warnings(py, || ti::raster_index_paths(&paths, &args.inputs(), &options))?
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let paths = paths(sources)?;
+            crate::with_warnings(py, || ti::raster_index_paths(&paths, &args.inputs(), &options))?
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            return Err(paths_unavailable());
+        }
     };
+    #[cfg(not(target_family = "wasm"))]
     for path in protected_paths {
         index.protect_source_path(&path).py()?;
     }
@@ -262,7 +306,8 @@ fn vector_index(
     let args = Args::parse(py, kwargs)?;
     let options = args.vector().py()?;
     let selection = args.selection();
-    let mut protected_paths = Vec::new();
+    let mut protected_paths: Vec<String> = Vec::new();
+    #[cfg_attr(target_family = "wasm", allow(unused_mut))]
     let mut index = if let Ok(mapping) = sources.cast::<PyDict>() {
         args.mapped_inputs()?;
         let mut headers = Vec::new();
@@ -271,11 +316,18 @@ fn vector_index(
             let group = if let Ok(path) = source.extract::<std::path::PathBuf>() {
                 let path = path.into_os_string().into_string().map_err(|_| invalid("index paths must be UTF-8"))?;
                 protected_paths.push(path.clone());
-                let mut group = crate::with_warnings(py, || ti::vector_index_sources(&path))?;
-                for s in &mut group {
-                    s.location = location.clone();
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    let mut group = crate::with_warnings(py, || ti::vector_index_sources(&path))?;
+                    for s in &mut group {
+                        s.location = location.clone();
+                    }
+                    group
                 }
-                group
+                #[cfg(target_family = "wasm")]
+                {
+                    return Err(paths_unavailable());
+                }
             } else if let Ok(layer) = source.cast::<PyLayer>() {
                 vec![ti::VectorIndexSource::from_layer(&location, 0, &layer.borrow().inner)]
             } else if source.cast::<PyVectorDataset>().is_ok() {
@@ -301,9 +353,17 @@ fn vector_index(
         let headers = selection.apply(headers).py()?;
         crate::with_warnings(py, || ti::vector_index(&headers, &options))?
     } else {
-        let paths = paths(sources)?;
-        crate::with_warnings(py, || ti::vector_index_paths(&paths, &args.inputs(), &selection, &options))?
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let paths = paths(sources)?;
+            crate::with_warnings(py, || ti::vector_index_paths(&paths, &args.inputs(), &selection, &options))?
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            return Err(paths_unavailable());
+        }
     };
+    #[cfg(not(target_family = "wasm"))]
     for path in protected_paths {
         index.protect_source_path(&path).py()?;
     }

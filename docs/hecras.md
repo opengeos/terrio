@@ -323,7 +323,7 @@ To reproduce them from a checkout:
 ```sh
 # Command-line binary, with hecras (the defaults), then without it
 cargo build --release -p terrio-cli
-sed -i 's/"libzstd", "hecras"\]/"libzstd"]/' crates/terrio/Cargo.toml
+sed -i 's/"grib", "hecras"\]/"grib"]/' crates/terrio/Cargo.toml
 CARGO_TARGET_DIR=target-without cargo build --release -p terrio-cli
 git checkout -- crates/terrio/Cargo.toml
 

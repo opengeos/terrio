@@ -50,6 +50,7 @@ fn contour(
 }
 
 /// Exact valid-data footprint of a Raster/path, optionally restricted by a mask.
+/// Validity uses finite samples and dataset nodata; alpha/external masks require an explicit mask.
 /// Attributes are explicit text fields; no source-path attribute is added automatically.
 #[pyfunction]
 #[pyo3(signature=(src, *, bands=None, intersection=false, mask=None, singlepart=false, attributes=None))]

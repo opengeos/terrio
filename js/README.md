@@ -287,6 +287,10 @@ also supports `band`, `levels`, `offset`, `nodata`, `ignoreNodata` and `layerNam
 Footprint supports `intersection`, a same-grid `mask` dataset/upload and explicit
 text `attributes`; no source-path field is added automatically.
 
+Footprint validity uses finite samples and the dataset nodata value. Alpha bands
+and external mask files are not interpreted implicitly; supply an explicit mask
+when those pixels should be excluded.
+
 Vector functions process every input layer, accepting datasets, uploaded files
 or GeoJSON. Buffers use planar CRS units and preserve attributes/IDs. Dissolve
 can group by field names. `checkGeometry` retains geometry and appends validity
@@ -323,3 +327,29 @@ limits are listed in the CLI pipeline reference.
 Use `{ inputKind: "raster" }` or `{ inputKind: "vector" }` to force the input
 family, including ambiguous uploaded files; `"auto"` chooses detection. This
 option overrides a `raster` or `vector` prefix in the command string.
+
+## Retile and publish raster folders
+
+```js
+const files = new Map();
+const options = {tileSize: [512, 512], overlap: 16, levels: 3, csv: "tiles.csv"};
+const plan = terrio.planRetile(dataset, options);
+const report = terrio.retile(dataset, options,
+  (name, bytes) => files.set(name, bytes),
+  name => files.get(name) ?? null);
+```
+
+Inputs accept shared datasets, uploaded bytes or arrays of them. The synchronous
+output callback receives each image and CSV/index companion. Optional read-back
+returns a `Uint8Array` or null; it avoids regenerating parents evicted from the
+64 MiB/256-tile cache. Callback exceptions propagate unchanged. Keeping every
+file in a `Map` uses caller memory; persistent stores can retain the bytes
+outside WASM. Native filesystem resume is not exposed in JavaScript. Inputs must remain
+unchanged during generation; write-only regeneration assumes stable samples.
+
+Retile uses matching-CRS north-up inputs, recursive factor-two pyramids and
+one-based row/column filenames. Options accept camelCase or snake_case.
+`rasterTiles(input, {publication: {viewers: ["all"], kml: true}}, onFile)`
+adds applicable browser viewers, MapML, STACTA and KML files. The callback must
+save companion files as well as images. See the [CLI reference](../docs/cli.md#retile)
+for output layouts, supported options, limits and measured GDAL differences.
