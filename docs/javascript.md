@@ -545,7 +545,8 @@ uploaded images directly. See the [supported rules and limitations](cli.md#geopa
 ### Separate raster tiles
 
 `planRasterTiles(src, options)` returns the grid and tile count without reading
-pixels. `rasterTiles(src, options, callback)` sends each encoded tile to
+pixels and includes the destination `crs` (null when unknown). It validates
+metadata-based rendering options. `rasterTiles(src, options, callback)` sends each encoded tile to
 `callback(name, bytes)` and returns generation counts. Options include `tilingScheme`
 (`raster`, `WebMercatorQuad`, `WorldCRS84Quad`), `grid` (for example
 `{tileSize: 128, minZoom: 0, maxZoom: 2}`),
