@@ -88,7 +88,7 @@ fn published_kml_urls_include_the_tile_directory_and_tms_row() {
     options.grid.min_zoom = Some(1);
     options.grid.max_zoom = Some(1);
     options.convention = Convention::Tms;
-    options.publication.viewers = vec!["leaflet".into(), "openlayers".into()];
+    options.publication.viewers = vec!["none".into(), "leaflet".into(), "none".into(), "openlayers".into()];
     options.publication.url = Some("https://example.test/tiles/".into());
     let mut sink = Collect::default();
     tile::generate(&mut input, &options, &mut sink).unwrap();

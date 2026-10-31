@@ -27,10 +27,14 @@ def compare_kml(reference, actual):
     for name in names:
         a, b = [ET.parse(root / name) for root in (reference, actual)]
         for bound in ("north", "south", "east", "west"):
-            values = [
-                float(tree.find(f".//k:GroundOverlay/k:LatLonBox/k:{bound}", ns).text)
-                for tree in (a, b)
-            ]
+            values = []
+            for tree in (a, b):
+                element = tree.find(
+                    f".//k:GroundOverlay/k:LatLonBox/k:{bound}", ns
+                )
+                if element is None or element.text is None:
+                    raise AssertionError(f"{name}: missing KML overlay {bound}")
+                values.append(float(element.text))
             if abs(values[0] - values[1]) > 1e-10:
                 raise AssertionError(f"{name}: KML {bound} differs")
     for root in (reference, actual):

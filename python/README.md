@@ -272,7 +272,9 @@ band counts and north-up affine grids. `dry_run=True` returns the metadata plan;
 `resume=True` fills missing files. GTiff and COG, row directories, pyramid-only
 output, type conversion and writer options are supported. Pyramids read the
 previous emitted level with a bounded cache; source overviews are ignored.
-Existing resumed parents supply pixels for missing children.
+Existing resumed parents supply pixels for missing children. The default filename
+prefix is the first source path stem, or `input_1` when the first source is an
+in-memory `Raster`. Set `prefix="name"` to choose it explicitly.
 
 `terrio.raster_tiles(source, output, publication={"viewers": ["all"], "kml": True})`
 adds applicable Leaflet/OpenLayers pages, MapML, STACTA and KML companions.

@@ -9,6 +9,7 @@ from osgeo import gdal, osr
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from compare_retile_with_gdal import compare_samples, verify_cog_reference_byte_bug
+from compare_tile_publication_with_gdal import compare_kml
 
 
 def write(folder, values, *, nodata=None, origin=0.0, mask=None):
@@ -86,3 +87,14 @@ def test_binade_boundaries_allow_exactly_one_float32_step(tmp_path, value):
     assert compare_samples(a, one, allow_roundoff=True)[1]
     with pytest.raises(AssertionError, match="one ULP"):
         compare_samples(a, two, allow_roundoff=True)
+
+
+def test_kml_missing_overlay_reports_a_comparison_failure(tmp_path):
+    roots = [tmp_path / "reference", tmp_path / "actual"]
+    for root in roots:
+        root.mkdir()
+        (root / "tile.kml").write_text(
+            '<kml xmlns="http://www.opengis.net/kml/2.2"><Document/></kml>'
+        )
+    with pytest.raises(AssertionError, match="tile.kml: missing KML overlay north"):
+        compare_kml(*roots)

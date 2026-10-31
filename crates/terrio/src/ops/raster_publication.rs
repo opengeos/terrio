@@ -95,7 +95,7 @@ impl<'a> Publication<'a> {
         for name in &options.viewers {
             let name = name.to_ascii_lowercase();
             match name.as_str() {
-                "none" if options.viewers.len() == 1 => {}
+                "none" => {}
                 "all" => {
                     for candidate in ["leaflet", "openlayers", "mapml", "stac"] {
                         if applicable(candidate) {

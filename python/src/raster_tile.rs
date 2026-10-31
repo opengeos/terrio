@@ -12,6 +12,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Retile Raster/path inputs, retaining lazy windows. Options match Rust
 /// RetileOptions; tile_size=[width,height], levels, overlap, row_directories,
 /// csv and tile_index control the file layout. Dry runs write nothing.
+/// The default prefix is the first path stem, or input_1 for an in-memory
+/// Raster. Set prefix="name" to override it.
 #[pyfunction]
 #[pyo3(signature=(sources, output, *, resume=false, dry_run=false, **kwargs))]
 fn retile(
