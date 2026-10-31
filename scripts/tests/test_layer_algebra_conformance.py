@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 import tempfile
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -68,6 +69,45 @@ class LayerAlgebraComparisonTests(unittest.TestCase):
             b = self.write(f"b{i}.gpkg", b_wkt)
             with self.assertRaisesRegex(AssertionError, message):
                 compare(a, b)
+
+    def test_tiny_disjoint_polygons_are_rejected(self):
+        a = self.write(
+            "tiny-a.gpkg", "POLYGON ((0 0,0.0001 0,0.0001 0.0001,0 0.0001,0 0))"
+        )
+        b = self.write(
+            "tiny-b.gpkg", "POLYGON ((1 1,1.0001 1,1.0001 1.0001,1 1.0001,1 1))"
+        )
+        with self.assertRaisesRegex(AssertionError, "polygon area difference"):
+            compare(a, b)
+
+    def test_equal_length_networks_with_the_same_vertices_are_rejected(self):
+        a = self.write("network-a.gpkg", "MULTILINESTRING ((0 0,1 0),(0 1,1 1))")
+        b = self.write("network-b.gpkg", "MULTILINESTRING ((0 0,0 1),(1 0,1 1))")
+        with self.assertRaisesRegex(AssertionError, "line edges differ"):
+            compare(a, b)
+
+    def test_optimized_python_still_rejects_wrong_attributes(self):
+        a = self.write("optimized-a.gpkg", "POINT (1 1)", 1)
+        b = self.write("optimized-b.gpkg", "POINT (1 1)", 2)
+        script = "from compare_layer_algebra_with_gdal import compare; import sys; compare(sys.argv[1], sys.argv[2])"
+        process = subprocess.run(
+            [sys.executable, "-O", "-c", script, str(a), str(b)],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("attributes differ", process.stderr)
+
+    def test_missing_geos_skips_the_reference(self):
+        ctx = SimpleNamespace(data=str(self.root), terrio="terrio")
+        with (
+            patch.object(conformance, "missing_modules", return_value=[]),
+            patch.object(ogr.Geometry, "Buffer", return_value=None),
+        ):
+            suite = conformance.suite_layer_algebra(ctx)
+        self.assertEqual(suite.skipped, "needs GDAL with GEOS")
+        self.assertEqual(suite.cases, [])
 
     def test_reported_comparison_failures_are_counted_as_differences(self):
         ctx = SimpleNamespace(data=str(self.root), terrio="terrio")

@@ -78,6 +78,10 @@ FIXTURES = {
         ["GEOMETRYCOLLECTION (POLYGON ((0 0,2 0,2 2,0 2,0 0)))"],
         ["POINT (3 3)"],
     ),
+    "collection inside polygon hole": (
+        ["GEOMETRYCOLLECTION (POINT (1 1))"],
+        ["POLYGON ((0 0,4 0,4 4,0 4,0 0),(0.5 0.5,0.5 1.5,1.5 1.5,1.5 0.5,0.5 0.5))"],
+    ),
     "null input": ([None], ["POINT (1 1)"]),
     "null method": (["POINT (1 1)"], [None]),
     "empty input": (["POLYGON EMPTY"], ["POINT (1 1)"]),
@@ -149,25 +153,32 @@ def by_dimension(g, dimension):
 def compare(actual, reference):
     a, sa, ca, na = read(actual)
     b, sb, cb, nb = read(reference)
-    assert (len(a), sa, na) == (len(b), sb, nb), (
-        f"count/schema/name differs: {(len(a), sa, na)}/{(len(b), sb, nb)}"
-    )
-    assert ca.IsSame(cb), "CRS differs"
-    assert [f[0] for f in a] == list(range(1, len(a) + 1)), (
-        "IDs are not sequential from one"
-    )
-    assert [f[0] for f in a] == [f[0] for f in b], "reference feature IDs differ"
+    if not ((len(a), sa, na) == (len(b), sb, nb)):
+        raise AssertionError(
+            f"count/schema/name differs: {(len(a), sa, na)}/{(len(b), sb, nb)}"
+        )
+    if not (ca.IsSame(cb)):
+        raise AssertionError("CRS differs")
+    if not ([f[0] for f in a] == list(range(1, len(a) + 1))):
+        raise AssertionError("IDs are not sequential from one")
+    if not ([f[0] for f in a] == [f[0] for f in b]):
+        raise AssertionError("reference feature IDs differ")
     exact = True
     for (fid, attrs, g), (_, expected, e) in zip(a, b, strict=True):
-        assert attrs == expected, f"FID {fid}: attributes differ"
-        assert (g is None) == (e is None), f"FID {fid}: null geometry differs"
+        if not (attrs == expected):
+            raise AssertionError(f"FID {fid}: attributes differ")
+        if not ((g is None) == (e is None)):
+            raise AssertionError(f"FID {fid}: null geometry differs")
         if g is None:
             continue
-        assert g.GetGeometryType() == e.GetGeometryType(), (
-            f"FID {fid}: types {g.GetGeometryName()}/{e.GetGeometryName()}"
-        )
-        assert g.IsValid(), f"FID {fid}: invalid output"
-        assert g.IsEmpty() == e.IsEmpty(), f"FID {fid}: emptiness differs"
+        if not (g.GetGeometryType() == e.GetGeometryType()):
+            raise AssertionError(
+                f"FID {fid}: types {g.GetGeometryName()}/{e.GetGeometryName()}"
+            )
+        if not (g.IsValid()):
+            raise AssertionError(f"FID {fid}: invalid output")
+        if not (g.IsEmpty() == e.IsEmpty()):
+            raise AssertionError(f"FID {fid}: emptiness differs")
         same = bytes(g.Normalize().ExportToIsoWkb()) == bytes(
             e.Normalize().ExportToIsoWkb()
         )
@@ -181,36 +192,42 @@ def compare(actual, reference):
         )
         for dim in dimensions:
             actual_part, expected_part = by_dimension(g, dim), by_dimension(e, dim)
-            assert actual_part.IsEmpty() == expected_part.IsEmpty(), (
-                f"FID {fid}: lost dimension {dim}"
-            )
+            if not (actual_part.IsEmpty() == expected_part.IsEmpty()):
+                raise AssertionError(f"FID {fid}: lost dimension {dim}")
             if expected_part.IsEmpty():
                 continue
             if dim == 2:
                 error = actual_part.SymDifference(expected_part).GetArea() / max(
-                    1.0, expected_part.GetArea()
+                    1e-300, expected_part.GetArea()
                 )
-                assert error <= 1e-7, (
-                    f"FID {fid}: relative polygon area difference {error}"
-                )
+                if not (error <= 1e-07):
+                    raise AssertionError(
+                        f"FID {fid}: relative polygon area difference {error}"
+                    )
             elif dim == 1:
                 error = abs(actual_part.Length() - expected_part.Length()) / max(
-                    1.0, expected_part.Length()
+                    1e-300, expected_part.Length()
                 )
-                assert error <= 1e-8, f"FID {fid}: relative length difference {error}"
+                if not (error <= 1e-08):
+                    raise AssertionError(
+                        f"FID {fid}: relative length difference {error}"
+                    )
                 for source, target in [
                     (actual_part, expected_part),
                     (expected_part, actual_part),
                 ]:
+                    uncovered = source.Difference(target.Buffer(1e-7)).Length()
+                    if uncovered / max(1e-300, source.Length()) > 1e-8:
+                        raise AssertionError(f"FID {fid}: line edges differ")
                     for p in points(source):
                         point = ogr.Geometry(ogr.wkbPoint)
                         point.AddPoint_2D(p[0], p[1])
-                        assert point.Distance(target) <= 1e-7, (
-                            f"FID {fid}: line vertex differs"
-                        )
+                        if not (point.Distance(target) <= 1e-07):
+                            raise AssertionError(f"FID {fid}: line vertex differs")
             else:
                 left, right = points(actual_part), points(expected_part)
-                assert len(left) == len(right), f"FID {fid}: point count differs"
+                if not (len(left) == len(right)):
+                    raise AssertionError(f"FID {fid}: point count differs")
                 for p in left:
                     j = min(
                         range(len(right)),
@@ -218,9 +235,8 @@ def compare(actual, reference):
                         + (right[j][1] - p[1]) ** 2,
                     )
                     q = right.pop(j)
-                    assert (q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2 <= 1e-16, (
-                        f"FID {fid}: point position differs"
-                    )
+                    if not ((q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2 <= 1e-16):
+                        raise AssertionError(f"FID {fid}: point position differs")
     return exact, len(a)
 
 
@@ -243,6 +259,64 @@ def projected_roads(data):
         if len(rows) == 40:
             break
     return rows, crs
+
+
+def compare_update_types(root, binary, crs):
+    results = []
+    for index, (input_type, method_type, value) in enumerate(
+        [
+            (ogr.OFTInteger64, ogr.OFTString, "42"),
+            (ogr.OFTReal, ogr.OFTString, "2.5"),
+            (ogr.OFTString, ogr.OFTInteger64, 7),
+        ]
+    ):
+        row = {"name": f"update field conversion {index}"}
+        try:
+            paths = [
+                root / f"typed-{index}-{side}.gpkg"
+                for side in ["input", "method", "actual", "reference"]
+            ]
+            for side, dtype, attribute in [(0, input_type, 1), (1, method_type, value)]:
+                ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(paths[side]))
+                layer = ds.CreateLayer("features", crs, geom_type=ogr.wkbPoint)
+                layer.CreateField(ogr.FieldDefn("value", dtype))
+                feature = ogr.Feature(layer.GetLayerDefn())
+                feature.SetField(
+                    "value", str(attribute) if dtype == ogr.OFTString else attribute
+                )
+                feature.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({side * 2} 0)"))
+                layer.CreateFeature(feature)
+                feature = layer = ds = None
+            da, db = ogr.Open(str(paths[0])), ogr.Open(str(paths[1]))
+            ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(paths[3]))
+            layer = ds.CreateLayer("result", crs, geom_type=ogr.wkbUnknown)
+            layer.CreateField(ogr.FieldDefn("value", input_type))
+            if da.GetLayer(0).Update(db.GetLayer(0), layer) != 0:
+                raise AssertionError("reference update failed")
+            layer = ds = da = db = None
+            process = subprocess.run(
+                [
+                    str(binary),
+                    "layer-algebra",
+                    "update",
+                    *map(str, paths[:3]),
+                    "--nln",
+                    "result",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if process.returncode:
+                raise AssertionError(process.stderr)
+            exact, count = compare(paths[2], paths[3])
+            row.update(
+                status="identical" if exact else "within tolerance",
+                detail=f"{count} features; typed Update values checked",
+            )
+        except Exception as error:
+            row.update(status="differs", detail=str(error))
+        results.append(row)
+    return results
 
 
 def main():
@@ -310,7 +384,8 @@ def main():
                                 f"KEEP_LOWER_DIMENSION_GEOMETRIES={'YES' if lower else 'NO'}",
                             ],
                         )
-                        assert status == 0, f"GDAL operation returned {status}"
+                        if not (status == 0):
+                            raise AssertionError(f"GDAL operation returned {status}")
                         layer = ds = da = db = None
                         p = subprocess.run(
                             [
@@ -332,7 +407,8 @@ def main():
                             capture_output=True,
                             text=True,
                         )
-                        assert p.returncode == 0, p.stderr
+                        if not (p.returncode == 0):
+                            raise AssertionError(p.stderr)
                         validation = subprocess.run(
                             [
                                 str(args.terrio),
@@ -344,9 +420,10 @@ def main():
                             capture_output=True,
                             text=True,
                         )
-                        assert validation.returncode == 0, (
-                            f"native GeoPackage validation failed: {validation.stdout}{validation.stderr}"
-                        )
+                        if not (validation.returncode == 0):
+                            raise AssertionError(
+                                f"native GeoPackage validation failed: {validation.stdout}{validation.stderr}"
+                            )
                         exact, count = compare(actual, reference)
                         row.update(
                             status="identical" if exact else "within tolerance",
@@ -369,6 +446,7 @@ def main():
                                         / f"{index}-{operation}-{lower}-{role}.gpkg",
                                     )
                     results.append(row)
+        results.extend(compare_update_types(root, args.terrio, crs))
     print(
         json.dumps(results, indent=2)
         if args.json
