@@ -371,7 +371,7 @@ fn checked_output(g: Geometry) -> Result<Geometry> {
     Ok(g)
 }
 
-fn polygons(g: &Geometry, fid: u64) -> Result<geo::MultiPolygon<f64>> {
+pub(super) fn polygons(g: &Geometry, fid: u64) -> Result<geo::MultiPolygon<f64>> {
     match to_geo(g) {
         geo::Geometry::Polygon(p) => Ok(geo::MultiPolygon(if p.exterior().0.is_empty() { vec![] } else { vec![p] })),
         geo::Geometry::MultiPolygon(p) => Ok(p),
@@ -411,7 +411,7 @@ fn candidates(index: &BoundsIndex, bounds: Option<geo::Rect<f64>>) -> Vec<usize>
     indices
 }
 
-fn union<'a>(shapes: impl Iterator<Item = &'a geo::MultiPolygon<f64>>) -> geo::MultiPolygon<f64> {
+pub(super) fn union<'a>(shapes: impl Iterator<Item = &'a geo::MultiPolygon<f64>>) -> geo::MultiPolygon<f64> {
     let oriented: Vec<_> = shapes.map(|g| g.orient(geo::algorithm::orient::Direction::Default)).collect();
     geo::unary_union(&oriented)
 }
@@ -527,7 +527,7 @@ fn clean_geometry(g: &Geometry, grid: f64) -> Result<Geometry> {
     })
 }
 
-fn to_geo(g: &Geometry) -> geo::Geometry<f64> {
+pub(super) fn to_geo(g: &Geometry) -> geo::Geometry<f64> {
     let coord = |c: &Coord| geo::Coord { x: c.x, y: c.y };
     let line = |cs: &[Coord]| geo::LineString(cs.iter().map(coord).collect());
     let poly = |e: &Ring, i: &[Ring]| geo::Polygon::new(line(&e.0), i.iter().map(|r| line(&r.0)).collect());
@@ -542,7 +542,7 @@ fn to_geo(g: &Geometry) -> geo::Geometry<f64> {
     }
 }
 
-fn from_polygons(mp: geo::MultiPolygon<f64>) -> Geometry {
+pub(super) fn from_polygons(mp: geo::MultiPolygon<f64>) -> Geometry {
     let ring = |r: geo::LineString<f64>| Ring(r.0.into_iter().map(|c| Coord::xy(c.x, c.y)).collect());
     Geometry::MultiPolygon(
         mp.0.into_iter()

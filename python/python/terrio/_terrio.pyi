@@ -47,6 +47,7 @@ __all__ = [
     "write_vector",
     "convert",
     "sql",
+    "clip_vector",
     "rasterize",
     "raster_index",
     "raster_tiles",
@@ -2238,6 +2239,20 @@ def validate_gpkg(
     strict: bool = False,
     unicode_case: bool = False,
 ) -> dict[str, Any]: ...
+def clip_vector(
+    src: Any,
+    *,
+    bbox: Sequence[float] | None = None,
+    geometry: str | None = None,
+    like: Any = None,
+    crs: str | None = None,
+    layer: str | None = None,
+    like_layer: str | None = None,
+    like_where: str | None = None,
+    like_sql: str | None = None,
+) -> Layer:
+    """Clip vector features to a bbox, polygon or vector/raster template."""
+
 def check_coverage(
     src: Any,
     *,

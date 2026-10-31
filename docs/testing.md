@@ -1609,6 +1609,49 @@ reported category permits only reassociation of an identical collinear ring: all
 oriented integer rings and all non-collinear polygon groups must still match.
 `scripts/reference/test_make_valid_tile_comparison.py` rejects broader changes.
 
+## Vector clipping (#289)
+
+`vector-clip` in `scripts/conformance.py` compares clipping of real Tennessee
+county polygons, Las Vegas roads and Natural Earth populated places against
+GDAL 3.13.3. Cases cover native bbox/WKT, unioned/filtered vector templates,
+SQL template selection, raster bounds and transformed bbox/geometry inputs.
+Schema, attributes grouped by source ID, CRS and declared type must match;
+coverage is checked separately in each dimension so area cannot hide lost lines
+or points. Polygon symmetric-difference area and line total-length differences
+must be within 1e-9 relative, with coordinate-scaled Hausdorff distance <= 1e-9.
+Points must match exactly. Multipart ordering and ring orientation are ignored.
+
+The polygon engine uses an integer grid for topology. The clip operation restores
+its result vertices from original floating vertices and robust edge intersections
+to avoid amplifying grid rounding on shallow-angle cuts. A focused triangle
+regression checks the cut area independently. Additional regressions cover hole
+boundaries, tangencies, polygon-only contacts, mixed collections, Z/M interpolation,
+CRS selection and CLI/MCP/output safety. Python and Node/WASM tests exercise bbox,
+WKT/GeoJSON, templates, filters, uploaded raster bytes and invalid options.
+
+A separately checked transformed-point boundary case compares the exact point
+set against GDAL, including latitude 2 at the projected upper edge. The current
+inverse Web Mercator implementation includes that point in both outputs; this
+case has no missing-point tolerance exception.
+
+Dense-template performance can be checked with
+`scripts/bench_vector_clip.py ../terrio-data --kind roads` (or `--kind counties`).
+The benchmark clips the real Las Vegas roads or Tennessee counties against a
+10,001-vertex circular template, times only the CLI operations and verifies each
+result against GDAL. Region and source point-in-polygon tests use indexed,
+boundary-inclusive ray crossings. Untransformed regions are validated once per
+clip call; a transformed region is validated again after reprojection.
+
+One local optimized run with a 10,001-vertex template measured:
+
+| Input | Features | Before | After |
+|---|---:|---:|---:|
+| Las Vegas roads | 78 | 1.56 s | 1.12 s |
+| Tennessee counties | 95 | 1.73 s | 1.19 s |
+
+Both outputs retain their GDAL comparison results. These timings are observations
+from one local run; fixture preparation and comparison reads are excluded.
+
 ### Polygon coverage validation
 
 `scripts/compare_coverage_with_gdal.py ../terrio-data --terrio target/release/terrio`

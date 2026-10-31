@@ -103,6 +103,8 @@ enum Command {
     Sql(cmd::processing::SqlArgs),
     /// Planar buffer in input CRS units, with round caps and joins.
     Buffer(cmd::processing::BufferArgs),
+    /// Clip points, lines and polygons to a bbox, geometry or polygon/raster template.
+    VectorClip(cmd::vector_clip::Args),
     /// Overlay valid polygon layers in a common CRS, preserving both sets of attributes.
     Overlay(cmd::processing::OverlayArgs),
     /// Dissolve polygons across a layer or by selected attributes.
@@ -329,6 +331,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::ZonalStats(a) => cmd::processing::zonal(a),
         Command::Sql(a) => cmd::processing::sql(a),
         Command::Buffer(a) => cmd::processing::buffer(a),
+        Command::VectorClip(a) => cmd::vector_clip::run(a),
         Command::Overlay(a) => cmd::processing::overlay(a),
         Command::Dissolve(a) => cmd::processing::dissolve(a),
         Command::IsValid(a) => cmd::processing::validity(a),
