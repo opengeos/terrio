@@ -1,7 +1,8 @@
 # Installation
 
 terrio is published on [crates.io](https://crates.io/crates/terrio),
-[PyPI](https://pypi.org/project/terrio/) and [npm](https://www.npmjs.com/package/terrio-js) (as `terrio-js`).
+[PyPI](https://pypi.org/project/terrio/), [conda-forge](https://anaconda.org/conda-forge/terrio) and
+[npm](https://www.npmjs.com/package/terrio-js) (as `terrio-js`).
 
 ## Command-line tool
 
@@ -53,6 +54,7 @@ The command also comes with the Python package (`python -m terrio` runs it too):
 
 ```sh
 pip install terrio      # or: uv tool install terrio, pipx install terrio
+conda install -c conda-forge terrio
 ```
 
 A Docker image for linux/amd64 and linux/arm64 is published to the
@@ -83,6 +85,8 @@ cargo add terrio
 
 ```sh
 pip install terrio
+# or, with conda or mamba
+conda install -c conda-forge terrio
 ```
 
 Wheels are built for Linux (x86_64 and aarch64, glibc and musl), macOS (Intel and Apple silicon)
