@@ -688,11 +688,7 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         #[cfg(feature = "parquet")]
         Err(_) if has_parquet_magic(path) => {
             crate::formats::check_driver_allowed(VectorDriver::Parquet.name(), path, crate::formats::Kind::Vector)?;
-            let layer = crate::drivers::vector::geoparquet::read_filtered(path, None)?;
-            Ok(Dataset::Vector(VectorDataset {
-                layers: vec![fix_layer(layer, path, VectorDriver::Parquet)],
-                driver: VectorDriver::Parquet,
-            }))
+            read_vector_local(path, VectorDriver::Parquet, options).map(Dataset::Vector)
         }
         Err(raster_err) => match wbvector::VectorFormat::detect(path) {
             Ok(format) => {
@@ -1544,9 +1540,13 @@ mod tests {
         assert!(crate::open(path).is_err());
         crate::config::push_scope([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))].into());
         let opened = crate::open(path);
+        let options = VectorOpenOptions { spatial_filter: Some((-5.5, -2.5, 5.5, 2.5)), ..Default::default() };
+        let filtered = open_local(path, &options);
         crate::config::pop_scope();
         let crate::Dataset::Vector(v) = opened.unwrap() else { panic!("not a vector") };
         assert_eq!((v.driver, v.layers[0].len()), (crate::formats::VectorDriver::Parquet, 500));
+        let crate::Dataset::Vector(v) = filtered.unwrap() else { panic!("not a vector") };
+        assert_eq!(v.layers[0].len(), 30);
     }
 
     /// A vector file only `wbvector`'s detection recognises (GPX named `.payload`) is refused
