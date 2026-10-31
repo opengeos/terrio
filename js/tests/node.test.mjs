@@ -3164,7 +3164,7 @@ test("retile callbacks and parent read-back agree after bounded cache eviction",
   const b=terrio.retile(source,options,(name,bytes)=>second.set(name,bytes),name=>{reads++;return second.get(name)||null;});
   assert.equal(a.written,370);assert.equal(b.written,a.written);assert.ok(reads>0);
   const foreign=new Map();
-  const c=terrio.retile(source,options,(name,bytes)=>foreign.set(name,bytes),name=>{const bytes=foreign.get(name);return bytes?runInNewContext("new Uint8Array(bytes)",{bytes}):null;});
+  const c=terrio.retile(source,options,(name,bytes)=>foreign.set(name,bytes),name=>{const bytes=foreign.get(name);return bytes?runInNewContext("Object.defineProperty(new Uint8Array(bytes), Symbol.toStringTag, {value: 'custom'})",{bytes}):null;});
   assert.equal(c.written,a.written);
   for(const [name,bytes] of first)assert.deepEqual(foreign.get(name),bytes,name);
   assert.deepEqual([...first.keys()],[...second.keys()]);

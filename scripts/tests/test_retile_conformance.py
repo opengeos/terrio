@@ -98,3 +98,27 @@ def test_kml_missing_overlay_reports_a_comparison_failure(tmp_path):
         )
     with pytest.raises(AssertionError, match="tile.kml: missing KML overlay north"):
         compare_kml(*roots)
+
+
+def test_malformed_kml_does_not_abort_later_publication_cases(monkeypatch, capsys):
+    import json
+    import xml.etree.ElementTree as ET
+
+    import compare_tile_publication_with_gdal as publication
+
+    monkeypatch.setattr(sys, "argv", ["compare", ".", "--json"])
+    monkeypatch.setattr(
+        publication.gdal,
+        "Translate",
+        lambda *args, **kwargs: gdal.GetDriverByName("MEM").Create("", 1, 1, 3),
+    )
+
+    def malformed_output(command):
+        ET.fromstring("<kml>")
+
+    monkeypatch.setattr(publication, "run", malformed_output)
+    assert publication.main() == 1
+    cases = json.loads(capsys.readouterr().out)
+    assert len(cases) == 3
+    assert all(case["status"] == "differs" for case in cases)
+    assert all("no element found" in case["detail"] for case in cases)

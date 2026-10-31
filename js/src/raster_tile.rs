@@ -3,10 +3,14 @@ use terrio::ops::raster_tile::{self as tile, FolderSink, TileOptions};
 use terrio::ops::warp::WarpSource;
 use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(catch, js_namespace = ["Object", "prototype", "toString"], js_name = call)]
-    fn object_tag(value: &JsValue) -> Result<String, JsValue>;
+// Invoke the intrinsic typed-array tag getter directly: unlike toString(), it
+// reads the internal typed-array brand and ignores an own Symbol.toStringTag.
+fn uint8_brand(value: &JsValue) -> Result<bool, JsValue> {
+    let array = js_sys::Uint8Array::new_with_length(0);
+    let prototype = js_sys::Object::get_prototype_of(&js_sys::Object::get_prototype_of(&array));
+    let descriptor = js_sys::Object::get_own_property_descriptor(&prototype, &js_sys::Symbol::to_string_tag());
+    let getter = js_sys::Reflect::get(&descriptor, &JsValue::from_str("get"))?.dyn_into::<js_sys::Function>()?;
+    Ok(getter.call0(value)?.as_string().as_deref() == Some("Uint8Array"))
 }
 
 /// Plan folder tiles without reading pixels. Grid fields accept camelCase.
@@ -108,11 +112,11 @@ pub fn retile(
             if !js_sys::ArrayBuffer::is_view(&value) {
                 return Err(terrio::Error::InvalidArgument("readFile must synchronously return a Uint8Array or null".into()));
             }
-            let tag = object_tag(&value).map_err(|error| {
+            let uint8 = uint8_brand(&value).map_err(|error| {
                 self.exception = Some(error);
                 terrio::Error::InvalidArgument("retile read-back type check failed".into())
             })?;
-            if tag != "[object Uint8Array]" {
+            if !uint8 {
                 return Err(terrio::Error::InvalidArgument("readFile must synchronously return a Uint8Array or null".into()));
             }
             let bytes = value.unchecked_ref::<js_sys::Uint8Array>();

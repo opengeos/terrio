@@ -305,10 +305,14 @@ fn prepare(sources: &mut [RetileSource<'_>], o: &RetileOptions) -> Result<(Retil
     }
     let crs = first.crs();
     let crs = crs.authority_code().or_else(|| crs.to_wkt()).or(crs.proj4);
-    Ok((
-        RetilePlan { prefix: name, crs, tile_size: o.tile_size, overlap: o.overlap, row_directories: o.row_directories, levels, planned },
-        headers,
-    ))
+    let plan =
+        RetilePlan { prefix: name, crs, tile_size: o.tile_size, overlap: o.overlap, row_directories: o.row_directories, levels, planned };
+    if o.csv.is_some() {
+        for level in &plan.levels {
+            csv_text(plan.cells(level), o)?;
+        }
+    }
+    Ok((plan, headers))
 }
 
 /// Generate tiles and optional per-level manifests without retaining encoded images.
@@ -496,6 +500,29 @@ fn blit(
     copy!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
     Ok(())
 }
+fn csv_text(records: impl Iterator<Item = (String, TileCell)>, o: &RetileOptions) -> Result<String> {
+    let mut text = String::new();
+    for (name, c) in records {
+        let g = c.geo_transform;
+        let d = &o.csv_delimiter;
+        let name = if name.contains([d.chars().next().unwrap(), '"', '\r', '\n']) {
+            format!("\"{}\"", name.replace('"', "\"\""))
+        } else {
+            name.clone()
+        };
+        text.push_str(&format!(
+            "{name}{d}{:.6}{d}{:.6}{d}{:.6}{d}{:.6}\n",
+            g[0],
+            g[0] + g[1] * c.size[0] as f64,
+            g[3] + g[5] * c.size[1] as f64,
+            g[3]
+        ));
+        if text.len() > 16 * 1024 * 1024 {
+            return Err(invalid("retile CSV exceeds its byte budget"));
+        }
+    }
+    Ok(text)
+}
 fn manifests(
     plan: &RetilePlan,
     directory: &str,
@@ -506,26 +533,7 @@ fn manifests(
     if let Some(name) = &o.csv {
         let path = format!("{directory}{name}");
         if !sink.exists(&path)? {
-            let mut text = String::new();
-            for (name, c) in records {
-                let g = c.geo_transform;
-                let d = &o.csv_delimiter;
-                let name = if name.contains([d.chars().next().unwrap(), '"', '\r', '\n']) {
-                    format!("\"{}\"", name.replace('"', "\"\""))
-                } else {
-                    name.clone()
-                };
-                text.push_str(&format!(
-                    "{name}{d}{:.6}{d}{:.6}{d}{:.6}{d}{:.6}\n",
-                    g[0],
-                    g[0] + g[1] * c.size[0] as f64,
-                    g[3] + g[5] * c.size[1] as f64,
-                    g[3]
-                ));
-                if text.len() > 16 * 1024 * 1024 {
-                    return Err(invalid("retile CSV exceeds its byte budget"));
-                }
-            }
+            let text = csv_text(records.iter().cloned(), o)?;
             sink.put(&path, text.as_bytes())?;
         }
     }

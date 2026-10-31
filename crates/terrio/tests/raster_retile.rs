@@ -259,3 +259,28 @@ fn shapefile_index_field_names_must_fit_without_truncation() {
     let options = RetileOptions { tile_index: Some("tiles.gpkg".into()), tile_index_field: "source_location".into(), ..Default::default() };
     assert!(re::plan(&mut sources, &options).is_ok());
 }
+
+#[test]
+fn oversized_csv_fails_during_planning_before_pixels_or_output() {
+    struct Metadata(RasterDataset);
+    impl terrio::ops::warp::WarpSource for Metadata {
+        fn info(&mut self) -> terrio::Result<terrio::ops::warp::WarpSourceInfo> {
+            Ok(terrio::ops::warp::WarpSourceInfo { raster: self.0.clone(), overviews: vec![] })
+        }
+        fn read_window(&mut self, _: Window, _: &WindowOptions) -> terrio::Result<RasterDataset> {
+            panic!("CSV budget must fail before reading pixels")
+        }
+    }
+    let mut header = source(1, 1, -180., vec![1]).header();
+    header.raster.cols = 316_000;
+    header.raster.rows = 316_000;
+    header.set_geo_transform([-180., 0.0005, 0., 90., 0., -0.0005]);
+    let mut input = Metadata(header);
+    let mut sources = [RetileSource { name: "input.tif".into(), source: &mut input }];
+    let options =
+        RetileOptions { tile_size: [1000, 1000], prefix: Some("x".repeat(128)), csv: Some("tiles.csv".into()), ..Default::default() };
+    assert!(re::plan(&mut sources, &options).unwrap_err().to_string().contains("CSV"));
+    let mut sink = Collect::default();
+    assert!(re::generate(&mut sources, &options, &mut sink).unwrap_err().to_string().contains("CSV"));
+    assert!(sink.0.is_empty());
+}

@@ -223,7 +223,7 @@ def main():
                         "detail": detail,
                     }
                 )
-            except (AssertionError, RuntimeError) as error:
+            except (AssertionError, ET.ParseError, RuntimeError, ValueError) as error:
                 results.append(
                     {"name": name, "status": "differs", "detail": str(error)}
                 )

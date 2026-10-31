@@ -3166,7 +3166,7 @@ terrio tile input.tif published --webviewer all --kml \
 or `stac`. `all` selects the companions applicable to the chosen grid. Leaflet
 requires a global PNG grid; OpenLayers supports PNG grids, including raster
 grids with unequal X/Y resolution. MapML requires global XYZ tiles. STACTA
-(`stacta.json`) requires XYZ, a known CRS and square pixels, and can be reopened
+(`stacta.json`) requires XYZ, a known CRS, square pixels and blank tiles retained, and can be reopened
 as a raster. Leaflet/OpenLayers pages fetch pinned public library distributions.
 Serve the generated directory over HTTP to view it in a browser.
 

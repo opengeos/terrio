@@ -103,13 +103,6 @@ Terrio files derived from GDAL source files (each file's header names them):
   scripts/compare_vector_dataset_with_gdal.py
   scripts/compare_vector_geom_with_gdal.py
 
-The retile and publication modules (crates/terrio/src/ops/raster_retile.rs,
-crates/terrio/src/ops/raster_retile/pyramid.rs and
-crates/terrio/src/ops/raster_publication.rs) independently implement behavior
-checked against GDAL's gdal_retile.py and unified raster tile command. Their
-code is not translated from GDAL source. Resampling uses Terrio's shared warp
-kernels, whose source attribution is recorded separately in their headers.
-
 The copyright notices of those source files:
   Copyright (c) 2017, Even Rouault
   Copyright (c) 2007, ITC
@@ -281,6 +274,13 @@ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+The retile and publication modules (crates/terrio/src/ops/raster_retile.rs,
+crates/terrio/src/ops/raster_retile/pyramid.rs and
+crates/terrio/src/ops/raster_publication.rs) independently implement behavior
+checked against GDAL's gdal_retile.py and unified raster tile command. Their
+code is not translated from GDAL source. Resampling uses Terrio's shared warp
+kernels, whose source attribution is recorded separately in their headers.
 
 -------------------------------------------------------------------------------
 PROJ (https://github.com/OSGeo/PROJ)

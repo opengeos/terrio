@@ -59,6 +59,7 @@ impl<'a> Publication<'a> {
         scheme: &'a str,
         convention: Convention,
         extension: &'a str,
+        skip_blank: bool,
     ) -> Result<Self> {
         if [&options.title, &options.copyright]
             .into_iter()
@@ -72,6 +73,16 @@ impl<'a> Publication<'a> {
             || options.mapml_template.as_ref().is_some_and(|s| s.len() > MAX_METADATA)
         {
             return Err(invalid("publication strings exceed their limits, or the URL contains a query/fragment"));
+        }
+        if options.url.as_ref().is_some_and(|url| url.chars().any(|c| c.is_ascii_control() || c == ' ')) {
+            return Err(invalid("publication URLs cannot contain spaces or control characters"));
+        }
+        if let Some(url) = &options.url
+            && let Some((protocol, rest)) = url.split_once(':')
+            && (protocol.eq_ignore_ascii_case("http") || protocol.eq_ignore_ascii_case("https"))
+            && !rest.strip_prefix("//").and_then(|r| r.split('/').next()).is_some_and(|host| !host.is_empty())
+        {
+            return Err(invalid("HTTP(S) publication URLs must include a host"));
         }
         if let Some(url) = &options.url
             && let Some((protocol, _)) = url.split_once(':')
@@ -88,7 +99,7 @@ impl<'a> Publication<'a> {
             "leaflet" => global && extension == "png",
             "openlayers" => extension == "png",
             "mapml" => global && convention == Convention::Xyz,
-            "stac" => convention == Convention::Xyz && plan.crs.is_some() && square,
+            "stac" => convention == Convention::Xyz && plan.crs.is_some() && square && !skip_blank,
             _ => false,
         };
         let mut viewers = BTreeSet::new();
@@ -143,6 +154,11 @@ impl<'a> Publication<'a> {
         }
         if options.kml && !plan.levels.is_empty() {
             publication.root_kml()?;
+            for level in &plan.levels {
+                for cell in level.cells(convention) {
+                    publication.geo_bounds(cell_bounds(&cell))?;
+                }
+            }
         }
         Ok(publication)
     }

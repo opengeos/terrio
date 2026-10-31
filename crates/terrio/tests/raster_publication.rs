@@ -298,3 +298,61 @@ fn root_kml_planning_accepts_16384_links_within_the_actual_byte_budget() {
     let plan = tile::plan(&source().header(), &options).unwrap().0;
     assert_eq!(plan.count().unwrap(), 16384);
 }
+
+#[test]
+fn invalid_http_hosts_and_obfuscated_schemes_fail_before_output() {
+    for url in [
+        "https://",
+        "https:///tiles",
+        "HTTP:/tiles",
+        "\tjavascript:alert(1)",
+        "java\tscript:alert(1)",
+        " javaScript:alert(1)",
+        "tiles/with space",
+    ] {
+        let mut options = options();
+        options.publication.url = Some(url.into());
+        let mut sink = Collect::default();
+        assert!(tile::generate(&mut source(), &options, &mut sink).is_err(), "{url:?}");
+        assert!(sink.0.is_empty());
+    }
+}
+
+#[test]
+fn stac_requires_blank_tiles_while_all_omits_inapplicable_stac() {
+    let mut options = options();
+    options.skip_blank = true;
+    options.publication.viewers = vec!["stac".into()];
+    let mut sink = Collect::default();
+    assert!(tile::generate(&mut source(), &options, &mut sink).is_err());
+    assert!(sink.0.is_empty());
+    options.publication.viewers = vec!["all".into()];
+    tile::generate(&mut source(), &options, &mut sink).unwrap();
+    assert!(!sink.0.contains_key("stacta.json"));
+    assert!(sink.0.contains_key("leaflet.html"));
+}
+
+#[test]
+fn finer_kml_cells_outside_geographic_bounds_fail_before_pixels_or_output() {
+    struct Metadata(RasterDataset);
+    impl terrio::ops::warp::WarpSource for Metadata {
+        fn info(&mut self) -> terrio::Result<terrio::ops::warp::WarpSourceInfo> {
+            Ok(terrio::ops::warp::WarpSourceInfo { raster: self.0.clone(), overviews: vec![] })
+        }
+        fn read_window(&mut self, _: terrio::Window, _: &terrio::WindowOptions) -> terrio::Result<RasterDataset> {
+            panic!("invalid KML plan must fail before reading pixels")
+        }
+    }
+    let mut header = source().header();
+    header.raster.cols = 1400;
+    header.raster.rows = 1000;
+    header.set_geo_transform([169., 0.01, 0., 10., 0., -0.01]);
+    let mut input = Metadata(header);
+    let mut options = options();
+    options.tiling_scheme = "raster".into();
+    options.grid = GridOptions { tile_size: 256, min_zoom: Some(1), max_zoom: Some(2), ..Default::default() };
+    options.publication.viewers.clear();
+    let mut sink = Collect::default();
+    assert!(tile::generate(&mut input, &options, &mut sink).is_err());
+    assert!(sink.0.is_empty());
+}

@@ -124,6 +124,7 @@ pub fn plan(source: &RasterDataset, options: &TileOptions) -> Result<(TilePlan, 
             &options.tiling_scheme,
             options.convention,
             extension,
+            options.skip_blank,
         )
         .map(|_| ())
     };
@@ -216,6 +217,7 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
         &options.tiling_scheme,
         options.convention,
         extension,
+        options.skip_blank,
     )?;
     let preserve_mask = extension == "tif" && !alpha && source.has_mask()?;
     let limits = RenderLimits::default();
