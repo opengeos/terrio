@@ -13,8 +13,36 @@ use parquet::basic::Compression;
 use parquet::column::page::{Page, PageIterator, PageMetadata, PageReader};
 use parquet::errors::{ParquetError, Result};
 use parquet::file::metadata::{ColumnChunkMetaData, ParquetMetaData, RowGroupMetaData};
-use parquet::file::reader::ChunkReader;
+use parquet::file::reader::{ChunkReader, Length};
 use parquet::file::serialized_reader::SerializedPageReader;
+
+/// One opened input shared by a metadata reader and a page reader, so that a file is not opened
+/// again for its Zstandard chunks.
+pub(super) struct SharedInput<R>(pub(super) Arc<R>);
+
+impl<R> Clone for SharedInput<R> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<R: Length> Length for SharedInput<R> {
+    fn len(&self) -> u64 {
+        self.0.len()
+    }
+}
+
+impl<R: ChunkReader> ChunkReader for SharedInput<R> {
+    type T = R::T;
+
+    fn get_read(&self, start: u64) -> Result<Self::T> {
+        self.0.get_read(start)
+    }
+
+    fn get_bytes(&self, start: u64, length: usize) -> Result<Bytes> {
+        self.0.get_bytes(start, length)
+    }
+}
 
 /// Whether a chunk of the projected columns of `groups` is compressed with Zstandard.
 pub(super) fn has_zstd(meta: &ParquetMetaData, groups: &[usize], mask: &ProjectionMask) -> bool {
@@ -70,7 +98,8 @@ impl<R: ChunkReader + 'static> RowGroups for ZstdRowGroups<R> {
     }
 }
 
-/// The page readers of a column's chunks.
+/// The page readers of a column's chunks. Metadata is read without its page index, so pages are
+/// found from their headers.
 struct Chunks<R> {
     input: Arc<R>,
     meta: Arc<ParquetMetaData>,
@@ -82,14 +111,13 @@ impl<R: ChunkReader + 'static> Chunks<R> {
     fn pages(&self, group: usize) -> Result<Box<dyn PageReader>> {
         let rg = self.meta.row_group(group);
         let chunk = rg.column(self.column);
-        let locations = self.meta.offset_index().filter(|i| !i[group].is_empty()).map(|i| i[group][self.column].page_locations.clone());
         let rows = rg.num_rows() as usize;
         if !matches!(chunk.compression(), Compression::ZSTD(_)) {
-            return Ok(Box::new(SerializedPageReader::new(self.input.clone(), chunk, rows, locations)?));
+            return Ok(Box::new(SerializedPageReader::new(self.input.clone(), chunk, rows, None)?));
         }
         let raw: ColumnChunkMetaData = chunk.clone().into_builder().set_compression(Compression::UNCOMPRESSED).build()?;
         let limit = usize::try_from(chunk.uncompressed_size()).map_err(|e| ParquetError::External(Box::new(e)))?;
-        Ok(Box::new(ZstdPages { pages: SerializedPageReader::new(self.input.clone(), &raw, rows, locations)?, limit }))
+        Ok(Box::new(ZstdPages { pages: SerializedPageReader::new(self.input.clone(), &raw, rows, None)?, limit }))
     }
 }
 
@@ -189,5 +217,37 @@ impl<R: ChunkReader> PageReader for ZstdPages<R> {
 
     fn at_record_boundary(&mut self) -> Result<bool> {
         self.pages.at_record_boundary()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::fs::File;
+    use std::path::PathBuf;
+
+    use super::super::geoparquet::ParquetStream;
+
+    /// How many times reading a fixture opens it.
+    fn opens(file: &str, bbox: Option<(f64, f64, f64, f64)>) -> u32 {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/parquet_zstd").join(file);
+        let count = Cell::new(0);
+        let open = || {
+            count.set(count.get() + 1);
+            Ok(File::open(&path)?)
+        };
+        assert!(ParquetStream::open(open, "t", None, bbox, 64, None).is_ok());
+        count.get()
+    }
+
+    /// Zstandard chunks open a file no more often than others, so a remote file's footer is not
+    /// fetched again.
+    #[test]
+    fn zstd_chunks_add_no_opens() {
+        let bbox = Some((-5.5, -2.5, 5.5, 2.5));
+        for file in ["snappy.parquet", "zstd_v1.parquet", "zstd_mixed.parquet"] {
+            assert_eq!(opens(file, None), 1, "{file}");
+            assert_eq!(opens(file, bbox), 2, "{file}");
+        }
     }
 }

@@ -18,6 +18,7 @@ Suites:
                       (compare_windows_with_gdal.py)
     ops               translate, warp, mosaic vs GDAL's tools (compare_ops_with_gdal.py)
     raster-masks      per-dataset masks in convert/warp, including COG overviews
+    parquet-zstd      Zstandard GeoParquet pages read without the zstd C library vs GDAL
     catalogs          indexed real DEM mosaics and HTTP window I/O vs GDAL GTI
                       (compare_catalogs_with_gdal.py)
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
@@ -924,6 +925,39 @@ def suite_dataset_check(ctx):
         suite.cases.append(Case("Dataset content check", result["name"], statuses.get(result["status"], DIFFERS), result["detail"]))
     if code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out)
+    return suite
+
+
+def suite_parquet_zstd(ctx):
+    suite = Suite("parquet-zstd", "Zstandard GeoParquet pages", "GDAL 3.13.3 / Arrow",
+                  "Fixtures with v1, v2 and per-column compression: feature ids, attributes and points, read whole")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs osgeo"
+        return suite
+    from osgeo import ogr
+
+    ogr.UseExceptions()
+    fixtures = SCRIPTS.parent / "crates/terrio/tests/data/parquet_zstd"
+    for path in sorted(fixtures.glob("*.parquet")):
+        ds = ogr.Open(str(path))
+        reference = [
+            (f.GetField("id"), f.GetField("name"), f.GetField("value"), f.GetGeometryRef().GetX(), f.GetGeometryRef().GetY())
+            for f in ds.GetLayer(0)
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "out.geojson"
+            code, out, err = run([ctx.terrio, "convert", str(path), str(out_path)])
+            if code:
+                suite.cases.append(Case("GeoParquet", path.name, DIFFERS, tail(err or out)))
+                continue
+            features = json.loads(out_path.read_text())["features"]
+        got = [
+            (f["properties"]["id"], f["properties"]["name"], f["properties"]["value"], *f["geometry"]["coordinates"][:2])
+            for f in features
+        ]
+        status = IDENTICAL if got == reference else DIFFERS
+        detail = "" if got == reference else f"{len(got)} features, GDAL {len(reference)}"
+        suite.cases.append(Case("GeoParquet", path.name, status, detail))
     return suite
 
 
@@ -2482,6 +2516,7 @@ SUITES = OrderedDict(
         ("identify", suite_identify),
         ("dataset-files", suite_dataset_files),
         ("parquet-metadata", suite_parquet_metadata),
+        ("parquet-zstd", suite_parquet_zstd),
         ("dataset-check", suite_dataset_check),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),

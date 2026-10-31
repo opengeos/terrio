@@ -65,8 +65,9 @@ keep it so:
   `libzstd` feature uses the zstd C library natively instead, which decodes faster and compresses
   better: `ruzstd` writes at its fastest level, about zstd's level 1, whatever level is asked for.
 - HTTPS uses `rustls` with `rustls-graviola`, whose cryptography is Rust and assembly and needs no
-  C compiler. It requires `aes`, `ssse3`, `avx`, `avx2`, `adx`, `bmi2` and `pclmulqdq` on x86-64
-  (most CPUs since about 2014), and `aes`, `sha2`, `pmull` and `neon` on AArch64. Other
+  C compiler. It requires `aes`, `pclmulqdq`, `ssse3`, `avx`, `avx2`, `adx`, `bmi1` and `bmi2` on
+  x86-64 (most CPUs since about 2014), and `aes`, `sha2`, `pmull` and `neon` on AArch64: without the
+  ones it checks, an HTTPS request panics, naming the missing feature. Other
   architectures, for which no release is built, use `ring`, which needs a C compiler.
 - GeoParquet is written with Snappy, which needs no C. Reading also takes Zstandard, gzip, LZ4 and
   Brotli.

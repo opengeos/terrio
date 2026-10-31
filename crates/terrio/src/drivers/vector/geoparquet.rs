@@ -16,7 +16,7 @@
 //! types, bounds and CRS.
 
 use super::datetime::{format_date, format_datetime, parse_date, parse_datetime};
-use super::geoparquet_zstd;
+use super::geoparquet_zstd::{self, SharedInput};
 use super::profile::LayerProfile;
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
@@ -159,7 +159,7 @@ pub(crate) struct ParquetStream {
 }
 
 impl ParquetStream {
-    /// Opens a file whose bytes `open` gives (once, or again with a filter or Zstandard chunks), to read the rows of
+    /// Opens a file whose bytes `open` gives (once, or twice with a filter), to read the rows of
     /// `row_groups` (all by default) that intersect `bbox` in batches of `batch_size` rows.
     /// `prefetch`, when given, is told the byte ranges about to be read.
     pub(crate) fn open<R: parquet::file::reader::ChunkReader + 'static>(
@@ -171,7 +171,8 @@ impl ParquetStream {
         prefetch: Prefetch<'_>,
     ) -> Result<Self> {
         let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
-        let builder = ParquetRecordBatchReaderBuilder::try_new(open()?).map_err(|e| err(&e))?;
+        let input = SharedInput(Arc::new(open()?));
+        let builder = ParquetRecordBatchReaderBuilder::try_new(input.clone()).map_err(|e| err(&e))?;
         let num_groups = builder.metadata().num_row_groups();
         if let Some(g) = row_groups.and_then(|g| g.iter().find(|&&g| g >= num_groups)) {
             return Err(Error::InvalidArgument(format!("no row group {g}: the file has {num_groups}")));
@@ -231,7 +232,8 @@ impl ParquetStream {
             None => (0..num_groups).collect(),
         };
         if let Some(rect) = bbox {
-            let (kept_groups, selected, kept) = select_rows(&builder, open()?, covering, geom_index, &encoding, rect, &groups, prefetch)?;
+            let (kept_groups, selected, kept) =
+                select_rows(&builder, SharedInput(Arc::new(open()?)), covering, geom_index, &encoding, rect, &groups, prefetch)?;
             groups = kept_groups;
             row_selection = Some(selected);
             fids = Some(kept);
@@ -250,7 +252,7 @@ impl ParquetStream {
             p(&ranges)?;
         }
         let reader = if geoparquet_zstd::has_zstd(&meta, &groups, &ProjectionMask::all()) {
-            geoparquet_zstd::reader(open()?, &meta, &schema, ProjectionMask::all(), groups, row_selection, batch_size)
+            geoparquet_zstd::reader(input, &meta, &schema, ProjectionMask::all(), groups, row_selection, batch_size)
         } else {
             let mut builder = builder.with_row_groups(groups).with_batch_size(batch_size.max(1));
             if let Some(selection) = row_selection {
