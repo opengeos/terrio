@@ -194,3 +194,28 @@ def test_appending_mixed_height_layouts_promotes_the_declaration(tmp_path):
         terrio.write_vector(second, str(path), append=True)
         with closing(sqlite3.connect(path)) as db:
             assert db.execute("SELECT z FROM gpkg_geometry_columns").fetchone() == (2,)
+
+
+def test_typed_empty_polygon_and_optional_z_have_valid_wkb(tmp_path):
+    original = source()
+    for feature in original["features"]:
+        for point in feature["geometry"]["coordinates"][0]:
+            point.append(3)
+    original["features"].append(
+        {
+            "type": "Feature",
+            "properties": {"name": "empty"},
+            "geometry": {"type": "Polygon", "coordinates": [[]]},
+        }
+    )
+    layer = terrio.Layer.from_geojson(original)
+    assert layer.to_geojson()["features"][2]["geometry"]["type"] == "Polygon"
+    path = tmp_path / "empty.gpkg"
+    layer.write(str(path))
+    report = terrio.validate_gpkg(str(path), full_check=True)
+    assert report["valid"], report
+    with closing(sqlite3.connect(path)) as db:
+        assert db.execute("SELECT z FROM gpkg_geometry_columns").fetchone() == (2,)
+        blob = db.execute("SELECT geom FROM layer ORDER BY fid DESC LIMIT 1").fetchone()[0]
+        assert blob[3] & 0x10
+        assert struct.unpack("<II", blob[9:17]) == (3, 0)

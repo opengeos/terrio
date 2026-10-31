@@ -3036,5 +3036,10 @@ With `preserve_declared_geometry_type` (JavaScript
 `preserveDeclaredGeometryType`), GeoPackage writers reject non-null features
 incompatible with a concrete declared type. Unknown declarations accept every
 geometry; GeometryCollection declarations also accept multipart subtypes.
-Mixed 2D/3D GeoPackage features use optional Z declarations, including append and
-update. Null geometries do not force either Z or M to optional.
+
+Mixed 2D/3D features use optional Z by default in every pure-Rust GeoPackage
+whole-layer, memory and streaming writer, independently of the preserve option;
+append/update also promote the declaration when needed. Null geometries do not
+force Z or M to optional. A typed-empty geometry encoded with an XY WKB type
+still counts as 2D for this registration, unlike SQL NULL. The Layer model does
+not retain independent source Z/M declaration hints for empty geometries.

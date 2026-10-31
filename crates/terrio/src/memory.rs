@@ -875,6 +875,34 @@ mod tests {
     }
 
     #[test]
+    fn geopackage_typed_empty_polygons_have_valid_wkb_in_mixed_z_layers() {
+        use crate::{Feature, Geometry};
+        use wbvector::{Coord, Ring};
+        let empty = || Geometry::polygon(vec![], vec![]);
+        for geometry in [empty(), Geometry::MultiPolygon(vec![(Ring(vec![]), vec![])]), Geometry::GeometryCollection(vec![empty()])] {
+            let mut layer = Layer::new("polygons").with_epsg(4326);
+            layer.features = vec![
+                Feature {
+                    fid: 1,
+                    attributes: vec![],
+                    geometry: Some(Geometry::polygon(vec![Coord::xyz(0., 0., 1.), Coord::xyz(2., 0., 2.), Coord::xyz(0., 2., 3.)], vec![])),
+                },
+                Feature { fid: 2, attributes: vec![], geometry: Some(geometry) },
+            ];
+            for preserve in [false, true] {
+                let options = VectorWriteOptions { preserve_declared_geometry_type: preserve, ..Default::default() };
+                let bytes = write_vector_bytes(std::slice::from_ref(&layer), "empty.gpkg", &options).unwrap();
+                let report = crate::gpkg_validate::validate_gpkg_bytes(&bytes, &Default::default()).unwrap();
+                assert!(report.is_valid, "{:?}", report.errors);
+                let back = open_vector_bytes(bytes, "empty.gpkg", &Default::default()).unwrap();
+                let g = back.layers[0].features[1].geometry.as_ref().unwrap();
+                assert!(g.all_coords().is_empty());
+                assert_eq!(g.geom_type(), layer.features[1].geometry.as_ref().unwrap().geom_type());
+            }
+        }
+    }
+
+    #[test]
     fn geopackage_preserves_zm_values_and_registers_dimensions() {
         for wkt in [
             "POINT M (1 2 30)",

@@ -8,6 +8,7 @@ GDAL independently checks output coverage validity.
 import argparse
 import json
 import sqlite3
+import subprocess
 import tempfile
 from contextlib import closing
 from pathlib import Path
@@ -31,6 +32,18 @@ def polygon_edges(geometry):
         for i in range(geometry.GetGeometryCount())
         for edge in polygon_edges(geometry.GetGeometryRef(i))
     ]
+
+
+def validate_package(path, terrio):
+    process = subprocess.run(
+        [str(terrio), "gpkg-validate", str(path), "--full-check", "--json"],
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode:
+        raise AssertionError(
+            f"GeoPackage validation failed: {process.stdout}{process.stderr}"
+        )
 
 
 def read(path):
@@ -179,6 +192,7 @@ def main():
                             [args.terrio, "simplify-coverage", source, actual, *options]
                         )
                         detail = compare(reference, actual)
+                        validate_package(actual, args.terrio)
                         for output in [reference, actual]:
                             errors = root / f"errors-{output.stem}.gpkg"
                             run(["gdal", "vector", "check-coverage", output, errors])
@@ -224,6 +238,7 @@ def main():
                 )
                 run([args.terrio, "simplify-coverage", source, actual, *options])
                 detail = compare(reference, actual)
+                validate_package(actual, args.terrio)
                 for output in [reference, actual]:
                     errors = root / f"errors-{output.stem}.gpkg"
                     run(

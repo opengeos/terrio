@@ -2978,3 +2978,15 @@ test("GPKG toBytes registers optional Z for mixed height layouts", () => {
     assert.equal(report.valid,true,JSON.stringify(report));
   }
 });
+
+
+test("GPKG toBytes preserves valid typed-empty polygon bodies", () => {
+  const source=terrio.fromGeoJSON({type:"FeatureCollection",features:[
+    {type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[[[0,0,1],[2,0,2],[0,2,3],[0,0,1]]]}},
+    {type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[[]]}}
+  ]});
+  assert.equal(source.toGeoJSON().features[1].geometry.type,"Polygon");
+  const bytes=source.toBytes("empty.gpkg");
+  const report=terrio.validateGpkg(bytes,{fullCheck:true});
+  assert.equal(report.valid,true,JSON.stringify(report));
+});

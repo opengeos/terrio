@@ -98,6 +98,10 @@ fn write_iso_wkb(out: &mut Vec<u8>, geometry: &Geometry) {
         }
     }
     fn polygon(out: &mut Vec<u8>, shell: &wbvector::Ring, holes: &[wbvector::Ring], z: bool, m: bool) {
+        if shell.0.is_empty() && holes.iter().all(|r| r.0.is_empty()) {
+            count(out, 0);
+            return;
+        }
         count(out, 1 + holes.len());
         ring(out, shell, z, m);
         for hole in holes {
