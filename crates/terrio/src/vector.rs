@@ -1,6 +1,7 @@
 //! Vector layer helpers, and the parts of terrio's vector data model (from `wbvector`) that the
 //! crate root does not re-export: coordinates, rings, schemas, bounding boxes and layer CRSs.
 
+pub use crate::drivers::vector::geojson::with_declared_geometry_types;
 pub use wbvector::{BBox, Coord, Crs, GeoError, Ring, Schema};
 
 use wbvector::{Geometry, GeometryType, Layer};
@@ -230,6 +231,8 @@ pub fn read_flatgeobuf_sparse(
     name: &str,
     bbox: Option<(f64, f64, f64, f64)>,
 ) -> crate::Result<(FlatGeobufInfo, Layer)> {
+    // Read as FlatGeobuf by its caller: only if the process-wide vector allow-list has the driver.
+    crate::formats::check_driver_allowed("FlatGeobuf", name, crate::formats::Kind::Vector)?;
     let mut r = file.clone();
     let prefetch = |ranges: &[(u64, u64)]| -> crate::Result<()> { Ok(file.prefetch(ranges)?) };
     let (info, layer) = crate::drivers::vector::flatgeobuf::read_filtered(&mut r, file.len(), bbox, &prefetch)?;
@@ -241,6 +244,7 @@ pub fn read_flatgeobuf_sparse(
 /// The header of a remote FlatGeobuf file whose bytes the caller fetches (see
 /// [`crate::sparse`]), and its layer without features.
 pub fn read_flatgeobuf_header_sparse(file: &crate::sparse::SparseFile, name: &str) -> crate::Result<(FlatGeobufInfo, Layer)> {
+    crate::formats::check_driver_allowed("FlatGeobuf", name, crate::formats::Kind::Vector)?;
     let mut r = file.clone();
     let (info, layer) = crate::drivers::vector::flatgeobuf::read_header(&mut r, file.len())?;
     Ok((info, crate::dataset::fix_layer(layer, name, crate::formats::VectorDriver::FlatGeobuf)))
@@ -252,6 +256,8 @@ pub fn read_flatgeobuf_header_sparse(file: &crate::sparse::SparseFile, name: &st
 /// [`crate::sparse`]): their row counts and bounding boxes (from the statistics of the
 /// bounding-box covering column).
 pub fn geoparquet_row_groups_sparse(file: &crate::sparse::SparseFile) -> crate::Result<Vec<RowGroupInfo>> {
+    // Read as GeoParquet by its caller: only if the process-wide vector allow-list has the driver.
+    crate::formats::check_driver_allowed("Parquet", "a remote GeoParquet file", crate::formats::Kind::Vector)?;
     crate::drivers::vector::geoparquet::row_groups(file.clone())
 }
 
@@ -269,6 +275,7 @@ pub fn read_geoparquet_sparse(
     row_groups: Option<&[usize]>,
     bbox: Option<(f64, f64, f64, f64)>,
 ) -> crate::Result<Layer> {
+    crate::formats::check_driver_allowed("Parquet", name, crate::formats::Kind::Vector)?;
     let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     let layer = crate::drivers::vector::geoparquet::read_sparse(file, stem, row_groups, bbox)?;
     Ok(crate::dataset::fix_layer(layer, name, crate::formats::VectorDriver::Parquet))

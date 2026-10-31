@@ -1,5 +1,6 @@
 //! Vector layers read as streams: `open_stream` and the `FeatureStream` class.
 
+use crate::Detach;
 use crate::vector::PyLayer;
 use crate::{PyResultExt, crs_string, invalid};
 use arrow_array::ffi_stream::FFI_ArrowArrayStream;
@@ -87,7 +88,7 @@ fn open_stream(
         return Err(invalid("batch_size must be positive"));
     }
     let options = VectorOpenOptions { spatial_filter: bbox, ..Default::default() };
-    let reader = py.detach(|| pick(terrio::stream::open_layers(path, &options, batch_size)?, layer)).py()?;
+    let reader = py.detach_result(|| pick(terrio::stream::open_layers(path, &options, batch_size)?, layer)).py()?;
     let layer = reader.layer().clone();
     Ok(PyFeatureStream { reader: Mutex::new(Some(reader)), layer, path: path.to_string(), options, batch_size, started: false })
 }
@@ -137,7 +138,7 @@ impl PyFeatureStream {
         let Some(reader) = guard.as_mut() else { return Ok(None) };
         self.started = true;
         let n = self.batch_size;
-        let chunk = py.detach(|| reader.read_chunk(n)).py()?;
+        let chunk = py.detach_result(|| reader.read_chunk(n)).py()?;
         Ok(chunk.map(|inner| PyLayer { inner }))
     }
 
@@ -148,7 +149,7 @@ impl PyFeatureStream {
     fn read_all(&mut self, py: Python<'_>) -> PyResult<PyLayer> {
         let reader = self.take()?;
         self.started = true;
-        Ok(PyLayer { inner: py.detach(|| reader.read_all()).py()? })
+        Ok(PyLayer { inner: py.detach_result(|| reader.read_all()).py()? })
     }
 
     fn __repr__(&self) -> String {
@@ -178,7 +179,7 @@ impl PyFeatureStream {
         let arrow = terrio::arrow::ArrowWriteOptions { batch_size: self.batch_size, ..Default::default() };
         let (path, options, name) = (self.path.clone(), self.options.clone(), self.layer.name.clone());
         let stream = py
-            .detach(|| -> terrio::Result<ArrowStream> {
+            .detach_result(|| -> terrio::Result<ArrowStream> {
                 let profile = if terrio::arrow::ArrowEncoder::needs_profile(reader.layer(), &arrow) {
                     let mut first = pick(terrio::stream::open_layers(&path, &options, arrow.batch_size)?, Some(&name))?;
                     let mut p = terrio::stream::LayerProfile::new(first.layer());

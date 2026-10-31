@@ -23,6 +23,14 @@ pub(crate) fn is_ehdr(path: &Path) -> bool {
     })
 }
 
+/// [`open`] for a data file `raw_opener` recognised by the EHdr header beside it, whatever driver
+/// its name points to: refused when the process-wide allow-list leaves EHdr out, as a data file
+/// named for another driver (`h.img`, Imagine's) reaches this point as that driver's file.
+pub(crate) fn open_recognised(path: &Path) -> Result<RawRaster> {
+    crate::formats::check_driver_allowed("EHdr", &path.to_string_lossy(), crate::formats::Kind::Raster)?;
+    open(path)
+}
+
 /// Opens an EHdr data file, reading only its header now: its pixels are read by window.
 pub(crate) fn open(path: &Path) -> Result<RawRaster> {
     let hdr = common::sibling(path, "hdr");

@@ -5,6 +5,7 @@
 //! `scripts/compare_grib_with_gdal.py` and the real-data tests.
 #![cfg(feature = "grib")]
 
+use std::path::PathBuf;
 use terrio::formats::RasterDriver;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/grib");
@@ -149,11 +150,11 @@ fn reads_grib_files_as_gdal() {
             let k = b + 1;
             let got: f64 = (0..n).map(|i| ds.raster.data.get_f64(b * n + i)).sum();
             assert_eq!(got, *sum, "{} band {k}", e.file);
-            let band_nodata = item(meta, &format!("TERRIO#BAND_{k}_NODATA")).map(|v| v.parse::<f64>().unwrap());
+            let band_nodata = ds.band_nodata(k);
             assert_eq!(band_nodata, *nodata, "{} band {k}", e.file);
             assert_eq!(item(meta, &format!("BAND_{k}#GRIB_ELEMENT")).as_deref(), Some(*element), "{} band {k}", e.file);
             assert_eq!(item(meta, &format!("BAND_{k}#GRIB_SHORT_NAME")).as_deref(), Some(*short), "{} band {k}", e.file);
-            assert_eq!(item(meta, &format!("TERRIO#BAND_{k}_DESCRIPTION")).as_deref(), Some(*description), "{} band {k}", e.file);
+            assert_eq!(ds.band_metadata[b].description.as_deref(), Some(*description), "{} band {k}", e.file);
         }
     }
 }
@@ -202,7 +203,7 @@ fn rotated_lat_lon_grids() {
     assert!(r.crs().is_rotated_pole());
     let meta = r.metadata();
     assert_eq!(item(&meta, "BAND_1#GRIB_ELEMENT").as_deref(), Some("DEPR"));
-    assert_eq!(item(&meta, "TERRIO#BAND_1_DESCRIPTION").as_deref(), Some("100000[Pa] ISBL=\"Isobaric surface\""));
+    assert_eq!(r.band_metadata()[0].description.as_deref(), Some("100000[Pa] ISBL=\"Isobaric surface\""));
 }
 
 #[test]
@@ -231,4 +232,72 @@ fn grib_metadata_items_as_gdal() {
     // Kelvin as Celsius.
     let t = terrio::open_raster(&format!("{DIR}/spatial_differencing_order_1.grb2")).unwrap();
     assert_eq!(item(&t.raster.metadata, "BAND_1#GRIB_UNIT").as_deref(), Some("[C]"));
+}
+
+fn dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/grib")
+}
+
+/// GRIB2 read as GDAL reads it: the files of `tests/data/grib` written by GDAL's GRIB driver, and
+/// what GDAL (through rasterio) reads of them (`scripts/make_grib_fixtures.py`): size, band count,
+/// geotransform, CRS, each band's nodata, description, metadata and pixels.
+#[test]
+fn grib_reads_as_gdal() {
+    let text = std::fs::read_to_string(dir().join("expected.json")).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let mut checked = 0;
+    for (name, e) in expected.as_object().unwrap() {
+        let path = dir().join(name).to_string_lossy().into_owned();
+        let ds = terrio::open_raster(&path).unwrap_or_else(|err| panic!("{name}: {err}"));
+        assert_eq!(ds.driver, terrio::formats::RasterDriver::GRIB, "{name}");
+        let bands = e["bands"].as_array().unwrap();
+        let size = |k: &str| e[k].as_u64().unwrap() as usize;
+        assert_eq!((ds.band_count(), ds.raster.rows, ds.raster.cols), (bands.len(), size("height"), size("width")), "{name}");
+        assert_eq!(ds.data_type_name(), "Float64", "{name}");
+        let gt: Vec<f64> = e["geo_transform"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        for (a, b) in ds.geo_transform().iter().zip(&gt) {
+            assert!((a - b).abs() <= 1e-9 * b.abs().max(1e-3), "{name}: geotransform {:?} != {gt:?}", ds.geo_transform());
+        }
+        // GDAL's EPSG code (EPSG:4326 for WGS 84 latitude/longitude grids), else its WKT.
+        let crs = ds.crs();
+        match crs.epsg {
+            Some(code) => assert_eq!(Some(code as u64), e["epsg"].as_u64(), "{name}"),
+            None => assert_eq!(crs.wkt.as_deref(), e["crs_wkt"].as_str(), "{name}"),
+        }
+        let values = ds.raster.data.to_f64_vec();
+        let n = ds.raster.rows * ds.raster.cols;
+        for (b, band) in bands.iter().enumerate() {
+            let pixels: Vec<f64> = band["pixels"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            let ours = &values[b * n..(b + 1) * n];
+            let differ = ours.iter().zip(&pixels).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+            assert_eq!(differ, 0, "{name} band {}: {differ} pixels differ from GDAL's", b + 1);
+            let nodata = if ds.band_nodata.is_empty() { ds.nodata() } else { ds.band_nodata[b] };
+            assert_eq!(nodata, band["nodata"].as_f64(), "{name} band {}: nodata", b + 1);
+            let md = &ds.band_metadata[b];
+            assert_eq!(md.description.as_deref(), band["description"].as_str(), "{name} band {}", b + 1);
+            for (k, v) in band["tags"].as_object().unwrap() {
+                let ours = md.items.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+                assert_eq!(ours, v.as_str(), "{name} band {}: {k}", b + 1);
+            }
+        }
+        checked += 1;
+    }
+    assert!(checked >= 10, "{checked} files");
+}
+
+/// GRIB files are found by their content as well as by their extension, as GDAL finds them; a
+/// file that is not GRIB2 is refused with the reason.
+#[test]
+fn grib_detection() {
+    let src = dir().join("simple.grib2");
+    let tmp = tempfile::tempdir().unwrap();
+    let renamed = tmp.path().join("forecast.bin");
+    std::fs::copy(&src, &renamed).unwrap();
+    assert_eq!(terrio::open_raster(renamed.to_str().unwrap()).unwrap().driver, terrio::formats::RasterDriver::GRIB);
+    let mut grib1 = std::fs::read(&src).unwrap();
+    grib1[7] = 1;
+    let p = tmp.path().join("old.grb");
+    std::fs::write(&p, grib1).unwrap();
+    let err = terrio::open_raster(p.to_str().unwrap()).unwrap_err().to_string();
+    assert!(err.contains("GRIB1"), "{err}");
 }

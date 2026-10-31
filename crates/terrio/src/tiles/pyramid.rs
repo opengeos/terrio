@@ -19,28 +19,127 @@
 
 use super::TileFormat;
 use crate::Result;
+use crate::dataset::fallible;
 use std::collections::VecDeque;
 
 /// The tile size, in pixels.
 const TS: i64 = 256;
+
+/// What the buffers of a pyramid's rows are called in an allocation error. Their sizes come from
+/// the source's header (the level's width), so they are allocated fallibly: an allocation the
+/// process cannot get fails the write rather than ending the process.
+pub(crate) const ROWS: &str = "a tile pyramid's rows";
+
+/// The most bytes an encoded tile of `plan` takes: its pixels (256 x 256, the data bands and the
+/// alpha band, which JPEG tiles drop) with a margin. Measured on noise, the largest PNG and WebP
+/// tiles were 0.3% larger than their pixels, JPEG tiles at quality 100 1.6 times larger.
+fn tile_bytes(plan: &Plan) -> u128 {
+    let channels = if plan.format == TileFormat::Jpeg { plan.bands } else { plan.bands + 1 };
+    let pixels = (TS * TS) as u128 * channels as u128;
+    if plan.format == TileFormat::Jpeg { 2 * pixels + 4096 } else { pixels + pixels / 64 + 4096 }
+}
+
+/// What building `plan` holds at once, at most, in bytes (`None`: more than a `u64`), counted from
+/// [`build`] and [`advance`] below, the full-resolution level read `strip` rows at a time:
+/// - the rows of each level: those kept for its next tile row (fewer than a tile row) or for the
+///   next level's kernel, and those just given to it (a strip, or a batch of the level above's
+///   output rows): `min(h, 255 + strip)` rows of the first level, `min(h, 255 + 64)` of the
+///   others, each of `(bands + 1) x w` bytes;
+/// - for a convolution (bilinear, cubic), the horizontally filtered rows of each level the next
+///   one is computed from (8-byte values of every band and of the mask, `8 x (bands + 2) x w'`
+///   bytes each, `w'` the next level's width): those a batch of 64 output rows reads, no more
+///   than the rows the level was just given and the kernel's span twice; and each level's kernel
+///   taps, one per output column and row;
+/// - either a strip being read (`held.1`: the window and its decoding) or a tile row being
+///   encoded (its tiles, and on each thread a tile's pixels and the encoder's buffers);
+/// - what the rows' source holds throughout (`held.0`, a level held whole);
+/// - the tiles: a PMTiles archive's index of spilled tiles and its directories; tiles gathered in
+///   memory (`copies` > 0, MBTiles) once while the pyramid is built and `copies` times while the
+///   archive is written.
+pub(crate) fn held_bytes(plan: &Plan, strip: usize, held: (u64, u64), copies: u64) -> Option<u64> {
+    let (nb, ts, batch, strip) = (plan.bands as u128 + 1, TS as u128, BATCH as u128, strip.max(1) as u128);
+    let (mut rows, mut hrows, mut taps, mut tiles, mut across) = (0u128, 0u128, 0u128, 0u128, 0u128);
+    for (k, g) in plan.levels.iter().enumerate() {
+        let (w, h) = (g.w as u128, g.h as u128);
+        let given = if k == 0 { strip } else { batch };
+        rows += h.min(ts - 1 + given) * nb * w;
+        let (tx0, tx1, ty0, ty1) = tile_range(g);
+        let (a, d) = ((tx1 - tx0 + 1).max(0) as u128, (ty1 - ty0 + 1).max(0) as u128);
+        across = across.max(a);
+        tiles += a * d;
+        if let (Some((radius, _)), Some(next)) = (plan.method.kernel(), plan.levels.get(k + 1)) {
+            let (ry, rx) = (g.h as f64 / next.h.max(1) as f64, g.w as f64 / next.w.max(1) as f64);
+            let span = |r: f64| (2.0 * radius * r.max(1.0)).ceil() as u128 + 2;
+            let reads = ((batch - 1) as f64 * ry).ceil() as u128 + span(ry);
+            hrows += h.min(reads).min(given + 2 * span(ry) + ry.ceil() as u128) * 8 * (nb + 1) * next.w as u128;
+            taps += next.w as u128 * (48 + 8 * span(rx)) + next.h as u128 * (48 + 8 * span(ry));
+        }
+    }
+    let tile = tile_bytes(plan);
+    let encode = across * tile + crate::par::threads() as u128 * (ts * ts * nb * 2 + (1 << 20));
+    let build = rows + hrows + taps + held.0 as u128 + (held.1 as u128).max(encode);
+    let total = match copies as u128 {
+        0 => build + tiles * 256 + (2 << 20),
+        copies => (build + tiles * tile).max(copies * tiles * tile + tiles * 256 + (1 << 20)),
+    };
+    u64::try_from(total).ok()
+}
+
+/// The tiles of a level: the first and last columns and rows of tiles it covers.
+fn tile_range(g: &LevelGeom) -> (i64, i64, i64, i64) {
+    let nmax = (1i64 << g.z) - 1;
+    let (tx0, tx1) = (g.sx.div_euclid(TS).max(0), (g.sx + g.w as i64 - 1).div_euclid(TS).min(nmax));
+    let (ty0, ty1) = (g.sy.div_euclid(TS).max(0), (g.sy + g.h as i64 - 1).div_euclid(TS).min(nmax));
+    (tx0, tx1, ty0, ty1)
+}
+
+/// What the buffers a pyramid holds at once are called in its refusal.
+pub(crate) const HELD: &str = "the buffers a tile pyramid holds at once";
+
+/// Refuses, before anything is read, a pyramid whose buffers ([`held_bytes`], sized from the
+/// source's header) the process cannot hold at once (see [`fallible::check_usable`]).
+fn check(plan: &Plan, strip: usize, held: (u64, u64), copies: u64) -> Result<()> {
+    let bytes = held_bytes(plan, strip, held, copies).and_then(|b| usize::try_from(b).ok());
+    let g = plan.levels.first().copied().unwrap_or(LevelGeom { z: 0, w: 0, h: 0, sx: 0, sy: 0 });
+    let low = plan.levels.last().map_or(g.z, |l| l.z);
+    let detail = format!("{} x {} pixels of {} bands, zoom levels {low} to {}", g.w, g.h, plan.bands + 1, g.z);
+    fallible::check_usable(bytes, || format!("{HELD} ({detail}) are too large to allocate"))
+        .map(|_| ())
+        .map_err(|message| crate::Error::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, message)))
+}
 
 /// Rows of the full-resolution level fed to [`build`], from the top: each row holds the data
 /// bands then the alpha band, one after the other, `width` bytes each.
 pub(crate) trait BaseRows {
     /// The next `n` rows.
     fn next_rows(&mut self, n: usize) -> Result<Vec<Vec<u8>>>;
+    /// What reading the rows holds besides them, in bytes: throughout (a level held whole), and
+    /// while `n` rows are read (the source's window and its decoding). Counted by [`held_bytes`].
+    fn held(&self, _n: usize) -> (u64, u64) {
+        (0, 0)
+    }
 }
 
 /// Where encoded tiles go.
 pub(crate) trait TileSink {
     /// Takes tile `(z, x, y)`.
     fn put(&mut self, z: u8, x: u32, y: u32, data: Vec<u8>) -> Result<()>;
+    /// How many copies of the tiles it was given are held at once while they are written out
+    /// after the pyramid is built: 0 when they are not held. Counted by [`held_bytes`].
+    fn held_copies(&self) -> u64 {
+        0
+    }
 }
 
 impl TileSink for Vec<(u8, u32, u32, Vec<u8>)> {
     fn put(&mut self, z: u8, x: u32, y: u32, data: Vec<u8>) -> Result<()> {
         self.push((z, x, y, data));
         Ok(())
+    }
+    /// The MBTiles writer moves the tiles into its rows, serializes the rows (a copy), lays them
+    /// out in pages (a copy) and joins the pages (a copy, made while the pages are held).
+    fn held_copies(&self) -> u64 {
+        3
     }
 }
 
@@ -110,17 +209,18 @@ pub(crate) struct Plan {
 
 /// Per-axis taps of a convolution, as GDAL computes them: for each output index, the first
 /// source index and the weights.
-fn taps(dst: usize, src_n: usize, ratio: f64, radius: f64, k: Weight) -> Vec<(usize, Vec<f64>)> {
+fn taps(dst: usize, src_n: usize, ratio: f64, radius: f64, k: Weight) -> Result<Vec<(usize, Vec<f64>)>> {
     let scale = (1.0 / ratio).min(1.0);
     let r = radius / scale;
-    (0..dst)
-        .map(|i| {
-            let c = (i as f64 + 0.5) * ratio;
-            let lo = ((c - r + 0.5).floor() as i64).max(0) as usize;
-            let hi = ((c + r + 0.5) as i64).min(src_n as i64).max(lo as i64) as usize;
-            (lo, (lo..hi).map(|j| k(scale * (j as f64 - c + 0.5))).collect())
-        })
-        .collect()
+    let mut taps = Vec::new();
+    fallible::reserve(&mut taps, dst, ROWS)?;
+    taps.extend((0..dst).map(|i| {
+        let c = (i as f64 + 0.5) * ratio;
+        let lo = ((c - r + 0.5).floor() as i64).max(0) as usize;
+        let hi = ((c + r + 0.5) as i64).min(src_n as i64).max(lo as i64) as usize;
+        (lo, (lo..hi).map(|j| k(scale * (j as f64 - c + 0.5))).collect())
+    }));
+    Ok(taps)
 }
 
 /// Downsampling a level (the source, `sw` x `sh`) to the next one (`w` x `h`), a row at a time,
@@ -146,13 +246,13 @@ struct Down {
 }
 
 impl Down {
-    fn new(method: Method, nb: usize, sw: usize, sh: usize, w: usize, h: usize) -> Self {
+    fn new(method: Method, nb: usize, sw: usize, sh: usize, w: usize, h: usize) -> Result<Self> {
         let (rx, ry) = (sw as f64 / w as f64, sh as f64 / h as f64);
         let (tx, ty) = match method.kernel() {
-            Some((radius, k)) => (taps(w, sw, rx, radius, k), taps(h, sh, ry, radius, k)),
+            Some((radius, k)) => (taps(w, sw, rx, radius, k)?, taps(h, sh, ry, radius, k)?),
             None => (Vec::new(), Vec::new()),
         };
-        Self { method, nb, sw, sh, w, h, rx, ry, tx, ty, next: 0, hrows: VecDeque::new(), hfirst: 0 }
+        Ok(Self { method, nb, sw, sh, w, h, rx, ry, tx, ty, next: 0, hrows: VecDeque::new(), hfirst: 0 })
     }
 
     /// The source rows `lo..hi` output row `y` reads.
@@ -176,11 +276,11 @@ impl Down {
 
     /// The horizontal pass over a source row: the values of every band, weighted by the alpha
     /// band, and the filtered mask.
-    fn horizontal(&self, row: &[u8]) -> (Vec<f64>, Vec<f64>) {
+    fn horizontal(&self, row: &[u8]) -> Result<(Vec<f64>, Vec<f64>)> {
         let (w, sw, nb) = (self.w, self.sw, self.nb);
         let alpha = &row[(nb - 1) * sw..nb * sw];
-        let mut hv = vec![0.0f64; nb * w];
-        let mut hm = vec![0.0f64; w];
+        let mut hm = fallible::filled(w, 0.0f64, ROWS)?;
+        let mut hv = fallible::filled(fallible::len(&[nb, w], ROWS)?, 0.0f64, ROWS)?;
         for (x, (lo, wt)) in self.tx.iter().enumerate() {
             let (mut sa, mut sw_) = (0.0, 0.0);
             let mut sv = [0.0f64; 4];
@@ -200,14 +300,14 @@ impl Down {
                 hm[x] = (sa / sw_ + 0.5).min(255.0).floor();
             }
         }
-        (hv, hm)
+        Ok((hv, hm))
     }
 
     /// Output row `y`, from the source rows (`src(r)` is source row `r`) and, for convolutions,
     /// the horizontally filtered rows (`hrow(r)`).
-    fn row<'a>(&self, y: usize, src: &dyn Fn(usize) -> &'a [u8], hrow: &dyn Fn(usize) -> &'a (Vec<f64>, Vec<f64>)) -> Vec<u8> {
+    fn row<'a>(&self, y: usize, src: &dyn Fn(usize) -> &'a [u8], hrow: &dyn Fn(usize) -> &'a (Vec<f64>, Vec<f64>)) -> Result<Vec<u8>> {
         let (w, sw, nb) = (self.w, self.sw, self.nb);
-        let mut out = vec![0u8; nb * w];
+        let mut out = fallible::filled(fallible::len(&[nb, w], ROWS)?, 0u8, ROWS)?;
         match self.method {
             Method::Bilinear | Method::Cubic => {
                 let (lo, wt) = &self.ty[y];
@@ -263,7 +363,7 @@ impl Down {
                 }
             }
         }
-        out
+        Ok(out)
     }
 }
 
@@ -302,6 +402,7 @@ impl Level {
 /// `strip` rows, and gives every tile that is not fully transparent to `sink`.
 pub(crate) fn build(plan: &Plan, base: &mut dyn BaseRows, sink: &mut dyn TileSink, strip: usize) -> Result<()> {
     let nb = plan.bands + 1;
+    check(plan, strip, base.held(strip), sink.held_copies())?;
     let mut levels: Vec<Level> = plan
         .levels
         .iter()
@@ -313,7 +414,8 @@ pub(crate) fn build(plan: &Plan, base: &mut dyn BaseRows, sink: &mut dyn TileSin
         })
         .collect();
     // `downs[k]` downsamples level `k` to level `k + 1`.
-    let mut downs: Vec<Down> = levels.windows(2).map(|p| Down::new(plan.method, nb, p[0].g.w, p[0].g.h, p[1].g.w, p[1].g.h)).collect();
+    let mut downs: Vec<Down> =
+        levels.windows(2).map(|p| Down::new(plan.method, nb, p[0].g.w, p[0].g.h, p[1].g.w, p[1].g.h)).collect::<Result<_>>()?;
     let h0 = levels[0].g.h;
     let strip = strip.max(1);
     while levels[0].produced() < h0 {
@@ -383,11 +485,15 @@ fn advance(plan: &Plan, levels: &mut [Level], downs: &mut [Down], k: usize, sink
                 if hi > from {
                     let d = &*down;
                     let new = crate::par::map_range(hi - from, |i| d.horizontal(src.row(from + i)));
-                    down.hrows.extend(new);
+                    for row in new {
+                        down.hrows.push_back(row?);
+                    }
                 }
             }
             let d = &*down;
-            let rows = crate::par::map_range(ys.len(), |i| d.row(ys[i], &|r| src.row(r), &|r| &d.hrows[r - d.hfirst]));
+            let rows = crate::par::map_range(ys.len(), |i| d.row(ys[i], &|r| src.row(r), &|r| &d.hrows[r - d.hfirst]))
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?;
             down.next += ys.len();
             dst.rows.extend(rows);
             advance(plan, levels, downs, k + 1, sink)?;
@@ -460,17 +566,23 @@ impl BaseRows for MemoryRows<'_> {
     fn next_rows(&mut self, n: usize) -> Result<Vec<Vec<u8>>> {
         let (w, total) = (self.w, self.w * self.h);
         let rows = (self.next..self.next + n)
-            .map(|r| {
-                let mut row = Vec::with_capacity((self.bands + 1) * w);
+            .map(|r| -> Result<Vec<u8>> {
+                let mut row = Vec::new();
+                fallible::reserve(&mut row, fallible::len(&[self.bands + 1, w], ROWS)?, ROWS)?;
                 for b in 0..self.bands {
                     row.extend_from_slice(&self.data[b * total + r * w..b * total + (r + 1) * w]);
                 }
                 row.extend_from_slice(&self.alpha[r * w..(r + 1) * w]);
-                row
+                Ok(row)
             })
-            .collect();
+            .collect::<Result<_>>()?;
         self.next += n;
         Ok(rows)
+    }
+
+    /// The level, held whole throughout.
+    fn held(&self, _n: usize) -> (u64, u64) {
+        ((self.data.len() + self.alpha.len()) as u64, 0)
     }
 }
 
@@ -532,3 +644,6 @@ impl TileSink for SpillSink {
         Ok(())
     }
 }
+
+#[cfg(test)]
+pub(crate) mod memory_tests;

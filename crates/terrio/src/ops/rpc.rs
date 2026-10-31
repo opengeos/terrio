@@ -962,6 +962,7 @@ impl RpcTransformer {
 /// When the file cannot be resolved (a remote file that cannot be fetched).
 pub fn read_rpc(path: &str) -> Result<Option<Rpc>> {
     let local = crate::vfs::resolve(path)?;
+    crate::geotiff::check_tiff_allowed(local.path(), path)?;
     if let Some(tag) = crate::geotiff::read_geo_tags(local.path()).and_then(|t| t.rpc) {
         return Rpc::from_tiff_tag(&tag).map(Some);
     }

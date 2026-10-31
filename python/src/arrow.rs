@@ -2,6 +2,7 @@
 //! (`__arrow_c_stream__`, `__arrow_c_array__`, `__arrow_c_schema__`), with no dependency on
 //! pyarrow.
 
+use crate::Detach;
 use crate::vector::PyLayer;
 use crate::{PyResultExt, invalid};
 use arrow_array::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
@@ -177,7 +178,7 @@ pub(crate) fn layer_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs:
         }
         None => return Err(invalid("expected an object with __arrow_c_stream__ or __arrow_c_array__ (a pyarrow Table, ...)")),
     };
-    let mut layer = obj.py().detach(|| layer_from_arrow(&schema, &batches, name.unwrap_or("layer"))).py()?;
+    let mut layer = obj.py().detach_result(|| layer_from_arrow(&schema, &batches, name.unwrap_or("layer"))).py()?;
     if let Some(c) = crs {
         SpatialRef::parse(c).py()?.apply_to_layer(&mut layer);
     }
@@ -202,12 +203,12 @@ pub(crate) fn write_options(
 
 /// Converts a layer to an `ArrowTable`.
 pub(crate) fn layer_to_table(py: Python<'_>, layer: &terrio::Layer, options: &ArrowWriteOptions) -> PyResult<PyArrowTable> {
-    Ok(PyArrowTable { table: py.detach(|| terrio::arrow::layer_to_arrow(layer, options)).py()? })
+    Ok(PyArrowTable { table: py.detach_result(|| terrio::arrow::layer_to_arrow(layer, options)).py()? })
 }
 
 /// Exports a layer as an Arrow C stream, with WKB geometries.
 pub(crate) fn layer_stream<'py>(py: Python<'py>, layer: &terrio::Layer) -> PyResult<Bound<'py, PyCapsule>> {
-    let table = py.detach(|| terrio::arrow::layer_to_arrow(layer, &ArrowWriteOptions::default())).py()?;
+    let table = py.detach_result(|| terrio::arrow::layer_to_arrow(layer, &ArrowWriteOptions::default())).py()?;
     stream_capsule(py, &table)
 }
 

@@ -1,0 +1,634 @@
+{
+ "producer": "rasterio 1.5.0, GDAL 3.12.1",
+ "width": 18,
+ "height": 17,
+ "written": "PHOTOMETRIC=MINISWHITE; strips of 5 rows or 16 x 16 tiles; NBITS=1 for b1; ENDIANNESS=BIG for _be",
+ "samples": "per kind, the samples GDAL reads from each of its files (equal to those written), band after band, little-endian hex",
+ "kinds": {
+  "u8": {
+   "dtype": "uint8",
+   "bands": 1,
+   "values": "00ff010b65877c119d7325be568595812ea62765d317b347b35356e82467e27dafc582a3ec1b7056bccf76421b2f3fa2dfd4b0109f764bcb55427d16ee0d4939b4045564e62baae3ffe13dc3dfa23af2519c59dec7c854ede9d544176337dfe5929d84863a30f3e2499ce8b697837d1c01ec3d21c30fc270a00a9441e27839a85af8906c7bb4109ae7a620a7d9cd1b11972c912f43fbd08067be99f80fb9c8b5d9bf7fbe2a055c5d358e2777570f2eaa709f6c2cd6ce44579ef5d9e8d42ecb5441a849a790e67cc5290f206a850e193aba9241493f49c307fbd22fe7888a6da3a789a1f6c99a85b168b0f3bfe3780ad756be604cdb82b4ee841678c377d87ab64fb4157a0a951c548645076586dd138c832e18c8f600e9b93f16b43f5d938e4175d7921bb7f99ebeeef6e507bdc4884f968c"
+  },
+  "u16": {
+   "dtype": "uint16",
+   "bands": 1,
+   "values": "0000ffff01000b003bbf0f90c739372eb3e45c3cd79971e50bd528b356c9ceeaf56c1bbc0b429254e00c81573ef899c2c31cbd4e690413965de8ca24e469fff9fe1b75b1282c85d952e0e4e64a09e8288ca4d2f72f76c54f5772f186f82bb143dab84637be1cc8d5b008cf0455a58e4f9bfe4a4f305e27c7ba8282e7ca0a40dc4cfba1161c26ddd9dbbd698837a9093a45c174ddac56419aa35ee3befd89e0d556c3f23977cf8a80c3405399dd17d73f1be3f28b24e48aa01d290a5b849e8bb9f18c2323898ea74ac62539336eff69b86361357bcfd12e5db020b764f0327568e6c546cb6fc8a3ac2125c5b80a7bcc6a71c6499053e0f501f614a4b6d4de2c44ba961c0d056150af29b9ae6d42511e8def18147fd0860e18776ee9cb4f782034c6d750f904d752afa306bb9fd939cd91fc1c661dac2f7b856b126fd70ca9684a7dfa3ae40e27091b70c2a21f6f3a13336fa751d2a6fa07e3c458ec964f8ef01564f3e6b0a56f8b05fcef5d08012968fa15a5344539db81c22aa449d61f92b4a5e512aebd232ab34c0dce1d183ae6c6cdf70df7fcdc8e35c9f85229b1806f49fd6359db98ff9a6bf82499a5af4577b76489ed7af114a5e52b220a15136ef39ba388de120adf33efcf2cd259a29297325ea611d6435c9769db748a21a80a228eb7e801d523b813aba3249c0987ea19d9b59a2219ab6ded235456a4e43329694434954fb0542e2902a76212087b52cd1a74d492eea8d7a5655653c4b45d6bbdc2d995a1a1cd240a3b38a0451e8e8076e88b2fabfadfd63b4b1a17caf54359d94675f7d01bba51439867f9b89153ca7174f9b4e43f5f1debd65d2d13de3f36113ab3ecdbf6c9"
+  },
+  "f32": {
+   "dtype": "float32",
+   "bands": 1,
+   "values": "00000000000000800000003f0000803f000080bf0000c07f0000807f000080ffffff7f7f0000400000007f4300ff7f47a39dffc4b57c3344c3b280c49ef2c2443bc00445e454f4c35d48b144072710c459c4f8444cbc3d44bee7ddc4b2db13c40ee497c3ba428a43dfd0b444bc8af1c480cbb7c2efb838451e7ef3c36c863cc461d157422e9ea8c477ae3d440f9c3043d75a6e449a1a8f4417a2fd4400b7bac38ba1b1435932ecc400c58744fd6d694328d0f043b3b5b0c3ab7074c208cc864447091ec3104ff142c3f092c36389d9c20ab54c4473fd1ec4975c01c4dbba3bc4d32eb9c342c621c28bb520c441489ac3b1704c4478912cc479ae12c45c8f684477172fc3f9ccb6436e77aac4dd1ad1c34805114564362344b9e153420ccf9543448982c44ebd5ec4372fb9c2370f3644c89309c554ed0d4571e44ac4353cc6c334e016c58af39dc40b022341b105cb439f83acc4c950c3c41f5893c4f5eab944fd3b1ec4588f6344ab8944435b0cc5445c6f1544087a09c4c59657c4450e8544b85470434727d543e6e6a5442be86a4305f12b44c06d19c473c38ac4094687c4dea815c4ec52af44a07f9d433101c4c24a3876c48a4c7fc2455cce44f06182441c254e43aa0b62c28d4043449ee5d542ca62754435176f44869b8744567207c4f7cb83c4eb96c844bd457cc407435dc42be0e2c204580244c1dac1c2afbf8d44f31297c4cb3d96c4c77126c4b2d41b442da6f9433d1ec6c33c68434461277f4367463bc3aff925c4fba1a8439a9205c4345c3e42308e54c4d7a5d1c31b7d87c22796c3c30a03fc4326154843ba8dc0c29c7d5c444e6d96c44a259f446489bec4bebe924402d8a4441269c344dfa0fe4320605b44b4796a44445e8943457ad24339f96c4445b5be43ac0a4f41043e9c43129a7243cf1fb144de0d34c46e4109c48409434417aed6c3d9ce54c465a1c64247a01a44f6fb884446e881c498fcf1c3511b97426b8d71435f420c44997595438ae157c380b290c4107aa1c360a7cd44fb65ad44c4f00944d5856bc45f3fd3c310536b4423efc1c434d061c4774ebc43dbc3ecc48cfb2444df5001c4cea70745d6dc6bc1b28f1d4410abe643733ad144cc2fb4c25f8e0044e81ffdc3b7a2c3c43f1701c257bdd842fe4a22c4e3725bc48e778943d451004395b56dc33167264591f07fc2ec879244c65886c4fbcdc844ef68a2c3b80d25c40a72fac37e8958c3803a33c489818ec419e7a2c31e3e8cc46d31d4c34042dcc3b51e81c4c92add4176977fc381b9c5c3dc8b8dc4f1dd1bc5e20f0945b235ac43df66dfc3a095b443d23925c2ebb43cc314c6c7c4c730adc433901944eb1e8344e74a9f44666c9cc48a63554425e71d45888e2c44e14d2c441c6606445c91e0c497986b449bb57e4453d459c2e3152cc40849b1c3fb14b4436b488a444938eb429a7cb143915fbe42d13b0fc4161a59c41ac6714371612dc3deaa3143b31c144513544f4419ca9ac44bb21c447c597143555b0145d70025440673b1443b1a5444bcc51c44d466d9c4d93d93442462fb44ee2098c3e2abde44437c97c46e5d9243b549e04394a09944bea484444965c4c3914805451ba39bc4833e09c48197dcc32573f5c44efb7cc4f60f38435f0efe445868c2446dc69b42bce2204443561ec5275c974324cdbd4444af63c482ac8444f39198c4867bc2411f22a442ebc3ec43"
+  },
+  "b1": {
+   "dtype": "uint8",
+   "bands": 1,
+   "values": "000100010101010100010100000001010100000001010000010000000000010101000101000001010101000001000001010000010000000101010000000001000000010001010000010000010101000001010000010100010100000000010100000001000000000000010101010001010101000101010101010100010100010001010000000000000101010001000100010000000001000000010101000001000101010100010000010000010100010100010101010000010101010101010101000000010101000100010000000001010100010100010101010000000101000100000101000000000100010000000101010101000101010101010001000101000000010100010000010000010100000100000101000001000000000001000101010101010001000100000101010101000101"
+  },
+  "u8x2": {
+   "dtype": "uint8",
+   "bands": 2,
+   "values": "04c99314c7433a18514ebc44d443952a16072459225e6183cf56891ddd3d73a7e628a8d1ef0b431d1eac30b3d5b43221c46e7f0831d37f424732495b5db585e060a3ab6d074e5333e1b75d6203323b8994aacddeecc93ee67b029c8ef4b2abb472c0aacdd971dbcff716cd60a82ee326af32c7be8b22b8fe542c9846617cf36ded0ffbc54650cf4c4abe1e9471173da32faecf2a09b1ae737cb002c52004ab3933ebc9aa041e2efb32afcdc25b07ea0b90c8a92c303d80542fab990642b6d76f9e6c98c9aa7a89913dacc9f9921c348f46942e1d6380a97eed5dc5b62637e29f2140132e1364cce1e4765407b22a6a382b6c03de57d339f86ec33d759f4fb50d6c2c704891ced096a81e9d66a9a6387ea55951a968e2d6d377576221d6d087096c8c307602e7137791cc29ddfef43f1c75448148bf58c59dfb09146464d4bdb2abbf0577025722dc2cf2f36346c15b13f39d8a8708f9ee8e69aa4ddd16e97f56d74690e958646e8a6c4a2102c83c0057cd31e1b771c5fa4ffb8a805666a82849f7e7f2c86f021546f453132a7b8e5b8a6aec516228dc2f41d3de1ec976db7af0966dc3e000500bceb9da26e4acadd59a9f721f82dc477032de17251bc58f52b131aeda9d96a7009616e5d3c9cb3e7609429937c4e917dfaef2c6b042708273c268bac1ff2bded0cf999c3e71f45ba0317324c0549cf4b77b73bded98e66e6b89858d844b652f14c5bee3a85a30470135ccafd43b3e1afdbef8724f639c88b67a8924264539de207c4771c09b79b2c950cbb43ed39f14b493afead1928db573d6d0c31d7192c3a1a2782d11dee6f12663397de17ddf578ebd3cfbab941709f1ed56f25f9b"
+  },
+  "i16": {
+   "dtype": "int16",
+   "bands": 1,
+   "values": "0000ff7f00800b00fd7dfb5897af932ec77d6f6f491a26b5bad24985d98d380c75839e57f370336da49d545b15a33e4a2c8c422e82bf5559f83bf11515d91d72658abc6a806374c5fdf51e4a673e07a6dee4a0a8b86759195fdc916e847e2569b09ddb08dae3308ce672306fc6c4a5bfe1c0663faee194717702a1239796a43cfc35e978d3dd1d4a49f9e9ba14c5f3b5bde2457a5401c1977260941299caa81e40650c4b6597598adf0a969b1ea97372c6d8359348b09423a6683dd6cf561475e1eec4d3d8ebd85ea3955fd37018ce597c8710824bb09f3f19ad0658e1990996e404d86a76576c226f406b44fada78232073d70a79d9397856605271189063314f3da4fa9d3a415a11a3399147fe227ab5f8467fc6f42532aa517d92f3cd5c252abf47af152334a7c5a5bf944632af1cbd6afe668517cab10e280aa7064e06ba9cb138874fe80e3fe15f16a27635936adff127d19bde3639dac97945cb645836193080100317e6149461ef97e39423a4ec3878703983c66c444712f5c962cdc8b3f0858d12087e233539542deeaf1c5c3863a5cc2ad2d7104112f0247ed8b86e274f216727aade791184577db0dc885525e8f8c6067b3684c05f8910e497970b12ce7094d8a48b459ef13a301c329b0df476246f2855d3b947952e60d0f4536261790cf6b9223ec6ab886afbe89e78830b7def93e4c53895743101b9689d14c88804435bd3acef7523b65750b299b09a4d965cab54b8f794a95e7034a3ef38915039112447a6e17af035fcb38f54595a8854d34a6a7977d13b748001216b40deec895dd9e049754d53f339aeb25cddd85e684208edba49f45f90304065b1c6da0465be6e"
+  },
+  "f16": {
+   "dtype": "float16",
+   "bands": 1,
+   "values": "000000800038003c00bc007e007c00fcff7b0002f85bff7b22e709680fdd6f6376e2636835db23e764e3ec574ee48f62a34968e8a3e4a9e110d0edcfe0e0bae437e0dd6217de4de26ddd6266ca5c54e80464c7614fd818e46e5924eafc6255e18bd94a64c45cc6dc2de4ca616ae11b5c1adfae638fddef66d5e42b56a6e39955aa6008e05965d061a86272dd1dd7e858305226e665e5eb5e3de2c95efe536062f1d8c4e3c96145617edc1de0426499e5b6dd94d909dca550f15d5ee411e22c5d295cebd809e3a35623bdbb63e0d4f05ac8652a6829d5425cfa6596e76862255ff1603de22d5d9ae244e51363a661c5e0065efce7e15dd9654460eed934e34ee1aee529e3cc5ddc582fe37ecf2e6738602a5f105f1cdd90e0b8e43a6842d90ee511422965d1e449e6a4e5c25c445d256613e065dd94daeb57836348db2de6bcdf9de451558a61c7dbb463f062fde16be4a467335c0c68f7d7dfe1b65d2de2d7df1fdd44666ce0ac67a9e048dc7a624666e8e066d85ddb256573e13eda3369ce67e5617e5c1f59acdde1e25bdd7b63ed626a67eb549be21a61586559e7394c0e64fadae0e7e0649ee829e0da6395e2146821619bd743e60364da57a76665e55e664362adde1d64c5545de49b60a168f3e643603560ea590a67cc5f6465445e27645a64864ed4dc525d416444d5e1deb56316645fe48edc8753bf5f6ee4eee7565ec9df88ddf8db0c589eda16e591d242e2b662eedf61e0f5e414e4e55a5b578d6154de7e60e2e304645e5eb85c61e76f68d6e496dde35d7ae679617461726064e6ec6487667362a265414fd45f14ea9e3fa4632ce405681be4ade4415a15e400dc63dfb2dc"
+  }
+ },
+ "files": {
+  "u8_none_strips": {
+   "kind": "u8",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u8_none_tiles": {
+   "kind": "u8",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u8_lzw_strips": {
+   "kind": "u8",
+   "compression": 5,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u8_lzw_tiles": {
+   "kind": "u8",
+   "compression": 5,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u8_lzw_predictor2_strips": {
+   "kind": "u8",
+   "compression": 5,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u8_lzw_predictor2_tiles": {
+   "kind": "u8",
+   "compression": 5,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u8_deflate_strips": {
+   "kind": "u8",
+   "compression": 8,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u8_deflate_tiles": {
+   "kind": "u8",
+   "compression": 8,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u8_deflate_predictor2_strips": {
+   "kind": "u8",
+   "compression": 8,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u8_deflate_predictor2_tiles": {
+   "kind": "u8",
+   "compression": 8,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u8_packbits_strips": {
+   "kind": "u8",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u8_packbits_tiles": {
+   "kind": "u8",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u8_zstd_strips": {
+   "kind": "u8",
+   "compression": 50000,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u8_zstd_tiles": {
+   "kind": "u8",
+   "compression": 50000,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u8_zstd_predictor2_strips": {
+   "kind": "u8",
+   "compression": 50000,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u8_zstd_predictor2_tiles": {
+   "kind": "u8",
+   "compression": 50000,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u16_none_strips": {
+   "kind": "u16",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u16_none_tiles": {
+   "kind": "u16",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u16_lzw_strips": {
+   "kind": "u16",
+   "compression": 5,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u16_lzw_tiles": {
+   "kind": "u16",
+   "compression": 5,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u16_lzw_predictor2_strips": {
+   "kind": "u16",
+   "compression": 5,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u16_lzw_predictor2_tiles": {
+   "kind": "u16",
+   "compression": 5,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u16_deflate_strips": {
+   "kind": "u16",
+   "compression": 8,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u16_deflate_tiles": {
+   "kind": "u16",
+   "compression": 8,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u16_deflate_predictor2_strips": {
+   "kind": "u16",
+   "compression": 8,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u16_deflate_predictor2_tiles": {
+   "kind": "u16",
+   "compression": 8,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u16_packbits_strips": {
+   "kind": "u16",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u16_packbits_tiles": {
+   "kind": "u16",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u16_zstd_strips": {
+   "kind": "u16",
+   "compression": 50000,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u16_zstd_tiles": {
+   "kind": "u16",
+   "compression": 50000,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u16_zstd_predictor2_strips": {
+   "kind": "u16",
+   "compression": 50000,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u16_zstd_predictor2_tiles": {
+   "kind": "u16",
+   "compression": 50000,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f32_none_strips": {
+   "kind": "f32",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f32_none_tiles": {
+   "kind": "f32",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f32_lzw_strips": {
+   "kind": "f32",
+   "compression": 5,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f32_lzw_tiles": {
+   "kind": "f32",
+   "compression": 5,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f32_lzw_predictor2_strips": {
+   "kind": "f32",
+   "compression": 5,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f32_lzw_predictor2_tiles": {
+   "kind": "f32",
+   "compression": 5,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f32_deflate_strips": {
+   "kind": "f32",
+   "compression": 8,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f32_deflate_tiles": {
+   "kind": "f32",
+   "compression": 8,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f32_deflate_predictor2_strips": {
+   "kind": "f32",
+   "compression": 8,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f32_deflate_predictor2_tiles": {
+   "kind": "f32",
+   "compression": 8,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f32_packbits_strips": {
+   "kind": "f32",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f32_packbits_tiles": {
+   "kind": "f32",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f32_zstd_strips": {
+   "kind": "f32",
+   "compression": 50000,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f32_zstd_tiles": {
+   "kind": "f32",
+   "compression": 50000,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f32_zstd_predictor2_strips": {
+   "kind": "f32",
+   "compression": 50000,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f32_zstd_predictor2_tiles": {
+   "kind": "f32",
+   "compression": 50000,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f32_lzw_predictor3_strips": {
+   "kind": "f32",
+   "compression": 5,
+   "predictor": 3,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f32_lzw_predictor3_tiles": {
+   "kind": "f32",
+   "compression": 5,
+   "predictor": 3,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f32_deflate_predictor3_strips": {
+   "kind": "f32",
+   "compression": 8,
+   "predictor": 3,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f32_deflate_predictor3_tiles": {
+   "kind": "f32",
+   "compression": 8,
+   "predictor": 3,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f32_zstd_predictor3_strips": {
+   "kind": "f32",
+   "compression": 50000,
+   "predictor": 3,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f32_zstd_predictor3_tiles": {
+   "kind": "f32",
+   "compression": 50000,
+   "predictor": 3,
+   "tiled": true,
+   "big_endian": false
+  },
+  "b1_none_strips": {
+   "kind": "b1",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "b1_none_tiles": {
+   "kind": "b1",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "b1_lzw_strips": {
+   "kind": "b1",
+   "compression": 5,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "b1_lzw_tiles": {
+   "kind": "b1",
+   "compression": 5,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "b1_deflate_strips": {
+   "kind": "b1",
+   "compression": 8,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "b1_deflate_tiles": {
+   "kind": "b1",
+   "compression": 8,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "b1_packbits_strips": {
+   "kind": "b1",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "b1_packbits_tiles": {
+   "kind": "b1",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "b1_zstd_strips": {
+   "kind": "b1",
+   "compression": 50000,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "b1_zstd_tiles": {
+   "kind": "b1",
+   "compression": 50000,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u16_be_none_strips": {
+   "kind": "u16",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": true
+  },
+  "u16_be_lzw_predictor2_tiles": {
+   "kind": "u16",
+   "compression": 5,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": true
+  },
+  "u16_be_deflate_predictor2_strips": {
+   "kind": "u16",
+   "compression": 8,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": true
+  },
+  "u16_be_packbits_tiles": {
+   "kind": "u16",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": true
+  },
+  "f32_be_none_strips": {
+   "kind": "f32",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": true
+  },
+  "f32_be_lzw_predictor2_tiles": {
+   "kind": "f32",
+   "compression": 5,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": true
+  },
+  "f32_be_deflate_predictor2_strips": {
+   "kind": "f32",
+   "compression": 8,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": true
+  },
+  "f32_be_packbits_tiles": {
+   "kind": "f32",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": true
+  },
+  "u8x2_none_strips": {
+   "kind": "u8x2",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u8x2_lzw_predictor2_tiles": {
+   "kind": "u8x2",
+   "compression": 5,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "u8x2_deflate_predictor2_strips": {
+   "kind": "u8x2",
+   "compression": 8,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "u8x2_packbits_tiles": {
+   "kind": "u8x2",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "i16_none_strips": {
+   "kind": "i16",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "i16_lzw_predictor2_tiles": {
+   "kind": "i16",
+   "compression": 5,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "i16_deflate_predictor2_strips": {
+   "kind": "i16",
+   "compression": 8,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "i16_packbits_tiles": {
+   "kind": "i16",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f16_none_strips": {
+   "kind": "f16",
+   "compression": 1,
+   "predictor": 1,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f16_lzw_predictor2_tiles": {
+   "kind": "f16",
+   "compression": 5,
+   "predictor": 2,
+   "tiled": true,
+   "big_endian": false
+  },
+  "f16_deflate_predictor2_strips": {
+   "kind": "f16",
+   "compression": 8,
+   "predictor": 2,
+   "tiled": false,
+   "big_endian": false
+  },
+  "f16_packbits_tiles": {
+   "kind": "f16",
+   "compression": 32773,
+   "predictor": 1,
+   "tiled": true,
+   "big_endian": false
+  }
+ }
+}

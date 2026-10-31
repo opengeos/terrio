@@ -48,7 +48,11 @@ fn directory(length: usize, leaf: bool) -> Vec<u8> {
 }
 
 fn archive(codec: u8, tile: &[u8]) -> (Vec<u8>, PmTilesReadLimits) {
-    let tile_raw = encoded(tile, codec);
+    archive_of(codec, encoded(tile, codec), tile.len())
+}
+
+/// [`archive`] of a tile already encoded with `codec` (`tile_raw`), decoding to `tile_len` bytes.
+fn archive_of(codec: u8, tile_raw: Vec<u8>, tile_len: usize) -> (Vec<u8>, PmTilesReadLimits) {
     let leaf = directory(tile_raw.len(), false);
     let leaf_raw = encoded(&leaf, codec);
     let root = directory(leaf_raw.len(), true);
@@ -75,7 +79,7 @@ fn archive(codec: u8, tile: &[u8]) -> (Vec<u8>, PmTilesReadLimits) {
             root_directory: Some(root.len()),
             leaf_directory: Some(leaf.len()),
             metadata: Some(metadata.len()),
-            tile: Some(tile.len()),
+            tile: Some(tile_len),
         },
     )
 }
@@ -163,4 +167,24 @@ fn overflowing_archive_offsets_are_invalid_data() {
         let result = TileArchive::from_sparse_with_limits(file, PmTilesReadLimits::default()).and_then(|mut a| a.tile(0, 0, 0));
         assert!(matches!(result, Err(Error::InvalidData(_))), "section {section}: {result:?}");
     }
+}
+
+/// A zstd tile of 131 KB expanding to 4 GiB (RLE blocks of 128 KiB, no content size), with a
+/// tile limit of 1 MiB: an error at the limit, the rest not decoded.
+#[test]
+fn a_zstd_tile_expanding_far_past_the_limit_is_an_error_at_the_limit() {
+    let blocks = 32 * 1024;
+    // The magic number, a header descriptor of 0 and a 128 KiB window, then the RLE blocks.
+    let mut bomb = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 7 << 3];
+    for i in 0..blocks {
+        let header = ((128 * 1024u32) << 3) | (1 << 1) | u32::from(i + 1 == blocks);
+        bomb.extend_from_slice(&header.to_le_bytes()[..3]);
+        bomb.push(b'x');
+    }
+    let (bytes, limits) = archive_of(4, bomb, 1024 * 1024);
+    let file = SparseFile::with_block_size(bytes.len() as u64, 1024);
+    let mut fetched = 0;
+    let mut reader = open(&file, &bytes, limits, &mut fetched).unwrap();
+    let result = tile(&mut reader, &file, &bytes, &mut fetched);
+    assert!(matches!(result, Err(Error::DecodedLimitExceeded { resource: "PMTiles tile", limit: 1048576 })), "{result:?}");
 }

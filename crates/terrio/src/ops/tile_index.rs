@@ -1496,6 +1496,9 @@ impl VectorIndexSelection {
 /// Reads source layer schemas and bounds, retaining original layer numbers.
 #[cfg(not(target_family = "wasm"))]
 pub fn vector_index_sources(path: &str) -> Result<Vec<VectorIndexSource>> {
+    // Read by the driver its name points to (GeoPackage and FlatGeobuf headers directly, others as
+    // streams), as `open_vector` reads it: judged as that open judges a dataset.
+    crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector)).map_err(|e| index_source_error(path, e))?;
     Ok(read_vector_index_headers(path)
         .map_err(|e| index_source_error(path, e))?
         .iter()

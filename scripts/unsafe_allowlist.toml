@@ -1,0 +1,88 @@
+# The `unsafe` allowed in the workspace's own crates: per file, the number of `unsafe` keywords in
+# compiled, non-test code, as scripts/check_unsafe.py counts them (its docstring has the heuristic
+# and its limits), with a one-line reason. The check fails on any difference, naming the file, its
+# count, the allowed one and the lines: a new `unsafe`, here or in a file not listed, needs a
+# recorded decision before its count goes up; a file with fewer gets its count lowered.
+#
+# Baseline: 86 sites. 79 of them were in terrio before this allow-list: the 78 already there at
+# 83ad67b, on lines left untouched since, and the second of crates/terrio/src/ops/dem.rs (line 612),
+# an SSE intrinsic that #265 added. The other 7 are in the `native` module of
+# crates/terrio/src/par.rs: exactly the 7 compiled sites at lines 91, 125, 127, 131, 148, 188 and
+# 208. The par.rs `unsafe` of test code (lines 319, 570, 575, 581 and 586) is not counted. An
+# entry's `origin` is "existing" for sites present before the change that added this allow-list and
+# "added" for those that change added; scripts/check_unsafe.py accepts no other value.
+
+[files."crates/terrio-cli/src/main.rs"]
+count = 2
+origin = "existing"
+reason = "libc::signal restores SIGPIPE's default and libc::mallopt sets glibc's mmap threshold, at start-up before any thread"
+
+[files."crates/terrio/src/drivers/jp2.rs"]
+count = 37
+origin = "existing"
+reason = "OpenJPEG's port through its C-style API (extern block, stream callbacks, codec calls), and on wasm32 the C allocator and strcpy it links to"
+
+[files."crates/terrio/src/drivers/sqlite.rs"]
+count = 1
+origin = "existing"
+reason = "memmap2::Mmap::map of a database file, read only, for the lifetime of the reader"
+
+[files."crates/terrio/src/drivers/sqlite_edit.rs"]
+count = 6
+origin = "existing"
+reason = "SQLite's exclusive lock before an edit: a zeroed libc::flock and fcntl(F_SETLK); on Windows, LockFileEx and GetFileInformationByHandle (file identity)"
+
+[files."crates/terrio/src/drivers/vector/osm.rs"]
+count = 2
+origin = "existing"
+reason = "memmap2 map of a private unlinked temporary file, and MADV_DONTNEED on its clean pages"
+
+[files."crates/terrio/src/gdal_backend.rs"]
+count = 17
+origin = "existing"
+reason = "The optional GDAL backend's calls through gdal-sys, compiled only with the gdal feature"
+
+[files."crates/terrio/src/lib.rs"]
+count = 9
+origin = "existing"
+reason = "NullSafeAllocator, a GlobalAlloc forwarding to the system allocator: the unsafe impl, its 4 unsafe fns and their 4 blocks"
+
+[files."crates/terrio/src/ops/dem.rs"]
+count = 2
+origin = "existing"
+reason = "SSE reciprocal square root intrinsics, part of the x86-64 baseline; the second from #265, an SSE intrinsic in DEM operations"
+
+[files."crates/terrio/src/par.rs"]
+count = 7
+origin = "added"
+reason = "native module: pthread_atfork registration (1), pool publication (4), held-back jobs (2); lines 148; 91, 125, 127, 131; 188, 208"
+
+[files."crates/terrio/src/pointcloud/ept_append.rs"]
+count = 1
+origin = "existing"
+reason = "libc::flock on a file descriptor owned for as long as the lock: the lock of an EPT dataset appended to"
+
+[files."crates/terrio/src/vsi/sozip.rs"]
+count = 1
+origin = "existing"
+reason = "libc::flock (LOCK_EX | LOCK_NB) on the descriptor of a zip archive appended to, which the append reader owns: an advisory lock held until the new archive is published (Unix)"
+
+[files."crates/terrio/src/vsi/sozip/native.rs"]
+count = 2
+origin = "existing"
+reason = "Windows file identity of an archive's open handle: GetFileInformationByHandleEx (FileIdInfo) and, where unsupported, GetFileInformationByHandle, each into a correctly sized buffer"
+
+[files."js/src/lib.rs"]
+count = 3
+origin = "existing"
+reason = "getrandom's custom backend on wasm64: the no_mangle attribute, the unsafe extern fn and the slice of the caller's buffer"
+
+[files."js/src/threads.rs"]
+count = 1
+origin = "existing"
+reason = "A worker's reference to the leaked thread channel, by its address"
+
+[files."python/src/arrow.rs"]
+count = 2
+origin = "existing"
+reason = "The Arrow C stream and C data interfaces: arrays and streams moved out of PyCapsules"

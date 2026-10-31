@@ -39,7 +39,7 @@ from terrio.rio.crs import CRS
 from terrio.rio.enums import Resampling
 from terrio.rio.errors import WindowError
 from terrio.rio.io import MemoryFile, driver_from_extension
-from terrio.xarray._crs import crs_from_user_input, crs_to_cf
+from terrio.xarray._crs import crs_from_cf, crs_from_user_input, crs_to_cf
 from terrio.xarray._options import EXPORT_GRID_MAPPING, SKIP_MISSING_SPATIAL_DIMS, get_option
 from terrio.xarray._spatial import (
     DEFAULT_GRID_MAP,
@@ -117,6 +117,10 @@ def _read_crs(obj: XarrayObject) -> CRS | None:
                     return crs_from_user_input(gm.attrs[key])
                 except Exception:  # noqa: BLE001 - try the next source
                     pass
+        # CF grid mapping parameters, as rioxarray reads them through pyproj.CRS.from_cf.
+        cf = crs_from_cf(gm.attrs)
+        if cf is not None:
+            return cf
     if _declared(obj.attrs, "proj:"):
         for key in ("proj:wkt2", "proj:code"):
             value = obj.attrs.get(key)
@@ -1112,44 +1116,6 @@ def _utm_epsg(lon: float, lat: float, datum_name: str) -> int:
     raise RuntimeError("Unable to determine UTM CRS")
 
 
-def _flip_north_up(data: np.ndarray, t: Affine) -> tuple[np.ndarray, Affine]:
-    """Flips an array (and its transform) so that it is north-up with positive pixel width.
-
-    Args:
-        data: The array; its last two axes are y and x.
-        t: Its transform (not rotated).
-
-    Returns:
-        tuple: The array and transform.
-    """
-    h, w = data.shape[-2:]
-    if t.e > 0:
-        data = data[..., ::-1, :]
-        t = Affine(t.a, t.b, t.c, t.d, -t.e, t.f + t.e * h)
-    if t.a < 0:
-        data = data[..., :, ::-1]
-        t = Affine(-t.a, t.b, t.c + t.a * w, t.d, t.e, t.f)
-    return data, t
-
-
-def _north_up(t: Affine, width: int, height: int) -> Affine:
-    """The north-up transform of the same grid.
-
-    Args:
-        t: A transform (not rotated).
-        width: The grid's width.
-        height: Its height.
-
-    Returns:
-        Affine: The transform with positive pixel width and negative pixel height.
-    """
-    if t.e > 0:
-        t = Affine(t.a, t.b, t.c, t.d, -t.e, t.f + t.e * height)
-    if t.a < 0:
-        t = Affine(-t.a, t.b, t.c + t.a * width, t.d, t.e, t.f)
-    return t
-
-
 class TerrioArray(XRasterBase):
     """The `.terrio` accessor of DataArrays: rioxarray's `.rio` API on terrio."""
 
@@ -1327,29 +1293,23 @@ class TerrioArray(XRasterBase):
             NODATA_DTYPE_MAP.get(self._obj.dtype.name) if self.nodata is None else self.nodata
         )
         dst_nodata = default_nodata if nodata is None else nodata
-        if georef:
-            src_values, src_t = np.asarray(self._obj.values), None
-        else:
-            src_values, src_t = _flip_north_up(np.asarray(self._obj.values), src_affine)
-        dst_t = _north_up(dst_affine, dst_width, dst_height)
+        # The grids as they are (south-up, east-to-west), as rioxarray passes them to GDAL: the
+        # warper maps each destination pixel centre through the source's own transform, and a
+        # centre on a source pixel edge falls in the pixel that edge starts. Flipping either grid
+        # first moves such a centre to the neighbouring source pixel, and a centre on the
+        # source's far edge inside it.
         warp.reproject(
-            source=np.ascontiguousarray(src_values),
+            source=np.ascontiguousarray(self._obj.values),
             destination=dst_data,
-            src_transform=src_t,
+            src_transform=None if georef else src_affine,
             src_crs=self.crs,
             src_nodata=self.nodata,
-            dst_transform=dst_t,
+            dst_transform=dst_affine,
             dst_crs=dst_crs,
             dst_nodata=dst_nodata,
             resampling=resampling,
             **{k: v for k, v in kwargs.items() if k not in ("dst_width", "dst_height")},
         )
-        if dst_t != dst_affine:
-            if dst_affine.e > 0:
-                dst_data = dst_data[..., ::-1, :]
-            if dst_affine.a < 0:
-                dst_data = dst_data[..., :, ::-1]
-            dst_data = np.ascontiguousarray(dst_data)
         new_attrs = generate_attrs(src_data_array=self._obj, dst_nodata=dst_nodata)
         dst_dims: list[Hashable] = []
         for dim in self._obj.dims:

@@ -5,6 +5,7 @@
 # Derived from (adapted and modified):
 #   rasterio 1.5.2:
 #     rasterio/warp.py
+#     rasterio/_features.pyx
 
 """Reprojection: coordinates, geometries, bounds and rasters, with rasterio's functions.
 
@@ -14,6 +15,8 @@ Rasters are warped by terrio's `warp`, which follows GDAL's warper (the default 
 
 from __future__ import annotations
 
+import warnings
+from collections.abc import Mapping
 from math import ceil, floor
 from typing import Any
 
@@ -24,7 +27,7 @@ from terrio import _terrio
 from terrio.rio.crs import CRS
 from terrio.rio.dtypes import _gdal_typename
 from terrio.rio.enums import Resampling
-from terrio.rio.errors import CRSError, RPCError, TransformError
+from terrio.rio.errors import CRSError, RasterioDeprecationWarning, RPCError, TransformError
 from terrio.rio.transform import array_bounds, from_bounds
 
 SUPPORTED_RESAMPLING = [
@@ -158,48 +161,172 @@ def transform_geom(
         precision: Round coordinates to this many decimal places (-1 to keep them).
 
     Returns:
-        dict | list: The transformed geometry, or geometries.
-    """
-    src, dst = _crs_text(src_crs), _crs_text(dst_crs)
-    if isinstance(geom, (list, tuple)):
-        return [transform_geom(src, dst, g, precision=precision) for g in geom]
-    g = getattr(geom, "__geo_interface__", None) or geom
-    pts: list[tuple[float, float]] = []
+        dict | list: The transformed geometry, or geometries, built as rasterio builds them
+        from GDAL's (`GeomBuilder`): a new dict of `type` and `coordinates` (or `geometries`),
+        positions as tuples in lists (a Point's coordinates a tuple), every position of a
+        geometry with a height when one has it (0 where it had none), rings closed. With a
+        precision, rasterio's `recursive_round` makes every sequence a list.
 
-    def collect(c: Any) -> None:
-        if c and isinstance(c[0], (int, float)):
-            pts.append((c[0], c[1]))
+    Raises:
+        ValueError: For a geometry without coordinates (or members), or of an unsupported type.
+    """
+    if antimeridian_cutting is not None or antimeridian_offset is not None:
+        warnings.warn(
+            "The antimeridian_cutting and antimeridian_offset parameters are "
+            "deprecated and no longer have any effect.",
+            RasterioDeprecationWarning,
+            stacklevel=2,
+        )
+    src, dst = _crs_text(src_crs), _crs_text(dst_crs)
+    if isinstance(geom, Mapping) or hasattr(geom, "__geo_interface__"):
+        return _transform_one_geom(src, dst, geom, precision)
+    return [_transform_one_geom(src, dst, g, precision) for g in geom]
+
+
+# GeoJSON geometry types with coordinates, and how deep each nests them down to a position.
+_GEOM_DEPTH = {
+    "Point": 0,
+    "MultiPoint": 1,
+    "LineString": 1,
+    "LinearRing": 1,
+    "MultiLineString": 2,
+    "Polygon": 2,
+    "MultiPolygon": 3,
+}
+
+
+def _ogr_geometry(geom: Any) -> tuple[dict[str, Any], bool]:
+    """A geometry as rasterio's `OGRGeomBuilder` builds it for GDAL, as plain GeoJSON.
+
+    Positions become lists `[x, y, z]`, `z` None where none was given; rings are closed as
+    `OGR_G_CloseRings()` closes them (a missing height compares as 0).
+
+    Args:
+        geom: A GeoJSON geometry or an object with `__geo_interface__`.
+
+    Returns:
+        tuple: The geometry (`type` and `coordinates`, or `geometries`), and whether a position
+        anywhere in it has a height, which makes the whole geometry 3-D in GDAL
+        (`HomogenizeDimensionalityWith()`).
+
+    Raises:
+        ValueError: As `OGRGeomBuilder.build()`: no coordinates or members, or another type.
+    """
+    has_z = False
+
+    def pos(c: Any) -> list[Any]:
+        nonlocal has_z
+        if len(c) == 2:
+            x, y = c
+            return [x, y, None]
+        x, y, z = c[:3]
+        has_z = True
+        return [x, y, z]
+
+    def ring(c: Any) -> list[Any]:
+        pts = [pos(p) for p in c]
+        if len(pts) >= 2:
+            (x0, y0, z0), (x1, y1, z1) = pts[0], pts[-1]
+            if x0 != x1 or y0 != y1 or (z0 or 0.0) != (z1 or 0.0):
+                pts.append(list(pts[0]))
+        return pts
+
+    def build(g: Any) -> dict[str, Any]:
+        g = getattr(g, "__geo_interface__", g)
+        kind = g["type"]
+        if kind in _GEOM_DEPTH:
+            c = g.get("coordinates")
+            if not (c and len(c) > 0):
+                raise ValueError("Input is not a valid geometry object")
+            if kind == "Point":
+                coords: Any = pos(c)
+            elif kind in ("MultiPoint", "LineString"):
+                coords = [pos(p) for p in c]
+            elif kind == "LinearRing":
+                coords = ring(c)
+            elif kind == "MultiLineString":
+                coords = [[pos(p) for p in line] for line in c]
+            elif kind == "Polygon":
+                coords = [ring(r) for r in c]
+            else:
+                coords = [[ring(r) for r in poly] for poly in c]
+            return {"type": kind, "coordinates": coords}
+        if kind == "GeometryCollection":
+            members = g.get("geometries")
+            if not (members and len(members) > 0):
+                raise ValueError("Input is not a valid geometry object")
+            return {"type": kind, "geometries": [build(m) for m in members]}
+        raise ValueError(f"Unsupported geometry type {kind}")
+
+    out = build(geom)
+    return out, has_z
+
+
+def _geom_positions(g: dict[str, Any]) -> list[list[Any]]:
+    """The positions of a geometry `_ogr_geometry` built, in order.
+
+    Args:
+        g: The geometry.
+
+    Returns:
+        list: The position lists themselves (not copies).
+    """
+    if "geometries" in g:
+        return [p for m in g["geometries"] for p in _geom_positions(m)]
+    out: list[list[Any]] = []
+
+    def walk(c: Any, depth: int) -> None:
+        if depth == 0:
+            out.append(c)
         else:
             for p in c:
-                collect(p)
+                walk(p, depth - 1)
 
-    def rebuild(c: Any, it: Any) -> Any:
-        if c and isinstance(c[0], (int, float)):
-            x, y = next(it)
-            if precision >= 0:
-                x, y = round(x, precision), round(y, precision)
-            return (x, y) + tuple(c[2:]) if isinstance(c, tuple) else [x, y] + list(c[2:])
-        return (
-            [rebuild(p, it) for p in c] if isinstance(c, list) else tuple(rebuild(p, it) for p in c)
-        )
-
-    if g["type"] == "GeometryCollection":
-        return {
-            "type": "GeometryCollection",
-            "geometries": [
-                transform_geom(src, dst, x, precision=precision) for x in g["geometries"]
-            ],
-        }
-    collect(g["coordinates"])
-    if not pts:
-        return dict(g)
-    xs = np.array([p[0] for p in pts], float)
-    ys = np.array([p[1] for p in pts], float)
-    ox, oy = _transform_arrays(src, dst, xs, ys)
-    it = iter(zip(ox.tolist(), oy.tolist(), strict=False))
-    out = dict(g)
-    out["coordinates"] = rebuild(g["coordinates"], it)
+    walk(g["coordinates"], _GEOM_DEPTH[g["type"]])
     return out
+
+
+def _transform_one_geom(src: str, dst: str, geom: Any, precision: int) -> dict[str, Any]:
+    """Transforms one geometry and builds it as rasterio's `GeomBuilder` does.
+
+    Args:
+        src: The source CRS.
+        dst: The target CRS.
+        geom: A GeoJSON geometry or an object with `__geo_interface__`.
+        precision: Round to this many decimal places when not negative, as rasterio's
+            `recursive_round` (lists, heights rounded too).
+
+    Returns:
+        dict: The transformed geometry.
+    """
+    g, has_z = _ogr_geometry(geom)
+    pts = _geom_positions(g)
+    if pts:
+        xs = np.array([p[0] for p in pts], float)
+        ys = np.array([p[1] for p in pts], float)
+        ox, oy = _transform_arrays(src, dst, xs, ys)
+        for p, x, y in zip(pts, ox.tolist(), oy.tolist(), strict=True):
+            p[0], p[1] = x, y
+            if has_z:
+                p[2] = 0.0 if p[2] is None else float(p[2])
+            else:
+                del p[2]
+
+    def leaf(p: list[Any]) -> Any:
+        return [round(v, precision) for v in p] if precision >= 0 else tuple(p)
+
+    def finish(m: dict[str, Any]) -> dict[str, Any]:
+        if "geometries" in m:
+            return {"type": m["type"], "geometries": [finish(x) for x in m["geometries"]]}
+
+        def walk(c: Any, depth: int) -> Any:
+            return leaf(c) if depth == 0 else [walk(p, depth - 1) for p in c]
+
+        # A ring comes back from GDAL as a line string (`OGRLinearRing::getGeometryType()`).
+        kind = "LineString" if m["type"] == "LinearRing" else m["type"]
+        return {"type": kind, "coordinates": walk(m["coordinates"], _GEOM_DEPTH[m["type"]])}
+
+    return finish(g)
 
 
 def transform_bounds(
@@ -458,6 +585,90 @@ def _nodata_arg(v: Any) -> Any:
     return "nan" if isinstance(v, float) and np.isnan(v) else float(v)
 
 
+def _alpha_max(dtype: Any) -> float:
+    """GDAL's default `SRC_ALPHA_MAX`/`DST_ALPHA_MAX` for an alpha band of this type.
+
+    Args:
+        dtype: The alpha band's data type.
+
+    Returns:
+        float: 32767 for Int16, 65535 for UInt16, else 255.
+    """
+    dt = np.dtype(dtype)
+    if dt == np.int16:
+        return 32767.0
+    if dt == np.uint16:
+        return 65535.0
+    return 255.0
+
+
+def _transparent(alpha: np.ndarray) -> np.ndarray:
+    """The source pixels GDAL's warper treats as transparent, from a binary alpha band.
+
+    GDAL scales alpha to a density (`alpha / SRC_ALPHA_MAX` in float32, clamped at 1) and
+    skips densities below 1e-9. A binary alpha band (0 or at least its maximum) is a validity
+    mask: GDAL warps it exactly as a unified nodata mask. Partial transparency blends values
+    by density, which terrio's warp kernel does not do, so it is refused rather than
+    approximated.
+
+    Args:
+        alpha: The source alpha band.
+
+    Returns:
+        np.ndarray: True where the source pixel is transparent.
+
+    Raises:
+        ValueError: If the alpha band holds partial transparency.
+    """
+    density = alpha.astype(np.float32) * np.float32(1.0 / _alpha_max(alpha.dtype))
+    opaque = density >= np.float32(1.0)
+    transparent = density.astype(np.float64) < 1e-9
+    if not np.all(opaque | transparent):
+        raise ValueError(
+            "terrio.rio reprojects binary alpha bands only (0 or the alpha maximum); "
+            "partial transparency is not supported"
+        )
+    return transparent
+
+
+def _sentinel(src3: np.ndarray, valid: np.ndarray) -> Any:
+    """A value no valid source pixel holds in every band, to mark invalid pixels as nodata.
+
+    With unified source nodata a pixel is invalid only when all its bands equal the nodata
+    value, so the value only has to differ from every valid pixel whose bands are all equal.
+
+    Args:
+        src3: The source bands.
+        valid: True where the source pixel is valid.
+
+    Returns:
+        The value (NaN for floating-point data when no valid pixel is NaN in every band).
+
+    Raises:
+        ValueError: If every value of the data type is taken.
+    """
+    v = src3[:, valid]
+    if src3.dtype.kind == "f":
+        if not np.all(np.isnan(v), axis=0).any():
+            return float("nan")
+        info = np.finfo(src3.dtype)
+        used = set(np.unique(v[0][np.all(v == v[0], axis=0)]).tolist())
+        for c in (float("-inf"), float("inf"), float(info.min), float(info.max)):
+            if c not in used:
+                return c
+    else:
+        iinfo = np.iinfo(src3.dtype)
+        used_arr = np.unique(v[0][np.all(v == v[0], axis=0)]).astype(np.int64)
+        used = set(used_arr.tolist())
+        for c in (int(iinfo.min), int(iinfo.max)):
+            if c not in used:
+                return c
+        for a, b in zip(used_arr[:-1].tolist(), used_arr[1:].tolist(), strict=True):
+            if b - a > 1:
+                return a + 1
+    raise ValueError("no value is free to mark transparent source pixels")
+
+
 def reproject(
     source: Any,
     destination: Any = None,
@@ -485,7 +696,10 @@ def reproject(
 
     Args:
         source: A 2-D or 3-D array, a `Band` (`terrio.rio.band(dataset, bidx)`) or a dataset.
+            A masked array is warped with its mask as an alpha band, as rasterio does.
         destination: A 2-D or 3-D array (or a `Band` of a writer) to fill; created when None.
+            For a masked array, a new masked array over its data is returned, masked where
+            nothing was warped, as rasterio does.
         src_transform: The source's transform (arrays only).
         gcps: Ground control points georeferencing the source (arrays; datasets with GCPs give
             theirs), warped with a GCP polynomial or thin plate splines (see `**kwargs`).
@@ -498,9 +712,12 @@ def reproject(
         dst_crs: The destination CRS (by default, the source's).
         dst_nodata: The destination nodata value (by default, the source's).
         dst_resolution: The destination resolution, when its grid is computed.
-        src_alpha: Unsupported (0).
-        dst_alpha: Unsupported (0).
-        masked: Return a masked array when the destination is created.
+        src_alpha: The 1-based index of the source alpha band (binary alpha only: 0 is
+            transparent, the alpha maximum opaque). It is warped as a data band too, as
+            rasterio does.
+        dst_alpha: The 1-based index of the destination band to receive alpha: the alpha
+            maximum where a pixel was warped, else 0.
+        masked: Return a masked array (see `destination`) when the destination is created.
         resampling: The resampling method.
         num_threads: Unused.
         init_dest_nodata: Fill the destination with nodata first (else keep its values where
@@ -540,8 +757,6 @@ def reproject(
             "resampling must be one of: "
             + ", ".join(f"Resampling.{r.name}" for r in SUPPORTED_RESAMPLING)
         ) from None
-    if src_alpha or dst_alpha:
-        raise ValueError("terrio.rio does not support alpha bands in reproject")
     if destination is None and dst_transform is not None:
         raise ValueError("Must provide destination if dst_transform is provided.")
 
@@ -579,11 +794,13 @@ def reproject(
         arr = source
         if src_transform is None and gcps is None and rpcs is None:
             raise ValueError("src_transform is required for arrays")
+    src_valid = None
     if isinstance(arr, np.ma.MaskedArray):
-        if src_nodata is None:
-            fill = arr.fill_value
-            src_nodata = float(fill) if fill is not None else None
-        arr = arr.filled(src_nodata)
+        # rasterio warps a masked array with its mask as an alpha band: a pixel masked in any
+        # band is transparent, and the fill value is not a nodata value.
+        m = np.ma.getmaskarray(arr)
+        src_valid = ~np.logical_or.reduce(m[np.newaxis] if m.ndim == 2 else m, axis=0)
+        arr = np.ma.getdata(arr)
     arr = np.asarray(arr)
     src_2d = arr.ndim == 2
     src3 = arr[np.newaxis] if src_2d else arr
@@ -641,57 +858,143 @@ def reproject(
             dest_arr = np.ma.masked_array(dest_arr)
     if dst_nodata is None and src_nodata is not None:
         dst_nodata = src_nodata
+    # rasterio gives a masked destination an alpha band, and its mask from that alpha.
+    dst_masked = isinstance(dest_arr, np.ma.MaskedArray)
+    if (src_alpha or dst_alpha or src_valid is not None or dst_masked) and not init_dest_nodata:
+        raise ValueError(
+            "terrio.rio does not support alpha bands or masked arrays with init_dest_nodata=False"
+        )
 
     out_dtype = dest_arr.dtype if dest_arr is not None else np.dtype(dest_band.dtype)  # type: ignore[union-attr]
+    if src_alpha and not 1 <= src_alpha <= src_count:
+        raise ValueError(f"src_alpha {src_alpha} is not a source band (1-{src_count})")
+    # A binary source alpha (or a masked array's mask) is a unified validity mask: transparent
+    # pixels become nodata in every band, under the given nodata value or a free sentinel.
+    transparent = None
+    if src_alpha:
+        transparent = _transparent(src3[src_alpha - 1])
+    elif src_valid is not None:
+        if _alpha_max(src3.dtype) != 255.0 and not (dst_masked or dst_alpha):
+            # The mask becomes a 16-bit alpha band of 255s, a 1/257 or 1/128 density, which
+            # GDAL blends into an unmasked destination's initial values.
+            raise ValueError(
+                "terrio.rio does not reproject a masked 16-bit array into an unmasked destination"
+            )
+        transparent = ~src_valid
+    invalid = None
+    warp_nodata = src_nodata
+    if transparent is not None and transparent.any():
+        invalid = transparent
+        if src_nodata is not None:
+            nd = float(src_nodata)
+            same = np.isnan(src3) if np.isnan(nd) else src3 == nd
+            invalid = invalid | np.all(same, axis=0)
+            fill = src_nodata
+        else:
+            fill = _sentinel(src3, ~transparent)
+        src3 = src3.copy()
+        src3[:, transparent] = fill
+        warp_nodata = fill
     src_raster = _terrio.Raster.from_array(
         np.ascontiguousarray(src3),
         src_transform.to_gdal(),
         _crs_text(src_crs),
-        None if src_nodata is None else float(src_nodata),
+        None if warp_nodata is None else float(warp_nodata),
     )
-    keep = not init_dest_nodata
-    ot = "Float64" if keep else _gdal_typename(np.dtype(out_dtype).name)
-    dstnd: Any = "nan" if keep else (_nodata_arg(dst_nodata) if dst_nodata is not None else "none")
-    out = _terrio.warp(
-        src_raster,
+    ot = _gdal_typename(np.dtype(out_dtype).name)
+    dstnd: Any = _nodata_arg(dst_nodata) if dst_nodata is not None else "none"
+    initial = None
+    if not init_dest_nodata:
+        # As GDAL without INIT_DEST: the warp starts from the destination's values, which pixels
+        # nothing is warped to keep, and from which GDAL makes each chunk's validity mask.
+        base = dest_arr if dest_arr is not None else dest_band.ds.read(dest_band.bidx)  # type: ignore[union-attr]
+        base3 = np.asarray(base)
+        base3 = base3[np.newaxis] if base3.ndim == 2 else base3[: src3.shape[0]]
+        initial = _terrio.Raster.from_array(
+            np.ascontiguousarray(base3),
+            Affine(*dst_transform[:6]).to_gdal(),
+            _crs_text(dst_crs),
+            None,
+        )
+    common = dict(
         t_srs=_crs_text(dst_crs),
         dst_transform=Affine(*dst_transform[:6]).to_gdal(),
         ts=(int(dst_w), int(dst_h)),
         resampling=name,
-        # An explicit source nodata is unified across bands, as rasterio's warps
-        # (UNIFIED_SRC_NODATA=YES).
-        srcnodata=_nodata_arg(src_nodata) if src_nodata is not None else "none",
-        dstnodata=dstnd,
-        ot=ot,
         # As rasterio: exact transformations with an RPC DEM.
         et=0.0 if "to" in rpc_kw and "RPC_DEM" in rpc_kw["to"] else tolerance,
         wo=_warp_extras(kwargs),
         **gcp_kw,
         **rpc_kw,
     )
+    out = _terrio.warp(
+        src_raster,
+        # An explicit source nodata is unified across bands, as rasterio's warps
+        # (UNIFIED_SRC_NODATA=YES).
+        srcnodata=_nodata_arg(warp_nodata) if warp_nodata is not None else "none",
+        dstnodata=dstnd,
+        ot=ot,
+        init=initial,
+        **common,
+    )
     res = np.asarray(out.read())
-    if keep:
-        written = ~np.isnan(res)
-        base = dest_arr if dest_arr is not None else dest_band.ds.read(dest_band.bidx)  # type: ignore[union-attr]
-        base3 = np.asarray(base)
-        base3 = base3[np.newaxis] if base3.ndim == 2 else base3
-        from terrio.rio._resample import gdal_cast
-
-        merged = base3.copy()
-        merged[written] = gdal_cast(res, merged.dtype)[written]
-        res = merged
+    written = None
+    if dst_alpha or dst_masked:
+        # The pixels the warp wrote, from a one-band warp with the same validity: GDAL sets
+        # the destination alpha to its maximum there and to 0 elsewhere.
+        if invalid is None and src_nodata is not None:
+            nd = float(src_nodata)
+            same = np.isnan(src3) if np.isnan(nd) else src3 == nd
+            invalid = np.all(same, axis=0)
+        ones = np.ones((1, src_h, src_w), np.float32)
+        if invalid is not None:
+            ones[0][invalid] = 0
+        has_invalid = invalid is not None and bool(invalid.any())
+        written = ~np.isnan(
+            np.asarray(
+                _terrio.warp(
+                    _terrio.Raster.from_array(
+                        ones,
+                        src_transform.to_gdal(),
+                        _crs_text(src_crs),
+                        0.0 if has_invalid else None,
+                    ),
+                    srcnodata=0.0 if has_invalid else "none",
+                    dstnodata="nan",
+                    ot="Float32",
+                    **common,
+                ).read()
+            )[0]
+        )
+    alpha_out = None
+    if dst_alpha:
+        assert written is not None
+        alpha_out = (written * _alpha_max(out_dtype)).astype(out_dtype)
     if dest_band is not None:
+        # GDAL writes the destination alpha before the warped bands.
+        if alpha_out is not None:
+            dest_band.ds.write(alpha_out, dst_alpha)
         dest_band.ds.write(res if not isinstance(dest_band.bidx, int) else res[0], dest_band.bidx)
         return dest_band, dst_transform
     assert dest_arr is not None
-    if dest_arr.ndim == 2:
-        dest_arr[...] = res[0]
+    data = np.ma.getdata(dest_arr) if dst_masked else dest_arr
+    if alpha_out is not None:
+        if data.ndim != 3 or not 1 <= dst_alpha <= data.shape[0]:
+            raise ValueError(f"dst_alpha {dst_alpha} is not a destination band")
+        data[dst_alpha - 1] = alpha_out
+    if data.ndim == 2:
+        data[...] = res[0]
+    elif data.shape[0] != res.shape[0] and data.shape[0] > res.shape[0]:
+        # rasterio warps source band i to destination band i when the counts differ.
+        data[: res.shape[0]] = res
     else:
-        dest_arr[...] = res
-    if masked and isinstance(dest_arr, np.ma.MaskedArray) and dst_nodata is not None:
-        dest_arr.mask = (
-            np.isnan(dest_arr.data) if np.isnan(dst_nodata) else dest_arr.data == dst_nodata
-        )
+        data[...] = res
+    if dst_masked:
+        # As rasterio: a new masked array over the destination's data, masked where nothing
+        # was warped.
+        assert written is not None
+        mask = ~written if data.ndim == 2 else np.repeat(~written[np.newaxis], data.shape[0], 0)
+        return np.ma.masked_array(data, mask=mask), dst_transform
     return dest_arr, dst_transform
 
 

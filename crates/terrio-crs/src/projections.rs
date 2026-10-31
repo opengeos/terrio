@@ -120,13 +120,18 @@ fn proj_int(p: &Params, method: &str, key: &str) -> Result<i32> {
 pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj>>> {
     Ok(Some(match name {
         "nsper" | "tpers" => Box::new(perspective::Perspective::new(s, name == "tpers")?),
-        "tmerc" | "etmerc" => Box::new(Tmerc::new(s.ell, s.k0, s.phi0)),
+        "tmerc" | "etmerc" => {
+            if let Some(zone) = utm_zone(s) {
+                s.lam0 = utm_lam0(zone);
+            }
+            Box::new(Tmerc::new(s.ell, s.k0, s.phi0))
+        }
         "utm" => {
             let zone = s.p.f64("zone").ok_or_else(|| err("utm needs +zone"))?;
             if !(1.0..=60.0).contains(&zone) {
                 return Err(err("invalid UTM zone"));
             }
-            s.lam0 = ((zone.trunc() - 1.0) * 6.0 - 180.0 + 3.0).to_radians();
+            s.lam0 = utm_lam0(zone.trunc() as u32);
             s.k0 = 0.9996;
             s.phi0 = 0.0;
             s.x0 = 500000.0;
@@ -197,27 +202,241 @@ pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj
 }
 
 // ---------------------------------------------------------------------------------------------
-// Transverse Mercator: the "exact" Poder/Engsager algorithm PROJ uses by default.
+// Transverse Mercator: the "exact" Poder/Engsager algorithm PROJ uses by default, as PROJ 9.7.1
+// computes it (`src/projections/tmerc.cpp`: `setup_exact`, `clenS`, `exact_e_fwd`, `exact_e_inv`),
+// with its auxiliary latitude series (`src/latitudes.cpp`), so that the results are PROJ's to the
+// last bit.
 
 const ETMERC_ORDER: usize = 6;
 
-/// Clenshaw summation of a real series of sin(2kB) (PROJ's `gatg`).
-fn gatg(p: &[f64; ETMERC_ORDER], b: f64) -> f64 {
-    let cos_2b = (2.0 * b).cos();
-    let two_cos_2b = 2.0 * cos_2b;
-    let (mut h, mut h1, mut h2) = (0.0, p[ETMERC_ORDER - 1], 0.0);
-    for i in (0..ETMERC_ORDER - 1).rev() {
-        h = -h2 + two_cos_2b * h1 + p[i];
-        h2 = h1;
-        h1 = h;
-    }
-    b + h * (2.0 * b).sin()
+/// PROJ's auxiliary latitudes (`AuxLat`), by their index.
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+enum AuxLat {
+    Geographic = 0,
+    Rectifying = 3,
+    Conformal = 4,
 }
 
-/// Clenshaw summation of a complex series (PROJ's `clenS`); returns the real and imaginary parts.
-fn clen_s(a: &[f64; ETMERC_ORDER], arg_r: f64, arg_i: f64) -> (f64, f64) {
-    let (sin_r, cos_r) = arg_r.sin_cos();
-    let (sinh_i, cosh_i) = (arg_i.sinh(), arg_i.cosh());
+/// The matrices of `pj_auxlat_coeffs()` (Karney's series in the third flattening), concatenated
+/// as PROJ concatenates them; [`AUXLAT_PTRS`] gives where each conversion's starts.
+const AUXLAT_COEFFS: [f64; 150] = [
+    3.0 / 2.0,
+    -27.0 / 32.0,
+    269.0 / 512.0,
+    21.0 / 16.0,
+    -55.0 / 32.0,
+    6759.0 / 4096.0,
+    151.0 / 96.0,
+    -417.0 / 128.0,
+    1097.0 / 512.0,
+    -15543.0 / 2560.0,
+    8011.0 / 2560.0,
+    293393.0 / 61440.0,
+    2.0,
+    -2.0 / 3.0,
+    -2.0,
+    116.0 / 45.0,
+    26.0 / 45.0,
+    -2854.0 / 675.0,
+    7.0 / 3.0,
+    -8.0 / 5.0,
+    -227.0 / 45.0,
+    2704.0 / 315.0,
+    2323.0 / 945.0,
+    56.0 / 15.0,
+    -136.0 / 35.0,
+    -1262.0 / 105.0,
+    73814.0 / 2835.0,
+    4279.0 / 630.0,
+    -332.0 / 35.0,
+    -399572.0 / 14175.0,
+    4174.0 / 315.0,
+    -144838.0 / 6237.0,
+    601676.0 / 22275.0,
+    4.0 / 3.0,
+    4.0 / 45.0,
+    -16.0 / 35.0,
+    -2582.0 / 14175.0,
+    60136.0 / 467775.0,
+    28112932.0 / 212837625.0,
+    46.0 / 45.0,
+    152.0 / 945.0,
+    -11966.0 / 14175.0,
+    -21016.0 / 51975.0,
+    251310128.0 / 638512875.0,
+    3044.0 / 2835.0,
+    3802.0 / 14175.0,
+    -94388.0 / 66825.0,
+    -8797648.0 / 10945935.0,
+    6059.0 / 4725.0,
+    41072.0 / 93555.0,
+    -1472637812.0 / 638512875.0,
+    768272.0 / 467775.0,
+    455935736.0 / 638512875.0,
+    4210684958.0 / 1915538625.0,
+    -3.0 / 2.0,
+    9.0 / 16.0,
+    -3.0 / 32.0,
+    15.0 / 16.0,
+    -15.0 / 32.0,
+    135.0 / 2048.0,
+    -35.0 / 48.0,
+    105.0 / 256.0,
+    315.0 / 512.0,
+    -189.0 / 512.0,
+    -693.0 / 1280.0,
+    1001.0 / 2048.0,
+    1.0 / 2.0,
+    -2.0 / 3.0,
+    5.0 / 16.0,
+    41.0 / 180.0,
+    -127.0 / 288.0,
+    7891.0 / 37800.0,
+    13.0 / 48.0,
+    -3.0 / 5.0,
+    557.0 / 1440.0,
+    281.0 / 630.0,
+    -1983433.0 / 1935360.0,
+    61.0 / 240.0,
+    -103.0 / 140.0,
+    15061.0 / 26880.0,
+    167603.0 / 181440.0,
+    49561.0 / 161280.0,
+    -179.0 / 168.0,
+    6601661.0 / 7257600.0,
+    34729.0 / 80640.0,
+    -3418889.0 / 1995840.0,
+    212378941.0 / 319334400.0,
+    -2.0,
+    2.0 / 3.0,
+    4.0 / 3.0,
+    -82.0 / 45.0,
+    32.0 / 45.0,
+    4642.0 / 4725.0,
+    5.0 / 3.0,
+    -16.0 / 15.0,
+    -13.0 / 9.0,
+    904.0 / 315.0,
+    -1522.0 / 945.0,
+    -26.0 / 15.0,
+    34.0 / 21.0,
+    8.0 / 5.0,
+    -12686.0 / 2835.0,
+    1237.0 / 630.0,
+    -12.0 / 5.0,
+    -24832.0 / 14175.0,
+    -734.0 / 315.0,
+    109598.0 / 31185.0,
+    444337.0 / 155925.0,
+    -1.0 / 2.0,
+    2.0 / 3.0,
+    -37.0 / 96.0,
+    1.0 / 360.0,
+    81.0 / 512.0,
+    -96199.0 / 604800.0,
+    -1.0 / 48.0,
+    -1.0 / 15.0,
+    437.0 / 1440.0,
+    -46.0 / 105.0,
+    1118711.0 / 3870720.0,
+    -17.0 / 480.0,
+    37.0 / 840.0,
+    209.0 / 4480.0,
+    -5569.0 / 90720.0,
+    -4397.0 / 161280.0,
+    11.0 / 504.0,
+    830251.0 / 7257600.0,
+    -4583.0 / 161280.0,
+    108847.0 / 3991680.0,
+    -20648693.0 / 638668800.0,
+    -4.0 / 3.0,
+    -4.0 / 45.0,
+    88.0 / 315.0,
+    538.0 / 4725.0,
+    20824.0 / 467775.0,
+    -44732.0 / 2837835.0,
+    34.0 / 45.0,
+    8.0 / 105.0,
+    -2482.0 / 14175.0,
+    -37192.0 / 467775.0,
+    -12467764.0 / 212837625.0,
+    -1532.0 / 2835.0,
+    -898.0 / 14175.0,
+    54968.0 / 467775.0,
+    100320856.0 / 1915538625.0,
+    6007.0 / 14175.0,
+    24496.0 / 467775.0,
+    -5884124.0 / 70945875.0,
+    -23356.0 / 66825.0,
+    -839792.0 / 19348875.0,
+    570284222.0 / 1915538625.0,
+];
+
+/// Where the coefficients of the conversion from `auxin` to `auxout` start in
+/// [`AUXLAT_COEFFS`]: at `6 * auxout + auxin`.
+const AUXLAT_PTRS: [usize; 37] = [
+    0, 0, 0, 0, 12, 33, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 66, 66, 66, 66, 87, 87, 108, 108, 108, 129, 129, 129, 150, 150,
+    150, 150, 150, 150,
+];
+
+/// `sum(p[i] * x^i, i, 0, n)` by Horner's method (`pj_polyval`).
+fn polyval(x: f64, p: &[f64], n: usize) -> f64 {
+    let mut y = p[n];
+    for i in (0..n).rev() {
+        y = y * x + p[i];
+    }
+    y
+}
+
+/// The series converting the auxiliary latitude `auxin` to `auxout` (`pj_auxlat_coeffs`).
+fn auxlat_coeffs(n: f64, auxin: AuxLat, auxout: AuxLat) -> [f64; ETMERC_ORDER] {
+    let mut o = AUXLAT_PTRS[6 * auxout as usize + auxin as usize];
+    let (mut d, n2) = (n, n * n);
+    // Between the geographic, parametric, geocentric and rectifying latitudes, even powers only.
+    let even = auxin <= AuxLat::Rectifying && auxout <= AuxLat::Rectifying;
+    let mut f = [0.0; ETMERC_ORDER];
+    for (l, fl) in f.iter_mut().enumerate() {
+        let m = if even { (ETMERC_ORDER - l - 1) / 2 } else { ETMERC_ORDER - l - 1 };
+        *fl = d * polyval(if even { n2 } else { n }, &AUXLAT_COEFFS[o..=o + m], m);
+        o += m + 1;
+        d *= n;
+    }
+    f
+}
+
+/// `sum(f[k] * sin((2k + 2) zeta))` by Clenshaw summation, zeta given by its sine and cosine
+/// (`pj_clenshaw`).
+fn clenshaw(szeta: f64, czeta: f64, f: &[f64; ETMERC_ORDER]) -> f64 {
+    let (mut u0, mut u1) = (0.0, 0.0);
+    let x = 2.0 * (czeta - szeta) * (czeta + szeta);
+    for &fk in f.iter().rev() {
+        let t = x * u0 - u1 + fk;
+        u1 = u0;
+        u0 = t;
+    }
+    2.0 * szeta * czeta * u0
+}
+
+/// An auxiliary latitude converted by a series (`pj_auxlat_convert`).
+fn auxlat_convert(zeta: f64, f: &[f64; ETMERC_ORDER]) -> f64 {
+    auxlat_convert_sc(zeta, zeta.sin(), zeta.cos(), f)
+}
+
+/// [`auxlat_convert`] with the sine and cosine of the latitude given.
+fn auxlat_convert_sc(zeta: f64, szeta: f64, czeta: f64, f: &[f64; ETMERC_ORDER]) -> f64 {
+    zeta + clenshaw(szeta, czeta, f)
+}
+
+/// The rectifying radius, for a semi-major axis of 1 (`pj_rectifying_radius`).
+fn rectifying_radius(n: f64) -> f64 {
+    const C: [f64; 4] = [1.0, 1.0 / 4.0, 1.0 / 64.0, 1.0 / 256.0];
+    polyval(n * n, &C, 3) / (1.0 + n)
+}
+
+/// Clenshaw summation of a complex series of sin(2 zeta), zeta given by the sine, cosine,
+/// hyperbolic sine and cosine of twice its real and imaginary parts (`clenS`); returns the real
+/// and imaginary parts.
+fn clen_s(a: &[f64; ETMERC_ORDER], sin_r: f64, cos_r: f64, sinh_i: f64, cosh_i: f64) -> (f64, f64) {
     let r = 2.0 * cos_r * cosh_i;
     let i = -2.0 * sin_r * sinh_i;
     let (mut hr, mut hr1, mut hi, mut hi1) = (a[ETMERC_ORDER - 1], 0.0, 0.0, 0.0);
@@ -245,65 +464,40 @@ struct Tmerc {
 
 impl Tmerc {
     fn new(ell: Ell, k0: f64, phi0: f64) -> Self {
-        let f = ell.es / (1.0 + (1.0 - ell.es).sqrt());
-        let n = f / (2.0 - f);
-        let mut np = n;
-        let mut cgb = [0.0; 6];
-        let mut cbg = [0.0; 6];
-        let mut utg = [0.0; 6];
-        let mut gtu = [0.0; 6];
-        cgb[0] = n * (2.0 + n * (-2.0 / 3.0 + n * (-2.0 + n * (116.0 / 45.0 + n * (26.0 / 45.0 + n * (-2854.0 / 675.0))))));
-        cbg[0] = n * (-2.0 + n * (2.0 / 3.0 + n * (4.0 / 3.0 + n * (-82.0 / 45.0 + n * (32.0 / 45.0 + n * (4642.0 / 4725.0))))));
-        np *= n;
-        cgb[1] = np * (7.0 / 3.0 + n * (-8.0 / 5.0 + n * (-227.0 / 45.0 + n * (2704.0 / 315.0 + n * (2323.0 / 945.0)))));
-        cbg[1] = np * (5.0 / 3.0 + n * (-16.0 / 15.0 + n * (-13.0 / 9.0 + n * (904.0 / 315.0 + n * (-1522.0 / 945.0)))));
-        np *= n;
-        cgb[2] = np * (56.0 / 15.0 + n * (-136.0 / 35.0 + n * (-1262.0 / 105.0 + n * (73814.0 / 2835.0))));
-        cbg[2] = np * (-26.0 / 15.0 + n * (34.0 / 21.0 + n * (8.0 / 5.0 + n * (-12686.0 / 2835.0))));
-        np *= n;
-        cgb[3] = np * (4279.0 / 630.0 + n * (-332.0 / 35.0 + n * (-399572.0 / 14175.0)));
-        cbg[3] = np * (1237.0 / 630.0 + n * (-12.0 / 5.0 + n * (-24832.0 / 14175.0)));
-        np *= n;
-        cgb[4] = np * (4174.0 / 315.0 + n * (-144838.0 / 6237.0));
-        cbg[4] = np * (-734.0 / 315.0 + n * (109598.0 / 31185.0));
-        np *= n;
-        cgb[5] = np * (601676.0 / 22275.0);
-        cbg[5] = np * (444337.0 / 155925.0);
-
-        np = n * n;
-        let qn = k0 / (1.0 + n) * (1.0 + np * (1.0 / 4.0 + np * (1.0 / 64.0 + np / 256.0)));
-        utg[0] = n * (-0.5 + n * (2.0 / 3.0 + n * (-37.0 / 96.0 + n * (1.0 / 360.0 + n * (81.0 / 512.0 + n * (-96199.0 / 604800.0))))));
-        gtu[0] = n * (0.5 + n * (-2.0 / 3.0 + n * (5.0 / 16.0 + n * (41.0 / 180.0 + n * (-127.0 / 288.0 + n * (7891.0 / 37800.0))))));
-        utg[1] = np * (-1.0 / 48.0 + n * (-1.0 / 15.0 + n * (437.0 / 1440.0 + n * (-46.0 / 105.0 + n * (1118711.0 / 3870720.0)))));
-        gtu[1] = np * (13.0 / 48.0 + n * (-3.0 / 5.0 + n * (557.0 / 1440.0 + n * (281.0 / 630.0 + n * (-1983433.0 / 1935360.0)))));
-        np *= n;
-        utg[2] = np * (-17.0 / 480.0 + n * (37.0 / 840.0 + n * (209.0 / 4480.0 + n * (-5569.0 / 90720.0))));
-        gtu[2] = np * (61.0 / 240.0 + n * (-103.0 / 140.0 + n * (15061.0 / 26880.0 + n * (167603.0 / 181440.0))));
-        np *= n;
-        utg[3] = np * (-4397.0 / 161280.0 + n * (11.0 / 504.0 + n * (830251.0 / 7257600.0)));
-        gtu[3] = np * (49561.0 / 161280.0 + n * (-179.0 / 168.0 + n * (6601661.0 / 7257600.0)));
-        np *= n;
-        utg[4] = np * (-4583.0 / 161280.0 + n * (108847.0 / 3991680.0));
-        gtu[4] = np * (34729.0 / 80640.0 + n * (-3418889.0 / 1995840.0));
-        np *= n;
-        utg[5] = np * (-20648693.0 / 638668800.0);
-        gtu[5] = np * (212378941.0 / 319334400.0);
-
-        let z = gatg(&cbg, phi0);
-        let zb = -qn * (z + clen_s(&gtu, 2.0 * z, 0.0).0);
+        // The third flattening as PROJ derives it, from the angular eccentricity
+        // (`pj_calc_ellipsoid_params`).
+        let t = (ell.e.asin() / 2.0).tan();
+        let n = t * t;
+        let cgb = auxlat_coeffs(n, AuxLat::Conformal, AuxLat::Geographic);
+        let cbg = auxlat_coeffs(n, AuxLat::Geographic, AuxLat::Conformal);
+        let qn = k0 * rectifying_radius(n);
+        let utg = auxlat_coeffs(n, AuxLat::Rectifying, AuxLat::Conformal);
+        let gtu = auxlat_coeffs(n, AuxLat::Conformal, AuxLat::Rectifying);
+        let z = auxlat_convert(phi0, &cbg);
+        let zb = -qn * auxlat_convert(z, &gtu);
         Self { qn, zb, cgb, cbg, utg, gtu }
     }
 }
 
 impl Proj for Tmerc {
     fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
-        let cn = gatg(&self.cbg, phi);
-        let (sin_cn, cos_cn) = cn.sin_cos();
-        let (sin_ce, cos_ce) = lam.sin_cos();
-        let cn = sin_cn.atan2(cos_ce * cos_cn);
-        let ce = (sin_ce * cos_cn).atan2(sin_cn.hypot(cos_cn * cos_ce));
-        let ce = ce.tan().asinh();
-        let (dcn, dce) = clen_s(&self.gtu, 2.0 * cn, 2.0 * ce);
+        let cn = auxlat_convert(phi, &self.cbg);
+        let (sin_cn, cos_cn) = (cn.sin(), cn.cos());
+        let (sin_ce, cos_ce) = (lam.sin(), lam.cos());
+        let cos_cn_cos_ce = cos_cn * cos_ce;
+        let cn = sin_cn.atan2(cos_cn_cos_ce);
+        let inv_denom_tan_ce = 1.0 / sin_cn.hypot(cos_cn_cos_ce);
+        let tan_ce = sin_ce * cos_cn * inv_denom_tan_ce;
+        let ce = super::math::asinh(tan_ce);
+        // sin(2 Cn), cos(2 Cn), sinh(2 Ce) and cosh(2 Ce), as PROJ derives them.
+        let two_inv_denom_tan_ce = 2.0 * inv_denom_tan_ce;
+        let two_inv_denom_tan_ce_square = two_inv_denom_tan_ce * inv_denom_tan_ce;
+        let tmp_r = cos_cn_cos_ce * two_inv_denom_tan_ce_square;
+        let sin_arg_r = sin_cn * tmp_r;
+        let cos_arg_r = cos_cn_cos_ce * tmp_r - 1.0;
+        let sinh_arg_i = tan_ce * two_inv_denom_tan_ce;
+        let cosh_arg_i = two_inv_denom_tan_ce_square - 1.0;
+        let (dcn, dce) = clen_s(&self.gtu, sin_arg_r, cos_arg_r, sinh_arg_i, cosh_arg_i);
         let (cn, ce) = (cn + dcn, ce + dce);
         if ce.abs() > 2.623395162778 {
             return None;
@@ -317,15 +511,45 @@ impl Proj for Tmerc {
         if ce.abs() > 2.623395162778 {
             return None;
         }
-        let (dcn, dce) = clen_s(&self.utg, 2.0 * cn, 2.0 * ce);
+        let (sin_arg_r, cos_arg_r) = ((2.0 * cn).sin(), (2.0 * cn).cos());
+        let exp_2_ce = (2.0 * ce).exp();
+        let half_inv_exp_2_ce = 0.5 / exp_2_ce;
+        let sinh_arg_i = 0.5 * exp_2_ce - half_inv_exp_2_ce;
+        let cosh_arg_i = 0.5 * exp_2_ce + half_inv_exp_2_ce;
+        let (dcn, dce) = clen_s(&self.utg, sin_arg_r, cos_arg_r, sinh_arg_i, cosh_arg_i);
         let (cn, ce) = (cn + dcn, ce + dce);
-        let ce = ce.sinh().atan();
-        let (sin_cn, cos_cn) = cn.sin_cos();
-        let (sin_ce, cos_ce) = ce.sin_cos();
-        let lam = sin_ce.atan2(cos_ce * cos_cn);
-        let cn = (sin_cn * cos_ce).atan2(sin_ce.hypot(cos_ce * cos_cn));
-        Some((lam, gatg(&self.cgb, cn)))
+        let (sin_cn, cos_cn) = (cn.sin(), cn.cos());
+        let sinh_ce = ce.sinh();
+        let ce = sinh_ce.atan2(cos_cn);
+        let modulus_ce = sinh_ce.hypot(cos_cn);
+        let rr = sin_cn.hypot(modulus_ce);
+        let cn = sin_cn.atan2(modulus_ce);
+        Some((ce, auxlat_convert_sc(cn, sin_cn / rr, modulus_ce / rr, &self.cgb)))
     }
+}
+
+/// The central meridian PROJ gives UTM zone `zone` (1 to 60): `+proj=utm` computes it from the
+/// zone, in radians, rather than from degrees.
+fn utm_lam0(zone: u32) -> f64 {
+    use std::f64::consts::PI;
+    (f64::from(zone - 1) + 0.5) * PI / 30.0 - PI
+}
+
+/// The UTM zone of a transverse Mercator in metres with UTM's origin, scale and false easting and
+/// northing, which PROJ writes as `+proj=utm` (`Conversion::isUTM()`), whatever its definition.
+fn utm_zone(s: &Setup<'_>) -> Option<u32> {
+    let metres = s.p.f64("to_meter").is_none_or(|v| v == 1.0) && s.p.str("units").is_none_or(|u| u == "m");
+    let zone = (s.lam0.to_degrees() + 183.0) / 6.0;
+    let utm = metres
+        && s.ell.es != 0.0
+        && s.phi0.abs() < 1e-10
+        && (s.k0 - 0.9996).abs() < 1e-10
+        && (s.x0 - 500000.0).abs() < 1e-10
+        && (s.y0.abs() < 1e-10 || (s.y0 - 10000000.0).abs() < 1e-10)
+        && zone > 0.9
+        && zone < 60.1
+        && (zone - zone.round()).abs() < 1e-10;
+    utm.then(|| zone.round() as u32)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -445,10 +669,14 @@ impl Merc {
 
 impl Proj for Merc {
     fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
-        if (phi.abs() - HALFPI).abs() <= 1e-10 {
-            return None;
-        }
-        let y = if self.e == 0.0 { phi.tan().asinh() } else { phi.tan().asinh() - self.e * (self.e * phi.sin()).atanh() };
+        // PROJ's `merc_s_forward()` and `merc_e_forward()`, with the C library's asinh and atanh.
+        // PROJ 9.7.1 has no pole check: the poles map to a finite northing (asinh(tan(pi / 2))).
+        let y = if self.e == 0.0 {
+            super::math::asinh(phi.tan())
+        } else {
+            let (sphi, cphi) = (phi.sin(), phi.cos());
+            super::math::asinh(sphi / cphi) - self.e * super::math::atanh(self.e * sphi)
+        };
         Some((self.k0 * lam, self.k0 * y))
     }
 

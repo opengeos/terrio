@@ -742,3 +742,32 @@ fn ept_zstandard_underreported_hierarchy_is_refused_before_append() {
     assert!(error.to_string().contains("decompresses to more than"), "{error}");
     assert_eq!(std::fs::read(tile).unwrap(), before);
 }
+
+/// A Zstandard tile of 131 KB expanding to 4 GiB (RLE blocks of 128 KiB, no content size), far
+/// past the records of the 64 points its hierarchy declares: an error when read, the rest not
+/// decoded.
+#[test]
+fn ept_zstandard_tile_expanding_past_its_points_is_an_error_when_read() {
+    let points = cloud(64, 31);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("set/ept.json");
+    let options = PointWriteOptions {
+        ept_data_type: EptDataType::Zstandard,
+        copc_leaf_points: Some(1000),
+        ept_bounds: Some(points.bounds().unwrap()),
+        ..Default::default()
+    };
+    pointcloud::write_points(&points, path.to_str().unwrap(), &options).unwrap();
+    assert_eq!(pointcloud::read_points(path.to_str().unwrap(), &Default::default()).unwrap().len(), 64);
+    let blocks = 32 * 1024;
+    // The magic number, a header descriptor of 0 and a 128 KiB window, then the RLE blocks.
+    let mut bomb = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 7 << 3];
+    for i in 0..blocks {
+        let header = ((128 * 1024u32) << 3) | (1 << 1) | u32::from(i + 1 == blocks);
+        bomb.extend_from_slice(&header.to_le_bytes()[..3]);
+        bomb.push(1);
+    }
+    std::fs::write(path.with_file_name("ept-data").join("0-0-0-0.zst"), bomb).unwrap();
+    let error = pointcloud::read_points(path.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
+    assert!(error.contains("EPT node 0-0-0-0: Zstandard: decompresses to more than"), "{error}");
+}

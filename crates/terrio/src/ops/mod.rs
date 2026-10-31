@@ -69,6 +69,7 @@ pub mod pixel;
 pub mod pixel_info;
 pub mod polygonize;
 pub mod proximity;
+pub mod rasterio;
 pub mod rasterize;
 pub mod rpc;
 pub mod sample;

@@ -527,10 +527,7 @@ fn interpolate(
             best.map_or(f64::NAN, |(_, i)| vs[i as usize])
         };
         #[cfg(not(target_family = "wasm"))]
-        let found: Vec<f64> = {
-            use rayon::prelude::*;
-            todo.par_iter().map(|k| find(*k)).collect()
-        };
+        let found: Vec<f64> = crate::par::map_range(todo.len(), |i| find(todo[i]));
         #[cfg(target_family = "wasm")]
         let found: Vec<f64> = todo.iter().map(|k| find(*k)).collect();
         for (k, v) in todo.into_iter().zip(found) {

@@ -37,6 +37,7 @@ from typing import Any, NamedTuple
 from affine import Affine
 
 from terrio import __version__ as _terrio_version
+from terrio import _terrio
 from terrio.rio import (
     coords,
     crs,
@@ -237,6 +238,13 @@ def open(
         ds._env.callback(memfile.close)
         ds._env.callback(flush)
         return ds
+    if (
+        io.is_mem_pointer_name(fp)
+        and mode in ("r", "r+")
+        and (not driver or driver.upper() == "MEM")
+        and "MEM" in (_terrio.allowed_drivers("raster") or ["MEM"])
+    ):
+        return io.MemPointerDataset(fp, mode)
     path = os.fspath(fp) if not isinstance(fp, str) else fp
     if mode == "r":
         return DatasetReader(path, driver=driver, **kwargs)

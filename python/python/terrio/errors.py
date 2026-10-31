@@ -34,8 +34,18 @@ class InvalidDataError(TerrioError, ValueError):
     """A dataset was found but its contents are not valid."""
 
 
+class InternalError(TerrioError):
+    """A bug in terrio that this input reached: a Rust panic, caught before it reached Python.
+
+    Its message starts with "Rust panic in terrio:" and holds the panic's text. The process stays
+    usable. (Uncaught, PyO3 would raise `PanicException`, a `BaseException` that
+    `except Exception` does not catch.)
+    """
+
+
 __all__ = [
     "CRSError",
+    "InternalError",
     "InvalidArgumentError",
     "InvalidDataError",
     "NotFoundError",
