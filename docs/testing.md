@@ -1607,3 +1607,29 @@ quantized geometries are compared structurally and reported as invalid. A separa
 reported category permits only reassociation of an identical collinear ring: all
 oriented integer rings and all non-collinear polygon groups must still match.
 `scripts/reference/test_make_valid_tile_comparison.py` rejects broader changes.
+
+### Polygon coverage validation
+
+`scripts/compare_coverage_with_gdal.py ../terrio-data --terrio target/release/terrio`
+compares `terrio check-coverage` with GDAL 3.13.3's `gdal vector check-coverage`.
+The `coverage` conformance suite registers the same comparisons. It checks all
+95 Tennessee counties projected into EPSG:5070, and real-boundary splits,
+duplicated polygons, overlapping county parts, empty polygons and a ten-metre
+gap with detection disabled, below threshold and above threshold. Every fixture
+runs with and without `--include-valid`.
+
+Invalid edge coordinates and multiplicity must match exactly. Line component
+order and direction are ignored; no distance tolerance or approximate matching
+is used. Empty schema, output feature IDs, CRS, geometry type and layer names are
+also checked. As in GDAL, null/non-polygon inputs are rejected, source attributes
+are omitted and output IDs are new. Empty polygon inputs remain valid.
+
+Rust regressions cover matching edges, hole fillers, unmatched shared nodes,
+duplicated and reversed rings, contained/overlapping polygons, narrow gaps,
+original Z/M values, null/non-polygon rejection and invalid distances. CLI tests
+exercise gap/include-valid output and automatic MCP discovery. Python and WASM
+checks exercise the shared validation API. Verifier regressions prove reordered
+edges are accepted while moved/duplicated edges, changed IDs and changed schemas
+are rejected. The prerequisite probe skips the suite when the GDAL command is
+unavailable. The port's exact JTS sources and adaptations are recorded in
+[jts-provenance.md](jts-provenance.md).

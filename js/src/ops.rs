@@ -1514,3 +1514,34 @@ pub fn enhance_luts(src: JsValue, options: JsValue) -> Result<String, JsError> {
     let ds = input_raster(&src)?;
     Ok(terrio::ops::enhance::format_luts(&enhance_tables(&ds, &a)?))
 }
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct CheckCoverageArgs {
+    maximum_gap_width: f64,
+    include_valid: bool,
+}
+
+/// Polygon coverage errors as MultiLineStrings, with CRS retained, empty attributes and new IDs.
+/// Each polygon must individually be valid. Options: `maximumGapWidth` (input CRS
+/// units; zero disables narrow gaps), `includeValid` (empty lines for valid features).
+#[wasm_bindgen(js_name = checkCoverage)]
+pub fn check_coverage(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    let args: CheckCoverageArgs = parse_options(&options)?;
+    let options =
+        terrio::ops::coverage::CoverageCheckOptions { maximum_gap_width: args.maximum_gap_width, include_valid: args.include_valid };
+    let input = input_layers(&src)?;
+    let multiple = input.len() > 1;
+    let layers = input
+        .iter()
+        .map(|layer| {
+            let mut out = terrio::ops::coverage::check_coverage(layer, &options)?;
+            if multiple {
+                out.name = format!("invalid_edge_{}", layer.name);
+            }
+            Ok(out)
+        })
+        .collect::<terrio::Result<Vec<_>>>()
+        .map_err(js_err)?;
+    Ok(Dataset::from_layers(layers, VectorDriver::GeoJSON))
+}

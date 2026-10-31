@@ -279,16 +279,14 @@ fn set_crs(db: &impl Tables, layer: &mut Layer, srs_id: i64) {
     layer.set_crs_epsg(s.epsg);
 }
 
-/// Decodes a GeoPackage geometry blob: the `GP` header, then WKB. Empty geometries give `None`.
+/// Decodes a GeoPackage geometry blob: the `GP` header, then WKB.
+/// Empty non-point geometries retain their type; NaN empty points give `None`.
 pub(crate) fn decode_geometry(b: &[u8]) -> Option<Geometry> {
     if b.len() < 8 || &b[..2] != b"GP" {
         // Some writers store plain WKB.
         return from_wkb(b);
     }
     let flags = b[3];
-    if flags & 0x10 != 0 {
-        return None;
-    }
     let envelope = match (flags >> 1) & 0x07 {
         0 => 0,
         1 => 32,
@@ -788,6 +786,25 @@ impl Tables for IndexedLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_nonpoint_geometries_keep_their_type_in_geopackage_blobs() {
+        for geometry in [
+            Geometry::Polygon { exterior: Ring::default(), interiors: vec![] },
+            Geometry::MultiPolygon(vec![]),
+            Geometry::LineString(vec![]),
+            Geometry::MultiLineString(vec![]),
+            Geometry::MultiPoint(vec![]),
+            Geometry::GeometryCollection(vec![]),
+        ] {
+            let blob = super::super::geopackage::gpkg_geometry(&geometry, 4326);
+            assert_ne!(blob[3] & 0x10, 0, "GeoPackage empty flag");
+            assert_eq!(decode_geometry(&blob), Some(geometry));
+        }
+        let point = Geometry::point(f64::NAN, f64::NAN);
+        let blob = super::super::geopackage::gpkg_geometry(&point, 4326);
+        assert!(decode_geometry(&blob).is_none());
+    }
 
     #[test]
     fn decodes_wkb_as_wbvector() {

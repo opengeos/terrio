@@ -332,6 +332,7 @@ JTS Topology Suite (https://github.com/locationtech/jts)
 -------------------------------------------------------------------------------
 
 Terrio files derived from JTS source files (each file's header names them):
+  crates/terrio/src/ops/coverage.rs
   crates/terrio/src/ops/hull.rs
   crates/terrio/src/ops/jts_cdt.rs
   crates/terrio/src/ops/jts_delaunay.rs

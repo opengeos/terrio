@@ -30,6 +30,7 @@ Suites:
     vsi               terrio vsi list/copy/sync/move/delete vs gdal vsi, locally, in archives and on S3
                       (compare_vsi_with_gdal.py)
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
+    coverage          polygon coverage validity: shared nodes, overlaps and narrow gaps
     vector-dataset    concat, partition, set-field-type, make-point, create, export-schema, rename-layer, edit, update
     vector-geom       simplify, segmentize, hulls, swap-xy, set-geom-type, combine and sort vs
                       gdal vector and GEOS (compare_vector_geom_with_gdal.py)
@@ -2202,6 +2203,31 @@ def suite_vector_geom(ctx):
     return s
 
 
+def suite_coverage(ctx):
+    """Polygon coverage errors against GDAL on real county boundaries."""
+    suite = Suite("coverage", "Polygon coverage validation", "GDAL 3.13.3 gdal vector check-coverage",
+                  "Projected Tennessee counties and derived splits, overlaps, duplicates and gaps. "
+                  "Exact invalid edge sets, empty schema, output IDs, CRS, types and layer names; "
+                  "valid feature correspondence with include-valid.")
+    if missing_modules("osgeo") or not shutil.which("gdal") or run(["gdal", "vector", "check-coverage", "--help"])[0] != 0:
+        suite.skipped = "needs GDAL with GEOS and the vector check-coverage command"
+        return suite
+    if not os.path.isfile(os.path.join(ctx.data, "TN_Counties.geojson")):
+        suite.skipped = "needs TN_Counties.geojson (scripts/fetch_test_data.sh)"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_coverage_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        rows = json.loads(out)
+        for row in rows:
+            suite.cases.append(Case("check-coverage", row["name"], row["status"], row["detail"]))
+    except (ValueError, KeyError, TypeError) as error:
+        suite.error = f"{error}: {tail(err or out)}"
+        return suite
+    if code:
+        suite.error = tail(err or "coverage comparison process failed")
+    return suite
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -2246,6 +2272,7 @@ SUITES = OrderedDict(
         ("multidim", suite_multidim),
         ("mdmosaic", suite_mdmosaic),
         ("topology", suite_topology),
+        ("coverage", suite_coverage),
         ("vector-geom", suite_vector_geom),
         ("vector-dataset", suite_vector_dataset),
         ("footprint", suite_footprint),

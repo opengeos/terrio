@@ -110,6 +110,7 @@ __all__ = [
     "RpcTransformer",
     "FeatureStream",
     "open_stream",
+    "check_coverage",
     "simplify",
     "segmentize",
     "convex_hull",
@@ -2061,3 +2062,12 @@ def validate_gpkg(
     strict: bool = False,
     unicode_case: bool = False,
 ) -> dict[str, Any]: ...
+def check_coverage(
+    src: Any,
+    *,
+    maximum_gap_width: float = 0.0,
+    include_valid: bool = False,
+    layer: str | None = None,
+) -> Layer:
+    """Invalid coverage edges, retaining CRS and edge Z/M; empty schema and new IDs."""
+    ...

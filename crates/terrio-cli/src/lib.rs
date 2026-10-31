@@ -112,6 +112,8 @@ enum Command {
     IsValid(cmd::processing::GeometryArgs),
     /// Repair invalid geometries, preserving attributes and reporting failures.
     MakeValid(cmd::processing::GeometryArgs),
+    /// Find overlapping interiors, unmatched shared nodes and narrow gaps in polygon coverages.
+    CheckCoverage(cmd::processing::CheckCoverageArgs),
     /// Snap, deduplicate, close rings, remove collapsed parts and repair polygon topology.
     Clean(cmd::processing::CleanArgs),
     /// Topology-preserving Douglas-Peucker simplification per feature (like gdal vector
@@ -327,6 +329,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Dissolve(a) => cmd::processing::dissolve(a),
         Command::IsValid(a) => cmd::processing::validity(a),
         Command::MakeValid(a) => cmd::processing::make_valid(a),
+        Command::CheckCoverage(a) => cmd::processing::check_coverage(a),
         Command::Clean(a) => cmd::processing::clean(a),
         Command::Simplify(a) => cmd::vector_geom::simplify(a),
         Command::Segmentize(a) => cmd::vector_geom::segmentize(a),

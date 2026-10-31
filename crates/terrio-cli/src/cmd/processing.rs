@@ -432,3 +432,35 @@ mod footprint_tests {
         }
     }
 }
+
+/// Polygon coverage validation across each selected layer.
+#[derive(clap::Args)]
+pub struct CheckCoverageArgs {
+    #[command(flatten)]
+    input: VectorInput,
+    #[command(flatten)]
+    output: VectorOutput,
+    /// Flag narrow gaps up to this distance in input CRS units. Zero disables gap detection.
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+    maximum_gap_width: f64,
+    /// Retain valid/null input features with empty line geometry.
+    #[arg(long)]
+    include_valid: bool,
+}
+
+pub fn check_coverage(a: CheckCoverageArgs) -> Result<()> {
+    let input = a.input.open()?;
+    let options = terrio::ops::coverage::CoverageCheckOptions { maximum_gap_width: a.maximum_gap_width, include_valid: a.include_valid };
+    let multiple = input.len() > 1;
+    let layers = input
+        .iter()
+        .map(|layer| {
+            let mut out = terrio::ops::coverage::check_coverage(layer, &options)?;
+            if multiple {
+                out.name = format!("invalid_edge_{}", layer.name);
+            }
+            Ok(out)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    a.output.write(layers)
+}

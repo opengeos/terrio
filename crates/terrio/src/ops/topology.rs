@@ -355,7 +355,7 @@ fn collapsed_reason(g: &Geometry) -> Option<String> {
     }
 }
 
-fn require_valid(g: &Geometry, fid: u64) -> Result<()> {
+pub(super) fn require_valid(g: &Geometry, fid: u64) -> Result<()> {
     if let Some(reason) = invalid_reason(g) {
         Err(Error::InvalidArgument(format!("feature {fid} is invalid: {reason}; run make-valid first")))
     } else {
