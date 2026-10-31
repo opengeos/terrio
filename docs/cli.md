@@ -2896,10 +2896,18 @@ of this option, for native files, memory outputs and streams. Mixed measured
 and unmeasured geometries use optional M declarations, preserving their layouts. Streamed Z flags
 also reflect any coordinate with Z, matching the encoded payload even when the
 first coordinate is two-dimensional; absent ordinates are encoded as zero. This
-intentionally changes the default streaming output: later Z values previously
-dropped in that layout now survive, and vertices lacking Z receive `0.0`.
+intentionally changes the default streaming and whole-layer output: later Z
+values previously dropped in that layout now survive, and vertices lacking Z
+receive `0.0`. Missing M ordinates within a measured geometry likewise receive
+zero. This encoding rule applies independently of declaration preservation.
 Ordinary updates retain the in-place transaction path, with the
 existing atomic rewrite fallback when in-place editing is unsupported.
+
+General CLI writers currently infer geometry declarations and do not expose a
+`preserve_declared_geometry_type` flag. `simplify-coverage` enables declaration
+preservation for its GeoPackage output. This is a scope limit of the general
+CLI/MCP writer options; the simplification operation itself preserves declarations
+across all public surfaces.
 
 Retained simplified vertices keep their Z values; GEOS drops M values from active
 polygon layers. Inactive layers retain their coordinates, including Z and M in
