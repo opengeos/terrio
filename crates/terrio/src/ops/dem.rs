@@ -618,7 +618,7 @@ impl Float32Terrain {
     }
 }
 
-/// Match the reference's x86 estimate/refinement path, not a cross-CPU bit pattern.
+/// Match GDAL 3.13's x86 estimate/refinement path, not a cross-CPU bit pattern.
 /// Intel and AMD rsqrt estimates can differ; non-x86 uses exact division/sqrt.
 #[inline]
 fn divide_sqrt_f32(numerator: f32, denominator: f32, multi: bool) -> f32 {
