@@ -1,3 +1,13 @@
+// Written to match the behavior of:
+//   GDAL v3.12.1:
+//     port/cpl_recode_iconv.cpp
+//   glibc (iconv):
+//     iconvdata/cp932.c
+//     iconvdata/gbk.c
+//     iconvdata/uhc.c
+//     iconvdata/big5.c
+// No code is translated from these sources.
+
 //! Where GDAL's recoding of DBF text (glibc's iconv) decodes CP932, CP936, CP949 and CP950
 //! differently from `encoding_rs` (Shift_JIS, GBK, EUC-KR and Big5 as the WHATWG Encoding
 //! Standard defines them): sequences glibc rejects (`None`) or maps to another character.

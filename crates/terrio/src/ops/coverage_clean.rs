@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 Martin Davis.
 // SPDX-FileCopyrightText: Copyright (c) 2020 Martin Davis.
 // SPDX-FileCopyrightText: Copyright (c) 2016 Martin Davis.
+// SPDX-FileCopyrightText: Copyright (c) 2016 Vivid Solutions, and others.
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT AND BSD-3-Clause
 //
@@ -13,7 +14,16 @@
 //     algorithm/construct/MaximumInscribedCircle.java, ExactMaxInscribedCircle.java
 //     operation/polygonize/Polygonizer.java
 //     dissolve/LineDissolver.java, edgegraph/EdgeGraph.java, edgegraph/HalfEdge.java
+//     noding/NodedSegmentString.java, noding/SegmentNodeList.java
+//     noding/SegmentPointComparator.java
+//     algorithm/RobustLineIntersector.java, algorithm/Angle.java
+//     geom/Triangle.java, math/MathUtil.java
 // Paths are relative to modules/core/src/main/java/org/locationtech/jts/.
+//
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_vector_clean_coverage.cpp
+// No code is translated from these sources.
 
 //! Polygon coverage cleaning: snap and node linework, classify bounded faces,
 //! assign overlaps, and merge enclosed narrow gaps. Reference: GDAL 3.13.3 /

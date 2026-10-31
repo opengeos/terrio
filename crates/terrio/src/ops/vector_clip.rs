@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_vector_clip.cpp
+// No code is translated from these sources.
+
 //! Polygon clipping for vector features, with boundary-inclusive XY predicates.
 //!
 //! Clipping never reprojects the input. Only an explicitly referenced clip region is

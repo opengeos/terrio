@@ -49,12 +49,21 @@ precedence = "override"
 SPDX-FileCopyrightText = "GDAL contributors"
 SPDX-License-Identifier = "MIT"
 
-# GRIB tables: GDAL's GRIB tables (frmts/grib/data, GDAL v3.12.2), merged from NOAA's degrib
+# GRIB2 tables: GDAL's GRIB2 tables (frmts/grib/data, GDAL v3.12.2), merged from NOAA's degrib
 # tables (public domain) and the WMO's GRIB2 tables (wmo-im/GRIB2, MIT).
 [[annotations]]
-path = ["crates/terrio/data/grib2.tsv.zst", "crates/terrio/src/drivers/grib/grib1.tsv.zst"]
+path = "crates/terrio/data/grib2.tsv.zst"
 precedence = "override"
 SPDX-FileCopyrightText = ["Copyright © 2020-2024", "Copyright (C) 2021 Even Rouault", "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"]
+SPDX-License-Identifier = "MIT"
+
+# GRIB1 tables: degrib's GRIB1 parameter and level tables (frmts/grib/degrib/degrib/grib1tab.cpp,
+# GDAL v3.12.1), NOAA MDL code in the public domain (see GDAL's LICENSE.TXT), extracted by
+# gen_grib1_tables.py. The source file carries no copyright line.
+[[annotations]]
+path = "crates/terrio/src/drivers/grib/grib1.tsv.zst"
+precedence = "override"
+SPDX-FileCopyrightText = "Copyright (c) 2026 Qiusheng Wu and Terrio contributors"
 SPDX-License-Identifier = "MIT"
 
 # The EPSG Geodetic Parameter Dataset, owned by IOGP, through PROJ 9.8.1 and GDAL.

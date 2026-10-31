@@ -1,6 +1,9 @@
 // Written to match the behavior of:
 //   GDAL v3.13.3:
 //     frmts/gtiff/gtiffdataset_read.cpp, gt_wkt_srs.cpp
+//   libtiff 4.7.1 (bundled with GDAL v3.12.1):
+//     frmts/gtiff/libtiff/tif_dirread.c
+//     frmts/gtiff/libtiff/tif_codec.c
 // No code is translated from these sources.
 
 //! Reads a GeoTIFF's georeferencing tags directly, to fill in what the raster driver misses:

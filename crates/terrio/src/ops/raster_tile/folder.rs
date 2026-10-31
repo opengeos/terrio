@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_raster_tile.cpp
+// No code is translated from these sources.
+
 //! Bounded folder generation. Tile sinks let WASM clients consume tiles incrementally.
 use super::*;
 use crate::crs::SpatialRef;

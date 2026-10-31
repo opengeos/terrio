@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.12.1:
+//     frmts/webp/webpdataset.cpp
+// No code is translated from these sources.
+
 //! WebP rasters, read and written as GDAL's WEBP driver reads and writes them (`WEBPDataset` in
 //! `frmts/webp/webpdataset.cpp`, GDAL 3.12.1), except that terrio's writer is lossless only.
 //!

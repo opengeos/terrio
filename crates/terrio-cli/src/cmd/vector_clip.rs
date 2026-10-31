@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_vector_clip.rst
+// No code is translated from these sources.
+
 //! Polygon clipping of vector features.
 use super::processing::{VectorInput, VectorOutput};
 use terrio::crs::SpatialRef;

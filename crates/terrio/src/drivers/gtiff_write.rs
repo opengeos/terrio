@@ -1,11 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
 // SPDX-FileCopyrightText: Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 1998, 2002, Frank Warmerdam <warmerdam@pobox.com>
+// SPDX-FileCopyrightText: Copyright (c) 2007-2015, Even Rouault <even dot rouault at spatialys dot com>
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):
 //   GDAL v3.13.3:
 //     gcore/overview.cpp
+//   GDAL v3.12.1:
+//     frmts/gtiff/gtiffdataset_write.cpp
 
 //! A GeoTIFF and Cloud Optimized GeoTIFF writer.
 //!

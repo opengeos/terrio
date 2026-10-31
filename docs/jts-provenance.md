@@ -1,8 +1,12 @@
 # Geometry implementation provenance
 
-The geometry replacements on this branch were written from the JTS Topology
+The geometry replacements in the table below were written from the JTS Topology
 Suite **1.20.0**, tag commit
 [`6e95fe82feb986a7aa657f4ffa406d8c290af509`](https://github.com/locationtech/jts/tree/6e95fe82feb986a7aa657f4ffa406d8c290af509).
+The polygon coverage validation, simplification and cleaning ports described at the
+end of this page were written from a later, untagged JTS commit,
+[`3460207216f3091cd7f72d48d6ddd1b561b2b8fd`](https://github.com/locationtech/jts/tree/3460207216f3091cd7f72d48d6ddd1b561b2b8fd)
+(1.20.0 plus 226 commits), as their source headers state.
 They use its Eclipse Distribution License 1.0 (EDL-1.0), reproduced with copyright
 notices in the root and crate `NOTICE`. This changes implementation provenance;
 it is not a renaming of the previous GEOS-based implementations.
@@ -319,7 +323,9 @@ license notices. Changed-file pre-commit checks run before the local commit.
 [`3460207216f3091cd7f72d48d6ddd1b561b2b8fd`](https://github.com/locationtech/jts/tree/3460207216f3091cd7f72d48d6ddd1b561b2b8fd):
 `coverage/CoverageValidator.java`, `CoveragePolygonValidator.java`, `CoverageRing.java`,
 `InvalidSegmentDetector.java`, `CoveragePolygon.java`, plus
-`algorithm/PolygonNodeTopology.java` and `geom/LineSegment.java` helpers.
+`algorithm/PolygonNodeTopology.java`, `geom/LineSegment.java` and `geom/Quadrant.java`
+helpers. Its options and output (`invalid_edge` layers, `include-valid`,
+`maximum-gap-width`) follow GDAL 3.13.3's `gdal vector check-coverage`.
 The Eclipse Distribution License 1.0 is selected. File headers and both `NOTICE`
 files retain the source copyright notices.
 
@@ -356,9 +362,12 @@ GDAL behaviors.
 `coverage/CleanCoverage.java`, `noding/snap/SnappingNoder.java`,
 `SnappingIntersectionAdder.java`, `SnappingPointIndex.java`,
 `operation/polygonize/Polygonizer.java`, `dissolve/LineDissolver.java`,
-`edgegraph/EdgeGraph.java`, `edgegraph/HalfEdge.java` and
+`edgegraph/EdgeGraph.java`, `edgegraph/HalfEdge.java`,
 `algorithm/construct/MaximumInscribedCircle.java` and
-`ExactMaxInscribedCircle.java` from JTS commit
+`ExactMaxInscribedCircle.java`, with the helpers `noding/NodedSegmentString.java`,
+`SegmentNodeList.java`, `SegmentPointComparator.java`,
+`algorithm/RobustLineIntersector.java`, `Angle.java`, `geom/Triangle.java` and
+`math/MathUtil.java`, from JTS commit
 `3460207216f3091cd7f72d48d6ddd1b561b2b8fd`, under EDL-1.0 (BSD-3-Clause).
 It retains the snapping/noding, resultant-face classification, progressive overlap
 assignment and enclosed-gap merging stages. Rust R-trees replace the source's

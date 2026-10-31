@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_raster_tile.rst
+// No code is translated from these sources.
+
 //! Directory tiles using the shared incremental renderer.
 use terrio::ops::raster_tile::{self as tile, Convention, GridOptions, TileLimits, TileOptions};
 

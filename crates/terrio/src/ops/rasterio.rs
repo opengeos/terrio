@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.12.1:
+//     gcore/rasterio.cpp
+// No code is translated from these sources.
+
 //! Reads of a window into a buffer of another size, resampled as GDAL's `RasterIO` resamples
 //! them with a method other than nearest neighbour (`GDALRasterBand::RasterIOResampled` and
 //! `GDALDataset::RasterIOResampled`, gcore/rasterio.cpp), pixel for pixel: the same kernels as

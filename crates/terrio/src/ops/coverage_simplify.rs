@@ -15,6 +15,11 @@
 //     modules/core/src/main/java/org/locationtech/jts/coverage/CornerArea.java
 //     modules/core/src/main/java/org/locationtech/jts/simplify/LinkedLine.java
 //     modules/core/src/main/java/org/locationtech/jts/geom/Triangle.java
+//
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_vector_simplify_coverage.cpp
+// No code is translated from these sources.
 
 //! Topology-preserving Visvalingam-Whyatt simplification of shared coverage edges.
 //! Reference: GDAL 3.13.3 with GEOS 3.14.1.

@@ -13,6 +13,12 @@
 //     modules/core/src/main/java/org/locationtech/jts/coverage/CoveragePolygon.java
 //     modules/core/src/main/java/org/locationtech/jts/algorithm/PolygonNodeTopology.java
 //     modules/core/src/main/java/org/locationtech/jts/geom/LineSegment.java
+//     modules/core/src/main/java/org/locationtech/jts/geom/Quadrant.java
+//
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_vector_check_coverage.cpp
+// No code is translated from these sources.
 
 //! Polygon coverage validation. Predicates use planar XY coordinates and gap
 //! distances use the layer's coordinate units. Each input polygon must itself be

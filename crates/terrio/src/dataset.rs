@@ -1,3 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (c) 1998, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2008-2012, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.1:
+//     port/cpl_vsisimple.cpp
+//
+// Written to match the behavior of:
+//   GDAL v3.12.1:
+//     frmts/gtiff/gtiffdataset_write.cpp
+// No code is translated from these sources.
+
 //! Opening, reading and writing datasets.
 
 use crate::crs::SpatialRef;

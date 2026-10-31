@@ -9,8 +9,9 @@ terrio follows the REUSE specification (https://reuse.software). Each source fil
 another project's source files starts with SPDX headers: the copyright lines of those source
 files, copied verbatim, the licenses that apply, and the files it was translated or adapted from.
 Files written to match another program's behavior, without translating its code, say so in a
-comment. REUSE.toml records the copyright and license of the other files, and LICENSES/ holds the
-license texts. The sections below gather, project by project, the derived files, the copyright
+comment. The REUSE.toml of the terrio repository (https://github.com/opengeos/terrio) records the
+copyright and license of the other files, and its LICENSES/ directory holds the license texts.
+The sections below gather, project by project, the derived files, the copyright
 notices of their sources and the license terms.
 
 -------------------------------------------------------------------------------
@@ -20,6 +21,7 @@ GDAL (https://github.com/OSGeo/gdal)
 Terrio files derived from GDAL source files (each file's header names them):
   crates/terrio-crs/src/lib.rs
   crates/terrio/src/cog_validate.rs
+  crates/terrio/src/dataset.rs
   crates/terrio/src/drivers/gdal_overview.rs
   crates/terrio/src/drivers/grib.rs
   crates/terrio/src/drivers/grib/grib1.rs
@@ -544,7 +546,7 @@ The copyright notices of those source files:
 Licensed under the Mozilla Public License, Version 2.0 (MPL-2.0). The source of the
 Terrio file derived from Eigen is available under the MPL-2.0 at
 https://github.com/opengeos/terrio; the MPL-2.0 text is at
-https://www.mozilla.org/MPL/2.0/ and in LICENSES/MPL-2.0.txt.
+https://www.mozilla.org/MPL/2.0/.
 
 -------------------------------------------------------------------------------
 rasterio (https://github.com/rasterio/rasterio)
@@ -1368,8 +1370,7 @@ crates/terrio-crs/data/epsg.tsv.zst, datums.tsv.zst, epsg_vertical.tsv.zst and p
 and the EPSG definitions in crates/terrio-crs/data/esri.tsv.zst, are derived from the EPSG
 Geodetic Parameter Dataset (https://epsg.org), owned by the International Association of Oil &
 Gas Producers (IOGP), through PROJ's database and GDAL. They are redistributed under the EPSG
-Dataset Terms of Use (https://epsg.org/terms-of-use.html, reproduced in
-LICENSES/LicenseRef-EPSG.txt), with this attribution. They are not the EPSG Dataset itself, and
+Dataset Terms of Use (https://epsg.org/terms-of-use.html), with this attribution. They are not the EPSG Dataset itself, and
 terrio is not endorsed by IOGP. The EPSG method and parameter names and codes in
 crates/terrio-crs/src/projjson_write.rs and crates/terrio/src/drivers/vector/projjson.rs come
 from the same dataset.
@@ -1409,7 +1410,7 @@ seed-igh, seed-ob_tran-moll, method-qsc, method-healpix and method-rhealpix nume
 ddd9fac70ec370acd9651ebb8b46035207347ad5, generated with PROJ 9.9.0.
 The CRS-study oracle version is retained separately from projection-suite data.
 The repository carries no license yet; terrio has asked its author for one (see
-LICENSES/LicenseRef-rust-proj-capability.txt).
+LICENSES/LicenseRef-rust-proj-capability.txt in https://github.com/opengeos/terrio).
 
 -------------------------------------------------------------------------------
 ras-commander-fast-hdf test fixtures
