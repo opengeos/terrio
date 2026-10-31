@@ -350,3 +350,24 @@ observed details: simplified rings can reach three distinct vertices (four with
 closure), single-part MultiPolygons retain their geometry type, and small holes
 and polygon parts are retained. The port follows those independently tested
 GDAL behaviors.
+## Polygon coverage cleaning
+
+`ops/coverage_clean.rs` adapts `coverage/CoverageCleaner.java`,
+`coverage/CleanCoverage.java`, `noding/snap/SnappingNoder.java`,
+`SnappingIntersectionAdder.java`, `SnappingPointIndex.java`,
+`operation/polygonize/Polygonizer.java`, `dissolve/LineDissolver.java`,
+`edgegraph/EdgeGraph.java`, `edgegraph/HalfEdge.java` and
+`algorithm/construct/MaximumInscribedCircle.java` and
+`ExactMaxInscribedCircle.java` from JTS commit
+`3460207216f3091cd7f72d48d6ddd1b561b2b8fd`, under EDL-1.0 (BSD-3-Clause).
+It retains the snapping/noding, resultant-face classification, progressive overlap
+assignment and enclosed-gap merging stages. Rust R-trees replace the source's
+KD-tree/STRtree; indexed line intersections feed a directed planar graph.
+The line-dissolving stage merges degree-two chains using an origin-edge stack
+before polygonization. Vertex iteration uses a fixed insertion order rather than
+a randomized hash table. Progressive overlap assignment can consequently choose
+a different valid ownership from a particular reference hash traversal.
+The maximum-inscribed-circle radius predicate uses the source branch-and-bound
+search with relative radius tolerance 1e-4 and its iteration bound, plus direct
+triangle/convex-quadrilateral evaluation. The reference
+runtime is GDAL 3.13.3 / GEOS 3.14.1. Topology is XY; retained vertices keep Z and generated intersection Z is interpolated. Cleaned layers drop M.

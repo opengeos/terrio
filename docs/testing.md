@@ -59,6 +59,8 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Vector operations | `scripts/compare_vector_ops_with_gdal.py` | `ogr2ogr` filters, `gdal_rasterize` and `gdal_polygonize.py` |
 | Raster/vector pipelines | `scripts/compare_pipeline_with_gdal.py` (`pipeline`) | Composed operations, physical masks, unreferenced TIFFs, real USGS DEM/county inputs, and saved GDALG definitions produced by both implementations. Pixels and masks exact, affine transforms within 1e-12, CRS equivalence, vector schema/attributes/validity and topological geometry equality or explicit tolerances: polygon relative symmetric-difference area 1e-7 (buffer 5e-4), line relative length 1e-8 and bidirectional vertex distance 1e-7, point displacement 1e-8. Derived band statistics and descriptions are checked on controlled fixtures. |
 | Layer algebra | `scripts/compare_layer_algebra_with_gdal.py` (`layer-algebra`) | All seven operations, both lower-dimension settings, holes/collections/null/empty inputs and real projected Tennessee counties/Las Vegas roads. Schema, attributes, sequential IDs, CRS, geometry types and validity; exact normalized WKB or explicit polygon relative area tolerance 1e-7, line relative length 1e-8 with bidirectional vertex distance 1e-7 CRS units. |
+
+| Coverage cleaning | `scripts/compare_coverage_clean_with_gdal.py` (`coverage-clean`) | GDAL 3.13.3 / GEOS 3.14.1: real projected Tennessee counties, overlapping boundaries, duplicates, contained features, enclosed gaps/inlets, snapping and all four overlap merge strategies. Schema, attributes, IDs, feature types and CRS; exact normalized WKB when equal, otherwise relative symmetric-difference area tolerance 1e-8. GDAL independently checks output coverage validity. Ordering-dependent results are reported separately: exact equivalent cyclic-input references or independent legal greedy-merge witnesses on GDAL-polygonized faces, with unchanged union and output correspondence. These cases do not claim per-feature geometry equality. |
 | Vector topology | `scripts/compare_topology_with_gdal.py` | Tennessee county polygons and Las Vegas roads projected to metre-based CRSs: buffer, all four polygon overlays, dissolve, validity, repair of a deliberately corrupted county boundary and snap cleanup against GDAL/GEOS; attributes, source IDs and CRS, with relative symmetric-difference area tolerance 1e-7 (5e-4 for buffer curves). Registered in conformance as `topology`. |
 | Vector dataset commands | `scripts/compare_vector_dataset_with_gdal.py` | `concat` (all modes, source-layer fields, intersection, reprojection; also `ogrmerge.py -single`), `partition` (Hive and flat, string and integer fields, feature limits, patterns), `set-field-type` (a 77-conversion matrix of edge values, every type to every type, and conversions of real fields), `make-point` (GPS trace, places with Z), `create` (`--like`, `--schema`, fields) and `export-schema` (GeoPackage, Shapefile, GeoJSON, FlatGeobuf, GeoParquet) plus `rename-layer`, `edit` and `update`, against GDAL 3.13.3's vector commands/API, OGRLayer::Rename and `ogrinfo -json`; GeoPackage validity and R-tree checks: values exact, coordinates within 1e-9 degrees (or 1e-6 metres) after reprojection; Int16, Float32 and JSON subtypes are reported within tolerance. Registered in conformance as `vector-dataset`. |
 | Terrain and raster algebra | `scripts/compare_dem_calc_with_gdal.py` | every `gdaldem` mode and option, `gdal_calc.py` expressions, types, nodata and extents, `gdal_proximity.py`, `gdal_sieve.py` |
@@ -1787,3 +1789,23 @@ segment envelopes. High-degree hubs can therefore require quadratic work.
 Single local optimized CLI runs on 1,000 and 2,000 unit spokes meeting at one
 vertex took 0.279 and 1.358 seconds, including I/O. Both outputs retained all
 spokes and total length; these measurements do not establish a latency bound.
+
+
+## Coverage-cleaning runtime observation
+
+Three warm local command runs with GDAL 3.13.3-derived inputs measured median
+wall time, including reading and writing GeoPackages. The 95 Tennessee counties
+were projected to EPSG:5070 (176,128-byte input); applying a 10-metre buffer to
+each produced interacting overlaps (831,488-byte input). `clean-coverage` used
+default snapping and no gap filling. The four strategies measured:
+
+| Input | longest-border | max-area | min-area | min-index |
+|---|---:|---:|---:|---:|
+| 95 counties | 0.025 s | 0.025 s | 0.026 s | 0.025 s |
+| 95 buffered counties | 0.380 s | 0.328 s | 0.331 s | 0.331 s |
+
+These are observations from one local machine with warm files, not portable
+performance thresholds or cold/remote I/O measurements. The conformance suite
+also includes a 0.25-unit sliver next to a wider polygon with snapping distance
+1: all four strategies are compared against GDAL, checking original-input face
+classification after the sliver collapses.

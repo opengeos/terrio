@@ -122,6 +122,8 @@ enum Command {
     CheckCoverage(cmd::processing::CheckCoverageArgs),
     /// Simplify shared polygon coverage boundaries while preserving topology.
     SimplifyCoverage(cmd::processing::SimplifyCoverageArgs),
+    /// Snap shared boundaries and remove overlaps and enclosed narrow gaps from polygon coverages.
+    CleanCoverage(cmd::processing::CleanCoverageArgs),
     /// Snap, deduplicate, close rings, remove collapsed parts and repair polygon topology.
     Clean(cmd::processing::CleanArgs),
     /// Topology-preserving Douglas-Peucker simplification per feature (like gdal vector
@@ -344,6 +346,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::MakeValid(a) => cmd::processing::make_valid(a),
         Command::CheckCoverage(a) => cmd::processing::check_coverage(a),
         Command::SimplifyCoverage(a) => cmd::processing::simplify_coverage(a),
+        Command::CleanCoverage(a) => cmd::processing::clean_coverage(a),
         Command::Clean(a) => cmd::processing::clean(a),
         Command::Simplify(a) => cmd::vector_geom::simplify(a),
         Command::Segmentize(a) => cmd::vector_geom::segmentize(a),
