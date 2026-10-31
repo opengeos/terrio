@@ -2855,6 +2855,8 @@ test("rasterTiles streams encoded files and planRasterTiles reads metadata", () 
   const options = {tilingScheme: "raster", grid: {tileSize: 2}, resampling: "nearest"};
   const plan = terrio.planRasterTiles(raster, options);
   assert.equal(plan.levels.length, 1);
+  assert.equal(plan.crs, "EPSG:4326");
+  assert.throws(() => terrio.planRasterTiles(raster, {...options, resampling: "not-a-resampler"}), /resampling/i);
   let count = 0;
   const report = terrio.rasterTiles(raster, options, (name, bytes) => {
     assert.match(name, /^1\/\d+\/\d+\.png$/);

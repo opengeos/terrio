@@ -362,8 +362,9 @@ mod tests {
         assert_eq!(l.lut.unwrap(), vec![0, 1, 3, 3]);
     }
 
+    /// Reference: GDAL 3.13.
     #[test]
-    fn nan_nodata_uses_first_lut_bin_like_gdal_313() {
+    fn nan_nodata_uses_first_lut_bin_like_gdal() {
         let grid = super::super::Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
         let ds = super::super::build_raster_data(grid, RasterData::F32(vec![f32::NAN]), 1, Some(f64::NAN), &Default::default()).unwrap();
         let luts = vec![BandLut { min: 0., max: 8., lut: Some((0..256).rev().collect()) }];
@@ -371,16 +372,18 @@ mod tests {
         assert_eq!(out.raster.data.to_f64_vec(), vec![255.]);
     }
 
+    /// Reference: GDAL 3.13.
     #[test]
-    fn byte_lut_values_wrap_like_gdal_313() {
+    fn byte_lut_values_wrap_like_gdal() {
         let grid = super::super::Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
         let ds = super::super::build_raster_data(grid, RasterData::U8(vec![1]), 1, None, &Default::default()).unwrap();
         let luts = vec![BandLut { min: 0., max: 16., lut: Some(vec![300; 256]) }];
         assert_eq!(enhance(&ds, &luts, &EnhanceOptions::default()).unwrap().raster.data.to_f64_vec(), vec![44.]);
     }
 
+    /// Reference: GDAL 3.13.
     #[test]
-    fn byte_nodata_conversion_matches_gdal_313_reference_build() {
+    fn byte_nodata_conversion_matches_gdal_reference_build() {
         for (nodata, expected) in [(-9999., 241.), (300., 44.), (1e30, 0.), (f64::INFINITY, 0.)] {
             let grid = super::super::Grid { width: 2, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
             let ds =

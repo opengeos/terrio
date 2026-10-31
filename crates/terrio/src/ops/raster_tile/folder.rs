@@ -92,8 +92,9 @@ fn format(options: &TileOptions) -> Result<(crate::formats::RasterDriver, &'stat
 
 /// Plan from source metadata only. Global schemes use the warp engine's suggested
 /// output resolution and densified source perimeter; raster grids require north-up affine input.
+/// Validates rendering choices available from metadata, without reading source pixels.
 pub fn plan(source: &RasterDataset, options: &TileOptions) -> Result<(TilePlan, Option<SpatialRef>)> {
-    format(options)?;
+    let (_, extension) = format(options)?;
     let r = &source.raster;
     if source.complex || r.bands == 0 {
         return Err(Error::Unsupported("folder tiles require non-complex raster bands".into()));
@@ -101,9 +102,13 @@ pub fn plan(source: &RasterDataset, options: &TileOptions) -> Result<(TilePlan, 
     if source.geolocation.is_some() || !source.gcps.is_empty() {
         return Err(Error::Unsupported("folder tiling currently requires affine georeferencing".into()));
     }
+    validate_rendering(source, options, extension)?;
     let scheme = options.tiling_scheme.to_ascii_lowercase();
     if scheme == "raster" {
-        return Ok((TilePlan::raster(r.cols, r.rows, source.geo_transform(), &options.grid)?, None));
+        let mut plan = TilePlan::raster(r.cols, r.rows, source.geo_transform(), &options.grid)?;
+        let crs = source.crs();
+        plan.crs = crs.authority_code().or_else(|| crs.to_wkt()).or(crs.proj4);
+        return Ok((plan, None));
     }
     if source.crs().is_unknown() {
         return Err(invalid("global tile schemes require a source CRS"));
@@ -390,7 +395,13 @@ fn finish_color(ds: &RasterDataset, dtype: DataType, alpha: bool, nodata: Option
             values[bands * n + i] = a.clamp(0.0, 1.0) * alpha_max(dtype);
         }
     }
-    let data = crate::ops::bands_data(&values.chunks(n).map(<[f64]>::to_vec).collect::<Vec<_>>(), n, dtype, crate::ops::convert_value);
+    let chunk_len = crate::par::chunk_len(values.len(), 1 << 16);
+    crate::par::chunks_mut(&mut values, chunk_len, |_, chunk| {
+        for value in chunk {
+            *value = crate::ops::convert_value(*value, dtype);
+        }
+    });
+    let data = RasterData::from_f64_vec(dtype, values);
     let mut out = crate::ops::derived(ds, data, bands + usize::from(alpha))?;
     out.has_nodata = !alpha && nodata.is_some();
     if let Some(nd) = nodata {
@@ -524,6 +535,35 @@ mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    fn metadata_plans_retain_crs_and_reject_unrenderable_options() {
+        let mut dataset = source().header();
+        dataset.raster.crs = SpatialRef::from_epsg(32633).unwrap().to_crs_info();
+        let (planned, _) = plan(&dataset, &options()).unwrap();
+        assert_eq!(planned.crs.as_deref(), Some("EPSG:32633"));
+        assert!(plan(&source().header(), &options()).unwrap().0.crs.is_none());
+        for (scheme, expected) in [(GlobalScheme::WebMercatorQuad, "EPSG:3857"), (GlobalScheme::WorldCrs84Quad, "EPSG:4326")] {
+            let planned = TilePlan::global(scheme, [0., 0., 1., 1.], 1., &options().grid).unwrap();
+            assert_eq!(planned.crs.as_deref(), Some(expected));
+        }
+        let local = SpatialRef::from_wkt(
+            r#"LOCAL_CS["Custom local grid",LOCAL_DATUM["arbitrary",0],UNIT["metre",1],AXIS["x",EAST],AXIS["y",NORTH]]"#,
+        );
+        let mut custom = dataset.clone();
+        custom.raster.crs = local.to_crs_info();
+        assert!(plan(&custom, &options()).unwrap().0.crs.unwrap().contains("Custom local grid"));
+        for options in [
+            TileOptions { resampling: "not-a-resampler".into(), ..options() },
+            TileOptions { overview_resampling: Some("not-a-resampler".into()), ..options() },
+            TileOptions { output_nodata: Some(256.), ..options() },
+        ] {
+            assert!(plan(&dataset, &options).is_err());
+        }
+        dataset.raster.data_type = DataType::U64;
+        let options = TileOptions { format: "GTiff".into(), alpha: Some(true), ..options() };
+        assert!(plan(&dataset, &options).is_err());
+    }
+
     #[test]
     fn global_schemes_require_a_known_source_crs() {
         let ds = source().header();

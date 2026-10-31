@@ -18,6 +18,7 @@ def test_folder_tiles(tmp_path, kind):
     options = dict(tiling_scheme="raster", grid={"tile_size": 2}, resampling="nearest")
     plan = terrio.raster_tiles(raster, output, dry_run=True, **options)
     assert len(plan["levels"]) == 1
+    assert plan["crs"] == "EPSG:4326"
     assert not output.exists()
     report = terrio.raster_tiles(raster, output, **options)
     assert report["written"] == 6
@@ -88,3 +89,21 @@ def test_geotiff_dataset_masks_are_retained(tmp_path, gdal, dtype, alpha_source)
     np.testing.assert_array_equal(tile.read(1), [[7, 0], [7, 7]])
     np.testing.assert_array_equal(tile.read_mask(), [[255, 0], [255, 255]])
     assert tile.nodata is None
+
+
+@pytest.mark.parametrize(
+    "invalid_option",
+    [
+        {"resampling": "not-a-resampler"},
+        {"overview_resampling": "not-a-resampler"},
+        {"output_nodata": 256},
+    ],
+)
+def test_dry_run_rejects_invalid_rendering_choices(tmp_path, invalid_option):
+    raster = terrio.Raster.from_array(
+        np.ones((1, 2, 2), dtype="uint8"), (0, 1, 0, 2, 0, -1), crs="EPSG:3857"
+    )
+    output = tmp_path / "not-created"
+    with pytest.raises(Exception, match="resampling|nodata"):
+        terrio.raster_tiles(raster, output, dry_run=True, tiling_scheme="raster", **invalid_option)
+    assert not output.exists()

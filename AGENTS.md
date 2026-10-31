@@ -13,6 +13,10 @@ optional backend and a reference for conformance testing.
   opened or bytes transferred when changing I/O behavior.
 - Attribute algorithm ports and copied code with SPDX headers (REUSE) and in the applicable
   `NOTICE` files; see "Credit what you port" in `docs/contributing.md`.
+- Name identifiers, including tests, after behavior (`Float32Terrain`,
+  `slope_f32`). Record a reference GDAL version in a doc comment. Version numbers
+  belong in names only when a public selector chooses that version, such as
+  `KernelVersion::Gdal313`.
 - Read `docs/testing.md` for validation and `ROADMAP.md` for planned scope. Read
   `docs/gdal-parity-recommendations.md` when working on GDAL feature parity.
 

@@ -682,8 +682,9 @@ mod tests {
         assert!(palette_to_rgb(&source, true).unwrap_err().to_string().contains("overflow"));
     }
 
+    /// Reference: GDAL 3.13.3.
     #[test]
-    fn median_cut_and_diffusion_match_independent_gdal_3133_fixture() {
+    fn median_cut_and_diffusion_match_independent_gdal_fixture() {
         // Three bands of a GDAL-written 3x2 TIFF; reference outputs come from
         // `gdal raster rgb-to-palette --color-count 3 --bit-depth 5|8`.
         let red = [0, 32, 64, 255, 240, 12];
