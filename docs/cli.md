@@ -2998,6 +2998,11 @@ and pass GDAL coverage validation. Per-feature geometric equality is not claimed
 for these cases; Polygon/MultiPolygon types may follow the differing owners.
 The ordinary per-feature geometric tolerance is not widened.
 
+Cleaning infers output geometry declarations from the result. A one-part result
+is Polygon, including when the input GeoPackage declares MultiPolygon. This
+reflects the topology operation's Polygon collapse; coverage simplification
+separately supports preserving its input declaration.
+
 ## Separate-file raster tiles
 
 `terrio tile INPUT OUTPUT_DIR` writes separate `z/x/y.png` tiles. The default
