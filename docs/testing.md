@@ -139,7 +139,10 @@ python scripts/conformance.py ../terrio-data --only rpftoc --strict
 ```
 
 Selecting these tests without the required files fails; it does not silently pass.
-The polar sample is pinned to the GDAL 3.13.3 commit and its SHA-256 digest is
+Fixture preparation compares every frame inventory with a fresh GDAL export;
+missing frames are restored without replacing existing files, and unexpected
+frame names are rejected. Counts may vary with source placement and are not
+hardcoded. The polar sample is pinned to the GDAL 3.13.3 commit and its SHA-256 digest is
 verified both after download and when using an existing fixture.
 
 The direct analysis bindings use the existing materialized raster engines. A cold-cache

@@ -3,6 +3,8 @@
 
 import argparse
 import hashlib
+import shutil
+import tempfile
 from pathlib import Path
 import urllib.request
 
@@ -25,6 +27,33 @@ def verify_polar(path):
         )
 
 
+def install_frame_inventory(root, generated, pattern):
+    """Compare with a fresh GDAL export; fill missing frames without replacing files."""
+    expected = {path.relative_to(generated) for path in generated.rglob(pattern)}
+    present = {path.relative_to(root) for path in root.rglob(pattern)}
+    if not expected or present - expected:
+        raise RuntimeError(f"unexpected RPF fixture inventory in {root}")
+    for path in sorted(generated.rglob("*")):
+        if path.is_file():
+            target = root / path.relative_to(generated)
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, target)
+    if {path.relative_to(root) for path in root.rglob(pattern)} != expected:
+        raise RuntimeError(f"incomplete RPF fixture inventory in {root}")
+
+
+def export_frames(root, source, options, pattern):
+    # Counts depend on the source's exact position, so never assume a fixed count.
+    with tempfile.TemporaryDirectory(prefix="terrio-rpf-reference-") as temp:
+        generated = Path(temp) / "frames"
+        output = gdal.GetDriverByName("NITF").CreateCopy(
+            str(generated), source, options=options
+        )
+        output.Close()
+        install_frame_inventory(root, generated, pattern)
+
+
 def prepare(data):
     if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
         raise RuntimeError("RPF fixture creation needs GDAL >= 3.13")
@@ -42,24 +71,18 @@ def prepare(data):
         ("rpftoc_fractional3500000", "WI", 3500000),
     ]:
         root = data / relative
-        if not any(root.rglob(f"*.{series}2")):
-            if root.exists():
-                raise RuntimeError(
-                    f"refusing to overwrite incomplete fixture directory {root}"
-                )
-            root.parent.mkdir(parents=True, exist_ok=True)
-            output = gdal.GetDriverByName("NITF").CreateCopy(
-                str(root),
-                source,
-                options=[
-                    "PRODUCT_TYPE=CADRG",
-                    f"SERIES_CODE={series}",
-                    f"SCALE={scale}",
-                    "ZONE=2",
-                    "RESAMPLING=NEAREST",
-                ],
-            )
-            output.Close()
+        export_frames(
+            root,
+            source,
+            [
+                "PRODUCT_TYPE=CADRG",
+                f"SERIES_CODE={series}",
+                f"SCALE={scale}",
+                "ZONE=2",
+                "RESAMPLING=NEAREST",
+            ],
+            f"*.{series}2",
+        )
     polar = data / "rpftoc_polar/RPF/ZONE9/00027010.ON9"
     if not polar.exists():
         polar.parent.mkdir(parents=True, exist_ok=True)
@@ -75,11 +98,6 @@ def prepare(data):
     # Independent synthetic checks for frames containing the geographic poles.
     for label, zone, latitude in [("north", "9", 89.9), ("south", "J", -89.8)]:
         root = data / "rpftoc_pole_centers" / (label + "-rgb")
-        if any(root.rglob("*.ON" + zone)):
-            continue
-        if root.exists():
-            raise RuntimeError(f"refusing to overwrite incomplete polar fixture {root}")
-        root.parent.mkdir(parents=True, exist_ok=True)
         ds = gdal.GetDriverByName("MEM").Create("", 30, 30, 3, gdal.GDT_Byte)
         ds.SetGeoTransform((-2, 4 / 30, 0, latitude, 0, -0.1 / 30))
         crs = osr.SpatialReference()
@@ -93,17 +111,17 @@ def prepare(data):
             ds.GetRasterBand(band).WriteArray(
                 (np.arange(900).reshape(30, 30) % 127 + band * 10).astype("uint8")
             )
-        output = gdal.GetDriverByName("NITF").CreateCopy(
-            str(root),
+        export_frames(
+            root,
             ds,
-            options=[
+            [
                 "PRODUCT_TYPE=CADRG",
                 "SERIES_CODE=ON",
                 "SCALE=1000000",
                 "ZONE=" + zone,
             ],
+            "*.ON" + zone,
         )
-        output.Close()
 
 
 if __name__ == "__main__":

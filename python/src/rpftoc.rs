@@ -19,6 +19,8 @@ fn options(scale: Option<u32>, producer_id: &str, producer_name: &str, country_c
 }
 /// Recursively index existing CADRG frames, returning counts and metadata bytes read.
 /// The output defaults to input/A.TOC; its parent must be input or an ancestor.
+/// Directory trees must remain stable; atomic overwrite preserves Unix mode bits,
+/// not ownership, extended ACLs or extended attributes.
 #[pyfunction]
 #[pyo3(signature=(input, output=None, *, scale=None, producer_id="TERRI", producer_name="Terrio", country_code="", classification='U', overwrite=false))]
 #[allow(clippy::too_many_arguments)]
@@ -69,12 +71,16 @@ fn rpftoc_bytes<'py>(
         return Err(crate::invalid("at most 100000 frames are accepted"));
     }
     let frames: Vec<(String, Py<PyBytes>)> = frames.extract()?;
-    // Borrow only the required metadata ranges from uploaded Python bytes.
-    let frames = frames
-        .iter()
-        .map(|(name, bytes)| rpftoc::read_frame(name, &mut std::io::Cursor::new(bytes.bind(py).as_bytes())))
-        .collect::<terrio::Result<Vec<_>>>()
+    // Immutable PyBytes owners remain alive while the GIL is released.
+    let inputs: Vec<_> = frames.iter().map(|(name, bytes)| (name.as_str(), bytes.as_bytes(py))).collect();
+    let bytes = py
+        .detach_result(|| {
+            let metadata = inputs
+                .iter()
+                .map(|(name, bytes)| rpftoc::read_frame(name, &mut std::io::Cursor::new(bytes)))
+                .collect::<terrio::Result<Vec<_>>>()?;
+            rpftoc::encode(&metadata, &options)
+        })
         .py()?;
-    let bytes = py.detach_result(|| rpftoc::encode(&frames, &options)).py()?;
     Ok(PyBytes::new(py, &bytes))
 }

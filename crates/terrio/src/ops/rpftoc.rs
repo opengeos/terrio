@@ -1,6 +1,7 @@
-// SPDX-FileCopyrightText: 2026 Qiusheng Wu
-// SPDX-FileCopyrightText: 2026 T-Kartor
+// SPDX-FileCopyrightText: Copyright (c) 2026, T-Kartor
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
+// Derived from GDAL 3.13.3 frmts/nitf/rpftocwriter.cpp and rpfframewriter.cpp (MIT).
 //! Metadata-only CADRG frame inspection for RPF table-of-contents creation.
 //!
 //! Reference: GDAL 3.13.3, frmts/nitf/rpftocwriter.cpp and rpfframewriter.cpp
@@ -113,6 +114,10 @@ pub struct RpfTocReport {
 /// input/A.TOC). Symlinks are skipped. Output must be in the input directory or
 /// one of its ancestors, keeping all frame references traversal-free and portable.
 /// All frames and the complete TOC are validated before creating the temporary file.
+/// Input/output directory trees must remain stable during the call; callers must
+/// synchronize concurrent directory changes. This is not a filesystem confinement
+/// boundary. Atomic overwrite preserves Unix mode bits, not ownership, extended
+/// ACLs or extended attributes.
 #[cfg(not(target_family = "wasm"))]
 pub fn create(input: &std::path::Path, output: Option<&std::path::Path>, options: &RpfTocOptions, overwrite: bool) -> Result<RpfTocReport> {
     native::create(input, output, options, overwrite)

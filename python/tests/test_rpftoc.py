@@ -49,6 +49,7 @@ def frame_metadata():
     header += struct.pack(">12d", *coverage)
     header += bytes([0, 1, 0, 36, 0, 1, 0, 1, 0, 6, 0, 6])
     header += struct.pack(">II", 256, 256)
+    header[342:354] = f"{len(header):012}".encode()
     return bytes(header)
 
 
@@ -104,3 +105,31 @@ def test_index_cannot_downgrade_the_nitf_frame_classification():
 def test_frame_limit_is_checked_before_extracting_items():
     with pytest.raises(ValueError, match="100000"):
         terrio.rpftoc_bytes([object()] * 100001)
+
+
+def test_truncated_payload_and_windows_device_paths_are_rejected():
+    metadata = bytearray(frame_metadata())
+    metadata += b"payload"
+    metadata[342:354] = f"{len(metadata):012}".encode()
+    assert terrio.rpftoc_bytes([("zone/000C9010.ON2", bytes(metadata))])
+    with pytest.raises(ValueError, match="file length"):
+        terrio.rpftoc_bytes([("zone/000C9010.ON2", bytes(metadata[:-1]))])
+    for name in [
+        "CON/000C9010.ON2",
+        "aux.txt/000C9010.ON2",
+        "COM1/000C9010.ON2",
+        "COM¹/000C9010.ON2",
+    ]:
+        with pytest.raises(ValueError, match="relative paths"):
+            terrio.rpftoc_bytes([(name, bytes(metadata))])
+
+
+def test_custom_83_output_name_can_be_replaced(tmp_path):
+    (tmp_path / "000C9010.ON2").write_bytes(frame_metadata())
+    output = tmp_path / "INDEX001.TOC"
+    output.write_bytes(b"placeholder")
+    first = terrio.rpftoc_create(tmp_path, output, overwrite=True)
+    second = terrio.rpftoc_create(tmp_path, output, overwrite=True)
+    assert first == second
+    assert first["frames"] == 1 and first["skipped_files"] == 0
+    assert output.read_bytes().startswith(b"NITF02.00")

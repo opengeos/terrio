@@ -92,3 +92,50 @@ def test_mcp_reply_deadline_terminates_a_stalled_server():
             mcp_report(Path("unused"), [], timeout=0.05)
     assert processes[0].poll() is not None
     assert time.monotonic() - start < 4
+
+
+def test_partial_generated_fixture_is_repaired_without_replacing_existing_files(
+    tmp_path,
+):
+    from make_rpftoc_fixtures import install_frame_inventory
+
+    generated, target = tmp_path / "generated", tmp_path / "target"
+    generated.mkdir()
+    target.mkdir()
+    for name in ["00000000.ON2", "00000001.ON2"]:
+        (generated / name).write_bytes(name.encode())
+    (target / "00000000.ON2").write_bytes(b"keep existing frame")
+    install_frame_inventory(target, generated, "*.ON2")
+    assert (target / "00000000.ON2").read_bytes() == b"keep existing frame"
+    assert (target / "00000001.ON2").read_bytes() == b"00000001.ON2"
+    (target / "00000002.ON2").write_bytes(b"unexpected")
+    with pytest.raises(RuntimeError, match="unexpected RPF fixture inventory"):
+        install_frame_inventory(target, generated, "*.ON2")
+
+
+def test_missing_rpf_reference_capability_skips_suite(monkeypatch, tmp_path):
+    import conformance
+    import sys
+    from types import SimpleNamespace
+    from osgeo import gdal
+
+    monkeypatch.setitem(sys.modules, "terrio", SimpleNamespace(rpftoc_bytes=True))
+    monkeypatch.setattr(conformance, "missing_modules", lambda *args: [])
+    monkeypatch.setattr(gdal, "VersionInfo", lambda *args: "3130300")
+    monkeypatch.setattr(gdal, "GetDriverByName", lambda *args: None)
+    suite = conformance.suite_rpftoc(SimpleNamespace(data=tmp_path))
+    assert "NITF/RPFTOC" in suite.skipped and not suite.cases
+
+
+def test_optional_node_probe_checks_wasm_and_exports(tmp_path):
+    import shutil
+    from conformance import node_exports_available
+
+    if shutil.which("node") is None:
+        pytest.skip("Node is unavailable")
+    module = tmp_path / "terrio.js"
+    module.write_text("module.exports={rpftocCreate(){}}")
+    assert not node_exports_available(module, ["rpftocCreate"])
+    module.with_name("terrio_bg.wasm").touch()
+    assert node_exports_available(module, ["rpftocCreate"])
+    assert not node_exports_available(module, ["missingExport"])

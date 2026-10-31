@@ -2146,14 +2146,21 @@ def suite_rpftoc(ctx):
     if int(gdal.VersionInfo("VERSION_NUM")) < 3130000 or not hasattr(terrio, "rpftoc_bytes"):
         suite.skipped = "needs GDAL >= 3.13 and current RPF Python bindings"
         return suite
+    driver_algorithm = gdal.GetGlobalAlgorithmRegistry().InstantiateAlg("driver")
+    if (gdal.GetDriverByName("NITF") is None or gdal.GetDriverByName("RPFTOC") is None
+            or "rpftoc" not in driver_algorithm.GetSubAlgorithmNames()):
+        suite.skipped = "needs GDAL NITF/RPFTOC drivers and the rpftoc algorithm"
+        return suite
     if any(not (Path(ctx.data) / directory).is_dir() for directory in ["rpftoc_landsat", "rpftoc_polar", "rpftoc_fractional3500000", "rpftoc_pole_centers/north-rgb", "rpftoc_pole_centers/south-rgb"]):
         suite.skipped = "run scripts/make_rpftoc_fixtures.py DATA to prepare CADRG references"
         return suite
     command = [sys.executable, str(SCRIPTS / "compare_rpftoc_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"]
     module = ROOT / "js" / "pkg-node" / "terrio.js"
-    node = shutil.which("node") is not None and module.is_file()
+    node = node_exports_available(module, ["rpftocCreate"])
     if node:
         command += ["--js", module]
+    else:
+        suite.cases.append(Case("RPFTOC", "Node backend", SKIPPED, "needs Node and both js/pkg-node/terrio.js and terrio_bg.wasm"))
     code, out, err = run(command)
     try:
         results = json.loads(out)

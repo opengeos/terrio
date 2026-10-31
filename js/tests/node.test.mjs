@@ -3270,7 +3270,10 @@ test("rpftocCreate indexes bounded frame metadata and rejects inconsistent optio
   const bytes = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let offset = 0; for (const p of parts) { bytes.set(p, offset); offset += p.length; }
   bytes.set(encoder.encode(String(location).padStart(6,"0")),354);
+  bytes.set(encoder.encode(String(bytes.length).padStart(12,"0")),342);
   const frames = [{filename:"zone/000C9010.ON2",bytes}];
+  assert.throws(()=>terrio.rpftocCreate([{filename:"CON/000C9010.ON2",bytes}],{}),/relative/);
+  assert.throws(()=>terrio.rpftocCreate([{filename:"zone/000C9010.ON2",bytes:bytes.subarray(0,bytes.length-1)}],{}),/file length/);
   const output = terrio.rpftocCreate(frames, {countryCode:"US"});
   assert.notDeepStrictEqual(output,terrio.rpftocCreate(frames,{}));
   const ascii = data => new TextDecoder().decode(data);

@@ -1,6 +1,6 @@
-// SPDX-FileCopyrightText: 2026 Qiusheng Wu
-// SPDX-FileCopyrightText: 2002 Frank Warmerdam
-// SPDX-FileCopyrightText: 2007-2013 Even Rouault
+// SPDX-FileCopyrightText: Copyright (c) 2002, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //! CADRG scale catalogue from GDAL 3.13.3 frmts/nitf/nitffile.cpp.
 //! Entries whose scale is variable require an explicit caller-supplied scale.

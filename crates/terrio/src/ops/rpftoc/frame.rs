@@ -1,6 +1,7 @@
-// SPDX-FileCopyrightText: 2026 Qiusheng Wu
-// SPDX-FileCopyrightText: 2026 T-Kartor
+// SPDX-FileCopyrightText: Copyright (c) 2026, T-Kartor
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
+// Derived from GDAL 3.13.3 frmts/nitf/rpftocwriter.cpp and rpfframewriter.cpp (MIT).
 //! Bounded NITF/RPF metadata inspection; GDAL 3.13.3 is the conformance reference.
 use super::{RpfFrame, invalid};
 use crate::{Error, Result};
@@ -77,12 +78,22 @@ fn rpf_header(header: &[u8], segment_start: usize) -> Result<&[u8]> {
     found.ok_or_else(|| invalid("no RPFHDR in the NITF file header"))
 }
 
+fn reserved_component(part: &str) -> bool {
+    let stem = part.split('.').next().unwrap_or(part).trim_end_matches(' ');
+    if ["CON", "PRN", "AUX", "NUL"].iter().any(|name| stem.eq_ignore_ascii_case(name)) {
+        return true;
+    }
+    // Win32 also recognizes ISO-8859-1 superscript digits as device suffixes.
+    stem.get(..3).is_some_and(|prefix| prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+        && matches!(stem.get(3..), Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"))
+}
+
 pub(super) fn name_parts(relative_name: &str) -> Result<(u8, String)> {
     if relative_name.is_empty()
         || relative_name.len() > 4096
         || relative_name.starts_with('/')
         || relative_name.contains(['\\', '\0', ':'])
-        || relative_name.split('/').any(|part| part.is_empty() || part.ends_with(['.', ' ']))
+        || relative_name.split('/').any(|part| part.is_empty() || part.ends_with(['.', ' ']) || reserved_component(part))
     {
         return Err(Error::InvalidArgument("RPF frame names must be safe relative paths".into()));
     }
@@ -104,8 +115,7 @@ pub(super) fn name_parts(relative_name: &str) -> Result<(u8, String)> {
     Ok((zone, basename[9..11].to_ascii_uppercase()))
 }
 
-pub(super) fn read(relative_name: &str, reader: &mut (impl Read + Seek)) -> Result<RpfFrame> {
-    let (zone, series) = name_parts(relative_name)?;
+fn file_header(reader: &mut (impl Read + Seek)) -> Result<(u64, usize, Vec<u8>)> {
     let size = reader.seek(SeekFrom::End(0))?;
     let prefix = read_at(reader, size, 0, 360)?;
     let version = &prefix[..9];
@@ -113,12 +123,33 @@ pub(super) fn read(relative_name: &str, reader: &mut (impl Read + Seek)) -> Resu
         return Err(Error::Unsupported("RPF frame inspection requires NITF 2.0 or 2.1".into()));
     }
     let extra = if version == b"NITF02.00" && &prefix[280..286] == b"999998" { 40 } else { 0 };
+    let file_length = if extra == 0 { prefix[342..354].to_vec() } else { read_at(reader, size, 382, 12)? };
+    if !file_length.iter().all(u8::is_ascii_digit)
+        || std::str::from_utf8(&file_length).ok().and_then(|s| s.parse::<u64>().ok()) != Some(size)
+    {
+        return Err(invalid("NITF declared file length does not match the actual file size"));
+    }
     let header_length = if extra == 0 { decimal(&prefix[354..360])? } else { decimal(&read_at(reader, size, 394, 6)?)? };
     if !(363 + extra..=MAX_HEADER).contains(&header_length) {
         return Err(invalid("NITF header length exceeds its metadata budget"));
     }
     let mut header = prefix;
     header.extend(read_at(reader, size, 360, header_length - 360)?);
+    Ok((size, extra, header))
+}
+
+pub(super) fn is_toc(reader: &mut (impl Read + Seek)) -> Result<bool> {
+    let (_, extra, header) = file_header(reader)?;
+    if decimal(&header[360 + extra..363 + extra])? != 0 {
+        return Ok(false);
+    }
+    let rpf = rpf_header(&header, 360 + extra)?;
+    Ok(rpf[3..15].trim_ascii().eq_ignore_ascii_case(b"A.TOC"))
+}
+
+pub(super) fn read(relative_name: &str, reader: &mut (impl Read + Seek)) -> Result<RpfFrame> {
+    let (zone, series) = name_parts(relative_name)?;
+    let (size, extra, header) = file_header(reader)?;
     if decimal(&header[360 + extra..363 + extra])? != 1 {
         return Err(invalid("RPF frame requires exactly one NITF image segment"));
     }
@@ -236,6 +267,8 @@ pub(super) fn test_frame(coverage: [f64; 12]) -> Vec<u8> {
     bytes.extend_from_slice(&[0, 1, 0, 36, 0, 1, 0, 1, 0, 6, 0, 6]);
     bytes.extend_from_slice(&256u32.to_be_bytes());
     bytes.extend_from_slice(&256u32.to_be_bytes());
+    let length = bytes.len();
+    bytes[342..354].copy_from_slice(format!("{length:012}").as_bytes());
     bytes
 }
 
@@ -291,6 +324,29 @@ mod tests {
         for name in [".. /00000000.ON2", "zone./00000000.ON2", "zone /00000000.ON2", "./00000000.ON2", "../00000000.ON2"] {
             assert!(matches!(read(name, &mut Cursor::new(Vec::<u8>::new())), Err(Error::InvalidArgument(_))), "{name}");
         }
+    }
+
+    #[test]
+    fn windows_device_components_fail_before_reading() {
+        for part in ["CON", "con.txt", "PRN", "AUX", "NUL", "COM1", "com9.ext", "LPT1", "lpt9.txt", "COM¹", "lpt³.ext", "NUL .txt"] {
+            let name = format!("{part}/00000000.ON2");
+            assert!(matches!(read(&name, &mut Cursor::new(Vec::<u8>::new())), Err(Error::InvalidArgument(_))), "{name}");
+        }
+        assert!(name_parts("CONTEXT/00000000.ON2").is_ok());
+        assert!(name_parts("COM10/00000000.ON2").is_ok());
+    }
+
+    #[test]
+    fn truncation_after_metadata_is_rejected_without_reading_payload() {
+        let mut bytes = fixture();
+        bytes.extend_from_slice(&[42; 128]);
+        let length = bytes.len();
+        bytes[342..354].copy_from_slice(format!("{length:012}").as_bytes());
+        assert!(read("00000000.ON2", &mut Cursor::new(&bytes)).is_ok());
+        bytes.pop();
+        assert!(
+            matches!(read("00000000.ON2", &mut Cursor::new(&bytes)), Err(Error::InvalidData(message)) if message.contains("file length"))
+        );
     }
 
     #[test]
