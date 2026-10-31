@@ -140,3 +140,29 @@ def test_singlepart_preserves_attributes_nulls_and_xyz(tmp_path):
     assert result[2]["geometry"]["coordinates"] == [[0, 0, 7], [1, 1, 8]]
     assert result[2]["properties"] == {"name": "parts"}
     assert result[3]["geometry"] is None and result[3]["properties"] == {"name": "null"}
+
+
+@pytest.mark.parametrize("kind", ["memory", "lazy", "str", "path"])
+def test_zonal_single_raster_matches_sequence(tmp_path, kind):
+    zones, raster = inputs()
+    if kind != "memory":
+        path = tmp_path / "source.tif"
+        raster.write(str(path))
+        raster = (
+            terrio.open_raster(str(path), lazy=True)
+            if kind == "lazy"
+            else (str(path) if kind == "str" else path)
+        )
+    one = terrio.zonal_stats(zones, raster).to_geojson()
+    many = terrio.zonal_stats(zones, [raster]).to_geojson()
+    assert one == many
+    assert one["features"][0]["properties"]["raster1_b1_count"] == 3
+
+
+def test_pathlike_source_name_is_retained_for_vrt(tmp_path):
+    _, raster = inputs()
+    path = tmp_path / "source.tif"
+    raster.write(str(path))
+    vrt = tmp_path / "mosaic.vrt"
+    assert terrio.mosaic(path, str(vrt)) is None
+    np.testing.assert_array_equal(terrio.open_raster(str(vrt)).read(1), raster.read(1))

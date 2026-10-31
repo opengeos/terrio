@@ -52,6 +52,7 @@ def test_matching_zonal_result_is_accepted():
         "crs",
         "missing-crs",
         "geometry",
+        "geometry-null",
         "feature",
         "nan",
     ],
@@ -71,6 +72,8 @@ def test_zonal_comparison_rejects_regressions(change):
         result["crs"] = "EPSG:3857"
     if change == "missing-crs":
         del result["crs"]
+    if change == "geometry-null":
+        feature["geometry"] = None
     if change == "geometry":
         feature["geometry"]["coordinates"][0][1][0] = 1.01
     if change == "feature":

@@ -68,6 +68,8 @@ def compare(result, expected, source, options):
             if feature["geometry"] is not None:
                 raise AssertionError("null geometry changed")
         else:
+            if feature.get("geometry") is None:
+                raise AssertionError("output geometry missing")
             geometry = ogr.CreateGeometryFromJson(json.dumps(original["geometry"]))
             geometry.Transform(transform)
             distance = float(
@@ -205,14 +207,14 @@ def compare_singlepart(result, path):
         layer.GetSpatialRef(), ["IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES"]
     ):
         raise AssertionError("singlepart CRS differs")
-    for index, (feature, (geometry, attrs)) in enumerate(
-        zip(actual, expected, strict=True), 1
-    ):
+    for feature, (geometry, attrs) in zip(actual, expected, strict=True):
         if feature["properties"] != attrs:
-            raise AssertionError("singlepart attributes or sequential IDs differ")
+            raise AssertionError("singlepart attributes differ")
         if geometry is None:
             if feature["geometry"] is not None:
                 raise AssertionError("singlepart null geometry changed")
+        elif feature.get("geometry") is None:
+            raise AssertionError("singlepart output geometry missing")
         elif (
             ogr.CreateGeometryFromJson(json.dumps(feature["geometry"])).ExportToWkb()
             != geometry.ExportToWkb()
@@ -231,7 +233,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data", type=Path)
     parser.add_argument("--js", type=Path)
-    parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--json", action="store_true", help="emit compact JSON for the harness"
+    )
     args = parser.parse_args()
     results = []
     with tempfile.TemporaryDirectory(prefix="terrio-zonal-bindings-") as temp:
@@ -309,7 +313,7 @@ def main():
             results.append(
                 dict(name=f"{backend}/{row['name']}", status=status, detail=detail)
             )
-    print(json.dumps(results))
+    print(json.dumps(results, indent=None if args.json else 2))
     return int(any(row["status"] == "differs" for row in results))
 
 

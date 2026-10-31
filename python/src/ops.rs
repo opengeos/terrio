@@ -1005,7 +1005,7 @@ fn nodata_arg(v: Option<&Bound<'_, PyAny>>) -> PyResult<Nodata> {
 /// The rasters given to an operation: one path or `Raster`, or a sequence of them, with the
 /// paths (or made-up names for rasters in memory).
 pub(crate) fn input_rasters(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<Vec<(String, RasterDataset)>> {
-    let items: Vec<Bound<'_, PyAny>> = if src.extract::<String>().is_ok() || src.cast::<PyRaster>().is_ok() {
+    let items: Vec<Bound<'_, PyAny>> = if src.extract::<std::path::PathBuf>().is_ok() || src.cast::<PyRaster>().is_ok() {
         vec![src.clone()]
     } else {
         src.extract().map_err(|_| invalid("expected a path, a terrio.Raster, or a sequence of them"))?
@@ -1014,8 +1014,11 @@ pub(crate) fn input_rasters(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<
         return Err(invalid("no input rasters"));
     }
     // Sources are told apart by name: rasters in memory get one of their own.
-    let name = |k: usize, i: &Bound<'_, PyAny>| i.extract::<String>().unwrap_or_else(|_| format!("{MEMORY_PREFIX}{k}>"));
-    items.iter().enumerate().map(|(k, i)| Ok((name(k, i), input_raster(py, i)?))).collect()
+    items
+        .iter()
+        .enumerate()
+        .map(|(k, i)| Ok((raster_path(i)?.unwrap_or_else(|| format!("{MEMORY_PREFIX}{k}>")), input_raster(py, i)?)))
+        .collect()
 }
 
 /// The start of the names given to rasters in memory.

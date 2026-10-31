@@ -2429,7 +2429,7 @@ def make_valid(src: Any, *, layer: str | None = None) -> Layer:
 
 def zonal_stats(
     zones: Any,
-    rasters: Sequence[str | os.PathLike[str] | Raster],
+    rasters: str | os.PathLike[str] | Raster | Sequence[str | os.PathLike[str] | Raster],
     *,
     bands: Sequence[int] | None = None,
     prefixes: Sequence[str] | None = None,

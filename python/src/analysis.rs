@@ -124,7 +124,7 @@ fn make_valid(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> 
 fn zonal_stats(
     py: Python<'_>,
     zones: &Bound<'_, PyAny>,
-    rasters: Vec<Bound<'_, PyAny>>,
+    rasters: &Bound<'_, PyAny>,
     bands: Option<Vec<usize>>,
     prefixes: Option<Vec<String>>,
     stats: Option<Vec<String>>,
@@ -135,7 +135,7 @@ fn zonal_stats(
 ) -> PyResult<PyLayer> {
     use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions};
     let zones = crate::vector_geom::one_layer(py, zones, layer)?;
-    let rasters = rasters.iter().map(|src| input_raster(py, src)).collect::<PyResult<Vec<_>>>()?;
+    let rasters: Vec<_> = crate::ops::input_rasters(py, rasters)?.into_iter().map(|(_, raster)| raster).collect();
     let prefixes = prefixes.unwrap_or_else(|| (1..=rasters.len()).map(|i| format!("raster{i}")).collect());
     if prefixes.iter().any(|p| p.trim().is_empty()) {
         return Err(pyo3::exceptions::PyValueError::new_err("raster field prefixes cannot be empty"));
