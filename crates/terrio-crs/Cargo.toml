@@ -23,8 +23,9 @@ ruzstd.workspace = true
 rayon.workspace = true
 
 [features]
-default = ["libzstd"]
-# Zstandard TIFF grids, with the zstd C library. PROJ's grids are DEFLATE-compressed.
+default = []
+# Zstandard TIFF grids, with the zstd C library (off by default: the crate is otherwise pure Rust).
+# PROJ's grids are DEFLATE-compressed.
 libzstd = ["tiff/zstd"]
 # Additional projection methods and legacy identification through wbprojection.
 wbprojection-fallback = ["dep:wbprojection"]

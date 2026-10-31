@@ -5,8 +5,10 @@
 ### Standalone CRS crate
 
 - `terrio-crs` 0.2.0 carries the CRS work since 0.1.0: geocentric and IAU CRSs,
-  PROJJSON, and more projections. Its public API has breaking additions, and
-  its default features now include `libzstd`.
+  PROJJSON, and more projections. Its public API has breaking additions.
+- The crate's default build has no C dependency, on native targets as well as
+  WebAssembly. The zstd C library is behind the optional `libzstd` feature, needed
+  only for Zstandard TIFF grids; PROJ's grids are DEFLATE-compressed.
 
 ### Raster dataset masks
 
