@@ -143,8 +143,25 @@ let dem = RasterDataset::from_array3(header, array)?; // and back, with the meta
 - `LazyRaster::read_window` returns a dataset, which `into_array3` moves into an array, and
   `LazyRaster::read_mask_array2` reads a window's mask (255 for valid pixels, 0 for invalid ones)
   as an `Array2<u8>`.
+- `LazyRaster::read_window_array3` and `RasterDataset::read_window_array3` read a window as an
+  owned array of `f32` or `f64` values (`FloatElement`), NaN where pixels are invalid (see
+  [Floating-point windows](#floating-point-windows)), bands first or last (`BandLayout`):
+  `(bands, rows, cols)` or `(rows, cols, bands)`, written in that layout as the pixels are
+  converted. `read_window_array2` reads one band as `(rows, cols)`. Bands first, `Float32` pixels
+  read as `f32` (`Float64` as `f64`) are converted where they are read, without a second buffer.
 
-Nothing is copied, converted, reordered or reallocated, so what would need it fails instead,
+```rust,no_run
+use terrio::{BandLayout, FloatReadOptions, Window};
+
+let mut image = terrio::open_raster_lazy("https://example.com/cog.tif")?;
+let window = Window::new(0, 0, 256, 256);
+let pixels = image.read_window_array3::<f32>(window, &FloatReadOptions::default(), BandLayout::BandsLast)?;
+assert_eq!(pixels.dim(), (256, 256, image.band_count())); // rows, columns, bands
+# Ok::<(), terrio::Error>(())
+```
+
+Apart from these floating-point reads, which convert pixels as they read them, nothing is copied,
+converted, reordered or reallocated, so what would need it fails instead,
 giving its input back exactly (`ArrayError`): the type asked for must be the pixels' (`f32` for
 `Float32`) and the raster's declared data type, and an owned array must be in standard layout
 and own exactly its elements. An array refused is given back with the same buffer, first element
@@ -178,6 +195,45 @@ let v = terrio::validate_cog("https://example.com/dem.tif", false)?;
 assert!(v.is_valid, "{:?}", v.errors);
 # Ok::<(), terrio::Error>(())
 ```
+
+### Floating-point windows
+
+`LazyRaster::read_window_f32` and `read_window_f64` read a window as `f32` or `f64` values, band
+after band (`(bands, rows, cols)`), NaN where pixels are invalid: the values of GDAL's
+`ReadAsArray` into a floating-point buffer, with the pixels its `GetMaskBand` masks set to NaN.
+`FloatReadOptions` selects the bands and the overview, as `WindowOptions` does, and with
+`unscale` applies each band's scale and offset (`value * scale + offset`, the band's properties or
+a netCDF variable's `scale_factor` and `add_offset`), which GDAL and rasterio leave to the caller.
+`RasterDataset::read_window_f32` and `read_window_f64` read a dataset in memory alike.
+
+```rust,no_run
+use terrio::{FloatReadOptions, Window};
+
+let mut sst = terrio::open_raster_lazy("sst.nc")?;
+let options = FloatReadOptions { bands: vec![1], unscale: true, ..Default::default() };
+let celsius = sst.read_window_f32(Window::new(0, 0, 360, 180), &options)?; // NaN over land
+# Ok::<(), terrio::Error>(())
+```
+
+Pixels are invalid as GDAL's mask band decides, alpha bands aside (they are read as bands):
+
+- where the per-dataset mask of the level read is 0 (`LazyRaster::read_mask`: an internal mask or
+  a `.msk` sidecar; an overview's own mask, else the full-resolution mask sampled by nearest
+  neighbour). Such a mask replaces the nodata values, as in GDAL and rasterio: a pixel holding the
+  nodata value that the mask marks valid is a number.
+- otherwise where a pixel is its band's nodata value (`RasterDataset::band_nodata`), compared in
+  the band's own type before any conversion, as GDAL's `GDALNoDataMaskBand` compares it:
+  `Float32` and `Float64` values within GDAL's relative tolerance (`ARE_REAL_EQUAL`, a `Float32`
+  nodata value rounded to `f32`), NaN for a NaN nodata value, integers equal to the nodata value
+  cast to their type (truncated: 1.5 is 1 for a `Byte` band). A value the type cannot hold
+  (-9999 for `Byte`, 1e39 for `Float32`) masks nothing.
+
+Pixels already NaN stay NaN and infinities are kept. Valid pixels are rounded once to the nearest
+`f32` or `f64`, as GDAL converts them; `f32` holds integers exactly up to 2^24 and `f64` up to
+2^53, beyond which `UInt32`, `Int32`, `UInt64` and `Int64` values are rounded, but the nodata
+comparison happens before: an `Int32` -2147483646 stays valid next to a nodata value of
+-2147483647, although both read as -2147483648 in `f32`. Unscaled values are computed in `f64`,
+then rounded to `f32` once. Complex bands are refused.
 
 ## Bytes in memory
 
@@ -507,13 +563,14 @@ the operations and the streams. The other drivers are features:
 | `lzma` | on | LZMA-compressed GeoTIFFs. |
 | `hecras` | on | HEC-RAS geometry and plan HDF files as vector layers, read only (the `HECRAS` driver and the `hecras` module, through the `ras-commander-fast-hdf` engine; needs `netcdf-hdf5`). See [HEC-RAS](hecras.md). |
 | `gdal` | off | The optional GDAL backend: formats terrio has no driver for, through GDAL (needs GDAL installed). See [the GDAL backend](gdal.md#the-optional-gdal-backend). |
-| `ndarray` | off | Raster pixels as `ndarray` arrays, without copying them: views, owned transfers and the masks of lazy reads, with the crate re-exported as `terrio::ndarray`. See [ndarray](#ndarray). |
+| `ndarray` | off | Raster pixels as `ndarray` arrays, without copying them: views, owned transfers and the masks of lazy reads, with the crate re-exported as `terrio::ndarray`; floating-point windows as owned arrays, bands first or last. See [ndarray](#ndarray). |
 
 The drivers stay in the API whatever the features (`formats::RasterDriver`,
 `formats::VectorDriver`): those a build leaves out are listed as neither read nor written, and
 opening or writing their files fails with "built without the `zarr` feature". Modules and types
 that belong to one feature (`terrio::arrow`, `terrio::pointcloud`, `terrio::http`,
-`terrio::s3`, `tiles::TileArchive`, `terrio::ndarray`, `RasterArrayExt`) exist only with it.
+`terrio::s3`, `tiles::TileArchive`, `terrio::ndarray`, `RasterArrayExt`, `BandLayout`) exist
+only with it.
 
 The `geotiff` build still pulls the JPEG XL decoder and encoder (`jxl-oxide`, `zune-jpegxl`):
 `wbraster`, terrio's raster data model, depends on them through its GeoTIFF reader.

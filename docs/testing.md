@@ -59,7 +59,6 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Vector operations | `scripts/compare_vector_ops_with_gdal.py` | `ogr2ogr` filters, `gdal_rasterize` and `gdal_polygonize.py` |
 | Raster/vector pipelines | `scripts/compare_pipeline_with_gdal.py` (`pipeline`) | Composed operations, physical masks, unreferenced TIFFs, real USGS DEM/county inputs, and saved GDALG definitions produced by both implementations. Pixels and masks exact, affine transforms within 1e-12, CRS equivalence, vector schema/attributes/validity and topological geometry equality or explicit tolerances: polygon relative symmetric-difference area 1e-7 (buffer 5e-4), line relative length 1e-8 and bidirectional vertex distance 1e-7, point displacement 1e-8. Derived band statistics and descriptions are checked on controlled fixtures. |
 | Layer algebra | `scripts/compare_layer_algebra_with_gdal.py` (`layer-algebra`) | All seven operations, both lower-dimension settings, holes/collections/null/empty inputs and real projected Tennessee counties/Las Vegas roads. Schema, attributes, sequential IDs, CRS, geometry types and validity; exact normalized WKB or explicit polygon relative area tolerance 1e-7, line relative length 1e-8 with bidirectional vertex distance 1e-7 CRS units. |
-
 | Coverage cleaning | `scripts/compare_coverage_clean_with_gdal.py` (`coverage-clean`) | GDAL 3.13.3 / GEOS 3.14.1: real projected Tennessee counties, overlapping boundaries, duplicates, contained features, enclosed gaps/inlets, snapping and all four overlap merge strategies. Schema, attributes, IDs, feature types and CRS; exact normalized WKB when equal, otherwise relative symmetric-difference area tolerance 1e-8. GDAL independently checks output coverage validity. Ordering-dependent results are reported separately: exact equivalent cyclic-input references or independent legal greedy-merge witnesses on GDAL-polygonized faces, with unchanged union and output correspondence. These cases do not claim per-feature geometry equality. |
 | Vector topology | `scripts/compare_topology_with_gdal.py` | Tennessee county polygons and Las Vegas roads projected to metre-based CRSs: buffer, all four polygon overlays, dissolve, validity, repair of a deliberately corrupted county boundary and snap cleanup against GDAL/GEOS; attributes, source IDs and CRS, with relative symmetric-difference area tolerance 1e-7 (5e-4 for buffer curves). Registered in conformance as `topology`. |
 | Vector dataset commands | `scripts/compare_vector_dataset_with_gdal.py` | `concat` (all modes, source-layer fields, intersection, reprojection; also `ogrmerge.py -single`), `partition` (Hive and flat, string and integer fields, feature limits, patterns), `set-field-type` (a 77-conversion matrix of edge values, every type to every type, and conversions of real fields), `make-point` (GPS trace, places with Z), `create` (`--like`, `--schema`, fields) and `export-schema` (GeoPackage, Shapefile, GeoJSON, FlatGeobuf, GeoParquet) plus `rename-layer`, `edit` and `update`, against GDAL 3.13.3's vector commands/API, OGRLayer::Rename and `ogrinfo -json`; GeoPackage validity and R-tree checks: values exact, coordinates within 1e-9 degrees (or 1e-6 metres) after reprojection; Int16, Float32 and JSON subtypes are reported within tolerance. Registered in conformance as `vector-dataset`. |
@@ -977,6 +976,50 @@ Moving to another level still reads that image's directory and tables (the
 `tiff` crate's `seek_to_image`), and the threads decoding the chunks of a
 multi-chunk window of a local file or bytes in memory each open a decoder,
 which reads the first image's tables (and the level's). Opening is unchanged.
+
+## Floating-point window reads (#422)
+
+```sh
+cargo test -p terrio --lib float_read
+cargo test -p terrio --test float_reads
+cargo test -p terrio --features ndarray --test float_reads --test ndarray
+python scripts/make_float_reads_fixtures.py                  # GDAL's Python bindings
+python scripts/make_float_reads_fixtures.py --check-rasterio # rasterio
+```
+
+`LazyRaster::read_window_f32` and `read_window_f64`, their `RasterDataset` counterparts and
+their `ndarray` arrays are library APIs, which `scripts/conformance.py` (a comparison of the
+command line) does not reach: their GDAL references are frozen in `tests/data/float_reads`.
+`scripts/make_float_reads_fixtures.py` writes the rasters with GDAL and, for 38 cases (a file,
+bands, a window, an overview, unscaled or not), the values GDAL 3.13.2 reads with `ReadAsArray`
+into `Float32` and `Float64` buffers, NaN where `GetMaskBand` is 0. The rasters hold Byte, Int8,
+UInt16, Int16, UInt32, Int32, UInt64, Int64, Float32 and Float64 bands with nodata values at the
+ends of their types' ranges, next to values that round alike, NaN, fractional (GDAL truncates
+them to the type) and outside the type's range (masking nothing), Float32's -3.4e38, per-band
+nodata values in a PAM `.aux.xml`, a virtual raster of UInt32, Float32 and Byte bands, internal
+and `.msk` masks over nodata values, overviews with masks of their own, without (sampled from the
+full-resolution mask) and with nodata values only, a band scale and offset, and a netCDF variable
+packed with `scale_factor`, `add_offset` and `_FillValue`. Every value terrio reads, lazily and
+from a dataset in memory, is compared bit for bit, NaN with NaN.
+
+An overview without a mask of its own has the full-resolution mask sampled by nearest neighbour,
+as `LazyRaster::read_mask` gives it and GDAL's decimated reads of the mask band (rasterio's
+`out_shape`) give it; GDAL's overview band reports such an overview all valid. The reference is
+the decimated read. A dataset read into memory keeps no mask, and a virtual raster of bands of
+several types, read whole, holds them in one type, which their nodata values are then compared
+in: the in-memory comparison leaves those cases out (25 of 38 compared).
+
+Unscaled values are `value * scale + offset` computed in `Float64` and rounded to `Float32`;
+the script checks them against `gdal_translate -unscale`, identical in `Float32`. In `Float64`,
+GDAL 3.13.2 built by clang for arm64 (Homebrew) computes the expression with one fused
+multiply-add, rounding once rather than twice: 9 of the 23 valid pixels of `scaled.tif` are one
+ULP apart, each equal to `math.fma`. Rust does not fuse operations: terrio rounds twice on every
+platform, as GDAL does where its compiler does not fuse them.
+
+With `--check-rasterio`, the script compares the cases with rasterio's masked reads
+(`read(masked=True, out_dtype=...)`, NaN-filled, overviews as decimated reads, unscaled with
+`scales` and `offsets`): rasterio 1.4.3 (GDAL 3.10.3) read the 35 cases it can open identically;
+its GDAL had no netCDF driver for the other 3.
 
 ## File management (#289)
 

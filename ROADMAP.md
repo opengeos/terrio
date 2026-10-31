@@ -123,10 +123,10 @@ commands. Command-group progress:
       [#424](https://github.com/opengeos/terrio/pull/424), with 48 exact GDAL 3.13.3
       simplification comparisons and documented dimensional metadata behavior.
 
-- [ ] Layer algebra: intersection, union, symmetric difference, identity, update,
+- [x] Layer algebra: intersection, union, symmetric difference, identity, update,
       clip and erase for polygon, line, point and collection inputs across
-      Rust, CLI/MCP, Python and JavaScript. Part of
-      [#289](https://github.com/opengeos/terrio/issues/289); pending review and merge.
+      Rust, CLI/MCP, Python and JavaScript. Landed in
+      [#427](https://github.com/opengeos/terrio/pull/427).
 
 - [x] Coverage cleaning: snapping, progressive overlap assignment and enclosed-gap
       filling across Rust, CLI/MCP, Python and JavaScript. Landed in
@@ -634,6 +634,21 @@ copying, converting or reordering them.
       (`LazyRaster::read_mask_array2`).
 - Out of scope: complex bands as `Complex<T>` (they are viewed as their component bands),
   `multidim::Buffer`, and decoding into caller-provided buffers.
+
+## Analysis-ready floating-point reads (#422)
+
+Windows read as `f32` or `f64` values, NaN where GDAL's mask band marks pixels invalid.
+
+- [x] `LazyRaster::read_window_f32` and `read_window_f64` (`FloatReadOptions`: bands, overview and
+      optional unscaling with each band's scale and offset or a netCDF variable's packing), and
+      their `RasterDataset` counterparts: per-dataset masks (internal, `.msk`, overviews') in place
+      of nodata values, which are compared in each band's own type as GDAL's nodata mask band
+      compares them. Identical to GDAL 3.13.2 on 38 cases (`tests/data/float_reads`), and to
+      rasterio on the 35 its GDAL opens.
+- [x] With the `ndarray` feature, owned `Array3` and `Array2` arrays, bands first or last
+      (`BandLayout`), written in that layout as the pixels are converted.
+- Out of scope: alpha bands as masks (GDAL's `GMF_ALPHA`), the Python and JavaScript bindings
+  (Python's `terrio.rio` reads masked arrays already), and writing NaN back as nodata values.
 
 ## Decisions
 

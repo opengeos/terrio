@@ -70,6 +70,28 @@ impl Window {
             && self.x.checked_add(self.width).is_some_and(|e| e <= width)
             && self.y.checked_add(self.height).is_some_and(|e| e <= height)
     }
+
+    /// The error of a read of the window from an image of `width` x `height` pixels, unless it
+    /// [`fits`](Self::fits).
+    pub(crate) fn check(&self, width: usize, height: usize) -> Result<()> {
+        if self.fits(width, height) {
+            return Ok(());
+        }
+        Err(Error::InvalidArgument(format!(
+            "window {}x{} at ({}, {}) is outside the {width}x{height} image",
+            self.width, self.height, self.x, self.y
+        )))
+    }
+}
+
+/// The bands a read of `bands` (numbered from 1, all for none) reads of a raster of `count` bands,
+/// or the error of a band it does not have.
+pub(crate) fn read_bands(bands: &[usize], count: usize) -> Result<Vec<usize>> {
+    let bands: Vec<usize> = if bands.is_empty() { (1..=count).collect() } else { bands.to_vec() };
+    if let Some(b) = bands.iter().find(|b| **b == 0 || **b > count) {
+        return Err(Error::InvalidArgument(format!("no band {b}: the raster has {count} band(s)")));
+    }
+    Ok(bands)
 }
 
 /// What [`LazyRaster::read_window`] reads.
@@ -715,6 +737,13 @@ impl LazyRaster {
         }
     }
 
+    /// Exact integer nodata from native TIFF tags. PAM overrides remain f64 metadata.
+    pub(crate) fn band_integer_nodata(&self, band: usize, overview: Option<usize>) -> Option<i128> {
+        let Inner::Tiff(tiff) = &self.inner else { return None };
+        let tags = tiff.tags_at_level(overview.map_or(0, |i| i + 1));
+        if tags.band_nodata.iter().any(|(b, _)| *b == band) { None } else { tags.integer_nodata }
+    }
+
     /// The declared band type, falling back to the shared raster type.
     pub(crate) fn band_data_type(&self, band: usize) -> DataType {
         match &self.inner {
@@ -1014,16 +1043,8 @@ impl LazyRaster {
     /// georeferenced to the window.
     pub fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
         let (lw, lh) = self.level_size(options.overview)?;
-        if !window.fits(lw, lh) {
-            return Err(Error::InvalidArgument(format!(
-                "window {}x{} at ({}, {}) is outside the {lw}x{lh} image",
-                window.width, window.height, window.x, window.y
-            )));
-        }
-        let bands: Vec<usize> = if options.bands.is_empty() { (1..=self.band_count()).collect() } else { options.bands.clone() };
-        if let Some(b) = bands.iter().find(|b| **b == 0 || **b > self.band_count()) {
-            return Err(Error::InvalidArgument(format!("no band {b}: the raster has {} band(s)", self.band_count())));
-        }
+        window.check(lw, lh)?;
+        let bands = read_bands(&options.bands, self.band_count())?;
         let band_nodata: Vec<Option<f64>> = if let Inner::Tiff(t) = &self.inner {
             let tags = t.tags_at_level(options.overview.map_or(0, |i| i + 1));
             bands.iter().map(|b| tags.band_nodata.iter().find(|(i, _)| i == b).map(|(_, v)| *v).or(tags.nodata)).collect()
@@ -1037,7 +1058,19 @@ impl LazyRaster {
                 let data = t.read(level, window, &bands)?;
                 (data, t.tags.nodata.unwrap_or(-9999.0), t.tags.nodata.is_some(), Some(t.tags.crs_info()))
             }
-            Inner::Memory(ds) => (cut(&ds.raster, window, &bands), ds.raster.nodata, ds.has_nodata, Some(ds.raster.crs.clone())),
+            Inner::Memory(ds) => {
+                let r = &ds.raster;
+                if r.cols.checked_mul(r.rows).and_then(|n| n.checked_mul(r.bands)) != Some(r.data.len()) {
+                    return Err(Error::InvalidData(format!(
+                        "the raster holds {} values for {} band(s) of {} x {} pixels",
+                        r.data.len(),
+                        r.bands,
+                        r.cols,
+                        r.rows
+                    )));
+                }
+                (cut(r, window, &bands), r.nodata, ds.has_nodata, Some(r.crs.clone()))
+            }
             Inner::Source(ds, s) => {
                 let data = s.read(options.overview.map_or(0, |i| i + 1), window, &bands)?;
                 (data, ds.raster.nodata, ds.has_nodata, Some(ds.raster.crs.clone()))
@@ -1105,10 +1138,7 @@ impl LazyRaster {
         if let Some(r) = rows.iter().find(|r| **r >= lh) {
             return Err(Error::InvalidArgument(format!("row {r} is outside the {lw}x{lh} image")));
         }
-        let bands: Vec<usize> = if options.bands.is_empty() { (1..=self.band_count()).collect() } else { options.bands.clone() };
-        if let Some(b) = bands.iter().find(|b| **b == 0 || **b > self.band_count()) {
-            return Err(Error::InvalidArgument(format!("no band {b}: the raster has {} band(s)", self.band_count())));
-        }
+        let bands = read_bands(&options.bands, self.band_count())?;
         match &mut self.inner {
             Inner::Source(_, s) => s.read_sampled(options.overview.map_or(0, |i| i + 1), cols, rows, &bands),
             Inner::Tiff(_) | Inner::Memory(_) => Ok(None),
@@ -1174,12 +1204,7 @@ impl LazyRaster {
     /// neighbour, as GDAL does).
     pub fn read_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
         let (lw, lh) = self.level_size(overview)?;
-        if !window.fits(lw, lh) {
-            return Err(Error::InvalidArgument(format!(
-                "window {}x{} at ({}, {}) is outside the {lw}x{lh} image",
-                window.width, window.height, window.x, window.y
-            )));
-        }
+        window.check(lw, lh)?;
         // An external overview is its own TIFF dataset. GDAL does not inherit
         // the base TIFF's mask when that dataset has no mask of its own.
         if let Inner::Tiff(t) = &mut self.inner
@@ -1709,6 +1734,19 @@ impl TiffRaster {
 
         // Missing (sparse) chunks read as nodata, or 0, as in GDAL.
         let mut out = try_new_filled(self.data_type, len, self.tags.nodata.unwrap_or(0.0))?;
+        if let Some(nodata) = self.tags.integer_nodata {
+            match &mut out {
+                RasterData::U64(values) => values.fill(nodata as u64),
+                RasterData::I64(values) => values.fill(nodata as i64),
+                _ => {}
+            }
+        }
+        for (output_band, band) in bands.iter().enumerate() {
+            if let Some((_, nodata)) = self.tags.band_nodata.iter().find(|(b, _)| b == band) {
+                let plane = w.width * w.height;
+                crate::pixel::with_data!(&mut out, values => values[output_band * plane..(output_band + 1) * plane].fill(*nodata as _));
+            }
+        }
         let spp = if planar { parts } else { self.samples * parts };
         // Chunks with data, and where they go.
         let mut wanted: Vec<u32> = Vec::new();

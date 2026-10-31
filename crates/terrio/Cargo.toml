@@ -142,7 +142,8 @@ libzstd = ["dep:zstd"]
 ## Open any format GDAL reads, through the same data model, when terrio has no driver for it.
 gdal = ["dep:gdal", "dep:gdal-sys"]
 ## Raster pixels as `ndarray` arrays without copying them: borrowed and mutable views, owned
-## transfers between rasters and arrays, and lazy reads' masks as arrays. Re-exports the crate as
+## transfers between rasters and arrays, and lazy reads' masks as arrays; floating-point windows
+## (NaN where pixels are invalid) as owned arrays, bands first or last. Re-exports the crate as
 ## `terrio::ndarray`. Off by default.
 ndarray = ["dep:ndarray"]
 

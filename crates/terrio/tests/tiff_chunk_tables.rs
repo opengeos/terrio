@@ -471,3 +471,32 @@ fn concurrent_shared_readers_keep_cached_levels_consistent() {
         });
     }
 }
+
+/// GDAL 3.13.3 fills sparse chunks with each band's PAM nodata, before mask conversion.
+#[test]
+fn sparse_chunks_use_each_bands_pam_nodata() {
+    let raster = terrio::Raster::from_data_native(
+        RasterConfig { cols: 16, rows: 16, bands: 2, data_type: DataType::U16, nodata: 99.0, ..Default::default() },
+        RasterData::U16(vec![1; 16 * 16 * 2]),
+    )
+    .unwrap();
+    for (global_nodata, nodata) in [(false, "7"), (true, "7"), (true, "7.5")] {
+        let ds = RasterDataset::new(raster.clone(), global_nodata);
+        let mut bytes = terrio::memory::write_raster_bytes(&ds, "sparse.tif", &RasterWriteOptions::default()).unwrap();
+        let tables = chunk_tables(&bytes).swap_remove(0);
+        for i in 0..tables.counts.len() {
+            clear_chunk(&mut bytes, &tables, i);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sparse.tif");
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::write(dir.path().join("sparse.tif.aux.xml"),
+            format!("<PAMDataset><PAMRasterBand band=\"1\"><NoDataValue>{nodata}</NoDataValue></PAMRasterBand><PAMRasterBand band=\"2\"><NoDataValue>11</NoDataValue></PAMRasterBand></PAMDataset>")).unwrap();
+        let mut source = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let options = terrio::FloatReadOptions { bands: vec![2, 1, 2], ..Default::default() };
+        let raw = source.read_window(Window::full(16, 16), &WindowOptions { bands: options.bands.clone(), overview: None }).unwrap();
+        assert!(raw.raster.data.to_f64_vec()[..256].iter().all(|v| *v == 11.0));
+        assert!(raw.raster.data.to_f64_vec()[256..512].iter().all(|v| *v == 7.0));
+        assert!(source.read_window_f64(Window::full(16, 16), &options).unwrap().iter().all(|v| v.is_nan()));
+    }
+}

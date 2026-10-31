@@ -90,9 +90,10 @@ jobs:
       - run: cargo test --workspace
         env:
           TERRIO_SQLITE_REFERENCE_PYTHON: python3
-      # The `ndarray` feature, off by default: its module and its tests.
-      - run: cargo clippy -p terrio --features ndarray --lib --test ndarray -- -D warnings
-      - run: cargo test -p terrio --features ndarray --test ndarray
+      # The `ndarray` feature, off by default: its module and its tests (floating-point reads as
+      # arrays, against GDAL's, in `float_reads`).
+      - run: cargo clippy -p terrio --features ndarray --lib --test ndarray --test float_reads -- -D warnings
+      - run: cargo test -p terrio --features ndarray --test ndarray --test float_reads
 
   gdal:
     name: GDAL backend (feature build)

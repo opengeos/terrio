@@ -1,4 +1,5 @@
-//! Raster pixels as `ndarray` arrays (the `ndarray` feature), without copying them.
+//! Raster pixels as `ndarray` arrays (the `ndarray` feature), without copying them, and windows
+//! read as arrays of floating-point values.
 //!
 //! A raster's pixels are one typed buffer ([`Raster::data`]), band after band, each band row after
 //! row from the top: the standard (row-major) layout of an array of shape `(bands, rows, cols)`.
@@ -8,11 +9,18 @@
 //! raster's buffer, and an owned array is that buffer. Reading and decoding pixels or masks, which
 //! allocates, is not part of this: these adapt buffers already read.
 //!
+//! `float` is the exception: it reads windows as owned arrays of `f32` or `f64` values, NaN where
+//! pixels are invalid ([`LazyRaster::read_window_array3`]), converting the pixels as it reads them,
+//! bands first or last ([`BandLayout`]).
+//!
 //! [`RasterDataset::into_array3`]: crate::RasterDataset::into_array3
+//! [`LazyRaster::read_window_array3`]: crate::LazyRaster::read_window_array3
 
+mod float;
 mod lazy;
 mod owned;
 
+pub use float::{BandLayout, FloatElement};
 pub use owned::ArrayError;
 
 use crate::{Error, Raster, Result};
@@ -36,6 +44,12 @@ mod sealed {
     pub trait Viewed {}
 
     impl Viewed for wbraster::Raster {}
+
+    /// The types `FloatElement` is implemented for.
+    pub trait Floating {}
+
+    impl Floating for f32 {}
+    impl Floating for f64 {}
 }
 
 /// A type of raster pixels, and of the arrays viewing them: `u8`, `i8`, `u16`, `i16`, `u32`, `i32`,
@@ -106,7 +120,10 @@ element! {
 ///   [`Raster::band_view`] numbers them, rather than from 1 as [`WindowOptions::bands`] and GDAL do.
 /// - Nodata pixels hold the nodata value, as stored (no NaN is substituted): see
 ///   [`RasterDataset::band_nodata`]. Masks are separate arrays
-///   ([`LazyRaster::read_mask_array2`](crate::LazyRaster::read_mask_array2)).
+///   ([`LazyRaster::read_mask_array2`](crate::LazyRaster::read_mask_array2)). Windows are read
+///   as floating-point arrays with NaN for invalid pixels by
+///   [`LazyRaster::read_window_array3`](crate::LazyRaster::read_window_array3), which converts
+///   them.
 /// - A complex dataset ([`RasterDataset::complex`]) is viewed as stored: twice as many bands, each
 ///   complex band's real parts then its imaginary parts, so that band `k` of the dataset (from 0)
 ///   is bands `2k` and `2k + 1` of the views.
