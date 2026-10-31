@@ -299,7 +299,7 @@ fn clip_vector(
     } else if let Ok(path) = src.extract::<std::path::PathBuf>() {
         let path = path.to_str().ok_or_else(|| invalid("input path must be UTF-8"))?;
         let mut layers = py
-            .detach(|| {
+            .detach_result(|| {
                 terrio::ops::vector_filter::open_layers(
                     path,
                     &terrio::VectorOpenOptions { layers: layer.into_iter().collect(), ..Default::default() },
@@ -313,7 +313,7 @@ fn clip_vector(
     } else {
         one_layer(py, src, layer)?
     };
-    Ok(PyLayer { inner: py.detach(|| terrio::ops::vector_clip::clip(&input, &region)).py()? })
+    Ok(PyLayer { inner: py.detach_result(|| terrio::ops::vector_clip::clip(&input, &region)).py()? })
 }
 
 fn clip_inline_geojson(value: &Bound<'_, PyAny>) -> Option<PyResult<Vec<Layer>>> {
@@ -330,7 +330,7 @@ fn native_clip_template(
     path: &str,
     template: &terrio::ops::vector_clip::ClipTemplateOptions,
 ) -> PyResult<terrio::ops::vector_clip::ClipRegion> {
-    py.detach(|| terrio::ops::vector_clip::ClipRegion::from_path(path, template)).py()
+    py.detach_result(|| terrio::ops::vector_clip::ClipRegion::from_path(path, template)).py()
 }
 #[cfg(target_family = "wasm")]
 fn native_clip_template(
