@@ -31,7 +31,7 @@ ellipsoid are recorded in the conformance tests.
 | --- | --- | --- |
 | `wbprojection-fallback` | Off | Additional projection methods and legacy identification/WKT fallback |
 | `grid-transport` | Off | Host-provided seekable grid transport, without an HTTP dependency |
-| `libzstd` | On | Zstandard TIFF grids, with the zstd C library |
+| `libzstd` | Off | Zstandard TIFF grids, with the zstd C library |
 
 Terrio enables `wbprojection-fallback` to retain its existing projection coverage.
 A method requiring the feature returns an error naming the feature when it is
@@ -39,10 +39,8 @@ disabled. Canonical authority references, including versioned EPSG URNs/URLs, us
 parser in both configurations. Permissive legacy authority fragments remain a
 fallback feature. Both configurations include the same EPSG/ESRI/IAU tables, native datum
 operations and local grid readers. Table decompression uses `ruzstd` on all
-targets. TIFF grid codecs retain their existing features, including native Zstd;
-the default crate does not claim a dependency graph free of C codecs. With
-`default-features = false` there is no C: Zstandard grids are then not read (PROJ's grids
-are DEFLATE-compressed).
+targets. The default crate has no C dependency: Zstandard TIFF grids are read only with the
+`libzstd` feature (PROJ's grids are DEFLATE-compressed).
 
 Enable `grid-transport` to supply a
 seekable network transport through `network::GridTransport`; Terrio supplies

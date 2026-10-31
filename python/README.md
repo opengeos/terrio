@@ -340,7 +340,8 @@ beside it. Both accept `scale` (otherwise inferred per series), `producer_id`
 (up to five ASCII bytes), `producer_name` (27), `country_code` (two uppercase
 letters or empty) and `classification` (`U`, `R`, `C`, `S`, `T`). Frame corners
 must match the selected scale/zone. Historical polar interval fields are
-normalized to the standard grid. CIB and non-CADRG products are unsupported.
+normalized to the standard grid. CIB and non-CADRG products are unsupported. Recognized NITF candidates that are
+unsupported or malformed fail the operation before publication; they are not skipped.
 The encoded TRE payload must fit 99,999 bytes; oversized indexes fail before
 publication. The operation creates an index rather than embedding frame images.
 

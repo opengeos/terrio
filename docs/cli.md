@@ -3417,7 +3417,9 @@ Duplicate paths or grid cells within one scale/zone are rejected. File opens
 refuse symlinks and verify the inventoried file identity before reading metadata. Validation
 finishes before atomic publication; an existing TOC is preserved on errors.
 CADRG NITF 2.0/2.1 metadata and northern/southern ARC/polar grids are supported;
-CIB, other RPF products and TRE overflow chains are unsupported. Limits include
+CIB, other RPF products and TRE overflow chains are unsupported. A recognized
+NITF candidate that is unsupported or malformed aborts the run before publication;
+it is not counted as a skipped non-NITF file. Limits include
 100,000 candidate frames, 200,000 directory entries, 64 directory levels, 1 MiB
 NITF headers, 64 KiB location tables and a 99,999-byte encoded TRE payload.
 Large indexes must be partitioned by the caller. Historical polar nominal

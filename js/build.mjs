@@ -97,19 +97,14 @@ for (const f of ["terrio_bg.wasm", "core/terrio_bg.wasm", "threads/terrio_bg.was
 /**
  * The crates that do not build for wasm64-unknown-unknown as published, and the edits that make
  * them: they treat wasm32 as WebAssembly. `tar` (wbraster's) leaves out its path conversions
- * (https://github.com/alexcrichton/tar-rs, `cfg(target_arch = "wasm32")`), `zstd-sys` (Arrow's
- * Zstandard, for GeoParquet) its libc shim, `arrow-buffer` its alignment constant, and acadrust
- * its mmap/thread target guards. Copies of
- * the locked versions are edited (replacing `target_arch = "wasm32"` with `target_family =
- * "wasm"`) for this build only, through cargo's `--config patch...`.
+ * (https://github.com/alexcrichton/tar-rs, `cfg(target_arch = "wasm32")`), `arrow-buffer`
+ * its alignment constant, and acadrust its mmap/thread target guards. Copies of the locked
+ * versions are edited (replacing `target_arch = "wasm32"` with `target_family = "wasm"`) for this
+ * build only, through cargo's `--config patch...`.
  */
 function wasm64Patches() {
   return {
     tar: (dir) => readdirSync(join(dir, "src")).filter((f) => f.endsWith(".rs")).map((f) => [join("src", f), /target_arch = "wasm32"/g, 'target_family = "wasm"']),
-    "zstd-sys": () => [
-      ["src/lib.rs", /#\[cfg\(target_arch = "wasm32"\)\]/g, '#[cfg(target_family = "wasm")]'],
-      ["build.rs", /target == "wasm32-unknown-unknown"/g, 'target == "wasm32-unknown-unknown" || target == "wasm64-unknown-unknown"'],
-    ],
     // acadrust uses wasm32-specific guards for mmap and thread spawning.
     acadrust: (dir) => ["Cargo.toml", ...readdirSync(join(dir, "src"), { recursive: true }).filter((f) => f.endsWith(".rs")).map((f) => join("src", f))]
       .filter((f) => /target_arch = "wasm32"/.test(readFileSync(join(dir, f), "utf8")))
@@ -123,33 +118,6 @@ function wasmPackTool(prefix, file) {
   const cache = process.env.WASM_PACK_CACHE ?? (process.platform === "darwin" ? join(homedir(), "Library", "Caches", ".wasm-pack") : join(homedir(), ".cache", ".wasm-pack"));
   const found = existsSync(cache) ? readdirSync(cache).filter((d) => d.startsWith(prefix)).map((d) => join(cache, d, file)) : [];
   return found.filter((f) => existsSync(f));
-}
-
-/**
- * The C compiler for wasm64 (Zstandard's C sources): a clang of LLVM 20 or later, whose indirect
- * calls index a 64-bit table as Rust's do (an older clang wraps the index to 32 bits, and the
- * module it links fails to validate). CC_wasm64_unknown_unknown, else the first suitable of
- * `clang`, `clang-20`... on PATH.
- */
-function wasm64Clang() {
-  // The versioned names tried, newest first: clang-29 down to clang-20.
-  const versions = Array.from({ length: 10 }, (_, i) => 29 - i);
-  const major = (cc) => {
-    try {
-      return Number(/clang version (\d+)/.exec(execFileSync(cc, ["--version"]).toString())?.[1] ?? 0);
-    } catch {
-      return 0;
-    }
-  };
-  const given = process.env.CC_wasm64_unknown_unknown;
-  const candidates = given ? [given] : ["clang", ...versions.map((v) => `clang-${v}`)];
-  const seen = candidates.map((c) => [c, major(c)]);
-  const cc = seen.find(([, v]) => v >= 20)?.[0];
-  if (!cc) {
-    const found = seen.filter(([, v]) => v > 0).map(([c, v]) => `${c} (${v})`);
-    throw new Error(`the memory64 module needs clang 20 or later (CC_wasm64_unknown_unknown, or clang-20 on PATH); found: ${found.join(", ") || "none"}`);
-  }
-  return cc;
 }
 
 /**
@@ -196,7 +164,7 @@ function buildMemory64(outDir) {
     execFileSync("rustup", ["run", NIGHTLY, "cargo", "build", "-p", "terrio-js", "--target", target, ...profile, "-Z", "build-std=panic_abort,std", ...patches], {
       cwd: crate,
       stdio: "inherit",
-      env: { ...process.env, RUSTFLAGS: rustflags.join(" "), CARGO_TARGET_DIR: targetDir, CC_wasm64_unknown_unknown: wasm64Clang() },
+      env: { ...process.env, RUSTFLAGS: rustflags.join(" "), CARGO_TARGET_DIR: targetDir },
     });
   } finally {
     writeFileSync(lockPath, lock);

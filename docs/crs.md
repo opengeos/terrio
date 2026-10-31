@@ -55,10 +55,10 @@ than Terrio's raster/vector library:
 
 ```toml
 [dependencies]
-terrio-crs = "0.1"
+terrio-crs = "0.2"
 ```
 
-The [published crate](https://crates.io/crates/terrio-crs/0.1.0) works offline by
+The [published crate](https://crates.io/crates/terrio-crs/0.2.0) works offline by
 default. Enable `wbprojection-fallback` when Terrio's wider projection coverage
 is required; the feature matrix below describes the supported configurations.
 
@@ -100,9 +100,9 @@ by the settings described below. Direct callers retrieve diagnostics with
 
 The standalone default omits `wbprojection`; Terrio enables the fallback to retain
 its existing coverage. Bundled tables use portable `ruzstd` decompression on all
-targets. TIFF grid codecs retain their previous features, including native Zstd in the standalone
-default; Terrio does not enable it, so Zstandard grids are not read there. The PROJ CDN's grids are
-Deflate-compressed (all 11 sampled, among them those this page and the tests name), so this
+targets. The standalone default has no C dependency: Zstandard TIFF grids are read only with the
+`libzstd` feature, which uses the zstd C library and which Terrio does not enable. The PROJ CDN's
+grids are Deflate-compressed (all 11 sampled, among them those this page and the tests name), so this
 concerns grids recompressed with Zstandard.
 The [dependency and build measurements](crs-footprint.md) record both standalone
 configurations and full Terrio before/after extraction. Extraction and validation are tracked in
