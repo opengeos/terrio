@@ -2160,7 +2160,7 @@ def suite_rpftoc(ctx):
     if node:
         command += ["--js", module]
     else:
-        suite.cases.append(Case("RPFTOC", "Node backend", SKIPPED, "needs Node and both js/pkg-node/terrio.js and terrio_bg.wasm"))
+        suite.cases.append(Case("RPFTOC", "Node backend", NOT_COMPARED, "needs Node and both js/pkg-node/terrio.js and terrio_bg.wasm"))
     code, out, err = run(command)
     try:
         results = json.loads(out)

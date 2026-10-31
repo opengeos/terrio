@@ -139,3 +139,27 @@ def test_optional_node_probe_checks_wasm_and_exports(tmp_path):
     module.with_name("terrio_bg.wasm").touch()
     assert node_exports_available(module, ["rpftocCreate"])
     assert not node_exports_available(module, ["missingExport"])
+
+
+def test_missing_node_reports_not_compared_without_losing_other_results(monkeypatch, tmp_path):
+    import json
+    import conformance
+    from types import SimpleNamespace
+    from osgeo import gdal
+
+    monkeypatch.setitem(sys.modules, "terrio", SimpleNamespace(rpftoc_bytes=True))
+    monkeypatch.setattr(conformance, "missing_modules", lambda *args: [])
+    monkeypatch.setattr(gdal, "VersionInfo", lambda *args: "3130300")
+    monkeypatch.setattr(gdal, "GetDriverByName", lambda *args: object())
+    algorithm = SimpleNamespace(GetSubAlgorithmNames=lambda: ["rpftoc"])
+    monkeypatch.setattr(gdal, "GetGlobalAlgorithmRegistry", lambda: SimpleNamespace(InstantiateAlg=lambda name: algorithm))
+    for directory in ["rpftoc_landsat", "rpftoc_polar", "rpftoc_fractional3500000", "rpftoc_pole_centers/north-rgb", "rpftoc_pole_centers/south-rgb"]:
+        (tmp_path / directory).mkdir(parents=True)
+    monkeypatch.setattr(conformance, "node_exports_available", lambda *args: False)
+    results = [dict(name=str(i), status="identical", detail="reference matches") for i in range(20)]
+    monkeypatch.setattr(conformance, "run", lambda args: (0, json.dumps(results), ""))
+    suite = conformance.suite_rpftoc(SimpleNamespace(data=str(tmp_path), terrio="terrio"))
+    assert not suite.error and not suite.skipped
+    assert len(suite.cases) == 21
+    assert suite.cases[0].status == conformance.NOT_COMPARED
+    assert all(case.status == conformance.IDENTICAL for case in suite.cases[1:])
