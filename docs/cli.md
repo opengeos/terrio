@@ -2786,7 +2786,10 @@ tiles omit automatic alpha; `--add-alpha` retains it on every tile and
 `--no-alpha` removes it. `--output-nodata` sets the background when alpha is
 disabled. With `--no-alpha`, invalid image pixels become the background;
 PNG has no separate validity mask. A gray PNG with explicit output nodata uses
-a `tRNS` transparency entry; RGB PNG does not. Retain alpha for RGB transparency.
+a `tRNS` transparency entry; every sample equal to that background value becomes
+transparent, including valid samples. Retain alpha with `--add-alpha` when valid
+data can equal the background value. RGB PNG does not use `tRNS`;
+retain alpha for RGB transparency.
 Like GDAL, plain GeoTIFF tiles without explicit output nodata use zero padding
 while retaining source nodata tags. `--skip-blank` omits fully transparent/nodata-only tiles, including
 without alpha (GDAL 3.13.3 can retain zero-filled nodata-only tiles with

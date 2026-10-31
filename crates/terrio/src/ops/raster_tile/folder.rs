@@ -158,6 +158,9 @@ fn validate_rendering(source: &RasterDataset, options: &TileOptions, extension: 
         if !value.is_finite() || value < min || value > max || (crate::ops::is_integer(dtype) && value.fract() != 0.0) {
             return Err(invalid("output_nodata must be finite and representable in the output sample type"));
         }
+        if extension == "tif" && dtype == DataType::F32 && value as f32 as f64 != value {
+            return Err(invalid("output_nodata must be exactly representable as Float32 for GeoTIFF tiles"));
+        }
     }
     Ok((alpha, color, methods))
 }
@@ -543,6 +546,40 @@ mod tests {
             opts.alpha = Some(false);
             assert!(validate_rendering(&ds, &opts, "tif").is_ok());
         }
+    }
+
+    #[test]
+    fn float32_tiff_nodata_is_rejected_before_any_source_window_is_read() {
+        struct MetadataOnly {
+            info: WarpSourceInfo,
+            read: bool,
+        }
+        impl WarpSource for MetadataOnly {
+            fn info(&mut self) -> Result<WarpSourceInfo> {
+                Ok(self.info.clone())
+            }
+            fn read_window(&mut self, _: Window, _: &WindowOptions) -> Result<RasterDataset> {
+                self.read = true;
+                Err(invalid("unexpected source pixel read"))
+            }
+            fn read_mask(&mut self, _: Window, _: Option<usize>) -> Result<Option<Vec<u8>>> {
+                self.read = true;
+                Err(invalid("unexpected source mask read"))
+            }
+        }
+        let mut raster = source().header();
+        raster.raster.data_type = DataType::F32;
+        let mut source = MetadataOnly { info: WarpSourceInfo { raster, overviews: vec![] }, read: false };
+        let mut opts = options();
+        opts.format = "GTiff".into();
+        opts.output_nodata = Some(-999.9);
+        let mut sink = Collect::default();
+        let error = generate(&mut source, &opts, &mut sink).unwrap_err();
+        assert!(error.to_string().contains("exactly representable as Float32"));
+        assert!(!source.read);
+        assert!(sink.0.is_empty());
+        opts.output_nodata = Some(-999.5);
+        assert!(validate_rendering(&source.info.raster, &opts, "tif").is_ok());
     }
 
     #[test]
