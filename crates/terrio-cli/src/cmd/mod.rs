@@ -154,3 +154,5 @@ pub fn with_driver(input: &str, driver: Option<&str>) -> terrio::Result<String> 
 }
 
 pub mod gpkg;
+
+pub mod pipeline;

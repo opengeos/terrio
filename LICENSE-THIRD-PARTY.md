@@ -10,7 +10,7 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 
 ## Overview
 
-- Apache License 2.0 (260)
+- Apache License 2.0 (261)
 - MIT License (72)
 - ISC License (20)
 - BSD 3-Clause "New" or "Revised" License (14)
@@ -6641,6 +6641,7 @@ Used by:
 - [serde_core 1.0.229](https://github.com/serde-rs/serde)
 - [serde_derive 1.0.229](https://github.com/serde-rs/serde)
 - [serde_json 1.0.154](https://github.com/serde-rs/json)
+- [shlex 2.0.1](https://github.com/comex/rust-shlex)
 - [sif-itree 0.4.1](https://codeberg.org/adamreichold/sif-itree)
 - [simdutf8 0.1.5](https://github.com/rusticstuff/simdutf8)
 - [syn 2.0.119](https://github.com/dtolnay/syn)

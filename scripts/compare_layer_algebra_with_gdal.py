@@ -74,6 +74,18 @@ FIXTURES = {
         ],
         ["POINT (1.5 1.5)"],
     ),
+    "disjoint polygon collection": (
+        [
+            "GEOMETRYCOLLECTION (POLYGON ((0 0,1 0,1 1,0 1,0 0)),POLYGON ((3 0,4 0,4 1,3 1,3 0)))"
+        ],
+        ["POLYGON ((10 10,11 10,11 11,10 11,10 10))"],
+    ),
+    "touching polygon collection": (
+        [
+            "GEOMETRYCOLLECTION (POLYGON ((0.1 0.1,1.1 0.1,1.1 1.1,0.1 1.1,0.1 0.1)),POLYGON ((1.1 0.1,2.1 0.1,2.1 1.1,1.1 1.1,1.1 0.1)))"
+        ],
+        ["POLYGON ((10 10,11 10,11 11,10 11,10 10))"],
+    ),
     "single-part collection": (
         ["GEOMETRYCOLLECTION (POLYGON ((0 0,2 0,2 2,0 2,0 0)))"],
         ["POINT (3 3)"],

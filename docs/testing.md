@@ -57,8 +57,8 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Pixel-wise raster commands | `scripts/compare_raster_pixel_with_gdal.py` | `gdal raster unscale`, `nodata-to-alpha`, `reclassify` (inline and `@file` mappings, ranges, `NO_DATA`, `NAN`, `DEFAULT`, `PASS_THROUGH`, `--ot`) and `as-features` (polygons, points, tables, `--skip-nodata`, `--include-xy`, `--include-row-col`) on USGS, Landsat, ECOSTRESS, NLCD and Sentinel-5P data: size, type, nodata, CRS, color interpretations, scales and every pixel, or every feature's fields and vertices. Registered in conformance as `raster-pixel`. |
 | Focal statistics, collars, enhancement | `scripts/compare_focal_with_gdal.py` | `gdal raster neighbors` (every kernel and method, matrices, types, nodata, the whole USGS DEM in strips), `nearblack` and `gdal raster clean-collar` (both algorithms, colors, thresholds, distances, alpha, masks, in-place updates) and `gdalenhance` (equalization, LUT file output and input) on Sentinel-2, Landsat 7 and USGS data: pixels, masks, type, nodata, geotransform, LUT text |
 | Vector operations | `scripts/compare_vector_ops_with_gdal.py` | `ogr2ogr` filters, `gdal_rasterize` and `gdal_polygonize.py` |
+| Raster/vector pipelines | `scripts/compare_pipeline_with_gdal.py` (`pipeline`) | Composed operations, physical masks, unreferenced TIFFs, real USGS DEM/county inputs, and saved GDALG definitions produced by both implementations. Pixels and masks exact, affine transforms within 1e-12, CRS equivalence, vector schema/attributes/validity and topological geometry equality or explicit tolerances: polygon relative symmetric-difference area 1e-7 (buffer 5e-4), line relative length 1e-8 and bidirectional vertex distance 1e-7, point displacement 1e-8. Derived band statistics and descriptions are checked on controlled fixtures. Six direct translate comparisons additionally cover statistics on whole copies, crops, resizes, type/scale/nodata changes; the nodata case explicitly checks the reference's stale-statistics policy difference. |
 | Layer algebra | `scripts/compare_layer_algebra_with_gdal.py` (`layer-algebra`) | All seven operations, both lower-dimension settings, holes/collections/null/empty inputs and real projected Tennessee counties/Las Vegas roads. Schema, attributes, sequential IDs, CRS, geometry types and validity; exact normalized WKB or explicit polygon relative area tolerance 1e-7, line relative length 1e-8 with bidirectional vertex distance 1e-7 CRS units. |
-
 | Coverage cleaning | `scripts/compare_coverage_clean_with_gdal.py` (`coverage-clean`) | GDAL 3.13.3 / GEOS 3.14.1: real projected Tennessee counties, overlapping boundaries, duplicates, contained features, enclosed gaps/inlets, snapping and all four overlap merge strategies. Schema, attributes, IDs, feature types and CRS; exact normalized WKB when equal, otherwise relative symmetric-difference area tolerance 1e-8. GDAL independently checks output coverage validity. Ordering-dependent results are reported separately: exact equivalent cyclic-input references or independent legal greedy-merge witnesses on GDAL-polygonized faces, with unchanged union and output correspondence. These cases do not claim per-feature geometry equality. |
 | Vector topology | `scripts/compare_topology_with_gdal.py` | Tennessee county polygons and Las Vegas roads projected to metre-based CRSs: buffer, all four polygon overlays, dissolve, validity, repair of a deliberately corrupted county boundary and snap cleanup against GDAL/GEOS; attributes, source IDs and CRS, with relative symmetric-difference area tolerance 1e-7 (5e-4 for buffer curves). Registered in conformance as `topology`. |
 | Vector dataset commands | `scripts/compare_vector_dataset_with_gdal.py` | `concat` (all modes, source-layer fields, intersection, reprojection; also `ogrmerge.py -single`), `partition` (Hive and flat, string and integer fields, feature limits, patterns), `set-field-type` (a 77-conversion matrix of edge values, every type to every type, and conversions of real fields), `make-point` (GPS trace, places with Z), `create` (`--like`, `--schema`, fields) and `export-schema` (GeoPackage, Shapefile, GeoJSON, FlatGeobuf, GeoParquet) plus `rename-layer`, `edit` and `update`, against GDAL 3.13.3's vector commands/API, OGRLayer::Rename and `ogrinfo -json`; GeoPackage validity and R-tree checks: values exact, coordinates within 1e-9 degrees (or 1e-6 metres) after reprojection; Int16, Float32 and JSON subtypes are reported within tolerance. Registered in conformance as `vector-dataset`. |
@@ -1815,6 +1815,23 @@ cargo test -p terrio-cli --test raster_tiles
 pytest python/tests/test_raster_tiles.py
 node --test --test-name-pattern='rasterTiles' js/tests/node.test.mjs
 ```
+
+### Pipeline output memory
+
+The pipeline masked-COG export path currently materializes the output pixels and
+mask. A local Linux RSS measurement on 2026-10-31 used 4096×4096 Byte tiled TIFFs,
+with identical pixels and an internal validity mask on one variant. Whole-image
+COG export peaked at 86,484 KiB without a mask and 282,904 KiB with the mask;
+these are single-run observations, not memory limits or general guarantees.
+Both outputs passed full native COG validation and exact GDAL pixel/mask checks.
+Input crop/window/overview reads remain lazy; this whole-output encoding limit
+is distinct from the measured remote crop test.
+
+Per-feature pipeline dissolve currently nodes each segment against overlapping
+segment envelopes. High-degree hubs can therefore require quadratic work.
+Single local optimized CLI runs on 1,000 and 2,000 unit spokes meeting at one
+vertex took 0.279 and 1.358 seconds, including I/O. Both outputs retained all
+spokes and total length; these measurements do not establish a latency bound.
 
 
 ### Coverage-cleaning runtime observation

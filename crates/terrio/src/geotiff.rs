@@ -543,6 +543,13 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
     }
     out.metadata = ascii(GDAL_METADATA).map(crate::drivers::gtiff_write::parse_gdal_metadata).unwrap_or_default();
     out.band_metadata = ascii(GDAL_METADATA).map(crate::drivers::gtiff_write::parse_gdal_band_metadata).unwrap_or_default();
+    // Expose default-domain items alongside the band's descriptive roles. Lazy
+    // headers and eager reads both carry band_properties into output datasets.
+    for (index, name, value) in &out.band_metadata {
+        if let Some(band) = out.band_properties.get_mut(*index) {
+            band.items.push((name.clone(), value.clone()));
+        }
+    }
 
     if let Some(keys) = keys {
         apply_geokeys(&mut out, keys, doubles(GEO_DOUBLE_PARAMS), ascii(GEO_ASCII_PARAMS));

@@ -128,3 +128,24 @@ def test_many_intervals_with_nan_nodata_return_an_error_instead_of_panicking():
     random.Random(0).shuffle(entries)
     with pytest.raises(terrio.errors.InvalidArgumentError, match="overlaps"):
         terrio.reclassify(src, ";".join(entries))
+
+
+def test_global_translate_and_window_reads_drop_stale_band_statistics(tmp_path, gdal):
+    path = str(tmp_path / "statistics.tif")
+    raster = terrio.Raster.from_array(
+        np.array([[[1, 2], [3, 4]]], dtype="uint8"), (0, 1, 0, 2, 0, -1)
+    )
+    raster.write(path)
+    dataset = gdal.Open(path, gdal.GA_Update)
+    dataset.GetRasterBand(1).SetMetadata({"STATISTICS_MINIMUM": "1", "SOURCE": "sensor"})
+    dataset = None
+    source = terrio.open_raster(path, lazy=True)
+    assert terrio.open_raster(path).band_metadata[0]["items"]["STATISTICS_MINIMUM"] == "1"
+    for result in [
+        terrio.translate(source, srcwin=(1, 1, 1, 1)),
+        terrio.translate(source, outsize=(1, 1)),
+        terrio.translate(source, ot="Float32"),
+    ]:
+        assert result.band_metadata[0]["items"] == {"SOURCE": "sensor"}
+    np.testing.assert_array_equal(terrio.translate(source, srcwin=(1, 1, 1, 1)).read(1), [[4]])
+    assert terrio.translate(source).band_metadata[0]["items"]["STATISTICS_MINIMUM"] == "1"

@@ -109,6 +109,8 @@ enum Command {
     Overlay(cmd::processing::OverlayArgs),
     /// Polygon, line and point layer algebra (seven operations).
     LayerAlgebra(cmd::processing::LayerAlgebraArgs),
+    /// Chain raster/vector operations without serialized intermediate files; load/save GDALG.
+    Pipeline(cmd::pipeline::Args),
     /// Dissolve polygons across a layer or by selected attributes.
     Dissolve(cmd::processing::DissolveArgs),
     /// Report geometry validity and the first reason for each feature.
@@ -338,6 +340,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::VectorClip(a) => cmd::vector_clip::run(a),
         Command::Overlay(a) => cmd::processing::overlay(a),
         Command::LayerAlgebra(a) => cmd::processing::layer_algebra(a),
+        Command::Pipeline(a) => cmd::pipeline::run(a),
         Command::Dissolve(a) => cmd::processing::dissolve(a),
         Command::IsValid(a) => cmd::processing::validity(a),
         Command::MakeValid(a) => cmd::processing::make_valid(a),
