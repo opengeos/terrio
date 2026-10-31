@@ -102,3 +102,12 @@ def test_contour_comparison_reports_missing_and_custom_elevation_fields():
     reference = case("contour", geometry, {"height": 25})
     reference["options"]["field_name"] = "height"
     assert compare(reference, output(geometry, {"height": 25}))[0] == "tolerance"
+
+
+@pytest.mark.parametrize("missing", [None, "", "omitted"])
+def test_polygon_comparison_reports_missing_crs_as_difference(missing):
+    result = output(box(0, 0, 10, 10), {"source_id": 1}, missing)
+    if missing == "omitted":
+        del result["crs"]
+    with pytest.raises(AssertionError, match="CRS is missing"):
+        compare(case(), result)

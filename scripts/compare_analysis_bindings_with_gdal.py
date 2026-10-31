@@ -35,6 +35,8 @@ def compare(case, result):
     ]
     expected = case["expected"]
     crs = osr.SpatialReference()
+    if not result.get("crs"):
+        raise AssertionError("output CRS is missing")
     crs.SetFromUserInput(result["crs"])
     if not crs.IsSame(case["crs"], ["IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES"]):
         raise AssertionError("output CRS differs")

@@ -295,7 +295,12 @@ and external mask files are not interpreted implicitly; supply an explicit mask
 when those pixels should be excluded.
 
 Vector functions process every input layer, accepting datasets, uploaded files
-or GeoJSON. Buffers use planar CRS units and preserve attributes/IDs. Dissolve
+or GeoJSON. This deliberately differs from Python, whose analysis functions return
+one selected `Layer`; JavaScript returns a `Dataset` retaining all layers.
+When exporting with `toBytes`, single-layer formats require explicit selection
+(e.g. `{layers: ["roads"]}`); they now reject multi-layer input instead of
+silently writing the first layer. Layer-preserving formats retain every layer.
+Buffers use planar CRS units and preserve attributes/IDs. Dissolve
 can group by field names. `checkGeometry` retains geometry and appends validity
 and reason fields. `makeValid` keeps attributes/IDs/CRS and already-valid Z/M;
 repaired geometry is constructed in XY. These use the CLI's shared Rust engines

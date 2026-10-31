@@ -249,7 +249,11 @@ and external mask files are not interpreted implicitly; supply an explicit mask
 when those pixels should be excluded.
 
 Vector inputs accept paths, layers, datasets or GeoJSON; pass `layer="name"`
-when the input has several layers. Buffers use planar CRS units and round
+when the input has several layers. These functions return one selected `Layer`;
+JavaScript deliberately processes all layers and returns a `Dataset`. Shared
+byte exports to single-layer formats now reject multiple layers instead of
+silently writing the first; select a layer explicitly before exporting.
+Buffers use planar CRS units and round
 joins/caps. Dissolve optionally groups by field names. Geometry checks retain
 source geometries and add validity/reason fields. Repair preserves attributes,
 IDs, CRS and already-valid Z/M; repaired geometry is constructed in XY. These
