@@ -47,7 +47,8 @@ pub struct CoverageCheckOptions {
 /// matching GDAL. With `include_valid`, empty line geometries maintain the
 /// correspondence with valid inputs. The output layer is named
 /// `invalid_edge`; its geometry type is MultiLineString. Original edge coordinates
-/// (including Z/M) are retained. Overlapping interiors,
+/// (including Z/M) are retained after consecutive XY repeats are normalized,
+/// matching JTS/GEOS. Overlapping interiors,
 /// equal polygons and non-matching shared-edge nodes are invalid.
 ///
 /// ```no_run
@@ -232,22 +233,18 @@ fn add_ring(r: &Ring, shell: bool, feature: usize, rings: &mut Vec<CovRing>) -> 
     rings.push(CovRing { points, feature, interior_right: if shell { !ccw } else { ccw }, start: 0 });
     Some(line)
 }
+fn collect_polygon(exterior: &Ring, interiors: &[Ring], feature: usize, rings: &mut Vec<CovRing>, polygons: &mut Vec<Polygon>) {
+    if let Some(exterior) = add_ring(exterior, true, feature, rings) {
+        let interiors = interiors.iter().filter_map(|r| add_ring(r, false, feature, rings)).collect();
+        polygons.push(Polygon { feature, locator: Locator::new(geo::Polygon::new(exterior, interiors)) });
+    }
+}
 fn collect(g: &Geometry, feature: usize, rings: &mut Vec<CovRing>, polygons: &mut Vec<Polygon>) -> Result<()> {
     match g {
-        Geometry::Polygon { exterior, interiors } => {
-            if let Some(exterior) = add_ring(exterior, true, feature, rings) {
-                let interiors = interiors.iter().filter_map(|r| add_ring(r, false, feature, rings)).collect();
-                polygons.push(Polygon { feature, locator: Locator::new(geo::Polygon::new(exterior, interiors)) });
-            }
-        }
-        Geometry::MultiPolygon(ps) => {
-            for (exterior, interiors) in ps {
-                collect(&Geometry::Polygon { exterior: exterior.clone(), interiors: interiors.clone() }, feature, rings, polygons)?;
-            }
-        }
-        Geometry::GeometryCollection(gs) => {
-            for g in gs {
-                collect(g, feature, rings, polygons)?;
+        Geometry::Polygon { exterior, interiors } => collect_polygon(exterior, interiors, feature, rings, polygons),
+        Geometry::MultiPolygon(parts) => {
+            for (exterior, interiors) in parts {
+                collect_polygon(exterior, interiors, feature, rings, polygons);
             }
         }
         _ => return Err(Error::InvalidArgument("coverage checking requires polygonal geometries".into())),
@@ -450,6 +447,26 @@ mod tests {
             assert!(out.schema.is_empty());
         }
     }
+    #[test]
+    fn consecutive_xy_repeats_are_normalized_without_changing_retained_zm() {
+        let mut source = layer(&[LEFT, LEFT]);
+        if let Some(Geometry::Polygon { exterior, .. }) = &mut source.features[0].geometry {
+            for c in &mut exterior.0 {
+                c.z = Some(10.);
+                c.m = Some(20.);
+            }
+            let mut repeated = exterior.0[1].clone();
+            repeated.z = Some(99.);
+            repeated.m = Some(99.);
+            exterior.0.insert(2, repeated);
+        }
+        let out = check_coverage(&source, &Default::default()).unwrap();
+        assert_eq!(out.features.len(), 2);
+        let coords = out.features[0].geometry.as_ref().unwrap().all_coords();
+        assert_eq!(coords.len(), 5);
+        assert!(coords.iter().all(|c| c.z == Some(10.) && c.m == Some(20.)));
+    }
+
     #[test]
     fn shared_edges_with_unmatched_nodes_are_flagged_on_both_sides() {
         let source = layer(&[LEFT, "POLYGON ((1 0,2 0,2 2,1 2,1 1,1 0))"]);

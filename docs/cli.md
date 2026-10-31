@@ -2775,7 +2775,8 @@ loads the layer into memory and uses indexed edge and interior tests; it does
 not fix or simplify the coverage.
 
 Output is a MultiLineString layer called `invalid_edge`, with
-CRS and original edge coordinates (including Z/M) retained. Source attributes
+CRS and original edge coordinates (including Z/M) retained after consecutive
+XY repeats are normalized, matching JTS/GEOS. Source attributes
 are omitted, and output IDs are sequential from 1, as in GDAL.
 `--include-valid` retains valid source features with empty line geometry,
 maintaining one-to-one correspondence. Multiple selected input layers are checked

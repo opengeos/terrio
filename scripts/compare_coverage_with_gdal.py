@@ -127,10 +127,22 @@ def main():
     gap_right = first.Intersection(rectangle(mid + 5, y0 - 1, x1 + 1, y1 + 1))
     overlap_left = first.Intersection(rectangle(x0 - 1, y0 - 1, mid + 1000, y1 + 1))
     overlap_right = first.Intersection(rectangle(mid - 1000, y0 - 1, x1 + 1, y1 + 1))
+    repeated=first.Clone()
+    def repeat_vertex(geometry):
+        if geometry.GetGeometryName()=="LINEARRING":
+            points=geometry.GetPoints()
+            if len(points)>2:
+                points.insert(2,points[1])
+                geometry.Empty()
+                for x,y,*_ in points: geometry.AddPoint_2D(x,y)
+                return True
+        return any(repeat_vertex(geometry.GetGeometryRef(i)) for i in range(geometry.GetGeometryCount()))
+    assert repeat_vertex(repeated)
     fixtures = [
         ("Tennessee counties", shapes, 0),
         ("real county split", [left, right], 0),
         ("duplicate county", [first, first], 0),
+        ("repeated county vertex", [repeated, first], 0),
         ("empty polygons", [first, ogr.CreateGeometryFromWkt("POLYGON EMPTY")], 0),
         ("overlapping county parts", [overlap_left, overlap_right], 0),
         ("county gap disabled", [gap_left, gap_right], 0),

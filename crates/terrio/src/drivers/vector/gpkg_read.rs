@@ -851,6 +851,38 @@ mod tests {
     }
 
     #[test]
+    fn empty_geometry_summaries_and_geojson_remain_distinct_from_null() {
+        let mut layer = Layer::new("empty").with_epsg(4326);
+        for (i, geometry) in
+            [Some(Geometry::Polygon { exterior: Ring::default(), interiors: vec![] }), Some(Geometry::MultiPolygon(vec![])), None]
+                .into_iter()
+                .enumerate()
+        {
+            layer.features.push(Feature { fid: i as u64 + 1, geometry, attributes: vec![] });
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("empty.gpkg");
+        std::fs::write(&path, super::super::geopackage::to_bytes(&[layer]).unwrap()).unwrap();
+        let path = path.to_str().unwrap();
+        let layers = read(path, &[], None).unwrap();
+        assert!(layers[0].geom_type.is_none(), "mixed polygon types declare GEOMETRY");
+        assert!(matches!(&layers[0].features[0].geometry,Some(Geometry::Polygon{exterior,..}) if exterior.0.is_empty()));
+        assert!(matches!(&layers[0].features[1].geometry,Some(Geometry::MultiPolygon(parts)) if parts.is_empty()));
+        assert!(layers[0].features[2].geometry.is_none());
+        let (summaries, _) = summarize(path).unwrap().unwrap();
+        assert_eq!(summaries[0].feature_count, 3);
+        assert_eq!(summaries[0].geometry_type, "MultiPolygon");
+        assert_eq!(summaries[0].geometry_type, crate::vector::geometry_type_name(&layers[0]));
+        assert!(summaries[0].extent.is_none());
+        let bytes = crate::memory::write_vector_bytes(&layers, "empty.geojson", &Default::default()).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["features"][0]["geometry"]["type"], "Polygon");
+        assert!(json["features"][0]["geometry"]["coordinates"].as_array().unwrap().iter().all(|ring| ring.as_array().unwrap().is_empty()));
+        assert_eq!(json["features"][1]["geometry"]["type"], "MultiPolygon");
+        assert!(json["features"][2]["geometry"].is_null());
+    }
+
+    #[test]
     fn summarizes_as_reading_does() {
         use wbvector::Coord;
         let mut l = Layer::new("mixed").with_epsg(4326);

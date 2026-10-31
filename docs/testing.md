@@ -1614,7 +1614,8 @@ oriented integer rings and all non-collinear polygon groups must still match.
 compares `terrio check-coverage` with GDAL 3.13.3's `gdal vector check-coverage`.
 The `coverage` conformance suite registers the same comparisons. It checks all
 95 Tennessee counties projected into EPSG:5070, and real-boundary splits,
-duplicated polygons, overlapping county parts, empty polygons and a ten-metre
+duplicated polygons, consecutive repeated county vertices, overlapping county
+parts, empty polygons and a ten-metre
 gap with detection disabled, below threshold and above threshold. Every fixture
 runs with and without `--include-valid`.
 
