@@ -40,9 +40,9 @@ def compare_kml(reference, actual):
     for root in (reference, actual):
         for path in root.rglob("*.kml"):
             for link in ET.parse(path).findall(".//k:href", ns):
-                if not (path.parent / link.text).is_file():
+                if not link.text or not (path.parent / link.text).is_file():
                     raise AssertionError(
-                        f"{path.name}: missing linked file {link.text}"
+                        f"{path.name}: missing or empty linked file {link.text!r}"
                     )
     return f"{len(names)} matching overlay bounds and complete local KML links"
 

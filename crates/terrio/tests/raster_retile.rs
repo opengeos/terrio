@@ -284,3 +284,32 @@ fn oversized_csv_fails_during_planning_before_pixels_or_output() {
     assert!(re::generate(&mut sources, &options, &mut sink).unwrap_err().to_string().contains("CSV"));
     assert!(sink.0.is_empty());
 }
+
+#[test]
+fn direct_base_copy_budget_is_checked_before_output_directory_creation() {
+    struct Metadata(RasterDataset);
+    impl terrio::ops::warp::WarpSource for Metadata {
+        fn info(&mut self) -> terrio::Result<terrio::ops::warp::WarpSourceInfo> {
+            Ok(terrio::ops::warp::WarpSourceInfo { raster: self.0.clone(), overviews: vec![] })
+        }
+        fn read_window(&mut self, _: Window, _: &WindowOptions) -> terrio::Result<RasterDataset> {
+            panic!("oversized base window must fail before pixels are read")
+        }
+    }
+    let mut header = source(1, 1, 0., vec![1]).header();
+    header.raster.cols = 4096;
+    header.raster.rows = 4096;
+    header.raster.bands = 3;
+    let mut input = Metadata(header.clone());
+    let options = RetileOptions { tile_size: [4096, 4096], ..Default::default() };
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("tiles");
+    let error =
+        re::to_directory(&mut [RetileSource { name: "input.tif".into(), source: &mut input }], &options, &output, false).unwrap_err();
+    assert!(error.to_string().contains("source window"));
+    assert!(!output.exists());
+    header.raster.cols = 64;
+    header.raster.rows = 64;
+    let mut small = Metadata(header);
+    assert!(re::plan(&mut [RetileSource { name: "input.tif".into(), source: &mut small }], &options).is_ok());
+}

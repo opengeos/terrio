@@ -183,7 +183,8 @@ fn count(size: usize, tile: usize, overlap: usize) -> usize {
     size.saturating_sub(overlap).div_ceil(tile - overlap).max(1)
 }
 
-/// Validate every source and option using metadata only.
+/// Plan from metadata, checking output and direct base-copy buffer budgets.
+/// Resampled source/parent windows retain per-read limits enforced at runtime.
 pub fn plan(sources: &mut [RetileSource<'_>], options: &RetileOptions) -> Result<RetilePlan> {
     Ok(prepare(sources, options)?.0)
 }
@@ -282,6 +283,19 @@ fn prepare(sources: &mut [RetileSource<'_>], o: &RetileOptions) -> Result<(Retil
         return Err(invalid("retile mosaic dimensions exceed the address space"));
     }
     let size = [dimensions[0].round() as usize, dimensions[1].round() as usize];
+    // The raw zoom-zero path reads one complete mosaic window. Unlike the
+    // adaptive warp paths, it cannot split a too-large request during sampling.
+    if !o.pyramid_only
+        && dtype == first.raster.data_type
+        && size[0]
+            .min(o.tile_size[0])
+            .checked_mul(size[1].min(o.tile_size[1]))
+            .and_then(|n| n.checked_mul(first.raster.bands))
+            .and_then(|n| n.checked_mul(first.raster.data_type.size_bytes()))
+            .is_none_or(|n| n > RenderLimits::default().max_source_window_bytes)
+    {
+        return Err(invalid("retile source window exceeds its buffer budget; use smaller tiles"));
+    }
     let mut levels = Vec::new();
     let mut planned = 0u64;
     for level in u8::from(o.pyramid_only)..=o.levels {

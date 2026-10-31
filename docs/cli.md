@@ -3230,7 +3230,11 @@ Missing pyramid tiles read existing parent files, so resumed parents must match
 the expected dimensions, bands and type.
 
 Rendering uses bounded source windows and a parent cache limited to 64 MiB and
-256 tiles, in addition to one output tile and decoder/encoder buffers. Native
+256 tiles, in addition to one output tile and decoder/encoder buffers. Planning checks the output and
+direct base-copy buffers from metadata, using cropped edge dimensions. Resampled
+source and previous-level windows retain a 64 MiB per-window runtime limit; a
+dry-run does not preflight every adaptive resampling window. Reduce tile sizes
+if sampling exceeds that limit. Native
 directory output reads emitted parent files after eviction. Each cached parent
 is decoded from its emitted encoding, adding a decode pass so higher levels
 see the actual samples, including lossy writer effects. Write-only callback

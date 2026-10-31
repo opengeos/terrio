@@ -123,3 +123,17 @@ def test_malformed_kml_does_not_abort_later_publication_cases(monkeypatch, capsy
     assert len(cases) == 3
     assert all(case["status"] == "differs" for case in cases)
     assert all("no element found" in case["detail"] for case in cases)
+
+
+def test_empty_kml_link_is_a_comparison_failure(tmp_path):
+    roots = [tmp_path / "reference", tmp_path / "actual"]
+    for root in roots:
+        root.mkdir()
+        (root / "tile.kml").write_text(
+            '<kml xmlns="http://www.opengis.net/kml/2.2"><GroundOverlay>'
+            '<LatLonBox><north>1</north><south>0</south><east>1</east>'
+            '<west>0</west></LatLonBox><Icon><href/></Icon>'
+            '</GroundOverlay></kml>'
+        )
+    with pytest.raises(AssertionError, match="empty"):
+        compare_kml(*roots)
