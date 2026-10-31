@@ -47,11 +47,6 @@ impl PyPipelineResult {
     }
 }
 
-enum Input {
-    Data(Box<PipelineData>),
-    Path(String),
-}
-
 /// Evaluate a command or GDALG JSON text. Sources may be native paths or aliases
 /// in inputs (Raster, vector objects or paths). Outputs are deferred unless write=True.
 #[pyfunction]
@@ -73,24 +68,26 @@ fn pipeline(
     if let Some(inputs) = inputs {
         for (key, value) in inputs {
             let name = key.extract::<String>()?;
-            let input = if let Ok(raster) = value.cast::<PyRaster>() {
-                Input::Data(Box::new(PipelineData::Raster(raster.borrow_mut().inner.shared())))
-            } else if let Ok(path) = value.extract::<std::path::PathBuf>() {
-                Input::Path(path.into_os_string().into_string().map_err(|_| invalid("input paths must be UTF-8"))?)
-            } else {
-                Input::Data(Box::new(PipelineData::Vector(crate::ops::input_layers(py, &value, None)?)))
-            };
-            sources.insert(name, input);
+            sources.insert(name, value.unbind());
         }
     }
     let mut inner = py
         .detach_result(|| {
-            plan.evaluate_with(|request| match sources.get_mut(&request.source) {
-                Some(Input::Data(data)) => Ok(data.shared().into()),
-                Some(Input::Path(path)) => {
-                    PipelineInput::open(&ReadRequest { source: path.clone(), resolved: path.clone(), kind: request.kind })
-                }
-                None => PipelineInput::open(request),
+            plan.evaluate_with(|request| {
+                let Some(value) = sources.get(&request.source) else { return PipelineInput::open(request) };
+                Python::attach(|py| -> PyResult<PipelineInput> {
+                    let value = value.bind(py);
+                    if let Ok(raster) = value.cast::<PyRaster>() {
+                        Ok(PipelineData::Raster(raster.try_borrow_mut()?.inner.shared()).into())
+                    } else if let Ok(path) = value.extract::<std::path::PathBuf>() {
+                        let path = path.into_os_string().into_string().map_err(|_| invalid("input paths must be UTF-8"))?;
+                        py.detach_result(|| PipelineInput::open(&ReadRequest { source: path.clone(), resolved: path, kind: request.kind }))
+                            .py()
+                    } else {
+                        Ok(PipelineData::Vector(crate::ops::input_layers(py, value, None)?).into())
+                    }
+                })
+                .map_err(|error| terrio::Error::InvalidArgument(error.to_string()))
             })
         })
         .py()?;

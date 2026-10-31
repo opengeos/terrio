@@ -5,7 +5,7 @@
 //! null and empty features contribute no geometry. Layers are materialized.
 use crate::{Error, Feature, FieldValue, Geometry, Layer, Result};
 use geo::algorithm::line_intersection::{LineIntersection, line_intersection};
-use geo::{BooleanOps, BoundingRect, Intersects};
+use geo::{Area, BooleanOps, BoundingRect, Intersects};
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{AABB, RTree};
 use std::sync::{Arc, OnceLock};
@@ -93,8 +93,11 @@ pub fn layer_algebra(a: &Layer, b: &Layer, operation: LayerAlgebraOperation, opt
                 // A collection is a union of its components. Flattening overlapping
                 // polygons into one even-odd mask would subtract their shared interior.
                 if f.geometry.as_ref().is_some_and(|g| matches!(g, Geometry::GeometryCollection(_))) && set.area.0.len() > 1 {
-                    set.area = super::vector_clip::union_regions(std::slice::from_ref(&set.area))?;
-                    set.collection = false;
+                    let united = super::vector_clip::union_regions(std::slice::from_ref(&set.area))?;
+                    if united.unsigned_area() < set.area.unsigned_area() {
+                        set.area = united;
+                        set.collection = false;
+                    }
                 }
                 Ok(set)
             })
@@ -731,6 +734,31 @@ mod tests {
             let out = layer_algebra(a, b, LayerAlgebraOperation::Intersection, &Default::default()).unwrap();
             assert_eq!(out.features.len(), 1);
             assert!(matches!(out.features[0].geometry, Some(Geometry::Point(_))));
+        }
+    }
+    #[test]
+    fn untouched_disjoint_polygon_collections_keep_their_outer_type() {
+        let polygon = |x: f64| Geometry::Polygon {
+            exterior: wbvector::Ring(vec![
+                Coord::xy(x, 0.),
+                Coord::xy(x + 1., 0.),
+                Coord::xy(x + 1., 1.),
+                Coord::xy(x, 1.),
+                Coord::xy(x, 0.),
+            ]),
+            interiors: vec![],
+        };
+        let a = layer("a", Geometry::GeometryCollection(vec![polygon(0.), polygon(3.)]), 1);
+        let b = layer("b", polygon(10.), 2);
+        for op in [LayerAlgebraOperation::Erase, LayerAlgebraOperation::Identity] {
+            let result = layer_algebra(&a, &b, op, &Default::default()).unwrap();
+            let Some(Geometry::GeometryCollection(parts)) = &result.features[0].geometry else {
+                panic!("collection must remain a collection")
+            };
+            assert_eq!(parts.len(), 2);
+            let actual = Set::from_geometry(result.features[0].geometry.as_ref().unwrap());
+            let expected = Set::from_geometry(a.features[0].geometry.as_ref().unwrap());
+            assert_eq!(actual.area.xor(&expected.area).unsigned_area(), 0.);
         }
     }
     #[test]

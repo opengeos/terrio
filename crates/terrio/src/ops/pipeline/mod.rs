@@ -181,12 +181,16 @@ impl Pipeline {
     }
     /// Replaces or appends the terminal write destination.
     pub fn with_output(mut self, path: &str, format: Option<&str>, overwrite: bool) -> Self {
+        let layer = match self.blocks.last() {
+            Some(Block { step: Step::Write(spec), .. }) => spec.layer.clone(),
+            _ => None,
+        };
         if self.blocks.last().is_some_and(|b| matches!(b.step, Step::Write(_))) {
             self.blocks.pop();
         }
         self.blocks.push(Block {
             argv: vec!["write".into(), path.into()],
-            step: Step::Write(WriteSpec { path: path.into(), format: format.map(str::to_string), overwrite, append: false, layer: None }),
+            step: Step::Write(WriteSpec { path: path.into(), format: format.map(str::to_string), overwrite, append: false, layer }),
         });
         self
     }
@@ -286,8 +290,9 @@ impl Pipeline {
             let current = data.as_mut().ok_or_else(|| invalid("missing read input"))?;
             match &block.step {
                 Step::Write(spec) => {
-                    current.rename(&spec.layer)?;
-                    artifacts.push(Artifact::Data { spec: spec.clone(), data: current.shared() });
+                    let mut output = current.shared();
+                    output.rename(&spec.layer)?;
+                    artifacts.push(Artifact::Data { spec: spec.clone(), data: output });
                 }
                 Step::Materialize(spec) => {
                     current.materialize()?;
@@ -748,6 +753,22 @@ mod tests {
         assert_eq!(result.data.as_ref().unwrap().vectors().unwrap()[0].name, "places");
     }
     #[test]
+    fn final_output_layer_does_not_rename_the_returned_dataset_and_survives_override() {
+        let plan =
+            Pipeline::parse("read alias ! write old.geojson --output-layer renamed").unwrap().with_output("new.geojson", None, false);
+        let mut result = plan.evaluate_with(|_| Ok(vectors().into())).unwrap();
+        assert_eq!(result.data.as_ref().unwrap().vectors().unwrap()[0].name, "places");
+        let Artifact::Data { data, spec } = &result.artifacts[0] else { panic!("output") };
+        assert_eq!(data.vectors().unwrap()[0].name, "renamed");
+        assert_eq!(spec.path, "new.geojson");
+        assert!(result.output_bytes().unwrap().contains_key("new.geojson"));
+    }
+    #[test]
+    fn missing_multivalue_option_does_not_consume_the_next_step() {
+        let error = Pipeline::parse("read missing ! resize --resolution 10 ! write out.tif").unwrap_err();
+        assert!(error.to_string().contains("needs 2 values"), "{error}");
+    }
+    #[test]
     fn vector_reproject_rejects_raster_resampling() {
         let plan = Pipeline::parse("read alias ! reproject --output-crs EPSG:4326 --resampling bilinear").unwrap();
         assert!(plan.evaluate_with(|_| Ok(vectors().into())).is_err());
@@ -916,6 +937,37 @@ mod tests {
                 .err()
                 .unwrap();
             assert!(error.to_string().contains("north-up"));
+        }
+    }
+    #[test]
+    fn cropped_geolocation_coordinates_match_the_original_pixel_positions() {
+        use crate::ops::geolocation::GeolocationTransformer;
+        let grid = crate::ops::Grid { width: 4, height: 4, geo_transform: [0., 1., 0., 4., 0., -1.] };
+        let mut header =
+            crate::ops::raster_header(grid, crate::DataType::F64, 1, None, &crate::crs::SpatialRef::parse("EPSG:4326").unwrap()).unwrap();
+        let metadata = crate::dataset::Geolocation {
+            srs: "EPSG:4326".into(),
+            x_dataset: "longitude".into(),
+            x_band: 1,
+            y_dataset: "latitude".into(),
+            y_band: 1,
+            pixel_offset: 0.,
+            line_offset: 0.,
+            pixel_step: 1.,
+            line_step: 1.,
+            pixel_center: false,
+        };
+        header.geolocation = Some(metadata.clone());
+        let mut longitude = header.clone();
+        longitude.raster.data = wbraster::raster::RasterData::F64((0..16).map(|i| (i % 4) as f64 + 10.).collect());
+        let mut latitude = header.clone();
+        latitude.raster.data = wbraster::raster::RasterData::F64((0..16).map(|i| 40. - (i / 4) as f64).collect());
+        let original = GeolocationTransformer::new(&metadata, &longitude, &latitude, 4, 4).unwrap();
+        let view = raster::view(LazyRaster::from(header), vec![], Some(Window::new(1, 2, 2, 2))).unwrap();
+        let cropped = GeolocationTransformer::new(view.header().geolocation.as_ref().unwrap(), &longitude, &latitude, 2, 2).unwrap();
+        assert_eq!(cropped.to_geo(0.5, 0.5), original.to_geo(1.5, 2.5));
+        for bbox in ["10,0,0,10", "0,10,10,0", "0,0,0,1"] {
+            assert!(Pipeline::parse(&format!("read alias ! rasterize --size 2,2 --extent {bbox}")).is_err());
         }
     }
     #[test]

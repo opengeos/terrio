@@ -30,8 +30,18 @@ impl PipelineResult {
     pub fn output_bytes(&mut self) -> Result<js_sys::Object, JsError> {
         let outputs = js_sys::Object::new();
         for (name, bytes) in self.inner.output_bytes().map_err(js_err)? {
-            js_sys::Reflect::set(&outputs, &name.into(), &js_sys::Uint8Array::from(bytes.as_slice()))
-                .map_err(|_| JsError::new("could not set pipeline output"))?;
+            let descriptor = js_sys::Object::new();
+            js_sys::Reflect::set(&descriptor, &"value".into(), &js_sys::Uint8Array::from(bytes.as_slice()))
+                .map_err(|_| JsError::new("could not describe pipeline output"))?;
+            for key in ["enumerable", "writable", "configurable"] {
+                js_sys::Reflect::set(&descriptor, &key.into(), &JsValue::TRUE)
+                    .map_err(|_| JsError::new("could not describe pipeline output"))?;
+            }
+            if !js_sys::Reflect::define_property(&outputs, &name.into(), &descriptor)
+                .map_err(|_| JsError::new("could not define pipeline output"))?
+            {
+                return Err(JsError::new("could not define pipeline output"));
+            }
         }
         Ok(outputs)
     }
@@ -86,15 +96,17 @@ pub fn pipeline(command: &str, inputs: JsValue, options: JsValue) -> Result<Pipe
         for key in js_sys::Object::keys(&js_sys::Object::from(inputs.clone())) {
             let name = key.as_string().ok_or_else(|| JsError::new("input alias must be a string"))?;
             let value = js_sys::Reflect::get(&inputs, &key).map_err(|_| JsError::new("could not read pipeline input"))?;
-            sources.insert(name, input(&value, plan.input_kind())?);
+            sources.insert(name, value);
         }
     }
     let inner = plan
         .evaluate_with(|request| {
-            sources
-                .get_mut(if sources.contains_key(&request.source) { &request.source } else { &request.resolved })
-                .map(|data| data.shared().into())
-                .ok_or_else(|| terrio::Error::InvalidArgument(format!("missing pipeline input alias: {}", request.source)))
+            let value = sources
+                .get(if sources.contains_key(&request.source) { &request.source } else { &request.resolved })
+                .ok_or_else(|| terrio::Error::InvalidArgument(format!("missing pipeline input alias: {}", request.source)))?;
+            input(value, request.kind)
+                .map(Into::into)
+                .map_err(|error| terrio::Error::InvalidArgument(String::from(js_sys::Error::from(JsValue::from(error)).message())))
         })
         .map_err(js_err)?;
     Ok(PipelineResult { inner })

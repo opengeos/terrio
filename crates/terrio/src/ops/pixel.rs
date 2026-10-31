@@ -98,6 +98,7 @@ pub fn unscale(ds: &RasterDataset, o: &UnscaleOptions) -> Result<RasterDataset> 
             let mut m = ds.band_metadata.get(b).cloned().unwrap_or_default();
             m.scale = None;
             m.offset = None;
+            m.items.retain(|(key, _)| !key.starts_with("STATISTICS_"));
             m
         })
         .collect();
@@ -685,6 +686,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unscale_discards_stale_band_statistics_and_keeps_descriptive_items() {
+        let mut source = ds(vec![vec![1., 2.]], 2, 1, DataType::U8, None);
+        source.band_metadata = vec![crate::BandMetadata {
+            scale: Some(2.),
+            offset: Some(10.),
+            items: vec![("STATISTICS_MINIMUM".into(), "1".into()), ("SOURCE".into(), "sensor".into())],
+            ..Default::default()
+        }];
+        let output = unscale(&source, &Default::default()).unwrap();
+        assert_eq!(output.raster.data.to_f64_vec(), [12., 14.]);
+        assert_eq!(output.band_metadata[0].items, [("SOURCE".into(), "sensor".into())]);
+        assert_eq!(source.band_metadata[0].items.len(), 2);
+    }
     #[test]
     fn unscales_with_nodata_and_types() {
         let mut src = ds(vec![vec![1.0, 2.0, -9999.0, 4.0], vec![1.0, 2.0, 3.0, -9999.0]], 2, 2, DataType::I16, Some(-9999.0));

@@ -2981,7 +2981,6 @@ force Z or M to optional. A typed-empty geometry encoded with an XY WKB type
 still counts as 2D for this registration, unlike SQL NULL.
 
 
-
 ### Clean polygon coverages
 
 `terrio clean-coverage input.gpkg output.gpkg` snaps and nodes polygon
@@ -3265,3 +3264,16 @@ encoding or I/O failure can leave earlier outputs in place. CLI runs without
 Resize requires a north-up grid; reproject south-up, flipped or rotated grids first.
 Detached in-memory vector results report the GeoJSON memory-container driver;
 this value does not retain the source file driver's provenance.
+
+`relative_paths_relative_to_this_file` applies to input paths only. Named
+checkpoint and final output paths resolve against the caller's working directory.
+Executing a definition directly with `--load` executes its write options, including
+explicit `--overwrite`; this is an instruction to run that definition, including
+its requested output writes. Nested `read` definitions continue to discard writes.
+
+Each Python/JavaScript `dataset` property access creates an independent wrapper;
+vector features are copied on each access and at write/checkpoint snapshots. Keep
+and reuse one returned dataset when repeated access is needed. Native in-place
+raster output also snapshots the returned dataset and write artifact independently,
+which can read the source twice. High-degree line dissolve remains quadratic;
+its segment-neighborhood indexes are rebuilt per segment.

@@ -1816,7 +1816,7 @@ pytest python/tests/test_raster_tiles.py
 node --test --test-name-pattern='rasterTiles' js/tests/node.test.mjs
 ```
 
-## Pipeline output memory
+### Pipeline output memory
 
 The pipeline masked-COG export path currently materializes the output pixels and
 mask. A local Linux RSS measurement on 2026-10-31 used 4096×4096 Byte tiled TIFFs,
@@ -1834,7 +1834,7 @@ vertex took 0.279 and 1.358 seconds, including I/O. Both outputs retained all
 spokes and total length; these measurements do not establish a latency bound.
 
 
-## Coverage-cleaning runtime observation
+### Coverage-cleaning runtime observation
 
 Three warm local command runs with GDAL 3.13.3-derived inputs measured median
 wall time, including reading and writing GeoPackages. The 95 Tennessee counties

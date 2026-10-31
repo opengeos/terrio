@@ -731,6 +731,7 @@ impl StreamSource {
 /// the resolution levels as overviews, a window decoding only the tiles, precincts and code blocks
 /// it covers (the tiles in parallel).
 struct Jp2Window {
+    referenced: bool,
     source: StreamSource,
     len: u64,
     j2k: bool,
@@ -801,7 +802,7 @@ impl Jp2Window {
                 .map(|c| crate::BandMetadata { color_interp: Some(c.to_string()), ..Default::default() })
                 .collect();
         }
-        Ok((Self { source, len, j2k, header, alpha, overviews, block }, ds))
+        Ok((Self { referenced: gt.is_some(), source, len, j2k, header, alpha, overviews, block }, ds))
     }
 
     /// Decodes an area of the reference grid at a resolution level, on a stream of its own.
@@ -1018,6 +1019,9 @@ fn levels(w: usize, h: usize, tile: (u32, u32), resolutions: u32) -> (Vec<(usize
 }
 
 impl crate::cog::WindowSource for Jp2Window {
+    fn geotransform_present(&self) -> Option<bool> {
+        Some(self.referenced)
+    }
     fn overviews(&self) -> Vec<(usize, usize)> {
         self.overviews.clone()
     }
@@ -1312,6 +1316,23 @@ pub(crate) fn to_bytes(r: &Raster) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn pipeline_exports_unreferenced_codestream_without_inventing_a_transform() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("image.j2k");
+        let output = directory.path().join("image.tif");
+        let bytes = codec::encode(4, 4, &[codec::Component { precision: 8, signed: false, data: vec![7; 16] }]).unwrap();
+        std::fs::write(&source, bytes).unwrap();
+        let reader = crate::LazyRaster::open(source.to_str().unwrap()).unwrap();
+        assert!(!reader.geotransform_present());
+        crate::ops::pipeline::Pipeline::parse(&format!("read '{}' ! write '{}'", source.display(), output.display()))
+            .unwrap()
+            .run()
+            .unwrap();
+        let tags = crate::geotiff::read_geo_tags(&output).unwrap();
+        assert!(tags.geo_transform.is_none());
+        assert_eq!(crate::open_raster(output.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![7.; 16]);
+    }
     #[test]
     fn round_trips_signed_samples() {
         let data: Vec<i16> = (0..40 * 30).map(|i: i32| ((i * 37) % 3000 - 1500) as i16).collect();

@@ -2373,8 +2373,8 @@ def suite_pipeline(ctx):
                   "line relative length 1e-8 and displacement 1e-7, point displacement 1e-8. "
                   "Derived statistics and GDALG definitions produced by each implementation. "
                   "A discrete GeoPackage writer-ID policy difference is explicitly recorded; native sequential IDs are independently checked.")
-    if missing_modules("osgeo", "numpy"):
-        suite.skipped = "needs GDAL and NumPy"
+    if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None or run(["gdal", "pipeline", "--help"])[0] != 0:
+        suite.skipped = "needs GDAL pipeline command, bindings and NumPy"
         return suite
     if not all(os.path.isfile(os.path.join(ctx.data, name)) for name in ["usgs_dem.tif", "TN_Counties.geojson"]):
         suite.skipped = "needs real DEM and counties (scripts/fetch_test_data.sh)"

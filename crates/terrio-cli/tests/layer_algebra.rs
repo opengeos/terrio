@@ -17,6 +17,15 @@ fn operations_and_preflight_errors_preserve_existing_outputs() {
         let bytes = std::fs::read(path.join(&name)).unwrap();
         let data: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(data["features"].as_array().unwrap().len(), count);
+        if matches!(op, "erase" | "sym-difference") {
+            let mut expected =
+                vec![serde_json::json!({"type":"MultiLineString","coordinates":[[[0.0,0.0],[1.5,1.5]],[[1.5,1.5],[3.0,3.0]]]})];
+            if op == "sym-difference" {
+                expected.push(serde_json::json!({"type":"MultiLineString","coordinates":[[[0.0,3.0],[1.5,1.5]],[[1.5,1.5],[3.0,0.0]]]}));
+            }
+            assert_eq!(data["features"].as_array().unwrap().iter().map(|f| f["geometry"].clone()).collect::<Vec<_>>(), expected);
+        }
+
         assert!(!run(&args).status.success());
         assert_eq!(std::fs::read(path.join(name)).unwrap(), bytes);
     }

@@ -39,6 +39,19 @@ def test_all_operations_and_input_immutability(operation, count, tmp_path):
     before = a.to_geojson()
     result = terrio.layer_algebra(a, b, operation)
     assert len(result) == count
+    if operation in {"erase", "sym-difference"}:
+        geometries = [feature["geometry"] for feature in result.to_geojson()["features"]]
+        expected = [
+            {"type": "MultiLineString", "coordinates": [[[0, 0], [1.5, 1.5]], [[1.5, 1.5], [3, 3]]]}
+        ]
+        if operation == "sym-difference":
+            expected.append(
+                {
+                    "type": "MultiLineString",
+                    "coordinates": [[[0, 3], [1.5, 1.5]], [[1.5, 1.5], [3, 0]]],
+                }
+            )
+        assert geometries == expected
     assert a.to_geojson() == before
     path = tmp_path / "result.gpkg"
     result.write(str(path))

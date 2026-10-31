@@ -104,12 +104,12 @@ def compare_vector(actual, reference, polygon_tolerance=1e-7):
                     continue
                 exact = False
                 if yg.GetDimension() == 2:
-                    error = xg.SymDifference(yg).GetArea() / max(1.0, yg.GetArea())
+                    error = xg.SymDifference(yg).GetArea() / max(1e-300, yg.GetArea())
                     assert error <= polygon_tolerance, (
                         f"relative polygon symmetric-difference area {error}"
                     )
                 elif yg.GetDimension() == 1:
-                    error = abs(xg.Length() - yg.Length()) / max(1.0, yg.Length())
+                    error = abs(xg.Length() - yg.Length()) / max(1e-300, yg.Length())
                     assert error <= 1e-8, f"relative line length error {error}"
                     for source, target in [(xg, yg), (yg, xg)]:
                         for coordinate in points(source):

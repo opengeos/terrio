@@ -218,6 +218,10 @@ fn view_inner(mut source: LazyRaster, bands: Vec<usize>, crop: Option<Window>, r
             g
         })
         .collect();
+    if let Some(geolocation) = &mut header.geolocation {
+        geolocation.pixel_offset -= crop.x as f64;
+        geolocation.line_offset -= crop.y as f64;
+    }
     header.band_metadata = bands
         .iter()
         .map(|b| {

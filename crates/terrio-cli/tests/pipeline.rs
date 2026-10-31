@@ -48,3 +48,33 @@ fn pipeline_is_an_mcp_tool_with_write_annotations() {
     child.kill().unwrap();
     child.wait().unwrap();
 }
+
+#[test]
+fn loaded_definition_resolves_only_input_paths_against_its_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::create_dir(root.join("definitions")).unwrap();
+    std::fs::write(
+        root.join("definitions/source.geojson"),
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("definitions/plan.gdalg.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "type":"gdal_streamed_alg", "relative_paths_relative_to_this_file":true,
+            "command_line":"gdal vector pipeline read source.geojson ! materialize --output checkpoint.geojson"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_terrio"))
+        .current_dir(root)
+        .args(["pipeline", "--load", "definitions/plan.gdalg.json", "--output", "result.geojson"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(root.join("checkpoint.geojson").exists());
+    assert!(!root.join("definitions/checkpoint.geojson").exists());
+    assert_eq!(std::fs::read(root.join("checkpoint.geojson")).unwrap(), std::fs::read(root.join("result.geojson")).unwrap());
+}

@@ -3131,3 +3131,19 @@ test("cleanCoverage rejects null and non-polygonal active features", () => {
     assert.throws(()=>terrio.cleanCoverage({type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry}]}),/polygonal geometry/);
   }
 });
+
+
+test("pipeline definition saves and unused aliases do not decode inputs", () => {
+  const invalid = {bytes:new Uint8Array([1,2,3]),filename:"invalid.tif"};
+  const saved = terrio.pipeline("read unused ! write saved.gdalg.json",{unused:invalid});
+  assert.equal(saved.dataset,undefined);
+  assert.equal(JSON.parse(new TextDecoder().decode(saved.outputBytes()["saved.gdalg.json"])).type,"gdal_streamed_alg");
+  const source = terrio.createRaster(null,{size:[2,2],burn:[7],crs:"EPSG:4326",bbox:[0,0,2,2]});
+  const result = terrio.pipeline("read image ! write __proto__ --format GTiff",{image:source,unused:invalid});
+  const outputs = result.outputBytes();
+  assert.ok(Object.hasOwn(outputs,"__proto__"));
+  assert.deepEqual(Object.keys(outputs),["__proto__"]);
+  assert.ok(outputs["__proto__"] instanceof Uint8Array);
+  assert.equal(Object.getPrototypeOf(outputs),Object.prototype);
+  assert.throws(()=>terrio.pipeline("read unused",{unused:invalid}),/invalid|supported|recogniz|format/i);
+});

@@ -197,6 +197,9 @@ fn parse_step(argv: &[String]) -> Result<Step> {
                 return Err(bad("rasterize needs --size or --resolution"));
             }
             let extent = a.array::<4>("extent")?.map(|v| (v[0], v[1], v[2], v[3]));
+            if extent.is_some_and(|e| e.0 >= e.2 || e.1 >= e.3) {
+                return Err(bad("rasterize extent must have positive width and height"));
+            }
             let burn_values =
                 a.many("burn").iter().map(|v| v.parse::<f64>().map_err(|_| bad("invalid burn value"))).collect::<Result<Vec<_>>>()?;
             let attribute = a.one("attribute-name")?;

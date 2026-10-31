@@ -258,3 +258,13 @@ def test_input_kind_overrides_prefix_and_checks_family(tmp_path):
         terrio.pipeline("read a", {"a": layer}, input_kind="raster")
     with pytest.raises(ValueError, match="input kind"):
         terrio.pipeline("read missing", input_kind="invalid")
+
+
+def test_definition_saves_and_unused_aliases_do_not_convert_inputs():
+    result = terrio.pipeline("read unused ! write saved.gdalg.json", {"unused": object()})
+    assert result.dataset is None
+    assert json.loads(result.output_bytes()["saved.gdalg.json"])["type"] == "gdal_streamed_alg"
+    valid = terrio.pipeline("read source", {"source": points(), "unused": object()})
+    assert len(valid.dataset.layers[0]) == 2
+    with pytest.raises(terrio.InvalidArgumentError):
+        terrio.pipeline("read unused", {"unused": object()})
