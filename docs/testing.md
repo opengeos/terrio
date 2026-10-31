@@ -42,6 +42,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 
 | Area | Script | Checks |
 |---|---|---|
+| RPF table of contents | `scripts/compare_rpftoc_with_gdal.py` (`rpftoc`) | Twenty-five cross-reads of flat two-scale Landsat mosaics, a historical polar frame, WI 3.5M and synthetic frames centered on both poles through CLI/MCP, Python native/bytes and Node (20 cases without the optional Node package). Exact samples, masks, palettes, types, nodata, CRS, GEOREF, classification and producer metadata; affine limit 1e-7 CRS units. Native reads stay below 1 KiB per frame. GDAL 3.13.3 requires an explicit 3.5M override to correct its verified fractional-scale truncation. Prepare external data with `scripts/make_rpftoc_fixtures.py DATA`; the suite requires GDAL 3.13 and current bindings. |
 | Tile publication | `scripts/compare_tile_publication_with_gdal.py` (`tile-publication`) | Three real Landsat XYZ/TMS cases: exact PNG payloads, KML overlay bounds and complete local links, custom MapML substitutions, and GDAL cross-read STACTA grids and samples. One case corrects the independently verified GDAL default-256 scale defect for 64-pixel tiles. Seven Leaflet/OpenLayers pages were also checked in real Chrome on global XYZ/TMS, Mercator and anisotropic raster grids, including zoom changes, tile requests, rendered pixels and screenshots. Native tests cover typed STACTA in projected US feet and nondefault tile sizes. |
 | Retile layouts | `scripts/compare_retile_with_gdal.py` (`retile`) | 28 Landsat/USGS DEM cases: samples, masks, nodata, types, georeferencing, band properties, filenames, edge crops, overlap, row directories, three recursive levels, all five kernels, COG, Byte, CSV extents and Shapefile indexes. Fourteen exact; fourteen account explicitly for GDAL six-decimal index-origin rounding, one-ULP bilinear Float32 differences and its verified COG Byte-conversion defect. The defect workaround compares native COG samples with GDAL GTiff retile and validates all native COG layouts fully. Six verifier tests reject excessive roundoff, nonfinite, mask and grid changes and incorrect reference workarounds. |
 | Dataset summaries | `scripts/compare_with_gdal.py` (`--pixels`) | size, bands, data types, nodata, geotransform, EPSG code, statistics, pixels; layers, feature counts, fields, extents, geometry types |
@@ -63,6 +64,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Layer algebra | `scripts/compare_layer_algebra_with_gdal.py` (`layer-algebra`) | All seven operations, both lower-dimension settings, holes/collections/null/empty inputs and real projected Tennessee counties/Las Vegas roads. Schema, attributes, sequential IDs, CRS, geometry types and validity; exact normalized WKB or explicit polygon relative area tolerance 1e-7, line relative length 1e-8 with bidirectional vertex distance 1e-7 CRS units. |
 | Coverage cleaning | `scripts/compare_coverage_clean_with_gdal.py` (`coverage-clean`) | GDAL 3.13.3 / GEOS 3.14.1: real projected Tennessee counties, overlapping boundaries, duplicates, contained features, enclosed gaps/inlets, snapping and all four overlap merge strategies. Schema, attributes, IDs, feature types and CRS; exact normalized WKB when equal, otherwise relative symmetric-difference area tolerance 1e-8. GDAL independently checks output coverage validity. Ordering-dependent results are reported separately: exact equivalent cyclic-input references or independent legal greedy-merge witnesses on GDAL-polygonized faces, with unchanged union and output correspondence. These cases do not claim per-feature geometry equality. |
 | Vector topology | `scripts/compare_topology_with_gdal.py` | Tennessee county polygons and Las Vegas roads projected to metre-based CRSs: buffer, all four polygon overlays, dissolve, validity, repair of a deliberately corrupted county boundary and snap cleanup against GDAL/GEOS; attributes, source IDs and CRS, with relative symmetric-difference area tolerance 1e-7 (5e-4 for buffer curves). Registered in conformance as `topology`. |
+| Analysis bindings | `scripts/compare_analysis_bindings_with_gdal.py` | Direct Python and Node APIs on real DEM contours (levels, counts, Z, pixel-scaled Hausdorff distance and length), Landsat union/intersection footprints, county/road buffers, grouped dissolve, invalid-county diagnostics and repair. CRS and attributes are checked; relative symmetric-difference area limits are 5e-4 for buffer, 1e-7 for dissolve/repair and 1e-12 for footprints. Registered as `analysis-bindings`; optional Node checks require `js/pkg-node/terrio.js`. |
 | Vector dataset commands | `scripts/compare_vector_dataset_with_gdal.py` | `concat` (all modes, source-layer fields, intersection, reprojection; also `ogrmerge.py -single`), `partition` (Hive and flat, string and integer fields, feature limits, patterns), `set-field-type` (a 77-conversion matrix of edge values, every type to every type, and conversions of real fields), `make-point` (GPS trace, places with Z), `create` (`--like`, `--schema`, fields) and `export-schema` (GeoPackage, Shapefile, GeoJSON, FlatGeobuf, GeoParquet) plus `rename-layer`, `edit` and `update`, against GDAL 3.13.3's vector commands/API, OGRLayer::Rename and `ogrinfo -json`; GeoPackage validity and R-tree checks: values exact, coordinates within 1e-9 degrees (or 1e-6 metres) after reprojection; Int16, Float32 and JSON subtypes are reported within tolerance. Registered in conformance as `vector-dataset`. |
 | Terrain and raster algebra | `scripts/compare_dem_calc_with_gdal.py` | every `gdaldem` mode and option, `gdal_calc.py` expressions, types, nodata and extents, `gdal_proximity.py`, `gdal_sieve.py` |
 | STAC and GeoZarr | `scripts/compare_stac_geozarr.py` (`stac`, `stacta`, `geozarr`) | STACIT subdatasets, mosaic sizes, geotransforms, CRSs and windows on Earth Search; STACTA items (GDAL's test data and pyramids `gdal raster tile` writes from real rasters, local, over HTTP and with a missing tile): summaries, subdatasets, metadata, whole rasters, windows and overviews vs GDAL's STACTA driver; STAC footprint fields vs `ogrinfo`; GeoZarr stores read by GDAL and rioxarray, overviews vs `gdaladdo` |
@@ -117,6 +119,36 @@ The [Conformance](conformance.md) page has the full, generated results; in short
 | GeoPackage updates, `--spat` | 12 of 12 cases identical |
 | Coordinate transformations | Every EPSG CRS's forward and inverse points within 1 cm, without and with grids; 99.7 % of CRS-to-CRS points within 1 m |
 | Datum shift grids, geoids, epochs | 250 of 250 cases (50,000 points) within 0.02 mm of GDAL with the same grids |
+
+For all 25 RPF comparisons, build the Node package first:
+
+```sh
+wasm-pack build js --release --target nodejs --out-dir pkg-node --out-name terrio --no-opt
+```
+
+Without Node or `js/pkg-node/terrio.js`, the suite runs 20 CLI/MCP/Python cases.
+
+The four Rust RPF tests that consume prepared CADRG files are explicitly ignored in
+ordinary CI, whose reference is GDAL 3.12.2. Run them locally after preparation:
+
+```sh
+python scripts/make_rpftoc_fixtures.py ../terrio-data
+TERRIO_TEST_DATA=/absolute/path/to/terrio-data cargo test -p terrio --lib rpftoc -- --include-ignored
+python scripts/conformance.py ../terrio-data --only rpftoc --strict
+```
+
+Selecting these tests without the required files fails; it does not silently pass.
+The polar sample is pinned to the GDAL 3.13.3 commit and its SHA-256 digest is
+verified both after download and when using an existing fixture.
+
+The direct analysis bindings use the existing materialized raster engines. A cold-cache
+Python contour run at elevation 2500 on the real `usgs_dem.tif` served over local HTTP
+read 16,384 bytes while opening lazily and another 38,182,736 bytes during contour
+extraction (38,199,120 payload bytes total, two range GETs, one source file;
+51,486,544-byte file, 214 output contours). This measures the eager processing read;
+these wrappers do not provide windowed contour or footprint execution. Contour
+conformance bounds length per elevation by relative `1e-10` or the reported absolute
+distance tolerance, without an allowance proportional to vertex count.
 
 ## Running the tests
 
@@ -445,8 +477,10 @@ copies add a nodata stripe and a hole to exercise disconnected regions. It check
 feature counts, source-path and custom text fields, CRS and symmetric-difference
 area (at most `max(1e-6, reference area * 1e-12)` per feature). Rust regressions
 also cover holes, corner-touching regions, empty output schemas, field validation
-and sequential singlepart IDs. Python's bundled CLI uses the same options; there
-is currently no direct footprint operation in the Python or JavaScript bindings.
+and sequential singlepart IDs. Python and JavaScript also expose direct
+footprint operations with band selection, union/intersection, an optional mask,
+singlepart output and explicit text attributes. Unlike the CLI, they add no
+source-path attribute automatically; callers provide it explicitly when needed.
 
 ### Zonal and point-sampling output controls (#280)
 

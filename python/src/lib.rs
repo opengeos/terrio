@@ -1,6 +1,7 @@
 //! Python bindings for terrio: the `terrio._terrio` extension module, wrapped by the `terrio`
 //! Python package.
 
+mod analysis;
 mod arrow;
 #[cfg(not(target_os = "emscripten"))]
 mod cli;
@@ -24,6 +25,7 @@ mod query;
 mod raster;
 mod raster_tile;
 mod rio;
+mod rpftoc;
 mod stream;
 mod terrain;
 mod tile_index;
@@ -235,6 +237,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_set_http_retry_logger, m)?)?;
     m.add_function(wrap_pyfunction!(_set_warp_nodata_logger, m)?)?;
     ops::register(m)?;
+    analysis::register(m)?;
     config::register(m)?;
     manage::register(m)?;
     dataset_files::register(m)?;
@@ -246,6 +249,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     terrain::register(m)?;
     tile_index::register(m)?;
     raster_tile::register(m)?;
+    rpftoc::register(m)?;
     query::register(m)?;
     pixel::register(m)?;
     pipeline::register(m)?;

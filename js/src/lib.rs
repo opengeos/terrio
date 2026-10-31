@@ -12,6 +12,7 @@
 //! const points = readPoints(lazBytes, "lidar.laz", { classes: [2] }); // LAS, LAZ, COPC
 //! ```
 
+mod analysis;
 mod dataset_files;
 mod gpkg_maintenance;
 mod grid;
@@ -28,6 +29,7 @@ mod pointcloud;
 mod query;
 mod raster_tile;
 mod remote;
+mod rpftoc;
 #[cfg(feature = "threads")]
 mod threads;
 mod tile_index;

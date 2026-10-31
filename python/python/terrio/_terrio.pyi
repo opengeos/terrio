@@ -54,6 +54,8 @@ __all__ = [
     "rasterize",
     "raster_index",
     "raster_tiles",
+    "rpftoc_create",
+    "rpftoc_bytes",
     "retile",
     "vector_index",
     "DatasetIndex",
@@ -90,6 +92,12 @@ __all__ = [
     "enhance_luts",
     "unscale",
     "blend",
+    "buffer",
+    "check_geometry",
+    "contour",
+    "dissolve",
+    "footprint",
+    "make_valid",
     "rgb_to_palette",
     "palette_to_rgb",
     "attach_palette",
@@ -2351,3 +2359,68 @@ def clean_coverage(
     layer: None = None,
     active_layer: str,
 ) -> VectorDataset: ...
+def rpftoc_create(
+    input: str | os.PathLike[str],
+    output: str | os.PathLike[str] | None = None,
+    *,
+    scale: int | None = None,
+    producer_id: str = "TERRI",
+    producer_name: str = "Terrio",
+    country_code: str = "",
+    classification: str = "U",
+    overwrite: bool = False,
+) -> dict[str, int]: ...
+def rpftoc_bytes(
+    frames: Sequence[tuple[str, bytes]],
+    *,
+    scale: int | None = None,
+    producer_id: str = "TERRI",
+    producer_name: str = "Terrio",
+    country_code: str = "",
+    classification: str = "U",
+) -> bytes: ...
+def contour(
+    src: str | os.PathLike[str] | Raster,
+    *,
+    band: int = 1,
+    interval: float | None = None,
+    offset: float = 0.0,
+    levels: Sequence[float] | None = None,
+    nodata: float | None = None,
+    ignore_nodata: bool = False,
+    with_z: bool = False,
+    field_name: str = "ELEV",
+    layer_name: str = "contour",
+) -> Layer:
+    """Extract contours, materializing source pixels; options match the shared engine."""
+    ...
+
+def footprint(
+    src: str | os.PathLike[str] | Raster,
+    *,
+    bands: Sequence[int] | None = None,
+    intersection: bool = False,
+    mask: str | os.PathLike[str] | Raster | None = None,
+    singlepart: bool = False,
+    attributes: Mapping[str, str] | None = None,
+) -> Layer:
+    """Return valid-data polygons; omitted/empty bands selects every band (union by default)."""
+    ...
+
+def buffer(
+    src: Any, distance: float, *, quadrant_segments: int = 30, layer: str | None = None
+) -> Layer:
+    """Planar buffers of one vector layer, preserving attributes, IDs and CRS."""
+    ...
+
+def dissolve(src: Any, *, fields: Sequence[str] | None = None, layer: str | None = None) -> Layer:
+    """Dissolve one vector layer, optionally grouped by field names."""
+    ...
+
+def check_geometry(src: Any, *, layer: str | None = None) -> Layer:
+    """Annotate one layer with is_valid and valid_reason fields."""
+    ...
+
+def make_valid(src: Any, *, layer: str | None = None) -> Layer:
+    """Repair invalid geometries in one layer, preserving attributes and IDs."""
+    ...

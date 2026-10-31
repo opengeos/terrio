@@ -223,6 +223,42 @@ index = terrio.raster_index({"/vsis3/bucket/tile.tif": signed_url})
 
 This stores the credential-free mapping key; readers need their own credentials.
 
+### Contours, footprints and geometry analysis
+
+```python
+lines = terrio.contour(raster, interval=10, with_z=True, field_name="elevation")
+area = terrio.footprint(raster, bands=[1], singlepart=True, attributes={"source": "scene"})
+report = terrio.check_geometry(layer)
+repaired = terrio.make_valid(layer)
+buffered = terrio.buffer(repaired, 100, quadrant_segments=30)
+groups = terrio.dissolve(buffered, fields=["region"])
+```
+
+These functions return a `Layer`. Raster inputs accept a path or open raster,
+including a lazy raster; contour and footprint materialize the pixels for the
+full operation. Contour supports band selection, interval/offset, additional
+fixed levels, nodata override or ignoring nodata, 3D vertices and custom
+elevation/layer names. Footprint supports selected-band union or intersection,
+a mask on the same grid, singlepart output and explicit text attributes. No
+source-path attribute is added automatically in the bindings.
+
+Omitted or empty footprint bands selects every band, combined by union unless
+intersection is requested. Footprint attribute fields are sorted alphabetically.
+Footprint validity uses finite samples and the dataset nodata value. Alpha bands
+and external mask files are not interpreted implicitly; supply an explicit mask
+when those pixels should be excluded.
+
+Vector inputs accept paths, layers, datasets or GeoJSON; pass `layer="name"`
+when the input has several layers. These functions return one selected `Layer`;
+JavaScript deliberately processes all layers and returns a `Dataset`. Shared
+byte exports to single-layer formats now reject multiple layers instead of
+silently writing the first; select a layer explicitly before exporting.
+Buffers use planar CRS units and round
+joins/caps. Dissolve optionally groups by field names. Geometry checks retain
+source geometries and add validity/reason fields. Repair preserves attributes,
+IDs, CRS and already-valid Z/M; repaired geometry is constructed in XY. These
+call the same Rust engines as the CLI and retain their documented limits.
+
 ### Chained processing
 
 `terrio.pipeline(command, inputs=None, *, write=False, base_file=None, input_kind=None)` evaluates
@@ -255,6 +291,33 @@ operation limits.
 Use `input_kind="raster"` or `input_kind="vector"` to force the input family;
 `"auto"` chooses detection. A `raster` or `vector` prefix in the command string
 also selects a family. An explicit `input_kind` overrides that prefix.
+
+## RPF table of contents
+
+```python
+report = terrio.rpftoc_create("frames", "A.TOC", producer_id="ACME", country_code="US")
+toc = terrio.rpftoc_bytes([("zone/000C9010.ON2", frame_bytes)], classification="U")
+```
+
+These functions index existing CADRG frames without decoding their compressed
+pixels. `rpftoc_create` recursively scans a local directory, skips symlinks and
+atomically publishes the TOC after validation. Its default output is `input/A.TOC`;
+a supplied output must be in the input directory or an ancestor, so frame paths
+remain relative without `..`. Existing output requires `overwrite=True`. The
+report includes frame/group counts, skipped non-NITF candidates, metadata bytes
+read and output bytes. New Unix output follows the process umask; overwrites
+preserve its existing mode.
+
+`rpftoc_bytes` borrows bounded metadata ranges from each named Python `bytes`
+value and returns a TOC; retain those frame files at the supplied relative paths
+beside it. Both accept `scale` (otherwise inferred per series), `producer_id`
+(up to five ASCII bytes), `producer_name` (27), `country_code` (two uppercase
+letters or empty) and `classification` (`U`, `R`, `C`, `S`, `T`). Frame corners
+must match the selected scale/zone. Historical polar interval fields are
+normalized to the standard grid. CIB and non-CADRG products are unsupported. Recognized NITF candidates that are
+unsupported or malformed fail the operation before publication; they are not skipped.
+The encoded TRE payload must fit 99,999 bytes; oversized indexes fail before
+publication. The operation creates an index rather than embedding frame images.
 
 ## Retile and publish raster folders
 

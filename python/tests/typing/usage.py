@@ -168,6 +168,16 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
     algebra: terrio.Layer = terrio.layer_algebra(layer, layer, "identity")
     _ = algebra.to_geojson()
 
+    contours: terrio.Layer = terrio.contour(raster, interval=10, with_z=True)
+    footprint: terrio.Layer = terrio.footprint(
+        raster, bands=[1], intersection=True, attributes={"source": "typed"}
+    )
+    buffered: terrio.Layer = terrio.buffer(layer, 0.1, quadrant_segments=8)
+    dissolved: terrio.Layer = terrio.dissolve(layer)
+    checked: terrio.Layer = terrio.check_geometry(layer)
+    repaired: terrio.Layer = terrio.make_valid(layer)
+    print(len(contours), len(footprint), len(buffered), len(dissolved), len(checked), len(repaired))
+
     gpkg = str(tmp / "parcels.gpkg")
     layer.write(gpkg)
     reprojected.write(str(tmp / "parcels.geojson"), driver="GeoJSON")
@@ -410,6 +420,14 @@ def xarray_api(tmp: Path) -> None:
     merged = txr.merge_arrays([opened, opened])
     ds = xr.open_dataset(str(tmp / "xr.tif"), engine="terrio")
     print(acc.crs, acc.transform(), acc.resolution(), merged.shape, ds.terrio.crs)
+
+
+def rpf_metadata_api(
+    frame_bytes: bytes, input_dir: Path, output: Path
+) -> tuple[bytes, dict[str, int]]:
+    toc: bytes = terrio.rpftoc_bytes([("zone/000C9010.ON2", frame_bytes)], country_code="US")
+    report: dict[str, int] = terrio.rpftoc_create(input_dir, output, overwrite=True)
+    return toc, report
 
 
 def main() -> None:

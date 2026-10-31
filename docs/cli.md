@@ -3391,3 +3391,40 @@ its segment-neighborhood indexes are rebuilt per segment.
 A standalone `!` token is reserved as a step separator even when quoted; use
 `./!` to name a file literally called `!`. Raster bounding boxes round to source
 pixel windows; a box that rounds to an empty window is rejected.
+
+
+## RPF table of contents
+
+`terrio rpftoc-create INPUT [OUTPUT]` indexes existing CADRG frames recursively,
+without decoding compressed pixel components. `OUTPUT` defaults to `INPUT/A.TOC`.
+The command is also an MCP tool. It supports `--scale`, `--producer-id` (five
+printable ASCII bytes), `--producer-name` (27), `--country-code` (two uppercase
+letters), `--classification U|R|C|S|T` and `--overwrite`. The index classification must be
+at least as high as every indexed frame. Scale is inferred per
+series unless overridden; mismatched corners, intervals or zones fail validation.
+The JSON report includes frame/group counts, skipped non-NITF candidate counts,
+metadata bytes read and output size. On Unix, new output follows the process
+umask; overwrites preserve the existing file mode.
+
+The output parent must be the input directory or an ancestor. This preserves safe
+relative frame paths, including when the TOC is placed above a nested frame tree.
+Symlinks and non-NITF 2.0/2.1 candidates are skipped; the latter are counted in
+`skipped_files`. Malformed supported NITF frames still fail validation. An output
+cannot replace an input frame. Frame path
+components ending in dots or spaces are rejected to follow
+[Windows filename conventions](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file#naming-conventions).
+Duplicate paths or grid cells within one scale/zone are rejected. File opens
+refuse symlinks and verify the inventoried file identity before reading metadata. Validation
+finishes before atomic publication; an existing TOC is preserved on errors.
+CADRG NITF 2.0/2.1 metadata and northern/southern ARC/polar grids are supported;
+CIB, other RPF products and TRE overflow chains are unsupported. A recognized
+NITF candidate that is unsupported or malformed aborts the run before publication;
+it is not counted as a skipped non-NITF file. Limits include
+100,000 candidate frames, 200,000 directory entries, 64 directory levels, 1 MiB
+NITF headers, 64 KiB location tables and a 99,999-byte encoded TRE payload.
+Large indexes must be partitioned by the caller. Historical polar nominal
+interval fields are normalized from the scale and verified frame geometry.
+
+The nominal scale catalogue retains fractional scales such as `WI` at 3.5M.
+GDAL 3.13.3 truncates that catalogue value to 3M, producing incorrect index
+georeferencing; comparisons use its explicit `--scale 3500000` reference instead.
