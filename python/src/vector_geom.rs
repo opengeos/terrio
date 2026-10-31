@@ -15,6 +15,7 @@ use terrio::ops::vector_geom::{
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simplify, m)?)?;
     m.add_function(wrap_pyfunction!(clip_vector, m)?)?;
+    m.add_function(wrap_pyfunction!(layer_algebra, m)?)?;
 
     m.add_function(wrap_pyfunction!(check_coverage, m)?)?;
     m.add_function(wrap_pyfunction!(simplify_coverage, m)?)?;
@@ -403,4 +404,30 @@ fn simplify_coverage(
     let input = one_layer(py, src, layer)?;
     let inner = py.detach_result(|| terrio::ops::coverage_simplify::simplify_coverage(&input, &options)).py()?;
     Ok(Py::new(py, PyLayer { inner })?.into_any())
+}
+
+/// Planar XY layer algebra. All seven operations accept polygon, line, point and
+/// collection inputs. CRS must match. Returns a new Layer with sequential IDs.
+/// Intersection/union/sym-difference/identity include both schemas; update,
+/// clip and erase use input fields only. Sources are materialized in memory.
+#[pyfunction]
+#[pyo3(signature=(src, method, operation, *, layer=None, method_layer=None, keep_lower_dimension_geometries=true, input_prefix=None, method_prefix=None))]
+#[allow(clippy::too_many_arguments)]
+fn layer_algebra(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    method: &Bound<'_, PyAny>,
+    operation: &str,
+    layer: Option<String>,
+    method_layer: Option<String>,
+    keep_lower_dimension_geometries: bool,
+    input_prefix: Option<String>,
+    method_prefix: Option<String>,
+) -> PyResult<PyLayer> {
+    let op = operation.parse().py()?;
+    let a = one_layer(py, src, layer)?;
+    let b = one_layer(py, method, method_layer)?;
+    let options = terrio::ops::layer_algebra::LayerAlgebraOptions { keep_lower_dimension_geometries, input_prefix, method_prefix };
+    let inner = py.detach_result(|| terrio::ops::layer_algebra::layer_algebra(&a, &b, op, &options)).py()?;
+    Ok(PyLayer { inner })
 }

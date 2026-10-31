@@ -1601,3 +1601,47 @@ pub(crate) fn tile_input(input: &JsValue) -> Result<WarpInput, JsError> {
     }
     Err(invalid("expected a raster Dataset, Uint8Array or { bytes, filename }"))
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct LayerAlgebraArgs {
+    layer: Option<String>,
+    method_layer: Option<String>,
+    keep_lower_dimension_geometries: bool,
+    input_prefix: Option<String>,
+    method_prefix: Option<String>,
+}
+impl Default for LayerAlgebraArgs {
+    fn default() -> Self {
+        Self { layer: None, method_layer: None, keep_lower_dimension_geometries: true, input_prefix: None, method_prefix: None }
+    }
+}
+/// Attribute-preserving planar XY layer algebra. Operations: intersection, union,
+/// sym-difference, identity, update, clip, erase. CRS must match. Options: layer,
+/// methodLayer, keepLowerDimensionGeometries (true), inputPrefix, methodPrefix.
+/// Each source must have one layer unless selected. Sources are materialized;
+/// output IDs are sequential. All polygon, line and point types are supported.
+#[wasm_bindgen(js_name=layerAlgebra)]
+pub fn layer_algebra(src: JsValue, method: JsValue, operation: &str, options: JsValue) -> Result<Dataset, JsError> {
+    let args: LayerAlgebraArgs = parse_options(&options)?;
+    let select = |value: &JsValue, name: Option<String>| -> Result<Layer, JsError> {
+        let mut layers = input_layers(value)?;
+        if let Some(name) = name {
+            return layers.into_iter().find(|l| l.name == name).ok_or_else(|| invalid(format!("layer {name:?} not found")));
+        }
+        if layers.len() != 1 {
+            return Err(invalid("layer algebra requires one layer per source; choose layer or methodLayer"));
+        }
+        Ok(layers.remove(0))
+    };
+    let a = select(&src, args.layer)?;
+    let b = select(&method, args.method_layer)?;
+    let op = operation.parse().map_err(js_err)?;
+    let options = terrio::ops::layer_algebra::LayerAlgebraOptions {
+        keep_lower_dimension_geometries: args.keep_lower_dimension_geometries,
+        input_prefix: args.input_prefix,
+        method_prefix: args.method_prefix,
+    };
+    let output = terrio::ops::layer_algebra::layer_algebra(&a, &b, op, &options).map_err(js_err)?;
+    Ok(Dataset::from_layers(vec![output], VectorDriver::GeoJSON))
+}

@@ -760,3 +760,6 @@ mod tests {
         assert!((c - 3.0).abs() < 1e-12 && (r - 4.0).abs() < 1e-12);
     }
 }
+
+/// Attribute-preserving polygon, line and point layer algebra.
+pub mod layer_algebra;

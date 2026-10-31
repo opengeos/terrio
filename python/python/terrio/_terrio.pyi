@@ -48,6 +48,7 @@ __all__ = [
     "convert",
     "sql",
     "clip_vector",
+    "layer_algebra",
     "rasterize",
     "raster_index",
     "raster_tiles",
@@ -2281,3 +2282,16 @@ def simplify_coverage(
     layer: None = None,
     active_layer: str,
 ) -> VectorDataset: ...
+def layer_algebra(
+    src: Any,
+    method: Any,
+    operation: str,
+    *,
+    layer: str | None = None,
+    method_layer: str | None = None,
+    keep_lower_dimension_geometries: bool = True,
+    input_prefix: str | None = None,
+    method_prefix: str | None = None,
+) -> Layer:
+    """Attribute-preserving planar XY layer algebra, with matching input CRS."""
+    ...

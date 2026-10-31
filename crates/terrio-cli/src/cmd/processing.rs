@@ -491,3 +491,54 @@ pub fn simplify_coverage(a: SimplifyCoverageArgs) -> Result<()> {
     let layers = terrio::ops::coverage_simplify::simplify_coverage_layers(&input, &options, a.active_layer.as_deref())?;
     a.output.write_with_geometry_types(layers, true)
 }
+
+/// Attribute-preserving polygon, line and point layer algebra.
+#[derive(clap::Args)]
+pub struct LayerAlgebraArgs {
+    /// intersection, union, sym-difference, identity, update, clip or erase.
+    operation: terrio::ops::layer_algebra::LayerAlgebraOperation,
+    #[command(flatten)]
+    input: VectorInput,
+    /// Method vector dataset, in the input CRS.
+    method: String,
+    #[command(flatten)]
+    output: VectorOutput,
+    /// Select one method layer (required for a multi-layer method dataset).
+    #[arg(long)]
+    method_layer: Option<String>,
+    /// Include lower-dimensional intersections (clip always includes them).
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    keep_lower_dimension_geometries: bool,
+    /// Input attribute prefix; defaults to input_ with both schemas, otherwise empty.
+    #[arg(long)]
+    input_prefix: Option<String>,
+    /// Method attribute prefix; defaults to method_ with both schemas, otherwise empty.
+    #[arg(long)]
+    method_prefix: Option<String>,
+}
+pub fn layer_algebra(a: LayerAlgebraArgs) -> Result<()> {
+    if !a.output.append
+        && !a.output.overwrite
+        && (std::fs::symlink_metadata(&a.output.output).is_ok() || terrio::vsi::stat(&a.output.output)?.is_some())
+    {
+        return Err(Error::InvalidArgument("output exists; use --append or --overwrite explicitly".into()));
+    }
+    let right = super::quiet(|| {
+        terrio::open_vector(&a.method, &terrio::VectorOpenOptions { layers: a.method_layer.into_iter().collect(), ..Default::default() })
+    })?;
+    if right.layers.len() != 1 {
+        return Err(Error::InvalidArgument("layer algebra needs one method layer; choose it with --method-layer".into()));
+    }
+    let options = terrio::ops::layer_algebra::LayerAlgebraOptions {
+        keep_lower_dimension_geometries: a.keep_lower_dimension_geometries,
+        input_prefix: a.input_prefix,
+        method_prefix: a.method_prefix,
+    };
+    let layers = a
+        .input
+        .open()?
+        .iter()
+        .map(|l| terrio::ops::layer_algebra::layer_algebra(l, &right.layers[0], a.operation, &options))
+        .collect::<Result<Vec<_>>>()?;
+    a.output.write(layers)
+}

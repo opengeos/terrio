@@ -164,6 +164,44 @@ Null and empty geometries contribute no area; touching lines and points are omit
 have sequential IDs from 1. Overlaps within an input retain source feature multiplicity;
 dissolve the input first when disjoint coverage is required.
 
+`layer-algebra OPERATION input method output` supports `intersection`, `union`,
+`sym-difference`, `identity`, `update`, `clip` and `erase` for valid polygon, line,
+point, multipart and collection inputs in matching CRS. It constructs XY output;
+Z/M ordinates are dropped. Overlapping polygon components in a collection are
+queried as their union. Untouched single-part collections keep their outer type.
+Inputs are materialized. `--layer` selects input
+layers; `--method-layer` chooses one method layer. Existing output requires
+explicit `--overwrite` or `--append`; failed preflight preserves output files.
+
+Intersection, union, symmetric difference and identity include both attribute
+schemas with default `input_` and `method_` prefixes. Clip, erase and update use
+the input schema without a default prefix. `--input-prefix` and `--method-prefix`
+override these defaults. Prefix collisions receive numeric suffixes. Update
+copies method values whose original names match the output field names; adding
+an input prefix can therefore leave method values null. Null input geometry is
+skipped; update also retains typed-empty method geometry. IDs are sequential
+from one, with source multiplicity retained. The general output geometry type is
+inferred from results rather than preserving an unknown input declaration.
+
+`--keep-lower-dimension-geometries true|false` defaults to true. When false,
+intersection, identity and union omit a pair intersection whose dimension is
+below the smaller input geometry dimension. A mixed collection is retained when
+its maximum dimension qualifies. Clip always retains lower-dimensional results;
+erase and update subtract full method geometry. Symmetric difference subtracts
+both sides regardless of this option. Individual point cuts do not remove line
+length; line/line crossings node the remaining linework.
+
+Rust exposes `ops::layer_algebra::{layer_algebra, LayerAlgebraOperation,
+LayerAlgebraOptions}`. Python `terrio.layer_algebra(src, method, operation, *,
+layer=None, method_layer=None, keep_lower_dimension_geometries=True,
+input_prefix=None, method_prefix=None)` returns a Layer. JavaScript
+`layerAlgebra(src, method, operation, {layer, methodLayer,
+keepLowerDimensionGeometries, inputPrefix, methodPrefix})` returns a Dataset.
+Each binding requires one layer per input unless selected. CLI registration
+supplies the MCP tool. Field selection, output type forcing and on-the-fly
+reprojection are outside this operation's option subset; prepare inputs with
+`convert` when needed.
+
 `dissolve` also accepts only valid Polygon/MultiPolygon features. Without `--field` it merges
 the whole layer; repeat or comma-separate `--field` (alias `--by`) to group by typed attribute
 values. Null values form a group; non-finite numeric group values are rejected. Only grouping

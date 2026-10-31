@@ -2990,3 +2990,28 @@ test("GPKG toBytes preserves valid typed-empty polygon bodies", () => {
   const report=terrio.validateGpkg(bytes,{fullCheck:true});
   assert.equal(report.valid,true,JSON.stringify(report));
 });
+
+test("layerAlgebra implements seven operations and lower-dimension policy", () => {
+  const data=(coordinates,id)=>({type:"FeatureCollection",features:[{type:"Feature",properties:{id},geometry:{type:"LineString",coordinates}}]});
+  const a=data([[0,0],[3,3]],1),b=data([[0,3],[3,0]],2);
+  for (const [operation,count] of [["intersection",1],["union",3],["sym-difference",2],["identity",2],["update",2],["clip",1],["erase",1]]) {
+    const result=terrio.layerAlgebra(a,b,operation);
+    assert.equal(result.toGeoJSON().features.length,count);
+    if(operation==="update") assert.deepEqual(result.toGeoJSON().features[1].properties,{id:2});
+    result.free();
+  }
+  assert.equal(terrio.layerAlgebra(a,b,"intersection",{keepLowerDimensionGeometries:false}).toGeoJSON().features.length,0);
+  assert.equal(terrio.layerAlgebra(a,b,"clip",{keepLowerDimensionGeometries:false}).toGeoJSON().features.length,1);
+  assert.throws(()=>terrio.layerAlgebra(a,b,"unknown"),/operation must/);
+  assert.throws(()=>terrio.layerAlgebra(a,b,"clip",{unknown:true}),/unknown field/);
+});
+
+test("layerAlgebra selects one layer from each source", () => {
+  const g={type:"FeatureCollection",features:[{type:"Feature",properties:{id:1},geometry:{type:"Point",coordinates:[1,2]}}]};
+  const a=terrio.fromGeoJSON(g,"a"),b=terrio.fromGeoJSON(g,"b");
+  const combined=terrio.concat([a,b],{mode:"stack"}),names=combined.layerNames();
+  const result=terrio.layerAlgebra(combined,combined,"intersection",{layer:names[0],methodLayer:names[1],inputPrefix:"a_",methodPrefix:"b_"});
+  assert.deepEqual(result.toGeoJSON().features[0].properties,{a_id:1,b_id:1});
+  assert.throws(()=>terrio.layerAlgebra(combined,a,"clip"),/one layer/);
+  assert.throws(()=>terrio.layerAlgebra(a,b,"clip",{methodLayer:"missing"}),/not found/);
+});
