@@ -882,6 +882,33 @@ mod tests {
         assert!(matches!(&layers[0].features[0].geometry,Some(Geometry::Polygon{exterior,..}) if exterior.0.is_empty()));
         assert!(matches!(&layers[0].features[1].geometry,Some(Geometry::MultiPolygon(parts)) if parts.is_empty()));
         assert!(layers[0].features[2].geometry.is_none());
+        let projected = crate::vector::reproject_layer(&layers[0], &crate::crs::SpatialRef::from_epsg(3857).unwrap()).unwrap();
+        assert_eq!(projected.crs_epsg(), Some(3857));
+        assert_eq!(projected.features.len(), 3);
+        assert_eq!(projected.features[0].geometry, layers[0].features[0].geometry);
+        assert_eq!(projected.features[1].geometry, layers[0].features[1].geometry);
+        assert!(projected.features[2].geometry.is_none());
+        let buffered =
+            crate::ops::topology::buffer(&layers[0], &crate::ops::topology::BufferOptions { distance: 1.0, ..Default::default() }).unwrap();
+        assert_eq!(buffered.features.len(), 3);
+        for feature in &buffered.features[..2] {
+            assert!(matches!(&feature.geometry, Some(Geometry::MultiPolygon(parts)) if parts.is_empty()));
+        }
+        assert!(buffered.features[2].geometry.is_none());
+        use crate::ops::topology;
+        let dissolved = topology::dissolve(&layers[0], &[]).unwrap();
+        assert_eq!(dissolved.features.len(), 1);
+        assert!(matches!(&dissolved.features[0].geometry, Some(Geometry::MultiPolygon(parts)) if parts.is_empty()));
+        let overlay = topology::overlay(&layers[0], &layers[0], topology::OverlayOperation::Intersection).unwrap();
+        assert!(overlay.features.is_empty());
+        let repaired = topology::make_valid(&layers[0]).unwrap();
+        assert_eq!(repaired.features.len(), 3);
+        for (a, b) in repaired.features.iter().zip(&layers[0].features) {
+            assert_eq!(a.geometry, b.geometry);
+        }
+        let cleaned = topology::clean(&layers[0], &Default::default()).unwrap();
+        assert_eq!(cleaned.features.len(), 3);
+        assert!(cleaned.features.iter().all(|f| f.geometry.is_none()));
         let (summaries, _) = summarize(path).unwrap().unwrap();
         assert_eq!(summaries[0].feature_count, 3);
         assert_eq!(summaries[0].geometry_type, "MultiPolygon");
