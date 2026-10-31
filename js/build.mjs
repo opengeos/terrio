@@ -98,8 +98,9 @@ for (const f of ["terrio_bg.wasm", "core/terrio_bg.wasm", "threads/terrio_bg.was
  * The crates that do not build for wasm64-unknown-unknown as published, and the edits that make
  * them: they treat wasm32 as WebAssembly. `tar` (wbraster's) leaves out its path conversions
  * (https://github.com/alexcrichton/tar-rs, `cfg(target_arch = "wasm32")`), `arrow-buffer`
- * its alignment constant, and acadrust its mmap/thread target guards. Copies of the locked versions are edited (replacing `target_arch = "wasm32"` with `target_family =
- * "wasm"`) for this build only, through cargo's `--config patch...`.
+ * its alignment constant, and acadrust its mmap/thread target guards. Copies of the locked
+ * versions are edited (replacing `target_arch = "wasm32"` with `target_family = "wasm"`) for this
+ * build only, through cargo's `--config patch...`.
  */
 function wasm64Patches() {
   return {
