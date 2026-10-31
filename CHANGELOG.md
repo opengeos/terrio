@@ -10,7 +10,10 @@
 - The crate's default build has no C dependency, on native targets as well as
   WebAssembly. Its default features changed: Zstandard TIFF grids are no longer
   read unless the optional `libzstd` feature (the zstd C library) is enabled, and
-  such a grid is treated as unavailable. PROJ's grids are DEFLATE-compressed.
+  such a grid is treated as unavailable, so a transformation that needs it falls
+  back to the next operation, possibly a ballpark one, without an error. Set
+  `only_best` (`ONLY_BEST=YES`) to get an error instead. PROJ's grids are
+  DEFLATE-compressed.
 
 ### No C dependencies
 

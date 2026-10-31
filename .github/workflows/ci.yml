@@ -256,6 +256,14 @@ jobs:
             found=$(echo "$crates" | grep -E '^(cc|cmake|bindgen|pkg-config|cxx-build)$|-sys$' | grep -vE '^(js|web|linux-raw)-sys$' || true)
             if [ -n "$found" ]; then echo "C build dependencies for $target: $found"; exit 1; fi
           done
+      # The memory64 build has no C compiler that targets it, so it must not need one.
+      - name: The JavaScript package has no C dependency
+        run: |
+          set -o pipefail
+          for target in wasm32-unknown-unknown wasm64-unknown-unknown; do
+            found=$(cargo tree -p terrio-js -e normal,build --target "$target" --prefix none | cut -d' ' -f1 | sort -u | grep -E '^(ring|aws-lc-sys|openssl-sys|zstd-sys|cmake|bindgen)$' || true)
+            if [ -n "$found" ]; then echo "C dependencies for $target: $found"; exit 1; fi
+          done
       - name: The core for WebAssembly
         run: cargo build -p terrio --no-default-features --features geotiff --target wasm32-unknown-unknown
       # Every default feature builds for WebAssembly without a C compiler (#180).
