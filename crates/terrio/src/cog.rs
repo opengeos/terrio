@@ -972,9 +972,7 @@ impl LazyRaster {
     /// ```
     pub fn write(&mut self, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
         let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
-        if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && (self.has_mask() || options.mask.is_some()) {
-            return Err(Error::InvalidArgument("tile archive writes do not preserve dataset masks; use an explicit alpha band".into()));
-        }
+        self.refuse_masked_tile_archive(driver, options)?;
         let source_mask = options.mask.is_none() && self.has_mask() && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
         // Tile archives are built a tile row at a time (see `crate::tiles`). A source that cannot
         // list the files it reads, or an output replacing one of them, is read whole, as before.
@@ -1196,6 +1194,14 @@ impl LazyRaster {
             }
     }
 
+    /// Tile archive writers cannot retain a dataset mask or an explicit one.
+    fn refuse_masked_tile_archive(&self, driver: Option<RasterDriver>, options: &crate::RasterWriteOptions) -> Result<()> {
+        if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && (self.has_mask() || options.mask.is_some()) {
+            return Err(Error::InvalidArgument("tile archive writes do not preserve dataset masks; use an explicit alpha band".into()));
+        }
+        Ok(())
+    }
+
     /// Prepares inherited validity for an output window. GeoTIFF/COG retain
     /// per-dataset masks unless an explicit mask is supplied. Tile archives
     /// reject masked sources because their writers cannot retain that validity.
@@ -1209,9 +1215,7 @@ impl LazyRaster {
     ) -> Result<()> {
         use crate::formats::RasterDriver;
         let driver = options.driver.or_else(|| RasterDriver::for_extension(filename));
-        if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && (self.has_mask() || options.mask.is_some()) {
-            return Err(Error::InvalidArgument("tile archive writes do not preserve dataset masks; use an explicit alpha band".into()));
-        }
+        self.refuse_masked_tile_archive(driver, options)?;
         if options.mask.is_none() && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
             options.mask = self.read_mask(window, overview)?;
         }

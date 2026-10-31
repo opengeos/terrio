@@ -244,7 +244,15 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
         output_mask = r.read_mask(window, a.overview)?;
         Dataset::Raster(r.read_window(window, &opts)?)
     } else if a.layers.is_empty() && a.open_options.is_empty() && a.vector.spatial_hint(&a.input).is_none() {
-        super::quiet(|| terrio::open(&a.input))?
+        let ds = super::quiet(|| terrio::open(&a.input))?;
+        if let Dataset::Raster(r) = &ds {
+            // `open` returns pixels only: the validity comes from the lazy reader, when it has one.
+            let mut source = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
+            if source.has_mask() {
+                output_mask = source.read_mask(Window::full(r.raster.cols, r.raster.rows), None)?;
+            }
+        }
+        ds
     } else {
         let spatial_filter = a.vector.spatial_hint(&a.input);
         let mut options = VectorOpenOptions { layers: a.layers.clone(), spatial_filter, ..Default::default() };
@@ -262,10 +270,6 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
     match ds {
         Dataset::Raster(mut r) => {
-            if a.srcwin.is_none() && a.overview.is_none() {
-                let mut source = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
-                output_mask = source.read_mask(Window::full(r.raster.cols, r.raster.rows), None)?;
-            }
             let append = a.vector.append_only();
             if a.vector.is_set() && !append {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));

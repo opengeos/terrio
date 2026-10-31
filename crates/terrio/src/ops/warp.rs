@@ -1769,7 +1769,8 @@ pub fn warp_lazy_many(sources: &mut [&mut crate::LazyRaster], o: &WarpOptions) -
 /// ```
 pub fn warp_sources(sources: &mut [&mut dyn WarpSource], o: &WarpOptions) -> Result<RasterDataset> {
     // Scoped visits retain binding borrow guards until rendering has finished, including
-    // repeated references to one shared raster. No full or per-chunk pixel copies.
+    // repeated references to one shared raster. No full or per-chunk pixel copies. A mosaic with
+    // a masked source skips this path, which cannot see a `LazyRaster` mask, and pays for those copies.
     fn memory(sources: &[&mut dyn WarpSource], datasets: &[&RasterDataset], o: &WarpOptions) -> Result<Option<RasterDataset>> {
         let Some((first, rest)) = sources.split_first() else {
             if let Some(first) = datasets.first() {

@@ -88,7 +88,9 @@ fn convert_retains_internal_and_sidecar_masks_and_selected_windows() {
         run(d, &["convert", "source.tif", "source.tif", "-f", "COG", "--tile-size", "16"]);
         // Drop the stale sidecar, so the mask read is the rewritten COG's own.
         drop(input);
-        let _ = std::fs::remove_file(d.join("source.tif.msk"));
+        if external {
+            std::fs::remove_file(d.join("source.tif.msk")).unwrap();
+        }
         let mut out = terrio::open_raster_lazy(d.join("source.tif").to_str().unwrap()).unwrap();
         assert!(out.has_mask());
         assert_eq!(out.read_mask(Window::full(65, 35), None).unwrap(), Some(mask));

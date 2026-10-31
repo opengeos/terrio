@@ -2582,25 +2582,24 @@ impl CogWriter {
                 };
                 let out = gdal_overview::block_row(&bd.plan, &bd.buf, bd.buf_row0, bd.buf_rows, bands, self.nodata, weights, bd.next_y);
                 let next_mask = mask.as_ref().map(|_| {
+                    let bd = &mut self.builds[b];
                     let own = !self.mask_without_dataset || bd.src == 0;
                     let all_valid = if own { Vec::new() } else { vec![255; bd.mask.len()] };
+                    // Lent to `block_row` as `RasterData`, then put back, rather than copied per block row.
+                    let buffered = RasterData::U8(std::mem::take(&mut bd.mask));
                     let weights = gdal_overview::Weights {
                         alpha: own.then_some(0),
                         alpha_masks: false,
                         mask: (!own).then_some(all_valid.as_slice()),
                     };
-                    let RasterData::U8(mut values) = gdal_overview::block_row(
-                        &bd.mask_plan,
-                        &RasterData::U8(bd.mask.clone()),
-                        bd.buf_row0,
-                        bd.buf_rows,
-                        1,
-                        None,
-                        weights,
-                        bd.next_y,
-                    ) else {
+                    let RasterData::U8(mut values) =
+                        gdal_overview::block_row(&bd.mask_plan, &buffered, bd.buf_row0, bd.buf_rows, 1, None, weights, bd.next_y)
+                    else {
                         unreachable!("a Byte mask")
                     };
+                    if let RasterData::U8(buffered) = buffered {
+                        bd.mask = buffered;
+                    }
                     if !self.mask_without_dataset {
                         values.iter_mut().for_each(|v| *v = if *v != 0 { 255 } else { 0 });
                     }

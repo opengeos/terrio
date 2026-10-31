@@ -11,7 +11,9 @@
 - Masked inputs are refused, rather than written without their mask, by
   `convert` to any output other than GeoTIFF and COG (PMTiles, MBTiles and GDAL
   drivers included), by `convert --append` and by `convert --t-srs`. Write an
-  explicit alpha band to keep the validity.
+  explicit alpha band to keep the validity. The library, Python and JavaScript
+  writers refuse tile archives but keep the pixel, alpha and nodata serialization
+  of other non-GeoTIFF formats, which do not store the mask.
 
 ### Docker image
 

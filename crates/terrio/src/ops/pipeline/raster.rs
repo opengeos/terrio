@@ -297,7 +297,7 @@ fn warp_inner(source: &mut LazyRaster, options: &WarpOptions, mask_pixels: bool)
     let referenced = source.geotransform_present() || options.dst_srs.is_some();
     let original = source.header();
     let mut output = if mask_pixels && source.has_mask() {
-        crate::ops::warp::warp_reader_masked(source, options)?
+        crate::ops::warp::warp_reader(source, options)?
     } else {
         crate::ops::warp::warp_lazy(source, options)?
     };
