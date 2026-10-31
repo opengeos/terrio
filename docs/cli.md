@@ -2811,6 +2811,42 @@ in-memory data as templates. JavaScript `clipVector(src, {bbox: [...]})` returns
 a `Dataset`, with `geometry`, `like`, `crs`, `layers`, `likeLayer`, `likeWhere`
 and `likeSql`; templates may be `Dataset`s, uploaded bytes or vector GeoJSON.
 
+### Check polygon coverages
+
+`terrio check-coverage counties.gpkg invalid.gpkg` reports invalid polygon boundary
+segments: overlaps, duplicated interiors and mismatched nodes on shared edges.
+`--maximum-gap-width 10` additionally flags narrow gaps in input CRS units; zero
+(the default) disables gap detection. Gaps narrower than the threshold require
+sufficiently long, nearly parallel edges, following JTS/GEOS coverage validation.
+Use a projected CRS when the threshold should represent metres.
+
+Each input polygon must individually be valid; repair it before checking the
+coverage. Polygon and multipolygon features are supported, including holes.
+Nulls and geometry collections are rejected. Gap searches clamp overflowing
+search bounds; unrepresentable projections return an explicit precision error.
+The operation loads the layer into memory and uses indexed edge and interior tests; it does
+not fix or simplify the coverage.
+
+Output is a MultiLineString layer called `invalid_edge`, with
+CRS and original XY edge coordinates retained after consecutive XY repeats are
+normalized. Diagnostic lines are two-dimensional even for Z/M inputs, matching
+GDAL. Source attributes
+are omitted, and output IDs are sequential from 1, as in GDAL.
+`--include-valid` retains valid source features with empty line geometry,
+maintaining one-to-one correspondence. Multiple selected input layers are checked
+independently and named `invalid_edge_{input_layer}`; use `--layer` to select input
+layers or `--output-layer` to name a single result. The usual vector output format,
+append and overwrite options apply. This command also supplies the MCP tool.
+Terrio has one geometry field per layer; GDAL geometry-field selection, upsert,
+skip-errors, no-create-empty-layers, GDALG output and GDAL driver-specific
+options are outside this command's subset.
+
+Rust exposes `ops::coverage::{check_coverage, CoverageCheckOptions}`. Python
+`terrio.check_coverage(src, maximum_gap_width=0.0, include_valid=False, layer=None)`
+returns one Layer, accepting the usual vector path, dataset, layer or GeoJSON
+inputs. JavaScript `checkCoverage(src, {maximumGapWidth: 0, includeValid: false})`
+returns a Dataset and checks each input layer independently.
+
 ## Separate-file raster tiles
 
 `terrio tile INPUT OUTPUT_DIR` writes separate `z/x/y.png` tiles. The default
@@ -2850,7 +2886,9 @@ pass. Non-nearest validity uses the maximum contributing source density, which
 can mark more edge pixels valid than a GDAL interpolating alpha warp; exact mask
 agreement is validated for nearest. It can read source windows again while retaining the same buffer budgets.
 PNG output contains image pixels only, without world files, CRS sidecars or
-web viewers. Use the JSON grid from `--dry-run` to obtain tile georeferencing;
+web viewers. The `--dry-run` JSON includes `crs` and the grid for georeferencing;
+`crs` is an authority code or full definition, and is null for an unknown source
+CRS on a raster grid.
 GeoTIFF tiles embed their grids and CRS. Distinct per-band nodata requiring PAM
 sidecars is currently refused for GeoTIFF folder output. The same restriction
 covers a shared Float32 nodata value whose raw value cannot be represented as
@@ -2882,8 +2920,9 @@ source window may use at most 64 MiB and the output buffer 256 MiB; requests
 exceeding those limits fail before the source window read. Decoder caches,
 already-loaded sources and PNG/GeoTIFF encoder buffers are additional. A plan
 exceeding `--max-tiles` (default one million) is rejected before rendering.
-`--dry-run` reports only the metadata grid; rendering-specific options and the
-maximum tile count are validated when generation runs.
+`--dry-run` reports a metadata-only plan, including CRS, and validates format,
+resampling, alpha and output-nodata choices available from that metadata. The
+maximum tile count, source reads and encoding checks are enforced during generation.
 
 Output directories must be new unless `--resume` is given. Existing files are
 never overwritten; resume trusts existing tiles without validating their

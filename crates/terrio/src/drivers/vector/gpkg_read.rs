@@ -279,16 +279,14 @@ fn set_crs(db: &impl Tables, layer: &mut Layer, srs_id: i64) {
     layer.set_crs_epsg(s.epsg);
 }
 
-/// Decodes a GeoPackage geometry blob: the `GP` header, then WKB. Empty geometries give `None`.
+/// Decodes a GeoPackage geometry blob: the `GP` header, then WKB.
+/// Empty non-point geometries retain their type; NaN empty points give `None`.
 pub(crate) fn decode_geometry(b: &[u8]) -> Option<Geometry> {
     if b.len() < 8 || &b[..2] != b"GP" {
         // Some writers store plain WKB.
         return from_wkb(b);
     }
     let flags = b[3];
-    if flags & 0x10 != 0 {
-        return None;
-    }
     let envelope = match (flags >> 1) & 0x07 {
         0 => 0,
         1 => 32,
@@ -298,6 +296,11 @@ pub(crate) fn decode_geometry(b: &[u8]) -> Option<Geometry> {
     };
     let wkb = b.get(8 + envelope..)?;
     let g = from_wkb(wkb)?;
+    // A flagged-empty blob with nonempty WKB is malformed. Match the envelope
+    // reader so unfiltered reads and rebuilt spatial indexes agree.
+    if flags & 0x10 != 0 && crate::vector::coord_count(&g) != 0 {
+        return None;
+    }
     // An empty point is written as NaN coordinates.
     match &g {
         Geometry::Point(c) if c.x.is_nan() && c.y.is_nan() => None,
@@ -790,6 +793,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_flag_with_nonempty_wkb_is_rejected_consistently_with_index_envelopes() {
+        let mut blob = super::super::geopackage::gpkg_geometry(&Geometry::point(1., 2.), 4326);
+        blob[3] |= 0x10;
+        assert!(decode_geometry(&blob).is_none());
+        assert!(super::super::gpkg_update::envelope(&blob).is_none());
+    }
+
+    #[test]
+    fn empty_nonpoint_geometries_keep_their_type_in_geopackage_blobs() {
+        for geometry in [
+            Geometry::Polygon { exterior: Ring::default(), interiors: vec![] },
+            Geometry::MultiPolygon(vec![]),
+            Geometry::LineString(vec![]),
+            Geometry::MultiLineString(vec![]),
+            Geometry::MultiPoint(vec![]),
+            Geometry::GeometryCollection(vec![]),
+        ] {
+            let blob = super::super::geopackage::gpkg_geometry(&geometry, 4326);
+            assert_ne!(blob[3] & 0x10, 0, "GeoPackage empty flag");
+            assert_eq!(decode_geometry(&blob), Some(geometry));
+        }
+        let point = Geometry::point(f64::NAN, f64::NAN);
+        let blob = super::super::geopackage::gpkg_geometry(&point, 4326);
+        assert!(decode_geometry(&blob).is_none());
+    }
+
+    #[test]
     fn decodes_wkb_as_wbvector() {
         use wbvector::Coord;
         let ring = |o: f64| vec![Coord::xy(o, 0.0), Coord::xy(o + 1.0, 0.0), Coord::xy(o, 1.0), Coord::xy(o, 0.0)];
@@ -831,6 +861,65 @@ mod tests {
             ewkb.extend(v.to_le_bytes());
         }
         assert_eq!(from_wkb(&ewkb), Geometry::from_wkb(&ewkb).ok());
+    }
+
+    #[test]
+    fn empty_geometry_summaries_and_geojson_remain_distinct_from_null() {
+        let mut layer = Layer::new("empty").with_epsg(4326);
+        for (i, geometry) in
+            [Some(Geometry::Polygon { exterior: Ring::default(), interiors: vec![] }), Some(Geometry::MultiPolygon(vec![])), None]
+                .into_iter()
+                .enumerate()
+        {
+            layer.features.push(Feature { fid: i as u64 + 1, geometry, attributes: vec![] });
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("empty.gpkg");
+        std::fs::write(&path, super::super::geopackage::to_bytes(&[layer]).unwrap()).unwrap();
+        let path = path.to_str().unwrap();
+        let layers = read(path, &[], None).unwrap();
+        assert!(layers[0].geom_type.is_none(), "mixed polygon types declare GEOMETRY");
+        assert!(matches!(&layers[0].features[0].geometry,Some(Geometry::Polygon{exterior,..}) if exterior.0.is_empty()));
+        assert!(matches!(&layers[0].features[1].geometry,Some(Geometry::MultiPolygon(parts)) if parts.is_empty()));
+        assert!(layers[0].features[2].geometry.is_none());
+        let projected = crate::vector::reproject_layer(&layers[0], &crate::crs::SpatialRef::from_epsg(3857).unwrap()).unwrap();
+        assert_eq!(projected.crs_epsg(), Some(3857));
+        assert_eq!(projected.features.len(), 3);
+        assert_eq!(projected.features[0].geometry, layers[0].features[0].geometry);
+        assert_eq!(projected.features[1].geometry, layers[0].features[1].geometry);
+        assert!(projected.features[2].geometry.is_none());
+        let buffered =
+            crate::ops::topology::buffer(&layers[0], &crate::ops::topology::BufferOptions { distance: 1.0, ..Default::default() }).unwrap();
+        assert_eq!(buffered.features.len(), 3);
+        for feature in &buffered.features[..2] {
+            assert!(matches!(&feature.geometry, Some(Geometry::MultiPolygon(parts)) if parts.is_empty()));
+        }
+        assert!(buffered.features[2].geometry.is_none());
+        use crate::ops::topology;
+        let dissolved = topology::dissolve(&layers[0], &[]).unwrap();
+        assert_eq!(dissolved.features.len(), 1);
+        assert!(matches!(&dissolved.features[0].geometry, Some(Geometry::MultiPolygon(parts)) if parts.is_empty()));
+        let overlay = topology::overlay(&layers[0], &layers[0], topology::OverlayOperation::Intersection).unwrap();
+        assert!(overlay.features.is_empty());
+        let repaired = topology::make_valid(&layers[0]).unwrap();
+        assert_eq!(repaired.features.len(), 3);
+        for (a, b) in repaired.features.iter().zip(&layers[0].features) {
+            assert_eq!(a.geometry, b.geometry);
+        }
+        let cleaned = topology::clean(&layers[0], &Default::default()).unwrap();
+        assert_eq!(cleaned.features.len(), 3);
+        assert!(cleaned.features.iter().all(|f| f.geometry.is_none()));
+        let (summaries, _) = summarize(path).unwrap().unwrap();
+        assert_eq!(summaries[0].feature_count, 3);
+        assert_eq!(summaries[0].geometry_type, "MultiPolygon");
+        assert_eq!(summaries[0].geometry_type, crate::vector::geometry_type_name(&layers[0]));
+        assert!(summaries[0].extent.is_none());
+        let bytes = crate::memory::write_vector_bytes(&layers, "empty.geojson", &Default::default()).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["features"][0]["geometry"]["type"], "Polygon");
+        assert!(json["features"][0]["geometry"]["coordinates"].as_array().unwrap().iter().all(|ring| ring.as_array().unwrap().is_empty()));
+        assert_eq!(json["features"][1]["geometry"]["type"], "MultiPolygon");
+        assert!(json["features"][2]["geometry"].is_null());
     }
 
     #[test]

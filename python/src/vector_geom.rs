@@ -15,6 +15,8 @@ use terrio::ops::vector_geom::{
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simplify, m)?)?;
     m.add_function(wrap_pyfunction!(clip_vector, m)?)?;
+
+    m.add_function(wrap_pyfunction!(check_coverage, m)?)?;
     m.add_function(wrap_pyfunction!(segmentize, m)?)?;
     m.add_function(wrap_pyfunction!(convex_hull, m)?)?;
     m.add_function(wrap_pyfunction!(concave_hull, m)?)?;
@@ -339,4 +341,29 @@ fn native_clip_template(
     _: &terrio::ops::vector_clip::ClipTemplateOptions,
 ) -> PyResult<terrio::ops::vector_clip::ClipRegion> {
     Err(invalid("template paths are unavailable in WebAssembly; pass a Raster or vector data"))
+}
+
+/// Find invalid boundary segments in a polygon coverage.
+///
+/// Args:
+///     src: Vector path, dataset, layer or GeoJSON. Polygons must individually be valid.
+///     maximum_gap_width: Largest narrow-gap width to flag, in input CRS units; zero disables it.
+///     include_valid: Emit empty MultiLineStrings for valid features, preserving correspondence.
+///     layer: Select a single layer when the input has multiple layers.
+///
+/// Returns:
+///     Layer: Invalid MultiLineStrings with CRS retained, empty attributes and sequential IDs.
+#[pyfunction]
+#[pyo3(signature = (src, *, maximum_gap_width=0.0, include_valid=false, layer=None))]
+fn check_coverage(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    maximum_gap_width: f64,
+    include_valid: bool,
+    layer: Option<String>,
+) -> PyResult<PyLayer> {
+    let input = one_layer(py, src, layer)?;
+    let options = terrio::ops::coverage::CoverageCheckOptions { maximum_gap_width, include_valid };
+    let inner = py.detach_result(|| terrio::ops::coverage::check_coverage(&input, &options)).py()?;
+    Ok(PyLayer { inner })
 }

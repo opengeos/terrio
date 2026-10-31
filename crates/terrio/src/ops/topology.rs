@@ -56,6 +56,9 @@ pub fn buffer(layer: &Layer, options: &BufferOptions) -> Result<Layer> {
             .as_ref()
             .map(|g| {
                 require_valid(g, f.fid)?;
+                if g.all_coords().is_empty() {
+                    return Ok(Geometry::MultiPolygon(vec![]));
+                }
                 let result = to_geo(g).buffer_with_style(style.clone());
                 checked_output(from_polygons(result))
             })
@@ -370,7 +373,7 @@ fn checked_output(g: Geometry) -> Result<Geometry> {
 
 pub(super) fn polygons(g: &Geometry, fid: u64) -> Result<geo::MultiPolygon<f64>> {
     match to_geo(g) {
-        geo::Geometry::Polygon(p) => Ok(geo::MultiPolygon(vec![p])),
+        geo::Geometry::Polygon(p) => Ok(geo::MultiPolygon(if p.exterior().0.is_empty() { vec![] } else { vec![p] })),
         geo::Geometry::MultiPolygon(p) => Ok(p),
         _ => Err(Error::InvalidArgument(format!("feature {fid} is not polygonal"))),
     }

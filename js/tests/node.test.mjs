@@ -2834,11 +2834,39 @@ test("clipVector preserves attributes, boundary points and interpolated line Z",
   assert.throws(() => terrio.clipVector(src, {bbox:[0,0,2,2], layers:["missing"]}), /no layer/);
 });
 
+test("checkCoverage uses GDAL schema and flags overlaps and narrow gaps", () => {
+  const coverage = (shift) => ({type: "FeatureCollection", features: [
+    {type: "Feature", properties: {name: "west"}, geometry: {type: "Polygon", coordinates: [[[0,0],[1,0],[1,2],[0,2],[0,0]]]}},
+    {type: "Feature", properties: {name: "east"}, geometry: {type: "Polygon", coordinates: [[[1+shift,0],[2+shift,0],[2+shift,2],[1+shift,2],[1+shift,0]]]}}
+  ]});
+  assert.equal(terrio.checkCoverage(coverage(0)).toGeoJSON().features.length, 0);
+  const all = terrio.checkCoverage(coverage(0), {includeValid: true}).toGeoJSON().features;
+  assert.ok(all.every(f => f.properties === null));
+  assert.ok(all.every(f => f.geometry.coordinates.length === 0));
+  assert.equal(terrio.checkCoverage(coverage(-0.1)).toGeoJSON().features.length, 2);
+  assert.equal(terrio.checkCoverage(coverage(0.1)).toGeoJSON().features.length, 0);
+  const gap = terrio.checkCoverage(coverage(0.1), {maximumGapWidth: 0.2}).toGeoJSON().features;
+  assert.equal(gap.length, 2);
+  assert.ok(gap.every(f => f.geometry.type === "MultiLineString"));
+  assert.throws(() => terrio.checkCoverage(coverage(0), {maximumGapWidth: -1}), /maximum_gap_width/);
+});
+
+
+test("checkCoverage emits XY diagnostics for elevated polygons", () => {
+  const geometry = {type: "Polygon", coordinates: [[[0,0,1],[2,0,2],[0,2,3],[0,0,1]]]};
+  const feature = {type: "Feature", properties: {}, geometry};
+  const output = terrio.checkCoverage({type: "FeatureCollection", features: [feature, feature]}).toGeoJSON().features;
+  assert.equal(output.length, 2);
+  assert.ok(output.every(f => f.geometry.coordinates.flat().every(point => point.length === 2)));
+});
+
 test("rasterTiles streams encoded files and planRasterTiles reads metadata", () => {
   const raster = terrio.createRaster(null, {size: [5, 3], ot: "Byte", burn: [7], crs: "EPSG:4326", bbox: [0, 0, 5, 3]});
   const options = {tilingScheme: "raster", grid: {tileSize: 2}, resampling: "nearest"};
   const plan = terrio.planRasterTiles(raster, options);
   assert.equal(plan.levels.length, 1);
+  assert.equal(plan.crs, "EPSG:4326");
+  assert.throws(() => terrio.planRasterTiles(raster, {...options, resampling: "not-a-resampler"}), /resampling/i);
   let count = 0;
   const report = terrio.rasterTiles(raster, options, (name, bytes) => {
     assert.match(name, /^1\/\d+\/\d+\.png$/);

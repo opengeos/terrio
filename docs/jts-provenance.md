@@ -312,3 +312,18 @@ Validation also passed workspace Clippy with warnings denied, workspace Rust
 tests, the affected Python geometry/tile checks and Node geometry/tile checks,
 and a fresh WASM build. The release Python wheel and source archive contain the
 license notices. Changed-file pre-commit checks run before the local commit.
+
+## Polygon coverage validation
+
+`ops/coverage.rs` ports the coverage validation classes from JTS commit
+[`3460207216f3091cd7f72d48d6ddd1b561b2b8fd`](https://github.com/locationtech/jts/tree/3460207216f3091cd7f72d48d6ddd1b561b2b8fd):
+`coverage/CoverageValidator.java`, `CoveragePolygonValidator.java`, `CoverageRing.java`,
+`InvalidSegmentDetector.java`, `CoveragePolygon.java`, plus
+`algorithm/PolygonNodeTopology.java` and `geom/LineSegment.java` helpers.
+The Eclipse Distribution License 1.0 is selected. File headers and both `NOTICE`
+files retain the source copyright notices.
+
+Rust edge IDs replace mutable Java ring references. Canonical edge groups classify
+same/opposite polygon-interior sides before further interaction tests; `rstar`
+indexes replace the segment mutual intersector and point-in-area indexes. Source
+ring coordinates supply the invalid-edge output without constructing new vertices.

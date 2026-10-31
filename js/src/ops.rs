@@ -1539,6 +1539,26 @@ pub fn enhance_luts(src: JsValue, options: JsValue) -> Result<String, JsError> {
     Ok(terrio::ops::enhance::format_luts(&enhance_tables(&ds, &a)?))
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct CheckCoverageArgs {
+    maximum_gap_width: f64,
+    include_valid: bool,
+}
+
+/// Polygon coverage errors as MultiLineStrings, with CRS retained, empty attributes and new IDs.
+/// Each polygon must individually be valid. Options: `maximumGapWidth` (input CRS
+/// units; zero disables narrow gaps), `includeValid` (empty lines for valid features).
+#[wasm_bindgen(js_name = checkCoverage)]
+pub fn check_coverage(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    let args: CheckCoverageArgs = parse_options(&options)?;
+    let options =
+        terrio::ops::coverage::CoverageCheckOptions { maximum_gap_width: args.maximum_gap_width, include_valid: args.include_valid };
+    let input = input_layers(&src)?;
+    let layers = terrio::ops::coverage::check_coverage_layers(&input, &options).map_err(js_err)?;
+    Ok(Dataset::from_layers(layers, VectorDriver::GeoJSON))
+}
+
 /// A tile/window source without eagerly reading uploaded or shared datasets.
 pub(crate) fn tile_input(input: &JsValue) -> Result<WarpInput, JsError> {
     if let Some(inner) = Dataset::lookup(input) {

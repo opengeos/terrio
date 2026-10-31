@@ -112,6 +112,12 @@ The buffer, overlay, dissolve and validity commands are built on
 with [`rstar`](https://crates.io/crates/rstar) R-trees. GDAL-style vector gridding
 uses [`spade`](https://crates.io/crates/spade) triangulations.
 
+Polygon coverage checking also ports JTS's `CoverageValidator`,
+`CoveragePolygonValidator`, `CoverageRing`, `InvalidSegmentDetector` and their
+point/segment helpers, pinned to commit `3460207216f3091cd7f72d48d6ddd1b561b2b8fd`,
+under the Eclipse Distribution License 1.0 (BSD-3-Clause). The file headers and
+`NOTICE` name the source files and retain their copyright notices.
+
 ## The EPSG dataset and Esri's projection data
 
 terrio's EPSG table and datum names (`crates/terrio-crs/data/epsg.tsv.zst` and `datums.tsv.zst`) are
