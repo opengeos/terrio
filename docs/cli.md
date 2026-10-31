@@ -3426,6 +3426,9 @@ NITF candidate that is unsupported or malformed aborts the run before publicatio
 it is not counted as a skipped non-NITF file. Declared NITF file size must match
 the actual size, so truncation after metadata is detected without reading pixels.
 
+Unreadable directories fail the whole scan rather than publishing an incomplete
+inventory. Select a CADRG frame tree, rather than an entire drive root.
+
 Native creation requires a stable local directory tree: callers must synchronize
 concurrent changes to input and output directories. File identity checks detect
 replaced frames; they do not make pathname traversal or publication a confinement

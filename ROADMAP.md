@@ -237,6 +237,7 @@ Command-group progress:
 - [x] Metadata-only CADRG RPF table-of-contents creation through Rust, CLI/MCP,
       Python and WebAssembly, with bounded frame reads, polar grids and atomic native output
       ([#446](https://github.com/opengeos/terrio/pull/446)).
+      Part of [#289](https://github.com/opengeos/terrio/issues/289).
 - [x] Python and WebAssembly contour, footprint, buffer, grouped dissolve, geometry validity
       and repair functions, using the shared Rust engines.
 - [x] Python and WebAssembly zonal statistics and recursive multipart splitting, using the

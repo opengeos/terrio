@@ -339,7 +339,8 @@ replaces any file at that path, not only a TOC; input frames remain protected. T
 report includes frame/group counts, skipped non-NITF candidates, metadata bytes
 read and output bytes. New Unix output follows the process umask; overwrites
 preserve its existing Unix mode bits, but not ownership, extended ACLs or other
-extended attributes. Directory trees must remain stable during creation; callers
+extended attributes. Unreadable directories fail the entire native scan instead of producing an incomplete index.
+Directory trees must remain stable during creation; callers
 must synchronize concurrent directory changes. Use `rpftoc_bytes` with an
 application-managed writer when those publication properties are required.
 
