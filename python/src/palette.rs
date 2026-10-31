@@ -15,11 +15,13 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_color_table, m)?)?;
     Ok(())
 }
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 struct Destination<'a> {
     path: &'a str,
     other_sources: Vec<String>,
     overwrite: bool,
 }
+#[cfg(not(target_family = "wasm"))]
 fn check_destination(source: &LazyRaster, path: Option<&str>, destination: Option<Destination<'_>>) -> terrio::Result<()> {
     if let Some(destination) = destination {
         let mut paths = destination.other_sources;
@@ -29,6 +31,11 @@ fn check_destination(source: &LazyRaster, path: Option<&str>, destination: Optio
         }
         palette::check_output(destination.path, &paths.iter().map(String::as_str).collect::<Vec<_>>(), destination.overwrite)?;
     }
+    Ok(())
+}
+/// [`destination`] refuses a `dst` in this build, so there is none to check.
+#[cfg(target_family = "wasm")]
+fn check_destination(_source: &LazyRaster, _path: Option<&str>, _destination: Option<Destination<'_>>) -> terrio::Result<()> {
     Ok(())
 }
 fn with_source<T: Send>(
@@ -74,12 +81,20 @@ fn table(py: Python<'_>, source: &Bound<'_, PyAny>, filename: Option<&str>) -> P
     if source.cast::<PyRaster>().is_ok() {
         return with_source(py, source, None, |r| palette::color_table(&r.header()));
     }
-    let path = source
-        .extract::<std::path::PathBuf>()
-        .map_err(|_| invalid("expected a palette path, Raster, bytes or RGBA sequence with Byte entries"))?;
-    let path = path.into_os_string().into_string().map_err(|_| invalid("raster paths must be UTF-8"))?;
-    crate::with_warnings(py, || palette::read_color_table(&path))
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let path = source
+            .extract::<std::path::PathBuf>()
+            .map_err(|_| invalid("expected a palette path, Raster, bytes or RGBA sequence with Byte entries"))?;
+        let path = path.into_os_string().into_string().map_err(|_| invalid("raster paths must be UTF-8"))?;
+        crate::with_warnings(py, || palette::read_color_table(&path))
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        Err(invalid("this build reads palettes from a Raster, bytes or RGBA sequence only"))
+    }
 }
+#[cfg(not(target_family = "wasm"))]
 fn destination<'a>(
     py: Python<'_>,
     color_map: Option<&Bound<'_, PyAny>>,
@@ -105,6 +120,19 @@ fn destination<'a>(
         paths.extend(crate::with_warnings(py, || palette::color_table_files(&palette_path))?);
     }
     Ok(Some(Destination { path, other_sources: paths, overwrite }))
+}
+/// The check that an output does not replace an input is not available in this build.
+#[cfg(target_family = "wasm")]
+fn destination<'a>(
+    _py: Python<'_>,
+    _color_map: Option<&Bound<'_, PyAny>>,
+    dst: Option<&'a str>,
+    _overwrite: bool,
+) -> PyResult<Option<Destination<'a>>> {
+    if dst.is_some() {
+        return Err(invalid("this build returns the palette Raster only; write it with Raster.write"));
+    }
+    Ok(None)
 }
 #[allow(clippy::too_many_arguments)]
 fn finish(
