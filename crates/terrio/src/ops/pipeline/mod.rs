@@ -137,7 +137,24 @@ impl ReadRequest {
 }
 /// Resolved paths always join with `/`, so on Windows a native key names the same file.
 fn same_path(a: &str, b: &str) -> bool {
-    if cfg!(windows) { a.replace('\\', "/") == b.replace('\\', "/") } else { a == b }
+    same_path_on(a, b, cfg!(windows))
+}
+fn same_path_on(a: &str, b: &str, windows: bool) -> bool {
+    if windows { windows_segments(a) == windows_segments(b) } else { a == b }
+}
+/// A Windows path's segments, with `.` and `..` applied, since a resolved path can retain them.
+fn windows_segments(path: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    for segment in path.split(['\\', '/']) {
+        match segment {
+            "." => {}
+            ".." if segments.last().is_some_and(|last: &&str| !last.is_empty() && !last.ends_with(':') && *last != "..") => {
+                segments.pop();
+            }
+            _ => segments.push(segment),
+        }
+    }
+    segments
 }
 /// A loaded input dataset. Nested checkpoint and write artifacts are discarded.
 pub struct PipelineInput {
@@ -912,6 +929,14 @@ mod tests {
         let inputs = BTreeMap::from([(dir.path().join("source.geojson").to_string_lossy().into_owned(), 1)]);
         let request = plan.request("source.geojson");
         assert_eq!(request.find_input(&inputs), Some(&1));
+    }
+    #[test]
+    fn native_windows_keys_match_resolved_paths_only_on_windows() {
+        assert!(same_path_on(r"C:\d\s.geojson", r"C:\d/s.geojson", true));
+        assert!(same_path_on(r"C:\a\s.geojson", r"C:\a\b/../s.geojson", true));
+        assert!(same_path_on(r"C:\a\s.geojson", r"C:\a\b/.././s.geojson", true));
+        assert!(!same_path_on(r"C:\a\t.geojson", r"C:\a\b/../s.geojson", true));
+        assert!(!same_path_on(r"C:\d\s.geojson", r"C:\d/s.geojson", false));
     }
     #[test]
     fn nested_definitions_do_not_write_their_checkpoints() {
