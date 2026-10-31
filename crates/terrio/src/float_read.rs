@@ -1,5 +1,5 @@
 // Written to match the behavior of:
-//   GDAL v3.13.2:
+//   GDAL v3.13.3:
 //     gcore/gdalrasterband.cpp (GDALRasterBand::GetMaskBand)
 //     gcore/gdalnodatamaskband.cpp
 //     gcore/rasterio.cpp (GDALCopyWords)

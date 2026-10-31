@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     ogr/ogrsf_frmts/generic/ogrlayer.cpp (OGRLayer::Intersection, Union, SymDifference,
+//       Identity, Update, Clip, Erase)
+//     apps/gdalalg_vector_layer_algebra.cpp
+// No code is translated from these sources.
+
 //! Planar XY layer algebra, including lower-dimensional intersections.
 //! Reference semantics: GDAL 3.13.3 OGR layer algebra.
 //!
