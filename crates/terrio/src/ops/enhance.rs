@@ -381,7 +381,7 @@ mod tests {
         assert_eq!(enhance(&ds, &luts, &EnhanceOptions::default()).unwrap().raster.data.to_f64_vec(), vec![44.]);
     }
 
-    /// The reference build is GDAL 3.13.
+    /// Reference: GDAL 3.13.
     #[test]
     fn byte_nodata_conversion_matches_gdal_reference_build() {
         for (nodata, expected) in [(-9999., 241.), (300., 44.), (1e30, 0.), (f64::INFINITY, 0.)] {

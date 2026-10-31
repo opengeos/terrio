@@ -682,7 +682,7 @@ mod tests {
         assert!(palette_to_rgb(&source, true).unwrap_err().to_string().contains("overflow"));
     }
 
-    /// The fixture was produced with GDAL 3.13.3.
+    /// Reference: GDAL 3.13.3.
     #[test]
     fn median_cut_and_diffusion_match_independent_gdal_fixture() {
         // Three bands of a GDAL-written 3x2 TIFF; reference outputs come from
