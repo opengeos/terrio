@@ -1023,6 +1023,27 @@ mod tests {
         }
     }
     #[test]
+    fn resize_interpolates_raw_pixels_under_a_dataset_mask() {
+        let dir = tempfile::tempdir().unwrap();
+        let grid = crate::ops::Grid { width: 4, height: 4, geo_transform: [0., 1., 0., 4., 0., -1.] };
+        let values = (0..16).map(|v| (v * 10) as u8).collect();
+        let ds = crate::ops::build_raster_data(grid, wbraster::raster::RasterData::U8(values), 1, None, &Default::default()).unwrap();
+        let (raw, masked) = (dir.path().join("raw.tif"), dir.path().join("masked.tif"));
+        crate::write_raster_dataset(&ds, raw.to_str().unwrap(), &Default::default()).unwrap();
+        let mut mask = vec![255; 16];
+        mask[5] = 0;
+        let options = crate::RasterWriteOptions { mask: Some(mask), ..Default::default() };
+        crate::write_raster_dataset(&ds, masked.to_str().unwrap(), &options).unwrap();
+        let options =
+            crate::ops::warp::WarpOptions { size: Some((2, 2)), resampling: crate::ops::Resampling::Bilinear, ..Default::default() };
+        let mut raw = LazyRaster::open(raw.to_str().unwrap()).unwrap();
+        let expected = crate::ops::warp::warp_lazy(&mut raw, &options).unwrap();
+        let mut masked = LazyRaster::open(masked.to_str().unwrap()).unwrap();
+        let mut resized = raster::resize(&mut masked, &options).unwrap();
+        assert_eq!(resized.read().unwrap().raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
+        assert!(resized.has_mask());
+    }
+    #[test]
     fn crop_and_band_selection_only_read_requested_source_window() {
         use std::sync::{Arc, Mutex};
         type ReadLog = Arc<Mutex<Vec<(usize, Window, Vec<usize>)>>>;

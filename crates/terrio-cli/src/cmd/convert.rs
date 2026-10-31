@@ -277,7 +277,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
             if let Some(dst) = t_srs {
                 if output_mask.is_some() {
                     return Err(terrio::Error::InvalidArgument(
-                        "reprojection does not preserve dataset masks; use an explicit alpha band".into(),
+                        "reprojection does not preserve dataset masks; use `terrio warp`, which applies them".into(),
                     ));
                 }
                 let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), transform_options: coordinate_options, ..Default::default() };
@@ -290,7 +290,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
             if append {
                 if output_mask.is_some() {
                     return Err(terrio::Error::InvalidArgument(
-                        "tile archive writes do not preserve dataset masks; use an explicit alpha band".into(),
+                        "tile archive writes do not preserve dataset masks; write GeoTIFF or COG".into(),
                     ));
                 }
                 // Added to an existing archive of image tiles.
@@ -322,7 +322,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 if let Some(d) = gdal_driver {
                     if output_mask.is_some() {
                         return Err(terrio::Error::InvalidArgument(format!(
-                            "GDAL's {d} driver does not preserve dataset masks; use an explicit alpha band"
+                            "GDAL's {d} driver does not preserve dataset masks; write GeoTIFF or COG"
                         )));
                     }
                     return terrio::gdal_backend::write_raster(&r, &a.output, &d, &creation_options);
@@ -336,7 +336,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
             let output_driver = driver.or_else(|| RasterDriver::for_extension(&a.output));
             if output_mask.is_some() && !matches!(output_driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
                 return Err(terrio::Error::InvalidArgument(
-                    "this output format does not preserve dataset masks; use an explicit alpha band".into(),
+                    "this output format does not preserve dataset masks; write GeoTIFF or COG".into(),
                 ));
             }
             let opts = RasterWriteOptions {
