@@ -231,6 +231,8 @@ commands. Command-group progress:
       point sampling across multiple rasters, through the Rust API, CLI and MCP.
 - [x] Polygonization preserves exterior rings and holes on south-up and rotated grids, and
       classifies rings correctly for small pixels at large coordinate origins.
+- [x] Python and WebAssembly contour, footprint, buffer, grouped dissolve, geometry validity
+      and repair functions, using the shared Rust engines.
 - [x] Contour lines with interval/fixed levels, nodata handling and optional elevations in Z;
       multi-raster zonal statistics with GDAL's centre/all-touched pixel rules and per-raster CRS
       transformations; a standalone read-only SQL command using the existing query engine.
