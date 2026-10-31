@@ -3015,3 +3015,75 @@ test("layerAlgebra selects one layer from each source", () => {
   assert.throws(()=>terrio.layerAlgebra(combined,a,"clip"),/one layer/);
   assert.throws(()=>terrio.layerAlgebra(a,b,"clip",{methodLayer:"missing"}),/not found/);
 });
+
+test("pipeline composes vector aliases and exports deferred files", () => {
+  const input = terrio.fromGeoJSON({type:"FeatureCollection",features:[0,3].map(score=>({type:"Feature",properties:{score,name:`point-${score}`},geometry:{type:"Point",coordinates:[score,1]}}))});
+  const before = input.toGeoJSON();
+  const result = terrio.pipeline("read source ! filter --where 'score > 1' ! select name,_ogr_geometry_ ! buffer 1 ! materialize ! write selected.geojson", {source:input});
+  assert.deepEqual(result.outputNames, ["selected.geojson"]);
+  assert.equal(result.dataset.toGeoJSON().features.length, 1);
+  assert.deepEqual(input.toGeoJSON(),before);
+  const bytes = result.outputBytes()["selected.geojson"];
+  assert.ok(bytes instanceof Uint8Array);
+  assert.equal(JSON.parse(new TextDecoder().decode(bytes)).features.length,1);
+  const table = terrio.pipeline("read source ! select name",{source:input});
+  assert.ok(table.dataset.toGeoJSON().features.every(f=>f.geometry===null));
+});
+
+test("pipeline preserves exact UInt64 pixels through uploaded bytes", () => {
+  const pixels = new BigUint64Array([9007199254740993n,9007199254740995n,18446744073709551614n,1n]);
+  const source = terrio.rasterFromArray(pixels,2,2,[0,1,0,2,0,-1],"EPSG:4326");
+  const result = terrio.pipeline("read image ! select 1 ! materialize ! write copy.tif",{image:{bytes:source.toBytes("input.tif"),filename:"input.tif"}});
+  assert.deepEqual(result.dataset.readBand(1), pixels);
+  const exported = terrio.open(result.outputBytes()["copy.tif"],"copy.tif");
+  assert.deepEqual(exported.readBand(1),pixels);
+  assert.deepEqual(source.readBand(1),pixels);
+});
+
+test("pipeline saved definitions round-trip aliases without evaluating on save", () => {
+  const saved = terrio.pipeline("read image ! select 1 ! write definition.gdalg.json");
+  assert.equal(saved.dataset,undefined);
+  const text = new TextDecoder().decode(saved.outputBytes()["definition.gdalg.json"]);
+  assert.equal(JSON.parse(text).type,"gdal_streamed_alg");
+  const source = terrio.createRaster(null,{size:[2,2],burn:[7],crs:"EPSG:4326",bbox:[0,0,2,2]});
+  const result = terrio.pipeline(text,{image:source});
+  assert.deepEqual([...result.dataset.readBand(1)],[7,7,7,7]);
+  assert.throws(()=>terrio.pipeline("read missing"),/missing pipeline input alias/);
+  assert.throws(()=>terrio.pipeline("read image ! external sh",{image:source}),/unsupported/);
+  assert.throws(()=>terrio.pipeline("read image",{image:source},{typo:true}),/unknown field/);
+});
+
+test("pipeline crop views read the matching source overview", () => {
+  const values = Uint16Array.from({length:64*64},(_,i)=>i);
+  const original = terrio.rasterFromArray(values,64,64,[0,1,0,64,0,-1],"EPSG:3857");
+  const bytes = original.toBytes("pyramid.tif",{overviews:[2,4],overviewResampling:"nearest"});
+  const source = terrio.open(bytes,"pyramid.tif");
+  const result = terrio.pipeline("read image ! clip --bbox 8,8,40,48 ! select 1",{image:source});
+  assert.deepEqual(result.dataset.overviews,[[16,20],[8,10]]);
+  assert.deepEqual(result.dataset.readBand(1,[0,0,3,3],0),source.readBand(1,[4,8,3,3],0));
+  assert.deepEqual(result.dataset.readBand(1,[0,0,3,3],1),source.readBand(1,[2,4,3,3],1));
+});
+
+test("pipeline dissolve unions components within each feature", () => {
+  const geometries = [
+    {type:"MultiLineString",coordinates:[[[0,0],[4,0]],[[2,0],[6,0]]]},
+    {type:"MultiLineString",coordinates:[[[0,0],[4,4]],[[0,4],[4,0]]]},
+    {type:"MultiPoint",coordinates:[[1,1],[1,1],[2,2]]},
+    {type:"MultiPolygon",coordinates:[[[[0,0],[2,0],[2,2],[0,2],[0,0]]],[[[1,0],[3,0],[3,2],[1,2],[1,0]]]]},
+    {type:"MultiPoint",coordinates:[]},null,
+  ];
+  const source = terrio.fromGeoJSON({type:"FeatureCollection",features:geometries.map((geometry,id)=>({type:"Feature",properties:{id},geometry}))});
+  const before = source.toGeoJSON();
+  const result = terrio.pipeline("read source ! dissolve",{source});
+  const features = result.dataset.toGeoJSON().features;
+  assert.deepEqual(features.map(f=>f.properties),geometries.map((_,id)=>({id})));
+  assert.equal(features[0].geometry.type,"LineString");
+  assert.equal(features[0].geometry.coordinates.length,4);
+  assert.equal(features[1].geometry.type,"MultiLineString");
+  assert.equal(features[1].geometry.coordinates.length,4);
+  assert.equal(features[2].geometry.coordinates.length,2);
+  assert.equal(features[3].geometry.type,"Polygon");
+  assert.deepEqual(features[4].geometry,{type:"GeometryCollection",geometries:[]});
+  assert.equal(features[5].geometry,null);
+  assert.deepEqual(source.toGeoJSON(),before);
+});

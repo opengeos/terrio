@@ -113,6 +113,11 @@ commands. Command-group progress:
       [#420](https://github.com/opengeos/terrio/pull/420), with 24 exact
       GDAL 3.13.3 comparisons, including real counties and dimensional inputs.
 
+- [ ] Raster/vector pipelines: linear processing chains with read, write and
+      materialize steps, saved GDALG definitions and deferred named outputs through
+      Rust, CLI/MCP, Python and JavaScript. Part of
+      [#289](https://github.com/opengeos/terrio/issues/289); pending review and merge.
+
 - [ ] Coverage simplification: shared-edge topology preservation, boundary options
       and active-layer copying across the public APIs. Part of
       [#289](https://github.com/opengeos/terrio/issues/289); pending review and merge.

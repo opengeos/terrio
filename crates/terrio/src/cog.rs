@@ -177,6 +177,11 @@ enum Inner {
 /// A raster read by window, at full resolution or from an overview, by a driver other than the
 /// GeoTIFF one (STAC mosaics, Zarr pyramids).
 pub(crate) trait WindowSource: Send + Sync {
+    /// Whether the source explicitly supplies an affine transform, when known.
+    fn geotransform_present(&self) -> Option<bool> {
+        None
+    }
+
     /// The declared type of one band, for sources with heterogeneous band types.
     fn band_data_type(&self, _band: usize) -> Option<DataType> {
         None
@@ -244,6 +249,7 @@ pub(crate) trait StreamedSource: Sync {
 
 #[derive(Clone)]
 struct SharedRaster {
+    referenced: bool,
     reader: Arc<Mutex<LazyRaster>>,
     overviews: Vec<(usize, usize)>,
     block: Option<(usize, usize)>,
@@ -256,6 +262,9 @@ impl SharedRaster {
     }
 }
 impl WindowSource for SharedRaster {
+    fn geotransform_present(&self) -> Option<bool> {
+        Some(self.referenced)
+    }
     fn band_data_type(&self, band: usize) -> Option<DataType> {
         self.lock().ok().map(|reader| reader.band_data_type(band))
     }
@@ -334,11 +343,20 @@ impl LazyRaster {
         let block = self.block_size();
         let alpha = self.alpha_band();
         let mask = self.has_mask();
+        let referenced = self.geotransform_present();
         let replacement = Self::from(header.clone());
         let original = std::mem::replace(self, replacement);
-        let shared = SharedRaster { reader: Arc::new(Mutex::new(original)), overviews, block, alpha, mask };
+        let shared = SharedRaster { referenced, reader: Arc::new(Mutex::new(original)), overviews, block, alpha, mask };
         *self = Self::from_source(header.clone(), Box::new(shared.clone()));
         Self::from_source(header, Box::new(shared))
+    }
+
+    pub(crate) fn geotransform_present(&self) -> bool {
+        match &self.inner {
+            Inner::Tiff(t) => t.tags.geo_transform.is_some(),
+            Inner::Source(_, source) => source.geotransform_present().unwrap_or(true),
+            Inner::Memory(_) => true,
+        }
     }
 
     pub(crate) fn input_paths(&self) -> Result<Vec<String>> {
@@ -1133,6 +1151,12 @@ impl LazyRaster {
         overview: Option<usize>,
     ) -> Result<()> {
         use crate::formats::RasterDriver;
+        if !self.geotransform_present()
+            && options.geo_transform.is_none()
+            && !options.creation_options.iter().any(|(key, _)| key.eq_ignore_ascii_case("GEOREFERENCED"))
+        {
+            options.creation_options.push(("GEOREFERENCED".into(), "NO".into()));
+        }
         let driver = options.driver.or_else(|| RasterDriver::for_extension(filename));
         if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && (self.has_mask() || options.mask.is_some()) {
             return Err(Error::InvalidArgument("tile archive writes do not preserve dataset masks; use an explicit alpha band".into()));

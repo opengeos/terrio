@@ -9,6 +9,8 @@ from numpy.typing import DTypeLike, NDArray
 
 # PyO3 sets `__all__` to the names added to the module.
 __all__ = [
+    "PipelineResult",
+    "pipeline",
     "create_raster",
     "edit_raster",
     "move_raster",
@@ -2295,3 +2297,19 @@ def layer_algebra(
 ) -> Layer:
     """Attribute-preserving planar XY layer algebra, with matching input CRS."""
     ...
+@final
+class PipelineResult:
+    @property
+    def dataset(self) -> Raster | VectorDataset | None: ...
+    @property
+    def output_names(self) -> list[str]: ...
+    def output_bytes(self) -> dict[str, bytes]: ...
+    def write_outputs(self) -> None: ...
+
+def pipeline(
+    command: str,
+    inputs: dict[str, Any] | None = None,
+    *,
+    write: bool = False,
+    base_file: str | None = None,
+) -> PipelineResult: ...

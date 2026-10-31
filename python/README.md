@@ -222,3 +222,30 @@ index = terrio.raster_index({"/vsis3/bucket/tile.tif": signed_url})
 ```
 
 This stores the credential-free mapping key; readers need their own credentials.
+
+### Chained processing
+
+`terrio.pipeline(command, inputs=None, *, write=False, base_file=None)` evaluates
+supported GDAL-style steps through the Rust pipeline engine. `command` is a step
+string or saved GDALG JSON text. Inputs can use native paths or aliases mapped to
+`Raster`, vector objects, or paths:
+
+```python
+result = terrio.pipeline(
+    "read counties ! filter --where 'population > 10000' "
+    "! select name,_ogr_geometry_ ! write selected.gpkg",
+    {"counties": counties},
+)
+selected = result.dataset  # Raster or VectorDataset
+payload = result.output_bytes()["selected.gpkg"]  # creates no file
+result.write_outputs()  # explicit persistence, with overwrite checks
+```
+
+`write=True` persists requested outputs before returning. `output_names` lists
+write and named materialize destinations. A saved-definition output has no final
+dataset and can be exported with `output_bytes()` without reading its sources.
+For imported JSON text, `base_file` supplies the saved file's location for relative
+references. Raster band/crop views retain lazy window access; transformations and
+vector results reside in memory. Include `_ogr_geometry_` in vector `select` to
+retain geometry and CRS. See the CLI pipeline reference for supported steps and
+operation limits.

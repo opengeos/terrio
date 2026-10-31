@@ -395,6 +395,110 @@ impl Set {
         Ok(Some(geometry))
     }
 }
+/// Unary dissolve within each feature, preserving rows and attributes. Unlike
+/// layer grouping, this unions multipart components and nodes/merges linework.
+pub(super) fn dissolve_features(layer: &Layer) -> Result<Layer> {
+    let mut out = layer.clone();
+    out.geom_type = None;
+    for feature in &mut out.features {
+        let Some(geometry) = feature.geometry.take() else { continue };
+        for part in super::vector_filter::explode(&geometry) {
+            require_valid(&part, feature.fid)?;
+        }
+        let mut set = Set::from_geometry(&geometry);
+        if !set.area.0.is_empty() {
+            set.area = super::vector_clip::union_regions(&[set.area])?;
+        }
+        let area = Set { area: set.area.clone(), ..Default::default() };
+        set.lines =
+            if area.area.0.is_empty() { set.lines } else { set.lines.iter().flat_map(|line| cut_line(line, &area, false).0).collect() };
+        set.lines = merge_noded_lines(&set.lines);
+        let points = std::mem::take(&mut set.points);
+        for point in points {
+            if !set.covers(point) {
+                set.points.push(point);
+            }
+        }
+        set.multi = false;
+        set.collection = false;
+        feature.geometry = Some(set.geometry()?.unwrap_or_else(|| Geometry::GeometryCollection(vec![])));
+    }
+    Ok(out)
+}
+
+fn merge_noded_lines(lines: &[Vec<C>]) -> Vec<Vec<C>> {
+    use std::collections::BTreeMap;
+    type PointKey = (u64, u64);
+    let key = |p: C| -> PointKey { (if p.x == 0. { 0 } else { p.x.to_bits() }, if p.y == 0. { 0 } else { p.y.to_bits() }) };
+    let segments: Vec<_> = lines.iter().flat_map(|line| line.windows(2).map(|pair| [pair[0], pair[1]])).collect();
+    let bounds = |edge: &[C; 2]| {
+        AABB::from_corners([edge[0].x.min(edge[1].x), edge[0].y.min(edge[1].y)], [edge[0].x.max(edge[1].x), edge[0].y.max(edge[1].y)])
+    };
+    let index =
+        RTree::bulk_load(segments.iter().enumerate().map(|(i, edge)| GeomWithData::new(Rectangle::from_aabb(bounds(edge)), i)).collect());
+    let mut unique = BTreeMap::new();
+    for segment in &segments {
+        let mask = Set {
+            lines: index.locate_in_envelope_intersecting(bounds(segment)).map(|entry| segments[entry.data].to_vec()).collect(),
+            ..Default::default()
+        };
+        for piece in cut_line(segment, &mask, true).0 {
+            for pair in piece.windows(2) {
+                let a = key(pair[0]);
+                let b = key(pair[1]);
+                if a != b {
+                    unique.entry(if a < b { (a, b) } else { (b, a) }).or_insert([pair[0], pair[1]]);
+                }
+            }
+        }
+    }
+    let edges: Vec<_> = unique.into_values().collect();
+    let mut adjacency: BTreeMap<PointKey, Vec<usize>> = BTreeMap::new();
+    for (i, edge) in edges.iter().enumerate() {
+        for point in edge {
+            adjacency.entry(key(*point)).or_default().push(i);
+        }
+    }
+    let mut used = vec![false; edges.len()];
+    let walk = |start: C, first: usize, used: &mut [bool]| {
+        let mut result = vec![start];
+        let mut current = start;
+        let mut edge = first;
+        loop {
+            used[edge] = true;
+            let ends = edges[edge];
+            current = if key(ends[0]) == key(current) { ends[1] } else { ends[0] };
+            result.push(current);
+            let incident = &adjacency[&key(current)];
+            if incident.len() != 2 {
+                break;
+            }
+            let Some(next) = incident.iter().copied().find(|i| !used[*i]) else { break };
+            edge = next;
+        }
+        result
+    };
+    let mut output = vec![];
+    for edge in &edges {
+        for start in edge {
+            let incident = &adjacency[&key(*start)];
+            if incident.len() != 2 {
+                for &i in incident {
+                    if !used[i] {
+                        output.push(walk(*start, i, &mut used));
+                    }
+                }
+            }
+        }
+    }
+    for (i, edge) in edges.iter().enumerate() {
+        if !used[i] {
+            output.push(walk(edge[0], i, &mut used));
+        }
+    }
+    output
+}
+
 fn xy(c: &Coord) -> C {
     geo::coord! {x:c.x,y:c.y}
 }

@@ -7,6 +7,7 @@ terrio <COMMAND>
   check           Read dataset content and report decoding failures
   info            Summarize a raster, vector dataset or point cloud
   convert         Convert a dataset to another format, optionally reprojecting it
+  pipeline        Chain raster/vector operations or load/save GDALG definitions
   concat          Concatenate vector layers and datasets (like gdal vector concat and ogrmerge.py)
   partition       Split a vector dataset into files by field values (like gdal vector partition)
   set-field-type  Change field types with GDAL's value conversions (like gdal vector set-field-type)
@@ -3090,3 +3091,84 @@ append/update also promote the declaration when needed. Null geometries do not
 force Z or M to optional. A typed-empty geometry encoded with an XY WKB type
 still counts as 2D for this registration, unlike SQL NULL. The Layer model does
 not retain independent source Z/M declaration hints for empty geometries.
+
+
+## Pipelines
+
+`terrio pipeline` composes raster and vector operations through the shared Rust
+`terrio::ops::pipeline::Pipeline` engine. Separate steps with `!`; quote SQL
+expressions and paths with spaces for your shell:
+
+```sh
+terrio pipeline read counties.geojson ! filter --where 'population > 10000' ! select name,population,_ogr_geometry_ ! write selected.gpkg
+terrio pipeline read image.tif ! clip --bbox 2,2,8,8 ! select 1 ! resize --size 256,256 ! write subset.tif
+terrio pipeline --save subset.gdalg.json read image.tif ! select 1
+terrio pipeline --load subset.gdalg.json --output subset.tif
+```
+
+Global options (`--load`, `--save`, `--output`, `--input-kind`, `--overwrite`)
+precede the steps. The input kind can be `auto`, `raster` or `vector`.
+`read` must be first and `write`, when supplied, must be last. Supported
+intermediate steps are `filter`, `select`, `clip`, `reproject`, `resize`,
+`set-type`, `buffer`, `simplify`, `segmentize`, `swap-xy`, `dissolve`,
+`as-features`, `rasterize` and `materialize`. Unknown steps and options are
+rejected. `set-type` requires `--output-data-type`.
+
+| Step | Supported arguments and options |
+|---|---|
+| `read` | Input path or alias, optionally `--input`; repeatable vector `--layer` selectors |
+| `filter` | Vector `--where` expression and/or `--bbox xmin,ymin,xmax,ymax` spatial selection |
+| `select` | Comma-separated positional fields/bands, `--fields`, or repeatable `--band`; raster bands are one-based |
+| `clip` | Required `--bbox xmin,ymin,xmax,ymax`, in the current dataset CRS |
+| `reproject` | Required `--output-crs`; raster-only `--size width,height`, `--resolution x,y`, `--resampling` |
+| `resize` | Raster `--size width,height` (pixels or percentages) or `--resolution x,y`; optional `--resampling` |
+| `set-type` | Required raster `--output-data-type` |
+| `buffer` | Vector distance, positional or `--distance`; `--quadrant-segments` defaults to 8 |
+| `simplify`, `segmentize` | Vector tolerance (`--tolerance`) or maximum length (`--max-length`), also accepted positionally |
+| `swap-xy`, `dissolve` | Vector operations with no additional options |
+| `as-features` | Raster `--geometry-type`, `--skip-nodata`, `--include-xy`, `--include-row-col`, `--output-layer` |
+| `rasterize` | Required `--size` or `--resolution`; `--extent`, repeatable `--burn`, `--attribute-name`, `--all-touched`, `--output-data-type`, `--nodata` |
+| `write` | Destination, positional or `--output`; `--format`, `--overwrite`, native-vector `--append`, vector `--output-layer` |
+| `materialize` | No options for an in-memory snapshot; optional `--output` with the write options above for a named checkpoint |
+
+`--size` and `--resolution` are mutually exclusive. Resampling names use the
+shared raster resamplers. Unknown options are rejected rather than forwarded to
+an external GDAL executable. Python and JavaScript use these same step strings
+and validation rules; JavaScript encodes named outputs to bytes instead of
+writing native files.
+
+Raster reads, numeric band selection and north-up bounding-box clips retain lazy
+window and overview access. Vector layers and transformed raster results reside
+in memory. `materialize` takes an in-memory snapshot; add `--output checkpoint.tif`
+(or a vector destination) to request a persisted checkpoint. There are no implicit
+serialized intermediate datasets. Existing destinations require `--overwrite`;
+destination collisions, format availability and overwrite policy are checked before
+any checkpoint or final output is written.
+
+`.gdalg.json` definitions use `type: gdal_streamed_alg` and `command_line`.
+Saving omits the final write and does not evaluate the source. CLI saves resolve
+input paths to absolute paths; imported relative paths resolve against the
+saved definition unless `relative_paths_relative_to_this_file` is false.
+Nested saved pipelines are limited to 16 levels. Definitions execute supported
+Terrio operations directly and never invoke a shell or external program.
+
+This is a linear pipeline implementation. It does not expose every option of
+GDAL's individual steps. Raster bounding-box clips must fit inside a north-up
+source; use reprojection before resizing rotated grids. Complex raster band/crop
+views are unsupported. Mixed pipelines can use `as-features` and `rasterize` to
+change dataset family. Raster resize samples the pixel and validity planes
+independently; reprojection excludes masked pixels from interpolation.
+
+Vector `select` includes only the listed fields. Include `_ogr_geometry_` to retain
+geometry and its CRS; selecting attributes alone produces a nonspatial table.
+
+Pipeline `dissolve` unions components within each feature, nodes intersecting
+lines and merges degree-two line chains; it preserves rows and attributes.
+The standalone `terrio dissolve` groups polygon features across a layer instead.
+Constructed dissolve geometry is XY. Reprojection uses the source validity mask
+when sampling but, like GDAL's default reproject step, does not emit a physical
+output mask. Resize retains a separately sampled validity plane.
+
+Grid-changing and type-conversion steps clear derived `STATISTICS_*` metadata.
+Descriptive band metadata, scale, offset and units are retained. GDAL 3.13.3's
+clip/resize/type steps can omit a unit string; Terrio retains the source unit.
