@@ -351,7 +351,8 @@ compressed pixels. Options are `scale` (otherwise inferred per series),
 `producerId` (five ASCII bytes), `producerName` (27), `countryCode` (two uppercase
 letters or empty) and `classification` (`U`, `R`, `C`, `S`, `T`). Corners must
 match the selected scale/zone; legacy polar interval fields are normalized.
-CIB/non-CADRG products are unsupported. Encoded TRE metadata must fit 99,999
+CIB/non-CADRG products are unsupported and fail the operation; unsupported or
+malformed recognized NITF inputs are not skipped. Encoded TRE metadata must fit 99,999
 bytes; oversized indexes fail. Frame images are referenced rather than embedded.
 
 ## Retile and publish raster folders
