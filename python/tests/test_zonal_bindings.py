@@ -196,3 +196,9 @@ def test_invalid_zonal_options_precede_raster_reads():
     ]:
         with pytest.raises(ValueError, match=message):
             terrio.zonal_stats(zones, "not-a-real-raster.tif", **options)
+
+
+def test_negative_decimal_precision_reports_unsigned_conversion_error():
+    zones, raster = inputs()
+    with pytest.raises(OverflowError):
+        terrio.zonal_stats(zones, raster, decimal_places=-1)

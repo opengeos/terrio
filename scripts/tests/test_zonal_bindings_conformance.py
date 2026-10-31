@@ -146,3 +146,10 @@ def test_omitted_target_crs_preserves_projected_zone_crs():
     source[0]["crs"] = crs.ExportToWkt()
     result["crs"] = "EPSG:3857"
     assert "counts/nulls" in compare(result, expected, source, {})
+
+
+def test_explicit_unchanged_crs_keeps_the_tight_geometry_bound():
+    result, expected, source = example()
+    result["geojson"]["features"][0]["geometry"]["coordinates"][0][1][0] += 5e-6
+    with pytest.raises(AssertionError, match="output geometry differs"):
+        compare(result, expected, source, {"t_srs": "EPSG:4326"})

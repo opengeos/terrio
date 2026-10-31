@@ -324,8 +324,7 @@ per-raster CRS transforms; nodata/nonfinite exclusion; zero count/null statistic
 for empty zones; output reprojection and 0–15 decimal rounding. Default prefixes
 are `raster1`, `raster2`, etc., producing `PREFIX_bN_STATISTIC`; the CLI instead
 defaults to each input path stem. Set explicit prefixes for identical field names.
-Explicit prefixes
-must be nonblank, one per raster. Field-name collisions, including repeated
+Explicit prefixes must be nonblank, one per raster. Field-name collisions, including repeated
 prefixes/bands or existing zone fields, receive `_2`, `_3`, etc. suffixes from the
 shared engine. Weighted/fractional statistics are unsupported.
 

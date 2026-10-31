@@ -33,9 +33,9 @@ def compare(result, expected, source, options):
     target.SetFromUserInput(options.get("t_srs") or source[0]["crs"])
     if not crs.IsSame(target, ["IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES"]):
         raise AssertionError("output CRS differs")
-    transform = osr.CoordinateTransformation(
-        traditional(osr.SpatialReference(wkt=source[0]["crs"])), traditional(target)
-    )
+    source_crs = traditional(osr.SpatialReference(wkt=source[0]["crs"]))
+    transform = osr.CoordinateTransformation(source_crs, traditional(target))
+    reprojected = not source_crs.IsSame(target, ["IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES"])
     for feature, values, original in zip(actual, expected, source, strict=True):
         fields = feature["properties"]
         wanted = original["properties"] | values
@@ -81,7 +81,7 @@ def compare(result, expected, source, options):
                 )
             )
             if not math.isfinite(distance) or distance > (
-                1e-5 if options.get("t_srs") else 1e-12
+                1e-5 if reprojected else 1e-12
             ):
                 raise AssertionError("output geometry differs")
     return "GDAL masks + NumPy: counts/nulls/source attributes exact; seven statistics relative 1e-10 / absolute 1e-9; geometry 1e-12 source degrees or 1e-5 projected metres"
