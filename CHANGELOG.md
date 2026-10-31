@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-10-31)
+
+### Standalone CRS crate
+
+- `terrio-crs` 0.2.0 carries the CRS work since 0.1.0: geocentric and IAU CRSs,
+  PROJJSON, and more projections. Its public API has breaking additions, and
+  its default features now include `libzstd`.
 
 ### Raster dataset masks
 

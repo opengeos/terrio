@@ -55,10 +55,10 @@ than Terrio's raster/vector library:
 
 ```toml
 [dependencies]
-terrio-crs = "0.1"
+terrio-crs = "0.2"
 ```
 
-The [published crate](https://crates.io/crates/terrio-crs/0.1.0) works offline by
+The [published crate](https://crates.io/crates/terrio-crs/0.2.0) works offline by
 default. Enable `wbprojection-fallback` when Terrio's wider projection coverage
 is required; the feature matrix below describes the supported configurations.
 
