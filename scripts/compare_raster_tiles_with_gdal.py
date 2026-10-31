@@ -202,6 +202,16 @@ def remote_probe(data, root, terrio, masked=False):
     return f"{detail}; {counts['bytes']} served bytes in {counts['requests']} GETs from {size}-byte COG"
 
 
+def compare_pyramid(source, reference, actual, plan):
+    """Separate exact generated-pyramid agreement from verified policy differences."""
+    direct = compare_direct_pyramid(source, actual, plan)
+    try:
+        compare_folders(reference, actual, 'png')
+    except PixelDifference as difference:
+        return 'tolerance', direct + '; documented generated-pyramid difference: ' + str(difference)
+    return 'identical', direct + '; GDAL generated pyramid also matches'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('data', type=Path)
@@ -324,13 +334,8 @@ def main():
                     results.append(dict(name=name, status='tolerance', detail='Terrio omits all 15 fully invalid tiles; GDAL 3.13.3 --no-alpha retains 15 zero-filled tiles. Source validity and both outcomes independently checked.'))
                 elif 'pyramid' in extra:
                     plan = json.loads(run([args.terrio, 'tile', sources[source], actual, '--dry-run', *opts]))
-                    direct = compare_direct_pyramid(sources[source], actual, plan)
-                    try:
-                        compare_folders(reference, actual, 'png')
-                        detail = direct + '; GDAL generated pyramid also matches'
-                    except PixelDifference as difference:
-                        detail = direct + '; documented generated-pyramid difference: ' + str(difference)
-                    results.append(dict(name=name, status='tolerance', detail=detail))
+                    status, detail = compare_pyramid(sources[source], reference, actual, plan)
+                    results.append(dict(name=name, status=status, detail=detail))
                 else:
                     detail = compare_folders(reference, actual, 'tif' if fmt == 'GTiff' else 'png')
                     results.append(dict(name=name, status='identical', detail=detail))

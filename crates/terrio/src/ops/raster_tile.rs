@@ -236,6 +236,8 @@ impl TilePlan {
         let mut levels = Vec::new();
         for zoom in min_zoom..=max_zoom {
             let factor = 1usize << (max_zoom - zoom);
+            // GDAL floors decimated dimensions (at least one output pixel), so
+            // trailing native pixels can fall outside lower zooms.
             let columns = (width / factor).max(1).div_ceil(options.tile_size) as u64;
             let rows = (height / factor).max(1).div_ceil(options.tile_size) as u64;
             let matrix = TileMatrix {

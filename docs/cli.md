@@ -2780,8 +2780,8 @@ channel's nodata is excluded before interpolation; the pixel remains opaque when
 other channels are valid. GeoTIFF outputs without alpha retain dataset masks and
 exclude masked samples from resampling. Fully opaque
 tiles omit automatic alpha; `--add-alpha` retains it on every tile and
-`--no-alpha` removes it. `--output-nodata` sets the background when alpha is
-disabled. With `--no-alpha`, invalid image pixels become the background;
+`--no-alpha` removes it. `--output-nodata` sets invalid-pixel backgrounds,
+including the color beneath fully transparent pixels when alpha is enabled. With `--no-alpha`, invalid image pixels become the background;
 PNG has no separate validity mask. A gray PNG with explicit output nodata uses
 a `tRNS` transparency entry; every sample equal to that background value becomes
 transparent, including valid samples. Retain alpha with `--add-alpha` when valid
@@ -2857,3 +2857,9 @@ options accept camelCase, including `grid: {tileSize: 128, minZoom: 0}`. Uploade
 bytes and shared `Dataset` handles retain window reads. A thrown callback stops
 generation and is rethrown with its original JavaScript value; consumers are responsible for saving files and for any bytes retained
 by their callback.
+
+For the raster tiling scheme, lower zooms floor-divide source dimensions by the
+decimation factor, with a minimum of one pixel, matching GDAL 3.13.3. When a
+dimension is at least that factor, trailing native rows/columns that do not fill
+a decimated pixel are outside that lower zoom. Maximum zoom covers the full
+source. Output edge tiles may include padding.

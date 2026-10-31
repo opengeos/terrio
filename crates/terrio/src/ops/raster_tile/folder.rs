@@ -30,7 +30,7 @@ pub struct TileOptions {
     /// Add an alpha band. PNG defaults to alpha only on tiles with transparency.
     /// False removes existing alpha too.
     pub alpha: Option<bool>,
-    /// Destination nodata; used when alpha is disabled.
+    /// Background for invalid pixels, including color beneath transparent alpha.
     #[serde(alias = "outputNodata")]
     pub output_nodata: Option<f64>,
     /// Omit fully transparent or nodata-only tiles.
@@ -178,6 +178,7 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
     }
     let (alpha, color, methods) = validate_rendering(&info.raster, options, extension)?;
     let preserve_mask = extension == "tif" && !alpha && source.has_mask()?;
+    let limits = RenderLimits::default();
     let mut report = TileReport { planned, ..Default::default() };
     for level in &plan.levels {
         let method = methods[usize::from(level.matrix.zoom != plan.max_zoom)];
@@ -201,14 +202,14 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
                 // Zero is a valid synthetic color/density sample. Declaring it
                 // nodata makes the warp kernel nudge it to the next float.
                 warp.dst_nodata = Nodata::None;
-                let mut prepared = ColorSource { source, info: info.clone(), only_alpha: false };
-                let premult = render_cell(&mut prepared, &cell, &warp, RenderLimits::default())?;
+                let mut prepared = ColorSource { source, info: info.clone(), only_alpha: false, limits };
+                let premult = render_cell(&mut prepared, &cell, &warp, limits)?;
                 let n = premult.raster.cols * premult.raster.rows;
                 color_blank = (0..n).all(|i| premult.raster.data.get_f64((premult.raster.bands - 1) * n + i) == 0.0);
                 finish_color(&premult, info.raster.raster.data_type, alpha, options.output_nodata)?
             } else {
                 warp.dst_nodata = options.output_nodata.map_or(Nodata::None, |value| Nodata::Values(vec![value]));
-                let mut out = render_cell(source, &cell, &warp, RenderLimits::default())?;
+                let mut out = render_cell(source, &cell, &warp, limits)?;
                 if options.output_nodata.is_none() {
                     out.has_nodata = info.raster.has_nodata;
                     out.raster.nodata = info.raster.raster.nodata;
@@ -219,14 +220,14 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
             if (options.skip_blank && !color) || preserve_mask {
                 // The output's zero padding is distinct from its source nodata tag.
                 // Render validity independently so valid zero-valued tiles survive.
-                let mut coverage = ColorSource { source, info: info.clone(), only_alpha: true };
+                let mut coverage = ColorSource { source, info: info.clone(), only_alpha: true, limits };
                 let coverage_options = WarpOptions {
                     src_nodata: Nodata::None,
                     dst_nodata: Nodata::None,
                     resampling: if method == Resampling::Nearest { Resampling::Nearest } else { Resampling::Max },
                     ..warp.clone()
                 };
-                let density = render_cell(&mut coverage, &cell, &coverage_options, RenderLimits::default())?;
+                let density = render_cell(&mut coverage, &cell, &coverage_options, limits)?;
                 color_blank = (0..density.raster.data.len()).all(|i| density.raster.data.get_f64(i) == 0.0);
                 if preserve_mask {
                     output_mask =
@@ -279,6 +280,7 @@ struct ColorSource<'a> {
     source: &'a mut dyn WarpSource,
     info: WarpSourceInfo,
     only_alpha: bool,
+    limits: RenderLimits,
 }
 impl WarpSource for ColorSource<'_> {
     fn info(&mut self) -> Result<WarpSourceInfo> {
@@ -295,13 +297,16 @@ impl WarpSource for ColorSource<'_> {
         Ok(info)
     }
     fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
+        if !options.bands.is_empty() {
+            return Err(invalid("premultiplied tile source requires all bands"));
+        }
         let header = &self.info.raster.raster;
         let bytes = window
             .width
             .checked_mul(window.height)
             .and_then(|n| n.checked_mul(header.bands))
             .and_then(|n| n.checked_mul(header.data_type.size_bytes()));
-        if bytes.is_none_or(|n| n > RenderLimits::default().max_source_window_bytes) {
+        if bytes.is_none_or(|n| n > self.limits.max_source_window_bytes) {
             return Err(Error::Unsupported("source tile window exceeds the pixel-buffer budget".into()));
         }
         let input = self.source.read_window(window, &WindowOptions { bands: vec![], ..options.clone() })?;
@@ -626,6 +631,20 @@ mod tests {
     }
 
     #[test]
+    fn color_source_honors_custom_window_limits_and_refuses_band_selection() {
+        let mut source = source();
+        let info = source.info().unwrap();
+        let limits = RenderLimits { max_source_window_bytes: 3, ..Default::default() };
+        let mut prepared = ColorSource { source: &mut source, info, only_alpha: false, limits };
+        let window = Window::new(0, 0, 2, 2);
+        assert!(prepared.read_window(window, &Default::default()).unwrap_err().to_string().contains("pixel-buffer budget"));
+        prepared.limits.max_source_window_bytes = 4;
+        assert!(prepared.read_window(window, &Default::default()).is_ok());
+        let options = WindowOptions { bands: vec![1], ..Default::default() };
+        assert!(prepared.read_window(window, &options).unwrap_err().to_string().contains("requires all bands"));
+    }
+
+    #[test]
     fn color_source_rejects_malformed_reader_masks() {
         struct BadMask(crate::LazyRaster);
         impl WarpSource for BadMask {
@@ -641,7 +660,7 @@ mod tests {
         }
         let mut source = BadMask(source());
         let info = source.info().unwrap();
-        let mut prepared = ColorSource { source: &mut source, info, only_alpha: false };
+        let mut prepared = ColorSource { source: &mut source, info, only_alpha: false, limits: RenderLimits::default() };
         assert!(prepared.read_window(Window::new(0, 0, 2, 2), &WindowOptions::default()).unwrap_err().to_string().contains("mask length"));
     }
 
