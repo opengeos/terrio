@@ -1,6 +1,7 @@
-// SPDX-FileCopyrightText: 2026 Qiusheng Wu
-// SPDX-FileCopyrightText: 2026 T-Kartor
+// SPDX-FileCopyrightText: Copyright (c) 2026, T-Kartor
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
+// Derived from GDAL 3.13.3 frmts/nitf/rpftocwriter.cpp (MIT).
 //! NITF 2.0 / RPF TOC serialization; GDAL 3.13.3 rpftocwriter.cpp layout (MIT).
 use super::{RpfFrame, RpfTocOptions, frame, grid::Grid, invalid};
 use crate::{Error, Result};

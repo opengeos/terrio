@@ -3412,7 +3412,9 @@ relative frame paths, including when the TOC is placed above a nested frame tree
 Symlinks and non-NITF 2.0/2.1 candidates are skipped; the latter are counted in
 `skipped_files`. Malformed supported NITF frames still fail validation. An output
 cannot replace an input frame. Frame path
-components ending in dots or spaces are rejected to follow
+components must be UTF-8 and cannot contain `:`, backslashes or NUL bytes.
+Unrepresentable paths fail rather than being silently omitted. Components ending
+in dots or spaces are rejected to follow
 [Windows filename conventions](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file#naming-conventions).
 Duplicate paths or grid cells within one scale/zone are rejected. File opens
 refuse symlinks and verify the inventoried file identity before reading metadata. Validation

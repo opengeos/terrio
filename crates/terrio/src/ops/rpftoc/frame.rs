@@ -1,6 +1,7 @@
-// SPDX-FileCopyrightText: 2026 Qiusheng Wu
-// SPDX-FileCopyrightText: 2026 T-Kartor
+// SPDX-FileCopyrightText: Copyright (c) 2026, T-Kartor
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
+// Derived from GDAL 3.13.3 frmts/nitf/rpftocwriter.cpp and rpfframewriter.cpp (MIT).
 //! Bounded NITF/RPF metadata inspection; GDAL 3.13.3 is the conformance reference.
 use super::{RpfFrame, invalid};
 use crate::{Error, Result};

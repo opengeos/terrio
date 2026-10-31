@@ -1,6 +1,7 @@
-// SPDX-FileCopyrightText: 2026 Qiusheng Wu
-// SPDX-FileCopyrightText: 2026 T-Kartor
+// SPDX-FileCopyrightText: Copyright (c) 2026, T-Kartor
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
+// Derived from GDAL 3.13.3 frmts/nitf/rpftocwriter.cpp and rpfframewriter.cpp (MIT).
 //! Metadata-only CADRG frame inspection for RPF table-of-contents creation.
 //!
 //! Reference: GDAL 3.13.3, frmts/nitf/rpftocwriter.cpp and rpfframewriter.cpp
