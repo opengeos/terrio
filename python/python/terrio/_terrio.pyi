@@ -54,6 +54,8 @@ __all__ = [
     "rasterize",
     "raster_index",
     "raster_tiles",
+    "rpftoc_create",
+    "rpftoc_bytes",
     "vector_index",
     "DatasetIndex",
     "pansharpen",
@@ -2339,3 +2341,23 @@ def clean_coverage(
     layer: None = None,
     active_layer: str,
 ) -> VectorDataset: ...
+def rpftoc_create(
+    input: str | os.PathLike[str],
+    output: str | os.PathLike[str] | None = None,
+    *,
+    scale: int | None = None,
+    producer_id: str = "TERRI",
+    producer_name: str = "Terrio",
+    country_code: str = "",
+    classification: str = "U",
+    overwrite: bool = False,
+) -> dict[str, int]: ...
+def rpftoc_bytes(
+    frames: Sequence[tuple[str, bytes]],
+    *,
+    scale: int | None = None,
+    producer_id: str = "TERRI",
+    producer_name: str = "Terrio",
+    country_code: str = "",
+    classification: str = "U",
+) -> bytes: ...

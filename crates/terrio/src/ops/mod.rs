@@ -767,3 +767,6 @@ pub mod layer_algebra;
 
 /// In-memory raster/vector pipelines and GDALG saved definitions.
 pub mod pipeline;
+
+/// CADRG frame metadata and RPF table-of-contents support.
+pub mod rpftoc;

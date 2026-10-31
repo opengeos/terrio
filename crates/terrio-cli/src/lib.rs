@@ -26,6 +26,8 @@ struct Cli {
 enum Command {
     /// Summarize a raster, vector dataset or point cloud.
     Info(cmd::info::Args),
+    /// Create a metadata-only A.TOC index from existing CADRG frames.
+    RpftocCreate(cmd::rpftoc::Args),
     /// Repack a GeoPackage in place, preserving all encoded records and schema objects.
     GpkgRepack(cmd::gpkg::RepackArgs),
     /// Validate a self-contained GeoPackage against core and extension requirements.
@@ -306,6 +308,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
     };
     let result = match cli.command {
         Command::Info(a) => cmd::info::run(a),
+        Command::RpftocCreate(a) => cmd::rpftoc::run(&a),
         Command::GpkgRepack(a) => cmd::gpkg::repack(a),
         Command::GpkgValidate(a) => cmd::gpkg::validate(a),
         Command::Identify(a) => cmd::inspection::identify(a),
