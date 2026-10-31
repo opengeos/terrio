@@ -327,3 +327,26 @@ Rust edge IDs replace mutable Java ring references. Canonical edge groups classi
 same/opposite polygon-interior sides before further interaction tests; `rstar`
 indexes replace the segment mutual intersector and point-in-area indexes. Source
 ring coordinates supply the invalid-edge output without constructing new vertices.
+
+## Coverage simplification
+
+`ops/coverage_simplify.rs` ports `CoverageSimplifier`, `CoverageRingEdges`,
+`CoverageEdge`, `CoverageBoundarySegmentFinder`, `VertexRingCounter`,
+`TPVWSimplifier`, `Corner`, and the default area calculation from `CornerArea`,
+plus `simplify/LinkedLine` and `geom/Triangle` helpers, from the same pinned JTS
+commit `3460207216f3091cd7f72d48d6ddd1b561b2b8fd`. The source header names all paths
+and retains the copyright notices under the selected EDL/BSD license.
+
+Rust ring/edge IDs replace Java object references. A global static vertex R-tree
+with live-vertex flags replaces per-edge removable packed vertex indexes; the
+queried coordinate sets are the same. A separate edge-envelope index preserves
+the two-vertex baseline constraint. Binary heaps retain JTS's area/index ordering,
+and stored neighbor IDs discard obsolete corners. The API exposes one distance
+tolerance and boundary preservation, using the default unweighted triangle area
+with ring retention matching the GDAL/GEOS reference.
+
+GDAL 3.13.3 with GEOS 3.14.1 differs from the pinned JTS implementation in three
+observed details: simplified rings can reach three distinct vertices (four with
+closure), single-part MultiPolygons retain their geometry type, and small holes
+and polygon parts are retained. The port follows those independently tested
+GDAL behaviors.

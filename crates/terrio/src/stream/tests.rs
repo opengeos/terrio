@@ -662,3 +662,39 @@ fn geoparquet_row_groups_do_not_follow_chunks() {
     let b = crate::open_vector(&streamed, &Default::default()).unwrap().layers.remove(0);
     same_content(&a, &b);
 }
+
+#[test]
+fn geopackage_streams_preserve_measures_and_register_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut layer = polygons(3);
+    for feature in &mut layer.features {
+        crate::vector::map_coords(feature.geometry.as_mut().unwrap(), &mut |c| {
+            c.m = Some(c.x + c.y);
+            Ok(())
+        })
+        .unwrap();
+    }
+    for preserve in [false, true] {
+        layer.geom_type = if preserve { None } else { Some(wbvector::GeometryType::Polygon) };
+        let check = |path: &str| {
+            let back = crate::open_vector(path, &Default::default()).unwrap();
+            same_content(&layer, &back.layers[0]);
+            let db = crate::drivers::sqlite::Db::new(std::fs::read(path).unwrap()).unwrap();
+            let t = db.table("gpkg_geometry_columns").unwrap();
+            assert_eq!(t.get(&t.rows[0], "m").unwrap().as_i64(), Some(1));
+            assert_eq!(t.get(&t.rows[0], "z").unwrap().as_i64(), Some(if preserve { 2 } else { 1 }));
+            assert_eq!(t.get(&t.rows[0], "geometry_type_name").unwrap().as_str(), Some(if preserve { "GEOMETRY" } else { "POLYGON" }));
+        };
+        let single = dir.path().join(format!("single-{preserve}.gpkg")).to_string_lossy().into_owned();
+        let options = VectorWriteOptions { preserve_declared_geometry_type: preserve, ..Default::default() };
+        let mut writer = FeatureWriter::create(&single, &layer, Some(&LayerProfile::of(&layer)), &options).unwrap();
+        writer.write(&layer).unwrap();
+        writer.finish().unwrap();
+        check(&single);
+        let multi = dir.path().join(format!("multi-{preserve}.gpkg")).to_string_lossy().into_owned();
+        let mut sink = GpkgLayersSink::create(&multi, &[schema_of(&layer)], preserve).unwrap().unwrap();
+        sink.write(0, &layer).unwrap();
+        sink.finish().unwrap();
+        check(&multi);
+    }
+}

@@ -31,6 +31,7 @@ Suites:
                       (compare_vsi_with_gdal.py)
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
     coverage          polygon coverage validity: shared nodes, overlaps and narrow gaps
+    coverage-simplify shared-edge topology-preserving coverage simplification
     vector-dataset    concat, partition, set-field-type, make-point, create, export-schema, rename-layer, edit, update
     vector-geom       simplify, segmentize, hulls, swap-xy, set-geom-type, combine and sort vs
                       gdal vector and GEOS (compare_vector_geom_with_gdal.py)
@@ -2228,6 +2229,30 @@ def suite_coverage(ctx):
     return suite
 
 
+def suite_coverage_simplify(ctx):
+    """Shared coverage simplification, including metadata and global topology."""
+    suite = Suite("coverage-simplify", "Coverage simplification", "GDAL 3.13.3 gdal vector simplify-coverage",
+                  "Projected Tennessee counties, shared zigzags, holes, islands, empty polygons and active-layer copying. "
+                  "Exact retained edge coordinates/multiplicity, attributes, output IDs, types, CRS and names. "
+                  "GDAL independently checks output coverage validity.")
+    if missing_modules("osgeo") or not shutil.which("gdal") or run(["gdal", "vector", "simplify-coverage", "--help"])[0] != 0:
+        suite.skipped = "needs GDAL with GEOS and the vector simplify-coverage command"
+        return suite
+    if not os.path.isfile(os.path.join(ctx.data, "TN_Counties.geojson")):
+        suite.skipped = "needs TN_Counties.geojson (scripts/fetch_test_data.sh)"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_coverage_simplify_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        for row in json.loads(out):
+            suite.cases.append(Case("simplify-coverage", row["name"], row["status"], row["detail"]))
+    except (ValueError, KeyError, TypeError) as error:
+        suite.error = f"{error}: {tail(err or out)}"
+        return suite
+    if code:
+        suite.error = tail(err or "coverage simplification comparison process failed")
+    return suite
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -2273,6 +2298,7 @@ SUITES = OrderedDict(
         ("mdmosaic", suite_mdmosaic),
         ("topology", suite_topology),
         ("coverage", suite_coverage),
+        ("coverage-simplify", suite_coverage_simplify),
         ("vector-geom", suite_vector_geom),
         ("vector-dataset", suite_vector_dataset),
         ("footprint", suite_footprint),

@@ -197,7 +197,7 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
     driver.ensure_built()?;
     Ok(Some(match driver {
         #[cfg(feature = "sqlite")]
-        VectorDriver::GPKG => geopackage::to_bytes(layers)?,
+        VectorDriver::GPKG => geopackage::to_bytes_with_geometry_types(layers, options.preserve_declared_geometry_type)?,
         #[cfg(feature = "cad")]
         VectorDriver::DXF | VectorDriver::DWG => cad::to_bytes(layers, driver)?,
         VectorDriver::GPX => gpx::layers_to_string(layers)?.into_bytes(),

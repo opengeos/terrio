@@ -48,7 +48,11 @@ impl VectorOutput {
         Self { output: output.to_string(), format, nln: None, append, overwrite }
     }
 
-    pub(crate) fn write(&self, mut layers: Vec<Layer>) -> Result<()> {
+    pub(crate) fn write(&self, layers: Vec<Layer>) -> Result<()> {
+        self.write_with_geometry_types(layers, false)
+    }
+
+    fn write_with_geometry_types(&self, mut layers: Vec<Layer>, preserve: bool) -> Result<()> {
         if let Some(name) = &self.nln {
             if layers.len() != 1 {
                 return Err(Error::InvalidArgument("--nln requires a single input layer; choose one with --layer".into()));
@@ -67,7 +71,14 @@ impl VectorOutput {
         } else {
             WriteMode::Create
         };
-        write_vector_with_mode(&layers, &self.output, &terrio::VectorWriteOptions { driver, ..Default::default() }, mode)
+        let preserve_declared_geometry_type =
+            preserve && driver.or_else(|| VectorDriver::for_extension(&self.output)) == Some(VectorDriver::GPKG);
+        write_vector_with_mode(
+            &layers,
+            &self.output,
+            &terrio::VectorWriteOptions { driver, preserve_declared_geometry_type, ..Default::default() },
+            mode,
+        )
     }
 }
 
@@ -463,4 +474,30 @@ pub fn check_coverage(a: CheckCoverageArgs) -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
     a.output.write(layers)
+}
+
+/// Shared-edge coverage simplification, retaining attributes and CRS.
+#[derive(clap::Args)]
+pub struct SimplifyCoverageArgs {
+    #[command(flatten)]
+    input: VectorInput,
+    #[command(flatten)]
+    output: VectorOutput,
+    /// Square root of the triangle-area threshold, in input CRS units.
+    #[arg(long, allow_hyphen_values = true)]
+    tolerance: f64,
+    /// Keep exterior and hole boundaries unchanged; simplify shared edges only.
+    #[arg(long)]
+    preserve_boundary: bool,
+    /// Process this layer and copy other selected input layers unchanged.
+    #[arg(long)]
+    active_layer: Option<String>,
+}
+
+pub fn simplify_coverage(a: SimplifyCoverageArgs) -> Result<()> {
+    let input = a.input.open()?;
+    let options =
+        terrio::ops::coverage_simplify::CoverageSimplifyOptions { tolerance: a.tolerance, preserve_boundary: a.preserve_boundary };
+    let layers = terrio::ops::coverage_simplify::simplify_coverage_layers(&input, &options, a.active_layer.as_deref())?;
+    a.output.write_with_geometry_types(layers, true)
 }

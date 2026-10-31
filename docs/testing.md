@@ -1634,3 +1634,29 @@ edges are accepted while moved/duplicated edges, changed IDs and changed schemas
 are rejected. The prerequisite probe skips the suite when the GDAL command is
 unavailable. The port's exact JTS sources and adaptations are recorded in
 [jts-provenance.md](jts-provenance.md).
+
+### Coverage simplification
+
+`scripts/compare_coverage_simplify_with_gdal.py ../terrio-data --terrio target/release/terrio`
+is registered as `coverage-simplify`. It compares projected Tennessee counties
+at four tolerances, shared zigzags, small holes and polygon parts, empty polygons
+Z/M/ZM polygons and active-layer copying of a ZM point layer. Cases run with exterior boundary
+preservation both enabled and disabled. All retained edge coordinates and
+multiplicity, per-feature geometry kinds, attributes, IDs, CRS, layer names and
+declared layer types and GeoPackage Z/M flags must match exactly for these fixtures. Ring/component order and direction are
+ignored. Inactive non-polygon geometry coordinates are checked by canonical ISO
+WKB. GDAL independently validates every output polygon coverage.
+
+The verifier has regressions for wrong declarations, changed feature geometry
+kinds, moved vertices, changed attributes/IDs and moved inactive points. It also
+checks that an unavailable reference command skips before dataset access.
+
+Rust, CLI/MCP, Python and Node checks cover shared-edge consistency, boundary
+preservation, triangle minima, preservation of holes/parts, empty inputs,
+invalid inputs/tolerances and active-layer selection. Writer tests exercise
+Unknown declarations in native and memory codecs, append/replacement semantics,
+untouched data, format-option rejection and the in-place update path. A focused
+Linux run replaced a declaration in a 1,167,360-byte GeoPackage while preserving
+an untouched 1 MiB binary field and the inode; the process read-character delta
+was 184,520 bytes, including the measurement overhead. This checks retention of
+the existing bounded transaction path rather than whole-file replacement.

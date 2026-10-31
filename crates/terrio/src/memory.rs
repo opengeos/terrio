@@ -179,13 +179,13 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
         None => {
             #[cfg(feature = "gdal")]
             if let Some(d) = crate::gdal_backend::driver_for_path(name, true) {
-                crate::dataset::ensure_kmz_resources_apply(options, None)?;
+                crate::dataset::ensure_vector_options_apply(options, None)?;
                 return crate::gdal_backend::write_vector_bytes(layers, name, &d, &[], &[]);
             }
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")));
         }
     };
-    crate::dataset::ensure_kmz_resources_apply(options, Some(driver))?;
+    crate::dataset::ensure_vector_options_apply(options, Some(driver))?;
     if driver == VectorDriver::Shapefile {
         if !name.to_ascii_lowercase().ends_with(".zip") {
             return Err(Error::InvalidArgument("Shapefile bytes are a ZIP archive: use a .shp.zip filename (MIME application/zip)".into()));
@@ -717,6 +717,114 @@ mod tests {
         let bytes = zip.finish().unwrap().into_inner();
         let Dataset::Vector(z) = codec::open(bytes, "pts.zip", &Default::default()).unwrap() else { panic!() };
         assert_eq!(z.layers[0].features.len(), 2);
+    }
+
+    #[test]
+    fn geopackage_writer_can_preserve_unknown_declarations_in_both_codecs() {
+        let mut layer = Layer::new("unknown").with_epsg(4326);
+        layer.features.push(crate::Feature { fid: 1, geometry: Some(crate::Geometry::point(1., 2.)), attributes: vec![] });
+        let layers = [layer];
+        let declaration = |bytes: Vec<u8>| {
+            let db = crate::drivers::sqlite::Db::new(bytes).unwrap();
+            let table = db.table("gpkg_geometry_columns").unwrap();
+            table.get(&table.rows[0], "geometry_type_name").unwrap().as_str().unwrap().to_string()
+        };
+        assert_eq!(declaration(write_vector_bytes(&layers, "x.gpkg", &Default::default()).unwrap()), "POINT");
+        let options = VectorWriteOptions { preserve_declared_geometry_type: true, ..Default::default() };
+        for bytes in
+            [write_vector_bytes(&layers, "x.gpkg", &options).unwrap(), codec::write_vector(&layers, VectorDriver::GPKG, &options).unwrap()]
+        {
+            assert_eq!(declaration(bytes.clone()), "GEOMETRY");
+            let back = open_vector_bytes(bytes, "x.gpkg", &Default::default()).unwrap();
+            assert_eq!(back.layers[0].features[0].geometry, layers[0].features[0].geometry);
+        }
+        assert!(write_vector_bytes(&layers, "x.geojson", &options).unwrap_err().to_string().contains("GPKG"));
+    }
+
+    #[test]
+    fn geopackage_preserves_zm_values_and_registers_dimensions() {
+        for wkt in [
+            "POINT M (1 2 30)",
+            "LINESTRING ZM (0 0 10 100,1 2 20 200)",
+            "POLYGON ZM ((0 0 1 10,2 0 2 20,0 2 3 30,0 0 1 10))",
+            "MULTIPOINT M ((1 2 30),(3 4 50))",
+            "MULTILINESTRING M ((0 0 10,1 2 20))",
+            "MULTIPOLYGON M (((0 0 10,2 0 20,0 2 30,0 0 10)))",
+            "GEOMETRYCOLLECTION ZM (POINT ZM (1 2 3 4),LINESTRING ZM (0 0 1 10,1 2 2 20))",
+        ] {
+            let csv = format!("WKT\n\"{wkt}\"\n");
+            let source = open_vector_bytes(csv.into_bytes(), "source.csv", &Default::default()).unwrap();
+            let geometry = source.layers[0].features[0].geometry.as_ref().unwrap();
+            assert!(crate::vector::geometry_dims(geometry).1, "{wkt}");
+            let options = VectorWriteOptions { preserve_declared_geometry_type: true, ..Default::default() };
+            for bytes in [
+                write_vector_bytes(&source.layers, "x.gpkg", &options).unwrap(),
+                codec::write_vector(&source.layers, VectorDriver::GPKG, &options).unwrap(),
+            ] {
+                let db = crate::drivers::sqlite::Db::new(bytes.clone()).unwrap();
+                let table = db.table("gpkg_geometry_columns").unwrap();
+                assert_eq!(table.get(&table.rows[0], "m").unwrap().as_i64(), Some(1));
+                let back = open_vector_bytes(bytes, "x.gpkg", &Default::default()).unwrap();
+                assert_eq!(back.layers[0].features[0].geometry, source.layers[0].features[0].geometry, "{wkt}");
+            }
+        }
+    }
+
+    #[test]
+    fn preserved_geometry_declarations_support_transactional_replacement_and_append() {
+        use crate::ops::vector_filter::{WriteMode, write_vector_with_mode};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layers.gpkg");
+        let path = path.to_str().unwrap();
+        let layer = |name: &str| {
+            let mut l = Layer::new(name).with_epsg(4326);
+            l.features.push(crate::Feature { fid: 1, geometry: Some(crate::Geometry::point(1., 2.)), attributes: vec![] });
+            l
+        };
+        let unknown = layer("unknown");
+        let mut kept = layer("kept");
+        kept.add_field(crate::FieldDef::new("payload", crate::FieldType::Blob));
+        kept.features[0].attributes.push(crate::FieldValue::Blob(vec![42; 1024 * 1024]));
+        crate::write_vector(&[unknown.clone(), kept.clone()], path, &Default::default()).unwrap();
+        #[cfg(unix)]
+        let inode = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(path).unwrap().ino()
+        };
+        let read_chars = || {
+            std::fs::read_to_string("/proc/self/io")
+                .ok()
+                .and_then(|s| s.lines().find_map(|line| line.strip_prefix("rchar: ").and_then(|n| n.trim().parse::<u64>().ok())))
+        };
+        let before = read_chars();
+        let options = VectorWriteOptions { preserve_declared_geometry_type: true, ..Default::default() };
+        write_vector_with_mode(std::slice::from_ref(&unknown), path, &options, WriteMode::Overwrite).unwrap();
+        let after = read_chars();
+        if let (Some(before), Some(after)) = (before, after) {
+            println!(
+                "preserved declaration overwrite: process read chars {}, file bytes {}",
+                after - before,
+                std::fs::metadata(path).unwrap().len()
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(std::fs::metadata(path).unwrap().ino(), inode, "ordinary GeoPackages keep the in-place update path");
+        }
+        write_vector_with_mode(&[layer("new")], path, &options, WriteMode::Append).unwrap();
+        write_vector_with_mode(&[unknown], path, &options, WriteMode::Append).unwrap();
+        let db = crate::drivers::sqlite::Db::new(std::fs::read(path).unwrap()).unwrap();
+        let table = db.table("gpkg_geometry_columns").unwrap();
+        for row in &table.rows {
+            let name = table.get(row, "table_name").unwrap().as_str().unwrap();
+            let kind = table.get(row, "geometry_type_name").unwrap().as_str().unwrap();
+            assert_eq!(kind, if name == "kept" { "POINT" } else { "GEOMETRY" });
+        }
+        let back = crate::open_vector(path, &Default::default()).unwrap();
+        let kept_back = back.layers.iter().find(|l| l.name == "kept").unwrap();
+        assert_eq!(kept_back.features[0].attributes, kept.features[0].attributes);
+        assert_eq!(back.layers.iter().find(|l| l.name == "unknown").unwrap().len(), 2);
     }
 
     #[test]

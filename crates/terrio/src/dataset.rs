@@ -930,6 +930,11 @@ fn parse_compression(s: &str) -> Result<wbraster::GeoTiffCompression> {
 pub struct VectorWriteOptions {
     /// The output format. By default, chosen from the output path's extension.
     pub driver: Option<VectorDriver>,
+    /// GeoPackage: retain each layer's declared base geometry type, including Unknown,
+    /// when creating or replacing layers. By default the feature types are inferred.
+    /// Unknown declarations allow optional Z. Required/optional source dimensional
+    /// hints are not represented by Layer and cannot be reproduced by this option.
+    pub preserve_declared_geometry_type: bool,
     /// How to write CSV files.
     pub csv: crate::drivers::vector::csv::CsvOptions,
     /// How to write GeoJSON files.
@@ -962,13 +967,13 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
             // With the GDAL backend, the GDAL driver of the extension (`.gdb`...).
             #[cfg(feature = "gdal")]
             if let Some(d) = crate::gdal_backend::driver_for_path(path, true) {
-                ensure_kmz_resources_apply(options, None)?;
+                ensure_vector_options_apply(options, None)?;
                 return crate::gdal_backend::write_vector(layers, path, &d, &[], &[]);
             }
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{path}': give it explicitly")));
         }
     };
-    ensure_kmz_resources_apply(options, Some(driver))?;
+    ensure_vector_options_apply(options, Some(driver))?;
     driver.ensure_built()?;
     if !driver.info().write {
         return Err(Error::Unsupported(format!("the {} driver cannot write", driver.name())));
@@ -976,7 +981,14 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
     match (driver, layers) {
         (_, []) => Err(Error::InvalidArgument("no layers to write".into())),
         #[cfg(feature = "sqlite")]
-        (VectorDriver::GPKG, _) => crate::drivers::vector::geopackage::write(layers, path),
+        (VectorDriver::GPKG, _) => {
+            if options.preserve_declared_geometry_type {
+                std::fs::write(path, crate::drivers::vector::geopackage::to_bytes_with_geometry_types(layers, true)?)?;
+                Ok(())
+            } else {
+                crate::drivers::vector::geopackage::write(layers, path)
+            }
+        }
         #[cfg(feature = "cad")]
         (d @ (VectorDriver::DXF | VectorDriver::DWG), _) => {
             std::fs::write(path, crate::drivers::vector::cad::to_bytes(layers, d)?)?;
@@ -1001,9 +1013,11 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
     }
 }
 
-/// KMZ resources are packed into KMZ archives only, so any other output refuses them rather than
-/// dropping them. `driver` is `None` for a format only GDAL writes.
-pub(crate) fn ensure_kmz_resources_apply(options: &VectorWriteOptions, driver: Option<VectorDriver>) -> Result<()> {
+/// Refuses format-specific vector options on other output formats rather than dropping them. `driver` is `None` for a format only GDAL writes.
+pub(crate) fn ensure_vector_options_apply(options: &VectorWriteOptions, driver: Option<VectorDriver>) -> Result<()> {
+    if options.preserve_declared_geometry_type && driver != Some(VectorDriver::GPKG) {
+        return Err(Error::InvalidArgument("preserve_declared_geometry_type applies to GPKG output".into()));
+    }
     if options.kmz.resources.is_empty() || driver == Some(VectorDriver::KMZ) {
         return Ok(());
     }

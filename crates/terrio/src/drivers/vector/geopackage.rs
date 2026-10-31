@@ -62,8 +62,82 @@ pub(super) fn gpkg_geometry(g: &Geometry, srs_id: i32) -> Vec<u8> {
             out.extend_from_slice(&v.to_le_bytes());
         }
     }
-    out.extend_from_slice(&g.to_wkb());
+    write_iso_wkb(&mut out, g);
     out
+}
+
+// ISO WKB dimensional offsets are 1000 (Z), 2000 (M), and 3000 (ZM).
+// Encode measures here because wbvector's encoder currently writes only XY/Z.
+fn write_iso_wkb(out: &mut Vec<u8>, geometry: &Geometry) {
+    fn count(out: &mut Vec<u8>, n: usize) {
+        out.extend_from_slice(&(n as u32).to_le_bytes());
+    }
+    fn header(out: &mut Vec<u8>, kind: u32, z: bool, m: bool) {
+        out.push(1);
+        out.extend_from_slice(&(kind + 1000 * u32::from(z) + 2000 * u32::from(m)).to_le_bytes());
+    }
+    fn coord(out: &mut Vec<u8>, c: &wbvector::Coord, z: bool, m: bool) {
+        for v in [Some(c.x), Some(c.y), z.then_some(c.z.unwrap_or(0.0)), m.then_some(c.m.unwrap_or(0.0))].into_iter().flatten() {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    fn line(out: &mut Vec<u8>, cs: &[wbvector::Coord], z: bool, m: bool) {
+        count(out, cs.len());
+        for c in cs {
+            coord(out, c, z, m);
+        }
+    }
+    fn ring(out: &mut Vec<u8>, r: &wbvector::Ring, z: bool, m: bool) {
+        let close = !r.0.is_empty() && r.0.first() != r.0.last();
+        count(out, r.0.len() + usize::from(close));
+        for c in &r.0 {
+            coord(out, c, z, m);
+        }
+        if close {
+            coord(out, &r.0[0], z, m);
+        }
+    }
+    fn polygon(out: &mut Vec<u8>, shell: &wbvector::Ring, holes: &[wbvector::Ring], z: bool, m: bool) {
+        count(out, 1 + holes.len());
+        ring(out, shell, z, m);
+        for hole in holes {
+            ring(out, hole, z, m);
+        }
+    }
+    let (z, m) = crate::vector::geometry_dims(geometry);
+    header(out, geometry.geom_type().wkb_type(), z, m);
+    match geometry {
+        Geometry::Point(c) => coord(out, c, z, m),
+        Geometry::LineString(cs) => line(out, cs, z, m),
+        Geometry::Polygon { exterior, interiors } => polygon(out, exterior, interiors, z, m),
+        Geometry::MultiPoint(cs) => {
+            count(out, cs.len());
+            for c in cs {
+                header(out, 1, z, m);
+                coord(out, c, z, m);
+            }
+        }
+        Geometry::MultiLineString(lines) => {
+            count(out, lines.len());
+            for cs in lines {
+                header(out, 2, z, m);
+                line(out, cs, z, m);
+            }
+        }
+        Geometry::MultiPolygon(parts) => {
+            count(out, parts.len());
+            for (shell, holes) in parts {
+                header(out, 3, z, m);
+                polygon(out, shell, holes, z, m);
+            }
+        }
+        Geometry::GeometryCollection(children) => {
+            count(out, children.len());
+            for child in children {
+                write_iso_wkb(out, child);
+            }
+        }
+    }
 }
 
 const UNDEFINED_WKT: &str =
@@ -404,7 +478,8 @@ pub(crate) struct LayerColumns {
     pub spatial: bool,
     pub srs_id: i64,
     pub type_name: String,
-    pub has_z: bool,
+    pub z_hint: i64,
+    pub m_hint: i64,
     fid_field: Option<usize>,
     kept: Vec<usize>,
 }
@@ -626,13 +701,22 @@ impl Builder {
 
     /// Adds a vector layer, with its R-tree index.
     pub(crate) fn add_layer(&mut self, layer: &Layer) -> Result<()> {
+        self.add_layer_with_geometry_type(layer, false)
+    }
+
+    pub(crate) fn add_layer_with_geometry_type(&mut self, layer: &Layer, preserve_declared_geometry_type: bool) -> Result<()> {
         self.claim(&layer.name)?;
         // A layer without geometries, a geometry type or a CRS is an attribute table, as GDAL
         // writes one.
         let all_none = layer.features.iter().all(|f| f.geometry.is_none());
         // The geometry type the features share, as GDAL declares it (GEOMETRY when they differ).
-        let declared = if all_none { layer.geom_type } else { super::uniform_type(layer) };
-        let has_z = layer.features.iter().filter_map(|f| f.geometry.as_ref()).any(crate::vector::geometry_has_z);
+        let declared = if preserve_declared_geometry_type || all_none { layer.geom_type } else { super::uniform_type(layer) };
+        let (has_z, has_m) = layer
+            .features
+            .iter()
+            .filter_map(|f| f.geometry.as_ref())
+            .map(crate::vector::geometry_dims)
+            .fold((false, false), |a, b| (a.0 || b.0, a.1 || b.1));
         // Columns: a field named fid holding unique integers gives the feature ids, as in GDAL.
         let fields = layer.schema.fields();
         let fid_field =
@@ -644,7 +728,11 @@ impl Builder {
                 n == layer.len() && ids.len() == n
             });
         let small = |i: usize| layer.features.iter().filter_map(|ft| ft.attributes.get(i)?.as_i64()).all(|v| i32::try_from(v).is_ok());
-        let cols = self.layer_columns(layer, all_none, declared, has_z, fid_field, small);
+        let mut cols = self.layer_columns(layer, all_none, declared, has_z, fid_field, small);
+        if preserve_declared_geometry_type && declared.is_none() && cols.spatial && has_z {
+            cols.z_hint = 2;
+        }
+        cols.m_hint = i64::from(has_m);
 
         // Rows (with each geometry's bounds) are encoded in parallel, then combined in order.
         let encoded = crate::par::map_range(layer.len(), |n| cols.row(&layer.features[n], n as i64 + 1, fields));
@@ -715,7 +803,7 @@ impl Builder {
             kept.push(i);
         }
         sql.push(')');
-        LayerColumns { sql, spatial, srs_id, type_name, has_z, fid_field, kept }
+        LayerColumns { sql, spatial, srs_id, type_name, z_hint: i64::from(has_z), m_hint: 0, fid_field, kept }
     }
 
     /// Records a layer's table and its metadata: `gpkg_contents` with the extent,
@@ -754,8 +842,8 @@ impl Builder {
                 Value::Text("geom".into()),
                 Value::Text(cols.type_name.clone()),
                 Value::Int(srs_id),
-                Value::Int(i64::from(cols.has_z)),
-                Value::Int(0),
+                Value::Int(cols.z_hint),
+                Value::Int(cols.m_hint),
             ]);
         }
         self.ogr_contents.push(vec![Value::Text(name.into()), Value::Int(count as i64)]);
@@ -1032,9 +1120,14 @@ pub(crate) fn write_with_fid(layers: &[Layer], path: &str, fid_column: &str) -> 
 
 /// Encodes layers as a GeoPackage file.
 pub fn to_bytes(layers: &[Layer]) -> Result<Vec<u8>> {
+    to_bytes_with_geometry_types(layers, false)
+}
+
+/// Encodes layers while optionally retaining declared geometry types, including GEOMETRY.
+pub fn to_bytes_with_geometry_types(layers: &[Layer], preserve_declared_geometry_type: bool) -> Result<Vec<u8>> {
     let mut b = Builder::new();
     for layer in layers {
-        b.add_layer(layer)?;
+        b.add_layer_with_geometry_type(layer, preserve_declared_geometry_type)?;
     }
     b.finish()
 }

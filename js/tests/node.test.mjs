@@ -2817,3 +2817,28 @@ test("checkCoverage uses GDAL schema and flags overlaps and narrow gaps", () => 
   assert.ok(gap.every(f => f.geometry.type === "MultiLineString"));
   assert.throws(() => terrio.checkCoverage(coverage(0), {maximumGapWidth: -1}), /maximum_gap_width/);
 });
+
+
+test("simplifyCoverage simplifies shared edges and preserves exterior boundaries", () => {
+  const source = {type: "FeatureCollection", features: [
+    {type: "Feature", properties: {name: "west"}, geometry: {type: "Polygon", coordinates: [[[0,0],[2,0],[1.8,1],[2.2,2],[1.8,3],[2,4],[0,4],[0,0]]]}},
+    {type: "Feature", properties: {name: "east"}, geometry: {type: "Polygon", coordinates: [[[2,0],[4,0],[4,4],[2,4],[1.8,3],[2.2,2],[1.8,1],[2,0]]]}}
+  ]};
+  const result = terrio.simplifyCoverage(source, 1, {preserveBoundary: true});
+  const features = result.toGeoJSON().features;
+  assert.equal(features.length, 2);
+  assert.deepEqual(features.map(f => f.properties.name), ["west", "east"]);
+  assert.ok(features.every(f => f.geometry.coordinates[0].length === 5));
+  assert.equal(terrio.checkCoverage(result).toGeoJSON().features.length, 0);
+  const polygon = {type:"Polygon",coordinates:[[[0,0],[2,0],[4,0],[6,0],[6,2],[6,4],[4,4],[2,4],[0,4],[0,2],[0,0]]]};
+  assert.equal(terrio.simplifyCoverage(polygon, 100).toGeoJSON().features[0].geometry.coordinates[0].length, 4);
+  assert.throws(() => terrio.simplifyCoverage(source, -1), /tolerance/);
+});
+
+
+test("GPKG toBytes can retain declared geometry types", () => {
+  const source = terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry:{type:"Point",coordinates:[1,2]}}]});
+  const bytes = source.toBytes("unknown.gpkg", {preserveDeclaredGeometryType:true});
+  assert.deepEqual(terrio.open(bytes,"unknown.gpkg").toGeoJSON().features[0].geometry, {type:"Point",coordinates:[1,2]});
+  assert.throws(() => source.toBytes("out.geojson", {preserveDeclaredGeometryType:true}), /GPKG/);
+});

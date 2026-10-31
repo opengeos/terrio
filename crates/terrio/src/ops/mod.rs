@@ -43,6 +43,7 @@ pub mod compare;
 pub mod concat;
 pub mod contour;
 pub mod coverage;
+pub mod coverage_simplify;
 pub mod create;
 pub mod dem;
 pub mod edit;

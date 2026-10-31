@@ -15,6 +15,7 @@ use terrio::ops::vector_geom::{
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simplify, m)?)?;
     m.add_function(wrap_pyfunction!(check_coverage, m)?)?;
+    m.add_function(wrap_pyfunction!(simplify_coverage, m)?)?;
     m.add_function(wrap_pyfunction!(segmentize, m)?)?;
     m.add_function(wrap_pyfunction!(convex_hull, m)?)?;
     m.add_function(wrap_pyfunction!(concave_hull, m)?)?;
@@ -245,5 +246,30 @@ fn check_coverage(
     let input = one_layer(py, src, layer)?;
     let options = terrio::ops::coverage::CoverageCheckOptions { maximum_gap_width, include_valid };
     let inner = py.detach(|| terrio::ops::coverage::check_coverage(&input, &options)).py()?;
+    Ok(PyLayer { inner })
+}
+
+/// Simplify shared polygon coverage boundaries without creating gaps or overlaps.
+///
+/// Args:
+///     src: A polygonal vector path, dataset, layer or GeoJSON forming a valid coverage.
+///     tolerance: Square root of the triangle-area threshold, in input CRS units.
+///     preserve_boundary: Simplify shared edges only, retaining exterior/hole boundaries.
+///     layer: Select a single layer when the input has multiple layers.
+///
+/// Returns:
+///     Layer: Simplified polygons with attributes and CRS retained and new sequential IDs.
+#[pyfunction]
+#[pyo3(signature = (src, tolerance, *, preserve_boundary=false, layer=None))]
+fn simplify_coverage(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    tolerance: f64,
+    preserve_boundary: bool,
+    layer: Option<String>,
+) -> PyResult<PyLayer> {
+    let input = one_layer(py, src, layer)?;
+    let options = terrio::ops::coverage_simplify::CoverageSimplifyOptions { tolerance, preserve_boundary };
+    let inner = py.detach(|| terrio::ops::coverage_simplify::simplify_coverage(&input, &options)).py()?;
     Ok(PyLayer { inner })
 }

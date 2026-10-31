@@ -74,9 +74,20 @@ fn real(v: &w::Value) -> Option<f64> {
 /// are written, in a transaction protected by a rollback journal); files that cannot be changed
 /// that way are rewritten, the new file replacing the original once complete.
 pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
+    update_with_geometry_types(path, layers, mode, false)
+}
+
+/// Retains declarations for new/replaced layers through both transaction paths.
+pub fn update_with_geometry_types(path: &str, layers: &[Layer], mode: UpdateMode, preserve_declared_geometry_type: bool) -> Result<()> {
     let resolved = std::fs::canonicalize(path)?;
     // Reject pending WAL state before selecting the in-place or rewrite path.
     crate::drivers::sqlite_edit::ensure_no_wal(&resolved)?;
+    if preserve_declared_geometry_type {
+        if super::gpkg_inplace::update_in_place_with_geometry_types(&resolved, layers, mode, true)? {
+            return Ok(());
+        }
+        return rewrite_with_geometry_types(&resolved, layers, mode, true);
+    }
     if super::gpkg_inplace::update_in_place(&resolved, layers, mode)? {
         return Ok(());
     }
@@ -88,6 +99,14 @@ pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
 /// files are not changed in place) a transaction interrupted cannot be told from one under way,
 /// and the journal, left next to the new file, would be rolled back over it.
 fn rewrite(path: impl AsRef<std::path::Path>, layers: &[Layer], mode: UpdateMode) -> Result<()> {
+    rewrite_with_geometry_types(path, layers, mode, false)
+}
+fn rewrite_with_geometry_types(
+    path: impl AsRef<std::path::Path>,
+    layers: &[Layer],
+    mode: UpdateMode,
+    preserve_declared_geometry_type: bool,
+) -> Result<()> {
     let path = path.as_ref();
     // Recheck at the rewrite boundary before reading only the main image.
     crate::drivers::sqlite_edit::ensure_no_wal(path)?;
@@ -98,7 +117,11 @@ fn rewrite(path: impl AsRef<std::path::Path>, layers: &[Layer], mode: UpdateMode
             path.display()
         )));
     }
-    let bytes = update_bytes(std::fs::read(path)?, layers, mode)?;
+    let bytes = if preserve_declared_geometry_type {
+        update_bytes_with_geometry_types(std::fs::read(path)?, layers, mode, true)?
+    } else {
+        update_bytes(std::fs::read(path)?, layers, mode)?
+    };
     use std::io::Write;
     crate::vsi::write_local_atomic(path, |file| {
         file.write_all(&bytes)?;
@@ -108,6 +131,14 @@ fn rewrite(path: impl AsRef<std::path::Path>, layers: &[Layer], mode: UpdateMode
 
 /// Updates a GeoPackage held in memory: see [`update`].
 pub fn update_bytes(bytes: Vec<u8>, layers: &[Layer], mode: UpdateMode) -> Result<Vec<u8>> {
+    update_bytes_with_geometry_types(bytes, layers, mode, false)
+}
+fn update_bytes_with_geometry_types(
+    bytes: Vec<u8>,
+    layers: &[Layer],
+    mode: UpdateMode,
+    preserve_declared_geometry_type: bool,
+) -> Result<Vec<u8>> {
     let db = Db::new(bytes)?;
     let (existing, _) = super::gpkg_read::contents(&db)?;
     let mut d = Database::load(&db)?;
@@ -117,7 +148,11 @@ pub fn update_bytes(bytes: Vec<u8>, layers: &[Layer], mode: UpdateMode) -> Resul
             (Some(c), UpdateMode::Append) => d.append(&c.name, layer)?,
             (Some(c), UpdateMode::Overwrite) => {
                 d.remove_layer(&c.name);
-                d.add_layer(layer)?;
+                if preserve_declared_geometry_type {
+                    d.add_layer_with_geometry_type(layer, true)?;
+                } else {
+                    d.add_layer(layer)?;
+                }
             }
             (None, _) => {
                 if d.has(&layer.name) {
@@ -126,7 +161,11 @@ pub fn update_bytes(bytes: Vec<u8>, layers: &[Layer], mode: UpdateMode) -> Resul
                         layer.name
                     )));
                 }
-                d.add_layer(layer)?;
+                if preserve_declared_geometry_type {
+                    d.add_layer_with_geometry_type(layer, true)?;
+                } else {
+                    d.add_layer(layer)?;
+                }
             }
         }
     }
@@ -300,8 +339,11 @@ impl Database {
     /// Adds a layer, as a new file would hold it, its CRS reusing an entry of
     /// `gpkg_spatial_ref_sys` that matches.
     pub(super) fn add_layer(&mut self, layer: &Layer) -> Result<()> {
+        self.add_layer_with_geometry_type(layer, false)
+    }
+    pub(super) fn add_layer_with_geometry_type(&mut self, layer: &Layer, preserve_declared_geometry_type: bool) -> Result<()> {
         let mut b = Builder::new();
-        b.add_layer(layer)?;
+        b.add_layer_with_geometry_type(layer, preserve_declared_geometry_type)?;
         let mut parts = b.into_layer_parts();
 
         let remap = self.merge_srs(&parts.srs)?;
