@@ -115,6 +115,7 @@ __all__ = [
     "FeatureStream",
     "open_stream",
     "check_coverage",
+    "clean_coverage",
     "simplify",
     "simplify_coverage",
     "segmentize",
@@ -2295,3 +2296,28 @@ def layer_algebra(
 ) -> Layer:
     """Attribute-preserving planar XY layer algebra, with matching input CRS."""
     ...
+
+@overload
+def clean_coverage(
+    src: Any,
+    *,
+    snapping_distance: float = -1.0,
+    merge_strategy: Literal[
+        "longest-border", "max-area", "min-area", "min-index"
+    ] = "longest-border",
+    maximum_gap_width: float = 0.0,
+    layer: str | None = None,
+    active_layer: None = None,
+) -> Layer: ...
+@overload
+def clean_coverage(
+    src: Any,
+    *,
+    snapping_distance: float = -1.0,
+    merge_strategy: Literal[
+        "longest-border", "max-area", "min-area", "min-index"
+    ] = "longest-border",
+    maximum_gap_width: float = 0.0,
+    layer: None = None,
+    active_layer: str,
+) -> VectorDataset: ...

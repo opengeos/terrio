@@ -32,6 +32,8 @@ Suites:
     vector-clip       points/lines/polygons against bbox, geometry and template clips vs GDAL
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
     layer-algebra     seven polygon/line/point operations with schema and GDAL comparisons
+
+    coverage-clean    polygon coverage cleaning: snapping, overlaps and enclosed narrow gaps
     coverage          polygon coverage validity: shared nodes, overlaps and narrow gaps
     coverage-simplify shared-edge topology-preserving coverage simplification
     vector-dataset    concat, partition, set-field-type, make-point, create, export-schema, rename-layer, edit, update
@@ -2360,6 +2362,33 @@ def suite_layer_algebra(ctx):
     return suite
 
 
+def suite_coverage_clean(ctx):
+    """Coverage cleaning against GDAL on county boundaries and overlaps."""
+    suite = Suite("coverage-clean", "Polygon coverage cleaning", "GDAL 3.13.3 gdal vector clean-coverage",
+                  "Projected Tennessee counties, overlaps, duplicates, enclosed gaps and inlets; "
+                  "all four merge strategies and deterministic three-rectangle probes. Exact schema/attributes/IDs/types/CRS; "
+                  "relative symmetric-difference area tolerance 1e-8 and independent coverage validity. "
+                  "Ordering differences require an exact cyclic-input GDAL match or independent legal greedy-merge witnesses for both outputs; "
+                  "the latter do not claim per-feature geometry/type equality.")
+    if missing_modules("osgeo") or not shutil.which("gdal") or run(["gdal", "vector", "clean-coverage", "--help"])[0] != 0:
+        suite.skipped = "needs GDAL with GEOS and the vector clean-coverage command"
+        return suite
+    if not os.path.isfile(os.path.join(ctx.data, "TN_Counties.geojson")):
+        suite.skipped = "needs TN_Counties.geojson (scripts/fetch_test_data.sh)"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_coverage_clean_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        rows = json.loads(out)
+        for row in rows:
+            suite.cases.append(Case("clean-coverage", row["name"], row["status"], row["detail"]))
+    except (ValueError, KeyError, TypeError) as error:
+        suite.error = f"{error}: {tail(err or out)}"
+        return suite
+    if code:
+        suite.error = tail(err or "coverage cleaning comparison process failed")
+    return suite
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -2408,6 +2437,7 @@ SUITES = OrderedDict(
         ("layer-algebra", suite_layer_algebra),
         ("coverage", suite_coverage),
         ("coverage-simplify", suite_coverage_simplify),
+        ("coverage-clean", suite_coverage_clean),
         ("vector-geom", suite_vector_geom),
         ("vector-clip", suite_vector_clip),
         ("vector-dataset", suite_vector_dataset),

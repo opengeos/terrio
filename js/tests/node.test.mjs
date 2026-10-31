@@ -3015,3 +3015,38 @@ test("layerAlgebra selects one layer from each source", () => {
   assert.throws(()=>terrio.layerAlgebra(combined,a,"clip"),/one layer/);
   assert.throws(()=>terrio.layerAlgebra(a,b,"clip",{methodLayer:"missing"}),/not found/);
 });
+
+test("cleanCoverage repairs overlaps with feature correspondence", () => {
+  const rectangle = (x,y,w,h) => ({type:"Polygon", coordinates:[[[x,y],[x+w,y],[x+w,y+h],[x,y+h],[x,y]]]});
+  const src = {type:"FeatureCollection",features:[rectangle(0,0,4,4),rectangle(1,1,1,1)].map((geometry,i)=>({type:"Feature",geometry,properties:{source_id:i}}))};
+  for (const mergeStrategy of ["longest-border","max-area","min-area","min-index"]) {
+    const result = terrio.cleanCoverage(src,{mergeStrategy});
+    assert.equal(result.toGeoJSON().features.length,2);
+    assert.equal(terrio.checkCoverage(result).toGeoJSON().features.length,0);
+    assert.deepEqual(result.toGeoJSON().features.map(f=>f.properties.source_id),[0,1]);
+  }
+  assert.throws(()=>terrio.cleanCoverage(src,{mergeStrategy:"unknown"}),/merge_strategy/);
+  assert.throws(()=>terrio.cleanCoverage(src,{maximumGapWidth:-1}),/gap width/);
+  assert.throws(()=>terrio.cleanCoverage(src,{activeLayer:"missing"}),/not found/);
+});
+
+
+test("cleanCoverage selects layers and copies inactive elevated points", () => {
+  const polygon=terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}]},"coverage");
+  const point=terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry:{type:"Point",coordinates:[1,2,3]}}]},"point");
+  const source=terrio.concat([polygon,point],{mode:"stack"});
+  const names=source.layerNames();
+  const selected=terrio.cleanCoverage(source,{layer:names[0]});
+  assert.deepEqual(selected.layerNames(),[names[0]]);
+  const copied=terrio.cleanCoverage(source,{activeLayer:names[0]});
+  assert.deepEqual(copied.layerNames(),names);
+  assert.deepEqual(copied.toGeoJSON(names[1]).features[0].geometry.coordinates,[1,2,3]);
+  assert.throws(()=>terrio.cleanCoverage(source,{layer:names[0],activeLayer:names[0]}),/mutually exclusive/);
+});
+
+
+test("cleanCoverage rejects null and non-polygonal active features", () => {
+  for(const geometry of [null,{type:"Point",coordinates:[1,2]}]) {
+    assert.throws(()=>terrio.cleanCoverage({type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry}]}),/polygonal geometry/);
+  }
+});

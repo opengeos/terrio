@@ -113,14 +113,20 @@ commands. Command-group progress:
       [#420](https://github.com/opengeos/terrio/pull/420), with 24 exact
       GDAL 3.13.3 comparisons, including real counties and dimensional inputs.
 
-- [ ] Coverage simplification: shared-edge topology preservation, boundary options
-      and active-layer copying across the public APIs. Part of
-      [#289](https://github.com/opengeos/terrio/issues/289); pending review and merge.
+- [x] Coverage simplification: shared-edge topology preservation, boundary options
+      and active-layer copying across Rust, CLI/MCP, Python and JavaScript. Landed in
+      [#424](https://github.com/opengeos/terrio/pull/424), with 48 exact GDAL 3.13.3
+      simplification comparisons and documented dimensional metadata behavior.
 
 - [ ] Layer algebra: intersection, union, symmetric difference, identity, update,
       clip and erase for polygon, line, point and collection inputs across
       Rust, CLI/MCP, Python and JavaScript. Part of
       [#289](https://github.com/opengeos/terrio/issues/289); pending review and merge.
+
+- [x] Coverage cleaning: snapping, progressive overlap assignment and enclosed-gap
+      filling across Rust, CLI/MCP, Python and JavaScript. Landed in
+      [#426](https://github.com/opengeos/terrio/pull/426), with 236 GDAL 3.13.3
+      comparisons and documented, independently checked ordering-dependent results.
 
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
