@@ -44,7 +44,8 @@ pub(crate) struct Publication<'a> {
     geographic: Option<crate::crs::Transformer>,
 }
 
-const MAX_METADATA: usize = 16 * 1024 * 1024;
+/// Maximum encoded size of one publication companion or supplied template.
+pub const MAX_METADATA: usize = 16 * 1024 * 1024;
 
 fn invalid(message: &str) -> Error {
     Error::InvalidArgument(message.into())
@@ -59,6 +60,13 @@ impl<'a> Publication<'a> {
         convention: Convention,
         extension: &'a str,
     ) -> Result<Self> {
+        if [&options.title, &options.copyright]
+            .into_iter()
+            .chain(options.url.as_ref())
+            .any(|s| s.chars().any(|c| (c < ' ' && !matches!(c, '\t' | '\n' | '\r')) || matches!(c, '\u{fffe}' | '\u{ffff}')))
+        {
+            return Err(invalid("publication text contains XML-forbidden characters"));
+        }
         if [&options.title, &options.copyright].iter().any(|s| s.len() > 4096)
             || options.url.as_ref().is_some_and(|s| s.len() > 8192 || s.contains(['?', '#', '\0']))
             || options.mapml_template.as_ref().is_some_and(|s| s.len() > MAX_METADATA)
@@ -133,13 +141,8 @@ impl<'a> Publication<'a> {
         if publication.viewers.contains("mapml") && !plan.levels.is_empty() {
             publication.mapml()?;
         }
-        if options.kml {
-            let links = plan.levels.first().map(|l| l.range.count()).transpose()?.unwrap_or(0);
-            let per_link = 1024 + options.url.as_ref().map_or(0, |url| xml(url).len());
-            let root_bytes = xml(&options.title).len() + xml(&options.copyright).len() + 128;
-            if links > (MAX_METADATA.saturating_sub(root_bytes) / per_link) as u64 {
-                return Err(invalid("root KML exceeds the metadata byte budget"));
-            }
+        if options.kml && !plan.levels.is_empty() {
+            publication.root_kml()?;
         }
         Ok(publication)
     }
@@ -239,20 +242,26 @@ impl<'a> Publication<'a> {
             put(sink, name, content.as_bytes())?;
         }
         if self.options.kml {
-            let mut body = format!("<name>{}</name><description>{}</description>", xml(&self.options.title), xml(&self.options.copyright));
-            for cell in self.plan.levels[0].cells(self.convention) {
-                body.push_str(&format!(
-                    "<NetworkLink>{}<Link><href>{}</href><viewRefreshMode>onRegion</viewRefreshMode></Link></NetworkLink>",
-                    region(self.geo_bounds(cell_bounds(&cell))?, cell.size[0]),
-                    xml(&self.href(&format!("{}/{}/{}.kml", cell.zoom, cell.x, cell.y)))
-                ));
-                if body.len() > MAX_METADATA {
-                    return Err(invalid("root KML exceeds the metadata byte budget"));
-                }
-            }
-            put(sink, "doc.kml", kml(&body).as_bytes())?;
+            put(sink, "doc.kml", self.root_kml()?.as_bytes())?;
         }
         Ok(())
+    }
+
+    fn root_kml(&self) -> Result<String> {
+        let mut body = format!("<name>{}</name><description>{}</description>", xml(&self.options.title), xml(&self.options.copyright));
+        let overhead = kml("").len();
+        for cell in self.plan.levels[0].cells(self.convention) {
+            let link = format!(
+                "<NetworkLink>{}<Link><href>{}</href><viewRefreshMode>onRegion</viewRefreshMode></Link></NetworkLink>",
+                region(self.geo_bounds(cell_bounds(&cell))?, cell.size[0]),
+                xml(&self.href(&format!("{}/{}/{}.kml", cell.zoom, cell.x, cell.y)))
+            );
+            if body.len() + link.len() + overhead > MAX_METADATA {
+                return Err(invalid("root KML exceeds the metadata byte budget"));
+            }
+            body.push_str(&link);
+        }
+        Ok(kml(&body))
     }
 
     fn stac(&self, source: &RasterDataset) -> Result<String> {

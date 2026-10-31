@@ -186,7 +186,7 @@ enum Command {
     RasterIndex(cmd::tile_index::RasterArgs),
     /// Generate separate XYZ/TMS raster tiles in a directory.
     Tile(cmd::raster_tile::Args),
-    /// Retile mosaics into overlapping files and direct-source pyramid levels.
+    /// Retile mosaics into overlapping files and recursive pyramid levels.
     Retile(cmd::raster_retile::Args),
     /// Create a raster footprint catalog with GTI virtual-raster metadata.
     GtiCreate(cmd::tile_index::RasterArgs),

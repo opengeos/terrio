@@ -3235,7 +3235,10 @@ directory output reads emitted parent files after eviction. Each cached parent
 is decoded from its emitted encoding, adding a decode pass so higher levels
 see the actual samples, including lossy writer effects. Write-only callback
 sinks regenerate evicted parents; callbacks can supply read-back to avoid this
-additional work. No full input mosaic is materialized.
+additional work. Inputs must remain unchanged throughout generation, including
+across callbacks. Write-only regeneration assumes stable source samples; supply
+parent read-back when emitted parent bytes must be reused independently of the
+source. No full input mosaic is materialized.
 
 Rust exposes `ops::raster_retile::{plan, generate, to_directory, RetileOptions,
 RetileSource}`. Python `terrio.retile(source_or_sources, output, **options)`

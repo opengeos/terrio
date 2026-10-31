@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 const require = createRequire(import.meta.url);
 // TERRIO_JS_LOAD: the npm package's `load.js` (js/pkg, built by js/build.mjs), whose module the
@@ -2510,9 +2511,15 @@ test("palette conversion APIs preserve colors, masks and serialized tables", () 
 });
 
 
-test("masked toBytes reprojection is refused explicitly", () => {
+test("masked sources warp with their mask and refuse reprojection", () => {
   const bytes = new Uint8Array(Buffer.from("SUkqAAgAAAANAAABAwABAAAAAgAAAAEBAwABAAAAAgAAAAIBAwABAAAACAAAAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAA8gAAABUBAwABAAAAAQAAABYBAwABAAAAAgAAABcBBAABAAAABAAAABwBAwABAAAAAQAAAFMBAwABAAAAAQAAAA6DDAADAAAAqgAAAIKEDAAGAAAAwgAAAPYAAAAAAAAAAADwPwAAAAAAAPA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAABAQEBDQD+AAQAAQAAAAQAAAAAAQMAAQAAAAIAAAABAQMAAQAAAAIAAAACAQMAAQAAAAEAAAADAQMAAQAAAAgAAAAGAQMAAQAAAAQAAAARAQQAAQAAAJgBAAAVAQMAAQAAAAEAAAAWAQMAAQAAAAIAAAAXAQQAAQAAAA0AAAAcAQMAAQAAAAEAAAA9AQMAAQAAAAEAAABTAQMAAQAAAAEAAAAAAAAAeJwBAgD9/0DAAUIBAQ==", "base64"));
   const dataset = terrio.open(bytes, "masked.tif");
+  // GDAL 3.13.2: the full-resolution path and repeated-source compositing use the mask.
+  for (const source of [dataset, bytes, [dataset, dataset]]) {
+    const warped = terrio.warp(source, {ts: [2, 2], overview: "NONE"});
+    assert.deepEqual([...warped.readBand(1)], [0, 1, 1, 1]);
+    warped.free();
+  }
   assert.throws(() => dataset.toBytes("output.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
   const copy = terrio.open(dataset.toBytes("output.tif"), "copy.tif");
   assert.throws(() => copy.toBytes("reprojected.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
@@ -3156,6 +3163,10 @@ test("retile callbacks and parent read-back agree after bounded cache eviction",
   const a=terrio.retile(source,options,(name,bytes)=>first.set(name,bytes));
   const b=terrio.retile(source,options,(name,bytes)=>second.set(name,bytes),name=>{reads++;return second.get(name)||null;});
   assert.equal(a.written,370);assert.equal(b.written,a.written);assert.ok(reads>0);
+  const foreign=new Map();
+  const c=terrio.retile(source,options,(name,bytes)=>foreign.set(name,bytes),name=>{const bytes=foreign.get(name);return bytes?runInNewContext("new Uint8Array(bytes)",{bytes}):null;});
+  assert.equal(c.written,a.written);
+  for(const [name,bytes] of first)assert.deepEqual(foreign.get(name),bytes,name);
   assert.deepEqual([...first.keys()],[...second.keys()]);
   for(const [name,bytes] of first)assert.deepEqual(second.get(name),bytes,name);
   const exception={message:"read-back sentinel"};

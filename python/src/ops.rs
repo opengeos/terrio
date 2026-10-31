@@ -1314,6 +1314,25 @@ fn warp(
         Python(Py<PyRaster>),
     }
     impl terrio::ops::warp::WarpSource for Input {
+        fn has_mask(&mut self) -> terrio::Result<bool> {
+            match self {
+                Self::File(r) => Ok(r.has_mask()),
+                Self::Python(obj) => Python::attach(|py| {
+                    let r = obj.bind(py).try_borrow().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
+                    Ok(r.inner.has_mask())
+                }),
+            }
+        }
+        fn read_mask(&mut self, window: Window, overview: Option<usize>) -> terrio::Result<Option<Vec<u8>>> {
+            match self {
+                Self::File(r) => r.read_mask(window, overview),
+                Self::Python(obj) => Python::attach(|py| {
+                    let mut r = obj.bind(py).try_borrow_mut().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
+                    let lazy = &mut r.inner;
+                    py.detach_result(|| lazy.read_mask(window, overview))
+                }),
+            }
+        }
         fn with_dataset(&self, visit: &mut dyn FnMut(&RasterDataset)) -> terrio::Result<bool> {
             match self {
                 Self::File(r) => terrio::ops::warp::WarpSource::with_dataset(r.as_ref(), visit),

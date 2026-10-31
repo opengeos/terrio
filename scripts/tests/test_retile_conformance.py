@@ -72,3 +72,17 @@ def test_cog_workaround_requires_exact_byte_conversion_defect(tmp_path):
         verify_cog_reference_byte_bug(wrong, good)
     with pytest.raises(AssertionError):
         verify_cog_reference_byte_bug(good, good)
+
+
+@pytest.mark.parametrize("value", [1.0, -1.0, 0.0])
+def test_binade_boundaries_allow_exactly_one_float32_step(tmp_path, value):
+    value = np.float32(value)
+    toward = np.float32(-np.inf if value >= 0 else np.inf)
+    first = np.nextafter(value, toward)
+    second = np.nextafter(first, toward)
+    a = write(tmp_path / "a", [value])
+    one = write(tmp_path / "one", [first])
+    two = write(tmp_path / "two", [second])
+    assert compare_samples(a, one, allow_roundoff=True)[1]
+    with pytest.raises(AssertionError, match="one ULP"):
+        compare_samples(a, two, allow_roundoff=True)

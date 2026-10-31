@@ -111,3 +111,30 @@ fn retile_is_exposed_as_a_writing_mcp_tool() {
     child.kill().unwrap();
     child.wait().unwrap();
 }
+
+#[test]
+fn oversized_mapml_templates_fail_preflight_without_reading_the_whole_file() {
+    let directory = tempfile::tempdir().unwrap();
+    fixture(&directory.path().join("world.tif"), true);
+    let template = directory.path().join("large.mapml");
+    std::fs::File::create(&template).unwrap().set_len(16 * 1024 * 1024 + 1).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_terrio"))
+        .current_dir(directory.path())
+        .args([
+            "tile",
+            "world.tif",
+            "tiles",
+            "--tiling-scheme",
+            "WorldCRS84Quad",
+            "--webviewer",
+            "mapml",
+            "--mapml-template",
+            "large.mapml",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("template exceeds"));
+    assert!(!directory.path().join("tiles").exists());
+}

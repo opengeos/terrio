@@ -23,7 +23,8 @@ use wbraster::raster::RasterData;
 pub struct RetileSource<'a> {
     /// A filename or label. URL query strings/fragments are removed from the prefix.
     pub name: String,
-    /// An open reader; source windows remain lazy.
+    /// An open reader; source windows remain lazy. Metadata and pixels must stay
+    /// stable throughout generation, including across output callbacks.
     pub source: &'a mut dyn WarpSource,
 }
 
@@ -221,6 +222,9 @@ fn prepare(sources: &mut [RetileSource<'_>], o: &RetileOptions) -> Result<(Retil
         let ext = index.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
         if !matches!(ext.as_str(), "shp" | "geojson" | "gpkg") {
             return Err(invalid("tile indexes support .shp, .geojson or .gpkg"));
+        }
+        if ext == "shp" && o.tile_index_field.len() > 10 {
+            return Err(invalid("Shapefile tile index fields must fit in 10 bytes"));
         }
     }
     if o.tile_index_field.is_empty() || o.tile_index_field.contains('\0') {

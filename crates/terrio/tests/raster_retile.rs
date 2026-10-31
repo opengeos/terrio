@@ -245,3 +245,17 @@ fn source_overviews_are_not_used_for_retile_pyramids() {
     let tile = terrio::memory::open_raster_bytes(sink.0["2/sample_1_1.tif"].clone(), "tile.tif").unwrap();
     assert_eq!(tile.raster.data.to_f64_vec(), [7.; 4]);
 }
+
+#[test]
+fn shapefile_index_field_names_must_fit_without_truncation() {
+    let mut input = source(4, 4, 0., vec![7; 16]);
+    let mut sources = [RetileSource { name: "source.tif".into(), source: &mut input }];
+    for field in ["source_location", "éééééé"] {
+        let options = RetileOptions { tile_index: Some("tiles.shp".into()), tile_index_field: field.into(), ..Default::default() };
+        assert!(re::plan(&mut sources, &options).is_err(), "{field}");
+    }
+    let options = RetileOptions { tile_index: Some("tiles.shp".into()), tile_index_field: "source_loc".into(), ..Default::default() };
+    assert!(re::plan(&mut sources, &options).is_ok());
+    let options = RetileOptions { tile_index: Some("tiles.gpkg".into()), tile_index_field: "source_location".into(), ..Default::default() };
+    assert!(re::plan(&mut sources, &options).is_ok());
+}

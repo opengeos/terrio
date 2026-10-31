@@ -240,9 +240,61 @@ fn publication_urls_accept_ports_relative_colons_and_case_insensitive_http() {
 fn browser_assets_are_pinned_with_subresource_integrity() {
     let mut sink = Collect::default();
     tile::generate(&mut source(), &options(), &mut sink).unwrap();
-    for name in ["leaflet.html", "openlayers.html"] {
+    for (name, url, integrity) in [
+        (
+            "leaflet.html",
+            "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",
+            "sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H",
+        ),
+        (
+            "leaflet.html",
+            "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
+            "sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH",
+        ),
+        (
+            "openlayers.html",
+            "https://cdn.jsdelivr.net/npm/ol@10.11.0/ol.css",
+            "sha384-Jpg1uvTciFJuHq+90Ly0/2SKRT9yS5OhbIN5FuFoFWji9fc44ok8xxO88CJi8Z5W",
+        ),
+        (
+            "openlayers.html",
+            "https://cdn.jsdelivr.net/npm/ol@10.11.0/dist/ol.js",
+            "sha384-rwbCGPbgxLkcQaFvIra1Vz3KBT1yBeF2/1VgLs/gCCNCJ61GHJGimHpkufVKcqap",
+        ),
+    ] {
         let html = std::str::from_utf8(&sink.0[name]).unwrap();
-        assert_eq!(html.matches("integrity=\"sha384-").count(), 2, "{name}");
-        assert_eq!(html.matches("crossorigin=\"anonymous\"").count(), 2, "{name}");
+        assert!(html.contains(url), "{name}: missing pinned URL {url}");
+        assert!(
+            html.contains(&format!("{url}\" integrity=\"{integrity}\" crossorigin=\"anonymous\"")),
+            "{name}: integrity does not match {url}"
+        );
     }
+}
+
+#[test]
+fn xml_forbidden_characters_are_rejected_before_publication() {
+    for (title, copyright) in [("bad\u{1}", "ok"), ("ok", "bad\u{ffff}"), ("bad\u{fffe}", "ok")] {
+        let mut options = options();
+        options.publication.title = title.into();
+        options.publication.copyright = copyright.into();
+        let mut sink = Collect::default();
+        assert!(tile::generate(&mut source(), &options, &mut sink).is_err());
+        assert!(sink.0.is_empty());
+    }
+    let mut options = options();
+    options.publication.title = "tabs\tand\r\nUnicode 🌍".into();
+    assert!(tile::plan(&source().header(), &options).is_ok());
+    options.publication.url = Some("maps/\u{1}/".into());
+    assert!(tile::plan(&source().header(), &options).is_err());
+}
+
+#[test]
+fn root_kml_planning_accepts_16384_links_within_the_actual_byte_budget() {
+    let mut options = options();
+    options.grid.min_zoom = Some(7);
+    options.grid.max_zoom = Some(7);
+    options.grid.limits.max_x = Some(127);
+    options.publication.viewers.clear();
+    let plan = tile::plan(&source().header(), &options).unwrap().0;
+    assert_eq!(plan.count().unwrap(), 16384);
 }

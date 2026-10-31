@@ -316,7 +316,8 @@ output callback receives each image and CSV/index companion. Optional read-back
 returns a `Uint8Array` or null; it avoids regenerating parents evicted from the
 64 MiB/256-tile cache. Callback exceptions propagate unchanged. Keeping every
 file in a `Map` uses caller memory; persistent stores can retain the bytes
-outside WASM. Native filesystem resume is not exposed in JavaScript.
+outside WASM. Native filesystem resume is not exposed in JavaScript. Inputs must remain
+unchanged during generation; write-only regeneration assumes stable samples.
 
 Retile uses matching-CRS north-up inputs, recursive factor-two pyramids and
 one-based row/column filenames. Options accept camelCase or snake_case.

@@ -48,8 +48,7 @@ def compare_float32_roundoff(reference, actual):
         if not (np.isfinite(u).all() and np.isfinite(v).all()):
             raise AssertionError("nonfinite values differ")
         delta = np.abs(u.astype(np.float64) - v)
-        spacing = np.maximum(np.abs(np.spacing(u)), np.abs(np.spacing(v)))
-        if np.any(delta > spacing):
+        if np.any(np.nextafter(u, v) != v):
             raise AssertionError("Float32 samples differ by more than one ULP")
         count += len(u)
         maximum = max(maximum, float(delta.max()))

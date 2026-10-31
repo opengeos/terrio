@@ -3,6 +3,12 @@ use terrio::ops::raster_tile::{self as tile, FolderSink, TileOptions};
 use terrio::ops::warp::WarpSource;
 use wasm_bindgen::prelude::*;
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(catch, js_namespace = ["Object", "prototype", "toString"], js_name = call)]
+    fn object_tag(value: &JsValue) -> Result<String, JsValue>;
+}
+
 /// Plan folder tiles without reading pixels. Grid fields accept camelCase.
 #[wasm_bindgen(js_name = planRasterTiles)]
 pub fn plan_raster_tiles(input: &JsValue, options: JsValue) -> Result<JsValue, JsError> {
@@ -99,10 +105,17 @@ pub fn retile(
             if value.is_null() || value.is_undefined() {
                 return Ok(None);
             }
-            if !value.is_instance_of::<js_sys::Uint8Array>() {
+            if !js_sys::ArrayBuffer::is_view(&value) {
                 return Err(terrio::Error::InvalidArgument("readFile must synchronously return a Uint8Array or null".into()));
             }
-            let bytes = js_sys::Uint8Array::new(&value);
+            let tag = object_tag(&value).map_err(|error| {
+                self.exception = Some(error);
+                terrio::Error::InvalidArgument("retile read-back type check failed".into())
+            })?;
+            if tag != "[object Uint8Array]" {
+                return Err(terrio::Error::InvalidArgument("readFile must synchronously return a Uint8Array or null".into()));
+            }
+            let bytes = value.unchecked_ref::<js_sys::Uint8Array>();
             if bytes.length() as usize > tile::RenderLimits::default().max_output_bytes + 16 * 1024 * 1024 {
                 return Err(terrio::Error::InvalidArgument("parent tile exceeds its encoded-byte budget".into()));
             }

@@ -376,7 +376,7 @@ pub fn render_cell(
     options.extent_srs = None;
     options.resolution = None;
     options.target_aligned_pixels = false;
-    if masked { super::warp::warp_reader_masked(&mut bounded, &options) } else { super::warp::warp_sources(&mut [&mut bounded], &options) }
+    if masked { super::warp::warp_reader(&mut bounded, &options) } else { super::warp::warp_sources(&mut [&mut bounded], &options) }
 }
 
 fn invalid(message: &str) -> Error {

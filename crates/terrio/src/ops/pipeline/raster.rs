@@ -1,6 +1,10 @@
 //! Window/overview-preserving band and crop views used between pipeline steps.
 use crate::cog::{StreamedSource, WindowSource};
-use crate::ops::{Grid, Resampling, overview::OverviewSelection, warp::WarpOptions};
+use crate::ops::{
+    Grid, Resampling,
+    overview::OverviewSelection,
+    warp::{WarpOptions, WarpSource, WarpSourceInfo},
+};
 use crate::{Error, LazyRaster, RasterDataset, Result, Window, WindowOptions};
 use std::sync::Mutex;
 use wbraster::{DataType, raster::RasterData};
@@ -293,20 +297,36 @@ pub(super) fn resize(source: &mut LazyRaster, options: &WarpOptions) -> Result<L
     // Translate; reprojection instead excludes masked pixels from interpolation.
     warp_inner(source, options, false)
 }
+/// A raster warped by its raw pixels, whatever its dataset mask says.
+struct RawPixels<'a>(&'a mut LazyRaster);
+impl WarpSource for RawPixels<'_> {
+    fn with_dataset(&self, visit: &mut dyn FnMut(&RasterDataset)) -> Result<bool> {
+        self.0.with_dataset(visit)
+    }
+    fn info(&mut self) -> Result<WarpSourceInfo> {
+        self.0.info()
+    }
+    fn has_mask(&mut self) -> Result<bool> {
+        Ok(false)
+    }
+    fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
+        self.0.read_window(window, options)
+    }
+}
 fn warp_inner(source: &mut LazyRaster, options: &WarpOptions, mask_pixels: bool) -> Result<LazyRaster> {
     let referenced = source.geotransform_present() || options.dst_srs.is_some();
     let original = source.header();
-    let mut output = if mask_pixels && source.has_mask() {
-        crate::ops::warp::warp_reader_masked(source, options)?
-    } else {
+    let mut output = if mask_pixels {
         crate::ops::warp::warp_lazy(source, options)?
+    } else {
+        crate::ops::warp::warp_sources(&mut [&mut RawPixels(source)], options)?
     };
     // Independent source metadata survives changes of grid; derived statistics do not.
     output.raster.metadata = original.raster.metadata.clone();
     output.band_metadata = original.band_metadata.clone();
     clear_statistics(&mut output);
     output.color_table = original.color_table.clone();
-    if !mask_pixels && source.has_mask() {
+    if !mask_pixels && LazyRaster::has_mask(source) {
         let mut mask = mask_source(source)?;
         let mut mask_options = options.clone();
         mask_options.output_type = Some(DataType::U8);

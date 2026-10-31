@@ -17,6 +17,7 @@ Suites:
     windows           windowed and overview reads of GeoTIFFs, JPEG 2000 and raw-layout rasters
                       (compare_windows_with_gdal.py)
     ops               translate, warp, mosaic vs GDAL's tools (compare_ops_with_gdal.py)
+    raster-masks      per-dataset masks in convert/warp, including COG overviews
     catalogs          indexed real DEM mosaics and HTTP window I/O vs GDAL GTI
                       (compare_catalogs_with_gdal.py)
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
@@ -660,6 +661,29 @@ def suite_ops(ctx):
         "pixel within the case's tolerance (1e-2 for interpolating resamplings).",
         1,
     )
+
+
+def suite_raster_masks(ctx):
+    """Mask preservation and validity across the conversion and warp paths."""
+    suite = Suite("raster-masks", "Raster dataset masks", "GDAL gdal_translate/gdalwarp (3.13.2 reference)",
+                  "Synthetic Byte and real Landsat rasters with internal and sidecar masks: "
+                  "every pixel, mask, type, nodata, CRS and geotransform, including regenerated COG "
+                  "overviews, extracted windows/levels and single/multiple-source/cutline warps. "
+                  "Landsat forced-overview bilinear and average warps allow one value of rounding "
+                  "difference and must also match GDAL -wt Float32 exactly. Cutlines use the same binary mask as alpha "
+                  "because GDAL 3.13.2 drops a per-dataset mask when adding a cutline. "
+                  "A local masked COG counts HTTP payload bytes and requires small windows to fetch less than whole conversion.")
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_raster_masks_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out) or f"comparison exited {code} without JSON"
+        return suite
+    for result in results:
+        suite.cases.append(Case(result["name"].split()[0], result["name"], result["status"], result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or f"comparison exited {code}"
+    return suite
 
 
 def suite_benchmark_metadata(ctx):
@@ -2483,6 +2507,7 @@ SUITES = OrderedDict(
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),
+        ("raster-masks", suite_raster_masks),
         ("warp-policy", suite_warp_policy),
         ("benchmark-metadata", suite_benchmark_metadata),
         ("benchmark-compat", suite_benchmark_compat),
