@@ -30,7 +30,7 @@ def compare(result, expected, source, options):
         raise AssertionError("output CRS missing")
     crs.SetFromUserInput(result["crs"])
     target = osr.SpatialReference()
-    target.SetFromUserInput(options.get("t_srs", "EPSG:4326"))
+    target.SetFromUserInput(options.get("t_srs") or source[0]["crs"])
     if not crs.IsSame(target, ["IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES"]):
         raise AssertionError("output CRS differs")
     transform = osr.CoordinateTransformation(

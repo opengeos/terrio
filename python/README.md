@@ -275,7 +275,10 @@ materialized, including lazy and remote inputs. Zonal controls follow the CLI, w
 with median also supported. Standard deviation is population-based. Omitted
 prefixes are `raster1`, `raster2`, etc., producing `PREFIX_bN_STATISTIC` fields;
 the CLI instead defaults to each input path stem. Set explicit prefixes for the
-same field names across surfaces. Explicit prefixes must be nonblank, one per raster. Each polygon is transformed
+same field names across surfaces. Explicit prefixes must be nonblank, one per raster.
+Field-name collisions, including repeated prefixes/bands or existing zone fields,
+receive `_2`, `_3`, etc. suffixes from the shared engine. Repeated raster path
+entries are materialized separately; paths are not cached. Each polygon is transformed
 into each raster's CRS before center/all-touched membership is evaluated. Nodata
 and nonfinite values are excluded; empty zones have count zero and null other
 statistics. `t_srs` reprojects output geometry; `decimal_places` (0–15) rounds

@@ -137,3 +137,12 @@ def test_boolean_and_numeric_source_attributes_are_distinct(wanted, got):
     result["geojson"]["features"][0]["properties"]["original_flag"] = got
     with pytest.raises(AssertionError, match="attribute/count/null differs"):
         compare(result, expected, source, {})
+
+
+def test_omitted_target_crs_preserves_projected_zone_crs():
+    result, expected, source = example()
+    crs = osr.SpatialReference()
+    crs.ImportFromEPSG(3857)
+    source[0]["crs"] = crs.ExportToWkt()
+    result["crs"] = "EPSG:3857"
+    assert "counts/nulls" in compare(result, expected, source, {})

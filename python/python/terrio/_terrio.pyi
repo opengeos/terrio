@@ -2439,7 +2439,11 @@ def zonal_stats(
     decimal_places: int | None = None,
     layer: str | None = None,
 ) -> Layer:
-    """Summarize bands for polygon zones; materializes source raster pixels."""
+    """Summarize bands for polygon zones; materializes source raster pixels.
+
+    Field-name collisions receive _2, _3, etc. suffixes. Repeated raster path
+    entries are read separately, without a path cache.
+    """
     ...
 
 def singlepart(src: Any, *, layer: str | None = None) -> Layer:

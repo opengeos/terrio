@@ -325,7 +325,9 @@ for empty zones; output reprojection and 0–15 decimal rounding. Default prefix
 are `raster1`, `raster2`, etc., producing `PREFIX_bN_STATISTIC`; the CLI instead
 defaults to each input path stem. Set explicit prefixes for identical field names.
 Explicit prefixes
-must be nonblank, one per raster. Weighted/fractional statistics are unsupported.
+must be nonblank, one per raster. Field-name collisions, including repeated
+prefixes/bands or existing zone fields, receive `_2`, `_3`, etc. suffixes from the
+shared engine. Weighted/fractional statistics are unsupported.
 
 `singlepart` recursively splits collections/multipart geometry, preserving
 attributes, Z/M and CRS, and assigns sequential IDs from one per layer. Null and
