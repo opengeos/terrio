@@ -296,6 +296,24 @@ def test_errors():
         terrio.open_bytes(b"not a dataset", "x.unknown")
 
 
+def test_local_open_errors_name_the_path(tmp_path):
+    """`open_raster` (eager or lazy) and `validate_cog` name a missing file in their errors, and
+    `validate_cog` a directory, which it reads as a file; the exception classes are unchanged."""
+    missing = str(tmp_path / "missing.tif")
+    directory = tmp_path / "directory.tif"
+    directory.mkdir()
+    cases = [
+        (terrio.open_raster, missing, terrio.NotFoundError),
+        (lambda path: terrio.open_raster(path, lazy=True), missing, terrio.NotFoundError),
+        (terrio.validate_cog, missing, terrio.NotFoundError),
+        (terrio.validate_cog, str(directory), terrio.TerrioIOError),
+    ]
+    for function, path, error in cases:
+        with pytest.raises(terrio.TerrioError) as e:
+            function(path)
+        assert type(e.value) is error and path in str(e.value), e.value
+
+
 def test_to_geopandas():
     gpd = pytest.importorskip("geopandas")
     layer = terrio.Layer.from_geojson(POLYGONS, name="squares")
