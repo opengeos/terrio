@@ -1,255 +1,215 @@
-"""Compare terrio's GRIB driver with GDAL's, band by band, on real GRIB files.
-
-For each GRIB file (``.grb``, ``.grb2``, ``.grib``, ``.grib2``, and GDAL's autotest files) of the
-directories given, opens it with GDAL (without ``.idx`` sidecars, ``USE_IDX=NO``) and with terrio
-(``terrio.open_raster``), and compares:
-
-- the size, band count, geotransform (within 1e-9 relative) and CRS (``osr.IsSame``);
-- each band's description and ``GRIB_*`` metadata items, exactly;
-- each band's nodata value;
-- each band's pixels: identical, or within one Float32 unit in the last place (GDAL decodes in
-  single precision on platforms whose compiler fuses multiplications and additions, as on macOS
-  arm64), else they differ.
-
-Prints a line per file, ``OK``, ``TOL``, ``DIFF`` or ``SKIP`` (neither GDAL nor terrio opens
-it), the file (as ``<directory name>/<path in it>``), and what differs; with ``--raw`` also with
-units left as stored (``GRIB_NORMALIZE_UNITS=NO``). Exits non-zero when a file differs.
+"""Compare terrio's GRIB1 and GRIB2 reads with GDAL's (rasterio) on real products.
 
 Usage:
-    python scripts/compare_grib_with_gdal.py DIR [DIR ...] [--raw] [--files NAME ...]
+    python scripts/compare_grib_with_gdal.py OUT_DIR URL[#REGEX] [URL[#REGEX] ...]
 
-Needs GDAL's Python bindings, NumPy and the terrio Python package.
+Each URL is a GRIB file (`file://` URLs too). With a REGEX, the file has a wgrib2 `.idx` index
+next to it (NOAA's GFS and HRRR buckets) and the messages whose index line matches REGEX are
+fetched by HTTP range requests and concatenated into a local subset file in OUT_DIR; without
+one, the whole file is fetched (and decompressed when it ends with `.gz`, as MRMS files do). For
+each file, prints the grid and data representation templates of its fields, then compares terrio
+with GDAL: band count, size,
+geotransform, CRS, and per band the pixels (count of differing pixels, max |d|), nodata, mask,
+description and GRIB metadata. Also reads the file through a local HTTP server (with range
+requests), as a URL. A file GDAL cannot open must be refused by terrio too. Exits non-zero on any
+difference. Needs rasterio and terrio.
 """
 
 from __future__ import annotations
 
-import argparse
-import math
-import os
+import functools
+import gzip
+import http.server
+import io
+import re
 import sys
+import threading
+import urllib.request
+from pathlib import Path
 
 import numpy as np
-from osgeo import gdal, osr
+import rasterio
+from rasterio.crs import CRS as RioCRS
 
-import terrio
+import terrio.rio as trio
 
-gdal.UseExceptions()
-gdal.PushErrorHandler("CPLQuietErrorHandler")
+TAGS = (
+    "GRIB_COMMENT",
+    "GRIB_DISCIPLINE",
+    "GRIB_ELEMENT",
+    "GRIB_FORECAST_SECONDS",
+    "GRIB_IDS",
+    "GRIB_PDS_PDTN",
+    "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES",
+    "GRIB_PDS_TEMPLATE_NUMBERS",
+    "GRIB_REF_TIME",
+    "GRIB_SHORT_NAME",
+    "GRIB_UNIT",
+    "GRIB_VALID_TIME",
+)
 
-EXTENSIONS = (".grb", ".grb2", ".grib", ".grib2", ".grib1", ".bin")
-# Files of GDAL's autotest that GDAL itself does not open (truncated on purpose).
-SKIP = {"blend.t17z.master.f001.co.grib2.head"}
+
+def fetch(url: str, start: int | None = None, end: int | None = None) -> bytes:
+    req = urllib.request.Request(url)
+    if start is not None:
+        req.add_header("Range", f"bytes={start}-{'' if end is None else end}")
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return r.read()
 
 
-def grib_files(dirs, names):
-    """The GRIB files of some directories.
-
-    Args:
-        dirs: The directories.
-        names: File names to keep, or None for all.
-
-    Returns:
-        ``(label, path)`` pairs, sorted: the label is the directory's name and the file's path in it.
-    """
-    out = []
-    for d in dirs:
-        if not os.path.isdir(d):
+def subset(url: str, pattern: str | None, out: Path) -> Path:
+    if pattern is None:
+        data = fetch(url)
+        if url.endswith(".gz"):
+            data = gzip.decompress(data)
+            out = out.with_suffix("")
+        out.write_bytes(data)
+        return out
+    lines = fetch(url + ".idx").decode().splitlines()
+    offsets = [int(line.split(":")[1]) for line in lines]
+    data = b""
+    for i, line in enumerate(lines):
+        if pattern and not re.search(pattern, line):
             continue
-        for name in sorted(os.listdir(d)):
-            path = os.path.join(d, name)
-            if not os.path.isfile(path) or name in SKIP or (names and name not in names):
-                continue
-            if name.lower().endswith(EXTENSIONS):
-                with open(path, "rb") as f:
-                    if b"GRIB" in f.read(300 + 16):
-                        out.append((os.path.join(os.path.basename(os.path.normpath(d)), name), path))
+        end = offsets[i + 1] - 1 if i + 1 < len(offsets) else None
+        data += fetch(url, offsets[i], end)
+    out.write_bytes(data)
     return out
 
 
-def terrio_bands(r):
-    """Per-band items of a terrio raster's metadata.
-
-    Args:
-        r: The ``terrio.Raster``.
-
-    Returns:
-        A ``(metadata, descriptions, nodata)`` tuple: dicts of ``GRIB_*`` items, descriptions and
-        nodata values, by band number.
-    """
-    meta, desc, nodata = {}, {}, {}
-    for k, v in r.metadata:
-        if k.startswith("TERRIO#BAND_"):
-            n, _, what = k[len("TERRIO#BAND_") :].partition("_")
-            if what == "DESCRIPTION":
-                desc[int(n)] = v
-            elif what == "NODATA":
-                nodata[int(n)] = float(v)
-        elif k.startswith("BAND_") and "#" in k:
-            band, item = k.split("#", 1)
-            meta.setdefault(int(band[5:]), {})[item] = v
-    return meta, desc, nodata
-
-
-def same_crs(a, b, gt, width, height):
-    """Whether two CRSs are the same, or put a raster's corners and center at the same places.
-
-    Rotated grids are a derived geographic CRS in GDAL (its GRIB convention) and a PROJ
-    ``ob_tran`` one in terrio: equivalent, but not the same definition.
-
-    Args:
-        a: A CRS.
-        b: The other CRS.
-        gt: The raster's geotransform.
-        width: Its width.
-        height: Its height.
-
-    Returns:
-        Whether the CRSs are the same.
-    """
-    if a.IsSame(b, ["IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES", "CRITERION=EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS"]):
-        return True
-    wgs84 = osr.SpatialReference()
-    wgs84.ImportFromEPSG(4326)
-    wgs84.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-    for s in (a, b):
-        s.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-    try:
-        ta, tb = osr.CoordinateTransformation(a, wgs84), osr.CoordinateTransformation(b, wgs84)
-        for px, py in ((0.5, 0.5), (width - 0.5, 0.5), (0.5, height - 0.5), (width - 0.5, height - 0.5), (width / 2, height / 2)):
-            x, y = gt[0] + px * gt[1] + py * gt[2], gt[3] + px * gt[4] + py * gt[5]
-            pa, pb = ta.TransformPoint(x, y), tb.TransformPoint(x, y)
-            if any(not math.isclose(u, v, abs_tol=1e-9) for u, v in zip(pa[:2], pb[:2])):
-                return False
-    except RuntimeError:
-        return False
-    return True
-
-
-def ulps(a, b):
-    """The largest distance between two arrays in Float32 units in the last place.
-
-    Args:
-        a: An array.
-        b: An array of the same shape.
-
-    Returns:
-        The largest difference, in multiples of the spacing of Float32 numbers at the larger of
-        the two values, over the points where both are finite.
-    """
-    ok = np.isfinite(a) & np.isfinite(b)
-    if not ok.any():
-        return 0.0
-    d = np.abs(a[ok] - b[ok])
-    spacing = np.spacing(np.maximum(np.abs(a[ok]), np.abs(b[ok])).astype(np.float32)).astype(np.float64)
-    return float(np.max(d / spacing))
-
-
-def compare(path):
-    """Compares a file.
-
-    Args:
-        path: The file.
-
-    Returns:
-        A ``(status, details)`` pair: ``OK``, ``TOL`` or ``DIFF``, and what differs.
-    """
-    try:
-        g = gdal.OpenEx(path, gdal.OF_RASTER, open_options=["USE_IDX=NO"])
-    except RuntimeError as e:
-        g = None
-        gdal_error = str(e)
-    try:
-        t = terrio.open_raster(path, lazy=True)
-    except Exception as e:  # noqa: BLE001 (any terrio error is a difference)
-        if g is None:
-            return "SKIP", "neither GDAL nor terrio opens it"
-        return "DIFF", f"terrio cannot open it: {e}"
-    if g is None:
-        return "DIFF", f"GDAL cannot open it ({gdal_error}), terrio does"
-    diffs = []
-    if (g.RasterXSize, g.RasterYSize, g.RasterCount) != (t.width, t.height, t.count):
-        return "DIFF", f"size {t.width}x{t.height}x{t.count} vs GDAL's {g.RasterXSize}x{g.RasterYSize}x{g.RasterCount}"
-    gt, tt = g.GetGeoTransform(), t.transform
-    if any(not math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-9) for a, b in zip(tt, gt)):
-        diffs.append(f"geotransform {tt} vs {gt}")
-    gs = g.GetSpatialRef()
-    if gs is None and t.crs_wkt:
-        diffs.append("a CRS GDAL does not give")
-    elif gs is not None:
-        if not t.crs_wkt:
-            diffs.append("no CRS")
-        else:
-            ts = osr.SpatialReference()
-            ts.ImportFromWkt(t.crs_wkt)
-            if not same_crs(ts, gs, gt, g.RasterXSize, g.RasterYSize):
-                diffs.append(f"CRS {ts.ExportToProj4()} vs {gs.ExportToProj4()}")
-    meta, desc, nodata = terrio_bands(t)
-    worst = 0.0
-    for b in range(1, g.RasterCount + 1):
-        gb = g.GetRasterBand(b)
-        gnd = gb.GetNoDataValue()
-        gmeta = gb.GetMetadata()
-        if gb.GetDescription() != desc.get(b, ""):
-            diffs.append(f"band {b} description {desc.get(b)!r} vs {gb.GetDescription()!r}")
-        if meta.get(b, {}) != gmeta:
-            keys = sorted(set(meta.get(b, {})) | set(gmeta))
-            bad = [k for k in keys if meta.get(b, {}).get(k) != gmeta.get(k)]
-            diffs.append(f"band {b} metadata {bad[0]}: {meta.get(b, {}).get(bad[0])!r} vs {gmeta.get(bad[0])!r}")
-        tnd = nodata.get(b)
-        if not (tnd == gnd or (tnd is not None and gnd is not None and math.isnan(tnd) and math.isnan(gnd))):
-            diffs.append(f"band {b} nodata {tnd} vs {gnd}")
-        try:
-            ga = gb.ReadAsArray().astype(np.float64)
-        except RuntimeError:
-            ga = None
-        try:
-            ta = np.asarray(t.read(b), dtype=np.float64)
-        except Exception:  # noqa: BLE001 (any terrio error is a difference, unless GDAL fails too)
-            ta = None
-        if ga is None or ta is None:
-            if (ga is None) != (ta is None):
-                diffs.append(f"band {b}: {'GDAL' if ga is None else 'terrio'} cannot read it")
+def templates(path: Path) -> list[tuple]:
+    """`(grid, product, data representation)` template numbers of each GRIB2 field, and
+    `("GRIB1", "-", "-")` for each GRIB1 message; a message cut short ends the list."""
+    b = path.read_bytes()
+    out, pos = [], 0
+    while (i := b.find(b"GRIB", pos)) >= 0 and i + 16 <= len(b):
+        if b[i + 7] == 1:
+            out.append(("GRIB1", "-", "-"))
+            pos = i + max(int.from_bytes(b[i + 4 : i + 7], "big"), 8)
             continue
-        same = np.array_equal(ga, ta, equal_nan=True)
-        if not same:
-            # Non-finite values (NaN, infinities) must be the same, at the same pixels.
-            odd = ~np.isfinite(ga) | ~np.isfinite(ta)
-            if not np.array_equal(ga[odd], ta[odd], equal_nan=True):
-                diffs.append(f"band {b}: non-finite values at other pixels")
-                continue
-            u = ulps(ga, ta)
-            worst = max(worst, u)
-            if u > 1.0:
-                diffs.append(f"band {b}: pixels differ by up to {u:.3g} Float32 ulps")
-    if diffs:
-        more = f" (and {len(diffs) - 3} more)" if len(diffs) > 3 else ""
-        return "DIFF", "; ".join(diffs[:3]) + more
-    if worst > 0:
-        return "TOL", f"{g.RasterCount} bands, pixels within {worst:.2g} Float32 ulp"
-    return "OK", f"{g.RasterCount} bands"
+        if b[i + 7] != 2:
+            pos = i + 4
+            continue
+        total = int.from_bytes(b[i + 8 : i + 16], "big")
+        p, g, prod = i + 16, None, None
+        while p + 5 <= len(b) and b[p : p + 4] != b"7777":
+            length, num = int.from_bytes(b[p : p + 4], "big"), b[p + 4]
+            if length < 5:
+                break
+            if num == 3:
+                g = int.from_bytes(b[p + 12 : p + 14], "big")
+            elif num == 4:
+                prod = int.from_bytes(b[p + 7 : p + 9], "big")
+            elif num == 5:
+                out.append((g, prod, int.from_bytes(b[p + 9 : p + 11], "big")))
+            p += length
+        pos = i + max(total, 16)
+    return out
 
 
-def main():
-    """Compares the files and prints the results."""
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("dirs", nargs="+", help="directories of GRIB files")
-    ap.add_argument("--raw", action="store_true", help="also compare with units as stored (GRIB_NORMALIZE_UNITS=NO)")
-    ap.add_argument("--files", nargs="*", help="only these file names")
-    args = ap.parse_args()
-    files = grib_files(args.dirs, set(args.files or []))
-    if not files:
-        print("no GRIB file found", file=sys.stderr)
-        return 2
-    modes = [("YES", "")] + ([("NO", " (units as stored)")] if args.raw else [])
-    failed = False
-    for value, label in modes:
-        os.environ["GRIB_NORMALIZE_UNITS"] = value
-        gdal.SetConfigOption("GRIB_NORMALIZE_UNITS", value)
-        for name, path in files:
-            status, details = compare(path)
-            failed |= status == "DIFF"
-            print(f"{status:4} {name}{label}: {details}", flush=True)
-    return 1 if failed else 0
+def compare(path: str, url: str | None = None) -> int:
+    try:
+        rasterio.open(path).close()
+    except rasterio.errors.RasterioIOError as e:
+        # GDAL refuses the file: terrio must refuse it too.
+        try:
+            trio.open(url or path).close()
+        except Exception:  # noqa: BLE001 - any refusal will do
+            print(f"  both refuse ({str(e)[:100]})")
+            return 0
+        print(f"  terrio opens a file GDAL refuses ({str(e)[:100]})")
+        return 1
+    problems = 0
+    with rasterio.open(path) as g, trio.open(url or path) as t:
+        print(f"  {g.count} bands, {g.width} x {g.height}, terrio driver {t.driver}")
+        if (t.count, t.width, t.height) != (g.count, g.width, g.height):
+            print(f"  SIZE differs: terrio {(t.count, t.width, t.height)}")
+            return 1
+        gt, tt = np.array(g.transform.to_gdal()), np.array(t.transform.to_gdal())
+        rel = np.max(np.abs(tt - gt) / np.maximum(np.abs(gt), 1e-300))
+        print(f"  geotransform GDAL {list(gt)}; max relative difference {rel:.3g}")
+        problems += not np.allclose(tt, gt, rtol=1e-9, atol=1e-12)
+        same_crs = (g.crs is None and t.crs is None) or (
+            g.crs is not None and t.crs is not None and RioCRS.from_wkt(t.crs.to_wkt()) == g.crs
+        )
+        print(f"  CRS equivalent: {same_crs} (GDAL EPSG {g.crs.to_epsg() if g.crs else None})")
+        problems += not same_crs
+        for b in g.indexes:
+            a, o = g.read(b), t.read(b)
+            same = np.array_equal(a, o, equal_nan=True)
+            diff = np.abs(a - o)
+            mask_same = np.array_equal(g.read_masks(b), t.read_masks(b))
+            gtags = {k: v for k, v in g.tags(b).items() if k in TAGS}
+            ttags = {k: v for k, v in t.tags(b).items() if k in TAGS}
+            tag_diff = {k: (gtags.get(k), ttags.get(k)) for k in set(gtags) | set(ttags) if gtags.get(k) != ttags.get(k)}
+            nd_same = g.nodatavals[b - 1] == t.nodatavals[b - 1]
+            desc_same = g.descriptions[b - 1] == t.descriptions[b - 1]
+            ok = same and mask_same and not tag_diff and nd_same and desc_same
+            problems += not ok
+            print(
+                f"  band {b:3d} {gtags.get('GRIB_ELEMENT', '?'):>8} {gtags.get('GRIB_SHORT_NAME', ''):<22}"
+                f" pixels {'identical' if same else f'{np.count_nonzero(diff)} differ, max |d| {np.nanmax(diff):.6g}'}"
+                f", nodata {g.nodatavals[b - 1]} {'=' if nd_same else '!= ' + str(t.nodatavals[b - 1])}"
+                f", masked {np.count_nonzero(g.read_masks(b) == 0)} {'=' if mask_same else '!='}"
+                + ("" if desc_same else f", description {g.descriptions[b - 1]!r} != {t.descriptions[b - 1]!r}")
+                + ("" if not tag_diff else f", tags differ {tag_diff}")
+            )
+    return problems
+
+
+class RangeHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves files with single range requests (`bytes=a-b`), as object stores do."""
+
+    def send_head(self):
+        rng = self.headers.get("Range", "")
+        m = re.fullmatch(r"bytes=(\d+)-(\d*)", rng.strip())
+        path = Path(self.translate_path(self.path))
+        if not m or not path.is_file():
+            return super().send_head()
+        data = path.read_bytes()
+        a, b = int(m[1]), min(int(m[2]) if m[2] else len(data) - 1, len(data) - 1)
+        body = data[a : b + 1]
+        self.send_response(206)
+        self.send_header("Content-Range", f"bytes {a}-{b}/{len(data)}")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.end_headers()
+        return io.BytesIO(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def serve(directory: Path) -> tuple[http.server.HTTPServer, int]:
+    handler = functools.partial(RangeHandler, directory=str(directory))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, server.server_address[1]
+
+
+def main() -> int:
+    out = Path(sys.argv[1])
+    out.mkdir(parents=True, exist_ok=True)
+    problems = 0
+    server, port = serve(out)
+    try:
+        for k, arg in enumerate(sys.argv[2:]):
+            url, _, pattern = arg.partition("#")
+            path = subset(url, pattern or None, out / f"subset{k}_{Path(url).name}")
+            counts: dict[tuple, int] = {}
+            for tpl in templates(path):
+                counts[tpl] = counts.get(tpl, 0) + 1
+            print(f"{url} ({pattern or 'all'}): {path.stat().st_size} bytes")
+            listed = sorted(counts.items(), key=lambda kv: tuple(str(v) for v in kv[0]))
+            print("  templates (3.grid, 4.product, 5.packing): " + ", ".join(f"3.{g}/4.{p}/5.{d} x{n}" for (g, p, d), n in listed))
+            problems += compare(str(path))
+            local_url = f"http://127.0.0.1:{port}/{path.name}"
+            print(f"  read as a URL ({local_url}):")
+            problems += compare(str(path), local_url)
+    finally:
+        server.shutdown()
+    print(f"{problems} problem(s)")
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 //! Native and in-memory footprint indexes. Geometry/validation/serialization live in terrio.
 use crate::raster::PyRaster;
 use crate::vector::{PyLayer, PyVectorDataset};
-use crate::{PyResultExt, invalid};
+use crate::{Detach, PyResultExt, invalid};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use serde::Deserialize;
@@ -180,14 +180,14 @@ impl PyDatasetIndex {
     #[pyo3(signature=(filename="index.gpkg", *, format=None))]
     fn to_bytes<'py>(&self, py: Python<'py>, filename: &str, format: Option<&str>) -> PyResult<Bound<'py, PyBytes>> {
         let options = write_options(format)?;
-        let bytes = py.detach(|| self.inner.to_bytes(filename, &options)).py()?;
+        let bytes = py.detach_result(|| self.inner.to_bytes(filename, &options)).py()?;
         Ok(PyBytes::new(py, &bytes))
     }
     /// Write an index. Overwrite applies to single-file datasets; multi-file formats need a new basename.
     #[pyo3(signature=(path, *, format=None, overwrite=false))]
     fn write(&self, py: Python<'_>, path: &str, format: Option<&str>, overwrite: bool) -> PyResult<()> {
         let options = write_options(format)?;
-        py.detach(|| self.inner.write(path, &options, overwrite)).py()
+        py.detach_result(|| self.inner.write(path, &options, overwrite)).py()
     }
 }
 fn paths(sources: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
@@ -198,7 +198,7 @@ fn paths(sources: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
 fn finish(py: Python<'_>, index: ti::DatasetIndex, dst: Option<&str>, args: &Args) -> PyResult<PyDatasetIndex> {
     if let Some(dst) = dst {
         let options = write_options(args.format.as_deref())?;
-        py.detach(|| index.write(dst, &options, args.overwrite)).py()?;
+        py.detach_result(|| index.write(dst, &options, args.overwrite)).py()?;
     } else if args.format.is_some() || args.overwrite {
         return Err(invalid("format/overwrite require dst; otherwise use DatasetIndex.write/to_bytes"));
     }

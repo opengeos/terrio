@@ -5,11 +5,14 @@
 
 """`Env`: a context for configuration options and credentials.
 
-terrio reads its network settings and cloud credentials from environment variables named as
-GDAL's configuration options (`AWS_ACCESS_KEY_ID`, `AWS_NO_SIGN_REQUEST`, `GDAL_HTTP_TIMEOUT`,
-`CPL_VSIL_CURL_CHUNK_SIZE`...). `Env` sets the options it is given as environment variables while
-it is active, and restores them afterwards. Options terrio has no use for (such as
-`GDAL_DISABLE_READDIR_ON_OPEN` or `GDAL_CACHEMAX`) are accepted and have no effect.
+terrio reads its network settings and cloud credentials from options named as GDAL's
+configuration options (`AWS_ACCESS_KEY_ID`, `AWS_NO_SIGN_REQUEST`, `GDAL_HTTP_TIMEOUT`,
+`GDAL_HTTP_HEADERS`, `AZURE_STORAGE_ACCESS_TOKEN`, `CPL_VSIL_CURL_CHUNK_SIZE`...): the options set
+for the calling thread, else the environment variables of the same names. `Env` sets the options it
+is given for the calling thread only while it is active, as rasterio's `Env` sets GDAL's
+thread-local configuration options: another thread does not see them, so two threads can read
+with different credentials. Options terrio has no use for (such as `GDAL_CACHEMAX`) are accepted
+and have no effect.
 """
 
 from __future__ import annotations
@@ -72,7 +75,6 @@ class Env:
             session = Session.from_foreign_session(session)
         self.session: Session = session or DummySession()
         self.options = {k: v for k, v in options.items()}
-        self._saved: dict[str, str | None] = {}
 
     @classmethod
     def from_defaults(cls, *args: Any, **kwargs: Any) -> Env:
@@ -118,34 +120,39 @@ class Env:
 
         return {d["name"]: d.get("long_name", d["name"]) for d in _terrio.drivers()}
 
+    def _scope(self) -> dict[str, str | None]:
+        """The options as the calling thread's configuration scope.
+
+        Returns:
+            dict: Option names and text values.
+        """
+        return {k: None if v is None else self._value(v) for k, v in self.options.items()}
+
     def __enter__(self) -> Env:
-        """Activates the options.
+        """Activates the options for the calling thread.
 
         Returns:
             Env: The environment.
         """
+        from terrio import _terrio
+
         self.credentialize()
-        for k, v in self.options.items():
-            self._saved[k] = os.environ.get(k)
-            os.environ[k] = self._value(v)
+        _terrio.config_push(self._scope())
         _stack().append(self)
         return self
 
     def __exit__(self, *args: object) -> None:
-        """Restores the previous environment.
+        """Deactivates the options.
 
         Args:
             *args: Exception details.
         """
+        from terrio import _terrio
+
         stack = _stack()
         if stack and stack[-1] is self:
             stack.pop()
-        for k, v in self._saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        self._saved = {}
+            _terrio.config_pop()
 
 
 def getenv() -> dict[str, Any]:
@@ -180,12 +187,17 @@ def setenv(**options: Any) -> None:
     Args:
         **options: GDAL configuration options.
     """
+    from terrio import _terrio
+
     stack = _stack()
+    if stack:
+        # Replace the innermost scope with one holding the new options too.
+        env = stack[-1]
+        env.options.update(options)
+        _terrio.config_pop()
+        _terrio.config_push(env._scope())
+        return
     for k, v in options.items():
-        if stack:
-            env = stack[-1]
-            env._saved.setdefault(k, os.environ.get(k))
-            env.options[k] = v
         os.environ[k] = Env._value(v)
 
 

@@ -324,6 +324,67 @@ mod tests {
         assert_eq!((0..4).map(|i| out.raster.data.get_f64(i)).collect::<Vec<_>>(), vec![30., 80., 170., 255.]);
     }
 
+    /// A paletted Byte band's color table is carried by GeoTIFF and COG writes as GDAL 3.12.1's
+    /// `CreateCopy` carries it: whole, by window (lazy) and in memory, and by the row writer.
+    #[test]
+    fn palette_writes_inherit_as_gdal_3_12_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.tif");
+        let input = input.to_str().unwrap();
+        let source = super::super::build_raster(
+            super::super::Grid { width: 4, height: 6, geo_transform: [10., 1., 0., 20., 0., -1.] },
+            vec![(0..24).map(|i| (i % 2) as f64).collect()],
+            DataType::U8,
+            None,
+            &crate::crs::SpatialRef::default(),
+            super::super::convert_value,
+        )
+        .unwrap();
+        let palette = vec![[0, 0, 0, 255], [30, 80, 170, 255]];
+        crate::write_raster_dataset(&source, input, &crate::RasterWriteOptions { color_table: palette.clone(), ..Default::default() })
+            .unwrap();
+        let source = crate::open_raster(input).unwrap();
+        for (case, (options, written)) in [
+            ("plain", (crate::RasterWriteOptions::default(), true)),
+            ("cog", (crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), ..Default::default() }, true)),
+            (
+                "palette",
+                (
+                    crate::RasterWriteOptions { creation_options: vec![("PHOTOMETRIC".into(), "PALETTE".into())], ..Default::default() },
+                    true,
+                ),
+            ),
+        ] {
+            for lazy in [false, true] {
+                let file = dir.path().join(format!("{case}-{lazy}.tif"));
+                let path = file.to_str().unwrap();
+                let result = if lazy {
+                    crate::open_raster_lazy(input).unwrap().write(path, &options)
+                } else {
+                    crate::write_raster_dataset(&source, path, &options)
+                };
+                assert_eq!(result.is_ok(), written, "{case}, lazy={lazy}");
+                if written {
+                    let header = crate::open_raster_lazy(path).unwrap().header();
+                    assert_eq!(&header.color_table[..2], &palette[..], "{case}, lazy={lazy}");
+                    assert_eq!(header.band_color_interp(1), "Palette", "{case}, lazy={lazy}");
+                }
+            }
+            let driver = options.driver.unwrap_or(crate::formats::RasterDriver::GTiff);
+            let encoded = crate::memory::codec::write_raster(&source, driver, &options, "palette");
+            assert_eq!(encoded.is_ok(), written, "memory {case}");
+            if let Ok(encoded) = encoded {
+                let header = crate::LazyRaster::from_tiff_bytes(encoded).unwrap().unwrap().header();
+                assert_eq!(&header.color_table[..2], &palette[..], "memory {case}");
+            }
+        }
+        let file = dir.path().join("rows.tif");
+        let mut writer = crate::GeoTiffWriter::create(file.to_str().unwrap(), &source, &Default::default()).unwrap();
+        writer.write_rows(&source.raster.data, 6, None).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(&crate::open_raster_lazy(file.to_str().unwrap()).unwrap().header().color_table[..2], &palette);
+    }
+
     #[test]
     fn palette_writes_inherit_consistently_and_allow_grayscale_jpeg() {
         let dir = tempfile::tempdir().unwrap();

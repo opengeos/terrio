@@ -99,14 +99,20 @@ pub(crate) fn decode_name(bytes: &[u8], utf8: bool) -> String {
 
 /// The entries of the central directory.
 pub(crate) fn central_directory(r: &mut dyn ReadSeek) -> Result<Vec<CdEntry>> {
-    Ok(read_directory(r, false)?.0)
+    Ok(read_directory(r, None, false)?.0)
+}
+
+/// The entries of the central directory, within the archive limits of a raster open: the entries
+/// its end record declares and the directory's size are checked before the directory is read.
+pub(crate) fn central_directory_within(r: &mut dyn ReadSeek, limits: &crate::vfs::ZipLimits) -> Result<Vec<CdEntry>> {
+    Ok(read_directory(r, Some(limits), false)?.0)
 }
 
 /// The entries of the central directory, and its offset.
 pub(crate) fn central_directory_at(r: &mut dyn ReadSeek) -> Result<(Vec<CdEntry>, u64, Vec<u8>)> {
-    read_directory(r, true)
+    read_directory(r, None, true)
 }
-fn read_directory(r: &mut dyn ReadSeek, details: bool) -> Result<(Vec<CdEntry>, u64, Vec<u8>)> {
+fn read_directory(r: &mut dyn ReadSeek, limits: Option<&crate::vfs::ZipLimits>, details: bool) -> Result<(Vec<CdEntry>, u64, Vec<u8>)> {
     let len = r.seek(SeekFrom::End(0))?;
     if len < 22 {
         return Err(invalid("too short"));
@@ -148,6 +154,12 @@ fn read_directory(r: &mut dyn ReadSeek, details: bool) -> Result<(Vec<CdEntry>, 
     }
     if cd_offset.checked_add(cd_size).is_none_or(|end| end > len) {
         return Err(invalid("central directory out of bounds"));
+    }
+    if let Some(limits) = limits {
+        limits.check_entries("zip", count)?;
+        if cd_size > crate::vfs::MAX_DIRECTORY_BYTES {
+            return Err(Error::InvalidData(format!("zip: a central directory of {cd_size} bytes in an archive of {len}")));
+        }
     }
     r.seek(SeekFrom::Start(cd_offset))?;
     // Do not allocate the advertised directory size or entry count. Both can be
@@ -200,7 +212,9 @@ fn read_directory(r: &mut dyn ReadSeek, details: bool) -> Result<(Vec<CdEntry>, 
         if size as u64 > remaining {
             return Err(invalid("truncated central directory"));
         }
-        let mut fields = vec![0; size];
+        let mut fields = Vec::new();
+        fields.try_reserve_exact(size).map_err(|_| invalid("cannot allocate a central directory record"))?;
+        fields.resize(size, 0);
         cd.read_exact(&mut fields)?;
         remaining -= size as u64;
         let name = decode_name(&fields[..name_len], flags & 0x800 != 0);

@@ -1906,33 +1906,50 @@ def suite_grib(ctx):
         "grib",
         "GRIB",
         "GDAL's GRIB driver (degrib and g2clib)",
-        "GDAL's GRIB test files, ecCodes' and real forecasts (NOAA's GFS and HRRR, ECMWF's open data): "
-        "sizes, geotransforms (1e-9 relative) and CRSs, every band's description, `GRIB_*` metadata "
-        "and nodata value exactly, and its pixels (identical, or within one Float32 unit in the last "
-        "place), with units normalized (GDAL's default) and as stored.",
+        "GRIB1 and GRIB2 files band by band: sizes, geotransforms, CRSs, every band's description, "
+        "`GRIB_*` metadata, nodata value, mask and pixels.",
     )
-    dirs = [os.path.abspath(os.path.join(ctx.data, "grib", d)) for d in ("real", "gdal", "eccodes")]
-    dirs = [d for d in dirs if os.path.isdir(d)]
-    if not dirs:
-        s.skipped = "no GRIB data (scripts/fetch_test_data.sh)"
-        return s
-    missing = missing_modules("numpy", "osgeo", "terrio")
+    missing = missing_modules("terrio", "rasterio")
     if missing:
-        s.skipped = f"needs {', '.join(missing)}"
+        s.skipped = "needs the Python modules " + ", ".join(missing)
         return s
-    code, out, err = run([sys.executable, str(SCRIPTS / "compare_grib_with_gdal.py"), *dirs, "--raw"])
-    # Exit code 1 means a file differs; anything else, or a traceback, that the script failed.
-    if code not in (0, 1) or "Traceback" in err:
-        s.error = tail(err or out)
-    for line in out.splitlines():
-        # Files neither tool opens (SKIP) are not cases.
-        m = re.match(r"^(OK|TOL|DIFF)\s+(\S+?)/(\S+?)( \(units as stored\))?: (.*)$", line)
-        if m:
-            status = {"OK": IDENTICAL, "TOL": TOLERANCE}.get(m[1], DIFFERS)
-            group = {"real": "real forecasts", "gdal": "GDAL's test files", "eccodes": "ecCodes' test files"}.get(m[2], m[2])
-            s.cases.append(Case(group, m[3] + (m[4] or ""), status, "" if status == IDENTICAL else m[5]))
+    # The repository's GRIB fixtures and the GRIB files of the test data, one case each:
+    # compare_grib_with_gdal.py reads a file locally and as a URL (by range), and counts the
+    # problems it finds; a file GDAL refuses must be refused by terrio too.
+    exts = (".grib2", ".grb2", ".grib", ".grb")
+
+    def head(path):
+        with open(path, "rb") as f:
+            return f.read(4096)
+
+    def is_grib(path):
+        # By extension, or a .bin file that starts a GRIB message (after a bulletin header).
+        b = head(path) if path.suffix.lower() == ".bin" else b""
+        return path.suffix.lower() in exts or any(b[i : i + 4] == b"GRIB" and b[i + 7] in (1, 2) for i in range(len(b) - 7))
+
+    fixtures = ROOT / "crates" / "terrio" / "tests" / "data" / "grib"
+    files = sorted(p for p in fixtures.iterdir() if p.is_file() and (is_grib(p) or p.suffix == ".begin"))
+    data = Path(ctx.data)
+    if data.is_dir():
+        files += sorted(p for p in data.rglob("*") if p.is_file() and is_grib(p))
+    with tempfile.TemporaryDirectory() as out:
+        for path in files:
+            first = head(path)
+            at = first.find(b"GRIB")
+            group = {1: "GRIB1", 2: "GRIB2"}.get(first[at + 7] if 0 <= at < len(first) - 7 else 0, "GRIB")
+            code, text, err = run(
+                [sys.executable, str(SCRIPTS / "compare_grib_with_gdal.py"), out, path.resolve().as_uri()],
+                timeout=1800,
+            )
+            m = re.search(r"^(\d+) problem\(s\)$", text, re.MULTILINE)
+            if code == 0 and m and m[1] == "0":
+                refused = "both refuse" in text
+                s.cases.append(Case(group, path.name, IDENTICAL, "both refuse" if refused else ""))
+                continue
+            bad = [line.strip() for line in text.splitlines() if re.search(r"differ|!=|SIZE|False|GDAL refuses", line)]
+            s.cases.append(Case(group, path.name, DIFFERS, "; ".join(bad[:3]) or tail(err or text, 3)))
     if not s.cases:
-        s.error = tail(err or out)
+        s.error = "no GRIB file found"
     return s
 
 
@@ -2492,7 +2509,7 @@ def main():
 
     def go(name):
         start = datetime.datetime.now()
-        if gdal_missing and name not in ("pointclouds", "crs", "vsi", "hecras"):
+        if gdal_missing and name not in ("pointclouds", "crs", "grib", "vsi", "hecras"):
             fn = SUITES[name]
             s = Suite(name, name, "", fn.__doc__ or "")
             s.skipped = "needs the Python modules " + ", ".join(gdal_missing)

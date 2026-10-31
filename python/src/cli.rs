@@ -1,5 +1,6 @@
 //! The `terrio` command line, for the Python package's `terrio` command (`terrio.__main__`).
 
+use crate::Detach;
 use pyo3::prelude::*;
 use std::ffi::OsString;
 
@@ -8,8 +9,8 @@ use std::ffi::OsString;
 /// runs its tools with.
 #[pyfunction]
 #[pyo3(signature = (args, terrio = None))]
-fn cli_main(py: Python<'_>, args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32 {
-    py.detach(|| terrio_cli::run_as(args, terrio))
+fn cli_main(py: Python<'_>, args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> PyResult<i32> {
+    py.detach_value(|| terrio_cli::run_as(args, terrio))
 }
 
 /// Registers the functions in the module.

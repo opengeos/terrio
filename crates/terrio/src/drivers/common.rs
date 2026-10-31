@@ -155,6 +155,9 @@ struct RawWindow {
 /// without holding its file in memory.
 const RAW_READ_BYTES: usize = 16 << 20;
 
+/// What the buffer of a raw raster's samples is called in an allocation's refusal.
+const RAW_SAMPLES: &str = "a raw raster's samples";
+
 #[cfg(test)]
 thread_local! {
     /// The bytes of raw data files read by this thread, for tests.
@@ -219,7 +222,13 @@ impl RawWindow {
     fn read_window(&self, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
         let l = &self.layout;
         let size = l.data_type.size_bytes();
-        let n = window.width * window.height * bands.len();
+        // The samples' buffer, sized from the file's header: checked against the memory the
+        // process can use, then allocated fallibly (an error rather than an abort).
+        let n = crate::dataset::fallible::len(&[window.width, window.height, bands.len()], RAW_SAMPLES)?;
+        crate::dataset::fallible::check_usable(n.checked_mul(size), || {
+            format!("{RAW_SAMPLES} ({} x {} x {})", window.width, window.height, bands.len())
+        })
+        .map_err(|message| Error::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, message)))?;
         // The samples of a row of the window are `stride` samples apart in the file.
         let stride = if l.interleave == Interleave::Bip { l.bands } else { 1 };
         let span = if window.width == 0 { 0 } else { ((window.width - 1) * stride + 1) * size };
@@ -237,7 +246,7 @@ impl RawWindow {
         rows.sort_unstable();
         macro_rules! go {
             ($t:ty, $v:ident) => {{
-                let mut out: Vec<$t> = vec![Default::default(); n];
+                let mut out: Vec<$t> = crate::dataset::fallible::filled(n, <$t>::default(), RAW_SAMPLES)?;
                 if span > 0 {
                     self.for_each_row(&rows, span, |bytes, at| {
                         for (k, v) in out[at..at + window.width].iter_mut().enumerate() {
@@ -282,7 +291,17 @@ impl RawWindow {
             if k >= fetched {
                 fetched = self.prefetch(&runs[k..])? + k;
             }
-            buf.resize((end - start) as usize, 0);
+            // A run is at most `RAW_READ_BYTES`, or one row (as long as the header says): a row
+            // longer than the memory the process can use is refused, and the buffer allocated
+            // fallibly.
+            let len = usize::try_from(end - start).ok();
+            let len = crate::dataset::fallible::check_usable(len, || "a raw raster's row".to_string())
+                .map_err(|message| Error::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, message)))?;
+            if len > buf.capacity() {
+                buf.clear();
+                crate::dataset::fallible::reserve(&mut buf, len, "a raw raster's rows")?;
+            }
+            buf.resize(len, 0);
             reader.seek(SeekFrom::Start(start))?;
             reader.read_exact(&mut buf)?;
             #[cfg(test)]
@@ -641,6 +660,9 @@ pub(crate) struct Pam {
 
 /// Reads the `.aux.xml` sidecar of a dataset, if there is one.
 pub(crate) fn read_pam(path: &Path) -> Option<Pam> {
+    if crate::config::sidecars_disabled() {
+        return None;
+    }
     let mut aux = path.as_os_str().to_owned();
     aux.push(".aux.xml");
     Some(parse_pam(&String::from_utf8(crate::memfs::read(std::path::Path::new(&aux)).ok()?).ok()?))
@@ -882,6 +904,139 @@ mod tests {
                 assert_eq!(back, data);
             }
         }
+    }
+
+    /// The samples of a raw raster are allocated fallibly, after a check against the memory the
+    /// process can use: a header whose grid holds more (a 64 GiB sparse data file here) is refused
+    /// with an error naming the buffer, where an infallible allocation ends the process.
+    #[test]
+    fn raw_samples_larger_than_the_usable_memory_are_refused() {
+        let (cols, rows) = (1usize << 18, 1usize << 18);
+        let usable = crate::dataset::fallible::usable_memory().unwrap_or(u64::MAX);
+        if (cols * rows) as u64 <= usable {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sparse.bin");
+        std::fs::File::create(&path).unwrap().set_len((cols * rows) as u64).unwrap();
+        let l = Layout {
+            cols,
+            rows,
+            bands: 1,
+            data_type: DataType::U8,
+            little_endian: true,
+            interleave: Interleave::Bsq,
+            offset: 0,
+            bottom_up: false,
+        };
+        let header = raster_header(cols, rows, 1, DataType::U8, [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], CrsInfo::default(), None).unwrap();
+        let raw = RawRaster::open(RasterDataset::with_driver(header, crate::formats::RasterDriver::EHdr, false), &path, l, &[]).unwrap();
+        let err = raw.read().map(|_| ()).unwrap_err().to_string();
+        assert!(err.contains("a raw raster's samples (262144 x 262144 x 1)") && err.contains("of memory the process can use"), "{err}");
+    }
+
+    /// Sets this process's soft limit `resource` to `bytes`, its hard limit kept (a process may not
+    /// raise a finite hard limit).
+    #[cfg(target_os = "linux")]
+    fn set_soft_limit(resource: libc::__rlimit_resource_t, bytes: u64) {
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: `limit` is a valid rlimit, written by the first call and read by the second.
+        assert_eq!(unsafe { libc::getrlimit(resource, &mut limit) }, 0);
+        limit.rlim_cur = bytes;
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { libc::setrlimit(resource, &limit) },
+            0,
+            "a soft limit of {bytes} bytes under a hard limit of {}",
+            limit.rlim_max
+        );
+    }
+
+    /// The address space this process has mapped (`VmSize`).
+    #[cfg(target_os = "linux")]
+    fn mapped_bytes() -> u64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let kb =
+            status.lines().find_map(|l| l.strip_prefix("VmSize:")).and_then(|v| v.trim().strip_suffix("kB")?.trim().parse::<u64>().ok());
+        kb.unwrap() * 1024
+    }
+
+    /// A raw raster of `cols` x `rows` x `bands` bytes in `interleave`, its data file at `path` sparse
+    /// but for the bytes `set` (offset, value).
+    #[cfg(target_os = "linux")]
+    fn sparse_raw(path: &Path, (cols, rows, bands): (usize, usize, usize), interleave: Interleave, set: &[(u64, u8)]) -> RawRaster {
+        use std::os::unix::fs::FileExt;
+        let file = std::fs::File::create(path).unwrap();
+        file.set_len((cols * rows * bands) as u64).unwrap();
+        for &(offset, value) in set {
+            file.write_all_at(&[value], offset).unwrap();
+        }
+        let l = Layout { cols, rows, bands, data_type: DataType::U8, little_endian: true, interleave, offset: 0, bottom_up: false };
+        let header = raster_header(cols, rows, bands, DataType::U8, [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], CrsInfo::default(), None).unwrap();
+        RawRaster::open(RasterDataset::with_driver(header, crate::formats::RasterDriver::EHdr, false), path, l, &[]).unwrap()
+    }
+
+    /// The samples' buffer of a raw raster is allocated fallibly: a size that the check against the
+    /// usable memory lets through but the allocator cannot give is an error naming the buffer, where
+    /// an infallible allocation aborts the process. In a process of its own whose address-space
+    /// limit (the soft one, the hard one kept) leaves 64 MiB unmapped: a raster of as many samples
+    /// as the memory the process can use (that limit, which counts what is mapped already), its data
+    /// file sparse, is read whole.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn raw_samples_the_allocator_cannot_give_are_an_error() {
+        crate::par::alone(120, || {
+            let dir = tempfile::tempdir().unwrap();
+            let limit = mapped_bytes() + (64 << 20);
+            set_soft_limit(libc::RLIMIT_AS, limit);
+            assert_eq!(crate::dataset::fallible::usable_memory(), Some(limit));
+            let cols = 1 << 16;
+            let rows = limit as usize / cols;
+            let raw = sparse_raw(&dir.path().join("samples.bin"), (cols, rows, 1), Interleave::Bsq, &[]);
+            let err = raw.read().map(|_| ()).unwrap_err().to_string();
+            assert_eq!(err, format!("cannot allocate {} bytes for a raw raster's samples", cols * rows));
+            true
+        });
+    }
+
+    /// A run of a raw raster's rows longer than the memory the process can use is refused before its
+    /// buffer is allocated: where the system overcommits memory, the allocation succeeds and the
+    /// process is killed as the buffer is filled. Rows next to each other are read together up to
+    /// 16 MiB, so a longer run is one row, and a band's row in a BIP raster spans the samples of every
+    /// band from its first sample to its last. In a process of its own whose resident-set limit
+    /// (which the usable memory counts, and Linux does not enforce) is 64 MiB: band 1 of the one row
+    /// of 32,768 samples of 4,096 bands (134,213,633 bytes from its first sample to its last) is
+    /// refused; of 1,024 bands (33,553,409 bytes), read. The data files are sparse.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_raw_row_longer_than_the_usable_memory_is_refused() {
+        crate::par::alone(120, || {
+            set_soft_limit(libc::RLIMIT_RSS, 64 << 20);
+            assert_eq!(crate::dataset::fallible::usable_memory(), Some(64 << 20));
+            let dir = tempfile::tempdir().unwrap();
+            let cols = 1 << 15;
+            let read = |bands: usize| -> Result<Vec<u8>> {
+                // Band 1's first and last samples.
+                let set = [(0, 7), (((cols - 1) * bands) as u64, 9)];
+                let raw = sparse_raw(&dir.path().join(format!("{bands}.bin")), (cols, 1, bands), Interleave::Bip, &set);
+                let options = crate::WindowOptions { bands: vec![1], overview: None };
+                let RasterData::U8(samples) = raw.into_lazy().read_window(crate::Window::new(0, 0, cols, 1), &options)?.raster.data else {
+                    panic!("bytes")
+                };
+                Ok(samples)
+            };
+            match read(4096) {
+                Err(e) => assert_eq!(
+                    e.to_string(),
+                    "a raw raster's row: 134213633 bytes, more than the 67108864 bytes of memory the process can use"
+                ),
+                Ok(samples) => panic!("a row of 134213633 bytes read: {} samples", samples.len()),
+            }
+            let samples = read(1024).unwrap();
+            assert_eq!((samples.len(), samples[0], samples[cols - 1]), (cols, 7, 9));
+            assert_eq!(samples[1..cols - 1].iter().filter(|&&v| v != 0).count(), 0);
+            true
+        });
     }
 
     #[test]

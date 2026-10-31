@@ -60,13 +60,17 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   layout for the profile: strips or tiles (`tiled`, `blockxsize`, `blockysize`), pixel or band
   interleaving, compression (`lzw`, `deflate`, `zstd`, `packbits`) with predictors 2 and 3,
   photometric RGB and alpha bands as GDAL defaults to them, tags, band metadata, color tables,
-  overviews (`build_overviews` with `nearest`, `average` or `mode`) and GDAL's internal mask
+  overviews (`build_overviews` with `nearest`, `average`, `rms`, `bilinear`, `cubic`,
+  `cubic_spline`, `lanczos` or `mode`, and terrio's `min` and `max`) and GDAL's internal mask
   (`write_mask`, a 1-bit mask image read back by GDAL as a per-dataset mask). With
   `rasterio.Env(GDAL_TIFF_INTERNAL_MASK=False)`, or in formats without internal masks (ENVI...),
   the mask goes to GDAL's `.msk` sidecar instead (a tiled Deflate GeoTIFF flagged
   `INTERNAL_MASK_FLAGS_1=2`, with the dataset's overviews), and an `r+` update keeps it there;
-  `.msk` sidecars of local files are read as per-dataset masks, their overviews included.
-  `driver="COG"` writes a Cloud Optimized GeoTIFF.
+  `.msk` sidecars of local files are read as per-dataset masks, their overviews included (not
+  under `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, as GDAL). `driver="COG"` writes a Cloud
+  Optimized GeoTIFF whose overviews are GDAL's COG driver's, pixel for pixel: the same levels
+  (`overview_count`), and the same resampling (`overview_resampling` or `resampling`, by default
+  `cubic`, `nearest` for paletted rasters).
 - **Nodata.** Each band's nodata value is read, from the file or an `.aux.xml` sidecar (where GDAL
   keeps per-band values); GeoTIFFs hold one value for all bands, so a writer given different
   values writes the last band's, with GDAL's warning.
@@ -84,10 +88,10 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
 | `rio.transform` | `Affine`, `from_origin`, `from_bounds`, `from_gcps`, `array_bounds`, `rowcol`, `xy` (affine transforms, GCPs or RPCs, with `rpc_options`), `AffineTransformer`, `GCPTransformer`, `RPCTransformer` (context manager, `close`, `closed`), `get_transformer`, `guard_transform`, `IDENTITY` |
 | `rio.windows` | `Window` (`from_slices`, `round_offsets`, `round_lengths`, `round`, `crop`, `toslices`, `toranges`, `intersection`), `from_bounds`, `bounds`, `transform`, `intersection`, `union`, `intersect`, `crop`, `evaluate`, `subdivide`, `get_data_window`, `round_window_to_full_blocks` |
 | `rio.features` | `rasterize` (`replace` and `add`, `all_touched`, `out`, `dst_path`), `shapes` (mask, 4/8 connectivity), `geometry_mask`, `geometry_window`, `bounds`, `is_valid_geom`, `sieve`, `dataset_features` |
-| `rio.warp` | `reproject` (arrays, bands, datasets; rotated, south-up, GCP and RPC sources, with GDAL's transformer options; every resampling but `gauss`), `calculate_default_transform` (bounds, GCPs or RPCs), `aligned_target`, `transform`, `transform_bounds`, `transform_geom` |
+| `rio.warp` | `reproject` (arrays, bands, datasets; rotated, south-up, GCP and RPC sources, with GDAL's transformer options; every resampling but `gauss`; binary `src_alpha`/`dst_alpha` bands, and masked arrays warped with their mask as an alpha band, as rasterio does), `calculate_default_transform` (bounds, GCPs or RPCs), `aligned_target`, `transform`, `transform_bounds`, `transform_geom` |
 | `rio.merge` | `merge` (`bounds`, `res`, `nodata`, `dtype`, `indexes`, `method` first/last/min/max/sum/count or a function, `target_aligned_pixels`, `masked`, `dst_path`) |
 | `rio.mask` | `mask` (`crop`, `pad`, `all_touched`, `invert`, `filled`, `nodata`, `indexes`), `raster_geometry_mask` |
-| `rio.vrt` | `WarpedVRT` (`crs`, `transform`, `width`, `height`, `resampling`, `src_nodata`, `nodata`, `dtype`; datasets georeferenced by GCPs or RPCs, with transformer options) |
+| `rio.vrt` | `WarpedVRT` (`crs`, `transform`, `width`, `height`, `resampling`, `tolerance`, `src_nodata`, `nodata`, `dtype`, `add_alpha`, `src_alpha`, `dst_alpha`, `init_dest_nodata`, `warp_mem_limit`; sources georeferenced by a transform or GCPs): GDAL's implicit overviews and read paths; the source is read by the windows each warped region needs |
 | `rio.io` | `MemoryFile`, `ZipMemoryFile`, `DatasetReader`, `DatasetWriter` |
 | `rio.control`, `rio.rpc` | `GroundControlPoint`; `RPC` (`to_dict`, `to_gdal`, `from_gdal`); datasets' `gcps` and `rpcs`, read and written |
 | `rio.shutil` | `exists`, `copy` (paths or datasets, creation options), `copyfiles`, `delete` |
@@ -182,16 +186,25 @@ directory to keep the downloads).
 - Per-band masks in `.msk` sidecars (per-dataset ones are read and written), and the overviews
   of internal masks: an overview's internal mask is the full-resolution mask sampled by nearest
   neighbour (a `.msk` sidecar's own overviews are read).
-- The `gauss` resampling, PROJJSON and WKT2 output, and the RPC transformer's `RPC_FOOTPRINT`:
-  terrio does not implement them. An `RPC_DEM` is read whole into memory, with its horizontal CRS
-  only: GDAL moves the heights of a DEM in a compound CRS (a geoid) to the ellipsoid
-  (`RPC_DEM_APPLY_VDATUM_SHIFT`), terrio takes them as they are (and refuses a compound
-  `RPC_DEM_SRS` unless `RPC_DEM_APPLY_VDATUM_SHIFT=NO`). rasterio's `GCPTransformer` with
-  `tps=True` gives coordinates a few centimetres from GDAL's own thin plate splines (which
-  terrio's match, as `gdalwarp -tps` does).
-- Lossy GeoTIFF codecs and YCbCr JPEG: GeoTIFFs compressed with JPEG in YCbCr decode differently
-  from GDAL, and LERC, LZMA and JPEG XL are not decoded.
+- `reproject` with partially transparent alpha (values between 0 and the alpha maximum), which
+  GDAL blends by density, and a masked 16-bit array into an unmasked destination (GDAL reads its
+  mask as a 255/65535 density): both raise rather than differ.
+- `WarpedVRT` of a dataset georeferenced by RPCs (`reproject` and `calculate_default_transform`
+  take RPCs), the `gauss` resampling in `reproject` (reads, overviews and `build_overviews`
+  support it), WKT2 output, and the RPC transformer's `RPC_FOOTPRINT`: terrio does not implement
+  them. An `RPC_DEM` is read whole into memory, with its horizontal CRS only: GDAL moves the
+  heights of a DEM in a compound CRS (a geoid) to the ellipsoid (`RPC_DEM_APPLY_VDATUM_SHIFT`),
+  terrio takes them as they are (and refuses a compound `RPC_DEM_SRS` unless
+  `RPC_DEM_APPLY_VDATUM_SHIFT=NO`). `CRS.to_dict(projjson=True)` needs pyproj; without it the
+  PROJ parameters are returned. rasterio's `GCPTransformer` with `tps=True` gives coordinates a
+  few centimetres from GDAL's own thin plate splines (which terrio's match, as `gdalwarp -tps`
+  does).
+- Lossy GeoTIFF codecs: JPEG in YCbCr decodes as GDAL decodes it; LERC, LZMA and JPEG XL chunks
+  are decoded, with parity against GDAL not measured. GeoTIFFs with 1, 2 or 4 bits per sample are
+  not decoded correctly (12 bits is).
 - `r+` rewrites the file (overviews are rebuilt from the updated pixels, where GDAL keeps the old
-  ones); large COGs and GeoTIFFs with overviews are written from the whole raster.
+  ones). COG writes stream row by row, except COGs with an internal mask, copied source overviews,
+  explicit overview factors, and compressions other than NONE, LZW, DEFLATE, ZSTD and PACKBITS,
+  which are written from the whole raster, as are GeoTIFFs with overviews.
 - Band-level color tables only on band 1, as terrio's raster model holds them.
 - Custom openers (`opener=`).

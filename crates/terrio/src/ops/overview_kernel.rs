@@ -20,7 +20,7 @@
 //! `GDALRegenerateOverviewsEx` (full-width chunks of source rows) is reproduced by computing each
 //! chunk's overview rows from that chunk only (see [`ex_chunk_rows`]).
 
-use crate::drivers::gtiff_write::OverviewResampling as Method;
+use crate::drivers::gtiff_write::AddOverviewsResampling as Method;
 use wbraster::DataType;
 
 /// The type GDAL computes averages in (`GDALGetOvrWorkDataType`).

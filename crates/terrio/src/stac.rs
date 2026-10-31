@@ -57,15 +57,31 @@ fn is_url(s: &str) -> bool {
     l.starts_with("http://") || l.starts_with("https://")
 }
 
-/// A location's bytes: a local file, a URL or object storage, or a zip archive member.
+/// A location's bytes: a local file, a URL or object storage, or a zip archive member. A remote
+/// file named as a document (`.json`, `.geojson`) is read by range, as GDAL's `/vsicurl/` reads it
+/// (a server that ignores ranges is refused for a file more than ten times the first request);
+/// other URLs (STAC API endpoints) with one request. Either is capped at `CPL_JSON_MAX_SIZE`.
 pub(crate) fn fetch(loc: &str) -> Result<Vec<u8>> {
+    fetch_as(loc, false)
+}
+
+/// [`fetch`] of a location the caller chose, or with `link`, one a document's link chose: its
+/// requests are then redirected only to its own origin (see [`link_redirects`]).
+fn fetch_as(loc: &str, link: bool) -> Result<Vec<u8>> {
     use crate::vfs::Location;
+    #[cfg(not(remote))]
+    let _ = link;
     match Location::parse(loc) {
         Location::Local(p) => Ok(std::fs::read(p)?),
         #[cfg(remote)]
         l @ (Location::Url(_) | Location::S3 { .. }) => {
             let remote = l.remote().ok_or_else(|| bad(format!("'{loc}' is not remote")))?;
-            crate::http::get(&remote)
+            let name = l.file_name().to_ascii_lowercase();
+            if name.ends_with(".json") || name.ends_with(".geojson") {
+                crate::http::get_file(&remote, link_redirects(link))
+            } else {
+                crate::http::get_capped_following(&remote, crate::http::json_max_size(), link_redirects(link))
+            }
         }
         _ => {
             let local = crate::vfs::resolve(loc)?;
@@ -74,8 +90,23 @@ pub(crate) fn fetch(loc: &str) -> Result<Vec<u8>> {
     }
 }
 
+/// How the requests of a link a document chose follow redirects: to the origin [`may_follow`]
+/// allowed only, unless `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`, as the link itself (else a
+/// same-origin link redirected by its server to another origin would escape the check). Across
+/// origins, no header the document supplies is sent. A request the
+/// caller chose follows redirects anywhere, as GDAL follows them.
+#[cfg(remote)]
+fn link_redirects(link: bool) -> crate::http::Redirects {
+    if link && !option_on("TERRIO_STAC_FOLLOW_CROSS_ORIGIN") { crate::http::Redirects::SameOrigin } else { crate::http::Redirects::Any }
+}
+
 fn fetch_json(loc: &str) -> Result<Value> {
     serde_json::from_slice(&fetch(loc)?).map_err(|e| bad(format!("{loc}: {e}")))
+}
+
+/// [`fetch_json`] of a link's target: see [`fetch_as`].
+fn fetch_link_json(loc: &str) -> Result<Value> {
+    serde_json::from_slice(&fetch_as(loc, true)?).map_err(|e| bad(format!("{loc}: {e}")))
 }
 
 /// A page of search results to request: a `GET` of a URL, or a `POST` of a JSON body.
@@ -92,13 +123,15 @@ impl Request {
         Self { url: url.to_string(), body: None, headers: Vec::new() }
     }
 
-    fn fetch(&self) -> Result<Value> {
+    /// Fetches the page: a request the caller made, or with `link`, one a document's `next` link
+    /// chose, whose redirects lead to its own origin only (see [`link_redirects`]).
+    fn fetch(&self, link: bool) -> Result<Value> {
         let bytes = match &self.body {
-            None if self.headers.is_empty() => fetch(&self.url)?,
+            None if self.headers.is_empty() => fetch_as(&self.url, link)?,
             #[cfg(remote)]
-            None => crate::http::get_with_headers(&self.url, &self.headers)?,
+            None => crate::http::get_with_headers(&self.url, &self.headers, link_redirects(link))?,
             #[cfg(remote)]
-            Some(body) => crate::http::post_json(&self.url, &serde_json::to_vec(body).map_err(bad)?, &self.headers)?,
+            Some(body) => crate::http::post_json(&self.url, &serde_json::to_vec(body).map_err(bad)?, &self.headers, link_redirects(link))?,
             #[cfg(not(remote))]
             _ => return Err(bad(format!("{}: POST requests and request headers need the `remote` feature", self.url))),
         };
@@ -141,7 +174,10 @@ fn next_request(doc: &Value, cur: &Request) -> Option<Request> {
             h.extend(link_headers);
             h
         }
-        _ => link_headers,
+        (true, false, false) => link_headers,
+        // Another origin gets no header: neither the previous page's (keys, perhaps) nor any the
+        // document supplies.
+        (false, ..) => Vec::new(),
     };
     if method(link) == "GET" {
         return Some(Request { url, body: None, headers });
@@ -414,17 +450,16 @@ fn signed(href: String) -> Result<String> {
 /// before it expires.
 #[cfg(remote)]
 fn pc_token(account: &str, container: &str) -> Result<String> {
-    use std::sync::Mutex;
     use std::time::{Duration, Instant};
-    static TOKENS: Mutex<BTreeMap<(String, String), (String, Instant)>> = Mutex::new(BTreeMap::new());
     let key = (account.to_string(), container.to_string());
+    crate::par::fork_safe();
     if let Ok(tokens) = TOKENS.lock()
         && let Some((token, until)) = tokens.get(&key)
         && Instant::now() < *until
     {
         return Ok(token.clone());
     }
-    let base = std::env::var("TERRIO_PC_SAS_URL").unwrap_or_else(|_| format!("https://{PC_HOST}/api/sas/v1/token"));
+    let base = crate::config::get("TERRIO_PC_SAS_URL").unwrap_or_else(|| format!("https://{PC_HOST}/api/sas/v1/token"));
     let url = format!("{}/{account}/{container}", base.trim_end_matches('/'));
     // The API key goes over https only.
     let headers: Vec<(String, String)> = std::env::var("PC_SDK_SUBSCRIPTION_KEY")
@@ -433,7 +468,13 @@ fn pc_token(account: &str, container: &str) -> Result<String> {
         .map(|k| ("Ocp-Apim-Subscription-Key".to_string(), k.trim().to_string()))
         .into_iter()
         .collect();
-    let v: Value = serde_json::from_slice(&crate::http::get_with_headers(&url, &headers)?).map_err(|e| bad(format!("{url}: {e}")))?;
+    let v: Value = serde_json::from_slice(&crate::http::get_with_headers_capped(
+        &url,
+        &headers,
+        crate::http::MAX_TOKEN_BYTES,
+        crate::http::Redirects::Any,
+    )?)
+    .map_err(|e| bad(format!("{url}: {e}")))?;
     let token = v["token"].as_str().filter(|t| !t.is_empty()).ok_or_else(|| bad(format!("{url}: no token in the response")))?.to_string();
     // Tokens last about an hour or more ("msft:expiry"); renew well before.
     // No expiry given: half an hour. One already past (a clock off) or close: not cached.
@@ -441,12 +482,27 @@ fn pc_token(account: &str, container: &str) -> Result<String> {
         None => Some(Duration::from_secs(1800)),
         Some(t) => seconds_until(t).filter(|s| *s > 300).map(|s| Duration::from_secs(s - 300)),
     };
+    crate::par::fork_safe();
     if let Some(lifetime) = lifetime
         && let Ok(mut tokens) = TOKENS.lock()
     {
         tokens.insert(key, (token.clone(), Instant::now() + lifetime));
     }
     Ok(token)
+}
+
+/// The SAS tokens fetched for blob containers, by storage account and container, with the time
+/// they expire.
+#[cfg(remote)]
+#[allow(clippy::type_complexity)]
+static TOKENS: std::sync::Mutex<BTreeMap<(String, String), (String, std::time::Instant)>> = std::sync::Mutex::new(BTreeMap::new());
+
+/// Holds the lock of the containers' SAS tokens across a fork, for [`crate::par`]: the forking
+/// thread takes it before the process is copied and lets it go after, so that the child never
+/// starts with it held by a thread it does not have.
+#[cfg(all(remote, unix))]
+pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+    held.push(Box::new(TOKENS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)));
 }
 
 #[cfg(not(remote))]
@@ -474,6 +530,43 @@ fn load_items(doc: Value, loc: &str, max_items: usize) -> Result<Items> {
     load_items_from(doc, &Request::get(loc), max_items)
 }
 
+/// Whether a STAC document opened by its name (a `.json` or `.geojson` file, not a `STAC:` or
+/// `STACIT:` name) may lead to other requests through its links: only when no allow-list restricts
+/// the drivers, or one names STAC or STACIT. Under a policy that does not, the document is read as
+/// the GeoJSON it is, its own features only, as GDAL's GeoJSON driver reads it (a `.geojson`
+/// allowed as GeoJSON never makes terrio POST to a host the document chose).
+fn links_authorized() -> bool {
+    crate::formats::allowed_drivers(None).is_none_or(|list| list.iter().any(|d| d == "STAC" || d == "STACIT"))
+}
+
+/// The items a STAC document holds itself, following no link: an item, or the features of an
+/// item collection; a collection or catalog holds none.
+fn own_items(doc: Value, loc: &str) -> Items {
+    let items = match kind(&doc) {
+        Some(Kind::Item) => vec![(doc, loc.to_string())],
+        Some(Kind::ItemCollection) => doc["features"].as_array().into_iter().flatten().map(|f| (f.clone(), loc.to_string())).collect(),
+        _ => Vec::new(),
+    };
+    Items { items, truncated: false }
+}
+
+/// A URL without its query (where a SAS token or signature would be), for messages.
+fn without_query(url: &str) -> &str {
+    url.split(['?', '#']).next().unwrap_or(url)
+}
+
+/// Whether an option is set to yes.
+fn option_on(key: &str) -> bool {
+    crate::config::get(key).is_some_and(|v| matches!(v.trim().to_ascii_uppercase().as_str(), "YES" | "ON" | "TRUE" | "1"))
+}
+
+/// Whether a link to `url`, found in a document read from `from`, may be followed: a document
+/// chooses where its links lead, so only to its own origin, unless
+/// `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`.
+fn may_follow(from: &str, url: &str) -> bool {
+    crate::vfs::url_origin(url) == crate::vfs::url_origin(from) || option_on("TERRIO_STAC_FOLLOW_CROSS_ORIGIN")
+}
+
 /// [`load_items`] of the response to a request (whose next pages may be `POST` requests too).
 fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<Items> {
     let loc = request.url.as_str();
@@ -492,15 +585,19 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
                     }
                     let Some(href) = link["href"].as_str() else { continue };
                     let href = resolve_href(&base, href);
+                    if matches!(link["rel"].as_str(), Some("item" | "items" | "child")) && !may_follow(&base, &href) {
+                        crate::warnings::warn(format!("STAC: a link of '{}' to another origin was not followed", without_query(&base)));
+                        continue;
+                    }
                     match link["rel"].as_str() {
                         Some("item") => {
-                            let item = fetch_json(&href)?;
+                            let item = fetch_link_json(&href)?;
                             if kind(&item) == Some(Kind::Item) {
                                 out.items.push((item, href));
                             }
                         }
-                        Some("items") => read_pages(fetch_json(&href)?, Request::get(&href), max_items, &mut out)?,
-                        Some("child") if depth < 8 => queue.push((fetch_json(&href)?, href, depth + 1)),
+                        Some("items") => read_pages(fetch_link_json(&href)?, Request::get(&href), max_items, &mut out)?,
+                        Some("child") if depth < 8 => queue.push((fetch_link_json(&href)?, href, depth + 1)),
                         _ => {}
                     }
                 }
@@ -528,7 +625,17 @@ fn read_pages(mut doc: Value, mut cur: Request, max_items: usize, out: &mut Item
         if next == cur || pages > 10_000 {
             return Ok(());
         }
-        doc = next.fetch()?;
+        if !may_follow(&cur.url, &next.url) {
+            crate::warnings::warn(format!("STAC: the next page of '{}' is on another origin: not followed", without_query(&cur.url)));
+            return Ok(());
+        }
+        // A search made with GET is not continued with a POST its page asks for, unless asked
+        // (`TERRIO_STAC_ALLOW_POST=YES`); one made with POST (`method=POST`) is.
+        if next.body.is_some() && cur.body.is_none() && !option_on("TERRIO_STAC_ALLOW_POST") {
+            crate::warnings::warn(format!("STAC: the next page of '{}' is a POST request: not followed", without_query(&cur.url)));
+            return Ok(());
+        }
+        doc = next.fetch(true)?;
         cur = next;
     }
 }
@@ -1107,7 +1214,7 @@ fn probe(path: &str) -> Option<Result<Probe>> {
 /// The footprints layer of a STAC document.
 fn footprint_dataset(doc: Value, path: &str, max_items: usize) -> Result<(VectorDataset, Groups)> {
     let name = layer_name(&doc, path);
-    let items = load_items(doc, path, max_items)?;
+    let items = if links_authorized() { load_items(doc, path, max_items)? } else { own_items(doc, path) };
     let groups = group_assets(&items.items, &Filters { sign: Some(SignMode::None), ..Filters::default() });
     let layer = footprints(&items.items, &name)?;
     Ok((crate::dataset::finish_vector(vec![layer], path, VectorDriver::GeoJSON), groups))
@@ -1131,6 +1238,57 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
     })
 }
 
+/// [`open`] for a raster. A remote document that [`probe`] would fetch whole by range (one named
+/// `.json` or `.geojson`) is first identified by its first bytes, as GDAL's raster drivers
+/// identify one: its STACTA and STACIT drivers look at no more than the first 32,768. A document
+/// whose first bytes show no STAC document is refused there, rather than fetched whole to be read
+/// as GeoJSON and refused as a vector: a 50,000,000-byte GeoJSON document opened as a raster cost
+/// 49,999,930 bytes, where GDAL reads 49,152. A STAC document is fetched whole, as before: an item
+/// of tiled assets opens as a raster.
+pub(crate) fn open_raster(path: &str) -> Option<Result<Dataset>> {
+    #[cfg(remote)]
+    if let Some(e) = refused_as_raster(path) {
+        return Some(Err(e));
+    }
+    open(path)
+}
+
+/// The refusal of a remote document (see [`open_raster`]) whose first bytes show no STAC document,
+/// or the error reading them. The bytes are read as a lazy open reads them (at most
+/// [`crate::stacta::SNIFF_BYTES`], in two looks), so from the process-wide cache after one. `None`
+/// for a document showing STAC, and for anything [`probe`] does not fetch whole by range.
+#[cfg(remote)]
+fn refused_as_raster(path: &str) -> Option<Error> {
+    use crate::vfs::Location;
+    if !may_be_stac(path) {
+        return None;
+    }
+    let loc = Location::parse(path);
+    let name = loc.file_name().to_ascii_lowercase();
+    if !matches!(loc, Location::Url(_) | Location::S3 { .. }) || !(name.ends_with(".json") || name.ends_with(".geojson")) {
+        return None;
+    }
+    let remote = loc.remote()?;
+    let mut looked = 0;
+    for n in [crate::http::FIRST_READ, crate::stacta::SNIFF_BYTES] {
+        let head = match crate::http::head(&remote, n) {
+            Ok(h) => h,
+            Err(e) => return Some(e),
+        };
+        if String::from_utf8_lossy(&head).contains("\"stac_version\"") || crate::stacta::names_tiled_assets(&head) {
+            return None;
+        }
+        looked = head.len();
+        if (looked as u64) < n {
+            break;
+        }
+    }
+    Some(Error::Unsupported(format!(
+        "'{}' is not a raster dataset: its first {looked} bytes show no STAC document, and other JSON documents are vectors",
+        path.split(['?', '#']).next().unwrap_or(path)
+    )))
+}
+
 /// The first request of a `STACIT:` source: a `GET`, or with `method=POST` a `POST` of its query.
 fn search_request(source: &str, filters: &Filters) -> Request {
     if filters.post && is_url(source) { post_request(source) } else { Request::get(source) }
@@ -1146,7 +1304,7 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
         Name::Mosaic { source, filters } => (|| {
             filters.check()?;
             let request = search_request(&source, &filters);
-            let doc = request.fetch()?;
+            let doc = request.fetch(false)?;
             let mut max = filters.max_items.unwrap_or(DEFAULT_MAX_ITEMS);
             if filters.max_items.is_none()
                 && let Some(i) = source.to_ascii_lowercase().find("&limit=")
@@ -1175,7 +1333,7 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
             let several = (|| -> Result<Option<Info>> {
                 filters.check()?;
                 let request = search_request(&source, &filters);
-                let doc = request.fetch()?;
+                let doc = request.fetch(false)?;
                 let max = filters.max_items.unwrap_or(DEFAULT_MAX_ITEMS);
                 let name = layer_name(&doc, &source);
                 let items = load_items_from(doc, &request, max)?;
@@ -1233,6 +1391,319 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An item collection whose links are `links` (a `next` link that POSTs to another origin
+    /// with headers and a body the document chose).
+    #[cfg(remote)]
+    fn item_collection(links: Value) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "type": "FeatureCollection",
+            "features": [{"type": "Feature", "stac_version": "1.0.0", "id": "own", "properties": {"datetime": "2026-01-01T00:00:00Z", "name": "own"},
+                          "geometry": {"type": "Point", "coordinates": [1, 2]}, "links": [], "assets": {}}],
+            "links": links,
+        }))
+        .unwrap()
+    }
+
+    #[cfg(remote)]
+    fn post_to(internal: &str) -> Value {
+        json!({"rel": "next", "method": "POST", "href": format!("{internal}/private"), "body": {"query": "review-only"},
+               "headers": {"X-Internal": "1"}, "type": "application/geo+json"})
+    }
+
+    /// The private document the review's second origin served: its features must never be read.
+    #[cfg(remote)]
+    const SENTINEL: &[u8] = br#"{"type":"FeatureCollection","features":[{"type":"Feature","stac_version":"1.0.0","id":"private","properties":{"datetime":"2026-01-01T00:00:00Z","name":"private-sentinel"},"geometry":{"type":"Point","coordinates":[3,4]},"links":[],"assets":{}}],"links":[]}"#;
+
+    #[cfg(remote)]
+    fn open(url: &str) -> crate::VectorDataset {
+        crate::open_vector(url, &crate::VectorOpenOptions::default()).unwrap()
+    }
+
+    /// Under a vector allow-list that names GeoJSON and not STAC, a STAC-looking `.geojson` is read
+    /// as GeoJSON: its own features, and no request but its own.
+    #[cfg(remote)]
+    #[test]
+    fn a_geojson_allowed_as_geojson_follows_no_stac_link() {
+        let (internal, internal_seen) = crate::http::test_server(SENTINEL.to_vec());
+        let (base, seen) = crate::http::test_server(item_collection(json!([{"rel": "next", "href": "page2.json"}, post_to(&internal)])));
+        let only_geojson =
+            std::collections::HashMap::from([("TERRIO_ALLOWED_DRIVERS".to_string(), Some("GeoJSON,ESRI Shapefile".to_string()))]);
+        crate::config::push_scope(only_geojson);
+        let v = crate::open_vector(&format!("{base}/attack.geojson"), &crate::VectorOpenOptions::default());
+        crate::config::pop_scope();
+        let v = v.unwrap();
+        assert_eq!(v.layers[0].features.len(), 1, "its own feature only");
+        assert!(format!("{:?}", v.layers[0].features).contains("own"));
+        assert!(internal_seen.lock().unwrap().is_empty(), "the document's link was followed");
+        assert_eq!(seen.lock().unwrap().len(), 1, "only the input request, not even a same-origin next page");
+    }
+
+    /// Without an allow-list, links lead to the document's own origin only, and a search read with
+    /// GET is not continued with a POST its page asks for.
+    #[cfg(remote)]
+    #[test]
+    fn stac_links_lead_only_to_their_own_origin() {
+        let (internal, internal_seen) = crate::http::test_server(SENTINEL.to_vec());
+        // The review's document: a POST to another origin.
+        let (base, seen) = crate::http::test_server(item_collection(json!([post_to(&internal)])));
+        assert_eq!(open(&format!("{base}/attack.geojson")).layers[0].features.len(), 1);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        // A GET next page on the same origin is followed; one on another origin is not.
+        let (base, seen) = crate::http::test_server(item_collection(json!([{"rel": "next", "href": "page2.json"}])));
+        assert_eq!(open(&format!("{base}/items.geojson")).layers[0].features.len(), 2, "page 2 read");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        let (base, seen) = crate::http::test_server(item_collection(json!([{"rel": "next", "href": format!("{internal}/page2.json")}])));
+        assert_eq!(open(&format!("{base}/items.geojson")).layers[0].features.len(), 1);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        // A POST next page on the same origin, from a GET search: not followed.
+        let same_origin_post = json!([{"rel": "next", "method": "POST", "href": "page2.json", "body": {"query": "x"}}]);
+        let (base, seen) = crate::http::test_server(item_collection(same_origin_post));
+        assert_eq!(open(&format!("{base}/items.geojson")).layers[0].features.len(), 1);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        // A collection's item links: its own origin only.
+        let collection = |href: String| {
+            serde_json::to_vec(&json!({"type": "Collection", "stac_version": "1.0.0", "id": "c", "description": "d", "license": "x",
+                "extent": {"spatial": {"bbox": [[0, 0, 1, 1]]}, "temporal": {"interval": [[null, null]]}},
+                "links": [{"rel": "item", "href": href}]}))
+            .unwrap()
+        };
+        let (base, seen) = crate::http::test_server(collection(format!("{internal}/item.json")));
+        assert_eq!(open(&format!("{base}/collection.json")).layers[0].features.len(), 0);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        let (base, seen) = crate::http::test_server(collection("item.json".to_string()));
+        let _ = open(&format!("{base}/collection.json"));
+        assert_eq!(seen.lock().unwrap().len(), 2, "a same-origin item link is followed");
+        assert!(internal_seen.lock().unwrap().is_empty(), "another origin was requested: {:?}", internal_seen.lock().unwrap());
+    }
+
+    /// With cross-origin links allowed (`TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`), another origin
+    /// still gets no header the document supplies.
+    #[cfg(remote)]
+    #[test]
+    fn another_origin_gets_no_header_a_document_supplies() {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let other = format!("http://{}", listener.local_addr().unwrap());
+        let headers: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let record = headers.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                        break;
+                    }
+                    record.lock().unwrap().push(line.trim().to_ascii_lowercase());
+                }
+                let body = SENTINEL;
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = stream.write_all(&[head.as_bytes(), body].concat());
+            }
+        });
+        let next = json!([{"rel": "next", "href": format!("{other}/page2.json"), "headers": {"X-Internal": "1"}}]);
+        let (base, _) = crate::http::test_server(item_collection(next));
+        let follow = std::collections::HashMap::from([("TERRIO_STAC_FOLLOW_CROSS_ORIGIN".to_string(), Some("YES".to_string()))]);
+        crate::config::push_scope(follow);
+        let v = crate::open_vector(&format!("{base}/items.geojson"), &crate::VectorOpenOptions::default());
+        crate::config::pop_scope();
+        assert_eq!(v.unwrap().layers[0].features.len(), 2, "the cross-origin page was read, as asked");
+        let seen = headers.lock().unwrap().clone();
+        assert!(seen.iter().any(|h| h.starts_with("get /page2.json")), "{seen:?}");
+        assert!(!seen.iter().any(|h| h.starts_with("x-internal")), "a document's header reached another origin: {seen:?}");
+    }
+
+    /// The documents and redirects of a server whose links stay on its own origin, the server
+    /// redirecting each link to `other`.
+    #[cfg(remote)]
+    fn redirecting_routes(other: &str) -> Vec<crate::http::TestRoute> {
+        let doc = |path: &str, body: Vec<u8>| (path.to_string(), 200, Vec::new(), body);
+        let moved = |path: &str, status: u16, to: &str| {
+            (path.to_string(), status, vec![("Location".to_string(), format!("{other}{to}"))], Vec::new())
+        };
+        let collection = |rel: &str, href: &str| {
+            serde_json::to_vec(&json!({"type": "Collection", "stac_version": "1.0.0", "id": "c", "description": "d", "license": "x",
+                "extent": {"spatial": {"bbox": [[0, 0, 1, 1]]}, "temporal": {"interval": [[null, null]]}},
+                "links": [{"rel": rel, "href": href}]}))
+            .unwrap()
+        };
+        vec![
+            // A ranged read of a `.json` next page.
+            doc("/ranged.geojson", item_collection(json!([{"rel": "next", "href": "moved.json"}]))),
+            // A whole-body read of a next page not named as a document.
+            doc("/whole.geojson", item_collection(json!([{"rel": "next", "href": "search?page=2"}]))),
+            // A next page with headers the document supplies.
+            doc("/headers.geojson", item_collection(json!([{"rel": "next", "href": "moved.json", "headers": {"X-Doc": "1"}}]))),
+            // A POST next page.
+            doc("/post.geojson", item_collection(json!([{"rel": "next", "method": "POST", "href": "search", "body": {"q": 1}}]))),
+            // A collection's item, items and child links.
+            doc("/item-link.json", collection("item", "old-item.json")),
+            doc("/items-link.json", collection("items", "old-items.json")),
+            doc("/child-link.json", collection("child", "old-child.json")),
+            moved("/moved.json", 302, "/private.json"),
+            moved("/search", 307, "/private"),
+            moved("/old-item.json", 301, "/item.json"),
+            moved("/old-items.json", 303, "/private.json"),
+            moved("/old-child.json", 308, "/private.json"),
+        ]
+    }
+
+    /// The other origin's documents: the private sentinel, as an item collection and as an item.
+    #[cfg(remote)]
+    fn private_routes() -> Vec<crate::http::TestRoute> {
+        let item = serde_json::to_vec(&serde_json::from_slice::<Value>(SENTINEL).unwrap()["features"][0]).unwrap();
+        vec![
+            ("/private.json".to_string(), 200, Vec::new(), SENTINEL.to_vec()),
+            ("/private".to_string(), 200, Vec::new(), SENTINEL.to_vec()),
+            ("/item.json".to_string(), 200, Vec::new(), item),
+        ]
+    }
+
+    /// A link that passed the same-origin check is not redirected to another origin: every request
+    /// of a traversal (a ranged read, a whole-body read, a request with the document's headers, a
+    /// POST, a collection's item, items and child links) follows redirects to its own origin only,
+    /// each checked before anything is sent. Nothing reaches
+    /// the other origin, and its document is not read.
+    #[cfg(remote)]
+    #[test]
+    fn a_link_is_not_redirected_to_another_origin() {
+        let (other, other_seen) = crate::http::test_routes(private_routes());
+        let (base, seen) = crate::http::test_routes(redirecting_routes(&other));
+        let post = std::collections::HashMap::from([("TERRIO_STAC_ALLOW_POST".to_string(), Some("YES".to_string()))]);
+        for doc in
+            ["ranged.geojson", "whole.geojson", "headers.geojson", "post.geojson", "item-link.json", "items-link.json", "child-link.json"]
+        {
+            crate::config::push_scope(post.clone());
+            let opened = crate::open_vector(&format!("{base}/{doc}"), &crate::VectorOpenOptions::default());
+            crate::config::pop_scope();
+            let err = match opened {
+                Ok(v) => panic!("{doc}: read, with {} features", v.layers.first().map_or(0, |l| l.features.len())),
+                Err(e) => e.to_string(),
+            };
+            assert!(err.contains("a redirect to another origin") && err.contains(&other), "{doc}: {err}");
+        }
+        assert!(other_seen.lock().unwrap().is_empty(), "the other origin was requested: {:?}", other_seen.lock().unwrap());
+        // Each document, and its link.
+        assert_eq!(seen.lock().unwrap().len(), 14, "{:?}", seen.lock().unwrap());
+    }
+
+    /// A link's same-origin redirect is followed; with `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`, a
+    /// redirect to another origin is followed too, without the headers the document supplies.
+    #[cfg(remote)]
+    #[test]
+    fn a_link_follows_same_origin_redirects_and_cross_origin_ones_when_allowed() {
+        let (other, other_seen) = crate::http::test_routes(private_routes());
+        let mut routes = redirecting_routes(&other);
+        routes.push(("/hop.geojson".to_string(), 200, Vec::new(), item_collection(json!([{"rel": "next", "href": "hop.json"}]))));
+        routes.push(("/hop.json".to_string(), 302, vec![("Location".to_string(), "/page2.json".to_string())], Vec::new()));
+        routes.push(("/page2.json".to_string(), 200, Vec::new(), item_collection(json!([]))));
+        let (base, seen) = crate::http::test_routes(routes);
+        let v = crate::open_vector(&format!("{base}/hop.geojson"), &crate::VectorOpenOptions::default()).unwrap();
+        assert_eq!(v.layers[0].features.len(), 2, "the next page, redirected on its own origin");
+        assert_eq!(seen.lock().unwrap().len(), 3);
+        let follow = std::collections::HashMap::from([("TERRIO_STAC_FOLLOW_CROSS_ORIGIN".to_string(), Some("YES".to_string()))]);
+        crate::config::push_scope(follow);
+        let v = crate::open_vector(&format!("{base}/headers.geojson"), &crate::VectorOpenOptions::default());
+        crate::config::pop_scope();
+        assert_eq!(v.unwrap().layers[0].features.len(), 2, "the redirected page was read, as asked");
+        let reached = other_seen.lock().unwrap().clone();
+        assert_eq!(reached.len(), 1, "{reached:?}");
+        assert!(reached[0].0.starts_with("GET /private.json"), "{reached:?}");
+        assert!(!reached[0].1.iter().any(|(k, _)| k == "x-doc"), "a document's header reached another origin: {reached:?}");
+        assert!(seen.lock().unwrap().iter().any(|(_, h)| h.iter().any(|(k, v)| k == "x-doc" && v == "1")), "its own origin got it");
+    }
+
+    /// What a redirect brought from another origin for a location the caller chose (followed, as
+    /// GDAL follows it) is not returned from the cache to a link to the same location, whose
+    /// redirects stay on its origin.
+    #[cfg(remote)]
+    #[test]
+    fn a_link_does_not_read_what_a_redirect_brought_for_the_caller() {
+        let (other, other_seen) = crate::http::test_routes(private_routes());
+        let (base, seen) = crate::http::test_routes(redirecting_routes(&other));
+        assert_eq!(fetch(&format!("{base}/moved.json")).unwrap(), SENTINEL, "the caller's own choice is followed");
+        assert_eq!(other_seen.lock().unwrap().len(), 1);
+        let err = crate::open_vector(&format!("{base}/ranged.geojson"), &crate::VectorOpenOptions::default()).map(|_| ()).unwrap_err();
+        assert!(err.to_string().contains("a redirect to another origin"), "{err}");
+        assert_eq!(other_seen.lock().unwrap().len(), 1, "the link reached the other origin");
+        assert_eq!(seen.lock().unwrap().len(), 3, "the caller's request, the document, and the link's own request");
+    }
+
+    /// The bytes a [`crate::http::test_server`]'s requests asked for: their ranges' lengths, and
+    /// the whole file (`u64::MAX`) for a request without a range.
+    #[cfg(not(feature = "gdal"))]
+    #[cfg(remote)]
+    fn asked(ranges: &[Option<String>]) -> u64 {
+        ranges
+            .iter()
+            .map(|r| match r.as_deref().and_then(|r| r.strip_prefix("bytes=")?.split_once('-')) {
+                Some((a, b)) => b.parse::<u64>().unwrap() - a.parse::<u64>().unwrap() + 1,
+                None => u64::MAX,
+            })
+            .fold(0, u64::saturating_add)
+    }
+
+    /// A remote document opened as a raster is identified from its first bytes, as GDAL's raster
+    /// drivers identify one: a GeoJSON document is refused after at most 65,536 bytes by either
+    /// raster open (it was fetched whole: 49,999,930 bytes of a 50,000,000-byte one, where GDAL
+    /// reads 49,152). It still opens as a vector, read whole, and a STAC item opened as a raster is
+    /// still read whole (an item of tiled assets is a raster).
+    // Without the GDAL backend: with it, what terrio refuses goes on to GDAL (gdal_fallback).
+    #[cfg(not(feature = "gdal"))]
+    #[cfg(remote)]
+    #[test]
+    fn a_remote_document_opened_as_a_raster_is_identified_from_its_first_bytes() {
+        // The looks after the first read their bytes from the process-wide cache.
+        let _serial = crate::http::cache_test_guard();
+        let mut doc = br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"s":""#.to_vec();
+        doc.resize(2_000_000, b'x');
+        doc.extend_from_slice(br#""},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#);
+        for lazy in [false, true] {
+            let (base, seen) = crate::http::test_server(doc.clone());
+            let url = format!("{base}/big.json");
+            let opened = if lazy { crate::LazyRaster::open(&url).map(|_| ()) } else { crate::open_raster(&url).map(|_| ()) };
+            let seen = seen.lock().unwrap().clone();
+            assert!(asked(&seen) <= 65_536, "lazy {lazy}: {} bytes asked: {seen:?}", asked(&seen));
+            let err = opened.unwrap_err().to_string();
+            assert!(err.contains("is not a raster dataset: its first 32768 bytes show no STAC document"), "{err}");
+        }
+        let (base, seen) = crate::http::test_server(doc.clone());
+        let v = crate::open_vector(&format!("{base}/big.json"), &crate::VectorOpenOptions::default()).unwrap();
+        assert_eq!(v.layers[0].features.len(), 1);
+        assert!(asked(&seen.lock().unwrap()) >= doc.len() as u64, "{:?}", seen.lock().unwrap());
+        let item = serde_json::to_vec(&json!({"type": "Feature", "stac_version": "1.0.0", "id": "a", "links": [], "assets": {},
+            "properties": {"datetime": "2026-01-01T00:00:00Z", "pad": "x".repeat(100_000)}, "geometry": {"type": "Point", "coordinates": [1, 2]}}))
+        .unwrap();
+        let (base, seen) = crate::http::test_server(item.clone());
+        let err = crate::open_raster(&format!("{base}/item.json")).map(|_| ()).unwrap_err().to_string();
+        assert!(err.contains("is a vector, not a raster dataset"), "{err}");
+        assert!(asked(&seen.lock().unwrap()) >= item.len() as u64, "{:?}", seen.lock().unwrap());
+    }
+
+    /// The STAC signing token fetch (#197) reads at most `MAX_TOKEN_BYTES`: a token is a
+    /// two-member JSON object of about 400 bytes.
+    #[cfg(remote)]
+    #[test]
+    fn a_signing_token_response_is_capped() {
+        let token = br#"{"msft:expiry":"2099-01-01T00:00:00Z","token":"st=1&se=2&sp=rl&sig=abc"}"#.to_vec();
+        let (base, _) = crate::http::test_server(token);
+        let scope = |url: String| std::collections::HashMap::from([("TERRIO_PC_SAS_URL".to_string(), Some(url))]);
+        crate::config::push_scope(scope(base));
+        let got = pc_token("captestaccount", "small");
+        crate::config::pop_scope();
+        assert_eq!(got.unwrap(), "st=1&se=2&sp=rl&sig=abc");
+        let mut big = br#"{"token":""#.to_vec();
+        big.resize(crate::http::MAX_TOKEN_BYTES as usize + 1, b'a');
+        let (base, seen) = crate::http::test_server(big);
+        crate::config::push_scope(scope(base));
+        let got = pc_token("captestaccount", "big");
+        crate::config::pop_scope();
+        let err = got.unwrap_err().to_string();
+        assert!(err.contains(&format!("larger than the {} bytes allowed", crate::http::MAX_TOKEN_BYTES)), "{err}");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
 
     #[test]
     fn parses_names() {

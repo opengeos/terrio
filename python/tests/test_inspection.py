@@ -103,17 +103,24 @@ def test_remote_identification_keeps_bounded_reads(source):
         try:
             url = f"http://127.0.0.1:{server.server_port}/source.tif"
             results = []
+            # terrio reads the prefix through its range reader, as GDAL's /vsicurl/ reads a header:
+            # one request of 16 KiB with ranges; a server that ignores them is refused at that
+            # request for a file over ten times the range (here 64 MiB), its body not read (GDAL:
+            # "Range downloading not supported by this server!"). A URL per pass: the first bytes
+            # of a file are cached for the process.
             for ranges in [True, False]:
                 mode["ranges"] = ranges
                 counts.update(gets=0, bytes=0)
                 finished.clear()
-                assert terrio.identify(url)[0]["driver"] == "GTiff"
+                records = terrio.identify(f"{url}?ranges={ranges}", report_failures=True)
                 for done in finished:
                     assert done.wait(2)
                 assert counts["gets"] == 1
                 if ranges:
+                    assert records[0]["driver"] == "GTiff"
                     assert counts["bytes"] == 16 * 1024
                 else:
+                    assert "range downloading not supported" in records[0]["error"], records
                     assert counts["bytes"] < size
                 results.append(counts.copy())
             print("identify HTTP I/O (range, ignored range):", results)

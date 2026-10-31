@@ -1,5 +1,6 @@
 //! The `Raster` class: a raster in memory, or a GeoTIFF read by window.
 
+use crate::Detach;
 use crate::{PyResultExt, crs_string, invalid};
 use numpy::{PyArray1, PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::prelude::*;
@@ -8,6 +9,9 @@ use terrio::crs::SpatialRef;
 use terrio::formats::RasterDriver;
 use terrio::{DataType, LazyRaster, RasterDataset, RasterWriteOptions, Window, WindowOptions};
 use wbraster::raster::RasterData;
+
+/// A metadata domain as Python gets it: the band (from 1, 0 for the dataset), the domain, its items.
+type BandDomain = (usize, String, Vec<(String, String)>);
 
 /// A raster dataset: a grid of pixels in one or more bands, with georeferencing.
 ///
@@ -39,9 +43,10 @@ impl PyRaster {
         self.inner.crs()
     }
 
-    /// Whether the bands are complex (each held as a real and an imaginary band).
+    /// Whether the bands are complex (each held as a real and an imaginary band), in memory or
+    /// read by window (complex GeoTIFFs).
     fn is_complex(&self) -> bool {
-        self.inner.dataset().is_some_and(|d| d.complex)
+        self.inner.is_complex()
     }
 }
 
@@ -161,12 +166,66 @@ impl PyRaster {
         }
     }
 
+    /// GDAL's name of the bands' data type: `Byte`, `UInt16`, `Float32`... and `CInt16`,
+    /// `CInt32`, `CFloat32` or `CFloat64` for complex bands (whose `dtype` is `complex64` or
+    /// `complex128`).
+    #[getter]
+    fn data_type(&self) -> String {
+        let name = terrio::info::gdal_type_name(self.inner.data_type());
+        if self.is_complex() { format!("C{name}") } else { name.to_string() }
+    }
+
     /// Where the longitude and latitude of each pixel are, for swaths and other rasters
     /// georeferenced by geolocation arrays: GDAL's `GEOLOCATION` metadata items (`X_DATASET`,
     /// `Y_DATASET`, `PIXEL_STEP`...), or `None`.
     #[getter]
     fn geolocation(&self) -> Option<Vec<(String, String)>> {
         self.inner.dataset().and_then(|d| d.geolocation.as_ref()).map(|g| g.items())
+    }
+
+    /// The description and metadata of each band, for formats that report them per band (GRIB):
+    /// one dictionary per band with its `description`, `color_interp` (GDAL's name, or `None`) and
+    /// metadata `items` (GDAL's default domain), or an empty list.
+    #[getter]
+    fn band_metadata<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        self.inner
+            .band_metadata()
+            .iter()
+            .map(|m| {
+                let d = PyDict::new(py);
+                d.set_item("description", &m.description)?;
+                d.set_item("color_interp", &m.color_interp)?;
+                let items = PyDict::new(py);
+                for (k, v) in &m.items {
+                    items.set_item(k, v)?;
+                }
+                d.set_item("items", items)?;
+                Ok(d)
+            })
+            .collect()
+    }
+
+    /// The nodata value of each band, when the bands declare different ones (GRIB); otherwise an
+    /// empty list (every band has `nodata`).
+    #[getter]
+    fn band_nodata(&self) -> Vec<Option<f64>> {
+        self.inner.band_nodata_values().to_vec()
+    }
+
+    /// Metadata domains other than the default one, as GDAL reports them, for formats that report
+    /// them (JPEG 2000's `IMAGE_STRUCTURE`): `(band, domain, items)` triples, the band from 1, 0
+    /// for the dataset.
+    #[getter]
+    fn metadata_domains(&self) -> Vec<BandDomain> {
+        self.inner.metadata_domains().iter().map(|(b, d, items)| (b.map_or(0, |b| b + 1), d.clone(), items.clone())).collect()
+    }
+
+    /// The color table of band 1, for formats whose reader keeps one (paletted PNGs): `(r, g, b,
+    /// a)` entries from index 0, or `None`. A GeoTIFF's color map is read by `terrio.rio`.
+    #[getter]
+    fn color_table(&self) -> Option<Vec<(u8, u8, u8, u8)>> {
+        let table = self.inner.color_table();
+        (!table.is_empty()).then(|| table.iter().map(|c| (c[0], c[1], c[2], c[3])).collect())
     }
 
     /// The metadata items a driver other than the GeoTIFF one read, as `(key, value)` pairs:
@@ -203,6 +262,13 @@ impl PyRaster {
     fn transform(&self) -> (f64, f64, f64, f64, f64, f64) {
         let g = self.inner.geo_transform();
         (g[0], g[1], g[2], g[3], g[4], g[5])
+    }
+
+    /// Whether a GeoTIFF gives a geotransform (`None` for other formats): without one,
+    /// `transform` is `(0, 1, 0, height, 0, -1)`, which a georeferenced file can also have.
+    #[getter]
+    fn has_transform(&self) -> Option<bool> {
+        self.inner.geotiff_has_geo_transform()
     }
 
     /// The pixel size `(x_resolution, y_resolution)`, both positive.
@@ -295,7 +361,7 @@ impl PyRaster {
         };
         let options = WindowOptions { bands, overview };
         let inner = &mut self.inner;
-        let ds = py.detach(|| inner.read_window(window, &options)).py()?;
+        let ds = py.detach_result(|| inner.read_window(window, &options)).py()?;
         let r = ds.raster;
         if complex {
             let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands / 2, r.rows, r.cols] };
@@ -303,6 +369,42 @@ impl PyRaster {
         }
         let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands, r.rows, r.cols] };
         to_numpy(py, r.data, &shape)
+    }
+
+    /// Reads the pixels at some columns of some rows, as nearest-neighbour resampling picks them,
+    /// from the blocks that hold them alone (GDAL's decimated read), when the format's reader can
+    /// (Zarr).
+    ///
+    /// Args:
+    ///     bands: The bands, numbered from 1 (empty for all).
+    ///     cols: The column of each output column, in the level's pixels.
+    ///     rows: The row of each output row.
+    ///     overview: Read this overview (0 is the largest) instead of the full resolution.
+    ///
+    /// Returns:
+    ///     numpy.ndarray | None: `(bands, len(rows), len(cols))` in the raster's own dtype, or
+    ///     `None` when the reader reads the window spanning the pixels instead (other formats,
+    ///     complex bands).
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: If a band, a pixel or the overview does not exist.
+    #[pyo3(signature = (bands, cols, rows, overview=None))]
+    fn read_sampled<'py>(
+        &mut self,
+        py: Python<'py>,
+        bands: Vec<usize>,
+        cols: Vec<usize>,
+        rows: Vec<usize>,
+        overview: Option<usize>,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        if self.is_complex() {
+            return Ok(None);
+        }
+        let options = WindowOptions { bands, overview };
+        let inner = &mut self.inner;
+        let data = py.detach_result(|| inner.read_sampled(&cols, &rows, &options)).py()?;
+        let count = if options.bands.is_empty() { self.inner.band_count() } else { options.bands.len() };
+        data.map(|d| to_numpy(py, d, &[count, rows.len(), cols.len()])).transpose()
     }
 
     /// Whether the raster has a per-dataset mask (a GeoTIFF's internal mask, GDAL's
@@ -349,7 +451,7 @@ impl PyRaster {
             }
         };
         let inner = &mut self.inner;
-        let mask = py.detach(|| inner.read_mask(window, overview)).py()?;
+        let mask = py.detach_result(|| inner.read_mask(window, overview)).py()?;
         mask.map(|m| to_numpy(py, RasterData::U8(m), &[window.height, window.width])).transpose()
     }
 
@@ -431,8 +533,11 @@ impl PyRaster {
     ///     colormap: The color table of a single-band Byte or UInt16 GeoTIFF: `(r, g, b, a)`
     ///         entries from index 0.
     ///     overviews: GeoTIFF overviews to build, as decimation factors such as `[2, 4]`.
-    ///     overview_resampling: `"nearest"`, `"average"`, `"min"`, `"max"` or `"mode"`.
-    ///         Defaults to `"nearest"` for GeoTIFF and `"average"` for COG.
+    ///     overview_resampling: As GDAL names them: `"nearest"`, `"average"`, `"rms"`,
+    ///         `"bilinear"`, `"cubic"`, `"cubicspline"`, `"lanczos"`, `"mode"` (and terrio's
+    ///         `"min"` and `"max"` for GeoTIFF overviews). GeoTIFF overviews default to
+    ///         `"nearest"`; COGs to GDAL's COG driver's `"cubic"` (`"nearest"` when paletted).
+    ///         The `OVERVIEW_RESAMPLING` and `RESAMPLING` creation options come first.
     ///     gcps: GeoTIFF ground control points, in the raster's CRS: `(pixel, line, x, y, z)`
     ///         tuples, written as tie points instead of the geotransform.
     ///     mask: A per-dataset validity mask, a 2-D uint8 array (0 for invalid pixels), written
@@ -489,12 +594,14 @@ impl PyRaster {
         // A raster read by window is written as a tile archive a tile row at a time.
         let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
         let tile_archive = matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles));
-        py.detach(|| self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None))
-            .py()?;
+        py.detach_result(|| {
+            self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)
+        })
+        .py()?;
         if self.inner.dataset().is_none() && tile_archive {
-            return py.detach(|| self.inner.write(path, &options)).py();
+            return py.detach_result(|| self.inner.write(path, &options)).py();
         }
-        py.detach(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+        py.detach_result(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
     }
 
     /// Encodes the raster in a file format, in memory, preserving its dataset mask for GeoTIFF/COG.
@@ -519,7 +626,7 @@ impl PyRaster {
     ) -> PyResult<Bound<'py, PyBytes>> {
         let mut options = write_options(driver, compress, tile_size, false)?;
         let bytes = py
-            .detach(|| {
+            .detach_result(|| {
                 self.inner.prepare_output_mask(filename, &mut options, Window::full(self.inner.width(), self.inner.height()), None)?;
                 self.with_dataset(|ds| terrio::memory::write_raster_bytes(ds, filename, &options))
             })
@@ -758,7 +865,7 @@ impl PyGeoTiffWriter {
         }
         let mask: Option<Vec<u8>> = mask.map(|m| m.as_array().iter().copied().collect());
         let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
-        py.detach(|| w.write_rows(&data, rows, mask.as_deref())).py()
+        py.detach_result(|| w.write_rows(&data, rows, mask.as_deref())).py()
     }
 
     /// Writes the directory and closes the file.
@@ -767,7 +874,7 @@ impl PyGeoTiffWriter {
     ///     InvalidArgumentError: If rows are missing.
     fn close(&mut self, py: Python<'_>) -> PyResult<()> {
         match self.inner.take() {
-            Some(w) => py.detach(|| w.finish()).py(),
+            Some(w) => py.detach_result(|| w.finish()).py(),
             None => Ok(()),
         }
     }

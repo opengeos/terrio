@@ -255,11 +255,11 @@ commands. Command-group progress:
       tables and degrib's naming rules, its grids, earth shapes and 0-360 rewrapping, units
       normalized, nodata where bitmaps mask points), GRIB2 packings decoded as g2clib decodes them
       (simple, complex, spatial differencing, IEEE, JPEG 2000 with the OpenJPEG port, PNG, and CCSDS
-      with gribberish's pure-Rust decoder), GRIB1 simple packing; local files, bytes, and remote
-      files read message by message (NOAA `.idx` and ECMWF `.index` sidecars for the offsets, the
-      headers fetched in parallel); in WebAssembly too. Identical to GDAL, metadata and pixels, on
-      GDAL's GRIB test files, ecCodes', every field of a GFS file, HRRR's and ECMWF's open data
-      (`scripts/compare_grib_with_gdal.py`, the conformance suite's `grib`).
+      with the pure-Rust `rust-aec` decoder), GRIB1 simple packing; local files, bytes, and remote
+      files read message by message (one 16 KiB block per message for its headers, no sidecar;
+      servers that ignore range requests refused), every allocation a header sizes fallible; in
+      WebAssembly too. Identical to GDAL, metadata and pixels, on files GDAL writes in each of its
+      encodings and on NOAA's GFS, GEFS, HRRR and MRMS products (`scripts/compare_grib_with_gdal.py`).
 
 ## 0.5: Bindings and the GDAL backend
 

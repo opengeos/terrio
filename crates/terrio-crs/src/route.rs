@@ -530,6 +530,10 @@ impl Route {
                     if let Some(r) = run(chain) {
                         return report(Some(r), Some(&chain.rank), false, !inside(&chain.rank, boxes.get(i)));
                     }
+                    // A grid the network did not give: PROJ stops on the network error.
+                    if chain.legs.iter().any(|l| l.op.network_failed()) {
+                        return None;
+                    }
                     excluded.push(i);
                 }
                 if ballpark.is_some() {

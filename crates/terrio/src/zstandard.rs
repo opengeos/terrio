@@ -4,10 +4,14 @@
 
 use std::io::{Error, ErrorKind, Read, Result};
 
-// `decompress` reads EPT tiles (the `pointcloud` feature).
+// `decompress` reads EPT tiles (the `pointcloud` feature), `frames` ZSTD GeoTIFF chunks.
+#[cfg(all(feature = "libzstd", not(target_family = "wasm")))]
+pub(crate) use libzstd::frames;
 #[cfg(all(feature = "libzstd", not(target_family = "wasm")))]
 #[cfg_attr(not(feature = "pointcloud"), allow(unused_imports))]
 pub(crate) use libzstd::{compress, decompress};
+#[cfg(not(all(feature = "libzstd", not(target_family = "wasm"))))]
+pub(crate) use pure::frames;
 #[cfg(not(all(feature = "libzstd", not(target_family = "wasm"))))]
 #[cfg_attr(not(feature = "pointcloud"), allow(unused_imports))]
 pub(crate) use pure::{compress, decompress};
@@ -35,6 +39,14 @@ mod libzstd {
         if out.len() > limit {
             return Err(too_long(limit));
         }
+        Ok(out)
+    }
+
+    /// The first `max` bytes `data` decompresses to, frame after frame, skippable frames
+    /// skipped, as [`super::pure::frames`]: the rest is not decoded.
+    pub(crate) fn frames(data: &[u8], max: usize) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        zstd::stream::read::Decoder::with_buffer(data)?.take(max as u64).read_to_end(&mut out)?;
         Ok(out)
     }
 }
@@ -130,6 +142,23 @@ mod tests {
             assert!(e.to_string().contains("more than 1048576 bytes"), "{e}");
         }
         assert_eq!(decompress(&bomb, 64 << 20).unwrap().len(), 64 << 20);
+    }
+
+    /// The bound of ZSTD GeoTIFF chunks (`frames`, given the chunk's size): a stream expanding far
+    /// past it is decoded to that many bytes and no further, by the implementation in use and by
+    /// `ruzstd`. The values decoded are the same either way: only the length shows the bound.
+    #[test]
+    fn frames_decode_no_further_than_their_bound() {
+        // 64 MiB of zeros, then a second frame, in a few kilobytes.
+        let bomb = [pure::compress(&vec![0; 64 << 20], 3).unwrap(), pure::compress(&[1; 100], 3).unwrap()].concat();
+        assert!(bomb.len() < 1 << 20);
+        for max in [0, 1, 4096, 1 << 20] {
+            for (decoder, out) in [("in use", frames(&bomb, max).unwrap()), ("ruzstd", pure::frames(&bomb, max).unwrap())] {
+                assert_eq!(out.len(), max, "{decoder}");
+                assert!(out.iter().all(|&b| b == 0), "{decoder}");
+            }
+        }
+        assert_eq!(frames(&bomb, usize::MAX).unwrap().len(), (64 << 20) + 100);
     }
 
     /// Each implementation reads what the other writes, frames concatenated across them too.

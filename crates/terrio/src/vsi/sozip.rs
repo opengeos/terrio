@@ -724,6 +724,8 @@ impl<S: Write> Write for Deflater<S> {
     }
 }
 
+impl<S: Write> super::Sink for Deflater<S> {}
+
 /// Where compressed data waits until its local header can be written.
 enum Spool {
     Memory(Vec<u8>),
@@ -784,7 +786,7 @@ fn add_member<W: Write>(
     time: (u16, u16),
     options: &SozipOptions,
     extra: Vec<u8>,
-    fill: impl FnOnce(&mut dyn Write) -> Result<u64>,
+    fill: impl FnOnce(&mut dyn super::Sink) -> Result<u64>,
 ) -> Result<(u64, bool)> {
     // Auto inputs can have unknown or stale stat lengths. Flush chunks provisionally;
     // an ordinary Deflate member may contain flush markers without a seek index.

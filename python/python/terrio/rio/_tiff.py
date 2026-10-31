@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from terrio import _terrio
+from terrio.rio._jpeg_quality import guess_jpeg_quality
 from terrio.rio.enums import ColorInterp
 
 # TIFF tags.
@@ -33,9 +34,12 @@ SAMPLES = 277
 ROWS_PER_STRIP = 278
 PLANAR = 284
 COLOR_MAP = 320
+JPEG_TABLES = 347
 TILE_WIDTH = 322
 TILE_LENGTH = 323
 EXTRA_SAMPLES = 338
+SAMPLE_FORMAT = 339
+INK_SET = 332
 PIXEL_SCALE = 33550
 TIEPOINTS = 33922
 MODEL_TRANSFORMATION = 34264
@@ -150,6 +154,8 @@ class Structure:
     tags: dict[str, str] = field(default_factory=dict)
     namespaces: dict[str, dict[str, str]] = field(default_factory=dict)
     band_tags: list[dict[str, str]] = field(default_factory=list)
+    # Each band's metadata domains other than the default one (JPEG 2000's IMAGE_STRUCTURE).
+    band_namespaces: list[dict[str, dict[str, str]]] = field(default_factory=list)
     descriptions: list[str | None] = field(default_factory=list)
     scales: list[float] = field(default_factory=list)
     offsets: list[float] = field(default_factory=list)
@@ -286,6 +292,30 @@ def default_structure(raster: Any) -> Structure:
     geolocation = getattr(raster, "geolocation", None)
     if geolocation:
         s.namespaces["GEOLOCATION"] = dict(geolocation)
+    # Descriptions and metadata of formats that report them per band (GRIB).
+    for b, md in enumerate((getattr(raster, "band_metadata", None) or [])[:n]):
+        s.descriptions[b] = md.get("description")
+        s.band_tags[b] = dict(md.get("items") or {})
+        if md.get("color_interp"):
+            s.colorinterp[b] = ColorInterp[md["color_interp"].lower()]
+    # The color table of band 1 (a paletted PNG's), as GDAL reports it.
+    table = getattr(raster, "color_table", None)
+    if table:
+        s.colormap = {i: (r, g, b, a) for i, (r, g, b, a) in enumerate(table)}
+    for b, value in enumerate((getattr(raster, "band_nodata", None) or [])[:n]):
+        s.band_nodata[b] = value
+    # Metadata domains other than the default one, of the dataset (band 0) and of bands, for the
+    # formats that report them (JPEG 2000's IMAGE_STRUCTURE).
+    s.band_namespaces = [{} for _ in range(n)]
+    for band, domain, items in getattr(raster, "metadata_domains", None) or []:
+        if band == 0:
+            s.namespaces.setdefault(domain, {}).update(items)
+        elif band <= n:
+            s.band_namespaces[band - 1].setdefault(domain, {}).update(items)
+    # JPEG 2000: the block GDAL's JP2OpenJPEG driver gives (the tile, mostly).
+    block = getattr(raster, "block_size", None)
+    if getattr(raster, "driver", None) == "JP2" and block:
+        s.block_shape = (block[1], block[0])
     # The driver's metadata: band items (`BAND_<n>#<key>`), and the dataset's (not subdatasets,
     # which are the `SUBDATASETS` domain).
     per_band_nodata = False
@@ -357,15 +387,31 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
         name = {1: "LERC_DEFLATE", 2: "LERC_ZSTD"}.get(int(lerc_extra), "LERC")
     s.compression = name
     photometric = _first(t.get(PHOTOMETRIC), 1)
+    # 8-bit CMYK, which GDAL reads through libtiff's RGBA interface as RGBA (`GTiffRGBABand`), as
+    # terrio's reader does (`reads_cmyk_as_rgba` in cog.rs). GDAL reports its SOURCE_COLOR_SPACE
+    # then only.
+    samples = _first(t.get(SAMPLES), 1)
+    cmyk_as_rgba = (
+        photometric == 5
+        and _first(t.get(BITS), 1) == 8
+        and _first(t.get(SAMPLE_FORMAT), 1) == 1
+        and _first(t.get(INK_SET), 1) == 1
+        and samples >= 4
+        and (_first(t.get(PLANAR), 1) != 2 or samples == 4)
+        and n == 4
+    )
     if photometric == 6 and code == 7:
         s.source_color_space = "YCbCr"
-    elif photometric == 5:
+    elif cmyk_as_rgba:
         s.source_color_space = "CMYK"
     s.interleave = "BAND" if n == 1 or _first(t.get(PLANAR), 1) == 2 else "PIXEL"
     image_structure: dict[str, str] = {}
     if name:
         image_structure["COMPRESSION"] = "YCbCr JPEG" if s.source_color_space == "YCbCr" else name
     image_structure["INTERLEAVE"] = s.interleave
+    # GDAL 3.12.1 `GTiffDataset::OpenOffset`: WhiteIsZero images, whatever their bits.
+    if photometric == 0:
+        image_structure["MINISWHITE"] = "YES"
     predictor = _first(t.get(317), 1)
     if predictor > 1:
         image_structure["PREDICTOR"] = str(predictor)
@@ -375,6 +421,17 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
     if isinstance(ghost, str) and "LAYOUT=IFDS_BEFORE_DATA" in ghost:
         if "KNOWN_INCOMPATIBLE_EDITION=YES" not in ghost:
             image_structure["LAYOUT"] = "COG"
+    # libtiff's default BitsPerSample is 1, as the reader's.
+    bits = _first(t.get(BITS), 1)
+    tables = t.get(JPEG_TABLES)
+    if code == 7 and isinstance(tables, (bytes, list)):
+        # The JPEG quality and tables mode GDAL guesses from the JPEGTables tag.
+        # The JPEGTables tag is UNDEFINED: bytes, or a list of ints.
+        jpeg_tables = bytes(tables)  # type: ignore[arg-type]
+        quality, _, huffman = guess_jpeg_quality(jpeg_tables, n, bits, photometric)
+        if quality > 0:
+            image_structure["JPEG_QUALITY"] = str(quality)
+            image_structure["JPEGTABLESMODE"] = str(1 | (2 if huffman else 0))
     s.namespaces["IMAGE_STRUCTURE"] = image_structure
 
     # Color interpretation, from the photometric interpretation and the extra samples.
@@ -382,7 +439,10 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
     extra: list[Any] = extra_tag if isinstance(extra_tag, list) else []
     ci = [ColorInterp.undefined] * n
     base = 0
-    if photometric in (2, 6) and n >= 3:
+    if cmyk_as_rgba:
+        ci = [ColorInterp.red, ColorInterp.green, ColorInterp.blue, ColorInterp.alpha]
+        base = 4
+    elif photometric in (2, 6) and n >= 3:
         ci[:3] = [ColorInterp.red, ColorInterp.green, ColorInterp.blue]
         base = 3
     elif photometric == 5 and n >= 4:
@@ -392,7 +452,9 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
         ci[0] = ColorInterp.palette
         base = 1
     elif n >= 1:
-        ci[0] = ColorInterp.gray
+        # GDAL 3.12.1 `GTiffRasterBand`: a WhiteIsZero band is undefined (a palette with the color
+        # table it gets below).
+        ci[0] = ColorInterp.undefined if photometric == 0 else ColorInterp.gray
         base = 1
     for i in range(base, n):
         k = i - (n - len(extra)) if len(extra) else -1
@@ -402,7 +464,6 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
 
     # The color table.
     cmap = t.get(COLOR_MAP)
-    bits = _first(t.get(BITS), 8)
     if isinstance(cmap, list) and len(cmap) >= 3 and bits <= 16 and photometric not in (2, 6):
         s.colorinterp[0] = ColorInterp.palette
         m = len(cmap) // 3
@@ -427,6 +488,28 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
             )
         s.colormap = table
 
+    # Samples read as stored (GDAL 3.12.1 `GTiffDataset::OpenOffset`): a WhiteIsZero image of at
+    # most 16 bits gets an inverted gray color table, and a one-band bilevel image without a color
+    # table GDAL's black and white one (`GTiffBitmapBand`); band 1 is then a palette.
+    white_is_zero = photometric == 0 and bits <= 16
+    if s.colormap is None and (bits < 8 or white_is_zero) and photometric not in (2, 5, 6):
+        if photometric == 0:
+            top = (1 << bits) - 1
+            s.colormap = {i: ((255 * (top - i)) // top,) * 3 + (255,) for i in range(top + 1)}
+        elif bits == 1 and n == 1:
+            s.colormap = {0: (0, 0, 0, 255), 1: (255, 255, 255, 255)}
+        if s.colormap is not None:
+            s.colorinterp[0] = ColorInterp.palette
+    # GDAL's band `NBITS` item, for samples narrower than their type (GDAL 3.12.1
+    # `GTiffDataset::OpenOffset`).
+    dtype = str(getattr(raster, "dtype", ""))
+    if (
+        (dtype == "uint8" and bits != 8)
+        or (dtype == "uint16" and bits != 16)
+        or (dtype in ("uint32", "float32") and bits != 32)
+    ):
+        for b in range(n):
+            s.band_namespaces[b].setdefault("IMAGE_STRUCTURE", {})["NBITS"] = str(bits)
     # Metadata: TIFF tags, then GDAL_METADATA items, then AREA_OR_POINT.
     tags: dict[str, str] = {}
     for tag, key in _TIFFTAG_ITEMS:
@@ -442,6 +525,18 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
     xml = t.get(GDAL_METADATA)
     if isinstance(xml, str):
         _apply_gdal_metadata(s, xml, tags)
+    # The unit of a compound CRS's heights is the unit of the bands without one of their own
+    # (GDAL 3.12.1 `GTiffRasterBand::GetUnitType`).
+    vertical_unit = _vertical_unit(getattr(raster, "crs_wkt", None))
+    if vertical_unit:
+        s.units = [u or vertical_unit for u in s.units]
+    if bits == 1 and n == 1:
+        # `GTiffBitmapBand::GetColorInterpretation` is a palette, whatever the file stores.
+        s.colorinterp[0] = ColorInterp.palette
+    if cmyk_as_rgba:
+        # `GTiffRGBABand::GetColorInterpretation` is red, green, blue and alpha, whatever the file
+        # stores.
+        s.colorinterp = [ColorInterp.red, ColorInterp.green, ColorInterp.blue, ColorInterp.alpha]
     if "AREA_OR_POINT" not in tags and GEO_KEYS in t:
         tags["AREA_OR_POINT"] = "Point" if _geokey(t, 1025) == 2 else "Area"
     s.tags = tags
@@ -476,6 +571,21 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
             if _first(ifd.get(WIDTH)) == s.width and _first(ifd.get(HEIGHT)) == s.height:
                 s.has_mask = True
     return s
+
+
+def _vertical_unit(wkt: str | None) -> str | None:
+    """The linear unit of the vertical CRS of a compound CRS, as GDAL names it.
+
+    Args:
+        wkt: The CRS's WKT, or None.
+
+    Returns:
+        str | None: The unit's name (`metre`), or None for other CRSs and an unknown unit.
+    """
+    m = re.search(r'(?:VERT_CS|VERTCRS|VERTICALCRS)\[.*?UNIT\["([^"]*)"', wkt or "")
+    if m is None or m.group(1).lower() == "unknown":
+        return None
+    return m.group(1)
 
 
 def _apply_gdal_metadata(s: Structure, xml: str, tags: dict[str, str]) -> None:

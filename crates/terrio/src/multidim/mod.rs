@@ -392,7 +392,8 @@ impl View {
         let source_shape: Vec<_> = natural.iter().map(|&i| self.axes[i].count).collect();
         let strides = strides(&source_shape)?;
         let permuted: Vec<_> = self.order.iter().map(|axis| strides[natural.iter().position(|a| a == axis).unwrap()]).collect();
-        let mut out = vec![0u8; bytes];
+        // Beside the selection read, as large: allocated fallibly.
+        let mut out = crate::dataset::fallible::filled(bytes, 0u8, "a transposed selection")?;
         for flat in 0..n {
             let mut remaining = flat;
             let mut src = 0;
@@ -430,7 +431,8 @@ pub(crate) fn select_bytes(raw: &[u8], shape: &[usize], selection: &[Selection],
     let output: Vec<_> = selection.iter().map(|s| s.count).collect();
     let n = elements(&output)?;
     let st = strides(shape)?;
-    let mut out = Vec::with_capacity(n.checked_mul(size).ok_or_else(|| bad("array byte length overflows"))?);
+    let mut out = Vec::new();
+    crate::dataset::fallible::reserve(&mut out, n.checked_mul(size).ok_or_else(|| bad("array byte length overflows"))?, "a selection")?;
     for flat in 0..n {
         let mut remaining = flat;
         let mut offset = 0;
@@ -499,6 +501,9 @@ pub fn open(name: &str) -> Result<Dataset> {
         || crate::drivers::zarr::parse_name(name).is_some()
         || crate::drivers::zarr::is_zarr(std::path::Path::new(name))
     {
+        // Opened as Zarr, by its name or its directory's layout: only if the process-wide raster
+        // allow-list has Zarr, as a de-registered GDAL driver opens no store.
+        crate::formats::check_driver_allowed("Zarr", name, crate::formats::Kind::Raster)?;
         return crate::drivers::zarr::md_open(name, None);
     }
     #[cfg(feature = "netcdf-hdf5")]
@@ -547,6 +552,9 @@ pub fn open_zarr_store(files: Vec<(String, Vec<u8>)>) -> Result<Dataset> {
             return Err(bad("in-memory input contains multiple Zarr store roots; provide one store"));
         }
         let prefix = roots.first().map_or("", |s| s.as_str());
+        // Opened as Zarr by its caller, as `memory::open_zarr_store` opens one.
+        let shown = if prefix.is_empty() { "the Zarr store" } else { prefix };
+        crate::formats::check_driver_allowed("Zarr", shown, crate::formats::Kind::Raster)?;
         let mount = Arc::new(crate::memfs::Mount::new(files));
         let root = mount.path().join(prefix).to_string_lossy().to_string();
         crate::drivers::zarr::md_open(&root, Some(mount))
