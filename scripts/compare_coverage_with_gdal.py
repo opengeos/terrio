@@ -77,7 +77,7 @@ def read(path):
         if key in result:
             raise AssertionError(f"duplicated source feature {key}")
         geometry = feature.GetGeometryRef()
-        result[key] = (feature.GetFID(), feature.items(), geometry.Clone() if geometry else None)
+        result[key] = (feature.GetFID(), feature.items(), geometry.Clone() if geometry is not None else None)
     return result, [(f.name, f.GetType(), f.GetSubType()) for f in layer.schema], layer.GetSpatialRef().Clone(), layer.GetGeomType(), layer.GetName()
 
 
@@ -102,11 +102,15 @@ def compare(reference, actual):
         fb, attrs_b, gb = b[key]
         if fa != fb or attrs_a != attrs_b:
             raise AssertionError(f"{key}: source FID or attributes differ: {fa}/{fb}")
+        if (ga is None) != (gb is None):
+            raise AssertionError(f"{key}: null/empty diagnostic geometry differs")
+        if ga is not None and gb is not None and ga.GetGeometryType() != gb.GetGeometryType():
+            raise AssertionError(f"{key}: diagnostic feature geometry type differs")
         empty_a = ga is None or ga.IsEmpty()
         empty_b = gb is None or gb.IsEmpty()
         if empty_a != empty_b or (not empty_a and sorted(edges(ga)) != sorted(edges(gb))):
             raise AssertionError(f"{key}: invalid edge set differs: {ga.ExportToWkt() if ga else None} vs {gb.ExportToWkt() if gb else None}")
-        if ga:
+        if ga is not None:
             points += ga.GetGeometryCount()
     return f"{len(a)} features/{points} invalid lines; exact edge sets, empty schema, output IDs, CRS, type and layer name"
 
@@ -127,14 +131,16 @@ def main():
     gap_right = first.Intersection(rectangle(mid + 5, y0 - 1, x1 + 1, y1 + 1))
     overlap_left = first.Intersection(rectangle(x0 - 1, y0 - 1, mid + 1000, y1 + 1))
     overlap_right = first.Intersection(rectangle(mid - 1000, y0 - 1, x1 + 1, y1 + 1))
-    repeated=first.Clone()
+    repeated = first.Clone()
+
     def repeat_vertex(geometry):
-        if geometry.GetGeometryName()=="LINEARRING":
-            points=geometry.GetPoints()
-            if len(points)>2:
-                points.insert(2,points[1])
+        if geometry.GetGeometryName() == "LINEARRING":
+            points = geometry.GetPoints()
+            if len(points) > 2:
+                points.insert(2, points[1])
                 geometry.Empty()
-                for x,y,*_ in points: geometry.AddPoint_2D(x,y)
+                for x, y, *_ in points:
+                    geometry.AddPoint_2D(x, y)
                 return True
         return any(repeat_vertex(geometry.GetGeometryRef(i)) for i in range(geometry.GetGeometryCount()))
     assert repeat_vertex(repeated)
@@ -149,6 +155,13 @@ def main():
         ("county gap below threshold", [gap_left, gap_right], 5),
         ("county narrow gap", [gap_left, gap_right], 20),
     ]
+    for label, wkt in [
+        ("Z diagnostics", "POLYGON Z ((0 0 1,2 0 2,0 2 3,0 0 1))"),
+        ("M diagnostics", "POLYGON M ((0 0 10,2 0 20,0 2 30,0 0 10))"),
+        ("ZM diagnostics", "POLYGON ZM ((0 0 1 10,2 0 2 20,0 2 3 30,0 0 1 10))"),
+    ]:
+        shape = ogr.CreateGeometryFromWkt(wkt)
+        fixtures.append((label, [shape, shape], 0))
     results = []
     with tempfile.TemporaryDirectory(prefix="terrio-coverage-") as temp:
         root = Path(temp)

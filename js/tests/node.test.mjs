@@ -2800,7 +2800,6 @@ test("validateGpkg reports complete verdicts for bytes and memory paths", {
   assert.throws(() => terrio.validateGpkg(bytes, { unknownOption: true }), /unknown field/);
 });
 
-
 test("checkCoverage uses GDAL schema and flags overlaps and narrow gaps", () => {
   const coverage = (shift) => ({type: "FeatureCollection", features: [
     {type: "Feature", properties: {name: "west"}, geometry: {type: "Polygon", coordinates: [[[0,0],[1,0],[1,2],[0,2],[0,0]]]}},
@@ -2816,4 +2815,13 @@ test("checkCoverage uses GDAL schema and flags overlaps and narrow gaps", () => 
   assert.equal(gap.length, 2);
   assert.ok(gap.every(f => f.geometry.type === "MultiLineString"));
   assert.throws(() => terrio.checkCoverage(coverage(0), {maximumGapWidth: -1}), /maximum_gap_width/);
+});
+
+
+test("checkCoverage emits XY diagnostics for elevated polygons", () => {
+  const geometry = {type: "Polygon", coordinates: [[[0,0,1],[2,0,2],[0,2,3],[0,0,1]]]};
+  const feature = {type: "Feature", properties: {}, geometry};
+  const output = terrio.checkCoverage({type: "FeatureCollection", features: [feature, feature]}).toGeoJSON().features;
+  assert.equal(output.length, 2);
+  assert.ok(output.every(f => f.geometry.coordinates.flat().every(point => point.length === 2)));
 });

@@ -296,6 +296,11 @@ pub(crate) fn decode_geometry(b: &[u8]) -> Option<Geometry> {
     };
     let wkb = b.get(8 + envelope..)?;
     let g = from_wkb(wkb)?;
+    // A flagged-empty blob with nonempty WKB is malformed. Match the envelope
+    // reader so unfiltered reads and rebuilt spatial indexes agree.
+    if flags & 0x10 != 0 && crate::vector::coord_count(&g) != 0 {
+        return None;
+    }
     // An empty point is written as NaN coordinates.
     match &g {
         Geometry::Point(c) if c.x.is_nan() && c.y.is_nan() => None,
@@ -786,6 +791,14 @@ impl Tables for IndexedLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_flag_with_nonempty_wkb_is_rejected_consistently_with_index_envelopes() {
+        let mut blob = super::super::geopackage::gpkg_geometry(&Geometry::point(1., 2.), 4326);
+        blob[3] |= 0x10;
+        assert!(decode_geometry(&blob).is_none());
+        assert!(super::super::gpkg_update::envelope(&blob).is_none());
+    }
 
     #[test]
     fn empty_nonpoint_geometries_keep_their_type_in_geopackage_blobs() {

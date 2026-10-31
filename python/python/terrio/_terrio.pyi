@@ -2227,5 +2227,5 @@ def check_coverage(
     include_valid: bool = False,
     layer: str | None = None,
 ) -> Layer:
-    """Invalid coverage edges, retaining CRS and edge Z/M; empty schema and new IDs."""
+    """Invalid coverage edges, retaining CRS; XY diagnostics, empty schema and new IDs."""
     ...

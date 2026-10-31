@@ -66,3 +66,22 @@ def test_multilayer_input_requires_selection():
     with pytest.raises(ValueError, match="choose one"):
         terrio.check_coverage([valid, overlapping])
     assert len(terrio.check_coverage([valid, overlapping], layer="overlap")) == 2
+
+
+def test_diagnostic_edges_are_xy_even_for_elevated_polygons():
+    geometry = {"type": "Polygon", "coordinates": [[[0, 0, 1], [2, 0, 2], [0, 2, 3], [0, 0, 1]]]}
+    source = {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {}, "geometry": geometry},
+            {"type": "Feature", "properties": {}, "geometry": geometry},
+        ],
+    }
+    output = terrio.check_coverage(source).to_geojson()["features"]
+    assert len(output) == 2
+    assert all(
+        len(point) == 2
+        for feature in output
+        for line in feature["geometry"]["coordinates"]
+        for point in line
+    )

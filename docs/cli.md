@@ -2756,7 +2756,6 @@ an incomplete verdict; this includes the cost of character-class ranges.
 Checks are stricter than GDAL for some malformed geometry, image and metadata
 payloads. See [validation details and known differences](testing.md#geopackage-specification-validation).
 
-
 ### Check polygon coverages
 
 `terrio check-coverage counties.gpkg invalid.gpkg` reports invalid polygon boundary
@@ -2767,13 +2766,16 @@ sufficiently long, nearly parallel edges, following JTS/GEOS coverage validation
 Use a projected CRS when the threshold should represent metres.
 
 Each input polygon must individually be valid; repair it before checking the
-coverage. Polygon and multipolygon features are supported, including holes. Nulls and geometry collections are rejected. The operation
-loads the layer into memory and uses indexed edge and interior tests; it does
+coverage. Polygon and multipolygon features are supported, including holes.
+Nulls and geometry collections are rejected. Gap searches clamp overflowing
+search bounds; unrepresentable projections return an explicit precision error.
+The operation loads the layer into memory and uses indexed edge and interior tests; it does
 not fix or simplify the coverage.
 
 Output is a MultiLineString layer called `invalid_edge`, with
-CRS and original edge coordinates (including Z/M) retained after consecutive
-XY repeats are normalized, matching JTS/GEOS. Source attributes
+CRS and original XY edge coordinates retained after consecutive XY repeats are
+normalized. Diagnostic lines are two-dimensional even for Z/M inputs, matching
+GDAL. Source attributes
 are omitted, and output IDs are sequential from 1, as in GDAL.
 `--include-valid` retains valid source features with empty line geometry,
 maintaining one-to-one correspondence. Multiple selected input layers are checked

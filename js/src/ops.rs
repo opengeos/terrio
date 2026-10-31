@@ -1531,17 +1531,6 @@ pub fn check_coverage(src: JsValue, options: JsValue) -> Result<Dataset, JsError
     let options =
         terrio::ops::coverage::CoverageCheckOptions { maximum_gap_width: args.maximum_gap_width, include_valid: args.include_valid };
     let input = input_layers(&src)?;
-    let multiple = input.len() > 1;
-    let layers = input
-        .iter()
-        .map(|layer| {
-            let mut out = terrio::ops::coverage::check_coverage(layer, &options)?;
-            if multiple {
-                out.name = format!("invalid_edge_{}", layer.name);
-            }
-            Ok(out)
-        })
-        .collect::<terrio::Result<Vec<_>>>()
-        .map_err(js_err)?;
+    let layers = terrio::ops::coverage::check_coverage_layers(&input, &options).map_err(js_err)?;
     Ok(Dataset::from_layers(layers, VectorDriver::GeoJSON))
 }

@@ -707,6 +707,27 @@ mod tests {
     }
 
     #[test]
+    fn append_keeps_typed_empty_geometries_without_indexing_them() {
+        let mut empty = layer("a", 0, 0.);
+        for (i, geometry) in [Some(Geometry::polygon(vec![], vec![])), Some(Geometry::MultiPolygon(vec![])), None].into_iter().enumerate() {
+            empty.push(Feature { fid: i as u64 + 1, geometry, attributes: vec![] });
+        }
+        let mut base = layer("a", 1, 0.);
+        base.push(Feature { fid: 2, geometry: Some(Geometry::point(20., 20.)), attributes: vec![] });
+        let bytes = super::super::geopackage::to_bytes(&[base]).unwrap();
+        let updated = update_bytes(bytes, &[empty], UpdateMode::Append).unwrap();
+        let db = Db::new(updated).unwrap();
+        let all = super::super::gpkg_read::read_db(&db, &["a".into()], None).unwrap();
+        assert_eq!(all[0].features.len(), 5);
+        assert!(matches!(&all[0].features[2].geometry, Some(Geometry::Polygon { exterior, .. }) if exterior.0.is_empty()));
+        assert!(matches!(&all[0].features[3].geometry, Some(Geometry::MultiPolygon(parts)) if parts.is_empty()));
+        assert!(all[0].features[4].geometry.is_none());
+        let selected = super::super::gpkg_read::read_db(&db, &["a".into()], Some((-1., -1., 2., 2.))).unwrap();
+        assert_eq!(selected[0].features.len(), 1);
+        assert!(selected[0].features[0].geometry.as_ref().unwrap().bbox().is_some());
+    }
+
+    #[test]
     fn appends_overwrites_and_adds() {
         let base = super::super::geopackage::to_bytes(&[layer("a", 300, 0.0), layer("b", 5, 0.0)]).unwrap();
         // Append: fields matched ignoring case, extra fields dropped.
