@@ -69,6 +69,24 @@ impl Default for LayerAlgebraOptions {
     }
 }
 
+// Boundary contact alone does not change an untouched collection's type.
+// Use an indexed positive-area intersection test instead of comparing total
+// areas before/after union, whose rounding can differ for disjoint components.
+fn polygon_components_overlap(polygons: &geo::MultiPolygon<f64>) -> bool {
+    let bounds =
+        |polygon: &geo::Polygon<f64>| polygon.bounding_rect().map(|r| AABB::from_corners([r.min().x, r.min().y], [r.max().x, r.max().y]));
+    let index = RTree::bulk_load(
+        polygons.0.iter().enumerate().filter_map(|(i, p)| bounds(p).map(|b| GeomWithData::new(Rectangle::from_aabb(b), i))).collect(),
+    );
+    polygons.0.iter().enumerate().any(|(i, polygon)| {
+        bounds(polygon).is_some_and(|b| {
+            index
+                .locate_in_envelope_intersecting(b)
+                .any(|candidate| candidate.data < i && polygon.intersection(&polygons.0[candidate.data]).unsigned_area() > 0.)
+        })
+    })
+}
+
 /// Combines two layers without modifying either. All seven operations support
 /// polygon, line, point, multipart and collection geometry. Matching CRS is required.
 /// Intersection/union/symmetric-difference/identity include both schemas; clip,
@@ -92,12 +110,12 @@ pub fn layer_algebra(a: &Layer, b: &Layer, operation: LayerAlgebraOperation, opt
                 let mut set = f.geometry.as_ref().map_or_else(Set::default, Set::from_geometry);
                 // A collection is a union of its components. Flattening overlapping
                 // polygons into one even-odd mask would subtract their shared interior.
-                if f.geometry.as_ref().is_some_and(|g| matches!(g, Geometry::GeometryCollection(_))) && set.area.0.len() > 1 {
-                    let united = super::vector_clip::union_regions(std::slice::from_ref(&set.area))?;
-                    if united.unsigned_area() < set.area.unsigned_area() {
-                        set.area = united;
-                        set.collection = false;
-                    }
+                if f.geometry.as_ref().is_some_and(|g| matches!(g, Geometry::GeometryCollection(_)))
+                    && set.area.0.len() > 1
+                    && polygon_components_overlap(&set.area)
+                {
+                    set.area = super::vector_clip::union_regions(std::slice::from_ref(&set.area))?;
+                    set.collection = false;
                 }
                 Ok(set)
             })
@@ -759,6 +777,28 @@ mod tests {
             let actual = Set::from_geometry(result.features[0].geometry.as_ref().unwrap());
             let expected = Set::from_geometry(a.features[0].geometry.as_ref().unwrap());
             assert_eq!(actual.area.xor(&expected.area).unsigned_area(), 0.);
+        }
+    }
+    #[test]
+    fn touching_polygon_collections_do_not_become_multipolygons() {
+        for x in [0., 0.1, 100_000_000.1] {
+            let polygon = |left: f64| Geometry::Polygon {
+                exterior: wbvector::Ring(vec![
+                    Coord::xy(left, 0.1),
+                    Coord::xy(left + 1., 0.1),
+                    Coord::xy(left + 1., 1.1),
+                    Coord::xy(left, 1.1),
+                    Coord::xy(left, 0.1),
+                ]),
+                interiors: vec![],
+            };
+            let a = layer("a", Geometry::GeometryCollection(vec![polygon(x), polygon(x + 1.)]), 1);
+            let b = layer("b", polygon(-10.), 2);
+            assert!(!polygon_components_overlap(&Set::from_geometry(a.features[0].geometry.as_ref().unwrap()).area));
+            for op in [LayerAlgebraOperation::Erase, LayerAlgebraOperation::Identity] {
+                let result = layer_algebra(&a, &b, op, &Default::default()).unwrap();
+                assert!(matches!(result.features[0].geometry, Some(Geometry::GeometryCollection(_))));
+            }
         }
     }
     #[test]

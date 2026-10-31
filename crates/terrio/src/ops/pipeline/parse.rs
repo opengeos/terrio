@@ -286,7 +286,7 @@ impl Args {
                 "size" | "resolution" => 2,
                 _ => 1,
             };
-            while parts(&value).len() < count && i < tokens.len() {
+            while parts(&value).len() < count && i < tokens.len() && (!tokens[i].starts_with('-') || tokens[i].parse::<f64>().is_ok()) {
                 value.push(',');
                 value += &tokens[i];
                 i += 1;

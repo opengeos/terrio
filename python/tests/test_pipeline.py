@@ -266,5 +266,25 @@ def test_definition_saves_and_unused_aliases_do_not_convert_inputs():
     assert json.loads(result.output_bytes()["saved.gdalg.json"])["type"] == "gdal_streamed_alg"
     valid = terrio.pipeline("read source", {"source": points(), "unused": object()})
     assert len(valid.dataset.layers[0]) == 2
-    with pytest.raises(terrio.InvalidArgumentError):
+    with pytest.raises(TypeError):
         terrio.pipeline("read unused", {"unused": object()})
+
+
+def test_resolved_aliases_and_original_conversion_exception_types(tmp_path):
+    definition = json.dumps(
+        {
+            "type": "gdal_streamed_alg",
+            "relative_paths_relative_to_this_file": True,
+            "command_line": "gdal vector pipeline read source.geojson",
+        }
+    )
+    result = terrio.pipeline(
+        definition,
+        {str(tmp_path / "source.geojson"): points()},
+        base_file=str(tmp_path / "plan.gdalg.json"),
+    )
+    assert len(result.dataset.layers[0]) == 2
+    with pytest.raises(terrio.NotFoundError):
+        terrio.pipeline(
+            "read missing", {"missing": tmp_path / "missing.geojson"}, input_kind="vector"
+        )

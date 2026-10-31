@@ -184,6 +184,68 @@ def main():
         mask[:2, :3] = 0
         ds.GetRasterBand(1).GetMaskBand().WriteArray(mask)
         ds = None
+        statistics_source = root / "statistics.tif"
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(statistics_source), 2, 2, 1, gdal.GDT_Byte
+        )
+        dataset.SetGeoTransform([0, 1, 0, 2, 0, -1])
+        dataset.SetSpatialRef(crs)
+        statistics_band = dataset.GetRasterBand(1)
+        statistics_band.WriteArray(np.array([[1, 2], [3, 4]], dtype=np.uint8))
+        statistics_band.SetMetadataItem("SOURCE", "sensor")
+        statistics_band.ComputeStatistics(False)
+        statistics_band = None
+        dataset.Close()
+        for label, native_options, reference_options in [
+            ("copy", [], []),
+            ("crop", ["--srcwin", "1", "1", "1", "1"], ["-srcwin", "1", "1", "1", "1"]),
+            ("resize", ["--outsize", "1", "1"], ["-outsize", "1", "1"]),
+            ("type", ["--ot", "Float32"], ["-ot", "Float32"]),
+            (
+                "scale",
+                ["--scale", "1", "4", "0", "255"],
+                ["-scale", "1", "4", "0", "255"],
+            ),
+            ("nodata", ["--a-nodata", "1"], ["-a_nodata", "1"]),
+        ]:
+            row = {"name": "global translate statistics " + label}
+            try:
+                actual = root / f"statistics-{label}-native.tif"
+                reference = root / f"statistics-{label}-gdal.tif"
+                run([binary, "translate", statistics_source, actual, *native_options])
+                dataset = gdal.Translate(
+                    str(reference), str(statistics_source), options=reference_options
+                )
+                dataset.Close()
+                exact, detail = compare_raster(
+                    actual, reference, metadata=label != "nodata"
+                )
+                if label == "nodata":
+                    # Keep owning datasets alive while inspecting their bands.
+                    native_dataset, reference_dataset = (
+                        gdal.Open(str(actual)),
+                        gdal.Open(str(reference)),
+                    )
+                    native_metadata = native_dataset.GetRasterBand(1).GetMetadata()
+                    reference_metadata = reference_dataset.GetRasterBand(
+                        1
+                    ).GetMetadata()
+                    assert native_metadata == {
+                        key: value
+                        for key, value in reference_metadata.items()
+                        if not key.startswith("STATISTICS_")
+                    }
+                    assert "STATISTICS_MINIMUM" in reference_metadata
+                    assert reference_metadata["STATISTICS_MINIMUM"] == "1"
+                    assert native_dataset.GetRasterBand(1).GetNoDataValue() == 1
+                    exact = False
+                    detail += "; explicit metadata policy: native discards stale statistics after nodata assignment; GDAL 3.13.3 retains minimum=1 even though 1 is now nodata"
+                row.update(
+                    status="identical" if exact else "within tolerance", detail=detail
+                )
+            except Exception as error:
+                row.update(status="differs", detail=str(error))
+            results.append(row)
         unreferenced = root / "unreferenced.tif"
         ds = gdal.GetDriverByName("GTiff").Create(
             str(unreferenced), 2, 2, 1, gdal.GDT_Byte

@@ -5,6 +5,7 @@ use terrio::{Error, Result};
 #[derive(clap::Args)]
 pub struct Args {
     /// Load a .gdalg.json definition instead of supplying steps.
+    /// Executes the definition's write and overwrite options, including named checkpoints.
     #[arg(long, conflicts_with = "arguments")]
     load: Option<String>,
     /// Save a GDAL-readable pipeline definition without evaluating the input.

@@ -1121,6 +1121,11 @@ impl LazyRaster {
         if bands == [1] {
             ds.color_table = color_table.clone();
         }
+        if options.overview.is_some() || window != Window::full(lw, lh) {
+            for band in &mut ds.band_metadata {
+                band.items.retain(|(key, _)| !key.starts_with("STATISTICS_"));
+            }
+        }
         Ok(ds)
     }
 

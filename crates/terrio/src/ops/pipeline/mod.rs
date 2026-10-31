@@ -129,21 +129,20 @@ pub struct ReadRequest {
     /// Explicit or auto-detected input family.
     pub kind: InputKind,
 }
-/// A loaded input with any explicit checkpoints from a nested saved pipeline.
+/// A loaded input dataset. Nested checkpoint and write artifacts are discarded.
 pub struct PipelineInput {
     data: PipelineData,
-    artifacts: Vec<Artifact>,
 }
 impl PipelineInput {
-    /// Loads a native path or a saved definition, retaining nested checkpoints.
-    /// This only loads inputs; deferred outputs are not written.
+    /// Loads a native path or a saved definition's evaluated dataset.
+    /// Nested checkpoints and writes are discarded.
     pub fn open(request: &ReadRequest) -> Result<Self> {
         load_path(request, 0)
     }
 }
 impl From<PipelineData> for PipelineInput {
     fn from(data: PipelineData) -> Self {
-        Self { data, artifacts: vec![] }
+        Self { data }
     }
 }
 /// A validated reusable pipeline. Input files are not opened while parsing.
@@ -283,7 +282,6 @@ impl Pipeline {
                     }
                     input.retain(|l| layers.contains(&l.name));
                 }
-                artifacts.extend(loaded.artifacts);
                 data = Some(loaded.data);
                 continue;
             }
@@ -767,6 +765,15 @@ mod tests {
     fn missing_multivalue_option_does_not_consume_the_next_step() {
         let error = Pipeline::parse("read missing ! resize --resolution 10 ! write out.tif").unwrap_err();
         assert!(error.to_string().contains("needs 2 values"), "{error}");
+    }
+    #[test]
+    fn missing_multivalue_options_do_not_consume_following_options() {
+        let error = Pipeline::parse("read alias ! resize --resolution 10 --resampling near").unwrap_err();
+        assert!(error.to_string().contains("needs 2 values"), "{error}");
+        let plan = Pipeline::parse("read alias ! filter --where '' --bbox -1 -2 3 4").unwrap();
+        let Step::Filter(options) = &plan.blocks[1].step else { panic!("filter") };
+        assert_eq!(options.where_clause.as_deref(), Some(""));
+        assert_eq!(options.spatial_filter, Some((-1., -2., 3., 4.)));
     }
     #[test]
     fn vector_reproject_rejects_raster_resampling() {

@@ -253,6 +253,19 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
     let mut res = super::build_raster_data(grid, out, bands.len(), out_nodata.first().copied().flatten(), &srs)?;
     res.raster.metadata = ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     res.band_metadata = bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
+    if win != (0., 0., w, h)
+        || ow != r.cols
+        || oh != r.rows
+        || out_type != r.data_type
+        || o.scale.is_some()
+        || o.exponent.is_some()
+        || o.assign_nodata.is_some()
+    {
+        for band in &mut res.band_metadata {
+            band.items.retain(|(key, _)| !key.starts_with("STATISTICS_"));
+        }
+    }
+
     if o.assign_ullr.is_none() {
         res.gcps = ds
             .gcps

@@ -44,6 +44,7 @@ fn pipeline_is_an_mcp_tool_with_write_annotations() {
     let data: serde_json::Value = serde_json::from_str(&line).unwrap();
     let tool = data["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "pipeline").unwrap();
     assert!(tool["description"].as_str().unwrap().contains("--load"));
+    assert!(tool["description"].as_str().unwrap().split_whitespace().collect::<Vec<_>>().join(" ").contains("write and overwrite options"));
     assert_eq!(tool["annotations"]["readOnlyHint"], false);
     child.kill().unwrap();
     child.wait().unwrap();

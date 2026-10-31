@@ -3277,3 +3277,7 @@ and reuse one returned dataset when repeated access is needed. Native in-place
 raster output also snapshots the returned dataset and write artifact independently,
 which can read the source twice. High-degree line dissolve remains quadratic;
 its segment-neighborhood indexes are rebuilt per segment.
+
+A standalone `!` token is reserved as a step separator even when quoted; use
+`./!` to name a file literally called `!`. Raster bounding boxes round to source
+pixel windows; a box that rounds to an empty window is rejected.

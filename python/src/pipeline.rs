@@ -71,26 +71,32 @@ fn pipeline(
             sources.insert(name, value.unbind());
         }
     }
-    let mut inner = py
-        .detach_result(|| {
-            plan.evaluate_with(|request| {
-                let Some(value) = sources.get(&request.source) else { return PipelineInput::open(request) };
-                Python::attach(|py| -> PyResult<PipelineInput> {
-                    let value = value.bind(py);
-                    if let Ok(raster) = value.cast::<PyRaster>() {
-                        Ok(PipelineData::Raster(raster.try_borrow_mut()?.inner.shared()).into())
-                    } else if let Ok(path) = value.extract::<std::path::PathBuf>() {
-                        let path = path.into_os_string().into_string().map_err(|_| invalid("input paths must be UTF-8"))?;
-                        py.detach_result(|| PipelineInput::open(&ReadRequest { source: path.clone(), resolved: path, kind: request.kind }))
-                            .py()
-                    } else {
-                        Ok(PipelineData::Vector(crate::ops::input_layers(py, value, None)?).into())
-                    }
-                })
-                .map_err(|error| terrio::Error::InvalidArgument(error.to_string()))
+    let mut input_error = None;
+    let result = py.detach_result(|| {
+        plan.evaluate_with(|request| {
+            let key = if sources.contains_key(&request.source) { &request.source } else { &request.resolved };
+            let Some(value) = sources.get(key) else { return PipelineInput::open(request) };
+            Python::attach(|py| -> PyResult<PipelineInput> {
+                let value = value.bind(py);
+                if let Ok(raster) = value.cast::<PyRaster>() {
+                    Ok(PipelineData::Raster(raster.try_borrow_mut()?.inner.shared()).into())
+                } else if let Ok(path) = value.extract::<std::path::PathBuf>() {
+                    let path = path.into_os_string().into_string().map_err(|_| invalid("input paths must be UTF-8"))?;
+                    py.detach_result(|| PipelineInput::open(&ReadRequest { source: path.clone(), resolved: path, kind: request.kind })).py()
+                } else {
+                    Ok(PipelineData::Vector(crate::ops::input_layers(py, value, None)?).into())
+                }
+            })
+            .map_err(|error| {
+                input_error = Some(error);
+                terrio::Error::InvalidArgument("pipeline input conversion failed".into())
             })
         })
-        .py()?;
+    });
+    if let Some(error) = input_error {
+        return Err(error);
+    }
+    let mut inner = result.py()?;
     if write {
         py.detach_result(|| inner.write_outputs()).py()?;
     }
