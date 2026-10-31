@@ -158,7 +158,7 @@ fn validate_rendering(source: &RasterDataset, options: &TileOptions, extension: 
         if !value.is_finite() || value < min || value > max || (crate::ops::is_integer(dtype) && value.fract() != 0.0) {
             return Err(invalid("output_nodata must be finite and representable in the output sample type"));
         }
-        if extension == "tif" && dtype == DataType::F32 && value as f32 as f64 != value {
+        if extension == "tif" && !alpha && dtype == DataType::F32 && value as f32 as f64 != value {
             return Err(invalid("output_nodata must be exactly representable as Float32 for GeoTIFF tiles"));
         }
     }
@@ -580,6 +580,32 @@ mod tests {
         assert!(sink.0.is_empty());
         opts.output_nodata = Some(-999.5);
         assert!(validate_rendering(&source.info.raster, &opts, "tif").is_ok());
+    }
+
+    #[test]
+    fn float32_alpha_tiff_background_may_round_without_a_nodata_tag() {
+        let mut raster = source().read().unwrap();
+        raster.raster.data_type = DataType::F32;
+        raster.raster.data = RasterData::F32(vec![1.; 9]);
+        raster.has_nodata = false;
+        let mut opts = options();
+        opts.format = "GTiff".into();
+        opts.alpha = Some(true);
+        opts.output_nodata = Some(-999.9);
+        let mut sink = Collect::default();
+        let report = generate(&mut crate::LazyRaster::from(raster), &opts, &mut sink).unwrap();
+        assert_eq!(report.written, 4);
+        let mut zero_alpha = false;
+        for (name, bytes) in sink.0 {
+            let tile = crate::memory::open_raster_bytes(bytes, &name).unwrap();
+            assert_eq!(tile.raster.data_type, DataType::F32);
+            assert_eq!(tile.raster.bands, 2);
+            assert!(tile.nodata().is_none());
+            assert_eq!(tile.band_color_interp(2), "Alpha");
+            let n = tile.raster.rows * tile.raster.cols;
+            zero_alpha |= (n..2 * n).any(|i| tile.raster.data.get_f64(i) == 0.);
+        }
+        assert!(zero_alpha, "padded samples retain explicit transparent alpha");
     }
 
     #[test]

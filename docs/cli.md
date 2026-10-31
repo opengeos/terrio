@@ -2803,7 +2803,9 @@ GeoTIFF tiles embed their grids and CRS. Distinct per-band nodata requiring PAM
 sidecars is currently refused for GeoTIFF folder output. The same restriction
 covers a shared Float32 nodata value whose raw value cannot be represented as
 Float32 (for example `-999.9`), because retaining it also requires PAM. Use an
-exactly representable nodata value or translate it before folder tiling.
+exactly representable nodata value or translate it before folder tiling when the
+output retains a nodata tag. With alpha enabled, the explicit background may
+round to Float32 because validity is encoded by alpha and no nodata tag is written.
 Alpha uses 255 for full opacity for Byte, 32-bit integer and floating-point
 samples, 65535 for UInt16 and 32767 for Int16, following
 [GDAL's warp alpha defaults](https://gdal.org/en/stable/doxygen/structGDALWarpOptions.html). Floating
