@@ -76,8 +76,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      # The memory64 module's C code (Zstandard) needs clang 20 or later (js/build.mjs).
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-20
       - name: Build the package as the release does
         run: |
           node js/build.mjs
