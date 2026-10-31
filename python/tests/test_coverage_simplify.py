@@ -150,3 +150,20 @@ def test_appending_mixed_measure_layouts_promotes_the_declaration(tmp_path):
             blobs = db.execute("SELECT geom FROM points ORDER BY fid").fetchall()
             measured_blob = blobs[0 if measured_first else 1][0]
             assert struct.unpack("<d", measured_blob[-8:]) == (3,)
+
+
+def test_ring_direction_matches_gdal_when_feature_order_changes():
+    """GDAL 3.13.3 / GEOS 3.14.1 also reverses the reused first shared span."""
+    for reverse, expected in [(False, [8.0, 8.0]), (True, [8.0, -8.0])]:
+        original = source()
+        if reverse:
+            original["features"].reverse()
+        output = terrio.simplify_coverage(original, 1, preserve_boundary=True)
+        signed = []
+        for feature in output.to_geojson()["features"]:
+            ring = feature["geometry"]["coordinates"][0]
+            signed.append(
+                sum(a[0] * b[1] - a[1] * b[0] for a, b in zip(ring, ring[1:], strict=False)) / 2
+            )
+        assert signed == expected
+        assert len(terrio.check_coverage(output)) == 0

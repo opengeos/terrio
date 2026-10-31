@@ -2895,7 +2895,9 @@ feature type. The pure Rust GeoPackage encoders preserve M values by default, in
 of this option, for native files, memory outputs and streams. Mixed measured
 and unmeasured geometries use optional M declarations, preserving their layouts. Streamed Z flags
 also reflect any coordinate with Z, matching the encoded payload even when the
-first coordinate is two-dimensional; absent ordinates are encoded as zero.
+first coordinate is two-dimensional; absent ordinates are encoded as zero. This
+intentionally changes the default streaming output: later Z values previously
+dropped in that layout now survive, and vertices lacking Z receive `0.0`.
 Ordinary updates retain the in-place transaction path, with the
 existing atomic rewrite fallback when in-place editing is unsupported.
 
@@ -3016,3 +3018,9 @@ decimation factor, with a minimum of one pixel, matching GDAL 3.13.3. When a
 dimension is at least that factor, trailing native rows/columns that do not fill
 a decimated pixel are outside that lower zoom. Maximum zoom covers the full
 source. Output edge tiles may include padding.
+
+Coverage simplification follows GDAL 3.13.3 / GEOS 3.14.1 and JTS when
+reassembling shared edges: exterior/hole vertex direction can change with input
+feature order. Ring direction is not preserved; polygon roles and topology are
+preserved. For example, reversing the two-feature shared-zigzag fixture yields
+signed exterior areas +8 and -8 in both Terrio and GDAL.
