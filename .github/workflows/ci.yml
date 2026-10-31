@@ -251,7 +251,8 @@ jobs:
         run: |
           for target in x86_64-unknown-linux-gnu wasm32-unknown-unknown; do
             crates=$(cargo tree -p terrio-crs -e normal,build --target "$target" --prefix none | cut -d' ' -f1 | sort -u)
-            found=$(echo "$crates" | grep -E '^(cc|cmake|bindgen|zstd-sys)$' || true)
+            # Pure-Rust crates whose names end in -sys are not C dependencies.
+            found=$(echo "$crates" | grep -E '^(cc|cmake|bindgen|pkg-config|cxx-build)$|-sys$' | grep -vE '^(js|web|linux-raw)-sys$' || true)
             if [ -n "$found" ]; then echo "C build dependencies for $target: $found"; exit 1; fi
           done
       - name: The core for WebAssembly

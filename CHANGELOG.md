@@ -8,8 +8,9 @@
   PROJJSON, and more projections. `TransformOptions` has a new public field,
   `promote_to_3d`: struct literals need it or `..Default::default()`.
 - The crate's default build has no C dependency, on native targets as well as
-  WebAssembly. The zstd C library is behind the optional `libzstd` feature, needed
-  only for Zstandard TIFF grids; PROJ's grids are DEFLATE-compressed.
+  WebAssembly. Its default features changed: Zstandard TIFF grids are no longer
+  read unless the optional `libzstd` feature (the zstd C library) is enabled, and
+  such a grid is treated as unavailable. PROJ's grids are DEFLATE-compressed.
 
 ### No C dependencies
 
