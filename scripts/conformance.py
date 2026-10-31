@@ -2155,6 +2155,39 @@ def suite_rpftoc(ctx):
     return suite
 
 
+def suite_zonal_bindings(ctx):
+    """Zonal language surfaces, using GDAL pixel membership and NumPy statistics."""
+    suite = Suite("zonal-bindings", "Remaining analysis bindings", "GDAL 3.13.3 / NumPy",
+                  "Real Tennessee counties on DEM/NLCD grids and Landsat polygon zones: centers/all-touched, multiple rasters/bands, seven statistics, nodata/nulls, source attributes, output CRS and rounding. Counts/nulls exact; floating statistics relative 1e-10 or absolute 1e-9; geometry 1e-12 source degrees or 1e-5 projected metres.")
+    if missing_modules("osgeo", "numpy", "shapely", "terrio"):
+        suite.skipped = "needs current zonal bindings, GDAL 3.13, NumPy and Shapely"
+        return suite
+    import terrio
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000 or not hasattr(terrio, "zonal_stats"):
+        suite.skipped = "needs GDAL >= 3.13 and current zonal bindings"
+        return suite
+    command = [sys.executable, str(SCRIPTS / "compare_zonal_bindings_with_gdal.py"), ctx.data, "--json"]
+    module = ROOT / "js" / "pkg-node" / "terrio.js"
+    node = shutil.which("node") is not None and module.is_file()
+    if node:
+        command += ["--js", module]
+    code, out, err = run(command)
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    expected = 12 if node else 6
+    if len(results) != expected:
+        suite.cases.append(Case("Zonal bindings", "case count", DIFFERS, f"expected {expected} results, got {len(results)}"))
+    for result in results:
+        suite.cases.append(Case("Zonal bindings", result["name"], {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_analysis_bindings(ctx):
     """Real-data analysis results through the installed Python and optional Node APIs."""
     suite = Suite("analysis-bindings", "Analysis language bindings", "GDAL 3.13.3 / OGR / GEOS",
@@ -2657,6 +2690,7 @@ SUITES = OrderedDict(
         ("rpftoc", suite_rpftoc),
         ("footprint", suite_footprint),
         ("analysis-bindings", suite_analysis_bindings),
+        ("zonal-bindings", suite_zonal_bindings),
         ("analysis-output", suite_analysis_output),
         ("arrow", suite_arrow),
         ("gpkg", suite_gpkg),

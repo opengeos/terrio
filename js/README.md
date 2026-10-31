@@ -306,6 +306,32 @@ and reason fields. `makeValid` keeps attributes/IDs/CRS and already-valid Z/M;
 repaired geometry is constructed in XY. These use the CLI's shared Rust engines
 and retain their documented scope and limits.
 
+### Zonal statistics and multipart splitting
+
+```js
+const stats = terrio.zonalStats(zones, [dem, imagery], {
+  bands: [1], prefixes: ["dem", "scene"], stats: ["count", "mean", "median"],
+  allTouched: true, tSrs: "EPSG:3857", decimalPlaces: 2,
+});
+const parts = terrio.singlepart(countries);
+```
+
+Results are vector `Dataset` objects containing every input layer. This follows
+the other JavaScript analysis functions; Python returns one selected `Layer`.
+Zones accept datasets, uploads or GeoJSON. Rasters accept datasets/uploads, one
+or an array; all pixels are materialized, including lazy sources. Options and
+limits match Python/CLI: bands default to `[1]`; count/min/max/mean/sum/population
+stddev default statistics, optional median; center or `allTouched` membership;
+per-raster CRS transforms; nodata/nonfinite exclusion; zero count/null statistics
+for empty zones; output reprojection and 0–15 decimal rounding. Default prefixes
+are `raster1`, `raster2`, etc., producing `PREFIX_bN_STATISTIC`. Explicit prefixes
+must be nonblank, one per raster. Weighted/fractional statistics are unsupported.
+
+`singlepart` recursively splits collections/multipart geometry, preserving
+attributes, Z/M and CRS, and assigns sequential IDs from one per layer. Null and
+empty single geometries remain; empty multipart geometries yield no features.
+Single-layer exports of multi-layer results require explicit layer selection.
+
 ### Pipelines
 
 `pipeline(command, inputs?, options?)` uses the same Rust pipeline engine as the

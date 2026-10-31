@@ -3302,3 +3302,29 @@ test("multi-layer analysis output cannot silently drop layers in single-layer fo
   const restored=terrio.open(result.toBytes("all.topojson"),"all.topojson");
   assert.equal(restored.layerNames().length,2);
 });
+
+test("zonalStats exposes multiple rasters, bands, nodata and membership controls", () => {
+  const raster=terrio.rasterFromArray(new Float32Array([1,2,3,-99,10,20,30,-99]),2,2,[0,1,0,2,0,-1],"EPSG:4326",-99);
+  const zones={type:"FeatureCollection",features:[{type:"Feature",id:7,properties:{zone:"full"},geometry:{type:"Polygon",coordinates:[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}},{type:"Feature",id:8,properties:{zone:"empty"},geometry:null}]};
+  const out=terrio.zonalStats(zones,[raster,raster],{bands:[2,1],prefixes:["a","b"],stats:["count","mean","stddev","median"],decimalPlaces:2,tSrs:"EPSG:3857"});
+  const [a,b]=out.toGeoJSON().features;
+  assert.equal(out.crs,"EPSG:3857");
+  assert.equal(a.properties.a_b2_count,3);assert.equal(a.properties.a_b2_mean,20);
+  assert.equal(a.properties.a_b1_stddev,0.82);assert.equal(a.properties.b_b2_stddev,8.16);
+  assert.equal(b.properties.a_b1_count,0);assert.equal(b.properties.a_b1_mean,null);
+  const small={type:"Polygon",coordinates:[[[0.9,0.9],[1.1,0.9],[1.1,1.1],[0.9,1.1],[0.9,0.9]]]};
+  assert.equal(terrio.zonalStats(small,[raster],{}).toGeoJSON().features[0].properties.raster1_b1_count,0);
+  assert.equal(terrio.zonalStats(small,[raster],{allTouched:true}).toGeoJSON().features[0].properties.raster1_b1_count,3);
+  for(const options of [{prefixes:[]},{prefixes:[" "]},{bands:[]},{bands:[3]},{stats:[]},{stats:["mean","mean"]},{stats:["bad"]},{decimalPlaces:16},{decimalPlaces:NaN}])assert.throws(()=>terrio.zonalStats(zones,[raster],options));
+  assert.throws(()=>terrio.zonalStats(zones,[],{}),/no input rasters/);
+});
+
+
+test("singlepart recursively splits collections, retaining XYZ, attributes and nulls", () => {
+ const source={type:"FeatureCollection",features:[{type:"Feature",properties:{name:"parts"},geometry:{type:"GeometryCollection",geometries:[{type:"MultiPoint",coordinates:[[1,2,3],[4,5,6]]},{type:"MultiLineString",coordinates:[[[0,0,7],[1,1,8]]]}]}},{type:"Feature",properties:{name:"null"},geometry:null},{type:"Feature",properties:{name:"empty"},geometry:{type:"MultiPoint",coordinates:[]}}]};
+ const result=terrio.singlepart(source).toGeoJSON().features;
+ assert.equal(result.length,4);
+ assert.deepEqual(result[0].geometry.coordinates,[1,2,3]);
+ assert.deepEqual(result[2].geometry.coordinates,[[0,0,7],[1,1,8]]);
+ assert.deepEqual(result[2].properties,{name:"parts"});assert.equal(result[3].geometry,null);
+});

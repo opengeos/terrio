@@ -451,3 +451,13 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def analysis_adapters(
+    raster: terrio.Raster, zones: terrio.Layer
+) -> tuple[terrio.Layer, terrio.Layer]:
+    zonal: terrio.Layer = terrio.zonal_stats(
+        zones, [raster], stats=["count", "median"], all_touched=True, decimal_places=2
+    )
+    parts: terrio.Layer = terrio.singlepart(zones)
+    return zonal, parts

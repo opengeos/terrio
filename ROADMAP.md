@@ -236,6 +236,8 @@ commands. Command-group progress:
 
 - [x] Python and WebAssembly contour, footprint, buffer, grouped dissolve, geometry validity
       and repair functions, using the shared Rust engines.
+- [x] Python and WebAssembly zonal statistics and recursive multipart splitting, using the
+      shared Rust engines with explicit eager-raster and dimensional limits.
 - [x] Contour lines with interval/fixed levels, nodata handling and optional elevations in Z;
       multi-raster zonal statistics with GDAL's centre/all-touched pixel rules and per-raster CRS
       transformations; a standalone read-only SQL command using the existing query engine.
