@@ -1,6 +1,11 @@
 """The ordering verifier rejects wrong greedy owners, gaps, leaks and overlaps."""
 
 import sys
+import io
+import json
+from contextlib import redirect_stdout
+from types import SimpleNamespace
+from unittest.mock import patch
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,6 +32,30 @@ class CoverageCleanComparisonTests(unittest.TestCase):
         path.unlink(missing_ok=True)
         write(path, shapes, self.crs)
         return path
+
+    def test_comparison_failures_use_the_conformance_difference_status(self):
+        with (
+            patch.object(sys, "argv", ["comparison", str(self.root), "--json"]),
+            patch.object(comparison, "counties", return_value=([rectangle(0, 0, 2, 2)], self.crs)),
+            patch.object(comparison, "write"),
+            patch.object(
+                comparison,
+                "run",
+                side_effect=RuntimeError("injected comparison failure"),
+            ),
+            patch.object(
+                comparison.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=1, stderr="polygon"),
+            ),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            self.assertEqual(comparison.main(), 1)
+        failures = [
+            row for row in json.loads(output.getvalue()) if "injected" in row["detail"]
+        ]
+        self.assertTrue(failures)
+        self.assertTrue(all(row["status"] == "differs" for row in failures))
 
     def test_gdal_result_has_a_complete_legal_order(self):
         output = self.root / "gdal.geojson"

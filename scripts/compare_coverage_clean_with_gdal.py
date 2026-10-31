@@ -456,7 +456,7 @@ def main():
                             actual, reference, shapes, crs, options, root, source
                         )
                     except Exception as error:
-                        status, detail = "different", str(error)
+                        status, detail = "differs", str(error)
                     results.append({"name": label, "status": status, "detail": detail})
         for name, geometry in [
             ("null", None),
@@ -500,7 +500,7 @@ def main():
                         "both reject non-polygonal active geometry; Terrio creates no output",
                     )
                 except Exception as error:
-                    status, detail = "different", str(error)
+                    status, detail = "differs", str(error)
                 results.append(
                     {
                         "name": f"{name} rejection, {strategy}",
@@ -513,7 +513,7 @@ def main():
     else:
         for r in results:
             print(f"{r['status']}: {r['name']}: {r['detail']}")
-    return int(any(r["status"] == "different" for r in results))
+    return int(any(r["status"] == "differs" for r in results))
 
 
 if __name__ == "__main__":
