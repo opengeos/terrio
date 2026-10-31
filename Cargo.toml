@@ -40,7 +40,9 @@ flatgeobuf = { version = "6", default-features = false }
 # The version flatgeobuf's generated code is built with.
 flatbuffers = "=24.12.23"
 # GeoParquet writing; the same versions wbvector reads GeoParquet with.
-parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
+# Without its Zstandard (the zstd C library): terrio reads Zstandard pages itself
+# (drivers/vector/geoparquet_zstd.rs).
+parquet = { version = "58", default-features = false, features = ["arrow", "snap", "brotli", "flate2-zlib-rs", "lz4", "base64", "simdutf8"] }
 arrow-array = "58"
 arrow-schema = "58"
 # Arrow IPC streams of vector layers; already built for parquet.
@@ -102,7 +104,9 @@ tar = { version = "0.4", default-features = false }
 # POSIX file locks for in-place SQLite updates (Unix).
 libc = "0.2"
 zip = { version = "9", default-features = false, features = ["deflate"] }
-ureq = "3"
+# No TLS provider of its own: terrio supplies `rustls-graviola`, which needs no C compiler.
+ureq = { version = "3", default-features = false, features = ["gzip", "rustls-no-provider", "rustls-webpki-roots"] }
+rustls-graviola = "0.4"
 hmac = "0.13"
 sha2 = "0.11"
 clap = { version = "4", features = ["derive"] }

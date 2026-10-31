@@ -249,8 +249,7 @@ jobs:
           cargo check -p terrio-crs --all-features --target wasm32-unknown-unknown
       - name: The core for WebAssembly
         run: cargo build -p terrio --no-default-features --features geotiff --target wasm32-unknown-unknown
-      # Every default feature but GeoParquet (whose Zstandard is the zstd C library) builds for
-      # WebAssembly without a C compiler (#180).
+      # Every default feature builds for WebAssembly without a C compiler (#180).
       - name: WebAssembly without a C toolchain
         env:
           CC: "false"
@@ -259,7 +258,16 @@ jobs:
           CC_wasm32_unknown_unknown: "false"
         run: >-
           cargo build -p terrio --target wasm32-unknown-unknown --no-default-features
-          --features geotiff,remote,avif,netcdf-hdf5,osm,lzma,flatgeobuf,jp2,lerc,pointcloud,tiles,zarr,sqlite,grib,hecras
+          --features geotiff,parquet,remote,avif,netcdf-hdf5,osm,lzma,flatgeobuf,jp2,lerc,pointcloud,tiles,zarr,sqlite,grib,hecras
+      - name: The default command-line build without a C toolchain
+        env:
+          CC: "false"
+          CXX: "false"
+          AR: "false"
+        run: |
+          found=$(cargo tree -p terrio-cli -e normal,build --prefix none | cut -d' ' -f1 | sort -u | grep -E '^(ring|aws-lc-sys|openssl-sys|zstd-sys|cmake|bindgen)$' || true)
+          if [ -n "$found" ]; then echo "C dependencies: $found"; exit 1; fi
+          cargo build -p terrio-cli
       - name: A GeoTIFF build pulls none of the optional codecs
         run: |
           crates=$(cargo tree -p terrio -e normal --no-default-features --features geotiff --prefix none | cut -d' ' -f1 | sort -u)

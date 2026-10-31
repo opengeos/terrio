@@ -12,6 +12,7 @@ pub mod geojson;
 pub mod geopackage;
 #[cfg(feature = "parquet")]
 pub mod geoparquet;
+mod geoparquet_zstd;
 pub mod gml;
 #[cfg(feature = "sqlite")]
 pub(crate) mod gpkg_edit;

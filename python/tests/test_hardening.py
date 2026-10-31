@@ -72,7 +72,12 @@ def read_limited(action, path, env=None, headroom=HEADROOM):
     Few malloc arenas and threads: each arena reserves 64 MiB of address space, which would
     otherwise measure the thread count rather than the sizes the files declare.
     """
-    env = dict(os.environ if env is None else env, MALLOC_ARENA_MAX="2", RAYON_NUM_THREADS="4", OPENBLAS_NUM_THREADS="1")
+    env = dict(
+        os.environ if env is None else env,
+        MALLOC_ARENA_MAX="2",
+        RAYON_NUM_THREADS="4",
+        OPENBLAS_NUM_THREADS="1",
+    )
     return subprocess.run(
         [sys.executable, "-c", CHILD, str(headroom), action, str(path)],
         capture_output=True,
@@ -89,7 +94,9 @@ REFUSALS = ("exceeds decoded-byte limit", "too large to allocate", "cannot alloc
 
 def assert_raises_allocation_error(p):
     assert p.returncode == 0, f"the reader died (exit code {p.returncode}): {p.stderr[-600:]}"
-    assert p.stdout.startswith("RAISED") and any(r in p.stdout for r in REFUSALS), p.stdout + p.stderr[-600:]
+    assert p.stdout.startswith("RAISED") and any(r in p.stdout for r in REFUSALS), (
+        p.stdout + p.stderr[-600:]
+    )
 
 
 def tiled_tiff(width, height, tile, tiles=1, tile_bytes=None):
@@ -131,10 +138,17 @@ def png_declaring(width, height):
     """A 16-bit RGBA PNG whose header declares `width` x `height` pixels, with one row of data."""
 
     def chunk(kind, body):
-        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+        return (
+            struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+        )
 
     ihdr = struct.pack(">IIBBBBB", width, height, 16, 6, 0, 0, 0)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(b"\0" * 64)) + chunk(b"IEND", b"")
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(b"\0" * 64))
+        + chunk(b"IEND", b"")
+    )
 
 
 def test_a_tiff_chunk_too_large_to_allocate_raises(tmp_path):
@@ -174,7 +188,16 @@ def test_a_jpeg2000_too_large_to_allocate_raises(tmp_path):
     1,024-pixel tiles (10.8 GB), read whole."""
     rasterio = pytest.importorskip("rasterio")
     small = tmp_path / "small.j2k"
-    profile = dict(driver="JP2OpenJPEG", width=1024, height=1024, count=3, dtype="uint8", CODEC="J2K", BLOCKXSIZE=1024, BLOCKYSIZE=1024)
+    profile = dict(
+        driver="JP2OpenJPEG",
+        width=1024,
+        height=1024,
+        count=3,
+        dtype="uint8",
+        CODEC="J2K",
+        BLOCKXSIZE=1024,
+        BLOCKYSIZE=1024,
+    )
     with rasterio.open(small, "w", **profile) as dst:
         dst.write(np.zeros((3, 1024, 1024), "uint8"))
     data = bytearray(small.read_bytes())
@@ -226,7 +249,9 @@ def test_vsi_functions_keep_the_zip_limits_of_a_raster_open(tmp_path, monkeypatc
     member = f"/vsizip/{path}/z.bin"
     out = tmp_path / "out.bin"
     monkeypatch.setenv("TERRIO_ZIP_MAX_SIZE", "1000000")
-    message = re.escape("zip: 'z.bin' and its files hold more than the 1000000 bytes allowed (TERRIO_ZIP_MAX_SIZE)")
+    message = re.escape(
+        "zip: 'z.bin' and its files hold more than the 1000000 bytes allowed (TERRIO_ZIP_MAX_SIZE)"
+    )
     with pytest.raises(RasterioIOError, match=message):
         rio.open(member)
     with pytest.raises(UnsupportedError, match=f"^{message}$"):
@@ -393,7 +418,12 @@ def test_the_allow_list_sees_inside_zip_members(tmp_path):
     with zipfile.ZipFile(tmp_path / "a.zip", "w") as z:
         z.writestr("x.tif", vrt)
     paths = [str(tmp_path / "x.tif"), f"/vsizip/{tmp_path / 'a.zip'}/x.tif"]
-    p = subprocess.run([sys.executable, "-c", ALLOW_LIST_CHILD, *paths], capture_output=True, text=True, timeout=120)
+    p = subprocess.run(
+        [sys.executable, "-c", ALLOW_LIST_CHILD, *paths],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     assert p.returncode == 0, p.stderr[-600:]
     outside, inside = p.stdout.splitlines()
     assert "the VRT driver is not allowed" in outside, outside
@@ -422,7 +452,12 @@ def test_tiff_tags_reads_a_tiff_only_with_gtiff_allowed(tmp_path):
     assert len(terrio._terrio.tiff_tags(str(tif))) == 1
 
     def child(drivers):
-        p = subprocess.run([sys.executable, "-c", TIFF_TAGS_CHILD, str(tif), drivers], capture_output=True, text=True, timeout=120)
+        p = subprocess.run(
+            [sys.executable, "-c", TIFF_TAGS_CHILD, str(tif), drivers],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
         assert p.returncode == 0, p.stderr[-600:]
         return p.stdout.strip()
 
@@ -446,7 +481,9 @@ def tiff_file(entries, data):
             ifd += struct.pack("<HHI", tag, typ, len(values)) + packed.ljust(4, b"\0")
     data_at = at + len(arrays)
     ifd = ifd.replace(struct.pack("<HHII", 324, 4, 1, 0), struct.pack("<HHII", 324, 4, 1, data_at))
-    return b"II*\0" + struct.pack("<I", 8) + bytes(ifd) + struct.pack("<I", 0) + bytes(arrays) + data
+    return (
+        b"II*\0" + struct.pack("<I", 8) + bytes(ifd) + struct.pack("<I", 0) + bytes(arrays) + data
+    )
 
 
 def webp_declaring(width, height):
@@ -462,8 +499,16 @@ def test_a_webp_chunk_too_large_to_allocate_raises(tmp_path):
     tile whose WebP header declares as much (768 MiB of RGB) under 512 MiB of headroom."""
     side = 16368
     entries = [
-        (256, 4, [side]), (257, 4, [side]), (258, 3, [8, 8, 8, 8]), (259, 3, [50001]), (262, 3, [2]),
-        (277, 3, [4]), (284, 3, [1]), (322, 4, [side]), (323, 4, [side]), (338, 3, [0]),
+        (256, 4, [side]),
+        (257, 4, [side]),
+        (258, 3, [8, 8, 8, 8]),
+        (259, 3, [50001]),
+        (262, 3, [2]),
+        (277, 3, [4]),
+        (284, 3, [1]),
+        (322, 4, [side]),
+        (323, 4, [side]),
+        (338, 3, [0]),
     ]
     path = tmp_path / "webp.tif"
     path.write_bytes(tiff_file(entries, webp_declaring(side, side)))
@@ -625,6 +670,7 @@ def test_a_zarr_chunk_of_1_gib_is_read_or_refused_never_aborted(zarr_1_gib_chunk
             assert refused.startswith("RAISED RasterioIOError"), got
             assert "cannot allocate" in refused, got
 
+
 def test_a_rust_panic_is_an_internal_error():
     """A Rust panic reaches Python as `terrio.errors.InternalError`, an `Exception`,
     with "panic" and the panic's text in its message (a fuzz classifier can count them so).
@@ -700,7 +746,7 @@ def test_the_gil_release_scan_sees_every_spelling():
         "/* Python::detach(py, f) */ f()",
         'let s = "py.detach(|| f())";',
         'let s = r#"Python::detach(py, f)"#;',
-        "let c = '\"'; let t = \"detach\";",
+        'let c = \'"\'; let t = "detach";',
         "let detached = 1; let detaching = 2;",
     ]
     for line in quiet:
@@ -837,7 +883,9 @@ def geotiff_on_the_tile_grid(width, height, zoom, tile=256):
             arrays += p
         else:
             ifd += struct.pack("<HHI", tag, typ, len(values)) + p.ljust(4, b"\0")
-    return b"II*\0" + struct.pack("<I", 8) + bytes(ifd) + struct.pack("<I", 0) + bytes(arrays) + data
+    return (
+        b"II*\0" + struct.pack("<I", 8) + bytes(ifd) + struct.pack("<I", 0) + bytes(arrays) + data
+    )
 
 
 def test_a_tile_pyramid_too_wide_to_allocate_raises(tmp_path):
@@ -854,7 +902,9 @@ def test_a_tile_pyramid_too_wide_to_allocate_raises(tmp_path):
     assert not list(tmp_path.glob("*.pmtiles")) and not list(tmp_path.glob(".*.tmp"))
 
 
-def test_tile_archives_of_a_lazy_raster_release_the_gil_through_the_guard(tmp_path, counting_server, monkeypatch):
+def test_tile_archives_of_a_lazy_raster_release_the_gil_through_the_guard(
+    tmp_path, counting_server, monkeypatch
+):
     """A tile archive written from a raster read by window (`Raster.write` of a lazy raster, and
     `convert`, both built a tile row at a time) is written in the panic guard, which releases the
     GIL while the raster is read: a COG served by an HTTP server running as a thread of this
@@ -866,7 +916,9 @@ def test_tile_archives_of_a_lazy_raster_release_the_gil_through_the_guard(tmp_pa
     res = 2 * MAX_GM / 256 / 2**12
     transform = (-MAX_GM + 1000 * 256 * res, res, 0.0, MAX_GM - 700 * 256 * res, 0.0, -res)
     noise = np.random.default_rng(7).integers(0, 256, size=(3, 1024, 1024), dtype="uint8")
-    terrio.Raster.from_array(noise, transform, crs="EPSG:3857").write(str(tmp_path / "served.tif"), driver="COG")
+    terrio.Raster.from_array(noise, transform, crs="EPSG:3857").write(
+        str(tmp_path / "served.tif"), driver="COG"
+    )
     # A copy for `convert`: what the first write read is cached.
     shutil.copyfile(tmp_path / "served.tif", tmp_path / "copy.tif")
     monkeypatch.setenv("TERRIO_HTTP_TIMEOUT", "10")
@@ -910,10 +962,17 @@ def test_tile_archives_are_written_only_from_rasters_with_their_driver_allowed(t
     tif = tmp_path / "x.tif"
     res = 2 * MAX_GM / 256 / 2**10
     transform = (-MAX_GM + 1000 * 256 * res, res, 0.0, MAX_GM - 700 * 256 * res, 0.0, -res)
-    terrio.Raster.from_array(np.full((1, 300, 200), 7, "uint8"), transform, crs="EPSG:3857").write(str(tif))
+    terrio.Raster.from_array(np.full((1, 300, 200), 7, "uint8"), transform, crs="EPSG:3857").write(
+        str(tif)
+    )
 
     def child(drivers):
-        p = subprocess.run([sys.executable, "-c", TILES_CHILD, str(tif), drivers], capture_output=True, text=True, timeout=120)
+        p = subprocess.run(
+            [sys.executable, "-c", TILES_CHILD, str(tif), drivers],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
         assert p.returncode == 0, p.stderr[-600:]
         return p.stdout.splitlines()
 
@@ -927,10 +986,18 @@ def test_tile_archives_are_written_only_from_rasters_with_their_driver_allowed(t
     assert sorted(p.name for p in tmp_path.iterdir()) == ["x.tif"]
     assert child("GTiff") == ["convert WROTE", "write WROTE"] * 2
     names = sorted(p.name for p in tmp_path.iterdir())
-    assert names == ["x.tif", "x.tif.lazy.mbtiles", "x.tif.lazy.pmtiles", "x.tif.mbtiles", "x.tif.pmtiles"]
+    assert names == [
+        "x.tif",
+        "x.tif.lazy.mbtiles",
+        "x.tif.lazy.pmtiles",
+        "x.tif.mbtiles",
+        "x.tif.pmtiles",
+    ]
 
 
-def test_identification_and_content_checks_release_the_gil_through_the_guard(tmp_path, counting_server, monkeypatch):
+def test_identification_and_content_checks_release_the_gil_through_the_guard(
+    tmp_path, counting_server, monkeypatch
+):
     """`identify` and `check_dataset` read in the panic guard
     (`with_warnings`), which releases the GIL while they read: a COG served by an HTTP server
     running as a thread of this process is identified from its first bytes, and a copy is read
@@ -940,7 +1007,9 @@ def test_identification_and_content_checks_release_the_gil_through_the_guard(tmp
     url, stats = counting_server
     noise = np.random.default_rng(7).integers(0, 256, size=(1, 512, 512), dtype="uint8")
     transform = (500000.0, 10.0, 0.0, 4000000.0, 0.0, -10.0)
-    terrio.Raster.from_array(noise, transform, crs="EPSG:32610").write(str(tmp_path / "a.tif"), driver="COG")
+    terrio.Raster.from_array(noise, transform, crs="EPSG:32610").write(
+        str(tmp_path / "a.tif"), driver="COG"
+    )
     shutil.copyfile(tmp_path / "a.tif", tmp_path / "b.tif")
     monkeypatch.setenv("TERRIO_HTTP_TIMEOUT", "10")
     monkeypatch.setenv("TERRIO_HTTP_MAX_RETRY", "0")
@@ -979,10 +1048,17 @@ def test_identification_and_content_checks_see_only_allowed_drivers(tmp_path):
     with GTiff it is identified and read. In a child process: the allow-list is process-wide and
     cannot be lifted."""
     tif = tmp_path / "x.tif"
-    terrio.Raster.from_array(np.full((1, 3, 5), 7, "uint8"), (0.0, 1.0, 0.0, 3.0, 0.0, -1.0), crs="EPSG:4326").write(str(tif))
+    terrio.Raster.from_array(
+        np.full((1, 3, 5), 7, "uint8"), (0.0, 1.0, 0.0, 3.0, 0.0, -1.0), crs="EPSG:4326"
+    ).write(str(tif))
 
     def child(drivers):
-        p = subprocess.run([sys.executable, "-c", INSPECTION_CHILD, str(tif), drivers], capture_output=True, text=True, timeout=120)
+        p = subprocess.run(
+            [sys.executable, "-c", INSPECTION_CHILD, str(tif), drivers],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
         assert p.returncode == 0, p.stderr[-600:]
         return json.loads(p.stdout)
 
@@ -990,7 +1066,12 @@ def test_identification_and_content_checks_see_only_allowed_drivers(tmp_path):
     assert refused["identify"] == [None] and refused["identify bytes"] == [None], refused
     for label in ("check", "check bytes"):
         assert "UnsupportedError" in refused[label] and "not allowed" in refused[label], refused
-    assert child("PNG,GTiff") == {"identify": ["GTiff"], "identify bytes": ["GTiff"], "check": 15, "check bytes": 15}
+    assert child("PNG,GTiff") == {
+        "identify": ["GTiff"],
+        "identify bytes": ["GTiff"],
+        "check": 15,
+        "check bytes": 15,
+    }
 
 
 def test_identify_drivers_is_the_allow_lists_view_and_identify_goes_by_content(tmp_path):
@@ -998,7 +1079,9 @@ def test_identify_drivers_is_the_allow_lists_view_and_identify_goes_by_content(t
     name and first bytes, beside the records of `terrio.identify` (format identification), which
     go by the content."""
     tif = tmp_path / "x.tif"
-    terrio.Raster.from_array(np.zeros((1, 4, 4), "uint8"), (0.0, 1.0, 0.0, 4.0, 0.0, -1.0), crs="EPSG:4326").write(str(tif))
+    terrio.Raster.from_array(
+        np.zeros((1, 4, 4), "uint8"), (0.0, 1.0, 0.0, 4.0, 0.0, -1.0), crs="EPSG:4326"
+    ).write(str(tif))
     shutil.copyfile(tif, tmp_path / "disguised.png")
     assert terrio.identify_drivers(str(tmp_path / "disguised.png")) == (["PNG"], "GTIFF")
     assert [r["driver"] for r in terrio.identify(str(tmp_path / "disguised.png"))] == ["GTiff"]
@@ -1032,10 +1115,21 @@ def test_content_checks_of_uploads_release_the_gil_through_the_guard(tmp_path):
     GIL during the call only if the call releases it: held, the count could not move until the
     call returned."""
     tif = tmp_path / "big.tif"
-    profile = dict(driver="GTiff", width=8192, height=8192, count=1, dtype="uint8", tiled=True,
-                   blockxsize=512, blockysize=512, compress="deflate")
+    profile = dict(
+        driver="GTiff",
+        width=8192,
+        height=8192,
+        count=1,
+        dtype="uint8",
+        tiled=True,
+        blockxsize=512,
+        blockysize=512,
+        compress="deflate",
+    )
     with rio.open(tif, "w", **profile) as dst:
-        dst.write((np.arange(8192 * 8192, dtype="uint32") % 251).astype("uint8").reshape(1, 8192, 8192))
+        dst.write(
+            (np.arange(8192 * 8192, dtype="uint32") % 251).astype("uint8").reshape(1, 8192, 8192)
+        )
     upload = tif.read_bytes()
     counts, stop = [0], threading.Event()
 

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### No C dependencies
+
+- The default builds of the CLI, the Python package, the Rust crates and the JavaScript
+  package have no C dependencies, and CI builds them without a C compiler.
+- `libzstd` is no longer a default feature of `terrio`. Zstandard GeoTIFF and EPT tiles are decoded
+  and written with `ruzstd`, which decodes more slowly and writes at its fastest level (about zstd's
+  level 1) whatever level is asked for. Enable `libzstd` to use the zstd C library.
+- Zstandard GeoParquet is read with the same codec, rather than through the `parquet` crate's zstd.
+- HTTPS uses `rustls-graviola` rather than `ring` on x86-64 and AArch64. It needs a CPU with AES,
+  AVX2, ADX and BMI2 on x86-64 (most since about 2014), and AES, SHA-2 and PMULL on AArch64.
+
 ### Raster dataset masks
 
 - Preserve internal GeoTIFF and `.msk` validity masks in `convert`, including

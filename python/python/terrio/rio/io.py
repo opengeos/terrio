@@ -1590,11 +1590,7 @@ class DatasetReader(DatasetBase):
         for k, b in enumerate(indexes):
             f = flags[b - 1]
             if f & MaskFlags.nodata.value:
-                vals = (
-                    data[k]
-                    if data is not None
-                    else self._io([b], window, buf, resampling)[0]
-                )
+                vals = data[k] if data is not None else self._io([b], window, buf, resampling)[0]
                 nd = self.nodatavals[b - 1]
                 assert nd is not None
                 out[k][is_nodata(vals, nd)] = 0
