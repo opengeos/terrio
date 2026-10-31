@@ -223,6 +223,42 @@ index = terrio.raster_index({"/vsis3/bucket/tile.tif": signed_url})
 
 This stores the credential-free mapping key; readers need their own credentials.
 
+### Contours, footprints and geometry analysis
+
+```python
+lines = terrio.contour(raster, interval=10, with_z=True, field_name="elevation")
+area = terrio.footprint(raster, bands=[1], singlepart=True, attributes={"source": "scene"})
+report = terrio.check_geometry(layer)
+repaired = terrio.make_valid(layer)
+buffered = terrio.buffer(repaired, 100, quadrant_segments=30)
+groups = terrio.dissolve(buffered, fields=["region"])
+```
+
+These functions return a `Layer`. Raster inputs accept a path or open raster,
+including a lazy raster; contour and footprint materialize the pixels for the
+full operation. Contour supports band selection, interval/offset, additional
+fixed levels, nodata override or ignoring nodata, 3D vertices and custom
+elevation/layer names. Footprint supports selected-band union or intersection,
+a mask on the same grid, singlepart output and explicit text attributes. No
+source-path attribute is added automatically in the bindings.
+
+Omitted or empty footprint bands selects every band, combined by union unless
+intersection is requested. Footprint attribute fields are sorted alphabetically.
+Footprint validity uses finite samples and the dataset nodata value. Alpha bands
+and external mask files are not interpreted implicitly; supply an explicit mask
+when those pixels should be excluded.
+
+Vector inputs accept paths, layers, datasets or GeoJSON; pass `layer="name"`
+when the input has several layers. These functions return one selected `Layer`;
+JavaScript deliberately processes all layers and returns a `Dataset`. Shared
+byte exports to single-layer formats now reject multiple layers instead of
+silently writing the first; select a layer explicitly before exporting.
+Buffers use planar CRS units and round
+joins/caps. Dissolve optionally groups by field names. Geometry checks retain
+source geometries and add validity/reason fields. Repair preserves attributes,
+IDs, CRS and already-valid Z/M; repaired geometry is constructed in XY. These
+call the same Rust engines as the CLI and retain their documented limits.
+
 ### Chained processing
 
 `terrio.pipeline(command, inputs=None, *, write=False, base_file=None, input_kind=None)` evaluates

@@ -31,7 +31,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// The single layer an operation works on: `src`'s only layer, or the one named `layer`.
-fn one_layer(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> PyResult<Layer> {
+pub(crate) fn one_layer(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> PyResult<Layer> {
     let mut layers = input_layers(py, src, layer.clone().map(|l| vec![l]))?;
     match layers.len() {
         1 => Ok(layers.remove(0)),

@@ -30,13 +30,13 @@ pub fn unscale(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
 /// JSON can carry non-finite nodata values as strings.
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum NodataValue {
+pub(crate) enum NodataValue {
     Number(f64),
     Text(String),
 }
 
 impl NodataValue {
-    fn number(self) -> Result<f64, JsError> {
+    pub(crate) fn number(self) -> Result<f64, JsError> {
         match self {
             Self::Number(value) => Ok(value),
             Self::Text(text) => {
