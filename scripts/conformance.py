@@ -2009,6 +2009,39 @@ def suite_analysis_output(ctx):
     return suite
 
 
+def suite_analysis_bindings(ctx):
+    """Real-data analysis results through the installed Python and optional Node APIs."""
+    suite = Suite("analysis-bindings", "Analysis language bindings", "GDAL 3.13.3 / OGR / GEOS",
+                  "Real DEM contours (levels, counts, Z, relative length and pixel-scaled Hausdorff distance); imagery footprints; county/road buffers; grouped dissolve; invalid-county diagnostics and repair. Attributes/CRS and valid polygon output are checked. Geometry tolerances and diagnostic wording limits are explicit per case.")
+    if missing_modules("osgeo", "numpy", "shapely", "terrio"):
+        suite.skipped = "needs current terrio Python bindings, GDAL 3.13, NumPy and Shapely"
+        return suite
+    import terrio
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000 or any(not hasattr(terrio, name) for name in ["contour", "footprint", "buffer", "dissolve", "check_geometry", "make_valid"]):
+        suite.skipped = "needs GDAL >= 3.13 and current analysis bindings"
+        return suite
+    command = [sys.executable, str(SCRIPTS / "compare_analysis_bindings_with_gdal.py"), ctx.data, "--json"]
+    module = ROOT / "js" / "pkg-node" / "terrio.js"
+    node = shutil.which("node") is not None and module.is_file()
+    if node:
+        command += ["--js", module]
+    code, out, err = run(command)
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    expected = 16 if node else 8
+    if len(results) != expected:
+        suite.cases.append(Case("Analysis bindings", "case count", DIFFERS, f"expected {expected} results, got {len(results)}"))
+    for result in results:
+        suite.cases.append(Case("Analysis bindings", result["name"], {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_footprint(ctx):
     """Source attributes and multipart/singlepart footprints on real rasters."""
     suite = Suite(
@@ -2472,6 +2505,7 @@ SUITES = OrderedDict(
         ("vector-clip", suite_vector_clip),
         ("vector-dataset", suite_vector_dataset),
         ("footprint", suite_footprint),
+        ("analysis-bindings", suite_analysis_bindings),
         ("analysis-output", suite_analysis_output),
         ("arrow", suite_arrow),
         ("gpkg", suite_gpkg),

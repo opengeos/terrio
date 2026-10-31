@@ -168,6 +168,16 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
     algebra: terrio.Layer = terrio.layer_algebra(layer, layer, "identity")
     _ = algebra.to_geojson()
 
+    contours: terrio.Layer = terrio.contour(raster, interval=10, with_z=True)
+    footprint: terrio.Layer = terrio.footprint(
+        raster, bands=[1], intersection=True, attributes={"source": "typed"}
+    )
+    buffered: terrio.Layer = terrio.buffer(layer, 0.1, quadrant_segments=8)
+    dissolved: terrio.Layer = terrio.dissolve(layer)
+    checked: terrio.Layer = terrio.check_geometry(layer)
+    repaired: terrio.Layer = terrio.make_valid(layer)
+    print(len(contours), len(footprint), len(buffered), len(dissolved), len(checked), len(repaired))
+
     gpkg = str(tmp / "parcels.gpkg")
     layer.write(gpkg)
     reprojected.write(str(tmp / "parcels.geojson"), driver="GeoJSON")

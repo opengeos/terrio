@@ -3147,3 +3147,41 @@ test("pipeline definition saves and unused aliases do not decode inputs", () => 
   assert.equal(Object.getPrototypeOf(outputs),Object.prototype);
   assert.throws(()=>terrio.pipeline("read unused",{unused:invalid}),/invalid|supported|recogniz|format/i);
 });
+
+test("contour exposes band selection, elevation fields and 3D vertices", () => {
+  const source=terrio.rasterFromArray(new Float32Array([0,10,0,10,0,20,0,20]),2,2,[0,1,0,2,0,-1],"EPSG:4326");
+  const result=terrio.contour(source,{band:2,levels:[10],withZ:true,fieldName:"height",layerName:"lines"}).toGeoJSON();
+  assert.equal(result.features.length,1);
+  const line=result.features[0];assert.equal(line.properties.height,10);
+  assert.ok(line.geometry.coordinates.every(p=>Math.abs(p[0]-1)<1e-6 && p[2]===10));
+  assert.deepEqual([Math.min(...line.geometry.coordinates.map(p=>p[1])),Math.max(...line.geometry.coordinates.map(p=>p[1]))],[0,2]);
+  assert.throws(()=>terrio.contour(source,{}),/interval or/);
+  assert.throws(()=>terrio.contour(source,{interval:10,nodata:-9999,ignoreNodata:true}),/cannot be used together/);
+});
+
+test("footprint exposes mask, band combination and explicit attributes", () => {
+  const source=terrio.rasterFromArray(new Uint8Array([1,0,0,0,0,1,0,0]),2,2,[0,1,0,2,0,-1],"EPSG:4326",0);
+  const geo=result=>result.toGeoJSON();
+  const both=geo(terrio.footprint(source,{singlepart:true,attributes:{source:"test"}}));
+  assert.equal(both.features.length,1);assert.deepEqual(both.features[0].properties,{source:"test"});
+  assert.equal(geo(terrio.footprint(source,{intersection:true})).features.length,0);
+  const mask=terrio.rasterFromArray(new Uint8Array([1,0,0,0]),2,2,[0,1,0,2,0,-1],"EPSG:4326");
+  const selected=geo(terrio.footprint(source,{mask,bands:[1]}));
+  const points=selected.features[0].geometry.coordinates[0][0].map(p=>p.join(","));
+  assert.deepEqual(new Set(points),new Set(["0,1","1,1","1,2","0,2"]));
+});
+
+test("geometry checks, repairs, buffer and grouped dissolve use the shared engines", () => {
+  const geo=result=>result.toGeoJSON();
+  const source={type:"FeatureCollection",features:[{type:"Feature",properties:{group:"a"},geometry:{type:"Polygon",coordinates:[[[0,0],[2,2],[0,2],[2,0],[0,0]]]}}]};
+  const before=geo(terrio.checkGeometry(source)).features[0];
+  assert.equal(before.properties.is_valid,false);assert.notEqual(before.properties.valid_reason,"Valid Geometry");
+  const after=geo(terrio.checkGeometry(terrio.makeValid(source))).features[0];
+  assert.equal(after.properties.is_valid,true);assert.equal(after.properties.group,"a");
+  assert.deepEqual(before.geometry,source.features[0].geometry);
+  const points={type:"FeatureCollection",features:[[0,"a"],[1,"a"],[5,"b"]].map(([x,group])=>({type:"Feature",properties:{group},geometry:{type:"Point",coordinates:[x,0]}}))};
+  const buffered=terrio.buffer(points,1,{quadrantSegments:4});assert.equal(geo(buffered).features.length,3);
+  assert.equal(geo(terrio.dissolve(buffered,{fields:["group"]})).features.length,2);
+  assert.ok(geo(terrio.checkGeometry(buffered)).features.every(f=>f.properties.is_valid));
+  assert.throws(()=>terrio.buffer(points,1,{quadrantSegments:0}));
+});
