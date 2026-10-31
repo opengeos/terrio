@@ -182,7 +182,7 @@ impl ClipRegion {
 /// Output feature IDs are sequential from 1, including after multipart splitting.
 /// Invalid geometries and explicit known/unknown CRS mismatches are errors.
 /// Region vertices are reprojected without densification; edges are straight in
-/// the input CRS after transformation, matching GDAL vector clipping.
+/// the input CRS after transformation, matching GDAL 3.13.3 vector clipping.
 pub fn clip(layer: &Layer, region: &ClipRegion) -> Result<Layer> {
     require_valid(&region.geometry, 0)?;
     let target = SpatialRef::from_layer(layer);
@@ -356,15 +356,17 @@ impl Mask {
             let segment_index = RTree::bulk_load(
                 segments.iter().enumerate().map(|(i, l)| GeomWithData::new(Rectangle::from_aabb(envelope(*l)), i)).collect(),
             );
+            let on_line = |c: &Coord| {
+                segment_index
+                    .locate_in_envelope_intersecting(AABB::from_point([c.x, c.y]))
+                    .any(|entry| segments[entry.data].intersects(&point(c)))
+            };
+            out.retain(|g| !matches!(g, Geometry::Point(c) if on_line(c)));
             let point_key = |c: &Coord| [if c.x == 0.0 { 0 } else { c.x.to_bits() }, if c.y == 0.0 { 0 } else { c.y.to_bits() }];
             let mut points: HashSet<_> =
                 out.iter().filter_map(|g| if let Geometry::Point(c) = g { Some(point_key(c)) } else { None }).collect();
             for c in contacts {
-                if !segment_index
-                    .locate_in_envelope_intersecting(AABB::from_point([c.x, c.y]))
-                    .any(|entry| segments[entry.data].intersects(&point(&c)))
-                    && points.insert(point_key(&c))
-                {
+                if !on_line(&c) && points.insert(point_key(&c)) {
                     out.push(Geometry::Point(c));
                 }
             }
@@ -610,9 +612,13 @@ mod tests {
     }
     #[test]
     fn later_line_contacts_do_not_duplicate_retained_segments() {
-        let input = layer("MULTILINESTRING ((-1 0,3 0),(-1 1,1 -1))", None);
-        let out = clip(&input, &bbox()).unwrap();
-        assert_eq!(out.features[0].geometry, Some(geometry("LINESTRING (0 0,2 0)")));
+        for (input, expected) in [
+            ("MULTILINESTRING ((-1 0,3 0),(-1 1,1 -1))", "LINESTRING (0 0,2 0)"),
+            ("MULTILINESTRING ((-1 -1,0 0),(-1 0,1 0))", "LINESTRING (0 0,1 0)"),
+        ] {
+            let out = clip(&layer(input, None), &bbox()).unwrap();
+            assert_eq!(out.features[0].geometry, Some(geometry(expected)), "{input}");
+        }
     }
     #[test]
     fn points_include_outer_and_hole_boundaries_but_not_hole_interiors() {

@@ -191,11 +191,11 @@ def remote_raster_template(data, root, terrio):
             if match:
                 self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
             self.end_headers()
+            counts['bytes'] += end-start+1
+            counts['gets'] += 1
             with raster.open('rb') as stream:
                 stream.seek(start)
                 self.wfile.write(stream.read(end-start+1))
-            counts['bytes'] += end-start+1
-            counts['gets'] += 1
     reference, actual = root/'remote-ref.geojson', root/'remote-out.geojson'
     run(['gdal','vector','clip',source,reference,'--like',raster])
     with ThreadingHTTPServer(('127.0.0.1',0),Handler) as server:
