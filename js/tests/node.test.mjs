@@ -2513,6 +2513,12 @@ test("palette conversion APIs preserve colors, masks and serialized tables", () 
 test("masked toBytes reprojection is refused explicitly", () => {
   const bytes = new Uint8Array(Buffer.from("SUkqAAgAAAANAAABAwABAAAAAgAAAAEBAwABAAAAAgAAAAIBAwABAAAACAAAAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAA8gAAABUBAwABAAAAAQAAABYBAwABAAAAAgAAABcBBAABAAAABAAAABwBAwABAAAAAQAAAFMBAwABAAAAAQAAAA6DDAADAAAAqgAAAIKEDAAGAAAAwgAAAPYAAAAAAAAAAADwPwAAAAAAAPA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAABAQEBDQD+AAQAAQAAAAQAAAAAAQMAAQAAAAIAAAABAQMAAQAAAAIAAAACAQMAAQAAAAEAAAADAQMAAQAAAAgAAAAGAQMAAQAAAAQAAAARAQQAAQAAAJgBAAAVAQMAAQAAAAEAAAAWAQMAAQAAAAIAAAAXAQQAAQAAAA0AAAAcAQMAAQAAAAEAAAA9AQMAAQAAAAEAAABTAQMAAQAAAAEAAAAAAAAAeJwBAgD9/0DAAUIBAQ==", "base64"));
   const dataset = terrio.open(bytes, "masked.tif");
+  // GDAL 3.13.2: the full-resolution path and repeated-source compositing use the mask.
+  for (const source of [dataset, bytes, [dataset, dataset]]) {
+    const warped = terrio.warp(source, {ts: [2, 2], overview: "NONE"});
+    assert.deepEqual([...warped.readBand(1)], [0, 1, 1, 1]);
+    warped.free();
+  }
   assert.throws(() => dataset.toBytes("output.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
   const copy = terrio.open(dataset.toBytes("output.tif"), "copy.tif");
   assert.throws(() => copy.toBytes("reprojected.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);

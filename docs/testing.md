@@ -257,6 +257,31 @@ python -m pytest python/tests/test_vector_grid.py
 node --test --test-name-pattern='vectorGrid' js/tests/node.test.mjs
 ```
 
+### Raster dataset masks against GDAL
+
+```sh
+cargo test -p terrio-cli --test raster_masks
+cargo test -p terrio --lib masked_cogs_written_in_rows
+python -m pytest python/tests/test_dataset_masks.py
+python scripts/conformance.py ../terrio-data --only raster-masks --strict
+```
+
+The `raster-masks` suite compares synthetic Byte and real Landsat inputs with
+internal and `.msk` masks: whole conversion, window/overview extraction, five
+COG overview resamplers, and single-source, multiple-source and cutline warps.
+Masks, types, nodata, CRS and geotransforms must agree exactly. Byte bilinear and
+average warps from a forced overview permit one value of rounding difference;
+those cases must also match GDAL's `-wt Float32` output exactly. The same rounding
+difference occurs without a source mask. GDAL 3.13.2 ignores a per-dataset mask
+when adding a cutline, so those references supply the same binary mask as alpha
+and compare the data bands exactly (or within the stated Byte rounding bound).
+
+A masked Landsat COG served locally transferred 283,197 bytes in six GETs for
+whole conversion, 147,456 bytes in three GETs for a 17x19 window, and 65,536 bytes
+in two GETs for a 16x16 window of its second overview. Each read one source COG;
+the suite counts actual payload bytes and requires small reads to transfer less
+than whole conversion. These are fixture measurements, not universal bounds.
+
 ## Build size and iteration speed
 
 Development and test builds omit debug symbols by default. Enable full debugger

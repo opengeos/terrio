@@ -1486,6 +1486,17 @@ fn warp_data_with_storage(
     initial: Option<&RasterData>,
     storage: DataType,
 ) -> Result<RasterDataset> {
+    warp_data_masked(p, sources, o, initial, storage, &[])
+}
+
+fn warp_data_masked(
+    p: &Plan<'_>,
+    sources: &[&RasterDataset],
+    o: &WarpOptions,
+    initial: Option<&RasterData>,
+    storage: DataType,
+    masks: &[Option<Vec<bool>>],
+) -> Result<RasterDataset> {
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     // The output, in its type: chunks are warped into `f64` rows, then stored (the values are
@@ -1515,15 +1526,24 @@ fn warp_data_with_storage(
 
     for (k, s) in p.srcs.iter().enumerate() {
         let t = p.transformer(k)?;
-        let (ctx, chunks, storage) = p.context(k, &t, o);
+        let (mut ctx, chunks, mut storage) = p.context(k, &t, o);
         t.check_policy()?;
         let nodata = p.src_nodata(k, o);
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
         let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&sources[k].raster, b)).collect();
-        let cut_mask = match &o.cutline {
+        let mut cut_mask = match &o.cutline {
             Some(c) => Some(cutline_mask(c, s)?),
             None => None,
         };
+        if let Some(mask) = masks.get(k).and_then(Option::as_ref) {
+            if let Some(cut) = &mut cut_mask {
+                cut.iter_mut().zip(mask).for_each(|(valid, mask)| *valid &= mask);
+            } else {
+                cut_mask = Some(mask.clone());
+            }
+            ctx.global_validity = true;
+            storage.src_masked = true;
+        }
         let valid = validity(&src_bands, &nodata, unified, cut_mask);
         // The source's bands in their type: the kernels are compiled for each (no conversion of
         // the bands, and no dispatch on the type per pixel).
@@ -1610,7 +1630,7 @@ pub fn warp_lazy(src: &mut crate::LazyRaster, o: &WarpOptions) -> Result<RasterD
 }
 
 fn warp_reader(src: &mut dyn WarpSource, o: &WarpOptions) -> Result<RasterDataset> {
-    warp_reader_selected(src, o, None, None, false, None, false)
+    warp_reader_selected(src, o, None, None, false, None)
 }
 
 /// Serialized VRT working type: source conversion happens before validity and resampling.
@@ -1625,12 +1645,12 @@ pub(crate) fn warp_lazy_bands_working(
     if bands.is_empty() || bands.iter().any(|b| *b == 0 || *b > src.band_count()) {
         return Err(Error::InvalidArgument("invalid source band selection".into()));
     }
-    warp_reader_selected(src, o, Some(bands), working, unified_sink, source_overview, false)
+    warp_reader_selected(src, o, Some(bands), working, unified_sink, source_overview)
 }
 
 /// Windowed renderer used by tile generation when a source carries a dataset mask.
 pub(crate) fn warp_reader_masked(src: &mut dyn WarpSource, options: &WarpOptions) -> Result<RasterDataset> {
-    warp_reader_selected(src, options, None, None, false, None, true)
+    warp_reader(src, options)
 }
 
 fn warp_reader_selected(
@@ -1640,7 +1660,6 @@ fn warp_reader_selected(
     working: Option<DataType>,
     unified_sink: bool,
     source_overview: Option<usize>,
-    dataset_mask: bool,
 ) -> Result<RasterDataset> {
     if o.cutline.is_some() {
         if selection.is_some() || working.is_some() {
@@ -1680,7 +1699,7 @@ fn warp_reader_selected(
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     let t = p.transformer(0)?;
-    let (ctx, chunks, mut storage) = p.context(0, &t, o);
+    let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
     let nodata = p.src_nodata(0, o);
     if working.is_some() && nodata.iter().any(Option::is_some) {
         storage.avoid_nodata = Some(bands == 1 || !unified_sink);
@@ -1702,18 +1721,11 @@ fn warp_reader_selected(
             window.raster.data_type = dtype;
         }
         let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
-        let mask = if dataset_mask {
-            src.read_mask(crate::Window::new(c.sx, c.sy, c.sw, c.sh), read_options.overview)?
-                .map(|mask| {
-                    if mask.len() != c.sw * c.sh {
-                        return Err(Error::InvalidData("source mask dimensions do not match the window".into()));
-                    }
-                    Ok(mask.into_iter().map(|v| v != 0).collect())
-                })
-                .transpose()?
-        } else {
-            None
-        };
+        let mask = source_mask(src, crate::Window::new(c.sx, c.sy, c.sw, c.sh), read_options.overview)?;
+        if mask.is_some() {
+            ctx.global_validity = true;
+            storage.src_masked = true;
+        }
         let valid = validity(&src_bands, &nodata, unified, mask);
         let sn = c.sw * c.sh;
         // The chunks partition the output: each finds it at its initial value.
@@ -1778,7 +1790,9 @@ pub fn warp_sources(sources: &mut [&mut dyn WarpSource], o: &WarpOptions) -> Res
         result
     }
     // Bound nested shared-reader guards for very large in-memory mosaics.
+    let masked = sources.iter_mut().map(|s| s.has_mask()).collect::<Result<Vec<_>>>()?;
     if sources.len() <= 128
+        && !masked.iter().any(|m| *m)
         && let Some(output) = memory(sources, &[], o)?
     {
         return Ok(output);
@@ -1790,13 +1804,27 @@ pub fn warp_sources(sources: &mut [&mut dyn WarpSource], o: &WarpOptions) -> Res
     let refs: Vec<_> = info.iter().map(|s| &s.raster).collect();
     let mut p = Plan::new(&refs, o)?;
     let mut data = Vec::with_capacity(sources.len());
+    let mut masks = Vec::with_capacity(sources.len());
     for (k, source) in sources.iter_mut().enumerate() {
         let overview = p.select_overview(k, &info[k].overviews, o)?;
         let grid = p.srcs[k].grid;
         data.push(source.read_window(crate::Window::full(grid.width, grid.height), &crate::WindowOptions { overview, bands: Vec::new() })?);
+        masks.push(source_mask(*source, crate::Window::full(grid.width, grid.height), overview)?);
     }
     let refs: Vec<_> = data.iter().collect();
-    warp_data(&p, &refs, o, None)
+    warp_data_masked(&p, &refs, o, None, p.out_type, &masks)
+}
+
+fn source_mask(source: &mut dyn WarpSource, window: crate::Window, overview: Option<usize>) -> Result<Option<Vec<bool>>> {
+    source
+        .read_mask(window, overview)?
+        .map(|mask| {
+            if mask.len() != window.width * window.height {
+                return Err(Error::InvalidData("source mask dimensions do not match the window".into()));
+            }
+            Ok(mask.into_iter().map(|v| v != 0).collect())
+        })
+        .transpose()
 }
 
 /// Opens and warps paths with lazy source reads and stored overview selection.
@@ -1891,7 +1919,11 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let w = grid.width;
     let t = p.transformer(0)?;
-    let (ctx, chunks, storage) = p.context(0, &t, o);
+    let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
+    if src.has_mask() {
+        ctx.global_validity = true;
+        storage.src_masked = true;
+    }
     t.check_policy()?;
     let nodata = p.src_nodata(0, o);
     let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
@@ -1949,15 +1981,16 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
         chunks.len(),
         |i| {
             let c = &chunks[i];
-            src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &crate::WindowOptions { overview, bands: Vec::new() })
+            let window = crate::Window::new(c.sx, c.sy, c.sw, c.sh);
+            Ok((src.read_window(window, &crate::WindowOptions { overview, bands: Vec::new() })?, source_mask(&mut src, window, overview)?))
         },
-        |i, window| {
+        |i, (window, mask)| {
             let c = &chunks[i];
             // The chunk's part of the output, as `f64`: the output's initial value (the chunks of
             // a source don't overlap), warped.
             let mut staged: Vec<Vec<f64>> = fill.iter().map(|fill| vec![*fill; c.dw * c.dh]).collect();
             let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
-            let valid = validity(&src_bands, &nodata, unified, None);
+            let valid = validity(&src_bands, &nodata, unified, mask);
             let sn = c.sw * c.sh;
             crate::pixel::with_data!(&window.raster.data, v => {
                 let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();

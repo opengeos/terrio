@@ -2110,7 +2110,8 @@ mod inventory_tests {
             let result = catalog.into_lazy().write(destination.to_str().unwrap(), &Default::default());
             if known {
                 result.unwrap();
-                assert_eq!(reads.load(Ordering::Relaxed), 1);
+                // Preserve the catalog's validity too: one pass for pixels, one for its mask.
+                assert_eq!(reads.load(Ordering::Relaxed), 2);
                 assert_eq!(crate::open_raster(destination.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![7.]);
             } else {
                 assert!(result.unwrap_err().to_string().contains("inventory unavailable"));

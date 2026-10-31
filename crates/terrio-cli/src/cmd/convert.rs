@@ -225,6 +225,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     if let Some((mut r, options)) = streamed_raster(&a)? {
         return r.write(&a.output, &options);
     }
+    let mut output_mask = None;
     let ds = if a.srcwin.is_some() || a.overview.is_some() {
         let mut r = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
         let opts = WindowOptions { bands: Vec::new(), overview: a.overview };
@@ -240,6 +241,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 Window::full(w, h)
             }
         };
+        output_mask = r.read_mask(window, a.overview)?;
         Dataset::Raster(r.read_window(window, &opts)?)
     } else if a.layers.is_empty() && a.open_options.is_empty() && a.vector.spatial_hint(&a.input).is_none() {
         super::quiet(|| terrio::open(&a.input))?
@@ -260,19 +262,32 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
     match ds {
         Dataset::Raster(mut r) => {
+            if a.srcwin.is_none() && a.overview.is_none() {
+                let mut source = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
+                output_mask = source.read_mask(Window::full(r.raster.cols, r.raster.rows), None)?;
+            }
             let append = a.vector.append_only();
             if a.vector.is_set() && !append {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
             if let Some(dst) = t_srs {
                 let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), transform_options: coordinate_options, ..Default::default() };
-                r = terrio::ops::warp::warp(&[&r], &o)?;
+                r = if let Some(mask) = output_mask.take() {
+                    terrio::ops::warp::warp_lazy(&mut terrio::LazyRaster::from_masked_dataset(r, mask)?, &o)?
+                } else {
+                    terrio::ops::warp::warp(&[&r], &o)?
+                };
             }
             let mut creation_options: Vec<(String, String)> =
                 key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
             creation_options.extend(a.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));
             creation_options.extend(a.maxzoom.map(|z| ("MAXZOOM".to_string(), z.to_string())));
             if append {
+                if output_mask.is_some() {
+                    return Err(terrio::Error::InvalidArgument(
+                        "tile archive writes do not preserve dataset masks; use an explicit alpha band".into(),
+                    ));
+                }
                 // Added to an existing archive of image tiles.
                 if !terrio::tiles::is_archive(&a.output) || !std::path::Path::new(&a.output).exists() {
                     return Err(terrio::Error::InvalidArgument(
@@ -308,12 +323,19 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 .as_deref()
                 .map(|f| RasterDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{f}'"))))
                 .transpose()?;
+            let output_driver = driver.or_else(|| RasterDriver::for_extension(&a.output));
+            if matches!(output_driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && output_mask.is_some() {
+                return Err(terrio::Error::InvalidArgument(
+                    "tile archive writes do not preserve dataset masks; use an explicit alpha band".into(),
+                ));
+            }
             let opts = RasterWriteOptions {
                 driver,
                 compression: a.compress,
                 tile_size: a.tile_size,
                 bigtiff: a.bigtiff,
                 creation_options,
+                mask: output_mask.filter(|_| matches!(output_driver, Some(RasterDriver::GTiff | RasterDriver::Cog))),
                 ..Default::default()
             };
             terrio::write_raster_dataset(&r, &a.output, &opts)
