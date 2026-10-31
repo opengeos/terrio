@@ -20,7 +20,7 @@ pub struct Args {
     country_code: String,
     #[arg(long, default_value="U", value_parser=["U","R","C","S","T"])]
     classification: String,
-    /// Atomically replace any existing output file after validation; input frames are protected.
+    /// Atomically replace any existing output file after input validation; validated input frames are protected.
     /// Preserves Unix mode bits, not ownership, extended ACLs or extended attributes.
     #[arg(long)]
     overwrite: bool,

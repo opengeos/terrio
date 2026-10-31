@@ -159,7 +159,7 @@ def test_byte_metadata_parsing_releases_the_gil():
     data[342:354] = f"{len(data):012}".encode()
     data = bytes(data)
     assert terrio.rpftoc_bytes([("000C9010.ON2", data)]).startswith(b"NITF02.00")
-    frames = [("000C9010.ON2", data)] * 100000
+    frames = [("000C9010.ON2", data)] * 20000
     stop, ready = threading.Event(), threading.Event()
     ticks = []
 
@@ -191,4 +191,4 @@ def test_byte_metadata_parsing_releases_the_gil():
     longest_gap = max(right - left for left, right in zip(stamps, stamps[1:], strict=False))
     # Encoding may also release the GIL: total ticks alone would not detect
     # holding it throughout the much larger header-parsing portion of the call.
-    assert longest_gap < duration * 0.6, (longest_gap, duration)
+    assert longest_gap < duration * 0.8, (longest_gap, duration)

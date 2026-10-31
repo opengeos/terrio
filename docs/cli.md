@@ -3402,7 +3402,7 @@ printable ASCII bytes), `--producer-name` (27), `--country-code` (two uppercase
 letters), `--classification U|R|C|S|T` and `--overwrite`. The index classification must be
 at least as high as every indexed frame. Scale is inferred per
 series unless overridden; mismatched corners, intervals or zones fail validation.
-The JSON report includes frame/group counts, skipped non-NITF candidate counts,
+The JSON report includes frame/group counts, skipped non-frame candidate counts,
 metadata bytes read and output size. On Unix, new output follows the process
 umask; overwrites preserve the existing file mode. `--overwrite` replaces any
 existing file at OUTPUT, not only a TOC; input frames remain protected.
@@ -3410,7 +3410,10 @@ existing file at OUTPUT, not only a TOC; input frames remain protected.
 The output parent must be the input directory or an ancestor. This preserves safe
 relative frame paths, including when the TOC is placed above a nested frame tree.
 Symlinks and non-NITF 2.0/2.1 candidates are skipped; the latter are counted in
-`skipped_files`. Malformed supported NITF frames still fail validation. An output
+`skipped_files`, along with previous TOC indexes other than the selected output.
+Malformed supported input NITF frames fail validation. Explicit overwrite may
+replace a malformed file at the selected output path; validated input frames
+remain protected. An output
 cannot replace an input frame. Frame path
 components must be UTF-8 and cannot contain `:`, backslashes or NUL bytes.
 Unrepresentable paths fail rather than being silently omitted. Components ending
@@ -3436,7 +3439,8 @@ boundary against other local writers. Atomic overwrite preserves Unix mode bits;
 it creates a replacement file and does not preserve ownership, extended ACLs or
 other extended attributes. Applications requiring those properties should manage
 publication of `rpftoc_bytes` themselves. Limits include
-100,000 candidate frames, 200,000 directory entries, 64 directory levels, 1 MiB
+100,000 candidate frames (an inspection safety cap, not serializable capacity),
+200,000 directory entries, 64 directory levels, 1 MiB
 NITF headers, 64 KiB location tables and a 99,999-byte encoded TRE payload.
 Large indexes must be partitioned by the caller. Historical polar nominal
 interval fields are normalized from the scale and verified frame geometry.

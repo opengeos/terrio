@@ -180,7 +180,16 @@ pub(super) fn create(input: &Path, output: Option<&Path>, options: &RpfTocOption
             continue;
         }
         // Inspect the NITF header once for both images and previous indexes.
-        let frame = frame::read_candidate(&name, &mut reader)?;
+        let frame = match frame::read_candidate(&name, &mut reader) {
+            Ok(frame) => frame,
+            // Explicit overwrite can replace a corrupt old output, but retain
+            // I/O failures and path errors rather than treating them as format errors.
+            Err(Error::InvalidData(_) | Error::Unsupported(_)) if is_destination => continue,
+            Err(Error::InvalidData(message)) => return Err(Error::InvalidData(format!("RPF frame {name:?}: {message}"))),
+            Err(Error::InvalidArgument(message)) => return Err(Error::InvalidArgument(format!("RPF frame {name:?}: {message}"))),
+            Err(Error::Unsupported(message)) => return Err(Error::Unsupported(format!("RPF frame {name:?}: {message}"))),
+            Err(error) => return Err(error),
+        };
         if is_destination {
             if frame.is_some() {
                 return Err(Error::InvalidArgument("RPF output cannot replace an input frame".into()));
@@ -263,6 +272,33 @@ mod tests {
         assert_eq!((second.frames, second.skipped_files), (1, 0));
         assert_eq!(first.metadata_bytes, second.metadata_bytes);
         assert!(std::fs::read(output).unwrap().starts_with(b"NITF02.00"));
+    }
+
+    #[test]
+    fn malformed_matching_output_requires_overwrite_and_can_be_replaced() {
+        let stage = tempfile::tempdir().unwrap();
+        valid_frame(stage.path());
+        let output = stage.path().join("INDEX001.TOC");
+        let mut malformed = vec![b' '; 600];
+        malformed[..9].copy_from_slice(b"NITF02.10");
+        for bytes in [b"NITF02.00truncated".as_slice(), malformed.as_slice()] {
+            std::fs::write(&output, bytes).unwrap();
+            assert!(create(stage.path(), Some(&output), &Default::default(), false).is_err());
+            assert_eq!(std::fs::read(&output).unwrap(), bytes);
+            let report = create(stage.path(), Some(&output), &Default::default(), true).unwrap();
+            assert_eq!((report.frames, report.skipped_files), (1, 0));
+            assert!(std::fs::read(&output).unwrap().starts_with(b"NITF02.00"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_parent_component_error_names_the_frame() {
+        let stage = tempfile::tempdir().unwrap();
+        valid_frame(&stage.path().join("COM1"));
+        assert!(matches!(create(stage.path(), None, &Default::default(), false),
+            Err(Error::InvalidArgument(message)) if message.contains("COM1/000C9010.ON2")));
+        assert!(!stage.path().join("A.TOC").exists());
     }
 
     #[test]

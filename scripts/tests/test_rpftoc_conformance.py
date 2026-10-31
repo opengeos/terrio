@@ -184,3 +184,33 @@ def test_failed_fixture_copy_never_publishes_a_partial_frame(monkeypatch, tmp_pa
     assert not list(target.iterdir())
     install_frame_inventory(target, generated, "*.ON2")
     assert (target / "00000000.ON2").read_bytes() == b"complete frame"
+
+
+def test_fixture_copy_preserves_default_umask_based_file_mode(tmp_path):
+    import stat
+    from make_rpftoc_fixtures import install_frame_inventory
+
+    generated, target = tmp_path / "generated", tmp_path / "target"
+    generated.mkdir()
+    reference = tmp_path / "reference"
+    reference.write_bytes(b"reference mode")
+    (generated / "00000000.ON2").write_bytes(b"frame")
+    install_frame_inventory(target, generated, "*.ON2")
+    assert stat.S_IMODE((target / "00000000.ON2").stat().st_mode) == stat.S_IMODE(reference.stat().st_mode)
+
+
+def test_fixture_temporary_collision_does_not_remove_an_unowned_file(monkeypatch, tmp_path):
+    import make_rpftoc_fixtures as fixtures
+    from types import SimpleNamespace
+
+    generated, target = tmp_path / "generated", tmp_path / "target"
+    generated.mkdir()
+    target.mkdir()
+    (generated / "00000000.ON2").write_bytes(b"frame")
+    existing = target / ".00000000.ON2.fixed.partial"
+    existing.write_bytes(b"preserve someone else's file")
+    monkeypatch.setattr(fixtures.uuid, "uuid4", lambda: SimpleNamespace(hex="fixed"))
+    with pytest.raises(FileExistsError):
+        fixtures.install_frame_inventory(target, generated, "*.ON2")
+    assert existing.read_bytes() == b"preserve someone else's file"
+    assert not (target / "00000000.ON2").exists()
