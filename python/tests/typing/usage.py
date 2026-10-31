@@ -165,6 +165,8 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
     reprojected = layer.to_crs("EPSG:4326")
     clipped_vector: terrio.Layer = terrio.clip_vector(layer, bbox=[0.0, 0.0, 2.0, 2.0])
     _ = clipped_vector.to_geojson()
+    algebra: terrio.Layer = terrio.layer_algebra(layer, layer, "identity")
+    _ = algebra.to_geojson()
 
     gpkg = str(tmp / "parcels.gpkg")
     layer.write(gpkg)

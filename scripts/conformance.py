@@ -31,6 +31,8 @@ Suites:
                       (compare_vsi_with_gdal.py)
     vector-clip       points/lines/polygons against bbox, geometry and template clips vs GDAL
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
+    layer-algebra     seven polygon/line/point operations with schema and GDAL comparisons
+
     coverage-clean    polygon coverage cleaning: snapping, overlaps and enclosed narrow gaps
     coverage          polygon coverage validity: shared nodes, overlaps and narrow gaps
     coverage-simplify shared-edge topology-preserving coverage simplification
@@ -2327,6 +2329,39 @@ def suite_coverage_simplify(ctx):
     return suite
 
 
+def suite_layer_algebra(ctx):
+    """All seven layer-algebra operations on polygons, lines, points and collections."""
+    suite = Suite("layer-algebra", "Vector layer algebra", "GDAL 3.13.3 / OGR layer algebra",
+                  "Seven operations, both lower-dimension settings, null/empty and collection inputs, "
+                  "projected Tennessee counties and Las Vegas roads. Schema, attributes, sequential IDs, CRS, feature types and validity; "
+                  "exact normalized WKB where equal, otherwise polygon relative area tolerance 1e-7, "
+                  "line relative length 1e-8 and bidirectional vertex distance 1e-7 CRS units.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL with GEOS"
+        return suite
+    from osgeo import gdal, ogr
+    suite.reference = f"GDAL {gdal.VersionInfo('RELEASE_NAME')} / OGR layer algebra"
+    try:
+        if ogr.CreateGeometryFromWkt("POINT (0 0)").Buffer(1) is None:
+            raise RuntimeError("GEOS unavailable")
+    except Exception:
+        suite.skipped = "needs GDAL with GEOS"
+        return suite
+    if not all(os.path.isfile(os.path.join(ctx.data, name)) for name in ["TN_Counties.geojson", "las_vegas_roads.geojson"]):
+        suite.skipped = "needs real counties and roads (scripts/fetch_test_data.sh)"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_layer_algebra_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        for row in json.loads(out):
+            suite.cases.append(Case("layer-algebra", row["name"], row["status"], row["detail"]))
+    except (ValueError, KeyError, TypeError) as error:
+        suite.error = f"{error}: {tail(err or out)}"
+        return suite
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or "layer algebra comparison process failed")
+    return suite
+
+
 def suite_coverage_clean(ctx):
     """Coverage cleaning against GDAL on county boundaries and overlaps."""
     suite = Suite("coverage-clean", "Polygon coverage cleaning", "GDAL 3.13.3 gdal vector clean-coverage",
@@ -2399,6 +2434,7 @@ SUITES = OrderedDict(
         ("multidim", suite_multidim),
         ("mdmosaic", suite_mdmosaic),
         ("topology", suite_topology),
+        ("layer-algebra", suite_layer_algebra),
         ("coverage", suite_coverage),
         ("coverage-simplify", suite_coverage_simplify),
         ("coverage-clean", suite_coverage_clean),

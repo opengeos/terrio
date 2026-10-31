@@ -224,7 +224,7 @@ pub fn clip(layer: &Layer, region: &ClipRegion) -> Result<Layer> {
     Ok(out)
 }
 
-struct Mask {
+pub(super) struct Mask {
     area: geo::MultiPolygon<f64>,
     bounds: Option<geo::Rect<f64>>,
     edges: Vec<geo::Line<f64>>,
@@ -263,7 +263,7 @@ fn fraction(line: geo::Line<f64>, c: geo::Coord<f64>) -> f64 {
 }
 
 impl Mask {
-    fn new(area: geo::MultiPolygon<f64>) -> Self {
+    pub(super) fn new(area: geo::MultiPolygon<f64>) -> Self {
         let edges: Vec<_> = area.iter().flat_map(|p| std::iter::once(p.exterior()).chain(p.interiors())).flat_map(|r| r.lines()).collect();
         let index =
             RTree::bulk_load(edges.iter().enumerate().map(|(i, l)| GeomWithData::new(Rectangle::from_aabb(envelope(*l)), i)).collect());
@@ -271,7 +271,7 @@ impl Mask {
         let vertices = RTree::bulk_load(area.coords_iter().map(|c| [c.x, c.y]).collect());
         Self { area, bounds, edges, index, vertices }
     }
-    fn covers(&self, p: geo::Coord<f64>) -> bool {
+    pub(super) fn covers(&self, p: geo::Coord<f64>) -> bool {
         let Some(bounds) = self.bounds else {
             return false;
         };
@@ -373,7 +373,7 @@ impl Mask {
         }
         out.extend(lines.into_iter().map(Geometry::LineString));
     }
-    fn intersection(&self, g: &Geometry, keep_lower: bool, out: &mut Vec<Geometry>) -> Result<()> {
+    pub(super) fn intersection(&self, g: &Geometry, keep_lower: bool, out: &mut Vec<Geometry>) -> Result<()> {
         match g {
             Geometry::Point(c) => {
                 if self.covers(xy(c)) {
@@ -485,7 +485,7 @@ impl Mask {
     }
 }
 
-fn union_regions(shapes: &[geo::MultiPolygon<f64>]) -> Result<geo::MultiPolygon<f64>> {
+pub(super) fn union_regions(shapes: &[geo::MultiPolygon<f64>]) -> Result<geo::MultiPolygon<f64>> {
     let all = Mask::new(geo::MultiPolygon(shapes.iter().flat_map(|s| s.0.iter().cloned()).collect()));
     let mut exact: Vec<_> = all.area.coords_iter().map(|c| [c.x, c.y]).collect();
     for (i, line) in all.edges.iter().copied().enumerate() {
