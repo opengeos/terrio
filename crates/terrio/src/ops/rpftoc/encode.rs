@@ -205,6 +205,7 @@ pub(super) fn encode(frames: &[RpfFrame], options: &RpfTocOptions) -> Result<Vec
     let mut header = Vec::new();
     header.extend(b"NITF02.0003    ");
     text(&mut header, &options.producer_id, 10);
+    // Fixed placeholder for reproducible output, not the index creation time.
     header.extend(b"11111111ZJAN26");
     text(&mut header, "       A.TOC", 80);
     header.push(options.classification as u8);

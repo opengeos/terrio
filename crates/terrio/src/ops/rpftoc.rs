@@ -91,6 +91,7 @@ impl Default for RpfTocOptions {
 /// 16 MiB of metadata are accepted; the serialized TRE payload must fit 99,999 bytes. Conflicting grid cells and inconsistent scale,
 /// zone, corners, angular intervals or filename metadata fail before output.
 /// Output resolution is derived from scale; legacy polar pitch/interval fields are normalized.
+/// The file date-time is a fixed placeholder for reproducibility, not the creation time.
 pub fn encode(frames: &[RpfFrame], options: &RpfTocOptions) -> Result<Vec<u8>> {
     encode::encode(frames, options)
 }

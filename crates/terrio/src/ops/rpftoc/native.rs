@@ -4,7 +4,7 @@
 //! Caller contract: directory trees stay stable during creation; pathname operations
 //! are not a confinement boundary against hostile local writers. Atomic replacement
 //! preserves Unix mode bits, not ownership, extended ACLs or extended attributes.
-use super::{RpfTocOptions, RpfTocReport, encode, frame, invalid, read_frame};
+use super::{RpfTocOptions, RpfTocReport, encode, frame, invalid};
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -144,6 +144,12 @@ pub(super) fn create(input: &Path, output: Option<&Path>, options: &RpfTocOption
     if destination.exists() && !overwrite {
         return Err(Error::InvalidArgument("RPF output exists; enable overwrite to replace it".into()));
     }
+    let destination_identity = match std::fs::symlink_metadata(&destination) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Some(inventory_identity(&destination, &metadata)?),
+        Ok(_) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(Error::Io(error)),
+    };
     let mut paths = Vec::new();
     scan(&root, &mut paths, &mut 0, 0)?;
     paths.sort_by(|a, b| a.path.cmp(&b.path));
@@ -165,20 +171,27 @@ pub(super) fn create(input: &Path, output: Option<&Path>, options: &RpfTocOption
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => false,
             Err(error) => return Err(Error::Io(error)),
         };
-        if *path == destination {
-            // A custom 8.3 output name can pass the frame-name heuristic. It is
-            // not an input frame when it is a previous TOC or a non-NITF file.
-            if !supported || frame::is_toc(&mut reader)? {
-                continue;
-            }
-            return Err(Error::InvalidArgument("RPF output cannot replace an input frame".into()));
-        }
+        let is_destination = *path == destination || destination_identity == Some(candidate.identity);
         if !supported {
+            if !is_destination {
+                metadata_bytes += reader.bytes;
+                skipped_files += 1;
+            }
+            continue;
+        }
+        // Inspect the NITF header once for both images and previous indexes.
+        let frame = frame::read_candidate(&name, &mut reader)?;
+        if is_destination {
+            if frame.is_some() {
+                return Err(Error::InvalidArgument("RPF output cannot replace an input frame".into()));
+            }
+            continue;
+        }
+        let Some(frame) = frame else {
             metadata_bytes += reader.bytes;
             skipped_files += 1;
             continue;
-        }
-        let frame = read_frame(&name, &mut reader)?;
+        };
         metadata_bytes += reader.bytes;
         groups.insert((options.scale.or_else(|| frame.inferred_scale()), frame.zone));
         frames.push(frame);
@@ -250,6 +263,35 @@ mod tests {
         assert_eq!((second.frames, second.skipped_files), (1, 0));
         assert_eq!(first.metadata_bytes, second.metadata_bytes);
         assert!(std::fs::read(output).unwrap().starts_with(b"NITF02.00"));
+    }
+
+    #[test]
+    fn old_custom_toc_is_skipped_when_writing_another_output() {
+        let stage = tempfile::tempdir().unwrap();
+        valid_frame(stage.path());
+        let old = stage.path().join("INDEX001.TOC");
+        create(stage.path(), Some(&old), &Default::default(), false).unwrap();
+        let before = std::fs::read(&old).unwrap();
+        let report = create(stage.path(), None, &Default::default(), false).unwrap();
+        assert_eq!((report.frames, report.skipped_files), (1, 1));
+        assert_eq!(std::fs::read(old).unwrap(), before);
+    }
+
+    #[test]
+    fn output_alias_cannot_replace_an_input_frame() {
+        let stage = tempfile::tempdir().unwrap();
+        let path = valid_frame(stage.path());
+        let alias = stage.path().join("000c9010.on2");
+        // On a case-sensitive filesystem a hard link exercises the same identity
+        // check as a differently cased path on Windows or default macOS volumes.
+        if !alias.exists() {
+            std::fs::hard_link(&path, &alias).unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        assert!(matches!(create(stage.path(), Some(&alias), &Default::default(), true),
+            Err(Error::InvalidArgument(message)) if message.contains("input frame")));
+        assert_eq!(std::fs::read(path).unwrap(), before);
+        assert_eq!(std::fs::read(alias).unwrap(), before);
     }
 
     #[test]
