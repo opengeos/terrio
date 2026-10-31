@@ -2200,7 +2200,7 @@ def suite_zonal_bindings(ctx):
     if node:
         command += ["--js", module]
     else:
-        suite.cases.append(Case("Zonal bindings", "Node backend", SKIPPED, "needs a complete Node package exporting zonalStats and singlepart"))
+        suite.cases.append(Case("Zonal bindings", "Node backend", NOT_COMPARED, "needs a complete Node package exporting zonalStats and singlepart"))
     code, out, err = run(command)
     try:
         results = json.loads(out)

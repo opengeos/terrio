@@ -105,3 +105,24 @@ def test_missing_data_skips_before_launching_comparison(monkeypatch, tmp_path):
     monkeypatch.setattr(gdal, "VersionInfo", lambda *args: "3130300")
     suite = conformance.suite_zonal_bindings(SimpleNamespace(data=tmp_path))
     assert "missing zonal comparison data" in suite.skipped and not suite.cases
+
+
+def test_missing_node_retains_python_comparisons(monkeypatch, tmp_path):
+    import json
+    import conformance
+    from types import SimpleNamespace
+    from osgeo import gdal
+
+    monkeypatch.setitem(sys.modules, "terrio", SimpleNamespace(zonal_stats=True, singlepart=True))
+    monkeypatch.setattr(conformance, "missing_modules", lambda *args: [])
+    monkeypatch.setattr(gdal, "VersionInfo", lambda *args: "3130300")
+    for name in ["TN_Counties.geojson", "dem.tif", "nlcd_knoxville.tif", "landsat.tif", "countries.geojson", "countries.fgb"]:
+        (tmp_path / name).touch()
+    monkeypatch.setattr(conformance, "node_exports_available", lambda *args: False)
+    results = [dict(name=str(i), status="identical", detail="reference matches") for i in range(6)]
+    monkeypatch.setattr(conformance, "run", lambda args: (0, json.dumps(results), ""))
+    suite = conformance.suite_zonal_bindings(SimpleNamespace(data=str(tmp_path)))
+    assert not suite.error and not suite.skipped
+    assert len(suite.cases) == 7
+    assert suite.cases[0].status == conformance.NOT_COMPARED
+    assert all(case.status == conformance.IDENTICAL for case in suite.cases[1:])
