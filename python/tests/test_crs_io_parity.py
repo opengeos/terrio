@@ -92,6 +92,10 @@ def test_code_projjson_matches_rasterio(make, code):
     pickled ones come back from WKT. These codes' EPSG records read alike in PROJ 9.7 and 9.8
     (others gained `remarks`)."""
     _skip_unless_projjson_comparable()
+    # terrio.rio returns pyproj's object here, from pyproj's PROJ database: a conda pyproj's beside
+    # a rasterio wheel's reads otherwise (`datum` for `datum_ensemble`).
+    if "proj_dir" not in pytest.importorskip("pyproj").datadir.get_data_dir():
+        pytest.skip("pyproj does not use the PROJ database of its wheel")
     expected = CODE_CRSS[make](RCRS, code).to_dict(projjson=True)
     assert CODE_CRSS[make](TCRS, code).to_dict(projjson=True) == expected
 

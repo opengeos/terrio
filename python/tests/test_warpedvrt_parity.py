@@ -22,16 +22,6 @@ from terrio.rio.enums import Resampling as TR  # noqa: E402
 from terrio.rio.vrt import WarpedVRT  # noqa: E402
 from terrio.rio.windows import Window as TW  # noqa: E402
 
-# terrio's warper moves each band's warped values off the output nodata on their own, as GDAL
-# 3.12.1 does. GDAL 3.12.2 (rasterio 1.5.2's) moves a pixel of several bands only where every band
-# is at the nodata value, and leaves a band at it where another band is valid.
-PER_BAND_AVOID_NODATA = pytest.mark.xfail(
-    tuple(int(n) for n in re.findall(r"\d+", rasterio.__gdal_version__)[:3]) >= (3, 12, 2),
-    reason="GDAL 3.12.2 leaves a band at the output nodata where another band is valid",
-    raises=AssertionError,
-    strict=True,
-)
-
 
 @pytest.fixture(scope="module")
 def utm(tmp_path_factory):
@@ -227,8 +217,17 @@ def gcp_file(request, tmp_path_factory):
         for c in (0, 300, 599)
     ]
     data = ((np.arange(600 * 400).reshape(1, 400, 600) * 7) % 4093 + 1).astype("uint16")
-    with rasterio.open(path, "w", driver="GTiff", width=600, height=400, count=1, dtype="uint16",
-                       gcps=gcps, crs="EPSG:32631") as dst:
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=600,
+        height=400,
+        count=1,
+        dtype="uint16",
+        gcps=gcps,
+        crs="EPSG:32631",
+    ) as dst:
         dst.write(data)
         if request.param == "overviews":
             dst.build_overviews([2, 4], RR.average)
@@ -248,7 +247,14 @@ def test_gcp_source_matches_rasterio(gcp_file, shape):
             gcps, crs = src.gcps
             options = dict(src_crs=crs, src_transform=lib.transform.from_gcps(gcps), add_alpha=True)
             with vrt_class(src, **options) as vrt:
-                out.append(((vrt.width, vrt.height), tuple(vrt.transform)[:6], vrt.crs.to_epsg(), vrt.read(**kw)))
+                out.append(
+                    (
+                        (vrt.width, vrt.height),
+                        tuple(vrt.transform)[:6],
+                        vrt.crs.to_epsg(),
+                        vrt.read(**kw),
+                    )
+                )
     (g_size, g_t, g_crs, a), (t_size, t_t, t_crs, b) = out
     assert (t_size, t_crs) == (g_size, g_crs)
     assert np.allclose(t_t, g_t, rtol=0, atol=1e-6), (t_t, g_t)
@@ -261,8 +267,17 @@ def test_rotated_source_grid_matches_rasterio(tmp_path):
     bounds leave the rotation out)."""
     path = str(tmp_path / "rotated.tif")
     data = ((np.arange(600 * 400).reshape(1, 400, 600) * 7) % 4093 + 1).astype("uint16")
-    with rasterio.open(path, "w", driver="GTiff", width=600, height=400, count=1, dtype="uint16",
-                       crs="EPSG:32631", transform=Affine(10, 0.5, 500000, 0.3, -10, 4000000)) as dst:
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=600,
+        height=400,
+        count=1,
+        dtype="uint16",
+        crs="EPSG:32631",
+        transform=Affine(10, 0.5, 500000, 0.3, -10, 4000000),
+    ) as dst:
         dst.write(data)
     for options in ({}, {"crs": "EPSG:4326"}):
         out = []
@@ -397,10 +412,7 @@ RPC_CASES = [
 @pytest.mark.parametrize(
     "name,options",
     # rgb.tif: three bands with a nodata value.
-    [
-        pytest.param(n, o, marks=PER_BAND_AVOID_NODATA if n == "rgb.tif" else ())
-        for n, o in RPC_CASES
-    ],
+    [pytest.param(n, o) for n, o in RPC_CASES],
     ids=[f"{n}-{i}" for i, (n, _) in enumerate(RPC_CASES)],
 )
 def test_rpc_source_matches_rasterio(rpc_dir, monkeypatch, name, options):
@@ -475,13 +487,12 @@ def two_band_nodata(tmp_path_factory):
     return path
 
 
-@PER_BAND_AVOID_NODATA
 @pytest.mark.parametrize("resampling", ["nearest", "bilinear"])
 def test_multiband_nodata_matches_rasterio(two_band_nodata, resampling):
     """Several bands with a nodata value: GDAL 3.12 unifies their validity (rasterio's
     `UNIFIED_SRC_NODATA=YES`: a pixel is valid where any band is, and everywhere in a region
     where some band has no nodata pixel), so a band's nodata values are warped where the pixel
-    is valid, and the warp moves them off the output nodata value (`AvoidNoData()`)."""
+    is valid, and stay at the output nodata value unless every band is at it (GDAL 3.12.2)."""
     rs, rv, ts, tv = _pair(two_band_nodata, crs="EPSG:3857", resampling=resampling)
     with rs, rv, ts, tv:
         h, w = rv.height, rv.width
@@ -499,9 +510,6 @@ def test_multiband_nodata_matches_rasterio(two_band_nodata, resampling):
     for i, (a, b) in enumerate(zip(*reads, strict=True)):
         assert a.shape == b.shape and a.dtype == b.dtype, i
         assert np.array_equal(a, b), f"read {i}: {np.count_nonzero(a != b)} of {a.size} differ"
-    moved = np.nextafter(9999.0, np.inf)
-    assert np.count_nonzero(reads[1][0][0] == moved) > 0
-    assert np.count_nonzero(reads[1][1][0] == moved) > 0
 
 
 @pytest.mark.parametrize("resampling", ["nearest", "bilinear"])
@@ -615,7 +623,6 @@ def two_band_edges(tmp_path_factory):
     return path
 
 
-@PER_BAND_AVOID_NODATA
 @pytest.mark.parametrize("resampling", ["nearest", "bilinear", "cubic"])
 def test_band_subset_reads_match_rasterio(two_band_edges, resampling):
     """Reads of some of the bands are assembled from warped blocks, each warped with every band
@@ -640,8 +647,6 @@ def test_band_subset_reads_match_rasterio(two_band_edges, resampling):
     for i, (a, b) in enumerate(zip(*reads, strict=True)):
         assert a.shape == b.shape and a.dtype == b.dtype, i
         assert np.array_equal(a, b), f"read {i}: {np.count_nonzero(a != b)} of {a.size} differ"
-    # South of band 1's nodata rows, band 2's nodata values were warped and moved.
-    assert np.count_nonzero(reads[1][0][h // 2 :] == np.nextafter(9999.0, np.inf)) > 0
 
 
 def _same_nodata(a, b):

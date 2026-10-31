@@ -26,16 +26,6 @@ from terrio.rio.warp import calculate_default_transform as t_cdt  # noqa: E402
 from terrio.rio.warp import reproject as t_reproject  # noqa: E402
 from terrio.rio.warp import transform as t_transform  # noqa: E402
 
-# terrio's warper moves each band's warped values off the output nodata on their own, as GDAL
-# 3.12.1 does. GDAL 3.12.2 (rasterio 1.5.2's) moves a pixel of several bands only where every band
-# is at the nodata value, and leaves a band at it where another band is valid.
-PER_BAND_AVOID_NODATA = pytest.mark.xfail(
-    tuple(int(n) for n in re.findall(r"\d+", rasterio.__gdal_version__)[:3]) >= (3, 12, 2),
-    reason="GDAL 3.12.2 leaves a band at the output nodata where another band is valid",
-    raises=AssertionError,
-    strict=True,
-)
-
 
 @pytest.mark.parametrize("resampling", ["bilinear", "cubic", "lanczos"])
 def test_pixels_over_invalid_source_pixels_are_skipped(resampling):
@@ -96,12 +86,11 @@ def test_one_band_values_avoid_the_output_nodata(resampling):
     np.testing.assert_array_equal(out[1], np.where(src == 255, 254, src))
 
 
-@PER_BAND_AVOID_NODATA
 @pytest.mark.parametrize("resampling", ["nearest", "bilinear"])
 def test_multiband_nodata_values_avoid_the_output_nodata(resampling):
     """Two bands with nodata 9999, unified (rasterio's `UNIFIED_SRC_NODATA=YES`): band 2 is valid
-    everywhere, so band 1's nodata values are warped, and GDAL 3.12 moves them off the output
-    nodata value."""
+    everywhere, so band 1's nodata values are warped, and GDAL 3.12.2 leaves them at the output
+    nodata value: it moves a pixel off it only where every band is at it."""
     yy, xx = np.mgrid[0:120, 0:160]
     b1 = 200.0 + np.sin(xx / 9.0) * 50 + yy * 0.5
     b2 = 1000.0 + np.cos(yy / 7.0) * 80 + xx
@@ -123,7 +112,6 @@ def test_multiband_nodata_values_avoid_the_output_nodata(resampling):
         )
         out.append(dst)
     np.testing.assert_array_equal(out[1], out[0])
-    assert np.count_nonzero(out[1][0] == np.nextafter(9999.0, np.inf)) > 0
 
 
 def _u8_starts():
@@ -168,11 +156,10 @@ def test_without_init_dest_nodata_matches_rasterio(resampling, start):
         assert out[1][59, 79] == 255 and np.count_nonzero(out[1] == 255) == 1
 
 
-@PER_BAND_AVOID_NODATA
 @pytest.mark.parametrize("resampling", ["nearest", "bilinear"])
 def test_multiband_without_init_dest_nodata_matches_rasterio(resampling):
     """Two bands with nodata 9999 warped onto zeros (`init_dest_nodata=False`): GDAL makes the
-    output validity mask of several bands always, so band 1's warped nodata values move off it."""
+    output validity mask of several bands always, and band 1's warped nodata values stay on it."""
     yy, xx = np.mgrid[0:120, 0:160]
     b1 = 200.0 + np.sin(xx / 9.0) * 50 + yy * 0.5
     b2 = 1000.0 + np.cos(yy / 7.0) * 80 + xx
@@ -195,7 +182,6 @@ def test_multiband_without_init_dest_nodata_matches_rasterio(resampling):
         )
         out.append(dst)
     np.testing.assert_array_equal(out[1], out[0])
-    assert np.count_nonzero(out[1][0] == np.nextafter(9999.0, np.inf)) > 0
 
 
 @pytest.mark.parametrize("resampling", ["bilinear", "cubic", "cubic_spline", "lanczos"])

@@ -628,10 +628,22 @@ def pyogrio():
     return importlib.import_module("pyogrio")
 
 
+def _skip_before_pyogrio_0_13(pyogrio):
+    """Skips the test on pyogrio before 0.13, which leaves out time columns; terrio reads them.
+
+    Args:
+        pyogrio: The pyogrio module compared with.
+    """
+    if tuple(int(n) for n in pyogrio.__version__.split(".")[:2]) < (0, 13):
+        pytest.skip("pyogrio before 0.13 leaves out time columns")
+
+
 @pytest.mark.filterwarnings("ignore")
 @pytest.mark.parametrize("case", PARITY_CASES)
 def test_read_parity(pyogrio, corpus, case):
     """Reads each corpus file with pyogrio and terrio.pyogrio: identical snapshots."""
+    if case == "dates":
+        _skip_before_pyogrio_0_13(pyogrio)
     assert _snapshot(tpg.read_dataframe(corpus[case])) == _snapshot(
         pyogrio.read_dataframe(corpus[case])
     )
@@ -652,6 +664,7 @@ def test_file_object_and_bytes_parity(pyogrio, corpus):
     zipped."""
     import io
 
+    _skip_before_pyogrio_0_13(pyogrio)
     for case in ("basic", "dates", "zip"):
         data = open(corpus[case], "rb").read()
         ref = _snapshot(pyogrio.read_dataframe(io.BytesIO(data)))

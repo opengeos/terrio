@@ -21,6 +21,9 @@ from urllib.parse import quote
 
 import pytest
 
+if sys.platform == "win32":
+    pytest.skip("the wheel tools check Linux wheels", allow_module_level=True)
+
 ROOT = Path(__file__).resolve().parents[2]
 CHECK = ROOT / "scripts" / "check_wheel_paths.py"
 REMAP = ROOT / "scripts" / "remap_wheel_sbom.py"

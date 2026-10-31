@@ -1419,6 +1419,7 @@ impl<'a> Plan<'a> {
         // the kernels GDAL picks for each chunk (see `Storage::sink`). Pixels are masked by nodata
         // values and cutlines (see `validity`).
         let masked = nodata.iter().any(Option::is_some) || o.cutline.is_some();
+        let unified_multiband = self.bands > 1 && o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_)));
         let storage = Storage {
             work_type: working_type(self.out_type, s.ds.raster.data_type, &nodata, &self.dst_nodata_all),
             out_type: self.out_type,
@@ -1426,8 +1427,10 @@ impl<'a> Plan<'a> {
             resampling: o.resampling,
             bands: self.bands,
             src_masked: masked,
-            avoid_nodata: None,
-            avoid_all_nodata: false,
+            // GDAL 3.12.2: with UNIFIED_SRC_NODATA over several bands, only a pixel whose every
+            // band holds its nodata value is moved off them (`GWKAvoidNoDataMultiBand`).
+            avoid_nodata: unified_multiband.then_some(false),
+            avoid_all_nodata: unified_multiband,
         };
         (ctx, chunks, storage)
     }
@@ -3714,8 +3717,9 @@ impl RegionWarp {
                 resampling: self.resampling,
                 bands,
                 src_masked,
-                avoid_nodata: None,
-                avoid_all_nodata: false,
+                // As `Warp::context`: GDAL 3.12.2 moves only a pixel whose every band is at nodata.
+                avoid_nodata: (bands > 1 && unified).then_some(false),
+                avoid_all_nodata: bands > 1 && unified,
             };
             let sink = storage.sink(self.dst_nodata.is_some_and(|nd| is_nodata(warp_round(init, self.out_type), nd)));
             crate::pixel::with_data!(data, v => {
@@ -4247,7 +4251,6 @@ mod tests {
         let cut = |b: &[f64], (sx, sy, sw, sh): (usize, usize, usize, usize)| -> Vec<f64> {
             (sy..sy + sh).flat_map(|r| (sx..sx + sw).map(move |c| b[r * w + c])).collect()
         };
-        let nudged = f64::from_bits(9999.0f64.to_bits() + 1);
         let two =
             RegionWarp::new((w, h), gt, &srs, &srs, gt, Resampling::Nearest, 0.125, DataType::F64, vec![Some(9999.0); 2], Some(9999.0))
                 .unwrap();
@@ -4260,19 +4263,19 @@ mod tests {
         let mut b1: Vec<f64> = (0..n).map(|i| i as f64).collect();
         b1[0] = 9999.0;
         b1[1] = 9999.0;
-        // Band 2 valid everywhere: band 1's nodata values are warped, off the nodata value.
+        // Band 2 valid everywhere: band 1's nodata values are warped and stay at the nodata value.
         let (v, written) = run(&b1, &vec![1.0; n]);
-        assert_eq!(&v[..3], &[nudged, nudged, 2.0]);
+        assert_eq!(&v[..3], &[9999.0, 9999.0, 2.0]);
         assert_eq!(&v[n..n + 3], &[1.0, 1.0, 1.0]);
         assert!(written.iter().all(|x| *x));
         // Band 2 nodata at pixels 0 and 5: pixel 0 is invalid (nodata in both bands), pixels 1
-        // and 5 are valid (one band each), their nodata values warped off the nodata value.
+        // and 5 are valid (one band each), their nodata values warped and left at it.
         let mut b2 = vec![1.0; n];
         b2[0] = 9999.0;
         b2[5] = 9999.0;
         let (v, written) = run(&b1, &b2);
-        assert_eq!(&v[..3], &[9999.0, nudged, 2.0]);
-        assert_eq!(&v[n..n + 6], &[9999.0, 1.0, 1.0, 1.0, 1.0, nudged]);
+        assert_eq!(&v[..3], &[9999.0, 9999.0, 2.0]);
+        assert_eq!(&v[n..n + 6], &[9999.0, 1.0, 1.0, 1.0, 1.0, 9999.0]);
         assert_eq!(&written[..3], &[false, true, true]);
         // One band without source nodata: 255s become 254s when the output starts at 255.
         let one = RegionWarp::new((w, h), gt, &srs, &srs, gt, Resampling::Nearest, 0.125, DataType::U8, vec![None], Some(255.0)).unwrap();
