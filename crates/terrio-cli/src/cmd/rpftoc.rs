@@ -19,7 +19,7 @@ pub struct Args {
     country_code: String,
     #[arg(long, default_value="U", value_parser=["U","R","C","S","T"])]
     classification: String,
-    /// Atomically replace an existing TOC after all input validation succeeds.
+    /// Atomically replace any existing output file after validation; input frames are protected.
     #[arg(long)]
     overwrite: bool,
 }

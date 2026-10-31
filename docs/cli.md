@@ -3404,7 +3404,8 @@ at least as high as every indexed frame. Scale is inferred per
 series unless overridden; mismatched corners, intervals or zones fail validation.
 The JSON report includes frame/group counts, skipped non-NITF candidate counts,
 metadata bytes read and output size. On Unix, new output follows the process
-umask; overwrites preserve the existing file mode.
+umask; overwrites preserve the existing file mode. `--overwrite` replaces any
+existing file at OUTPUT, not only a TOC; input frames remain protected.
 
 The output parent must be the input directory or an ancestor. This preserves safe
 relative frame paths, including when the TOC is placed above a nested frame tree.
