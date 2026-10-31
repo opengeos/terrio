@@ -1,4 +1,5 @@
 //! Planar XY layer algebra, including lower-dimensional intersections.
+//! Reference semantics: GDAL 3.13.3 OGR layer algebra.
 //!
 //! Inputs must have matching CRS and valid geometry. Output topology is XY;
 //! null and empty features contribute no geometry. Layers are materialized.
@@ -7,6 +8,7 @@ use geo::algorithm::line_intersection::{LineIntersection, line_intersection};
 use geo::{BooleanOps, BoundingRect, Intersects};
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{AABB, RTree};
+use std::sync::{Arc, OnceLock};
 use wbvector::Coord;
 
 use super::topology::{from_polygons, require_valid, to_geo, union};
@@ -168,7 +170,9 @@ pub fn layer_algebra(a: &Layer, b: &Layer, operation: LayerAlgebraOperation, opt
             let gb = &right[j];
             if matches!(operation, Op::Update | Op::Erase | Op::SymmetricDifference) {
                 mask.extend(gb.clone());
-                right_masks[j].extend(ga.clone());
+                if operation == Op::SymmetricDifference {
+                    right_masks[j].extend(ga.clone());
+                }
                 continue;
             }
             let mut intersection = ga.intersection(gb)?;
@@ -183,7 +187,9 @@ pub fn layer_algebra(a: &Layer, b: &Layer, operation: LayerAlgebraOperation, opt
             } else if intersection.dimension() >= 0 {
                 mask.extend(gb.clone());
             }
-            right_masks[j].extend(ga.clone());
+            if operation == Op::Union {
+                right_masks[j].extend(ga.clone());
+            }
             if matches!(operation, Op::Intersection | Op::Union | Op::Identity) {
                 emit(intersection, Some(i), Some(j))?;
             }
@@ -208,6 +214,7 @@ pub fn layer_algebra(a: &Layer, b: &Layer, operation: LayerAlgebraOperation, opt
 
 #[derive(Clone)]
 struct Set {
+    area_mask: OnceLock<Arc<Mask>>,
     area: geo::MultiPolygon<f64>,
     lines: Vec<Vec<C>>,
     points: Vec<C>,
@@ -216,7 +223,7 @@ struct Set {
 }
 impl Default for Set {
     fn default() -> Self {
-        Self { area: geo::MultiPolygon(vec![]), lines: vec![], points: vec![], multi: false, collection: false }
+        Self { area_mask: OnceLock::new(), area: geo::MultiPolygon(vec![]), lines: vec![], points: vec![], multi: false, collection: false }
     }
 }
 impl Set {
@@ -247,6 +254,9 @@ impl Set {
         out
     }
     fn extend(&mut self, other: Self) {
+        if !other.area.0.is_empty() {
+            self.area_mask.take();
+        }
         self.area.0.extend(other.area.0);
         self.lines.extend(other.lines);
         self.points.extend(other.points);
@@ -273,8 +283,11 @@ impl Set {
             .chain(self.lines.iter().flat_map(|l| l.windows(2).map(|p| Line::new(p[0], p[1]))))
             .collect()
     }
+    fn area_mask(&self) -> &Mask {
+        self.area_mask.get_or_init(|| Arc::new(Mask::new(self.area.clone()))).as_ref()
+    }
     fn covers(&self, c: C) -> bool {
-        Mask::new(self.area.clone()).covers(c)
+        self.area_mask().covers(c)
             || self.lines.iter().flat_map(|l| l.windows(2)).any(|p| Line::new(p[0], p[1]).intersects(&geo::Point(c)))
             || self.points.contains(&c)
     }
@@ -407,7 +420,15 @@ fn fraction(l: Line, p: C) -> f64 {
 }
 fn cut_line(line: &[C], mask: &Set, inside: bool) -> (Vec<Vec<C>>, Vec<C>) {
     let edges = mask.segments();
-    let area = Mask::new(mask.area.clone());
+    let area = mask.area_mask();
+    let envelope = |line: Line| {
+        AABB::from_corners(
+            [line.start.x.min(line.end.x), line.start.y.min(line.end.y)],
+            [line.start.x.max(line.end.x), line.start.y.max(line.end.y)],
+        )
+    };
+    let index =
+        RTree::bulk_load(edges.iter().enumerate().map(|(i, line)| GeomWithData::new(Rectangle::from_aabb(envelope(*line)), i)).collect());
     let mut lines: Vec<Vec<C>> = vec![];
     let mut contacts = vec![];
     for pair in line.windows(2) {
@@ -415,10 +436,13 @@ fn cut_line(line: &[C], mask: &Set, inside: bool) -> (Vec<Vec<C>>, Vec<C>) {
             continue;
         }
         let source = Line::new(pair[0], pair[1]);
-        let covered_endpoint = |p: C| area.covers(p) || edges.iter().any(|e| e.intersects(&geo::Point(p)));
+        let mut candidates: Vec<_> = index.locate_in_envelope_intersecting(envelope(source)).map(|entry| entry.data).collect();
+        candidates.sort_unstable();
+        let covered_endpoint = |p: C| area.covers(p) || candidates.iter().any(|&i| edges[i].intersects(&geo::Point(p)));
         let mut cuts = vec![(0., pair[0], covered_endpoint(pair[0])), (1., pair[1], covered_endpoint(pair[1]))];
         let mut intervals = vec![];
-        for &edge in &edges {
+        for &i in &candidates {
+            let edge = edges[i];
             if let Some(hit) = line_intersection(source, edge) {
                 match hit {
                     LineIntersection::SinglePoint { intersection: p, .. } => cuts.push((fraction(source, p), p, true)),
@@ -478,6 +502,27 @@ mod tests {
     }
     fn line(a: (f64, f64), b: (f64, f64)) -> Geometry {
         Geometry::LineString(vec![Coord::xy(a.0, a.1), Coord::xy(b.0, b.1)])
+    }
+    #[test]
+    fn expanded_regions_cover_new_points_without_changing_existing_snapshots() {
+        let polygon = |x: f64| Geometry::Polygon {
+            exterior: wbvector::Ring(vec![
+                Coord::xy(x, 0.),
+                Coord::xy(x + 2., 0.),
+                Coord::xy(x + 2., 2.),
+                Coord::xy(x, 2.),
+                Coord::xy(x, 0.),
+            ]),
+            interiors: vec![],
+        };
+        let mut region = Set::from_geometry(&polygon(0.));
+        assert!(region.covers(geo::coord! {x:1.,y:1.}));
+        assert!(!region.covers(geo::coord! {x:11.,y:1.}));
+        let snapshot = region.clone();
+        region.extend(Set::from_geometry(&polygon(10.)));
+        assert!(region.covers(geo::coord! {x:1.,y:1.}));
+        assert!(region.covers(geo::coord! {x:11.,y:1.}));
+        assert!(!snapshot.covers(geo::coord! {x:11.,y:1.}));
     }
     #[test]
     fn crossing_lines_respect_lower_dimension_and_preserve_schema() {
