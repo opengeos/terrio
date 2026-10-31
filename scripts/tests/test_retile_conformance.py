@@ -102,8 +102,6 @@ def test_kml_missing_overlay_reports_a_comparison_failure(tmp_path):
 
 def test_malformed_kml_does_not_abort_later_publication_cases(monkeypatch, capsys):
     import json
-    import xml.etree.ElementTree as ET
-
     import compare_tile_publication_with_gdal as publication
 
     monkeypatch.setattr(sys, "argv", ["compare", ".", "--json"])
@@ -114,9 +112,12 @@ def test_malformed_kml_does_not_abort_later_publication_cases(monkeypatch, capsy
     )
 
     def malformed_output(command):
-        ET.fromstring("<kml>")
+        output = Path(command[4] if command[0] == "gdal" else command[3])
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "tile.kml").write_text("<kml>")
 
     monkeypatch.setattr(publication, "run", malformed_output)
+    monkeypatch.setattr(publication, "compare_folders", lambda *args: "")
     assert publication.main() == 1
     cases = json.loads(capsys.readouterr().out)
     assert len(cases) == 3

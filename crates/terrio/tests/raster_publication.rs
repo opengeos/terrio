@@ -229,7 +229,14 @@ fn empty_publication_plans_emit_no_companions() {
 
 #[test]
 fn publication_urls_accept_ports_relative_colons_and_case_insensitive_http() {
-    for url in ["//cdn.example.test:8443/tiles", "maps/2024:01/", "HTTPS://example.test/tiles"] {
+    for url in [
+        "//cdn.example.test:8443/tiles",
+        "maps/2024:01/",
+        "HTTPS://example.test/tiles",
+        "https://[::1]:8443/tiles",
+        "//[::1]:8443/tiles",
+        "https://reader@example.test:443/tiles",
+    ] {
         let mut options = options();
         options.publication.url = Some(url.into());
         assert!(tile::plan(&source().header(), &options).is_ok(), "{url}");
@@ -304,6 +311,12 @@ fn invalid_http_hosts_and_obfuscated_schemes_fail_before_output() {
     for url in [
         "https://",
         "https:///tiles",
+        "https://:443/tiles",
+        "https://reader@:443/tiles",
+        "https://reader@/tiles",
+        "https://[]/tiles",
+        "https://[::1/tiles",
+        "//:443/tiles",
         "HTTP:/tiles",
         "\tjavascript:alert(1)",
         "java\tscript:alert(1)",
@@ -355,4 +368,12 @@ fn finer_kml_cells_outside_geographic_bounds_fail_before_pixels_or_output() {
     let mut sink = Collect::default();
     assert!(tile::generate(&mut input, &options, &mut sink).is_err());
     assert!(sink.0.is_empty());
+}
+
+#[test]
+fn oversized_publication_plans_fail_before_geographic_cell_validation() {
+    let mut options = options();
+    options.grid.max_zoom = Some(1);
+    options.max_tiles = 1;
+    assert!(tile::plan(&source().header(), &options).unwrap_err().to_string().contains("max_tiles"));
 }

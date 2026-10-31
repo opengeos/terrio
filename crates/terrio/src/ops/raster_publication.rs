@@ -51,6 +51,19 @@ fn invalid(message: &str) -> Error {
     Error::InvalidArgument(message.into())
 }
 
+// Separate userinfo and ports before deciding whether an HTTP authority has a
+// host. Bracketed IPv6 literals contain colons and must stay intact.
+fn http_host(rest: &str) -> Option<&str> {
+    let authority = rest.strip_prefix("//")?.split('/').next()?;
+    let host_port = authority.rsplit('@').next()?;
+    if let Some(literal) = host_port.strip_prefix('[') {
+        let (host, _) = literal.split_once(']')?;
+        (!host.is_empty()).then_some(host)
+    } else {
+        host_port.split(':').next().filter(|host| !host.is_empty())
+    }
+}
+
 impl<'a> Publication<'a> {
     pub(crate) fn new(
         plan: &'a TilePlan,
@@ -77,12 +90,17 @@ impl<'a> Publication<'a> {
         if options.url.as_ref().is_some_and(|url| url.chars().any(|c| c.is_ascii_control() || c == ' ')) {
             return Err(invalid("publication URLs cannot contain spaces or control characters"));
         }
-        if let Some(url) = &options.url
-            && let Some((protocol, rest)) = url.split_once(':')
-            && (protocol.eq_ignore_ascii_case("http") || protocol.eq_ignore_ascii_case("https"))
-            && !rest.strip_prefix("//").and_then(|r| r.split('/').next()).is_some_and(|host| !host.is_empty())
-        {
-            return Err(invalid("HTTP(S) publication URLs must include a host"));
+        if let Some(url) = &options.url {
+            let authority = if url.starts_with("//") {
+                Some(url.as_str())
+            } else {
+                url.split_once(':').and_then(|(protocol, rest)| {
+                    (protocol.eq_ignore_ascii_case("http") || protocol.eq_ignore_ascii_case("https")).then_some(rest)
+                })
+            };
+            if authority.is_some_and(|rest| http_host(rest).is_none()) {
+                return Err(invalid("HTTP(S) publication URLs must include a host"));
+            }
         }
         if let Some(url) = &options.url
             && let Some((protocol, _)) = url.split_once(':')

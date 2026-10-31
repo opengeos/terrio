@@ -117,6 +117,9 @@ pub fn plan(source: &RasterDataset, options: &TileOptions) -> Result<(TilePlan, 
     }
     validate_rendering(source, options, extension)?;
     let validate_publication = |plan: &TilePlan| {
+        if plan.count()? > options.max_tiles {
+            return Err(invalid("the plan exceeds max_tiles"));
+        }
         crate::ops::raster_publication::Publication::new(
             plan,
             source,
