@@ -177,7 +177,7 @@ fn checked_point_count(nx: usize, ny: usize, file_len: usize, limit: usize) -> R
         // A configured resource limit must not trigger the optional GDAL fallback.
         return Err(Error::InvalidArgument(format!("GRIB grid of {n} points exceeds TERRIO_GRIB_MAX_POINTS={limit}")));
     }
-    // A grid of more than 100 Mi points needs at least one byte of the file per 1,000 points.
+    // degrib's guard against grids a short file cannot hold: at least one byte of the file per 1,000 points above 100 Mi points.
     if n > 100 * 1024 * 1024 && n / 1000 > file_len {
         return Err(Error::InvalidData("file too short for its grid".into()));
     }
