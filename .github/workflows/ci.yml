@@ -247,6 +247,25 @@ jobs:
           cargo test -p terrio-crs --all-features
           cargo check -p terrio-crs --target wasm32-unknown-unknown
           cargo check -p terrio-crs --all-features --target wasm32-unknown-unknown
+      - name: The standalone CRS crate has no C dependency
+        run: |
+          set -o pipefail
+          for target in x86_64-unknown-linux-gnu wasm32-unknown-unknown; do
+            crates=$(cargo tree -p terrio-crs -e normal,build --target "$target" --prefix none | cut -d' ' -f1 | sort -u)
+            # Pure-Rust crates whose names end in -sys are not C dependencies.
+            found=$(echo "$crates" | grep -E '^(cc|cmake|bindgen|pkg-config|cxx-build)$|-sys$' | grep -vE '^(js|web|linux-raw)-sys$' || true)
+            if [ -n "$found" ]; then echo "C build dependencies for $target: $found"; exit 1; fi
+          done
+      # The memory64 build has no C compiler that targets it, so it must not need one. `cc` is left
+      # out: rusty_av1d depends on it, but builds no C or assembly with its assembly feature off.
+      - name: The JavaScript package has no C dependency
+        run: |
+          set -o pipefail
+          for target in wasm32-unknown-unknown wasm64-unknown-unknown; do
+            crates=$(cargo tree -p terrio-js -e normal,build --target "$target" --prefix none | cut -d' ' -f1 | sort -u)
+            found=$(echo "$crates" | grep -E '^(ring|cmake|bindgen|pkg-config|cxx-build)$|-sys$' | grep -vE '^(js|web|linux-raw)-sys$' || true)
+            if [ -n "$found" ]; then echo "C dependencies for $target: $found"; exit 1; fi
+          done
       - name: The core for WebAssembly
         run: cargo build -p terrio --no-default-features --features geotiff --target wasm32-unknown-unknown
       # Every default feature builds for WebAssembly without a C compiler (#180).
@@ -266,7 +285,9 @@ jobs:
           AR: "false"
         # The build is the check; the names only fail faster, and with a clearer message.
         run: |
-          found=$(cargo tree -p terrio-cli -e normal,build --prefix none | cut -d' ' -f1 | sort -u | grep -E '^(ring|aws-lc-sys|openssl-sys|zstd-sys|cmake|bindgen)$' || true)
+          set -o pipefail
+          crates=$(cargo tree -p terrio-cli -e normal,build --prefix none | cut -d' ' -f1 | sort -u)
+          found=$(echo "$crates" | grep -E '^(ring|cmake|bindgen|pkg-config|cxx-build)$|-sys$' | grep -vE '^(js|web|linux-raw)-sys$' || true)
           if [ -n "$found" ]; then echo "C dependencies: $found"; exit 1; fi
           cargo build -p terrio-cli
       - name: A GeoTIFF build pulls none of the optional codecs

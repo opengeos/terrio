@@ -13,14 +13,14 @@ To cite a specific version instead, open the
 
 ## Recommended citation
 
-> Wu, Q. (2026). terrio: Pure-Rust geospatial raster, vector and point cloud data I/O. Zenodo.
-> <https://doi.org/10.5281/zenodo.23642204>
+> Wu, Q., & Fitzgerald, M. (2026). terrio: Pure-Rust geospatial raster, vector and point cloud
+> data I/O. Zenodo. <https://doi.org/10.5281/zenodo.23642204>
 
 ## BibTeX
 
 ```bibtex
 @software{wu_terrio,
-  author    = {Wu, Qiusheng},
+  author    = {Wu, Qiusheng and Fitzgerald, Mavrick},
   title     = {{terrio: Pure-Rust geospatial raster, vector and point cloud data I/O}},
   year      = {2026},
   publisher = {Zenodo},
@@ -31,8 +31,8 @@ To cite a specific version instead, open the
 
 ## APA
 
-> Wu, Q. (2026). terrio: Pure-Rust geospatial raster, vector and point cloud data I/O [Computer
-> software]. Zenodo. <https://doi.org/10.5281/zenodo.23642204>
+> Wu, Q., & Fitzgerald, M. (2026). terrio: Pure-Rust geospatial raster, vector and point cloud
+> data I/O [Computer software]. Zenodo. <https://doi.org/10.5281/zenodo.23642204>
 
 ## Citation metadata file
 
