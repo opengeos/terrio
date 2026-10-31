@@ -38,7 +38,11 @@ def test_iau_authority_versions_and_body_checks():
         crs = CRS.from_string(definition)
         assert crs.to_authority() == ("IAU_2015", "49900")
         assert crs.to_epsg() is None
-        assert CRS.from_wkt(crs.to_wkt()).to_authority() == ("IAU_2015", "49900")
+        # to_wkt() is GDAL's WKT1, as rasterio's: the code under "IAU", which GDAL 3.12.1
+        # (rasterio 1.5.0) does not read back as an authority, and neither does terrio.
+        wkt = crs.to_wkt()
+        assert 'AUTHORITY["IAU","49900"]' in wkt
+        assert CRS.from_wkt(wkt).to_authority() is None
     for definition in ["IAU_2000:49900", "IAU_2015:999999999"]:
         with pytest.raises(terrio.CRSError):
             terrio.transform_points([0], [0], definition, "IAU_2015:49910")
@@ -75,7 +79,8 @@ def test_iau_strict_datum_policy():
 def test_edited_iau_wkt_keeps_its_parameters():
     source = "IAU_2015:49910"
     wkt = CRS.from_string(source).to_wkt()
-    edited = wkt.replace('PARAMETER["False easting",0,', 'PARAMETER["False easting",1234,', 1)
+    # GDAL's WKT1, as rasterio writes it; GDAL 3.12.1 also transforms (0, 0) to (1234, 0).
+    edited = wkt.replace('PARAMETER["false_easting",0]', 'PARAMETER["false_easting",1234]', 1)
     assert edited != wkt
     assert CRS.from_wkt(edited).to_authority() is None
     x, y = terrio.transform_points([0], [0], source, edited)

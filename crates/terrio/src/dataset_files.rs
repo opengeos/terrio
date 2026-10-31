@@ -187,6 +187,7 @@ fn directory_driver(path: &str) -> Result<Option<String>> {
 /// Inventories owned files without reading raster pixels. Unknown inputs fail rather than
 /// treating an arbitrary directory or file as a dataset. `format` restricts identification.
 pub fn file_list(path: &str, format: Option<&str>) -> Result<FileSet> {
+    crate::formats::check_allowed(path, None)?;
     inventory(path, format)?.ok_or_else(|| invalid("dataset format is not recognized"))
 }
 fn inventory(path: &str, format: Option<&str>) -> Result<Option<FileSet>> {

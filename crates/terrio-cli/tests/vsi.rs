@@ -405,13 +405,14 @@ fn copies_large_http_binary_without_content_type() {
     let dir = tempfile::tempdir().unwrap();
     let output = terrio(&endpoint, dir.path(), &["vsi", "copy", &format!("{endpoint}/bkt/binary"), "output", "--stats"]);
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    // Index sniff (4096 bytes), one-byte stat, and one streamed payload copy.
+    // Index sniff (4096 bytes), one-byte stat, and the payload in two requests: its first 16384
+    // bytes (the first read of a remote file, GDAL's /vsicurl/ chunk), then the rest.
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains(&format!("3 HTTP request(s), {} byte(s) received", data.len() + 4097)),
+        String::from_utf8_lossy(&output.stderr).contains(&format!("4 HTTP request(s), {} byte(s) received", data.len() + 4097)),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(store.lock().unwrap().log.len(), 3);
+    assert_eq!(store.lock().unwrap().log.len(), 4);
     assert_eq!(std::fs::read(dir.path().join("output")).unwrap(), data);
 }
 

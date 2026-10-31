@@ -50,30 +50,16 @@ terrio::write_raster_dataset(&ds, "dem_cog.tif", &options)?;
 # Ok::<(), terrio::Error>(())
 ```
 
-`RasterWriteOptions::overview_resampling` accepts `nearest`, `average`, `min`, `max` or
-`mode` for GeoTIFF and COG. The defaults are `nearest` for GeoTIFF and `average` for COG.
-COGs build factors 2, 4, 8, … until the image fits in one tile. Each level reduces the original
-source blocks independently: `nearest` samples the block center (clamped at image edges), and
-`average` skips nodata and rounds only the final result. Categorical methods retain native
-sample precision, including UInt64 values above 2⁵³. With `ALPHA=YES`, color averages are
-weighted by the last band's alpha; alpha itself is averaged normally. Row-streamed COG output
-uses the same reduction, independently of the input row chunk size, without retaining the whole
-source image. Independent overview levels and complete average output rows run in parallel on
-native builds and sequentially in WebAssembly. Each output cell still accumulates its source
-samples in row-major order, including across streamed input slabs; block-local sums avoid
-per-sample updates to persistent row buffers. Reading the source for each level still costs
-O(levels × source pixels) work, more than recursively reducing already-rounded overviews.
-Mode counts native sample values with hash tables, retaining the first value to reach the
-highest count when frequencies tie; floating-point signed zeros count as the same value.
-
-Set the creation option `COG_OVERVIEW_POLICY=GDAL_3_13` to recursively reduce
-previously rounded levels and truncate halved dimensions as GDAL 3.13 does. This
-profile supports nearest and average, with nodata, without alpha bands or explicit
-masks. It retains bounded row streaming; `SOURCE` remains the default policy above.
-Recursive levels consume the previous level in order, instead of reducing levels
-independently in parallel. Input slabs and pending rows are copied between stages;
-this has a throughput cost that depends on the workload. Compression and each
-level's row reductions still use native parallelism. No speed advantage is implied.
+`RasterWriteOptions::overview_resampling` takes GDAL's names, `nearest`, `average`, `rms`,
+`bilinear`, `cubic`, `cubicspline`, `lanczos`, `mode` and `gauss`, plus terrio's `min` and `max`
+for GeoTIFF overviews. GeoTIFF overviews default to `nearest`. COGs follow GDAL's COG driver: the
+`OVERVIEW_RESAMPLING` and `RESAMPLING` creation options come first, and the default is `cubic`
+(`nearest` for paletted and complex rasters). COG overviews have GDAL's sizes, down to one that
+fits in a tile, and GDAL's pixels: each level is computed from the previous one, as
+`GDALRegenerateOverviewsMultiBand` computes it, with nodata, the alpha band (`ALPHA=YES`) and
+per-dataset masks weighting the samples as in GDAL, and the masks given overviews of their own.
+Row-streamed COG output computes the same pixels, whatever the input row chunk size, without
+retaining the whole source image.
 
 Native WebP TIFF output supports pixel-interleaved Byte RGB and RGBA.
 `WEBP_LOSSLESS=YES` preserves all samples, including transparent colors;
@@ -513,6 +499,7 @@ the operations and the streams. The other drivers are features:
 | `avif` | on | AVIF tiles of tile archives (needs `tiles`). |
 | `zarr` | on | Zarr v2 and v3. |
 | `jp2` | on | JPEG 2000. |
+| `grib` | on | GRIB1 and GRIB2 reading and GRIB2 writing (pure Rust, CCSDS packing with `rust-aec`; JPEG 2000 packing needs `jp2`). |
 | `flatgeobuf` | on | FlatGeobuf. |
 | `osm` | on | OpenStreetMap PBF and XML. |
 | `pointcloud` | on | LAS, LAZ, COPC, EPT, PLY and E57 (the `pointcloud` module). |

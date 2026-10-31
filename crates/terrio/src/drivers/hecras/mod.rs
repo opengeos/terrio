@@ -173,6 +173,7 @@ impl HecRasHdf {
     pub fn open_with_threads(path: impl AsRef<Path>, threads: usize) -> crate::Result<Self> {
         const _: () = assert!(ras_commander_fast_hdf::api::API_VERSION >= REQUIRED_ENGINE_API);
         let path = path.as_ref().to_path_buf();
+        crate::formats::check_driver_allowed("HECRAS", &path.to_string_lossy(), crate::formats::Kind::Vector)?;
         let session = ReadOnlyHdfSession::with_options(&path, threads, threads > 1).map_err(error::from_engine)?;
         let root_attribute_bytes = crate::drivers::hdf5::root_attribute_bytes(&crate::drivers::hdf5::open_file(&path)?, &path)?;
         Ok(Self { session, path, root_attribute_bytes })
@@ -191,6 +192,7 @@ impl HecRasHdf {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn from_bytes(bytes: Vec<u8>, name: &str) -> crate::Result<Self> {
+        crate::formats::check_driver_allowed("HECRAS", name, crate::formats::Kind::Vector)?;
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
         let path = PathBuf::from(name);
         let root_attribute_bytes = crate::drivers::hdf5::root_attribute_bytes_in(&bytes, name)?;

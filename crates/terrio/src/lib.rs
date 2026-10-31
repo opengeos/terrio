@@ -190,10 +190,13 @@ mod avif;
 mod civil_time;
 mod cog;
 mod cog_validate;
+pub mod config;
 pub mod crs;
 mod dataset;
 pub mod dataset_files;
 mod drivers;
+#[cfg(test)]
+mod entry_allow_list_tests;
 mod error;
 pub mod formats;
 #[cfg(feature = "hecras")]
@@ -256,6 +259,8 @@ pub use cog::{LazyRaster, TiffReadLimits, Window, WindowOptions, open_raster_laz
 pub use cog_validate::{
     CogValidation, CogValidationOptions, CogValidationProfile, validate_cog, validate_cog_bytes, validate_cog_with_options,
 };
+/// The memory the process can use, which reads refuse windows past.
+pub use dataset::fallible::usable_memory;
 pub use dataset::{
     BandMetadata, Dataset, Gcp, Geolocation, RasterDataset, RasterWriteOptions, VectorDataset, VectorOpenOptions, VectorWriteOptions,
     geo_transform, is_north_up, list_layers, open, open_raster, open_raster_with_tiff_limits, open_vector, read_gcps, write_netcdf_groups,

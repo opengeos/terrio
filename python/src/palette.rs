@@ -1,7 +1,7 @@
 //! Palette operations use the shared quantizer and retain lazy-source validity masks.
 use crate::ops::raster_path;
 use crate::raster::{PyRaster, write_options};
-use crate::{PyResultExt, invalid};
+use crate::{Detach, PyResultExt, invalid};
 use numpy::{PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -118,7 +118,7 @@ fn finish(
 ) -> PyResult<PyRaster> {
     if let Some(path) = dst {
         let mut options = write_options(format, compress, tile_size, bigtiff)?;
-        py.detach(|| {
+        py.detach_result(|| {
             output.prepare_output_mask(path, &mut options, terrio::Window::full(output.width(), output.height()), None)?;
             terrio::write_raster_dataset(&output.read()?, path, &options)
         })

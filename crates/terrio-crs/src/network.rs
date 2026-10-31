@@ -28,8 +28,16 @@ pub trait GridTransport: Send + Sync {
 }
 
 fn transport() -> &'static RwLock<Option<Arc<dyn GridTransport>>> {
+    crate::host::before_lock();
     static TRANSPORT: OnceLock<RwLock<Option<Arc<dyn GridTransport>>>> = OnceLock::new();
     TRANSPORT.get_or_init(|| RwLock::new(None))
+}
+
+/// Holds the transport's lock across a fork (see [`crate::host::hold_for_fork`]), written: no
+/// reader nor writer is left inside it in the child.
+#[cfg(all(unix, not(target_family = "wasm")))]
+pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+    held.push(Box::new(transport().write().unwrap_or_else(|e| e.into_inner())));
 }
 
 /// Set the process-wide grid transport. Existing open streams remain valid.
@@ -70,4 +78,20 @@ pub(crate) fn open(url: &str) -> io::Result<Box<dyn GridStream>> {
 
 pub(crate) fn download(url: &str, path: &Path) -> io::Result<()> {
     current()?.download(url, path)
+}
+
+#[cfg(all(test, unix, not(target_family = "wasm")))]
+mod tests {
+    /// The transport's lock is one `host::hold_for_fork` takes across a fork, read or written.
+    #[test]
+    fn hold_for_fork_takes_the_transport_lock() {
+        crate::host::assert_held_for_fork("transport (written)", |wait| {
+            let _g = super::transport().write().unwrap_or_else(|e| e.into_inner());
+            wait();
+        });
+        crate::host::assert_held_for_fork("transport (read)", |wait| {
+            let _g = super::transport().read().unwrap_or_else(|e| e.into_inner());
+            wait();
+        });
+    }
 }

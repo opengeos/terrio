@@ -3,10 +3,16 @@
 `test_rio_vs_rasterio.py` compares the same API with rasterio when it is installed.
 """
 
+import gc
 import io
 import json
 import math
+import os
+import subprocess
+import sys
+import tempfile
 import warnings
+import zipfile
 
 import numpy as np
 import pytest
@@ -22,6 +28,7 @@ from terrio.rio.errors import (
     UnsupportedOperation,
     WindowError,
 )
+from terrio.rio.io import ZipMemoryFile
 from terrio.rio.windows import Window
 
 T = rio.transform.from_origin(500000, 4100000, 30, 30)
@@ -254,6 +261,242 @@ def test_memoryfile_and_file_objects(dem):
         assert ds.read().sum() == 50
 
 
+@pytest.fixture
+def memfile_tmp(tmp_path, monkeypatch):
+    """An empty directory that `tempfile`, and so `MemoryFile`, takes as TMPDIR in the test."""
+    path = tmp_path / "tmpdir"
+    path.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(path))
+    return path
+
+
+def _dem_bytes(dem):
+    """The `dem` GeoTIFF's bytes, and the same file as `dem.tif` in a zip archive's bytes."""
+    path, _ = dem
+    with open(path, "rb") as f:
+        raw = f.read()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("dem.tif", raw)
+    return raw, buf.getvalue()
+
+
+def _open_and_drop(variant, raw, zipped, data, tmp):
+    """Makes one MemoryFile (or ZipMemoryFile), uses it, and drops it unclosed on return.
+
+    Returns:
+        list: The entries of `tmp` while it was in use.
+    """
+    if variant == "failed-init":
+        with pytest.raises(TypeError):
+            rio.MemoryFile("not bytes")
+        return []
+    if variant == "unopened":
+        mf = rio.MemoryFile(raw)
+    elif variant == "read":
+        ds = rio.MemoryFile(raw).open()
+        assert np.array_equal(ds.read(), data)
+    elif variant == "written":
+        dst = rio.MemoryFile().open(driver="GTiff", width=8, height=4, count=1, dtype="uint8")
+        dst.write(np.ones((1, 4, 8), "uint8"))
+    elif variant == "zip":
+        ds = ZipMemoryFile(zipped).open("dem.tif")
+        assert np.array_equal(ds.read(), data)
+    else:
+        mf = rio.MemoryFile(b"not a raster")
+        with pytest.raises(RasterioIOError):
+            mf.open()
+    return os.listdir(tmp)
+
+
+@pytest.mark.parametrize(
+    "variant", ["unopened", "read", "written", "zip", "failed-open", "failed-init"]
+)
+def test_memoryfile_dropped_unclosed_leaves_nothing(dem, memfile_tmp, variant):
+    """MemoryFiles dropped without `close()` leave nothing in TMPDIR once collected.
+
+    The other tests close every MemoryFile, in `with` blocks. This catches a directory removed by
+    `close()` only: 100 MemoryFiles dropped unclosed left 100 directories (424,200 bytes) where
+    rasterio's, in GDAL's `/vsimem/`, leave nothing. `failed-init` catches a removal set up only
+    once the bytes are written: a constructor failing in between left its directory.
+    """
+    raw, zipped = _dem_bytes(dem)
+    seen = set()
+    for _ in range(20):
+        seen.update(_open_and_drop(variant, raw, zipped, dem[1], memfile_tmp))
+    gc.collect()
+    assert sorted(os.listdir(memfile_tmp)) == []
+    if variant != "failed-init":
+        # Each file had a directory of its own there while in use.
+        assert len(seen) == 20 and all(n.startswith("terrio-memfile-") for n in seen)
+
+
+_EXIT_CHILD = """
+import json, os, sys
+import numpy as np
+import terrio.rio as rio
+
+with open(sys.argv[1], "rb") as f:
+    raw = f.read()
+unopened = rio.MemoryFile(raw)
+reader = rio.MemoryFile(raw).open()
+reader.read(1)
+writer = rio.MemoryFile().open(driver="GTiff", width=8, height=4, count=1, dtype="uint8")
+writer.write(np.ones((1, 4, 8), "uint8"))
+failed = rio.MemoryFile(b"not a raster")
+try:
+    failed.open()
+except Exception:
+    pass
+print(json.dumps(sorted(os.listdir(os.environ["TMPDIR"]))))
+"""
+
+
+def test_memoryfile_unclosed_at_exit_leaves_nothing(dem, tmp_path):
+    """A process exiting with MemoryFiles it never closed, a dataset of one still open, leaves
+    nothing in its TMPDIR.
+
+    Catches a removal left to garbage collection alone: what is still referenced when the
+    interpreter exits is not collected, and an unclosed MemoryFile left its bytes in TMPDIR after
+    the process ended. The in-process tests do not see the exit.
+    """
+    tmpdir = tmp_path / "tmpdir"
+    tmpdir.mkdir()
+    p = subprocess.run(
+        [sys.executable, "-c", _EXIT_CHILD, dem[0]],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env=dict(os.environ, TMPDIR=str(tmpdir)),
+    )
+    assert p.returncode == 0, p.stderr[-2000:]
+    before_exit = json.loads(p.stdout.strip().splitlines()[-1])
+    assert len(before_exit) == 4 and all(n.startswith("terrio-memfile-") for n in before_exit)
+    assert sorted(os.listdir(tmpdir)) == []
+
+
+def test_memoryfile_close_twice(dem, memfile_tmp):
+    """`close()` twice is fine, and neither it nor the collection of the closed file removes what
+    is at the file's path afterwards.
+
+    The other tests close each MemoryFile once. This catches a `close()` that removes its
+    directory again each time it is called, or a removal on collection still armed after
+    `close()`: once the file is closed, a directory at that path is someone else's.
+    """
+    raw, _ = _dem_bytes(dem)
+    mf = rio.MemoryFile(raw)
+    where = os.path.dirname(mf.name)
+    assert os.listdir(memfile_tmp) == [os.path.basename(where)]
+    mf.close()
+    assert mf.closed and os.listdir(memfile_tmp) == []
+    os.mkdir(where)
+    with open(os.path.join(where, "theirs.txt"), "w") as f:
+        f.write("not the MemoryFile's")
+    mf.close()
+    mf.__exit__(None, None, None)
+    assert mf.closed
+    with pytest.raises(OSError):
+        mf.open()
+    del mf
+    gc.collect()
+    assert os.listdir(where) == ["theirs.txt"]
+
+
+def test_dataset_outlives_dropped_memoryfile(dem, memfile_tmp):
+    """A dataset opened from a MemoryFile dropped unclosed reads on, its file still on disk,
+    until the dataset is closed or dropped; then the directory goes.
+
+    rasterio's datasets read on when their MemoryFile is dropped. This catches a removal when
+    the MemoryFile is collected while a dataset opened from it is in use (on Linux the open handle
+    still reads, so the file's presence is checked as well), a writer then failing to write its
+    file when closed, and a closed dataset keeping the directory.
+    """
+    raw, zipped = _dem_bytes(dem)
+    data = dem[1]
+    ds = rio.MemoryFile(raw).open()
+    gc.collect()
+    assert os.path.dirname(os.path.dirname(ds.name)) == str(memfile_tmp)
+    assert os.path.isfile(ds.name)
+    assert np.array_equal(ds.read(), data)
+    window = ds.read(2, window=Window(250, 150, 51, 53))
+    assert np.array_equal(window, data[1, 150:203, 250:301])
+    del ds
+    gc.collect()
+    assert os.listdir(memfile_tmp) == []
+
+    zds = ZipMemoryFile(zipped).open("dem.tif")
+    gc.collect()
+    assert os.path.isfile(zds.name.split("!")[0])
+    assert np.array_equal(zds.read(), data)
+    zds.close()
+    gc.collect()
+    assert os.listdir(memfile_tmp) == []
+    del zds
+
+    dst = rio.MemoryFile().open(driver="GTiff", width=8, height=4, count=1, dtype="uint8")
+    gc.collect()
+    assert len(os.listdir(memfile_tmp)) == 1
+    dst.write(np.full((1, 4, 8), 3, "uint8"))
+    dst.close()
+    gc.collect()
+    assert os.listdir(memfile_tmp) == []
+
+
+_FORK_CHILD = """
+import gc, json, os, sys
+import terrio.rio as rio
+
+with open(sys.argv[1], "rb") as f:
+    mf = rio.MemoryFile(f.read())
+where = os.path.dirname(mf.name)
+out = {}
+for how in ("collect", "close", "exit"):
+    sys.stdout.flush()
+    pid = os.fork()
+    if pid == 0:
+        if how == "collect":
+            del mf
+            gc.collect()
+        elif how == "close":
+            mf.close()
+        if how != "exit":
+            os._exit(0)
+        sys.exit(0)
+    out[how] = [os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]), os.path.isdir(where)]
+try:
+    with mf.open() as ds:
+        out["sum"] = int(ds.read(1).sum())
+except Exception as e:
+    out["sum"] = f"{type(e).__name__}: {e}"
+print(json.dumps(out))
+"""
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork()")
+def test_memoryfile_forked_child_leaves_parent_files(dem, tmp_path):
+    """A forked child that drops, closes or exits with its copy of a MemoryFile leaves the
+    directory to its parent, which reads on and removes it at its own exit.
+
+    Catches a removal run by every process holding a copy: a forked worker (multiprocessing,
+    a server forking after loading) would delete its parent's file. The other tests run in one
+    process.
+    """
+    tmpdir = tmp_path / "tmpdir"
+    tmpdir.mkdir()
+    p = subprocess.run(
+        [sys.executable, "-c", _FORK_CHILD, dem[0]],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env=dict(os.environ, TMPDIR=str(tmpdir)),
+    )
+    assert p.returncode == 0, p.stderr[-2000:]
+    out = json.loads(p.stdout.strip().splitlines()[-1])
+    expected = {"collect": [0, True], "close": [0, True], "exit": [0, True]}
+    assert out == {**expected, "sum": int(dem[1][0].sum())}
+    assert os.listdir(tmpdir) == []
+
+
 def test_transform_and_windows():
     t = rio.transform.from_bounds(0, 0, 100, 50, 200, 100)
     assert t == Affine(0.5, 0, 0, 0, -0.5, 50)
@@ -395,27 +638,40 @@ def test_warped_vrt_reads_only_the_source_it_needs(dem):
         crs="EPSG:32611", transform=Affine(17, 0, 501000, 0, -17, 4098000), width=40, height=30
     )
     with rio.open(path) as ds:
-        whole = rio.vrt.WarpedVRT(ds, resampling=Resampling.cubic, **grid)
-        whole._src = whole._src_raster
-        expected = whole.read()
+        expected = np.zeros((2, 30, 40), "int16")
+        warp.reproject(
+            ds.read(),
+            expected,
+            src_transform=ds.transform,
+            src_crs=ds.crs,
+            src_nodata=-9999,
+            dst_transform=grid["transform"],
+            dst_crs=grid["crs"],
+            dst_nodata=-9999,
+            resampling=Resampling.cubic,
+        )
         vrt = rio.vrt.WarpedVRT(ds, resampling=Resampling.cubic, **grid)
 
         def no_full_read(*args, **kwargs):
             raise AssertionError("the whole source was read")
 
-        vrt._src_raster = no_full_read
+        ds.read = no_full_read
         assert np.array_equal(vrt.read(), expected)
 
 
 def test_env_and_session():
     import os
 
+    from terrio import _terrio
+
     with rio.Env(GDAL_HTTP_TIMEOUT=17, AWS_NO_SIGN_REQUEST=True) as env:
-        assert os.environ["GDAL_HTTP_TIMEOUT"] == "17"
-        assert os.environ["AWS_NO_SIGN_REQUEST"] == "ON"
+        # GDAL's thread-local options, as rasterio sets them: the process environment is untouched.
+        assert _terrio.config_get("GDAL_HTTP_TIMEOUT") == "17"
+        assert _terrio.config_get("AWS_NO_SIGN_REQUEST") == "ON"
+        assert os.environ.get("GDAL_HTTP_TIMEOUT") != "17"
         assert rio.env.getenv()["GDAL_HTTP_TIMEOUT"] == 17
         assert env.drivers()
-    assert "GDAL_HTTP_TIMEOUT" not in os.environ or os.environ["GDAL_HTTP_TIMEOUT"] != "17"
+    assert _terrio.config_get("GDAL_HTTP_TIMEOUT") != "17"
     s = rio.session.AWSSession(
         aws_access_key_id="a", aws_secret_access_key="b", region_name="us-west-2"
     )

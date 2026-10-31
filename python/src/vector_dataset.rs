@@ -4,7 +4,7 @@
 
 use crate::ops::input_layers;
 use crate::vector::{PyLayer, PyVectorDataset};
-use crate::{PyResultExt, invalid, with_warnings};
+use crate::{Detach, PyResultExt, invalid, with_warnings};
 use pyo3::prelude::*;
 use terrio::crs::SpatialRef;
 use terrio::formats::VectorDriver;
@@ -129,7 +129,7 @@ fn concat(
     let out = with_warnings(py, || terrio::ops::concat::concat(&sources, &o))?;
     if let Some(path) = dst {
         let options = terrio::VectorWriteOptions { driver: driver(format)?, ..Default::default() };
-        py.detach(|| terrio::write_vector(&out, path, &options)).py()?;
+        py.detach_result(|| terrio::write_vector(&out, path, &options)).py()?;
     }
     dataset(py, out, None)
 }

@@ -48,10 +48,13 @@ arrow-ipc = { version = "58", default-features = false }
 arrow-buffer = "58"
 bytes = "1"
 quick-xml = "0.42"
+# Multi-byte DBF code pages (CP932, CP936, CP949, CP950) of shapefiles, with the differences of
+# GDAL's iconv recoding applied on top (drivers/vector/shapefile_cjk.rs).
+encoding_rs = "0.8.35"
 # OpenStreetMap PBF decoding, the version wbvector uses.
 osmpbfreader = "0.19"
-# Its Zstandard (a C library) is enabled by the `libzstd` features of terrio and terrio-crs only:
-# otherwise terrio decodes Zstandard with `ruzstd`.
+# Its Zstandard (zstd 0.13, a C library) is enabled by terrio-crs's `libzstd` feature only, for
+# terrio-crs built on its own: terrio decodes GeoTIFF Zstandard itself (zstd 0.14 or `ruzstd`).
 tiff = { version = "0.11", features = ["webp"] }
 half = "2"
 flate2 = "1"
@@ -77,11 +80,6 @@ image-webp = "0.2"
 # Pure-Rust WebP encoder for GeoTIFF/COG; already used transitively by wbgeotiff.
 webp-rust = "0.3.2"
 openjp2 = { version = "0.6", default-features = false, features = ["std"] }
-# GRIB2 CCSDS packing (its pure-Rust decoder); without its C features (OpenJPEG, libaec): terrio
-# decodes the other packings itself (JPEG 2000 with openjp2).
-gribberish = { version = "1.9", default-features = false }
-# The bit slices gribberish's decoders take.
-bitvec = "1"
 # GeoTIFF compressions GDAL writes and the tiff crate does not read: LERC, JPEG XL and LZMA (XZ).
 lerc-reader = { version = "0.5", default-features = false }
 lerc-core = "0.5"

@@ -137,7 +137,7 @@ impl<T> Lazy<T> {
 }
 
 /// A table's decompressed text.
-fn decompress(data: &[u8]) -> String {
+pub(crate) fn decompress(data: &[u8]) -> String {
     let mut text = String::new();
     if let Ok(mut d) = ruzstd::decoding::StreamingDecoder::new(&mut &data[..]) {
         let _ = d.read_to_string(&mut text);
@@ -348,7 +348,7 @@ pub(crate) fn usable(ops: &[Arc<Op>], grid_ops: &[Arc<Op>]) -> Vec<Arc<Op>> {
 /// input (native builds; a no-op in WebAssembly).
 pub(crate) fn prefetch() {
     #[cfg(not(target_family = "wasm"))]
-    rayon::spawn(|| {
+    crate::host::spawn(|| {
         table();
     });
 }
@@ -652,6 +652,26 @@ pub(crate) fn compound(code: u32) -> Option<&'static Compound> {
             Some(Compound { name: name.to_string(), horizontal: h.parse().ok()?, vertical: v.parse().ok()?, wkt: wkt.to_string() })
         })
         .as_ref()
+}
+
+/// The EPSG compound CRS of a horizontal and a vertical EPSG CRS: the only one of the table, or
+/// the one of several named `name` (the table keeps deprecated entries: 7412, of 27572 and 5719
+/// as 7411 is, but named otherwise). `None` when there is none, or no single one.
+pub(crate) fn compound_of(horizontal: u32, vertical: u32, name: Option<&str>) -> Option<u32> {
+    let mut codes: Vec<u32> = table()
+        .compounds
+        .keys()
+        .copied()
+        .filter(|code| compound(*code).is_some_and(|c| (c.horizontal, c.vertical) == (horizontal, vertical)))
+        .collect();
+    codes.sort_unstable();
+    match codes[..] {
+        [code] => Some(code),
+        _ => {
+            let named: Vec<u32> = codes.into_iter().filter(|c| compound(*c).is_some_and(|c| Some(c.name.as_str()) == name)).collect();
+            (named.len() == 1).then(|| named[0])
+        }
+    }
 }
 
 /// The geoid models (transformations from geographic 3D CRSs) of a vertical CRS, with the

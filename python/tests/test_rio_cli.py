@@ -142,7 +142,9 @@ def test_write_commands(raster, tmp_path):
     r = run("overview", out / "a.tif", "--build", "2,4", cwd=out)
     assert r.returncode == 0, r.stderr
     r = run("overview", out / "a.tif", "--ls", cwd=out)
-    assert r.stdout.splitlines()[1] == "  Band 1: [2, 4] (method: 'unknown')"
+    # rasterio's `rio overview --ls` reads the method from the `rio_overview` metadata domain,
+    # which terrio writes as GDAL does: 'nearest', as rasterio reports it for this file.
+    assert r.stdout.splitlines()[1] == "  Band 1: [2, 4] (method: 'nearest')"
 
 
 def test_key_val_bounds_build():

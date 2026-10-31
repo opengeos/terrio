@@ -55,7 +55,11 @@ fn write(ds: &terrio::RasterDataset, path: &str, compression: &str, tiled: bool,
         compression: Some(compression.into()),
         creation_options: co,
         overviews: vec![2, 4],
-        overview_resampling: Some("nearest".into()),
+        // Average, not nearest: with nearest, GDAL builds a band-interleaved file's overviews band
+        // by band, each from the full resolution, and a pixel-interleaved one's each from the
+        // previous level, so their x4 levels differ (GDAL 3.12.1: 476 of 816 pixels); with
+        // average both cascade and agree, so the overviews read can be compared.
+        overview_resampling: Some("average".into()),
         ..Default::default()
     };
     terrio::write_raster_dataset(ds, path, &options).unwrap();

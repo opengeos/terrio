@@ -26,7 +26,16 @@ fn key(p: &Path) -> Option<String> {
 }
 
 fn files() -> std::sync::MutexGuard<'static, BTreeMap<String, Arc<Vec<u8>>>> {
+    crate::par::fork_safe();
     FILES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Holds the lock of the files in memory across a fork, for [`crate::par`]: the forking thread
+/// takes it before the process is copied and lets it go after, so that the child never starts with
+/// it held by a thread it does not have.
+#[cfg(all(unix, not(target_family = "wasm")))]
+pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+    held.push(Box::new(files()));
 }
 
 /// Files mounted under a virtual directory, removed when dropped.

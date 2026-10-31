@@ -17,14 +17,14 @@ pub struct RasterDataset {
     pub driver: RasterDriver,
     /// Whether the file declares a nodata value (the raster always carries one).
     pub has_nodata: bool,
-    /// Per-band nodata in band order; empty means the shared raster value applies.
-    /// A nonempty vector overrides has_nodata/raster.nodata, including explicit None.
-    /// Clear or update this vector when changing the shared nodata fields.
+    /// Per-band nodata in band order, when the bands of a file declare different ones (GRIB, PAM);
+    /// empty means the shared raster value applies. A nonempty vector overrides
+    /// has_nodata/raster.nodata, including explicit None. Clear or update this vector when
+    /// changing the shared nodata fields.
     pub band_nodata: Vec<Option<f64>>,
-    /// Descriptive band properties, in band order; empty entries use driver defaults.
+    /// Descriptive band properties (description, metadata, colour interpretation), in band order;
+    /// empty entries use driver defaults.
     pub band_metadata: Vec<BandMetadata>,
-    /// RGBA palette entries of a single-band indexed image, empty for direct colors.
-    pub color_table: Vec<[u8; 4]>,
     /// Ground control points in the raster CRS, retained instead of inventing an affine grid.
     pub gcps: Vec<Gcp>,
     /// The geotransform of a rotated or south-up raster, which the raster's origin and cell sizes
@@ -39,7 +39,19 @@ pub struct RasterDataset {
     /// Geolocation arrays, as GDAL's `GEOLOCATION` metadata: for swaths and other rasters
     /// georeferenced by a longitude and a latitude per pixel rather than a geotransform.
     pub geolocation: Option<Geolocation>,
+    /// Metadata domains other than the default one, as GDAL reports them (`IMAGE_STRUCTURE`), for
+    /// drivers that report them (JPEG 2000): the band (from 0, `None` for the dataset), the domain
+    /// and its items, in GDAL's order.
+    pub metadata_domains: Vec<MetadataDomain>,
+    /// The color table of the first band, `(red, green, blue, alpha)` entries from index 0, for
+    /// drivers that read one (paletted PNGs and GeoTIFFs); empty otherwise. GeoTIFF and COG writes
+    /// of the dataset carry it, as GDAL's `CreateCopy` does.
+    pub color_table: Vec<[u8; 4]>,
 }
+
+/// A metadata domain other than the default one: the band (from 0, `None` for the dataset), the
+/// domain and its items (see [`RasterDataset::metadata_domains`]).
+pub type MetadataDomain = (Option<usize>, String, Vec<(String, String)>);
 
 /// Where the longitude and latitude of each pixel of a raster are, as GDAL describes geolocation
 /// arrays (its `GEOLOCATION` metadata domain, RFC 4): two rasters (`x_dataset`, `y_dataset`),
@@ -157,11 +169,12 @@ impl RasterDataset {
             has_nodata,
             band_nodata: Vec::new(),
             band_metadata: Vec::new(),
-            color_table: Vec::new(),
             gcps: Vec::new(),
             affine: None,
             complex: false,
             geolocation: None,
+            metadata_domains: Vec::new(),
+            color_table: Vec::new(),
         }
     }
 
@@ -261,6 +274,13 @@ pub struct VectorOpenOptions {
     pub spatial_filter: Option<(f64, f64, f64, f64)>,
     /// How to read tile archives (PMTiles, MBTiles, MVT): the zoom level, clipping.
     pub tiles: crate::tiles::TileOpenOptions,
+    /// Features to skip at the start of each layer, in file order (pyogrio's `skip_features`,
+    /// GDAL's `SetNextByIndex`). The Shapefile driver reads past them without decoding them;
+    /// the other local drivers read every feature and keep the range.
+    pub skip_features: usize,
+    /// At most this many features per layer after the skipped ones (pyogrio's
+    /// `max_features`); `None` reads to the end.
+    pub max_features: Option<usize>,
     /// How to read HEC-RAS geometry and plan HDF files: meshes and the stored values to join.
     pub hecras: crate::drivers::vector::hecras_options::HecRasOpenOptions,
 }
@@ -282,6 +302,23 @@ impl VectorOpenOptions {
     pub fn set(&mut self, key: &str, value: &str) -> Result<bool> {
         Ok(self.csv.set(key, value)? || self.shapefile.set(key, value)? || self.tiles.set(key, value)? || self.hecras.set(key, value)?)
     }
+
+    /// Whether a feature range is asked for.
+    pub(crate) fn has_range(&self) -> bool {
+        self.skip_features > 0 || self.max_features.is_some()
+    }
+
+    /// Keeps the requested range of a layer's features.
+    pub(crate) fn keep_range(&self, layer: &mut Layer) {
+        if !self.has_range() {
+            return;
+        }
+        let start = self.skip_features.min(layer.features.len());
+        let end = self.max_features.map_or(layer.features.len(), |m| start.saturating_add(m).min(layer.features.len()));
+        layer.features.truncate(end);
+        layer.features.drain(..start);
+        layer.extent = None;
+    }
 }
 
 /// Opens a dataset, raster or vector, detecting its format.
@@ -297,6 +334,7 @@ impl VectorOpenOptions {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open(path: &str) -> Result<Dataset> {
+    crate::formats::check_allowed(path, None)?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
         return crate::gdal_backend::open(rest);
@@ -324,8 +362,10 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
     if is_tile_archive(path) {
         return open_tile_archive(path, &VectorOpenOptions::default());
     }
+    #[cfg(remote)]
+    check_remote_copy(path, true)?;
     let local = vfs::resolve(path)?;
-    open_local(local.as_str(), &VectorOpenOptions::default())
+    open_local(local.as_str(), &VectorOpenOptions::default()).map_err(|e| naming_dataset(e, path, local.as_str()))
 }
 
 /// Opens a raster dataset, reading it into memory.
@@ -340,6 +380,7 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open_raster(path: &str) -> Result<RasterDataset> {
+    crate::formats::check_allowed(path, Some(crate::formats::Kind::Raster))?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
         return crate::gdal_backend::open_raster(rest);
@@ -358,6 +399,7 @@ pub fn open_raster(path: &str) -> Result<RasterDataset> {
 /// entry point does not fall back to GDAL or dispatch to other raster formats.
 pub fn open_raster_with_tiff_limits(path: &str, limits: crate::TiffReadLimits) -> Result<RasterDataset> {
     let local = vfs::resolve(path)?;
+    crate::geotiff::check_tiff_allowed(local.path(), path)?;
     crate::geotiff::read_geotiff_with_limits(Path::new(local.as_str()), limits)
 }
 
@@ -365,7 +407,7 @@ fn open_raster_native(path: &str) -> Result<RasterDataset> {
     if let Some(result) = crate::catalog::open_lazy(path) {
         return result?.read();
     }
-    if let Some(result) = crate::stac::open(path) {
+    if let Some(result) = crate::stac::open_raster(path) {
         return match result? {
             Dataset::Raster(r) => Ok(r),
             Dataset::Vector(_) => Err(Error::Unsupported(format!("'{path}' is a vector, not a raster dataset"))),
@@ -383,8 +425,95 @@ fn open_raster_native(path: &str) -> Result<RasterDataset> {
             Dataset::Vector(_) => Err(Error::Unsupported(format!("'{path}' holds vector tiles, not a raster"))),
         };
     }
+    #[cfg(remote)]
+    check_remote_copy(path, false)?;
     let local = vfs::resolve(path)?;
-    read_raster_local(local.as_str())
+    read_raster_local(local.as_str()).map_err(|e| naming_dataset(e, path, local.as_str()))
+}
+
+/// Refuses a remote file that [`vfs::resolve`] would download whole for the whole read of a raster
+/// ([`read_raster_local`]) or, `generic`, of a dataset of either kind ([`open_local`]), when that
+/// read finds the format by content alone ([`judged_by_content`]) and the file's first bytes show
+/// none it takes under the file's name ([`crate::drivers::takes_lone_file`]). The bytes judged are
+/// those the open reads anyway ([`crate::http::FIRST_READ`], from the process-wide cache); a file
+/// they show to be taken is downloaded whole, as before. GDAL refuses such files after identifying
+/// them from their first bytes (49,152 of them), where terrio downloaded them whole to refuse them
+/// after: 49,999,930 bytes of a 50,000,000-byte GeoJSON document named `x`, `x.dat` or
+/// `dir.json/x`, and the whole of a PNG, a JPEG or a STAC item so named, or of a TIFF for the whole
+/// read of a raster (a lazy open reads a TIFF by range whatever its name). A file they show to be
+/// taken by a driver the process-wide allow-list leaves out ([`crate::drivers::lone_file_driver`])
+/// is refused too, as the read would refuse it once downloaded.
+#[cfg(remote)]
+fn check_remote_copy(path: &str, generic: bool) -> Result<()> {
+    let loc = vfs::Location::parse(path);
+    let Some(remote) = loc.remote() else { return Ok(()) };
+    let name = loc.file_name();
+    if !judged_by_content(&name, generic) {
+        return Ok(());
+    }
+    let (head, len) = crate::http::head_and_len(&remote, crate::http::FIRST_READ)?;
+    // Taken by its content (or, for an SRTM tile, its name and size): refused here, before the rest
+    // is downloaded, when the process-wide allow-list leaves out the driver the read takes it with.
+    if let Some(driver) = crate::drivers::lone_file_driver(&name, &head, len) {
+        return crate::formats::check_driver_allowed(driver.name(), path.trim(), crate::formats::Kind::Raster);
+    }
+    let shown = match crate::formats::sniff(&head) {
+        Some(format) if crate::formats::read_under_own_names(format, generic) => {
+            format!("hold {format} data, which terrio does not read whole under this name")
+        }
+        Some(format) => format!("hold {format} data"),
+        None => "show no known format".to_string(),
+    };
+    Err(Error::Unsupported(format!(
+        "'{}' not recognized as being in a supported {} format: its first {} bytes {shown}",
+        path.trim().split(['?', '#']).next().unwrap_or(path),
+        if generic { "file" } else { "raster" },
+        head.len()
+    )))
+}
+
+/// Whether the whole read of a remote file named `name` ([`read_raster_local`], or, `generic`,
+/// [`open_local`]) finds the file's format by content alone, so that its first bytes tell whether
+/// the read takes it: under a name of no driver, and under those of the labelled raw rasters
+/// (ENVI's `.dat`, EHdr's `.bil`), which terrio reads with their `.hdr`, never fetched for a remote
+/// file. Not under a name of no driver with `TERRIO_WBRASTER_FALLBACK=YES` or, `generic`,
+/// `TERRIO_WBVECTOR_FALLBACK=YES`: their detection reads the whole file. Names the generic read
+/// takes by name (vector drivers', vector tiles', tile archives') are not judged.
+#[cfg(remote)]
+fn judged_by_content(name: &str, generic: bool) -> bool {
+    let vector = generic
+        && (VectorDriver::for_extension(name).is_some()
+            || crate::tiles::archive_kind(name).is_some()
+            || name.to_ascii_lowercase().ends_with(".mvt.gz"));
+    match RasterDriver::for_extension(name) {
+        Some(RasterDriver::ENVI | RasterDriver::EHdr) => !vector,
+        Some(_) => false,
+        None => !(vector || wbraster_fallback_allowed() || (generic && wbvector_fallback_allowed())),
+    }
+}
+
+/// An error reading `local`, the copy of `path` that [`vfs::resolve`] made (a remote file
+/// downloaded, an archive member extracted, to a temporary directory), naming the dataset as the
+/// caller gave it rather than the copy, whose path means nothing to the caller and would show a
+/// server's directories to the clients of a service that passes the message on. The copy's path
+/// is replaced with the dataset's name (without its query, which may hold a signature); a message
+/// that names neither starts with it. The variant is kept, but for the format libraries' errors,
+/// which become [`Error::InvalidData`] (the Python class they already map to).
+fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
+    if vfs::Location::parse(path).is_local() {
+        return e;
+    }
+    let shown = path.trim().split(['?', '#']).next().unwrap_or(path);
+    let named = |m: String| if m.contains(local) { m.replace(local, shown) } else { format!("'{shown}': {m}") };
+    match e {
+        Error::Unsupported(m) => Error::Unsupported(named(m)),
+        Error::InvalidData(m) => Error::InvalidData(named(m)),
+        Error::InvalidArgument(m) => Error::InvalidArgument(named(m)),
+        Error::Raster(e) => Error::InvalidData(named(e.to_string())),
+        Error::Vector(e) => Error::InvalidData(named(e.to_string())),
+        Error::Io(e) => Error::Io(std::io::Error::new(e.kind(), named(e.to_string()))),
+        e => e,
+    }
 }
 
 /// Opens a vector dataset, reading its layers into memory.
@@ -401,6 +530,7 @@ fn open_raster_native(path: &str) -> Result<RasterDataset> {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
         return crate::gdal_backend::open_vector(rest, options);
@@ -433,6 +563,7 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
 
 /// The layer names of a vector dataset, without reading the features when the format allows it.
 pub fn list_layers(path: &str) -> Result<Vec<String>> {
+    crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
         return crate::gdal_backend::list_layers(rest);
@@ -488,7 +619,7 @@ fn is_tile_archive(path: &str) -> bool {
 #[cfg_attr(not(feature = "tiles"), allow(unused_variables))]
 fn open_tile_archive(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     #[cfg(feature = "tiles")]
-    return crate::tiles::open_dataset(path, options);
+    return crate::tiles::open_named_dataset(path, options);
     #[cfg(not(feature = "tiles"))]
     Err(Error::disabled("tiles"))
 }
@@ -536,8 +667,15 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     }
     match raster {
         Ok(r) => Ok(Dataset::Raster(r)),
+        Err(raster_err) if !wbvector_fallback_allowed() => Err(Error::Unsupported(format!(
+            "'{path}': format not recognized ({raster_err}; TERRIO_WBVECTOR_FALLBACK=YES lets wbvector detect it)"
+        ))),
         Err(raster_err) => match wbvector::VectorFormat::detect(path) {
-            Ok(_) => {
+            Ok(format) => {
+                // Found by its content (an XML element anywhere in its first 4 KiB, a zip archive as
+                // KMZ...): read only if the driver of that format is allowed.
+                let driver = VectorDriver::ALL.iter().find(|d| d.to_wb().as_ref() == Some(&format)).map_or("unknown", |d| d.name());
+                crate::formats::check_driver_allowed(driver, path, crate::formats::Kind::Vector)?;
                 let layer = wbvector::read(path)?;
                 Ok(Dataset::Vector(VectorDataset {
                     layers: vec![fix_layer(layer, path, VectorDriver::GeoJSON)],
@@ -547,6 +685,30 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             Err(_) => Err(Error::Unsupported(format!("'{path}': format not recognized ({raster_err})"))),
         },
     }
+}
+
+/// Whether a raster that neither its extension nor terrio's own drivers recognise may be handed
+/// to `wbraster`'s format detection: only with the option `TERRIO_WBRASTER_FALLBACK=YES` (see
+/// [`crate::config`]). Unknown files fail closed otherwise, as with a driver allow-list: the
+/// detection reaches formats no allow-list names (CSF `.map` rasters by content, Esri binary
+/// grids, Zarr stores terrio's driver declines) through decoders with known advisories (`ruzstd`
+/// 0.8, RUSTSEC-2026-0344).
+fn wbraster_fallback_allowed() -> bool {
+    option_enabled("TERRIO_WBRASTER_FALLBACK")
+}
+
+/// Whether a file that neither its extension nor terrio's own drivers recognise, raster or
+/// vector, may be handed to `wbvector`'s format detection: only with the option
+/// `TERRIO_WBVECTOR_FALLBACK=YES`, as for `wbraster`'s ([`wbraster_fallback_allowed`]). The
+/// detection reads content no allow-list names: zip archives as KMZ (through `zip` 0.6, with
+/// known advisories), SQLite databases as GeoPackages, FlatGeobuf, GeoParquet, GML, GPX, KML.
+fn wbvector_fallback_allowed() -> bool {
+    option_enabled("TERRIO_WBVECTOR_FALLBACK")
+}
+
+/// Whether the option `key` is `YES` (or `TRUE`, `ON`, `1`), see [`crate::config`].
+fn option_enabled(key: &str) -> bool {
+    crate::config::get(key).is_some_and(|v| matches!(v.trim().to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1"))
 }
 
 fn read_raster_local(path: &str) -> Result<RasterDataset> {
@@ -561,9 +723,16 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
     }
     let (raster, driver) = match RasterDriver::for_extension(path) {
         Some(driver) => (Raster::read_with_format(path, driver.to_wb())?, driver),
-        None => {
+        None if wbraster_fallback_allowed() => {
             let fmt = wbraster::RasterFormat::detect(path)?;
+            // Found by its content or the files beside it: read only if its driver is allowed.
+            crate::drivers::check_recognised(RasterDriver::from_wb(fmt), path)?;
             (fmt.read(path)?, RasterDriver::from_wb(fmt))
+        }
+        None => {
+            return Err(Error::Unsupported(format!(
+                "'{path}': format not recognized by terrio's drivers (TERRIO_WBRASTER_FALLBACK=YES lets wbraster detect it)"
+            )));
         }
     };
     let mut ds = crate::drivers::nodata::finish(path, driver, raster);
@@ -575,10 +744,11 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
     driver.ensure_built()?;
     #[cfg(feature = "sqlite")]
     if driver == VectorDriver::GPKG {
-        let layers = crate::drivers::vector::gpkg_read::read(path, &options.layers, options.spatial_filter)?;
+        let mut layers = crate::drivers::vector::gpkg_read::read(path, &options.layers, options.spatial_filter)?;
+        layers.iter_mut().for_each(|l| options.keep_range(l));
         return Ok(finish_vector(layers, path, driver));
     }
-    let layers = if let Some(layers) = crate::drivers::vector::read(path, driver, options)? {
+    let mut layers = if let Some(layers) = crate::drivers::vector::read(path, driver, options)? {
         select_layers(layers, path, options)?
     } else {
         let format = driver.to_wb().ok_or_else(|| Error::Unsupported(format!("the {} driver cannot read", driver.name())))?;
@@ -591,6 +761,10 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
         }
         vec![layer]
     };
+    // The Shapefile driver reads only the range; the others read every feature.
+    if driver != VectorDriver::Shapefile {
+        layers.iter_mut().for_each(|l| options.keep_range(l));
+    }
     Ok(finish_vector(layers, path, driver))
 }
 
@@ -668,10 +842,11 @@ pub struct RasterWriteOptions {
     pub color_table: Vec<[u8; 4]>,
     /// GeoTIFF overviews to build, as decimation factors such as `[2, 4, 8]`.
     pub overviews: Vec<usize>,
-    /// Overview resampling: `nearest`, `average`, `min`, `max` or `mode`. Defaults to `nearest`
-    /// for GeoTIFF and `average` for COG. COG levels reduce full-resolution blocks independently:
-    /// nearest takes their center sample; averages skip nodata and weight colors by alpha when
-    /// `ALPHA=YES` (alpha itself is averaged without that weight).
+    /// The overview resampling, as GDAL names it: `nearest`, `average`, `rms`, `bilinear`,
+    /// `cubic`, `cubicspline`, `lanczos` or `mode` (and terrio's `min` and `max` for GeoTIFF
+    /// overviews). GeoTIFF overviews default to `nearest`; COGs to GDAL's COG driver's default,
+    /// `cubic` (`nearest` for paletted rasters), and also take the `OVERVIEW_RESAMPLING` and
+    /// `RESAMPLING` creation options, which come first.
     pub overview_resampling: Option<String>,
     /// The geotransform to write in place of the raster's own: a rotated or south-up one, which
     /// GeoTIFFs store in a `ModelTransformationTag`, as GDAL writes them.
@@ -687,6 +862,11 @@ pub struct RasterWriteOptions {
     /// order (error bias and random error, offsets, scales, then the line numerator and
     /// denominator, sample numerator and denominator coefficients). Empty for none.
     pub rpc: Vec<f64>,
+    /// The block size `(width, height)` of the raster written, when it is read by blocks: GDAL's
+    /// COG driver computes overviews in blocks of that size when it is square (a power of two
+    /// from 64 to 4096), of 128 otherwise, and the blocks set how its kernels round. Set by
+    /// [`crate::LazyRaster::write`].
+    pub source_block_size: Option<(usize, usize)>,
 }
 
 /// A ground control point: a pixel position and its georeferenced coordinates, as GDAL's
@@ -731,6 +911,7 @@ pub struct BandMetadata {
 /// rasters georeferenced by a geotransform, and for other formats.
 pub fn read_gcps(path: &str) -> Result<Vec<Gcp>> {
     let local = vfs::resolve(path)?;
+    crate::geotiff::check_tiff_allowed(local.path(), path)?;
     Ok(crate::geotiff::read_geo_tags(local.path()).map(|t| t.gcps).unwrap_or_default())
 }
 
@@ -757,6 +938,9 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<()> {
+    // PHOTOMETRIC=RGB and ALPHA=YES, as GDAL's CreateCopy takes them from the source bands.
+    let derived = color_options(ds, path, options);
+    let options = derived.as_ref().unwrap_or(options);
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
     let options = options.inherited_from(ds, driver);
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
@@ -791,6 +975,44 @@ pub(crate) fn needs_nodata_pam(ds: &RasterDataset) -> bool {
     let raw_float32_nodata = ds.raster.data_type == wbraster::DataType::F32
         && (1..=ds.raster.bands).any(|band| ds.band_nodata(band).is_some_and(|value| value.is_finite() && value as f32 as f64 != value));
     distinct || raw_float32_nodata
+}
+
+/// The options a GeoTIFF or COG is written with from its source dataset, as GDAL's `CreateCopy`
+/// takes them from the source bands: `PHOTOMETRIC=RGB` for red, green and blue first bands,
+/// `ALPHA=YES` for an alpha last band besides the colour ones (it then weights the overviews);
+/// each unless the caller gave it, and only when the caller gave no band colour interpretations.
+/// The color table is inherited as `RasterWriteOptions::inherited_from` decides. `None` when
+/// nothing is added, or for other formats.
+fn color_options(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Option<RasterWriteOptions> {
+    let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+    if !matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
+        return None;
+    }
+    let interps_given = options.band_metadata.iter().any(|b| b.color_interp.is_some());
+    let given = |k: &str| options.creation_options.iter().find(|(o, _)| o.eq_ignore_ascii_case(k)).map(|(_, v)| v.to_ascii_uppercase());
+    let ci = |b: usize| ds.band_metadata.get(b).and_then(|m| m.color_interp.as_deref()).map(str::to_ascii_lowercase);
+    let bands = ds.raster.bands;
+    let photometric = given("PHOTOMETRIC");
+    let rgb = photometric.is_none() && bands >= 3 && (0..3).map(ci).eq(["red", "green", "blue"].map(|c| Some(c.to_string())));
+    // The colour samples, as the writer resolves the photometric (3 Byte bands are RGB).
+    let color_samples = match photometric.as_deref() {
+        Some("RGB" | "YCBCR") => 3,
+        Some(_) => 1,
+        None if rgb || (bands == 3 && ds.raster.data_type == wbraster::DataType::U8) => 3,
+        None => 1,
+    };
+    let mut extra = Vec::new();
+    if rgb && !interps_given {
+        extra.push(("PHOTOMETRIC".to_string(), "RGB".to_string()));
+    }
+    if !interps_given && given("ALPHA").is_none() && bands > color_samples && ci(bands - 1).as_deref() == Some("alpha") {
+        extra.push(("ALPHA".to_string(), "YES".to_string()));
+    }
+    (!extra.is_empty()).then(|| {
+        let mut o = options.clone();
+        o.creation_options.extend(extra);
+        o
+    })
 }
 
 fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool, path: &str, options: &RasterWriteOptions) -> Result<()> {
@@ -1053,5 +1275,338 @@ impl RasterWriteOptions {
         } else {
             self.gcps.clone()
         }
+    }
+}
+
+/// Buffers sized from what a file declares, allocated fallibly. Rust ends the process when an
+/// allocation fails, where GDAL and numpy report an error; a size taken from a header that no
+/// allocator can satisfy must fail the read of that file, not the worker serving it.
+pub(crate) mod fallible {
+    use wbraster::DataType;
+    use wbraster::raster::RasterData;
+
+    /// The error of an allocation of `bytes` (`None`: more than the address space) for `what`.
+    pub(crate) fn out_of_memory(bytes: Option<usize>, what: &str) -> std::io::Error {
+        let size = bytes.map_or_else(|| "more bytes than the address space holds".to_string(), |b| format!("{b} bytes"));
+        std::io::Error::new(std::io::ErrorKind::OutOfMemory, format!("cannot allocate {size} for {what}"))
+    }
+
+    /// The product of a buffer's dimensions, or an error when it overflows.
+    pub(crate) fn len(dims: &[usize], what: &str) -> std::io::Result<usize> {
+        dims.iter().try_fold(1usize, |n, &d| n.checked_mul(d)).ok_or_else(|| out_of_memory(None, what))
+    }
+
+    /// Reserves room for `extra` more elements, or an error.
+    pub(crate) fn reserve<T>(v: &mut Vec<T>, extra: usize, what: &str) -> std::io::Result<()> {
+        v.try_reserve_exact(extra).map_err(|_| out_of_memory(extra.checked_mul(size_of::<T>()), what))
+    }
+
+    /// `len` copies of `value`. Zeros come from the allocator zeroed (`calloc`), their pages
+    /// untouched until written, once a reservation of the same size has succeeded; other values
+    /// fill the reserved buffer.
+    pub(crate) fn filled<T: Clone + Default + PartialEq>(len: usize, value: T, what: &str) -> std::io::Result<Vec<T>> {
+        let mut v = Vec::new();
+        reserve(&mut v, len, what)?;
+        if value == T::default() {
+            drop(v);
+            return Ok(vec![value; len]);
+        }
+        v.resize(len, value);
+        Ok(v)
+    }
+
+    /// `len` copies of `value` written now, into a reserved buffer: for buffers decoders fill whole
+    /// (chunks), allocated on several threads at once.
+    pub(crate) fn filled_now<T: Clone>(len: usize, value: T, what: &str) -> std::io::Result<Vec<T>> {
+        let mut v = Vec::new();
+        reserve(&mut v, len, what)?;
+        v.resize(len, value);
+        Ok(v)
+    }
+
+    /// The bytes of memory the process can use, as GDAL 3.12.1 counts them
+    /// (`CPLGetUsablePhysicalRAM`): the physical memory (`MemTotal`), less under the memory limit
+    /// of the process's cgroup or of one above it (`memory.max`, or `memory.limit_in_bytes` in
+    /// cgroup version 1), and less under its address-space or resident-set limit (`RLIMIT_AS`,
+    /// `RLIMIT_RSS`). `None` where none of them can be read (systems without `/proc`).
+    ///
+    /// Where the system overcommits memory, an allocation of more succeeds and the process is
+    /// killed as its pages are written: a buffer sized from a file is checked against this first.
+    pub fn usable_memory() -> Option<u64> {
+        static PHYSICAL: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+        let physical = *PHYSICAL.get_or_init(|| physical_memory(&|path| std::fs::read_to_string(path).ok()));
+        usable_within(physical, &std::fs::read_to_string("/proc/self/limits").unwrap_or_default())
+    }
+
+    /// [`usable_memory`] read from the files `read` gives (the file's text, `None` when it cannot
+    /// be read): those of [`physical_memory`] and `/proc/self/limits`. Nothing is read from the
+    /// machine running the test.
+    #[cfg(test)]
+    pub(crate) fn usable_memory_from(read: &dyn Fn(&str) -> Option<String>) -> Option<u64> {
+        usable_within(physical_memory(read), &read("/proc/self/limits").unwrap_or_default())
+    }
+
+    /// The least of `physical` and the address-space and resident-set limits in `limits`, the
+    /// text of `/proc/self/limits`.
+    fn usable_within(physical: Option<u64>, limits: &str) -> Option<u64> {
+        // "Max address space   4294967296   4294967296   bytes": the soft limit, unless unlimited.
+        let limit = |name: &str| {
+            limits.lines().find_map(|l| l.strip_prefix(name)).and_then(|l| l.split_whitespace().next()).and_then(|v| v.parse::<u64>().ok())
+        };
+        [physical, limit("Max address space"), limit("Max resident set")].into_iter().flatten().min()
+    }
+
+    /// GDAL's `CPLGetPhysicalRAM` on Linux: `MemTotal`, and the memory limits of the cgroups from
+    /// the process's up to the root, the files read with `read` (the file's text, `None` when it
+    /// cannot be read).
+    pub(crate) fn physical_memory(read: &dyn Fn(&str) -> Option<String>) -> Option<u64> {
+        let meminfo = read("/proc/meminfo")?;
+        let total = meminfo.lines().find_map(|l| l.strip_prefix("MemTotal:"))?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok()?;
+        let mut most = total.checked_mul(1024)?;
+        let groups = read("/proc/self/cgroup").unwrap_or_default();
+        // Version 1 names the memory controller's group, read up to the root's own limit; version 2
+        // has one group, read up to the one below the root.
+        let (v1, group) = match groups.lines().find_map(|l| l.split_once(":memory:")) {
+            Some((_, g)) => (true, g),
+            None => (false, groups.lines().find_map(|l| l.strip_prefix("0::")).unwrap_or_default()),
+        };
+        let mut g = group;
+        while !group.is_empty() {
+            let path =
+                if v1 { format!("/sys/fs/cgroup/memory/{g}/memory.limit_in_bytes") } else { format!("/sys/fs/cgroup/{g}/memory.max") };
+            // "max" when a version 2 group has no limit.
+            if let Some(limit) = read(&path).and_then(|v| v.trim().parse::<u64>().ok()) {
+                most = most.min(limit);
+            }
+            match g.rfind('/') {
+                Some(0) if v1 && !g.is_empty() => g = "",
+                Some(i) if i > 0 => g = &g[..i],
+                _ => break,
+            }
+        }
+        Some(most)
+    }
+
+    /// Buffers of at most this many bytes are not checked against [`usable_memory`].
+    const UNCHECKED: usize = 1 << 24;
+
+    /// Refuses a buffer of `bytes` (`None`: more than the address space holds) that the process
+    /// cannot hold, more than its [`usable_memory`], before anything is allocated: the error is
+    /// `refusal`'s message, completed with the sizes.
+    pub(crate) fn check_usable(bytes: Option<usize>, refusal: impl FnOnce() -> String) -> Result<usize, String> {
+        let Some(b) = bytes else {
+            return Err(format!("{}: more bytes than the address space holds", refusal()));
+        };
+        if b <= UNCHECKED {
+            return Ok(b);
+        }
+        match usable_memory() {
+            Some(most) if b as u64 > most => {
+                Err(format!("{}: {b} bytes, more than the {most} bytes of memory the process can use", refusal()))
+            }
+            _ => Ok(b),
+        }
+    }
+
+    /// [`RasterData::new_filled`], fallibly.
+    pub(crate) fn raster_data(data_type: DataType, len: usize, value: f64, what: &str) -> std::io::Result<RasterData> {
+        Ok(match data_type {
+            DataType::U8 => RasterData::U8(filled(len, value as u8, what)?),
+            DataType::I8 => RasterData::I8(filled(len, value as i8, what)?),
+            DataType::U16 => RasterData::U16(filled(len, value as u16, what)?),
+            DataType::I16 => RasterData::I16(filled(len, value as i16, what)?),
+            DataType::U32 => RasterData::U32(filled(len, value as u32, what)?),
+            DataType::I32 => RasterData::I32(filled(len, value as i32, what)?),
+            DataType::U64 => RasterData::U64(filled(len, value as u64, what)?),
+            DataType::I64 => RasterData::I64(filled(len, value as i64, what)?),
+            DataType::F32 => RasterData::F32(filled(len, value as f32, what)?),
+            DataType::F64 => RasterData::F64(filled(len, value, what)?),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The memory a process can use counts its cgroup's limit and those of the groups above it
+    /// (version 2's `memory.max`, version 1's `memory.limit_in_bytes`), as GDAL's
+    /// `CPLGetPhysicalRAM` does: in a 2 GiB cgroup on a machine of 32 GiB without an address-space
+    /// limit (a container), the cgroup's limit is what refuses a window between the two. Read from
+    /// files given here, not the machine's.
+    #[test]
+    fn a_cgroup_limit_is_part_of_the_usable_memory() {
+        use super::fallible::physical_memory;
+        let machine = |files: &[(&str, &str)]| -> Option<u64> {
+            let files: std::collections::HashMap<String, String> =
+                files.iter().map(|(path, text)| (path.to_string(), text.to_string())).collect();
+            // The groups' paths as the reader joins them, a slash doubled or not.
+            physical_memory(&|path: &str| files.get(&path.replace("//", "/")).cloned())
+        };
+        let meminfo = ("/proc/meminfo", "MemTotal:       33554432 kB\nMemFree:         1048576 kB\n");
+        let v2 = |group: &str, parent: &str| {
+            machine(&[
+                meminfo,
+                ("/proc/self/cgroup", "0::/user.slice/app.slice/run-1.scope\n"),
+                ("/sys/fs/cgroup/user.slice/app.slice/run-1.scope/memory.max", group),
+                ("/sys/fs/cgroup/user.slice/app.slice/memory.max", parent),
+                ("/sys/fs/cgroup/user.slice/memory.max", "max\n"),
+            ])
+        };
+        assert_eq!(v2("2147483648\n", "max\n"), Some(2 << 30), "the process's group");
+        assert_eq!(v2("max\n", "1073741824\n"), Some(1 << 30), "a group above it");
+        assert_eq!(v2("max\n", "max\n"), Some(32 << 30), "no limit: the machine's memory");
+        assert_eq!(v2("68719476736\n", "max\n"), Some(32 << 30), "a limit past the machine's memory");
+        let v1 = machine(&[
+            meminfo,
+            ("/proc/self/cgroup", "12:cpu,cpuacct:/docker/1\n4:memory:/docker/1\n0::/\n"),
+            ("/sys/fs/cgroup/memory/docker/1/memory.limit_in_bytes", "536870912\n"),
+            ("/sys/fs/cgroup/memory/docker/memory.limit_in_bytes", "9223372036854771712\n"),
+            ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "9223372036854771712\n"),
+        ]);
+        assert_eq!(v1, Some(512 << 20), "cgroup version 1");
+        assert_eq!(machine(&[meminfo]), Some(32 << 30), "no cgroup file");
+        assert_eq!(machine(&[]), None, "no /proc");
+    }
+
+    /// A raster only `wbraster`'s detection recognises (an Esri ASCII grid named
+    /// `.txt`) is refused unless the option allows the fallback.
+    // Without the GDAL backend: with it, what terrio refuses goes on to GDAL (gdal_fallback).
+    #[cfg(not(feature = "gdal"))]
+    #[test]
+    fn unknown_formats_do_not_reach_wbraster() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grid.txt");
+        std::fs::write(&path, "ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\nNODATA_value -9999\n1 2\n3 4\n").unwrap();
+        let path = path.to_str().unwrap();
+        let err = crate::open_raster(path).unwrap_err().to_string();
+        assert!(err.contains("TERRIO_WBRASTER_FALLBACK"), "{err}");
+        crate::config::push_scope([("TERRIO_WBRASTER_FALLBACK".to_string(), Some("YES".to_string()))].into());
+        let opened = crate::open_raster(path);
+        crate::config::pop_scope();
+        let ds = opened.expect("wbraster reads the grid when the option allows it");
+        assert_eq!((ds.raster.cols, ds.raster.rows), (2, 2));
+    }
+
+    /// A vector file only `wbvector`'s detection recognises (GPX named `.payload`) is refused
+    /// unless the option allows the fallback.
+    // Without the GDAL backend: with it, what terrio refuses goes on to GDAL (gdal_fallback).
+    #[cfg(not(feature = "gdal"))]
+    #[test]
+    fn unknown_formats_do_not_reach_wbvector() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track.payload");
+        std::fs::write(
+            &path,
+            r#"<?xml version="1.0"?><gpx version="1.1" creator="t" xmlns="http://www.topografix.com/GPX/1/1"><wpt lat="1.5" lon="2.5"><name>a</name></wpt></gpx>"#,
+        )
+        .unwrap();
+        let path = path.to_str().unwrap();
+        let err = crate::open(path).unwrap_err().to_string();
+        assert!(err.contains("TERRIO_WBVECTOR_FALLBACK"), "{err}");
+        crate::config::push_scope([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))].into());
+        let opened = crate::open(path);
+        crate::config::pop_scope();
+        match opened.expect("wbvector reads the GPX file when the option allows it") {
+            crate::Dataset::Vector(v) => assert_eq!(v.layers[0].features.len(), 1),
+            crate::Dataset::Raster(_) => panic!("a raster"),
+        }
+    }
+}
+
+/// The allow-lists and the vector and tile formats terrio finds by their content or by a file
+/// beside them, whatever driver the name points to: each is read only if its driver is allowed.
+/// The list is set with `TERRIO_ALLOWED_DRIVERS` on the test's thread (with the options given).
+#[cfg(all(test, feature = "tiles"))]
+mod content_allow_list_tests {
+    use super::*;
+
+    fn with<T>(options: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+        crate::config::push_scope(options.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect());
+        let out = f();
+        crate::config::pop_scope();
+        out
+    }
+
+    fn vector(path: &str, drivers: &str) -> std::result::Result<usize, String> {
+        with(&[("TERRIO_ALLOWED_DRIVERS", drivers)], || open_vector(path, &VectorOpenOptions::default()))
+            .map(|v| v.layers.iter().map(|l| l.features.len()).sum())
+            .map_err(|e| e.to_string())
+    }
+
+    fn assert_refused<T: std::fmt::Debug>(result: std::result::Result<T, String>, driver: &str, what: &str) {
+        let refused =
+            result.as_ref().is_err_and(|e| e.contains(&format!("holds {driver} data, and the {driver} driver is not allowed (allowed: ")));
+        assert!(refused, "{what}: {result:?}");
+    }
+
+    /// Two points, written as an MVT directory (a `metadata.json` beside `z/x/y.pbf` tiles) and as
+    /// an MBTiles archive.
+    fn tiles(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let geojson = dir.join("places.geojson");
+        let points = r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{"n":1},"geometry":{"type":"Point","coordinates":[10.5,47.5]}},
+            {"type":"Feature","properties":{"n":2},"geometry":{"type":"Point","coordinates":[11.5,46.5]}}]}"#;
+        std::fs::write(&geojson, points).unwrap();
+        let layer = open_vector(geojson.to_str().unwrap(), &VectorOpenOptions::default()).unwrap().layers.remove(0);
+        let (mvt, mbtiles) = (dir.join("places_dir"), dir.join("places.mbtiles"));
+        for (path, driver) in [(&mvt, Some(VectorDriver::MVT)), (&mbtiles, None)] {
+            let mut o = VectorWriteOptions { driver, ..Default::default() };
+            o.tiles.max_zoom = Some(2);
+            write_vector(std::slice::from_ref(&layer), path.to_str().unwrap(), &o).unwrap();
+        }
+        (mvt, mbtiles)
+    }
+
+    /// An MVT directory is found by its `metadata.json` whatever its name (`d.geojson`), and an MVT
+    /// tile under OpenStreetMap's `.pbf` by its first bytes, which `sniff` does not name: read only
+    /// with MVT allowed. An MBTiles archive named `.pmtiles` is found by its SQLite header, which
+    /// `sniff` calls GPKG: read only with MBTiles allowed, from a file or bytes.
+    #[test]
+    fn tiles_found_by_content_or_metadata_are_read_only_with_their_driver_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mvt, mbtiles) = tiles(dir.path());
+        let named_dir = dir.path().join("d.geojson");
+        std::fs::rename(&mvt, &named_dir).unwrap();
+        let tile =
+            std::fs::read_dir(named_dir.join("2")).unwrap().flatten().find_map(|x| std::fs::read_dir(x.path()).ok()?.flatten().next());
+        let pbf = dir.path().join("t.pbf");
+        std::fs::copy(tile.unwrap().path(), &pbf).unwrap();
+        let pmtiles = dir.path().join("v.pmtiles");
+        std::fs::copy(&mbtiles, &pmtiles).unwrap();
+        let (named_dir, pbf, pmtiles) = (named_dir.to_str().unwrap(), pbf.to_str().unwrap(), pmtiles.to_str().unwrap());
+        assert_refused(vector(named_dir, "GeoJSON"), "MVT", "an MVT directory named d.geojson");
+        assert!(vector(named_dir, "GeoJSON,MVT").is_ok_and(|n| n > 0));
+        assert_refused(vector(pbf, "OSM"), "MVT", "an MVT tile named t.pbf");
+        assert!(vector(pbf, "OSM,MVT").is_ok_and(|n| n > 0));
+        assert_refused(vector(pmtiles, "PMTiles,GPKG"), "MBTiles", "an MBTiles archive named v.pmtiles");
+        assert!(vector(pmtiles, "PMTiles,GPKG,MBTiles").is_ok_and(|n| n > 0));
+        let bytes = |drivers: &str| {
+            let b = std::fs::read(pmtiles).unwrap();
+            with(&[("TERRIO_ALLOWED_DRIVERS", drivers)], || crate::memory::open_raster_lazy_bytes(b, "v.pmtiles"))
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        assert_refused(bytes("PMTiles,GPKG"), "MBTiles", "MBTiles bytes named v.pmtiles");
+        let read = bytes("PMTiles,GPKG,MBTiles");
+        assert!(read.as_ref().is_err_and(|e| !e.contains("not allowed")), "read as the vector archive it is: {read:?}");
+    }
+
+    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, `wbvector` detects a file named for no driver by its
+    /// content, as KML when `<kml` is anywhere in its first 4 KiB, where `sniff` saw a GeoJSON
+    /// document: the format it finds is read only if its driver is allowed.
+    #[test]
+    fn the_wbvector_fallback_reads_only_allowed_drivers() {
+        let dir = tempfile::tempdir().unwrap();
+        let geojson = dir.path().join("q.dat2");
+        std::fs::write(&geojson, r#"{"type":"FeatureCollection","features":[],"name":"<kml"}"#).unwrap();
+        let kml = dir.path().join("k.dat2");
+        let doc = r#"<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+            <Placemark><name>a</name><Point><coordinates>10,47</coordinates></Point></Placemark></Document></kml>"#;
+        std::fs::write(&kml, doc).unwrap();
+        let open_with = |path: &Path, drivers: &str| {
+            let options = [("TERRIO_ALLOWED_DRIVERS", drivers), ("TERRIO_WBVECTOR_FALLBACK", "YES")];
+            with(&options, || open(path.to_str().unwrap())).map(|d| matches!(d, Dataset::Vector(_))).map_err(|e| e.to_string())
+        };
+        assert_refused(open_with(&geojson, "GeoJSON"), "KML", "a GeoJSON document holding '<kml'");
+        assert_eq!(open_with(&kml, "KML"), Ok(true));
     }
 }

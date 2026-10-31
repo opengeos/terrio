@@ -413,6 +413,7 @@ pub(crate) fn prefix(path: &str, size: usize) -> Result<Vec<u8>> {
                     Ok(())
                 }
             }
+            impl Sink for Prefix {}
             let mut out = Prefix { bytes: Vec::new(), size, stopped: false };
             let result = read_into(&node, &mut out);
             if !out.stopped {
@@ -492,6 +493,7 @@ impl MemberReader {
                 Ok(())
             }
         }
+        impl Sink for Range {}
         let mut range = Range { skip: offset, remaining: len, bytes: Vec::with_capacity(len), stopped: false };
         let result = read_into(&self.node, &mut range);
         if !range.stopped {

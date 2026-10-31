@@ -1,3 +1,38 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
+
+# terrio's parallel and background work runs on the pool of `crates/terrio/src/par.rs`, which is
+# started again in a fork()ed child; rayon's global pool, or a pool of one's own, is not, and work
+# given to it there waits forever. Use `par`'s functions, `par::spawn` and `par::install`.
+disallowed-methods = [
+    { path = "rayon::spawn", reason = "use `crate::par::spawn`: rayon's global pool hangs a fork()ed child (see par.rs)" },
+    { path = "rayon::spawn_fifo", reason = "use `crate::par::spawn`: rayon's global pool hangs a fork()ed child (see par.rs)" },
+    { path = "rayon::spawn_broadcast", reason = "rayon's global pool hangs a fork()ed child (see par.rs)" },
+    { path = "rayon::broadcast", reason = "rayon's global pool hangs a fork()ed child (see par.rs)" },
+    { path = "rayon::join", reason = "inside `crate::par::install` only: rayon's global pool hangs a fork()ed child (see par.rs)" },
+    { path = "rayon::join_context", reason = "inside `crate::par::install` only: rayon's global pool hangs a fork()ed child (see par.rs)" },
+    { path = "rayon::scope", reason = "inside `crate::par::install` only: rayon's global pool hangs a fork()ed child (see par.rs)" },
+    { path = "rayon::scope_fifo", reason = "inside `crate::par::install` only: rayon's global pool hangs a fork()ed child (see par.rs)" },
+    { path = "rayon::in_place_scope", reason = "inside `crate::par::install` only: rayon's global pool hangs a fork()ed child (see par.rs)" },
+    { path = "rayon::in_place_scope_fifo", reason = "inside `crate::par::install` only: rayon's global pool hangs a fork()ed child (see par.rs)" },
+    { path = "rayon::current_num_threads", reason = "use `crate::par::threads`, the size of terrio's pool (see par.rs)" },
+    { path = "rayon::ThreadPoolBuilder::build", reason = "one pool per process, `crate::par`'s, which survives fork() (see par.rs)" },
+    { path = "rayon::ThreadPoolBuilder::build_global", reason = "one pool per process, `crate::par`'s, which survives fork() (see par.rs)" },
+    { path = "rayon::iter::IntoParallelIterator::into_par_iter", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::iter::IntoParallelRefIterator::par_iter", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::iter::IntoParallelRefMutIterator::par_iter_mut", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::iter::ParallelBridge::par_bridge", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::iter::ParallelExtend::par_extend", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::slice::ParallelSlice::par_chunks", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::slice::ParallelSlice::par_chunks_exact", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::slice::ParallelSlice::par_windows", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::slice::ParallelSliceMut::par_chunks_mut", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::slice::ParallelSliceMut::par_chunks_exact_mut", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::slice::ParallelSliceMut::par_sort", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::slice::ParallelSliceMut::par_sort_by", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::slice::ParallelSliceMut::par_sort_by_key", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::slice::ParallelSliceMut::par_sort_unstable", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::slice::ParallelSliceMut::par_sort_unstable_by", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+    { path = "rayon::slice::ParallelSliceMut::par_sort_unstable_by_key", reason = "a parallel iterator runs on rayon's global pool, which hangs a fork()ed child: use `crate::par`'s functions, or `crate::par::install` around it (see par.rs)" },
+]

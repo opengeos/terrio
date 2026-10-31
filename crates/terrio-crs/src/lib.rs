@@ -1,6 +1,14 @@
+// SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.1:
+//     ogr/ogrct.cpp
+//
 // Written to match the behavior of:
 //   GDAL v3.13.3:
-//     ogr/ogrct.cpp
 //     ogr/ogrspatialreference.cpp
 //   PROJ 9.8.1:
 //     src/trans.cpp
@@ -47,6 +55,14 @@
 
 mod error;
 pub use error::{Error, Result};
+pub mod host;
+/// The bounds of the WKT reader, which are GDAL's and PROJ's: the length of a definition, in bytes.
+pub const WKT_MAX_LEN: usize = wkt1::MAX_LEN;
+/// The bounds of the WKT reader: the nesting of its nodes.
+pub const WKT_MAX_LEVELS: usize = wkt1::MAX_LEVELS;
+#[cfg(all(unix, not(target_family = "wasm")))]
+pub use host::hold_for_fork;
+pub use host::{Host, set_host};
 mod warnings;
 pub use warnings::take as take_warnings;
 #[cfg(remote)]
@@ -64,10 +80,11 @@ mod math;
 mod params;
 mod projections;
 mod projjson;
+mod projjson_gdal;
 mod projjson_write;
 mod rotation;
 mod route;
-mod wkt1;
+pub(crate) mod wkt1;
 mod wkt1_write;
 mod wkt2;
 
@@ -368,6 +385,12 @@ impl SpatialRef {
     /// `OGC:CRS84`, `WGS84`, `ESRI:54009` (or `urn:ogc:def:crs:ESRI::54009`), a WKT definition,
     /// a PROJ/PROJJSON string, or the path of a file holding one of these (such as a shapefile's `.prj`).
     pub fn parse(s: &str) -> Result<Self> {
+        Self::parse_definition(s, true)
+    }
+
+    /// [`Self::parse`], reading a file only when `files` (not for a file's own text).
+    #[cfg_attr(target_family = "wasm", allow(unused_variables))]
+    fn parse_definition(s: &str, files: bool) -> Result<Self> {
         let s = s.trim();
         if s.is_empty() {
             return Err(Error::Crs("empty definition".into()));
@@ -395,6 +418,12 @@ impl SpatialRef {
             return Self::compound(h, v);
         }
         if looks_like_wkt(s) {
+            // As GDAL's `importFromWkt`: WKT its reader refuses (unbalanced, nested deeper than
+            // PROJ allows, over 100,000 bytes) is an error, not an opaque CRS.
+            if wkt1::parse(s).is_none() {
+                let head: String = s.chars().take(80).collect();
+                return Err(Error::Crs(format!("not a WKT definition GDAL reads: '{head}'")));
+            }
             return Ok(Self::from_wkt(s));
         }
         if let Some(code) = esri_reference(&upper) {
@@ -403,9 +432,21 @@ impl SpatialRef {
         if let Some(code) = epsg_reference(s) {
             return Self::from_epsg(code);
         }
+        // A file, read as GDAL's `SetFromUserInput` reads one: into a 100,000-byte buffer, a file
+        // filling it (99,999 bytes or more) refused rather than read whole, as `/dev/zero` was;
+        // its text is a definition, never the path of another file (one naming itself recursed
+        // until the stack overflowed).
         #[cfg(not(target_family = "wasm"))]
-        if let Ok(text) = std::fs::read_to_string(s) {
-            return Self::parse(&text);
+        if files && let Ok(f) = std::fs::File::open(s) {
+            use std::io::Read;
+            const MAX: u64 = 99_999;
+            let mut bytes = Vec::new();
+            if f.take(MAX).read_to_end(&mut bytes).is_ok()
+                && (bytes.len() as u64) < MAX
+                && let Ok(text) = String::from_utf8(bytes)
+            {
+                return Self::parse_definition(&text, false);
+            }
         }
         Err(Error::Crs(format!("cannot parse '{s}'")))
     }
@@ -548,6 +589,18 @@ impl SpatialRef {
         Def::new(self).is_ok_and(|d| d.is_geocentric())
     }
 
+    /// The EPSG codes of the horizontal and the vertical CRS of a compound CRS: those of the
+    /// registry's compound CRS of the CRS's code, else those its WKT's two parts declare (the
+    /// horizontal one may be identified). `None` for other CRSs, and when a code is missing.
+    pub fn compound_parts(&self) -> Option<(u32, u32)> {
+        if let Some(c) = self.epsg.and_then(epsg::compound) {
+            return Some((c.horizontal, c.vertical));
+        }
+        let (horizontal, vertical) = def::split_compound(self.wkt.as_deref()?)?;
+        let vertical = declared_epsg(&vertical).filter(|v| epsg::vertical(*v).is_some())?;
+        Some((identify_epsg(&horizontal)?, vertical))
+    }
+
     /// Whether coordinates have a height that transformations change: a compound CRS (with a
     /// vertical CRS), a geographic 3D or a geocentric CRS. [`Transformer::transform_3d`]
     /// transforms heights between two such CRSs.
@@ -582,6 +635,11 @@ impl SpatialRef {
 
     /// Whether both describe the same CRS, as far as can be told.
     pub fn same_as(&self, other: &SpatialRef) -> bool {
+        // Compound CRSs of the same horizontal and vertical CRSs, whether or not one has the
+        // registry's code (EPSG:9707 and `EPSG:4326+5773`).
+        if let (Some(a), Some(b)) = (self.compound_parts(), other.compound_parts()) {
+            return a == b;
+        }
         match (self.authority(), other.authority()) {
             (Some(a), Some(b)) => a == b,
             _ => {
@@ -616,6 +674,10 @@ impl SpatialRef {
             return Ok(c);
         }
         if let Some(w) = &self.wkt {
+            // Only WKT the reader accepts: wbprojection's parser does not bound its recursion.
+            if wkt1::parse(w).is_none() {
+                return Err(Error::Crs("not a WKT definition GDAL reads".into()));
+            }
             return Ok(wbp::Crs::from_wkt(w)?);
         }
         Err(Error::Crs("the CRS is unknown".into()))
@@ -713,6 +775,14 @@ fn wkt_datums_and_others(wkt: &str) -> (Vec<u32>, &'static [u32]) {
     }
     let name = datum.name().unwrap_or_default();
     (epsg::datums_named(name), epsg::datums_written_as(name))
+}
+
+/// The EPSG code of the compound CRS of a horizontal and a vertical EPSG CRS, as GDAL finds one
+/// for a GeoTIFF's GeoKeys, which give the two codes but none for the compound
+/// (`GTIFGetOGISDefnAsOSR`'s `FindBestMatch(100)`): the registry's only compound CRS of the two,
+/// or the one named `name` among several. `None` when there is none.
+pub fn compound_code(horizontal: u32, vertical: u32, name: Option<&str>) -> Option<u32> {
+    epsg::compound_of(horizontal, vertical, name)
 }
 
 /// Identifies the EPSG code of a WKT definition, as GDAL does: a CRS on the WKT's datum (by its
@@ -1046,6 +1116,8 @@ pub struct Transformer {
     time: Option<f64>,
     /// The height transformation, between CRSs that both have heights.
     heights: Option<Box<Heights>>,
+    /// Web Mercator to WGS 84, which GDAL computes itself rather than with PROJ.
+    web_mercator_to_wgs84: bool,
     /// A point motion operation moving coordinates of one datum between two coordinate epochs
     /// (the Canada velocity grids of NAD83(CSRS), NKG_RF17vel), as PROJ applies it.
     motion: Option<Vec<datum::Step>>,
@@ -1110,6 +1182,78 @@ impl Side {
             s.models.push((s.defs.len() - 1, ops.clone()));
         }
         s
+    }
+}
+
+/// Whether GDAL transforms from `src` to `dst` with its own Web Mercator to WGS 84 formula rather
+/// than with PROJ (`OGRProjCT::DetectWebMercatorToWGS84()`): EPSG:3857 (or the deprecated 3785 and
+/// 900913, or ESRI's 102100) to EPSG:4326. Not from WGS 84 to Web Mercator, which PROJ computes.
+fn web_mercator_to_wgs84(src: &SpatialRef, dst: &SpatialRef) -> bool {
+    let mercator = matches!(src.epsg, Some(3857 | 3785 | 900913)) || src.esri == Some(102100);
+    mercator && dst.epsg == Some(4326) && dst.esri.is_none()
+}
+
+/// GDAL's Web Mercator to WGS 84 (`OGRProjCT::TransformWithErrorCodes()`): longitude and latitude
+/// in radians on the sphere of radius 6378137, which differ from PROJ's in the last bits.
+fn mercator_sphere_inverse(x: f64, y: f64) -> Option<(f64, f64)> {
+    use std::f64::consts::PI;
+    const REVERSE_SPHERE_RADIUS: f64 = 1.0 / 6378137.0;
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let lon = wrap_longitude(x * REVERSE_SPHERE_RADIUS);
+    Some((lon, PI / 2.0 - 2.0 * (-y * REVERSE_SPHERE_RADIUS).exp().atan()))
+}
+
+/// A longitude in radians brought within [-π, π] as GDAL's Web Mercator inverse brings it: within
+/// 10⁻¹⁴ of ±π to ±π, else by whole revolutions ([`unwind_longitude`]).
+fn wrap_longitude(lon: f64) -> f64 {
+    use std::f64::consts::PI;
+    if lon > PI {
+        if lon < PI + 1e-14 { PI } else { unwind_longitude(lon) }
+    } else if lon < -PI {
+        // GDAL adds 2π while the longitude is below -π, which mirrors subtracting it from the
+        // opposite longitude, bit for bit, but for a result of exactly 0, which an addition makes
+        // +0 and the mirror's negation -0: `0.0 -` keeps +0.
+        if lon > -PI - 1e-14 { -PI } else { 0.0 - unwind_longitude(-lon) }
+    } else {
+        lon
+    }
+}
+
+/// A longitude in radians above π brought back to (-π, π] as GDAL's `do { lon -= 2π } while (lon >
+/// π)` brings it, bit for bit, in a few steps per power of two rather than one per revolution:
+/// GDAL's loop takes 0.4 s for an easting of 10¹⁶ m (2.5·10⁸ revolutions), ten times longer for
+/// ten times more, and never ends from 2⁵⁶ radians (4.6·10²³ m) on, where subtracting 2π no longer
+/// changes a longitude. Those, which GDAL never returns, are reduced exactly modulo 2π.
+fn unwind_longitude(mut lon: f64) -> f64 {
+    use std::f64::consts::PI;
+    const TWO_PI: f64 = 2.0 * PI;
+    loop {
+        let next = lon - TWO_PI;
+        if next == lon {
+            // `%` is exact: the remainder of the longitude itself.
+            let r = lon % TWO_PI;
+            return if r > PI { r - TWO_PI } else { r };
+        }
+        // Within the binade [2^e, 2^(e+1)) of a longitude, while it stays above 2^e + 2π, each
+        // step subtracts the same amount, `lon - next` (2π rounded to the binade's spacing, with no
+        // tie from 128 radians on, where 2π is not halfway between two multiples of the spacing):
+        // all but the last steps in the binade at once, exactly (the result is a multiple of the
+        // spacing in the binade, `k` being at most one more than the steps that keep it 2π above
+        // 2^e). Below 128 radians GDAL's loop takes at most 20 steps.
+        if lon >= 128.0 {
+            let low = f64::from_bits(lon.to_bits() & (0x7ff << 52));
+            let k = ((lon - low - 2.0 * TWO_PI) / (lon - next)).floor();
+            if lon - low > 4.0 * TWO_PI && k >= 1.0 {
+                lon -= k * (lon - next);
+                continue;
+            }
+        }
+        lon = next;
+        if lon <= PI {
+            return lon;
+        }
     }
 }
 
@@ -1268,6 +1412,7 @@ impl Transformer {
         };
         let src_horizontal = s.horizontal();
         let identity = src.same_as(dst) && motion.is_none();
+        let web_mercator_to_wgs84 = web_mercator_to_wgs84(src, dst);
         Ok(Self {
             identity,
             src: s,
@@ -1281,6 +1426,7 @@ impl Transformer {
             vertical_ops,
             same_vertical_datum,
             src_horizontal,
+            web_mercator_to_wgs84,
             best_route: std::sync::OnceLock::new(),
             policy: opts.clone(),
             missing_grid_checked: std::sync::OnceLock::new(),
@@ -1447,6 +1593,12 @@ impl Transformer {
     /// without keeping heights, transformed).
     fn transform_2d(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y})"));
+        if self.web_mercator_to_wgs84 {
+            let (lon, lat) = mercator_sphere_inverse(x, y).ok_or_else(fail)?;
+            // Degrees as GDAL gives them (radians times `180 / pi`), in the CRS's axis order.
+            let (tx, ty) = self.dst.project(lon, lat).ok_or_else(fail)?;
+            return Ok((tx, ty, z));
+        }
         let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
         let p = datum::Point { lon, lat, h: z, t };
         let selected = if self.policy.only_best {
@@ -2018,6 +2170,49 @@ mod tests {
         assert!((y - 4300621.4).abs() < 1.0, "{y}");
     }
 
+    /// A Lambert conformal conic (2SP, on the WGS 84 ellipsoid with an unnamed datum, as a
+    /// gridded climate dataset declares it) gives GDAL's coordinates bit for bit: GDAL 3.12.1 with
+    /// PROJ 9.7.1, through rasterio's `warp.transform`, both ways. Its constants and its forward
+    /// projection go through `tsfn`; in the form PROJ used before 9 every latitude below was a
+    /// few units in the last place off, and the extent of a grid warped from it with them. Bit
+    /// for bit where the C library is glibc, as `asinh` and `atanh` are.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn lambert_conformal_conic_matches_proj_bit_for_bit() {
+        const LCC: &str = r#"PROJCS["undefined",GEOGCS["undefined",DATUM["undefined",SPHEROID["undefined",6378137,298.257223563]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["standard_parallel_1",25],PARAMETER["standard_parallel_2",60],PARAMETER["latitude_of_origin",42.5],PARAMETER["central_meridian",-100],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#;
+        let (lcc, wgs84) = (SpatialRef::parse(LCC).unwrap(), SpatialRef::from_epsg(4326).unwrap());
+        let bits = |p: (f64, f64)| (p.0.to_bits(), p.1.to_bits());
+        // A 1 km grid's corners, the projection's origin and points beyond the standard parallels.
+        let inverse = [
+            ((-5802750.0, -38500.0), (-160.3055519816432, 21.866370142929064)),
+            ((-5518750.0, -38500.0), (-158.236286957958, 23.518637016668105)),
+            ((-5802750.0, -622500.0), (-156.80763425972904, 17.953942068222393)),
+            ((-5518750.0, -622500.0), (-154.77159676995768, 19.4872617759031)),
+            ((0.0, 0.0), (-100.0, 42.5)),
+            ((1000000.0, 2000000.0), (-81.90841925276249, 60.06731242458275)),
+            ((-2500000.0, -1500000.0), (-125.15217207822917, 25.024669562373553)),
+            ((3000000.0, -1000000.0), (-68.40599710933087, 27.79413628919135)),
+        ];
+        let t = Transformer::new(&lcc, &wgs84).unwrap();
+        for ((x, y), want) in inverse {
+            let got = t.transform(x, y).unwrap();
+            assert_eq!(bits(got), bits(want), "({x}, {y}) to {got:?}, GDAL {want:?}");
+        }
+        let forward = [
+            ((-157.5, 21.0), (-5640537.969442342, -305411.69883608964)),
+            ((-100.0, 25.0), (0.0, -1882531.3839104532)),
+            ((-80.5, 35.25), (1692969.5890082794, -571387.0049998641)),
+            ((-120.0, 59.0), (-1131713.4059237528, 1908889.5129129528)),
+            ((-60.0, 10.0), (4688828.012877845, -2478499.0432682936)),
+            ((-155.0, 19.0), (-5572503.548581873, -651443.9024563333)),
+        ];
+        let t = Transformer::new(&wgs84, &lcc).unwrap();
+        for ((lon, lat), want) in forward {
+            let got = t.transform(lon, lat).unwrap();
+            assert_eq!(bits(got), bits(want), "({lon}, {lat}) to {got:?}, GDAL {want:?}");
+        }
+    }
+
     #[test]
     fn matches_gdal_for_national_grids() {
         // gdaltransform -s_srs EPSG:2263 -t_srs EPSG:4326 (traditional GIS order): US survey feet.
@@ -2212,5 +2407,109 @@ mod tests {
         let w = s.to_wkt().unwrap();
         assert!(w.contains("UNIT[\"US survey foot\",0.304800609601219") && w.ends_with("AUTHORITY[\"EPSG\",\"2263\"]]"), "{w}");
         assert_eq!(SpatialRef::from_wkt(&w).epsg, Some(2263));
+    }
+
+    /// GDAL's longitude reduction in its Web Mercator inverse (`ogrct.cpp`), one revolution per
+    /// step, as terrio computed it before: the reference for [`wrap_longitude`].
+    fn gdal_longitude(mut lon: f64) -> f64 {
+        use std::f64::consts::PI;
+        if lon > PI {
+            if lon < PI + 1e-14 {
+                lon = PI;
+            } else {
+                while lon > PI {
+                    lon -= 2.0 * PI;
+                }
+            }
+        } else if lon < -PI {
+            if lon > -PI - 1e-14 {
+                lon = -PI;
+            } else {
+                while lon < -PI {
+                    lon += 2.0 * PI;
+                }
+            }
+        }
+        lon
+    }
+
+    /// `wrap_longitude(lon)` and GDAL's loop on it, bit for bit.
+    fn same_as_gdal(lon: f64) {
+        let (ours, gdal) = (wrap_longitude(lon), gdal_longitude(lon));
+        assert_eq!(ours.to_bits(), gdal.to_bits(), "longitude {lon:e} ({:#x}): {ours:e}, GDAL {gdal:e}", lon.to_bits());
+    }
+
+    #[test]
+    fn web_mercator_longitudes_are_gdals_bit_for_bit() {
+        const R: f64 = 1.0 / 6378137.0;
+        let up = |x: f64, n: usize| (0..n).fold(x, |x, _| x.next_up());
+        let down = |x: f64, n: usize| (0..n).fold(x, |x, _| x.next_down());
+        // Eastings: the antimeridian and a few ULPs around it, and GDAL's slower cases (10^16 m
+        // takes it 2.5 x 10^8 steps).
+        let seam = 20037508.342789244;
+        let mut eastings = vec![seam, 1e7, 1e10, 1e13, 1e16, 3.14e15, 123456789.25];
+        eastings.extend((1..=4).flat_map(|n| [up(seam, n), down(seam, n)]));
+        for x in eastings.clone() {
+            eastings.push(-x);
+        }
+        for x in eastings {
+            let (lon, lat) = mercator_sphere_inverse(x, 1000.0).unwrap();
+            assert_eq!(lon.to_bits(), gdal_longitude(x * R).to_bits(), "easting {x:e}");
+            assert_eq!(lat, std::f64::consts::PI / 2.0 - 2.0 * (-1000.0 * R).exp().atan());
+        }
+        // Longitudes: around each power of two from 4 to 2^24 radians, where 2π is subtracted in
+        // another rounding, ±π, exact multiples of 2π (a result of +0), and 4,000 others spread
+        // over 2^2 to 2^22 radians.
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let mut lons = vec![std::f64::consts::PI, 4.0 * std::f64::consts::PI, 1e-300, 0.0];
+        for e in 2..=24 {
+            let p = f64::from(1u32 << e);
+            lons.extend((0..4).flat_map(|n| [up(p, n), down(p, n), up(p + two_pi, n), down(p + 4.0 * two_pi, n)]));
+            lons.extend((1..=3).map(|k| p + f64::from(k) * two_pi));
+        }
+        lons.extend((1..=50).map(|k| f64::from(k) * two_pi));
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..4000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let exponent = 2.0 + 20.0 * (state >> 11) as f64 / (1u64 << 53) as f64;
+            lons.push(2f64.powf(exponent));
+        }
+        for lon in lons {
+            same_as_gdal(lon);
+            same_as_gdal(-lon);
+        }
+        // NaN and infinities are refused, as before.
+        for (x, y) in [(f64::NAN, 0.0), (f64::INFINITY, 0.0), (f64::NEG_INFINITY, 0.0), (0.0, f64::NAN), (0.0, f64::INFINITY)] {
+            assert_eq!(mercator_sphere_inverse(x, y), None, "({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn huge_web_mercator_eastings_return_at_once() {
+        // GDAL's loop never ends for the first seven (subtracting 2π leaves their longitude
+        // unchanged) and runs 2.5 x 10^10 and 2.5 x 10^12 times for the others: on a thread, so that a
+        // loop that does not end fails the test rather than hangs it.
+        let stuck = [1e30, -1e30, 1e300, f64::MAX, -f64::MAX, 1e24, -1e24];
+        let slow = [1e18, -1e18, 1e20, -1e20];
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for x in stuck.into_iter().chain(slow) {
+                let start = std::time::Instant::now();
+                let lon = mercator_sphere_inverse(x, 0.0).map(|(lon, _)| lon);
+                tx.send((x, lon, start.elapsed())).unwrap();
+            }
+        });
+        let two_pi = 2.0 * std::f64::consts::PI;
+        for _ in 0..stuck.len() + slow.len() {
+            let (x, lon, took) = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("a huge easting did not return within 5 s");
+            assert!(took < std::time::Duration::from_millis(10), "easting {x:e}: {took:?}");
+            let lon = lon.unwrap_or_else(|| panic!("easting {x:e}: refused"));
+            assert!(lon.abs() <= std::f64::consts::PI, "easting {x:e}: {lon}");
+            // Where GDAL's loop never ends: the exact remainder of the longitude modulo 2π.
+            let r = (x * (1.0 / 6378137.0)) % two_pi;
+            assert!(!stuck.contains(&x) || lon == r || lon == r - two_pi.copysign(r), "easting {x:e}: {lon}, remainder {r}");
+        }
     }
 }

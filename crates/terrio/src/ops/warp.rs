@@ -6,6 +6,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2002, i3 - information integration and imaging Fort Collins, CO
 // SPDX-FileCopyrightText: Copyright (c) 2007-2015, Even Rouault <even dot rouault at spatialys.com>
 // SPDX-FileCopyrightText: Copyright (c) 2015, Faza Mahamood
+// SPDX-FileCopyrightText: Copyright (c) 1999, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2008-2012, Even Rouault <even dot rouault at spatialys.com>
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //
@@ -15,6 +18,9 @@
 //     alg/gdalwarpoperation.cpp
 //     alg/gdalwarpkernel.cpp
 //     apps/gdalwarp_lib.cpp
+//   GDAL v3.12.1:
+//     gcore/gdal_misc.cpp
+//     alg/gdalwarper.cpp
 
 //! Reprojection and resampling: an equivalent of `gdalwarp`.
 //!
@@ -34,6 +40,8 @@ use super::overview::OverviewSelection;
 use super::{Grid, Resampling, apply_gt, invert_gt, is_nodata, warp_round};
 use crate::crs::{SpatialRef, TransformOptions};
 use crate::{Error, RasterDataset, Result};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use wbraster::DataType;
 use wbraster::raster::RasterData;
 
@@ -1347,7 +1355,8 @@ impl<'a> Plan<'a> {
 
     /// Source `k`'s nodata values, band by band.
     fn src_nodata(&self, k: usize, o: &WarpOptions) -> Vec<Option<f64>> {
-        (0..self.bands).map(|b| src_nodata(&self.srcs[k], o, b)).collect()
+        let nodata: Vec<Option<f64>> = (0..self.bands).map(|b| src_nodata(&self.srcs[k], o, b)).collect();
+        usable_src_nodata(nodata, self.srcs[k].ds.raster.data_type)
     }
 
     /// The window of the output source `k` is warped into: the whole output, or with
@@ -1377,7 +1386,7 @@ impl<'a> Plan<'a> {
 
     /// The warp of source `k`, through `t` ([`Plan::transformer`]), and the chunks of the output
     /// it is warped in, in order.
-    fn context<'t>(&self, k: usize, t: &'t GenImgProj, o: &WarpOptions) -> (WarpContext<'t>, Vec<Chunk>, Sink) {
+    fn context<'t>(&self, k: usize, t: &'t GenImgProj, o: &WarpOptions) -> (WarpContext<'t>, Vec<Chunk>, Storage) {
         let s = &self.srcs[k];
         let nodata = self.src_nodata(k, o);
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && self.bands > 1;
@@ -1400,6 +1409,9 @@ impl<'a> Plan<'a> {
             global_validity: self.bands == 1 || o.unified_src_nodata != Some(false),
             dst_has_nodata: self.dst_nodata_all.iter().any(Option::is_some),
             cutline: o.cutline.is_some(),
+            // GWKGeneralCaseThread(): with a unified source mask (one band with nodata, or
+            // UNIFIED_SRC_NODATA over all bands), a pixel whose source pixel is invalid is skipped.
+            unified_center: nodata.iter().all(Option::is_some) && (self.bands == 1 || unified),
             source_extra: o.source_extra,
             sample_all: o.sample_steps_all,
             src_grid: std::sync::OnceLock::new(),
@@ -1409,17 +1421,24 @@ impl<'a> Plan<'a> {
             ctx.collect_chunks(x, y, w, h, &mut chunks);
         }
         chunks.sort_by_key(|c| (c.dy, c.dx));
-        // As GDAL's warp kernel: valid pixels equal to the output nodata are nudged off it,
-        // except with a nodata value unified across several bands. Pixels are masked by nodata
+        // As GDAL's warp kernels: warped values equal to the output nodata are moved off it, by
+        // the kernels GDAL picks for each chunk (see `Storage::sink`). Pixels are masked by nodata
         // values and cutlines (see `validity`).
         let masked = nodata.iter().any(Option::is_some) || o.cutline.is_some();
-        let sink = Sink {
+        let unified_multiband = self.bands > 1 && o.unified_src_nodata != Some(false);
+        let storage = Storage {
+            work_type: working_type(self.out_type, s.ds.raster.data_type, &nodata, &self.dst_nodata_all),
             out_type: self.out_type,
             dst_nodata: self.dst_nodata_all.clone(),
-            avoid_nodata: masked && (self.bands == 1 || !unified),
-            avoid_all_nodata: false,
+            resampling: o.resampling,
+            bands: self.bands,
+            src_masked: masked,
+            // GDAL 3.12.2: with UNIFIED_SRC_NODATA over several bands, only a pixel whose every
+            // band holds its nodata value is moved off them (`GWKAvoidNoDataMultiBand`).
+            avoid_nodata: unified_multiband.then_some(false),
+            avoid_all_nodata: unified_multiband,
         };
-        (ctx, chunks, sink)
+        (ctx, chunks, storage)
     }
 }
 
@@ -1435,31 +1454,68 @@ fn src_nodata(s: &Source, o: &WarpOptions, band: usize) -> Option<f64> {
 /// Reprojects and resamples one or more rasters into one output, as `gdalwarp` does. Later
 /// sources are drawn over earlier ones where they have valid pixels.
 pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset> {
+    warp_with(sources, o, None)
+}
+
+/// Warps as [`warp`] does onto an output that already holds values, as GDAL warps without
+/// `INIT_DEST` (rasterio's `reproject(init_dest_nodata=False)`). `initial` holds them, band after
+/// band: `bands * height * width` values of the output grid, in any type, stored in the output
+/// type. Pixels no valid source pixel reaches keep them. GDAL makes each chunk's output validity
+/// mask from them, so with one band a chunk without a nodata pixel can run a kernel without masks,
+/// which leaves warped values on the nodata value (see `runs_without_masks`).
+pub fn warp_onto(sources: &[&RasterDataset], o: &WarpOptions, initial: &RasterData) -> Result<RasterDataset> {
+    warp_with(sources, o, Some(initial))
+}
+
+fn warp_with(sources: &[&RasterDataset], o: &WarpOptions, initial: Option<&RasterData>) -> Result<RasterDataset> {
     let p = Plan::new(sources, o)?;
-    warp_data(&p, sources, o)
+    warp_data(&p, sources, o, initial)
 }
 
 /// Render pixels from `sources` with a plan already built from their metadata.
-fn warp_data(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset> {
-    warp_data_with_storage(p, sources, o, p.out_type)
+fn warp_data(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOptions, initial: Option<&RasterData>) -> Result<RasterDataset> {
+    warp_data_with_storage(p, sources, o, initial, p.out_type)
 }
 
 // Keep storage separate from the logical output type so its representation can
 // be checked without changing resampling, quantization or chunk planning.
-fn warp_data_with_storage(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOptions, storage: DataType) -> Result<RasterDataset> {
+fn warp_data_with_storage(
+    p: &Plan<'_>,
+    sources: &[&RasterDataset],
+    o: &WarpOptions,
+    initial: Option<&RasterData>,
+    storage: DataType,
+) -> Result<RasterDataset> {
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     // The output, in its type: chunks are warped into `f64` rows, then stored (the values are
     // already rounded to the type, see `Sink::value`).
     let fill = p.fill();
     let mut out = RasterData::new_filled(storage, n * bands, 0.0);
-    if n != 0 {
-        crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
+    match initial {
+        Some(init) => {
+            if init.len() != n * bands {
+                return Err(Error::InvalidArgument(format!(
+                    "the initial output has {} values, not {} ({bands} bands of {} x {})",
+                    init.len(),
+                    n * bands,
+                    grid.width,
+                    grid.height
+                )));
+            }
+            let values = init.to_f64_vec();
+            crate::pixel::with_data!(&mut out, v => v.iter_mut().zip(&values).for_each(|(x, i)| *x = warp_round(*i, out_type) as _));
+        }
+        // Each band at its own initial value.
+        None if n != 0 => {
+            crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band, fill)| band.iter_mut().for_each(|x| *x = *fill as _)))
+        }
+        None => {}
     }
 
     for (k, s) in p.srcs.iter().enumerate() {
         let t = p.transformer(k)?;
-        let (ctx, chunks, sink) = p.context(k, &t, o);
+        let (ctx, chunks, storage) = p.context(k, &t, o);
         t.check_policy()?;
         let nodata = p.src_nodata(k, o);
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
@@ -1472,11 +1528,12 @@ fn warp_data_with_storage(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOpti
         // The source's bands in their type: the kernels are compiled for each (no conversion of
         // the bands, and no dispatch on the type per pixel).
         let sn = s.grid.width * s.grid.height;
-        let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: k == 0 };
+        // With initial values, every source is warped onto values (as later sources are).
+        let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: k == 0 && initial.is_none() };
         crate::pixel::with_data!(&sources[k].raster.data, v => {
             let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
             let data = SrcData { bands: &typed, valid: &valid, width: s.grid.width, origin: (0, 0) };
-            warp_source(&ctx, &chunks, &data, &sink, target);
+            warp_source(&ctx, &chunks, &data, &storage, target);
         });
         t.check_policy()?;
     }
@@ -1623,11 +1680,11 @@ fn warp_reader_selected(
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     let t = p.transformer(0)?;
-    let (ctx, chunks, mut sink) = p.context(0, &t, o);
+    let (ctx, chunks, mut storage) = p.context(0, &t, o);
     let nodata = p.src_nodata(0, o);
     if working.is_some() && nodata.iter().any(Option::is_some) {
-        sink.avoid_nodata = bands == 1 || !unified_sink;
-        sink.avoid_all_nodata = bands > 1 && unified_sink;
+        storage.avoid_nodata = Some(bands == 1 || !unified_sink);
+        storage.avoid_all_nodata = bands > 1 && unified_sink;
     }
     let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
     let fill = p.fill();
@@ -1664,7 +1721,7 @@ fn warp_reader_selected(
         crate::pixel::with_data!(&window.raster.data, v => {
             let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
             let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
-            warp_source(&ctx, std::slice::from_ref(c), &data, &sink, target);
+            warp_source(&ctx, std::slice::from_ref(c), &data, &storage, target);
         });
     }
     t.check_policy()?;
@@ -1739,7 +1796,7 @@ pub fn warp_sources(sources: &mut [&mut dyn WarpSource], o: &WarpOptions) -> Res
         data.push(source.read_window(crate::Window::full(grid.width, grid.height), &crate::WindowOptions { overview, bands: Vec::new() })?);
     }
     let refs: Vec<_> = data.iter().collect();
-    warp_data(&p, &refs, o)
+    warp_data(&p, &refs, o, None)
 }
 
 /// Opens and warps paths with lazy source reads and stored overview selection.
@@ -1834,7 +1891,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let w = grid.width;
     let t = p.transformer(0)?;
-    let (ctx, chunks, sink) = p.context(0, &t, o);
+    let (ctx, chunks, storage) = p.context(0, &t, o);
     t.check_policy()?;
     let nodata = p.src_nodata(0, o);
     let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
@@ -1905,7 +1962,9 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
             crate::pixel::with_data!(&window.raster.data, v => {
                 let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
                 let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
+                let sink = storage.sink(storage.first_nodata().is_some_and(|nd| is_nodata(warp_round(nd, storage.work_type), nd)));
                 ctx.warp_chunk(c, &data, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
+                sink.finish();
             });
             // Stored in the pending rows, rounded to the output type.
             grow(&mut rows, base, c.dy + c.dh);
@@ -2181,6 +2240,9 @@ struct WarpContext<'a> {
     global_validity: bool,
     dst_has_nodata: bool,
     cutline: bool,
+    /// Whether band 0's validity is GDAL's unified source mask (`panUnifiedSrcValid`): an output
+    /// pixel whose source pixel is invalid is skipped, whatever the kernel.
+    unified_center: bool,
     /// GDAL's `SOURCE_EXTRA` warp option.
     source_extra: Option<usize>,
     /// GDAL's `SAMPLE_STEPS=ALL` warp option.
@@ -2214,7 +2276,7 @@ struct Target<'a> {
 /// source's chunks don't overlap: the output there is still its initial value), warped, then
 /// stored back. The chunks of a source partition the output (`collect_chunks`), and the values
 /// stored are already rounded to the output type (`Sink::value`), so storing them back is exact.
-fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data: &SrcData<T>, sink: &Sink, t: Target) {
+fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data: &SrcData<T>, storage: &Storage, t: Target) {
     let bands = data.bands.len();
     let (w, n) = (t.width, t.n);
     let mut staged: Vec<Vec<f64>> = vec![Vec::new(); bands];
@@ -2234,7 +2296,16 @@ fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data
                 });
             }
         }
-        ctx.warp_chunk(c, data, sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
+        // WarpRegionToBuffer() makes a chunk's output validity mask from the values the chunk
+        // starts with: the initial value for the first source, else the values already there.
+        let holds_nodata = match storage.first_nodata() {
+            Some(nd) if t.first => is_nodata(warp_round(nd, storage.work_type), nd),
+            Some(nd) => staged.iter().take(1).any(|band| band.iter().any(|v| is_nodata(*v, nd))),
+            None => false,
+        };
+        let sink = storage.sink(holds_nodata);
+        ctx.warp_chunk(c, data, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
+        sink.finish();
         for (b, part) in staged.iter().enumerate() {
             crate::pixel::with_data!(&mut *t.out, v => {
                 let dst = &mut v[b * n + rows.start * w..b * n + rows.end * w];
@@ -2248,12 +2319,67 @@ fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data
     }
 }
 
-/// How warped values are stored in the output.
-struct Sink {
+/// What decides how a source's warped values are stored, chunk by chunk (see [`Storage::sink`]).
+struct Storage {
+    /// The type GDAL's kernels compute and store in ([`working_type`]).
+    work_type: DataType,
     out_type: DataType,
+    /// The output nodata value of each band.
     dst_nodata: Vec<Option<f64>>,
-    avoid_nodata: bool,
+    resampling: Resampling,
+    bands: usize,
+    /// Whether the source is masked (nodata values, a cutline).
+    src_masked: bool,
+    /// Whether warped values are moved off the nodata values whatever the kernel: set for a
+    /// serialized warped VRT's working warp, `None` otherwise (GDAL's kernel choice decides).
+    avoid_nodata: Option<bool>,
+    /// See [`Sink::avoid_all_nodata`].
     avoid_all_nodata: bool,
+}
+
+impl Storage {
+    /// The sink of one kernel run (a chunk), whose part of the output starts with a nodata pixel
+    /// or not (`holds_nodata`, see [`runs_without_masks`]).
+    fn sink(&self, holds_nodata: bool) -> Sink {
+        let dst_nodata = self.first_nodata();
+        let no_masks = runs_without_masks(self.work_type, self.resampling, dst_nodata, self.bands, holds_nodata, self.src_masked);
+        Sink {
+            work_type: self.work_type,
+            out_type: self.out_type,
+            dst_nodata: self.dst_nodata.clone(),
+            avoid_nodata: self.avoid_nodata.unwrap_or(dst_nodata.is_some() && !no_masks),
+            avoid_all_nodata: self.avoid_all_nodata,
+            bands: self.bands,
+            nudged: AtomicBool::new(false),
+            moved_all: AtomicBool::new(false),
+        }
+    }
+
+    /// The first band's output nodata value, which GDAL's output validity mask is made from.
+    fn first_nodata(&self) -> Option<f64> {
+        self.dst_nodata.first().copied().flatten()
+    }
+}
+
+/// How the warped values of one kernel run (a chunk, or a region) are stored: in the working type,
+/// moved off the nodata value there, then converted to the output type.
+struct Sink {
+    work_type: DataType,
+    out_type: DataType,
+    /// The output nodata value of each band (see [`Sink::nodata`]).
+    dst_nodata: Vec<Option<f64>>,
+    /// Whether warped values equal to their band's nodata value are moved off it (see
+    /// [`off_nodata`]): in every kernel but those without masks ([`runs_without_masks`]).
+    avoid_nodata: bool,
+    /// Whether a pixel whose every band holds its nodata value is moved off them (a serialized
+    /// warped VRT with a unified output mask, see [`Sink::avoid_all`]).
+    avoid_all_nodata: bool,
+    /// Whether a warped value was moved off a nodata value (see [`Sink::finish`]).
+    nudged: AtomicBool,
+    /// The number of bands, whose values a multi-band warning names (see [`Sink::finish`]).
+    bands: usize,
+    /// Whether a pixel was moved off its bands' nodata values (see [`Sink::finish`]).
+    moved_all: AtomicBool,
 }
 
 /// One output row of a chunk: the chunk's part of the row in each band.
@@ -2271,30 +2397,155 @@ fn chunk_rows<'a>(out: &'a mut [Vec<f64>], width: usize, c: &Chunk) -> Vec<RowOu
 }
 
 impl Sink {
-    fn nudge(&self, v: f64) -> f64 {
-        if super::is_integer(self.out_type) {
-            let (lo, _) = super::type_range(self.out_type);
-            if v == lo { lo + 1. } else { v - 1. }
-        } else if self.out_type == DataType::F32 {
-            let f = v as f32;
-            (if f == f32::MAX { f32::from_bits(f.to_bits() - 1) } else { next_up_f32(f) }) as f64
-        } else if v == f64::MAX {
-            f64::from_bits(v.to_bits() - 1)
-        } else {
-            next_up_f64(v)
-        }
+    /// The output nodata value of band `band` (from 0), the last band's beyond them.
+    fn nodata(&self, band: usize) -> Option<f64> {
+        self.dst_nodata.get(band).or(self.dst_nodata.last()).copied().flatten()
     }
-    /// The value to store for a warped value `v`.
+
+    /// The value to store for a warped value `v` of band `band` (from 0): as GDAL's kernel stores
+    /// it in its working-type buffer (rounded to that type, moved off the band's nodata value
+    /// there), then as `GDALCopyWords` converts the buffer to the output type ([`copy_word`]),
+    /// which may bring it back onto the nodata value (Float64 9999.000000000002 is Float32 9999).
     fn value(&self, v: f64, band: usize) -> f64 {
-        let v = warp_round(v, self.out_type);
-        if self.avoid_nodata && self.dst_nodata[band].is_some_and(|nd| v == nd) { self.nudge(v) } else { v }
+        let mut v = warp_round(v, self.work_type);
+        if self.avoid_nodata
+            && let Some(nd) = self.nodata(band)
+            && v == nd
+        {
+            // Read first: once set, the rows warped in parallel only read the flag (a store from
+            // each would bounce its cache line between them).
+            if !self.nudged.load(Ordering::Relaxed) {
+                self.nudged.store(true, Ordering::Relaxed);
+            }
+            v = off_nodata(v, self.work_type);
+        }
+        copy_word(v, self.work_type, self.out_type)
     }
+
+    /// With a unified output mask over several bands ([`Sink::avoid_all_nodata`]), moves the
+    /// stored values of pixel `index` off their bands' nodata values when every band holds its own.
     fn avoid_all(&self, out: &mut [&mut [f64]], index: usize) {
-        if self.avoid_all_nodata && out.iter().zip(&self.dst_nodata).all(|(v, nd)| nd.is_some_and(|nd| v[index] == nd)) {
+        if self.avoid_all_nodata && out.iter().enumerate().all(|(b, v)| self.nodata(b).is_some_and(|nd| v[index] == nd)) {
+            if !self.moved_all.load(Ordering::Relaxed) {
+                self.moved_all.store(true, Ordering::Relaxed);
+            }
             for band in out {
-                band[index] = self.nudge(band[index]);
+                band[index] = off_nodata(band[index], self.out_type);
             }
         }
+    }
+
+    /// Ends the kernel run: when it moved values off the output nodata, records GDAL's warning,
+    /// which `AvoidNoData()` gives once per kernel (`bWarnedAboutDstNoDataReplacement`), so once
+    /// per chunk of a warp or region of a warped VRT (see [`record_nodata_warnings`]).
+    fn finish(&self) {
+        if self.nudged.swap(false, Ordering::Relaxed)
+            && let Some(nd) = self.dst_nodata.iter().flatten().next().copied()
+        {
+            nodata_warning(&printf_g(nd), &printf_g(off_nodata(nd, self.work_type)));
+        }
+        // `GWKAvoidNoDataMultiBand()` names every band's value, comma-separated.
+        if self.moved_all.swap(false, Ordering::Relaxed) {
+            let values: Vec<f64> = (0..self.bands).filter_map(|b| self.nodata(b)).collect();
+            let join = |f: &dyn Fn(f64) -> f64| values.iter().map(|v| printf_g(f(*v))).collect::<Vec<_>>().join(",");
+            nodata_warning(&join(&|v| v), &join(&|v| off_nodata(v, self.work_type)));
+        }
+    }
+}
+
+/// Where `AvoidNoData()` moves a value equal to the output nodata: an integer by one toward the
+/// type's lowest value (up from the lowest), a float to the next value toward its largest (down
+/// from the largest).
+fn off_nodata(v: f64, out_type: DataType) -> f64 {
+    if super::is_integer(out_type) {
+        let (lo, _) = super::type_range(out_type);
+        if v == lo { lo + 1.0 } else { v - 1.0 }
+    } else if out_type == DataType::F32 {
+        let f = v as f32;
+        (if f == f32::MAX { f32::from_bits(f.to_bits() - 1) } else { next_up_f32(f) }) as f64
+    } else if v == f64::MAX {
+        f64::from_bits(v.to_bits() - 1)
+    } else {
+        next_up_f64(v)
+    }
+}
+
+/// Whether the nodata warnings are recorded (see [`record_nodata_warnings`]).
+static NODATA_WARNINGS_ON: AtomicBool = AtomicBool::new(false);
+/// The nodata warnings recorded and not taken yet, at most [`NODATA_WARNINGS_MAX`].
+static NODATA_WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+const NODATA_WARNINGS_MAX: usize = 1000;
+
+/// [`NODATA_WARNINGS`], also after a panic elsewhere poisoned its lock; held across a fork as the
+/// other process-wide locks are (see [`hold_for_fork`]).
+fn nodata_warnings() -> std::sync::MutexGuard<'static, Vec<String>> {
+    crate::par::fork_safe();
+    NODATA_WARNINGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Holds the nodata warnings' lock across a fork, for [`crate::par`]: the forking thread takes it
+/// before the process is copied and lets it go after, so that the child never starts with it held
+/// by a thread it does not have (a warp's kernel run on another thread recording a warning).
+#[cfg(all(unix, not(target_family = "wasm")))]
+pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+    held.push(Box::new(nodata_warnings()));
+}
+
+/// Starts (`true`) or stops recording, for a binding to pass on as GDAL's warnings are passed on
+/// (rasterio logs them), the warning GDAL's warper gives when it moves warped values off the output
+/// nodata value: `CPLError(CE_Warning, CPLE_AppDefined, "Value %g in the source dataset has been
+/// changed to %g in the destination dataset to avoid being treated as NoData. To avoid this,
+/// select a different NoData value for the destination dataset.")`, once per kernel run (a chunk
+/// of a warp, a region of a warped VRT) that moved one. Stopping drops those not taken.
+pub fn record_nodata_warnings(on: bool) {
+    NODATA_WARNINGS_ON.store(on, Ordering::Relaxed);
+    if !on {
+        nodata_warnings().clear();
+    }
+}
+
+/// The nodata warnings recorded since the last call, oldest first; none unless recording.
+pub fn take_nodata_warnings() -> Vec<String> {
+    if !NODATA_WARNINGS_ON.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    std::mem::take(&mut *nodata_warnings())
+}
+
+/// Records GDAL's warning for a kernel run that moved values equal to `nodata` to `moved`.
+fn nodata_warning(nodata: &str, moved: &str) {
+    if !NODATA_WARNINGS_ON.load(Ordering::Relaxed) {
+        return;
+    }
+    let message = format!(
+        "Value {} in the source dataset has been changed to {} in the destination dataset to avoid being treated as NoData. To avoid \
+         this, select a different NoData value for the destination dataset.",
+        nodata, moved
+    );
+    let mut recorded = nodata_warnings();
+    if recorded.len() < NODATA_WARNINGS_MAX {
+        recorded.push(message);
+    }
+}
+
+/// `v` as C's `printf("%g")` writes it: 6 significant digits without trailing zeros, in
+/// exponent form (`1e+20`, `1.5e-05`) when the exponent is below -4 or at least 6.
+fn printf_g(v: f64) -> String {
+    if v.is_nan() {
+        return if v.is_sign_negative() { "-nan" } else { "nan" }.into();
+    }
+    if v.is_infinite() {
+        return if v < 0.0 { "-inf" } else { "inf" }.into();
+    }
+    // The exponent after rounding to 6 significant digits decides the form (C11 7.21.6.1).
+    let e = format!("{v:.5e}");
+    let (mantissa, exp) = e.split_once('e').unwrap_or((&e, "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    let trim = |s: &str| if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s.to_string() };
+    if (-4..6).contains(&exp) {
+        trim(&format!("{v:.*}", (5 - exp) as usize))
+    } else {
+        format!("{}e{}{:02}", trim(mantissa), if exp < 0 { '-' } else { '+' }, exp.abs())
     }
 }
 
@@ -2724,7 +2975,10 @@ impl WarpContext<'_> {
                 if iy == c.sh {
                     iy -= 1;
                 }
-                if global_validity && (0..self.bands).all(|b| !k.valid(b, ix, iy)) {
+                // GWKGeneralCaseThread() and the other kernels: with a unified source mask, a
+                // pixel whose source pixel is invalid is left alone; with per-band masks and the
+                // shared validity of `UNIFIED_SRC_NODATA=PARTIAL`, one whose every band is invalid.
+                if (self.unified_center && !k.valid(0, ix, iy)) || (global_validity && (0..self.bands).all(|b| !k.valid(b, ix, iy))) {
                     continue;
                 }
                 let (fx, fy) = (xs[i] - sxo, ys[i] - syo);
@@ -3086,6 +3340,502 @@ impl<T: crate::pixel::Pixel> Kernel<'_, T> {
             return None;
         }
         if !(0.99999..=1.00001).contains(&wsum) { Some(acc / wsum) } else { Some(acc) }
+    }
+}
+
+/// GDAL's view of a type for `GDALDataTypeUnion()`: its size in bits, whether it is signed
+/// (`GDALDataTypeIsSigned()`: floats are), and whether it is floating.
+fn type_traits(t: DataType) -> (u32, bool, bool) {
+    use DataType::{F32, F64, I8, I16, I32, I64, U8, U16, U32, U64};
+    match t {
+        U8 => (8, false, false),
+        I8 => (8, true, false),
+        U16 => (16, false, false),
+        I16 => (16, true, false),
+        U32 => (32, false, false),
+        I32 => (32, true, false),
+        U64 => (64, false, false),
+        I64 => (64, true, false),
+        F32 => (32, true, true),
+        F64 => (64, true, true),
+    }
+}
+
+/// `GDALFindDataType()`: the smallest type of `bits` bits, signed or not, floating or not.
+fn find_type(bits: u32, signed: bool, floating: bool) -> DataType {
+    use DataType::{F32, F64, I8, I16, I32, I64, U8, U16, U32, U64};
+    match (floating, signed) {
+        (true, _) if bits <= 32 => F32,
+        (true, _) => F64,
+        (false, false) => match bits {
+            0..=8 => U8,
+            9..=16 => U16,
+            17..=32 => U32,
+            33..=64 => U64,
+            _ => F64,
+        },
+        (false, true) => match bits {
+            0..=8 => I8,
+            9..=16 => I16,
+            17..=32 => I32,
+            33..=64 => I64,
+            _ => F64,
+        },
+    }
+}
+
+/// `GDALDataTypeUnion()` (GDAL 3.12): the smallest type holding every value of both types; an
+/// integer and a float need twice the integer's bits, an unsigned and a signed integer of as many
+/// bits twice those bits (UInt16 and Int16: Int32; Int16 and Float32: Float32; Int32 and Float32:
+/// Float64).
+fn type_union(a: DataType, b: DataType) -> DataType {
+    let ((ba, sa, fa), (bb, sb, fb)) = (type_traits(a), type_traits(b));
+    let bits = if fa != fb {
+        let (float_bits, int_bits) = if fa { (ba, bb) } else { (bb, ba) };
+        float_bits.max(2 * int_bits)
+    } else if sa != sb {
+        if !sa && ba < bb {
+            bb
+        } else if !sb && bb < ba {
+            ba
+        } else {
+            let (signed_bits, unsigned_bits) = if sa { (ba, bb) } else { (bb, ba) };
+            signed_bits.max(2 * unsigned_bits)
+        }
+    } else {
+        ba.max(bb)
+    };
+    find_type(bits, sa || sb, fa || fb)
+}
+
+/// `GDALIsValueExactAs()`: whether `v` converts to `t` and back unchanged (NaN to the floats).
+fn is_value_exact_as(v: f64, t: DataType) -> bool {
+    match t {
+        DataType::F64 => true,
+        DataType::F32 => v.is_nan() || ((v.is_infinite() || v.abs() <= f32::MAX as f64) && (v as f32) as f64 == v),
+        _ => {
+            let (lo, hi) = super::type_range(t);
+            v >= lo && v <= hi && v.trunc() == v
+        }
+    }
+}
+
+/// `GDALDataTypeUnionWithValue()` (not complex): `t` when it holds `v` exactly, else its union
+/// with the smallest type that does (`GDALFindDataTypeForValue()`).
+fn type_union_with_value(t: DataType, v: f64) -> DataType {
+    if is_value_exact_as(v, t) {
+        return t;
+    }
+    let floating = v.round() != v || v > u64::MAX as f64 || v < i64::MIN as f64;
+    let in_range = |t: DataType| {
+        let (lo, hi) = super::type_range(t);
+        v >= lo && v <= hi
+    };
+    // GetMinBitsForValue().
+    let bits = if v.round() == v {
+        if in_range(DataType::U8) || in_range(DataType::I8) {
+            8
+        } else if in_range(DataType::I16) || in_range(DataType::U16) {
+            16
+        } else if in_range(DataType::I32) || in_range(DataType::U32) {
+            32
+        } else {
+            64
+        }
+    } else if (v as f32) as f64 == v {
+        32
+    } else {
+        64
+    };
+    type_union(t, find_type(bits, floating || v < 0.0, floating))
+}
+
+/// The source nodata values GDAL's warper uses: none when no band's value is exactly a value of
+/// the source's type (`GDALWarpResolveWorkingDataType()` drops them then).
+fn usable_src_nodata(nodata: Vec<Option<f64>>, src_type: DataType) -> Vec<Option<f64>> {
+    if nodata.iter().any(Option::is_some) && nodata.iter().all(|n| n.is_some_and(|v| !is_value_exact_as(v, src_type))) {
+        return vec![None; nodata.len()];
+    }
+    nodata
+}
+
+/// `GDALWarpResolveWorkingDataType()` (GDAL 3.12, which rasterio's warps and warped VRTs leave to
+/// resolve): the type GDAL's kernels read, compute and store in, the union of the output's and the
+/// source's types and of the types holding the source and output nodata values, band by band.
+/// GDAL picks its kernels by it (see [`has_no_mask_kernel`]) and moves values off the nodata value
+/// in it (see [`Sink::value`]).
+fn working_type(out_type: DataType, src_type: DataType, src_nodata: &[Option<f64>], dst_nodata: &[Option<f64>]) -> DataType {
+    let mut w = DataType::U8;
+    for (band, nd) in src_nodata.iter().enumerate() {
+        w = type_union(w, out_type);
+        w = type_union(w, src_type);
+        if let Some(v) = nd {
+            w = type_union_with_value(w, *v);
+        }
+        if let Some(v) = dst_nodata.get(band).or(dst_nodata.last()).copied().flatten() {
+            w = type_union_with_value(w, v);
+        }
+    }
+    w
+}
+
+/// The data type of the bands of a warped VRT created without one, and the source nodata values
+/// its warp uses: GDAL 3.12's `GDALCreateWarpedVRT()` resolves the warp's working type
+/// (`GDALWarpResolveWorkingDataType()`) before the VRT exists, from the source's type and the
+/// source and output nodata values, drops source nodata values that no band's type holds, and
+/// creates the bands in that type. So a Byte source with an output nodata value of -1 gives an
+/// Int16 VRT, one of 300 a UInt16 VRT, and an Int8 source an Int16 VRT (the resolution starts at
+/// Byte). `src_nodata` has one value (or `None`) per band; `dst_nodata` one per band or one for all.
+pub fn warped_vrt_type(src_type: DataType, src_nodata: Vec<Option<f64>>, dst_nodata: &[Option<f64>]) -> (DataType, Vec<Option<f64>>) {
+    let src_nodata = usable_src_nodata(src_nodata, src_type);
+    // No output yet: the union with the output's type is the union with the source's again.
+    (working_type(src_type, src_type, &src_nodata, dst_nodata), src_nodata)
+}
+
+/// `GDALCopyWords()`'s conversion of a working-type value to the output type: to a float type a
+/// cast; to an integer type NaN to 0, then rounded half up (unsigned types) or half away from zero
+/// (signed types) in the working type's precision, clamped and truncated; between integer types
+/// clamped.
+fn copy_word(v: f64, from: DataType, to: DataType) -> f64 {
+    if from == to {
+        return v;
+    }
+    match to {
+        DataType::F64 => v,
+        DataType::F32 => v as f32 as f64,
+        _ => {
+            let (lo, hi) = super::type_range(to);
+            let (_, signed, _) = type_traits(to);
+            match from {
+                DataType::F32 => {
+                    let f = v as f32;
+                    if f.is_nan() {
+                        return 0.0;
+                    }
+                    let r = if signed && f < 0.0 { f - 0.5 } else { f + 0.5 };
+                    (r.clamp(lo as f32, hi as f32) as f64).trunc()
+                }
+                DataType::F64 => {
+                    if v.is_nan() {
+                        return 0.0;
+                    }
+                    let r = if signed && v < 0.0 { v - 0.5 } else { v + 0.5 };
+                    r.clamp(lo, hi).trunc()
+                }
+                _ => v.clamp(lo, hi),
+            }
+        }
+    }
+}
+
+/// Whether `GDALWarpKernel::PerformWarp()` (GDAL 3.12) has a kernel for this working type and
+/// resampling method that runs without any mask (`GWK*NoMasksOrDstDensityOnly*`): those kernels
+/// store values as computed, the others through `AvoidNoData()`.
+fn has_no_mask_kernel(t: DataType, r: Resampling) -> bool {
+    use Resampling::{Bilinear, Cubic, CubicSpline, Nearest};
+    match t {
+        DataType::U8 | DataType::I16 | DataType::U16 => matches!(r, Nearest | Bilinear | Cubic | CubicSpline),
+        // The Float64 kernels are not compiled in (`INSTANTIATE_FLOAT64_SSE2_IMPL` is not defined).
+        DataType::F32 => matches!(r, Nearest | Bilinear | Cubic),
+        _ => false,
+    }
+}
+
+/// Whether GDAL 3.12 runs one of its kernels without any mask ([`has_no_mask_kernel`]) on a
+/// kernel run: only without a source mask and without an output validity mask, which
+/// `WarpRegionToBuffer()` makes from the output nodata value for several bands always, and for one
+/// band when the run's part of the output starts with a nodata pixel (`holds_nodata`: with
+/// `INIT_DEST` at that value, or among the values the output already holds).
+fn runs_without_masks(t: DataType, r: Resampling, dst_nodata: Option<f64>, bands: usize, holds_nodata: bool, src_masked: bool) -> bool {
+    let dst_masked = dst_nodata.is_some() && (bands > 1 || holds_nodata);
+    !src_masked && !dst_masked && has_no_mask_kernel(t, r)
+}
+
+/// Whether warped values equal to the output nodata value are moved off it, as GDAL 3.12's
+/// `AvoidNoData()` moves them (see [`off_nodata`]) in every kernel but those without any mask
+/// ([`runs_without_masks`]), for an output that starts at `init` (the rule [`Storage::sink`]
+/// applies).
+#[cfg(test)]
+fn avoids_nodata(t: DataType, r: Resampling, dst_nodata: Option<f64>, bands: usize, init: f64, src_masked: bool) -> bool {
+    let holds_nodata = dst_nodata.is_some_and(|nd| is_nodata(warp_round(init, t), nd));
+    dst_nodata.is_some() && !runs_without_masks(t, r, dst_nodata, bands, holds_nodata, src_masked)
+}
+
+// ─── A grid warped region by region, as GDAL's warped VRT ───────────────────────────────────────
+
+/// Marks the output values no source pixel reached (a NaN no warped value carries).
+const UNWRITTEN: u64 = 0x7ff4_7465_7272_696f;
+
+/// A source level (a raster or one of its overviews) warped into a grid one region at a time, as
+/// GDAL's warped VRT (`VRTWarpedDataset`) warps it: each region (a block, or a whole read) is one
+/// `GDALWarpOperation::WarpRegionToBuffer()`, from the source window
+/// `GDALWarpOperation::ComputeSourceWindow()` computes for it, with GDAL's approximate transformer
+/// applied to the region's rows in the grid's pixel coordinates.
+///
+/// Validity follows GDAL 3.12's `WarpRegionToBuffer()` with the warp options rasterio's `WarpedVRT`
+/// sets (`UNIFIED_SRC_NODATA=YES`): with source nodata values, a pixel is invalid where every band
+/// is nodata, and no pixel is when a band has no nodata pixel in the window; without them, the
+/// source's per-dataset mask, when one is given.
+pub struct RegionWarp {
+    t: GenImgProj,
+    src_w: usize,
+    src_h: usize,
+    resampling: Resampling,
+    error_threshold: f64,
+    out_type: DataType,
+    src_nodata: Vec<Option<f64>>,
+    dst_nodata: Option<f64>,
+    translation: bool,
+}
+
+impl RegionWarp {
+    /// A warp of the bands of a source of `src_size` pixels, georeferenced by `src_gt` in
+    /// `src_srs`, into a grid georeferenced by `dst_gt` in `dst_srs`. `src_nodata` has one value
+    /// (or `None`) per band.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        src_size: (usize, usize),
+        src_gt: [f64; 6],
+        src_srs: &SpatialRef,
+        dst_srs: &SpatialRef,
+        dst_gt: [f64; 6],
+        resampling: Resampling,
+        error_threshold: f64,
+        out_type: DataType,
+        src_nodata: Vec<Option<f64>>,
+        dst_nodata: Option<f64>,
+    ) -> Result<Self> {
+        if src_nodata.is_empty() {
+            return Err(Error::InvalidArgument("no bands to warp".into()));
+        }
+        let mut t = GenImgProj::new(src_gt, src_srs, dst_srs)?;
+        t.set_dst_gt(dst_gt);
+        let translation = t.ct.is_none() && is_pixel_translation(&src_gt, &dst_gt);
+        Ok(Self { t, src_w: src_size.0, src_h: src_size.1, resampling, error_threshold, out_type, src_nodata, dst_nodata, translation })
+    }
+
+    /// As [`RegionWarp::new`], for a source georeferenced by GCPs instead of a geotransform, as
+    /// `GDALAutoCreateWarpedVRTEx()` warps a dataset that has GCPs and no geotransform.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_gcps(
+        src_size: (usize, usize),
+        gcps: super::gcp::GcpTransformer,
+        src_srs: &SpatialRef,
+        dst_srs: &SpatialRef,
+        dst_gt: [f64; 6],
+        resampling: Resampling,
+        error_threshold: f64,
+        out_type: DataType,
+        src_nodata: Vec<Option<f64>>,
+        dst_nodata: Option<f64>,
+    ) -> Result<Self> {
+        if src_nodata.is_empty() {
+            return Err(Error::InvalidArgument("no bands to warp".into()));
+        }
+        let mut t = GenImgProj::with_gcps(src_srs, dst_srs, gcps)?;
+        t.set_dst_gt(dst_gt);
+        Ok(Self {
+            t,
+            src_w: src_size.0,
+            src_h: src_size.1,
+            resampling,
+            error_threshold,
+            out_type,
+            src_nodata,
+            dst_nodata,
+            translation: false,
+        })
+    }
+
+    /// As [`RegionWarp::new`], for a source georeferenced by RPCs instead of a geotransform, as
+    /// `GDALAutoCreateWarpedVRTEx()` warps a dataset that has RPCs and neither a geotransform nor
+    /// GCPs: GDAL's RPC transformer (`GDALCreateGenImgProjTransformer2()` with `SRC_METHOD=RPC`)
+    /// gives positions in `src_srs`, WGS 84 longitudes and latitudes unless the caller says
+    /// otherwise (`SRC_SRS`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_rpc(
+        src_size: (usize, usize),
+        rpc: super::rpc::RpcTransformer,
+        src_srs: &SpatialRef,
+        dst_srs: &SpatialRef,
+        dst_gt: [f64; 6],
+        resampling: Resampling,
+        error_threshold: f64,
+        out_type: DataType,
+        src_nodata: Vec<Option<f64>>,
+        dst_nodata: Option<f64>,
+    ) -> Result<Self> {
+        if src_nodata.is_empty() {
+            return Err(Error::InvalidArgument("no bands to warp".into()));
+        }
+        let mut t = GenImgProj::with_georef(src_srs, dst_srs, Georef::Rpc(std::sync::Arc::new(rpc)))?;
+        t.set_dst_gt(dst_gt);
+        Ok(Self {
+            t,
+            src_w: src_size.0,
+            src_h: src_size.1,
+            resampling,
+            error_threshold,
+            out_type,
+            src_nodata,
+            dst_nodata,
+            translation: false,
+        })
+    }
+
+    fn context(&self) -> WarpContext<'_> {
+        WarpContext {
+            t: &self.t,
+            approx: Approx { base: &self.t, max_error: self.error_threshold },
+            src_w: self.src_w,
+            src_h: self.src_h,
+            resampling: self.resampling,
+            translation: self.translation,
+            memory_limit: f64::INFINITY,
+            bands: self.src_nodata.len(),
+            out_bits: self.out_type.size_bytes() * 8,
+            src_has_nodata: self.src_nodata.iter().any(Option::is_some),
+            // A warped VRT's validity is unified (rasterio's UNIFIED_SRC_NODATA=YES, see
+            // `RegionWarp::validity`), through `unified_center`.
+            global_validity: false,
+            dst_has_nodata: self.dst_nodata.is_some(),
+            cutline: false,
+            unified_center: false,
+            kernel_version: KernelVersion::default(),
+            // GDAL's defaults: no SOURCE_EXTRA, SAMPLE_STEPS not ALL.
+            source_extra: None,
+            sample_all: false,
+            src_grid: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The source window `(x, y, width, height)` that a region `(x, y, width, height)` of the
+    /// grid reads (GDAL's `ComputeSourceWindow()`, with room for the kernel). `None` when the
+    /// region cannot be transformed (GDAL then leaves it at its initial value); an empty window
+    /// when it falls outside the source.
+    pub fn source_window(&self, region: (usize, usize, usize, usize)) -> Option<(usize, usize, usize, usize)> {
+        let (dx, dy, dw, dh) = region;
+        self.context().source_window(dx, dy, dw, dh).map(|(sx, sy, sw, sh, ..)| (sx, sy, sw, sh))
+    }
+
+    /// Warps a region of the grid. `data` holds the bands of the source window
+    /// [`RegionWarp::source_window`] gives for the region (`width * height` values each, in the
+    /// source's type); `mask` (`width * height`, true where valid) is the source's per-dataset
+    /// mask, used without nodata values. Pixels no valid source pixel reaches keep `init`, the
+    /// value the output starts from (GDAL's `INIT_DEST`), which also decides, for one band with
+    /// an output nodata value, whether GDAL makes an output validity mask (see
+    /// `runs_without_masks`).
+    ///
+    /// With `padded_scale`, the kernel's scale is computed from the whole (padded) source window,
+    /// as GDAL 3.12's `VRTWarpedDataset::IRasterIO()` has it: its call to
+    /// `WarpRegionToBuffer()` resolves to the overload that takes the window's extra sizes as
+    /// progress arguments, so the warp sees no extra size. Block reads
+    /// (`VRTWarpedDataset::ProcessBlock()`) compute the scale from the unpadded window.
+    ///
+    /// Returns the region's bands in the output type, and which of its pixels were warped.
+    pub fn warp(
+        &self,
+        region: (usize, usize, usize, usize),
+        window: (usize, usize, usize, usize),
+        data: &RasterData,
+        mask: Option<&[bool]>,
+        init: f64,
+        padded_scale: bool,
+    ) -> Result<(RasterData, Vec<bool>)> {
+        let (dx, dy, dw, dh) = region;
+        let bands = self.src_nodata.len();
+        let n = dw * dh;
+        let mut ctx = self.context();
+        let mut staged: Vec<Vec<f64>> = vec![vec![f64::from_bits(UNWRITTEN); n]; bands];
+        if let Some((sx, sy, sw, sh, _, raw_w, raw_h)) = ctx.source_window(dx, dy, dw, dh)
+            && sw > 0
+            && sh > 0
+        {
+            if (sx, sy, sw, sh) != window {
+                return Err(Error::InvalidArgument(format!("{window:?} is not the source window of the region {region:?}")));
+            }
+            let sn = sw * sh;
+            if data.len() != sn * bands || mask.is_some_and(|m| m.len() != sn) {
+                return Err(Error::InvalidArgument("the source window's pixels do not match its size".into()));
+            }
+            let (valid, unified) = self.validity(data, sn, mask);
+            ctx.unified_center = unified;
+            let (raw_w, raw_h) = if padded_scale { (sw as f64, sh as f64) } else { (raw_w, raw_h) };
+            let chunk = Chunk { dx, dy, dw, dh, sx, sy, sw, sh, raw_w, raw_h };
+            let src_masked = valid.iter().any(Option::is_some);
+            // A warped VRT's bands are of its working type (rasterio sets it to the VRT's type).
+            let storage = Storage {
+                work_type: self.out_type,
+                out_type: self.out_type,
+                dst_nodata: vec![self.dst_nodata],
+                resampling: self.resampling,
+                bands,
+                src_masked,
+                // As `Warp::context`: GDAL 3.12.2 moves only a pixel whose every band is at nodata.
+                avoid_nodata: (bands > 1 && unified).then_some(false),
+                avoid_all_nodata: bands > 1 && unified,
+            };
+            let sink = storage.sink(self.dst_nodata.is_some_and(|nd| is_nodata(warp_round(init, self.out_type), nd)));
+            crate::pixel::with_data!(data, v => {
+                let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+                let src = SrcData { bands: &typed, valid: &valid, width: sw, origin: (sx, sy) };
+                ctx.warp_chunk(&chunk, &src, &sink, chunk_rows(&mut staged, dw, &Chunk { dx: 0, dy: 0, ..chunk }));
+            });
+            sink.finish();
+        }
+        let fill = warp_round(init, self.out_type);
+        let written: Vec<bool> = (0..n).map(|i| staged.iter().any(|b| b[i].to_bits() != UNWRITTEN)).collect();
+        let mut out = RasterData::new_filled(self.out_type, n * bands, 0.0);
+        crate::pixel::with_data!(&mut out, v => {
+            for (b, band) in staged.iter().enumerate() {
+                for (o, x) in v[b * n..(b + 1) * n].iter_mut().zip(band) {
+                    *o = (if x.to_bits() == UNWRITTEN { fill } else { *x }) as _;
+                }
+            }
+        });
+        Ok((out, written))
+    }
+
+    /// The validity of the window's pixels, band by band, as GDAL 3.12's `WarpRegionToBuffer()`
+    /// builds it, and whether it is a unified mask (the same for every band, GDAL's
+    /// `panUnifiedSrcValid`). With source nodata values: each band's `GDALWarpNoDataMasker()`
+    /// mask; no mask when every band is valid everywhere; one band's mask as the unified mask;
+    /// with several bands, as rasterio sets `UNIFIED_SRC_NODATA=YES`, only the unified mask,
+    /// valid where any band is (so a band valid everywhere makes every pixel valid, and a band's
+    /// own nodata values are warped where another band is valid). Without nodata values, `mask`.
+    fn validity(&self, data: &RasterData, sn: usize, mask: Option<&[bool]>) -> (Vec<Option<Vec<bool>>>, bool) {
+        let bands = self.src_nodata.len();
+        if self.src_nodata.iter().all(Option::is_none) {
+            return (vec![mask.map(<[bool]>::to_vec); bands], mask.is_some());
+        }
+        let per_band: Vec<Option<Vec<bool>>> = crate::pixel::with_data!(data, v => {
+            (0..bands)
+                .map(|b| {
+                    let nd = self.src_nodata[b]?;
+                    let m: Vec<bool> = v[b * sn..(b + 1) * sn].iter().map(|x| !is_nodata(crate::pixel::Pixel::to_f64(*x), nd)).collect();
+                    // GDALWarpNoDataMasker(): a band without nodata pixels needs no mask.
+                    if m.iter().all(|x| *x) { None } else { Some(m) }
+                })
+                .collect()
+        });
+        if per_band.iter().all(Option::is_none) {
+            // Every band valid everywhere: no mask.
+            return (per_band, false);
+        }
+        if bands == 1 {
+            // A single band's mask is the unified mask.
+            return (per_band, true);
+        }
+        // UNIFIED_SRC_NODATA: a pixel is valid when any band is (GDAL 3.12 allocates every band's
+        // mask, so a band without nodata pixels is valid everywhere rather than left out).
+        let mut unified = vec![false; sn];
+        for m in &per_band {
+            match m {
+                Some(m) => unified.iter_mut().zip(m).for_each(|(u, v)| *u |= *v),
+                None => unified.fill(true),
+            }
+        }
+        (vec![Some(unified); bands], true)
     }
 }
 
@@ -3464,7 +4214,7 @@ mod tests {
                 let sources = [&a, &b];
                 let actual = warp(&sources, &options).unwrap();
                 let plan = Plan::new(&sources, &options).unwrap();
-                let reference = warp_data_with_storage(&plan, &sources, &options, DataType::F64).unwrap();
+                let reference = warp_data_with_storage(&plan, &sources, &options, None, DataType::F64).unwrap();
                 assert_eq!(actual.raster.data_type, out_type);
                 assert_eq!(actual.raster.data.data_type(), out_type);
                 assert_eq!(reference.raster.data.data_type(), DataType::F64);
@@ -3477,6 +4227,453 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The same warps' values, pinned: checksums of terrio's results in one chunk and in many
+    /// (GDAL's kernels, working type and rounding), so that a change to them is seen even where it
+    /// changes the typed and the `f64` storage alike.
+    #[test]
+    fn typed_output_values_are_pinned() {
+        let a = raster(60, 40, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| (c * 7 + r * 3) as f64 + 0.37);
+        let b = raster(50, 30, [500600.0, 30.0, 0.0, 3999400.0, 0.0, -30.0], 32610, |c, r| {
+            if (c + r) % 5 == 0 { -9999.0 } else { 1000.0 - (c * 3 + r) as f64 * 1.5 }
+        });
+        let expected = [
+            (Resampling::Bilinear, DataType::I16, 0xde648369ef65765d_u64, 0xf34e7b69ef65765d_u64),
+            (Resampling::Cubic, DataType::U8, 0xe5d1a0e9ef65765d, 0xe5d1a0e9ef65765d),
+            (Resampling::Nearest, DataType::F32, 0xfcbcca5b6f65765d, 0xfcbcca5b6f65765d),
+        ];
+        for (resampling, out_type, one_chunk, many_chunks) in expected {
+            let o = |memory_limit: f64| WarpOptions {
+                dst_srs: Some(SpatialRef::from_epsg(4326).unwrap()),
+                resampling,
+                output_type: Some(out_type),
+                src_nodata: Nodata::Values(vec![-9999.0]),
+                memory_limit,
+                error_threshold: 0.0,
+                ..Default::default()
+            };
+            let sum = |d: &RasterDataset| {
+                super::super::band_f64(&d.raster, 0)
+                    .iter()
+                    .fold(0xcbf29ce484222325u64, |h, x| (h ^ x.to_bits()).wrapping_mul(0x100000001b3))
+            };
+            let one = warp(&[&a, &b], &o(1e9)).unwrap();
+            let many = warp(&[&a, &b], &o(4096.0)).unwrap();
+            assert_eq!(one.raster.data_type, out_type);
+            assert_eq!((sum(&one), sum(&many)), (one_chunk, many_chunks), "{resampling:?}");
+        }
+    }
+
+    /// GDAL 3.12's kernels move a warped value equal to the output nodata value off it, except
+    /// the kernels without any mask, which `PerformWarp()` has for some types and methods and
+    /// picks when there is neither a source mask nor an output validity mask.
+    #[test]
+    fn values_avoid_the_output_nodata_as_gdals_kernels() {
+        use DataType::{F32, F64, I32, U8};
+        use Resampling::{Average, Cubic, CubicSpline, Lanczos, Nearest};
+        // Without an output nodata value there is nothing to avoid.
+        assert!(!avoids_nodata(F64, Lanczos, None, 3, 0.0, true));
+        // One band, no source mask, an output starting off its nodata value, a mask-free kernel.
+        assert!(!avoids_nodata(U8, Nearest, Some(255.0), 1, 0.0, false));
+        assert!(!avoids_nodata(F32, Cubic, Some(-1.0), 1, 0.0, false));
+        // A source mask; several bands; an output starting at its nodata value.
+        assert!(avoids_nodata(U8, Nearest, Some(255.0), 1, 0.0, true));
+        assert!(avoids_nodata(U8, Nearest, Some(255.0), 2, 0.0, false));
+        assert!(avoids_nodata(U8, Nearest, Some(255.0), 1, 255.0, false));
+        // No mask-free kernel for the type or the method.
+        assert!(avoids_nodata(F64, Nearest, Some(9999.0), 1, 0.0, false));
+        assert!(avoids_nodata(I32, Nearest, Some(-1.0), 1, 0.0, false));
+        assert!(avoids_nodata(F32, CubicSpline, Some(-1.0), 1, 0.0, false));
+        assert!(avoids_nodata(U8, Lanczos, Some(255.0), 1, 0.0, false));
+        assert!(avoids_nodata(U8, Average, Some(255.0), 1, 0.0, false));
+    }
+
+    /// A region warped as GDAL 3.12's warped VRT warps it with rasterio's `UNIFIED_SRC_NODATA=YES`:
+    /// a band without nodata pixels in the window makes every pixel valid, so another band's
+    /// nodata values there are warped and moved off the output nodata value; otherwise a pixel
+    /// is valid where any band is. One band without source nodata avoids the output nodata value
+    /// when the output starts at it.
+    #[test]
+    fn region_warp_unifies_validity_and_avoids_the_output_nodata() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        let gt = [10.0, 0.25, 0.0, 50.0, 0.0, -0.25];
+        let (w, h) = (6, 4);
+        let n = w * h;
+        let region = (0, 0, w, h);
+        let window = |rw: &RegionWarp| rw.source_window(region).unwrap();
+        let cut = |b: &[f64], (sx, sy, sw, sh): (usize, usize, usize, usize)| -> Vec<f64> {
+            (sy..sy + sh).flat_map(|r| (sx..sx + sw).map(move |c| b[r * w + c])).collect()
+        };
+        let two =
+            RegionWarp::new((w, h), gt, &srs, &srs, gt, Resampling::Nearest, 0.125, DataType::F64, vec![Some(9999.0); 2], Some(9999.0))
+                .unwrap();
+        let win = window(&two);
+        let run = |b1: &[f64], b2: &[f64]| {
+            let data = RasterData::F64([cut(b1, win), cut(b2, win)].concat());
+            let (out, written) = two.warp(region, win, &data, None, 9999.0, false).unwrap();
+            (out.to_f64_vec(), written)
+        };
+        let mut b1: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        b1[0] = 9999.0;
+        b1[1] = 9999.0;
+        // Band 2 valid everywhere: band 1's nodata values are warped and stay at the nodata value.
+        let (v, written) = run(&b1, &vec![1.0; n]);
+        assert_eq!(&v[..3], &[9999.0, 9999.0, 2.0]);
+        assert_eq!(&v[n..n + 3], &[1.0, 1.0, 1.0]);
+        assert!(written.iter().all(|x| *x));
+        // Band 2 nodata at pixels 0 and 5: pixel 0 is invalid (nodata in both bands), pixels 1
+        // and 5 are valid (one band each), their nodata values warped and left at it.
+        let mut b2 = vec![1.0; n];
+        b2[0] = 9999.0;
+        b2[5] = 9999.0;
+        let (v, written) = run(&b1, &b2);
+        assert_eq!(&v[..3], &[9999.0, 9999.0, 2.0]);
+        assert_eq!(&v[n..n + 6], &[9999.0, 1.0, 1.0, 1.0, 1.0, 9999.0]);
+        assert_eq!(&written[..3], &[false, true, true]);
+        // One band without source nodata: 255s become 254s when the output starts at 255.
+        let one = RegionWarp::new((w, h), gt, &srs, &srs, gt, Resampling::Nearest, 0.125, DataType::U8, vec![None], Some(255.0)).unwrap();
+        let win = window(&one);
+        let data = RasterData::U8(cut(&(0..n).map(|i| (250 + i % 6) as f64).collect::<Vec<_>>(), win).iter().map(|x| *x as u8).collect());
+        let first_row = |init: f64| one.warp(region, win, &data, None, init, false).unwrap().0.to_f64_vec()[..w].to_vec();
+        assert_eq!(first_row(255.0), [250.0, 251.0, 252.0, 253.0, 254.0, 254.0]);
+        assert_eq!(first_row(0.0), [250.0, 251.0, 252.0, 253.0, 254.0, 255.0]);
+    }
+
+    /// `warp()` moves values equal to the output nodata value off it as GDAL's kernels do: one
+    /// band without source nodata, its output starting at the nodata value, gets a masked kernel.
+    #[test]
+    fn warp_avoids_the_output_nodata() {
+        let mut ds = raster(4, 3, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| (c + 4 * r) as f64);
+        ds.has_nodata = false;
+        let out = warp(&[&ds], &WarpOptions { dst_nodata: Nodata::Values(vec![5.0]), ..Default::default() }).unwrap();
+        let v = out.raster.data.to_f64_vec();
+        assert_eq!(out.nodata(), Some(5.0));
+        assert_eq!(&v[4..7], &[4.0, f64::from(f32::from_bits(5.0f32.to_bits() + 1)), 6.0]);
+    }
+
+    /// A 64 x 48 Byte source of `value`s but for a diagonal of 3s (no nodata of its own), the
+    /// options warping it to Byte on its own grid, one column wider, with output nodata `value`
+    /// and a memory limit that makes several chunks; and the chunks.
+    fn nodata_case(value: f64, r: Resampling) -> (RasterDataset, WarpOptions, Vec<Chunk>) {
+        let gt = [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0];
+        let mut ds = raster(64, 48, gt, 32610, |c, r| if c == r { 3.0 } else { value });
+        ds.has_nodata = false;
+        // A Byte source, so that GDAL's kernels work in Byte (see `working_type`).
+        ds.raster.data = RasterData::from_f64_vec(DataType::U8, ds.raster.data.to_f64_vec());
+        ds.raster.data_type = DataType::U8;
+        let o = WarpOptions {
+            dst_nodata: Nodata::Values(vec![value]),
+            output_type: Some(DataType::U8),
+            resampling: r,
+            dst_transform: Some(gt),
+            size: Some((65, 48)),
+            memory_limit: 2000.0,
+            ..Default::default()
+        };
+        let p = Plan::new(&[&ds], &o).unwrap();
+        let t = p.transformer(0).unwrap();
+        let (_, chunks, _) = p.context(0, &t, &o);
+        assert!(chunks.len() > 1, "{} chunks", chunks.len());
+        (ds, o, chunks)
+    }
+
+    /// Warped onto values (GDAL without `INIT_DEST`): pixels nothing is warped to keep them; and a
+    /// kernel without masks (nearest, Byte) moves warped values off the output nodata only in the
+    /// chunks with a nodata value among those they start with, where GDAL makes an output validity
+    /// mask. Kernels with masks always do.
+    #[test]
+    fn warp_onto_keeps_values_and_avoids_the_nodata_per_chunk() {
+        let (ds, o, chunks) = nodata_case(255.0, Resampling::Nearest);
+        let (w, h) = (65, 48);
+        let starting = |nodata_at: Option<usize>| {
+            let mut v = vec![7u8; w * h];
+            if let Some(i) = nodata_at {
+                v[i] = 255;
+            }
+            RasterData::U8(v)
+        };
+        let warped = |init: &RasterData, o: &WarpOptions| warp_onto(&[&ds], o, init).unwrap().raster.data.to_f64_vec();
+        // No nodata value to start with: nothing moves, and the column outside the source keeps 7.
+        let v = warped(&starting(None), &o);
+        assert_eq!((v[0], v[1], v[64], v[65]), (3.0, 255.0, 7.0, 255.0));
+        assert_eq!(v.iter().filter(|x| **x == 254.0).count(), 0);
+        // A nodata value in the last chunk's column outside the source: that chunk's values move.
+        let last = chunks.iter().find(|c| c.dx + c.dw == w).unwrap();
+        let v = warped(&starting(Some(last.dy * w + w - 1)), &o);
+        assert_eq!(v[last.dy * w + w - 1], 255.0);
+        for c in &chunks {
+            for (row, col) in (c.dy..c.dy + c.dh).flat_map(|r| (c.dx..(c.dx + c.dw).min(64)).map(move |x| (r, x))) {
+                let expected = if row == col {
+                    3.0
+                } else if std::ptr::eq(c, last) {
+                    254.0
+                } else {
+                    255.0
+                };
+                assert_eq!(v[row * w + col], expected, "row {row} col {col}");
+            }
+        }
+        // Average has no kernel without masks: every chunk's values move.
+        let (ds, o, _) = nodata_case(255.0, Resampling::Average);
+        let v = warp_onto(&[&ds], &o, &starting(None)).unwrap().raster.data.to_f64_vec();
+        assert_eq!((v[1], v[64]), (254.0, 7.0));
+        assert_eq!(v.iter().filter(|x| **x == 255.0).count(), 0);
+    }
+
+    /// The warning GDAL's warper gives for values moved off the output nodata, in its words, once
+    /// per kernel run (a chunk), only while recording.
+    #[test]
+    fn records_gdals_nodata_warning_once_per_kernel_run() {
+        // 77: no other test's nodata value, as the recording is global.
+        let (ds, o, chunks) = nodata_case(77.0, Resampling::Average);
+        let ours = || take_nodata_warnings().into_iter().filter(|w| w.starts_with("Value 77 ")).collect::<Vec<_>>();
+        // A region of a warped VRT is one kernel run: one warning, none when nothing moves.
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        let gt = [10.0, 0.25, 0.0, 50.0, 0.0, -0.25];
+        let one = RegionWarp::new((6, 4), gt, &srs, &srs, gt, Resampling::Nearest, 0.125, DataType::U8, vec![None], Some(77.0)).unwrap();
+        let region = (0, 0, 6, 4);
+        let win = one.source_window(region).unwrap();
+        let data = RasterData::U8(vec![77; win.2 * win.3]);
+        record_nodata_warnings(true);
+        warp(&[&ds], &o).unwrap();
+        let warnings = ours();
+        one.warp(region, win, &data, None, 77.0, false).unwrap();
+        one.warp(region, win, &data, None, 77.0, false).unwrap();
+        let regions = ours().len();
+        one.warp(region, win, &data, None, 0.0, false).unwrap();
+        let unmoved = ours().len();
+        record_nodata_warnings(false);
+        assert_eq!((regions, unmoved), (2, 0));
+        assert_eq!(warnings.len(), chunks.len());
+        assert_eq!(
+            warnings[0],
+            "Value 77 in the source dataset has been changed to 76 in the destination dataset to avoid being treated as NoData. \
+             To avoid this, select a different NoData value for the destination dataset."
+        );
+        warp(&[&ds], &o).unwrap();
+        assert!(ours().is_empty());
+    }
+
+    /// `printf("%g")`, as GDAL formats the values of its nodata warning (expected values from C).
+    #[test]
+    fn printf_g_formats_as_c() {
+        let cases: [(f64, &str); 21] = [
+            (255.0, "255"),
+            (9999.000000000002, "9999"),
+            (-1.0, "-1"),
+            (0.0, "0"),
+            (-0.0, "-0"),
+            (1e20, "1e+20"),
+            (123456.0, "123456"),
+            (1234567.0, "1.23457e+06"),
+            (0.0001, "0.0001"),
+            (0.00001, "1e-05"),
+            (1.5e-5, "1.5e-05"),
+            (f32::MAX as f64, "3.40282e+38"),
+            (999999.5, "1e+06"),
+            (9.9999999e-05, "0.0001"),
+            (-32768.0, "-32768"),
+            (4294967295.0, "4.29497e+09"),
+            (5e-324, "4.94066e-324"),
+            (0.1, "0.1"),
+            (100000.0, "100000"),
+            (f64::INFINITY, "inf"),
+            (f64::NAN, "nan"),
+        ];
+        for (v, expected) in cases {
+            assert_eq!(printf_g(v), expected, "{v:e}");
+        }
+    }
+
+    /// The kernel run's sink moves values off the output nodata unless GDAL runs a kernel without
+    /// masks there: no source mask, and no output validity mask (one band whose part of the
+    /// output starts without a nodata value), for a type and method that have one.
+    #[test]
+    fn sinks_avoid_the_nodata_unless_gdal_runs_a_kernel_without_masks() {
+        use DataType::{F32, F64, U8};
+        use Resampling::{Bilinear, Cubic, Lanczos};
+        let avoids = |out_type, resampling, dst_nodata, bands, src_masked, holds_nodata| {
+            let dst_nodata = vec![dst_nodata];
+            Storage {
+                work_type: out_type,
+                out_type,
+                dst_nodata,
+                resampling,
+                bands,
+                src_masked,
+                avoid_nodata: None,
+                avoid_all_nodata: false,
+            }
+            .sink(holds_nodata)
+            .avoid_nodata
+        };
+        assert!(!avoids(U8, Bilinear, Some(255.0), 1, false, false));
+        assert!(avoids(U8, Bilinear, Some(255.0), 1, false, true));
+        assert!(avoids(U8, Bilinear, Some(255.0), 2, false, false));
+        assert!(avoids(F32, Cubic, Some(-1.0), 1, true, false));
+        assert!(avoids(F64, Cubic, Some(-1.0), 1, false, false));
+        assert!(avoids(F32, Lanczos, Some(-1.0), 1, false, false));
+        assert!(!avoids(F32, Cubic, None, 1, true, true));
+    }
+
+    /// `GDALWarpResolveWorkingDataType()`: the union of the output's and the source's types and of
+    /// the types holding the nodata values (expected types from GDAL 3.12's rules); source nodata
+    /// values no source value can equal are dropped first.
+    #[test]
+    fn working_type_is_gdals() {
+        use DataType::{F32, F64, I16, I32, U8, U16, U32};
+        let w = |out, src, src_nd: Option<f64>, dst_nd| working_type(out, src, &[src_nd, src_nd], &[dst_nd, dst_nd]);
+        assert_eq!(w(F32, F64, Some(9999.0), Some(9999.0)), F64);
+        assert_eq!(w(F64, F32, None, None), F64);
+        assert_eq!(w(U8, F32, None, Some(255.0)), F32);
+        assert_eq!(w(F32, U16, None, None), F32);
+        assert_eq!(w(U16, I16, None, None), I32);
+        assert_eq!(w(I16, U16, None, None), I32);
+        assert_eq!(w(I16, U8, None, None), I16);
+        assert_eq!(w(U8, U16, None, Some(200.0)), U16);
+        assert_eq!(w(F32, I32, None, None), F64);
+        assert_eq!(w(U8, U8, None, Some(-9999.0)), I16);
+        assert_eq!(w(U8, U8, None, Some(-1.0)), I16);
+        assert_eq!(w(U8, U8, None, Some(0.5)), F32);
+        assert_eq!(w(U8, U8, None, Some(0.1)), F64);
+        assert_eq!(w(U8, U8, None, Some(f64::NAN)), F64);
+        assert_eq!(w(F32, F32, Some(f64::NAN), Some(f64::NAN)), F32);
+        assert_eq!(w(U16, U16, None, Some(70000.0)), U32);
+        // A Byte source's nodata of -1 can match no pixel: GDAL drops it, and the type with it.
+        assert_eq!(usable_src_nodata(vec![Some(-1.0); 2], U8), vec![None, None]);
+        assert_eq!(usable_src_nodata(vec![Some(0.0), Some(-1.0)], U8), vec![Some(0.0), Some(-1.0)]);
+        assert_eq!(usable_src_nodata(vec![Some(0.5)], F32), vec![Some(0.5)]);
+    }
+
+    /// The types of warped VRTs created without one, as rasterio 1.5.0 (GDAL 3.12.1) reports
+    /// them for a one-band source given `nodata=` (`dst`), `src_nodata=` (`both`: the output's
+    /// defaults to it) or `src_nodata=` with `nodata=None` (`src`): the source's type widened to
+    /// hold the nodata values, and source nodata values the source's type cannot hold dropped.
+    #[test]
+    fn warped_vrt_types_are_gdals() {
+        use DataType::{F32, F64, I8, I16, I32, I64, U8, U16, U32, U64};
+        let dst = |t, v: f64| warped_vrt_type(t, vec![None], &[Some(v)]);
+        let both = |t, v: f64| warped_vrt_type(t, vec![Some(v)], &[Some(v)]);
+        let src = |t, v: f64| warped_vrt_type(t, vec![Some(v)], &[None]);
+        let nan = f64::NAN;
+        let measured = [
+            (U8, 7.0, U8, U8, U8),
+            (U8, 300.0, U16, U16, U8),
+            (U8, -1.0, I16, I16, U8),
+            (U8, -2.5, F32, F32, U8),
+            (U8, 0.1, F64, F64, U8),
+            (U8, nan, F64, F64, U8),
+            (I8, -7.0, I16, I16, I16),
+            (I8, 200.0, I16, I16, I16),
+            (I8, -200.0, I16, I16, I16),
+            (I8, -2.5, F32, F32, I16),
+            (U16, 70000.0, U32, U32, U16),
+            (U16, -1.0, I32, I32, U16),
+            (U16, -2.5, F32, F32, U16),
+            (I16, 40000.0, I32, I32, I16),
+            (I16, -40000.0, I32, I32, I16),
+            (I16, -2.5, F32, F32, I16),
+            (U32, 5e9, U64, U64, U32),
+            (U32, -1.0, I64, I64, U32),
+            (U32, -2.5, F64, F64, U32),
+            (I32, 3e9, I64, I64, I32),
+            (I32, -3e9, I64, I64, I32),
+            (I32, -2.5, F64, F64, I32),
+            (I32, nan, F64, F64, I32),
+            (F32, -7.0, F32, F32, F32),
+            (F32, 1e40, F64, F64, F32),
+            (F32, -2.5, F32, F32, F32),
+            (F32, 0.1, F64, F64, F32),
+            (F32, nan, F32, F32, F32),
+        ];
+        for (t, v, d, b, s) in measured {
+            assert_eq!((dst(t, v).0, both(t, v).0, src(t, v).0), (d, b, s), "{t:?} with {v}");
+        }
+        assert_eq!(warped_vrt_type(I8, vec![None], &[None]).0, I16);
+        assert_eq!(warped_vrt_type(U8, vec![None], &[None]).0, U8);
+        // The warp keeps a source nodata value its type holds (NaN in a float), not others.
+        assert_eq!(src(U8, -1.0).1, vec![None]);
+        assert_eq!(src(U8, 7.0).1, vec![Some(7.0)]);
+        assert!(src(F32, nan).1[0].is_some_and(f64::is_nan));
+        assert_eq!(src(F32, 1e40).1, vec![None]);
+    }
+
+    /// `GDALCopyWords()`: working-type values converted to the output type.
+    #[test]
+    fn copy_word_is_gdals() {
+        use DataType::{F32, F64, I16, I32, U8, U16};
+        assert_eq!(copy_word(f64::from_bits(9999.0f64.to_bits() + 1), F64, F32), 9999.0);
+        assert_eq!(copy_word(f64::from(f32::from_bits(255.0f32.to_bits() + 1)), F32, U8), 255.0);
+        assert_eq!(copy_word(254.5, F32, U8), 255.0);
+        assert_eq!(copy_word(-0.7, F64, U8), 0.0);
+        assert_eq!(copy_word(-2.5, F64, I16), -3.0);
+        assert_eq!(copy_word(-2.5, F32, I16), -3.0);
+        assert_eq!(copy_word(2.5, F64, I16), 3.0);
+        assert_eq!(copy_word(-2.4, F64, I16), -2.0);
+        assert_eq!(copy_word(65535.6, F64, U16), 65535.0);
+        assert_eq!(copy_word(f64::NAN, F32, I16), 0.0);
+        assert_eq!(copy_word(-5.0, I32, U16), 0.0);
+        assert_eq!(copy_word(40000.0, I32, I16), 32767.0);
+        assert_eq!(copy_word(0.1, F64, F32), f64::from(0.1f32));
+    }
+
+    /// A value equal to the nodata value is moved off it in the working type, then converted to
+    /// the output type, which can bring it back (Float64 to Float32), and the kernel GDAL picks
+    /// is the working type's (Float64 has none without masks).
+    #[test]
+    fn sinks_move_values_in_the_working_type() {
+        use DataType::{F32, F64, U8};
+        let storage = |work_type, out_type| Storage {
+            work_type,
+            out_type,
+            dst_nodata: vec![Some(9999.0)],
+            resampling: Resampling::Bilinear,
+            bands: 1,
+            src_masked: false,
+            avoid_nodata: None,
+            avoid_all_nodata: false,
+        };
+        let sink = storage(F64, F32).sink(true);
+        assert_eq!(sink.value(9999.0, 0), 9999.0);
+        assert!(sink.nudged.load(Ordering::Relaxed));
+        assert_eq!(storage(F32, F32).sink(true).value(9999.0, 0), f64::from(f32::from_bits(9999.0f32.to_bits() + 1)));
+        assert!(storage(F64, F32).sink(false).avoid_nodata);
+        assert!(!storage(F32, F32).sink(false).avoid_nodata);
+        let byte = Storage { dst_nodata: vec![Some(200.0)], ..storage(F32, U8) }.sink(true);
+        assert_eq!((byte.value(200.0, 0), byte.value(199.6, 0), byte.value(199.4, 0)), (200.0, 200.0, 199.0));
+    }
+
+    /// A child forked while a warp's kernel run on another thread records a nodata warning
+    /// records its own: the nodata warnings' lock is held by the forking thread across the fork,
+    /// never left held in the child by a thread it does not have. In a process of its own
+    /// (`par::alone`), so that no other test delays the fork until the lock is free anyway.
+    #[test]
+    #[cfg(unix)]
+    fn a_child_forked_while_a_nodata_warning_is_recorded_records_its_own() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        crate::par::alone(60, || {
+            let (holding, released) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+            let (h, r) = (holding.clone(), released.clone());
+            let holder = std::thread::spawn(move || {
+                let warnings = nodata_warnings();
+                h.store(true, Ordering::Release);
+                std::thread::sleep(Duration::from_millis(300));
+                r.store(true, Ordering::Release);
+                drop(warnings);
+            });
+            while !holding.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let exit = crate::par::in_child(10, move || {
+                record_nodata_warnings(true);
+                nodata_warning("77", "76");
+                released.load(Ordering::Acquire) && take_nodata_warnings().iter().any(|w| w.starts_with("Value 77 "))
+            });
+            holder.join().is_ok() && exit == Some(0)
+        });
     }
 }
 

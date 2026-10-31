@@ -65,6 +65,34 @@ pub fn region_from_env() -> Option<String> {
     })
 }
 
+/// Whether `region` is an AWS region name: two lowercase letters, then lowercase words, then a
+/// number, joined by `-` (`us-east-1`, `us-gov-west-1`, `cn-northwest-1`, `us-isob-east-1`).
+pub(crate) fn is_region_name(region: &str) -> bool {
+    let parts: Vec<&str> = region.split('-').collect();
+    let word = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_lowercase());
+    region.len() <= 63
+        && parts.len() >= 3
+        && parts[0].len() == 2
+        && word(parts[0])
+        && parts[1..parts.len() - 1].iter().all(|p| word(p))
+        && parts.last().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether a bucket's region as a server names it (`x-amz-bucket-region`) may be used for the
+/// requests that follow. On Amazon's endpoints the region becomes part of the host
+/// (`s3.<region>.amazonaws.com`, see [`S3Object::url`]), so only an AWS region name
+/// ([`is_region_name`]); with an endpoint set by `AWS_S3_ENDPOINT` it only signs the requests, and
+/// S3-compatible servers name their regions freely (`fr-par`, `nyc3`), so any name of letters,
+/// digits, `-` and `_`. Neither lets through what could change a host: a dot, a slash, a port,
+/// user information, a percent-encoding.
+pub(crate) fn usable_region(region: &str) -> bool {
+    if env("AWS_S3_ENDPOINT").is_some() {
+        !region.is_empty() && region.len() <= 63 && region.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    } else {
+        is_region_name(region)
+    }
+}
+
 /// An object in an S3 bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct S3Object {
@@ -237,7 +265,7 @@ fn amz_date(secs: u64) -> String {
 }
 
 fn env(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.is_empty())
+    crate::config::get(name)
 }
 
 /// A boolean environment variable (`YES`/`TRUE`/`ON`/`1` or `NO`/`FALSE`/`OFF`/`0`).

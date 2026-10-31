@@ -237,6 +237,9 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
             })
             .collect());
     };
+    // Read by the driver its extension names, as `open_vector` would read it: judged as that open
+    // judges a dataset, by its name and its first bytes.
+    crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     #[cfg(feature = "sqlite")]
     if driver == VectorDriver::GPKG {
         return open_gpkg(path, options, batch);
@@ -341,7 +344,7 @@ fn open_geojson(path: &str, stem: &str, batch: usize) -> Result<(Layer, Box<dyn 
     }
     let name = c.members.get("name").and_then(|n| n.as_str()).unwrap_or(stem).to_string();
     let crs = c.members.get("crs").and_then(|c| c["properties"]["name"].as_str()).and_then(|n| crate::crs::SpatialRef::parse(n).ok());
-    let layer = scan.layer(&name, crs);
+    let layer = scan.geojson_layer(&name, crs);
     let decoder = geojson::FeatureDecoder::new(&layer, &scan);
     let collection = json::Collection::new(File::open(path)?)?;
     Ok((layer, Box::new(GeoJsonSource { collection, decoder, n: 0, batch })))
@@ -1683,6 +1686,9 @@ fn same_dataset(src: &str, dst: &str) -> bool {
 /// written to a GeoPackage go one after another, and OpenStreetMap PBF files sorted by type then
 /// id (as osmium, Geofabrik and the planet write them) are read a block at a time.
 pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
+    // The source is read by the driver its name points to (OpenStreetMap files by a reader of their
+    // own), as `open_vector` reads it: judged as that open judges a dataset.
+    crate::formats::check_allowed(src, Some(crate::formats::Kind::Vector))?;
     if let Some(done) = convert_osm(src, dst, options) {
         return done;
     }

@@ -398,7 +398,7 @@ pub(crate) fn open_lazy(path: &str) -> Result<Option<TileRaster>> {
     if matches!(loc, crate::vfs::Location::Zip { .. }) || super::archive_kind(&loc.file_name()).is_none() {
         return Ok(None);
     }
-    let archive = TileArchive::open(path)?;
+    let archive = TileArchive::open_named(path)?;
     if archive.is_vector() {
         return Err(Error::Unsupported(format!("'{path}' holds vector tiles, not a raster")));
     }
@@ -407,7 +407,7 @@ pub(crate) fn open_lazy(path: &str) -> Result<Option<TileRaster>> {
 
 /// Opens an archive of image tiles held in memory for reading by window.
 pub(crate) fn open_lazy_bytes(bytes: Vec<u8>) -> Result<TileRaster> {
-    TileRaster::new(TileArchive::from_bytes(bytes)?, None)
+    TileRaster::new(TileArchive::from_bytes_judged(bytes, &[])?, None)
 }
 
 // ─── Writing ────────────────────────────────────────────────────────────────────────────────────
@@ -935,13 +935,15 @@ impl super::pyramid::BaseRows for AlignedRows<'_> {
         let (w, bands) = (self.w, self.data_bands);
         let (sw, sh) = (self.src.width() as i64, self.src.height() as i64);
         let outside_alpha = if self.src_alpha { 0 } else { 255 };
-        let mut rows: Vec<Vec<u8>> = (0..n)
-            .map(|_| {
-                let mut row = vec![0u8; (bands + 1) * w];
-                row[bands * w..].fill(outside_alpha);
-                row
-            })
-            .collect();
+        // Sized from the source's header: allocated fallibly (`super::pyramid::build` checked
+        // the strip against the memory the process can use).
+        let row_len = crate::dataset::fallible::len(&[bands + 1, w], super::pyramid::ROWS)?;
+        let mut rows: Vec<Vec<u8>> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let mut row = crate::dataset::fallible::filled(row_len, 0u8, super::pyramid::ROWS)?;
+            row[bands * w..].fill(outside_alpha);
+            rows.push(row);
+        }
         // The part of the rows inside the source.
         let (y0, y1) = ((self.next as i64 + self.dy).max(0), (self.next as i64 + n as i64 + self.dy).min(sh));
         let (x0, x1) = (self.dx.max(0), (self.dx + w as i64).min(sw));
@@ -972,6 +974,21 @@ impl super::pyramid::BaseRows for AlignedRows<'_> {
         }
         self.next += n;
         Ok(rows)
+    }
+
+    /// While `n` rows are read: the source's window (one byte per sample, as `warp_plan` takes
+    /// Byte rasters only), its chunks decoded and read on each thread (`decode_chunks` decodes
+    /// four per thread at a time), and the compressed window a source that is not a local file
+    /// fetches first.
+    fn held(&self, n: usize) -> (u64, u64) {
+        let (bands, cols) = (self.src.band_count() as u64, self.w.min(self.src.width()) as u64);
+        let window = n as u64 * cols * bands;
+        let (bw, bh) = self.src.block_size().unwrap_or((self.src.width(), n));
+        let (bw, bh) = (bw.max(1), bh.max(1));
+        let chunks = (n.div_ceil(bh) as u64 + 1) * (self.w.div_ceil(bw) as u64 + 1);
+        let decoding = chunks.min(4 * crate::par::threads() as u64) * (bw * bh) as u64 * bands * 2;
+        let remote = if self.src.input_paths().is_ok_and(|p| !p.is_empty()) { 0 } else { window };
+        (0, window + decoding + remote)
     }
 }
 
@@ -1491,3 +1508,6 @@ mod tests {
         assert!(sorted(tiles) == sorted(reference.tiles));
     }
 }
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod memory_tests;

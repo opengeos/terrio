@@ -191,6 +191,7 @@ mod enabled {
         let mut metadata = Vec::new();
         let mut relatives = Vec::new();
         for input in inputs {
+            crate::formats::check_driver_allowed("Parquet", input, crate::formats::Kind::Vector)?;
             // Establish a representable relative location before opening a footer.
             relatives.push(location::relative_file(input, output)?);
             metadata.push(location::with_seekable(input, footer)?);

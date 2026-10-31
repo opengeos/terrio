@@ -406,7 +406,7 @@ fn tar_tree_extraction_reads_the_archive_once() {
     let mut reader = Counted { inner: Cursor::new(bytes), bytes: 0 };
     let tmp = tempfile::tempdir().unwrap();
     let mut report = Report::default();
-    copy_tar_reader(&mut reader, "files", &Node::Local(tmp.path().join("out")), false, None, &mut report).unwrap();
+    copy_tar_reader(&mut reader, "files", "files", &Node::Local(tmp.path().join("out")), false, None, &mut report).unwrap();
     assert_eq!(report.copied, 32);
     assert_eq!(report.bytes, 32 * 1024);
     assert!(reader.bytes <= len);
@@ -416,6 +416,7 @@ fn tar_tree_extraction_reads_the_archive_once() {
     let mut unchanged = Report::default();
     copy_tar_reader(
         &mut reader,
+        "files",
         "files",
         &Node::Local(tmp.path().join("out")),
         false,
@@ -448,10 +449,10 @@ fn tar_copy_reports_links_and_syncs_untimed_memory_by_content() {
     let tmp = tempfile::tempdir().unwrap();
     let target = Node::Local(tmp.path().join("out"));
     let mut report = Report::default();
-    let error = copy_tar_reader(&mut &bytes[..], "", &target, false, None, &mut report).unwrap_err();
+    let error = copy_tar_reader(&mut &bytes[..], "", "t.tar", &target, false, None, &mut report).unwrap_err();
     assert!(error.to_string().contains("tar links"));
     let mut report = Report::default();
-    copy_tar_reader(&mut &bytes[..], "", &target, true, None, &mut report).unwrap();
+    copy_tar_reader(&mut &bytes[..], "", "t.tar", &target, true, None, &mut report).unwrap();
     assert_eq!(report.copied, 1);
     assert_eq!(report.errors.len(), 1);
     assert_eq!(report.errors[0].0, "link.txt");
@@ -461,14 +462,14 @@ fn tar_copy_reports_links_and_syncs_untimed_memory_by_content() {
     let options = SyncOptions { recursive: true, ..Default::default() };
     for (copied, unchanged) in [(1, 0), (0, 1)] {
         let mut report = Report::default();
-        copy_tar_reader(&mut &bytes[..], "", &memory, true, Some(&options), &mut report).unwrap();
+        copy_tar_reader(&mut &bytes[..], "", "t.tar", &memory, true, Some(&options), &mut report).unwrap();
         assert_eq!((report.copied, report.unchanged), (copied, unchanged));
         assert_eq!(report.errors.len(), 1);
     }
     let Node::Mem(key) = memory.join("file.txt") else { unreachable!() };
     crate::memfs::write(Path::new(&key), b"edit").unwrap();
     let mut report = Report::default();
-    copy_tar_reader(&mut &bytes[..], "", &memory, true, Some(&options), &mut report).unwrap();
+    copy_tar_reader(&mut &bytes[..], "", "t.tar", &memory, true, Some(&options), &mut report).unwrap();
     assert_eq!((report.copied, report.unchanged), (1, 0));
     assert_eq!(crate::memfs::read(Path::new(&key)).unwrap(), b"data");
     let Node::Mem(root) = memory else { unreachable!() };
@@ -512,12 +513,12 @@ fn tar_member_metadata_stops_early_and_plain_reads_seek_over_payloads() {
     assert_eq!(reader.bytes, 512, "metadata must stop before reading the first member's payload");
     reader.inner.set_position(0);
     reader.bytes = 0;
-    let mut out = Vec::new();
+    let mut out = Memory::default();
     {
         let mut archive = tar::Archive::new(&mut reader);
         copy_tar_entries(archive.entries_with_seek().unwrap(), "last.txt", &mut out).unwrap();
     }
-    assert_eq!(out, [3; 4]);
+    assert_eq!(out.0, [3; 4]);
     assert!(reader.bytes < 4096, "plain tar member reads must seek over earlier payloads");
 }
 
@@ -1051,6 +1052,444 @@ fn writes_and_moves_preserve_special_destinations() {
     assert!(fs::metadata(&socket).unwrap().file_type().is_socket());
 }
 
+/// Runs `f` with the options set (the thread's own scope).
+fn with_options<T>(options: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+    crate::config::push_scope(options.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect());
+    let out = f();
+    crate::config::pop_scope();
+    out
+}
+
+/// The archive limits of a raster open hold for every function that lists or reads a zip
+/// archive's members, with the raster open's messages, and a refused copy writes nothing:
+/// `TERRIO_ZIP_MAX_ENTRIES` from the end record before the directory is read,
+/// `TERRIO_ZIP_MAX_RATIO` and `TERRIO_ZIP_MAX_SIZE` before a member is read, and, for a copy of
+/// a directory, the sizes of its members together before any is read.
+#[test]
+fn zip_archive_limits_hold_for_every_function() {
+    let tmp = tempfile::tempdir().unwrap();
+    let zip_path = tmp.path().join("t.zip");
+    {
+        let mut zip = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
+        let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let deflated = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for (name, bytes, options) in [
+            ("a.bin", vec![1u8; 2000], stored),
+            ("b.bin", b"b".to_vec(), stored),
+            ("d/c.bin", b"c".to_vec(), stored),
+            ("d/z.bin", vec![0u8; 1 << 20], deflated),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(&bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    let root = format!("/vsizip/{}", s(&zip_path));
+    let raster = |path: &str| crate::vfs::resolve(path).unwrap_err().to_string();
+    let out = tmp.path().join("out");
+    fs::create_dir_all(&out).unwrap();
+    let recursive = CopyOptions { recursive: true, ..Default::default() };
+    let sync_all = SyncOptions { recursive: true, ..Default::default() };
+
+    // Entries: every function that reads the directory, the raster open's message.
+    let entries = [("TERRIO_ZIP_MAX_ENTRIES", "3")];
+    let expected = with_options(&entries, || raster(&format!("{root}/a.bin")));
+    assert_eq!(expected, "zip: the archive lists 4 entries, more than the 3 allowed (TERRIO_ZIP_MAX_ENTRIES)");
+    with_options(&entries, || {
+        assert_eq!(list(&root, &ListOptions::default()).unwrap_err().to_string(), expected);
+        assert_eq!(stat(&format!("{root}/a.bin")).unwrap_err().to_string(), expected);
+        assert_eq!(read(&format!("{root}/b.bin")).unwrap_err().to_string(), expected);
+        assert_eq!(copy(&format!("{root}/b.bin"), &s(&out), &CopyOptions::default()).unwrap_err().to_string(), expected);
+        assert_eq!(copy(&root, &s(&out.join("tree")), &recursive).unwrap_err().to_string(), expected);
+        assert_eq!(sync(&format!("{root}/"), &s(&out), &sync_all).unwrap_err().to_string(), expected);
+    });
+    with_options(&[("TERRIO_ZIP_MAX_ENTRIES", "4")], || assert_eq!(read(&format!("{root}/b.bin")).unwrap(), b"b"));
+
+    // A member's size, before it is read: listing and describing it read no member.
+    let size = [("TERRIO_ZIP_MAX_SIZE", "1999")];
+    let expected = with_options(&size, || raster(&format!("{root}/a.bin")));
+    assert_eq!(expected, "zip: 'a.bin' and its files hold more than the 1999 bytes allowed (TERRIO_ZIP_MAX_SIZE)");
+    with_options(&size, || {
+        assert_eq!(read(&format!("{root}/a.bin")).unwrap_err().to_string(), expected);
+        assert_eq!(copy(&format!("{root}/a.bin"), &s(&out), &CopyOptions::default()).unwrap_err().to_string(), expected);
+        assert_eq!(copy(&format!("{root}/a.bin"), "/vsimem/zip_limits/a.bin", &CopyOptions::default()).unwrap_err().to_string(), expected);
+        assert_eq!(sync(&format!("{root}/a.bin"), &s(&out), &SyncOptions::default()).unwrap_err().to_string(), expected);
+        assert_eq!(read(&format!("{root}/b.bin")).unwrap(), b"b");
+        assert_eq!(stat(&format!("{root}/a.bin")).unwrap().unwrap().size, Some(2000));
+        assert_eq!(list(&root, &ListOptions { recursive: true, ..Default::default() }).unwrap().len(), 5);
+    });
+    with_options(&[("TERRIO_ZIP_MAX_SIZE", "2000")], || assert_eq!(read(&format!("{root}/a.bin")).unwrap(), vec![1u8; 2000]));
+
+    // A member's ratio, before it is read.
+    let ratio = [("TERRIO_ZIP_MAX_RATIO", "100")];
+    let expected = with_options(&ratio, || raster(&format!("{root}/d/z.bin")));
+    assert!(expected.starts_with("zip: 'd/z.bin' declares 1048576 bytes compressed to "), "{expected}");
+    assert!(expected.ends_with(", a ratio above the 100 allowed (TERRIO_ZIP_MAX_RATIO)"), "{expected}");
+    with_options(&ratio, || {
+        assert_eq!(read(&format!("{root}/d/z.bin")).unwrap_err().to_string(), expected);
+        assert_eq!(copy(&format!("{root}/d/z.bin"), &s(&out), &CopyOptions::default()).unwrap_err().to_string(), expected);
+        assert_eq!(copy(&format!("{root}/d"), &s(&out.join("tree")), &recursive).unwrap_err().to_string(), expected);
+        assert_eq!(read(&format!("{root}/b.bin")).unwrap(), b"b");
+    });
+
+    // A directory's members together, before any is read, as a raster open of the directory.
+    let total = [("TERRIO_ZIP_MAX_SIZE", "1048576")];
+    let expected = with_options(&total, || raster(&format!("{root}/d")));
+    assert_eq!(expected, "zip: 'd' and its files hold more than the 1048576 bytes allowed (TERRIO_ZIP_MAX_SIZE)");
+    with_options(&total, || {
+        assert_eq!(copy(&format!("{root}/d"), &s(&out.join("tree")), &recursive).unwrap_err().to_string(), expected);
+        assert_eq!(sync(&format!("{root}/d"), &s(&out), &sync_all).unwrap_err().to_string(), expected);
+        assert_eq!(read(&format!("{root}/d/z.bin")).unwrap().len(), 1 << 20);
+        let whole = copy(&root, &s(&out.join("tree")), &recursive).unwrap_err().to_string();
+        assert_eq!(whole, "zip: 't.zip' and its files hold more than the 1048576 bytes allowed (TERRIO_ZIP_MAX_SIZE)");
+    });
+    assert!(files_below(&out).is_empty(), "{:?}", files_below(&out));
+    assert!(stat("/vsimem/zip_limits/a.bin").unwrap().is_none());
+    with_options(&[("TERRIO_ZIP_MAX_SIZE", "1048577")], || {
+        let report = copy(&format!("{root}/d"), &s(&out.join("tree")), &recursive).unwrap();
+        assert_eq!((report.copied, report.bytes), (2, 1 + (1 << 20)));
+    });
+}
+
+/// The same limits on a tar archive (plain and gzipped), whose entries are known only as they are
+/// read: the entries past the number allowed, a member's size (its header's) and the members
+/// read together are refused before the member's bytes are read.
+#[test]
+fn tar_archive_limits_hold_for_every_function() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tar_path = tmp.path().join("t.tar");
+    {
+        let mut builder = tar::Builder::new(fs::File::create(&tar_path).unwrap());
+        for (name, bytes) in [("b.bin", b"b".to_vec()), ("a.bin", vec![1u8; 2000]), ("d/c.bin", b"c".to_vec())] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, &bytes[..]).unwrap();
+        }
+        builder.finish().unwrap();
+    }
+    let gz_path = tmp.path().join("t.tar.gz");
+    let mut gz = flate2::write::GzEncoder::new(fs::File::create(&gz_path).unwrap(), flate2::Compression::fast());
+    gz.write_all(&fs::read(&tar_path).unwrap()).unwrap();
+    gz.finish().unwrap();
+    let recursive = CopyOptions { recursive: true, ..Default::default() };
+    for (archive, name) in [(&tar_path, "t.tar"), (&gz_path, "t.tar.gz")] {
+        let root = format!("/vsitar/{}", s(archive));
+        let out = tmp.path().join(format!("out-{name}"));
+        let entries = "tar: the archive lists more than the 2 entries allowed (TERRIO_ZIP_MAX_ENTRIES)";
+        with_options(&[("TERRIO_ZIP_MAX_ENTRIES", "2")], || {
+            assert_eq!(list(&root, &ListOptions { recursive: true, ..Default::default() }).unwrap_err().to_string(), entries);
+            assert_eq!(stat(&format!("{root}/d/c.bin")).unwrap_err().to_string(), entries);
+            assert_eq!(read(&format!("{root}/d/c.bin")).unwrap_err().to_string(), entries);
+            // Streamed: the members before the third entry are copied, and read, as before.
+            assert_eq!(copy(&root, &s(&out.join("entries")), &recursive).unwrap_err().to_string(), entries);
+            assert!(out.join("entries/a.bin").exists() && !out.join("entries/d/c.bin").exists());
+            assert_eq!(read(&format!("{root}/a.bin")).unwrap(), vec![1u8; 2000]);
+        });
+        let size = "tar: 'a.bin' and its files hold more than the 1999 bytes allowed (TERRIO_ZIP_MAX_SIZE)";
+        with_options(&[("TERRIO_ZIP_MAX_SIZE", "1999")], || {
+            assert_eq!(read(&format!("{root}/a.bin")).unwrap_err().to_string(), size);
+            assert_eq!(copy(&format!("{root}/a.bin"), &s(&out.join("single.bin")), &CopyOptions::default()).unwrap_err().to_string(), size);
+            assert_eq!(read(&format!("{root}/b.bin")).unwrap(), b"b");
+            assert_eq!(stat(&format!("{root}/a.bin")).unwrap().unwrap().size, Some(2000));
+        });
+        assert!(!out.join("single.bin").exists());
+        let total = format!("tar: '{name}' and its files hold more than the 2001 bytes allowed (TERRIO_ZIP_MAX_SIZE)");
+        with_options(&[("TERRIO_ZIP_MAX_SIZE", "2001")], || {
+            assert_eq!(copy(&root, &s(&out.join("total")), &recursive).unwrap_err().to_string(), total);
+            assert!(out.join("total/a.bin").exists() && !out.join("total/d/c.bin").exists());
+        });
+        with_options(&[("TERRIO_ZIP_MAX_SIZE", "2002"), ("TERRIO_ZIP_MAX_ENTRIES", "3")], || {
+            assert_eq!(copy(&root, &s(&tmp.path().join(format!("all-{name}"))), &recursive).unwrap().bytes, 2002);
+        });
+    }
+}
+
+/// A zip archive of one stored member of 10 bytes whose central directory declares
+/// `declared` bytes (zip64).
+fn zip64_member(declared: u64) -> Vec<u8> {
+    zip64_holding(declared, b"0123456789")
+}
+
+/// A zip archive of one stored member, `big.bin`, holding `data`, whose central directory
+/// declares `declared` bytes (zip64).
+fn zip64_holding(declared: u64, data: &[u8]) -> Vec<u8> {
+    let crc = {
+        let mut c = flate2::Crc::new();
+        c.update(data);
+        c.sum()
+    };
+    let name = b"big.bin";
+    let zip64 =
+        |size: u64| [&1u16.to_le_bytes()[..], &16u16.to_le_bytes(), &size.to_le_bytes(), &(data.len() as u64).to_le_bytes()].concat();
+    let mut out = Vec::new();
+    out.extend_from_slice(&zipdir::LOCAL.to_le_bytes());
+    out.extend_from_slice(&45u16.to_le_bytes());
+    out.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0x21, 0]);
+    out.extend_from_slice(&crc.to_le_bytes());
+    out.extend_from_slice(&[0xFF; 8]);
+    out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(name);
+    out.extend_from_slice(&zip64(data.len() as u64));
+    out.extend_from_slice(data);
+    let directory = out.len() as u32;
+    out.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+    out.extend_from_slice(&[45, 0, 45, 0, 0, 0, 0, 0, 0, 0, 0x21, 0]);
+    out.extend_from_slice(&crc.to_le_bytes());
+    out.extend_from_slice(&[0xFF; 8]);
+    out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&[0; 10]);
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(name);
+    out.extend_from_slice(&zip64(declared));
+    let size = out.len() as u32 - directory;
+    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    out.extend_from_slice(&[0, 0, 0, 0, 1, 0, 1, 0]);
+    out.extend_from_slice(&size.to_le_bytes());
+    out.extend_from_slice(&directory.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
+/// A member read into memory is refused before anything is allocated when the size it declares
+/// is more than the process can use (the limits raised past it), not allocated and aborted on;
+/// copied to a file, it is not held in memory.
+#[test]
+fn a_member_larger_than_the_memory_is_refused_unallocated() {
+    if crate::usable_memory().is_none() {
+        return; // Nothing to refuse against: `usable_memory` reads `/proc`.
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let zip_path = tmp.path().join("big.zip");
+    fs::write(&zip_path, zip64_member(1 << 50)).unwrap();
+    let member = format!("/vsizip/{}/big.bin", s(&zip_path));
+    assert_eq!(stat(&member).unwrap().unwrap().size, Some(1 << 50));
+    let err = read(&member).unwrap_err().to_string();
+    assert_eq!(
+        err,
+        "zip: 'big.bin' declares 1125899906842624 bytes compressed to 10, a ratio above the 1032 allowed (TERRIO_ZIP_MAX_RATIO)"
+    );
+    let unlimited = [("TERRIO_ZIP_MAX_RATIO", "18446744073709551615"), ("TERRIO_ZIP_MAX_SIZE", "18446744073709551615")];
+    with_options(&unlimited, || {
+        let most = crate::usable_memory().unwrap();
+        let refusal = format!(
+            "a file read into memory is too large to allocate: 1125899906842624 bytes, more than the {most} bytes of memory the process can use"
+        );
+        let err = read(&member).unwrap_err().to_string();
+        assert!(err.ends_with(&refusal), "{err}");
+        let err = copy(&member, "/vsimem/zip_limits/big.bin", &CopyOptions::default()).unwrap_err().to_string();
+        assert!(err.ends_with(&refusal), "{err}");
+        // To a file, the member's bytes are streamed: its 10 bytes are not what it declares.
+        let err = copy(&member, &s(&tmp.path().join("big.bin")), &CopyOptions::default()).unwrap_err().to_string();
+        assert!(err.contains("corrupt member"), "{err}");
+    });
+    // Declared as what it holds, it is read.
+    fs::write(&zip_path, zip64_member(10)).unwrap();
+    assert_eq!(read(&member).unwrap(), b"0123456789");
+}
+
+/// Remote files are read through the range reader, as a raster open reads them: a server that
+/// ignores `Range` is refused after its first response for a file more than ten times the first
+/// read, never read whole, by `read`, `copy` and `sync` as by a raster open.
+#[cfg(remote)]
+#[test]
+fn remote_reads_refuse_a_server_that_ignores_ranges() {
+    let body = vec![7u8; 12 * crate::http::FIRST_READ as usize];
+    let (base, seen) = crate::http::test_routes(vec![("/big.bin".into(), 200, Vec::new(), body)]);
+    let url = format!("{base}/big.bin");
+    let raster = crate::vfs::resolve(&url).unwrap_err().to_string();
+    assert!(raster.contains("range downloading not supported by this server"), "{raster}");
+    let range = |requests: &[(String, Vec<(String, String)>)]| -> Vec<Option<String>> {
+        requests.iter().map(|(_, headers)| headers.iter().find(|(k, _)| k == "range").map(|(_, v)| v.clone())).collect()
+    };
+    assert_eq!(range(&seen.lock().unwrap()), [Some("bytes=0-16383".to_string())], "the raster open");
+    seen.lock().unwrap().clear();
+    let err = read(&url).unwrap_err().to_string();
+    assert_eq!(err, raster);
+    assert_eq!(range(&seen.lock().unwrap()), [Some("bytes=0-16383".to_string())], "read");
+    let tmp = tempfile::tempdir().unwrap();
+    for target in [tmp.path().join("copied.bin"), tmp.path().join("synced.bin")] {
+        seen.lock().unwrap().clear();
+        let err = if target.ends_with("copied.bin") {
+            copy(&url, &s(&target), &CopyOptions::default()).unwrap_err().to_string()
+        } else {
+            sync(&url, &s(&target), &SyncOptions::default()).unwrap_err().to_string()
+        };
+        assert_eq!(err, raster);
+        assert!(!target.exists());
+        // The read itself asked for the first range only.
+        let gets: Vec<_> = seen.lock().unwrap().iter().filter(|(line, _)| line.starts_with("GET ")).cloned().collect();
+        assert_eq!(range(&gets).last(), Some(&Some("bytes=0-16383".to_string())), "{gets:?}");
+    }
+}
+
+/// A loopback server of a file it declares to hold `len` bytes, of which it sends at most 16,384
+/// at a time: a range request is answered 206 with the declared total, a `HEAD` with the length,
+/// anything else 404. Returns its base URL and each request's method, path and `Range`.
+#[cfg(remote)]
+#[allow(clippy::type_complexity)]
+fn declaring_server(len: u64) -> (String, std::sync::Arc<std::sync::Mutex<Vec<(String, String, Option<String>)>>>) {
+    use std::io::{BufRead, BufReader};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            let _ = reader.read_line(&mut request);
+            let mut range = None;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("range:") {
+                    range = Some(v.trim().to_string());
+                }
+            }
+            let mut words = request.split_whitespace();
+            let (method, path) = (words.next().unwrap_or("").to_string(), words.next().unwrap_or("").to_string());
+            record.lock().unwrap().push((method.clone(), path, range.clone()));
+            let first = range.as_deref().and_then(|r| r.strip_prefix("bytes=")?.split_once('-')?.0.parse::<u64>().ok());
+            let response = match (method.as_str(), first) {
+                ("HEAD", _) => format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n").into_bytes(),
+                ("GET", Some(a)) if a < len => {
+                    let end = len.min(a + 16_384);
+                    let head = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {a}-{}/{len}\r\nConnection: close\r\n\r\n",
+                        end - a,
+                        end - 1
+                    );
+                    [head.into_bytes(), vec![0u8; (end - a) as usize]].concat()
+                }
+                _ => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+            };
+            let _ = stream.write_all(&response);
+        }
+    });
+    (base, seen)
+}
+
+/// A remote file read whole into memory is refused, as a local one is and with its error, when the
+/// length its first response declares is more than the process can use: before its buffer is
+/// reserved and before anything more is requested, by `read`, a copy and a sync to `/vsimem/`.
+#[cfg(remote)]
+#[test]
+fn a_remote_file_larger_than_the_memory_is_refused_after_its_first_response() {
+    if crate::usable_memory().is_none() {
+        return; // Nothing to refuse against: `usable_memory` reads `/proc`.
+    }
+    let declared = 1u64 << 50;
+    let local = Memory::default().expect(declared).unwrap_err().to_string();
+    assert!(local.starts_with("a file read into memory is too large to allocate: 1125899906842624 bytes, more than the "), "{local}");
+    let (base, seen) = declaring_server(declared);
+    let ranged = |path: &str| -> Vec<Option<String>> {
+        seen.lock().unwrap().iter().filter(|(m, p, r)| m == "GET" && p == path && r.is_some()).map(|(_, _, r)| r.clone()).collect()
+    };
+    assert_eq!(read(&format!("{base}/read.bin")).unwrap_err().to_string(), local);
+    assert_eq!(ranged("/read.bin"), [Some("bytes=0-16383".to_string())]);
+    // A copy describes its source first (`bytes=0-0`), then reads it.
+    let first = [Some("bytes=0-0".to_string()), Some("bytes=0-16383".to_string())];
+    let copied = copy(&format!("{base}/copy.bin"), "/vsimem/declared/copy.bin", &CopyOptions::default());
+    assert_eq!(copied.unwrap_err().to_string(), local);
+    assert_eq!(ranged("/copy.bin"), first);
+    let synced = sync(&format!("{base}/sync.bin"), "/vsimem/declared/sync.bin", &SyncOptions::default());
+    assert_eq!(synced.unwrap_err().to_string(), local);
+    assert_eq!(ranged("/sync.bin"), first);
+    assert!(stat("/vsimem/declared").unwrap().is_none());
+    // Declared within the memory, it is read as before.
+    let (base, _) = declaring_server(10_000);
+    assert_eq!(read(&format!("{base}/small.bin")).unwrap(), vec![0u8; 10_000]);
+}
+
+/// Sets the calling process's soft limit `resource` to `bytes`, its hard limit kept: a process may
+/// not raise a finite hard limit (`prlimit --as`, `ulimit -v`), which asking for none would do.
+#[cfg(target_os = "linux")]
+pub(crate) fn set_limit(resource: libc::__rlimit_resource_t, bytes: u64) {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `limit` is a valid rlimit, written by the first call and read by the second.
+    assert_eq!(unsafe { libc::getrlimit(resource, &mut limit) }, 0);
+    limit.rlim_cur = bytes;
+    // SAFETY: as above.
+    assert_eq!(unsafe { libc::setrlimit(resource, &limit) }, 0, "a soft limit of {bytes} bytes under a hard limit of {}", limit.rlim_max);
+}
+
+/// The address space the calling process has mapped (`VmSize`).
+#[cfg(target_os = "linux")]
+fn mapped_bytes() -> u64 {
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let kb = status.lines().find_map(|l| l.strip_prefix("VmSize:")).and_then(|v| v.trim().strip_suffix("kB")?.trim().parse::<u64>().ok());
+    kb.unwrap() * 1024
+}
+
+/// A local file read whole into memory is told its size and refused, unread, when the process
+/// cannot hold it. In a process of its own whose resident-set limit (which the usable memory counts,
+/// and Linux does not enforce) is 64 MiB: a file of 128 MiB refused by `read` and a copy to
+/// `/vsimem/`, one of 32 MiB read.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_local_file_larger_than_the_usable_memory_is_refused_unread() {
+    crate::par::alone(120, || {
+        set_limit(libc::RLIMIT_RSS, 64 << 20);
+        assert_eq!(crate::usable_memory(), Some(64 << 20));
+        let tmp = tempfile::tempdir().unwrap();
+        let (big, small) = (tmp.path().join("big.bin"), tmp.path().join("small.bin"));
+        fs::File::create(&big).unwrap().set_len(128 << 20).unwrap();
+        fs::File::create(&small).unwrap().set_len(32 << 20).unwrap();
+        let refusal =
+            "a file read into memory is too large to allocate: 134217728 bytes, more than the 67108864 bytes of memory the process can use";
+        assert_eq!(read(&s(&big)).unwrap_err().to_string(), refusal);
+        assert_eq!(copy(&s(&big), "/vsimem/alone/big.bin", &CopyOptions::default()).unwrap_err().to_string(), refusal);
+        assert!(stat("/vsimem/alone/big.bin").unwrap().is_none());
+        assert_eq!(read(&s(&small)).unwrap().len(), 32 << 20);
+        true
+    });
+}
+
+/// A file read whole into memory is reserved fallibly. In a process of its own whose address-space
+/// limit leaves 64 MiB unmapped, a file of the size the process may use (the limit, which counts
+/// what is mapped already) passes the usable-memory check and its reservation fails: an error, not
+/// an abort.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_file_read_into_memory_is_reserved_fallibly() {
+    crate::par::alone(120, || {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("file.bin");
+        let file = fs::File::create(&path).unwrap();
+        set_limit(libc::RLIMIT_AS, mapped_bytes() + (64 << 20));
+        let most = crate::usable_memory().unwrap();
+        file.set_len(most).unwrap();
+        assert_eq!(read(&s(&path)).unwrap_err().to_string(), format!("cannot allocate {most} bytes for a file read into memory"));
+        true
+    });
+}
+
+/// Bytes past the size a source declares grow its buffer in memory fallibly. In a process of its own
+/// whose address-space limit leaves 32 MiB unmapped, a zip member declaring 24 MiB and holding one
+/// byte more is reserved, and the growth its last byte asks for fails: an error, not an abort.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_buffer_in_memory_grows_fallibly_past_the_declared_size() {
+    crate::par::alone(120, || {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("longer.zip");
+        fs::write(&path, zip64_holding(24 << 20, &vec![0u8; (24 << 20) + 1])).unwrap();
+        let member = format!("/vsizip/{}/big.bin", s(&path));
+        assert!(read(&member).unwrap_err().to_string().contains("corrupt member"), "without a limit, the size mismatch");
+        set_limit(libc::RLIMIT_AS, mapped_bytes() + (32 << 20));
+        let err = read(&member).unwrap_err().to_string();
+        assert!(err.starts_with("cannot allocate ") && err.ends_with(" bytes for a file read into memory"), "{err}");
+        true
+    });
+}
+
 /// A local HTTP server of `files` (path, bytes, `Content-Type`), keeping connections alive and
 /// honoring single byte ranges unless `ranges` is false. A directory `/d/` that is served is
 /// redirected to from `/d`, as web servers do. Every request is logged as `GET /path [range]`.
@@ -1174,7 +1613,16 @@ fn plain_http_files_are_stated_without_an_index_probe() {
         let out = tmp.path().join("copied.tif");
         assert_eq!(copy(&format!("{base}/data.tif"), &s(&out), &CopyOptions::default()).unwrap().bytes, data.len() as u64);
         assert_eq!(fs::read(&out).unwrap(), data);
-        assert_eq!(server.take(), [format!("GET /data.tif{one}"), "GET /data.tif".to_string()]);
+        // The payload is read by range, as terrio reads every remote file (`http::download_to`
+        // through `RangeReader`): its first 16 KiB, then the rest, which a server that ignores
+        // ranges sends with the first.
+        let payload = if ranges {
+            vec!["GET /data.tif bytes=0-16383", "GET /data.tif bytes=16384-99999"]
+        } else {
+            vec!["GET /data.tif bytes=0-16383"]
+        };
+        let expected: Vec<String> = std::iter::once(format!("GET /data.tif{one}")).chain(payload.into_iter().map(String::from)).collect();
+        assert_eq!(server.take(), expected);
         // HTML and untyped responses may be index pages: probed as before.
         for name in ["page.html", "untyped"] {
             assert!(!stat(&format!("{base}/{name}")).unwrap().unwrap().is_dir());
@@ -1213,10 +1661,12 @@ fn remote_zip_members_are_read_through_one_reader() {
     assert_eq!(report.copied, 20);
     assert_eq!(fs::read_to_string(out.join("m07.txt")).unwrap(), "member 7\n".repeat(100));
     let log = server.take();
-    // The archive's stat, the central directory by 16 KiB blocks, then one 64 KiB block that
-    // holds every member (before: one per member, 20).
-    let payload = log.iter().filter(|l| l.ends_with("bytes=0-65535")).count();
-    assert_eq!(payload, 1, "{log:?}");
+    // The archive's stat, the central directory by 16 KiB blocks, then one block that holds every
+    // member (rather than one per member, 20). terrio's readers start with GDAL's 16 KiB block
+    // (`CPL_VSIL_CURL_CHUNK_SIZE`) whatever their block size, so the payload's first block is
+    // 16 KiB too.
+    let payload = log.iter().filter(|l| l.ends_with("bytes=0-16383")).count();
+    assert_eq!(payload, 2, "{log:?}");
     assert!(log.len() <= 4, "{log:?}");
     // All of it over one connection.
     assert_eq!(server.connections.load(std::sync::atomic::Ordering::Relaxed), 1);

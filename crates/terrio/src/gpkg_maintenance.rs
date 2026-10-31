@@ -22,6 +22,7 @@ pub struct RepackReport {
 pub fn repack_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
     #[cfg(feature = "sqlite")]
     {
+        crate::formats::check_driver_allowed("GPKG", "a GeoPackage in memory", crate::formats::Kind::Vector)?;
         check(bytes)?;
         crate::drivers::sqlite_repack::compact(bytes)
     }
@@ -52,6 +53,7 @@ pub fn repack(path: impl AsRef<std::path::Path>) -> Result<RepackReport> {
     #[cfg(feature = "sqlite")]
     {
         let path = path.as_ref();
+        crate::formats::check_driver_allowed("GPKG", &path.to_string_lossy(), crate::formats::Kind::Vector)?;
         if crate::memfs::is_virtual(path) {
             let name = path.to_str().ok_or_else(|| Error::InvalidArgument("memory path must be UTF-8".into()))?;
             return crate::vsi::transform_memory(name, |before| {
