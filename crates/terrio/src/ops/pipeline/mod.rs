@@ -1,4 +1,5 @@
 //! Linear raster/vector pipelines, with no serialized intermediate datasets.
+//! Reference syntax and behavior: GDAL 3.13.3 pipelines and GDALG.
 //!
 //! The parser accepts the supported GDAL-style steps separated by `!` and saved
 //! GDALG JSON. It never invokes a shell. Evaluation retains lazy raster sources;
@@ -166,6 +167,10 @@ impl Pipeline {
         }
         let (kind, blocks) = parse::parse(tokens)?;
         Ok(Self { kind, blocks, base: None, relative: false })
+    }
+    /// The requested dataset family, including a raster/vector command prefix.
+    pub fn input_kind(&self) -> InputKind {
+        self.kind
     }
     /// Overrides input detection without opening the input.
     pub fn with_kind(mut self, kind: InputKind) -> Self {
@@ -885,6 +890,11 @@ mod tests {
             ..Default::default()
         };
         crate::write_raster_dataset(&ds, input.to_str().unwrap(), &options).unwrap();
+        let mut unreferenced = LazyRaster::open(input.to_str().unwrap()).unwrap();
+        let mut png_options = crate::RasterWriteOptions::default();
+        unreferenced.prepare_output_mask("unreferenced.png", &mut png_options, Window::full(2, 2), None).unwrap();
+        assert!(!png_options.creation_options.iter().any(|(key, _)| key == "GEOREFERENCED"));
+
         for (index, middle) in [
             vec![],
             vec!["select", "1"],

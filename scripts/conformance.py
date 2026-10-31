@@ -2359,7 +2359,8 @@ def suite_pipeline(ctx):
                   "Pixels, masks, types, nodata, color, CRS and affine transforms; vector schemas, "
                   "attributes, validity and geometry. Polygon relative area tolerance 1e-7 (buffer 5e-4), "
                   "line relative length 1e-8 and displacement 1e-7, point displacement 1e-8. "
-                  "Derived statistics and GDALG definitions produced by each implementation.")
+                  "Derived statistics and GDALG definitions produced by each implementation. "
+                  "A discrete GeoPackage writer-ID policy difference is explicitly recorded; native sequential IDs are independently checked.")
     if missing_modules("osgeo", "numpy"):
         suite.skipped = "needs GDAL and NumPy"
         return suite

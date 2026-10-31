@@ -293,3 +293,7 @@ reference resolution; supply corresponding input aliases. Outputs remain in
 memory. Raster band/crop views retain window and overview reads. Vector `select`
 requires `_ogr_geometry_` to retain geometry and CRS. Supported steps and their
 limits are listed in the CLI pipeline reference.
+
+Use `{ inputKind: "raster" }` or `{ inputKind: "vector" }` to force the input
+family, including ambiguous uploaded files; `"auto"` chooses detection. This
+option overrides a `raster` or `vector` prefix in the command string.

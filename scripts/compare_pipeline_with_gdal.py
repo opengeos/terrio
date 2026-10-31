@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -12,8 +13,13 @@ from osgeo import gdal, ogr, osr
 from compare_layer_algebra_with_gdal import points
 
 
-def run(command):
-    result = subprocess.run(list(map(str, command)), capture_output=True, text=True)
+def run(command, config=None):
+    result = subprocess.run(
+        list(map(str, command)),
+        capture_output=True,
+        text=True,
+        env=None if config is None else {**os.environ, **config},
+    )
     assert result.returncode == 0, result.stderr or result.stdout
     return result.stdout
 
@@ -60,6 +66,7 @@ def compare_raster(actual, reference, metadata=False):
 
 def compare_vector(actual, reference, polygon_tolerance=1e-7):
     exact = True
+    identifiers_differ = False
     a, b = ogr.Open(str(actual)), ogr.Open(str(reference))
     assert a.GetLayerCount() == b.GetLayerCount(), "layer count"
     for index in range(a.GetLayerCount()):
@@ -77,6 +84,15 @@ def compare_vector(actual, reference, polygon_tolerance=1e-7):
         assert (xc is None) == (yc is None), "CRS presence"
         if xc is not None:
             assert xc.IsSame(yc), "CRS"
+        actual_ids, expected_ids = [f.GetFID() for f in x], [f.GetFID() for f in y]
+        x.ResetReading()
+        y.ResetReading()
+        if actual_ids != expected_ids:
+            assert actual_ids == list(range(1, len(actual_ids) + 1)), (
+                "native generated feature IDs"
+            )
+            exact = False
+            identifiers_differ = True
         for xf, yf in zip(x, y, strict=True):
             assert xf.items() == yf.items(), "attributes"
             xg, yg = xf.GetGeometryRef(), yf.GetGeometryRef()
@@ -121,7 +137,12 @@ def compare_vector(actual, reference, polygon_tolerance=1e-7):
         exact,
         "schema/attributes, validity, CRS and geometry checked; polygon relative area tolerance "
         + str(polygon_tolerance)
-        + ", line relative length 1e-8 and displacement 1e-7, point displacement 1e-8",
+        + ", line relative length 1e-8 and displacement 1e-7, point displacement 1e-8; "
+        + (
+            "writer policy: native sequential FIDs independently checked; GDAL retains source IDs"
+            if identifiers_differ
+            else "feature IDs match"
+        ),
     )
 
 
@@ -205,8 +226,20 @@ def main():
                 feature.SetGeometry(ogr.CreateGeometryFromWkt(wkt))
             layer.CreateFeature(feature)
         feature = layer = ds = None
+        identified = root / "identified.gpkg"
+        ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(identified))
+        layer = ds.CreateLayer("identified", projected, geom_type=ogr.wkbPoint)
+        layer.CreateField(ogr.FieldDefn("value", ogr.OFTInteger))
+        for index, fid in enumerate([42, 87]):
+            feature = ogr.Feature(layer.GetLayerDefn())
+            feature.SetFID(fid)
+            feature.SetField("value", index)
+            feature.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({index} 1)"))
+            layer.CreateFeature(feature)
+        feature = layer = ds = None
         cases = [
             ("masked copy", source, []),
+            ("vector source identifiers", identified, []),
             ("band selection", source, ["select", "2"]),
             ("masked crop", source, ["clip", "--bbox", "1,1,8,9"]),
             ("masked resize", source, ["resize", "--size", "3,4"]),
@@ -316,63 +349,141 @@ def main():
             except Exception as error:
                 row.update(status="differs", detail=str(error))
             results.append(row)
-        # Check the saved command with each implementation, including paths with spaces.
+        row = {"name": "masked COG export"}
+        try:
+            actual, reference = (
+                root / "masked-cog-native.tif",
+                root / "masked-cog-reference.tif",
+            )
+            for program, output in [(binary, actual), ("gdal", reference)]:
+                run(
+                    [
+                        program,
+                        "pipeline",
+                        "read",
+                        source,
+                        "!",
+                        "write",
+                        output,
+                        "--format",
+                        "COG",
+                    ]
+                )
+            run(
+                [
+                    binary,
+                    "validate-cog",
+                    actual,
+                    "--profile",
+                    "gdal",
+                    "--full-check",
+                    "yes",
+                    "--json",
+                ]
+            )
+            exact, detail = compare_raster(actual, reference, metadata=True)
+            row.update(
+                status="identical" if exact else "within tolerance", detail=detail
+            )
+        except Exception as error:
+            row.update(status="differs", detail=str(error))
+        results.append(row)
+        # Saved definitions from each implementation, including materialization.
         for kind, path, middle in [
             ("raster", source, ["select", "2"]),
             ("vector", data / "TN_Counties.geojson", ["select", "NAME"]),
         ]:
+            compare = (
+                compare_vector
+                if kind == "vector"
+                else lambda a, b: compare_raster(a, b, metadata=True)
+            )
+            extension = "gpkg" if kind == "vector" else "tif"
             for producer in ["terrio", "gdal"]:
-                row = {"name": f"{kind} saved definition from {producer}"}
-                definition = root / f"{kind}-{producer}.gdalg.json"
-                actual, reference = (
-                    root / f"saved-{kind}-{producer}.tif",
-                    root / f"reference-{kind}-{producer}.tif",
-                )
-                if kind == "vector":
+                for checkpoint_mode in ["none", "memory", "named"]:
+                    label = f"{kind}-{producer}-{checkpoint_mode}"
+                    row = {
+                        "name": f"{kind} saved definition from {producer}, materialize={checkpoint_mode}"
+                    }
+                    definition = root / f"{label}.gdalg.json"
                     actual, reference = (
-                        actual.with_suffix(".gpkg"),
-                        reference.with_suffix(".gpkg"),
+                        root / f"actual-{label}.{extension}",
+                        root / f"reference-{label}.{extension}",
                     )
-                steps = ["read", str(path), "!", *middle]
-                try:
-                    run(
-                        [
-                            binary if producer == "terrio" else "gdal",
-                            "pipeline",
-                            *steps,
-                            "!",
-                            "write",
-                            definition,
-                            "--format",
-                            "GDALG",
-                        ]
-                    )
-                    run([binary, "pipeline", "--load", definition, "--output", actual])
-                    run(
-                        [
-                            "gdal",
-                            "pipeline",
-                            "read",
-                            definition,
-                            "!",
-                            "write",
-                            reference,
-                        ]
-                    )
-                    if kind == "vector":
-                        run([binary, "gpkg-validate", actual, "--full-check", "--json"])
-                    exact, detail = (
-                        compare_vector(actual, reference)
-                        if kind == "vector"
-                        else compare_raster(actual, reference, metadata=True)
-                    )
-                    row.update(
-                        status="identical" if exact else "within tolerance",
-                        detail=detail,
-                    )
-                except Exception as error:
-                    row.update(status="differs", detail=str(error))
-                results.append(row)
+                    checkpoint = root / f"checkpoint-{label}.{extension}"
+                    steps = ["read", str(path), "!", *middle]
+                    if checkpoint_mode != "none":
+                        steps.extend(["!", "materialize"])
+                    if checkpoint_mode == "named":
+                        steps.extend(["--output", str(checkpoint)])
+                    try:
+                        run(
+                            [
+                                binary if producer == "terrio" else "gdal",
+                                "pipeline",
+                                *steps,
+                                "!",
+                                "write",
+                                definition,
+                                "--format",
+                                "GDALG",
+                            ]
+                        )
+                        assert not checkpoint.exists(), (
+                            "saving evaluated the checkpoint"
+                        )
+                        run(
+                            [
+                                binary,
+                                "pipeline",
+                                "--load",
+                                definition,
+                                "--output",
+                                actual,
+                            ]
+                        )
+                        if checkpoint_mode == "named":
+                            assert checkpoint.exists(), "native checkpoint missing"
+                            compare(checkpoint, actual)
+                            checkpoint.unlink()
+                        config = (
+                            {"GDAL_ALGORITHM_ALLOW_WRITES_IN_STREAM": "YES"}
+                            if checkpoint_mode == "named"
+                            else None
+                        )
+                        run(
+                            [
+                                "gdal",
+                                "pipeline",
+                                "read",
+                                definition,
+                                "!",
+                                "write",
+                                reference,
+                            ],
+                            config=config,
+                        )
+                        if checkpoint_mode == "named":
+                            assert checkpoint.exists(), "reference checkpoint missing"
+                            compare(checkpoint, reference)
+                        if kind == "vector":
+                            run(
+                                [
+                                    binary,
+                                    "gpkg-validate",
+                                    actual,
+                                    "--full-check",
+                                    "--json",
+                                ]
+                            )
+                        exact, detail = compare(actual, reference)
+                        row.update(
+                            status="identical" if exact else "within tolerance",
+                            detail=detail,
+                        )
+                    except Exception as error:
+                        row.update(status="differs", detail=str(error))
+                    results.append(row)
     print(
         json.dumps(results, indent=2)
         if args.json

@@ -55,16 +55,20 @@ enum Input {
 /// Evaluate a command or GDALG JSON text. Sources may be native paths or aliases
 /// in inputs (Raster, vector objects or paths). Outputs are deferred unless write=True.
 #[pyfunction]
-#[pyo3(signature = (command, inputs=None, *, write=false, base_file=None))]
+#[pyo3(signature = (command, inputs=None, *, write=false, base_file=None, input_kind=None))]
 fn pipeline(
     py: Python<'_>,
     command: &str,
     inputs: Option<&Bound<'_, PyDict>>,
     write: bool,
     base_file: Option<&str>,
+    input_kind: Option<&str>,
 ) -> PyResult<PyPipelineResult> {
-    let plan =
+    let mut plan =
         if command.trim_start().starts_with('{') { Pipeline::from_gdalg(command, base_file) } else { Pipeline::parse(command) }.py()?;
+    if let Some(kind) = input_kind {
+        plan = plan.with_kind(kind.parse().py()?);
+    }
     let mut sources = BTreeMap::new();
     if let Some(inputs) = inputs {
         for (key, value) in inputs {

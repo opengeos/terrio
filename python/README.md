@@ -225,7 +225,7 @@ This stores the credential-free mapping key; readers need their own credentials.
 
 ### Chained processing
 
-`terrio.pipeline(command, inputs=None, *, write=False, base_file=None)` evaluates
+`terrio.pipeline(command, inputs=None, *, write=False, base_file=None, input_kind=None)` evaluates
 supported GDAL-style steps through the Rust pipeline engine. `command` is a step
 string or saved GDALG JSON text. Inputs can use native paths or aliases mapped to
 `Raster`, vector objects, or paths:
@@ -249,3 +249,7 @@ references. Raster band/crop views retain lazy window access; transformations an
 vector results reside in memory. Include `_ogr_geometry_` in vector `select` to
 retain geometry and CRS. See the CLI pipeline reference for supported steps and
 operation limits.
+
+Use `input_kind="raster"` or `input_kind="vector"` to force the input family;
+`"auto"` chooses detection. A `raster` or `vector` prefix in the command string
+also selects a family. An explicit `input_kind` overrides that prefix.

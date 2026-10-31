@@ -41,19 +41,24 @@ impl PipelineResult {
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 struct Options {
     base_file: Option<String>,
+    input_kind: Option<String>,
 }
 
-fn input(value: &JsValue) -> Result<PipelineData, JsError> {
+fn input(value: &JsValue, kind: terrio::ops::pipeline::InputKind) -> Result<PipelineData, JsError> {
     if let Some(inner) = Dataset::lookup(value) {
         return Ok(match &mut *inner.borrow_mut() {
             Inner::Raster(r) => PipelineData::Raster(r.shared()),
             Inner::Vector(layers, _) => PipelineData::Vector(layers.clone()),
         });
     }
-    if let Some((bytes, name)) = crate::ops::file_bytes(value)
-        && let Ok(raster) = terrio::memory::open_raster_lazy_bytes(bytes, &name)
+    if kind != terrio::ops::pipeline::InputKind::Vector
+        && let Some((bytes, name)) = crate::ops::file_bytes(value)
     {
-        return Ok(PipelineData::Raster(raster));
+        match terrio::memory::open_raster_lazy_bytes(bytes, &name) {
+            Ok(raster) => return Ok(PipelineData::Raster(raster)),
+            Err(error) if kind == terrio::ops::pipeline::InputKind::Raster => return Err(js_err(error)),
+            Err(_) => {}
+        }
     }
     Ok(PipelineData::Vector(crate::ops::input_layers(value)?))
 }
@@ -64,12 +69,15 @@ fn input(value: &JsValue) -> Result<PipelineData, JsError> {
 #[wasm_bindgen]
 pub fn pipeline(command: &str, inputs: JsValue, options: JsValue) -> Result<PipelineResult, JsError> {
     let options: Options = crate::parse_options(&options)?;
-    let plan = if command.trim_start().starts_with('{') {
+    let mut plan = if command.trim_start().starts_with('{') {
         Pipeline::from_gdalg(command, options.base_file.as_deref())
     } else {
         Pipeline::parse(command)
     }
     .map_err(js_err)?;
+    if let Some(kind) = options.input_kind {
+        plan = plan.with_kind(kind.parse().map_err(js_err)?);
+    }
     let mut sources = BTreeMap::new();
     if !inputs.is_null() && !inputs.is_undefined() {
         if !inputs.is_object() || js_sys::Array::is_array(&inputs) {
@@ -78,7 +86,7 @@ pub fn pipeline(command: &str, inputs: JsValue, options: JsValue) -> Result<Pipe
         for key in js_sys::Object::keys(&js_sys::Object::from(inputs.clone())) {
             let name = key.as_string().ok_or_else(|| JsError::new("input alias must be a string"))?;
             let value = js_sys::Reflect::get(&inputs, &key).map_err(|_| JsError::new("could not read pipeline input"))?;
-            sources.insert(name, input(&value)?);
+            sources.insert(name, input(&value, plan.input_kind())?);
         }
     }
     let inner = plan

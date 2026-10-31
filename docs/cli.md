@@ -3172,3 +3172,24 @@ output mask. Resize retains a separately sampled validity plane.
 Grid-changing and type-conversion steps clear derived `STATISTICS_*` metadata.
 Descriptive band metadata, scale, offset and units are retained. GDAL 3.13.3's
 clip/resize/type steps can omit a unit string; Terrio retains the source unit.
+
+Python's `input_kind` keyword and JavaScript's `inputKind` option accept
+`"auto"`, `"raster"`, or `"vector"`. These override a family prefix in the
+command string. Plain `materialize` steps interoperate in
+saved GDALG definitions. GDAL 3.13.3 requires its
+`GDAL_ALGORITHM_ALLOW_WRITES_IN_STREAM=YES` configuration option when opening a
+definition with a named checkpoint, because opening that stream writes the
+checkpoint file.
+
+Native masked COG output currently reads the final raster and mask into memory
+before encoding; the COG row writer cannot stream that mask. This is separate
+from lazy input/view reads and from the streaming unmasked COG path. Byte exports
+also encode a complete in-memory dataset.
+
+Vector output uses the native writer's feature-ID policy. GeoPackage output
+assigns sequential IDs when the schema has no explicit `fid` field; GDAL can
+retain source IDs instead. The pipeline conformance suite identifies this
+discrete writer-policy difference in its case details and checks the native
+sequence independently. Source identifiers needed as data should be retained in
+an ordinary attribute field. Writer option parity remains
+part of [#288](https://github.com/opengeos/terrio/issues/288).

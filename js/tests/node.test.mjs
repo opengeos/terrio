@@ -3087,3 +3087,12 @@ test("pipeline dissolve unions components within each feature", () => {
   assert.equal(features[5].geometry,null);
   assert.deepEqual(source.toGeoJSON(),before);
 });
+
+test("pipeline inputKind overrides prefixes and controls uploaded inputs", () => {
+  const source = terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{id:1},geometry:{type:"Point",coordinates:[1,2]}}]});
+  const bytes = source.toBytes("source.gpkg");
+  const result = terrio.pipeline("raster read source",{source:{bytes,filename:"source.gpkg"}},{inputKind:"vector"});
+  assert.equal(result.dataset.toGeoJSON().features.length,1);
+  assert.throws(()=>terrio.pipeline("read source",{source},{inputKind:"raster"}),/input kind/);
+  assert.throws(()=>terrio.pipeline("read missing",{}, {inputKind:"invalid"}),/input kind/);
+});

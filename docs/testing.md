@@ -1770,3 +1770,14 @@ cargo test -p terrio-cli --test raster_tiles
 pytest python/tests/test_raster_tiles.py
 node --test --test-name-pattern='rasterTiles' js/tests/node.test.mjs
 ```
+
+## Pipeline output memory
+
+The pipeline masked-COG export path currently materializes the output pixels and
+mask. A local Linux RSS measurement on 2026-10-31 used 4096×4096 Byte tiled TIFFs,
+with identical pixels and an internal validity mask on one variant. Whole-image
+COG export peaked at 86,484 KiB without a mask and 282,904 KiB with the mask;
+these are single-run observations, not memory limits or general guarantees.
+Both outputs passed full native COG validation and exact GDAL pixel/mask checks.
+Input crop/window/overview reads remain lazy; this whole-output encoding limit
+is distinct from the measured remote crop test.

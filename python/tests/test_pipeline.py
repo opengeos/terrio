@@ -245,3 +245,16 @@ def test_dissolve_unions_components_within_each_feature():
     assert features[4]["geometry"] == {"type": "GeometryCollection", "geometries": []}
     assert features[5]["geometry"] is None
     assert layer.to_geojson() == before
+
+
+def test_input_kind_overrides_prefix_and_checks_family(tmp_path):
+    """Bindings expose the same explicit family override as the CLI."""
+    layer = points()
+    path = tmp_path / "source.gpkg"
+    layer.write(str(path))
+    result = terrio.pipeline(f"raster read '{path}'", input_kind="vector")
+    assert isinstance(result.dataset, terrio.VectorDataset)
+    with pytest.raises(ValueError, match="input kind"):
+        terrio.pipeline("read a", {"a": layer}, input_kind="raster")
+    with pytest.raises(ValueError, match="input kind"):
+        terrio.pipeline("read missing", input_kind="invalid")

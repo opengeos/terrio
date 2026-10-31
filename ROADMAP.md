@@ -118,9 +118,11 @@ commands. Command-group progress:
       Rust, CLI/MCP, Python and JavaScript. Part of
       [#289](https://github.com/opengeos/terrio/issues/289); pending review and merge.
 
-- [ ] Coverage simplification: shared-edge topology preservation, boundary options
-      and active-layer copying across the public APIs. Part of
-      [#289](https://github.com/opengeos/terrio/issues/289); pending review and merge.
+- [x] Coverage simplification: shared-edge topology preservation, boundary options
+      and active-layer copying across Rust, CLI/MCP, Python and JavaScript. Landed
+      in [#424](https://github.com/opengeos/terrio/pull/424), with 48 exact
+      GDAL 3.13.3 simplification comparisons and documented dimensional metadata
+      behavior.
 
 - [ ] Layer algebra: intersection, union, symmetric difference, identity, update,
       clip and erase for polygon, line, point and collection inputs across
