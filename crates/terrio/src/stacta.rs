@@ -402,7 +402,7 @@ struct Tiled {
     levels: Vec<Level>,
     data_type: DataType,
     band_types: Vec<DataType>,
-    /// The value of pixels outside the tiles and of missing ones: the nodata value, else 0.
+    /// The fill values band by band: each band's nodata value, else 0.
     band_fills: Vec<f64>,
     skip_missing: bool,
     block: (usize, usize),

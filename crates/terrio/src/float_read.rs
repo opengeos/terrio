@@ -40,6 +40,8 @@ pub struct FloatReadOptions {
 pub(crate) trait Cast: Sample {
     /// The sample as `f32`.
     fn to_f32(self) -> f32;
+    /// Compare an exact nodata value, used only for native integer buffers.
+    fn equals_integer(self, nodata: i128) -> bool;
 }
 
 macro_rules! cast {
@@ -48,6 +50,10 @@ macro_rules! cast {
             #[inline]
             fn to_f32(self) -> f32 {
                 self as f32
+            }
+            #[inline]
+            fn equals_integer(self, nodata: i128) -> bool {
+                self as i128 == nodata
             }
         }
     )*};
@@ -140,7 +146,10 @@ impl LazyRaster {
     /// values beyond it are rounded, and so are `Float64` values. [`LazyRaster::read_window_f64`]
     /// holds integers up to 2^53 exactly, `UInt64` and `Int64` values beyond rounded. Nodata
     /// values are compared before rounding: `Int32` -2147483646 stays valid next to a nodata value
-    /// of -2147483647, although both read as -2147483648 in `f32`. Unscaling converts values to
+    /// of -2147483647, although both read as -2147483648 in `f32`. Native TIFF integer
+    /// nodata tags retain their exact integer comparison value. In-memory and PAM
+    /// nodata metadata uses `f64`, so integer values that metadata cannot represent
+    /// exactly remain subject to its precision limit. Unscaling converts values to
     /// `f64` first, rounding `UInt64` and `Int64` values beyond 2^53.
     ///
     /// # Errors
@@ -218,7 +227,8 @@ impl LazyRaster {
         let sources: Vec<_> = (0..bands.len())
             .map(|k| {
                 let (read, _, start) = at(k);
-                Band::new(&reads[read].raster.data, start, window.width, nodata[k], scales[k])
+                let integer_nodata = mask.is_none().then(|| self.band_integer_nodata(bands[k], options.overview)).flatten();
+                Band::new(&reads[read].raster.data, start, window.width, nodata[k], integer_nodata, scales[k])
             })
             .collect();
         convert(&sources, size, mask.as_deref(), bands_last)
@@ -288,7 +298,7 @@ impl RasterDataset {
             .iter()
             .map(|&b| {
                 let scale = if options.unscale { scale_offset(self, b) } else { None };
-                Band::new(&r.data, (b - 1) * n + first, r.cols, self.band_nodata(b), scale)
+                Band::new(&r.data, (b - 1) * n + first, r.cols, self.band_nodata(b), None, scale)
             })
             .collect();
         convert(&sources, (window.width, window.height), None, bands_last)
@@ -321,22 +331,30 @@ struct Band<'a> {
     /// The nodata value the pixels are compared with, `None` for none (or one outside their type's
     /// range).
     nodata: Option<f64>,
+    integer_nodata: Option<i128>,
     /// The scale and offset applied to valid pixels, `None` for none.
     scale: Option<(f64, f64)>,
 }
 
 impl<'a> Band<'a> {
-    fn new(data: &'a RasterData, start: usize, stride: usize, nodata: Option<f64>, scale: Option<(f64, f64)>) -> Self {
+    fn new(
+        data: &'a RasterData,
+        start: usize,
+        stride: usize,
+        nodata: Option<f64>,
+        integer_nodata: Option<i128>,
+        scale: Option<(f64, f64)>,
+    ) -> Self {
         // GDAL's `IsNoDataInRange`: a nodata value the type cannot hold masks nothing.
         let nodata = nodata.filter(|&nd| with_data!(data, v => in_range(v, nd)));
-        Self { data, start, stride, nodata, scale }
+        Self { data, start, stride, nodata, integer_nodata, scale }
     }
 
     /// Converts row `row` of the window, `width` pixels, into every `step`-th value of `out` from
     /// the first.
     fn row<T: Float>(&self, row: usize, width: usize, mask: Option<&[u8]>, out: &mut [T], step: usize) {
         let at = self.start + row * self.stride;
-        with_data!(self.data, v => convert_row(&v[at..at + width], mask, self.nodata, self.scale, out, step))
+        with_data!(self.data, v => convert_row(&v[at..at + width], mask, self.nodata, self.integer_nodata, self.scale, out, step))
     }
 }
 
@@ -395,7 +413,7 @@ fn convert_in_place<T: Float>(
             let (band, row) = ((i * rows + j) / height, (i * rows + j) % height);
             let mask = mask.map(|m| &m[row * width..][..width]);
             for (c, v) in values.iter_mut().enumerate() {
-                *v = value(*v, mask.is_none_or(|m| m[c] != 0), nodata[band], scales[band]);
+                *v = value(*v, mask.is_none_or(|m| m[c] != 0), nodata[band], None, scales[band]);
             }
         }
     });
@@ -407,20 +425,21 @@ fn convert_row<S: Cast, T: Float>(
     src: &[S],
     mask: Option<&[u8]>,
     nodata: Option<f64>,
+    integer_nodata: Option<i128>,
     scale: Option<(f64, f64)>,
     out: &mut [T],
     step: usize,
 ) {
     for (c, &x) in src.iter().enumerate() {
-        out[c * step] = value(x, mask.is_none_or(|m| m[c] != 0), nodata, scale);
+        out[c * step] = value(x, mask.is_none_or(|m| m[c] != 0), nodata, integer_nodata, scale);
     }
 }
 
 /// A sample as `T`: NaN when the mask marks it invalid (`unmasked` false) or it is the nodata
 /// value, else converted, its scale and offset applied in `f64` when given.
 #[inline]
-fn value<S: Cast, T: Float>(x: S, unmasked: bool, nodata: Option<f64>, scale: Option<(f64, f64)>) -> T {
-    if !unmasked || nodata.is_some_and(|nd| x.is_nodata(nd)) {
+fn value<S: Cast, T: Float>(x: S, unmasked: bool, nodata: Option<f64>, integer_nodata: Option<i128>, scale: Option<(f64, f64)>) -> T {
+    if !unmasked || integer_nodata.map_or_else(|| nodata.is_some_and(|nd| x.is_nodata(nd)), |nd| x.equals_integer(nd)) {
         T::NAN
     } else if let Some((scale, offset)) = scale {
         T::of_f64(x.to_f64() * scale + offset)
@@ -630,6 +649,43 @@ mod tests {
         let last: Vec<f32> = masked.read_float(Window::new(0, 0, 2, 1), &FloatReadOptions::default(), true).unwrap();
         assert!(same(&last, &[0.0, 0.0, nan, nan]));
         assert!(same(&f32s(&ds), &[nan, 1.0, 2.0, 3.0, nan, 5.0, 6.0, 7.0]));
+    }
+
+    /// GDAL 3.13.3 masks exact integer TIFF nodata before float conversion.
+    #[test]
+    fn native_tiff_integer_nodata_does_not_round_through_metadata() {
+        use std::io::Cursor;
+        use tiff::encoder::{TiffEncoder, colortype};
+        use tiff::tags::Tag;
+        let mut files = Vec::new();
+        let mut bytes = Cursor::new(Vec::new());
+        {
+            let mut encoder = TiffEncoder::new(&mut bytes).unwrap();
+            let mut image = encoder.new_image::<colortype::Gray64>(2, 1).unwrap();
+            image.encoder().write_tag(Tag::Unknown(42113), "18446744073709551614").unwrap();
+            image.write_data(&[u64::MAX - 1, u64::MAX]).unwrap();
+        }
+        files.push(bytes.into_inner());
+        for nodata in [9_007_199_254_740_993i64, -9_007_199_254_740_993] {
+            let mut bytes = Cursor::new(Vec::new());
+            {
+                let mut encoder = TiffEncoder::new(&mut bytes).unwrap();
+                let mut image = encoder.new_image::<colortype::GrayI64>(2, 1).unwrap();
+                image.encoder().write_tag(Tag::Unknown(42113), nodata.to_string().as_str()).unwrap();
+                image.write_data(&[nodata, nodata - 1]).unwrap();
+            }
+            files.push(bytes.into_inner());
+        }
+        for bytes in files {
+            let mut source = LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
+            let options = FloatReadOptions::default();
+            let values = source.read_window_f32(Window::full(2, 1), &options).unwrap();
+            assert!(values[0].is_nan());
+            assert!(values[1].is_finite());
+            let values = source.read_window_f64(Window::full(2, 1), &options).unwrap();
+            assert!(values[0].is_nan());
+            assert!(values[1].is_finite());
+        }
     }
 
     /// Each band of a virtual raster of several types has its nodata value compared in its own

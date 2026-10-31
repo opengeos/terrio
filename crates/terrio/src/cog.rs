@@ -719,6 +719,13 @@ impl LazyRaster {
         }
     }
 
+    /// Exact integer nodata from native TIFF tags. PAM overrides remain f64 metadata.
+    pub(crate) fn band_integer_nodata(&self, band: usize, overview: Option<usize>) -> Option<i128> {
+        let Inner::Tiff(tiff) = &self.inner else { return None };
+        let tags = tiff.tags_at_level(overview.map_or(0, |i| i + 1));
+        if tags.band_nodata.iter().any(|(b, _)| *b == band) { None } else { tags.integer_nodata }
+    }
+
     /// The declared band type, falling back to the shared raster type.
     pub(crate) fn band_data_type(&self, band: usize) -> DataType {
         match &self.inner {
@@ -1702,6 +1709,13 @@ impl TiffRaster {
 
         // Missing (sparse) chunks read as nodata, or 0, as in GDAL.
         let mut out = try_new_filled(self.data_type, len, self.tags.nodata.unwrap_or(0.0))?;
+        if let Some(nodata) = self.tags.integer_nodata {
+            match &mut out {
+                RasterData::U64(values) => values.fill(nodata as u64),
+                RasterData::I64(values) => values.fill(nodata as i64),
+                _ => {}
+            }
+        }
         for (output_band, band) in bands.iter().enumerate() {
             if let Some((_, nodata)) = self.tags.band_nodata.iter().find(|(b, _)| b == band) {
                 let plane = w.width * w.height;
