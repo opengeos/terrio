@@ -2916,6 +2916,88 @@ Layer model does not store source required/optional dimensional declarations, so
 this option cannot reproduce those hints for empty layers or explicitly required
 Z/M declarations. This is a metadata limitation even when coordinates match.
 
+Coverage simplification follows GDAL 3.13.3 / GEOS 3.14.1 and JTS when
+reassembling shared edges: exterior/hole vertex direction can change with input
+feature order. Ring direction is not preserved; polygon roles and topology are
+preserved. For example, reversing the two-feature shared-zigzag fixture yields
+signed exterior areas +8 and -8 in both Terrio and GDAL.
+
+For `simplifyCoverage`, JavaScript `layer` selects a single output layer and is
+mutually exclusive with `activeLayer`, which copies inactive layers.
+Interior shared-span vertices take Z from the representative edge encountered
+first. Shared endpoints use the preceding output span's Z; the first ring
+vertex uses the following span's Z. Neighbors can therefore retain different
+endpoint heights. Per-feature heights on shared spans are not independently
+preserved.
+
+With `preserve_declared_geometry_type` (JavaScript
+`preserveDeclaredGeometryType`), GeoPackage writers reject non-null features
+incompatible with a concrete declared type. Unknown declarations accept every
+geometry; GeometryCollection declarations also accept multipart subtypes.
+
+Mixed 2D/3D features use optional Z by default in every pure-Rust GeoPackage
+whole-layer, memory and streaming writer, independently of the preserve option;
+append/update also promote the declaration when needed. Null geometries do not
+force Z or M to optional. A typed-empty geometry encoded with an XY WKB type
+still counts as 2D for this registration, unlike SQL NULL.
+
+### Clean polygon coverages
+
+`terrio clean-coverage input.gpkg output.gpkg` snaps and nodes polygon
+boundaries, assigns overlaps to a neighboring source feature and optionally
+fills enclosed narrow gaps. This is a pure-Rust operation. Each polygon must
+individually be valid; use `make-valid` first for invalid polygons. Null and
+non-polygonal active features are rejected before output creation; inactive
+layers are copied without applying this restriction.
+
+- `--snapping-distance D`: planar distance in input CRS units. The default
+  negative value selects extent diameter / 1e8; zero disables proximity snapping.
+- `--merge-strategy longest-border|max-area|min-area|min-index`: choose overlap
+  ownership, breaking ties by input order. The default is `longest-border`.
+  Area/border scores use already assigned faces, including earlier overlaps.
+- `--maximum-gap-width W`: merge enclosed gaps whose maximum inscribed diameter
+  is at most W, into the neighbor with longest common boundary. Zero disables
+  filling. Open inlets are retained. Holes are treated as enclosed gaps.
+- `--active-layer NAME`: clean one selected layer and copy inactive layers.
+  The standard `--layer`, output format/name and append/overwrite options apply.
+
+The whole selected layer is materialized. Planar topology uses XY; representative Z
+vertices are retained and intersection elevations are interpolated. Active-layer
+M values are dropped. Output attributes and CRS survive, with sequential IDs;
+removed/covered features retain empty Polygon geometry. Geographic coordinates
+use degrees: reproject before supplying distances in metres. This operation can
+alter boundaries and a merged narrow gap can introduce a spike. Ownership is
+classified against the original input polygons after snapping, matching JTS.
+General gap widths use a bounded inscribed-circle search with tolerance
+0.0001 times the requested radius. If the iteration bound is exhausted without
+finding a larger radius, the gap is classified within the width. Near-threshold
+or pathological gaps can therefore be approximate. Triangles and convex
+quadrilaterals use the exact radius shortcut.
+
+Rust exposes `ops::coverage_clean::{clean_coverage, clean_coverage_layers,
+CoverageCleanOptions, CoverageMergeStrategy}`. Python
+`terrio.clean_coverage(src, snapping_distance=-1, merge_strategy="longest-border",
+maximum_gap_width=0, layer=None)` returns a Layer; `active_layer="name"` returns
+a VectorDataset and is mutually exclusive with `layer`. JavaScript
+`cleanCoverage(src, {snappingDistance, mergeStrategy, maximumGapWidth,
+layer, activeLayer})` returns a Dataset. The CLI also supplies the MCP tool.
+Without `layer` or `activeLayer`, CLI and JavaScript process every input layer,
+following their dataset return/output contracts. Python's default returns one
+Layer and requires `layer=` when its source has multiple layers. `active_layer=`
+(or `activeLayer`) cleans the named layer and copies the others on both bindings.
+
+Coverage cleaning can have multiple ordering-dependent results for interacting
+overlaps. GDAL 3.13.3 / GEOS 3.14.1 itself changes longest-border ownership when
+only the starting vertices of unchanged polygon rings are rotated. Terrio uses
+a fixed graph traversal; per-feature ownership need not match one particular
+reference traversal. The comparer reports such differences explicitly: it checks
+exact cyclic-input reference alternatives, then independently replays greedy
+ownership on GDAL-polygonized input faces when necessary. Both results must have
+a legal complete merge order, preserve the input union, attributes, IDs and CRS,
+and pass GDAL coverage validation. Per-feature geometric equality is not claimed
+for these cases; Polygon/MultiPolygon types may follow the differing owners.
+The ordinary per-feature geometric tolerance is not widened.
+
 ## Separate-file raster tiles
 
 `terrio tile INPUT OUTPUT_DIR` writes separate `z/x/y.png` tiles. The default
@@ -3026,86 +3108,3 @@ decimation factor, with a minimum of one pixel, matching GDAL 3.13.3. When a
 dimension is at least that factor, trailing native rows/columns that do not fill
 a decimated pixel are outside that lower zoom. Maximum zoom covers the full
 source. Output edge tiles may include padding.
-
-Coverage simplification follows GDAL 3.13.3 / GEOS 3.14.1 and JTS when
-reassembling shared edges: exterior/hole vertex direction can change with input
-feature order. Ring direction is not preserved; polygon roles and topology are
-preserved. For example, reversing the two-feature shared-zigzag fixture yields
-signed exterior areas +8 and -8 in both Terrio and GDAL.
-
-For `simplifyCoverage`, JavaScript `layer` selects a single output layer and is
-mutually exclusive with `activeLayer`, which copies inactive layers. Shared-span
-Interior shared-span vertices take Z from the representative edge encountered
-first. Shared endpoints use the preceding output span's Z; the first ring
-vertex uses the following span's Z. Neighbors can therefore retain different
-endpoint heights. Per-feature heights on shared spans are not independently
-preserved.
-
-With `preserve_declared_geometry_type` (JavaScript
-`preserveDeclaredGeometryType`), GeoPackage writers reject non-null features
-incompatible with a concrete declared type. Unknown declarations accept every
-geometry; GeometryCollection declarations also accept multipart subtypes.
-
-Mixed 2D/3D features use optional Z by default in every pure-Rust GeoPackage
-whole-layer, memory and streaming writer, independently of the preserve option;
-append/update also promote the declaration when needed. Null geometries do not
-force Z or M to optional. A typed-empty geometry encoded with an XY WKB type
-still counts as 2D for this registration, unlike SQL NULL. The Layer model does
-not retain independent source Z/M declaration hints for empty geometries.
-
-### Clean polygon coverages
-
-`terrio clean-coverage input.gpkg output.gpkg` snaps and nodes polygon
-boundaries, assigns overlaps to a neighboring source feature and optionally
-fills enclosed narrow gaps. This is a pure-Rust operation. Each polygon must
-individually be valid; use `make-valid` first for invalid polygons. Null and
-non-polygonal active features are rejected before output creation; inactive
-layers are copied without applying this restriction.
-
-- `--snapping-distance D`: planar distance in input CRS units. The default
-  negative value selects extent diameter / 1e8; zero disables proximity snapping.
-- `--merge-strategy longest-border|max-area|min-area|min-index`: choose overlap
-  ownership, breaking ties by input order. The default is `longest-border`.
-  Area/border scores use already assigned faces, including earlier overlaps.
-- `--maximum-gap-width W`: merge enclosed gaps whose maximum inscribed diameter
-  is at most W, into the neighbor with longest common boundary. Zero disables
-  filling. Open inlets are retained. Holes are treated as enclosed gaps.
-- `--active-layer NAME`: clean one selected layer and copy inactive layers.
-  The standard `--layer`, output format/name and append/overwrite options apply.
-
-The whole selected layer is materialized. Planar topology uses XY; representative Z
-vertices are retained and intersection elevations are interpolated. Active-layer
-M values are dropped. Output attributes and CRS survive, with sequential IDs;
-removed/covered features retain empty Polygon geometry. Geographic coordinates
-use degrees: reproject before supplying distances in metres. This operation can
-alter boundaries and a merged narrow gap can introduce a spike. Ownership is
-classified against the original input polygons after snapping, matching JTS.
-General gap widths use a bounded inscribed-circle search with tolerance
-0.0001 times the requested radius. If the iteration bound is exhausted without
-finding a larger radius, the gap is classified within the width. Near-threshold
-or pathological gaps can therefore be approximate. Triangles and convex
-quadrilaterals use the exact radius shortcut.
-
-Rust exposes `ops::coverage_clean::{clean_coverage, clean_coverage_layers,
-CoverageCleanOptions, CoverageMergeStrategy}`. Python
-`terrio.clean_coverage(src, snapping_distance=-1, merge_strategy="longest-border",
-maximum_gap_width=0, layer=None)` returns a Layer; `active_layer="name"` returns
-a VectorDataset and is mutually exclusive with `layer`. JavaScript
-`cleanCoverage(src, {snappingDistance, mergeStrategy, maximumGapWidth,
-layer, activeLayer})` returns a Dataset. The CLI also supplies the MCP tool.
-Without `layer` or `activeLayer`, CLI and JavaScript process every input layer,
-following their dataset return/output contracts. Python's default returns one
-Layer and requires `layer=` when its source has multiple layers. `active_layer=`
-(or `activeLayer`) cleans the named layer and copies the others on both bindings.
-
-Coverage cleaning can have multiple ordering-dependent results for interacting
-overlaps. GDAL 3.13.3 / GEOS 3.14.1 itself changes longest-border ownership when
-only the starting vertices of unchanged polygon rings are rotated. Terrio uses
-a fixed graph traversal; per-feature ownership need not match one particular
-reference traversal. The comparer reports such differences explicitly: it checks
-exact cyclic-input reference alternatives, then independently replays greedy
-ownership on GDAL-polygonized input faces when necessary. Both results must have
-a legal complete merge order, preserve the input union, attributes, IDs and CRS,
-and pass GDAL coverage validation. Per-feature geometric equality is not claimed
-for these cases; Polygon/MultiPolygon types may follow the differing owners.
-The ordinary per-feature geometric tolerance is not widened.
