@@ -4,7 +4,7 @@
 Requires landsat.tif from scripts/fetch_test_data.sh. Checks synthetic Byte and real
 Landsat pixels with internal/sidecar masks, regenerated COG overviews, window and
 overview extraction, and full-resolution/overview/multi-source/cutline warps.
-Masks, types, nodata, CRS and geotransforms must match exactly. Byte interpolation
+Masks, types, nodata, CRS and geotransforms must match exactly. Landsat interpolation
 from a forced overview permits one value of rounding difference, and must also
 match GDAL exactly with Float32 working pixels. Cutlines use a GDAL alpha reference
 because GDAL 3.13.2 drops per-dataset masks when adding a cutline.
@@ -341,6 +341,9 @@ def remote_cases(work, real, terrio):
                         file_bytes=size,
                     )
                     if label != "whole":
+                        assert records[0]["status"] == "identical", (
+                            "whole masked image case must pass first"
+                        )
                         assert 0 < counts["bytes"] < records[0]["http_bytes"], (
                             "small window must transfer fewer bytes than the whole masked image"
                         )

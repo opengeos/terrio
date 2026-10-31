@@ -269,12 +269,12 @@ python scripts/conformance.py ../terrio-data --only raster-masks --strict
 The `raster-masks` suite compares synthetic Byte and real Landsat inputs with
 internal and `.msk` masks: whole conversion, window/overview extraction, five
 COG overview resamplers, and single-source, multiple-source and cutline warps.
-Masks, types, nodata, CRS and geotransforms must agree exactly. Byte bilinear and
+Masks, types, nodata, CRS and geotransforms must agree exactly. Landsat bilinear and
 average warps from a forced overview permit one value of rounding difference;
 those cases must also match GDAL's `-wt Float32` output exactly. The same rounding
 difference occurs without a source mask. GDAL 3.13.2 ignores a per-dataset mask
 when adding a cutline, so those references supply the same binary mask as alpha
-and compare the data bands exactly (or within the stated Byte rounding bound).
+and compare the data bands exactly (or within the stated rounding bound).
 
 A masked Landsat COG served locally transferred 283,197 bytes in six GETs for
 whole conversion, 147,456 bytes in three GETs for a 17x19 window, and 65,536 bytes
