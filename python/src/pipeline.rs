@@ -73,9 +73,20 @@ fn pipeline(
     }
     let mut input_error = None;
     let result = py.detach_result(|| {
+        // Reference resolution joins with `/`, so a Windows alias keyed by a native path needs a separator-blind match.
+        fn windows_alias<'a, V>(sources: &'a BTreeMap<String, V>, resolved: &str) -> Option<&'a V> {
+            if !cfg!(windows) {
+                return None;
+            }
+            let normalize = |path: &str| path.replace('\\', "/");
+            let wanted = normalize(resolved);
+            sources.iter().find(|(name, _)| normalize(name) == wanted).map(|(_, value)| value)
+        }
         plan.evaluate_with(|request| {
             let key = if sources.contains_key(&request.source) { &request.source } else { &request.resolved };
-            let Some(value) = sources.get(key) else { return PipelineInput::open(request) };
+            let Some(value) = sources.get(key).or_else(|| windows_alias(&sources, &request.resolved)) else {
+                return PipelineInput::open(request);
+            };
             Python::attach(|py| -> PyResult<PipelineInput> {
                 let value = value.bind(py);
                 if let Ok(raster) = value.cast::<PyRaster>() {
