@@ -934,6 +934,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "graviola"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ceed5ad5e9637af6fbc9de8734d9c6014ceacf3d8c5736e8eafa72d839fa0ac"
+dependencies = [
+ "cfg-if",
+ "getrandom 0.4.3",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1848,7 +1858,6 @@ dependencies = [
  "snap",
  "thrift",
  "twox-hash",
- "zstd 0.13.3",
 ]
 
 [[package]]
@@ -2347,6 +2356,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustls-graviola"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf5d0a370be690f7f1aa4e1b912fde3f5f9a5c53285062fd2d6ac1a52ab3e883"
+dependencies = [
+ "graviola",
+ "rustls",
+]
+
+[[package]]
 name = "rustls-pki-types"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2736,6 +2755,7 @@ dependencies = [
  "rayon",
  "rstar 0.13.0",
  "rust-aec",
+ "rustls-graviola",
  "rusty_av1d",
  "ruzstd 0.9.1",
  "same-file",
@@ -3182,8 +3202,6 @@ checksum = "622581e510df4500d3173fc3cb1323476f843d74ff4d52073f518b9e1c0188d5"
 dependencies = [
  "flatbuffers 24.12.23",
  "osmpbfreader 0.16.1",
- "parquet",
- "serde_json",
  "thiserror 1.0.69",
  "wbprojection",
  "zip 0.6.6",

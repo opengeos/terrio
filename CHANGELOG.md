@@ -11,6 +11,17 @@
   WebAssembly. The zstd C library is behind the optional `libzstd` feature, needed
   only for Zstandard TIFF grids; PROJ's grids are DEFLATE-compressed.
 
+### No C dependencies
+
+- The default builds of the CLI, the Python package, the Rust crates and the JavaScript
+  package have no C dependencies, and CI builds them without a C compiler.
+- `libzstd` is no longer a default feature of `terrio`. Zstandard GeoTIFF and EPT tiles are decoded
+  and written with `ruzstd`, which decodes more slowly and writes at its fastest level (about zstd's
+  level 1) whatever level is asked for. Enable `libzstd` to use the zstd C library.
+- Zstandard GeoParquet is read with the same codec, rather than through the `parquet` crate's zstd.
+- HTTPS uses `rustls-graviola` rather than `ring` on x86-64 and AArch64. An HTTPS request panics on
+  a CPU without the features it needs; see [Architecture](docs/architecture.md#pure-rust).
+
 ### Raster dataset masks
 
 - Preserve internal GeoTIFF and `.msk` validity masks in `convert`, including

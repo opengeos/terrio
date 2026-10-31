@@ -94,16 +94,16 @@ ndarray = { workspace = true, optional = true }
 # Disabled drivers stay in the API (`RasterDriver`, `VectorDriver`) and fail with "built without
 # the `...` feature".
 [features]
-default = ["cad", "geotiff", "parquet", "remote", "avif", "netcdf-hdf5", "osm", "lzma", "flatgeobuf", "jp2", "lerc", "pointcloud", "tiles", "zarr", "sqlite", "grib", "libzstd", "hecras"]
+default = ["cad", "geotiff", "parquet", "remote", "avif", "netcdf-hdf5", "osm", "lzma", "flatgeobuf", "jp2", "lerc", "pointcloud", "tiles", "zarr", "sqlite", "grib", "hecras"]
 ## GeoTIFF and COG reading and writing. Always built (it is the core): the feature exists so that
 ## `features = ["geotiff"]` states what a build needs.
 geotiff = []
 ## DWG and ASCII/binary DXF reading and writing, through acadrust.
 cad = ["dep:acadrust"]
 ## GeoParquet, the `arrow` module and Arrow streams of vector layers.
-parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:arrow-buffer", "dep:bytes", "wbvector/geoparquet"]
+parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:arrow-buffer", "dep:bytes"]
 ## HTTP(S), S3, GCS and Azure inputs, range reads of remote COGs and STAC (native builds only).
-remote = ["dep:ureq", "dep:hmac", "dep:sha2", "terrio-crs/grid-transport"]
+remote = ["dep:ureq", "dep:rustls-graviola", "dep:hmac", "dep:sha2", "terrio-crs/grid-transport"]
 ## AVIF tiles of PMTiles and MBTiles archives.
 avif = ["tiles", "dep:rusty_av1d"]
 ## NetCDF, HDF5 and HDF-EOS reading, netCDF writing.
@@ -158,6 +158,14 @@ tar.workspace = true
 ureq = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+
+# HTTPS without a C compiler, on the architectures `rustls-graviola` supports.
+[target.'cfg(all(not(target_family = "wasm"), any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+rustls-graviola = { workspace = true, optional = true }
+
+# Elsewhere (no release is built for these), HTTPS with `ring`, which needs a C compiler.
+[target.'cfg(all(not(target_family = "wasm"), not(any(target_arch = "x86_64", target_arch = "aarch64"))))'.dependencies]
+ureq = { workspace = true, optional = true, features = ["rustls"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

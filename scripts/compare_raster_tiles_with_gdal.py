@@ -26,7 +26,7 @@ class PixelDifference(AssertionError):
     """A value-only mismatch after every tile's structure/metadata was checked."""
 
 
-def compare_folders(reference, actual, extension):
+def compare_folders(reference, actual, extension, reference_origin_offset=(0., 0.)):
     refs = {p.relative_to(reference) for p in reference.rglob('*.' + extension)}
     outs = {p.relative_to(actual) for p in actual.rglob('*.' + extension)}
     if refs != outs:
@@ -44,7 +44,10 @@ def compare_folders(reference, actual, extension):
             differences.append(f'{name}: {count}/{x.size} different samples; max delta {np.nanmax(abs(x.astype(float)-y))}')
         samples += x.size
         if extension == 'tif':
-            if not np.allclose(a.GetGeoTransform(), b.GetGeoTransform(), atol=1e-8, rtol=1e-12):
+            ref_gt = list(a.GetGeoTransform())
+            ref_gt[0] -= reference_origin_offset[0]
+            ref_gt[3] -= reference_origin_offset[1]
+            if not np.allclose(ref_gt, b.GetGeoTransform(), atol=1e-8, rtol=1e-12):
                 raise AssertionError(f'{name}: geotransforms differ')
             sa, sb = osr.SpatialReference(wkt=a.GetProjection()), osr.SpatialReference(wkt=b.GetProjection())
             if not sa.IsSame(sb):
