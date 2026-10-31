@@ -138,18 +138,24 @@ fn file_header(reader: &mut (impl Read + Seek)) -> Result<(u64, usize, Vec<u8>)>
     Ok((size, extra, header))
 }
 
-pub(super) fn is_toc(reader: &mut (impl Read + Seek)) -> Result<bool> {
-    let (_, extra, header) = file_header(reader)?;
-    if decimal(&header[360 + extra..363 + extra])? != 0 {
-        return Ok(false);
-    }
-    let rpf = rpf_header(&header, 360 + extra)?;
-    Ok(rpf[3..15].trim_ascii().eq_ignore_ascii_case(b"A.TOC"))
+pub(super) fn read(relative_name: &str, reader: &mut (impl Read + Seek)) -> Result<RpfFrame> {
+    read_impl(relative_name, reader, false)?.ok_or_else(|| invalid("expected an RPF image frame"))
 }
 
-pub(super) fn read(relative_name: &str, reader: &mut (impl Read + Seek)) -> Result<RpfFrame> {
+#[cfg(not(target_family = "wasm"))]
+pub(super) fn read_candidate(relative_name: &str, reader: &mut (impl Read + Seek)) -> Result<Option<RpfFrame>> {
+    read_impl(relative_name, reader, true)
+}
+
+fn read_impl(relative_name: &str, reader: &mut (impl Read + Seek), allow_toc: bool) -> Result<Option<RpfFrame>> {
     let (zone, series) = name_parts(relative_name)?;
     let (size, extra, header) = file_header(reader)?;
+    if allow_toc && decimal(&header[360 + extra..363 + extra])? == 0 {
+        let rpf = rpf_header(&header, 360 + extra)?;
+        if rpf[3..15].trim_ascii().eq_ignore_ascii_case(b"A.TOC") {
+            return Ok(None);
+        }
+    }
     if decimal(&header[360 + extra..363 + extra])? != 1 {
         return Err(invalid("RPF frame requires exactly one NITF image segment"));
     }
@@ -228,7 +234,7 @@ pub(super) fn read(relative_name: &str, reader: &mut (impl Read + Seek)) -> Resu
     let rpf_class = classes.iter().position(|value| *value == rpf[39]).ok_or_else(|| invalid("unknown RPF frame classification"))?;
     let nitf_class = classes.iter().position(|value| *value == header[119]).ok_or_else(|| invalid("unknown NITF file classification"))?;
     let classification = char::from(classes[rpf_class.max(nitf_class)]);
-    Ok(RpfFrame { name: relative_name.into(), zone, series, classification, coverage: values })
+    Ok(Some(RpfFrame { name: relative_name.into(), zone, series, classification, coverage: values }))
 }
 
 #[cfg(test)]
