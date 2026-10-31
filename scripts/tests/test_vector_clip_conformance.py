@@ -36,6 +36,41 @@ class ClipToleranceTests(unittest.TestCase):
             ogr.wkbLineString,
         )
 
+    def test_zero_measure_references_do_not_divide_by_zero_or_accept_nonzero_measures(
+        self,
+    ):
+        crs = osr.SpatialReference()
+        crs.ImportFromEPSG(3857)
+        for kind, zero_wkt, nonzero_wkt in [
+            (
+                ogr.wkbLineString,
+                "LINESTRING (0 0,0 0)",
+                "LINESTRING (0 0,0 0.000000000001)",
+            ),
+            (
+                ogr.wkbPolygon,
+                "POLYGON ((0 0,0 0,0 0,0 0))",
+                "POLYGON ((0 0,0.000000000001 0,0 0.000000000001,0 0))",
+            ),
+        ]:
+
+            def record(wkt):
+                return {1: ([], [ogr.CreateGeometryFromWkt(wkt)])}, [], crs, kind
+
+            zero = record(zero_wkt)
+            with patch.object(comparison, "contents", side_effect=[zero, zero]):
+                self.assertIn(
+                    comparison.compare("reference", "actual")[0],
+                    ["identical", "within tolerance"],
+                )
+            with patch.object(
+                comparison, "contents", side_effect=[zero, record(nonzero_wkt)]
+            ):
+                with self.assertRaisesRegex(
+                    AssertionError, "relative geometry difference"
+                ):
+                    comparison.compare("reference", "actual")
+
     def test_missing_clip_command_skips_before_dataset_access(self):
         with (patch.object(conformance, "missing_modules", return_value=False),
               patch.object(conformance.shutil, "which", return_value="gdal"),

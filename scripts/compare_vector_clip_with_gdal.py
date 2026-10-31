@@ -132,11 +132,18 @@ def compare(reference, actual):
             if distance > scale*1e-9:
                 raise AssertionError(f'{key}: Hausdorff distance {distance} exceeds {scale*1e-9}')
             max_distance = max(max_distance, distance)
-            delta = a.SymmetricDifference(b)
             if dimension == 2:
-                error = delta.Area() / a.Area()
+                reference_measure, actual_measure = a.Area(), b.Area()
+                if reference_measure == 0:
+                    error = 0.0 if actual_measure == 0 else float('inf')
+                else:
+                    error = a.SymmetricDifference(b).Area() / reference_measure
             elif dimension == 1:
-                error = abs(a.Length()-b.Length()) / a.Length()
+                reference_measure, actual_measure = a.Length(), b.Length()
+                if reference_measure == 0:
+                    error = 0.0 if actual_measure == 0 else float('inf')
+                else:
+                    error = abs(reference_measure-actual_measure) / reference_measure
             else:
                 raise AssertionError(f'{key}: point coordinates differ')
             if error > 1e-9:
@@ -274,9 +281,7 @@ def main():
                     results.append(dict(name=f'{name} {kind}', status=status, detail=detail))
                 except Exception as error:
                     results.append(dict(name=f'{name} {kind}', status='differs', detail=str(error)))
-        # Expose the discontinuity of exact point inclusion at a transformed edge.
-        # The Terrio CRS command reports the arithmetic behind this
-        # documented few-ULP difference; it must not hide arbitrary missing points.
+        # Check exact point inclusion at a transformed upper edge.
         boundary = root / 'boundary.geojson'
         boundary.write_text(json.dumps({'type': 'FeatureCollection', 'features': [
             {'type': 'Feature', 'properties': {'clip_source_id': i}, 'geometry': {'type': 'Point', 'coordinates': point}}
@@ -286,14 +291,8 @@ def main():
         try:
             run(['gdal', 'vector', 'clip', boundary, reference, *options])
             run([args.terrio, 'vector-clip', boundary, actual, *options])
-            ra, sa, ca, ta = contents(reference)
-            rb, sb, cb, tb = contents(actual)
-            latitude = float(run([args.terrio, 'crs', 'EPSG:3857', '--to', 'EPSG:4326', '0', '222684.20850554405']).split()[1])
-            if not (sa == sb and ca.IsSame(cb) and ta == tb and set(ra) == {0, 1} and set(rb) == {1}
-                    and 0 < 2-latitude < 1e-14 and ra[1][0] == rb[1][0] and ra[1][1][0].Equals(rb[1][1][0])):
-                raise AssertionError('transformed-boundary behavior changed; re-audit this known difference')
-            results.append(dict(name='transformed point boundary', status='within tolerance',
-                                detail=f'GDAL includes latitude 2; Terrio clips at {latitude!r}. The interior point, schema/CRS/type and coordinates match; the {2-latitude:.3g}-degree edge discrepancy is reported by Terrio; GDAL inclusion is checked externally.'))
+            status, detail = compare(reference, actual)
+            results.append(dict(name='transformed point boundary', status=status, detail=detail))
         except Exception as error:
             results.append(dict(name='transformed point boundary', status='differs', detail=str(error)))
         try:

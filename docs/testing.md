@@ -1629,11 +1629,10 @@ boundaries, tangencies, polygon-only contacts, mixed collections, Z/M interpolat
 CRS selection and CLI/MCP/output safety. Python and Node/WASM tests exercise bbox,
 WKT/GeoJSON, templates, filters, uploaded raster bytes and invalid options.
 
-One separately checked transformed-point boundary case records a known arithmetic
-difference: GDAL includes latitude 2 at a projected upper edge while Terrio's
-inverse Web Mercator produces 1.9999999999999996. The GDAL inclusion is checked externally, and `terrio crs` reports the arithmetic.
-The unchanged interior point and exact source IDs/metadata are checked;
-arbitrary missing points cannot use this exception.
+A separately checked transformed-point boundary case compares the exact point
+set against GDAL, including latitude 2 at the projected upper edge. The current
+inverse Web Mercator implementation includes that point in both outputs; this
+case has no missing-point tolerance exception.
 
 Dense-template performance can be checked with
 `scripts/bench_vector_clip.py ../terrio-data --kind roads` (or `--kind counties`).

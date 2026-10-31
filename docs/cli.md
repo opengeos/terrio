@@ -2777,7 +2777,9 @@ without densification, so edges are straight in the input CRS after reprojection
 as in GDAL vector clipping. `--layer` selects input
 layers. A vector template's polygons are unioned, with `--like-layer`,
 `--like-where` or `--like-sql` selecting/filtering its features. SQL uses Terrio's
-existing documented vector SELECT subset. Raster templates use rectangular
+existing documented vector SELECT subset. A filter selecting no polygonal features,
+or a template containing only null geometries, produces an empty output with
+success status. Raster templates use rectangular
 bounds, including rotated-grid bounds; lazy raster pixels are not decoded.
 
 Polygon holes and boundary points/lines are included. Null/empty intersections
@@ -2788,9 +2790,8 @@ Attributes, schema, layer name and CRS are retained, with output IDs sequential
 from 1. Points retain Z/M; line cuts interpolate source Z/M, while constructed
 polygon topology is XY. Invalid geometries are refused; repair them first with
 `make-valid`. Exact inclusion at a transformed boundary can differ from GDAL by
-a few floating-point units: for example inverse Web Mercator can put latitude
-2 just outside an upper edge of 1.9999999999999996. Reprojection does not snap
-input points to the transformed boundary. If a polygon result cannot be
+a few floating-point units. Reprojection does not snap input points to the
+transformed boundary. If a polygon result cannot be
 reconstructed as valid geometry at floating precision, clipping returns an error
 rather than silently dropping features or accepting the coarser integer-grid result.
 
@@ -2803,7 +2804,8 @@ skip-errors are not separate options of this command.
 
 Rust uses `ops::vector_clip::{clip, ClipRegion, ClipTemplateOptions}`. Python
 `terrio.clip_vector(src, bbox=[...])` returns one `Layer` (choose `layer=` when
-needed); `geometry=`, `like=`, `crs=`, `like_layer=`, `like_where=` and `like_sql=`
+needed); unlike the CLI and JavaScript, Python does not return several input
+layers in one call. `geometry=`, `like=`, `crs=`, `like_layer=`, `like_where=` and `like_sql=`
 provide the corresponding options. Python accepts vector/raster paths and
 in-memory data as templates. JavaScript `clipVector(src, {bbox: [...]})` returns
 a `Dataset`, with `geometry`, `like`, `crs`, `layers`, `likeLayer`, `likeWhere`

@@ -99,18 +99,23 @@ impl ClipRegion {
             return Err(Error::InvalidArgument("like_where and like_sql are mutually exclusive".into()));
         }
         let selected = if let Some(name) = &options.layer {
-            vec![
+            std::slice::from_ref(
                 layers
                     .iter()
                     .find(|l| &l.name == name)
-                    .ok_or_else(|| Error::InvalidArgument(format!("no template layer named '{name}'")))?
-                    .clone(),
-            ]
+                    .ok_or_else(|| Error::InvalidArgument(format!("no template layer named '{name}'")))?,
+            )
         } else {
-            layers.to_vec()
+            layers
         };
+        if options.where_clause.is_none() && options.sql.is_none() {
+            if selected.len() != 1 {
+                return Err(Error::InvalidArgument("clip template needs one vector layer; select it with like_layer or like_sql".into()));
+            }
+            return Self::from_layer(&selected[0]);
+        }
         let selected = super::vector_filter::translate(
-            &selected,
+            selected,
             &super::vector_filter::VectorTranslateOptions {
                 where_clause: options.where_clause.clone(),
                 sql: options.sql.clone(),
@@ -137,7 +142,8 @@ impl ClipRegion {
             }
             return Self::from_raster(&crate::open_raster_lazy(path)?.header());
         }
-        match super::vector_filter::open_layers(path, &Default::default()) {
+        let read_options = crate::VectorOpenOptions { layers: options.layer.iter().cloned().collect(), ..Default::default() };
+        match super::vector_filter::open_layers(path, &read_options) {
             Ok(layers) if layers.is_empty() && may_raster && !vector_options => Self::from_raster(&crate::open_raster_lazy(path)?.header()),
             Ok(layers) => Self::from_layers(&layers, options),
             Err(vector_error) if may_raster && !vector_options => match crate::open_raster_lazy(path) {
@@ -340,7 +346,13 @@ impl Mask {
             }
         }
         if !contacts.is_empty() {
-            let segments: Vec<_> = lines.iter().flat_map(|l| l.windows(2)).map(|p| geo::Line::new(xy(&p[0]), xy(&p[1]))).collect();
+            let segments: Vec<_> = lines
+                .iter()
+                .map(Vec::as_slice)
+                .chain(out.iter().filter_map(|g| if let Geometry::LineString(cs) = g { Some(cs.as_slice()) } else { None }))
+                .flat_map(|l| l.windows(2))
+                .map(|p| geo::Line::new(xy(&p[0]), xy(&p[1])))
+                .collect();
             let segment_index = RTree::bulk_load(
                 segments.iter().enumerate().map(|(i, l)| GeomWithData::new(Rectangle::from_aabb(envelope(*l)), i)).collect(),
             );
@@ -379,6 +391,10 @@ impl Mask {
             }
             Geometry::Polygon { .. } | Geometry::MultiPolygon(_) => {
                 let shape = polygons(g, 0).expect("validated polygon");
+                // Disjoint bounds cannot produce area or boundary contacts.
+                if !shape.bounding_rect().zip(self.bounds).is_some_and(|(a, b)| a.intersects(&b)) {
+                    return Ok(());
+                }
                 let result = self.polygon_intersection(&shape)?;
                 if keep_lower {
                     self.polygon_contacts(&shape, &result, out);
@@ -503,25 +519,19 @@ fn restore_polygon_vertices(mut result: geo::MultiPolygon<f64>, exact: Vec<[f64;
             c.y = p[1];
         }
         ring.0.dedup();
-        ring
+        if ring.0.len() < 4 || geo::Polygon::new(ring.clone(), vec![]).unsigned_area() == 0.0 {
+            return Err(Error::InvalidData("polygon clip ring collapsed during floating-precision reconstruction".into()));
+        }
+        Ok(ring)
     };
     result.0 = result
         .0
         .into_iter()
-        .filter_map(|p| {
+        .map(|p| {
             let (outer, holes) = p.into_inner();
-            let outer = restore(outer);
-            if outer.0.len() < 4 || geo::Polygon::new(outer.clone(), vec![]).unsigned_area() == 0.0 {
-                return None;
-            }
-            let holes = holes
-                .into_iter()
-                .map(restore)
-                .filter(|r| r.0.len() >= 4 && geo::Polygon::new(r.clone(), vec![]).unsigned_area() > 0.0)
-                .collect();
-            Some(geo::Polygon::new(outer, holes))
+            Ok(geo::Polygon::new(restore(outer)?, holes.into_iter().map(restore).collect::<Result<Vec<_>>>()?))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     require_valid(&from_polygons(result.clone()), 0)
         .map_err(|e| Error::InvalidData(format!("polygon clip topology could not be reconstructed at floating precision: {e}")))?;
     Ok(result)
@@ -575,6 +585,7 @@ fn fit_type(parts: Vec<Geometry>, ty: Option<GeometryType>) -> Vec<Geometry> {
 mod tests {
     use super::*;
     use crate::{FieldDef, FieldType, FieldValue};
+    use geo::polygon;
     fn geometry(wkt: &str) -> Geometry {
         let bytes = format!("WKT\n\"{wkt}\"\n").into_bytes();
         crate::memory::open_vector_bytes(bytes, "g.csv", &Default::default()).unwrap().layers[0].features[0].geometry.clone().unwrap()
@@ -588,6 +599,20 @@ mod tests {
     }
     fn bbox() -> ClipRegion {
         ClipRegion::bbox([0., 0., 2., 2.], None).unwrap()
+    }
+    #[test]
+    fn collapsed_restored_exteriors_and_holes_are_errors() {
+        let square = geo::polygon![(x:0.,y:0.),(x:2.,y:0.),(x:2.,y:2.),(x:0.,y:2.),(x:0.,y:0.)];
+        assert!(restore_polygon_vertices(geo::MultiPolygon(vec![square.clone()]), vec![[0., 0.]]).is_err());
+        let hole = geo::LineString::from(vec![(0.5, 0.5), (0.6, 0.5), (0.6, 0.6), (0.5, 0.6), (0.5, 0.5)]);
+        let p = geo::Polygon::new(square.exterior().clone(), vec![hole]);
+        assert!(restore_polygon_vertices(geo::MultiPolygon(vec![p]), vec![[0., 0.], [2., 0.], [2., 2.], [0., 2.]]).is_err());
+    }
+    #[test]
+    fn later_line_contacts_do_not_duplicate_retained_segments() {
+        let input = layer("MULTILINESTRING ((-1 0,3 0),(-1 1,1 -1))", None);
+        let out = clip(&input, &bbox()).unwrap();
+        assert_eq!(out.features[0].geometry, Some(geometry("LINESTRING (0 0,2 0)")));
     }
     #[test]
     fn points_include_outer_and_hole_boundaries_but_not_hole_interiors() {
@@ -712,6 +737,18 @@ mod tests {
         let expected = 0.5 * (x1 - x0) * (100_000. - y0);
         let actual = super::super::topology::to_geo(out.features[0].geometry.as_ref().unwrap()).unsigned_area();
         assert!((actual - expected).abs() / expected < 1e-9, "{actual} vs {expected}");
+    }
+
+    #[test]
+    fn crsless_geojson_region_defaults_to_wgs84_for_projected_inputs() {
+        let region = ClipRegion::parse(r#"{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}"#, None).unwrap();
+        assert_eq!(region.crs.as_ref().unwrap().epsg, Some(4326));
+        let mut input = layer("POINT (111319.49079327357 111325.1428663851)", Some(GeometryType::Point));
+        SpatialRef::from_epsg(3857).unwrap().apply_to_layer(&mut input);
+        let out = clip(&input, &region).unwrap();
+        assert_eq!(out.features.len(), 1);
+        assert_eq!(out.features[0].geometry, input.features[0].geometry);
+        assert!(SpatialRef::from_layer(&out).same_as(&SpatialRef::from_layer(&input)));
     }
 
     #[test]

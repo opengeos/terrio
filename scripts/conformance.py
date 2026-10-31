@@ -2227,7 +2227,7 @@ def suite_vector_clip(ctx):
                   "filtered vector templates, raster bounds and clipping-CRS transforms. "
                   "Exact schema/attributes/CRS/types and source IDs, per-dimension coverage. "
                   "Area symmetric difference <= 1e-9, relative line length <= 1e-9; "
-                  "coordinate-scaled Hausdorff distance <= 1e-9. Boundary transform ambiguity is explicit.")
+                  "coordinate-scaled Hausdorff distance <= 1e-9. Transformed-boundary point inclusion is exact.")
     if missing_modules("osgeo", "shapely") or not shutil.which("gdal") or run(["gdal", "vector", "clip", "--help"])[0] != 0:
         suite.skipped = "needs GDAL 3.13 with the vector clip command, GEOS and shapely"
         return suite
