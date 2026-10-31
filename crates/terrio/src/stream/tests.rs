@@ -664,6 +664,67 @@ fn geoparquet_row_groups_do_not_follow_chunks() {
 }
 
 #[test]
+fn geopackage_streams_register_optional_measures_across_chunks() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut layer = Layer::new("mixed").with_epsg(4326);
+    layer.features = vec![
+        Feature {
+            fid: 1,
+            attributes: vec![],
+            geometry: Some(Geometry::Point(wbvector::Coord { m: Some(3.), ..wbvector::Coord::xy(1., 2.) })),
+        },
+        Feature { fid: 2, attributes: vec![], geometry: Some(Geometry::point(4., 5.)) },
+    ];
+    let check = |path: &str| {
+        let db = crate::drivers::sqlite::Db::new(std::fs::read(path).unwrap()).unwrap();
+        let table = db.table("gpkg_geometry_columns").unwrap();
+        assert_eq!(table.get(&table.rows[0], "m").unwrap().as_i64(), Some(2));
+        let back = crate::open_vector(path, &Default::default()).unwrap();
+        for (a, b) in layer.features.iter().zip(&back.layers[0].features) {
+            assert_eq!(a.geometry, b.geometry);
+        }
+    };
+    let single = directory.path().join("single.gpkg").to_string_lossy().into_owned();
+    let mut writer = FeatureWriter::create(&single, &layer, Some(&LayerProfile::of(&layer)), &Default::default()).unwrap();
+    writer.write(&layer).unwrap();
+    writer.finish().unwrap();
+    check(&single);
+    let multi = directory.path().join("multi.gpkg").to_string_lossy().into_owned();
+    let mut sink = GpkgLayersSink::create(&multi, &[schema_of(&layer)], false).unwrap().unwrap();
+    for feature in &layer.features {
+        let mut chunk = schema_of(&layer);
+        chunk.features.push(feature.clone());
+        sink.write(0, &chunk).unwrap();
+    }
+    sink.finish().unwrap();
+    check(&multi);
+}
+
+#[test]
+fn geopackage_streams_register_z_found_after_the_first_coordinate() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("late-z.gpkg").to_string_lossy().into_owned();
+    let mut layer = Layer::new("late_z").with_epsg(4326);
+    layer.features.push(Feature {
+        fid: 1,
+        attributes: vec![],
+        geometry: Some(Geometry::LineString(vec![
+            wbvector::Coord::xy(0., 0.),
+            wbvector::Coord { z: Some(12.), ..wbvector::Coord::xy(1., 1.) },
+        ])),
+    });
+    let mut writer = FeatureWriter::create(&path, &layer, Some(&LayerProfile::of(&layer)), &Default::default()).unwrap();
+    writer.write(&layer).unwrap();
+    writer.finish().unwrap();
+    let db = crate::drivers::sqlite::Db::new(std::fs::read(&path).unwrap()).unwrap();
+    let table = db.table("gpkg_geometry_columns").unwrap();
+    assert_eq!(table.get(&table.rows[0], "z").unwrap().as_i64(), Some(1));
+    let back = crate::open_vector(&path, &Default::default()).unwrap();
+    let coordinates = back.layers[0].features[0].geometry.as_ref().unwrap().all_coords();
+    assert_eq!((coordinates[0].z, coordinates[1].z), (Some(0.), Some(12.)));
+}
+
+#[test]
 fn geopackage_streams_preserve_measures_and_register_them() {
     let dir = tempfile::tempdir().unwrap();
     let mut layer = polygons(3);

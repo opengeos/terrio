@@ -919,7 +919,7 @@ impl GpkgSink {
         let declared = if preserve || all_none { schema.geom_type } else { g.first.filter(|(_, same)| *same).map(|(t, _)| t) };
         let small = |i: usize| profile.fields.get(i).is_none_or(|f| f.no_int_beyond_int32);
         let mut cols = builder.layer_columns(schema, all_none, declared, g.any_z, None, small);
-        cols.m_hint = i64::from(g.has_m);
+        cols.m_hint = crate::drivers::vector::profile::dimension_hint(g.has_m, g.missing_m);
         if preserve && declared.is_none() && g.any_z {
             cols.z_hint = 2;
         }
@@ -1102,7 +1102,7 @@ impl GpkgLayersSink {
             let declared = if preserve || all_none { l.schema.geom_type } else { l.profile.uniform_type() };
             let small = |i: usize| l.profile.fields.get(i).is_none_or(|f| f.no_int_beyond_int32);
             let mut cols = builder.layer_columns(&l.schema, all_none, declared, g.any_z, None, small);
-            cols.m_hint = i64::from(g.has_m);
+            cols.m_hint = crate::drivers::vector::profile::dimension_hint(g.has_m, g.missing_m);
             if preserve && declared.is_none() && g.any_z {
                 cols.z_hint = 2;
             }

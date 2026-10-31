@@ -137,6 +137,8 @@ pub struct GeometryProfile {
     pub any_z: bool,
     /// Some coordinate has an M value.
     pub has_m: bool,
+    /// Some non-null geometry has no M values.
+    pub missing_m: bool,
     /// Some geometry is not a point.
     pub non_point: bool,
     /// Some feature has no geometry, or an empty one (no bounding box).
@@ -145,6 +147,16 @@ pub struct GeometryProfile {
     pub type_names: Vec<String>,
     /// The extent `[min_x, min_y, max_x, max_y]`.
     pub bbox: Option<[f64; 4]>,
+}
+
+/// GeoPackage dimension declaration: prohibited (0), mandatory (1), optional (2).
+#[cfg(feature = "sqlite")]
+pub(crate) fn dimension_hint(present: bool, missing: bool) -> i64 {
+    match (present, missing) {
+        (false, _) => 0,
+        (true, false) => 1,
+        (true, true) => 2,
+    }
 }
 
 /// What writers learn from a layer's features.
@@ -216,6 +228,7 @@ impl LayerProfile {
         g.has_z |= h.has_z;
         g.any_z |= h.any_z;
         g.has_m |= h.has_m;
+        g.missing_m |= h.missing_m;
         g.non_point |= h.non_point;
         g.missing_bbox |= h.missing_bbox;
         for n in &h.type_names {
@@ -253,11 +266,10 @@ impl LayerProfile {
             });
             let z = crate::vector::geometry_has_z(geom);
             g.has_z |= z;
-            if !(g.any_z && g.has_m) {
-                let (az, am) = crate::vector::geometry_dims(geom);
-                g.any_z |= az;
-                g.has_m |= am;
-            }
+            let (az, am) = crate::vector::geometry_dims(geom);
+            g.any_z |= az;
+            g.has_m |= am;
+            g.missing_m |= !am;
             g.non_point |= !matches!(geom, wbvector::Geometry::Point(_));
             add_type_name(&mut g.type_names, t, z);
             match geom.bbox() {

@@ -17,6 +17,7 @@
 //     modules/core/src/main/java/org/locationtech/jts/geom/Triangle.java
 
 //! Topology-preserving Visvalingam-Whyatt simplification of shared coverage edges.
+//! Reference: GDAL 3.13.3 with GEOS 3.14.1.
 use crate::{Error, Feature, Geometry, Layer, Result};
 use geo::algorithm::kernels::{Kernel, Orientation, RobustKernel};
 use rstar::primitives::{GeomWithData, Rectangle};
@@ -307,7 +308,7 @@ impl Graph {
     }
     fn simplify(&mut self, options: &CoverageSimplifyOptions) {
         for edge in &mut self.edges {
-            edge.tolerance = if options.preserve_boundary && edge.count != 2 { 0. } else { options.tolerance };
+            edge.tolerance = options.tolerance;
         }
         if options.preserve_boundary && self.edges.iter().all(|e| e.count != 2) {
             return;

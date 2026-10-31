@@ -145,6 +145,8 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
     layer = terrio.Layer.from_geojson(POLYGONS, name="parcels", crs="EPSG:32610")
     simplified: terrio.Layer = terrio.simplify_coverage(layer, 1.0, preserve_boundary=True)
     simplified.to_bytes("coverage.gpkg", preserve_declared_geometry_type=True)
+    copied: terrio.VectorDataset = terrio.simplify_coverage([layer], 1.0, active_layer="parcels")
+    copied.write(str(tmp / "coverage-copy.gpkg"), preserve_declared_geometry_type=True)
     layer.name = "parcels"
     print(layer.name, layer.crs, layer.crs_wkt is not None, layer.geometry_type, len(layer))
     fields: dict[str, str] = layer.fields

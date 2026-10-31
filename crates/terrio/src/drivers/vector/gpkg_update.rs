@@ -527,8 +527,8 @@ impl Database {
             .unwrap_or(0)
     }
 
-    /// Updates what describes a layer after features were appended to it: its sequence, `z`
-    /// flag, extent, last change and feature count (`total`).
+    /// Updates what describes a layer after features were appended to it: its sequence,
+    /// dimension flags, extent, last change and feature count (`total`).
     pub(super) fn appended(&mut self, name: &str, sql: &str, enc: &Encoded, total: i64) {
         if keywords_contain(sql, "AUTOINCREMENT")
             && let Some((last, _)) = enc.rows.last()
@@ -541,6 +541,11 @@ impl Database {
             && z == 0
         {
             self.set("gpkg_geometry_columns", "table_name", name, "z", w::Value::Int(2));
+        }
+
+        let m = self.lookup("gpkg_geometry_columns", "table_name", name, "m").as_ref().and_then(int).unwrap_or(0);
+        if (m == 0 && enc.has_m) || (m == 1 && enc.missing_m) {
+            self.set("gpkg_geometry_columns", "table_name", name, "m", w::Value::Int(2));
         }
 
         // The extent and the feature count.
@@ -583,6 +588,10 @@ pub(super) struct Encoded {
     pub bounds: Option<[f64; 4]>,
     /// Whether a geometry has z values.
     pub has_z: bool,
+    /// Some encoded geometry has M values.
+    pub has_m: bool,
+    /// Some non-null encoded geometry has no M values.
+    pub missing_m: bool,
 }
 
 /// Encodes the features of `layer` as rows of the feature table created by `sql`, with ids
@@ -615,11 +624,14 @@ pub(super) fn encode_append(sql: &str, geometry: Option<&(String, i64, i64)>, la
         }
         let mut bbox = None;
         let mut z = false;
+        let mut m = false;
+        let mut missing_m = false;
         if let Some(gi) = geom_col {
             values[gi] = match &f.geometry {
                 Some(g) => {
                     bbox = g.bbox().filter(|b| b.min_x.is_finite() && b.min_y.is_finite());
-                    z = crate::vector::geometry_has_z(g);
+                    (z, m) = crate::vector::geometry_dims(g);
+                    missing_m = !m;
                     w::Value::Blob(gw::gpkg_geometry(g, srs_id as i32))
                 }
                 None => w::Value::Null,
@@ -633,12 +645,14 @@ pub(super) fn encode_append(sql: &str, geometry: Option<&(String, i64, i64)>, la
                 values[i] = convert(v, &decls[i].1);
             }
         }
-        (values, bbox, z)
+        (values, bbox, z, m, missing_m)
     });
     let mut bounds: Option<[f64; 4]> = None;
     let mut has_z = false;
+    let mut has_m = false;
+    let mut missing_m = false;
     let mut rows = Vec::with_capacity(encoded.len());
-    for ((values, bbox, z), id) in encoded.into_iter().zip(first..) {
+    for ((values, bbox, z, m, no_m), id) in encoded.into_iter().zip(first..) {
         if let Some(b) = bbox {
             bounds = Some(match bounds {
                 None => [b.min_x, b.min_y, b.max_x, b.max_y],
@@ -646,9 +660,11 @@ pub(super) fn encode_append(sql: &str, geometry: Option<&(String, i64, i64)>, la
             });
         }
         has_z |= z;
+        has_m |= m;
+        missing_m |= no_m;
         rows.push((id, values));
     }
-    Encoded { rows, geom_col, bounds, has_z }
+    Encoded { rows, geom_col, bounds, has_z, has_m, missing_m }
 }
 
 /// An envelope `[min_x, max_x, min_y, max_y]` as SQLite's R-tree stores it, rounded outwards to
@@ -746,6 +762,38 @@ mod tests {
             });
         }
         l
+    }
+
+    #[test]
+    fn append_promotes_measure_flags_without_changing_existing_geometry_types() {
+        let point = |m| Some(wbvector::Geometry::Point(wbvector::Coord { m, ..wbvector::Coord::xy(1., 2.) }));
+        for (first, second, expected) in
+            [(point(Some(3.)), point(None), 2), (point(None), point(Some(3.)), 2), (point(Some(3.)), None, 1), (point(None), None, 0)]
+        {
+            let make = |geometry| {
+                let mut l = Layer::new("points").with_epsg(4326);
+                l.features.push(Feature { fid: 1, geometry, attributes: vec![] });
+                l
+            };
+            let a = make(first);
+            let b = make(second);
+            let initial = gw::to_bytes(std::slice::from_ref(&a)).unwrap();
+            let check = |bytes: Vec<u8>| {
+                let db = crate::drivers::sqlite::Db::new(bytes.clone()).unwrap();
+                let table = db.table("gpkg_geometry_columns").unwrap();
+                assert_eq!(table.get(&table.rows[0], "m").unwrap().as_i64(), Some(expected));
+                assert_eq!(table.get(&table.rows[0], "geometry_type_name").unwrap().as_str(), Some("POINT"));
+                let back = crate::memory::open_vector_bytes(bytes, "points.gpkg", &Default::default()).unwrap();
+                assert_eq!(back.layers[0].features[0].geometry, a.features[0].geometry);
+                assert_eq!(back.layers[0].features[1].geometry, b.features[0].geometry);
+            };
+            check(update_bytes(initial.clone(), std::slice::from_ref(&b), UpdateMode::Append).unwrap());
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("points.gpkg");
+            std::fs::write(&path, &initial).unwrap();
+            update(path.to_str().unwrap(), std::slice::from_ref(&b), UpdateMode::Append).unwrap();
+            check(std::fs::read(path).unwrap());
+        }
     }
 
     #[test]

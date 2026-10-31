@@ -804,6 +804,34 @@ mod tests {
     }
 
     #[test]
+    fn geopackage_mixed_measures_are_optional_and_nulls_do_not_change_layout() {
+        use crate::{Feature, Geometry};
+        use wbvector::Coord;
+        for (second, expected) in [(Some(Geometry::point(4., 5.)), 2), (None, 1)] {
+            let mut layer = Layer::new("mixed").with_epsg(4326);
+            layer.features = vec![
+                Feature { fid: 1, attributes: vec![], geometry: Some(Geometry::Point(Coord { m: Some(3.), ..Coord::xy(1., 2.) })) },
+                Feature { fid: 2, attributes: vec![], geometry: second },
+            ];
+            for preserve in [false, true] {
+                let options = VectorWriteOptions { preserve_declared_geometry_type: preserve, ..Default::default() };
+                for bytes in [
+                    write_vector_bytes(std::slice::from_ref(&layer), "mixed.gpkg", &options).unwrap(),
+                    codec::write_vector(std::slice::from_ref(&layer), VectorDriver::GPKG, &options).unwrap(),
+                ] {
+                    let db = crate::drivers::sqlite::Db::new(bytes.clone()).unwrap();
+                    let table = db.table("gpkg_geometry_columns").unwrap();
+                    assert_eq!(table.get(&table.rows[0], "m").unwrap().as_i64(), Some(expected));
+                    let back = open_vector_bytes(bytes, "mixed.gpkg", &Default::default()).unwrap();
+                    for (a, b) in layer.features.iter().zip(&back.layers[0].features) {
+                        assert_eq!(a.geometry, b.geometry);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn geopackage_preserves_zm_values_and_registers_dimensions() {
         for wkt in [
             "POINT M (1 2 30)",
@@ -818,16 +846,18 @@ mod tests {
             let source = open_vector_bytes(csv.into_bytes(), "source.csv", &Default::default()).unwrap();
             let geometry = source.layers[0].features[0].geometry.as_ref().unwrap();
             assert!(crate::vector::geometry_dims(geometry).1, "{wkt}");
-            let options = VectorWriteOptions { preserve_declared_geometry_type: true, ..Default::default() };
-            for bytes in [
-                write_vector_bytes(&source.layers, "x.gpkg", &options).unwrap(),
-                codec::write_vector(&source.layers, VectorDriver::GPKG, &options).unwrap(),
-            ] {
-                let db = crate::drivers::sqlite::Db::new(bytes.clone()).unwrap();
-                let table = db.table("gpkg_geometry_columns").unwrap();
-                assert_eq!(table.get(&table.rows[0], "m").unwrap().as_i64(), Some(1));
-                let back = open_vector_bytes(bytes, "x.gpkg", &Default::default()).unwrap();
-                assert_eq!(back.layers[0].features[0].geometry, source.layers[0].features[0].geometry, "{wkt}");
+            for preserve in [false, true] {
+                let options = VectorWriteOptions { preserve_declared_geometry_type: preserve, ..Default::default() };
+                for bytes in [
+                    write_vector_bytes(&source.layers, "x.gpkg", &options).unwrap(),
+                    codec::write_vector(&source.layers, VectorDriver::GPKG, &options).unwrap(),
+                ] {
+                    let db = crate::drivers::sqlite::Db::new(bytes.clone()).unwrap();
+                    let table = db.table("gpkg_geometry_columns").unwrap();
+                    assert_eq!(table.get(&table.rows[0], "m").unwrap().as_i64(), Some(1));
+                    let back = open_vector_bytes(bytes, "x.gpkg", &Default::default()).unwrap();
+                    assert_eq!(back.layers[0].features[0].geometry, source.layers[0].features[0].geometry, "{wkt}");
+                }
             }
         }
     }
@@ -853,22 +883,8 @@ mod tests {
             use std::os::unix::fs::MetadataExt;
             std::fs::metadata(path).unwrap().ino()
         };
-        let read_chars = || {
-            std::fs::read_to_string("/proc/self/io")
-                .ok()
-                .and_then(|s| s.lines().find_map(|line| line.strip_prefix("rchar: ").and_then(|n| n.trim().parse::<u64>().ok())))
-        };
-        let before = read_chars();
         let options = VectorWriteOptions { preserve_declared_geometry_type: true, ..Default::default() };
         write_vector_with_mode(std::slice::from_ref(&unknown), path, &options, WriteMode::Overwrite).unwrap();
-        let after = read_chars();
-        if let (Some(before), Some(after)) = (before, after) {
-            println!(
-                "preserved declaration overwrite: process read chars {}, file bytes {}",
-                after - before,
-                std::fs::metadata(path).unwrap().len()
-            );
-        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;

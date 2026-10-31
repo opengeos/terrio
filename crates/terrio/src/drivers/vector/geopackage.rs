@@ -88,7 +88,7 @@ fn write_iso_wkb(out: &mut Vec<u8>, geometry: &Geometry) {
         }
     }
     fn ring(out: &mut Vec<u8>, r: &wbvector::Ring, z: bool, m: bool) {
-        let close = !r.0.is_empty() && r.0.first() != r.0.last();
+        let close = r.0.first().zip(r.0.last()).is_some_and(|(a, b)| a.x != b.x || a.y != b.y);
         count(out, r.0.len() + usize::from(close));
         for c in &r.0 {
             coord(out, c, z, m);
@@ -711,12 +711,12 @@ impl Builder {
         let all_none = layer.features.iter().all(|f| f.geometry.is_none());
         // The geometry type the features share, as GDAL declares it (GEOMETRY when they differ).
         let declared = if preserve_declared_geometry_type || all_none { layer.geom_type } else { super::uniform_type(layer) };
-        let (has_z, has_m) = layer
+        let (has_z, has_m, missing_m) = layer
             .features
             .iter()
             .filter_map(|f| f.geometry.as_ref())
             .map(crate::vector::geometry_dims)
-            .fold((false, false), |a, b| (a.0 || b.0, a.1 || b.1));
+            .fold((false, false, false), |a, b| (a.0 || b.0, a.1 || b.1, a.2 || !b.1));
         // Columns: a field named fid holding unique integers gives the feature ids, as in GDAL.
         let fields = layer.schema.fields();
         let fid_field =
@@ -732,7 +732,7 @@ impl Builder {
         if preserve_declared_geometry_type && declared.is_none() && cols.spatial && has_z {
             cols.z_hint = 2;
         }
-        cols.m_hint = i64::from(has_m);
+        cols.m_hint = super::profile::dimension_hint(has_m, missing_m);
 
         // Rows (with each geometry's bounds) are encoded in parallel, then combined in order.
         let encoded = crate::par::map_range(layer.len(), |n| cols.row(&layer.features[n], n as i64 + 1, fields));
@@ -1217,6 +1217,20 @@ mod tests {
         rowids.sort_by_key(|(n, _)| *n);
         parents.sort_by_key(|(n, _)| *n);
         (nodes, rowids, parents)
+    }
+
+    #[test]
+    fn xy_closed_rings_keep_the_last_zm_without_an_extra_vertex() {
+        let coords = [(0., 0., 1., 10.), (2., 0., 2., 20.), (0., 2., 3., 30.), (0., 0., 9., 90.)]
+            .into_iter()
+            .map(|(x, y, z, m)| Coord { x, y, z: Some(z), m: Some(m) })
+            .collect();
+        let geometry = Geometry::Polygon { exterior: wbvector::Ring(coords), interiors: vec![] };
+        let mut bytes = Vec::new();
+        write_iso_wkb(&mut bytes, &geometry);
+        assert_eq!(u32::from_le_bytes(bytes[9..13].try_into().unwrap()), 4);
+        let last: Vec<_> = bytes[bytes.len() - 32..].as_chunks::<8>().0.iter().map(|v| f64::from_le_bytes(*v)).collect();
+        assert_eq!(last, vec![0., 0., 9., 90.]);
     }
 
     #[test]

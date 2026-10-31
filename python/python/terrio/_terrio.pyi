@@ -2248,8 +2248,21 @@ def check_coverage(
     """Invalid coverage edges, retaining CRS; XY diagnostics, empty schema and new IDs."""
     ...
 
+@overload
 def simplify_coverage(
-    src: Any, tolerance: float, *, preserve_boundary: bool = False, layer: str | None = None
-) -> Layer:
-    """Simplify shared coverage edges, preserving attributes/CRS; output IDs are new."""
-    ...
+    src: Any,
+    tolerance: float,
+    *,
+    preserve_boundary: bool = False,
+    layer: str | None = None,
+    active_layer: None = None,
+) -> Layer: ...
+@overload
+def simplify_coverage(
+    src: Any,
+    tolerance: float,
+    *,
+    preserve_boundary: bool = False,
+    layer: None = None,
+    active_layer: str,
+) -> VectorDataset: ...

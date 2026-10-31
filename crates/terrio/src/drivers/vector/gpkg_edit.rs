@@ -701,6 +701,8 @@ pub(crate) fn update_features(d: &mut Database, name: &str, src: &Layer, keys: &
     let mut added: Vec<(i64, Vec<w::Value>)> = Vec::new();
     let mut bounds: Option<[f64; 4]> = None;
     let mut has_z = false;
+    let mut has_m = false;
+    let mut missing_m = false;
     let max_rowid = t.rows.iter().map(|(id, _)| *id).max().unwrap_or(0);
     let mut next = d.sequence(&name).max(max_rowid) + 1;
     let existing: HashMap<i64, &Vec<w::Value>> = t.rows.iter().map(|(id, v)| (*id, v)).collect();
@@ -752,6 +754,14 @@ pub(crate) fn update_features(d: &mut Database, name: &str, src: &Layer, keys: &
             });
         }
         has_z |= z;
+        if geom_col.is_some()
+            && let Some(g) = &f.geometry
+        {
+            let (az, m) = crate::vector::geometry_dims(g);
+            has_z |= az;
+            has_m |= m;
+            missing_m |= !m;
+        }
     }
     if changed.is_empty() && added.is_empty() {
         return Ok(counts);
@@ -770,7 +780,7 @@ pub(crate) fn update_features(d: &mut Database, name: &str, src: &Layer, keys: &
     if let (Some((g, ..)), Some(gi)) = (&geometry, geom_col) {
         d.rebuild_rtree(&name, g, gi);
     }
-    let enc = gu::Encoded { rows: added, geom_col, bounds, has_z };
+    let enc = gu::Encoded { rows: added, geom_col, bounds, has_z, has_m, missing_m };
     d.appended(&name, &sql, &enc, total as i64);
     Ok(counts)
 }

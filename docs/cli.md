@@ -2822,7 +2822,9 @@ command's subset. The command also supplies the MCP tool.
 Rust exposes `ops::coverage_simplify::{simplify_coverage, simplify_coverage_layers,
 CoverageSimplifyOptions}`. Python
 `terrio.simplify_coverage(src, tolerance, preserve_boundary=False, layer=None)`
-returns one Layer. JavaScript
+returns one Layer. With `active_layer="counties"`, it returns a `VectorDataset`,
+simplifying that layer and copying the other input layers. `layer` and
+`active_layer` are mutually exclusive. JavaScript
 `simplifyCoverage(src, tolerance, {preserveBoundary: false, activeLayer: "counties"})`
 returns a Dataset, copying inactive layers. Inputs use the usual vector paths,
 datasets, layers and GeoJSON forms of their respective bindings.
@@ -2832,8 +2834,14 @@ For general GeoPackage writes, Rust `VectorWriteOptions`, Python `Layer.write`,
 `preserve_declared_geometry_type=True`. JavaScript `Dataset.toBytes` accepts
 `preserveDeclaredGeometryType: true`. This option applies to GPKG output and
 retains base geometry declarations when creating/replacing layers; appending to an existing
-layer keeps its existing declaration. The existing default infers the common
-feature type. Ordinary updates retain the in-place transaction path, with the
+layer keeps its base geometry declaration, with dimension flags promoted to
+optional when needed to retain mixed layouts. The existing default infers the common
+feature type. The pure Rust GeoPackage encoders preserve M values by default, independent
+of this option, for native files, memory outputs and streams. Mixed measured
+and unmeasured geometries use optional M declarations, preserving their layouts. Streamed Z flags
+also reflect any coordinate with Z, matching the encoded payload even when the
+first coordinate is two-dimensional; absent ordinates are encoded as zero.
+Ordinary updates retain the in-place transaction path, with the
 existing atomic rewrite fallback when in-place editing is unsupported.
 
 Retained simplified vertices keep their Z values; GEOS drops M values from active

@@ -129,6 +129,15 @@ def main():
             [0, 100],
         ),
     ]
+    for repeats in [1, 2]:
+        coordinates = "0 0," + "1 0," * (repeats + 1) + "2 0,2 2,0 2,0 0"
+        fixtures.append(
+            (
+                f"consecutive repeats {repeats}",
+                [ogr.CreateGeometryFromWkt(f"POLYGON (({coordinates}))")],
+                [0, 100],
+            )
+        )
     for dimensions in ["Z", "M", "ZM"]:
         values = {"Z": "10", "M": "100", "ZM": "10 100"}[dimensions]
         ring = ",".join(

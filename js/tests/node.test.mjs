@@ -2842,6 +2842,17 @@ test("GPKG toBytes can retain declared geometry types", () => {
   assert.throws(() => source.toBytes("out.geojson", {preserveDeclaredGeometryType:true}), /GPKG/);
 });
 
+test("GPKG toBytes uses valid optional M declarations for mixed layouts", () => {
+  const source = terrio.open(new TextEncoder().encode('WKT\n"POINT M (1 2 3)"\n"POINT (4 5)"\n'), "mixed.csv");
+  for (const preserve of [false, true]) {
+    const bytes = source.toBytes("mixed.gpkg", {preserveDeclaredGeometryType: preserve});
+    const report = terrio.validateGpkg(bytes, {fullCheck: true});
+    assert.equal(report.valid, true, JSON.stringify(report));
+    assert.equal(report.complete, true);
+  }
+  source.free();
+});
+
 test("checkCoverage emits XY diagnostics for elevated polygons", () => {
   const geometry = {type: "Polygon", coordinates: [[[0,0,1],[2,0,2],[0,2,3],[0,0,1]]]};
   const feature = {type: "Feature", properties: {}, geometry};
