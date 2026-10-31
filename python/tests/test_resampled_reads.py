@@ -44,35 +44,17 @@ def sources(tmp_path_factory):
         ("f32-nodata", 1, "float32", -9999.0, False, False),
         ("valid", 2, "uint8", None, False, False),
     ):
-        data = (
-            np.stack(
-                [
-                    np.sin(x / (9 + b)) * 60 + np.cos(y / 13) * 50 + 120 + rng.normal(0, 8, x.shape)
-                    for b in range(count)
-                ]
-            )
-            .clip(1, 250)
-            .astype(dtype)
-        )
+        data = np.stack(
+            [np.sin(x / (9 + b)) * 60 + np.cos(y / 13) * 50 + 120 + rng.normal(0, 8, x.shape) for b in range(count)]
+        ).clip(1, 250).astype(dtype)
         if nodata is not None:
             data[:, rng.random(x.shape) < 0.03] = nodata
             data[:, 200:260, 300:380] = nodata
         path = str(d / f"{name}.tif")
         with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True):
             with rasterio.open(
-                path,
-                "w",
-                driver="GTiff",
-                width=900,
-                height=700,
-                count=count,
-                dtype=dtype,
-                nodata=nodata,
-                crs="EPSG:3857",
-                transform=from_origin(0, 0, 1, 1),
-                tiled=True,
-                blockxsize=256,
-                blockysize=256,
+                path, "w", driver="GTiff", width=900, height=700, count=count, dtype=dtype, nodata=nodata,
+                crs="EPSG:3857", transform=from_origin(0, 0, 1, 1), tiled=True, blockxsize=256, blockysize=256,
             ) as dst:
                 dst.write(data)
                 if mask:
@@ -93,25 +75,13 @@ def test_resampled_reads_match_rasterio(sources, kind, method, read):
     win, shape = READS[read]
     with rasterio.open(sources[kind]) as s:
         out_shape = None if shape is None else (s.count, *shape)
-        a = s.read(
-            window=RW(*win) if win else None,
-            out_shape=out_shape,
-            resampling=RR[method],
-            masked=True,
-        )
+        a = s.read(window=RW(*win) if win else None, out_shape=out_shape, resampling=RR[method], masked=True)
     with trio.open(sources[kind]) as s:
-        b = s.read(
-            window=TW(*win) if win else None,
-            out_shape=out_shape,
-            resampling=TR[method],
-            masked=True,
-        )
+        b = s.read(window=TW(*win) if win else None, out_shape=out_shape, resampling=TR[method], masked=True)
     assert a.shape == b.shape
     x, y = a.data, b.data
     same = (x == y) | (np.isnan(x) & np.isnan(y)) if x.dtype.kind == "f" else x == y
-    assert same.all(), (
-        f"{np.mean(~same):.4%} of pixels differ, max |d| {np.abs(x.astype(float) - y)[~same].max()}"
-    )
+    assert same.all(), f"{np.mean(~same):.4%} of pixels differ, max |d| {np.abs(x.astype(float) - y)[~same].max()}"
     am, bm = np.ma.getmaskarray(a), np.ma.getmaskarray(b)
     assert np.array_equal(am, bm), f"{np.mean(am != bm):.4%} of the mask differs"
 
@@ -123,24 +93,10 @@ def test_gauss_boundless_reads_match_rasterio(sources, kind, shape, window):
     """Gauss through a boundless read (a VRT GDAL resamples with `RasterIOResampled`)."""
     with rasterio.open(sources[kind]) as s:
         out_shape = (s.count, *shape)
-        a = s.read(
-            window=RW(*window),
-            out_shape=out_shape,
-            resampling=RR.gauss,
-            boundless=True,
-            masked=True,
-        )
+        a = s.read(window=RW(*window), out_shape=out_shape, resampling=RR.gauss, boundless=True, masked=True)
     with trio.open(sources[kind]) as s:
-        b = s.read(
-            window=TW(*window),
-            out_shape=out_shape,
-            resampling=TR.gauss,
-            boundless=True,
-            masked=True,
-        )
+        b = s.read(window=TW(*window), out_shape=out_shape, resampling=TR.gauss, boundless=True, masked=True)
     am, bm = np.ma.getmaskarray(a), np.ma.getmaskarray(b)
     assert np.array_equal(am, bm), f"{np.mean(am != bm):.4%} of the mask differs"
     valid = ~am
-    assert np.array_equal(a.data[valid], b.data[valid]), (
-        f"{np.mean(a.data[valid] != b.data[valid]):.4%} differ"
-    )
+    assert np.array_equal(a.data[valid], b.data[valid]), f"{np.mean(a.data[valid] != b.data[valid]):.4%} differ"

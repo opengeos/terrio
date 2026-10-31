@@ -142,10 +142,7 @@ class AWSSession(Session):
         if aws_unsigned is None:
             from terrio import _terrio
 
-            aws_unsigned = (_terrio.config_get("AWS_NO_SIGN_REQUEST") or "").upper() in (
-                "YES",
-                "TRUE",
-            )
+            aws_unsigned = (_terrio.config_get("AWS_NO_SIGN_REQUEST") or "").upper() in ("YES", "TRUE")
         self.unsigned = bool(aws_unsigned)
         self.endpoint_url = endpoint_url
         self.requester_pays = requester_pays
