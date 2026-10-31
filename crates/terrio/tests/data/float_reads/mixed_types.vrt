@@ -1,0 +1,24 @@
+<VRTDataset rasterXSize="6" rasterYSize="4">
+  <GeoTransform>0, 1, 0, 4, 0, -1</GeoTransform>
+  <VRTRasterBand dataType="UInt32" band="1">
+    <NoDataValue>4294967295</NoDataValue>
+    <SimpleSource>
+      <SourceFilename relativeToVRT="1">mixed_uint32.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+    </SimpleSource>
+  </VRTRasterBand>
+  <VRTRasterBand dataType="Float32" band="2">
+    <NoDataValue>nan</NoDataValue>
+    <SimpleSource>
+      <SourceFilename relativeToVRT="1">mixed_float32.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+    </SimpleSource>
+  </VRTRasterBand>
+  <VRTRasterBand dataType="Byte" band="3">
+    <NoDataValue>1.5</NoDataValue>
+    <SimpleSource>
+      <SourceFilename relativeToVRT="1">mixed_byte.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+    </SimpleSource>
+  </VRTRasterBand>
+</VRTDataset>

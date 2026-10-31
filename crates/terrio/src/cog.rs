@@ -70,6 +70,28 @@ impl Window {
             && self.x.checked_add(self.width).is_some_and(|e| e <= width)
             && self.y.checked_add(self.height).is_some_and(|e| e <= height)
     }
+
+    /// The error of a read of the window from an image of `width` x `height` pixels, unless it
+    /// [`fits`](Self::fits).
+    pub(crate) fn check(&self, width: usize, height: usize) -> Result<()> {
+        if self.fits(width, height) {
+            return Ok(());
+        }
+        Err(Error::InvalidArgument(format!(
+            "window {}x{} at ({}, {}) is outside the {width}x{height} image",
+            self.width, self.height, self.x, self.y
+        )))
+    }
+}
+
+/// The bands a read of `bands` (numbered from 1, all for none) reads of a raster of `count` bands,
+/// or the error of a band it does not have.
+pub(crate) fn read_bands(bands: &[usize], count: usize) -> Result<Vec<usize>> {
+    let bands: Vec<usize> = if bands.is_empty() { (1..=count).collect() } else { bands.to_vec() };
+    if let Some(b) = bands.iter().find(|b| **b == 0 || **b > count) {
+        return Err(Error::InvalidArgument(format!("no band {b}: the raster has {count} band(s)")));
+    }
+    Ok(bands)
 }
 
 /// What [`LazyRaster::read_window`] reads.
@@ -996,16 +1018,8 @@ impl LazyRaster {
     /// georeferenced to the window.
     pub fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
         let (lw, lh) = self.level_size(options.overview)?;
-        if !window.fits(lw, lh) {
-            return Err(Error::InvalidArgument(format!(
-                "window {}x{} at ({}, {}) is outside the {lw}x{lh} image",
-                window.width, window.height, window.x, window.y
-            )));
-        }
-        let bands: Vec<usize> = if options.bands.is_empty() { (1..=self.band_count()).collect() } else { options.bands.clone() };
-        if let Some(b) = bands.iter().find(|b| **b == 0 || **b > self.band_count()) {
-            return Err(Error::InvalidArgument(format!("no band {b}: the raster has {} band(s)", self.band_count())));
-        }
+        window.check(lw, lh)?;
+        let bands = read_bands(&options.bands, self.band_count())?;
         let band_nodata: Vec<Option<f64>> = if let Inner::Tiff(t) = &self.inner {
             let tags = t.tags_at_level(options.overview.map_or(0, |i| i + 1));
             bands.iter().map(|b| tags.band_nodata.iter().find(|(i, _)| i == b).map(|(_, v)| *v).or(tags.nodata)).collect()
@@ -1087,10 +1101,7 @@ impl LazyRaster {
         if let Some(r) = rows.iter().find(|r| **r >= lh) {
             return Err(Error::InvalidArgument(format!("row {r} is outside the {lw}x{lh} image")));
         }
-        let bands: Vec<usize> = if options.bands.is_empty() { (1..=self.band_count()).collect() } else { options.bands.clone() };
-        if let Some(b) = bands.iter().find(|b| **b == 0 || **b > self.band_count()) {
-            return Err(Error::InvalidArgument(format!("no band {b}: the raster has {} band(s)", self.band_count())));
-        }
+        let bands = read_bands(&options.bands, self.band_count())?;
         match &mut self.inner {
             Inner::Source(_, s) => s.read_sampled(options.overview.map_or(0, |i| i + 1), cols, rows, &bands),
             Inner::Tiff(_) | Inner::Memory(_) => Ok(None),
@@ -1149,12 +1160,7 @@ impl LazyRaster {
     /// neighbour, as GDAL does).
     pub fn read_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
         let (lw, lh) = self.level_size(overview)?;
-        if !window.fits(lw, lh) {
-            return Err(Error::InvalidArgument(format!(
-                "window {}x{} at ({}, {}) is outside the {lw}x{lh} image",
-                window.width, window.height, window.x, window.y
-            )));
-        }
+        window.check(lw, lh)?;
         // An external overview is its own TIFF dataset. GDAL does not inherit
         // the base TIFF's mask when that dataset has no mask of its own.
         if let Inner::Tiff(t) = &mut self.inner
