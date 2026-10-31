@@ -99,6 +99,16 @@ def rasters(tmp: Path) -> terrio.Raster:
     for out in (small, scaled, warped, merged, shade, slope, ratio, dist, clean):
         print(repr(out))
 
+    tiles: dict[str, Any] = terrio.raster_tiles(
+        r,
+        tmp / "tiles",
+        tiling_scheme="raster",
+        format="GTiff",
+        grid={"tile_size": 64},
+        resampling="nearest",
+    )
+    print(tiles["written"])
+
     info: dict[str, Any] = terrio.info(str(path), stats=True)
     drivers: list[dict[str, Any]] = terrio.drivers()
     print(info["driver"], len(drivers))

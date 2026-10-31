@@ -1544,6 +1544,7 @@ fn warp_data_with_storage(
 }
 
 /// Metadata for a window-readable warp source. Pixels may remain unloaded.
+#[derive(Clone)]
 pub struct WarpSourceInfo {
     /// Full-resolution raster metadata, including its georeferencing and shared nodata.
     pub raster: RasterDataset,
@@ -1564,11 +1565,26 @@ pub trait WarpSource {
     }
     /// Returns full-resolution metadata and the available overview dimensions.
     fn info(&mut self) -> Result<WarpSourceInfo>;
+    /// Whether a per-dataset mask is available. The default probes one pixel;
+    /// readers with mask metadata can override this without reading pixels.
+    fn has_mask(&mut self) -> Result<bool> {
+        Ok(self.read_mask(crate::Window::new(0, 0, 1, 1), None)?.is_some())
+    }
+    /// Optional per-dataset validity mask for a window (zero means invalid).
+    fn read_mask(&mut self, _window: crate::Window, _overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
     /// Reads valid raster data for this window and overview, with the requested bands.
     fn read_window(&mut self, window: crate::Window, options: &crate::WindowOptions) -> Result<RasterDataset>;
 }
 
 impl WarpSource for crate::LazyRaster {
+    fn has_mask(&mut self) -> Result<bool> {
+        Ok(crate::LazyRaster::has_mask(self))
+    }
+    fn read_mask(&mut self, window: crate::Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+        crate::LazyRaster::read_mask(self, window, overview)
+    }
     fn with_dataset(&self, visit: &mut dyn FnMut(&RasterDataset)) -> Result<bool> {
         if let Some(dataset) = self.dataset() {
             visit(dataset);
@@ -1594,7 +1610,7 @@ pub fn warp_lazy(src: &mut crate::LazyRaster, o: &WarpOptions) -> Result<RasterD
 }
 
 fn warp_reader(src: &mut dyn WarpSource, o: &WarpOptions) -> Result<RasterDataset> {
-    warp_reader_selected(src, o, None, None, false, None)
+    warp_reader_selected(src, o, None, None, false, None, false)
 }
 
 /// Serialized VRT working type: source conversion happens before validity and resampling.
@@ -1609,7 +1625,12 @@ pub(crate) fn warp_lazy_bands_working(
     if bands.is_empty() || bands.iter().any(|b| *b == 0 || *b > src.band_count()) {
         return Err(Error::InvalidArgument("invalid source band selection".into()));
     }
-    warp_reader_selected(src, o, Some(bands), working, unified_sink, source_overview)
+    warp_reader_selected(src, o, Some(bands), working, unified_sink, source_overview, false)
+}
+
+/// Windowed renderer used by tile generation when a source carries a dataset mask.
+pub(crate) fn warp_reader_masked(src: &mut dyn WarpSource, options: &WarpOptions) -> Result<RasterDataset> {
+    warp_reader_selected(src, options, None, None, false, None, true)
 }
 
 fn warp_reader_selected(
@@ -1619,6 +1640,7 @@ fn warp_reader_selected(
     working: Option<DataType>,
     unified_sink: bool,
     source_overview: Option<usize>,
+    dataset_mask: bool,
 ) -> Result<RasterDataset> {
     if o.cutline.is_some() {
         if selection.is_some() || working.is_some() {
@@ -1680,7 +1702,19 @@ fn warp_reader_selected(
             window.raster.data_type = dtype;
         }
         let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
-        let valid = validity(&src_bands, &nodata, unified, None);
+        let mask = if dataset_mask {
+            src.read_mask(crate::Window::new(c.sx, c.sy, c.sw, c.sh), read_options.overview)?
+                .map(|mask| {
+                    if mask.len() != c.sw * c.sh {
+                        return Err(Error::InvalidData("source mask dimensions do not match the window".into()));
+                    }
+                    Ok(mask.into_iter().map(|v| v != 0).collect())
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let valid = validity(&src_bands, &nodata, unified, mask);
         let sn = c.sw * c.sh;
         // The chunks partition the output: each finds it at its initial value.
         let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
@@ -3894,8 +3928,10 @@ mod tests {
         assert!(a.iter().zip(&b).all(|(x, y)| y == x || *y == 0.0));
     }
 
+    /// Reference: GDAL 3.13.
+    /// Checks the local transformed-square scales.
     #[test]
-    fn gdal313_scales_follow_local_geometry() {
+    fn square_scales_follow_local_geometry() {
         assert_eq!(square_scales([(0.0, 0.0), (2.0, 0.0), (0.0, 4.0), (2.0, 4.0)]), Some((0.5, 0.25)));
         let rotated = square_scales([(0.0, 0.0), (2.0, 2.0), (-2.0, 2.0), (0.0, 4.0)]).unwrap();
         assert!((rotated.0 - 1.0 / 8.0_f64.sqrt()).abs() < 1e-15);

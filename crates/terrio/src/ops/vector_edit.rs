@@ -920,8 +920,9 @@ fn replace_dataset(_layers: &[Layer], _path: &str, _write: &crate::VectorWriteOp
 
 #[cfg(test)]
 mod tests {
+    /// Reference: GDAL 3.13.
     #[test]
-    fn latin_y_diaeresis_matches_gdal_313() {
+    fn latin_y_diaeresis_matches_gdal() {
         assert_eq!(super::ascii_of('ÿ'), Some("u"));
     }
 

@@ -1070,6 +1070,30 @@ def suite_raster_query(ctx):
     return suite
 
 
+def suite_raster_tiles(ctx):
+    """Folder tile pixels, filenames, masks and grids on real imagery/elevation."""
+    suite = Suite("raster-tiles", "Separate-file raster tiles", "GDAL 3.13.3 raster tile / alpha warp",
+                  "Real Landsat and USGS derivatives; XYZ/TMS, raster/global grids, Byte PNG alpha/nodata/masks and typed GeoTIFF tiles. Exact nearest-neighbor samples, names, masks, types and TIFF georeferencing; independent GDAL alpha warps check masked UInt16/Float32 outputs, and two remote COG probes measure payload reads. Lower zooms resample directly from source. Generated-pyramid and no-alpha blank-tile differences are independently checked and reported; interpolating-kernel agreement is not asserted.")
+    if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None:
+        suite.skipped = "needs GDAL 3.13 commands/bindings and NumPy"
+        return suite
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_raster_tiles_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("Raster tiles", result["name"], {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_palette(ctx):
     """Indexed colors on real Landsat and OPERA imagery."""
     if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None:
@@ -2285,6 +2309,7 @@ SUITES = OrderedDict(
         ("raster-pixel", suite_raster_pixel),
         ("blend", suite_blend),
         ("palette", suite_palette),
+        ("raster-tiles", suite_raster_tiles),
         ("cog-validate", suite_cog_validate),
         ("identify", suite_identify),
         ("dataset-files", suite_dataset_files),

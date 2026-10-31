@@ -780,8 +780,9 @@ mod tests {
         assert!(o.set_mask);
     }
 
+    /// Reference: GDAL 3.13.
     #[test]
-    fn rgba_mask_processing_retains_alpha_only_in_place_like_gdal_313() {
+    fn rgba_mask_processing_retains_alpha_only_in_place_like_gdal() {
         let grid = Grid { width: 3, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
         let pixels = vec![0, 120, 0, 0, 120, 0, 0, 120, 0, 64, 64, 64];
         let mut ds = super::super::build_raster_data(grid, RasterData::U8(pixels), 4, None, &Default::default()).unwrap();
