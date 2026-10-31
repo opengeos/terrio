@@ -244,6 +244,6 @@ fn check_coverage(
 ) -> PyResult<PyLayer> {
     let input = one_layer(py, src, layer)?;
     let options = terrio::ops::coverage::CoverageCheckOptions { maximum_gap_width, include_valid };
-    let inner = py.detach(|| terrio::ops::coverage::check_coverage(&input, &options)).py()?;
+    let inner = py.detach_result(|| terrio::ops::coverage::check_coverage(&input, &options)).py()?;
     Ok(PyLayer { inner })
 }
