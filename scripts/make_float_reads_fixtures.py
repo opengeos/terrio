@@ -191,6 +191,7 @@ def write_files(gdal: Any) -> list[dict[str, Any]]:
     cases += [case("scaled.tif"), case("scaled.tif", unscale=True), case("scaled.tif", window=(2, 1, 3, 3), unscale=True)]
     # A netCDF variable of two bands (time), packed: Int16 with scale_factor, add_offset and
     # _FillValue (the nodata value).
+    (OUT / "packed.nc").unlink(missing_ok=True)
     ds = gdal.GetDriverByName("netCDF").CreateMultiDimensional(str(OUT / "packed.nc"))
     root = ds.GetRootGroup()
     dims = [root.CreateDimension(name, None, None, size) for name, size in [("time", 2), ("y", ROWS), ("x", COLS)]]
@@ -349,12 +350,12 @@ def main() -> None:
     if args.check_rasterio:
         expected = json.loads((OUT / "expected.json").read_text())
         sys.exit(1 if check_rasterio(expected) else 0)
+    if sys.version_info < (3, 13):
+        parser.error("fixture generation requires Python 3.13 or newer (math.fma)")
     from osgeo import gdal
 
     gdal.UseExceptions()
     OUT.mkdir(parents=True, exist_ok=True)
-    for f in OUT.iterdir():
-        f.unlink()
     cases = write_files(gdal)
     expected = [gdal_case(gdal, c) for c in cases]
     (OUT / "expected.json").write_text(json.dumps(expected, indent=1) + "\n")

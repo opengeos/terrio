@@ -273,7 +273,7 @@ impl RasterDataset {
             return Err(Error::InvalidArgument(format!("no overview {i}: the raster has 0 overview(s)")));
         }
         window.check(r.cols, r.rows)?;
-        let n = r.cols * r.rows;
+        let n = r.cols.checked_mul(r.rows).ok_or_else(|| Error::InvalidData("raster dimensions overflow the address space".into()))?;
         if r.bands.checked_mul(n) != Some(r.data.len()) {
             return Err(Error::InvalidData(format!(
                 "the raster holds {} values for {} band(s) of {} x {} pixels",
@@ -581,6 +581,25 @@ mod tests {
         let mut short = ds.clone();
         short.raster.bands = 3;
         assert!(matches!(short.read_window_f32(whole(&ds), &FloatReadOptions::default()), Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn invalid_public_dimensions_return_errors_instead_of_overflowing() {
+        let mut ds = row(RasterData::U8(vec![1]), None);
+        ds.raster.cols = usize::MAX;
+        ds.raster.rows = 2;
+        let window = Window::new(0, 0, 1, 1);
+        assert!(matches!(ds.read_window_f32(window, &FloatReadOptions::default()), Err(Error::InvalidData(_))));
+        let mut lazy = LazyRaster::from(ds);
+        assert!(matches!(lazy.read_window_f64(window, &FloatReadOptions::default()), Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn invalid_public_buffers_return_errors_instead_of_panicking() {
+        let mut ds = dataset(RasterData::U16(vec![1, 2, 3, 4]), 2, 2, 1, None);
+        ds.raster.data = RasterData::U16(vec![1]);
+        let mut lazy = LazyRaster::from(ds);
+        assert!(matches!(lazy.read_window_f32(Window::new(0, 0, 2, 2), &FloatReadOptions::default()), Err(Error::InvalidData(_))));
     }
 
     #[test]

@@ -1033,7 +1033,19 @@ impl LazyRaster {
                 let data = t.read(level, window, &bands)?;
                 (data, t.tags.nodata.unwrap_or(-9999.0), t.tags.nodata.is_some(), Some(t.tags.crs_info()))
             }
-            Inner::Memory(ds) => (cut(&ds.raster, window, &bands), ds.raster.nodata, ds.has_nodata, Some(ds.raster.crs.clone())),
+            Inner::Memory(ds) => {
+                let r = &ds.raster;
+                if r.cols.checked_mul(r.rows).and_then(|n| n.checked_mul(r.bands)) != Some(r.data.len()) {
+                    return Err(Error::InvalidData(format!(
+                        "the raster holds {} values for {} band(s) of {} x {} pixels",
+                        r.data.len(),
+                        r.bands,
+                        r.cols,
+                        r.rows
+                    )));
+                }
+                (cut(r, window, &bands), r.nodata, ds.has_nodata, Some(r.crs.clone()))
+            }
             Inner::Source(ds, s) => {
                 let data = s.read(options.overview.map_or(0, |i| i + 1), window, &bands)?;
                 (data, ds.raster.nodata, ds.has_nodata, Some(ds.raster.crs.clone()))
@@ -1690,6 +1702,12 @@ impl TiffRaster {
 
         // Missing (sparse) chunks read as nodata, or 0, as in GDAL.
         let mut out = try_new_filled(self.data_type, len, self.tags.nodata.unwrap_or(0.0))?;
+        for (output_band, band) in bands.iter().enumerate() {
+            if let Some((_, nodata)) = self.tags.band_nodata.iter().find(|(b, _)| b == band) {
+                let plane = w.width * w.height;
+                crate::pixel::with_data!(&mut out, values => values[output_band * plane..(output_band + 1) * plane].fill(*nodata as _));
+            }
+        }
         let spp = if planar { parts } else { self.samples * parts };
         // Chunks with data, and where they go.
         let mut wanted: Vec<u32> = Vec::new();
