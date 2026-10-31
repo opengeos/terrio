@@ -186,6 +186,8 @@ enum Command {
     RasterIndex(cmd::tile_index::RasterArgs),
     /// Generate separate XYZ/TMS raster tiles in a directory.
     Tile(cmd::raster_tile::Args),
+    /// Retile mosaics into overlapping files and direct-source pyramid levels.
+    Retile(cmd::raster_retile::Args),
     /// Create a raster footprint catalog with GTI virtual-raster metadata.
     GtiCreate(cmd::tile_index::RasterArgs),
     /// Create a vector envelope index of vector dataset layers.
@@ -372,6 +374,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Warp(a) => cmd::warp::run(a),
         Command::Catalog(a) => cmd::catalog::run(a),
         Command::Tile(a) => cmd::raster_tile::run(&a),
+        Command::Retile(a) => cmd::raster_retile::run(a),
         Command::RasterIndex(a) | Command::GtiCreate(a) => cmd::tile_index::raster(a),
         Command::VectorIndex(a) => cmd::tile_index::vector(a),
         Command::Mosaic(a) => cmd::mosaic::run(a),

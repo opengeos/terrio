@@ -56,6 +56,21 @@ pub struct Args {
     resume: bool,
     #[arg(long, default_value_t = 1_000_000)]
     max_tiles: u64,
+    /// Publication companions: none, all, leaflet, openlayers, mapml, stac. Repeat as needed.
+    #[arg(long = "webviewer", value_delimiter = ',')]
+    webviewer: Vec<String>,
+    /// URL of the published tile directory itself.
+    #[arg(long)]
+    url: Option<String>,
+    #[arg(long, default_value = "")]
+    title: String,
+    #[arg(long, default_value = "")]
+    copyright: String,
+    /// Read a MapML template containing GDAL-style ${TITLE}, ${URL}, etc.
+    #[arg(long)]
+    mapml_template: Option<std::path::PathBuf>,
+    #[arg(long)]
+    kml: bool,
     /// Report grid without reading pixels or creating output.
     #[arg(long)]
     dry_run: bool,
@@ -84,6 +99,14 @@ pub fn run(args: &Args) -> terrio::Result<()> {
         output_nodata: args.output_nodata,
         skip_blank: args.skip_blank,
         max_tiles: args.max_tiles,
+        publication: terrio::ops::raster_publication::PublicationOptions {
+            viewers: args.webviewer.clone(),
+            url: args.url.clone(),
+            title: args.title.clone(),
+            copyright: args.copyright.clone(),
+            mapml_template: args.mapml_template.as_ref().map(std::fs::read_to_string).transpose()?,
+            kml: args.kml,
+        },
     };
     let mut source = super::rasterout::open_lazy(&args.input)?;
     if args.dry_run {

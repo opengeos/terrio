@@ -100,7 +100,9 @@ commands. Command-group progress:
       Rust, CLI/MCP, Python and JavaScript, with bounded source windows and
       non-overwriting resume. Real Landsat/USGS comparisons are registered as
       `raster-tiles`; direct-source lower zooms differ from GDAL's generated-image
-      pyramid. Retile file layouts and publication helpers remain unimplemented.
+      pyramid. Retile layouts, recursive pyramids, CSV/vector indexes and
+      Leaflet/OpenLayers, MapML, STACTA and KML publication helpers are implemented
+      in the retile/publication feature branch, pending validation and merge.
 
 - [x] Vector clipping: points, lines, polygons and collections, with bbox,
       geometry, filtered vector/raster templates and region CRS transforms through

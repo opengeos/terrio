@@ -255,3 +255,27 @@ operation limits.
 Use `input_kind="raster"` or `input_kind="vector"` to force the input family;
 `"auto"` chooses detection. A `raster` or `vector` prefix in the command string
 also selects a family. An explicit `input_kind` overrides that prefix.
+
+## Retile and publish raster folders
+
+```python
+report = terrio.retile(
+    ["west.tif", "east.tif"], "retiled",
+    tile_size=[512, 512], overlap=16, levels=3,
+    resampling="bilinear", csv="tiles.csv", tile_index="tiles.gpkg",
+)
+```
+
+Inputs may be paths or open `Raster` objects, including lazy rasters. Later
+inputs overwrite earlier ones, including nodata. Retile requires matching CRS,
+band counts and north-up affine grids. `dry_run=True` returns the metadata plan;
+`resume=True` fills missing files. GTiff and COG, row directories, pyramid-only
+output, type conversion and writer options are supported. Pyramids read the
+previous emitted level with a bounded cache; source overviews are ignored.
+Existing resumed parents supply pixels for missing children.
+
+`terrio.raster_tiles(source, output, publication={"viewers": ["all"], "kml": True})`
+adds applicable Leaflet/OpenLayers pages, MapML, STACTA and KML companions.
+`publication.url` names the tile directory itself. Serve the directory over HTTP
+to use the viewers. See the [CLI reference](../docs/cli.md#retile) for supported
+options, memory limits, resume rules and measured GDAL differences.
