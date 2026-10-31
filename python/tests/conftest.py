@@ -41,8 +41,12 @@ BIT_EXACT_ON_LINUX = {
     "test_resampled_reads.py::test_resampled_reads_match_rasterio",
     "test_utm_parity.py::test_utm_transforms_are_gdal_s",
     "test_warp_parity.py::test_float32_kernels_match_rasterio_without_a_projection",
+    "test_warp_parity.py::test_multiband_nodata_values_avoid_the_output_nodata",
+    "test_warp_parity.py::test_multiband_without_init_dest_nodata_matches_rasterio",
     "test_warp_parity.py::test_working_type_matches_rasterio",
+    "test_warpedvrt_parity.py::test_band_subset_reads_match_rasterio",
     "test_warpedvrt_parity.py::test_float32_reads_match_rasterio",
+    "test_warpedvrt_parity.py::test_multiband_nodata_matches_rasterio",
     "test_warpedvrt_parity.py::test_nodata_widens_the_type_as_rasterio",
 }
 

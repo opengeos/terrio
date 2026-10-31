@@ -3168,7 +3168,7 @@ mod tests {
             assert_eq!(e, format!("Zarr: Invalid value for zarr_format: {shown}"), "{format}");
         }
         let v3 = |format: &str| {
-            let p = dir.path().join(format!("v3-{}.zarr", format.replace('"', "s")));
+            let p = dir.path().join(format!("v3-{}.zarr", format.replace(|c: char| !c.is_alphanumeric(), "_")));
             std::fs::create_dir_all(&p).unwrap();
             let zarr = format!(
                 r#"{{{format} "node_type": "array", "shape": [2, 2], "data_type": "uint8",
