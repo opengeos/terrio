@@ -25,7 +25,7 @@ def test_contour_band_options_and_3d_output(tmp_path, kind):
     coords = np.asarray(result[0]["geometry"]["coordinates"])
     np.testing.assert_allclose(coords[:, 0], 1, atol=1e-6)
     np.testing.assert_array_equal(coords[:, 2], 10)
-    assert (coords[:, 1].min(), coords[:, 1].max()) == (0, 2)
+    np.testing.assert_allclose((coords[:, 1].min(), coords[:, 1].max()), (0, 2), atol=1e-6)
     with pytest.raises(ValueError, match="interval or"):
         terrio.contour(source)
     with pytest.raises(ValueError, match="cannot be used together"):

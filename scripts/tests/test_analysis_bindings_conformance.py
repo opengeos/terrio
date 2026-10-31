@@ -86,3 +86,10 @@ def test_contour_comparison_accepts_matching_z_lines():
         case("contour", geometry, {"ELEV": 25}), output(geometry, {"ELEV": 25})
     )
     assert status == "tolerance" and "matching levels/counts/Z" in detail
+
+
+def test_dense_contour_length_error_does_not_get_a_vertex_count_allowance():
+    expected = LineString([(0, 0, 25), (1e-8, 0, 25)])
+    actual = LineString([(i * 1e-8 / 1000, (i % 2) * 1e-8, 25) for i in range(1001)])
+    with pytest.raises(AssertionError, match="position/length"):
+        compare(case("contour", expected, {"ELEV": 25}), output(actual, {"ELEV": 25}))

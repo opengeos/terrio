@@ -1,5 +1,6 @@
 //! Raster-to-vector analysis and topology adapters around the shared Rust engines.
 use crate::ops::{input_layers, input_raster, split_options};
+use crate::pixel::NodataValue;
 use crate::{Dataset, js_err, parse_options};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -14,7 +15,7 @@ struct ContourOptions {
     interval: Option<f64>,
     offset: f64,
     levels: Vec<f64>,
-    nodata: Option<f64>,
+    nodata: Option<NodataValue>,
     ignore_nodata: bool,
     with_z: bool,
     field_name: String,
@@ -28,7 +29,7 @@ impl Default for ContourOptions {
             interval: o.interval,
             offset: o.offset,
             levels: o.levels,
-            nodata: o.nodata,
+            nodata: o.nodata.map(NodataValue::Number),
             ignore_nodata: o.ignore_nodata,
             with_z: o.with_z,
             field_name: o.field_name,
@@ -40,13 +41,24 @@ impl Default for ContourOptions {
 /// The source raster and generated lines are held in memory.
 #[wasm_bindgen]
 pub fn contour(src: &JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    // JSON.stringify otherwise turns explicit NaN/Infinity overrides into None.
+    if options.is_object() {
+        for name in ["nodata", "interval"] {
+            let raw = js_sys::Reflect::get(&options, &JsValue::from_str(name)).map_err(|_| JsError::new("invalid contour option"))?;
+            if raw.is_null() || raw.as_f64().is_some_and(|value| !value.is_finite()) {
+                return Err(JsError::new(
+                    "interval/nodata cannot be null or a non-finite number; use strings 'nan', 'inf' or '-inf' for nodata",
+                ));
+            }
+        }
+    }
     let a: ContourOptions = parse_options(&options)?;
     let options = lines::ContourOptions {
         band: a.band,
         interval: a.interval,
         offset: a.offset,
         levels: a.levels,
-        nodata: a.nodata,
+        nodata: a.nodata.map(NodataValue::number).transpose()?,
         ignore_nodata: a.ignore_nodata,
         with_z: a.with_z,
         field_name: a.field_name,

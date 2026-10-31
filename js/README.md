@@ -283,10 +283,12 @@ const groups = terrio.dissolve(buffered, {fields: ["region"]});
 
 Results are vector `Dataset` objects. Raster inputs accept uploaded bytes or
 shared datasets; contour/footprint hold full input pixels in memory. Contour
-also supports `band`, `levels`, `offset`, `nodata`, `ignoreNodata` and `layerName`.
+also supports `band`, `levels`, `offset`, `nodata`, `ignoreNodata` and `layerName`. Nonfinite nodata overrides use strings `"nan"`,
+`"inf"` or `"-inf"`; raw nonfinite numbers and null are rejected.
 Footprint supports `intersection`, a same-grid `mask` dataset/upload and explicit
 text `attributes`; no source-path field is added automatically.
 
+Footprint attribute fields are sorted alphabetically.
 Footprint validity uses finite samples and the dataset nodata value. Alpha bands
 and external mask files are not interpreted implicitly; supply an explicit mask
 when those pixels should be excluded.

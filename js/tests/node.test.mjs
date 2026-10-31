@@ -3164,6 +3164,15 @@ test("contour exposes band selection, elevation fields and 3D vertices", () => {
   assert.deepEqual([Math.min(...line.geometry.coordinates.map(p=>p[1])),Math.max(...line.geometry.coordinates.map(p=>p[1]))],[0,2]);
   assert.throws(()=>terrio.contour(source,{}),/interval or/);
   assert.throws(()=>terrio.contour(source,{interval:10,nodata:-9999,ignoreNodata:true}),/cannot be used together/);
+  for (const nodata of [NaN,Infinity,-Infinity,null]) {
+    assert.throws(()=>terrio.contour(source,{levels:[10],nodata}),/non-finite number/);
+  }
+  for (const nodata of ["nan","inf","-inf"]) {
+    assert.equal(terrio.contour(source,{levels:[10],nodata}).toGeoJSON().features.length,1);
+    assert.throws(()=>terrio.contour(source,{levels:[10],nodata,ignoreNodata:true}),/cannot be used together/);
+  }
+  assert.throws(()=>terrio.contour(source,{levels:[10],interval:NaN}),/non-finite number/);
+
 });
 
 test("footprint exposes mask, band combination and explicit attributes", () => {

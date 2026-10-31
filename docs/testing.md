@@ -119,6 +119,15 @@ The [Conformance](conformance.md) page has the full, generated results; in short
 | Coordinate transformations | Every EPSG CRS's forward and inverse points within 1 cm, without and with grids; 99.7 % of CRS-to-CRS points within 1 m |
 | Datum shift grids, geoids, epochs | 250 of 250 cases (50,000 points) within 0.02 mm of GDAL with the same grids |
 
+The direct analysis bindings use the existing materialized raster engines. A cold-cache
+Python contour run at elevation 2500 on the real `usgs_dem.tif` served over local HTTP
+read 16,384 bytes while opening lazily and another 38,182,736 bytes during contour
+extraction (38,199,120 payload bytes total, two range GETs, one source file;
+51,486,544-byte file, 214 output contours). This measures the eager processing read;
+these wrappers do not provide windowed contour or footprint execution. Contour
+conformance bounds length per elevation by relative `1e-10` or the reported absolute
+distance tolerance, without an allowance proportional to vertex count.
+
 ## Running the tests
 
 ```sh

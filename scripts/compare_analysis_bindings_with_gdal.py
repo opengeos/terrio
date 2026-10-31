@@ -64,13 +64,13 @@ def compare(case, result):
                 sum(g.length for g in a[key]),
                 sum(g.length for g in b[key]),
                 rel_tol=1e-10,
-                abs_tol=case["tolerance"] * sum(len(g.coords) for g in a[key]),
+                abs_tol=case["tolerance"],
             ):
                 raise AssertionError("contour position/length differs beyond tolerance")
             maximum = max(maximum, distance)
         return (
             "tolerance",
-            f"{len(actual)} contours; matching levels/counts/Z; max Hausdorff distance {maximum}, limit {case['tolerance']} CRS units",
+            f"{len(actual)} contours; matching levels/counts/Z; max Hausdorff distance {maximum}, limit {case['tolerance']} CRS units; length per elevation relative limit 1e-10, absolute limit {case['tolerance']} CRS units",
         )
     if case["operation"] == "check_geometry":
         if len(actual) != len(expected):
