@@ -77,12 +77,13 @@ pub(crate) struct StripWriter {
     bands: usize,
     width: usize,
     nodata_pam: Option<Vec<Option<f64>>>,
+    source_mask: bool,
 }
 
 enum Inner {
     /// Strips compressed and written on another thread, while the next are computed.
     #[cfg(not(target_family = "wasm"))]
-    Thread { tx: std::sync::mpsc::SyncSender<(RasterData, usize)>, handle: Option<std::thread::JoinHandle<Result<()>>> },
+    Thread { tx: std::sync::mpsc::SyncSender<(RasterData, usize, Option<Vec<u8>>)>, handle: Option<std::thread::JoinHandle<Result<()>>> },
     #[cfg(target_family = "wasm")]
     Tiff(Tiff),
     /// The output gathered whole, written at the end.
@@ -92,11 +93,19 @@ enum Inner {
 impl StripWriter {
     /// Prepares to write a raster described by `header` (its data is not read) to `path`.
     pub fn create(header: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<Self> {
-        let inherited = options.inherited_from(header, options.driver.or_else(|| RasterDriver::for_extension(path)));
+        Self::create_masked(header, path, options, false)
+    }
+
+    /// A source mask is supplied with each strip instead of held in `options.mask`.
+    pub fn create_masked(header: &RasterDataset, path: &str, options: &RasterWriteOptions, source_mask: bool) -> Result<Self> {
+        let mut inherited = options.inherited_from(header, options.driver.or_else(|| RasterDriver::for_extension(path)));
+        if source_mask {
+            inherited.mask = Some(Vec::new());
+        }
         let options = &inherited;
         let r = &header.raster;
         let (rows, bands, width) = (r.rows, r.bands, r.cols);
-        if let Some(tiff) = Tiff::create(header, path, options)? {
+        if let Some(tiff) = Tiff::create(header, path, options, source_mask)? {
             let mut aux = std::ffi::OsString::from(path);
             aux.push(".aux.xml");
             let nodata_pam = (crate::dataset::needs_nodata_pam(header) || crate::memfs::exists(std::path::Path::new(&aux)))
@@ -105,10 +114,10 @@ impl StripWriter {
                 #[cfg(not(target_family = "wasm"))]
                 {
                     let mut w = tiff;
-                    let (tx, rx) = std::sync::mpsc::sync_channel::<(RasterData, usize)>(1);
+                    let (tx, rx) = std::sync::mpsc::sync_channel::<(RasterData, usize, Option<Vec<u8>>)>(1);
                     let handle = std::thread::spawn(move || {
-                        for (data, n) in rx {
-                            w.write_rows(data, n)?;
+                        for (data, n, mask) in rx {
+                            w.write_rows(data, n, mask)?;
                         }
                         w.finish()
                     });
@@ -117,7 +126,7 @@ impl StripWriter {
                 #[cfg(target_family = "wasm")]
                 Inner::Tiff(tiff)
             };
-            return Ok(Self { inner: Some(inner), path: path.to_string(), rows, bands, width, nodata_pam });
+            return Ok(Self { inner: Some(inner), path: path.to_string(), rows, bands, width, nodata_pam, source_mask });
         }
         let mut ds = header.clone();
         ds.raster.data = RasterData::new_filled(r.data_type, width * rows * bands, 0.0);
@@ -128,16 +137,24 @@ impl StripWriter {
             bands,
             width,
             nodata_pam: None,
+            source_mask,
         })
     }
 
     /// Writes the next `rows` rows of every band (`data`: band after band, of the output's type).
     pub fn write(&mut self, data: RasterData, rows: usize) -> Result<()> {
+        self.write_masked(data, rows, None)
+    }
+
+    pub fn write_masked(&mut self, data: RasterData, rows: usize, mask: Option<Vec<u8>>) -> Result<()> {
+        if self.source_mask != mask.is_some() || mask.as_ref().is_some_and(|m| m.len() != self.width * rows) {
+            return Err(Error::InvalidArgument("give one source mask value per pixel of the strip".into()));
+        }
         let Some(inner) = &mut self.inner else { return Err(Error::InvalidArgument("the raster is written".into())) };
         match inner {
             #[cfg(not(target_family = "wasm"))]
             Inner::Thread { tx, handle } => {
-                if tx.send((data, rows)).is_ok() {
+                if tx.send((data, rows, mask)).is_ok() {
                     return Ok(());
                 }
                 // The writer stopped on an error.
@@ -147,8 +164,8 @@ impl StripWriter {
                 }
             }
             #[cfg(target_family = "wasm")]
-            Inner::Tiff(w) => w.write_rows(data, rows),
-            Inner::Whole { ds, done, .. } => {
+            Inner::Tiff(w) => w.write_rows(data, rows, mask),
+            Inner::Whole { ds, done, options } => {
                 let (w, n) = (self.width, self.width * self.rows);
                 if *done + rows > self.rows || data.len() != w * rows * self.bands {
                     return Err(Error::InvalidArgument(format!("{rows} rows past the raster's {}", self.rows)));
@@ -166,6 +183,9 @@ impl StripWriter {
                     };
                 }
                 copy!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
+                if let Some(mask) = mask {
+                    options.mask.as_mut().expect("source mask initialized").extend(mask);
+                }
                 *done += rows;
                 Ok(())
             }
@@ -244,16 +264,20 @@ enum Tiff {
 
 impl Tiff {
     /// The writer of `path`, when it is a GeoTIFF or COG terrio's writer streams (without
-    /// overviews or a mask, in a compression it encodes); `None` for other outputs. Invalid
+    /// explicit overview factors, in a compression it encodes); `None` for other outputs. Invalid
     /// options fail here, before any work.
-    fn create(header: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<Option<Self>> {
+    fn create(header: &RasterDataset, path: &str, options: &RasterWriteOptions, source_mask: bool) -> Result<Option<Self>> {
         let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
         let cog = driver == Some(RasterDriver::Cog);
-        if !(cog || driver == Some(RasterDriver::GTiff)) || options.mask.is_some() || !options.overviews.is_empty() {
+        if !(cog || driver == Some(RasterDriver::GTiff)) || (options.mask.is_some() && !source_mask) || !options.overviews.is_empty() {
             return Ok(None);
         }
         // Compressions only wbraster encodes are written whole.
         let Some(mut opts) = TiffOptions::from_write_options(options, cog, crate::dataset::tiff_nodata(header))? else { return Ok(None) };
+        // Copying a source's overviews needs the whole raster, as `cog_rows` requires.
+        if cog && opts.source_overviews.is_some() {
+            return Ok(None);
+        }
         crate::dataset::ensure_writable_location(path)?;
         if !cog {
             return Ok(Some(Self::GeoTiff(GeoTiffWriter::create(path, header, options)?)));
@@ -266,10 +290,13 @@ impl Tiff {
         Ok(Some(Self::Cog(Box::new(CogWriter::create(path, &header.raster, &opts)?))))
     }
 
-    fn write_rows(&mut self, data: RasterData, rows: usize) -> Result<()> {
+    fn write_rows(&mut self, data: RasterData, rows: usize, mask: Option<Vec<u8>>) -> Result<()> {
         match self {
-            Self::GeoTiff(w) => w.write_rows(&data, rows, None),
-            Self::Cog(w) => w.write_rows(data, rows),
+            Self::GeoTiff(w) => w.write_rows(&data, rows, mask.as_deref()),
+            Self::Cog(w) => match mask {
+                Some(mask) => w.write_rows_masked(data, rows, Some(mask)),
+                None => w.write_rows(data, rows),
+            },
         }
     }
 
@@ -498,6 +525,19 @@ mod tests {
         drop(StripWriter::create(&source, path.to_str().unwrap(), &Default::default()).unwrap());
         assert!(!path.exists());
         assert!(!aux.exists());
+    }
+
+    /// A COG copying a source's overviews needs the whole raster, which copies them; the row
+    /// writer does not stream it, with or without a source mask.
+    #[test]
+    fn cog_copying_source_overviews_is_not_streamed() {
+        let options = RasterWriteOptions {
+            driver: Some(RasterDriver::Cog),
+            creation_options: vec![("@COPY_SRC_OVERVIEWS".into(), "source.tif".into())],
+            ..Default::default()
+        };
+        assert!(Tiff::create(&header(DataType::U8), "out.tif", &options, false).unwrap().is_none());
+        assert!(Tiff::create(&header(DataType::U8), "out.tif", &options, true).unwrap().is_none());
     }
 
     /// A raster of 300 x 200 Float32 values with nodata and metadata, in UTM.

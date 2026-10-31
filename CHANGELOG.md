@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Raster dataset masks
+
+- Preserve internal GeoTIFF and `.msk` validity masks in `convert`, including
+  extracted windows and overviews. Stream masks alongside GeoTIFF/COG pixels
+  and use them when generating COG overviews. Lazy warps, CLI output and Python
+  inputs now apply source masks, including multiple sources and cutlines (#431).
+- Masked inputs are refused, rather than written without their mask, by
+  `convert` to any output other than GeoTIFF and COG (PMTiles, MBTiles and GDAL
+  drivers included), by `convert --append` and by `convert --t-srs`. Write
+  GeoTIFF or COG to keep the validity, or use `warp` to apply it. The library,
+  Python and JavaScript writers refuse tile archives but keep the pixel, alpha
+  and nodata serialization of other non-GeoTIFF formats, which do not store the
+  mask.
+
 ### Docker image
 
 - Publish the `terrio` command-line tool as a Docker image for linux/amd64 and

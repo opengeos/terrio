@@ -225,6 +225,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     if let Some((mut r, options)) = streamed_raster(&a)? {
         return r.write(&a.output, &options);
     }
+    let mut output_mask = None;
     let ds = if a.srcwin.is_some() || a.overview.is_some() {
         let mut r = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
         let opts = WindowOptions { bands: Vec::new(), overview: a.overview };
@@ -240,9 +241,18 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 Window::full(w, h)
             }
         };
+        output_mask = r.read_mask(window, a.overview)?;
         Dataset::Raster(r.read_window(window, &opts)?)
     } else if a.layers.is_empty() && a.open_options.is_empty() && a.vector.spatial_hint(&a.input).is_none() {
-        super::quiet(|| terrio::open(&a.input))?
+        let ds = super::quiet(|| terrio::open(&a.input))?;
+        if let Dataset::Raster(r) = &ds {
+            // `open` returns pixels only: the validity comes from the lazy reader, when it has one.
+            let mut source = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
+            if source.has_mask() {
+                output_mask = source.read_mask(Window::full(r.raster.cols, r.raster.rows), None)?;
+            }
+        }
+        ds
     } else {
         let spatial_filter = a.vector.spatial_hint(&a.input);
         let mut options = VectorOpenOptions { layers: a.layers.clone(), spatial_filter, ..Default::default() };
@@ -265,6 +275,11 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
             if let Some(dst) = t_srs {
+                if output_mask.is_some() {
+                    return Err(terrio::Error::InvalidArgument(
+                        "reprojection does not preserve dataset masks; use `terrio warp`, which applies them".into(),
+                    ));
+                }
                 let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), transform_options: coordinate_options, ..Default::default() };
                 r = terrio::ops::warp::warp(&[&r], &o)?;
             }
@@ -273,6 +288,11 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
             creation_options.extend(a.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));
             creation_options.extend(a.maxzoom.map(|z| ("MAXZOOM".to_string(), z.to_string())));
             if append {
+                if output_mask.is_some() {
+                    return Err(terrio::Error::InvalidArgument(
+                        "tile archive writes do not preserve dataset masks; write GeoTIFF or COG".into(),
+                    ));
+                }
                 // Added to an existing archive of image tiles.
                 if !terrio::tiles::is_archive(&a.output) || !std::path::Path::new(&a.output).exists() {
                     return Err(terrio::Error::InvalidArgument(
@@ -300,6 +320,11 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                     _ => None,
                 };
                 if let Some(d) = gdal_driver {
+                    if output_mask.is_some() {
+                        return Err(terrio::Error::InvalidArgument(format!(
+                            "GDAL's {d} driver does not preserve dataset masks; write GeoTIFF or COG"
+                        )));
+                    }
                     return terrio::gdal_backend::write_raster(&r, &a.output, &d, &creation_options);
                 }
             }
@@ -308,12 +333,19 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 .as_deref()
                 .map(|f| RasterDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{f}'"))))
                 .transpose()?;
+            let output_driver = driver.or_else(|| RasterDriver::for_extension(&a.output));
+            if output_mask.is_some() && !matches!(output_driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
+                return Err(terrio::Error::InvalidArgument(
+                    "this output format does not preserve dataset masks; write GeoTIFF or COG".into(),
+                ));
+            }
             let opts = RasterWriteOptions {
                 driver,
                 compression: a.compress,
                 tile_size: a.tile_size,
                 bigtiff: a.bigtiff,
                 creation_options,
+                mask: output_mask,
                 ..Default::default()
             };
             terrio::write_raster_dataset(&r, &a.output, &opts)

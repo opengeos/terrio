@@ -1953,7 +1953,7 @@ impl GeoTiffWriter {
     /// computed as their rows come, the file the same, byte for byte, as `write_raster_dataset`'s.
     ///
     /// # Errors
-    /// For overviews, COGs with a mask or a source's overviews to copy, and compressions
+    /// For explicit overview factors, a source's overviews to copy, and compressions
     /// terrio's own writer does not encode (WEBP...), which need the whole raster; and when the
     /// file cannot be created.
     pub fn create(path: &str, header: &crate::RasterDataset, options: &crate::RasterWriteOptions) -> Result<Self> {
@@ -1982,8 +1982,11 @@ impl GeoTiffWriter {
     pub fn write_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
         match &mut self.inner {
             RowWriter::Tiff(t) => t.write_rows(data, rows, mask),
-            RowWriter::Cog(_) if mask.is_some() => Err(Error::InvalidArgument("the COG has no mask".into())),
-            RowWriter::Cog(c) => c.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).write_rows(data.clone(), rows),
+            RowWriter::Cog(c) => c.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).write_rows_masked(
+                data.clone(),
+                rows,
+                mask.map(<[u8]>::to_vec),
+            ),
         }
     }
 
@@ -1999,12 +2002,12 @@ impl GeoTiffWriter {
     }
 }
 
-/// The COG `create` writes in rows: as `crate::write_raster_dataset` writes it, without a mask,
-/// overviews, a source's overviews to copy, or a compression only the whole raster is encoded
+/// The COG `create` writes in rows: as `crate::write_raster_dataset` writes it, without explicit
+/// overview factors, a source's overviews to copy, or a compression only the whole raster is encoded
 /// with.
 fn cog_rows(path: &str, header: &crate::RasterDataset, options: &crate::RasterWriteOptions) -> Result<CogWriter> {
-    if options.mask.is_some() || !options.overviews.is_empty() {
-        return Err(Error::Unsupported("COGs with a mask or overview factors need the whole raster".into()));
+    if !options.overviews.is_empty() {
+        return Err(Error::Unsupported("COGs with explicit overview factors need the whole raster".into()));
     }
     let mut opts = TiffOptions::from_write_options(options, true, header.nodata())?.ok_or_else(|| {
         let name = options.compression.as_deref().unwrap_or_default();
@@ -2380,7 +2383,18 @@ struct CogLevel {
     sizes: Vec<Vec<u64>>,
     /// The structural tags, from the first row of tiles.
     tags: Vec<(u16, Value)>,
+    mask: Option<CogMask>,
 }
+
+/// Mask rows and compressed tiles follow the same bounded pipeline as the image.
+struct CogMask {
+    pending: Vec<u8>,
+    spool: ChunkSpool,
+    sizes: Vec<u64>,
+    tags: Vec<(u16, Value)>,
+}
+
+type CogImages = (Image, Option<Image>);
 
 /// An overview level of a [`CogWriter`] being computed from the level it is resampled from: the
 /// rows of that level its next blocks need (`buf_rows` rows from `buf_row0`, band after band),
@@ -2393,6 +2407,8 @@ struct CogBuild {
     buf_row0: usize,
     buf_rows: usize,
     next_y: usize,
+    mask: Vec<u8>,
+    mask_plan: gdal_overview::Plan,
 }
 
 /// A COG written a few rows at a time, from the top, so that the raster is never held whole. Each
@@ -2411,6 +2427,7 @@ pub(crate) struct CogWriter {
     nodata: Option<f64>,
     /// The alpha band, and whether it masks the other bands ([`alpha_weights`]).
     alpha: (Option<usize>, bool),
+    mask_without_dataset: bool,
     builds: Vec<CogBuild>,
     bigtiff: bool,
     /// The full-resolution image's georeferencing and metadata tags (nodata on every level).
@@ -2420,7 +2437,7 @@ pub(crate) struct CogWriter {
     /// Rows of tiles being compressed, in the order they were given: their level, number of
     /// rows, and the compressed image to come.
     #[cfg(not(target_family = "wasm"))]
-    in_flight: std::collections::VecDeque<(usize, usize, std::sync::mpsc::Receiver<Result<Image>>)>,
+    in_flight: std::collections::VecDeque<(usize, usize, std::sync::mpsc::Receiver<Result<CogImages>>)>,
 }
 
 /// The most rows of tiles a [`CogWriter`] compresses at once, so that the tiles of the next rows
@@ -2430,10 +2447,10 @@ const COG_IN_FLIGHT: usize = 3;
 
 impl CogWriter {
     /// Creates the file, for a raster described by `raster` (its pixels are not read). `opts` are
-    /// a COG's, without a mask.
+    /// a COG's. `opts.mask` enables a mask supplied with each row slab.
     pub(crate) fn create(path: &str, raster: &Raster, opts: &TiffOptions) -> Result<Self> {
-        if !opts.cog || opts.mask.is_some() {
-            return Err(Error::Unsupported("COGs are written in rows without a mask only".into()));
+        if !opts.cog {
+            return Err(Error::Unsupported("a COG row writer requires COG options".into()));
         }
         let Plan { tile, layout, geo, color_map } = plan(raster, opts)?;
         let tile = tile.map_or(512, |(t, _)| t as usize);
@@ -2447,7 +2464,8 @@ impl CogWriter {
                 let src = if sizes[level - 1].0 > sizes[level].0 { level - 1 } else { 0 };
                 let plan = gdal_overview::Plan::new(method, sizes[src], sizes[level], raster.bands, block, raster.data_type);
                 let buf = RasterData::new_filled(raster.data_type, 0, 0.0);
-                CogBuild { level, src, plan, buf, buf_row0: 0, buf_rows: 0, next_y: 0 }
+                let mask_plan = gdal_overview::Plan::new(method, sizes[src], sizes[level], 1, block, DataType::U8);
+                CogBuild { level, src, plan, buf, buf_row0: 0, buf_rows: 0, next_y: 0, mask: Vec::new(), mask_plan }
             })
             .collect();
         let levels = sizes
@@ -2462,6 +2480,11 @@ impl CogWriter {
                     spools: (0..planes).map(|_| chunk_spool()).collect::<Result<_>>()?,
                     sizes: vec![Vec::new(); planes],
                     tags: Vec::new(),
+                    mask: if opts.mask.is_some() {
+                        Some(CogMask { pending: Vec::new(), spool: chunk_spool()?, sizes: Vec::new(), tags: Vec::new() })
+                    } else {
+                        None
+                    },
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -2474,6 +2497,7 @@ impl CogWriter {
             tile,
             nodata: opts.nodata,
             alpha: alpha_weights(opts, raster.bands, raster.data_type),
+            mask_without_dataset: opts.mask_without_dataset,
             builds,
             bigtiff: opts.bigtiff,
             geo,
@@ -2495,10 +2519,17 @@ impl CogWriter {
     /// # Errors
     /// Rejects a sample-type or shape mismatch before consuming rows or changing overview state.
     pub(crate) fn write_rows(&mut self, data: RasterData, rows: usize) -> Result<()> {
+        self.write_rows_masked(data, rows, None)
+    }
+
+    pub(crate) fn write_rows_masked(&mut self, data: RasterData, rows: usize, mask: Option<Vec<u8>>) -> Result<()> {
         if data.data_type() != self.data_type {
             return Err(Error::InvalidArgument("the rows are not of the raster's data type".into()));
         }
         let l = &self.levels[0];
+        if l.mask.is_some() != mask.is_some() || mask.as_ref().is_some_and(|m| m.len() != l.cols * rows) {
+            return Err(Error::InvalidArgument("give one mask value per pixel when the COG has a mask".into()));
+        }
         if l.received + rows > l.rows {
             return Err(Error::InvalidArgument(format!("{} rows past the raster's {}", l.received + rows, l.rows)));
         }
@@ -2510,12 +2541,14 @@ impl CogWriter {
                 l.cols
             )));
         }
-        if rows > 0 { self.push(0, data, rows) } else { Ok(()) }
+        // As the whole writer reads a mask: any nonzero value is valid, weighted as 255.
+        let mask: Option<Vec<u8>> = mask.map(|m| m.into_iter().map(|v| if v != 0 { 255 } else { 0 }).collect());
+        if rows > 0 { self.push(0, data, rows, mask) } else { Ok(()) }
     }
 
     /// Adds `rows` rows to level `i`: resampled into the levels computed from it as soon as their
     /// next blocks' rows are in, and compressed by rows of tiles.
-    fn push(&mut self, i: usize, data: RasterData, rows: usize) -> Result<()> {
+    fn push(&mut self, i: usize, data: RasterData, rows: usize, mask: Option<Vec<u8>>) -> Result<()> {
         let bands = self.bands;
         let (cols, done) = {
             let l = &mut self.levels[i];
@@ -2529,6 +2562,9 @@ impl CogWriter {
             }
             let bd = &mut self.builds[b];
             bd.buf = if bd.buf_rows == 0 { data.clone() } else { append_rows(&bd.buf, bd.buf_rows, &data, rows, cols, bands)? };
+            if let Some(mask) = &mask {
+                bd.mask.extend_from_slice(mask);
+            }
             bd.buf_rows += rows;
             loop {
                 let bd = &self.builds[b];
@@ -2539,8 +2575,36 @@ impl CogWriter {
                 if need.end > received && !done {
                     break;
                 }
-                let weights = gdal_overview::Weights { alpha: self.alpha.0, alpha_masks: self.alpha.1, mask: None };
+                let weights = gdal_overview::Weights {
+                    alpha: self.alpha.0,
+                    alpha_masks: self.alpha.1,
+                    mask: mask.as_ref().map(|_| bd.mask.as_slice()),
+                };
                 let out = gdal_overview::block_row(&bd.plan, &bd.buf, bd.buf_row0, bd.buf_rows, bands, self.nodata, weights, bd.next_y);
+                let next_mask = mask.as_ref().map(|_| {
+                    let bd = &mut self.builds[b];
+                    let own = !self.mask_without_dataset || bd.src == 0;
+                    let all_valid = if own { Vec::new() } else { vec![255; bd.mask.len()] };
+                    // Lent to `block_row` as `RasterData`, then put back, rather than copied per block row.
+                    let buffered = RasterData::U8(std::mem::take(&mut bd.mask));
+                    let weights = gdal_overview::Weights {
+                        alpha: own.then_some(0),
+                        alpha_masks: false,
+                        mask: (!own).then_some(all_valid.as_slice()),
+                    };
+                    let RasterData::U8(mut values) =
+                        gdal_overview::block_row(&bd.mask_plan, &buffered, bd.buf_row0, bd.buf_rows, 1, None, weights, bd.next_y)
+                    else {
+                        unreachable!("a Byte mask")
+                    };
+                    if let RasterData::U8(buffered) = buffered {
+                        bd.mask = buffered;
+                    }
+                    if !self.mask_without_dataset {
+                        values.iter_mut().for_each(|v| *v = if *v != 0 { 255 } else { 0 });
+                    }
+                    values
+                });
                 let bd = &mut self.builds[b];
                 bd.next_y += n;
                 // The rows no later block reads.
@@ -2548,11 +2612,14 @@ impl CogWriter {
                 if keep > bd.buf_row0 {
                     let drop = keep - bd.buf_row0;
                     bd.buf = slice_rows(&bd.buf, bd.buf_rows, drop..bd.buf_rows, cols, bands);
+                    if mask.is_some() {
+                        bd.mask.drain(..drop * cols);
+                    }
                     bd.buf_rows -= drop;
                     bd.buf_row0 = keep;
                 }
                 let level = bd.level;
-                self.push(level, out, n)?;
+                self.push(level, out, n, next_mask)?;
             }
         }
         // Whole rows of tiles, and the level's last rows.
@@ -2563,6 +2630,9 @@ impl CogWriter {
             l.pending = append_rows(&l.pending, l.pending_rows, &data, rows, cols, bands)?;
         }
         l.pending_rows += rows;
+        if let (Some(pending), Some(mask)) = (&mut l.mask, mask) {
+            pending.pending.extend(mask);
+        }
         let total = l.pending_rows;
         let ready = if done { total } else { total / self.tile * self.tile };
         if ready > 0 {
@@ -2575,19 +2645,22 @@ impl CogWriter {
                 l.pending = rest;
             }
             l.pending_rows = total - ready;
-            self.compress(i, slab, ready)?;
+            let mask = l.mask.as_mut().map(|m| m.pending.drain(..ready * cols).collect());
+            self.compress(i, slab, ready, mask)?;
         }
         Ok(())
     }
 
     /// Compresses rows of tiles of level `i` (in parallel, on the thread pool, while the next rows
     /// are given), to be added to its spools in turn.
-    fn compress(&mut self, i: usize, data: RasterData, rows: usize) -> Result<()> {
+    fn compress(&mut self, i: usize, data: RasterData, rows: usize, mask: Option<Vec<u8>>) -> Result<()> {
         let level = Level { cols: self.levels[i].cols, rows, bands: self.bands, data: std::borrow::Cow::Owned(data) };
         let (data_type, encoding) = (self.data_type, self.encoding.clone());
-        let encode = move || {
+        let tile = self.tile;
+        let encode = move || -> Result<CogImages> {
             let (compression, codec, layout) = &*encoding;
-            level.image(data_type, *compression, codec, layout)
+            let mask = mask.map(|mask| mask_image(&mask, level.cols, rows, (tile, tile, true))).transpose()?;
+            Ok((level.image(data_type, *compression, codec, layout)?, mask))
         };
         #[cfg(target_family = "wasm")]
         return self.add(i, rows, encode()?);
@@ -2614,7 +2687,7 @@ impl CogWriter {
     }
 
     /// Adds compressed rows of tiles of level `i` to its spools.
-    fn add(&mut self, i: usize, rows: usize, img: Image) -> Result<()> {
+    fn add(&mut self, i: usize, rows: usize, (img, mask): CogImages) -> Result<()> {
         let l = &mut self.levels[i];
         let per_plane = l.cols.div_ceil(self.tile) * rows.div_ceil(self.tile);
         let mut framed = vec![Vec::new(); l.spools.len()];
@@ -2630,6 +2703,17 @@ impl CogWriter {
         }
         if l.tags.is_empty() {
             l.tags = img.tags;
+        }
+        if let (Some(out), Some(mask)) = (&mut l.mask, mask) {
+            for chunk in mask.chunks {
+                out.spool.write_all(&chunk_leader(&chunk))?;
+                out.spool.write_all(&chunk)?;
+                out.spool.write_all(&chunk_trailer(&chunk))?;
+                out.sizes.push(chunk.len() as u64);
+            }
+            if out.tags.is_empty() {
+                out.tags = mask.tags;
+            }
         }
         Ok(())
     }
@@ -2667,12 +2751,27 @@ impl CogWriter {
             }
             tags.sort_by_key(|(t, _)| *t);
             dirs.push(Directory { tags, sizes: l.sizes.concat(), tiled: true });
+            if let Some(mask) = &mut l.mask {
+                let mut tags = std::mem::take(&mut mask.tags);
+                for (tag, value) in &mut tags {
+                    match *tag {
+                        254 => *value = Value::Longs(vec![if i == 0 { 4 } else { 5 }]),
+                        257 => *value = Value::Longs(vec![l.rows as u32]),
+                        _ => {}
+                    }
+                }
+                dirs.push(Directory { tags, sizes: std::mem::take(&mut mask.sizes), tiled: true });
+            }
         }
         let data_len: u64 = dirs.iter().flat_map(|d| &d.sizes).map(|s| s + 8).sum();
         let big = self.bigtiff || data_len > (u32::MAX as u64) - (1 << 24);
         self.file.write_all(&directories(dirs, big, true))?;
         use std::io::{Seek, SeekFrom};
         for i in data_order(self.levels.len(), true) {
+            if let Some(mask) = &mut self.levels[i].mask {
+                mask.spool.seek(SeekFrom::Start(0))?;
+                std::io::copy(&mut mask.spool, &mut self.file)?;
+            }
             for spool in &mut self.levels[i].spools {
                 spool.seek(SeekFrom::Start(0))?;
                 std::io::copy(spool, &mut self.file)?;
@@ -3078,6 +3177,62 @@ mod tests {
         }
     }
 
+    /// GDAL 3.13.2 mask semantics: mask-weighted data overviews and a mask at every level.
+    /// Uneven slabs must produce the whole writer's bytes, including planar/alpha and MEM masks.
+    #[test]
+    fn masked_cogs_written_in_rows_are_those_written_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cols, rows, bands) = (131, 259, 2);
+        let data = RasterData::U8((0..cols * rows * bands).map(|i| (i * 7 % 251) as u8).collect());
+        let mask: Vec<u8> = (0..cols * rows).map(|i| if i % cols < 31 || i % 13 < 5 { 0 } else { 255 }).collect();
+        let raster = Raster::from_data_native(
+            wbraster::RasterConfig { cols, rows, bands, data_type: DataType::U8, ..Default::default() },
+            data.clone(),
+        )
+        .unwrap();
+        for method in [Method::Nearest, Method::Average, Method::Bilinear, Method::Cubic, Method::Mode] {
+            for mask_without_dataset in [false, true] {
+                for planar in [false, true] {
+                    let opts = TiffOptions {
+                        cog: true,
+                        tile_size: Some(16),
+                        cog_resampling: Some(method),
+                        mask: Some(mask.clone()),
+                        mask_without_dataset,
+                        planar,
+                        alpha: true,
+                        nodata: Some(0.0),
+                        ..Default::default()
+                    };
+                    let whole = encode(&raster, &opts).unwrap();
+                    for step in [1, 37, rows] {
+                        let path = dir.path().join("masked.tif");
+                        let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
+                        assert!(writer.write_rows_masked(slice_rows(&data, rows, 0..1, cols, bands), 1, None).is_err());
+                        assert!(writer.write_rows_masked(slice_rows(&data, rows, 0..1, cols, bands), 1, Some(vec![255])).is_err());
+                        assert_eq!(writer.rows_written(), 0);
+                        for y in (0..rows).step_by(step) {
+                            let end = (y + step).min(rows);
+                            writer
+                                .write_rows_masked(
+                                    slice_rows(&data, rows, y..end, cols, bands),
+                                    end - y,
+                                    Some(mask[y * cols..end * cols].to_vec()),
+                                )
+                                .unwrap();
+                        }
+                        writer.finish().unwrap();
+                        assert_eq!(
+                            std::fs::read(path).unwrap(),
+                            whole,
+                            "{method:?}, MEM {mask_without_dataset}, planar {planar}, step {step}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn layouts_raster(bands: usize, t: DataType) -> Raster {
         let cfg = wbraster::RasterConfig {
             cols: 70,
@@ -3444,6 +3599,45 @@ mod tests {
     // An odd-sized source large enough for factors 2, 4 and 8 with 16-pixel COG tiles.
     fn overview_fixture(bands: usize, data_type: DataType, data: RasterData) -> Raster {
         Raster::from_data_native(wbraster::RasterConfig { cols: 65, rows: 35, bands, data_type, ..Default::default() }, data).unwrap()
+    }
+
+    /// Streamed mask values are read as the whole writer reads them: any nonzero value is valid
+    /// and weighted as 255, so mixed 1 and 255 valid values give the whole writer's overviews.
+    #[test]
+    fn streamed_mask_values_are_normalized_as_the_whole_writer_normalizes_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cols, rows) = (131, 259);
+        let data = RasterData::U8((0..cols * rows).map(|i| (i * 7 % 251) as u8).collect());
+        let mask: Vec<u8> = (0..cols * rows)
+            .map(|i| {
+                if i % cols < 31 || i % 13 < 5 {
+                    0
+                } else if i % 3 == 0 {
+                    255
+                } else {
+                    1
+                }
+            })
+            .collect();
+        let normalized: Vec<u8> = mask.iter().map(|v| if *v != 0 { 255 } else { 0 }).collect();
+        let raster = Raster::from_data_native(
+            wbraster::RasterConfig { cols, rows, bands: 1, data_type: DataType::U8, ..Default::default() },
+            data.clone(),
+        )
+        .unwrap();
+        let opts = TiffOptions {
+            cog: true,
+            tile_size: Some(16),
+            cog_resampling: Some(Method::Cubic),
+            mask: Some(normalized.clone()),
+            ..Default::default()
+        };
+        let whole = encode(&raster, &opts).unwrap();
+        let path = dir.path().join("masked.tif");
+        let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
+        writer.write_rows_masked(slice_rows(&data, rows, 0..rows, cols, 1), rows, Some(mask)).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), whole);
     }
 
     /// A mask without a dataset (rasterio's buffered COG writes hold it in a MEM dataset) has its
