@@ -9,6 +9,8 @@ authors:
     email: giswqs@gmail.com
     affiliation: "University of Tennessee, Knoxville, USA"
     orcid: "https://orcid.org/0000-0001-5437-4073"
+  - given-names: Mavrick
+    family-names: Fitzgerald
 version: 0.6.0
 date-released: 2026-10-31
 doi: "10.5281/zenodo.23642204"
