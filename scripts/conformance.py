@@ -2337,6 +2337,14 @@ def suite_layer_algebra(ctx):
     if missing_modules("osgeo"):
         suite.skipped = "needs GDAL with GEOS"
         return suite
+    from osgeo import gdal, ogr
+    suite.reference = f"GDAL {gdal.VersionInfo('RELEASE_NAME')} / OGR layer algebra"
+    try:
+        if ogr.CreateGeometryFromWkt("POINT (0 0)").Buffer(1) is None:
+            raise RuntimeError("GEOS unavailable")
+    except Exception:
+        suite.skipped = "needs GDAL with GEOS"
+        return suite
     if not all(os.path.isfile(os.path.join(ctx.data, name)) for name in ["TN_Counties.geojson", "las_vegas_roads.geojson"]):
         suite.skipped = "needs real counties and roads (scripts/fetch_test_data.sh)"
         return suite

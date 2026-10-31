@@ -94,6 +94,7 @@ pub fn layer_algebra(a: &Layer, b: &Layer, operation: LayerAlgebraOperation, opt
                 // polygons into one even-odd mask would subtract their shared interior.
                 if f.geometry.as_ref().is_some_and(|g| matches!(g, Geometry::GeometryCollection(_))) && set.area.0.len() > 1 {
                     set.area = super::vector_clip::union_regions(std::slice::from_ref(&set.area))?;
+                    set.collection = false;
                 }
                 Ok(set)
             })
@@ -126,6 +127,8 @@ pub fn layer_algebra(a: &Layer, b: &Layer, operation: LayerAlgebraOperation, opt
     let attrs = |layer: &Layer, f: &Feature| {
         (0..layer.schema.len()).map(|i| f.attributes.get(i).cloned().unwrap_or(FieldValue::Null)).collect::<Vec<_>>()
     };
+    let input_types: Vec<_> = (0..a.schema.len()).map(|i| super::vector_schema::ogr_type(a, i)).collect();
+    let method_types: Vec<_> = (0..b.schema.len()).map(|i| super::vector_schema::ogr_type(b, i)).collect();
     let mut emit = |g: Set, ia: Option<usize>, ib: Option<usize>| -> Result<()> {
         let geometry = if operation == Op::Update && ia.is_none() {
             ib.and_then(|j| b.features[j].geometry.clone()).map(|g| super::vector_geom::set_dimensions(g, false, false))
@@ -139,11 +142,15 @@ pub fn layer_algebra(a: &Layer, b: &Layer, operation: LayerAlgebraOperation, opt
             out.schema
                 .fields()
                 .iter()
-                .map(|field| {
-                    b.schema
-                        .field_index(&field.name)
-                        .and_then(|j| b.features[ib.unwrap()].attributes.get(j))
-                        .cloned()
+                .enumerate()
+                .map(|(i, field)| {
+                    ib.and_then(|feature| b.schema.field_index(&field.name).map(|j| (feature, j)))
+                        .and_then(|(feature, j)| {
+                            b.features[feature]
+                                .attributes
+                                .get(j)
+                                .map(|value| super::vector_schema::convert_value(value, field, method_types[j], input_types[i]))
+                        })
                         .unwrap_or(FieldValue::Null)
                 })
                 .collect()
@@ -352,7 +359,12 @@ impl Set {
         }
         out.points.extend(self.points.iter().copied().filter(|p| !mask.covers(*p)));
         out.multi = self.multi && other.dimension() < 0;
-        out.collection = self.collection && other.dimension() < 0;
+        out.collection = self.collection
+            && (other.dimension() < 0
+                || (self.area.0.len() + self.lines.len() + self.points.len() == 1
+                    && out.area == self.area
+                    && out.lines == self.lines
+                    && out.points == self.points));
         Ok(out)
     }
     fn normalized(&self) -> Result<Self> {
@@ -550,6 +562,16 @@ mod tests {
         assert_eq!(out.features.iter().map(|f| f.fid).collect::<Vec<_>>(), vec![1, 2]);
     }
     #[test]
+    fn update_converts_method_values_to_the_input_schema() {
+        let a = layer("a", Geometry::Point(Coord::xy(0., 0.)), 1);
+        let mut b = layer("b", Geometry::Point(Coord::xy(2., 2.)), 2);
+        b.schema = Default::default();
+        b.schema.add_field(crate::FieldDef::new("id", crate::FieldType::Text));
+        b.features[0].attributes[0] = FieldValue::Text("42".into());
+        let out = layer_algebra(&a, &b, LayerAlgebraOperation::Update, &Default::default()).unwrap();
+        assert_eq!(out.features[1].attributes, vec![FieldValue::Integer(42)]);
+    }
+    #[test]
     fn empty_and_null_inputs_emit_nothing() {
         let mut a = layer("a", Geometry::MultiPoint(vec![]), 1);
         a.features.push(Feature { fid: 43, geometry: None, attributes: vec![] });
@@ -617,5 +639,27 @@ mod tests {
             let out = layer_algebra(&a, &b, op, &Default::default()).unwrap();
             assert!(matches!(out.features[0].geometry, Some(Geometry::GeometryCollection(_))));
         }
+        let b = layer(
+            "b",
+            Geometry::Polygon {
+                exterior: wbvector::Ring(vec![
+                    Coord::xy(0., 0.),
+                    Coord::xy(4., 0.),
+                    Coord::xy(4., 4.),
+                    Coord::xy(0., 4.),
+                    Coord::xy(0., 0.),
+                ]),
+                interiors: vec![wbvector::Ring(vec![
+                    Coord::xy(0.5, 0.5),
+                    Coord::xy(0.5, 1.5),
+                    Coord::xy(1.5, 1.5),
+                    Coord::xy(1.5, 0.5),
+                    Coord::xy(0.5, 0.5),
+                ])],
+            },
+            2,
+        );
+        let out = layer_algebra(&a, &b, LayerAlgebraOperation::Erase, &Default::default()).unwrap();
+        assert!(matches!(out.features[0].geometry, Some(Geometry::GeometryCollection(_))));
     }
 }
