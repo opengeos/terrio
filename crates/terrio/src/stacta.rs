@@ -30,8 +30,8 @@
 //!   them. terrio opens the first of them and lists them all, as it does for other files of
 //!   several rasters.
 //!
-//! terrio keeps one data type and nodata value per raster: bands of different `raster:bands`
-//! data types are read as `Float64`, and the first band's nodata value is the raster's. Tiles
+//! Mixed-type multiband buffers use `Float64`; windows selecting one sample type retain its declared
+//! sample type, and per-band nodata metadata is retained. Tiles
 //! are assembled through 64-bit floats, so `Int64` and `UInt64` values beyond 2^53 lose
 //! precision. A remote item does not name local files.
 //!
@@ -401,8 +401,9 @@ struct Level {
 struct Tiled {
     levels: Vec<Level>,
     data_type: DataType,
-    /// The value of pixels outside the tiles and of missing ones: the nodata value, else 0.
-    fill: f64,
+    band_types: Vec<DataType>,
+    /// The fill values band by band: each band's nodata value, else 0.
+    band_fills: Vec<f64>,
     skip_missing: bool,
     block: (usize, usize),
     /// Tiles opened (`None` for missing ones), by href, reused by later windows.
@@ -595,6 +596,8 @@ fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(St
         }
         let (url, r) = proto.ok_or_else(|| bad("Cannot find prototype dataset"))?;
         let found = (r.band_count(), r.data_type(), r.nodata());
+        types = (1..=r.band_count()).map(|b| r.band_data_type(b)).collect();
+        nodatas = (1..=r.band_count()).map(|b| r.band_nodata(b)).collect();
         proto_block = r.block_size();
         cache.insert(url, Some(r));
         found
@@ -602,7 +605,7 @@ fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(St
         let dt = if types.iter().all(|t| *t == types[0]) { types[0] } else { DataType::F64 };
         (types.len(), dt, nodatas[0])
     };
-    let fill = nodata.unwrap_or(0.0);
+    let band_fills = nodatas.iter().map(|v| v.unwrap_or(0.0)).collect();
 
     // The levels, from the most detailed (the last tile matrix): the first valid one is the
     // raster, the others its overviews, cut to its extent when theirs differs.
@@ -682,8 +685,9 @@ fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(St
         metadata,
         data: RasterData::new_filled(data_type, 0, 0.0),
     };
-    let header = RasterDataset::with_driver(raster, RasterDriver::STACTA, nodata.is_some());
-    let source = Tiled { levels, data_type, fill, skip_missing, block, tiles: Mutex::new(cache) };
+    let mut header = RasterDataset::with_driver(raster, RasterDriver::STACTA, nodata.is_some());
+    header.band_nodata = nodatas;
+    let source = Tiled { levels, data_type, band_types: types, band_fills, skip_missing, block, tiles: Mutex::new(cache) };
     Ok(Opened::Raster(Box::new(LazyRaster::from_source(header, Box::new(source)))))
 }
 
@@ -729,6 +733,10 @@ impl Tiled {
 }
 
 impl WindowSource for Tiled {
+    fn band_data_type(&self, band: usize) -> Option<DataType> {
+        self.band_types.get(band.checked_sub(1)?).copied()
+    }
+
     fn overviews(&self) -> Vec<(usize, usize)> {
         self.levels[1..].iter().map(|l| (l.width, l.height)).collect()
     }
@@ -742,14 +750,22 @@ impl WindowSource for Tiled {
         if !w.fits(l.width, l.height) {
             return Err(bad(format!("window outside the {}x{} level", l.width, l.height)));
         }
+        let data_type = bands
+            .first()
+            .and_then(|&b| self.band_data_type(b))
+            .filter(|data_type| bands.iter().all(|&b| self.band_data_type(b) == Some(*data_type)))
+            .unwrap_or(self.data_type);
         let n = w.width * w.height;
-        let mut out = vec![self.fill; n * bands.len()];
+        let mut out = vec![0.0; n * bands.len()];
+        for (i, band) in bands.iter().enumerate() {
+            out[i * n..(i + 1) * n].fill(self.band_fills[band - 1]);
+        }
         // The window in the tiles' pixels, and its part over them.
         let (ax0, ay0) = (l.off_x + w.x as i64, l.off_y + w.y as i64);
         let (ax1, ay1) = (ax0 + w.width as i64, ay0 + w.height as i64);
         let (cx0, cy0, cx1, cy1) = (ax0.max(0), ay0.max(0), ax1.min(l.raw_w as i64), ay1.min(l.raw_h as i64));
         if cx0 >= cx1 || cy0 >= cy1 {
-            return Ok(RasterData::from_f64_vec(self.data_type, out));
+            return Ok(RasterData::from_f64_vec(data_type, out));
         }
         let (tw, th) = (l.tile_w as i64, l.tile_h as i64);
         let mut tiles = Vec::new();
@@ -778,7 +794,7 @@ impl WindowSource for Tiled {
                 }
             }
         }
-        Ok(RasterData::from_f64_vec(self.data_type, out))
+        Ok(RasterData::from_f64_vec(data_type, out))
     }
 }
 
@@ -931,6 +947,52 @@ fn escape_jsonc(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixed_band_windows_keep_integer_nodata_comparisons_exact() {
+        let raster = crate::Raster::from_data_native(
+            crate::RasterConfig { cols: 2, rows: 1, bands: 2, data_type: DataType::F64, ..Default::default() },
+            RasterData::F64(vec![4_294_967_295.0, 4_294_967_294.0, 1.5, 2.0]),
+        )
+        .unwrap();
+        let tile = RasterDataset::new(raster, false);
+        let mut header = tile.clone();
+        header.band_nodata = vec![Some(4_294_967_295.0), Some(1.5)];
+        let source = Tiled {
+            levels: vec![Level {
+                template: "tile".into(),
+                tile_w: 2,
+                tile_h: 1,
+                min_col: 0,
+                min_row: 0,
+                raw_w: 2,
+                raw_h: 1,
+                off_x: 0,
+                off_y: 0,
+                width: 2,
+                height: 1,
+            }],
+            data_type: DataType::F64,
+            band_types: vec![DataType::U32, DataType::F32],
+            band_fills: vec![4_294_967_295.0, 1.5],
+            skip_missing: false,
+            block: (2, 1),
+            tiles: Mutex::new(HashMap::from([("tile".into(), Some(LazyRaster::from(tile)))])),
+        };
+        let mut source = LazyRaster::from_source(header, Box::new(source));
+        let selected = source.read_window(Window::full(2, 1), &WindowOptions { bands: vec![1], overview: None }).unwrap();
+        assert!(matches!(selected.raster.data, RasterData::U32(ref values) if values == &[u32::MAX, u32::MAX - 1]));
+        let values = source.read_window_f64(Window::full(2, 1), &Default::default()).unwrap();
+        assert!(values[0].is_nan());
+        assert_eq!(values[1], 4_294_967_294.0);
+        assert!(values[2].is_nan());
+        assert_eq!(values[3], 2.0);
+        let repeated =
+            source.read_window_f64(Window::full(2, 1), &crate::FloatReadOptions { bands: vec![1, 1], ..Default::default() }).unwrap();
+        assert!(repeated[0].is_nan() && repeated[2].is_nan());
+        assert_eq!(repeated[1], 4_294_967_294.0);
+        assert_eq!(repeated[3], 4_294_967_294.0);
+    }
 
     /// A remote `.json` that is not a STACTA item is identified from a bounded prefix, never
     /// fetched whole.
