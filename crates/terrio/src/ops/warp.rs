@@ -1419,7 +1419,7 @@ impl<'a> Plan<'a> {
         // the kernels GDAL picks for each chunk (see `Storage::sink`). Pixels are masked by nodata
         // values and cutlines (see `validity`).
         let masked = nodata.iter().any(Option::is_some) || o.cutline.is_some();
-        let unified_multiband = self.bands > 1 && o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_)));
+        let unified_multiband = self.bands > 1 && o.unified_src_nodata != Some(false);
         let storage = Storage {
             work_type: working_type(self.out_type, s.ds.raster.data_type, &nodata, &self.dst_nodata_all),
             out_type: self.out_type,
@@ -2309,7 +2309,9 @@ impl Storage {
             dst_nodata: self.dst_nodata.clone(),
             avoid_nodata: self.avoid_nodata.unwrap_or(dst_nodata.is_some() && !no_masks),
             avoid_all_nodata: self.avoid_all_nodata,
+            bands: self.bands,
             nudged: AtomicBool::new(false),
+            moved_all: AtomicBool::new(false),
         }
     }
 
@@ -2334,6 +2336,10 @@ struct Sink {
     avoid_all_nodata: bool,
     /// Whether a warped value was moved off a nodata value (see [`Sink::finish`]).
     nudged: AtomicBool,
+    /// The number of bands, whose values a multi-band warning names (see [`Sink::finish`]).
+    bands: usize,
+    /// Whether a pixel was moved off its bands' nodata values (see [`Sink::finish`]).
+    moved_all: AtomicBool,
 }
 
 /// One output row of a chunk: the chunk's part of the row in each band.
@@ -2380,6 +2386,9 @@ impl Sink {
     /// stored values of pixel `index` off their bands' nodata values when every band holds its own.
     fn avoid_all(&self, out: &mut [&mut [f64]], index: usize) {
         if self.avoid_all_nodata && out.iter().enumerate().all(|(b, v)| self.nodata(b).is_some_and(|nd| v[index] == nd)) {
+            if !self.moved_all.load(Ordering::Relaxed) {
+                self.moved_all.store(true, Ordering::Relaxed);
+            }
             for band in out {
                 band[index] = off_nodata(band[index], self.out_type);
             }
@@ -2393,7 +2402,13 @@ impl Sink {
         if self.nudged.swap(false, Ordering::Relaxed)
             && let Some(nd) = self.dst_nodata.iter().flatten().next().copied()
         {
-            nodata_warning(nd, off_nodata(nd, self.work_type));
+            nodata_warning(&printf_g(nd), &printf_g(off_nodata(nd, self.work_type)));
+        }
+        // `GWKAvoidNoDataMultiBand()` names every band's value, comma-separated.
+        if self.moved_all.swap(false, Ordering::Relaxed) {
+            let values: Vec<f64> = (0..self.bands).filter_map(|b| self.nodata(b)).collect();
+            let join = |f: &dyn Fn(f64) -> f64| values.iter().map(|v| printf_g(f(*v))).collect::<Vec<_>>().join(",");
+            nodata_warning(&join(&|v| v), &join(&|v| off_nodata(v, self.work_type)));
         }
     }
 }
@@ -2458,15 +2473,14 @@ pub fn take_nodata_warnings() -> Vec<String> {
 }
 
 /// Records GDAL's warning for a kernel run that moved values equal to `nodata` to `moved`.
-fn nodata_warning(nodata: f64, moved: f64) {
+fn nodata_warning(nodata: &str, moved: &str) {
     if !NODATA_WARNINGS_ON.load(Ordering::Relaxed) {
         return;
     }
     let message = format!(
         "Value {} in the source dataset has been changed to {} in the destination dataset to avoid being treated as NoData. To avoid \
          this, select a different NoData value for the destination dataset.",
-        printf_g(nodata),
-        printf_g(moved)
+        nodata, moved
     );
     let mut recorded = nodata_warnings();
     if recorded.len() < NODATA_WARNINGS_MAX {
@@ -4615,7 +4629,7 @@ mod tests {
             }
             let exit = crate::par::in_child(10, move || {
                 record_nodata_warnings(true);
-                nodata_warning(77.0, 76.0);
+                nodata_warning("77", "76");
                 released.load(Ordering::Acquire) && take_nodata_warnings().iter().any(|w| w.starts_with("Value 77 "))
             });
             holder.join().is_ok() && exit == Some(0)

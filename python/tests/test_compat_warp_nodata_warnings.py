@@ -12,7 +12,6 @@ interpreter with terrio standing in for rasterio and, when rasterio is installed
 
 import importlib.util
 import json
-import re
 import subprocess
 import sys
 import textwrap
@@ -22,12 +21,6 @@ import pytest
 
 import terrio.rio as trio
 from terrio.rio.transform import from_origin
-
-# The GDAL of the installed rasterio, whose warps run in another interpreter below.
-try:
-    from rasterio import __gdal_version__ as _RASTERIO_GDAL
-except ImportError:
-    _RASTERIO_GDAL = ""
 
 _SCRIPT = textwrap.dedent(
     """
@@ -171,24 +164,21 @@ def test_compat_logs_values_moved_off_the_nodata_as_gdal_warnings(tiled):
     record = ["rasterio._err", "WARNING", _WARNING.format(255, 254)]
     assert steps["nearest"] == [record]
     assert steps["bilinear, twice"] == [record, record]
-    assert steps["two bands"] == [record]
+    # Several bands: GDAL 3.12.2 moves a pixel only where every band is at the output nodata, and
+    # names every band's value.
+    assert steps["two bands"] == [
+        ["rasterio._err", "WARNING", _WARNING.format("255,255", "254,254")]
+    ]
     # The destination's values without a nodata value: GDAL's kernel without masks moves nothing.
     assert steps["no init, no nodata value"] == []
     assert steps["no init, a nodata value"] == [record]
     assert steps["no init, lanczos"] == [record]
-    assert steps["float64"] == [["rasterio._err", "WARNING", _WARNING.format(9999, 9999)]]
+    # Band 2 is valid wherever band 1 holds the nodata value: nothing is moved.
+    assert steps["float64"] == []
     assert len(steps["WarpedVRT blocks"]) > 1
 
 
 @pytest.mark.skipif(importlib.util.find_spec("rasterio") is None, reason="needs rasterio")
-# terrio moves (and warns about) each band's values on their own, as GDAL 3.12.1 does.
-@pytest.mark.xfail(
-    tuple(int(n) for n in re.findall(r"\d+", _RASTERIO_GDAL)[:3]) >= (3, 12, 2),
-    reason="GDAL 3.12.2 moves a pixel of several bands, and warns, only where every band is at "
-    "the output nodata, and its warning gives every band's value",
-    raises=AssertionError,
-    strict=True,
-)
 def test_compat_nodata_warnings_match_rasterios(tiled):
     """The same records as rasterio's (GDAL 3.12), step by step."""
     terrio_steps = _run("terrio", tiled)["steps"]

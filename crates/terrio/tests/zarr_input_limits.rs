@@ -600,6 +600,17 @@ fn window_errors(path: &str, width: usize, height: usize) -> [String; 2] {
     [lazy.map(|ds| ds.raster.cols), terrio::open_raster(path).map(|ds| ds.raster.cols)].map(|r| r.unwrap_err().to_string())
 }
 
+/// The error of a window of `size` pixels taking `bytes`: refused against the usable memory where
+/// it is known, else by the allocation that fails.
+#[cfg(not(feature = "gdal"))]
+fn window_refusal(size: &str, bytes: u64) -> String {
+    if terrio::usable_memory().is_some() {
+        format!("Zarr: a window of {size} pixels in 1 band(s) is too large: {bytes} bytes")
+    } else {
+        format!("cannot allocate {bytes} bytes for a Zarr region")
+    }
+}
+
 /// A shape of 2^52 columns declared by 4 KB of metadata: its window of 2^59 bytes is an error before
 /// anything is allocated, as GeoTIFF's windows past the memory are, rather than an allocation that
 /// ends the process ("memory allocation of 576460752303423488 bytes failed").
@@ -609,8 +620,9 @@ fn window_errors(path: &str, width: usize, height: usize) -> [String; 2] {
 fn a_window_of_a_huge_declared_shape_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let path = declaring(dir.path(), "wide", &[64, 1 << 52], &[32, 32]);
+    let expected = window_refusal("4503599627370496x64", 1 << 59);
     for e in window_errors(&path, 1 << 52, 64) {
-        assert!(e.contains("Zarr: a window of 4503599627370496x64 pixels in 1 band(s) is too large: 576460752303423488 bytes"), "{e}");
+        assert!(e.contains(&expected), "{e}");
     }
 }
 
@@ -621,8 +633,9 @@ fn a_window_of_a_huge_declared_shape_is_an_error() {
 fn a_window_past_what_a_buffer_holds_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let path = declaring(dir.path(), "wider", &[64, 1 << 56], &[32, 32]);
+    let expected = window_refusal("72057594037927936x64", 1 << 63);
     for e in window_errors(&path, 1 << 56, 64) {
-        assert!(e.contains("Zarr: a window of 72057594037927936x64 pixels in 1 band(s) is too large: 9223372036854775808 bytes"), "{e}");
+        assert!(e.contains(&expected), "{e}");
     }
 }
 
