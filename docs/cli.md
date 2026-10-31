@@ -2955,6 +2955,33 @@ Layer model does not store source required/optional dimensional declarations, so
 this option cannot reproduce those hints for empty layers or explicitly required
 Z/M declarations. This is a metadata limitation even when coordinates match.
 
+Coverage simplification follows GDAL 3.13.3 / GEOS 3.14.1 and JTS when
+reassembling shared edges: exterior/hole vertex direction can change with input
+feature order. Ring direction is not preserved; polygon roles and topology are
+preserved. For example, reversing the two-feature shared-zigzag fixture yields
+signed exterior areas +8 and -8 in both Terrio and GDAL.
+
+For `simplifyCoverage`, JavaScript `layer` selects a single output layer and is
+mutually exclusive with `activeLayer`, which copies inactive layers.
+Interior shared-span vertices take Z from the representative edge encountered
+first. Shared endpoints use the preceding output span's Z; the first ring
+vertex uses the following span's Z. Neighbors can therefore retain different
+endpoint heights. Per-feature heights on shared spans are not independently
+preserved.
+
+With `preserve_declared_geometry_type` (JavaScript
+`preserveDeclaredGeometryType`), GeoPackage writers reject non-null features
+incompatible with a concrete declared type. Unknown declarations accept every
+geometry; GeometryCollection declarations also accept multipart subtypes.
+
+Mixed 2D/3D features use optional Z by default in every pure-Rust GeoPackage
+whole-layer, memory and streaming writer, independently of the preserve option;
+append/update also promote the declaration when needed. Null geometries do not
+force Z or M to optional. A typed-empty geometry encoded with an XY WKB type
+still counts as 2D for this registration, unlike SQL NULL.
+
+
+
 ## Separate-file raster tiles
 
 `terrio tile INPUT OUTPUT_DIR` writes separate `z/x/y.png` tiles. The default
@@ -3065,33 +3092,6 @@ decimation factor, with a minimum of one pixel, matching GDAL 3.13.3. When a
 dimension is at least that factor, trailing native rows/columns that do not fill
 a decimated pixel are outside that lower zoom. Maximum zoom covers the full
 source. Output edge tiles may include padding.
-
-Coverage simplification follows GDAL 3.13.3 / GEOS 3.14.1 and JTS when
-reassembling shared edges: exterior/hole vertex direction can change with input
-feature order. Ring direction is not preserved; polygon roles and topology are
-preserved. For example, reversing the two-feature shared-zigzag fixture yields
-signed exterior areas +8 and -8 in both Terrio and GDAL.
-
-For `simplifyCoverage`, JavaScript `layer` selects a single output layer and is
-mutually exclusive with `activeLayer`, which copies inactive layers. Shared-span
-Interior shared-span vertices take Z from the representative edge encountered
-first. Shared endpoints use the preceding output span's Z; the first ring
-vertex uses the following span's Z. Neighbors can therefore retain different
-endpoint heights. Per-feature heights on shared spans are not independently
-preserved.
-
-With `preserve_declared_geometry_type` (JavaScript
-`preserveDeclaredGeometryType`), GeoPackage writers reject non-null features
-incompatible with a concrete declared type. Unknown declarations accept every
-geometry; GeometryCollection declarations also accept multipart subtypes.
-
-Mixed 2D/3D features use optional Z by default in every pure-Rust GeoPackage
-whole-layer, memory and streaming writer, independently of the preserve option;
-append/update also promote the declaration when needed. Null geometries do not
-force Z or M to optional. A typed-empty geometry encoded with an XY WKB type
-still counts as 2D for this registration, unlike SQL NULL. The Layer model does
-not retain independent source Z/M declaration hints for empty geometries.
-
 
 ## Pipelines
 
