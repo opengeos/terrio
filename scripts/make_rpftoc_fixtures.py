@@ -38,7 +38,16 @@ def install_frame_inventory(root, generated, pattern):
             target = root / path.relative_to(generated)
             if not target.exists():
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(path, target)
+                temporary = None
+                try:
+                    with tempfile.NamedTemporaryFile(dir=target.parent, prefix=f".{target.name}.", suffix=".partial", delete=False) as output:
+                        temporary = Path(output.name)
+                        with path.open("rb") as source:
+                            shutil.copyfileobj(source, output)
+                    temporary.replace(target)
+                finally:
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
     if {path.relative_to(root) for path in root.rglob(pattern)} != expected:
         raise RuntimeError(f"incomplete RPF fixture inventory in {root}")
 
