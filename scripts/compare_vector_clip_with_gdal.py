@@ -134,9 +134,9 @@ def compare(reference, actual):
             max_distance = max(max_distance, distance)
             delta = a.SymmetricDifference(b)
             if dimension == 2:
-                error = delta.Area() / max(1, a.Area())
+                error = delta.Area() / a.Area()
             elif dimension == 1:
-                error = abs(a.Length()-b.Length()) / max(1, a.Length())
+                error = abs(a.Length()-b.Length()) / a.Length()
             else:
                 raise AssertionError(f'{key}: point coordinates differ')
             if error > 1e-9:
@@ -275,7 +275,7 @@ def main():
                 except Exception as error:
                     results.append(dict(name=f'{name} {kind}', status='differs', detail=str(error)))
         # Expose the discontinuity of exact point inclusion at a transformed edge.
-        # The independent CRS command verifies the actual arithmetic behind this
+        # The Terrio CRS command reports the arithmetic behind this
         # documented few-ULP difference; it must not hide arbitrary missing points.
         boundary = root / 'boundary.geojson'
         boundary.write_text(json.dumps({'type': 'FeatureCollection', 'features': [
@@ -293,7 +293,7 @@ def main():
                     and 0 < 2-latitude < 1e-14 and ra[1][0] == rb[1][0] and ra[1][1][0].Equals(rb[1][1][0])):
                 raise AssertionError('transformed-boundary behavior changed; re-audit this known difference')
             results.append(dict(name='transformed point boundary', status='within tolerance',
-                                detail=f'GDAL includes latitude 2; Terrio clips at {latitude!r}. The interior point, schema/CRS/type and coordinates match; the {2-latitude:.3g}-degree edge discrepancy is independently verified.'))
+                                detail=f'GDAL includes latitude 2; Terrio clips at {latitude!r}. The interior point, schema/CRS/type and coordinates match; the {2-latitude:.3g}-degree edge discrepancy is reported by Terrio; GDAL inclusion is checked externally.'))
         except Exception as error:
             results.append(dict(name='transformed point boundary', status='differs', detail=str(error)))
         try:

@@ -1630,8 +1630,8 @@ WKT/GeoJSON, templates, filters, uploaded raster bytes and invalid options.
 
 One separately checked transformed-point boundary case records a known arithmetic
 difference: GDAL includes latitude 2 at a projected upper edge while Terrio's
-inverse Web Mercator produces 1.9999999999999996. The independent `terrio crs`
-result, unchanged interior point and exact source IDs/metadata are checked;
+inverse Web Mercator produces 1.9999999999999996. The GDAL inclusion is checked externally, and `terrio crs` reports the arithmetic.
+The unchanged interior point and exact source IDs/metadata are checked;
 arbitrary missing points cannot use this exception.
 
 Dense-template performance can be checked with

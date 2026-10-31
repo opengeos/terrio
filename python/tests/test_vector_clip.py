@@ -92,7 +92,7 @@ def test_raster_template_and_lazy_path(tmp_path):
 def test_region_reprojection_preserves_input_coordinates():
     # Transform arithmetic can move the exact upper boundary by a few ULPs.
     # Test coordinate preservation with an interior point; the boundary ambiguity
-    # has its own independently checked GDAL conformance case.
+    # has its own GDAL conformance case.
     src = source()
     src["features"][1]["geometry"]["coordinates"] = [0, 1.5, 7]
     expected = rows(terrio.clip_vector(src, bbox=[0, 0, 2, 2]))
@@ -136,3 +136,16 @@ def test_geopackage_raster_template(tmp_path, gdal):
     api.Translate(str(path), dataset, format="GPKG").Close()
     expected = rows(terrio.clip_vector(source(), bbox=[0, 0, 2, 2]))
     assert rows(terrio.clip_vector(source(), like=path)) == expected
+
+
+def test_existing_brace_prefixed_paths_are_not_inline_geojson(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    src = "{source}.geojson"
+    mask = "{mask}.geojson"
+    (tmp_path / src).write_text(json.dumps(source()))
+    (tmp_path / mask).write_text(
+        json.dumps({"type": "Polygon", "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]]})
+    )
+    assert rows(terrio.clip_vector(src, like=mask)) == rows(
+        terrio.clip_vector(source(), bbox=[0, 0, 2, 2])
+    )

@@ -10,6 +10,7 @@ use geo::algorithm::line_intersection::{LineIntersection, line_intersection};
 use geo::{Area, BooleanOps, BoundingRect, CoordsIter, Intersects};
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{AABB, RTree};
+use std::collections::HashSet;
 use wbvector::{Coord, Ring};
 
 use super::topology::{from_polygons, polygons, require_valid, union};
@@ -174,6 +175,8 @@ impl ClipRegion {
 /// Unspecified/collection layers retain boundary-only line/point intersections.
 /// Output feature IDs are sequential from 1, including after multipart splitting.
 /// Invalid geometries and explicit known/unknown CRS mismatches are errors.
+/// Region vertices are reprojected without densification; edges are straight in
+/// the input CRS after transformation, matching GDAL vector clipping.
 pub fn clip(layer: &Layer, region: &ClipRegion) -> Result<Layer> {
     require_valid(&region.geometry, 0)?;
     let target = SpatialRef::from_layer(layer);
@@ -220,6 +223,7 @@ struct Mask {
     bounds: Option<geo::Rect<f64>>,
     edges: Vec<geo::Line<f64>>,
     index: RTree<GeomWithData<Rectangle<[f64; 2]>, usize>>,
+    vertices: RTree<[f64; 2]>,
 }
 
 fn envelope(line: geo::Line<f64>) -> AABB<[f64; 2]> {
@@ -258,7 +262,8 @@ impl Mask {
         let index =
             RTree::bulk_load(edges.iter().enumerate().map(|(i, l)| GeomWithData::new(Rectangle::from_aabb(envelope(*l)), i)).collect());
         let bounds = area.bounding_rect();
-        Self { area, bounds, edges, index }
+        let vertices = RTree::bulk_load(area.coords_iter().map(|c| [c.x, c.y]).collect());
+        Self { area, bounds, edges, index, vertices }
     }
     fn covers(&self, p: geo::Coord<f64>) -> bool {
         let Some(bounds) = self.bounds else {
@@ -334,11 +339,22 @@ impl Mask {
                 contacts.extend(cuts.into_iter().map(|(_, c)| c).filter(|c| self.covers(xy(c))));
             }
         }
-        for c in contacts {
-            if !lines.iter().flat_map(|l| l.windows(2)).any(|p| geo::Line::new(xy(&p[0]), xy(&p[1])).intersects(&point(&c)))
-                && !out.iter().any(|g| matches!(g, Geometry::Point(p) if same(p,&c)))
-            {
-                out.push(Geometry::Point(c));
+        if !contacts.is_empty() {
+            let segments: Vec<_> = lines.iter().flat_map(|l| l.windows(2)).map(|p| geo::Line::new(xy(&p[0]), xy(&p[1]))).collect();
+            let segment_index = RTree::bulk_load(
+                segments.iter().enumerate().map(|(i, l)| GeomWithData::new(Rectangle::from_aabb(envelope(*l)), i)).collect(),
+            );
+            let point_key = |c: &Coord| [if c.x == 0.0 { 0 } else { c.x.to_bits() }, if c.y == 0.0 { 0 } else { c.y.to_bits() }];
+            let mut points: HashSet<_> =
+                out.iter().filter_map(|g| if let Geometry::Point(c) = g { Some(point_key(c)) } else { None }).collect();
+            for c in contacts {
+                if !segment_index
+                    .locate_in_envelope_intersecting(AABB::from_point([c.x, c.y]))
+                    .any(|entry| segments[entry.data].intersects(&point(&c)))
+                    && points.insert(point_key(&c))
+                {
+                    out.push(Geometry::Point(c));
+                }
             }
         }
         out.extend(lines.into_iter().map(Geometry::LineString));
@@ -388,7 +404,14 @@ impl Mask {
         // Every vertex of a linear polygon intersection belongs to this set.
         let source_index = Mask::new(shape.clone());
         let mut exact: Vec<[f64; 2]> = shape.coords_iter().filter(|c| self.covers(*c)).map(|c| [c.x, c.y]).collect();
-        exact.extend(self.area.coords_iter().filter(|c| source_index.covers(*c)).map(|c| [c.x, c.y]));
+        if let Some(bounds) = source_index.bounds {
+            exact.extend(
+                self.vertices
+                    .locate_in_envelope_intersecting(AABB::from_corners([bounds.min().x, bounds.min().y], [bounds.max().x, bounds.max().y]))
+                    .filter(|c| source_index.covers(geo::coord! {x:c[0],y:c[1]}))
+                    .copied(),
+            );
+        }
         for ring in shape.iter().flat_map(|p| std::iter::once(p.exterior()).chain(p.interiors())) {
             for line in ring.lines() {
                 for edge in self.edges_at(line) {
@@ -665,6 +688,16 @@ mod tests {
                 assert_eq!(mask.covers(p), mask.area.intersects(&geo::Point(p)), "{p:?}");
             }
         }
+    }
+
+    #[test]
+    fn dense_contained_untyped_lines_do_not_emit_spurious_contacts() {
+        let mut input = layer("LINESTRING (0 1,2 1)", None);
+        let coords: Vec<_> = (0..=10000).map(|i| Coord::xy(i as f64 / 5000., 1.)).collect();
+        input.features[0].geometry = Some(Geometry::LineString(coords.clone()));
+        let out = clip(&input, &bbox()).unwrap();
+        assert_eq!(out.features.len(), 1);
+        assert_eq!(out.features[0].geometry, Some(Geometry::LineString(coords)));
     }
 
     #[test]

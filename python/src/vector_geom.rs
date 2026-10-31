@@ -318,7 +318,7 @@ fn clip_vector(
 
 fn clip_inline_geojson(value: &Bound<'_, PyAny>) -> Option<PyResult<Vec<Layer>>> {
     let text = value.extract::<String>().ok()?;
-    if !text.trim_start().starts_with('{') {
+    if !text.trim_start().starts_with('{') || std::path::Path::new(&text).is_file() {
         return None;
     }
     Some(terrio::memory::open_vector_bytes(text.into_bytes(), "input.geojson", &Default::default()).map(|v| v.layers).py())

@@ -2211,8 +2211,8 @@ def suite_vector_clip(ctx):
                   "Exact schema/attributes/CRS/types and source IDs, per-dimension coverage. "
                   "Area symmetric difference <= 1e-9, relative line length <= 1e-9; "
                   "coordinate-scaled Hausdorff distance <= 1e-9. Boundary transform ambiguity is explicit.")
-    if missing_modules("osgeo", "shapely") or not shutil.which("gdal"):
-        suite.skipped = "needs GDAL 3.13 with GEOS and shapely"
+    if missing_modules("osgeo", "shapely") or not shutil.which("gdal") or run(["gdal", "vector", "clip", "--help"])[0] != 0:
+        suite.skipped = "needs GDAL 3.13 with the vector clip command, GEOS and shapely"
         return suite
     needed = ("TN_Counties.geojson", "las_vegas_roads.geojson", "ne_places/ne_10m_populated_places_simple.shp", "usgs_dem.tif")
     if any(not os.path.isfile(os.path.join(ctx.data, name)) for name in needed):

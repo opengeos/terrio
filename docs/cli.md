@@ -2775,7 +2775,9 @@ terrio vector-clip parcels.gpkg clipped.gpkg --like zones.gpkg --like-where 'kee
 Supply exactly one of `--bbox`, `--geometry` or `--like`. Bbox and WKT coordinates
 use each input layer's CRS unless `--bbox-crs` or `--geometry-crs` is supplied;
 GeoJSON defaults to WGS84 or its embedded CRS. Only the clipping region is
-reprojected; input coordinates and CRS are retained. `--layer` selects input
+reprojected; input coordinates and CRS are retained. Region vertices are transformed
+without densification, so edges are straight in the input CRS after reprojection,
+as in GDAL vector clipping. `--layer` selects input
 layers. A vector template's polygons are unioned, with `--like-layer`,
 `--like-where` or `--like-sql` selecting/filtering its features. SQL uses Terrio's
 existing documented vector SELECT subset. Raster templates use rectangular
@@ -2791,11 +2793,15 @@ polygon topology is XY. Invalid geometries are refused; repair them first with
 `make-valid`. Exact inclusion at a transformed boundary can differ from GDAL by
 a few floating-point units: for example inverse Web Mercator can put latitude
 2 just outside an upper edge of 1.9999999999999996. Reprojection does not snap
-input points to the transformed boundary.
+input points to the transformed boundary. If a polygon result cannot be
+reconstructed as valid geometry at floating precision, clipping returns an error
+rather than silently dropping features or accepting the coarser integer-grid result.
 
 Outputs use the usual vector format inference, `--format`, `--output-layer`,
 `--append` and `--overwrite` options. Existing outputs are refused unless an
-explicit write mode is selected. GDAL-specific creation/open options, upsert and
+explicit write mode is selected. This is a preflight existence check; the shared
+vector writers do not guarantee exclusive publication against a concurrent writer.
+GDAL-specific creation/open options, upsert and
 skip-errors are not separate options of this command.
 
 Rust uses `ops::vector_clip::{clip, ClipRegion, ClipTemplateOptions}`. Python
