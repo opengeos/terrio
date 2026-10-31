@@ -330,6 +330,7 @@ def main():
         ("snap partial edge", [rectangle(0, 0, 2, 4), rectangle(2.001, 1, 4, 3)]),
         ("zero snap", [rectangle(0, 0, 2, 4), rectangle(2, 1, 4, 3)]),
         ("collapse", [rectangle(0, 0, 1, 1)]),
+        ("thin snapping sliver", [rectangle(0, 0, 0.25, 10), rectangle(0.7, 0, 5, 10)]),
         (
             "triangle hole",
             [
@@ -435,6 +436,8 @@ def main():
                         options += ["--snapping-distance", "0.01"]
                     elif name == "zero snap":
                         options += ["--snapping-distance", "0"]
+                    elif name == "thin snapping sliver":
+                        options += ["--snapping-distance", "1"]
                     elif name == "collapse":
                         options += ["--snapping-distance", "2"]
                     try:

@@ -1769,3 +1769,23 @@ cargo test -p terrio-cli --test raster_tiles
 pytest python/tests/test_raster_tiles.py
 node --test --test-name-pattern='rasterTiles' js/tests/node.test.mjs
 ```
+
+
+### Coverage-cleaning runtime observation
+
+Three warm local command runs with GDAL 3.13.3-derived inputs measured median
+wall time, including reading and writing GeoPackages. The 95 Tennessee counties
+were projected to EPSG:5070 (176,128-byte input); applying a 10-metre buffer to
+each produced interacting overlaps (831,488-byte input). `clean-coverage` used
+default snapping and no gap filling. The four strategies measured:
+
+| Input | longest-border | max-area | min-area | min-index |
+|---|---:|---:|---:|---:|
+| 95 counties | 0.025 s | 0.025 s | 0.026 s | 0.025 s |
+| 95 buffered counties | 0.380 s | 0.328 s | 0.331 s | 0.331 s |
+
+These are observations from one local machine with warm files, not portable
+performance thresholds or cold/remote I/O measurements. The conformance suite
+also includes a 0.25-unit sliver next to a wider polygon with snapping distance
+1: all four strategies are compared against GDAL, checking original-input face
+classification after the sliver collapses.

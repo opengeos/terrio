@@ -3078,7 +3078,13 @@ vertices are retained and intersection elevations are interpolated. Active-layer
 M values are dropped. Output attributes and CRS survive, with sequential IDs;
 removed/covered features retain empty Polygon geometry. Geographic coordinates
 use degrees: reproject before supplying distances in metres. This operation can
-alter boundaries and a merged narrow gap can introduce a spike.
+alter boundaries and a merged narrow gap can introduce a spike. Ownership is
+classified against the original input polygons after snapping, matching JTS.
+General gap widths use a bounded inscribed-circle search with tolerance
+0.0001 times the requested radius. If the iteration bound is exhausted without
+finding a larger radius, the gap is classified within the width. Near-threshold
+or pathological gaps can therefore be approximate. Triangles and convex
+quadrilaterals use the exact radius shortcut.
 
 Rust exposes `ops::coverage_clean::{clean_coverage, clean_coverage_layers,
 CoverageCleanOptions, CoverageMergeStrategy}`. Python
@@ -3087,6 +3093,10 @@ maximum_gap_width=0, layer=None)` returns a Layer; `active_layer="name"` returns
 a VectorDataset and is mutually exclusive with `layer`. JavaScript
 `cleanCoverage(src, {snappingDistance, mergeStrategy, maximumGapWidth,
 layer, activeLayer})` returns a Dataset. The CLI also supplies the MCP tool.
+Without `layer` or `activeLayer`, CLI and JavaScript process every input layer,
+following their dataset return/output contracts. Python's default returns one
+Layer and requires `layer=` when its source has multiple layers. `active_layer=`
+(or `activeLayer`) cleans the named layer and copies the others on both bindings.
 
 Coverage cleaning can have multiple ordering-dependent results for interacting
 overlaps. GDAL 3.13.3 / GEOS 3.14.1 itself changes longest-border ownership when
