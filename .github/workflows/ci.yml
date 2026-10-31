@@ -249,6 +249,7 @@ jobs:
           cargo check -p terrio-crs --all-features --target wasm32-unknown-unknown
       - name: The standalone CRS crate has no C dependency
         run: |
+          set -o pipefail
           for target in x86_64-unknown-linux-gnu wasm32-unknown-unknown; do
             crates=$(cargo tree -p terrio-crs -e normal,build --target "$target" --prefix none | cut -d' ' -f1 | sort -u)
             # Pure-Rust crates whose names end in -sys are not C dependencies.
@@ -274,6 +275,7 @@ jobs:
           AR: "false"
         # The build is the check; the names only fail faster, and with a clearer message.
         run: |
+          set -o pipefail
           found=$(cargo tree -p terrio-cli -e normal,build --prefix none | cut -d' ' -f1 | sort -u | grep -E '^(ring|aws-lc-sys|openssl-sys|zstd-sys|cmake|bindgen)$' || true)
           if [ -n "$found" ]; then echo "C dependencies: $found"; exit 1; fi
           cargo build -p terrio-cli
