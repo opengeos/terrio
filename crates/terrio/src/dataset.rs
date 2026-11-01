@@ -399,7 +399,8 @@ pub fn open_raster(path: &str) -> Result<RasterDataset> {
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
         return crate::gdal_backend::open_raster(rest);
     }
-    let result = open_raster_native(path);
+    // A missing file, or a directory, is named in the error.
+    let result = open_raster_native(path).map_err(|e| e.naming_local_file(path));
     #[cfg(feature = "gdal")]
     let result = gdal_fallback(path, result, crate::gdal_backend::open_raster);
     result
@@ -1572,6 +1573,46 @@ mod tests {
             crate::Dataset::Vector(v) => assert_eq!(v.layers[0].features.len(), 1),
             crate::Dataset::Raster(_) => panic!("a raster"),
         }
+    }
+
+    /// `open_raster` (eager or lazy) and `validate_cog` (with either reader) name a local file
+    /// that is missing, or a directory, in their errors, once: the operating system's messages
+    /// name no file. A missing file stays an I/O error of kind `NotFound` (`NotFoundError` in
+    /// Python), and a directory an I/O error of `validate_cog`, which reads it as a file. A VRT
+    /// whose source is missing is not named: the error is the source's.
+    #[test]
+    fn local_open_errors_name_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("directory.tif")).unwrap();
+        let gdal = crate::CogValidationOptions { profile: crate::CogValidationProfile::Gdal, ..Default::default() };
+        // A lazy open of a missing `.tif` falls back to the eager open, which names it; a missing
+        // `.vrt` is opened by the VRT reader.
+        for name in ["missing.tif", "missing.vrt", "directory.tif"] {
+            let path = dir.path().join(name);
+            let path = path.to_str().unwrap();
+            let errors = [
+                ("open_raster", crate::open_raster(path).err()),
+                ("open_raster_lazy", crate::open_raster_lazy(path).err()),
+                ("validate_cog", crate::validate_cog(path, false).err()),
+                ("validate_cog, GDAL profile", crate::validate_cog_with_options(path, &gdal).err()),
+            ];
+            for (entry, error) in errors {
+                let error = error.unwrap_or_else(|| panic!("{entry}('{path}') succeeded"));
+                assert_eq!(error.to_string().matches(path).count(), 1, "{entry}: {error}");
+                if name.starts_with("missing") {
+                    assert!(matches!(&error, crate::Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound), "{entry}: {error:?}");
+                } else if entry.starts_with("validate_cog") {
+                    assert!(matches!(error, crate::Error::Io(_)), "{entry}: {error:?}");
+                }
+            }
+        }
+        let vrt = dir.path().join("source.vrt");
+        let source = r#"<SourceFilename relativeToVRT="1">absent.tif</SourceFilename><SourceBand>1</SourceBand>
+            <SrcRect xOff="0" yOff="0" xSize="4" ySize="4"/><DstRect xOff="0" yOff="0" xSize="4" ySize="4"/>"#;
+        let band = format!(r#"<VRTRasterBand dataType="Byte" band="1"><SimpleSource>{source}</SimpleSource></VRTRasterBand>"#);
+        std::fs::write(&vrt, format!(r#"<VRTDataset rasterXSize="4" rasterYSize="4">{band}</VRTDataset>"#)).unwrap();
+        let error = crate::open_raster(vrt.to_str().unwrap()).err().unwrap().to_string();
+        assert!(error.contains("absent.tif") && !error.contains("source.vrt"), "{error}");
     }
 }
 

@@ -514,7 +514,9 @@ pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> 
             validate_reader(&mut crate::http::RangeReader::open(&remote)?, path, None, options, false)
         }
         Location::Local(p) => {
-            let mut file = std::fs::File::open(p)?;
+            // A missing file, or a directory, is named in the error.
+            let named = |e: Error| e.naming_local_file(path);
+            let mut file = std::fs::File::open(p).map_err(|e| named(e.into()))?;
             let mut ovr = p.clone().into_os_string();
             ovr.push(".ovr");
             let ovr = std::path::Path::new(&ovr);
@@ -532,9 +534,9 @@ pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> 
             // A BufReader refills after each absolute seek and reads payload bytes
             // that validation does not need. Read the local file directly here.
             if options.profile == CogValidationProfile::Gdal && options.full_check.unwrap_or(true) {
-                validate_reader(&mut file, path, sidecar, options, true)
+                validate_reader(&mut file, path, sidecar, options, true).map_err(named)
             } else {
-                validate_reader(&mut std::io::BufReader::new(file), path, sidecar, options, true)
+                validate_reader(&mut std::io::BufReader::new(file), path, sidecar, options, true).map_err(named)
             }
         }
         _ => {

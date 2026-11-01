@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- `terrio.rio.MemoryFile` given PNG, JPEG or WebP bytes without a filename or
+  `ext` names its file for their format, so they open (#451). Other bytes are
+  named `.tif`, as before.
+- `open_raster` (eager or lazy) and `validate_cog` name a missing local file, or
+  a directory, in their errors, as in `'dem.tif': No such file or directory (os
+  error 2)` (#451). The error's kind and its Python class are unchanged.
+- A first range request answered 206 with an unknown total length
+  (`Content-Range: bytes 0-16383/*`) fails with its own message, distinct from
+  that of a 206 without `Content-Range` (#451).
+
 ## 0.6.0 (2026-10-31)
 
 ### Standalone CRS crate

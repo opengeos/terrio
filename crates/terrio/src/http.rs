@@ -394,6 +394,8 @@ struct Fetched {
     status: u16,
     /// The file's length, from `Content-Range` (or the body's length when the status is 200).
     total_len: Option<u64>,
+    /// The `Content-Range` header, for the error of a 206 response that gives no file length.
+    content_range: Option<String>,
     data: Vec<u8>,
 }
 
@@ -781,7 +783,8 @@ impl Client {
             let response = self.send_range(range.clone())?;
             let status = response.status().as_u16();
             let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
-            let content_range = header("content-range").as_deref().and_then(content_range_total);
+            let content_range_header = header("content-range");
+            let content_range = content_range_header.as_deref().and_then(content_range_total);
             let declared = header("content-length").and_then(|v| v.trim().parse::<u64>().ok());
             let limit = match explicit_range(range.as_deref()) {
                 Some((_, len)) if status == 206 => Some(len),
@@ -840,7 +843,7 @@ impl Client {
                 eprintln!("terrio:   received {} bytes", data.len());
             }
             let total_len = if status == 200 { Some(data.len() as u64) } else { content_range };
-            return Ok(Fetched { status, total_len, data });
+            return Ok(Fetched { status, total_len, content_range: content_range_header, data });
         }
     }
 
@@ -1113,7 +1116,6 @@ fn redact(url: &str) -> std::borrow::Cow<'_, str> {
     crate::vsi::listing::redact_url(url)
 }
 
-/// The total length in a `Content-Range` header (`bytes 0-99/1234` or `bytes */1234`).
 /// The first byte and the length of a `bytes=first-last` range.
 fn explicit_range(range: Option<&str>) -> Option<(u64, u64)> {
     let (a, b) = range?.strip_prefix("bytes=")?.split_once('-')?;
@@ -1121,8 +1123,19 @@ fn explicit_range(range: Option<&str>) -> Option<(u64, u64)> {
     (b >= a).then(|| (a, b - a + 1))
 }
 
+/// The total length in a `Content-Range` header (`bytes 0-99/1234` or `bytes */1234`).
 fn content_range_total(v: &str) -> Option<u64> {
     v.rsplit_once('/')?.1.trim().parse().ok()
+}
+
+/// Why a 206 response gives no file length, for its error: its `Content-Range` gives `*` (a
+/// length the server does not know) or none that can be read, or it has no `Content-Range`.
+fn no_total_length(content_range: Option<&str>) -> &'static str {
+    match content_range.map(|v| v.rsplit_once('/').map(|(_, total)| total.trim())) {
+        None => "no Content-Range in a 206 response",
+        Some(Some("*")) => "Content-Range gives no total length (`*`)",
+        Some(_) => "Content-Range gives no readable total length",
+    }
 }
 
 /// Downloads a remote file to a local path: see [`download_checked`], with no check.
@@ -1666,9 +1679,9 @@ impl RangeReader {
             let first = shared.client.fetch(Some((0, first_len - 1)))?;
             match first.status {
                 206 => {
-                    shared.len = first
-                        .total_len
-                        .ok_or_else(|| Error::Http(format!("{}: no Content-Range in a 206 response", redact(&shared.client.url))))?;
+                    shared.len = first.total_len.ok_or_else(|| {
+                        Error::Http(format!("{}: {}", redact(&shared.client.url), no_total_length(first.content_range.as_deref())))
+                    })?;
                     if first.data.len() as u64 >= shared.len.min(block_size) {
                         shared.store(0, first.data);
                     } else {
@@ -2128,6 +2141,11 @@ mod tests {
         Forbidden,
         /// Range requests are answered 206 with the range in `Content-Range`, but the whole file.
         Oversized,
+        /// Range requests are answered 206 with the range, its `Content-Range` giving `*` as the
+        /// total length (`bytes 0-4095/*`).
+        UnknownLength,
+        /// Range requests are answered 206 with the range, without `Content-Range`.
+        NoContentRange,
         /// The first request is answered with its range; every later one with the whole file (200).
         FirstRangeOnly,
     }
@@ -2183,6 +2201,12 @@ mod tests {
                     (Mode::Oversized, Some((a, b))) => {
                         let extra = format!("Content-Range: bytes {a}-{b}/{}\r\n", data.len());
                         [head("206 Partial Content", &extra, data.len()).into_bytes(), data.clone()].concat()
+                    }
+                    (Mode::UnknownLength | Mode::NoContentRange, Some((a, b))) => {
+                        let b = b.min(data.len() - 1);
+                        let extra =
+                            if matches!(mode, Mode::UnknownLength) { format!("Content-Range: bytes {a}-{b}/*\r\n") } else { String::new() };
+                        [head("206 Partial Content", &extra, b - a + 1).into_bytes(), data[a..=b].to_vec()].concat()
                     }
                     (_, Some((a, b))) => {
                         let b = b.min(data.len() - 1);
@@ -2419,6 +2443,25 @@ mod tests {
         assert!(err.contains("larger than the range asked"), "{err}");
     }
 
+    /// A 206 whose `Content-Range` gives `*` as the total length (RFC 9110 §14.4: the server does
+    /// not know it) is refused for that reason, its URL redacted, not as a 206 without
+    /// `Content-Range`.
+    #[test]
+    fn a_partial_response_of_unknown_total_length_is_refused_for_that_reason() {
+        let (url, _) = serve(test_data(), Mode::UnknownLength);
+        let err = RangeReader::open_with(&Remote::Url(format!("{url}?sig=secret")), options()).err().unwrap().to_string();
+        assert_eq!(err, format!("HTTP: {url}?<redacted>: Content-Range gives no total length (`*`)"));
+    }
+
+    /// A 206 without `Content-Range` is refused for that reason, not as one whose total length is
+    /// `*`.
+    #[test]
+    fn a_partial_response_without_content_range_is_refused_for_that_reason() {
+        let (url, _) = serve(test_data(), Mode::NoContentRange);
+        let err = RangeReader::open_with(&Remote::Url(url.clone()), options()).err().unwrap().to_string();
+        assert_eq!(err, format!("HTTP: {url}: no Content-Range in a 206 response"));
+    }
+
     #[test]
     fn error_responses_count_as_requests_with_their_bodies() {
         // As GDAL's network statistics count them: each response is a request, with its body.
@@ -2538,6 +2581,7 @@ mod tests {
     fn parses_headers() {
         assert_eq!(content_range_total("bytes 0-99/1234"), Some(1234));
         assert_eq!(content_range_total("bytes */1234"), Some(1234));
+        assert_eq!(no_total_length(Some("bytes 0-99/many")), "Content-Range gives no readable total length");
         assert_eq!(redact("https://a.org/b.tif?sv=1&sig=abc"), "https://a.org/b.tif?<redacted>");
         assert_eq!(redact("https://a.org/b.tif?x=1"), "https://a.org/b.tif?x=1");
         assert_eq!(resolve_redirect("https://a.org/x/y.tif?q=1", "/z.tif"), "https://a.org/z.tif");

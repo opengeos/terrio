@@ -3228,6 +3228,27 @@ def _remove_memory_file_dir(path: str, pid: int) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _extension_from_signature(data: bytes) -> str:
+    """The extension of a `MemoryFile` given bytes without a file name or an extension.
+
+    PNG, JPEG and WebP bytes named `.tif` are read by the GeoTIFF reader, which refuses them: bytes
+    starting with the signature of one of these formats are named for it, any others `.tif`.
+
+    Args:
+        data: The bytes.
+
+    Returns:
+        str: `.png`, `.jpg`, `.webp` or `.tif`.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return ".webp"
+    return ".tif"
+
+
 class MemoryFile:
     """A file in memory: bytes to open as a dataset, or a dataset to write into bytes.
 
@@ -3249,7 +3270,7 @@ class MemoryFile:
         file_or_bytes: Any = None,
         dirname: str | None = None,
         filename: str | None = None,
-        ext: str = ".tif",
+        ext: str | None = None,
     ) -> None:
         """Creates the file.
 
@@ -3257,7 +3278,9 @@ class MemoryFile:
             file_or_bytes: Initial contents: bytes, or a file object to read them from.
             dirname: Unused.
             filename: The file's name (its extension tells the format).
-            ext: The extension when no file name is given.
+            ext: The extension when no file name is given. By default, the extension of the
+                format the bytes start with: `.png`, `.jpg` or `.webp` for PNG, JPEG or WebP
+                bytes, and `.tif` for any other bytes or none.
         """
         if file_or_bytes is not None and hasattr(file_or_bytes, "read"):
             file_or_bytes = file_or_bytes.read()
@@ -3267,15 +3290,18 @@ class MemoryFile:
         # this point leaves nothing either; called once: by `close()`, by the collection of the
         # file, or at exit (the finalizers still alive then are called).
         self._finalizer = weakref.finalize(self, _remove_memory_file_dir, self._dir, os.getpid())
+        data = None if file_or_bytes is None else bytes(file_or_bytes)
+        if ext is None:
+            ext = ".tif" if data is None else _extension_from_signature(data)
         name = (
             filename or f"{uuid.uuid4().hex}{ext if ext.startswith('.') or not ext else '.' + ext}"
         )
         self.name = os.path.join(self._dir, name)
         self._pos = 0
         self.closed = False
-        if file_or_bytes is not None:
+        if data is not None:
             with open(self.name, "wb") as f:
-                f.write(bytes(file_or_bytes))
+                f.write(data)
 
     def exists(self) -> bool:
         """Whether the file has contents.

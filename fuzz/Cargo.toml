@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-terrio = { path = "../crates/terrio", default-features = false, features = ["geotiff", "remote", "lerc", "lzma"] }
+terrio = { path = "../crates/terrio", default-features = false, features = ["geotiff", "remote", "lerc", "lzma", "sqlite", "hecras"] }
 
 # Not a member of terrio's workspace: built with a nightly toolchain by `cargo fuzz`.
 [workspace]
@@ -32,6 +32,27 @@ bench = false
 [[bin]]
 name = "vector"
 path = "fuzz_targets/vector.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sozip"
+path = "fuzz_targets/sozip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gpkg_validate"
+path = "fuzz_targets/gpkg_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hecras"
+path = "fuzz_targets/hecras.rs"
 test = false
 doc = false
 bench = false

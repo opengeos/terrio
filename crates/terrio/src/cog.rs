@@ -428,7 +428,8 @@ impl LazyRaster {
     /// formats are read whole.
     pub fn open(path: &str) -> Result<Self> {
         crate::formats::check_allowed(path, Some(crate::formats::Kind::Raster))?;
-        let mut r = Self::open_without_sidecars(path)?;
+        // A missing file, or a directory, is named in the error.
+        let mut r = Self::open_without_sidecars(path).map_err(|e| e.naming_local_file(path))?;
         r.find_sidecar_mask(path);
         Ok(r)
     }
