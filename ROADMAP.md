@@ -33,6 +33,12 @@ appearance require a separate future design.
 - [ ] CityJSON 1.1/2.0 writer ([#473](https://github.com/opengeos/terrio/pull/473)).
 - [ ] CityGML writer.
 
+## Local browser interface
+
+- [x] `terrio ui`: forms generated from the command catalog, served on the loopback
+      interface with a session token, with a file browser, the equivalent command line
+      and cancellation. No map or preview; output arrives when a command ends.
+
 ## Machine-readable CLI metadata (#386)
 
 - [x] Unstable v0.1 `--json-usage` catalog from the shared clap/MCP command tree:

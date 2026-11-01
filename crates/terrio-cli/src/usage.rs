@@ -13,7 +13,7 @@ fn root() -> Command {
 }
 
 fn exposed(command: &Command) -> bool {
-    !matches!(command.get_name(), "mcp" | "help")
+    !matches!(command.get_name(), "mcp" | "ui" | "help")
 }
 
 /// The top-level commands served by both the JSON catalog and MCP tools/list.
@@ -168,6 +168,7 @@ fn argument(arg: &Arg, path: &[String]) -> Value {
         "num_args": {"min": range.min_values(), "max": (max != usize::MAX).then_some(max)},
         "action": action,
         "global": arg.is_global_set(),
+        "hidden": arg.is_hide_set(),
         "value_names": arg.get_value_names().unwrap_or_default().iter().map(ToString::to_string).collect::<Vec<_>>(),
         "value_delimiter": arg.get_value_delimiter().map(|c| c.to_string()),
         "allow_hyphen_values": arg.is_allow_hyphen_values_set(),

@@ -8,6 +8,7 @@
 
 mod cmd;
 mod mcp;
+mod ui;
 mod usage;
 
 use clap::{Parser, Subcommand};
@@ -413,6 +414,11 @@ enum Command {
     /// Runs a Model Context Protocol server over standard input and output, for Claude Code, Claude
     /// Desktop, Cursor, VS Code…
     Mcp,
+    /// Run these commands from forms in your browser.
+    ///
+    /// Serves a page on 127.0.0.1, with a form for every command, a file picker and the equivalent
+    /// command line. Commands run on this computer as you; stop the server with Ctrl-C.
+    Ui(ui::Args),
 }
 
 /// Runs the command line `args` (the program name first) and returns the process exit code: 0 on
@@ -569,6 +575,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Filter(a) => cmd::filter::run(a),
         Command::Vsi(a) => cmd::vsi::run(a),
         Command::Mcp => serve_mcp(terrio),
+        Command::Ui(a) => serve_ui(a, terrio),
     };
     for w in terrio::warnings::take() {
         eprintln!("terrio: warning: {w}");
@@ -600,6 +607,15 @@ fn serve_mcp(terrio: Option<Vec<OsString>>) -> terrio::Result<()> {
         None => mcp::this_binary()?,
     };
     Ok(mcp::serve(terrio)?)
+}
+
+/// `terrio ui`, running its commands with `terrio`, or this executable.
+fn serve_ui(args: ui::Args, terrio: Option<Vec<OsString>>) -> terrio::Result<()> {
+    let terrio = match terrio {
+        Some(t) => t,
+        None => mcp::this_binary()?,
+    };
+    Ok(ui::serve(args, terrio)?)
 }
 
 #[cfg(test)]
