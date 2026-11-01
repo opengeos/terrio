@@ -1,0 +1,136 @@
+name: Homebrew
+
+# Renders the `terrio` cask for a release, installs it with Homebrew on macOS and Linux, and pushes
+# it to the tap (opengeos/homebrew-terrio). The cask comes from packaging/homebrew/render.sh and the
+# checksums attached to the release. release.yml calls this once the release and its binaries are
+# on GitHub; it can also be run by hand for a release (Actions > Homebrew). A pull request that
+# changes the cask tests it against the latest release, without publishing. The publish job skips
+# itself when its secret is missing.
+#
+# Repository secret:
+#   HOMEBREW_TAP_DEPLOY_KEY - private half of an SSH deploy key with write access to
+#                             opengeos/homebrew-terrio
+on:
+  pull_request:
+    paths:
+      - packaging/homebrew/**
+      - .github/workflows/homebrew.yml
+  workflow_call:
+    inputs:
+      version:
+        description: The release, such as 0.6.0 or v0.6.0
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_DEPLOY_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The release, such as 0.6.0 or v0.6.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.render.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Render the cask
+        id: render
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: opengeos/terrio
+          VERSION: ${{ inputs.version }}
+        run: |
+          tag="${VERSION:-$(gh release view --json tagName --jq .tagName)}"
+          tag="v${tag#v}"
+          gh release download "$tag" --pattern '*.sha256' --dir "$RUNNER_TEMP/sums"
+          cat "$RUNNER_TEMP"/sums/*.sha256 > "$RUNNER_TEMP/SHA256SUMS"
+          packaging/homebrew/render.sh "$tag" "$RUNNER_TEMP/SHA256SUMS" tap
+          cat tap/Casks/terrio.rb
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: homebrew-cask
+          path: tap/Casks/terrio.rb
+
+  test:
+    name: test (${{ matrix.os }})
+    needs: [render]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel, ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: Homebrew/actions/setup-homebrew@main
+      - uses: actions/download-artifact@v8
+        with:
+          name: homebrew-cask
+          path: ${{ runner.temp }}/cask
+      - name: Install, run and uninstall the cask
+        env:
+          VERSION: ${{ needs.render.outputs.version }}
+        run: |
+          brew tap-new --no-git local/terrio
+          cp "$RUNNER_TEMP/cask/terrio.rb" "$(brew --repository local/terrio)/Casks/"
+          brew install --cask local/terrio/terrio
+          test "$(terrio --version)" = "terrio $VERSION"
+          terrio formats > /dev/null
+          if [ "$RUNNER_OS" = macOS ]; then
+            # Whether Homebrew quarantined the download, for the log; the binary must not carry it.
+            xattr -l "$(brew --cache --cask local/terrio/terrio)"
+            if xattr -p com.apple.quarantine "$(realpath "$(command -v terrio)")"; then
+              echo "::error::the binary is quarantined"
+              exit 1
+            fi
+          fi
+          brew uninstall --cask local/terrio/terrio
+          if command -v terrio; then
+            echo "::error::uninstalling left the command behind"
+            exit 1
+          fi
+
+  publish:
+    name: Push to the tap
+    needs: [render, test]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-tap
+      cancel-in-progress: false
+    env:
+      TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+    steps:
+      - uses: actions/download-artifact@v8
+        if: env.TAP_KEY != ''
+        with:
+          name: homebrew-cask
+          path: ${{ runner.temp }}/cask
+      - name: Update opengeos/homebrew-terrio
+        if: env.TAP_KEY != ''
+        env:
+          VERSION: ${{ needs.render.outputs.version }}
+        run: |
+          eval "$(ssh-agent -s)"
+          ssh-add - <<< "$TAP_KEY"
+          git clone --depth 1 git@github.com:opengeos/homebrew-terrio.git "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          mkdir -p Casks
+          cp "$RUNNER_TEMP/cask/terrio.rb" Casks/
+          git add Casks
+          if git diff --cached --quiet; then
+            echo "The tap already has $VERSION."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "terrio $VERSION"
+          git push origin HEAD
