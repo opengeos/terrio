@@ -139,7 +139,7 @@ pub fn read(path: &str) -> Result<Layer> {
 /// Parses GeoJSON. `default_name` names a layer whose collection has no `name`.
 pub fn parse(bytes: &[u8], default_name: &str) -> Result<Layer> {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    reserve_parse_memory(bytes.len())?;
+    reserve_parse_memory(bytes.len(), "GeoJSON")?;
     let doc: Value = serde_json::from_slice(bytes).map_err(|e| Error::InvalidData(format!("GeoJSON: {e}")))?;
     check_integers(&doc)?;
     let features: Vec<&Value> = match doc["type"].as_str() {
@@ -175,12 +175,12 @@ const PARSE_MEMORY_PER_BYTE: usize = 16;
 /// Reserves, and releases, the address space parsing `len` bytes of GeoJSON takes, so that a
 /// document too large for the memory available fails with an error rather than aborting the
 /// process when an allocation fails half-way through the parse.
-fn reserve_parse_memory(len: usize) -> Result<()> {
+pub(super) fn reserve_parse_memory(len: usize, format: &str) -> Result<()> {
     let need = len.saturating_mul(PARSE_MEMORY_PER_BYTE);
     let mut probe: Vec<u8> = Vec::new();
-    probe
-        .try_reserve_exact(need)
-        .map_err(|_| Error::InvalidData(format!("GeoJSON: parsing {len} bytes needs about {need} bytes of memory, more than is available")))
+    probe.try_reserve_exact(need).map_err(|_| {
+        Error::InvalidData(format!("{format}: parsing {len} bytes needs about {need} bytes of memory, more than is available"))
+    })
 }
 
 /// The fields of GeoJSON features, inferred as GDAL infers them: a scan of every feature.
@@ -1497,8 +1497,8 @@ mod tests {
     #[test]
     fn a_document_too_large_for_memory_is_an_error() {
         // The address space for parsing is reserved first: an input whose parse cannot fit fails.
-        assert!(reserve_parse_memory(usize::MAX / 4).is_err());
-        assert!(reserve_parse_memory(1 << 20).is_ok());
+        assert!(reserve_parse_memory(usize::MAX / 4, "GeoJSON").is_err());
+        assert!(reserve_parse_memory(1 << 20, "GeoJSON").is_ok());
     }
 
     #[test]

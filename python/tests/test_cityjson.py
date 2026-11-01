@@ -7,6 +7,20 @@ import pytest
 import terrio
 
 
+@pytest.mark.parametrize("crs", [None, 7415, {}, "unknown-unsupported-crs"])
+def test_cityjson_declared_invalid_crs_is_rejected(crs):
+    doc = {
+        "type": "CityJSON",
+        "version": "2.0",
+        "vertices": [],
+        "CityObjects": {},
+        "transform": {"scale": [1, 1, 1], "translate": [0, 0, 0]},
+        "metadata": {"referenceSystem": crs},
+    }
+    with pytest.raises(terrio.errors.InvalidDataError, match="referenceSystem"):
+        terrio.open_bytes(json.dumps(doc).encode(), filename="crs.city.json")
+
+
 def test_cityjson_late_type_and_unknown_crs(tmp_path):
     doc = {
         "vertices": [[10, 20, 30], [10, 21, 30], [10, 21, 31]],

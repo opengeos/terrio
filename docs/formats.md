@@ -405,6 +405,8 @@ object metadata and counts. These counts are not totals to sum across features.
 Invalid indices and malformed boundary/semantic nesting still fail explicitly.
 `metadata.referenceSystem` supplies the CRS; absent CRS stays unknown. Coordinates
 retain the source XYZ order rather than applying geographic axis swapping.
+An explicitly declared CRS must be a supported string; malformed or unsupported
+declarations fail instead of silently assigning an unknown or guessed CRS.
 
 This view retains vertical faces but does not model solids, shell membership or
 the object hierarchy as geometry. It does not preserve textures, materials,
@@ -417,8 +419,22 @@ payload (text, coordinates and feature containers) is limited to 256 MiB; larger
 expansions fail with a request to split the model. This is an expansion limit,
 not a bound on total process memory or input parsing. Template vertices are
 decoded once, and only referenced template coordinates are transformed per instance.
+Whole source semantics are repeated as owned text. A local connected 1,000-face
+CompositeSurface example used 68,723 input bytes and 26,966,000 bytes of owned field
+text; larger single geometries can reach the expansion limit. Run
+`python scripts/benchmark_json_dispatch.py DATA` to reproduce this observation.
+The JSON parse also uses the existing GeoJSON allocation preflight; neither probe
+nor payload accounting is a total resident-memory guarantee.
 The `.city.json` extension now selects the CityJSON driver; until the writer is
 available it rejects output instead of writing GeoJSON under a CityJSON filename.
+
+The `.json` root-type probe scans the already-read buffer without reopening the
+file and borrows valid UTF-8; malformed UTF-8 is rejected without an owned decoded
+copy. A local Linux development-build observation on equal 16,777,271-byte files
+read 16,875,575–16,875,576 bytes in five calls for either root-type position,
+including bounded header probes. Mean opens were 52 ms with an early type and
+114 ms with a late type (three warmed runs). These observations are not performance
+thresholds; the benchmark above records actual counters and timings.
 
 The [CityJSON 1.1](https://www.cityjson.org/specs/1.1.3/) and
 [2.0 specifications](https://www.cityjson.org/specs/2.0.2/) and their published JSON

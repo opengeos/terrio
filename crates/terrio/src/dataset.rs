@@ -663,7 +663,7 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     if VectorDriver::for_extension(path).is_none()
         && RasterDriver::for_extension(path).is_none()
         && !Path::new(path).is_dir()
-        && crate::inspection::identify(path, false)?.is_some_and(|i| i.driver == "CityJSON")
+        && crate::inspection::identify(path, false).ok().flatten().is_some_and(|i| i.driver == "CityJSON")
     {
         return read_vector_local(path, VectorDriver::CityJSON, options).map(Dataset::Vector);
     }
@@ -784,7 +784,7 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
     // document read; inspect those same bytes rather than opening the file twice.
     let (driver, json) = if driver == VectorDriver::GeoJSON {
         let bytes = std::fs::read(path)?;
-        let text = String::from_utf8_lossy(&bytes);
+        let text = std::str::from_utf8(&bytes).map_err(|e| Error::InvalidData(format!("JSON input is not UTF-8: {e}")))?;
         let city = crate::inspection::root_json_type(text.trim_start_matches('\u{feff}').trim_start()).as_deref() == Some("CityJSON");
         let driver = if city { VectorDriver::CityJSON } else { driver };
         crate::formats::check_driver_allowed(driver.name(), path, crate::formats::Kind::Vector)?;

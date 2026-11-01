@@ -271,6 +271,7 @@ fn push(layer: &mut Layer, geometry: Option<Geometry>, attrs: &[FieldValue], use
 
 fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
     let mut used = 0usize;
+    super::geojson::reserve_parse_memory(bytes.len(), "CityJSON")?;
     let doc: Value = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).map_err(invalid)?;
     if doc["type"] != "CityJSON" {
         return Err(invalid("expected a CityJSON document"));
@@ -294,7 +295,8 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
     for name in ["skipped_rings", "skipped_faces"] {
         layer.add_field(FieldDef::new(name, FieldType::Integer));
     }
-    if let Some(crs) = doc["metadata"]["referenceSystem"].as_str() {
+    if let Some(value) = doc.get("metadata").and_then(|m| m.get("referenceSystem")) {
+        let crs = value.as_str().ok_or_else(|| invalid("referenceSystem must be a CRS string"))?;
         SpatialRef::parse(crs).map_err(|e| invalid(format!("referenceSystem: {e}")))?.apply_to_layer(&mut layer);
     }
     for (id, object) in objects {
@@ -359,6 +361,19 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_large_single_geometry_reports_the_documented_semantics_expansion_limit() {
+        let faces = 100;
+        let doc = serde_json::json!({"type":"CityJSON","version":"2.0",
+            "transform":{"scale":[1,1,1],"translate":[0,0,0]},"vertices":[[0,0,0],[0,1,0],[0,1,1]],
+            "CityObjects":{"house":{"type":"Building","geometry":[{"type":"CompositeSurface","lod":"2",
+                "boundaries":vec![serde_json::json!([[0,1,2]]);faces],
+                "semantics":{"surfaces":vec![serde_json::json!({"type":"WallSurface"});faces],"values":(0..faces).collect::<Vec<_>>()}}]}}});
+        let bytes = serde_json::to_vec(&doc).unwrap();
+        assert_eq!(super::parse_with_limit(&bytes, 1024 * 1024).unwrap()[0].features.len(), faces);
+        assert!(super::parse_with_limit(&bytes, 64 * 1024).unwrap_err().to_string().contains("expansion limit"));
+    }
+
     #[test]
     fn repeated_attributes_stop_at_the_flat_payload_budget() {
         let mut doc = serde_json::json!({"type":"CityJSON","version":"2.0","vertices":[[1,2,3]],"transform":{"scale":[1,1,1],"translate":[0,0,0]},

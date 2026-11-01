@@ -21,6 +21,8 @@ from urllib.parse import urlparse
 
 FIXTURES = ["DH_01_subs.city.json", "delft.json", "rotterdam/rotterdam_subset.json"]
 CJIO_COMMIT = "35728539127f71b1d5ae458169ff84050e5e20ad"
+SCHEMA_COMMITS = {"1.1.3": "e242f3e59cb62e2001811f0874c48438b0ae2858",
+                  "2.0.2": "877ee49e16c82a4bc7ab598926efcb9ba1075374"}
 SCHEMAS = ["cityjson", "cityobjects", "geomprimitives", "geomtemplates", "metadata", "appearance"]
 
 
@@ -38,7 +40,7 @@ def fetch(data):
         for name in SCHEMAS:
             path = folder / f"{name}.schema.json"
             if not path.exists():
-                url = f"https://raw.githubusercontent.com/cityjson/specs/{version}/schemas/{name}.schema.json"
+                url = f"https://raw.githubusercontent.com/cityjson/specs/{SCHEMA_COMMITS[version]}/schemas/{name}.schema.json"
                 path.write_bytes(urlopen(url, timeout=30).read())
 
 
