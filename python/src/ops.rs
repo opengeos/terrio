@@ -55,6 +55,10 @@ pub(crate) fn vector_write_options(driver: Option<&str>) -> PyResult<VectorWrite
     Ok(VectorWriteOptions { driver, ..Default::default() })
 }
 
+pub(crate) fn parse_cityjson_version(value: Option<&str>) -> PyResult<Option<terrio::CityJsonVersion>> {
+    value.map(str::parse).transpose().py()
+}
+
 /// Wraps a dataset in its Python class.
 fn dataset_to_py(py: Python<'_>, ds: Dataset) -> PyResult<Py<PyAny>> {
     Ok(match ds {
@@ -377,11 +381,12 @@ fn write_netcdf_groups(
 ///     append: Add the features to the layers of an existing output.
 ///     overwrite: Replace the layers of the same name in an existing output.
 ///     preserve_declared_geometry_type: GPKG: retain the declared base geometry type, including Unknown.
+///     cityjson_version: CityJSON output: "1.1" or "2.0" (the default).
 ///
 /// Raises:
 ///     InvalidArgumentError: If several layers go to a single-layer format.
 #[pyfunction]
-#[pyo3(signature = (data, path, driver=None, layer_name=None, crs=None, append=false, overwrite=false, *, preserve_declared_geometry_type=false))]
+#[pyo3(signature = (data, path, driver=None, layer_name=None, crs=None, append=false, overwrite=false, *, preserve_declared_geometry_type=false, cityjson_version=None))]
 #[allow(clippy::too_many_arguments)]
 fn write_vector(
     py: Python<'_>,
@@ -393,11 +398,13 @@ fn write_vector(
     append: bool,
     overwrite: bool,
     preserve_declared_geometry_type: bool,
+    cityjson_version: Option<&str>,
 ) -> PyResult<()> {
     let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer").to_string();
     let layers = layers_from_object(data, Some(layer_name.unwrap_or(&stem)), crs)?;
     let mut options = vector_write_options(driver)?;
     options.preserve_declared_geometry_type = preserve_declared_geometry_type;
+    options.cityjson_version = parse_cityjson_version(cityjson_version)?;
     let mode = write_mode(append, overwrite)?;
     py.detach_result(|| terrio::ops::vector_filter::write_vector_with_mode(&layers, path, &options, mode)).py()
 }
@@ -437,6 +444,7 @@ fn write_vector(
 ///     overwrite: Replace the layers of the same name in an existing output.
 ///     options: Raster creation options, as GDAL names them (a mapping or `(key, value)` pairs),
 ///         such as COG `OVERVIEW_RESAMPLING`, `RESAMPLING` and `OVERVIEW_COUNT`.
+///     cityjson_version: CityJSON output: "1.1" or "2.0" (the default).
 ///     overview_resampling: The resampling of COG overviews (`"cubic"`, the default, as GDAL's
 ///         COG driver; `"nearest"`, `"average"`, `"rms"`, `"bilinear"`, `"cubicspline"`,
 ///         `"lanczos"`, `"mode"`).
@@ -448,7 +456,7 @@ fn write_vector(
     src, dst, *, format=None, layers=None, t_srs=None, compress=None, tile_size=None, bigtiff=false, srcwin=None,
     overview=None, r#where=None, spat=None, spat_srs=None, select=None, limit=None, sql=None, nln=None, nlt=None,
     explodecollections=false, simplify=None, segmentize=None, s_srs=None, a_srs=None, append=false, overwrite=false,
-    options=None, overview_resampling=None, ct_opt=None
+    options=None, overview_resampling=None, ct_opt=None, cityjson_version=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn convert(
@@ -481,8 +489,14 @@ fn convert(
     options: Option<Bound<'_, PyAny>>,
     overview_resampling: Option<String>,
     ct_opt: Option<std::collections::HashMap<String, String>>,
+    cityjson_version: Option<&str>,
 ) -> PyResult<()> {
     use terrio::ops::vector_geom::GeometryOp;
+    if cityjson_version.is_some()
+        && format.map_or_else(|| VectorDriver::for_extension(dst), VectorDriver::from_name) != Some(VectorDriver::CityJSON)
+    {
+        return Err(invalid("cityjson_version applies to CityJSON output"));
+    }
     if simplify.is_some() && segmentize.is_some() {
         return Err(invalid("simplify and segmentize cannot be combined"));
     }
@@ -521,7 +535,8 @@ fn convert(
         || vector_options.src_srs.is_some()
         || vector_options.assign_srs.is_some()
         || append
-        || overwrite;
+        || overwrite
+        || cityjson_version.is_some();
     let mode = write_mode(append, overwrite)?;
     let raster_options = match format.map(terrio::formats::RasterDriver::from_name) {
         Some(None) => None,
@@ -534,7 +549,11 @@ fn convert(
     };
     let vector_write = match format.map(VectorDriver::from_name) {
         Some(None) => None,
-        _ => Some(vector_write_options(format)?),
+        _ => {
+            let mut options = vector_write_options(format)?;
+            options.cityjson_version = parse_cityjson_version(cityjson_version)?;
+            Some(options)
+        }
     };
     crate::with_warnings(py, || -> terrio::Result<()> {
         // Vector conversions between formats read and written as streams go a chunk of

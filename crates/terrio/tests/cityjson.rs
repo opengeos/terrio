@@ -123,16 +123,18 @@ fn solid_semantics_follow_shell_nesting_and_null_classifications() {
 }
 
 #[test]
-fn detection_looks_at_root_type_and_read_only_driver_rejects_writes() {
+fn detection_looks_at_root_type_and_writer_produces_cityjson() {
     let bytes = serde_json::to_vec(&document("MultiPoint", json!([0]))).unwrap();
     assert_eq!(terrio::inspection::identify_bytes(&bytes, "x.json").unwrap().driver, "CityJSON");
     assert_eq!(VectorDriver::for_extension("X.CITY.JSON"), Some(VectorDriver::CityJSON));
-    assert!(!VectorDriver::CityJSON.info().write);
+    assert!(VectorDriver::CityJSON.info().write);
     let dir = tempfile::tempdir().unwrap();
-    let ds = read(&document("MultiPoint", json!([0])), "x.city.json");
+    let ds = read(&document("MultiSurface", json!([[[0, 1, 2, 3]]])), "x.city.json");
     let path = dir.path().join("out.city.json");
-    assert!(terrio::write_vector(&ds.layers, path.to_str().unwrap(), &Default::default()).is_err());
-    assert!(!path.exists());
+    terrio::write_vector(&ds.layers, path.to_str().unwrap(), &Default::default()).unwrap();
+    let output: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(output["type"], "CityJSON");
+    assert_eq!(output["version"], "2.0");
     let ordinary = br#"{"type":"FeatureCollection","features":[],"note":{"type":"CityJSON"}}"#;
     assert_eq!(terrio::inspection::identify_bytes(ordinary, "x.json").unwrap().driver, "GeoJSON");
 }
@@ -191,4 +193,24 @@ fn collinear_xyz_rings_are_retained_without_an_area_validity_test() {
     assert_eq!(ds.layers[0].features.iter().filter(|f| f.geometry.is_some()).count(), 1);
     let feature = ds.layers[0].features.iter().find(|f| f.geometry.is_some()).unwrap();
     assert_eq!(feature.attributes[9], FieldValue::Integer(0));
+}
+
+#[test]
+fn existing_cityjson_rejects_layer_update_modes_without_modifying_the_model() {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("existing.city.json");
+    let bytes = br#"{"type":"CityJSON","version":"2.0","transform":{"scale":[1,1,1],"translate":[0,0,0]},"CityObjects":{"old":{"type":"GenericCityObject"}},"vertices":[]}"#;
+    std::fs::write(&path, bytes).unwrap();
+    let layer = wbvector::Layer::new("new_layer");
+    for mode in [terrio::ops::vector_filter::WriteMode::Append, terrio::ops::vector_filter::WriteMode::Overwrite] {
+        let error = terrio::ops::vector_filter::write_vector_with_mode(
+            std::slice::from_ref(&layer),
+            path.to_str().unwrap(),
+            &Default::default(),
+            mode,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("CityJSON has no persistent layer names"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
 }

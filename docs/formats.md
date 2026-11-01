@@ -362,7 +362,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | FlatGeobuf | FlatGeobuf | ✓ | ✓ | fgb |
 | ESRI Shapefile | Shapefile | ✓ | ✓ | shp |
 | GeoJSON | GeoJSON | ✓ | ✓ | geojson, json |
-| CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | — | city.json, cityjson, json (by content) |
+| CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | ✓ | city.json, cityjson, json (by content) |
 | CityGML | CityGML 2.0 and 3.0 (flat XYZ view) | ✓ | — | citygml, gml/xml (by content) |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
@@ -417,7 +417,7 @@ the object hierarchy as geometry. It does not preserve textures, materials,
 extensions or general city-model metadata. CityJSONFeature sequences are outside
 this reader. Unsupported geometry types and invalid vertex/template references
 fail explicitly. Reading currently materializes the document and flat features;
-there is no spatial/window index. CityJSON writing is a separate step in [#462](https://github.com/opengeos/terrio/issues/462).
+there is no spatial/window index.
 The flat view owns repeated attributes and semantics text. Its estimated feature
 payload (text, coordinates and feature containers) is limited to 256 MiB; larger
 expansions fail with a request to split the model. This is an expansion limit,
@@ -429,8 +429,7 @@ text; larger single geometries can reach the expansion limit. Run
 `python scripts/benchmark_json_dispatch.py DATA` to reproduce this observation.
 The JSON parse also uses the existing GeoJSON allocation preflight; neither probe
 nor payload accounting is a total resident-memory guarantee.
-The `.city.json` extension now selects the CityJSON driver; until the writer is
-available it rejects output instead of writing GeoJSON under a CityJSON filename.
+The `.city.json` extension selects the CityJSON driver for both reading and writing.
 
 The `.json` root-type probe scans the already-read buffer without reopening the
 file and borrows valid UTF-8; malformed UTF-8 is rejected without an owned decoded
@@ -439,6 +438,48 @@ read 16,875,575–16,875,576 bytes in five calls for either root-type position,
 including bounded header probes. Mean opens were 52 ms with an early type and
 114 ms with a late type (three warmed runs). These observations are not performance
 thresholds; the benchmark above records actual counters and timings.
+
+The writer produces CityJSON 2.0 by default, or 1.1 with
+`terrio convert input.city.json output.city.json --cityjson-version 1.1`.
+Rust uses `VectorWriteOptions.cityjson_version`, Python uses `cityjson_version`
+on `write_vector`, `convert`, layer/dataset `write` and layer `to_bytes`, and
+JavaScript uses `toBytes("output.city.json", {cityjsonVersion: "1.1"})`.
+
+Layers with `city_id` and `city_type` fields use the city-object convention:
+`lod` is optional (default `"0"`), and `parents`, `attributes` and
+`surface_semantics` contain JSON text when present. Other columns become object
+attributes. Features sharing an ID are grouped by LoD and primitive type;
+conflicting attributes, types or parents are errors. Core second-level types
+(parts, installations, constructive elements, furnishings, rooms and building
+subdivisions) require exactly one parent, as specified in CityJSON section 2.
+Top-level core types have no parent. Null-geometry objects remain.
+Other layers become one `GenericCityObject` per feature, with generated IDs and
+all columns as attributes. That generic type requires version 2.0. Several layers
+can share a file when their CRSs are consistent and explicit IDs do not collide.
+
+Polygons become `MultiSurface` (`CompositeSurface` for triangular `TINRelief`),
+lines become `MultiLineString`, and points become `MultiPoint`. XYZ and holes are
+retained; 2D input receives Z=0. A shared integer vertex pool and per-axis power-of-two
+scales encode the coordinates within JavaScript's safe integer range. Quantization
+can change the last floating-point bits; comparisons allow half a step plus four
+ULPs (constant axes use ULPs only). Rings or lines that collapse are rejected.
+Measured M coordinates are not representable and must be removed before writing.
+A declared CRS needs a valid EPSG URI; unsupported or unregistered CRSs must be
+reprojected first. Unknown CRS remains absent.
+
+The writer retains supported per-face classification and properties, not source
+solid/shell topology or semantic parent/child indices. It rebuilds object children
+from the retained parent IDs; group memberships absent from the flat fields,
+materials, textures, templates and extensions are not reconstructed. Supported
+CityGML Window/Door objects use a lossy `BuildingConstructiveElement` projection,
+with the original class in `terrio:sourceCityType`. This is Terrio’s identity-preserving
+projection, not a normative CityGML-to-CityJSON equivalence: the CityJSON
+[specification](https://www.cityjson.org/specs/2.0.2/#3.3) represents Window/Door
+as surface semantics, while its core object types omit filling elements. Other
+CityGML aliases use supported CityJSON core types, with
+the original type in `terrio:sourceCityType`. Unsupported object/classification
+types fail explicitly. Reader diagnostics are not city-model attributes and are
+not written. These are flat conversions, not lossless city-model round trips.
 
 The [CityJSON 1.1](https://www.cityjson.org/specs/1.1.3/) and
 [2.0 specifications](https://www.cityjson.org/specs/2.0.2/) and their published JSON
