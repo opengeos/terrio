@@ -83,7 +83,11 @@ jobs:
           brew tap-new --no-git local/terrio
           mkdir -p "$(brew --repository local/terrio)/Casks"
           cp "$RUNNER_TEMP/cask/terrio.rb" "$(brew --repository local/terrio)/Casks/"
-          brew install --cask local/terrio/terrio
+          brew install --cask local/terrio/terrio 2>&1 | tee "$RUNNER_TEMP/install.log"
+          if grep -q deprecated "$RUNNER_TEMP/install.log"; then
+            echo "::error::the cask uses something Homebrew has deprecated"
+            exit 1
+          fi
           test "$(terrio --version)" = "terrio $VERSION"
           terrio formats > /dev/null
           if [ "$RUNNER_OS" = macOS ]; then
@@ -95,7 +99,7 @@ jobs:
             fi
           fi
           brew uninstall --cask local/terrio/terrio
-          if command -v terrio; then
+          if [ -e "$(brew --prefix)/bin/terrio" ]; then
             echo "::error::uninstalling left the command behind"
             exit 1
           fi
