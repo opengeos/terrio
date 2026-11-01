@@ -118,8 +118,9 @@ Keep the multi-report issue open while these items remain outstanding.
 ## GDAL multithreaded statistics
 
 On `srtm90.tif` (Int16, Deflate, 512×512 tiles), GDAL 3.13.3's `gdalinfo -stats`
-reads only about one thread's share of the pixels. Each row is a fresh run with PAM
-disabled:
+reads only about one thread's share of the pixels. Each row is a fresh run of
+`GDAL_PAM_ENABLED=NO GDAL_NUM_THREADS=N gdalinfo -json -stats srtm90.tif`, and the
+[raw metadata](benchmark-253-recheck.json) is under `gdal_statistics`:
 
 | `GDAL_NUM_THREADS` | Minimum | Maximum | `STATISTICS_VALID_PERCENT` |
 |---:|---:|---:|---:|
@@ -154,7 +155,9 @@ run. The recheck found two faults in the comparison scripts, not in Terrio:
 
 - `benchmark.py` asked only GDAL for average COG overviews. Terrio's default became cubic,
   matching GDAL's, in #406, so the overview comparison failed. Both now request average,
-  and every level agrees. With neither requesting it, both use cubic and also agree.
+  and every level agrees. With neither requesting it, both use cubic and also agree. The
+  large-mosaic COG case uses the same command and was not rerun; it is not among the eight
+  cases, and its earlier timing is one of the withdrawn large-file results.
 - `compare_warp_policy_with_gdal.py` turned the network off only for Terrio. With
   `PROJ_NETWORK=ON`, GDAL fetched a Colorado datum grid for NAD83 to WGS 84, and 15 of the
   22 cases differed. The reference now runs with the network off, and all 22 are identical.

@@ -50,7 +50,7 @@ def terrio_dem(binary, processing):
 
 def terrio_cog(binary):
     """Build average overviews, recursive and floor-sized when the reference uses GDAL 3.13."""
-    # Terrio's COG default is cubic, as GDAL's is; the GDAL commands request average.
+    # The GDAL COG commands request average overviews, so Terrio must too; its cubic default matches GDAL's default.
     command = [binary, "convert", "--co", "RESAMPLING=AVERAGE"]
     if gdal_kernel_version() == "3.13":
         command += ["--co", "COG_OVERVIEW_POLICY=GDAL_3_13"]

@@ -1502,5 +1502,77 @@
         }
       ]
     }
-  ]
+  ],
+  "gdal_statistics": {
+    "command": "GDAL_PAM_ENABLED=NO GDAL_NUM_THREADS=N gdalinfo -json -stats FILE",
+    "gdal": "3.13.3",
+    "band_1_metadata": [
+      {
+        "file": "srtm90.tif",
+        "GDAL_NUM_THREADS": 1,
+        "STATISTICS_MINIMUM": "15",
+        "STATISTICS_MAXIMUM": "4338",
+        "STATISTICS_MEAN": "1580.0688040627",
+        "STATISTICS_STDDEV": "948.84376426763",
+        "STATISTICS_VALID_PERCENT": "100"
+      },
+      {
+        "file": "srtm90.tif",
+        "GDAL_NUM_THREADS": 2,
+        "STATISTICS_MINIMUM": "18",
+        "STATISTICS_MAXIMUM": "4320",
+        "STATISTICS_MEAN": "1609.784902835",
+        "STATISTICS_STDDEV": "912.54379890579",
+        "STATISTICS_VALID_PERCENT": "50.02"
+      },
+      {
+        "file": "srtm90.tif",
+        "GDAL_NUM_THREADS": 3,
+        "STATISTICS_MINIMUM": "23",
+        "STATISTICS_MAXIMUM": "4237",
+        "STATISTICS_MEAN": "1626.729746538",
+        "STATISTICS_STDDEV": "902.35124258541",
+        "STATISTICS_VALID_PERCENT": "33.39"
+      },
+      {
+        "file": "srtm90.tif",
+        "GDAL_NUM_THREADS": 4,
+        "STATISTICS_MINIMUM": "25",
+        "STATISTICS_MAXIMUM": "4148",
+        "STATISTICS_MEAN": "1636.2158571861",
+        "STATISTICS_STDDEV": "895.20430653632",
+        "STATISTICS_VALID_PERCENT": "25.03"
+      },
+      {
+        "file": "srtm90.tif",
+        "GDAL_NUM_THREADS": 8,
+        "STATISTICS_MINIMUM": "26",
+        "STATISTICS_MAXIMUM": "4148",
+        "STATISTICS_MEAN": "1648.7353654441",
+        "STATISTICS_STDDEV": "887.46606311668",
+        "STATISTICS_VALID_PERCENT": "12.54"
+      },
+      {
+        "file": "srtm90.tif",
+        "GDAL_NUM_THREADS": 16,
+        "STATISTICS_MINIMUM": "28",
+        "STATISTICS_MAXIMUM": "4148",
+        "STATISTICS_MEAN": "1659.1624479556",
+        "STATISTICS_STDDEV": "888.48097574344",
+        "STATISTICS_VALID_PERCENT": "6.288"
+      },
+      {
+        "file": "usgs_dem.tif",
+        "GDAL_NUM_THREADS": 8,
+        "DESCRIPTION": "*",
+        "LAYER_TYPE": "*",
+        "RepresentationType": "*",
+        "STATISTICS_MAXIMUM": "4347.0678710938",
+        "STATISTICS_MEAN": "2703.1413711719",
+        "STATISTICS_MINIMUM": "1550.5980224609",
+        "STATISTICS_STDDEV": "553.85086872909",
+        "STATISTICS_VALID_PERCENT": "100"
+      }
+    ]
+  }
 }

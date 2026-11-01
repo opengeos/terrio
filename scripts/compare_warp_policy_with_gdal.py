@@ -7,8 +7,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-# Terrio runs with its network off. GDAL must not fetch a datum grid Terrio does not use: with
-# PROJ's network on, NAD83 to WGS 84 in Colorado selects a grid in place of the null transform.
+# Terrio runs with TERRIO_NETWORK=OFF, which takes precedence over this setting. GDAL must not
+# fetch a datum grid Terrio does not use: with PROJ's network on, NAD83 to WGS 84 in Colorado
+# selects a grid in place of the null transform. This script is run directly, not imported.
 os.environ["PROJ_NETWORK"] = "OFF"
 
 from osgeo import gdal, osr  # noqa: E402
