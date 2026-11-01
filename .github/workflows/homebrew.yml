@@ -81,6 +81,7 @@ jobs:
           VERSION: ${{ needs.render.outputs.version }}
         run: |
           brew tap-new --no-git local/terrio
+          mkdir -p "$(brew --repository local/terrio)/Casks"
           cp "$RUNNER_TEMP/cask/terrio.rb" "$(brew --repository local/terrio)/Casks/"
           brew install --cask local/terrio/terrio
           test "$(terrio --version)" = "terrio $VERSION"
