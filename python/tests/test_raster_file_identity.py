@@ -1,6 +1,7 @@
 """Open TIFF handles retain their original file identity, compared with GDAL 3.13.3."""
 
 import os
+import sys
 
 import numpy as np
 import pytest
@@ -8,6 +9,10 @@ import pytest
 import terrio
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="GDAL 3.13.3 does not open Windows files with FILE_SHARE_DELETE",
+)
 @pytest.mark.parametrize("compression", ["NONE", "DEFLATE"])
 def test_replacement_keeps_original_pixels(tmp_path, compression):
     gdal = pytest.importorskip("osgeo.gdal")

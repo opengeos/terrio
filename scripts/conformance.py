@@ -406,7 +406,10 @@ def suite_windows(ctx):
                 s.cases.append(Case(f"{fmt} {mode}, headers", m[1], IDENTICAL if ok else DIFFERS))
         if not s.cases:
             s.error = tail(err or out)
-    if missing_modules("terrio", "pytest", "osgeo", "numpy"):
+    if sys.platform == "win32":
+        s.cases.append(Case("GTiff identity", "replacement NONE/DEFLATE", NOT_COMPARED,
+                            "GDAL 3.13.3 Windows handles do not share delete access"))
+    elif missing_modules("terrio", "pytest", "osgeo", "numpy"):
         s.cases.append(Case("GTiff identity", "replacement NONE/DEFLATE", NOT_COMPARED,
                             "needs current Python bindings, pytest, GDAL and NumPy"))
     else:
