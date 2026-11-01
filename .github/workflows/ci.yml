@@ -320,7 +320,7 @@ jobs:
         shell: bash
         # rasterio (with its bundled GDAL) and shapely: terrio.rio is compared with rasterio.
         # xarray, dask, rioxarray, zarr and scipy: terrio.xarray is compared with rioxarray.
-        run: python -m pip install pytest rasterio shapely xarray "dask[array]" rioxarray zarr scipy python/dist/*.whl
+        run: python -m pip install pytest "jsonschema>=4.18" rasterio shapely xarray "dask[array]" rioxarray zarr scipy python/dist/*.whl
       - name: Test
         working-directory: python
         run: python -m pytest -v
@@ -370,7 +370,7 @@ jobs:
         # With pip, on top of the cached environment: terrio.rio is compared with rasterio, and
         # terrio.xarray with rioxarray.
         shell: micromamba-shell {0}
-        run: python -m pip install rasterio xarray "dask[array]" rioxarray zarr scipy
+        run: python -m pip install "jsonschema>=4.18" rasterio xarray "dask[array]" rioxarray zarr scipy
       - name: Real-data tests
         env:
           TERRIO_TEST_DATA: ${{ github.workspace }}/terrio-data
