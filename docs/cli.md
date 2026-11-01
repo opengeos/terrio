@@ -1,5 +1,38 @@
 # Command Line
 
+## Machine-readable command catalog
+
+`terrio --json-usage` prints a versioned JSON catalog of every exposed command,
+including nested commands such as `vsi sozip create`, `lineref create` and
+`filter smrf`. Use `terrio warp --json-usage` or `terrio vsi sync --json-usage`
+for one command and its descendants. Required dataset arguments may be omitted;
+metadata requests open no datasets or output files. The Python package supports
+identical requests with `python -m terrio`.
+
+The payload has `schema_version: "0.1"`, `unstable: true`, the program/version,
+and a recursive `command` object. Each command records its canonical name/path,
+aliases, description, arguments and subcommands. Arguments include flags and
+aliases, positional index, type, raw default tokens, choices, required status,
+per-occurrence `num_args` bounds, action, delimiter and value names. An unbounded
+maximum is `null`. Types are `string`, `integer`, `number`, `boolean`, `path` or
+`unknown`; dataset locations represented as strings are tagged as paths. Custom
+parsers whose result type is not recognized report `unknown`.
+
+The [v0.1 JSON Schema](https://github.com/opengeos/terrio/blob/main/schemas/cli-usage-v0.1.schema.json)
+describes the payload. This initial schema is unstable: consumers should check
+`schema_version`. `required` describes unconditional clap requirements; conditional
+requirements, conflicts, mutation/idempotency rules and pipeline-step semantics
+are outside this version. Choices list only those registered in clap; additional
+numeric ranges and runtime parser constraints remain enforced by the CLI. The catalog shares the MCP command tree and excludes
+`mcp` and the generated `help` subcommand; MCP tool arguments remain `args: string[]`.
+
+Clap distinguishes the metadata flag from literal values. For example,
+`terrio info -- --json-usage` treats `--json-usage` as the dataset name, and
+`--srcnodata --json-usage` treats it as the nodata argument's value. For the
+pipeline's trailing expression, put the metadata flag before expression tokens.
+
+## Commands
+
 ```text
 terrio <COMMAND>
 

@@ -22,6 +22,14 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - Proprietary formats that need vendor SDKs (MrSID, ECW, FileGDB raster).
 - Database drivers (PostGIS, Oracle, SQL Server) in the core crate.
 
+## Machine-readable CLI metadata (#386)
+
+- [x] Unstable v0.1 `--json-usage` catalog from the shared clap/MCP command tree:
+      nested command paths, aliases, typed argument metadata, defaults, choices and
+      arity, a checked-in JSON Schema, and the Python CLI entrypoint.
+- [ ] Mutation/idempotency metadata and conditional command effects, shared with
+      MCP hints, as a separate follow-up.
+
 ## Completed: Practical GDAL feature parity
 
 All nine items in [#238](https://github.com/opengeos/terrio/issues/238) are complete
