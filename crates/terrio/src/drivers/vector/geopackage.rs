@@ -19,6 +19,8 @@
 //! [`Builder`] gathers vector layers and raster tile tables (written by the raster driver) into
 //! one file.
 
+pub(crate) mod spilled;
+
 use super::sqlite::{self, BuiltTable, SchemaObject, Table, Value};
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
@@ -523,6 +525,7 @@ impl LayerColumns {
 pub(crate) struct LayerExtent {
     bounds: Option<[f64; 4]>,
     entries: Vec<RtreeEntry>,
+    spilled: Option<spilled::Tree>,
 }
 
 impl LayerExtent {
@@ -871,15 +874,24 @@ impl Builder {
                 "write-only",
             );
             let [rowid, node, parent] = rtree_tables;
-            let shadow: [(_, Box<sqlite::Rows>); 3] =
-                [(rowid, Box::new(tree.rowid_rows())), (node, tree.node_rows()), (parent, tree.parent_rows())];
-            for ((name, sql), mut rows) in shadow {
-                let t = Table { name, sql, rows: Vec::new(), autoindexes: vec![] };
-                match &mut write {
-                    None => self.tables.push(Table { rows: rows.collect(), ..t }),
-                    Some(write) => {
-                        let built = write(t, &mut rows)?;
-                        self.built.push((self.tables.len(), built));
+            if let Some(mut tree) = extent.spilled {
+                let write = write
+                    .as_deref_mut()
+                    .ok_or_else(|| crate::Error::InvalidArgument("spilled R-tree requires streamed table output".into()))?;
+                for built in tree.write([rowid, node, parent], write)? {
+                    self.built.push((self.tables.len(), built));
+                }
+            } else {
+                let shadow: [(_, Box<sqlite::Rows>); 3] =
+                    [(rowid, Box::new(tree.rowid_rows())), (node, tree.node_rows()), (parent, tree.parent_rows())];
+                for ((name, sql), mut rows) in shadow {
+                    let t = Table { name, sql, rows: Vec::new(), autoindexes: vec![] };
+                    match &mut write {
+                        None => self.tables.push(Table { rows: rows.collect(), ..t }),
+                        Some(write) => {
+                            let built = write(t, &mut rows)?;
+                            self.built.push((self.tables.len(), built));
+                        }
                     }
                 }
             }

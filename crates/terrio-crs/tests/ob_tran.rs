@@ -27,23 +27,6 @@ fn pinned_oblique_mollweide_fixture() {
     }
 }
 
-/// Inverts `point`, retrying it nudged by a relative 1e-12 in easting when it is refused.
-///
-/// A few reference samples fall exactly on the rotated antimeridian, the edge of the inverse
-/// domain, where the platform's libm decides by one ulp whether the point is inside (PROJ itself
-/// refuses `|lam| >= pi`). Only a point on that edge has exactly one side of the nudge accepted,
-/// so an interior point refused at its exact coordinate still fails.
-fn inverse_at_edge(inverse: &Transformer, point: (f64, f64)) -> Result<(f64, f64), String> {
-    inverse.transform(point.0, point.1).or_else(|error| {
-        let nudged: Vec<_> =
-            [1.0 - 1e-12, 1.0 + 1e-12].into_iter().filter_map(|scale| inverse.transform(point.0 * scale, point.1).ok()).collect();
-        match nudged[..] {
-            [one] => Ok(one),
-            _ => Err(error.to_string()),
-        }
-    })
-}
-
 fn angular_error(actual: (f64, f64), expected: &serde_json::Value) -> f64 {
     let lon = expected[0].as_f64().unwrap();
     let lat = expected[1].as_f64().unwrap();
@@ -74,12 +57,21 @@ fn rotated_projections_pole_forms_figures_and_units_match_frozen_proj() {
                 let actual = actual.unwrap_or_else(|e| panic!("{name} {encoding} {point:?}: {e}"));
                 let error = (actual.0 - expected.0).abs().max((actual.1 - expected.1).abs()) * factor;
                 assert!(error <= 0.001, "{name} {encoding} {point:?}: forward error {error} m");
-                if sample[3].is_null() {
+                // Mollweide-family antimeridian samples now invert, even where PROJ refused them.
+                let edge = case["target"]
+                    .as_str()
+                    .unwrap()
+                    .split_whitespace()
+                    .any(|p| matches!(p, "+o_proj=moll" | "+o_proj=wag4" | "+o_proj=wag5"))
+                    && sample[3].is_null();
+                if sample[3].is_null() && !edge {
                     let actual = inverse.transform(expected.0, expected.1);
                     assert!(actual.is_err(), "{name} {encoding}: inverse must refuse {expected:?}, as PROJ does: {actual:?}");
                 } else {
-                    let actual = inverse_at_edge(&inverse, expected).unwrap_or_else(|e| panic!("{name} {encoding} inverse {point:?}: {e}"));
-                    let error = angular_error(actual, &sample[3]);
+                    let actual =
+                        inverse.transform(expected.0, expected.1).unwrap_or_else(|e| panic!("{name} {encoding} inverse {point:?}: {e}"));
+                    let geographic = if edge { serde_json::json!([point.0, point.1]) } else { sample[3].clone() };
+                    let error = angular_error(actual, &geographic);
                     assert!(error <= 1e-8, "{name} {encoding} {point:?}: inverse error {error} degrees");
                 }
             }
@@ -125,5 +117,22 @@ fn conflicting_pole_forms_take_proj_precedence() {
         let target = SpatialRef::parse(&format!("{base} {pole}")).unwrap();
         let actual = Transformer::new(&geographic, &target).unwrap().transform(18.0, 50.0).unwrap();
         assert!((actual.0 - expected.0).abs() < 0.001 && (actual.1 - expected.1).abs() < 0.001, "{pole}: {actual:?}");
+    }
+}
+
+/// Unmodified oblique edge inputs invert for every shared kernel (GDAL 3.13.3 domain policy differs).
+#[test]
+fn rotated_mollweide_and_wagner_accept_antimeridians() {
+    let source = SpatialRef::parse("+proj=longlat +R=6371000").unwrap();
+    for projection in ["moll", "wag4", "wag5"] {
+        let target =
+            SpatialRef::parse(&format!("+proj=ob_tran +o_proj={projection} +o_lon_p=0 +o_lat_p=45 +lon_0=147 +R=6371000")).unwrap();
+        let forward = Transformer::new(&source, &target).unwrap();
+        let inverse = Transformer::new(&target, &source).unwrap();
+        for (lon, lat) in [(-33.0, -75.0), (-33.0, -30.0), (147.0, -60.0)] {
+            let (x, y) = forward.transform(lon, lat).unwrap();
+            let back = inverse.transform(x, y).unwrap();
+            assert!(angular_error(back, &serde_json::json!([lon, lat])) <= 1e-8, "{projection} {lon} {lat}: {back:?}");
+        }
     }
 }

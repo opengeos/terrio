@@ -97,6 +97,15 @@ Writers whose headers or column types depend on the values (CSV, Shapefile, Flat
 GeoParquet) take a `LayerProfile` of all the features, which `convert` computes in a first pass
 over the input, so that a streamed file is identical to the one `write_vector` writes.
 
+With the `sqlite` feature, `stream::GpkgLayersWriter::create(path, &schemas)` writes
+multiple layers into one GeoPackage without collecting all features in memory.
+Call `write(layer_index, &chunk)` in any interleaving, then `finish()` to complete
+tables, spatial indexes and metadata. Native builds spill feature rows, spatial-index
+entries and SQLite page directories to temporary files, using fixed-size sort buffers
+and tree-depth bookkeeping. Schemas with an integer `fid` field
+or neither a geometry type nor CRS must use `write_vector` instead. Creation
+truncates an existing output; dropping the writer before `finish` leaves it incomplete.
+
 ## Arrow
 
 `terrio::arrow` converts layers to and from Arrow record batches with a GeoArrow geometry column

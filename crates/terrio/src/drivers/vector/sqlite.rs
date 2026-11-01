@@ -9,6 +9,8 @@
 //!
 //! The format is described at <https://www.sqlite.org/fileformat2.html>.
 
+mod spilled;
+
 use crate::Result;
 
 const PAGE_SIZE: usize = 4096;
@@ -545,6 +547,7 @@ pub struct StreamTable<W: std::io::Write + std::io::Seek> {
     used: usize,
     last_key: i64,
     level: Vec<(u32, i64)>,
+    disk_level: Option<(std::io::BufWriter<Box<dyn super::Spill>>, usize)>,
 }
 
 impl<W: std::io::Write + std::io::Seek> StreamTable<W> {
@@ -556,7 +559,14 @@ impl<W: std::io::Write + std::io::Seek> StreamTable<W> {
 
     /// Starts a table whose pages go to `out` from page `first` on, after other tables'.
     pub fn starting_at(out: W, first: u32) -> Self {
-        Self { out, next: first, leaf: Vec::new(), used: 8, last_key: 0, level: Vec::new() }
+        Self { out, next: first, leaf: Vec::new(), used: 8, last_key: 0, level: Vec::new(), disk_level: None }
+    }
+
+    /// Also spills the page directory, for memory independent of the number of leaves.
+    pub(crate) fn starting_at_spilled(out: W, first: u32) -> Result<Self> {
+        let mut table = Self::starting_at(out, first);
+        table.disk_level = Some((std::io::BufWriter::new(super::spill()?), 0));
+        Ok(table)
     }
 
     fn alloc(&mut self) -> u32 {
@@ -623,7 +633,14 @@ impl<W: std::io::Write + std::io::Seek> StreamTable<W> {
         let n = self.alloc();
         let page = node_bytes(0x0D, &std::mem::take(&mut self.leaf), None);
         self.write_page(n, &page)?;
-        self.level.push((n, self.last_key));
+        if let Some((rows, count)) = &mut self.disk_level {
+            use std::io::Write;
+            rows.write_all(&n.to_le_bytes())?;
+            rows.write_all(&self.last_key.to_le_bytes())?;
+            *count += 1;
+        } else {
+            self.level.push((n, self.last_key));
+        }
         self.used = 8;
         Ok(())
     }
@@ -635,8 +652,12 @@ impl<W: std::io::Write + std::io::Seek> StreamTable<W> {
 
     /// [`StreamTable::finish`], handing back the output for more pages.
     pub fn finish_with_output(mut self) -> Result<(u32, u32, W)> {
-        if !self.leaf.is_empty() || self.level.is_empty() {
+        let empty = self.disk_level.as_ref().map_or(self.level.is_empty(), |(_, count)| *count == 0);
+        if !self.leaf.is_empty() || empty {
             self.flush_leaf()?;
+        }
+        if let Some((rows, count)) = self.disk_level.take() {
+            return self.finish_spilled(rows, count);
         }
         let mut level = std::mem::take(&mut self.level);
         // A single leaf is the root.
@@ -689,7 +710,26 @@ impl<W: std::io::Write + std::io::Seek> StreamTable<W> {
 /// [`StreamTable`] from page `first` on: the rows of `table` then `more`. Returns the table as
 /// listed in the schema, and the first page after it.
 pub fn stream_table<W: std::io::Write + std::io::Seek>(out: W, first: u32, table: Table, more: &mut Rows) -> Result<(BuiltTable, u32, W)> {
-    let mut st = StreamTable::starting_at(out, first);
+    stream_table_impl(out, first, table, more, false)
+}
+
+pub(crate) fn stream_table_spilled<W: std::io::Write + std::io::Seek>(
+    out: W,
+    first: u32,
+    table: Table,
+    more: &mut Rows,
+) -> Result<(BuiltTable, u32, W)> {
+    stream_table_impl(out, first, table, more, true)
+}
+
+fn stream_table_impl<W: std::io::Write + std::io::Seek>(
+    out: W,
+    first: u32,
+    table: Table,
+    more: &mut Rows,
+    spilled: bool,
+) -> Result<(BuiltTable, u32, W)> {
+    let mut st = if spilled { StreamTable::starting_at_spilled(out, first)? } else { StreamTable::starting_at(out, first) };
     for (rowid, values) in &table.rows {
         st.push(*rowid, &record(values))?;
     }

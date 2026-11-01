@@ -28,7 +28,15 @@ as PROJ strings with typical parameters and as pyproj's WKT1 and WKT2 of them:
 Krovak off Bessel's ellipsoid, where PROJ's inverse is not the inverse of its forward.
 
 Mollweide and Wagner IV/V use Terrio's own ports of PROJ's formulas, including
-PROJ's finite Mollweide pole approximation. The orthographic inverse intersects
+PROJ's finite Mollweide pole approximation. Their inverses judge antimeridian
+rounding on the normalized projected ellipse, allowing its radius up to
+`1 + 8 * f64::EPSILON`. Longitude estimates at or above `π - 8 * ulp(π)` in
+absolute value snap to the corresponding antimeridian if they pass that radius
+check; points farther outside the ellipse remain errors. The resulting longitude
+allowance grows toward the poles because inversion amplifies projected-coordinate
+rounding there. This deliberately differs from PROJ's strict exclusion of the edge
+in GDAL 3.13.3, avoiding refusals caused by platform libm rounding.
+The orthographic inverse intersects
 the viewing ray with the ellipsoid directly, including local scale and azimuth.
 For Winkel Tripel, an omitted `lat_1` means 0, as in PROJ's CRS model and GDAL;
 PROJ's bare operation instead defaults to `acos(2/pi)` (about 50.46°). Supply

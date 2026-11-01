@@ -985,6 +985,76 @@ impl FeatureSink for GpkgSink {
     }
 }
 
+/// Writes several GeoPackage layers in bounded memory, accepting chunks in any order.
+///
+/// In native builds, rows, spatial-index entries and SQLite page directories are spooled
+/// to temporary files. Memory depends on schemas, the current chunk, fixed sort buffers
+/// and tree-depth bookkeeping, rather than the total feature count. Call [`Self::finish`]
+/// to write tables, R-trees and metadata. Dropping an unfinished writer leaves an
+/// incomplete output file.
+/// Requires the `sqlite` feature. Existing files are truncated by successful creation.
+///
+/// ```no_run
+/// use terrio::stream::{GpkgLayersWriter, schema_of};
+/// # let layers: Vec<terrio::Layer> = vec![];
+/// let schemas: Vec<_> = layers.iter().map(schema_of).collect();
+/// let mut writer = GpkgLayersWriter::create("combined.gpkg", &schemas)?;
+/// for (index, chunk) in layers.iter().enumerate() {
+///     writer.write(index, chunk)?;
+/// }
+/// writer.finish()?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
+#[cfg(feature = "sqlite")]
+pub struct GpkgLayersWriter {
+    sink: GpkgLayersSink,
+}
+
+#[cfg(feature = "sqlite")]
+impl GpkgLayersWriter {
+    /// Creates the output using each layer's name, fields, CRS and geometry type, ignoring
+    /// features. Refuses integer `fid` fields and schemas with neither CRS nor geometry type;
+    /// use [`crate::write_vector`] for those. Duplicate/reserved table names are also refused.
+    /// Geometry declarations are inferred from arriving features, as in the whole-layer writer.
+    pub fn create(path: &str, schemas: &[Layer]) -> Result<Self> {
+        for schema in schemas {
+            let name = schema.name.to_ascii_lowercase();
+            if name.starts_with("gpkg_") || name.starts_with("sqlite_") {
+                return Err(Error::InvalidArgument(format!("'{}' is a reserved GeoPackage table name", schema.name)));
+            }
+        }
+        let sink = GpkgLayersSink::create(path, schemas, false)?.ok_or_else(|| {
+            Error::Unsupported("streaming GeoPackage layers require a geometry type or CRS and no integer fid field".into())
+        })?;
+        Ok(Self { sink })
+    }
+
+    /// Writes a chunk to the zero-based layer index from [`Self::create`]. Chunks must have
+    /// the same fields, in the same order, as that layer's schema; feature IDs are assigned
+    /// sequentially within each output layer. An invalid index or field schema returns an error.
+    /// Chunk CRS declarations are ignored: coordinates must already use the output schema's
+    /// CRS; this method does not reproject them. Geometry types are inferred from features,
+    /// rather than the chunk's geometry-type declaration.
+    pub fn write(&mut self, index: usize, chunk: &Layer) -> Result<()> {
+        let layer = self.sink.layers.get(index).ok_or_else(|| Error::InvalidArgument(format!("no output layer at index {index}")))?;
+        if layer.schema.schema.fields().iter().map(|f| (&f.name, f.field_type)).ne(chunk
+            .schema
+            .fields()
+            .iter()
+            .map(|f| (&f.name, f.field_type)))
+            || chunk.features.iter().any(|f| f.attributes.len() != layer.schema.schema.fields().len())
+        {
+            return Err(Error::InvalidArgument("chunk fields must match the output layer schema".into()));
+        }
+        self.sink.write(index, chunk)
+    }
+
+    /// Consumes the writer and completes the GeoPackage, including empty layers.
+    pub fn finish(self) -> Result<()> {
+        self.sink.finish()
+    }
+}
+
 /// A GeoPackage of several layers whose features arrive in any interleaving (a chunk of one
 /// layer, then of another): each layer's rows are encoded as they come into a temporary file of
 /// its own, with their bounds, then copied into the database one table after another
@@ -1070,7 +1140,7 @@ impl GpkgLayersSink {
 
     /// Writes the tables, one after another, then the rest of the database.
     pub(crate) fn finish(self) -> Result<()> {
-        use crate::drivers::vector::geopackage::{LayerExtent, LayerTable};
+        use crate::drivers::vector::geopackage::LayerTable;
         use crate::drivers::vector::sqlite::{BuiltTable, StreamTable};
         let Self { mut out, mut builder, layers, preserve } = self;
         let mut next = 2;
@@ -1078,8 +1148,8 @@ impl GpkgLayersSink {
             let mut rows = l.rows.into_inner().map_err(|e| Error::Io(e.into_error()))?;
             rows.seek(SeekFrom::Start(0))?;
             let mut rows = BufReader::with_capacity(1 << 20, rows);
-            let mut table = StreamTable::starting_at(&mut out, next);
-            let mut extent = LayerExtent::default();
+            let mut table = StreamTable::starting_at_spilled(&mut out, next)?;
+            let mut extent = crate::drivers::vector::geopackage::spilled::Extent::new()?;
             let mut head = [0u8; 9];
             let mut rec = Vec::new();
             for _ in 0..l.count {
@@ -1098,17 +1168,18 @@ impl GpkgLayersSink {
                 rec.resize(u32::from_le_bytes(len) as usize, 0);
                 rows.read_exact(&mut rec)?;
                 table.push(rowid, &rec)?;
-                extent.add(rowid, bbox);
+                extent.add(rowid, bbox)?;
             }
             let (root, after) = table.finish()?;
             next = after;
             // The R-tree's tables follow the layer's.
             let mut write = |t, rows: &mut crate::drivers::vector::sqlite::Rows| {
-                let (built, after, _) = crate::drivers::vector::sqlite::stream_table(&mut out, next, t, rows)?;
+                let (built, after, _) = crate::drivers::vector::sqlite::stream_table_spilled(&mut out, next, t, rows)?;
                 next = after;
                 Ok(built)
             };
             // The schema decisions of the whole-layer writer, from the profile.
+            let extent = extent.finish()?;
             let g = &l.profile.geometry;
             let all_none = g.count == 0;
             let declared = if preserve || all_none { l.schema.geom_type } else { l.profile.uniform_type() };

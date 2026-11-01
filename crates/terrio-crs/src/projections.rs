@@ -3318,10 +3318,19 @@ impl Proj for Moll {
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
         let theta = aasin_checked(y / self.cy)?;
-        let lam = x / (self.cx * theta.cos());
-        // PROJ excludes the antimeridian itself from this inverse's domain.
-        if !lam.is_finite() || lam.abs() >= PI {
+        let mut lam = x / (self.cx * theta.cos());
+        // GDAL 3.13.3 / PROJ excludes the antimeridian. Test its elliptical image
+        // in projected coordinates: a fixed longitude tolerance amplifies y rounding
+        // near the poles. Eight ulps of the unit radius absorb coordinate rounding.
+        if !lam.is_finite() {
             return None;
+        }
+        let edge = 8.0 * (PI.next_up() - PI);
+        if lam.abs() >= PI - edge {
+            if (x / (self.cx * PI)).hypot(y / self.cy) > 1.0 + 8.0 * f64::EPSILON {
+                return None;
+            }
+            lam = PI.copysign(lam);
         }
         let twice = 2.0 * theta;
         Some((lam, aasin_checked((twice + twice.sin()) / self.cp)?))
@@ -4822,6 +4831,34 @@ mod benchmark_regressions {
                 let expected = 1.0 / srat(e * phi0.sin(), 0.5 * e);
                 assert!(gauss.k.is_finite() && (gauss.k - expected).abs() < 1e-14);
                 assert!((chi - phi0).abs() < 1e-15 && radius.is_finite());
+            }
+        }
+    }
+
+    /// Edge policy deliberately differs from GDAL 3.13.3's strict PROJ domain.
+    #[test]
+    fn mollweide_and_wagner_snap_antimeridian_roundoff() {
+        for name in ["moll", "wag4", "wag5"] {
+            let p = Moll::new(name);
+            for sign in [-1.0, 1.0] {
+                for ulps in [-4.0, 0.0, 4.0] {
+                    let lam = sign * (PI + ulps * (PI.next_up() - PI));
+                    let actual = p.inv(p.cx * lam, 0.0).unwrap();
+                    assert_eq!(actual, (sign * PI, 0.0), "{name}");
+                }
+                // High auxiliary latitudes amplify an ulp of y into many ulps of longitude.
+                for theta in if name == "moll" { [1.2_f64, 1.4, 1.5] } else { [0.8, 0.9, 1.0] } {
+                    let x = p.cx * sign * PI * theta.cos();
+                    let y = p.cy * theta.sin();
+                    for rounded_y in [y.next_down(), y, y.next_up()] {
+                        let actual = p.inv(x, rounded_y).unwrap();
+                        assert!((actual.0 - sign * PI).abs() < 1e-12, "{name}: {theta}");
+                    }
+                    assert!(p.inv(x * (1.0 + 1e-10), y).is_none(), "{name}: {theta}");
+                }
+                assert!(p.inv(p.cx * sign * (PI + 1e-12), 0.0).is_none());
+                let inside = sign * (PI - 1e-12);
+                assert!((p.inv(p.cx * inside, 0.0).unwrap().0 - inside).abs() < 1e-15);
             }
         }
     }
