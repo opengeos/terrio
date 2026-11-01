@@ -36,11 +36,13 @@ terrio rasterize counties.gpkg counties.tif -a FIPS --tr 0.01 0.01
   archives, and GDAL's `/vsicurl/`, `/vsis3/`, `/vsizip/` prefixes. Remote COGs are read window by
   window. See [Remote Data](remote-data.md).
 - **GDAL-style operations**: `translate`, `warp` (14 resampling methods), `mosaic` and VRTs,
-  `rasterize`, `polygonize`, and `convert` with OGR SQL filters. See [Command Line](cli.md).
+  `rasterize`, `polygonize`, `dem`, `calc`, `contour`, overviews, and `convert` with OGR SQL filters. See [Command Line](cli.md).
 - **Coordinate reference systems**: EPSG codes, WKT, PROJ strings and `.prj` files, identified and
   transformed the way GDAL does. See [Coordinate Systems](crs.md).
-- **Three interfaces**: a [Rust library](rust.md), a [Python package](python.md) with NumPy arrays,
-  and an [npm package](javascript.md) compiled to WebAssembly.
+- **Every interface**: the [command line](cli.md), a [Rust library](rust.md), a
+  [Python package](python.md) with NumPy arrays, an [npm package](javascript.md) compiled to
+  WebAssembly, and an [MCP server](mcp.md) for AI agents. Try it in the
+  [playground](playground.md) or the [notebooks](notebooks.md), with nothing to install.
 
 ## How terrio relates to GDAL
 
@@ -61,4 +63,5 @@ terrio is in early development. The API may change before 1.0. See the
 
 ## License
 
-MIT.
+MIT, except the point cloud eigensolver (MPL-2.0). See
+[NOTICE](https://github.com/opengeos/terrio/blob/main/NOTICE).

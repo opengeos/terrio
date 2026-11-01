@@ -1,7 +1,9 @@
 # Testing Against GDAL
 
-GDAL is terrio's reference: every driver and operation is compared with GDAL 3.12 on real-world
-files, and the comparisons run in continuous integration on every pull request. Pull requests
+GDAL is terrio's reference: drivers and operations are compared with GDAL on real-world files.
+The conformance suites run against GDAL 3.12.2 and PROJ 9.8.1 in `ci-extended.yml`, on every push
+to `main` and on pull requests on demand (Run workflow, or a `ci:conformance` or `ci:all` label).
+Suites that require GDAL 3.13 run only in a local environment with that version. Pull requests
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 

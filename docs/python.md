@@ -11,7 +11,8 @@ pip install terrio
 The [quickstart notebook](notebooks.md) runs these functions on real data, in Google Colab or locally.
 
 Coming from rasterio? `import terrio.rio as rasterio` runs typical rasterio scripts unchanged: see
-[Coming from rasterio](rasterio.md).
+[Coming from rasterio](rasterio.md). `terrio.compat.install()` goes further: `import rasterio`,
+`rioxarray` and `pyogrio` then resolve to `terrio.rio`, `terrio.xarray` and `terrio.pyogrio`.
 
 Working with xarray? `terrio.xarray.open_rasterio` (or `xr.open_dataset(path, engine="terrio")`)
 opens rasters lazily as DataArrays, as rioxarray does, and the `.terrio` accessor has rioxarray's
@@ -77,7 +78,7 @@ europe = terrio.open_vector("counties.gpkg", bbox=(-10, 35, 30, 60))
 # Existing GeoPackages are updated: features appended to a layer (new ids, R-tree, extent and
 # feature count updated, as GDAL does), layers replaced or added, other tables kept.
 terrio.write_vector(layer, "world.gpkg", append=True)
-terrio.convert("more.shp", "world.gpkg", layer_name="countries", overwrite=True)
+terrio.convert("more.shp", "world.gpkg", nln="countries", overwrite=True)
 ```
 
 Driver open options go in `options`, by their GDAL names, as `terrio convert --oo` takes them.
@@ -105,7 +106,7 @@ back).
 Layers larger than memory are read a chunk of features at a time with `terrio.open_stream`
 (GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq and CSV; other formats are
 read whole and handed out in chunks), and `terrio.convert` streams vector conversions between
-those formats (all but GeoPackage as outputs), as the command line does:
+those formats (GeoPackage outputs included), as the command line does:
 
 ```python
 stream = terrio.open_stream("buildings.gpkg", "buildings", batch_size=100_000)
@@ -344,6 +345,15 @@ These follow GDAL's `gdal raster unscale`, `nodata-to-alpha`, `reclassify` and `
 see [unscale](cli.md#unscale), [nodata-to-alpha](cli.md#nodata-to-alpha),
 [reclassify](cli.md#reclassify) and [as-features](cli.md#as-features).
 
+## Analysis and topology
+
+`contour`, `footprint`, `zonal_stats`, `buffer`, `dissolve`, `make_valid`, `check_geometry`,
+`singlepart`, `clip_vector`, `layer_algebra`, `check_coverage`, `simplify_coverage`,
+`clean_coverage`, `blend`, `identify`, `check_dataset`, `pipeline`, `raster_tiles`, `retile`,
+`raster_index`, `vector_index` and `rpftoc_create` follow the matching
+[commands](cli.md); see `help(terrio.contour)` for each one's arguments. `list_layers(path)` and
+`write_raster(raster, path, ...)` are the plain I/O helpers.
+
 ## File management
 
 ```python
@@ -556,8 +566,7 @@ into an existing file and returns its changed window, or None for no overlap.
 Their keyword options follow the CLI, including compression, partial refresh,
 clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
-base update commits. Use `create-raster`, `edit-raster` and `update-raster` when
-calling the corresponding CLI commands.
+base update commits.
 
 COG validation also accepts uploaded TIFF `bytes`. Use
 `terrio.validate_cog(data, profile="gdal", full_check=True)` for GDAL 3.13
@@ -598,11 +607,11 @@ priority, type preservation and supported scope.
 
 ## Dataset file management
 
-`terrio.dataset_files(path, *, format=None)` returns the driver, owned files and a
+`terrio.dataset_files(source, *, format=None)` returns the driver, owned files and a
 `directory` flag. `dataset_copy(source, destination, *, format=None, overwrite=False, allow_external_references=False)`
 and `dataset_rename(source, destination, *, format=None, overwrite=False, allow_external_references=False)` manage the complete file set and return affected paths
 and copied bytes. Paths may be strings or `os.PathLike` values, including VSI paths.
-`dataset_delete(path_or_iterable, *, format=None)` preflights all inputs and returns a
+`dataset_delete(sources, *, format=None)` preflights all inputs and returns a
 list of reports. VRT references stay in the source directory tree by default;
 `allow_external_references=True` permits trusted external assets. Deleting a VRT
 preserves referenced rasters. Reports include `recovery_files`: a nonempty list

@@ -71,8 +71,9 @@ Zstandard, LZMA, LERC (alone, with Deflate or with Zstandard, lossless or not, w
 JPEG XL, with horizontal and floating-point predictors, tiled or striped, chunky or planar. JPEG
 (in GeoTIFFs, GeoPackage and tile archive tiles, and `.jpg` files) is decoded exactly as GDAL's
 libjpeg decodes it: the same integer IDCT, chroma upsampling and YCbCr conversion, so the pixels are
-GDAL's. Lossy JPEG XL can differ from libjxl's by 1 in a few pixels. LERC, JPEG XL and LZMA are
-read, not written. Unsigned samples packed in 9 to 15 or 17 to 31 bits (GDAL's
+GDAL's. Lossy JPEG XL can differ from libjxl's by 1 in a few pixels. LERC (`--compress LERC`,
+`LERC_DEFLATE`, `LERC_ZSTD`) and lossless JPEG XL (`JXL`, for Byte and UInt16) are written too;
+LZMA is read, not written. Unsigned samples packed in 9 to 15 or 17 to 31 bits (GDAL's
 `NBITS`, as GDAL writes Sentinel-2's 15-bit bands) are read as UInt16 or UInt32, as GDAL reads them,
 in either bit order (`FillOrder`); packed signed samples and packed samples with a predictor are
 not supported (GDAL writes neither). WhiteIsZero samples are read as stored, as GDAL reads them,
@@ -611,12 +612,15 @@ Rust read and write Arrow IPC streams.
 | LAS | ASPRS LAS 1.0 to 1.4, point formats 0 to 10 | ✓ | ✓ | las |
 | LAZ | LASzip-compressed LAS | ✓ | ✓ | laz |
 | COPC | Cloud Optimized Point Cloud | ✓ | ✓ | copc.laz |
+| EPT | Entwine Point Tile | ✓ | ✓ | ept.json |
+| PLY | Polygon File Format | ✓ | ✓ | ply |
+| E57 | ASTM E57 3D imaging data | ✓ | ✓ | e57 |
 
 See [Point Clouds](point-clouds.md).
 
 ## In WebAssembly
 
-The browser and Node.js package reads from bytes. GRIB files are read there too, band by band
+The browser and Node.js package reads from bytes, or by range with `openUrl`. GRIB files are read there too, band by band
 (the full module). JPEG 2000 is read and written there with the same
 codec as natively (written with a nodata value, it comes back as a zip archive of the JP2 file and
 its `.aux.xml` sidecar), and GeoTIFFs in every compression above are read. Formats made

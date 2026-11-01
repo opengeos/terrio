@@ -1,7 +1,7 @@
 # Getting Started
 
-This walk-through uses public data: Natural Earth countries, a USGS 3DEP elevation tile and a
-Sentinel-2 image on AWS.
+This walk-through uses public data: Natural Earth countries and a USGS 3DEP elevation
+tile.
 
 ## Look at a dataset
 
@@ -33,7 +33,7 @@ terrio info https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/cur
 The output format comes from the extension, or from `-f`:
 
 ```sh
-terrio convert ne_110m_admin_0_countries.zip countries.gpkg
+terrio convert https://naciscdn.org/naturalearth/110m/cultural/ne_110m_admin_0_countries.zip countries.gpkg
 terrio convert countries.gpkg countries.fgb
 terrio convert countries.gpkg europe.parquet --where "CONTINENT = 'Europe'" --select NAME,POP_EST
 terrio convert countries.gpkg countries_3857.geojson --t-srs EPSG:3857
@@ -42,13 +42,13 @@ terrio convert countries.gpkg countries_3857.geojson --t-srs EPSG:3857
 Rasters convert the same way:
 
 ```sh
-terrio convert USGS_1_n40w106.tif dem.tif -f COG --compress DEFLATE
+terrio convert https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif dem.tif -f COG --compress DEFLATE
 ```
 
 ## Process rasters
 
 ```sh
-# A window, a type change and rescaling
+# A window and a type change
 terrio translate dem.tif subset.tif --srcwin 1000 1000 512 512 --ot Int16
 
 # Reproject to UTM zone 13N at 30 m with bilinear resampling
@@ -81,3 +81,4 @@ terrio crs EPSG:4326 --to EPSG:32613 -105.5 39.5
 - [Command Line](cli.md) for every option
 - [Benchmarks](benchmarks.md) for timings against GDAL
 - [Python](python.md) and [JavaScript](javascript.md) for scripting
+- [Playground](playground.md) and [Notebooks](notebooks.md) to try terrio in your browser

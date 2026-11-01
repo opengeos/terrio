@@ -22,7 +22,8 @@ kind found among vector layers, rasters and point clouds (LAS, LAZ, COPC, PLY, E
 
 GeoTIFFs and COGs are opened lazily: `terrio info` fetches the header only, and window or overview
 reads fetch only the tiles they touch, merging adjacent ranges into one request. PMTiles archives
-and Zarr stores are read in place too (below). Other formats are downloaded to a temporary
+Zarr stores, JPEG 2000, GRIB, SRTM HGT, STAC tiled assets, COPC and EPT are read in place too
+(below). Other formats are downloaded to a temporary
 directory first; a remote shapefile's `.shx`, `.dbf`, `.prj` and `.cpg`
 come with it.
 

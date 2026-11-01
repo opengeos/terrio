@@ -1,8 +1,9 @@
 # Vector SQL
 
 `terrio sql`, Rust `ops::sql::query`, Python `terrio.sql(src, query)` and JavaScript
-`sql(src, query)` share one pure-Rust query engine, including WebAssembly builds. The CLI MCP
-`sql` tool exposes the same command. `convert --sql` and Python `convert(..., sql=...)` use
+`sql(src, query)` share one pure-Rust query engine, including WebAssembly builds. The `sql`
+MCP tool exposes the same command, as in
+`terrio sql countries.gpkg big.geojson --query "SELECT ADMIN FROM countries WHERE POP_EST > 10000000"`. `convert --sql` and Python `convert(..., sql=...)` use
 the same engine before subsequent vector translation options.
 
 ```sql

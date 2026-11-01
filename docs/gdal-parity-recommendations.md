@@ -3,7 +3,7 @@
 Initial assessment date: 2026-10-24. Based on the checkout before PR #239 and official GDAL
 documentation. Priorities and effort are engineering judgments, not measured estimates.
 Implementation is tracked in [#238](https://github.com/opengeos/terrio/issues/238)
-and the [roadmap](../ROADMAP.md#next-practical-gdal-feature-parity).
+and the [roadmap](https://terrio.dev/roadmap/#completed-practical-gdal-feature-parity).
 
 ## Existing foundation
 
@@ -11,7 +11,7 @@ Terrio already implements common raster/vector formats, cloud and archive access
 COGs, window reads, streaming vector conversion, streaming warp/mosaic/terrain
 outputs, GCP/RPC transformers, the full warp resampler list, STAC/STACIT/STACTA,
 GRIB, netCDF/HDF5/Zarr, Arrow, topology, contours and zonal statistics. These are
-documented in [the roadmap](../ROADMAP.md), [formats](formats.md) and
+documented in [the roadmap](roadmap.md), [formats](formats.md) and
 [CLI documentation](cli.md). Recommendations below extend these implementations.
 The optional GDAL backend provides additional format access; it does not constitute
 native implementation of the proposed operations.
