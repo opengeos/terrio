@@ -15,6 +15,8 @@ GDAL. Wheels need only NumPy (and the small `affine` package).
 
 ```sh
 pip install terrio
+# or, with conda or mamba
+conda install -c conda-forge terrio
 ```
 
 It installs the `terrio` command line too (`terrio info`, `convert`, `warp`, `translate`...; see
