@@ -11,7 +11,7 @@ Terrio already implements common raster/vector formats, cloud and archive access
 COGs, window reads, streaming vector conversion, streaming warp/mosaic/terrain
 outputs, GCP/RPC transformers, the full warp resampler list, STAC/STACIT/STACTA,
 GRIB, netCDF/HDF5/Zarr, Arrow, topology, contours and zonal statistics. These are
-documented in [the roadmap](roadmap.md), [formats](formats.md) and
+documented in [the roadmap](https://terrio.dev/roadmap/), [formats](formats.md) and
 [CLI documentation](cli.md). Recommendations below extend these implementations.
 The optional GDAL backend provides additional format access; it does not constitute
 native implementation of the proposed operations.

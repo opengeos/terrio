@@ -65,6 +65,13 @@ fn invalid_catalog_paths_report_usage_errors() {
     }
 }
 
+/// The name and summary of a command table row: ``| [`name`](link) | summary |``.
+fn command_row(line: &str) -> Option<(String, String)> {
+    let (name, rest) = line.strip_prefix("| [`")?.split_once("`](")?;
+    let (_link, summary) = rest.split_once(") | ")?;
+    Some((name.to_string(), summary.strip_suffix(" |")?.to_string()))
+}
+
 /// `docs/cli.md` lists every command in alphabetical order, with the summary `--help` prints.
 #[test]
 fn documented_command_list_matches_the_catalog() {
@@ -79,18 +86,13 @@ fn documented_command_list_matches_the_catalog() {
             (command["name"].as_str().unwrap().to_string(), summary.to_string())
         })
         .collect();
-    // The catalog leaves out `mcp`, which serves it.
-    expected.push(("mcp".to_string(), "Serve these commands to AI agents over MCP".to_string()));
+    // The catalog leaves out `mcp`, which serves it: its summary comes from `--help`.
+    let help = String::from_utf8(run(&["--help"], dir.path()).stdout).unwrap();
+    let mcp = help.lines().find_map(|line| line.trim_start().strip_prefix("mcp ")).unwrap();
+    expected.push(("mcp".to_string(), mcp.trim().to_string()));
     expected.sort();
 
     let docs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/cli.md")).unwrap();
-    let documented: Vec<(String, String)> = docs
-        .lines()
-        .filter_map(|line| line.strip_prefix("| [`")?.split_once("`](")?.1.split_once(") | ").map(|(_, rest)| (line, rest)))
-        .map(|(line, summary)| {
-            let name = line.strip_prefix("| [`").unwrap().split_once('`').unwrap().0;
-            (name.to_string(), summary.trim_end_matches(" |").to_string())
-        })
-        .collect();
+    let documented: Vec<(String, String)> = docs.lines().filter_map(command_row).collect();
     assert_eq!(documented, expected);
 }
