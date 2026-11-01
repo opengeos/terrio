@@ -7,8 +7,8 @@ name: Release
 # (pypi, crates-io, npm). The artifacts are built by release-build.yml, which
 # release-dry-run.yml can run manually before a release, without publishing. Then linux-packages.yml
 # updates the AUR packages and builds the COPR one, with the two secrets it describes (the AUR
-# and COPR have no trusted publishing), and docker.yml publishes the image to the GitHub Container
-# Registry.
+# and COPR have no trusted publishing), homebrew.yml tests the cask and pushes it to the tap, with
+# the secret it describes, and docker.yml publishes the image to the GitHub Container Registry.
 on:
   push:
     tags: ["v*"]
@@ -56,6 +56,17 @@ jobs:
     secrets:
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
       COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+
+  homebrew:
+    # The cask, once the release's binaries and checksums are on GitHub.
+    needs: [github-release]
+    # Final releases only: the cask's renderer refuses a pre-release, which the tap must not offer.
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    uses: ./.github/workflows/homebrew.yml
+    with:
+      version: ${{ github.ref_name }}
+    secrets:
+      HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
 
   docker:
     # The image, once the packages are on PyPI, as for the GitHub release.

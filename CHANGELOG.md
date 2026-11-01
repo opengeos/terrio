@@ -14,6 +14,8 @@
 - `terrio --help` and the nested command lists are sorted alphabetically, with a
   one-line summary of at most 60 characters per command. Details such as the
   matching GDAL or PDAL tool moved to each command's own `--help`.
+- Homebrew installs the `terrio` command on macOS and Linux, with `brew install
+  --cask opengeos/terrio/terrio`. Each release tests the cask and updates the tap.
 
 ## 0.6.0 (2026-10-31)
 

@@ -47,7 +47,8 @@ curl -LsSf https://terrio.dev/install.sh | sh                                # L
 powershell -ExecutionPolicy ByPass -c "irm https://terrio.dev/install.ps1 | iex"  # Windows
 ```
 
-`pip install terrio` installs it too, and `cargo install terrio-cli` builds it from source (see
+`brew install --cask opengeos/terrio/terrio` and `pip install terrio` install it too, and
+`cargo install terrio-cli` builds it from source (see
 [Installation](https://terrio.dev/installation/)).
 
 ```sh
