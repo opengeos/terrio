@@ -167,6 +167,18 @@ def _to_raster_dtypes(
     """
     if dtype is None:
         dtype = xarray_dataarray.encoding.get("dtype", str(xarray_dataarray.dtype))
+        # A masked integer source may have no on-disk nodata. Warping introduces NaN
+        # borders, which its old integer encoding cannot represent. Keep those pixels
+        # and the floating values instead of inventing an integer sentinel.
+        nodata = xarray_dataarray.terrio.nodata
+        if (
+            np.issubdtype(np.dtype(dtype), np.integer)
+            and np.issubdtype(xarray_dataarray.dtype, np.floating)
+            and xarray_dataarray.encoding.get("_FillValue") is None
+            and nodata is not None
+            and np.isnan(nodata)
+        ):
+            dtype = xarray_dataarray.dtype
     numpy_dtype = np.dtype(dtype)
     if "_Unsigned" in xarray_dataarray.encoding:
         unsigned = _get_unsigned_dtype(xarray_dataarray.encoding["_Unsigned"] == "true", dtype)
@@ -175,6 +187,9 @@ def _to_raster_dtypes(
             dtype = unsigned
             xarray_dataarray.encoding["rasterio_dtype"] = str(unsigned)
             xarray_dataarray.encoding["dtype"] = str(unsigned)
+    # CF encoding must use the selected output type too, including explicit overrides.
+    # Otherwise it can cast floating values through the stale source integer type.
+    xarray_dataarray.encoding["dtype"] = str(numpy_dtype)
     return xarray_dataarray, numpy_dtype, str(np.dtype(dtype))
 
 
@@ -328,7 +343,14 @@ def write_raster(
     da.terrio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim, inplace=True)
     da, numpy_dtype, kwargs["dtype"] = _to_raster_dtypes(da, kwargs.get("dtype"))
     if kwargs.get("nodata") is not None:
-        kwargs["nodata"] = _ensure_nodata_dtype(kwargs["nodata"], numpy_dtype)
+        try:
+            kwargs["nodata"] = _ensure_nodata_dtype(kwargs["nodata"], numpy_dtype)
+        except OverflowError as error:
+            raise OverflowError(
+                f"{error} Choose a floating output dtype (for example dtype='float32'), "
+                "or set a representable fill value with "
+                "write_nodata(value, encoded=True) before to_raster()."
+            ) from error
     if kwargs.get("crs") is None:
         kwargs.pop("crs", None)
     # Ground control points and RPCs, written as the file's georeferencing.
