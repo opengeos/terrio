@@ -51,15 +51,27 @@ fn index(value: &Value) -> Result<usize> {
     value.as_u64().and_then(|i| usize::try_from(i).ok()).ok_or_else(|| invalid("vertex or template index must be a nonnegative integer"))
 }
 
-fn position(value: &Value, vertices: &[Coord]) -> Result<Coord> {
-    vertices.get(index(value)?).cloned().ok_or_else(|| invalid("vertex index out of bounds"))
+struct Positions<'a> {
+    points: &'a [Coord],
+    transform: Option<([f64; 16], [f64; 3])>,
 }
 
-fn line(value: &Value, vertices: &[Coord]) -> Result<Vec<Coord>> {
+fn position(value: &Value, vertices: &Positions<'_>) -> Result<Coord> {
+    let c = vertices.points.get(index(value)?).ok_or_else(|| invalid("vertex index out of bounds"))?;
+    let Some((matrix, offset)) = &vertices.transform else { return Ok(c.clone()) };
+    let p = [c.x, c.y, c.z.unwrap_or(0.0), 1.0];
+    let p: [f64; 3] = std::array::from_fn(|i| (0..4).map(|j| matrix[i * 4 + j] * p[j]).sum::<f64>() + offset[i]);
+    if p.iter().any(|v| !v.is_finite()) {
+        return Err(invalid("instance coordinate is not finite"));
+    }
+    Ok(Coord { x: p[0], y: p[1], z: Some(p[2]), m: None })
+}
+
+fn line(value: &Value, vertices: &Positions<'_>) -> Result<Vec<Coord>> {
     array(value)?.iter().map(|i| position(i, vertices)).collect()
 }
 
-fn ring(value: &Value, vertices: &[Coord]) -> Result<Ring> {
+fn ring(value: &Value, vertices: &Positions<'_>) -> Result<Ring> {
     let mut points = line(value, vertices)?;
     if points.len() > 1 && points.first() == points.last() {
         points.pop();
@@ -70,14 +82,14 @@ fn ring(value: &Value, vertices: &[Coord]) -> Result<Ring> {
     Ok(Ring::new(points))
 }
 
-fn surface(value: &Value, vertices: &[Coord]) -> Result<Geometry> {
+fn surface(value: &Value, vertices: &Positions<'_>) -> Result<Geometry> {
     let mut rings = array(value)?.iter().map(|r| ring(r, vertices));
     let exterior = rings.next().ok_or_else(|| invalid("surface has no exterior ring"))??;
     Ok(Geometry::Polygon { exterior, interiors: rings.collect::<Result<_>>()? })
 }
 
 /// Flatten known boundary nesting only: malformed geometry must not silently disappear.
-fn surfaces(value: &Value, depth: usize, vertices: &[Coord], out: &mut Vec<Geometry>) -> Result<()> {
+fn surfaces(value: &Value, depth: usize, vertices: &Positions<'_>, out: &mut Vec<Geometry>) -> Result<()> {
     if depth == 0 {
         out.push(surface(value, vertices)?);
     } else {
@@ -88,7 +100,7 @@ fn surfaces(value: &Value, depth: usize, vertices: &[Coord], out: &mut Vec<Geome
     Ok(())
 }
 
-fn primitives(geometry: &Value, vertices: &[Coord]) -> Result<Vec<Geometry>> {
+fn primitives(geometry: &Value, vertices: &Positions<'_>) -> Result<Vec<Geometry>> {
     let boundaries = &geometry["boundaries"];
     let mut out = Vec::new();
     match geometry["type"].as_str() {
@@ -114,16 +126,22 @@ fn primitives(geometry: &Value, vertices: &[Coord]) -> Result<Vec<Geometry>> {
     Ok(out)
 }
 
-fn semantic_values(boundaries: &Value, values: &Value, surfaces: &[Value], depth: usize, out: &mut Vec<FieldValue>) -> Result<()> {
+fn semantic_values<'a>(
+    boundaries: &Value,
+    values: &Value,
+    surfaces: &'a [Value],
+    depth: usize,
+    out: &mut Vec<Option<&'a Value>>,
+) -> Result<()> {
     if depth == 0 {
         out.push(if values.is_null() {
-            FieldValue::Null
+            None
         } else {
             let surface = surfaces.get(index(values)?).ok_or_else(|| invalid("semantic surface index out of bounds"))?;
             if !surface.is_object() {
                 return Err(invalid("semantic surface must be an object"));
             }
-            text(surface)
+            Some(surface)
         });
     } else {
         let boundaries = array(boundaries)?;
@@ -138,9 +156,9 @@ fn semantic_values(boundaries: &Value, values: &Value, surfaces: &[Value], depth
     Ok(())
 }
 
-fn primitive_semantics(geometry: &Value, count: usize) -> Result<Vec<FieldValue>> {
+fn primitive_semantics(geometry: &Value, count: usize) -> Result<Vec<Option<&Value>>> {
     if geometry["semantics"].is_null() {
-        return Ok(vec![FieldValue::Null; count]);
+        return Ok(vec![None; count]);
     }
     let depth = match geometry["type"].as_str() {
         Some("MultiSurface" | "CompositeSurface") => 1,
@@ -154,16 +172,18 @@ fn primitive_semantics(geometry: &Value, count: usize) -> Result<Vec<FieldValue>
     Ok(out)
 }
 
-fn instance(geometry: &Value, doc: &Value, world: &[Coord]) -> Result<(Value, Vec<Coord>)> {
+fn instance<'a>(geometry: &Value, doc: &'a Value, world: &Positions<'_>, points: &'a [Coord]) -> Result<(&'a Value, Positions<'a>)> {
     let templates = &doc["geometry-templates"];
     let template =
-        array(&templates["templates"])?.get(index(&geometry["template"])?).ok_or_else(|| invalid("template index out of bounds"))?.clone();
-    let points = vertices(&templates["vertices-templates"], &Value::Null)?;
-    let matrix = array(&geometry["transformationMatrix"])?;
-    if matrix.len() != 16 {
+        array(&templates["templates"])?.get(index(&geometry["template"])?).ok_or_else(|| invalid("template index out of bounds"))?;
+    let values = array(&geometry["transformationMatrix"])?;
+    if values.len() != 16 {
         return Err(invalid("instance matrix must have 16 entries"));
     }
-    let matrix = matrix.iter().map(|v| v.as_f64().ok_or_else(|| invalid("nonnumeric instance matrix"))).collect::<Result<Vec<_>>>()?;
+    let mut matrix = [0.0; 16];
+    for (target, value) in matrix.iter_mut().zip(values) {
+        *target = value.as_f64().filter(|v| v.is_finite()).ok_or_else(|| invalid("nonfinite or nonnumeric instance matrix"))?;
+    }
     if matrix[12..] != [0.0, 0.0, 0.0, 1.0] {
         return Err(invalid("instance matrix must be affine"));
     }
@@ -173,18 +193,9 @@ fn instance(geometry: &Value, doc: &Value, world: &[Coord]) -> Result<(Value, Ve
     }
     let anchor = position(&anchors[0], world)?;
     let offset = [anchor.x, anchor.y, anchor.z.unwrap_or(0.0)];
-    let points = points
-        .iter()
-        .map(|c| {
-            let p = [c.x, c.y, c.z.unwrap_or(0.0), 1.0];
-            let p: [f64; 3] = std::array::from_fn(|i| (0..4).map(|j| matrix[i * 4 + j] * p[j]).sum::<f64>() + offset[i]);
-            if p.iter().any(|v| !v.is_finite()) {
-                return Err(invalid("instance coordinate is not finite"));
-            }
-            Ok(Coord { x: p[0], y: p[1], z: Some(p[2]), m: None })
-        })
-        .collect::<Result<_>>()?;
-    Ok((template, points))
+    // Templates and their vertex pool are borrowed. Only referenced coordinates are
+    // transformed, so unrelated templates do not multiply the work per instance.
+    Ok((template, Positions { points, transform: Some((matrix, offset)) }))
 }
 
 fn text(value: &Value) -> FieldValue {
@@ -193,6 +204,39 @@ fn text(value: &Value) -> FieldValue {
 
 /// Read a CityJSON document into its ordinary, flat vector view.
 pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
+    parse_with_limit(bytes, 256 * 1024 * 1024)
+}
+
+// Account for owned field text, coordinates and feature containers before cloning
+// a primitive. wbvector owns String values; it cannot share repeated attributes.
+fn push(layer: &mut Layer, geometry: Option<Geometry>, attrs: &[FieldValue], used: &mut usize, limit: usize) -> Result<()> {
+    let coordinates = match &geometry {
+        Some(Geometry::Point(_)) => 1,
+        Some(Geometry::LineString(points)) => points.len(),
+        Some(Geometry::Polygon { exterior, interiors }) => exterior.len() + interiors.iter().map(Ring::len).sum::<usize>(),
+        _ => 0,
+    };
+    let text = attrs
+        .iter()
+        .map(|a| match a {
+            FieldValue::Text(s) => s.len(),
+            _ => 0,
+        })
+        .sum::<usize>();
+    let cost = text
+        .saturating_add(coordinates.saturating_mul(std::mem::size_of::<Coord>()))
+        .saturating_add(std::mem::size_of_val(attrs))
+        .saturating_add(std::mem::size_of::<Feature>());
+    *used = used.saturating_add(cost);
+    if *used > limit {
+        return Err(invalid("flat feature payload exceeds the 256 MiB expansion limit; split the city model into smaller files"));
+    }
+    layer.push(Feature { fid: layer.features.len() as u64, geometry, attributes: attrs.to_vec() });
+    Ok(())
+}
+
+fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
+    let mut used = 0usize;
     let doc: Value = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).map_err(invalid)?;
     if doc["type"] != "CityJSON" {
         return Err(invalid("expected a CityJSON document"));
@@ -200,7 +244,13 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
     if !matches!(doc["version"].as_str(), Some("1.1" | "2.0")) {
         return Err(Error::Unsupported("CityJSON: supported versions are 1.1 and 2.0".into()));
     }
-    let points = vertices(&doc["vertices"], &doc["transform"])?;
+    let world = vertices(&doc["vertices"], &doc["transform"])?;
+    let points = Positions { points: &world, transform: None };
+    let template_points = doc
+        .get("geometry-templates")
+        .map(|templates| vertices(&templates["vertices-templates"], &Value::Null))
+        .transpose()?
+        .unwrap_or_default();
     let objects = doc["CityObjects"].as_object().ok_or_else(|| invalid("missing CityObjects object"))?;
     let mut layer = Layer::new("CityJSON");
     for name in ["city_id", "city_type", "lod", "parents", "attributes", "geometry_type", "semantics", "surface_semantics"] {
@@ -226,7 +276,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
             None => &[],
         };
         if geometries.is_empty() {
-            layer.push(Feature { fid: layer.features.len() as u64, geometry: None, attributes: attrs });
+            push(&mut layer, None, &attrs, &mut used, limit)?;
             continue;
         }
         for geometry in geometries {
@@ -235,13 +285,13 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
             attrs[5] = text(&geometry["type"]);
             attrs[6] = text(&geometry["semantics"]);
             let (primitives, surface_semantics) = if geometry["type"] == "GeometryInstance" {
-                let (template, vertices) = instance(geometry, &doc, &points)?;
+                let (template, vertices) = instance(geometry, &doc, &points, &template_points)?;
                 if attrs[2] == FieldValue::Null {
                     attrs[2] = text(&template["lod"]);
                 }
                 attrs[6] = text(&template["semantics"]);
-                let primitives = primitives(&template, &vertices)?;
-                let semantics = primitive_semantics(&template, primitives.len())?;
+                let primitives = primitives(template, &vertices)?;
+                let semantics = primitive_semantics(template, primitives.len())?;
                 (primitives, semantics)
             } else {
                 let primitives = primitives(geometry, &points)?;
@@ -249,13 +299,28 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
                 (primitives, semantics)
             };
             if primitives.is_empty() {
-                layer.push(Feature { fid: layer.features.len() as u64, geometry: None, attributes: attrs.clone() });
+                push(&mut layer, None, &attrs, &mut used, limit)?;
             }
             for (primitive, semantic) in primitives.into_iter().zip(surface_semantics) {
-                attrs[7] = semantic;
-                layer.push(Feature { fid: layer.features.len() as u64, geometry: Some(primitive), attributes: attrs.clone() });
+                attrs[7] = semantic.map_or(FieldValue::Null, text);
+                push(&mut layer, Some(primitive), &attrs, &mut used, limit)?;
             }
         }
     }
     Ok(vec![layer])
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn repeated_attributes_stop_at_the_flat_payload_budget() {
+        let mut doc = serde_json::json!({"type":"CityJSON","version":"2.0","vertices":[[1,2,3]],
+            "CityObjects":{"tree":{"type":"SolitaryVegetationObject","attributes":{"text":"x".repeat(400)},
+                "geometry":[{"type":"MultiPoint","lod":"1","boundaries":[0,0,0,0]}]}}});
+        let bytes = serde_json::to_vec(&doc).unwrap();
+        assert_eq!(super::parse_with_limit(&bytes, 16384).unwrap()[0].features.len(), 4);
+        assert!(super::parse_with_limit(&bytes, 1024).unwrap_err().to_string().contains("expansion limit"));
+        doc["CityObjects"]["tree"]["geometry"][0]["boundaries"] = serde_json::json!([0]);
+        assert_eq!(super::parse_with_limit(&serde_json::to_vec(&doc).unwrap(), 1024).unwrap()[0].features.len(), 1);
+    }
 }

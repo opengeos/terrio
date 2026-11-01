@@ -11,6 +11,7 @@ Checks CLI, Python paths/bytes, and optionally the Node/WebAssembly package.
 import argparse
 from collections import Counter
 import json
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -75,23 +76,34 @@ def reference(doc):
         if not geometries:
             result.append((base | dict(lod=None, geometry_type=None, semantics=None, surface_semantics=None), None))
         for g in geometries:
-            props = base | dict(lod=g.get("lod"), geometry_type=g["type"], semantics=g.get("semantics"), surface_semantics=None)
-            kind = g["type"]
+            source = g
+            local_vertices = vertices
+            if g["type"] == "GeometryInstance":
+                source = doc["geometry-templates"]["templates"][g["template"]]
+                anchor = vertices[g["boundaries"][0]]
+                matrix = g["transformationMatrix"]
+                local_vertices = [
+                    [sum(matrix[row * 4 + col] * (point + [1])[col] for col in range(4)) + anchor[row]
+                     for row in range(3)]
+                    for point in doc["geometry-templates"]["vertices-templates"]
+                ]
+            props = base | dict(lod=g.get("lod", source.get("lod")), geometry_type=g["type"], semantics=source.get("semantics"), surface_semantics=None)
+            kind = source["type"]
             if kind in ("MultiPoint", "MultiLineString"):
-                for part in g["boundaries"]:
-                    geometry = {"type": "Point", "coordinates": vertices[part]} if kind == "MultiPoint" else {
-                        "type": "LineString", "coordinates": [vertices[i] for i in part]}
+                for part in source["boundaries"]:
+                    geometry = {"type": "Point", "coordinates": local_vertices[part]} if kind == "MultiPoint" else {
+                        "type": "LineString", "coordinates": [local_vertices[i] for i in part]}
                     result.append((props, geometry))
             else:
                 depth = {"MultiSurface": 1, "CompositeSurface": 1, "Solid": 2, "MultiSolid": 3, "CompositeSolid": 3}[kind]
-                faces = list(walk(g["boundaries"], depth))
-                semantics = g.get("semantics")
+                faces = list(walk(source["boundaries"], depth))
+                semantics = source.get("semantics")
                 semantic_values = list(walk(semantics["values"], depth)) if semantics else [None] * len(faces)
                 assert len(semantic_values) == len(faces)
                 if not faces:
                     result.append((props, None))
                 for face, semantic in zip(faces, semantic_values):
-                    rings = [[vertices[i] for i in ring] for ring in face]
+                    rings = [[local_vertices[i] for i in ring] for ring in face]
                     face_props = props | dict(surface_semantics=semantics["surfaces"][semantic] if semantic is not None else None)
                     result.append((face_props, {"type": "Polygon", "coordinates": rings}))
     return result
@@ -147,7 +159,7 @@ def main():
         expected = Counter(key(*row) for row in reference(doc))
         native = terrio.open_vector(str(path))[0]
         crs = doc.get("metadata", {}).get("referenceSystem")
-        expected_epsg = int(crs.rsplit("/", 1)[1]) if crs else None
+        expected_epsg = int(re.split(r"[:/]", crs)[-1]) if crs else None
         assert native.crs == (f"EPSG:{expected_epsg}" if crs else None), native.crs
         for surface, fc in [
             ("Python path", native.to_geojson()),

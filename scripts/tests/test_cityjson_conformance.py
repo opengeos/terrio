@@ -8,7 +8,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from compare_cityjson import compare, key
+from compare_cityjson import compare, key, reference
 
 
 def fixture():
@@ -48,3 +48,15 @@ def test_rejects_corrupted_flat_view(change):
         actual["features"].append(deepcopy(feature))
     with pytest.raises(AssertionError):
         compare(expected, actual)
+
+
+def test_template_oracle_applies_matrix_before_world_anchor():
+    doc = dict(vertices=[[100, 200, 300]], CityObjects={"tree": dict(type="SolitaryVegetationObject",
+        geometry=[dict(type="GeometryInstance", template=0, boundaries=[0],
+            transformationMatrix=[2,0,0,10,0,3,0,20,0,0,4,30,0,0,0,1])])})
+    doc["geometry-templates"] = {"vertices-templates": [[1,2,3]],
+        "templates": [dict(type="MultiPoint", lod="2", boundaries=[0])]}
+    rows = reference(doc)
+    assert len(rows) == 1
+    assert rows[0][0]["lod"] == "2"
+    assert rows[0][1] == dict(type="Point", coordinates=[112,226,342])

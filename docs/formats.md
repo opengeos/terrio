@@ -403,6 +403,13 @@ extensions or general city-model metadata. CityJSONFeature sequences are outside
 this reader. Unsupported geometry types and invalid vertex/template references
 fail explicitly. Reading currently materializes the document and flat features;
 there is no spatial/window index. CityJSON writing is a separate step in [#462](https://github.com/opengeos/terrio/issues/462).
+The flat view owns repeated attributes and semantics text. Its estimated feature
+payload (text, coordinates and feature containers) is limited to 256 MiB; larger
+expansions fail with a request to split the model. This is an expansion limit,
+not a bound on total process memory or input parsing. Template vertices are
+decoded once, and only referenced template coordinates are transformed per instance.
+The `.city.json` extension now selects the CityJSON driver; until the writer is
+available it rejects output instead of writing GeoJSON under a CityJSON filename.
 
 The [CityJSON 1.1](https://www.cityjson.org/specs/1.1.3/) and
 [2.0 specifications](https://www.cityjson.org/specs/2.0.2/) and their published JSON
