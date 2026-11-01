@@ -738,8 +738,7 @@ enum Filter {
     ///
     /// Reads in chunks: the union of the hexagons with at least --threshold points, polygons with
     /// holes, written to a vector dataset as one multipolygon feature (with its area, density,
-    /// point and hexagon counts). The grid is anchored at the first point, as PDAL's (PDAL's
-    /// filters.hexbin).
+    /// point and hexagon counts). The grid is anchored at the first point, as PDAL's filters.hexbin does.
     Hexbin {
         /// The point cloud (LAS, LAZ, COPC, EPT, PLY or E57; a path, URL or `s3://` object).
         input: String,
