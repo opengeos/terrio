@@ -132,14 +132,28 @@ def test_singlepart_preserves_attributes_nulls_and_xyz(tmp_path):
             },
         ],
     }
+    for kind in ["Point", "LineString"]:
+        source["features"].append(
+            {
+                "type": "Feature",
+                "properties": {"name": kind},
+                "geometry": {"type": kind, "coordinates": []},
+            }
+        )
     layer = terrio.singlepart(source)
     result = layer.to_geojson()["features"]
-    assert len(result) == 4
-    assert feature_ids(layer, tmp_path / "parts.gpkg") == [1, 2, 3, 4]
+    assert len(result) == 6
+    assert feature_ids(layer, tmp_path / "parts.gpkg") == [1, 2, 3, 4, 5, 6]
     assert result[0]["geometry"]["coordinates"] == [1, 2, 3]
     assert result[2]["geometry"]["coordinates"] == [[0, 0, 7], [1, 1, 8]]
     assert result[2]["properties"] == {"name": "parts"}
     assert result[3]["geometry"] is None and result[3]["properties"] == {"name": "null"}
+
+    # GeoJSON represents an empty Point as null; its feature and attributes remain.
+    assert result[4]["properties"] == {"name": "Point"}
+    assert result[4]["geometry"] is None
+    assert result[5]["properties"] == {"name": "LineString"}
+    assert result[5]["geometry"] == {"type": "LineString", "coordinates": []}
 
 
 @pytest.mark.parametrize("kind", ["memory", "lazy", "str", "path"])

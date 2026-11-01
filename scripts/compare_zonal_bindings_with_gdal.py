@@ -74,14 +74,22 @@ def compare(result, expected, source, options):
                 raise AssertionError("output geometry missing")
             geometry = ogr.CreateGeometryFromJson(json.dumps(original["geometry"]))
             geometry.Transform(transform)
-            distance = float(
-                hausdorff_distance(
-                    from_geojson(json.dumps(feature["geometry"])),
-                    from_wkb(bytes(geometry.ExportToWkb())),
-                )
+            actual_geometry = from_geojson(json.dumps(feature["geometry"]))
+            expected_geometry = from_wkb(bytes(geometry.ExportToWkb()))
+            if actual_geometry.geom_type != expected_geometry.geom_type:
+                raise AssertionError("output geometry type differs")
+            distances = (
+                float(hausdorff_distance(actual_geometry, expected_geometry)),
+                float(
+                    hausdorff_distance(
+                        actual_geometry.boundary, expected_geometry.boundary
+                    )
+                ),
             )
-            if not math.isfinite(distance) or distance > (
-                1e-5 if reprojected else 1e-12
+            if any(
+                not math.isfinite(distance)
+                or distance > (1e-5 if reprojected else 1e-12)
+                for distance in distances
             ):
                 raise AssertionError("output geometry differs")
     return "GDAL masks + NumPy: counts/nulls/source attributes exact; seven statistics relative 1e-10 / absolute 1e-9; geometry 1e-12 source degrees or 1e-5 projected metres"

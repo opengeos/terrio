@@ -84,6 +84,26 @@ def test_zonal_comparison_rejects_regressions(change):
         compare(result, expected, source, {})
 
 
+def test_polygon_boundary_cannot_replace_polygon():
+    result, expected, source = example()
+    polygon = result["geojson"]["features"][0]["geometry"]
+    result["geojson"]["features"][0]["geometry"] = {
+        "type": "LineString", "coordinates": polygon["coordinates"][0]
+    }
+    with pytest.raises(AssertionError, match="geometry type differs"):
+        compare(result, expected, source, {})
+
+
+def test_lost_polygon_hole_is_rejected():
+    result, expected, source = example()
+    hole = [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75], [0.25, 0.25]]
+    source[0]["geometry"]["coordinates"].append(hole)
+    with pytest.raises(AssertionError, match="output geometry differs"):
+        compare(result, expected, source, {})
+    result["geojson"]["features"][0]["geometry"]["coordinates"].append(hole)
+    compare(result, expected, source, {})
+
+
 @pytest.mark.parametrize("field", ["r0_b1_count", "r0_b1_mean"])
 def test_booleans_cannot_stand_in_for_numeric_statistics(field):
     result, expected, source = example()

@@ -449,10 +449,6 @@ def main() -> None:
         print(type(e).__name__)
 
 
-if __name__ == "__main__":
-    main()
-
-
 def analysis_adapters(
     raster: terrio.Raster, zones: terrio.Layer
 ) -> tuple[terrio.Layer, terrio.Layer]:
@@ -461,3 +457,7 @@ def analysis_adapters(
     )
     parts: terrio.Layer = terrio.singlepart(zones)
     return zonal, parts
+
+
+if __name__ == "__main__":
+    main()

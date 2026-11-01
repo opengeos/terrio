@@ -3325,6 +3325,22 @@ test("zonalStats exposes multiple rasters, bands, nodata and membership controls
 });
 
 
+test("zonalStats retains every named layer and its statistics", () => {
+  const raster=terrio.rasterFromArray(new Float32Array([1,2,3,-99]),2,2,[0,1,0,2,0,-1],"EPSG:4326",-99);
+  const zones=name=>terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{name},geometry:{type:"Polygon",coordinates:[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}]},name);
+  const source=terrio.concat([zones("a"),zones("b")],{mode:"stack"});
+  const result=terrio.zonalStats(source,[raster],{stats:["count","mean"]});
+  assert.deepEqual(result.layerNames(),source.layerNames());
+  for (const [index,name] of result.layerNames().entries()) {
+    const features=result.toGeoJSON(name).features;
+    assert.equal(features.length,1);
+    assert.equal(features[0].properties.name,["a","b"][index]);
+    assert.equal(features[0].properties.raster1_b1_count,3);
+    assert.equal(features[0].properties.raster1_b1_mean,2);
+  }
+});
+
+
 test("singlepart recursively splits collections, retaining XYZ, attributes and nulls", () => {
  const source={type:"FeatureCollection",features:[{type:"Feature",properties:{name:"parts"},geometry:{type:"GeometryCollection",geometries:[{type:"MultiPoint",coordinates:[[1,2,3],[4,5,6]]},{type:"MultiLineString",coordinates:[[[0,0,7],[1,1,8]]]}]}},{type:"Feature",properties:{name:"null"},geometry:null},{type:"Feature",properties:{name:"empty"},geometry:{type:"MultiPoint",coordinates:[]}}]};
  const result=terrio.singlepart(source).toGeoJSON().features;
