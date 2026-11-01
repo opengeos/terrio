@@ -60,8 +60,8 @@ validation in that rerun. Warp and counties have since been corrected, and a
 [recheck](benchmark-parity.md#final-validation-and-timed-reruns) on `afc7539a` passed
 exact validation on all eight cases, on glibc Linux. Background CPU activity exceeded the
 unchanged measurement limit on seven of them, so those have no speed ratio; the eighth, COG,
-was 1.54× slower than GDAL at CPU budgets one and two. The tables below retain their original
-samples.
+was 1.54× slower than GDAL in that single run, at a selected CPU budget of two. The tables below
+retain their original samples.
 
 ## Correctness gates
 

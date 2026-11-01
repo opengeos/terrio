@@ -151,8 +151,9 @@ The rerun below predates the warp and county corrections above.
 **Recheck on `afc7539a`.** All eight cases pass the exact output gate against GDAL
 3.13.3 ([raw results](benchmark-253-recheck.json)). Other jobs were running, so seven of
 the eight exceeded the background CPU limit and have no speed ratio. The COG case passed
-that limit: Terrio was 1.54× slower than GDAL, tuned at CPU budgets one and two only. The
-recheck found two faults in the comparison scripts, not in Terrio:
+that limit. In that single run, Terrio's median was 1.269 s and GDAL's 0.822 s at CPU budget
+two, so Terrio was 1.54× slower. Tuning tried budgets one and two and selected two for both.
+The recheck found two faults in the comparison scripts, not in Terrio:
 
 - `benchmark.py` asked only GDAL for average COG overviews. Terrio's default became cubic,
   matching GDAL's, in #406, so the overview comparison failed. Both now request average,
