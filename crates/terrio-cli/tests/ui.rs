@@ -117,6 +117,19 @@ fn runs_commands_and_reports_failures_as_results() {
 }
 
 #[test]
+fn survives_clients_that_leave_during_a_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let ui = start(dir.path());
+    // The catalog outgrows the socket's buffers, so the server writes to a closed connection.
+    for _ in 0..5 {
+        let mut stream = TcpStream::connect(&ui.addr).unwrap();
+        write!(stream, "GET /api/catalog HTTP/1.1\r\nHost: {}\r\nX-Terrio-Token: {}\r\n\r\n", ui.addr, ui.token).unwrap();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(ui.send("GET", "/", "", "").0, 200);
+}
+
+#[test]
 fn lists_directories_for_the_file_picker() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("points.geojson"), POINTS).unwrap();

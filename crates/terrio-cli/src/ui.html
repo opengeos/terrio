@@ -38,6 +38,7 @@ h1 { font-size: 24px; margin: 0 0 4px; }
 .field > label, .field > .label { display: block; font-weight: 600; margin-bottom: 3px; }
 .field .flag { font-weight: 400; color: var(--muted); margin-left: 6px; }
 .required { color: var(--bad); }
+.help:empty { display: none; }
 .help { color: var(--muted); font-size: 13px; margin-top: 3px; white-space: pre-line; overflow-wrap: anywhere; }
 input[type=text], input[type=search], select, textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: inherit; font: inherit; }
 textarea { min-height: 68px; resize: vertical; }
@@ -189,7 +190,7 @@ function field(arg, id) {
   const flag = flagName(arg);
   const name = arg.value_names.length ? arg.value_names.join(" ") : arg.name.toUpperCase();
   const title = arg.position != null ? name : flag;
-  const help = arg.description ? el("div", { className: "help", textContent: arg.description }) : "";
+  const help = el("div", { className: "help", textContent: arg.description });
 
   if (isFlag(arg)) {
     const input = el("input", { type: "checkbox", id });
@@ -215,12 +216,19 @@ function field(arg, id) {
   const label = el("label", { htmlFor: id }, title);
   if (arg.required) label.append(el("span", { className: "required", textContent: " *", "aria-hidden": "true" }));
   if (arg.position == null && arg.value_names.length) label.append(el("span", { className: "flag mono", textContent: name }));
-  if (arg.choices.length && multi) help && help.append(`\nOne of: ${arg.choices.join(", ")}`);
+  if (arg.choices.length && multi) help.append(`${arg.description ? "\n" : ""}One of: ${arg.choices.join(", ")}`);
   const control = arg.type === "path" ? pathField(input) : input;
   return { arg, node: el("div", { className: "field" }, label, control, help), read: () => input.value, input };
 }
 
+// The status line of the run in progress, whose form holds the only Cancel button for it.
+let activeRun = null;
+
 function show(command) {
+  if (activeRun) {
+    activeRun.textContent = "Running… Cancel it, or wait for it, before changing command.";
+    return;
+  }
   for (const button of byId("commands").querySelectorAll("button")) {
     button.setAttribute("aria-current", String(button.dataset.path === command.path.join(" ")));
   }
@@ -266,6 +274,7 @@ function show(command) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     controller = new AbortController();
+    activeRun = status;
     run.disabled = true;
     cancel.disabled = false;
     status.className = "status";
@@ -291,6 +300,7 @@ function show(command) {
       status.className = error.name === "AbortError" ? "status" : "status bad";
       status.textContent = error.name === "AbortError" ? "Cancelled: the command was stopped." : `Error: ${error.message}`;
     } finally {
+      activeRun = null;
       run.disabled = false;
       cancel.disabled = true;
     }
@@ -335,10 +345,14 @@ async function browseTo(path) {
   try {
     browsing = await api("/api/list", { path });
   } catch (error) {
+    // The list and "Use this folder" must not offer a directory the header no longer names.
     byId("browse-path").textContent = error.message;
+    list.replaceChildren();
+    byId("browse-folder").disabled = true;
     return;
   }
   byId("browse-path").textContent = browsing.path;
+  byId("browse-folder").disabled = false;
   byId("browse-up").disabled = !browsing.parent;
   list.replaceChildren(...browsing.entries.map((entry) => {
     const full = browsing.path.endsWith(separator) ? browsing.path + entry.name : browsing.path + separator + entry.name;

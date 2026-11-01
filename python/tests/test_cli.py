@@ -174,7 +174,7 @@ def test_json_usage_matches_published_schema(path):
     Draft202012Validator(schema).validate(json.loads(result.stdout))
 
 
-def test_ui(tmp_path):
+def test_ui_runs_commands_with_the_token_and_refuses_without(tmp_path):
     """Serves the forms' API through ``python -m terrio``, running commands in this interpreter."""
     (tmp_path / "points.geojson").write_text(json.dumps(POINTS))
     server = subprocess.Popen(

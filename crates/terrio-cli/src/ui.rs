@@ -19,7 +19,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{MAIN_SEPARATOR_STR, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// The page: one file with no external resources, so that it works offline.
@@ -28,6 +28,9 @@ const PAGE: &str = include_str!("ui.html");
 const MAX_HEAD: usize = 64 << 10;
 /// The longest request body accepted, in bytes.
 const MAX_BODY: usize = 1 << 20;
+/// The most connections handled at once; more are dropped, so that local clients cannot exhaust
+/// threads or memory without the token. A browser keeps few open, plus one per running command.
+const MAX_CONNECTIONS: usize = 64;
 /// How long a client may take to send its request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often a run checks whether its command is done and its client still there.
@@ -59,13 +62,6 @@ struct Session {
 
 /// Serves the page until the process is stopped.
 pub fn serve(args: Args, terrio: Vec<OsString>) -> std::io::Result<()> {
-    // The binary dies on SIGPIPE so that `terrio formats | head` exits quietly; here, a browser
-    // that goes away must not stop the server. Commands restore the default when they start.
-    #[cfg(unix)]
-    // SAFETY: changes this process's handling of a signal, with a handler that runs no code.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-    }
     let listener = TcpListener::bind(("127.0.0.1", args.port))?;
     let session = session(terrio, listener.local_addr()?.port())?;
     let url = format!("http://127.0.0.1:{}/#token={}", session.port, session.token);
@@ -90,11 +86,34 @@ fn session(terrio: Vec<OsString>, port: u16) -> std::io::Result<Session> {
 
 /// Answers connections, each on a thread of its own, since a run lasts as long as its command.
 fn accept(listener: &TcpListener, session: &Arc<Session>) {
-    for stream in listener.incoming().flatten() {
+    let open = Arc::new(AtomicUsize::new(0));
+    for stream in listener.incoming() {
+        let Ok(stream) = stream else {
+            // Out of file descriptors, say: do not spin until some are free.
+            std::thread::sleep(POLL);
+            continue;
+        };
+        if open.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+            continue;
+        }
+        open.fetch_add(1, Ordering::Relaxed);
+        let closed = Closed(open.clone());
         let session = session.clone();
         // The stack of `run_as`: checking a command's name builds the command catalog. A thread
         // that cannot start drops its connection, and the server carries on.
-        let _ = std::thread::Builder::new().stack_size(crate::STACK_SIZE).spawn(move || connection(stream, &session));
+        let _ = std::thread::Builder::new().stack_size(crate::STACK_SIZE).spawn(move || {
+            let _closed = closed;
+            connection(stream, &session);
+        });
+    }
+}
+
+/// Counts a connection as closed when dropped, whichever way its thread ends or fails to start.
+struct Closed(Arc<AtomicUsize>);
+
+impl Drop for Closed {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
