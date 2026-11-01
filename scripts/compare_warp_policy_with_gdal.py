@@ -7,9 +7,13 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from osgeo import gdal, osr
+# Terrio runs with its network off. GDAL must not fetch a datum grid Terrio does not use: with
+# PROJ's network on, NAD83 to WGS 84 in Colorado selects a grid in place of the null transform.
+os.environ["PROJ_NETWORK"] = "OFF"
 
-from compare_ops_with_gdal import compare, format_row
+from osgeo import gdal, osr  # noqa: E402
+
+from compare_ops_with_gdal import compare, format_row  # noqa: E402
 
 gdal.UseExceptions()
 

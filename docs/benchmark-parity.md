@@ -113,8 +113,27 @@ The exact ICEYE, vendor elevation and optical assets/commands were unavailable.
 Their reported failure patterns now have independent regressions, but those
 particular assets cannot be certified. The native JPEG XL regressions pass on macOS and Windows, but the precise vendor
 failure still requires its reproduction.
-The GDAL multithreaded statistics observation is an upstream report, not a Terrio
-fix. Keep the multi-report issue open while these items remain outstanding.
+Keep the multi-report issue open while these items remain outstanding.
+
+## GDAL multithreaded statistics
+
+On `srtm90.tif` (Int16, Deflate, 512×512 tiles), GDAL 3.13.3's `gdalinfo -stats`
+reads only about one thread's share of the pixels. Each row is a fresh run with PAM
+disabled:
+
+| `GDAL_NUM_THREADS` | Minimum | Maximum | `STATISTICS_VALID_PERCENT` |
+|---:|---:|---:|---:|
+| 1 | 15 | 4338 | 100 |
+| 2 | 18 | 4320 | 50.02 |
+| 3 | 23 | 4237 | 33.39 |
+| 4 | 25 | 4148 | 25.03 |
+| 8 | 26 | 4148 | 12.54 |
+| 16 | 28 | 4148 | 6.288 |
+
+Terrio and a NumPy reduction both give 15 and 4338, so this is not a Terrio defect.
+`usgs_dem.tif` (Float32) reports 100 percent at eight threads, so not every raster is
+affected. The cause inside GDAL has not been isolated, and this has not been reported
+upstream.
 
 ## Final validation and timed reruns
 
@@ -127,6 +146,18 @@ release mode; WASM uses Rust release optimization without the optional wasm-opt
 postpass.
 
 The rerun below predates the warp and county corrections above.
+
+**Recheck on `afc7539a`.** All eight cases pass the exact output gate against GDAL
+3.13.3 ([raw results](benchmark-253-recheck.json)). Other jobs were running, so seven of
+the eight exceeded the background CPU limit and no new speed ratios are claimed from this
+run. The recheck found two faults in the comparison scripts, not in Terrio:
+
+- `benchmark.py` asked only GDAL for average COG overviews. Terrio's default became cubic,
+  matching GDAL's, in #406, so the overview comparison failed. Both now request average,
+  and every level agrees. With neither requesting it, both use cubic and also agree.
+- `compare_warp_policy_with_gdal.py` turned the network off only for Terrio. With
+  `PROJ_NETWORK=ON`, GDAL fetched a Colorado datum grid for NAD83 to WGS 84, and 15 of the
+  22 cases differed. The reference now runs with the network off, and all 22 are identical.
 
 [All eight benchmark cases were rerun](benchmark-253-rerun.md) with fresh timings,
 independent tuning at one/two CPUs, seven small-file or five large-file samples,
