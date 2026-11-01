@@ -122,7 +122,7 @@ release, which does not allow cross-origin requests):
 ```python
 import micropip
 
-await micropip.install("terrio-0.6.0-cp310-abi3-pyemscripten_2025_0_wasm32.whl")
+await micropip.install("./terrio-0.6.0-cp310-abi3-pyemscripten_2025_0_wasm32.whl")
 ```
 
 Files are read from and written to Pyodide's in-memory file system, or from bytes
