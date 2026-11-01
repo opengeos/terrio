@@ -7,7 +7,7 @@
 
 # terrio
 
-[![crates.io](https://img.shields.io/crates/v/terrio.svg)](https://crates.io/crates/terrio) [![docs.rs](https://img.shields.io/docsrs/terrio)](https://docs.rs/terrio) [![PyPI](https://img.shields.io/pypi/v/terrio.svg)](https://pypi.org/project/terrio/) [![conda-forge](https://img.shields.io/conda/vn/conda-forge/terrio.svg)](https://anaconda.org/conda-forge/terrio) [![npm](https://img.shields.io/npm/v/terrio-js.svg)](https://www.npmjs.com/package/terrio-js) [![CI](https://github.com/opengeos/terrio/actions/workflows/ci.yml/badge.svg)](https://github.com/opengeos/terrio/actions/workflows/ci.yml) [![Docs](https://github.com/opengeos/terrio/actions/workflows/docs.yml/badge.svg)](https://terrio.opengeos.org) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/opengeos/terrio/blob/main/LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23642204.svg)](https://doi.org/10.5281/zenodo.23642204)
+[![crates.io](https://img.shields.io/crates/v/terrio.svg)](https://crates.io/crates/terrio) [![docs.rs](https://img.shields.io/docsrs/terrio)](https://docs.rs/terrio) [![PyPI](https://img.shields.io/pypi/v/terrio.svg)](https://pypi.org/project/terrio/) [![conda-forge](https://img.shields.io/conda/vn/conda-forge/terrio.svg)](https://anaconda.org/conda-forge/terrio) [![npm](https://img.shields.io/npm/v/terrio-js.svg)](https://www.npmjs.com/package/terrio-js) [![CI](https://github.com/opengeos/terrio/actions/workflows/ci.yml/badge.svg)](https://github.com/opengeos/terrio/actions/workflows/ci.yml) [![Docs](https://github.com/opengeos/terrio/actions/workflows/docs.yml/badge.svg)](https://terrio.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/opengeos/terrio/blob/main/LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23642204.svg)](https://doi.org/10.5281/zenodo.23642204)
 
 Pure-Rust geospatial raster, vector and point cloud data I/O.
 
@@ -15,7 +15,7 @@ Pure-Rust geospatial raster, vector and point cloud data I/O.
   <img src="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-banner.webp" alt="terrio: geospatial data I/O in pure Rust. Rasters, vectors and point clouds, from the command line, Python, JavaScript and Rust, with an MCP server for AI agents" width="800">
 </p>
 
-Documentation: <https://terrio.opengeos.org>
+Documentation: <https://terrio.dev>
 
 terrio aims to read, write, convert and reproject the geospatial formats most workflows use, without
 C dependencies, so that it builds anywhere Rust does, including WebAssembly.
@@ -43,12 +43,12 @@ centimetre, and 99 % of a sample of transformations between two CRSs within a me
 Install the `terrio` command, a standalone binary, with:
 
 ```sh
-curl -LsSf https://terrio.opengeos.org/install.sh | sh                                # Linux, macOS
-powershell -ExecutionPolicy ByPass -c "irm https://terrio.opengeos.org/install.ps1 | iex"  # Windows
+curl -LsSf https://terrio.dev/install.sh | sh                                # Linux, macOS
+powershell -ExecutionPolicy ByPass -c "irm https://terrio.dev/install.ps1 | iex"  # Windows
 ```
 
 `pip install terrio` installs it too, and `cargo install terrio-cli` builds it from source (see
-[Installation](https://terrio.opengeos.org/installation/)).
+[Installation](https://terrio.dev/installation/)).
 
 ```sh
 terrio info countries.gpkg                       # summarize a dataset (--json, --stats)
@@ -124,7 +124,7 @@ terrio convert tile.laz tile-ept/ept.json                               # write 
 
 `terrio mcp` serves the commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code) over
 the Model Context Protocol: `claude mcp add terrio -- terrio mcp` (see
-[AI Agents](https://terrio.opengeos.org/mcp/)).
+[AI Agents](https://terrio.dev/mcp/)).
 
 ## Library
 
@@ -170,7 +170,7 @@ needs only:
 terrio = { version = "0.3", default-features = false, features = ["geotiff"] }
 ```
 
-See [the features](https://terrio.opengeos.org/rust/#features) for what each one adds.
+See [the features](https://terrio.dev/rust/#features) for what each one adds.
 
 Point clouds are read into columns, one typed vector per dimension (`terrio::pointcloud`):
 
@@ -230,14 +230,14 @@ The operations (`convert`, `translate`, `warp`, `mosaic`, `rasterize`, `polygoni
 
 rasterio scripts run with an import change, `import terrio.rio as rasterio`: datasets, windows,
 CRSs, features, warping, merging, masking and memory files follow rasterio's API, compared with
-rasterio on real files. See [Coming from rasterio](https://terrio.opengeos.org/rasterio/).
+rasterio on real files. See [Coming from rasterio](https://terrio.dev/rasterio/).
 
 `terrio.xarray` is rioxarray's API without installing GDAL (`pip install "terrio[xarray]"`):
 `terrio.xarray.open_rasterio` and `xr.open_dataset(path, engine="terrio")` open rasters lazily
 (remote COGs fetch only the tiles a window needs, chunked with dask), and the `.terrio` accessor
 has rioxarray's `.rio` methods (`clip_box`, `clip`, `reproject`, `reproject_match`, `pad_box`,
 `to_raster`...), compared with rioxarray on real files. See
-[xarray](https://terrio.opengeos.org/xarray/).
+[xarray](https://terrio.dev/xarray/).
 
 To build the Linux wheel for glibc 2.28 and later (`manylinux_2_28`) without Docker, run
 `scripts/build_wheel_manylinux_2_28.sh [OUT_DIR]` with Rust and `pip install "maturin[zig]"`: the
@@ -349,7 +349,7 @@ and data terrio adapts from them:
   Parquet, `netcdf-reader`, `hdf5-reader`, `laz` and `e57`; and clap, rayon, serde, PyO3 and
   wasm-bindgen.
 
-See the [acknowledgements](https://terrio.opengeos.org/acknowledgements/) for the full list.
+See the [acknowledgements](https://terrio.dev/acknowledgements/) for the full list.
 
 ## Citation
 
@@ -359,7 +359,7 @@ If you use terrio in your work, please cite it. terrio is archived on [Zenodo](h
 
 > Wu, Q., & Fitzgerald, M. (2026). terrio: Pure-Rust geospatial raster, vector and point cloud data I/O. Zenodo. <https://doi.org/10.5281/zenodo.23642204>
 
-You can also use GitHub's **"Cite this repository"** button (which reads [`CITATION.cff`](CITATION.cff)) to copy a ready-made APA or BibTeX entry. See the [How to Cite](https://terrio.opengeos.org/citation/) page for more formats.
+You can also use GitHub's **"Cite this repository"** button (which reads [`CITATION.cff`](CITATION.cff)) to copy a ready-made APA or BibTeX entry. See the [How to Cite](https://terrio.dev/citation/) page for more formats.
 
 ## Disclaimer
 

@@ -340,7 +340,7 @@ Command-group progress:
 - [x] The command line without a Rust toolchain: `pip install terrio` installs the `terrio`
       command, standalone binaries for Linux, macOS and Windows are attached to each release
       (`cargo binstall terrio-cli`), and one-line installers download them
-      (`curl -LsSf https://terrio.opengeos.org/install.sh | sh`, `install.ps1` on Windows).
+      (`curl -LsSf https://terrio.dev/install.sh | sh`, `install.ps1` on Windows).
 - [x] An MCP server (`terrio mcp`): AI agents run the commands as tools, each described by its
       `--help`.
 

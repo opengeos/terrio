@@ -14,22 +14,22 @@ Windows). No Rust or Python is needed.
 
 ```sh
 # Linux and macOS
-curl -LsSf https://terrio.opengeos.org/install.sh | sh
+curl -LsSf https://terrio.dev/install.sh | sh
 ```
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy ByPass -c "irm https://terrio.opengeos.org/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://terrio.dev/install.ps1 | iex"
 ```
 
 Set `TERRIO_VERSION` to install another release, and `TERRIO_INSTALL_DIR` to install elsewhere:
 
 ```sh
-curl -LsSf https://terrio.opengeos.org/install.sh | TERRIO_VERSION=0.6.0 sh
+curl -LsSf https://terrio.dev/install.sh | TERRIO_VERSION=0.6.0 sh
 ```
 
 ```powershell
-$env:TERRIO_VERSION = "0.6.0"; irm https://terrio.opengeos.org/install.ps1 | iex
+$env:TERRIO_VERSION = "0.6.0"; irm https://terrio.dev/install.ps1 | iex
 ```
 
 The Windows installer adds the directory to your `PATH` (`TERRIO_NO_MODIFY_PATH=1` to leave it);

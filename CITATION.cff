@@ -15,7 +15,7 @@ version: 0.6.0
 date-released: 2026-10-31
 doi: "10.5281/zenodo.23642204"
 repository-code: "https://github.com/opengeos/terrio"
-url: "https://terrio.opengeos.org"
+url: "https://terrio.dev"
 license: MIT
 keywords:
   - geospatial

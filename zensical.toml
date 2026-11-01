@@ -2,7 +2,7 @@
 site_name = "terrio"
 site_description = "Pure-Rust geospatial raster, vector and point cloud data I/O: read, write, convert and reproject geospatial formats without C dependencies"
 site_author = "opengeos"
-site_url = "https://terrio.opengeos.org"
+site_url = "https://terrio.dev"
 repo_url = "https://github.com/opengeos/terrio"
 repo_name = "opengeos/terrio"
 extra_css = ["stylesheets/playground.css"]

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs the terrio command-line tool from its GitHub release, on Linux and macOS:
 #
-#     curl -LsSf https://terrio.opengeos.org/install.sh | sh
+#     curl -LsSf https://terrio.dev/install.sh | sh
 #
 # Settings, from the environment:
 #   TERRIO_VERSION        the release to install (0.4.0 or v0.4.0); the latest by default
@@ -58,7 +58,7 @@ target() {
             echo "$arch-apple-darwin"
             ;;
         MINGW* | MSYS* | CYGWIN*)
-            err "on Windows, run in PowerShell: irm https://terrio.opengeos.org/install.ps1 | iex"
+            err "on Windows, run in PowerShell: irm https://terrio.dev/install.ps1 | iex"
             ;;
         *) err "no terrio binary for $os; install it with pip install terrio or cargo install terrio-cli" ;;
     esac

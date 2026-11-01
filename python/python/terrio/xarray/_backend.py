@@ -41,7 +41,7 @@ class TerrioBackendEntrypoint(BackendEntrypoint):
     """
 
     description = "Open rasters (GeoTIFF, COG, Zarr, netCDF...) with terrio, without GDAL"
-    url = "https://terrio.opengeos.org/xarray/"
+    url = "https://terrio.dev/xarray/"
     open_dataset_parameters = (
         "filename_or_obj",
         "drop_variables",
