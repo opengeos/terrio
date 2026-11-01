@@ -22,9 +22,11 @@ STDERR = ".jp-OutputArea-output[data-mime-type='application/vnd.jupyter.stderr']
 
 # True once every code cell has an execution count, or a cell has failed, which stops the run.
 FINISHED = """([cells, stderr]) => {
-    const failed = [...document.querySelectorAll(stderr)].some((e) => /Traceback|Error/.test(e.innerText));
+    const failed = [...document.querySelectorAll(stderr)]
+        .some((e) => /Traceback|Error/.test(e.innerText));
     const prompts = [...document.querySelectorAll(".jp-CodeCell .jp-InputArea-prompt")];
-    return failed || (prompts.length === cells && prompts.every((p) => /^\\[\\d+\\]:$/.test(p.innerText.trim())));
+    const ran = prompts.every((p) => /^\\[\\d+\\]:$/.test(p.innerText.trim()));
+    return failed || (prompts.length === cells && ran);
 }"""
 
 

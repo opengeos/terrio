@@ -23,7 +23,17 @@ from rasterio.transform import from_origin  # noqa: E402
 
 from terrio.rio.enums import Resampling as TR  # noqa: E402
 
-METHODS = ["NEAREST", "AVERAGE", "RMS", "BILINEAR", "CUBIC", "CUBICSPLINE", "LANCZOS", "MODE", "GAUSS"]
+METHODS = [
+    "NEAREST",
+    "AVERAGE",
+    "RMS",
+    "BILINEAR",
+    "CUBIC",
+    "CUBICSPLINE",
+    "LANCZOS",
+    "MODE",
+    "GAUSS",
+]
 
 # (width, height, bands, dtype, nodata): odd and even sizes, 1 and 3 bands, with and without
 # nodata. 875 halves to 437, as the 875 x 875 level of a 14000 x 14000 raster does.
@@ -56,8 +66,17 @@ def _source(path, width, height, bands, dtype, nodata, **profile):
         holes[: height // 3, : width // 4] = True
         data[:, holes] = nodata
     with rasterio.open(
-        path, "w", driver="GTiff", width=width, height=height, count=bands, dtype=dtype, nodata=nodata,
-        crs="EPSG:32613", transform=from_origin(400000, 4500000, 10, 10), **profile,
+        path,
+        "w",
+        driver="GTiff",
+        width=width,
+        height=height,
+        count=bands,
+        dtype=dtype,
+        nodata=nodata,
+        crs="EPSG:32613",
+        transform=from_origin(400000, 4500000, 10, 10),
+        **profile,
     ) as dst:
         dst.write(data)
     return str(path)
@@ -93,13 +112,17 @@ def _gdal_cog(src, dst, **options):
 
 
 @pytest.mark.parametrize("method", METHODS)
-@pytest.mark.parametrize("case", CASES, ids=lambda c: "x".join(map(str, c[:3])) + f"-{c[3]}-nd{c[4]}")
+@pytest.mark.parametrize(
+    "case", CASES, ids=lambda c: "x".join(map(str, c[:3])) + f"-{c[3]}-nd{c[4]}"
+)
 def test_overviews_are_gdals(tmp_path, case, method):
     """Each resampling, through `terrio.convert` (the native path) and `OVERVIEW_RESAMPLING`."""
     src = _source(tmp_path / "src.tif", *case)
     gdal = _gdal_cog(src, tmp_path / "gdal.tif", overview_resampling=method)
     ours = str(tmp_path / "terrio.tif")
-    terrio.convert(src, ours, format="COG", compress="DEFLATE", options={"OVERVIEW_RESAMPLING": method.lower()})
+    terrio.convert(
+        src, ours, format="COG", compress="DEFLATE", options={"OVERVIEW_RESAMPLING": method.lower()}
+    )
     _assert_same(gdal, ours, f"convert {method}")
 
 
@@ -136,7 +159,9 @@ def test_resampling_keywords_on_rio_paths(tmp_path, key):
     trio.shutil.copy(src, ours, driver="COG", compress="deflate", **{key: "lanczos"})
     _assert_same(gdal, ours, key)
     written = str(tmp_path / "written.tif")
-    terrio.open(src).write(written, driver="COG", compress="DEFLATE", options={key.upper(): "LANCZOS"})
+    terrio.open(src).write(
+        written, driver="COG", compress="DEFLATE", options={key.upper(): "LANCZOS"}
+    )
     _assert_same(gdal, written, f"Raster.write {key}")
 
 
@@ -145,7 +170,9 @@ def test_paletted_default_is_nearest(tmp_path):
     the color table; `terrio.convert` does not carry one)."""
     src = str(tmp_path / "src.tif")
     rng = np.random.default_rng(1)
-    with rasterio.open(src, "w", driver="GTiff", width=1001, height=999, count=1, dtype="uint8") as dst:
+    with rasterio.open(
+        src, "w", driver="GTiff", width=1001, height=999, count=1, dtype="uint8"
+    ) as dst:
         dst.write(rng.integers(0, 8, (1, 999, 1001), dtype="uint8"))
         dst.write_colormap(1, {i: (i * 30, 255 - i * 30, i * 10, 255) for i in range(8)})
     gdal = _gdal_cog(src, tmp_path / "gdal.tif")
@@ -156,11 +183,30 @@ def test_paletted_default_is_nearest(tmp_path):
 
 def test_overview_count_and_tiled_source(tmp_path):
     """`OVERVIEW_COUNT`, and a tiled source, whose blocks set those GDAL computes overviews in."""
-    src = _source(tmp_path / "src.tif", 3001, 2999, 3, "uint8", None, tiled=True, blockxsize=256, blockysize=256)
-    for options in ({"overview_resampling": "bilinear"}, {"overview_resampling": "cubic", "overview_count": 2}):
+    src = _source(
+        tmp_path / "src.tif",
+        3001,
+        2999,
+        3,
+        "uint8",
+        None,
+        tiled=True,
+        blockxsize=256,
+        blockysize=256,
+    )
+    for options in (
+        {"overview_resampling": "bilinear"},
+        {"overview_resampling": "cubic", "overview_count": 2},
+    ):
         gdal = _gdal_cog(src, tmp_path / "gdal.tif", **options)
         ours = str(tmp_path / "terrio.tif")
-        terrio.convert(src, ours, format="COG", compress="DEFLATE", options={k.upper(): str(v) for k, v in options.items()})
+        terrio.convert(
+            src,
+            ours,
+            format="COG",
+            compress="DEFLATE",
+            options={k.upper(): str(v) for k, v in options.items()},
+        )
         _assert_same(gdal, ours, f"tiled source {options}")
 
 
@@ -191,8 +237,19 @@ def _masked_source(path, kind, width, height, **profile):
     y, x = np.mgrid[0:height, 0:width].astype("float64")
     lo, hi = RANGES[dtype]
     colors = bands - 1 if alpha else bands
-    planes = [lo + (hi - lo) * np.clip(np.sin(x / (15 + 4 * b)) * 0.3 + np.cos(y / 21) * 0.2 + 0.5
-                                       + rng.normal(0, 0.05, x.shape), 0, 1) for b in range(colors)]
+    planes = [
+        lo
+        + (hi - lo)
+        * np.clip(
+            np.sin(x / (15 + 4 * b)) * 0.3
+            + np.cos(y / 21) * 0.2
+            + 0.5
+            + rng.normal(0, 0.05, x.shape),
+            0,
+            1,
+        )
+        for b in range(colors)
+    ]
     a = np.full((height, width), 255.0)
     a[: height // 3, : width // 4] = 0
     edge = (x > width // 2) & (x < width // 2 + 40)
@@ -206,8 +263,18 @@ def _masked_source(path, kind, width, height, **profile):
     kw = {"photometric": "RGB", "alpha": "YES"} if alpha else {}
     with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True):
         with rasterio.open(
-            path, "w", driver="GTiff", width=width, height=height, count=bands, dtype=dtype, nodata=nodata,
-            crs="EPSG:32613", transform=from_origin(400000, 4500000, 10, 10), **kw, **profile,
+            path,
+            "w",
+            driver="GTiff",
+            width=width,
+            height=height,
+            count=bands,
+            dtype=dtype,
+            nodata=nodata,
+            crs="EPSG:32613",
+            transform=from_origin(400000, 4500000, 10, 10),
+            **kw,
+            **profile,
         ) as dst:
             dst.write(data)
             if mask:
@@ -296,7 +363,12 @@ def test_masked_build_overviews_are_gdals(tmp_path, kind, method):
     gdal, ours = str(tmp_path / "gdal.tif"), str(tmp_path / "terrio.tif")
     for mod, out, enums in ((rasterio, gdal, RR), (trio, ours, TR)):
         with mod.open(src) as ds:
-            profile = ds.profile | {"tiled": True, "blockxsize": 256, "blockysize": 256, "compress": "deflate"}
+            profile = ds.profile | {
+                "tiled": True,
+                "blockxsize": 256,
+                "blockysize": 256,
+                "compress": "deflate",
+            }
             data, mask = ds.read(), ds.dataset_mask()
             colorinterp = ds.colorinterp
         with mod.open(out, "w", **profile) as dst:
@@ -316,8 +388,16 @@ def test_ingestion_call_structure_is_gdals(tmp_path, kind):
     src = str(tmp_path / "src.tif")
     rng = np.random.default_rng(3)
     y, x = np.mgrid[0:999, 0:1001]
-    field = (np.sin(x / 17) * 60 + np.cos(y / 23) * 50 + 120 + rng.normal(0, 5, x.shape)).clip(0, 255)
-    profile = dict(driver="GTiff", width=1001, height=999, crs="EPSG:32613", transform=from_origin(400000, 4500000, 10, 10))
+    field = (np.sin(x / 17) * 60 + np.cos(y / 23) * 50 + 120 + rng.normal(0, 5, x.shape)).clip(
+        0, 255
+    )
+    profile = dict(
+        driver="GTiff",
+        width=1001,
+        height=999,
+        crs="EPSG:32613",
+        transform=from_origin(400000, 4500000, 10, 10),
+    )
     extra = {}
     if kind == "ycbcr-jpeg":
         profile.update(count=3, dtype="uint8", photometric="YCBCR", compress="jpeg", tiled=True)
@@ -332,7 +412,9 @@ def test_ingestion_call_structure_is_gdals(tmp_path, kind):
     with rasterio.open(src, "w", **profile) as dst:
         dst.write(data)
         if kind == "palette":
-            dst.write_colormap(1, {c: (25 * c, 255 - 20 * c, (60 * c) % 256, 255) for c in range(10)})
+            dst.write_colormap(
+                1, {c: (25 * c, 255 - 20 * c, (60 * c) % 256, 255) for c in range(10)}
+            )
     outputs = {}
     for name, mod in (("gdal", rasterio), ("terrio", trio)):
         out = str(tmp_path / f"{name}.tif")
@@ -341,7 +423,11 @@ def test_ingestion_call_structure_is_gdals(tmp_path, kind):
         p.update({"driver": "COG", "compress": "deflate"}, **extra)
         mod.shutil.copy(src, out, **p)
         with rasterio.open(out) as ds:
-            outputs[name] = (ds.profile.get("photometric"), ds.colorinterp, ds.tags(ns="IMAGE_STRUCTURE"))
+            outputs[name] = (
+                ds.profile.get("photometric"),
+                ds.colorinterp,
+                ds.tags(ns="IMAGE_STRUCTURE"),
+            )
         if kind != "palette":
             continue
         with rasterio.open(out) as ds:
@@ -437,11 +523,22 @@ def test_multiband_float32_image_chip(tmp_path):
     values = np.random.default_rng(3).random((3, 900, 1100), dtype="float32")
     values[:, :40, :50] = np.nan
     values[1, 500:, 700:] = np.nan
-    for name, memory_file in (("gdal", rasterio.io.MemoryFile), ("terrio", terrio.rio.io.MemoryFile)):
+    for name, memory_file in (
+        ("gdal", rasterio.io.MemoryFile),
+        ("terrio", terrio.rio.io.MemoryFile),
+    ):
         with memory_file() as memory:
-            with memory.open(driver="COG", height=900, width=1100, count=3, dtype="float32",
-                             crs="EPSG:32633", transform=from_origin(5e5, 4.1e6, 10.0, 10.0),
-                             nodata=np.nan, compress="DEFLATE") as dataset:
+            with memory.open(
+                driver="COG",
+                height=900,
+                width=1100,
+                count=3,
+                dtype="float32",
+                crs="EPSG:32633",
+                transform=from_origin(5e5, 4.1e6, 10.0, 10.0),
+                nodata=np.nan,
+                compress="DEFLATE",
+            ) as dataset:
                 dataset.write(values)
                 for band_index, band in enumerate(("ndvi", "evi", "ndwi"), start=1):
                     dataset.set_band_description(band_index, band)
@@ -450,8 +547,11 @@ def test_multiband_float32_image_chip(tmp_path):
 
 
 @pytest.mark.parametrize("memory", [False, True], ids=["open", "memoryfile"])
-@pytest.mark.parametrize("options", [{}, {"compress": "NONE"}, {"compress": "DEFLATE"}, {"interleave": "pixel"}],
-                         ids=["default", "none", "deflate", "pixel"])
+@pytest.mark.parametrize(
+    "options",
+    [{}, {"compress": "NONE"}, {"compress": "DEFLATE"}, {"interleave": "pixel"}],
+    ids=["default", "none", "deflate", "pixel"],
+)
 @pytest.mark.parametrize("count", [1, 3])
 def test_cog_open_interleave(tmp_path, count, options, memory):
     """rasterio writes a COG by copying a MEM dataset, band-interleaved: GDALDriver::CreateCopy
@@ -460,10 +560,20 @@ def test_cog_open_interleave(tmp_path, count, options, memory):
     import terrio.rio.io
 
     data = (np.arange(count * 700 * 600) % 251).astype("uint16").reshape(count, 700, 600)
-    kw = dict(driver="COG", height=700, width=600, count=count, dtype="uint16", crs="EPSG:32633",
-              transform=from_origin(0, 700, 1, 1), **options)
-    for name, mod, memory_file in (("gdal", rasterio, rasterio.io.MemoryFile),
-                                   ("terrio", trio, terrio.rio.io.MemoryFile)):
+    kw = dict(
+        driver="COG",
+        height=700,
+        width=600,
+        count=count,
+        dtype="uint16",
+        crs="EPSG:32633",
+        transform=from_origin(0, 700, 1, 1),
+        **options,
+    )
+    for name, mod, memory_file in (
+        ("gdal", rasterio, rasterio.io.MemoryFile),
+        ("terrio", trio, terrio.rio.io.MemoryFile),
+    ):
         path = tmp_path / f"{name}.tif"
         if memory:
             with memory_file() as mf:
@@ -483,9 +593,18 @@ def test_copy_keeps_source_interleave(tmp_path, driver, src_interleave, options)
     """`shutil.copy` is GDAL's CreateCopy: the source's interleaving unless INTERLEAVE or a
     COMPRESS other than NONE is given, else the drivers' PIXEL."""
     src = str(tmp_path / "src.tif")
-    with rasterio.open(src, "w", driver="GTiff", height=300, width=400, count=3, dtype="uint16",
-                       crs="EPSG:32633", transform=from_origin(0, 300, 1, 1),
-                       interleave=src_interleave) as ds:
+    with rasterio.open(
+        src,
+        "w",
+        driver="GTiff",
+        height=300,
+        width=400,
+        count=3,
+        dtype="uint16",
+        crs="EPSG:32633",
+        transform=from_origin(0, 300, 1, 1),
+        interleave=src_interleave,
+    ) as ds:
         ds.write((np.arange(3 * 300 * 400) % 999).astype("uint16").reshape(3, 300, 400))
     for name, mod in (("gdal", rasterio), ("terrio", trio)):
         mod.shutil.copy(src, str(tmp_path / f"{name}.tif"), driver=driver, **options)
