@@ -406,6 +406,14 @@ def suite_windows(ctx):
                 s.cases.append(Case(f"{fmt} {mode}, headers", m[1], IDENTICAL if ok else DIFFERS))
         if not s.cases:
             s.error = tail(err or out)
+    if missing_modules("terrio", "pytest", "osgeo", "numpy"):
+        s.cases.append(Case("GTiff identity", "replacement NONE/DEFLATE", NOT_COMPARED,
+                            "needs current Python bindings, pytest, GDAL and NumPy"))
+    else:
+        code, out, err = run([sys.executable, "-m", "pytest", "-q",
+                              str(ROOT / "python/tests/test_raster_file_identity.py")])
+        s.cases.append(Case("GTiff identity", "replacement NONE/DEFLATE", IDENTICAL if code == 0 else DIFFERS,
+                            "exact original/new pixels with GDAL block cache disabled" if code == 0 else tail(err or out)))
     return s
 
 
@@ -1508,9 +1516,9 @@ def suite_igh(ctx):
 def suite_ob_tran(ctx):
     """PROJ's general oblique transformation of projections other than longlat, and its refusals."""
     suite = Suite("ob_tran", "General oblique transformation", "GDAL/PROJ",
-                  "15 spherical/WGS84 configurations of 8 rotated projections (moll, merc, eqc, sinu, ortho, "
+                  "19 spherical/WGS84 configurations of 10 rotated projections (moll, wag4, wag5, merc, eqc, sinu, ortho, "
                   "robin, lcc, utm), with the pole given in each of PROJ's three forms and a transverse "
-                  "rotation, and 4,680 geographic samples, as PROJ strings, WKT2 and WKT1; forward and "
+                  "rotation, and geographic samples, as PROJ strings, WKT2 and WKT1; forward and "
                   "inverse refusals. Projected allowance 1 mm; inverse 1e-8 degrees, longitude weighted "
                   "by cos(latitude).")
     if missing_modules("osgeo"):

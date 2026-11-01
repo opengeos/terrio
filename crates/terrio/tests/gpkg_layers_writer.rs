@@ -46,7 +46,14 @@ fn unsupported_schemas_do_not_truncate_existing_output() {
     std::fs::write(&path, b"existing").unwrap();
     let mut fid = Layer::new("points").with_epsg(4326);
     fid.add_field(FieldDef::new("FID", FieldType::Integer));
-    for schemas in [vec![fid], vec![Layer::new("unknown")], vec![Layer::new("same").with_epsg(4326); 2]] {
+    for schemas in [
+        vec![fid],
+        vec![Layer::new("unknown")],
+        vec![Layer::new("same").with_epsg(4326); 2],
+        vec![Layer::new("gpkg_contents").with_epsg(4326)],
+        vec![Layer::new("GPKG_CONTENTS").with_epsg(4326)],
+        vec![Layer::new("sqlite_sequence").with_epsg(4326)],
+    ] {
         assert!(GpkgLayersWriter::create(path.to_str().unwrap(), &schemas).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"existing");
     }

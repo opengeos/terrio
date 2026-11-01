@@ -213,7 +213,8 @@ def main():
 
         # Real Byte imagery exercises the histogram path and parallel row groups; the
         # existing DEM cases exercise reusable non-Byte counters. Mode must be exact.
-        for data_type in [gdal.GDT_Byte, gdal.GDT_UInt16, gdal.GDT_Float32]:
+        for data_type in ([gdal.GDT_Byte, gdal.GDT_UInt16, gdal.GDT_Float32]
+                          if (args.data / "landsat.tif").is_file() else []):
             def mode_image(data_type=data_type):
                 a, b = work / "mode-gdal.tif", work / "mode-terrio.tif"
                 ds = gdal.Translate(str(a), str(args.data / "landsat.tif"),

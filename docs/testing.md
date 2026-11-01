@@ -852,7 +852,7 @@ inverse points inside and beyond the rotated projection's domain. Each configura
 WKT1 and WKT2 as PROJ writes them. The generator checks that pyproj's CRS route is PROJ's
 `ob_tran` operation itself, and that PROJ refuses the definitions the corpus lists as refused.
 
-Mollweide inverses now accept and snap an eight-ulp band around the antimeridian
+Mollweide inverses now accept and snap a rounding band around the antimeridian
 (#357), including samples that the frozen PROJ oracle refuses. These are checked
 against their original geographic coordinates, with longitude immaterial at a pole.
 The live comparison verifies the edge analytically and reports these policy differences.
@@ -1933,9 +1933,12 @@ classification after the sliver collapses.
 ## Projection edges, multi-layer streaming and TIFF reads (#357, #392, #432, #433)
 
 The Mollweide/Wagner unit regressions check both signs of the antimeridian, rounding
-inside and outside it, and refusal beyond the eight-ulp edge band. Rust, Python and
+inside and outside it, high auxiliary latitudes, and refusal beyond the eight-ulp
+unit-radius band in projected elliptical coordinates. Rust, Python and
 Node oblique-projection tests invert the original coordinates without retries. The
 `ob_tran` conformance suite reports the deliberate difference from GDAL's strict domain.
+Plain `moll`, `wag4` and `wag5` share this kernel policy; their edge acceptance is
+covered by the direct unit regressions rather than the live oblique comparison.
 
 `gpkg_layers_writer` exercises the public Rust writer with interleaved chunks, an empty
 layer, 64-bit attributes, sequential IDs and invalid indices/schemas. Independent
@@ -1949,7 +1952,12 @@ bytes at interior-node split boundaries, and propagation of spill read failures.
 A two-layer export with fixed 1,000-feature chunks used 61.3, 73.4 and 62.6 MiB peak
 RSS for 100,000, 1,000,000 and 10,000,000 total point features respectively in local
 optimized runs. The 10-million-feature writer took 12.36 s and produced an
-817,631,232-byte GeoPackage; temporary-pass I/O was not instrumented.
+817,631,232-byte GeoPackage. A repeat using an on-disk temporary directory took
+12.93 s with 23.9 MiB peak RSS, 7,904,978,355 logical bytes read and 8,069,801,456
+logical bytes written (including the output), from Linux `/proc/self/io`. The
+filesystem accounted for 8,072,683,520 bytes written and zero physical bytes read
+because reads hit the cache. Temporary files use the configured temporary directory;
+a RAM-backed temporary filesystem also consumes system memory outside process RSS.
 GDAL confirmed both layers' counts and R-tree counts, and SQLite's
 integrity check passed in each file. These observations complement the fixed sort-buffer
 and page-buffer limits; they are not a portable RSS threshold. Small conversions
@@ -1959,8 +1967,10 @@ conformance suite cross-reads GeoPackage conversions and their R-tree spatial fi
 
 `raster_file_identity` replaces a TIFF with a different tile layout, then reads one
 and several chunks through the old and new handles. It also unlinks an unread file.
-Both uncompressed and DEFLATE sources keep their original samples. Python and GDAL
-3.13.3 agree on the same replacement scenario with GDAL's block cache disabled.
+Both uncompressed and DEFLATE sources keep their original samples.
+`python/tests/test_raster_file_identity.py` compares this replacement scenario with
+GDAL 3.13.3, with GDAL's block cache disabled; it is registered in the `windows`
+conformance suite.
 A local sampled XYZ export on the benchmark raster below opened its input 131 times
 before the change and three times afterward, with byte-identical text output.
 

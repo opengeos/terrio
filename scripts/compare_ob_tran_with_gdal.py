@@ -80,7 +80,7 @@ def mollweide_roundtrip_error(case, point, back):
 
 def inverse_probes(points, projected, case):
     """Pair inverse inputs with their own independent geographic reference, if available."""
-    return [(p, source) for source, p in zip(points, projected, strict=True) if p is not None] + case["inverse_samples"]
+    return [(image, geographic) for geographic, image in zip(points, projected, strict=True) if image is not None] + case["inverse_samples"]
 
 
 def ellipsoidal_eqc():
@@ -157,7 +157,7 @@ def main():
             actual = native(args.terrio, case["target"], case["source"], inverse_points)
             maximum_inverse = 0.0
             edge_differences = 0
-            for (point, reference), got, want in zip(probes, actual, expected_inverse, strict=True):
+            for (point, geographic_reference), got, want in zip(probes, actual, expected_inverse, strict=True):
                 if past_pole(case, point):
                     # PROJ's spherical sinusoidal inverse returns a latitude past a pole, which
                     # the rotation turns into a point; terrio's sinusoidal refuses it.
@@ -170,7 +170,7 @@ def main():
                     lam = mollweide_longitude(case, point)
                     assert abs(abs(lam) - math.pi) <= 8 * math.ulp(math.pi), "not on Mollweide/Wagner edge"
                     edge_differences += 1
-                    if reference is None:
+                    if geographic_reference is None:
                         # A standalone inverse probe may have no geographic oracle because
                         # PROJ refused its edge. Independently validate GDAL's forward image.
                         back = oracle(forward, got)
@@ -179,7 +179,7 @@ def main():
                         assert error <= 0.001, f"edge roundtrip {error} metres"
                         maximum_forward = max(maximum_forward, error)
                         continue
-                    want = reference
+                    want = geographic_reference
                 assert (got is None) == (want is None), "inverse domain differs"
                 if want is not None:
                     dlon = ((got[0] - want[0] + 180) % 360 - 180) * math.cos(

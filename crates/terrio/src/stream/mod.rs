@@ -1017,6 +1017,12 @@ impl GpkgLayersWriter {
     /// use [`crate::write_vector`] for those. Duplicate/reserved table names are also refused.
     /// Geometry declarations are inferred from arriving features, as in the whole-layer writer.
     pub fn create(path: &str, schemas: &[Layer]) -> Result<Self> {
+        for schema in schemas {
+            let name = schema.name.to_ascii_lowercase();
+            if name.starts_with("gpkg_") || name.starts_with("sqlite_") {
+                return Err(Error::InvalidArgument(format!("'{}' is a reserved GeoPackage table name", schema.name)));
+            }
+        }
         let sink = GpkgLayersSink::create(path, schemas, false)?.ok_or_else(|| {
             Error::Unsupported("streaming GeoPackage layers require a geometry type or CRS and no integer fid field".into())
         })?;
@@ -1025,7 +1031,10 @@ impl GpkgLayersWriter {
 
     /// Writes a chunk to the zero-based layer index from [`Self::create`]. Chunks must have
     /// the same fields, in the same order, as that layer's schema; feature IDs are assigned
-    /// sequentially within each output layer. An invalid index or schema returns an error.
+    /// sequentially within each output layer. An invalid index or field schema returns an error.
+    /// Chunk CRS declarations are ignored: coordinates must already use the output schema's
+    /// CRS; this method does not reproject them. Geometry types are inferred from features,
+    /// rather than the chunk's geometry-type declaration.
     pub fn write(&mut self, index: usize, chunk: &Layer) -> Result<()> {
         let layer = self.sink.layers.get(index).ok_or_else(|| Error::InvalidArgument(format!("no output layer at index {index}")))?;
         if layer.schema.schema.fields().iter().map(|f| (&f.name, f.field_type)).ne(chunk

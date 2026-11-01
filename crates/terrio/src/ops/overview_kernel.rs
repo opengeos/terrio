@@ -125,14 +125,17 @@ pub(crate) fn resample(
     chunk: std::ops::Range<usize>,
     group_origin: usize,
 ) -> Vec<f64> {
-    // Coarse row groups preserve each pixel's visitation/tie order. Each worker reuses its
-    // mode counters; small jobs stay sequential to avoid scheduling and buffer overhead.
-    if t.method == Method::Mode && out_rows.len() > 16 && out_rows.len() * t.width >= 65536 {
+    // Coarse row groups preserve each pixel's visitation/tie order. Workers fill
+    // disjoint output slices directly and reuse their mode counters.
+    if t.method == Method::Mode {
         let mut out = vec![0.0; out_rows.len() * t.width];
-        crate::par::chunks_mut_coarse(&mut out, 16 * t.width, |i, rows| {
-            let start = out_rows.start + i * 16;
-            rows.copy_from_slice(&resample(band, t, start..start + rows.len() / t.width, chunk.clone(), group_origin));
-        });
+        if out_rows.len() > 16 && out.len() >= 65536 {
+            crate::par::chunks_mut_coarse(&mut out, 16 * t.width, |i, rows| {
+                mode_rows(band, t, out_rows.start + i * 16, chunk.clone(), rows);
+            });
+        } else {
+            mode_rows(band, t, out_rows.start, chunk, &mut out);
+        }
         return out;
     }
     let rx = band.width as f64 / t.width as f64;
@@ -154,18 +157,13 @@ pub(crate) fn resample(
             let xs: Vec<XWindow> = (0..t.width).map(|i| XWindow::new(i, rx, cx0, cx1)).collect();
             let spacing_two = xs.windows(2).all(|w| w[0].x1 == w[1].x0) && xs.iter().all(|w| w.x1 - w.x0 == 2);
             let average = Average::new(t);
-            let mut mode = Mode::new();
             for i in out_rows {
                 let (y0, y1, fy0, fy1) = window(i, ry, cy0, cy1);
                 match t.method {
                     Method::Average => {
                         average.row(&mut out, &xs, (y0, y1, fy0, fy1), &at, &ok, band.valid.is_some(), spacing_two, group_origin)
                     }
-                    Method::Mode => {
-                        for w in &xs {
-                            out.push(mode.sample(w, (y0, y1), &at, &ok, band.valid.is_some(), t));
-                        }
-                    }
+                    Method::Mode => unreachable!(),
                     Method::Min | Method::Max => {
                         for w in &xs {
                             let mut best: Option<f64> = None;
@@ -191,6 +189,23 @@ pub(crate) fn resample(
         }
     }
     out
+}
+
+/// Fill consecutive Mode rows without allocating a second output buffer.
+fn mode_rows(band: &Band, t: &Target, first: usize, chunk: std::ops::Range<usize>, out: &mut [f64]) {
+    let rx = band.width as f64 / t.width as f64;
+    let ry = band.height as f64 / t.height as f64;
+    let (cy0, cy1) = (chunk.start.max(band.rows.start), chunk.end.min(band.rows.end));
+    let at = |x: usize, y: usize| band.values[(y - band.rows.start) * band.width + x];
+    let ok = |x: usize, y: usize| band.valid.is_none_or(|v| v[(y - band.rows.start) * band.width + x]);
+    let xs: Vec<_> = (0..t.width).map(|i| XWindow::new(i, rx, 0, band.width)).collect();
+    let mut mode = Mode::new();
+    for (i, row) in out.chunks_mut(t.width).enumerate() {
+        let (y0, y1, _, _) = window(first + i, ry, cy0, cy1);
+        for (value, w) in row.iter_mut().zip(&xs) {
+            *value = mode.sample(w, (y0, y1), &at, &ok, band.valid.is_some(), t);
+        }
+    }
 }
 
 /// The source window `[start, end)` of overview line or column `i` at `ratio`, clamped to
@@ -475,6 +490,7 @@ impl Mode {
                         continue;
                     }
                     // Decoded Byte samples (or 0/1 mask samples) are integers in 0..=255.
+                    debug_assert!(v.is_finite() && (0.0..=255.0).contains(&v) && v.fract() == 0.0);
                     let i = v as usize;
                     if self.bytes[i] == 0 {
                         self.touched.push(i);
