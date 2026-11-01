@@ -423,6 +423,25 @@ def test_to_raster_float_override_preserves_fractions(tmp_path):
     assert da.encoding["dtype"] == "int16"
 
 
+def test_float_override_keeps_packed_values_and_metadata(files, tmp_path):
+    """GDAL 3.13.3 cross-read: dtype overrides retain CF scales and offsets."""
+    gdal = pytest.importorskip("osgeo.gdal")
+    da = txr.open_rasterio(files["dem"], mask_and_scale=True)
+    target = tmp_path / "packed-float.tif"
+    da.terrio.to_raster(target, dtype="float32")
+    with gdal.ExceptionMgr(), gdal.Open(str(target)) as dataset:
+        band = dataset.GetRasterBand(1)
+        assert band.DataType == gdal.GDT_Float32
+        assert band.GetScale() == 0.5
+        assert band.GetOffset() == 100.0
+        assert band.GetNoDataValue() == -32768
+        np.testing.assert_array_equal(
+            dataset.ReadAsArray(), terrio.open_raster(files["dem"]).read(1)
+        )
+    with txr.open_rasterio(target, mask_and_scale=True) as back:
+        np.testing.assert_array_equal(back.values, da.values)
+
+
 def test_to_zarr_georeferencing(files, tmp_path):
     pytest.importorskip("zarr")
     da = txr.open_rasterio(files["rgb"], masked=True)

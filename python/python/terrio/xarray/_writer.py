@@ -129,8 +129,8 @@ def _write_metadata(
     if lossy and str(raster_handle.driver).upper() != "GTIFF":
         warnings.warn(
             f"terrio's {raster_handle.driver} writer does not store band scales and offsets: "
-            "the file holds the encoded values without them. Write a GeoTIFF, write decoded "
-            "values (dtype='float32'), or use xarray's to_zarr / to_netcdf.",
+            "the file holds the encoded values without them. Write a GeoTIFF "
+            "or use xarray's to_zarr / to_netcdf.",
             UserWarning,
             stacklevel=4,
         )
@@ -186,7 +186,6 @@ def _to_raster_dtypes(
             numpy_dtype = unsigned
             dtype = unsigned
             xarray_dataarray.encoding["rasterio_dtype"] = str(unsigned)
-            xarray_dataarray.encoding["dtype"] = str(unsigned)
     # CF encoding must use the selected output type too, including explicit overrides.
     # Otherwise it can cast floating values through the stale source integer type.
     xarray_dataarray.encoding["dtype"] = str(numpy_dtype)
