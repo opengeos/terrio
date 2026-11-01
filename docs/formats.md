@@ -362,6 +362,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | FlatGeobuf | FlatGeobuf | ✓ | ✓ | fgb |
 | ESRI Shapefile | Shapefile | ✓ | ✓ | shp |
 | GeoJSON | GeoJSON | ✓ | ✓ | geojson, json |
+| CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | — | city.json, cityjson, json (by content) |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
 | KML | KML | ✓ | ✓ | kml |
@@ -377,6 +378,72 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | PMTiles | PMTiles v3 vector tiles (MVT) | ✓ | ✓ | pmtiles |
 | MBTiles | MBTiles vector tiles (MVT) | ✓ | ✓ | mbtiles |
 | MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, pbf |
+
+### CityJSON
+
+The pure-Rust `CityJSON` reader accepts versions 1.1 and 2.0, including quantized XYZ
+vertices, affine geometry templates, MultiSurface/CompositeSurface, Solid (all shells),
+MultiSolid/CompositeSolid, MultiPoint and MultiLineString. Use `.city.json` or
+`.cityjson`; `.json` is distinguished from GeoJSON by its root `type`, even when
+the type follows a large vertex/object payload. Bounded header identification can
+only report a root type present within its header limit.
+The top-level `transform` object is required by both supported versions; template
+vertices remain unquantized as specified.
+
+The single `CityJSON` layer is a **flat vector view**: each face is a polygon with Z
+and interior rings; lines and points are separate features. Nonspatial objects
+remain null-geometry features. Fields are `city_id`, `city_type`, `lod`, `parents`
+(a JSON array), `attributes` (a JSON object), `geometry_type` and `semantics` (the
+source geometry's complete JSON semantics object, repeated on its primitives).
+`surface_semantics` contains the JSON semantic record resolved for that particular
+face (for example `RoofSurface` with its properties), or null for unclassified faces.
+Rings with fewer than three distinct XYZ positions cannot form polygons in this
+view. Degenerate interior rings are omitted; a degenerate exterior omits its face.
+Surviving faces keep their original semantic records. Integer `skipped_rings` and
+`skipped_faces` fields report totals for the source geometry, repeated on each
+surviving primitive. If no primitive survives, a null-geometry feature retains the
+object metadata and counts. These counts are not totals to sum across features.
+The test is limited to distinct XYZ positions; collinear rings with at least three
+distinct positions are retained. No area or general polygon-validity test is applied.
+Invalid indices and malformed boundary/semantic nesting still fail explicitly.
+`metadata.referenceSystem` supplies the CRS; absent CRS stays unknown. Coordinates
+retain the source XYZ order rather than applying geographic axis swapping.
+An explicitly declared CRS must be a supported string; malformed or unsupported
+declarations fail instead of silently assigning an unknown or guessed CRS.
+
+This view retains vertical faces but does not model solids, shell membership or
+the object hierarchy as geometry. It does not preserve textures, materials,
+extensions or general city-model metadata. CityJSONFeature sequences are outside
+this reader. Unsupported geometry types and invalid vertex/template references
+fail explicitly. Reading currently materializes the document and flat features;
+there is no spatial/window index. CityJSON writing is a separate step in [#462](https://github.com/opengeos/terrio/issues/462).
+The flat view owns repeated attributes and semantics text. Its estimated feature
+payload (text, coordinates and feature containers) is limited to 256 MiB; larger
+expansions fail with a request to split the model. This is an expansion limit,
+not a bound on total process memory or input parsing. Template vertices are
+decoded once, and only referenced template coordinates are transformed per instance.
+Whole source semantics are repeated as owned text. A local connected 1,000-face
+CompositeSurface example used 68,723 input bytes and 26,966,000 bytes of owned field
+text; larger single geometries can reach the expansion limit. Run
+`python scripts/benchmark_json_dispatch.py DATA` to reproduce this observation.
+The JSON parse also uses the existing GeoJSON allocation preflight; neither probe
+nor payload accounting is a total resident-memory guarantee.
+The `.city.json` extension now selects the CityJSON driver; until the writer is
+available it rejects output instead of writing GeoJSON under a CityJSON filename.
+
+The `.json` root-type probe scans the already-read buffer without reopening the
+file and borrows valid UTF-8; malformed UTF-8 is rejected without an owned decoded
+copy. A local Linux development-build observation on equal 16,777,271-byte files
+read 16,875,575–16,875,576 bytes in five calls for either root-type position,
+including bounded header probes. Mean opens were 52 ms with an early type and
+114 ms with a late type (three warmed runs). These observations are not performance
+thresholds; the benchmark above records actual counters and timings.
+
+The [CityJSON 1.1](https://www.cityjson.org/specs/1.1.3/) and
+[2.0 specifications](https://www.cityjson.org/specs/2.0.2/) and their published JSON
+Schemas define conformance. GDAL 3.13.3 has no CityJSON driver.
+
+### Other vector formats
 
 HEC-RAS geometry and plan files (`HECRAS`, which GDAL does not have) are recognized by content,
 an HDF5 signature and the root `File Type` HEC-RAS writes, and give the mesh, 1D and 2D feature

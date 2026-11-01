@@ -310,6 +310,13 @@ pub(crate) mod codec {
 
     /// The vector driver of a file, by its extension or, without one, its first bytes.
     fn vector_driver(bytes: &[u8], name: &str) -> Option<VectorDriver> {
+        let json = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes).trim_ascii_start();
+        if json.starts_with(b"{")
+            && let Ok(text) = std::str::from_utf8(json)
+            && crate::inspection::root_json_type(text.trim_start()).as_deref() == Some("CityJSON")
+        {
+            return Some(VectorDriver::CityJSON);
+        }
         if let Some(d) = VectorDriver::for_extension(name) {
             return Some(d);
         }

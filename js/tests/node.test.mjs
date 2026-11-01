@@ -161,6 +161,45 @@ test("vector layers as Arrow IPC streams, and back", { skip: needs("parquet") },
   assert.throws(() => ds.toArrowIPC(0, { geometryEncoding: "nope" }), /unknown geometry encoding/);
 });
 
+test("CityJSON late root type retains vertical XYZ and unknown CRS", () => {
+  const doc = {
+    vertices: [[10, 20, 30], [10, 21, 30], [10, 21, 31]],
+    CityObjects: { house: {
+      type: "Building", attributes: { note: "a".repeat(20000) },
+      geometry: [{ type: "MultiSurface", lod: "2", boundaries: [[[0, 1, 2]]] }],
+    } },
+    type: "CityJSON", version: "2.0",
+    transform: { scale: [1, 1, 1], translate: [0, 0, 0] },
+  };
+  const ds = terrio.open(new TextEncoder().encode(JSON.stringify(doc)), "late.json");
+  const fc = ds.toGeoJSON();
+  assert.equal(fc.features.length, 1);
+  assert.equal(fc.features[0].properties.city_id, "house");
+  assert.deepEqual(fc.features[0].geometry.coordinates[0].slice(0, 3), doc.vertices);
+  ds.free();
+});
+
+test("CityJSON skips degenerate faces without shifting semantics", () => {
+  const doc = {
+    type: "CityJSON", version: "2.0", vertices: [[10, 0, 0], [10, 1, 0], [10, 1, 1]],
+    transform: { scale: [1, 1, 1], translate: [0, 0, 0] },
+    CityObjects: { house: { type: "Building", geometry: [{ type: "MultiSurface", lod: "2.2",
+      boundaries: [[[0, 0, 0]], [[0, 1, 2]]],
+      semantics: { surfaces: [{ type: "GroundSurface" }, { type: "WallSurface" }], values: [0, 1] },
+    }] } },
+  };
+  const bytes = () => new TextEncoder().encode(JSON.stringify(doc));
+  const ds = terrio.open(bytes(), "tile.city.json");
+  const features = ds.toGeoJSON().features;
+  assert.equal(features.length, 1);
+  assert.equal(features[0].properties.skipped_rings, 1);
+  assert.equal(features[0].properties.skipped_faces, 1);
+  assert.equal(JSON.parse(features[0].properties.surface_semantics).type, "WallSurface");
+  ds.free();
+  delete doc.transform;
+  assert.throws(() => terrio.open(bytes(), "missing.city.json"), /transform/);
+});
+
 test("vector from GeoJSON, to other formats and back", () => {
   const ds = terrio.fromGeoJSON(SQUARES, "squares");
   assert.equal(ds.kind, "vector");

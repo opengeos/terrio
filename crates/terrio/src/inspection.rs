@@ -256,6 +256,9 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
     }
     let json = text.trim_start_matches('\u{1e}').trim_start();
     let root_type = root_json_type(json);
+    if root_type.as_deref() == Some("CityJSON") {
+        return vector(VectorDriver::CityJSON);
+    }
     if root_type.as_deref() == Some("Topology") {
         return vector(VectorDriver::TopoJSON);
     }
@@ -288,7 +291,7 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
 // A prefix may end inside a large features array. Stop after the root type
 // member, skipping nested values with serde's bounded parser rather than
 // matching a geometry type embedded in an unrelated JSON object.
-fn root_json_type(text: &str) -> Option<String> {
+pub(crate) fn root_json_type(text: &str) -> Option<String> {
     use serde::de::{Error as _, MapAccess, Visitor};
     struct RootType<'a>(&'a mut Option<String>);
     impl<'de> Visitor<'de> for RootType<'_> {

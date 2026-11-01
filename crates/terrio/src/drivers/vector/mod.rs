@@ -3,6 +3,7 @@
 
 #[cfg(feature = "cad")]
 pub(crate) mod cad;
+pub mod cityjson;
 pub mod csv;
 pub(crate) mod datetime;
 #[cfg(feature = "flatgeobuf")]
@@ -78,6 +79,7 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
         #[cfg(feature = "cad")]
         VectorDriver::DXF | VectorDriver::DWG => vec![cad::parse(std::fs::read(path)?, driver)?],
         VectorDriver::GeoJSON => vec![geojson::read(path)?],
+        VectorDriver::CityJSON => cityjson::parse(&std::fs::read(path)?)?,
         VectorDriver::GeoJSONSeq => {
             let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
             vec![geojson::parse_seq(&std::fs::read(path)?, stem)?]
@@ -135,6 +137,7 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
 /// from memory itself. Formats made of several files are read from their main file alone (a
 /// shapefile without attributes or CRS): see [`read_parts`].
 pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Option<Vec<Layer>>> {
+    crate::formats::check_driver_allowed(driver.name(), name, crate::formats::Kind::Vector)?;
     driver.ensure_built()?;
     if matches!(driver, VectorDriver::Shapefile | VectorDriver::MapInfo) {
         return read_parts(&bytes, name, driver, &|_: &str| None, options).map(Some);
@@ -146,6 +149,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
         #[cfg(feature = "cad")]
         VectorDriver::DXF | VectorDriver::DWG => vec![cad::parse(bytes, driver)?],
         VectorDriver::GeoJSON => vec![geojson::parse(&bytes, stem)?],
+        VectorDriver::CityJSON => cityjson::parse(&bytes)?,
         VectorDriver::GeoJSONSeq => vec![geojson::parse_seq(&bytes, stem)?],
         VectorDriver::CSV => {
             let tsv = crate::formats::extension(name).as_deref() == Some("tsv");
