@@ -1,5 +1,7 @@
 # terrio
 
+[![docs.rs](https://img.shields.io/docsrs/terrio)](https://docs.rs/terrio) [![CI](https://github.com/opengeos/terrio/actions/workflows/ci.yml/badge.svg)](https://github.com/opengeos/terrio/actions/workflows/ci.yml) [![Docs](https://github.com/opengeos/terrio/actions/workflows/docs.yml/badge.svg)](https://terrio.dev)
+
 **Pure-Rust geospatial raster, vector and point cloud data I/O.**
 
 ![terrio: geospatial data I/O in pure Rust. Rasters, vectors and point clouds, from the command line, Python, JavaScript and Rust, with an MCP server for AI agents](assets/terrio-banner.webp)
