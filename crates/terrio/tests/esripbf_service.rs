@@ -38,6 +38,11 @@ fn message(field: u64, bytes: &[u8]) -> Vec<u8> {
 
 /// A page of point features with ids from `offset + 1`, at most two of them.
 fn page(offset: u64) -> Vec<u8> {
+    page_with(offset, true)
+}
+
+/// [`page`], its features with their object ids or leaving them null.
+fn page_with(offset: u64, object_ids: bool) -> Vec<u8> {
     let end = (offset + 2).min(TOTAL);
     let field = message(13, &[message(1, b"OBJECTID"), number(2, 6)].concat());
     let srs = message(8, &number(1, 4326));
@@ -46,7 +51,8 @@ fn page(offset: u64) -> Vec<u8> {
         let mut coords = Vec::new();
         varint(&mut coords, i * 2);
         varint(&mut coords, i * 2);
-        let feature = [message(1, &number(5, i + 1)), message(2, &message(3, &coords))].concat();
+        let id = if object_ids { number(5, i + 1) } else { number(10, 1) };
+        let feature = [message(1, &id), message(2, &message(3, &coords))].concat();
         result.extend(message(15, &feature));
     }
     message(2, &message(1, &result))
@@ -83,6 +89,10 @@ fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
                 "/refused/query" => Vec::new(),
                 "/denied/query" => br#"{"error":{"code":498,"message":"Invalid token."}}"#.to_vec(),
                 "/count/query" => message(2, &message(2, &number(1, 5))),
+                "/nullid/query" => page_with(offset, false),
+                "/repeats/query" => page(0),
+                // The same features, with something else that changes on every answer.
+                "/repeats-stamped/query" => [message(1, format!("2.{offset}").as_bytes()), page(0)].concat(),
                 _ => b"not found".to_vec(),
             };
             let _ = stream.write_all(&[b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".as_slice(), &body].concat());
@@ -136,6 +146,18 @@ fn a_refused_query_says_so() {
     let error = |path: &str| terrio::open_vector(&format!("{base}{path}"), &Default::default()).unwrap_err().to_string();
     assert!(error("/refused/query?f=pbf").contains("f=json shows why"));
     assert!(error("/denied/query?f=pbf").contains("Invalid token."));
+    assert!(error("/repeats/query?f=pbf").contains("same as the one before"));
+    assert!(error("/repeats-stamped/query?f=pbf").contains("same as the one before"));
+    // So with every entry point, GDAL backend or not: a recognized answer is not handed on.
+    assert!(terrio::open(&format!("{base}/refused/query?f=pbf")).is_err_and(|e| e.to_string().contains("f=json shows why")));
+    assert!(terrio::list_layers(&format!("{base}/refused/query?f=pbf")).is_err_and(|e| e.to_string().contains("f=json shows why")));
+}
+
+#[test]
+fn features_without_object_ids_are_numbered_across_pages() {
+    let (base, _) = serve();
+    let ds = terrio::open_vector(&format!("{base}/nullid/query?f=pbf"), &Default::default()).unwrap();
+    assert_eq!(ids(&ds), [0, 1, 2, 3, 4]);
 }
 
 #[test]
