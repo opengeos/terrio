@@ -1118,6 +1118,8 @@ pub struct Transformer {
     heights: Option<Box<Heights>>,
     /// Web Mercator to WGS 84, which GDAL computes itself rather than with PROJ.
     web_mercator_to_wgs84: bool,
+    /// The reverse of [`web_mercator_to_wgs84`](Self::web_mercator_to_wgs84).
+    wgs84_to_web_mercator: bool,
     /// A point motion operation moving coordinates of one datum between two coordinate epochs
     /// (the Canada velocity grids of NAD83(CSRS), NKG_RF17vel), as PROJ applies it.
     motion: Option<Vec<datum::Step>>,
@@ -1338,9 +1340,12 @@ impl Transformer {
     /// inverts the forward pipeline (`OGRProjCT::GetInverse()`), so PROJ undoes its `unitconvert`
     /// by dividing by the factor, which rounds about a tenth of the degrees differently from
     /// multiplying by the reciprocal. GDAL's warper maps output pixels to the source this way.
-    /// Web Mercator to WGS 84 is unchanged: GDAL keeps its own formula for that pair.
+    /// Web Mercator and WGS 84 are unchanged both ways: GDAL has its own formula from Web Mercator,
+    /// and no PROJ pipeline to invert in the other direction, so it builds a direct one.
+    /// Only the horizontal path of [`transform`](Self::transform) is affected: 3D, geocentric and
+    /// vertical transformations keep the default conversion.
     pub fn with_reverse_degree_division(mut self) -> Self {
-        if !self.web_mercator_to_wgs84 {
+        if !self.web_mercator_to_wgs84 && !self.wgs84_to_web_mercator {
             self.src.inverted_degrees = true;
             self.dst.inverted_degrees = true;
         }
@@ -1425,6 +1430,7 @@ impl Transformer {
         };
         let src_horizontal = s.horizontal();
         let identity = src.same_as(dst) && motion.is_none();
+        let wgs84_to_web_mercator = web_mercator_to_wgs84(dst, src);
         let web_mercator_to_wgs84 = web_mercator_to_wgs84(src, dst);
         Ok(Self {
             identity,
@@ -1440,6 +1446,7 @@ impl Transformer {
             same_vertical_datum,
             src_horizontal,
             web_mercator_to_wgs84,
+            wgs84_to_web_mercator,
             best_route: std::sync::OnceLock::new(),
             policy: opts.clone(),
             missing_grid_checked: std::sync::OnceLock::new(),
@@ -2190,6 +2197,7 @@ mod tests {
     /// few units in the last place off, and the extent of a grid warped from it with them. Bit
     /// for bit on the glibc the values were recorded on (2.39), whose `asinh` and `atanh` PROJ and
     /// Terrio share; other releases round those differently, so within 4 units in the last place.
+    /// Exact parity on the installed glibc is checked against GDAL by `benchmark-compat`.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn lambert_conformal_conic_matches_proj() {

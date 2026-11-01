@@ -353,7 +353,7 @@ def main():
 
         if version == "3.13":
             run("Bilinear NAD83 to UTM warp bit-identical", warp_exact)
-        run("Counties to Conus Albers coordinates bit-identical", counties_exact)
+            run("Counties to Conus Albers coordinates bit-identical", counties_exact)
 
     if args.json:
         print(json.dumps(records, indent=2))

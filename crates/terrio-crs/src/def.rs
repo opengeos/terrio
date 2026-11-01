@@ -1060,33 +1060,36 @@ pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
 mod inverted_degrees_tests {
     use super::*;
 
-    /// Radians that dividing by π/180 and multiplying by 180/π round differently.
-    #[test]
-    fn inverted_pipelines_divide_by_the_forward_factor() {
+    fn nad83(inverted_degrees: bool) -> Def {
         let mut def = Def::new(&SpatialRef { epsg: Some(4269), ..Default::default() }).unwrap();
+        def.inverted_degrees = inverted_degrees;
+        def
+    }
+
+    #[test]
+    fn project_divides_by_the_forward_factor() {
+        let (plain, inverted) = (nad83(false), nad83(true));
         let factor = 1.0_f64.to_radians();
-        let radians: Vec<f64> = (1..2000).map(|i| f64::from(i) * 7.3e-4).collect();
-        let plain: Vec<_> = radians.iter().map(|r| def.project(*r, 0.25).unwrap()).collect();
-        def.inverted_degrees = true;
         let mut changed = 0;
-        for (r, before) in radians.iter().zip(&plain) {
-            let (u, v) = def.project(*r, 0.25).unwrap();
-            let (lon, lat) = if def.axis[0] == b'e' { (u, v) } else { (v, u) };
-            assert_eq!(lon.to_bits(), (r / factor).to_bits());
-            assert_eq!(lat.to_bits(), (0.25 / factor).to_bits());
-            changed += usize::from((u, v) != *before);
+        for radians in (1..2000).map(|i| f64::from(i) * 7.3e-4) {
+            let (u, v) = inverted.project(radians, 0.25).unwrap();
+            assert_eq!((u, v), inverted.axis(radians / factor, 0.25 / factor));
+            changed += usize::from((u, v) != plain.project(radians, 0.25).unwrap());
         }
         assert!(changed > 0, "the two conversions never differed");
-        let reciprocal = 1.0 / factor;
-        let (mut unprojected, mut changed) = (def.clone(), 0);
-        unprojected.inverted_degrees = true;
-        def.inverted_degrees = false;
+    }
+
+    #[test]
+    fn unproject_divides_by_the_forward_factor() {
+        let (plain, inverted) = (nad83(false), nad83(true));
+        let factor = 1.0 / 1.0_f64.to_radians();
+        let mut changed = 0;
         for degrees in (1..2000).map(|i| f64::from(i) * 0.05) {
-            let (u, v) = def.axis(degrees, 30.0);
-            let (lon, lat) = unprojected.unproject(u, v).unwrap();
-            assert_eq!(lon.to_bits(), (degrees / reciprocal).to_bits());
-            assert_eq!(lat.to_bits(), (30.0 / reciprocal).to_bits());
-            changed += usize::from((lon, lat) != def.unproject(u, v).unwrap());
+            let (u, v) = plain.axis(degrees, 30.0);
+            let (lon, lat) = inverted.unproject(u, v).unwrap();
+            assert_eq!(lon.to_bits(), (degrees / factor).to_bits());
+            assert_eq!(lat.to_bits(), (30.0 / factor).to_bits());
+            changed += usize::from((lon, lat) != plain.unproject(u, v).unwrap());
         }
         assert!(changed > 0, "the two conversions never differed");
     }
