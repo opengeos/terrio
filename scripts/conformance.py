@@ -529,6 +529,7 @@ def suite_raster_manage(ctx):
     """Real DEM raster management, cross-read and compared by GDAL."""
     suite = Suite("raster-manage", "Raster management", "GDAL 3.13.3",
                   "Creation types/bands, metadata escaping, nodata, internal/external overview add/delete, "
+                  "exact Landsat Byte/UInt16/Float32 mode on uneven levels, "
                   "internal mask overviews added, refreshed (whole and over an extent) and added again over "
                   "gdaladdo's, and real DEM subset updates: masks, mask blocks, type, nodata, CRS and "
                   "geotransform exact; "

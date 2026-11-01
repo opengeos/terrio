@@ -507,7 +507,11 @@ impl LazyRaster {
         let resolve_file = || {
             let local = vfs::resolve(path)?;
             let file = local.path().to_path_buf();
-            Ok::<_, Error>((Source::File(BufReader::new(std::fs::File::open(&file)?)), Some(local), Some(file)))
+            Ok::<_, Error>((
+                Source::File(BufReader::new(crate::geotiff::FileCursor::new(std::fs::File::open(&file)?))),
+                Some(local),
+                Some(file),
+            ))
         };
         let (mut source, local, file) = match &loc {
             #[cfg(remote)]
@@ -516,7 +520,9 @@ impl LazyRaster {
                 (Source::Http(crate::http::RangeReader::open(&remote)?), None, None)
             }
             Location::Local(p) if !p.is_file() => return Ok(None),
-            Location::Local(p) => (Source::File(BufReader::new(std::fs::File::open(p)?)), None, Some(p.clone())),
+            Location::Local(p) => {
+                (Source::File(BufReader::new(crate::geotiff::FileCursor::new(std::fs::File::open(p)?))), None, Some(p.clone()))
+            }
             // A member of a zip archive, stored or seek-optimized: read in place, without
             // extracting the archive (remote archives by range requests).
             #[cfg(not(target_family = "wasm"))]
@@ -1424,7 +1430,7 @@ impl AsRef<[u8]> for SharedBytes {
 
 /// Where a TIFF's bytes come from.
 enum Source {
-    File(BufReader<std::fs::File>),
+    File(BufReader<crate::geotiff::FileCursor>),
     Memory(std::io::Cursor<SharedBytes>),
     #[cfg(remote)]
     Http(crate::http::RangeReader),
@@ -1515,8 +1521,7 @@ struct TiffRaster {
     current_ifd: usize,
     /// Keeps a file extracted from an archive.
     _local: Option<vfs::LocalPath>,
-    /// The local file the TIFF is read from, which more decoders can open to decode chunks in
-    /// parallel.
+    /// The local file path, used for output alias checks and sidecar discovery.
     file: Option<std::path::PathBuf>,
     /// Reopening and native archive alias information for an in-place ZIP member.
     zip: Option<crate::vsi::sozip::MemberReopen>,
@@ -1533,8 +1538,8 @@ struct TiffRaster {
 }
 
 /// What more decoders of a TIFF read: its local file, or its bytes in memory.
-enum Reopened<'a> {
-    File(&'a std::path::Path),
+enum Reopened {
+    File(crate::geotiff::FileCursor),
     Memory(SharedBytes),
     Zip(crate::vsi::sozip::MemberReopen),
 }
@@ -1634,7 +1639,9 @@ impl TiffRaster {
             return;
         }
         let Ok(file) = std::fs::File::open(path) else { return };
-        let Ok(mut ovr) = TiffRaster::new(Source::File(BufReader::new(file)), None, self.limits) else { return };
+        let Ok(mut ovr) = TiffRaster::new(Source::File(BufReader::new(crate::geotiff::FileCursor::new(file))), None, self.limits) else {
+            return;
+        };
         if ovr.bands != self.bands || ovr.data_type != self.data_type || ovr.complex != self.complex {
             return;
         }
@@ -1791,19 +1798,20 @@ impl TiffRaster {
         }
         // More decoders over the local file, or over the bytes in memory.
         let (tags, limits) = (&self.tags, self.limits);
-        let source = match (self.file.as_deref(), dec.inner().get_ref()) {
-            (Some(path), _) => Some(Reopened::File(path)),
-            (None, Source::Memory(m)) => Some(Reopened::Memory(m.get_ref().clone())),
-            (None, Source::Zip(member)) => member.reopen().map(Reopened::Zip),
+        let source = match dec.inner().get_ref() {
+            Source::File(f) => Some(Reopened::File(f.get_ref().clone())),
+            Source::Memory(m) => Some(Reopened::Memory(m.get_ref().clone())),
+            Source::Zip(member) => member.reopen().map(Reopened::Zip),
             _ => None,
         };
         let reopen = source.map(|source| {
             move || -> Result<Decoder<PatchedReader<Source>>> {
                 // The `tiff` crate's limits bounded by the file's size, as for the first decoder.
                 let (s, len) = match &source {
-                    Reopened::File(path) => {
-                        let file = std::fs::File::open(path)?;
-                        let len = file.metadata()?.len();
+                    Reopened::File(file) => {
+                        let mut file = file.clone();
+                        file.seek(SeekFrom::Start(0))?;
+                        let len = file.len()?;
                         (Source::File(BufReader::new(file)), len)
                     }
                     Reopened::Memory(bytes) => (Source::Memory(std::io::Cursor::new(bytes.clone())), bytes.as_ref().len() as u64),

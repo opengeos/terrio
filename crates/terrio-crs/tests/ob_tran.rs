@@ -27,23 +27,6 @@ fn pinned_oblique_mollweide_fixture() {
     }
 }
 
-/// Inverts `point`, retrying it nudged by a relative 1e-12 in easting when it is refused.
-///
-/// A few reference samples fall exactly on the rotated antimeridian, the edge of the inverse
-/// domain, where the platform's libm decides by one ulp whether the point is inside (PROJ itself
-/// refuses `|lam| >= pi`). Only a point on that edge has exactly one side of the nudge accepted,
-/// so an interior point refused at its exact coordinate still fails.
-fn inverse_at_edge(inverse: &Transformer, point: (f64, f64)) -> Result<(f64, f64), String> {
-    inverse.transform(point.0, point.1).or_else(|error| {
-        let nudged: Vec<_> =
-            [1.0 - 1e-12, 1.0 + 1e-12].into_iter().filter_map(|scale| inverse.transform(point.0 * scale, point.1).ok()).collect();
-        match nudged[..] {
-            [one] => Ok(one),
-            _ => Err(error.to_string()),
-        }
-    })
-}
-
 fn angular_error(actual: (f64, f64), expected: &serde_json::Value) -> f64 {
     let lon = expected[0].as_f64().unwrap();
     let lat = expected[1].as_f64().unwrap();
@@ -74,13 +57,19 @@ fn rotated_projections_pole_forms_figures_and_units_match_frozen_proj() {
                 let actual = actual.unwrap_or_else(|e| panic!("{name} {encoding} {point:?}: {e}"));
                 let error = (actual.0 - expected.0).abs().max((actual.1 - expected.1).abs()) * factor;
                 assert!(error <= 0.001, "{name} {encoding} {point:?}: forward error {error} m");
-                if sample[3].is_null() {
+                // Mollweide antimeridian samples now invert, even where PROJ refused them.
+                let edge = case["target"].as_str().unwrap().contains("+o_proj=moll") && sample[3].is_null();
+                if sample[3].is_null() && !edge {
                     let actual = inverse.transform(expected.0, expected.1);
                     assert!(actual.is_err(), "{name} {encoding}: inverse must refuse {expected:?}, as PROJ does: {actual:?}");
                 } else {
-                    let actual = inverse_at_edge(&inverse, expected).unwrap_or_else(|e| panic!("{name} {encoding} inverse {point:?}: {e}"));
-                    let error = angular_error(actual, &sample[3]);
-                    assert!(error <= 1e-8, "{name} {encoding} {point:?}: inverse error {error} degrees");
+                    let actual =
+                        inverse.transform(expected.0, expected.1).unwrap_or_else(|e| panic!("{name} {encoding} inverse {point:?}: {e}"));
+                    let expected = if edge { serde_json::json!([point.0, point.1]) } else { sample[3].clone() };
+                    let error = angular_error(actual, &expected);
+                    // asin near a pole loses sqrt(epsilon) radians on some platform libms.
+                    let tolerance = if expected[1].as_f64().unwrap().abs() == 90.0 { 1e-6 } else { 1e-8 };
+                    assert!(error <= tolerance, "{name} {encoding} {point:?}: inverse error {error} degrees");
                 }
             }
             for sample in case["inverse_samples"].as_array().unwrap() {

@@ -104,12 +104,25 @@ def main():
             expected_inverse = [oracle(inverse, p) for p in inverse_points]
             actual = native(args.terrio, case["target"], case["source"], inverse_points)
             maximum_inverse = 0.0
+            edge_differences = 0
             for point, got, want in zip(inverse_points, actual, expected_inverse, strict=True):
                 if past_pole(case, point):
                     # PROJ's spherical sinusoidal inverse returns a latitude past a pole, which
                     # the rotation turns into a point; terrio's sinusoidal refuses it.
                     assert got is None, "inverse past a pole"
                     continue
+                if want is None and got is not None and "+o_proj=moll" in case["target"]:
+                    # The only accepted GDAL refusal is the documented eight-ulp domain band.
+                    # Verify the unrotated Mollweide domain analytically, then check the inverse
+                    # against the original geographic sample rather than skipping its values.
+                    radius = case["radius_metres"]
+                    x, y = (v * case["metres_per_unit"] / radius for v in point)
+                    theta = math.asin(y / math.sqrt(2))
+                    lam = x / (2 * math.sqrt(2) / math.pi * math.cos(theta))
+                    assert abs(abs(lam) - math.pi) <= 8 * math.ulp(math.pi), "not on Mollweide edge"
+                    index = expected.index(point)
+                    want = points[index]
+                    edge_differences += 1
                 assert (got is None) == (want is None), "inverse domain differs"
                 if want is not None:
                     dlon = ((got[0] - want[0] + 180) % 360 - 180) * math.cos(
@@ -120,10 +133,10 @@ def main():
                     maximum_inverse = max(maximum_inverse, error)
             status = (
                 "identical"
-                if maximum_forward == maximum_inverse == 0
+                if maximum_forward == maximum_inverse == 0 and edge_differences == 0
                 else "within tolerance"
             )
-            detail = f"max forward {maximum_forward} m; inverse {maximum_inverse} deg; {sum(p is None for p in expected)} forward and {sum(p is None for p in expected_inverse)} inverse refusals matched"
+            detail = f"max forward {maximum_forward} m; inverse {maximum_inverse} deg; {sum(p is None for p in expected)} forward and {sum(p is None for p in expected_inverse)} inverse oracle refusals; {edge_differences} documented antimeridian acceptances"
             results.append(dict(name=case["name"], status=status, detail=detail))
         except Exception as error:
             results.append(

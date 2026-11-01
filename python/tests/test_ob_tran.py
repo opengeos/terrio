@@ -15,40 +15,6 @@ REFERENCE = json.loads(
 )
 
 
-def _inverse_at_edge(point, source, target):
-    """Inverts a point, retrying it nudged by a relative 1e-12 in easting when refused.
-
-    A few reference samples fall exactly on the rotated antimeridian, the edge of the
-    inverse domain, where the platform's libm decides by one ulp whether the point is
-    inside. Only a point on that edge has exactly one side of the nudge accepted, so an
-    interior point refused at its exact coordinate still fails.
-
-    Mirrors `inverse_at_edge` in crates/terrio-crs/tests/ob_tran.rs; keep the two in step.
-
-    Args:
-        point: The projected (x, y) point.
-        source: The projected CRS definition.
-        target: The geographic CRS definition.
-
-    Returns:
-        The (longitude, latitude) of the point.
-    """
-    try:
-        x, y = terrio.transform_points([point[0]], [point[1]], source, target)
-        return x[0], y[0]
-    except terrio.CRSError:
-        nudged = []
-        for scale in (1 - 1e-12, 1 + 1e-12):
-            try:
-                x, y = terrio.transform_points([point[0] * scale], [point[1]], source, target)
-                nudged.append((x[0], y[0]))
-            except terrio.CRSError:
-                pass
-        if len(nudged) != 1:
-            raise
-        return nudged[0]
-
-
 @pytest.mark.parametrize("case", REFERENCE["cases"], ids=lambda case: case["name"])
 def test_ob_tran_oracle(case):
     samples = [s for s in case["samples"] if s[2] is not None]
@@ -63,14 +29,25 @@ def test_ob_tran_oracle(case):
         if s[2] is None:
             with pytest.raises(terrio.CRSError):
                 terrio.transform_points([s[0]], [s[1]], case["source"], case["target"])
+    # Known domain-policy difference: Mollweide antimeridians now invert.
+    samples = [
+        [*s[:3], s[:2]] if s[3] is None and "+o_proj=moll" in case["target"] else s for s in samples
+    ]
     reversible = [s for s in samples if s[3] is not None]
-    actual = np.asarray(
-        [_inverse_at_edge(s[2], case["target"], case["source"]) for s in reversible]
-    ).reshape(-1, 2)
+    actual = np.column_stack(
+        terrio.transform_points(
+            [s[2][0] for s in reversible],
+            [s[2][1] for s in reversible],
+            case["target"],
+            case["source"],
+        )
+    )
     expected = np.asarray([s[3] for s in reversible])
     delta = actual - expected
     delta[:, 0] = ((delta[:, 0] + 180) % 360 - 180) * np.cos(np.deg2rad(expected[:, 1]))
-    assert np.all(np.abs(delta) <= 1e-8)
+    # asin at a pole loses sqrt(epsilon) radians on some platform libms.
+    tolerance = np.where(np.abs(expected[:, 1]) == 90, 1e-6, 1e-8)
+    assert np.all(np.abs(delta) <= tolerance[:, None])
 
     # PROJ's spherical sinusoidal inverse returns a latitude past a pole, which the rotation turns
     # into a point; terrio's sinusoidal refuses it (as crates/terrio-crs/tests/ob_tran.rs checks).

@@ -1753,7 +1753,8 @@ test("interrupted Goode homolosine matches PROJ", () => {
 test("general oblique transformation matches PROJ", () => {
   const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/ob_tran_reference.json", import.meta.url), "utf8"));
   for (const c of reference.cases) {
-    const samples = c.samples.filter(s => s[2] !== null);
+    const samples = c.samples.filter(s => s[2] !== null).map(s =>
+      s[3] === null && c.target.includes("+o_proj=moll") ? [...s.slice(0, 3), s.slice(0, 2)] : s);
     for (const target of [c.target, c.wkt2, c.wkt1]) {
       const result = terrio.transformPoints(samples.map(s => s[0]), samples.map(s => s[1]), c.source, target);
       for (let i = 0; i < samples.length; i++) for (let j = 0; j < 2; j++) {
@@ -1765,28 +1766,9 @@ test("general oblique transformation matches PROJ", () => {
     }
     const reversible = samples.filter(s => s[3] !== null);
     const invert = ([x, y]) => terrio.transformPoints([x], [y], c.target, c.source);
-    const edge = [];
     const singleResults = new Map();
     for (let i = 0; i < reversible.length; i++) {
-      let inverse;
-      try {
-        inverse = invert(reversible[i][2]);
-      } catch (error) {
-        // The rotated antimeridian is the inverse domain boundary, which libm can round one
-        // ulp outside. Only a point on that edge has exactly one side of the 1e-12 easting
-        // nudge accepted; an interior point refused at its exact coordinate still fails.
-        const [x, y] = reversible[i][2];
-        const nudged = [1 - 1e-12, 1 + 1e-12].map(scale => {
-          try {
-            return invert([x * scale, y]);
-          } catch {
-            return null;
-          }
-        }).filter(r => r !== null);
-        if (nudged.length !== 1) throw error;
-        inverse = nudged[0];
-        edge.push(i);
-      }
+      const inverse = invert(reversible[i][2]);
       singleResults.set(reversible[i], [inverse[0][0], inverse[1][0]]);
       const [lon, lat] = reversible[i][3];
       const dlon = ((inverse[0][0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180);
@@ -1796,8 +1778,8 @@ test("general oblique transformation matches PROJ", () => {
       assert.ok(pole || Math.abs(dlon) <= 1e-8, `${c.name} inverse longitude ${i}`);
       assert.ok(Math.abs(inverse[1][0] - lat) <= (pole ? 1e-6 : 1e-8), `${c.name} inverse latitude ${i}`);
     }
-    // One batched call over the interior samples, which reuses a single transformer.
-    const interior = reversible.filter((_, i) => !edge.includes(i));
+    // One batched call over every reversible sample, including the antimeridian.
+    const interior = reversible;
     const batch = terrio.transformPoints(interior.map(s => s[2][0]), interior.map(s => s[2][1]), c.target, c.source);
     for (let i = 0; i < interior.length; i++) {
       assert.deepEqual([batch[0][i], batch[1][i]], singleResults.get(interior[i]), `${c.name} batch/single inverse ${i}`);

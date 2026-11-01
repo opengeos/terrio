@@ -886,13 +886,72 @@ fn identify_by_name(name: &str) -> Option<u32> {
         .find(|code| wbprojection::epsg::epsg_info(*code).is_some_and(|i| i.name.eq_ignore_ascii_case(name)))
 }
 
-/// A TIFF decoder over a local file.
-pub(crate) type FileDecoder = tiff::decoder::Decoder<PatchedReader<std::io::BufReader<std::fs::File>>>;
+/// Independent cursors sharing one open file identity, including after a rename/unlink.
+/// Positioned reads avoid the shared kernel offset of `File::try_clone` on Unix/Windows.
+#[derive(Clone)]
+pub(crate) struct FileCursor {
+    file: std::sync::Arc<std::fs::File>,
+    pos: u64,
+    #[cfg(not(any(unix, windows)))]
+    lock: std::sync::Arc<std::sync::Mutex<()>>,
+}
 
-/// Opens a decoder over a local TIFF file whose tags were read with [`read_geo_tags`].
-pub(crate) fn open_decoder(path: &std::path::Path, tags: &GeoTags, limits: crate::cog::TiffReadLimits) -> crate::Result<FileDecoder> {
-    let file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
+impl FileCursor {
+    pub(crate) fn new(file: std::fs::File) -> Self {
+        Self {
+            file: std::sync::Arc::new(file),
+            pos: 0,
+            #[cfg(not(any(unix, windows)))]
+            lock: Default::default(),
+        }
+    }
+
+    pub(crate) fn len(&self) -> std::io::Result<u64> {
+        Ok(self.file.metadata()?.len())
+    }
+}
+
+impl Read for FileCursor {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        #[cfg(unix)]
+        let n = std::os::unix::fs::FileExt::read_at(&*self.file, buf, self.pos)?;
+        #[cfg(windows)]
+        let n = std::os::windows::fs::FileExt::seek_read(&*self.file, buf, self.pos)?;
+        #[cfg(not(any(unix, windows)))]
+        let n = {
+            let _guard = self.lock.lock().map_err(|_| std::io::Error::other("file cursor lock poisoned"))?;
+            let mut file = &*self.file;
+            file.seek(SeekFrom::Start(self.pos))?;
+            file.read(buf)?
+        };
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for FileCursor {
+    fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+        let pos = match from {
+            SeekFrom::Start(pos) => Some(pos),
+            SeekFrom::Current(delta) => self.pos.checked_add_signed(delta),
+            SeekFrom::End(delta) => self.len()?.checked_add_signed(delta),
+        };
+        self.pos = pos.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid file seek"))?;
+        Ok(self.pos)
+    }
+}
+
+/// A TIFF decoder over a local file.
+pub(crate) type FileDecoder = tiff::decoder::Decoder<PatchedReader<std::io::BufReader<FileCursor>>>;
+
+fn file_decoder(
+    mut file: FileCursor,
+    tags: &GeoTags,
+    limits: crate::cog::TiffReadLimits,
+    path: &std::path::Path,
+) -> crate::Result<FileDecoder> {
+    let len = file.len()?;
+    file.seek(SeekFrom::Start(0))?;
     let file = PatchedReader::new(std::io::BufReader::new(file), tags);
     let dec = tiff::decoder::Decoder::new(file).map_err(|e| crate::Error::InvalidData(format!("{}: {e}", path.display())))?;
     Ok(dec.with_limits(limits.tiff_within(len)))
@@ -1190,12 +1249,13 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
         tiff::TiffError::LimitsExceeded => limits.error()(e),
         e => Error::InvalidData(format!("{}: {e}", path.display())),
     };
-    let mut tags = read_geo_tags(path).unwrap_or_default();
+    let mut file = FileCursor::new(std::fs::File::open(path)?);
+    let mut tags = read_geo_tags_from(std::io::BufReader::new(&mut file)).unwrap_or_default();
     tags.check_structure()?;
     tags.apply_sidecar_crs(path);
     tags.warn_unreadable(&path.display().to_string());
     // The decoder rejects palette images; read their indices as grayscale instead.
-    let mut dec = open_decoder(path, &tags, limits)?;
+    let mut dec = file_decoder(file, &tags, limits, path)?;
     let (w, h) = dec.dimensions().map_err(tiff_err)?;
     check_open(&mut dec, tiff_err)?;
     let (w, h) = (w as usize, h as usize);
@@ -1236,12 +1296,13 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
         };
         let offsets = dec.get_tag_u64_vec(offsets_tag).map_err(tiff_err)?;
         let counts = dec.get_tag_u64_vec(counts_tag).map_err(tiff_err)?;
-        check_stored_chunks(compression, offsets.into_iter().zip(counts), std::fs::metadata(path)?.len())?;
+        check_stored_chunks(compression, offsets.into_iter().zip(counts), dec.inner().get_ref().get_ref().len()?)?;
     }
 
     // Band-major output, typed after the first chunk decoded.
     let mut data: Option<RasterData> = None;
-    let reopen = || open_decoder(path, &tags, limits);
+    let file = dec.inner().get_ref().get_ref().clone();
+    let reopen = || file_decoder(file.clone(), &tags, limits, path);
     // The compressions the `tiff` crate does not decode (alone), with the same limit.
     let codec = crate::tiff_codecs::ChunkCodec::new(&mut dec, limits.chunk_bytes, None).map_err(tiff_err)?;
     decode_chunks(&mut dec, Some(&reopen), 0, &chunks, codec.as_ref(), limits.chunk_bytes, &tiff_err, |(idx, chunk, (dw, dh))| {

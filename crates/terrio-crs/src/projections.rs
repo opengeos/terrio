@@ -3318,10 +3318,15 @@ impl Proj for Moll {
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
         let theta = aasin_checked(y / self.cy)?;
-        let lam = x / (self.cx * theta.cos());
-        // PROJ excludes the antimeridian itself from this inverse's domain.
-        if !lam.is_finite() || lam.abs() >= PI {
+        let mut lam = x / (self.cx * theta.cos());
+        // GDAL 3.13.3 / PROJ excludes the antimeridian. Accept and snap an eight-ulp
+        // edge band so platform libm rounding cannot change whether the inverse exists.
+        let edge = 8.0 * (PI.next_up() - PI);
+        if !lam.is_finite() || lam.abs() > PI + edge {
             return None;
+        }
+        if (lam.abs() - PI).abs() <= edge {
+            lam = PI.copysign(lam);
         }
         let twice = 2.0 * theta;
         Some((lam, aasin_checked((twice + twice.sin()) / self.cp)?))
@@ -4822,6 +4827,24 @@ mod benchmark_regressions {
                 let expected = 1.0 / srat(e * phi0.sin(), 0.5 * e);
                 assert!(gauss.k.is_finite() && (gauss.k - expected).abs() < 1e-14);
                 assert!((chi - phi0).abs() < 1e-15 && radius.is_finite());
+            }
+        }
+    }
+
+    /// Edge policy deliberately differs from GDAL 3.13.3's strict PROJ domain.
+    #[test]
+    fn mollweide_and_wagner_snap_antimeridian_roundoff() {
+        for name in ["moll", "wag4", "wag5"] {
+            let p = Moll::new(name);
+            for sign in [-1.0, 1.0] {
+                for ulps in [-4.0, 0.0, 4.0] {
+                    let lam = sign * (PI + ulps * (PI.next_up() - PI));
+                    let actual = p.inv(p.cx * lam, 0.0).unwrap();
+                    assert_eq!(actual, (sign * PI, 0.0), "{name}");
+                }
+                assert!(p.inv(p.cx * sign * (PI + 1e-12), 0.0).is_none());
+                let inside = sign * (PI - 1e-12);
+                assert!((p.inv(p.cx * inside, 0.0).unwrap().0 - inside).abs() < 1e-15);
             }
         }
     }

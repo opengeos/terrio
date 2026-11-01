@@ -125,6 +125,16 @@ pub(crate) fn resample(
     chunk: std::ops::Range<usize>,
     group_origin: usize,
 ) -> Vec<f64> {
+    // Coarse row groups preserve each pixel's visitation/tie order. Each worker reuses its
+    // mode counters; small jobs stay sequential to avoid scheduling and buffer overhead.
+    if t.method == Method::Mode && out_rows.len() > 16 && out_rows.len() * t.width >= 65536 {
+        let mut out = vec![0.0; out_rows.len() * t.width];
+        crate::par::chunks_mut_coarse(&mut out, 16 * t.width, |i, rows| {
+            let start = out_rows.start + i * 16;
+            rows.copy_from_slice(&resample(band, t, start..start + rows.len() / t.width, chunk.clone(), group_origin));
+        });
+        return out;
+    }
     let rx = band.width as f64 / t.width as f64;
     let ry = band.height as f64 / t.height as f64;
     let (cx0, cx1) = (0usize, band.width);
@@ -144,6 +154,7 @@ pub(crate) fn resample(
             let xs: Vec<XWindow> = (0..t.width).map(|i| XWindow::new(i, rx, cx0, cx1)).collect();
             let spacing_two = xs.windows(2).all(|w| w[0].x1 == w[1].x0) && xs.iter().all(|w| w.x1 - w.x0 == 2);
             let average = Average::new(t);
+            let mut mode = Mode::new();
             for i in out_rows {
                 let (y0, y1, fy0, fy1) = window(i, ry, cy0, cy1);
                 match t.method {
@@ -152,7 +163,7 @@ pub(crate) fn resample(
                     }
                     Method::Mode => {
                         for w in &xs {
-                            out.push(mode(w, (y0, y1), &at, &ok, band.valid.is_some(), t));
+                            out.push(mode.sample(w, (y0, y1), &at, &ok, band.valid.is_some(), t));
                         }
                     }
                     Method::Min | Method::Max => {
@@ -420,57 +431,96 @@ fn replacement_value(dt: DataType, nd: f64) -> f64 {
 
 /// GDAL's mode (`GDALResampleChunk_ModeT`): the first value to reach the highest count. Byte bands
 /// leave out the nodata value only (not the mask); others leave out what the mask does.
-fn mode(
-    w: &XWindow,
-    (y0, y1): (usize, usize),
-    at: &impl Fn(usize, usize) -> f64,
-    ok: &impl Fn(usize, usize) -> bool,
-    masked: bool,
-    t: &Target,
-) -> f64 {
-    // Signed integers are compared as unsigned values of their size: an out-of-range nodata
-    // value leaves the empty windows at 0.
-    let in_range = |nd: f64| match t.data_type {
-        DataType::F64 | DataType::F32 => !nd.is_nan(),
-        DataType::I8 => (-128.0..=127.0).contains(&nd),
-        DataType::U8 => (0.0..=255.0).contains(&nd),
-        DataType::U16 | DataType::I16 => (0.0..=65535.0).contains(&nd),
-        DataType::U32 | DataType::I32 => (0.0..=4294967295.0).contains(&nd),
-        DataType::U64 | DataType::I64 => (0.0..18446744073709551615.0).contains(&nd),
-    };
-    let empty = t.nodata.filter(|nd| in_range(*nd)).unwrap_or(0.0);
-    let mut seen: Vec<(f64, u64)> = Vec::new();
-    let mut counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
-    let mut best = 0;
-    for y in y0..y1 {
-        for x in w.x0..w.x1 {
-            let v = at(x, y);
-            let valid = if t.data_type == DataType::U8 { t.nodata.is_none() || v != empty } else { !masked || ok(x, y) };
-            if !valid {
-                continue;
+struct Mode {
+    bytes: [u64; 256],
+    touched: Vec<usize>,
+    seen: Vec<(f64, u64)>,
+    counts: std::collections::HashMap<u64, usize>,
+}
+
+impl Mode {
+    fn new() -> Self {
+        Self { bytes: [0; 256], touched: Vec::new(), seen: Vec::new(), counts: Default::default() }
+    }
+
+    fn sample(
+        &mut self,
+        w: &XWindow,
+        (y0, y1): (usize, usize),
+        at: &impl Fn(usize, usize) -> f64,
+        ok: &impl Fn(usize, usize) -> bool,
+        masked: bool,
+        t: &Target,
+    ) -> f64 {
+        // Signed integers are compared as unsigned values of their size: an out-of-range nodata
+        // value leaves the empty windows at 0.
+        let in_range = |nd: f64| match t.data_type {
+            DataType::F64 | DataType::F32 => !nd.is_nan(),
+            DataType::I8 => (-128.0..=127.0).contains(&nd),
+            DataType::U8 => (0.0..=255.0).contains(&nd),
+            DataType::U16 | DataType::I16 => (0.0..=65535.0).contains(&nd),
+            DataType::U32 | DataType::I32 => (0.0..=4294967295.0).contains(&nd),
+            DataType::U64 | DataType::I64 => (0.0..18446744073709551615.0).contains(&nd),
+        };
+        let empty = t.nodata.filter(|nd| in_range(*nd)).unwrap_or(0.0);
+        if t.data_type == DataType::U8 {
+            for i in self.touched.drain(..) {
+                self.bytes[i] = 0;
             }
-            let key = if v == 0.0 {
-                0
-            } else if v.is_nan() {
-                f64::NAN.to_bits()
-            } else {
-                v.to_bits()
-            };
-            match counts.get(&key).copied() {
-                Some(i) => {
-                    seen[i].1 += 1;
-                    if seen[i].1 > seen[best].1 {
-                        best = i;
+            let (mut best, mut high) = (empty, 0);
+            for y in y0..y1 {
+                for x in w.x0..w.x1 {
+                    let v = at(x, y);
+                    if t.nodata.is_some() && v == empty {
+                        continue;
+                    }
+                    let i = v as usize;
+                    if self.bytes[i] == 0 {
+                        self.touched.push(i);
+                    }
+                    self.bytes[i] += 1;
+                    if self.bytes[i] > high {
+                        best = v;
+                        high = self.bytes[i];
                     }
                 }
-                None => {
-                    counts.insert(key, seen.len());
-                    seen.push((v, 1));
+            }
+            return best;
+        }
+        let (seen, counts) = (&mut self.seen, &mut self.counts);
+        seen.clear();
+        counts.clear();
+        let mut best = 0;
+        for y in y0..y1 {
+            for x in w.x0..w.x1 {
+                let v = at(x, y);
+                let valid = !masked || ok(x, y);
+                if !valid {
+                    continue;
+                }
+                let key = if v == 0.0 {
+                    0
+                } else if v.is_nan() {
+                    f64::NAN.to_bits()
+                } else {
+                    v.to_bits()
+                };
+                match counts.get(&key).copied() {
+                    Some(i) => {
+                        seen[i].1 += 1;
+                        if seen[i].1 > seen[best].1 {
+                            best = i;
+                        }
+                    }
+                    None => {
+                        counts.insert(key, seen.len());
+                        seen.push((v, 1));
+                    }
                 }
             }
         }
+        if seen.is_empty() { empty } else { seen[best].0 }
     }
-    if seen.is_empty() { empty } else { seen[best].0 }
 }
 
 #[cfg(test)]
@@ -511,6 +561,32 @@ mod tests {
         let valid = [false; 4];
         let band = Band { values: &nan, valid: Some(&valid), width: 4, height: 1, rows: 0..1 };
         assert_eq!(resample(&band, &target(1, 1, DataType::F64, Some(f64::NAN), Method::Mode), 0..1, 0..1, 0), vec![0.0]);
+    }
+
+    /// GDAL 3.13.3 mode ignores masks on Byte bands, but excludes numeric nodata.
+    #[test]
+    fn byte_mode_resets_counts_and_preserves_ties_and_nodata() {
+        let values = [5.0, 7.0, 7.0, 5.0, 5.0, 5.0, 7.0, 7.0, 0.0, 0.0, 0.0, 0.0];
+        let mask = [false; 12];
+        let band = Band { values: &values, valid: Some(&mask), width: 12, height: 1, rows: 0..1 };
+        assert_eq!(resample(&band, &target(3, 1, DataType::U8, Some(0.0), Method::Mode), 0..1, 0..1, 0), [7.0, 5.0, 0.0]);
+        let mut mode = Mode::new();
+        let t = target(1, 1, DataType::F64, None, Method::Mode);
+        let w = XWindow::new(0, 4.0, 0, 4);
+        assert!(mode.sample(&w, (0, 1), &|_, _| f64::NAN, &|_, _| true, false, &t).is_nan());
+        assert_eq!(mode.sample(&w, (0, 1), &|x, _| [5.0, 7.0, 7.0, 5.0][x], &|_, _| true, false, &t), 7.0);
+    }
+
+    #[test]
+    fn parallel_mode_matches_individual_rows_on_uneven_grids() {
+        let values: Vec<_> = (0..1031 * 263).map(|i| ((i * 7 + i / 1031) % 256) as f64).collect();
+        let band = Band { values: &values, valid: None, width: 1031, height: 263, rows: 0..263 };
+        for dt in [DataType::U8, DataType::I16, DataType::F64] {
+            let t = target(517, 131, dt, Some(0.0), Method::Mode);
+            let parallel = resample(&band, &t, 0..131, 0..263, 0);
+            let serial: Vec<_> = (0..131).flat_map(|y| resample(&band, &t, y..y + 1, 0..263, 0)).collect();
+            assert_eq!(parallel, serial);
+        }
     }
 
     #[test]

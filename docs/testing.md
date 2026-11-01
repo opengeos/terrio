@@ -852,6 +852,11 @@ inverse points inside and beyond the rotated projection's domain. Each configura
 WKT1 and WKT2 as PROJ writes them. The generator checks that pyproj's CRS route is PROJ's
 `ob_tran` operation itself, and that PROJ refuses the definitions the corpus lists as refused.
 
+Mollweide inverses now accept and snap an eight-ulp band around the antimeridian
+(#357), including samples that the frozen PROJ oracle refuses. These are checked
+against their original geographic coordinates, with longitude immaterial at a pole.
+The live comparison verifies the edge analytically and reports these policy differences.
+
 Rust checks the corpus in every encoding with its forward and inverse refusals, the fixture with
 terrio's own WKT1, and the refused definitions; the rotated-pole tests check the other pole forms
 for `longlat` against PROJ. Python and Node/WASM check every sample and PROJ's refusals; CLI/MCP
@@ -1924,3 +1929,46 @@ performance thresholds or cold/remote I/O measurements. The conformance suite
 also includes a 0.25-unit sliver next to a wider polygon with snapping distance
 1: all four strategies are compared against GDAL, checking original-input face
 classification after the sliver collapses.
+
+## Projection edges, multi-layer streaming and TIFF reads (#357, #392, #432, #433)
+
+The Mollweide/Wagner unit regressions check both signs of the antimeridian, rounding
+inside and outside it, and refusal beyond the eight-ulp edge band. Rust, Python and
+Node oblique-projection tests invert the original coordinates without retries. The
+`ob_tran` conformance suite reports the deliberate difference from GDAL's strict domain.
+
+`gpkg_layers_writer` exercises the public Rust writer with interleaved chunks, an empty
+layer, 64-bit attributes, sequential IDs and invalid indices/schemas. Independent
+GDAL 3.13.3 cross-reads of Natural Earth countries and populated places (176 and 7,342
+features, streamed in seven-feature chunks) found exact attributes and geometry WKB,
+equivalent geographic CRSs after ignoring axis declaration order, complete R-trees
+and a successful SQLite integrity check. Native spatial-index packing and SQLite
+page-directory construction also spill to disk: regressions check every R-tree shadow
+row through four levels, stable ties across external merge runs, exact SQLite page
+bytes at interior-node split boundaries, and propagation of spill read failures.
+A two-layer export with fixed 1,000-feature chunks used 61.3, 73.4 and 62.6 MiB peak
+RSS for 100,000, 1,000,000 and 10,000,000 total point features respectively in local
+optimized runs. GDAL confirmed both layers' counts and R-tree counts, and SQLite's
+integrity check passed in each file. These observations complement the fixed sort-buffer
+and page-buffer limits; they are not a portable RSS threshold. The existing `streams`
+conformance suite also cross-reads the spill-backed GeoPackage conversion path.
+
+`raster_file_identity` replaces a TIFF with a different tile layout, then reads one
+and several chunks through the old and new handles. It also unlinks an unread file.
+Both uncompressed and DEFLATE sources keep their original samples. Python and GDAL
+3.13.3 agree on the same replacement scenario with GDAL's block cache disabled.
+A local sampled XYZ export on the benchmark raster below opened its input 131 times
+before the change and three times afterward, with byte-identical text output.
+
+Mode regressions check counter reuse, first-to-lead ties, nodata, Byte mask semantics,
+NaNs and parallel/serial equality on uneven grids. The `raster-manage` conformance
+suite includes exact Byte/UInt16/Float32 mode comparisons on a 1023×1021 Landsat
+subset at factors 2, 3 and 8, in addition to its existing DEM checks.
+
+A local 40-logical-CPU Linux run of the 8192×8192 three-band Byte benchmark in #433
+(pixel-interleaved, 512-pixel DEFLATE tiles, default overview factors) took 11.33 s
+before the change and 1.07–1.10 s in three runs afterward (median 1.08 s, peak RSS
+about 268 MiB). GDAL 3.13.3 took 2.94 s with one thread and 0.53 s with all cores.
+Every band/overview pixel and mask matched GDAL exactly. These are local observations,
+not timing thresholds or a claim that Terrio matches GDAL's all-core speed. Existing
+Float64 overview arithmetic still limits exact handling of integers above 2^53.

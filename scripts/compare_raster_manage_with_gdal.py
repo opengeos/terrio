@@ -211,6 +211,24 @@ def main():
                     overviews,
                 )
 
+        # Real Byte imagery exercises the histogram path and parallel row groups; the
+        # existing DEM cases exercise reusable non-Byte counters. Mode must be exact.
+        for data_type in [gdal.GDT_Byte, gdal.GDT_UInt16, gdal.GDT_Float32]:
+            def mode_image(data_type=data_type):
+                a, b = work / "mode-gdal.tif", work / "mode-terrio.tif"
+                ds = gdal.Translate(str(a), str(args.data / "landsat.tif"),
+                                    srcWin=[0, 0, 1023, 1021], outputType=data_type,
+                                    creationOptions=["TILED=YES", "COMPRESS=DEFLATE"])
+                ds = None
+                shutil.copyfile(a, b)
+                run(["gdaladdo", "-r", "mode", a, 2, 3, 8])
+                run([args.terrio, "overviews", b, "-r", "mode", 2, 3, 8])
+                status, detail = compare(a, b)
+                if status != "identical":
+                    raise AssertionError("mode pixels must match exactly: " + detail)
+                return status, detail
+            case(f"Landsat mode {gdal.GetDataTypeName(data_type)} uneven levels", mode_image)
+
         # A per-dataset internal mask in 64-pixel tiles, the smallest that GDAL's overviews
         # keep: the first overview's last block row has 36 of 64 rows, and the others fit
         # in a tile.
