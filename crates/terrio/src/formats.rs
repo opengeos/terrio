@@ -760,8 +760,8 @@ pub fn identify_bytes(name: &str, bytes: &[u8]) -> Identified {
     }
 }
 
-// JSON without an observed root type is ambiguous. A CityJSON name should not
-// acquire a false GeoJSON content assertion when vertices precede the root type.
+// JSON without an observed root type is ambiguous. Shared .json names and explicit
+// CityJSON names must not acquire a false GeoJSON assertion from a bounded prefix.
 fn sniff_named(head: &[u8], names: &[String]) -> Option<&'static str> {
     let found = sniff(head);
     if found == Some("GEOJSON") && names.iter().any(|n| n == "CITYJSON") {
@@ -814,6 +814,10 @@ fn named_drivers(trimmed: &str) -> Named {
                 }
             }
         }
+    }
+    // Plain JSON is shared by GeoJSON and CityJSON; the reader chooses by root type.
+    if name.ends_with(".json") && by_name.iter().any(|name| name == "GEOJSON") {
+        by_name.push("CITYJSON".to_string());
     }
     Named::Name(location, by_name)
 }
@@ -1312,6 +1316,26 @@ mod allow_list_tests {
         check_drivers(&tif, &["GTiff".to_string(), "GSBG".to_string()]).unwrap();
         let err = check_identified("x.png", &identify_bytes("x.png", &grid), &["PNG".to_string()]).unwrap_err().to_string();
         assert_eq!(err, "'x.png' holds GSBG data, and the GSBG driver is not allowed (allowed: PNG)");
+    }
+
+    #[test]
+    fn late_json_root_type_is_ambiguous_until_the_driver_is_selected() {
+        let bytes = format!(r#"{{"padding":"{}","type":"CityJSON","version":"2.0","transform":{{"scale":[1,1,1],"translate":[0,0,0]}},"vertices":[],"CityObjects":{{}}}}"#, "x".repeat(2000)).into_bytes();
+        let id = identify_bytes("late.json", &bytes);
+        assert!(id.by_name.contains(&"CITYJSON".to_string()));
+        assert_eq!(id.by_content, None);
+        let (_dir, path) = temp("late.json", &bytes);
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_ALLOWED_DRIVERS".to_string(), Some("CityJSON".to_string()))]));
+        let allowed = check_allowed(&path, Some(Kind::Vector));
+        let opened = crate::open_vector(&path, &Default::default());
+        let bytes_opened = crate::memory::open_vector_bytes(bytes.clone(), "late.json", &Default::default());
+        let geojson = format!(r#"{{"padding":"{}","type":"FeatureCollection","features":[]}}"#, "x".repeat(2000));
+        let geojson_refused = crate::memory::open_vector_bytes(geojson.into_bytes(), "late.json", &Default::default());
+        crate::config::pop_scope();
+        allowed.unwrap();
+        assert_eq!(opened.unwrap().driver, VectorDriver::CityJSON);
+        assert_eq!(bytes_opened.unwrap().driver, VectorDriver::CityJSON);
+        assert!(geojson_refused.unwrap_err().to_string().contains("not allowed"));
     }
 
     #[test]

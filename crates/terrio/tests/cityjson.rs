@@ -182,3 +182,13 @@ fn degenerate_rings_preserve_other_faces_semantics_and_geometry_diagnostics() {
             .contains("transform")
     );
 }
+
+#[test]
+fn collinear_xyz_rings_are_retained_without_an_area_validity_test() {
+    let mut doc = document("MultiSurface", json!([[[0, 1, 2]]]));
+    doc["vertices"] = json!([[10, 0, 0], [10, 0, 1], [10, 0, 2]]);
+    let ds = read(&doc, "collinear.city.json");
+    assert_eq!(ds.layers[0].features.iter().filter(|f| f.geometry.is_some()).count(), 1);
+    let feature = ds.layers[0].features.iter().find(|f| f.geometry.is_some()).unwrap();
+    assert_eq!(feature.attributes[9], FieldValue::Integer(0));
+}

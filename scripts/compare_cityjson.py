@@ -188,6 +188,22 @@ def compare(expected, fc):
     assert actual == expected, f"{sum((expected - actual).values())} missing / {sum((actual - expected).values())} unexpected primitives"
 
 
+def schema_version(version):
+    """Use only the published schema versions supported by the reader."""
+    versions = {"1.1": "1.1.3", "2.0": "2.0.2"}
+    if version not in versions:
+        raise ValueError(f"no published schema for CityJSON version {version!r}")
+    return versions[version]
+
+
+def convert_cli(terrio, source, target):
+    """Keep the converter diagnostic in conformance reports when conversion fails."""
+    try:
+        subprocess.run([str(terrio), "convert", str(source), str(target)], check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"{source}: terrio convert failed ({error.returncode}): {error.stderr.strip()}") from error
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data", type=Path)
@@ -210,7 +226,7 @@ def main():
     paths += [p for p in args.extra_fixture if p not in paths]
     for path in paths:
         doc = json.loads(path.read_bytes())
-        version = "1.1.3" if doc["version"] == "1.1" else "2.0.2"
+        version = schema_version(doc["version"])
         validate_schema(doc, args.data / "citymodels" / "schemas" / version)
         expected = Counter(key(*row) for row in reference(doc))
         native = terrio.open_vector(str(path))[0]
@@ -225,7 +241,7 @@ def main():
             results.append(dict(name=f"{path.name} {surface}", status="identical", detail=f"schema valid; {sum(expected.values())} primitives, surviving XYZ/holes, diagnostics, attributes, identity, LoD, parents and semantics exact; CRS checked"))
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "out.geojson"
-            subprocess.run([args.terrio, "convert", str(path), str(target)], check=True, capture_output=True, text=True)
+            convert_cli(args.terrio, path, target)
             compare(expected, json.loads(target.read_bytes()))
             results.append(dict(name=f"{path.name} CLI", status="identical", detail=f"{sum(expected.values())} primitives exact"))
         if args.node_package:

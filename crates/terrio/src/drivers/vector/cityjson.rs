@@ -14,6 +14,14 @@ use crate::{Error, Result};
 use serde_json::Value;
 use wbvector::{Coord, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
 
+// Mutable attribute slots are named to keep LoD, source and face semantics distinct.
+const LOD: usize = 2;
+const GEOMETRY_TYPE: usize = 5;
+const SEMANTICS: usize = 6;
+const SURFACE_SEMANTICS: usize = 7;
+const SKIPPED_RINGS: usize = 8;
+const SKIPPED_FACES: usize = 9;
+
 fn invalid(message: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("CityJSON: {message}"))
 }
@@ -292,16 +300,16 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
         }
         for geometry in geometries {
             let mut diagnostics = Diagnostics::default();
-            attrs[7] = FieldValue::Null;
-            attrs[2] = text(&geometry["lod"]);
-            attrs[5] = text(&geometry["type"]);
-            attrs[6] = text(&geometry["semantics"]);
+            attrs[SURFACE_SEMANTICS] = FieldValue::Null;
+            attrs[LOD] = text(&geometry["lod"]);
+            attrs[GEOMETRY_TYPE] = text(&geometry["type"]);
+            attrs[SEMANTICS] = text(&geometry["semantics"]);
             let (primitives, surface_semantics) = if geometry["type"] == "GeometryInstance" {
                 let (template, vertices) = instance(geometry, &doc, &points, &template_points)?;
-                if attrs[2] == FieldValue::Null {
-                    attrs[2] = text(&template["lod"]);
+                if attrs[LOD] == FieldValue::Null {
+                    attrs[LOD] = text(&template["lod"]);
                 }
-                attrs[6] = text(&template["semantics"]);
+                attrs[SEMANTICS] = text(&template["semantics"]);
                 let primitives = primitives(template, &vertices, &mut diagnostics)?;
                 let semantics = primitive_semantics(template, primitives.len())?;
                 (primitives, semantics)
@@ -310,12 +318,12 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
                 let semantics = primitive_semantics(geometry, primitives.len())?;
                 (primitives, semantics)
             };
-            attrs[8] = FieldValue::Integer(i64::try_from(diagnostics.skipped_rings).map_err(invalid)?);
-            attrs[9] = FieldValue::Integer(i64::try_from(diagnostics.skipped_faces).map_err(invalid)?);
+            attrs[SKIPPED_RINGS] = FieldValue::Integer(i64::try_from(diagnostics.skipped_rings).map_err(invalid)?);
+            attrs[SKIPPED_FACES] = FieldValue::Integer(i64::try_from(diagnostics.skipped_faces).map_err(invalid)?);
             let mut emitted = false;
             for (primitive, semantic) in primitives.into_iter().zip(surface_semantics) {
                 if let Some(primitive) = primitive {
-                    attrs[7] = semantic.map_or(FieldValue::Null, text);
+                    attrs[SURFACE_SEMANTICS] = semantic.map_or(FieldValue::Null, text);
                     super::city::push_with_limit(&mut layer, Some(primitive), &attrs, &mut used, limit)?;
                     emitted = true;
                 }

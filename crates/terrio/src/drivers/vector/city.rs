@@ -46,7 +46,7 @@ pub(super) fn push_with_limit(
     *used = used.saturating_add(cost);
     if *used > limit {
         return Err(crate::Error::InvalidData(
-            "city model flat feature payload exceeds the 256 MiB expansion limit; split the model into smaller files".into(),
+            "city model flat feature payload exceeds the 256 MiB expansion limit (attributes and complete source semantics are repeated per primitive); split the model into smaller files".into(),
         ));
     }
     layer.push(Feature { fid: layer.features.len() as u64, geometry, attributes: attrs.to_vec() });
