@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 import sysconfig
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -148,7 +150,7 @@ def test_json_usage_without_dataset_arguments(path):
     if not path:
         names = {c["name"] for c in catalog["command"]["subcommands"]}
         assert {"warp", "vsi", "lineref", "filter"} <= names
-        assert not {"mcp", "help"} & names
+        assert not {"mcp", "ui", "help"} & names
 
 
 def test_json_usage_literal_dataset_name(tmp_path):
@@ -170,3 +172,37 @@ def test_json_usage_matches_published_schema(path):
     result = run(*path, "--json-usage")
     assert result.returncode == 0, result.stderr
     Draft202012Validator(schema).validate(json.loads(result.stdout))
+
+
+def test_ui(tmp_path):
+    """Serves the forms' API through ``python -m terrio``, whose commands run in this interpreter."""
+    (tmp_path / "points.geojson").write_text(json.dumps(POINTS))
+    server = subprocess.Popen(
+        [sys.executable, "-m", "terrio", "ui", "--no-open"],
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        line = server.stdout.readline().strip()
+        base, token = line.removeprefix("terrio ui: ").split("/#token=")
+        headers = {"X-Terrio-Token": token}
+
+        def run(*args):
+            """Runs ``terrio info`` through the server and returns the decoded result."""
+            body = json.dumps({"name": "info", "arguments": {"args": list(args)}})
+            request = urllib.request.Request(f"{base}/api/run", body.encode(), headers)
+            with urllib.request.urlopen(request, timeout=60) as reply:
+                return json.load(reply)
+
+        result = run("points.geojson", "--json")
+        assert result["isError"] is False
+        assert json.loads(result["content"][0]["text"])["type"] == "vector"
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(f"{base}/api/catalog", timeout=60)
+        assert refused.value.code == 403
+    finally:
+        server.kill()
+        server.wait()
+        server.stdout.close()

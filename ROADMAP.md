@@ -22,6 +22,12 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - Proprietary formats that need vendor SDKs (MrSID, ECW, FileGDB raster).
 - Database drivers (PostGIS, Oracle, SQL Server) in the core crate.
 
+## Local browser interface
+
+- [x] `terrio ui`: forms generated from the command catalog, served on the loopback
+      interface with a session token, with a file browser, the equivalent command line
+      and cancellation. No map or preview; output arrives when a command ends.
+
 ## Machine-readable CLI metadata (#386)
 
 - [x] Unstable v0.1 `--json-usage` catalog from the shared clap/MCP command tree:

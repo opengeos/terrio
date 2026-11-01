@@ -86,10 +86,12 @@ fn documented_command_list_matches_the_catalog() {
             (command["name"].as_str().unwrap().to_string(), summary.to_string())
         })
         .collect();
-    // The catalog leaves out `mcp`, which serves it: its summary comes from `--help`.
+    // The catalog leaves out the servers: their summaries come from `--help`.
     let help = String::from_utf8(run(&["--help"], dir.path()).stdout).unwrap();
-    let mcp = help.lines().find_map(|line| line.trim_start().strip_prefix("mcp ")).unwrap();
-    expected.push(("mcp".to_string(), mcp.trim().to_string()));
+    for server in ["mcp", "ui"] {
+        let summary = help.lines().find_map(|line| line.trim_start().strip_prefix(&format!("{server} "))).unwrap();
+        expected.push((server.to_string(), summary.trim().to_string()));
+    }
     expected.sort();
 
     let docs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/cli.md")).unwrap();
