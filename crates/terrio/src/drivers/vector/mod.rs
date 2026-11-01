@@ -239,7 +239,9 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
         VectorDriver::KMZ => kml::kmz_bytes(layers, &options.kmz)?,
         VectorDriver::TopoJSON => topojson::to_string(layers)?.into_bytes(),
         VectorDriver::CityJSON => cityjson_write::to_bytes(layers, options.cityjson_version.unwrap_or_default())?,
-        VectorDriver::CityGML => citygml_write::to_bytes(layers, options.citygml_version.unwrap_or_default())?,
+        VectorDriver::CityGML => {
+            citygml_write::to_bytes(layers, options.citygml_version.unwrap_or_default(), options.citygml_lod0_surface)?
+        }
         #[cfg(feature = "flatgeobuf")]
         VectorDriver::FlatGeobuf => flatgeobuf::to_bytes(first)?,
         VectorDriver::GeoJSON => geojson::to_string(first, &options.geojson)?.into_bytes(),

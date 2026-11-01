@@ -532,6 +532,8 @@ for the flat model and coordinate quantization limits.
 
 CityGML output defaults to 3.0. Use `--citygml-version 2.0` for 2.0; a `.citygml`
 filename selects this native writer. For `.gml`, also use `--format CityGML`.
+For an unclassified 2.0 building LoD 0 surface, choose
+`--citygml-lod0-surface footprint` or `roof-edge`; native source hints take precedence.
 Native class/LoD/geometry restrictions are checked before the output is written.
 The flat view writes native geometry and generic JSON annotations; solids,
 appearance and implicit templates are not reconstructed.

@@ -20,3 +20,19 @@ fn citygml_version_is_rejected_on_unrelated_formats_before_io() {
         assert!(!output.exists());
     }
 }
+
+#[test]
+fn lod0_surface_is_rejected_on_unrelated_formats_before_io() {
+    let folder = tempfile::tempdir().unwrap();
+    let output = folder.path().join("wrong.tif");
+    let result = Command::new(env!("CARGO_BIN_EXE_terrio"))
+        .arg("convert")
+        .arg(folder.path().join("missing.tif"))
+        .arg(&output)
+        .args(["--citygml-lod0-surface", "roof-edge"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("applies to CityGML"));
+    assert!(!output.exists());
+}

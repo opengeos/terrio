@@ -92,6 +92,9 @@ pub struct Args {
     /// CityGML output version (default: 3.0).
     #[arg(long, value_parser = ["2.0", "3.0"])]
     citygml_version: Option<String>,
+    /// CityGML 2.0 building LoD 0 property when the source has no footprint/roof hint.
+    #[arg(long, value_parser = ["footprint", "roof-edge"])]
+    citygml_lod0_surface: Option<String>,
     #[command(flatten)]
     vector: super::vector_opts::VectorArgs,
     #[command(flatten)]
@@ -151,6 +154,7 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
         driver,
         cityjson_version: a.cityjson_version.as_deref().map(str::parse).transpose()?,
         citygml_version: a.citygml_version.as_deref().map(str::parse).transpose()?,
+        citygml_lod0_surface: a.citygml_lod0_surface.as_deref().map(str::parse).transpose()?,
         ..Default::default()
     };
     for (k, v) in key_values(&a.creation_options)? {
@@ -220,11 +224,11 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
 }
 
 pub fn run(mut a: Args) -> terrio::Result<()> {
-    if a.citygml_version.is_some()
+    if (a.citygml_version.is_some() || a.citygml_lod0_surface.is_some())
         && a.format.as_deref().map_or_else(|| VectorDriver::for_extension(&a.output), VectorDriver::from_name)
             != Some(VectorDriver::CityGML)
     {
-        return Err(terrio::Error::InvalidArgument("--citygml-version applies to CityGML output".into()));
+        return Err(terrio::Error::InvalidArgument("--citygml-version/--citygml-lod0-surface applies to CityGML output".into()));
     }
     if a.cityjson_version.is_some()
         && a.format.as_deref().map_or_else(|| VectorDriver::for_extension(&a.output), VectorDriver::from_name)
@@ -294,7 +298,11 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     match ds {
         Dataset::Raster(mut r) => {
             let append = a.vector.append_only();
-            if (a.vector.is_set() && !append) || a.cityjson_version.is_some() || a.citygml_version.is_some() {
+            if (a.vector.is_set() && !append)
+                || a.cityjson_version.is_some()
+                || a.citygml_version.is_some()
+                || a.citygml_lod0_surface.is_some()
+            {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
             if let Some(dst) = t_srs {
@@ -415,6 +423,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 driver,
                 cityjson_version: a.cityjson_version.as_deref().map(str::parse).transpose()?,
                 citygml_version: a.citygml_version.as_deref().map(str::parse).transpose()?,
+                citygml_lod0_surface: a.citygml_lod0_surface.as_deref().map(str::parse).transpose()?,
                 ..Default::default()
             };
             options.tiles.min_zoom = a.minzoom;

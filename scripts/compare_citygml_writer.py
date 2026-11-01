@@ -245,37 +245,60 @@ def main():
     paths += [(root/'writer-core-types.city.json', ['3.0'])]
     (root/'writer-tin.city.json').write_text(json.dumps(tin_source()))
     paths += [(root/'writer-tin.city.json', ['2.0', '3.0'])]
+    lod0 = dict(type='CityJSON', version='2.0', transform=dict(scale=[1,1,1], translate=[0,0,0]),
+                vertices=[[0,0,2],[1,0,2],[0,1,2]], CityObjects={'house':dict(type='Building',
+                    geometry=[dict(type='MultiSurface',lod='0',boundaries=[[[0,1,2]]])])})
+    (root/'writer-lod0.city.json').write_text(json.dumps(lod0))
+    paths += [(root/'writer-lod0.city.json', [('2.0', 'footprint'), ('2.0', 'roof-edge')])]
+
     results = []
     if not args.cli_only:
         import terrio
     for path, versions in paths:
         check(path.is_file(), f'missing source fixture {path}')
         verified = {}
-        for version in versions:
+        # A flat CityJSON LoD 0 face has no native FootPrint/RoofEdge selector.
+        # Make the corpus conversion choice explicit, without changing its XYZ.
+        needs_lod0_choice = False
+        if path.suffix != '.gml':
+            source_objects = json.loads(path.read_bytes()).get('CityObjects', {})
+            needs_lod0_choice = any(obj['type'] in {'Building', 'BuildingPart'}
+                                    and any(str(g.get('lod')).split('.')[0] == '0' for g in obj.get('geometry', []))
+                                    for obj in source_objects.values())
+        for selection in versions:
+            version, choice = selection if isinstance(selection, tuple) else (selection, None)
+            if version == '2.0' and choice is None and needs_lod0_choice:
+                choice = 'footprint'
+            options = dict(citygml_lod0_surface=choice) if choice else {}
+            label = version + (f' {choice}' if choice else '')
             with tempfile.TemporaryDirectory() as temporary:
                 folder = Path(temporary)
                 target = folder/'cli.citygml'
-                run_cli([args.terrio, 'convert', str(path), str(target), '--citygml-version', version])
+                run_cli([args.terrio, 'convert', str(path), str(target), '--citygml-version', version]
+                        + (['--citygml-lod0-surface', choice] if choice else []))
                 outputs = [('CLI', target.read_bytes())]
                 if not args.cli_only:
                     layer = terrio.open_vector(str(path))[0]
                     target = folder/'python.citygml'
-                    layer.write(str(target), citygml_version=version)
-                    outputs += [('Python path', target.read_bytes()), ('Python bytes', layer.to_bytes('output.citygml', citygml_version=version))]
+                    layer.write(str(target), citygml_version=version, **options)
+                    outputs += [('Python path', target.read_bytes()), ('Python bytes', layer.to_bytes('output.citygml', citygml_version=version, **options))]
                     if args.node_package:
                         target = folder/'node.citygml'
-                        script = 'const fs=require("fs"),t=require(process.argv[1]);fs.writeFileSync(process.argv[3],t.open(new Uint8Array(fs.readFileSync(process.argv[2])),process.argv[2]).toBytes("model.citygml",{citygmlVersion:process.argv[4]}));'
-                        subprocess.run(['node', '-e', script, str(args.node_package.resolve()), str(path), str(target), version], check=True, capture_output=True)
+                        script = 'const fs=require("fs"),t=require(process.argv[1]);fs.writeFileSync(process.argv[3],t.open(new Uint8Array(fs.readFileSync(process.argv[2])),process.argv[2]).toBytes("model.citygml",{citygmlVersion:process.argv[4],citygmlLod0Surface:process.argv[5]||undefined}));'
+                        subprocess.run(['node', '-e', script, str(args.node_package.resolve()), str(path), str(target), version, choice or ''], check=True, capture_output=True)
                         outputs.append(('Node/WASM', target.read_bytes()))
                 for api, output in outputs:
                     doc = etree.fromstring(output, etree.XMLParser(no_network=True, resolve_entities=False))
                     check(etree.QName(doc).namespace == f'http://www.opengis.net/citygml/{version}', 'writer ignored selected version')
+                    if isinstance(selection, tuple):
+                        native = 'lod0FootPrint' if choice == 'footprint' else 'lod0RoofEdge'
+                        check(any(local(n) == native for n in doc.iter()), 'writer ignored selected LoD 0 property')
                     digest = hashlib.sha256(output).digest()
                     if digest not in verified:
                         verified[digest] = verify(path, output, root/'gml-schemas')
-                    results.append(dict(name=f'{path.name} {version} {api}', status='identical',
+                    results.append(dict(name=f'{path.name} {label} {api}', status='identical',
                                         detail=f'schema valid; {verified[digest]} flat primitives; actual native XML XYZ, holes, class, owning hierarchy, LoD and CRS checked; flat JSON annotations checked independently'))
-            print(f'validated {path.name} -> {version}', file=sys.stderr, flush=True)
+            print(f'validated {path.name} -> {label}', file=sys.stderr, flush=True)
     print(json.dumps(results, indent=2) if args.json else '\n'.join(f"{r['name']}: {r['detail']}" for r in results))
 
 

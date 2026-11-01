@@ -121,7 +121,12 @@ actual native XML coordinates, rings, class, owning hierarchy, integer LoD and
 CRS separately from the generic flat-field annotations. XYZ is exact: the writer
 does not quantize. Samples include both published CityGML fixtures, Den Haag,
 Delft, Rotterdam, optional cached 3DBAG pages and all 33 CityJSON core classes
-exported as CityGML 3.0. Unavailable target-version class/LoD combinations are
+exported as CityGML 3.0. Generated samples cover per-triangle fractional LoD
+and semantics, plus both explicit 2.0 building LoD 0 property choices across
+CLI, Python paths/bytes and Node/WASM. The 2.0 corpus conversions explicitly
+select footprint as the fallback for unclassified CityJSON building LoD 0
+faces; native source hints and GroundSurface/RoofSurface classification still
+take precedence. Unavailable target-version class/LoD combinations are
 explicit writer errors rather than silent reclassifications.
 
 The checked-in native property-order tables can be regenerated from the official

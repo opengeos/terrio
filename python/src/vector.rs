@@ -362,10 +362,11 @@ impl PyLayer {
     ///     driver: The format's short name, such as `"GeoJSON"`, `"GPKG"` or `"ESRI Shapefile"`.
     ///     cityjson_version: CityJSON output: "1.1" or "2.0" (the default).
     ///     citygml_version: CityGML output: "2.0" or "3.0" (the default).
+    ///     citygml_lod0_surface: CityGML 2.0 LoD 0 fallback: "footprint" or "roof-edge".
     ///     kmz_resources: KMZ output: files packed into the archive, such as icon images, by the
     ///         relative path the styles refer to them with (`{"icons/pin.png": png_bytes}`).
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None))]
+    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
     fn write(
         &self,
         py: Python<'_>,
@@ -375,11 +376,13 @@ impl PyLayer {
         preserve_declared_geometry_type: bool,
         cityjson_version: Option<&str>,
         citygml_version: Option<&str>,
+        citygml_lod0_surface: Option<&str>,
     ) -> PyResult<()> {
         let mut options = crate::ops::vector_write_options(driver)?;
         options.preserve_declared_geometry_type = preserve_declared_geometry_type;
         options.cityjson_version = crate::ops::parse_cityjson_version(cityjson_version)?;
         options.citygml_version = crate::ops::parse_citygml_version(citygml_version)?;
+        options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layers = std::slice::from_ref(&self.inner);
         py.detach_result(|| terrio::write_vector(layers, path, &options)).py()
@@ -393,6 +396,7 @@ impl PyLayer {
     ///     driver: The format's short name, overriding the extension.
     ///     cityjson_version: CityJSON output: "1.1" or "2.0" (the default).
     ///     citygml_version: CityGML output: "2.0" or "3.0" (the default).
+    ///     citygml_lod0_surface: CityGML 2.0 LoD 0 fallback: "footprint" or "roof-edge".
     ///     kmz_resources: KMZ output: files packed into the archive, such as icon images, by the
     ///         relative path the styles refer to them with (`{"icons/pin.png": png_bytes}`).
     ///
@@ -402,7 +406,7 @@ impl PyLayer {
     ///     encoding and CRS members. Bare `.shp` names and unsupported DBF values
     ///     (including text over 254 UTF-8 bytes) raise an error.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (filename="layer.geojson", driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None))]
+    #[pyo3(signature = (filename="layer.geojson", driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
     fn to_bytes<'py>(
         &self,
         py: Python<'py>,
@@ -412,11 +416,13 @@ impl PyLayer {
         preserve_declared_geometry_type: bool,
         cityjson_version: Option<&str>,
         citygml_version: Option<&str>,
+        citygml_lod0_surface: Option<&str>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let mut options = crate::ops::vector_write_options(driver)?;
         options.preserve_declared_geometry_type = preserve_declared_geometry_type;
         options.cityjson_version = crate::ops::parse_cityjson_version(cityjson_version)?;
         options.citygml_version = crate::ops::parse_citygml_version(citygml_version)?;
+        options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layers = std::slice::from_ref(&self.inner);
         let bytes = py.detach_result(|| terrio::memory::write_vector_bytes(layers, filename, &options)).py()?;
@@ -480,10 +486,11 @@ impl PyVectorDataset {
     ///     driver: The format's short name.
     ///     cityjson_version: CityJSON output: "1.1" or "2.0" (the default).
     ///     citygml_version: CityGML output: "2.0" or "3.0" (the default).
+    ///     citygml_lod0_surface: CityGML 2.0 LoD 0 fallback: "footprint" or "roof-edge".
     ///     kmz_resources: KMZ output: files packed into the archive, such as icon images, by the
     ///         relative path the styles refer to them with (`{"icons/pin.png": png_bytes}`).
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None))]
+    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
     fn write(
         &self,
         py: Python<'_>,
@@ -493,11 +500,13 @@ impl PyVectorDataset {
         preserve_declared_geometry_type: bool,
         cityjson_version: Option<&str>,
         citygml_version: Option<&str>,
+        citygml_lod0_surface: Option<&str>,
     ) -> PyResult<()> {
         let mut options = crate::ops::vector_write_options(driver)?;
         options.preserve_declared_geometry_type = preserve_declared_geometry_type;
         options.cityjson_version = crate::ops::parse_cityjson_version(cityjson_version)?;
         options.citygml_version = crate::ops::parse_citygml_version(citygml_version)?;
+        options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layers = self.layer_copies(py);
         py.detach_result(|| terrio::write_vector(&layers, path, &options)).py()

@@ -552,6 +552,15 @@ Python `citygml_version="2.0"`, or JavaScript `citygmlVersion: "2.0"`.
 For a `.gml` filename, select `--format CityGML` explicitly; the default `.gml`
 writer remains ordinary GML. Version options on other formats are rejected.
 
+CityGML 2.0 building LoD 0 distinguishes a ground footprint from a roof outline.
+Native GML reads retain `lod0FootPrint`/`lod0RoofEdge` in `geometry_type` and the
+writer preserves those hints. GroundSurface/RoofSurface classification also
+selects the corresponding property. For an unclassified flat input, choose
+`--citygml-lod0-surface footprint` or `roof-edge` (Python
+`citygml_lod0_surface`, JavaScript `citygmlLod0Surface`); otherwise the writer
+rejects the ambiguity. This fallback requires CityGML 2.0 and never overrides a
+source property or classification. Conflicting source hints fail explicitly.
+
 The writer groups the common flat fields by `city_id` and emits supported native
 object types, owning relationships and geometry properties in schema order.
 Ordinary vector features become GenericCityObject in 2.0 and GenericOccupiedSpace

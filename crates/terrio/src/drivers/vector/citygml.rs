@@ -1056,7 +1056,7 @@ impl<'a> Reader<'a> {
             let digits = node.name.as_bytes()[3..].iter().take_while(|byte| byte.is_ascii_digit()).count();
             if digits != 0 {
                 context.lod = Some(&node.name[3..3 + digits]);
-                context.geometry_type = None;
+                context.geometry_type = matches!(node.name.as_str(), "lod0FootPrint" | "lod0RoofEdge").then_some(node.name.as_str());
             }
         }
         if !context.validate_only && node.city() && node.name.ends_with("Surface") && !node.name.starts_with("lod") {

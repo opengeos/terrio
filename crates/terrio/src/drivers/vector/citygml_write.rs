@@ -44,6 +44,45 @@ impl std::str::FromStr for CityGmlVersion {
         }
     }
 }
+/// Native building surface property for ambiguous CityGML 2.0 LoD 0 input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CityGmlLod0Surface {
+    /// Ground footprint (`lod0FootPrint`).
+    Footprint,
+    /// Roof outline (`lod0RoofEdge`).
+    RoofEdge,
+}
+impl std::str::FromStr for CityGmlLod0Surface {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "footprint" => Ok(Self::Footprint),
+            "roof-edge" => Ok(Self::RoofEdge),
+            _ => Err(invalid("LoD 0 surface must be footprint or roof-edge")),
+        }
+    }
+}
+impl CityGmlLod0Surface {
+    fn property(self) -> &'static str {
+        match self {
+            Self::Footprint => "lod0FootPrint",
+            Self::RoofEdge => "lod0RoofEdge",
+        }
+    }
+    fn from_property(value: &str) -> Option<Self> {
+        match value {
+            "lod0FootPrint" => Some(Self::Footprint),
+            "lod0RoofEdge" => Some(Self::RoofEdge),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy)]
+struct Settings {
+    version: CityGmlVersion,
+    lod0_surface: Option<CityGmlLod0Surface>,
+}
+
 fn invalid(message: impl std::fmt::Display) -> Error {
     Error::InvalidArgument(format!("CityGML writer: {message}"))
 }
@@ -134,7 +173,7 @@ fn native_type(source: &str, version: CityGmlVersion) -> Result<&'static Profile
     profile(version, &format!("{module}:{kind}"))
 }
 
-type Part<'a> = (Rc<str>, Rc<Value>, Primitive<'a>);
+type Part<'a> = (Rc<str>, Rc<Value>, Primitive<'a>, Option<CityGmlLod0Surface>);
 
 struct Object<'a> {
     source_type: String,
@@ -271,7 +310,11 @@ fn objects(layers: &[Layer], version: CityGmlVersion) -> Result<BTreeMap<String,
                     if !matches!(part, Primitive::Surface(..)) && !semantic.is_null() {
                         return Err(invalid("surface semantics attached to a point or line"));
                     }
-                    entry.parts.push((lod.clone(), semantic.clone(), part));
+                    let hint = match field(layer, row, "geometry_type") {
+                        FieldValue::Text(kind) if flat => CityGmlLod0Surface::from_property(kind),
+                        _ => None,
+                    };
+                    entry.parts.push((lod.clone(), semantic.clone(), part, hint));
                 }
             }
         }
@@ -455,7 +498,7 @@ fn primitive(part: Primitive<'_>, lod: &str, semantic: &Value, reference: &Refer
 fn geometry(property: &Property, parts: &[&Part<'_>], reference: &Reference) -> Result<String> {
     let bodies = parts
         .iter()
-        .map(|(lod, sem, p)| primitive(*p, lod, sem, reference, property.geometry == GeometryProperty::Tin))
+        .map(|(lod, sem, p, _)| primitive(*p, lod, sem, reference, property.geometry == GeometryProperty::Tin))
         .collect::<Result<Vec<_>>>()?;
     let (tag, member) = match property.geometry {
         GeometryProperty::Surface => ("MultiSurface", "surfaceMember"),
@@ -473,8 +516,10 @@ fn geometry(property: &Property, parts: &[&Part<'_>], reference: &Reference) -> 
         GeometryProperty::None => return Err(invalid("expected a native geometry property")),
     };
     let body = if property.geometry == GeometryProperty::Tin {
-        let patches: Vec<_> =
-            parts.iter().map(|(lod, semantic, _)| json!({"version":1,"lod":lod.as_ref(),"surface_semantics":semantic.as_ref()})).collect();
+        let patches: Vec<_> = parts
+            .iter()
+            .map(|(lod, semantic, _, _)| json!({"version":1,"lod":lod.as_ref(),"surface_semantics":semantic.as_ref()}))
+            .collect();
         let metadata = json_text(&json!({"version":1,"patches":patches}))?;
         format!(
             "<gml:name codeSpace=\"urn:terrio:citygml:flat-patches\">{metadata}</gml:name><gml:{member}>{}</gml:{member}>",
@@ -486,7 +531,11 @@ fn geometry(property: &Property, parts: &[&Part<'_>], reference: &Reference) -> 
     let attrs = reference.name.as_ref().map_or(String::new(), |name| format!(" srsName=\"{}\" srsDimension=\"3\"", escape(name)));
     Ok(format!("<{0}><gml:{tag}{attrs}>{body}</gml:{tag}></{0}>", property.name))
 }
-fn property_for(profile: &Profile, lod: u8, part: Primitive<'_>) -> Option<usize> {
+fn property_for(profile: &Profile, lod: u8, part: Primitive<'_>, hint: Option<CityGmlLod0Surface>) -> Option<usize> {
+    if lod == 0 && matches!(part, Primitive::Surface(..)) && profile.properties.iter().any(|p| p.name == "bldg:lod0FootPrint") {
+        let name = hint?.property();
+        return profile.properties.iter().position(|p| p.name.strip_prefix("bldg:") == Some(name));
+    }
     profile.properties.iter().position(|p| {
         if p.name == "dem:tin" {
             return matches!(part, Primitive::Surface(..));
@@ -542,8 +591,8 @@ fn boundary_for(
             | "DoorSurface"
             | "GenericThematicSurface",
         ) => semantic.unwrap(),
-        None if property_for(owner, lod, part).is_none() && version == CityGmlVersion::V3_0 => "GenericThematicSurface",
-        None if property_for(owner, lod, part).is_none() && owner.name == "wtr:WaterBody" => "WaterSurface",
+        None if property_for(owner, lod, part, None).is_none() && version == CityGmlVersion::V3_0 => "GenericThematicSurface",
+        None if property_for(owner, lod, part, None).is_none() && owner.name == "wtr:WaterBody" => "WaterSurface",
         _ => return None,
     };
     let module = if source.starts_with("Water") {
@@ -556,7 +605,7 @@ fn boundary_for(
         owner.name.split(':').next()?
     };
     let native = profile(version, &format!("{module}:{source}")).ok()?;
-    Some((owner.relation(native)?, native, property_for(native, lod, part)?))
+    Some((owner.relation(native)?, native, property_for(native, lod, part, None)?))
 }
 
 // Native relief LoD is integral; flat primitive annotations retain fractional
@@ -604,22 +653,39 @@ fn render(
     children: &BTreeMap<String, Vec<String>>,
     ids: &BTreeMap<String, String>,
     reference: &Reference,
-    version: CityGmlVersion,
+    settings: Settings,
     depth: usize,
 ) -> Result<String> {
     if depth > 128 {
         return Err(invalid("object hierarchy exceeds 128 levels"));
     }
+    let version = settings.version;
     let object = &objects[id];
     let mut slots: BTreeMap<usize, String> = BTreeMap::new();
     let mut buckets: BTreeMap<usize, Vec<&Part<'_>>> = BTreeMap::new();
     let mut boundaries: BTreeMap<(usize, &'static str, usize), Vec<&Part<'_>>> = BTreeMap::new();
-    for item @ (lod, sem, part) in &object.parts {
+    for item @ (lod, sem, part, source_hint) in &object.parts {
+        let semantic_hint = match sem.get("type").and_then(Value::as_str) {
+            Some("GroundSurface") => Some(CityGmlLod0Surface::Footprint),
+            Some("RoofSurface") => Some(CityGmlLod0Surface::RoofEdge),
+            _ => None,
+        };
+        if source_hint.is_some() && semantic_hint.is_some() && *source_hint != semantic_hint {
+            return Err(invalid("LoD 0 source property conflicts with its surface classification"));
+        }
+        let hint = source_hint.or(semantic_hint).or(settings.lod0_surface);
         if let Some((parent, boundary, index)) = boundary_for(object.native, sem, lod_number(lod, version)?, *part, version) {
             boundaries.entry((parent, boundary.name, index)).or_default().push(item);
             continue;
         }
-        let index = property_for(object.native, lod_number(lod, version)?, *part).ok_or_else(|| {
+        if lod_number(lod, version)? == 0
+            && hint.is_none()
+            && object.native.properties.iter().any(|p| p.name == "bldg:lod0FootPrint")
+            && matches!(part, Primitive::Surface(..))
+        {
+            return Err(invalid("ambiguous building LoD 0 surface: choose citygml_lod0_surface footprint or roof-edge"));
+        }
+        let index = property_for(object.native, lod_number(lod, version)?, *part, hint).ok_or_else(|| {
             invalid(format!("{} cannot represent {} at LoD {lod} in CityGML {}", object.native.name, part.kind(), version.as_str()))
         })?;
         buckets.entry(index).or_default().push(item);
@@ -637,7 +703,7 @@ fn render(
         slots.insert(index, format!("<dem:lod>{}</dem:lod>", relief_lod(id, objects, children, version, depth)?));
     }
     for child in children.get(id).into_iter().flatten() {
-        let child_body = render(child, objects, children, ids, reference, version, depth + 1)?;
+        let child_body = render(child, objects, children, ids, reference, settings, depth + 1)?;
         let (index, child_body) = if let Some(index) = object.native.relation(objects[child].native) {
             (index, child_body)
         } else if version == CityGmlVersion::V2_0 && matches!(objects[child].source_type.as_str(), "Door" | "Window") {
@@ -670,7 +736,10 @@ fn render(
     ))
 }
 
-pub(crate) fn to_bytes(layers: &[Layer], version: CityGmlVersion) -> Result<Vec<u8>> {
+pub(crate) fn to_bytes(layers: &[Layer], version: CityGmlVersion, lod0_surface: Option<CityGmlLod0Surface>) -> Result<Vec<u8>> {
+    if lod0_surface.is_some() && version != CityGmlVersion::V2_0 {
+        return Err(invalid("citygml_lod0_surface applies to CityGML 2.0 output"));
+    }
     if layers.is_empty() {
         return Err(invalid("no layers to write"));
     }
@@ -741,7 +810,7 @@ pub(crate) fn to_bytes(layers: &[Layer], version: CityGmlVersion) -> Result<Vec<
             write!(
                 xml,
                 "<core:cityObjectMember>{}</core:cityObjectMember>",
-                render(id, &objects, &children, &ids, &reference, version, 0)?
+                render(id, &objects, &children, &ids, &reference, Settings { version, lod0_surface }, 0)?
             )
             .unwrap();
         }
@@ -761,12 +830,12 @@ mod tests {
         SpatialRef::parse("EPSG:4326").unwrap().apply_to_layer(&mut layer);
         layer.push(point(4.0, 52.0, 31.0));
         for version in [CityGmlVersion::V2_0, CityGmlVersion::V3_0] {
-            let data = to_bytes(std::slice::from_ref(&layer), version).unwrap();
+            let data = to_bytes(std::slice::from_ref(&layer), version, None).unwrap();
             assert!(std::str::from_utf8(&data).unwrap().contains("<gml:pos>52 4 31</gml:pos>"));
             assert_eq!(super::super::citygml::parse(&data).unwrap()[0].features[0].geometry, layer.features[0].geometry);
             let mut extreme = Layer::new("extreme");
             extreme.push(point(f64::MAX, -f64::MAX, f64::from_bits(1)));
-            let data = to_bytes(&[extreme.clone()], version).unwrap();
+            let data = to_bytes(&[extreme.clone()], version, None).unwrap();
             assert_eq!(super::super::citygml::parse(&data).unwrap()[0].features[0].geometry, extreme.features[0].geometry);
         }
     }
@@ -776,7 +845,7 @@ mod tests {
         let doc = json!({"type":"CityJSON","version":"2.0","transform":{"scale":[1,1,1],"translate":[0,0,0]},"vertices":[[10,0,0],[10,1,0],[10,1,1]],"CityObjects":{"house":{"type":"Building","children":["1 bad"]},"1 bad":{"type":"BuildingPart","parents":["house"],"attributes":{"nested":[1,true],"label":"A<&B","controls":"\u{0000}\u{fffe}"},"geometry":[{"type":"MultiSurface","lod":"2.2","boundaries":[[[0,1,2]]],"semantics":{"surfaces":[{"type":"WallSurface","label":"brick & stone"}],"values":[0]}}]}}});
         let source = super::super::cityjson::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
         for version in [CityGmlVersion::V2_0, CityGmlVersion::V3_0] {
-            let output = to_bytes(&source, version).unwrap();
+            let output = to_bytes(&source, version, None).unwrap();
             assert!(!std::str::from_utf8(&output).unwrap().contains("gml:id=\"1 bad\""));
             let actual = super::super::citygml::parse(&output).unwrap();
             for expected in &source[0].features {
@@ -805,7 +874,7 @@ mod tests {
                      "semantics":{"surfaces":[{"type":"GroundSurface","material":"sand"}],"values":[0]}}]}}});
         let source = super::super::cityjson::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
         for version in [CityGmlVersion::V2_0, CityGmlVersion::V3_0] {
-            let output = to_bytes(&source, version).unwrap();
+            let output = to_bytes(&source, version, None).unwrap();
             let xml = std::str::from_utf8(&output).unwrap();
             assert_eq!(xml.matches("<dem:lod>2</dem:lod>").count(), 2);
             let actual = super::super::citygml::parse(&output).unwrap();
@@ -824,11 +893,30 @@ mod tests {
     }
 
     #[test]
+    fn building_lod0_requires_a_choice_and_preserves_native_property_hints() {
+        let doc = json!({"type":"CityJSON","version":"2.0","transform":{"scale":[1,1,1],"translate":[0,0,0]},
+            "vertices":[[0,0,2],[1,0,2],[0,1,2]],"CityObjects":{"house":{"type":"Building",
+                "geometry":[{"type":"MultiSurface","lod":"0","boundaries":[[[0,1,2]]]}]}}});
+        let source = super::super::cityjson::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(to_bytes(&source, CityGmlVersion::V2_0, None).unwrap_err().to_string().contains("ambiguous building LoD 0"));
+        for choice in [CityGmlLod0Surface::Footprint, CityGmlLod0Surface::RoofEdge] {
+            let output = to_bytes(&source, CityGmlVersion::V2_0, Some(choice)).unwrap();
+            let xml = std::str::from_utf8(&output).unwrap();
+            assert!(xml.contains(&format!("<bldg:{}>", choice.property())));
+            let restored = super::super::citygml::parse(&output).unwrap();
+            assert_eq!(restored[0].features[0].attributes[5], FieldValue::Text(choice.property().into()));
+            let rewritten = to_bytes(&restored, CityGmlVersion::V2_0, None).unwrap();
+            assert!(std::str::from_utf8(&rewritten).unwrap().contains(&format!("<bldg:{}>", choice.property())));
+            assert!(to_bytes(&source, CityGmlVersion::V3_0, Some(choice)).unwrap_err().to_string().contains("2.0 output"));
+        }
+    }
+
+    #[test]
     fn nonspatial_models_keep_crs_without_inventing_an_envelope() {
         let mut layer = Layer::new("empty");
         SpatialRef::parse("EPSG:4326").unwrap().apply_to_layer(&mut layer);
         for version in [CityGmlVersion::V2_0, CityGmlVersion::V3_0] {
-            let output = to_bytes(std::slice::from_ref(&layer), version).unwrap();
+            let output = to_bytes(std::slice::from_ref(&layer), version, None).unwrap();
             assert!(!std::str::from_utf8(&output).unwrap().contains("Envelope"));
             assert_eq!(super::super::citygml::parse(&output).unwrap()[0].crs_epsg(), Some(4326));
         }
@@ -848,7 +936,7 @@ mod tests {
         assert!(!path.exists());
         let doc = json!({"type":"CityJSON","version":"2.0","transform":{"scale":[1,1,1],"translate":[0,0,0]},"vertices":[],"CityObjects":{"part":{"type":"BuildingPart","parents":["missing"]}}});
         let source = super::super::cityjson::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
-        assert!(to_bytes(&source, CityGmlVersion::V3_0).unwrap_err().to_string().contains("missing parent"));
+        assert!(to_bytes(&source, CityGmlVersion::V3_0, None).unwrap_err().to_string().contains("missing parent"));
     }
 
     #[test]
@@ -867,7 +955,7 @@ mod tests {
             }),
         });
         for version in [CityGmlVersion::V2_0, CityGmlVersion::V3_0] {
-            let output = to_bytes(std::slice::from_ref(&layer), version).unwrap();
+            let output = to_bytes(std::slice::from_ref(&layer), version, None).unwrap();
             let layers = super::super::citygml::parse(&output).unwrap();
             assert_eq!(layers[0].features.len(), 1);
             let Geometry::Polygon { exterior, .. } = layers[0].features[0].geometry.as_ref().unwrap() else { panic!() };

@@ -108,3 +108,67 @@ def test_existing_models_reject_layer_modes_without_mutation(tmp_path, mode):
     with pytest.raises(terrio.UnsupportedError, match="no persistent layer names"):
         terrio.write_vector(source, str(path), **{mode: True})
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "choice, native", [("footprint", "lod0FootPrint"), ("roof-edge", "lod0RoofEdge")]
+)
+def test_building_lod0_choice_across_python_entrypoints(tmp_path, choice, native):
+    doc = model()
+    doc["vertices"] = [
+        [0, 0, 2],
+        [10, 0, 2],
+        [10, 10, 2],
+        [0, 10, 2],
+        [2, 2, 2],
+        [3, 2, 2],
+        [3, 3, 2],
+    ]
+    obj = doc["CityObjects"]["1 bad"]
+    obj["geometry"][0]["lod"] = "0"
+    obj["geometry"][0].pop("semantics")
+    path = tmp_path / "lod0.city.json"
+    path.write_text(json.dumps(doc))
+    source = terrio.open_vector(str(path))
+    layer = source[0]
+    with pytest.raises(terrio.InvalidArgumentError, match="ambiguous building LoD 0"):
+        layer.to_bytes("out.citygml", citygml_version="2.0")
+    options = dict(citygml_version="2.0", citygml_lod0_surface=choice)
+    outputs = [layer.to_bytes("out.citygml", **options)]
+    for label, write in [
+        ("layer", lambda p: layer.write(str(p), **options)),
+        ("dataset", lambda p: source.write(str(p), **options)),
+        ("function", lambda p: terrio.write_vector(source, str(p), **options)),
+        ("convert", lambda p: terrio.convert(str(path), str(p), **options)),
+    ]:
+        target = tmp_path / f"{label}.citygml"
+        write(target)
+        outputs.append(target.read_bytes())
+    for output in outputs:
+        assert f"<bldg:{native}>".encode() in output
+        restored = terrio.open_bytes(output, filename="native.citygml")[0]
+        assert f"<bldg:{native}>".encode() in restored.to_bytes(
+            "again.citygml", citygml_version="2.0"
+        )
+    with pytest.raises(terrio.InvalidArgumentError, match="applies to CityGML"):
+        terrio.convert("missing.tif", str(tmp_path / "wrong.tif"), citygml_lod0_surface=choice)
+
+
+@pytest.mark.parametrize(
+    "kind, native", [("GroundSurface", "lod0FootPrint"), ("RoofSurface", "lod0RoofEdge")]
+)
+def test_lod0_classification_selects_property_and_rejects_conflicting_source_hint(kind, native):
+    doc = model()
+    geometry = doc["CityObjects"]["1 bad"]["geometry"][0]
+    geometry["lod"] = "0"
+    geometry["semantics"]["surfaces"][0]["type"] = kind
+    source = terrio.open_bytes(json.dumps(doc).encode(), filename="source.city.json")[0]
+    output = source.to_bytes("out.citygml", citygml_version="2.0")
+    assert f"<bldg:{native}>".encode() in output
+    other_kind = "RoofSurface" if kind == "GroundSurface" else "GroundSurface"
+    corrupted = output.replace(kind.encode(), other_kind.encode())
+    conflicting = terrio.open_bytes(corrupted, filename="conflict.citygml")[0]
+    with pytest.raises(
+        terrio.InvalidArgumentError, match="conflicts with its surface classification"
+    ):
+        conflicting.to_bytes("out.citygml", citygml_version="2.0")

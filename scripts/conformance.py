@@ -735,7 +735,8 @@ def suite_citygml_write(ctx):
                   "are checked independently of Terrio's reader; standard generic annotations retain "
                   "typed flat attributes, original IDs/types, fractional LoD and per-face properties. "
                   "Includes published CityGML models, Den Haag/Delft/Rotterdam, cached 3DBAG pages "
-                  "and all 33 schema-derived CityJSON core classes for CityGML 3.0. Exact XYZ; no quantization. "
+                  "all 33 schema-derived CityJSON core classes for CityGML 3.0, per-patch TIN fields "
+                  "and both explicit 2.0 building LoD 0 property choices. Exact XYZ; no quantization. "
                   "This does not reconstruct source solids, appearance or semantic tables.")
     missing = missing_modules("terrio", "lxml", "pyproj")
     if missing:

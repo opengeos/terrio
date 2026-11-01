@@ -3500,3 +3500,22 @@ test("CityGML declared Windows-1252 preserves currency symbols", () => {
   assert.equal(JSON.parse(ds.toGeoJSON().features[0].properties.attributes).name, "€");
   ds.free();
 });
+
+test("CityGML 2.0 building LoD 0 requires and preserves its native surface choice", () => {
+  const doc = {type:"CityJSON", version:"2.0", transform:{scale:[1,1,1],translate:[0,0,0]},
+    vertices:[[0,0,2],[1,0,2],[0,1,2]], CityObjects:{house:{type:"Building",
+      geometry:[{type:"MultiSurface",lod:"0",boundaries:[[[0,1,2]]]}]}}};
+  const source = terrio.open(new TextEncoder().encode(JSON.stringify(doc)), "source.city.json");
+  try {
+    assert.throws(() => source.toBytes("out.citygml", {citygmlVersion:"2.0"}), /ambiguous building LoD 0/);
+    for (const [choice, native] of [["footprint","lod0FootPrint"],["roof-edge","lod0RoofEdge"]]) {
+      const bytes = source.toBytes("out.citygml", {citygmlVersion:"2.0",citygmlLod0Surface:choice});
+      assert.ok(new TextDecoder().decode(bytes).includes(`<bldg:${native}>`));
+      const restored = terrio.open(bytes, "native.citygml");
+      try {
+        assert.ok(new TextDecoder().decode(restored.toBytes("again.citygml", {citygmlVersion:"2.0"})).includes(`<bldg:${native}>`));
+      } finally { restored.free(); }
+      assert.throws(() => source.toBytes("wrong.geojson", {citygmlLod0Surface:choice}), /applies to CityGML/);
+    }
+  } finally { source.free(); }
+});
