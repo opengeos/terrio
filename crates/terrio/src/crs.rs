@@ -371,9 +371,9 @@ impl Transformer {
             .map_err(Into::into)
     }
     /// This transformer, as GDAL's warper runs its reverse transformation (see
-    /// [`terrio_crs::Transformer::into_inverted_pipeline`]).
-    pub(crate) fn into_inverted_pipeline(self) -> Self {
-        Self(self.0.into_inverted_pipeline())
+    /// [`terrio_crs::Transformer::with_reverse_degree_division`]).
+    pub(crate) fn with_reverse_degree_division(self) -> Self {
+        Self(self.0.with_reverse_degree_division())
     }
     /// Transform an x/y coordinate pair.
     pub fn transform(&self, x: f64, y: f64) -> Result<(f64, f64)> {

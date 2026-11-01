@@ -339,7 +339,7 @@ impl GenImgProj {
         } else {
             Some((
                 Transformer::with_options(src_srs, dst_srs, options)?,
-                Transformer::with_options(dst_srs, src_srs, options)?.into_inverted_pipeline(),
+                Transformer::with_options(dst_srs, src_srs, options)?.with_reverse_degree_division(),
             ))
         };
         Ok(Self { src_gt, src_inv, src_gcp: None, src_scale: (1.0, 1.0), dst_gt: IDENTITY, dst_inv: IDENTITY, ct })

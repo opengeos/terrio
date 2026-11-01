@@ -32,7 +32,7 @@ pub(crate) struct Def {
     /// The projection, `None` for a geographic CRS.
     proj: Option<Arc<dyn Proj>>,
     /// Converts degrees as the inverse of a PROJ `unitconvert` step does, dividing by the factor
-    /// of the forward step. See [`crate::Transformer::into_inverted_pipeline`].
+    /// of the forward step. See [`crate::Transformer::with_reverse_degree_division`].
     pub(crate) inverted_degrees: bool,
     geocentric: bool,
     /// Geographic planetocentric latitude rather than ellipsoidal geodetic latitude.
@@ -759,6 +759,7 @@ impl Def {
         let (lam, phi) = match &self.proj {
             None => {
                 let (lam, phi) = if self.inverted_degrees {
+                    // The forward step went from radians to degrees, with this factor.
                     let factor = 1.0 / 1.0_f64.to_radians();
                     (e * self.to_deg / factor, n * self.to_deg / factor)
                 } else {
@@ -811,6 +812,7 @@ impl Def {
                     None => (adjlon(lon - self.lam0), if self.ocentric { ((1.0 - self.ell.es) * lat.sin()).atan2(lat.cos()) } else { lat }),
                 };
                 if self.inverted_degrees {
+                    // The forward step went from degrees to radians, with this factor.
                     let factor = 1.0_f64.to_radians();
                     (lam / factor / self.to_deg, phi / factor / self.to_deg)
                 } else {
@@ -1073,6 +1075,18 @@ mod inverted_degrees_tests {
             assert_eq!(lon.to_bits(), (r / factor).to_bits());
             assert_eq!(lat.to_bits(), (0.25 / factor).to_bits());
             changed += usize::from((u, v) != *before);
+        }
+        assert!(changed > 0, "the two conversions never differed");
+        let reciprocal = 1.0 / factor;
+        let (mut unprojected, mut changed) = (def.clone(), 0);
+        unprojected.inverted_degrees = true;
+        def.inverted_degrees = false;
+        for degrees in (1..2000).map(|i| f64::from(i) * 0.05) {
+            let (u, v) = def.axis(degrees, 30.0);
+            let (lon, lat) = unprojected.unproject(u, v).unwrap();
+            assert_eq!(lon.to_bits(), (degrees / reciprocal).to_bits());
+            assert_eq!(lat.to_bits(), (30.0 / reciprocal).to_bits());
+            changed += usize::from((lon, lat) != def.unproject(u, v).unwrap());
         }
         assert!(changed > 0, "the two conversions never differed");
     }

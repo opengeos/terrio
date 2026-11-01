@@ -73,8 +73,8 @@ Two causes accounted for the last warp and county differences:
 - **Inverted pipelines:** GDAL's reverse transformation inverts the forward pipeline,
   so PROJ divides by the forward `unitconvert` factor; multiplying by the reciprocal
   rounds about a tenth of the degrees differently. The warper's reverse
-  transformation now does the same. Other Terrio transformations are unchanged, as
-  `ogr2ogr` runs a forward pipeline.
+  transformation now does the same. Web Mercator to WGS 84 keeps GDAL's own formula.
+  Other Terrio transformations are unchanged, as `ogr2ogr` runs a forward pipeline.
 
 These results are fixture-specific. Other CRS pairs can retain last-bit differences:
 a NAD83 to EPSG:5070 warp of the same DEM still has 11 of 15,160,628 pixels differing

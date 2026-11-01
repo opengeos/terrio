@@ -48,6 +48,7 @@ def main():
                 ValueError,
                 AssertionError,
                 subprocess.CalledProcessError,
+                OSError,
             ) as error:
                 record["error"] = str(error)
                 if isinstance(error, subprocess.CalledProcessError):
@@ -308,7 +309,7 @@ def main():
                         jxl,
                     )
 
-        dem = args.data / "usgs_dem.tif"
+        warp_source = args.data / "usgs_dem.tif"
         counties = args.data / "UScounties.gpkg"
 
         def warp_exact():
@@ -319,7 +320,7 @@ def main():
                     "warp",
                     "--kernel-version",
                     version,
-                    dem,
+                    warp_source,
                     actual,
                     "--t-srs",
                     "EPSG:26913",
@@ -327,7 +328,7 @@ def main():
                     "bilinear",
                 ]
             )
-            command(["gdalwarp", "-q", "-t_srs", "EPSG:26913", "-r", "bilinear", dem, reference])
+            command(["gdalwarp", "-q", "-t_srs", "EPSG:26913", "-r", "bilinear", warp_source, reference])
             exact(actual, reference)
 
         def counties_exact():
@@ -350,10 +351,9 @@ def main():
             if differences:
                 raise AssertionError("; ".join(differences))
 
-        if dem.exists():
+        if version == "3.13":
             run("Bilinear NAD83 to UTM warp bit-identical", warp_exact)
-        if counties.exists():
-            run("Counties to Conus Albers coordinates bit-identical", counties_exact)
+        run("Counties to Conus Albers coordinates bit-identical", counties_exact)
 
     if args.json:
         print(json.dumps(records, indent=2))

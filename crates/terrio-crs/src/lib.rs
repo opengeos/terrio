@@ -1334,14 +1334,16 @@ impl CoordinateOperation {
 }
 
 impl Transformer {
-    /// This transformer, as GDAL's reverse transformation runs it: the inverse of the pipeline
-    /// from the target to the source (`OGRCoordinateTransformation::GetInverse()`), rather than a
-    /// pipeline of its own. PROJ then undoes the forward pipeline's `unitconvert` by dividing by
-    /// its factor, which rounds about a tenth of the degrees differently from multiplying by the
-    /// inverse factor. GDAL's warper maps output pixels to the source this way.
-    pub fn into_inverted_pipeline(mut self) -> Self {
-        self.src.inverted_degrees = true;
-        self.dst.inverted_degrees = true;
+    /// This transformer, converting degrees as GDAL 3.13.3's reverse transformation does. GDAL
+    /// inverts the forward pipeline (`OGRProjCT::GetInverse()`), so PROJ undoes its `unitconvert`
+    /// by dividing by the factor, which rounds about a tenth of the degrees differently from
+    /// multiplying by the reciprocal. GDAL's warper maps output pixels to the source this way.
+    /// Web Mercator to WGS 84 is unchanged: GDAL keeps its own formula for that pair.
+    pub fn with_reverse_degree_division(mut self) -> Self {
+        if !self.web_mercator_to_wgs84 {
+            self.src.inverted_degrees = true;
+            self.dst.inverted_degrees = true;
+        }
         self
     }
 
@@ -2190,7 +2192,7 @@ mod tests {
     /// Terrio share; other releases round those differently, so within 4 units in the last place.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
-    fn lambert_conformal_conic_matches_proj_bit_for_bit() {
+    fn lambert_conformal_conic_matches_proj() {
         const LCC: &str = r#"PROJCS["undefined",GEOGCS["undefined",DATUM["undefined",SPHEROID["undefined",6378137,298.257223563]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["standard_parallel_1",25],PARAMETER["standard_parallel_2",60],PARAMETER["latitude_of_origin",42.5],PARAMETER["central_meridian",-100],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#;
         let (lcc, wgs84) = (SpatialRef::parse(LCC).unwrap(), SpatialRef::from_epsg(4326).unwrap());
         unsafe extern "C" {
