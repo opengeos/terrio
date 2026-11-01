@@ -15,10 +15,7 @@ use serde_json::Value;
 use wbvector::{Coord, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
 
 // Mutable attribute slots are named to keep LoD, source and face semantics distinct.
-const LOD: usize = 2;
-const GEOMETRY_TYPE: usize = 5;
-const SEMANTICS: usize = 6;
-const SURFACE_SEMANTICS: usize = 7;
+use super::city::{GEOMETRY_TYPE, LOD, SEMANTICS, SURFACE_SEMANTICS};
 const SKIPPED_RINGS: usize = 8;
 const SKIPPED_FACES: usize = 9;
 

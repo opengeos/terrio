@@ -3448,3 +3448,10 @@ test("CityGML UTF-16 positions infer two dimensions from their CRS", () => {
   assert.equal(JSON.parse(feature.properties.attributes).name, "Montréal");
   ds.free();
 });
+
+test("CityGML declared Windows-1252 preserves currency symbols", () => {
+  const xml = `<?xml version="1.0" encoding="windows-1252"?><c:CityModel xmlns:c="http://www.opengis.net/citygml/3.0" xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0"><c:cityObjectMember><b:Building g:id="house"><g:name>\x80</g:name></b:Building></c:cityObjectMember></c:CityModel>`;
+  const ds = terrio.open(Buffer.from(xml, "latin1"), "model.gml");
+  assert.equal(JSON.parse(ds.toGeoJSON().features[0].properties.attributes).name, "€");
+  ds.free();
+});

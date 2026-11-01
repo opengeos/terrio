@@ -56,7 +56,7 @@ python scripts/conformance.py ../terrio-data --only citygml --strict
 The suite requires current Python bindings and `lxml`; Node/WASM is included when
 the package exports `open` and Node is runnable. Both source files must pass XSD validation against
 the cached OGC/W3C/OASIS schemas. XYZ, holes, owner/type, LoD, thematic face class
-and scalar source attributes are exact. Rust regressions additionally check local
+and direct scalar source properties (including units/code spaces) are exact. Rust regressions additionally check local
 XLinks (including reversed surfaces), consecutive coordinate duplicates, implicit
 matrices, inferred dimensions, UTF-16/Latin-1 input, authority-axis order, compound
 CRSs and malformed input. The independent XML oracle covers the explicit polygon

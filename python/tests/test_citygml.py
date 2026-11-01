@@ -54,3 +54,14 @@ def test_inferred_2d_position_crs_and_xml_encodings(encoding):
     feature = ds[0].to_geojson()["features"][0]
     assert feature["geometry"]["coordinates"] == [10, 20]
     assert json.loads(feature["properties"]["attributes"])["name"] == "Montréal"
+
+
+def test_declared_windows_encoding_preserves_unicode_attributes():
+    xml = """<?xml version="1.0" encoding="windows-1252"?>
+    <c:CityModel xmlns:c="http://www.opengis.net/citygml/3.0"
+    xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0">
+    <c:cityObjectMember><b:Building g:id="house"><g:name>€</g:name></b:Building>
+    </c:cityObjectMember></c:CityModel>"""
+    ds = terrio.open_bytes(xml.encode("cp1252"), filename="model.gml")
+    feature = ds[0].to_geojson()["features"][0]
+    assert json.loads(feature["properties"]["attributes"])["name"] == "€"

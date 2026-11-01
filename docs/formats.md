@@ -454,7 +454,9 @@ without fetching external resources; invalid XML, duplicate IDs, unresolved
 references, reference cycles and malformed coordinate lists fail explicitly.
 Reference expansion is limited to 1,000,000 visits within expanded subtrees,
 including acyclic branching graphs; ordinary inline traversal does not consume
-this budget. A global nesting limit of 256 includes linked city objects. Repeated
+this budget. Reference-expanded primitive conversions additionally have a 64 MiB
+coordinate-text work budget; repeated references with an already validated
+CRS/dimension reuse validation. A global nesting limit of 256 includes linked city objects. Repeated
 object references share their feature records and accumulate parent IDs. Repeated source properties are retained as JSON arrays.
 
 The `CityGML` layer uses the eight common flat fields described for CityJSON,
@@ -475,7 +477,8 @@ the CRS when omitted. Position-level CRS declarations, legacy compound OGC URNs 
 geographic authority-axis order are supported. A flat layer requires a consistent
 CRS; mixing unknown and known CRSs, or distinct CRSs, fails explicitly.
 
-UTF-8, Latin-1 and UTF-16 XML are supported. Identification examines at most
+UTF-8, Latin-1 and UTF-16 XML are supported. Other declared encodings recognized
+by `encoding_rs`, including Windows-1252, are decoded using their declaration. Identification examines at most
 16 KiB; opening a named `.gml` can inspect beyond a long leading comment.
 
 This is a materialized vector view with a 256 MiB raw XML limit checked before

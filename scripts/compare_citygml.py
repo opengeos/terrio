@@ -163,8 +163,10 @@ def compare(expected, owners, fc):
         source_values = {}
         for child in owner:
             name = etree.QName(child).localname
-            if name in {"name", "class", "function", "usage"} and len(child) == 0:
-                expected_value = child.text.strip()
+            if (len(child) == 0 and name not in OBJECTS
+                    and name not in {"boundedBy", "boundary", "appearance", "appearanceMember"}
+                    and child.get("{http://www.w3.org/1999/xlink}href") is None):
+                expected_value = (child.text or "").strip()
                 units = {k: child.get(k) for k in ("uom", "codeSpace") if child.get(k) is not None}
                 if units:
                     expected_value = {"value": expected_value} | units
@@ -221,7 +223,7 @@ def main():
             surfaces.append(("Node/WASM", json.loads(output)))
         for surface, fc in surfaces:
             compare(expected, owners, fc)
-            results.append(dict(name=f"{name} {surface}", status="identical", detail=f"schema valid; {len(expected)} faces; exact XYZ, holes, owner/type, LoD, thematic class and source scalar attributes; compound CRS checked"))
+            results.append(dict(name=f"{name} {surface}", status="identical", detail=f"schema valid; {len(expected)} faces; exact XYZ, holes, owner/type, LoD, thematic class and direct scalar source properties; compound CRS checked"))
     print(json.dumps(results, indent=2) if args.json else "\n".join(f"{r['name']}: {r['detail']}" for r in results))
 
 
