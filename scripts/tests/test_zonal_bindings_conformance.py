@@ -104,14 +104,14 @@ def test_lost_polygon_hole_is_rejected():
     compare(result, expected, source, {})
 
 
-@pytest.mark.parametrize("change", ["none", "drop", "add", "value", "nan"])
+@pytest.mark.parametrize("change", ["none", "drop", "add", "value", "nan", "reverse_xy"])
 def test_zonal_geometry_preserves_z_presence_and_values(change):
     result, expected, source = example()
     source_ring = source[0]["geometry"]["coordinates"][0]
     result_ring = result["geojson"]["features"][0]["geometry"]["coordinates"][0]
     for ring in [source_ring, result_ring]:
         for point in ring:
-            point.append(100 + point[0] + point[1])
+            point.append(100 + point[0] + 2 * point[1])
     if change == "drop":
         for point in result_ring:
             point.pop()
@@ -122,6 +122,10 @@ def test_zonal_geometry_preserves_z_presence_and_values(change):
         result_ring[1][2] += 0.01
     elif change == "nan":
         result_ring[1][2] = float("nan")
+    elif change == "reverse_xy":
+        reversed_xy = [point[:2] for point in reversed(result_ring)]
+        for point, xy in zip(result_ring, reversed_xy, strict=True):
+            point[:2] = xy
     if change == "none":
         compare(result, expected, source, {})
     else:

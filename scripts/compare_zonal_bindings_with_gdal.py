@@ -95,6 +95,14 @@ def compare(result, expected, source, options):
             for point, wanted_point in zip(actual_points, expected_points, strict=True):
                 if len(point) != len(wanted_point):
                     raise AssertionError("output geometry dimension differs")
+                # The engine preserves vertex order. Compare XY at the same
+                # position as Z, so a winding change cannot reassign elevations.
+                if any(
+                    not math.isfinite(value)
+                    or abs(value - wanted_value) > (1e-5 if reprojected else 1e-12)
+                    for value, wanted_value in zip(point[:2], wanted_point[:2], strict=True)
+                ):
+                    raise AssertionError("output geometry XY/Z pairing differs")
                 if any(
                     not math.isfinite(value)
                     or not math.isclose(value, wanted_value, rel_tol=0, abs_tol=1e-9)
