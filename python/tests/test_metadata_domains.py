@@ -35,22 +35,10 @@ def gdal_metadata_items(path):
     e = "<" if b[:2] == b"II" else ">"
     if struct.unpack(e + "H", b[2:4])[0] == 43:
         off = struct.unpack(e + "Q", b[8:16])[0]
-        n, p, size, fmt, inline = (
-            struct.unpack(e + "Q", b[off : off + 8])[0],
-            off + 8,
-            20,
-            "HHQQ",
-            8,
-        )
+        n, p, size, fmt, inline = struct.unpack(e + "Q", b[off : off + 8])[0], off + 8, 20, "HHQQ", 8
     else:
         off = struct.unpack(e + "I", b[4:8])[0]
-        n, p, size, fmt, inline = (
-            struct.unpack(e + "H", b[off : off + 2])[0],
-            off + 2,
-            12,
-            "HHII",
-            4,
-        )
+        n, p, size, fmt, inline = struct.unpack(e + "H", b[off : off + 2])[0], off + 2, 12, "HHII", 4
     for i in range(n):
         entry = p + i * size
         tag, _, count, val = struct.unpack(e + fmt, b[entry : entry + size])
@@ -114,19 +102,9 @@ def test_rio_overview_domain_is_kept(tmp_path):
     """An imagery pipeline's overview recording on both: the `rio_overview` domain is kept."""
     for mod, memory_file, name in ((rasterio, MemoryFile, "gdal"), (trio, TMemoryFile, "terrio")):
         with memory_file() as memfile:
-            with memfile.open(
-                driver="GTiff",
-                height=H,
-                width=W,
-                count=2,
-                dtype="uint8",
-                crs="EPSG:4326",
-                transform=TRANSFORM,
-                compress="deflate",
-                tiled=True,
-                blockxsize=128,
-                blockysize=128,
-            ) as dst_ds:
+            with memfile.open(driver="GTiff", height=H, width=W, count=2, dtype="uint8",
+                              crs="EPSG:4326", transform=TRANSFORM, compress="deflate",
+                              tiled=True, blockxsize=128, blockysize=128) as dst_ds:
                 dst_ds.write(DATA)
                 dst_ds.build_overviews([2, 4], Resampling.average)
                 dst_ds.update_tags(ns="rio_overview", resampling="average")

@@ -74,15 +74,7 @@ def field(height, width, bands=1, seed=0, nodata=False):
 def write_grib(path, data, crs, transform, nodata=None, **options):
     """Writes a GRIB2 file with GDAL (the driver only copies, so through an in-memory GeoTIFF)."""
     count, height, width = data.shape
-    profile = dict(
-        driver="GTiff",
-        width=width,
-        height=height,
-        count=count,
-        dtype=data.dtype.name,
-        crs=crs,
-        transform=transform,
-    )
+    profile = dict(driver="GTiff", width=width, height=height, count=count, dtype=data.dtype.name, crs=crs, transform=transform)
     if nodata is not None:
         profile["nodata"] = nodata
     with MemoryFile() as mem:
@@ -111,9 +103,7 @@ def assert_same(path, tags=True, epsg=True):
         a, b = g.read(), t.read()
         if not np.array_equal(a, b, equal_nan=True):
             d = np.abs(a - b)
-            raise AssertionError(
-                f"pixels differ: {np.count_nonzero(d)} of {d.size}, max |d| {np.nanmax(d)}"
-            )
+            raise AssertionError(f"pixels differ: {np.count_nonzero(d)} of {d.size}, max |d| {np.nanmax(d)}")
         assert t.nodatavals == g.nodatavals
         assert np.array_equal(t.read_masks(), g.read_masks())
         assert np.array_equal(t.read(masked=True).mask, g.read(masked=True).mask)
@@ -149,21 +139,10 @@ ENCODINGS = [
 
 
 @pytest.mark.parametrize("nodata", [False, True], ids=["no-nodata", "nodata"])
-@pytest.mark.parametrize(
-    "encoding,options",
-    ENCODINGS,
-    ids=[f"{e}-{'-'.join(f'{k}={v}' for k, v in o.items())}" for e, o in ENCODINGS],
-)
+@pytest.mark.parametrize("encoding,options", ENCODINGS, ids=[f"{e}-{'-'.join(f'{k}={v}' for k, v in o.items())}" for e, o in ENCODINGS])
 def test_encodings(tmp_path, encoding, options, nodata):
     data = field(41, 57, bands=3, seed=len(encoding), nodata=nodata)
-    path = write_grib(
-        tmp_path / "f.grib2",
-        data,
-        nodata=NODATA if nodata else None,
-        DATA_ENCODING=encoding,
-        **options,
-        **LATLON,
-    )
+    path = write_grib(tmp_path / "f.grib2", data, nodata=NODATA if nodata else None, DATA_ENCODING=encoding, **options, **LATLON)
     assert_same(path)
 
 
@@ -173,13 +152,8 @@ def test_temperature_kelvin_to_celsius(tmp_path):
     data[data < -9000] = NODATA
     for encoding in ("SIMPLE_PACKING", "COMPLEX_PACKING", "IEEE_FLOATING_POINT"):
         path = write_grib(
-            tmp_path / f"t_{encoding}.grib2",
-            data,
-            nodata=NODATA,
-            DATA_ENCODING=encoding,
-            PDS_PDTN="0",
-            PDS_TEMPLATE_NUMBERS=TEMPERATURE,
-            **LATLON,
+            tmp_path / f"t_{encoding}.grib2", data, nodata=NODATA, DATA_ENCODING=encoding,
+            PDS_PDTN="0", PDS_TEMPLATE_NUMBERS=TEMPERATURE, **LATLON
         )
         assert_same(path)
         with rasterio.open(path) as g:
@@ -191,9 +165,7 @@ def test_missing_value_inside_the_data(tmp_path):
     # data (`f_readjust`) while GDAL reports the file's missing value as nodata.
     data = field(19, 23, bands=2, seed=19)
     data[:, 3:6, 4:9] = 280.0
-    path = write_grib(
-        tmp_path / "m.grib2", data, nodata=280.0, DATA_ENCODING="COMPLEX_PACKING", **LATLON
-    )
+    path = write_grib(tmp_path / "m.grib2", data, nodata=280.0, DATA_ENCODING="COMPLEX_PACKING", **LATLON)
     assert_same(path)
 
 
@@ -204,11 +176,7 @@ PRODUCTS = {
     "4.5-probability": ("5", T0 + " 0 1 1 0 0 0 0 0 2 0 0 106 179"),
     "4.6-percentile": ("6", T0 + " 90"),
     "4.8-accumulation": ("8", "1 8 2 0 96 0 0 0 1 0 0 0 0 1 0 0 0 0 0 255 0 0 0 0 0 " + INTERVAL),
-    "4.9-probability-interval": (
-        "9",
-        "1 8 2 0 96 0 0 0 1 0 0 0 0 1 0 0 0 0 0 255 0 0 0 0 0 0 1 1 0 0 0 0 0 3 0 0 0 254 "
-        + INTERVAL,
-    ),
+    "4.9-probability-interval": ("9", "1 8 2 0 96 0 0 0 1 0 0 0 0 1 0 0 0 0 0 255 0 0 0 0 0 0 1 1 0 0 0 0 0 3 0 0 0 254 " + INTERVAL),
 }
 
 
@@ -218,14 +186,7 @@ def test_product_templates(tmp_path, product):
     (temperature probabilities are not converted to Celsius, percentiles are)."""
     pdtn, numbers = PRODUCTS[product]
     data = field(11, 13, bands=1, seed=29)
-    path = write_grib(
-        tmp_path / "p.grib2",
-        data,
-        DATA_ENCODING="SIMPLE_PACKING",
-        PDS_PDTN=pdtn,
-        PDS_TEMPLATE_NUMBERS=numbers,
-        **LATLON,
-    )
+    path = write_grib(tmp_path / "p.grib2", data, DATA_ENCODING="SIMPLE_PACKING", PDS_PDTN=pdtn, PDS_TEMPLATE_NUMBERS=numbers, **LATLON)
     assert_same(path)
 
 
@@ -242,12 +203,8 @@ def test_product_templates(tmp_path, product):
 def test_longitude_ranges(tmp_path, origin, res, shape):
     data = field(*shape, bands=2, seed=5)
     path = write_grib(
-        tmp_path / "g.grib2",
-        data,
-        crs="EPSG:4326",
-        transform=from_origin(origin[0], origin[1], res, res),
-        DATA_ENCODING="COMPLEX_PACKING",
-        SPATIAL_DIFFERENCING_ORDER="2",
+        tmp_path / "g.grib2", data, crs="EPSG:4326", transform=from_origin(origin[0], origin[1], res, res),
+        DATA_ENCODING="COMPLEX_PACKING", SPATIAL_DIFFERENCING_ORDER="2",
     )
     assert_same(path)
 
@@ -265,17 +222,7 @@ def test_longitude_ranges(tmp_path, origin, res, shape):
         "+proj=merc +lon_0=0 +k=1 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs",
         "+proj=merc +lat_ts=20 +lon_0=0 +x_0=0 +y_0=0 +a=6371229 +b=6371229 +units=m +no_defs",
     ],
-    ids=[
-        "sphere",
-        "grs80",
-        "iau1965",
-        "lcc-sphere",
-        "lcc-wgs84",
-        "polar-north-sphere",
-        "polar-south-wgs84",
-        "mercator-wgs84",
-        "mercator-2sp-sphere",
-    ],
+    ids=["sphere", "grs80", "iau1965", "lcc-sphere", "lcc-wgs84", "polar-north-sphere", "polar-south-wgs84", "mercator-wgs84", "mercator-2sp-sphere"],
 )
 def test_grids_and_earth_shapes(tmp_path, crs):
     data = field(25, 31, bands=2, seed=7)
@@ -283,9 +230,7 @@ def test_grids_and_earth_shapes(tmp_path, crs):
         transform = from_origin(-10.0, 50.0, 0.25, 0.25)
     else:
         transform = from_origin(-1_500_000.0, 1_200_000.0, 12_000.0, 12_000.0)
-    path = write_grib(
-        tmp_path / "p.grib2", data, crs=crs, transform=transform, DATA_ENCODING="SIMPLE_PACKING"
-    )
+    path = write_grib(tmp_path / "p.grib2", data, crs=crs, transform=transform, DATA_ENCODING="SIMPLE_PACKING")
     assert_same(path)
 
 
@@ -371,21 +316,10 @@ def test_bitmap_reused_by_second_field(tmp_path):
     first, second = (dict(sections(m)) for m in messages(open(src, "rb").read()))
     a5, a7 = repack(first[5], first[7], keep)
     b5, b7 = repack(second[5], second[7], keep)
-    msg = build(
-        messages(open(src, "rb").read())[0][:16],
-        [
-            first[1],
-            first[3],
-            first[4],
-            a5,
-            bitmap_section(keep),
-            a7,
-            second[4],
-            b5,
-            section(6, bytes([254])),
-            b7,
-        ],
-    )
+    msg = build(messages(open(src, "rb").read())[0][:16], [
+        first[1], first[3], first[4], a5, bitmap_section(keep), a7,
+        second[4], b5, section(6, bytes([254])), b7,
+    ])
     path = tmp_path / "bitmap254.grib2"
     path.write_bytes(msg)
     assert_same(str(path))
@@ -404,9 +338,7 @@ def with_packing(message, reference, e, d, nbits, ints):
     s5[17:19] = sign_magnitude(d, 2)
     s5[19] = nbits
     bits = ((ints[:, None] >> np.arange(nbits - 1, -1, -1)) & 1).astype(np.uint8).reshape(-1)
-    return build(
-        message[:16], [s[1], s[3], s[4], bytes(s5), s[6], section(7, np.packbits(bits).tobytes())]
-    )
+    return build(message[:16], [s[1], s[3], s[4], bytes(s5), s[6], section(7, np.packbits(bits).tobytes())])
 
 
 def packing_arithmetic(src, out):
@@ -422,17 +354,13 @@ def packing_arithmetic(src, out):
 
 def test_packing_arithmetic(tmp_path):
     """Catches unpacking in double precision, which GDAL's own files cannot tell apart."""
-    src = write_grib(
-        tmp_path / "s.grib2", field(23, 29, seed=21), DATA_ENCODING="SIMPLE_PACKING", **LATLON
-    )
+    src = write_grib(tmp_path / "s.grib2", field(23, 29, seed=21), DATA_ENCODING="SIMPLE_PACKING", **LATLON)
     assert_same(packing_arithmetic(src, tmp_path / "arithmetic.grib2"))
 
 
 def test_open_raster_and_info(tmp_path):
     data = field(12, 16, bands=2, seed=17, nodata=True)
-    path = write_grib(
-        tmp_path / "x.grb2", data, nodata=NODATA, DATA_ENCODING="COMPLEX_PACKING", **LATLON
-    )
+    path = write_grib(tmp_path / "x.grb2", data, nodata=NODATA, DATA_ENCODING="COMPLEX_PACKING", **LATLON)
     r = terrio.open_raster(path)
     assert r.driver == "GRIB"
     assert r.count == 2 and r.dtype == "float64"
@@ -448,9 +376,7 @@ REMOTE = os.environ.get("TERRIO_TEST_REMOTE")
 
 
 @pytest.mark.skipif(not REMOTE, reason="TERRIO_TEST_REMOTE is not set")
-@pytest.mark.parametrize(
-    "url", [u for u in (os.environ.get("TERRIO_TEST_GRIB_URLS") or "").split(",") if u]
-)
+@pytest.mark.parametrize("url", [u for u in (os.environ.get("TERRIO_TEST_GRIB_URLS") or "").split(",") if u])
 def test_remote_products(url):
     assert_same(url)
 
@@ -475,49 +401,20 @@ def g1_section(body):
     return (3 + len(body)).to_bytes(3, "big") + body
 
 
-def g1_pds(
-    param=11,
-    level=(105, 2),
-    center=7,
-    table=2,
-    subcenter=0,
-    process=96,
-    d=1,
-    bitmap=False,
-    when=(2024, 5, 17, 6, 0),
-    unit=1,
-    p1=6,
-    p2=0,
-    time_range=0,
-):
+def g1_pds(param=11, level=(105, 2), center=7, table=2, subcenter=0, process=96, d=1, bitmap=False,
+           when=(2024, 5, 17, 6, 0), unit=1, p1=6, p2=0, time_range=0):
     year, month, day, hour, minute = when
     flags = 0x80 | (0x40 if bitmap else 0)
-    body = bytes([table, center, process, 255, flags, param, level[0]]) + level[1].to_bytes(
-        2, "big"
-    )
-    body += bytes([year % 100 or 100, month, day, hour, minute, unit, p1, p2, time_range]) + bytes(
-        3
-    )
+    body = bytes([table, center, process, 255, flags, param, level[0]]) + level[1].to_bytes(2, "big")
+    body += bytes([year % 100 or 100, month, day, hour, minute, unit, p1, p2, time_range]) + bytes(3)
     body += bytes([(year - 1) // 100 + 1, subcenter]) + sign_magnitude(d, 2)
     assert len(body) == 25
     return g1_section(body)
 
 
 def g1_latlon(ni, nj, la1, lo1, la2, lo2, di, dj, scan=0, typ=0, res=0x80, rotation=None):
-    body = (
-        bytes([0, 255, typ])
-        + ni.to_bytes(2, "big")
-        + nj.to_bytes(2, "big")
-        + sign_magnitude(la1, 3)
-        + sign_magnitude(lo1, 3)
-    )
-    body += (
-        bytes([res])
-        + sign_magnitude(la2, 3)
-        + sign_magnitude(lo2, 3)
-        + di.to_bytes(2, "big")
-        + dj.to_bytes(2, "big")
-    )
+    body = bytes([0, 255, typ]) + ni.to_bytes(2, "big") + nj.to_bytes(2, "big") + sign_magnitude(la1, 3) + sign_magnitude(lo1, 3)
+    body += bytes([res]) + sign_magnitude(la2, 3) + sign_magnitude(lo2, 3) + di.to_bytes(2, "big") + dj.to_bytes(2, "big")
     body += bytes([scan]) + bytes(4)
     if rotation is not None:
         south_lat, south_lon, angle = rotation
@@ -526,58 +423,22 @@ def g1_latlon(ni, nj, la1, lo1, la2, lo2, di, dj, scan=0, typ=0, res=0x80, rotat
 
 
 def g1_polar(nx, ny, la1, lo1, lov, dx, south=False, scan=0x40, res=0x08):
-    body = (
-        bytes([0, 255, 5])
-        + nx.to_bytes(2, "big")
-        + ny.to_bytes(2, "big")
-        + sign_magnitude(la1, 3)
-        + sign_magnitude(lo1, 3)
-    )
+    body = bytes([0, 255, 5]) + nx.to_bytes(2, "big") + ny.to_bytes(2, "big") + sign_magnitude(la1, 3) + sign_magnitude(lo1, 3)
     body += bytes([res]) + sign_magnitude(lov, 3) + sign_magnitude(dx, 3) + sign_magnitude(dx, 3)
     body += bytes([0x80 if south else 0, scan]) + bytes(4)
     return g1_section(body)
 
 
 def g1_lambert(nx, ny, la1, lo1, lov, dx, latin1, latin2, scan=0x40, res=0x08):
-    body = (
-        bytes([0, 255, 3])
-        + nx.to_bytes(2, "big")
-        + ny.to_bytes(2, "big")
-        + sign_magnitude(la1, 3)
-        + sign_magnitude(lo1, 3)
-    )
-    body += (
-        bytes([res])
-        + sign_magnitude(lov, 3)
-        + sign_magnitude(dx, 3)
-        + sign_magnitude(dx, 3)
-        + bytes([0, scan])
-    )
-    body += (
-        sign_magnitude(latin1, 3)
-        + sign_magnitude(latin2, 3)
-        + sign_magnitude(-90000, 3)
-        + bytes(3)
-        + bytes(2)
-    )
+    body = bytes([0, 255, 3]) + nx.to_bytes(2, "big") + ny.to_bytes(2, "big") + sign_magnitude(la1, 3) + sign_magnitude(lo1, 3)
+    body += bytes([res]) + sign_magnitude(lov, 3) + sign_magnitude(dx, 3) + sign_magnitude(dx, 3) + bytes([0, scan])
+    body += sign_magnitude(latin1, 3) + sign_magnitude(latin2, 3) + sign_magnitude(-90000, 3) + bytes(3) + bytes(2)
     return g1_section(body)
 
 
 def g1_mercator(ni, nj, la1, lo1, la2, lo2, latin, di, dj, scan=0x40, res=0x80):
-    body = (
-        bytes([0, 255, 1])
-        + ni.to_bytes(2, "big")
-        + nj.to_bytes(2, "big")
-        + sign_magnitude(la1, 3)
-        + sign_magnitude(lo1, 3)
-    )
-    body += (
-        bytes([res])
-        + sign_magnitude(la2, 3)
-        + sign_magnitude(lo2, 3)
-        + sign_magnitude(latin, 3)
-        + bytes([0, scan])
-    )
+    body = bytes([0, 255, 1]) + ni.to_bytes(2, "big") + nj.to_bytes(2, "big") + sign_magnitude(la1, 3) + sign_magnitude(lo1, 3)
+    body += bytes([res]) + sign_magnitude(la2, 3) + sign_magnitude(lo2, 3) + sign_magnitude(latin, 3) + bytes([0, scan])
     body += sign_magnitude(di, 3) + sign_magnitude(dj, 3) + bytes(8)
     return g1_section(body)
 
@@ -592,11 +453,7 @@ def g1_message(values, pds, gds, d=1, e=0, nbits=16, keep=None):
     ref = float(np.floor(scaled.min())) if v.size else 0.0
     ints = np.round((scaled - ref) / 2.0**e).astype(np.int64)
     assert ints.min() >= 0 and (nbits == 0 or ints.max() < 1 << nbits), (ints.min(), ints.max())
-    bits = (
-        ((ints[:, None] >> np.arange(nbits - 1, -1, -1)) & 1).astype(np.uint8).reshape(-1)
-        if nbits
-        else np.zeros(0, np.uint8)
-    )
+    bits = ((ints[:, None] >> np.arange(nbits - 1, -1, -1)) & 1).astype(np.uint8).reshape(-1) if nbits else np.zeros(0, np.uint8)
     data = np.packbits(bits).tobytes()
     if (11 + len(data)) % 2:
         data += b"\0"
@@ -632,14 +489,7 @@ def test_grib1_latlon_two_messages(tmp_path):
     grid = g1_latlon(nx, ny, 60000, -20000, 40000, -4000, 500, 1000)
     msgs = [
         g1_message(t.reshape(-1), g1_pds(), grid),
-        g1_message(
-            z.reshape(-1),
-            g1_pds(param=7, level=(100, 500), d=0, p1=12, time_range=4, p2=18),
-            grid,
-            d=0,
-            e=-2,
-            nbits=20,
-        ),
+        g1_message(z.reshape(-1), g1_pds(param=7, level=(100, 500), d=0, p1=12, time_range=4, p2=18), grid, d=0, e=-2, nbits=20),
     ]
     path = latlon_file(tmp_path, "two.grb", msgs)
     assert_same(path)
@@ -660,12 +510,8 @@ def test_units_not_normalized_as_gdal(tmp_path, case):
         data = field(20, 30, bands=2, seed=3, nodata=True) - 273.0
         data[data < -9000] = NODATA
         path = write_grib(
-            tmp_path / "t.grib2",
-            data,
-            nodata=NODATA,
-            PDS_PDTN="0",
-            PDS_TEMPLATE_NUMBERS=TEMPERATURE,
-            **LATLON,
+            tmp_path / "t.grib2", data, nodata=NODATA, PDS_PDTN="0",
+            PDS_TEMPLATE_NUMBERS=TEMPERATURE, **LATLON
         )
     else:
         path = str(FIXTURES / case)
@@ -684,38 +530,22 @@ def test_units_not_normalized_as_gdal(tmp_path, case):
     assert_same(path)
 
 
-@pytest.mark.parametrize(
-    "scan", [0x00, 0x40, 0x80, 0x20, 0xC0], ids=["0000", "0100", "1000", "0010", "1100"]
-)
+@pytest.mark.parametrize("scan", [0x00, 0x40, 0x80, 0x20, 0xC0], ids=["0000", "0100", "1000", "0010", "1100"])
 def test_grib1_scanning_modes(tmp_path, scan):
     ny, nx = 9, 14
     v = g1_field(ny, nx, 3).reshape(-1)
-    path = latlon_file(
-        tmp_path,
-        "s.grb",
-        [
-            g1_message(
-                v, g1_pds(), g1_latlon(nx, ny, 10000, 100000, 2000, 113000, 1000, 1000, scan=scan)
-            )
-        ],
-    )
+    path = latlon_file(tmp_path, "s.grb", [g1_message(v, g1_pds(), g1_latlon(nx, ny, 10000, 100000, 2000, 113000, 1000, 1000, scan=scan))])
     assert_same(path)
 
 
-@pytest.mark.parametrize(
-    "d,e,nbits", [(2, 0, 16), (0, -3, 18), (1, 2, 12), (-1, 0, 10), (3, -4, 32), (1, 0, 0)]
-)
+@pytest.mark.parametrize("d,e,nbits", [(2, 0, 16), (0, -3, 18), (1, 2, 12), (-1, 0, 10), (3, -4, 32), (1, 0, 0)])
 def test_grib1_scales(tmp_path, d, e, nbits):
     """Catches a decimal (D) or binary (E) scale factor applied wrongly, and constant fields."""
     v = g1_field(12, 17, 4, base=1000.0, amplitude=300.0).reshape(-1)
     if nbits == 0:
         v[:] = 12.5
     grid = g1_latlon(17, 12, 50000, 0, 39000, 16000, 1000, 1000)
-    path = latlon_file(
-        tmp_path,
-        "d.grb",
-        [g1_message(v, g1_pds(param=1, level=(1, 0), d=d), grid, d=d, e=e, nbits=nbits)],
-    )
+    path = latlon_file(tmp_path, "d.grb", [g1_message(v, g1_pds(param=1, level=(1, 0), d=d), grid, d=d, e=e, nbits=nbits)])
     assert_same(path)
 
 
@@ -731,25 +561,17 @@ def test_grib1_bitmap(tmp_path, case):
         v = g1_field(ny, nx, 5, base=base, amplitude=amplitude).reshape(-1)
     keep = ~masked(ny, nx, 3).reshape(-1)
     grid = g1_latlon(nx, ny, 30000, 10000, 16000, 28000, 1000, 1000)
-    path = latlon_file(
-        tmp_path,
-        "b.grb",
-        [
-            g1_message(v, g1_pds(param=2, level=(102, 0), d=d, bitmap=True), grid, d=d, keep=keep),
-            g1_message(v, g1_pds(param=11, d=d, bitmap=True), grid, d=d, keep=keep),
-        ],
-    )
+    path = latlon_file(tmp_path, "b.grb", [
+        g1_message(v, g1_pds(param=2, level=(102, 0), d=d, bitmap=True), grid, d=d, keep=keep),
+        g1_message(v, g1_pds(param=11, d=d, bitmap=True), grid, d=d, keep=keep),
+    ])
     assert_same(path)
 
 
 GRIB1_GRIDS = {
     "gaussian": g1_latlon(36, 18, 85761, 0, -85761, 350000, 10000, 9, typ=4),
-    "rotated": g1_latlon(
-        30, 20, -10000, -15000, 9000, 14000, 1000, 1000, typ=10, rotation=(-40000, 10000, 0.0)
-    ),
-    "rotated-angle": g1_latlon(
-        30, 20, -10000, -15000, 9000, 14000, 1000, 1000, typ=10, rotation=(-35000, 15000, 12.5)
-    ),
+    "rotated": g1_latlon(30, 20, -10000, -15000, 9000, 14000, 1000, 1000, typ=10, rotation=(-40000, 10000, 0.0)),
+    "rotated-angle": g1_latlon(30, 20, -10000, -15000, 9000, 14000, 1000, 1000, typ=10, rotation=(-35000, 15000, 12.5)),
     "polar-north": g1_polar(30, 20, 30000, -135000, -105000, 47625),
     "polar-south": g1_polar(30, 20, -40000, 10000, 0, 25000, south=True),
     "lambert": g1_lambert(30, 20, 12190, -133459, -95000, 40635, 25000, 25000),
@@ -770,38 +592,19 @@ def test_grib1_grids(tmp_path, grid, center):
     v = g1_field(ny, nx, 6).reshape(-1)
     table, param = (128, 167) if center == 98 else (2, 11)
     pds = g1_pds(param=param, center=center, table=table)
-    path = latlon_file(
-        tmp_path,
-        "g.grb",
-        [
-            g1_message(v, pds, gds),
-            g1_message(v[::-1], g1_pds(param=param, center=center, table=table, p1=12), gds),
-        ],
-    )
+    path = latlon_file(tmp_path, "g.grb", [g1_message(v, pds, gds), g1_message(v[::-1], g1_pds(param=param, center=center, table=table, p1=12), gds)])
     assert_same(path)
 
 
-@pytest.mark.parametrize(
-    "pds",
-    [
-        dict(param=61, level=(1, 0), unit=1, p1=0, p2=6, time_range=4),
-        dict(param=11, level=(112, 10 * 256 + 40), unit=0, p1=30),
-        dict(param=33, level=(100, 850), unit=254, p1=200, time_range=10),
-        dict(param=250, level=(105, 10), table=2),
-        dict(param=191, center=7, subcenter=2, level=(1, 0)),
-        dict(param=11, center=78, table=2, level=(105, 2)),
-        dict(param=11, center=7, table=129, level=(105, 2)),
-    ],
-    ids=[
-        "accumulation",
-        "two-part-level",
-        "seconds-p1-p2",
-        "undefined-param",
-        "ensemble",
-        "dwd",
-        "ncep-129",
-    ],
-)
+@pytest.mark.parametrize("pds", [
+    dict(param=61, level=(1, 0), unit=1, p1=0, p2=6, time_range=4),
+    dict(param=11, level=(112, 10 * 256 + 40), unit=0, p1=30),
+    dict(param=33, level=(100, 850), unit=254, p1=200, time_range=10),
+    dict(param=250, level=(105, 10), table=2),
+    dict(param=191, center=7, subcenter=2, level=(1, 0)),
+    dict(param=11, center=78, table=2, level=(105, 2)),
+    dict(param=11, center=7, table=129, level=(105, 2)),
+], ids=["accumulation", "two-part-level", "seconds-p1-p2", "undefined-param", "ensemble", "dwd", "ncep-129"])
 def test_grib1_names_and_times(tmp_path, pds):
     v = g1_field(8, 9, 7).reshape(-1)
     grid = g1_latlon(9, 8, 10000, 0, 3000, 8000, 1000, 1000)
@@ -825,54 +628,24 @@ def with_grid(message, template, extra, edit=None):
     return build(message[:16], secs)
 
 
-@pytest.mark.parametrize(
-    "pole",
-    [(-40.0, 10.0, 0.0), (-31.758312, 87.597225, 0.0), (-90.0, 0.0, 25.0)],
-    ids=["europe", "rdpa", "angle"],
-)
-@pytest.mark.parametrize(
-    "crs", ["EPSG:4326", "+proj=longlat +a=6371229 +b=6371229 +no_defs"], ids=["wgs84", "sphere"]
-)
+@pytest.mark.parametrize("pole", [(-40.0, 10.0, 0.0), (-31.758312, 87.597225, 0.0), (-90.0, 0.0, 25.0)], ids=["europe", "rdpa", "angle"])
+@pytest.mark.parametrize("crs", ["EPSG:4326", "+proj=longlat +a=6371229 +b=6371229 +no_defs"], ids=["wgs84", "sphere"])
 def test_rotated_latlon_grid(tmp_path, pole, crs):
     """Catches template 3.1: the rotated grid's extent and GDAL's derived geographic CRS."""
-    src = write_grib(
-        tmp_path / "s.grib2",
-        field(9, 13, bands=2, seed=31),
-        crs=crs,
-        transform=from_origin(-20.0, 10.0, 0.5, 0.5),
-        DATA_ENCODING="SIMPLE_PACKING",
-    )
+    src = write_grib(tmp_path / "s.grib2", field(9, 13, bands=2, seed=31), crs=crs, transform=from_origin(-20.0, 10.0, 0.5, 0.5), DATA_ENCODING="SIMPLE_PACKING")
     lat, lon, angle = pole
-    extra = (
-        sign_magnitude(round(lat * 1e6), 4)
-        + (round(lon % 360 * 1e6)).to_bytes(4, "big")
-        + round(angle * 1e6).to_bytes(4, "big")
-    )
+    extra = sign_magnitude(round(lat * 1e6), 4) + (round(lon % 360 * 1e6)).to_bytes(4, "big") + round(angle * 1e6).to_bytes(4, "big")
     out = b"".join(with_grid(m, 1, extra) for m in messages(open(src, "rb").read()))
     path = tmp_path / "rotated.grib2"
     path.write_bytes(out)
     assert_same(str(path))
 
 
-@pytest.mark.parametrize(
-    "crs",
-    [
-        "EPSG:32611",
-        "EPSG:32733",
-        "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +units=m +no_defs",
-    ],
-    ids=["utm11n", "utm33s", "british-grid"],
-)
+@pytest.mark.parametrize("crs", ["EPSG:32611", "EPSG:32733", "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +units=m +no_defs"], ids=["utm11n", "utm33s", "british-grid"])
 def test_transverse_mercator_grid(tmp_path, crs):
     """Catches template 3.12, which GDAL writes for UTM (a tile server's own GRIB test asset)."""
     transform = from_origin(500000.0, 4100000.0, 30.0, 30.0)
-    path = write_grib(
-        tmp_path / "tm.grib2",
-        field(10, 10, bands=2, seed=37),
-        crs=crs,
-        transform=transform,
-        DATA_ENCODING="COMPLEX_PACKING",
-    )
+    path = write_grib(tmp_path / "tm.grib2", field(10, 10, bands=2, seed=37), crs=crs, transform=transform, DATA_ENCODING="COMPLEX_PACKING")
     with rasterio.open(path) as g:
         assert g.crs is not None
     assert_same(path)
@@ -880,22 +653,14 @@ def test_transverse_mercator_grid(tmp_path, crs):
 
 def test_negative_longitudes_sign_and_magnitude(tmp_path):
     """Catches longitudes read unsigned where g2clib's map reads them signed (3.0's La1/Lo1/Lo2)."""
-    src = write_grib(
-        tmp_path / "s.grib2",
-        field(9, 13, seed=41),
-        crs="EPSG:4326",
-        transform=from_origin(-20.0, 10.0, 0.5, 0.5),
-        DATA_ENCODING="SIMPLE_PACKING",
-    )
+    src = write_grib(tmp_path / "s.grib2", field(9, 13, seed=41), crs="EPSG:4326", transform=from_origin(-20.0, 10.0, 0.5, 0.5), DATA_ENCODING="SIMPLE_PACKING")
 
     def negative(s3):
         s3[50:54] = sign_magnitude(-19_750_000, 4)
         s3[59:63] = sign_magnitude(-13_750_000, 4)
 
     path = tmp_path / "neg.grib2"
-    path.write_bytes(
-        b"".join(with_grid(m, 0, b"", negative) for m in messages(open(src, "rb").read()))
-    )
+    path.write_bytes(b"".join(with_grid(m, 0, b"", negative) for m in messages(open(src, "rb").read())))
     assert_same(str(path))
 
 
@@ -952,11 +717,7 @@ BLOCK = 16 * 1024
 def message_spans(data):
     out, pos = [], 0
     while (i := data.find(b"GRIB", pos)) >= 0:
-        n = (
-            int.from_bytes(data[i + 8 : i + 16], "big")
-            if data[i + 7] == 2
-            else int.from_bytes(data[i + 4 : i + 7], "big")
-        )
+        n = int.from_bytes(data[i + 8 : i + 16], "big") if data[i + 7] == 2 else int.from_bytes(data[i + 4 : i + 7], "big")
         out.append((i, n))
         pos = i + n
     return out
@@ -1020,9 +781,7 @@ def test_remote_grib1_by_range(tmp_path, band):
             assert np.array_equal(t.read(band), g.read(band))
             received = sum(n for _, n in log)
             assert received <= ceiling, (received, ceiling, len(raw), len(log))
-            assert [t.tags(b)["GRIB_FORECAST_SECONDS"] for b in (1, 6)] == [
-                g.tags(b)["GRIB_FORECAST_SECONDS"] for b in (1, 6)
-            ]
+            assert [t.tags(b)["GRIB_FORECAST_SECONDS"] for b in (1, 6)] == [g.tags(b)["GRIB_FORECAST_SECONDS"] for b in (1, 6)]
     finally:
         server.shutdown()
 
@@ -1141,9 +900,7 @@ except Exception as e:
 def huge_grib2(tmp_path):
     """A constant GRIB2 field of 65536 x 65535 points (simple packing of 0 bits), the file padded
     past degrib's 1000-points-a-byte guard."""
-    src = write_grib(
-        tmp_path / "s.grib2", field(4, 4, seed=1), DATA_ENCODING="SIMPLE_PACKING", **LATLON
-    )
+    src = write_grib(tmp_path / "s.grib2", field(4, 4, seed=1), DATA_ENCODING="SIMPLE_PACKING", **LATLON)
     msg = messages(open(src, "rb").read())[0]
     s = dict(sections(msg))
     nx, ny = 65536, 65535
@@ -1153,9 +910,7 @@ def huge_grib2(tmp_path):
     s5 = bytearray(s[5])
     s5[5:9] = (nx * ny).to_bytes(4, "big")
     s5[19] = 0
-    return build(msg[:16], [s[1], bytes(s3), s[4], bytes(s5), s[6], section(7, b"")]) + bytes(
-        nx * ny // 1000 + 1
-    )
+    return build(msg[:16], [s[1], bytes(s3), s[4], bytes(s5), s[6], section(7, b"")]) + bytes(nx * ny // 1000 + 1)
 
 
 def huge_grib1():
@@ -1185,9 +940,7 @@ def test_huge_grid_is_an_error_not_an_abort(tmp_path, edition):
 def test_allow_list_finds_grib_after_a_header(tmp_path):
     """Catches content sniffing that misses a GRIB message after a WMO bulletin header (GDAL
     finds "GRIB" and an edition in the first kilobyte): the allow-list would refuse the file."""
-    src = write_grib(
-        tmp_path / "s.grib2", field(6, 7, seed=47), DATA_ENCODING="SIMPLE_PACKING", **LATLON
-    )
+    src = write_grib(tmp_path / "s.grib2", field(6, 7, seed=47), DATA_ENCODING="SIMPLE_PACKING", **LATLON)
     path = tmp_path / "bulletin"
     path.write_bytes(b"\x01\r\r\n001 \r\r\nYTXA98 KWBC 170600\r\r\n" + open(src, "rb").read())
     terrio.check_drivers(str(path), ["GRIB"])
@@ -1203,19 +956,10 @@ def test_tile_server_test_asset(tmp_path):
 
     transform = affine.Affine(14.25739965507221, 0, 305827.93, 0, -14.25739965507221, 5223236.6)
     dest = tmp_path / "data.grib2"
-    with rasterio.open(
-        dest,
-        "w",
-        driver="GRIB",
-        height=10,
-        width=10,
-        count=1,
-        dtype="float32",
-        crs=RioCRS.from_epsg(32611),
-        transform=transform,
-    ) as dst:
+    with rasterio.open(dest, "w", driver="GRIB", height=10, width=10, count=1, dtype="float32", crs=RioCRS.from_epsg(32611), transform=transform) as dst:
         dst.write(np.ones((1, 10, 10), dtype=np.float32))
     assert_same(str(dest))
+
 
 
 # CCSDS packing (template 5.42). GDAL decodes it with libaec, terrio with the pure-Rust rust-aec.
@@ -1314,24 +1058,16 @@ def test_ccsds_packing(tmp_path):
 
 
 @pytest.mark.parametrize("template", [0, 1, 40])
-@pytest.mark.parametrize(
-    "missing", ["La1", "Lo1", "La2", "Lo2", "Di", "Dj", "subdivision-0", "no-parallels"]
-)
+@pytest.mark.parametrize("missing", ["La1", "Lo1", "La2", "Lo2", "Di", "Dj", "subdivision-0", "no-parallels"])
 def test_missing_grid_points(tmp_path, template, missing):
     """GDAL reads a lat/lon grid whose first or last point (or increment) is missing (all ones),
     whose subdivision is 0 or whose Gaussian grid has no parallels: degrib's `ParseSect3` stops
     there, GDAL ignores the error and keeps what was parsed, the rest zeros."""
     if missing == "no-parallels" and template != 40:
         pytest.skip("Gaussian grids only")
-    src = write_grib(
-        tmp_path / "s.grib2", field(9, 13, seed=41), DATA_ENCODING="SIMPLE_PACKING", **LATLON
-    )
+    src = write_grib(tmp_path / "s.grib2", field(9, 13, seed=41), DATA_ENCODING="SIMPLE_PACKING", **LATLON)
     where = {"La1": 46, "Lo1": 50, "La2": 55, "Lo2": 59, "Di": 63, "Dj": 67}
-    rotation = (
-        sign_magnitude(-40_000_000, 4) + (10_000_000).to_bytes(4, "big") + bytes(4)
-        if template == 1
-        else b""
-    )
+    rotation = sign_magnitude(-40_000_000, 4) + (10_000_000).to_bytes(4, "big") + bytes(4) if template == 1 else b""
 
     def edit(s3):
         if template == 40:
@@ -1344,9 +1080,7 @@ def test_missing_grid_points(tmp_path, template, missing):
             s3[67:71] = bytes(4)
 
     path = tmp_path / "m.grib2"
-    path.write_bytes(
-        b"".join(with_grid(m, template, rotation, edit) for m in messages(open(src, "rb").read()))
-    )
+    path.write_bytes(b"".join(with_grid(m, template, rotation, edit) for m in messages(open(src, "rb").read())))
     assert_same(str(path))
 
 
@@ -1362,42 +1096,22 @@ def test_rotated_grid_reprojects_as_gdal(tmp_path, grid):
 
     if grid == "grib1-rotated-angle":
         gds = GRIB1_GRIDS["rotated-angle"]
-        path = latlon_file(
-            tmp_path, "r.grb", [g1_message(g1_field(20, 30, 6).reshape(-1), g1_pds(), gds)]
-        )
+        path = latlon_file(tmp_path, "r.grb", [g1_message(g1_field(20, 30, 6).reshape(-1), g1_pds(), gds)])
     else:
-        crs, pole = (
-            ("EPSG:4326", (-40.0, 10.0, 0.0))
-            if grid == "grib2-wgs84"
-            else ("+proj=longlat +a=6371229 +b=6371229 +no_defs", (-35.0, 15.0, 25.0))
-        )
-        src = write_grib(
-            tmp_path / "s.grib2",
-            field(9, 13, seed=31),
-            crs=crs,
-            transform=from_origin(-20.0, 10.0, 0.5, 0.5),
-            DATA_ENCODING="SIMPLE_PACKING",
-        )
+        crs, pole = ("EPSG:4326", (-40.0, 10.0, 0.0)) if grid == "grib2-wgs84" else ("+proj=longlat +a=6371229 +b=6371229 +no_defs", (-35.0, 15.0, 25.0))
+        src = write_grib(tmp_path / "s.grib2", field(9, 13, seed=31), crs=crs, transform=from_origin(-20.0, 10.0, 0.5, 0.5), DATA_ENCODING="SIMPLE_PACKING")
         lat, lon, angle = pole
-        extra = (
-            sign_magnitude(round(lat * 1e6), 4)
-            + round(lon % 360 * 1e6).to_bytes(4, "big")
-            + round(angle * 1e6).to_bytes(4, "big")
-        )
+        extra = sign_magnitude(round(lat * 1e6), 4) + round(lon % 360 * 1e6).to_bytes(4, "big") + round(angle * 1e6).to_bytes(4, "big")
         path = tmp_path / "rotated.grib2"
         path.write_bytes(b"".join(with_grid(m, 1, extra) for m in messages(open(src, "rb").read())))
         path = str(path)
     with rasterio.open(path) as g, trio.open(path) as t:
         for dst in ("EPSG:3857", "EPSG:4326"):
             ours = trio.warp.transform_bounds(t.crs, dst, *t.bounds)
-            np.testing.assert_allclose(
-                ours, rasterio.warp.transform_bounds(g.crs, dst, *g.bounds), rtol=1e-12, atol=1e-6
-            )
+            np.testing.assert_allclose(ours, rasterio.warp.transform_bounds(g.crs, dst, *g.bounds), rtol=1e-12, atol=1e-6)
             with rasterio.vrt.WarpedVRT(g, crs=dst) as gv, trio.vrt.WarpedVRT(t, crs=dst) as tv:
                 assert tv.shape == gv.shape
-                np.testing.assert_allclose(
-                    tv.transform.to_gdal(), gv.transform.to_gdal(), rtol=1e-12, atol=1e-6
-                )
+                np.testing.assert_allclose(tv.transform.to_gdal(), gv.transform.to_gdal(), rtol=1e-12, atol=1e-6)
                 assert np.array_equal(tv.read(1), gv.read(1))
 
 
@@ -1568,15 +1282,11 @@ WRITES = {
         {},
     ),
     "lambert-conformal": (
-        smooth(1, 20, 30, np.float32),
-        projected("EPSG:2154", 300000.0, 6900000.0, 1000.0),
-        {},
+        smooth(1, 20, 30, np.float32), projected("EPSG:2154", 300000.0, 6900000.0, 1000.0), {}
     ),
     "albers": (smooth(1, 20, 30, np.float32), projected("EPSG:5070", -5e5, 2e6, 1000.0), {}),
     "transverse-mercator-airy": (
-        smooth(1, 20, 30, np.float32),
-        projected("EPSG:27700", 400000.0, 300000.0, 100.0),
-        {},
+        smooth(1, 20, 30, np.float32), projected("EPSG:27700", 400000.0, 300000.0, 100.0), {}
     ),
     "sphere": (
         smooth(1, 20, 30, np.float32),
@@ -1606,15 +1316,8 @@ def write_both(tmp_path, data, georef, options):
     bands, height, width = data.shape
     for lib, path in zip((trio, rasterio), paths, strict=True):
         with lib.open(
-            path,
-            "w",
-            driver="GRIB",
-            count=bands,
-            height=height,
-            width=width,
-            dtype=data.dtype.name,
-            **georef,
-            **options,
+            path, "w", driver="GRIB", count=bands, height=height, width=width,
+            dtype=data.dtype.name, **georef, **options,
         ) as dst:
             dst.write(data)
     return paths
@@ -1672,26 +1375,14 @@ def test_grib_writer_refuses_what_it_does_not_write(tmp_path):
     data[0, 0, :5] = -9999.0
     with pytest.raises(Exception, match="COMPLEX_PACKING"):
         with trio.open(
-            tmp_path / "n.grib2",
-            "w",
-            driver="GRIB",
-            count=1,
-            height=20,
-            width=30,
-            dtype="float32",
-            nodata=-9999.0,
-            **GEOGRAPHIC,
+            tmp_path / "n.grib2", "w", driver="GRIB", count=1, height=20, width=30,
+            dtype="float32", nodata=-9999.0, **GEOGRAPHIC,
         ) as dst:
             dst.write(data)
     with pytest.raises(Exception, match="projection"):
         with trio.open(
-            tmp_path / "m.grib2",
-            "w",
-            driver="GRIB",
-            count=1,
-            height=20,
-            width=30,
-            dtype="float32",
-            **projected("EPSG:3857", 0.0, 0.0, 1000.0),
+            tmp_path / "m.grib2", "w", driver="GRIB", count=1, height=20, width=30,
+            dtype="float32", **projected("EPSG:3857", 0.0, 0.0, 1000.0),
         ) as dst:
             dst.write(data)
+

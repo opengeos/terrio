@@ -32,9 +32,7 @@ def _write(path, dtype, layout, compress, bands=2, interleave="pixel", nodata=No
     rng = np.random.default_rng(len(dtype) + bands)
     height, width = 37, 41
     # Real parts from 0: only the nodata block has -5.
-    values = rng.integers(0, 300, (bands, height, width)) + 1j * rng.integers(
-        -300, 300, (bands, height, width)
-    )
+    values = rng.integers(0, 300, (bands, height, width)) + 1j * rng.integers(-300, 300, (bands, height, width))
     values = values.astype(TYPES[dtype])
     if nodata is not None:
         values[:, :5, :7] = nodata + 3j
@@ -72,9 +70,7 @@ def test_complex_bands_read_as_rasterio_reads_them(tmp_path, dtype, layout, comp
         np.testing.assert_array_equal(got, expected)
         # One band, and a window across blocks.
         np.testing.assert_array_equal(t.read(2), g.read(2))
-        np.testing.assert_array_equal(
-            t.read(1, window=TW(3, 4, 20, 25)), g.read(1, window=RW(3, 4, 20, 25))
-        )
+        np.testing.assert_array_equal(t.read(1, window=TW(3, 4, 20, 25)), g.read(1, window=RW(3, 4, 20, 25)))
         assert t.block_shapes == g.block_shapes
 
 
@@ -98,6 +94,4 @@ def test_masks_of_complex_bands_compare_their_real_parts(tmp_path, dtype):
         assert (t.nodata, t.nodatavals) == (g.nodata, g.nodatavals)
         np.testing.assert_array_equal(t.read_masks(1), g.read_masks(1))
         assert int((g.read_masks(1) == 0).sum()) == 35
-        np.testing.assert_array_equal(
-            np.ma.getmaskarray(t.read(masked=True)), np.ma.getmaskarray(g.read(masked=True))
-        )
+        np.testing.assert_array_equal(np.ma.getmaskarray(t.read(masked=True)), np.ma.getmaskarray(g.read(masked=True)))

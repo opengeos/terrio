@@ -223,11 +223,7 @@ class WarpedVRT(DatasetReader):
         # A source georeferenced by GCPs alone: rasterio takes their CRS when none is given.
         src_gcps, gcp_crs = src_dataset.gcps
         gcp_only = bool(src_gcps) and src_dataset.transform.almost_equals(Affine.identity())
-        if (
-            self.src_crs is None
-            and gcp_only
-            and self.src_transform.almost_equals(Affine.identity())
-        ):
+        if self.src_crs is None and gcp_only and self.src_transform.almost_equals(Affine.identity()):
             self.src_crs = gcp_crs
         self.src_nodata = src_dataset.nodata if src_nodata is _DEFAULT else src_nodata
         self.dst_nodata = self.src_nodata if nodata is _DEFAULT else nodata
@@ -299,18 +295,11 @@ class WarpedVRT(DatasetReader):
             # GDALAutoCreateWarpedVRTEx() on a dataset with GCPs and no geotransform: its
             # transformer, and so the grid, uses the GCPs (src_transform plays no part).
             options = {
-                k: v
-                for k, v in self.warp_extras.items()
-                if k.upper() in ("MAX_GCP_ORDER", "SRC_METHOD")
+                k: v for k, v in self.warp_extras.items() if k.upper() in ("MAX_GCP_ORDER", "SRC_METHOD")
             }
             self._warp_gcps = _gcp_args(src_gcps, options)
             t, w, h = calculate_default_transform(
-                self.src_crs,
-                self.dst_crs,
-                src_dataset.width,
-                src_dataset.height,
-                gcps=src_gcps,
-                **options,
+                self.src_crs, self.dst_crs, src_dataset.width, src_dataset.height, gcps=src_gcps, **options
             )
         elif transform is None and (not width or not height):
             # GDALAutoCreateWarpedVRTEx(): GDALSuggestedWarpOutput() around the source, whose
@@ -584,11 +573,7 @@ class WarpedVRT(DatasetReader):
                 **(
                     {}
                     if gcps is None
-                    else {
-                        "gcps": gcps["gcps"],
-                        "gcp_order": gcps["order"],
-                        "gcp_method": gcps["gcp_method"],
-                    }
+                    else {"gcps": gcps["gcps"], "gcp_order": gcps["order"], "gcp_method": gcps["gcp_method"]}
                 ),
             )
             if len(self._warpers) > 32:
