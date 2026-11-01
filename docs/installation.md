@@ -34,7 +34,7 @@ $env:TERRIO_VERSION = "0.6.0"; irm https://terrio.dev/install.ps1 | iex
 
 The Windows installer adds the directory to your `PATH` (`TERRIO_NO_MODIFY_PATH=1` to leave it);
 the shell installer prints the line to add when it isn't on it. Run the installer again to update
-terrio, and delete the binary to uninstall it.
+terrio, and see [Uninstall](#uninstall) to remove it.
 
 On macOS and Linux, [Homebrew](https://brew.sh) installs the release's binary from the
 [opengeos/terrio tap](https://github.com/opengeos/homebrew-terrio), updated with each release:
@@ -168,6 +168,33 @@ git clone https://github.com/opengeos/terrio
 cd terrio/python && pip install maturin numpy && maturin develop --release   # Python
 cd ../js && wasm-pack build --target web                                      # JavaScript
 ```
+
+## Uninstall
+
+Remove terrio the way you installed it:
+
+| Installed with | Command |
+| --- | --- |
+| `install.sh` | `rm "${XDG_BIN_HOME:-$HOME/.local/bin}/terrio"` |
+| `install.ps1` | `Remove-Item "$env:USERPROFILE\.local\bin\terrio.exe"` |
+| Homebrew | `brew uninstall --cask terrio` |
+| AUR | `sudo pacman -R terrio-bin` (or `terrio`) |
+| Fedora COPR | `sudo dnf remove terrio` |
+| pip | `pip uninstall terrio` |
+| uv | `uv tool uninstall terrio` |
+| pipx | `pipx uninstall terrio` |
+| conda or mamba | `conda remove terrio` or `mamba remove terrio` |
+| Cargo or cargo-binstall | `cargo uninstall terrio-cli` |
+| npm | `npm uninstall terrio-js` |
+| Pyodide | `micropip.uninstall("terrio")` |
+| Docker | `docker image rm ghcr.io/opengeos/terrio:<tag>` (`latest` or the version you pulled) |
+
+If you installed with `TERRIO_INSTALL_DIR`, delete the binary from that directory instead. The
+Windows installer adds its directory to your `PATH` if it isn't there already; if it did, you can
+remove the entry from your user environment variables when nothing else uses that directory.
+
+To find the copies on your `PATH`, run `which -a terrio` (`where.exe terrio` on Windows). Their
+locations usually show how each was installed.
 
 ## Requirements
 
