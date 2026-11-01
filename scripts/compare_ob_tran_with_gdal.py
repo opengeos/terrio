@@ -5,6 +5,7 @@ import argparse
 import json
 import math
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from osgeo import gdal, osr
@@ -45,6 +46,16 @@ def native(executable, source, target, points):
 def past_pole(case, point):
     northing = (point[1] * case["metres_per_unit"] - case["false_northing_metres"]) / case["radius_metres"]
     return case["refuses_past_pole"] and abs(northing) > math.pi / 2
+
+
+def mollweide_longitude(case, point):
+    """Recover Mollweide longitude in radians, removing false origins in metres."""
+    parameters = dict(token.lstrip("+").split("=", 1) for token in shlex.split(case["target"]) if "=" in token)
+    radius, factor = case["radius_metres"], case["metres_per_unit"]
+    x = (point[0] * factor - float(parameters.get("x_0", 0))) / radius
+    y = (point[1] * factor - case["false_northing_metres"]) / radius
+    theta = math.asin(y / math.sqrt(2))
+    return x / (2 * math.sqrt(2) / math.pi * math.cos(theta))
 
 
 def ellipsoidal_eqc():
@@ -115,10 +126,7 @@ def main():
                     # The only accepted GDAL refusal is the documented eight-ulp domain band.
                     # Verify the unrotated Mollweide domain analytically, then check the inverse
                     # against the original geographic sample rather than skipping its values.
-                    radius = case["radius_metres"]
-                    x, y = (v * case["metres_per_unit"] / radius for v in point)
-                    theta = math.asin(y / math.sqrt(2))
-                    lam = x / (2 * math.sqrt(2) / math.pi * math.cos(theta))
+                    lam = mollweide_longitude(case, point)
                     assert abs(abs(lam) - math.pi) <= 8 * math.ulp(math.pi), "not on Mollweide edge"
                     index = expected.index(point)
                     want = points[index]
