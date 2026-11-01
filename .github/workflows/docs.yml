@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    paths: ["docs/**", "ROADMAP.md", "zensical.toml", "requirements_docs.txt", ".github/workflows/docs.yml"]
+    paths: ["docs/**", "ROADMAP.md", "zensical.toml", "requirements_docs.txt", "lite/**", "scripts/test_jupyterlite.py", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
@@ -29,6 +29,20 @@ jobs:
           uv venv --python 3.12
           uv pip install -r requirements_docs.txt
           .venv/bin/zensical build
+      - name: Download the latest Pyodide wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download --repo "$GITHUB_REPOSITORY" --pattern '*pyemscripten*' --dir lite/wheels
+      - name: Build the JupyterLite site
+        working-directory: lite
+        run: |
+          uv venv --python 3.12
+          uv pip install -r requirements.txt playwright
+          .venv/bin/jupyter lite build
+      - name: Run the JupyterLite notebooks in a browser
+        run: |
+          lite/.venv/bin/playwright install --with-deps chromium
+          lite/.venv/bin/python scripts/test_jupyterlite.py site/lite
       - uses: actions/upload-pages-artifact@v5
         if: github.event_name != 'pull_request'
         with:

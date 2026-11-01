@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The documentation site runs the notebooks in the browser with JupyterLite, with
+  terrio preinstalled, at <https://terrio.dev/notebooks/>.
 - `terrio.rio.MemoryFile` given PNG, JPEG or WebP bytes without a filename or
   `ext` names its file for their format, so they open (#451). Other bytes are
   named `.tif`, as before.

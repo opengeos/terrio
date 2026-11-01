@@ -478,7 +478,8 @@ Python:
       window and overview is identical to GDAL's.
 - [x] Wheels for more platforms (musl aarch64, Windows ARM64) and for Pyodide, to run in the browser.
       Done: musllinux aarch64 and Windows ARM64 wheels; a Pyodide 0.29 wheel (Python 3.13) attached
-      to each GitHub release, tested in Pyodide under Node.js in the release workflow.
+      to each GitHub release, tested in Pyodide under Node.js in the release workflow. The documentation
+      site runs notebooks on it with JupyterLite, tested in a browser in the docs workflow.
 
 WebAssembly (the `terrio-js` npm package):
 

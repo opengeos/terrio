@@ -114,16 +114,15 @@ later, as its recipe currently sets. It can follow a new release after a delay, 
 
 A wheel for [Pyodide](https://pyodide.org) (Python in WebAssembly, in browsers and Node.js) is
 attached to each [GitHub release](https://github.com/opengeos/terrio/releases) from 0.2.0 on,
-built for the Pyodide release it names (0.29, Python 3.13). Install it with `micropip`, from the
-release or a copy served next to the page:
+built for the Pyodide release it names (0.29, Python 3.13). To try it without installing anything,
+use the [notebooks in your browser](notebooks.md#in-your-browser). In your own page, serve a copy of
+the wheel next to the page and install it with `micropip` (browsers refuse to download it from the
+release, which does not allow cross-origin requests):
 
 ```python
 import micropip
 
-await micropip.install(
-    "https://github.com/opengeos/terrio/releases/download/v0.6.0/"
-    "terrio-0.6.0-cp310-abi3-pyemscripten_2025_0_wasm32.whl"
-)
+await micropip.install("terrio-0.6.0-cp310-abi3-pyemscripten_2025_0_wasm32.whl")
 ```
 
 Files are read from and written to Pyodide's in-memory file system, or from bytes
