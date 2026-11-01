@@ -756,7 +756,8 @@ def suite_benchmark_compat(ctx):
     return suite_json_ops(
         ctx, "benchmark-compat", "compare_benchmark_compat_with_gdal.py",
         "Benchmark compatibility and codec roundtrips", "Installed GDAL independent decoder",
-        "GDAL 3.13 recursive COG pyramids and versioned slope/hillshade match exactly. "
+        "GDAL 3.13 recursive COG pyramids, versioned slope/hillshade, the bilinear NAD83 to UTM warp "
+        "and counties to Conus Albers match exactly on glibc Linux. "
         "WebP lossless pixels/masks and JPEG XL Byte/UInt16 layouts roundtrip exactly; "
         "lossy WebP quality must change valid decoded output, with no cross-encoder pixel equality claim.", 1,
     )
