@@ -262,9 +262,6 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
     if root_type.as_deref() == Some("CityJSON") {
         return vector(VectorDriver::CityJSON);
     }
-    if crate::drivers::vector::esrijson::is_esrijson(json.as_bytes()) {
-        return vector(VectorDriver::ESRIJSON);
-    }
     if root_type.as_deref() == Some("Topology") {
         return vector(VectorDriver::TopoJSON);
     }
@@ -287,6 +284,11 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
         } else {
             VectorDriver::GeoJSON
         });
+    }
+    // After the root types above, which this header may show past the bytes ESRI JSON's signs are
+    // looked for in.
+    if crate::drivers::vector::esrijson::is_esrijson(json.as_bytes()) {
+        return vector(VectorDriver::ESRIJSON);
     }
     if matches!(ext.as_str(), "csv" | "tsv") && !text.is_empty() {
         return vector(VectorDriver::CSV);

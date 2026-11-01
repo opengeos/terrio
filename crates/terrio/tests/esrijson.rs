@@ -76,9 +76,22 @@ fn geojson_with_esri_looking_properties_stays_geojson() {
         let ds = terrio::memory::open_vector_bytes(doc.clone().into_bytes(), name, &Default::default()).unwrap();
         assert_eq!(ds.driver, VectorDriver::GeoJSON, "{name} in memory");
     }
-    // Without an extension, the identification sees only the first bytes; the reader, the whole.
+    // Identification reads further than the signs are looked for: this root type is in its header,
+    // so it is GeoJSON, and not read as ESRI JSON.
     let path = dir.path().join("sorted");
     std::fs::write(&path, &sorted).unwrap();
+    assert_eq!(terrio::inspection::identify_bytes(sorted.as_bytes(), "sorted.json").unwrap().driver, "GeoJSON");
+    assert_eq!(terrio::inspection::identify(path.to_str().unwrap(), false).unwrap().unwrap().driver, "GeoJSON");
+    assert!(!terrio::open_vector(path.to_str().unwrap(), &Default::default()).is_ok_and(|ds| ds.driver == VectorDriver::ESRIJSON));
+    // Past that header identification sees only the signs; without an extension, the reader decides
+    // on the whole document.
+    let padding = "x".repeat(20_000);
+    let far = format!(
+        r#"{{"features":[{{"geometry":{{"coordinates":[1,2],"type":"Point"}},"properties":{{"fieldAliases":"{padding}"}},"type":"Feature"}}],"type":"FeatureCollection"}}"#
+    );
+    let path = dir.path().join("far");
+    std::fs::write(&path, &far).unwrap();
+    assert_eq!(terrio::inspection::identify(path.to_str().unwrap(), false).unwrap().unwrap().driver, "ESRIJSON");
     let ds = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap();
     assert_eq!((ds.driver, ds.layers[0].features.len()), (VectorDriver::GeoJSON, 1));
 }

@@ -854,7 +854,6 @@ fn read_head_local(path: &Path) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// Up to 1024 bytes from the start of a remote file, and the file's length.
 /// The first bytes of a feature-service query, whose server may ignore ranges.
 fn read_head_query(path: &str, location: &crate::vfs::Location) -> Option<Vec<u8>> {
     #[cfg(remote)]
@@ -872,6 +871,7 @@ fn read_head_query(path: &str, location: &crate::vfs::Location) -> Option<Vec<u8
     }
 }
 
+/// Up to 1024 bytes from the start of a remote file, and the file's length.
 fn read_head_remote(location: &crate::vfs::Location) -> Option<(Vec<u8>, u64)> {
     #[cfg(remote)]
     {

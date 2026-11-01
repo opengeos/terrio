@@ -621,10 +621,11 @@ schemas. GDAL 3.13.3's partial CityGML reader is informational.
 ### ESRIJSON
 
 The `ESRIJSON` driver reads the JSON of ArcGIS feature-service queries (`f=json`) as GDAL's
-ESRIJSON driver does. A `.json` file, or one without an extension, is recognized by its content:
-`geometryType`, `fieldAliases`, `esriFieldType` names, features with rings or attributes, or a
-`spatialReference` by WKID, unless its root `type`, anywhere in the document, is GeoJSON's or
-TopoJSON's; a query URL's answer is judged the same way. A `.geojson` file stays GeoJSON. A URL is read as a query when it has a parameter `f=json`, `f=pjson` or
+ESRIJSON driver does. A `.json` file, or one without an extension, is recognized by its first
+6,000 bytes: `geometryType`, `fieldAliases`, `esriFieldType` names, features with rings or
+attributes, or a `spatialReference` by WKID, unless its root `type`, anywhere in the document, is
+GeoJSON's or TopoJSON's; a query URL's answer is judged the same way. A `.geojson` file stays
+GeoJSON. A URL is read as a query when it has a parameter `f=json`, `f=pjson` or
 `resultRecordCount=` and answers ESRI JSON; `ESRIJSON:` before a URL or a path names the driver. A
 document without `features`, such as a layer's description (a URL without its `/query`), is an
 error.
@@ -641,10 +642,12 @@ GDAL. A page over `TERRIO_JSON_MAX_SIZE` (100 MiB by default) is an error, as ar
 first, and a page the same as the one before it (a service that ignores the offset; rows without
 an object id that happen to repeat a whole page need `FEATURE_SERVER_PAGING=NO` and an offset of
 their own). Features without an object id are numbered by their place in the whole layer. As
-GDAL's documentation advises, add `orderByFields=OBJECTID+ASC` so that pages don't overlap.
-Authentication goes in the URL (`token=`) or the usual HTTP options. All the pages are held in
-memory. In builds with the GDAL backend, an answer recognized as a query's and found wrong stays an
-error rather than going to GDAL, which would read what it can of it.
+GDAL's documentation advises, order by the layer's object id field (`orderByFields=OBJECTID+ASC`
+when it is named so) so that pages don't overlap. Authentication goes in the URL (`token=`) or the
+usual HTTP options. All the pages are held in memory, and `terrio info` reads them all to count the
+features: `FEATURE_SERVER_PAGING=NO` describes one page. In builds with the GDAL backend, an answer
+recognized as a query's and found wrong stays an error rather than going to GDAL, which would read
+what it can of it.
 
 Fields follow `fields`, else `fieldAliases` (as text), else the attributes' values. Terrio has no
 field subtypes: small integers are integers, single-precision numbers are reals, GUIDs are text,
