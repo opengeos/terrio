@@ -88,7 +88,6 @@ fn malformed_references_and_unsupported_versions_fail() {
     for doc in [
         document("MultiSurface", json!([[[0, 1, 999]]])),
         document("MultiSurface", json!([[[0, 1, -1]]])),
-        document("MultiSurface", json!([[[0, 1]]])),
         document("Solid", json!([[[0, 1, 2]]])),
         document("SomethingElse", json!([])),
         document("MultiPoint", json!([0.5])),
@@ -154,4 +153,32 @@ fn generic_json_with_root_type_after_large_payload_is_not_geojson() {
     assert_eq!(ds.driver, VectorDriver::CityJSON);
     assert_eq!(ds.layers[0].features.len(), 2);
     assert_eq!(ds.layers[0].crs_epsg(), Some(7415));
+}
+
+#[test]
+fn degenerate_rings_preserve_other_faces_semantics_and_geometry_diagnostics() {
+    let mut doc = document("MultiSurface", json!([[[0, 0, 0]], [[0, 1, 2, 3], [0, 0, 0]], [[0, 3, 2, 1]]]));
+    doc["CityObjects"]["part"]["geometry"][0]["semantics"] = json!({
+        "surfaces":[{"type":"GroundSurface"},{"type":"WallSurface"},{"type":"RoofSurface"}],
+        "values":[0,1,2]
+    });
+    for version in ["1.1", "2.0"] {
+        doc["version"] = version.into();
+        let ds = read(&doc, "degenerate.city.json");
+        let features: Vec<_> = ds.layers[0].features.iter().filter(|f| f.geometry.is_some()).collect();
+        assert_eq!(features.len(), 2);
+        assert_eq!(features[0].attributes[7], FieldValue::Text("{\"type\":\"WallSurface\"}".into()));
+        assert_eq!(features[1].attributes[7], FieldValue::Text("{\"type\":\"RoofSurface\"}".into()));
+        assert!(features.iter().all(|f| f.attributes[8] == FieldValue::Integer(2) && f.attributes[9] == FieldValue::Integer(1)));
+        let Geometry::Polygon { exterior, interiors } = features[0].geometry.as_ref().unwrap() else { panic!() };
+        assert_eq!(exterior.len(), 4);
+        assert!(interiors.is_empty());
+    }
+    doc.as_object_mut().unwrap().remove("transform");
+    assert!(
+        terrio::memory::open_vector_bytes(serde_json::to_vec(&doc).unwrap(), "missing.city.json", &Default::default())
+            .unwrap_err()
+            .to_string()
+            .contains("transform")
+    );
 }

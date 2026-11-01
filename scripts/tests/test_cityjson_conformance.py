@@ -13,7 +13,8 @@ from compare_cityjson import compare, key, reference
 
 def fixture():
     props = dict(city_id="wall", city_type="Building", lod="2", parents=None,
-                 attributes='{"name":"wall"}', geometry_type="MultiSurface", semantics=None)
+                 attributes='{"name":"wall"}', geometry_type="MultiSurface", semantics=None,
+                 skipped_rings=0, skipped_faces=0)
     geometry = dict(type="Polygon", coordinates=[
         [[10, 20, 30], [10, 30, 30], [10, 30, 40]],
         [[10, 22, 32], [10, 23, 32], [10, 23, 33]],
@@ -31,7 +32,7 @@ def test_accepts_same_numeric_values_with_explicit_ring_closure():
     compare(expected, actual)
 
 
-@pytest.mark.parametrize("change", ["z", "hole", "attribute", "missing", "duplicate"])
+@pytest.mark.parametrize("change", ["z", "hole", "attribute", "missing", "duplicate", "diagnostic"])
 def test_rejects_corrupted_flat_view(change):
     expected, actual = fixture()
     actual = deepcopy(actual)
@@ -46,6 +47,8 @@ def test_rejects_corrupted_flat_view(change):
         actual["features"].clear()
     elif change == "duplicate":
         actual["features"].append(deepcopy(feature))
+    elif change == "diagnostic":
+        feature["properties"]["skipped_rings"] = 1
     with pytest.raises(AssertionError):
         compare(expected, actual)
 
@@ -60,3 +63,14 @@ def test_template_oracle_applies_matrix_before_world_anchor():
     assert len(rows) == 1
     assert rows[0][0]["lod"] == "2"
     assert rows[0][1] == dict(type="Point", coordinates=[112,226,342])
+
+
+def test_degenerate_oracle_preserves_semantic_indices():
+    doc = dict(vertices=[[10,0,0],[10,1,0],[10,1,1]], CityObjects={"house": dict(type="Building",
+        geometry=[dict(type="MultiSurface", lod="2.2", boundaries=[[[0,0,0]],[[0,1,2]]],
+            semantics=dict(surfaces=[dict(type="GroundSurface"),dict(type="WallSurface")],values=[0,1]))])})
+    rows = reference(doc)
+    assert len(rows) == 1
+    assert rows[0][0]["skipped_rings"] == 1
+    assert rows[0][0]["skipped_faces"] == 1
+    assert rows[0][0]["surface_semantics"] == {"type":"WallSurface"}

@@ -387,6 +387,8 @@ MultiSolid/CompositeSolid, MultiPoint and MultiLineString. Use `.city.json` or
 `.cityjson`; `.json` is distinguished from GeoJSON by its root `type`, even when
 the type follows a large vertex/object payload. Bounded header identification can
 only report a root type present within its header limit.
+The top-level `transform` object is required by both supported versions; template
+vertices remain unquantized as specified.
 
 The single `CityJSON` layer is a **flat vector view**: each face is a polygon with Z
 and interior rings; lines and points are separate features. Nonspatial objects
@@ -395,8 +397,17 @@ remain null-geometry features. Fields are `city_id`, `city_type`, `lod`, `parent
 source geometry's complete JSON semantics object, repeated on its primitives).
 `surface_semantics` contains the JSON semantic record resolved for that particular
 face (for example `RoofSurface` with its properties), or null for unclassified faces.
+Rings with fewer than three distinct XYZ positions cannot form polygons in this
+view. Degenerate interior rings are omitted; a degenerate exterior omits its face.
+Surviving faces keep their original semantic records. Integer `skipped_rings` and
+`skipped_faces` fields report totals for the source geometry, repeated on each
+surviving primitive. If no primitive survives, a null-geometry feature retains the
+object metadata and counts. These counts are not totals to sum across features.
+Invalid indices and malformed boundary/semantic nesting still fail explicitly.
 `metadata.referenceSystem` supplies the CRS; absent CRS stays unknown. Coordinates
 retain the source XYZ order rather than applying geographic axis swapping.
+An explicitly declared CRS must be a supported string; malformed or unsupported
+declarations fail instead of silently assigning an unknown or guessed CRS.
 
 This view retains vertical faces but does not model solids, shell membership or
 the object hierarchy as geometry. It does not preserve textures, materials,
@@ -409,8 +420,22 @@ payload (text, coordinates and feature containers) is limited to 256 MiB; larger
 expansions fail with a request to split the model. This is an expansion limit,
 not a bound on total process memory or input parsing. Template vertices are
 decoded once, and only referenced template coordinates are transformed per instance.
+Whole source semantics are repeated as owned text. A local connected 1,000-face
+CompositeSurface example used 68,723 input bytes and 26,966,000 bytes of owned field
+text; larger single geometries can reach the expansion limit. Run
+`python scripts/benchmark_json_dispatch.py DATA` to reproduce this observation.
+The JSON parse also uses the existing GeoJSON allocation preflight; neither probe
+nor payload accounting is a total resident-memory guarantee.
 The `.city.json` extension now selects the CityJSON driver; until the writer is
 available it rejects output instead of writing GeoJSON under a CityJSON filename.
+
+The `.json` root-type probe scans the already-read buffer without reopening the
+file and borrows valid UTF-8; malformed UTF-8 is rejected without an owned decoded
+copy. A local Linux development-build observation on equal 16,777,271-byte files
+read 16,875,575–16,875,576 bytes in five calls for either root-type position,
+including bounded header probes. Mean opens were 52 ms with an early type and
+114 ms with a late type (three warmed runs). These observations are not performance
+thresholds; the benchmark above records actual counters and timings.
 
 The [CityJSON 1.1](https://www.cityjson.org/specs/1.1.3/) and
 [2.0 specifications](https://www.cityjson.org/specs/2.0.2/) and their published JSON
@@ -425,7 +450,8 @@ its sibling application-schema lookup. XML and local geometry XLinks are parsed
 without fetching external resources; invalid XML, duplicate IDs, unresolved
 references, reference cycles and malformed coordinate lists fail explicitly.
 
-The `CityGML` layer uses the same flat fields as CityJSON. Polygon faces retain
+The `CityGML` layer uses the eight common flat fields described for CityJSON,
+without its skipped-ring/face counters. Polygon faces retain
 Z and interior rings; solids (including interior shells), composite surfaces,
 triangle/rectangle patches, linear curves and point collections become ordinary
 primitives. Local polygon references shared by a solid and its thematic boundary
