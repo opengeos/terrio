@@ -23,7 +23,10 @@ describes the payload. This initial schema is unstable: consumers should check
 `schema_version`. `required` describes unconditional clap requirements; conditional
 requirements, conflicts, mutation/idempotency rules and pipeline-step semantics
 are outside this version. Choices list only those registered in clap; additional
-numeric ranges and runtime parser constraints remain enforced by the CLI. The catalog shares the MCP command tree and excludes
+numeric ranges and runtime parser constraints remain enforced by the CLI. The catalog includes accepted hidden options, including `--json-usage` itself and
+`calc` compatibility flags, even when ordinary `--help` omits them.
+
+The catalog shares the MCP command tree and excludes
 `mcp` and the generated `help` subcommand; MCP tool arguments remain `args: string[]`.
 
 Clap distinguishes the metadata flag from literal values. For example,

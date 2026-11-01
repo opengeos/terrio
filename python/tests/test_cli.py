@@ -157,3 +157,16 @@ def test_json_usage_literal_dataset_name(tmp_path):
     assert result.returncode == 0, result.stderr
     assert '"schema_version"' not in result.stdout
     assert "--json-usage" in result.stdout
+
+
+@pytest.mark.parametrize("path", [[], ["vsi", "sync"], ["warp"]])
+def test_json_usage_matches_published_schema(path):
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads(
+        (Path(__file__).resolve().parents[2] / "schemas/cli-usage-v0.1.schema.json").read_text()
+    )
+    Draft202012Validator.check_schema(schema)
+    result = run(*path, "--json-usage")
+    assert result.returncode == 0, result.stderr
+    Draft202012Validator(schema).validate(json.loads(result.stdout))

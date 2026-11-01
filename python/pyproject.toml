@@ -22,7 +22,7 @@ dependencies = ["numpy>=1.21", "affine>=2.3"]
 
 [project.optional-dependencies]
 geopandas = ["geopandas>=0.14"]
-test = ["pytest>=7"]
+test = ["pytest>=7", "jsonschema>=4.18"]
 # For terrio.rio.plot.
 plot = ["matplotlib>=3.5"]
 # For terrio.xarray (dask for chunked arrays); interpolate_na also needs scipy.
