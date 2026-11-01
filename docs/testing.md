@@ -87,7 +87,8 @@ CRSs and malformed input. The independent XML oracle covers the explicit polygon
 geometry in the two published fixtures; it does not independently expand arbitrary
 XLinks or implicit geometry.
 
-CityGML dispatch and CRS-cache observations can be reproduced with:
+CityGML dispatch and CRS-cache observations require Linux with `/proc/self/io`:
+reproduce them with:
 
 ```sh
 python scripts/benchmark_citygml_dispatch.py ../terrio-data
