@@ -38,3 +38,20 @@ def test_rejects_corrupted_view(change):
     elif change == "semantic": feature["properties"]["surface_semantics"] = None
     elif change == "attribute": feature["properties"]["attributes"] = '{"name":"wrong"}'
     with pytest.raises(AssertionError): compare(expected, owners, actual)
+
+
+def test_repeatable_properties_keep_all_source_occurrences():
+    import json
+
+    expected, owners, actual = example()
+    owner = owners["house"]
+    for value in ["office", "retail"]:
+        child = etree.SubElement(owner, "{http://www.opengis.net/citygml/building/3.0}function", codeSpace="codes")
+        child.text = value
+    attrs = {"name": "house", "function": [{"value": "office", "codeSpace": "codes"}, {"value": "retail", "codeSpace": "codes"}]}
+    actual["features"][0]["properties"]["attributes"] = json.dumps(attrs)
+    compare(expected, owners, actual)
+    attrs["function"] = attrs["function"][-1]
+    actual["features"][0]["properties"]["attributes"] = json.dumps(attrs)
+    with pytest.raises(AssertionError):
+        compare(expected, owners, actual)

@@ -152,7 +152,8 @@ def compare(expected, owners, fc):
         props = feature["properties"]
         owner = owners[props["city_id"]]
         attrs = json.loads(props["attributes"])
-        # Independently inspect source scalar name/class attributes when present.
+        # Collect source occurrences independently, including repeatable function/usage.
+        source_values = {}
         for child in owner:
             name = etree.QName(child).localname
             if name in {"name", "class", "function", "usage"} and len(child) == 0:
@@ -160,7 +161,9 @@ def compare(expected, owners, fc):
                 units = {k: child.get(k) for k in ("uom", "codeSpace") if child.get(k) is not None}
                 if units:
                     expected_value = {"value": expected_value} | units
-                assert attrs[name] == expected_value, (name, attrs)
+                source_values.setdefault(name, []).append(expected_value)
+        for name, values in source_values.items():
+            assert attrs[name] == (values[0] if len(values) == 1 else values), (name, attrs)
         if feature["geometry"] is None:
             assert not any(row[0] == props["city_id"] for row in expected)
             continue

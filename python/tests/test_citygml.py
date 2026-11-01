@@ -13,6 +13,8 @@ def test_citygml_paths_bytes_xyz_and_metadata(tmp_path, version):
     data = f'''<c:CityModel xmlns:c="http://www.opengis.net/citygml/{version}"
     xmlns:g="{gml}" xmlns:b="http://www.opengis.net/citygml/building/{version}">
     <c:cityObjectMember><b:Building g:id="building"><g:name>Test house</g:name>
+    <b:function codeSpace="codes">office</b:function>
+    <b:function codeSpace="codes">retail</b:function>
     <b:measuredHeight uom="m">12.5</b:measuredHeight><b:lod2MultiSurface>
     <g:MultiSurface srsName="EPSG:32632" srsDimension="3"><g:surfaceMember>
     <g:Polygon><g:exterior><g:LinearRing><g:posList>10 20 30 10 21 30 10 21 31 10 20 30</g:posList>
@@ -28,6 +30,10 @@ def test_citygml_paths_bytes_xyz_and_metadata(tmp_path, version):
         assert feature["properties"]["lod"] == "2"
         attrs = json.loads(feature["properties"]["attributes"])
         assert attrs["name"] == "Test house"
+        assert attrs["function"] == [
+            {"value": "office", "codeSpace": "codes"},
+            {"value": "retail", "codeSpace": "codes"},
+        ]
         assert attrs["measuredHeight"] == {"value": "12.5", "uom": "m"}
         assert feature["geometry"]["coordinates"][0][:3] == [
             [10, 20, 30],

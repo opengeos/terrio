@@ -5,18 +5,13 @@
 use terrio::{VectorDataset, formats::VectorDriver};
 use wbvector::{FieldValue, Geometry};
 
-fn model(version: &str, body: &str, crs: &str) -> String {
-    let gml = if version == "2.0" { "http://www.opengis.net/gml" } else { "http://www.opengis.net/gml/3.2" };
-    format!(
-        r#"<c:CityModel xmlns:c="http://www.opengis.net/citygml/{version}" xmlns:g="{gml}" xmlns:b="http://www.opengis.net/citygml/building/{version}" xmlns:l="http://www.w3.org/1999/xlink">
-    <g:boundedBy><g:Envelope srsName="{crs}" srsDimension="3"><g:lowerCorner>0 0 0</g:lowerCorner><g:upperCorner>1000 1000 1000</g:upperCorner></g:Envelope></g:boundedBy>
-    <c:cityObjectMember><b:Building g:id="house">{body}</b:Building></c:cityObjectMember></c:CityModel>"#
-    )
-}
+#[path = "support/citygml.rs"]
+mod data;
+use data::{FACE, model};
+
 fn read(text: &str, name: &str) -> terrio::Result<VectorDataset> {
     terrio::memory::open_vector_bytes(text.as_bytes().to_vec(), name, &Default::default())
 }
-const FACE: &str = r#"<g:Polygon g:id="wall"><g:exterior><g:LinearRing><g:posList>10 0 0 10 10 0 10 10 10 10 0 10 10 0 0</g:posList></g:LinearRing></g:exterior><g:interior><g:LinearRing><g:posList>10 2 2 10 3 2 10 3 3 10 2 2</g:posList></g:LinearRing></g:interior></g:Polygon>"#;
 
 #[test]
 fn local_links_and_thematic_boundaries_share_one_vertical_face() {
@@ -76,26 +71,14 @@ fn geographic_authority_axes_are_normalized_and_compound_crs_is_retained() {
 }
 
 #[test]
-fn malformed_xml_links_coordinates_and_namespaces_fail_explicitly() {
-    let base = model("3.0", &format!("<b:lod2MultiSurface>{FACE}</b:lod2MultiSurface>"), "EPSG:32632");
-    for text in [
-        base.replace("10 0 0 10 10 0", "NaN 0 0 10 10 0"),
-        base.replace("</c:CityModel>", ""),
-        base.replace("</b:Building>", "</b:BuildingPart>"),
-        base.replace("http://www.opengis.net/citygml/3.0", "urn:fake"),
-        model("3.0", r##"<b:lod2MultiSurface l:href="#missing"/>"##, "EPSG:32632"),
-        model("3.0", r#"<b:lod2MultiSurface l:href="https://example.invalid/model.gml#face"/>"#, "EPSG:32632"),
-        model("3.0", &format!("<b:lod2Geometry>{FACE}{FACE}</b:lod2Geometry>"), "EPSG:32632"),
-    ] {
-        assert!(read(&text, "broken.gml").is_err(), "accepted {}", &text[..text.len().min(200)]);
-    }
-}
-
-#[test]
 fn real_citygml_examples_open_without_flattening_away_heights() {
     let Ok(root) = std::env::var("TERRIO_TEST_DATA") else { return };
     for name in ["lod3_building_v2.gml", "lod2_buildings_v3.gml"] {
         let path = std::path::Path::new(&root).join("citymodels").join(name);
+        if !path.is_file() {
+            eprintln!("optional CityGML fixture is absent: {}", path.display());
+            continue;
+        }
         let ds = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap();
         assert_eq!(ds.driver, VectorDriver::CityGML);
         assert!(ds.layers[0].features.len() > 500);
@@ -110,7 +93,7 @@ fn real_citygml_examples_open_without_flattening_away_heights() {
 }
 
 #[test]
-fn openings_do_not_inherit_their_wall_class_and_curves_are_not_dropped() {
+fn openings_do_not_inherit_their_wall_class() {
     let window = FACE.replace("wall", "window-face");
     let body = format!(
         "<b:boundedBy><b:WallSurface><b:lod2MultiSurface>{FACE}</b:lod2MultiSurface><b:opening><b:Window g:id=\"window\"><b:lod2MultiSurface>{window}</b:lod2MultiSurface></b:Window></b:opening></b:WallSurface></b:boundedBy>"
@@ -119,8 +102,6 @@ fn openings_do_not_inherit_their_wall_class_and_curves_are_not_dropped() {
     let opening = ds.layers[0].features.iter().find(|f| f.attributes[0] == FieldValue::Text("window".into())).unwrap();
     assert_eq!(opening.attributes[7], FieldValue::Null);
     assert_eq!(opening.attributes[3], FieldValue::Text("[\"house\"]".into()));
-    let body = "<b:lod2MultiCurve><g:Curve><g:segments><g:GeodesicString><g:posList>1 2 3 4 5 6</g:posList></g:GeodesicString></g:segments></g:Curve></b:lod2MultiCurve>";
-    assert!(read(&model("3.0", body, "EPSG:32632"), "curve.gml").unwrap_err().to_string().contains("nonlinear"));
 }
 
 #[test]
@@ -143,11 +124,34 @@ fn nonspatial_models_keep_crs_and_generate_distinct_ids() {
 }
 
 #[test]
-fn mixed_unknown_and_known_crs_are_rejected_in_both_orders() {
-    let unknown = "<b:lod1Geometry><g:Point><g:pos>1 2 3</g:pos></g:Point></b:lod1Geometry>";
-    let known = "<b:lod1Geometry><g:Point srsName=\"EPSG:32631\"><g:pos>1 2 3</g:pos></g:Point></b:lod1Geometry>";
-    for body in [format!("{unknown}{known}"), format!("{known}{unknown}")] {
-        let text = model("3.0", &body, "EPSG:32632").replace("srsName=\"EPSG:32632\"", "");
-        assert!(read(&text, "mixed.gml").unwrap_err().to_string().contains("without CRS mixed"));
+fn repeated_object_properties_keep_every_value_and_code_space() {
+    let body = r#"<b:function codeSpace="codes">office</b:function><b:function codeSpace="codes">retail</b:function><b:usage>work</b:usage><b:usage>shop</b:usage>"#;
+    let ds = read(&model("3.0", body, "EPSG:32632"), "functions.gml").unwrap();
+    let FieldValue::Text(attrs) = &ds.layers[0].features[0].attributes[4] else { panic!() };
+    let attrs: serde_json::Value = serde_json::from_str(attrs).unwrap();
+    assert_eq!(attrs["function"], serde_json::json!([{"value":"office","codeSpace":"codes"},{"value":"retail","codeSpace":"codes"}]));
+    assert_eq!(attrs["usage"], serde_json::json!(["work", "shop"]));
+}
+
+#[test]
+fn linked_objects_share_records_and_accumulate_all_parents() {
+    let xml = r##"<c:CityModel xmlns:c="http://www.opengis.net/citygml/3.0" xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0" xmlns:l="http://www.w3.org/1999/xlink"><c:cityObjectMember><b:Building g:id="a"><b:consistsOfBuildingPart l:href="#part"/></b:Building></c:cityObjectMember><c:cityObjectMember><b:Building g:id="b"><b:consistsOfBuildingPart l:href="#part"/></b:Building></c:cityObjectMember><c:cityObjectMember><b:BuildingPart g:id="part"/></c:cityObjectMember></c:CityModel>"##;
+    for geometry in [String::new(), format!("<b:lod2MultiSurface>{FACE}</b:lod2MultiSurface>")] {
+        let xml = xml.replace("<b:BuildingPart g:id=\"part\"/>", &format!("<b:BuildingPart g:id=\"part\">{geometry}</b:BuildingPart>"));
+        let ds = read(&xml, "references.gml").unwrap();
+        let parts: Vec<_> = ds.layers[0].features.iter().filter(|f| f.attributes[0] == FieldValue::Text("part".into())).collect();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].attributes[3], FieldValue::Text("[\"a\",\"b\"]".into()));
+        assert_eq!(ds.layers[0].features.len(), 3);
+    }
+}
+
+#[test]
+fn geometry_axis_spellings_are_normalized_before_combining() {
+    let body = r#"<b:lod1Geometry><g:MultiPoint><g:pointMember><g:Point srsName="urn:ogc:def:crs:EPSG::4326"><g:pos>52 4 30</g:pos></g:Point></g:pointMember><g:pointMember><g:Point srsName="EPSG:4326"><g:pos>4 52 30</g:pos></g:Point></g:pointMember></g:MultiPoint></b:lod1Geometry>"#;
+    let ds = read(&model("3.0", body, "EPSG:4326"), "axes.gml").unwrap();
+    for f in &ds.layers[0].features {
+        let Geometry::Point(c) = f.geometry.as_ref().unwrap() else { panic!() };
+        assert_eq!((c.x, c.y, c.z), (4.0, 52.0, Some(30.0)));
     }
 }

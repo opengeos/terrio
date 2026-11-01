@@ -451,6 +451,9 @@ root CityModel; `.citygml` selects this driver explicitly. Ordinary GML retains
 its sibling application-schema lookup. XML and local geometry XLinks are parsed
 without fetching external resources; invalid XML, duplicate IDs, unresolved
 references, reference cycles and malformed coordinate lists fail explicitly.
+Reference expansion is limited to 1,000,000 node visits, including acyclic
+branching graphs. Repeated object references share their feature records and
+accumulate parent IDs. Repeated source properties are retained as JSON arrays.
 
 The `CityGML` layer uses the eight common flat fields described for CityJSON,
 without its skipped-ring/face counters. Polygon faces retain
@@ -472,7 +475,9 @@ This is a materialized vector view with the shared 256 MiB estimated flat-featur
 payload limit. It does not retain solid/shell topology, full city-model hierarchy,
 textures/materials, ADE semantics or general metadata for lossless round trips.
 External geometry references, linked coordinate/ring content, nonlinear curve
-segments and DTD/entity declarations are outside this reader. CityGML writing is
+segments and DTD/entity declarations are outside this native reader. Builds with
+the optional GDAL backend retain Terrio’s normal fallback policy; an explicit
+`GDAL:` input selects GDAL directly. CityGML writing is
 a separate step in [#462](https://github.com/opengeos/terrio/issues/462).
 
 Conformance follows the OGC [CityGML 2.0 encoding](https://schemas.opengis.net/citygml/2.0/)

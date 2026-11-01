@@ -217,19 +217,20 @@ fn primitive(node: &Node, dim: usize) -> Result<Geometry> {
     Ok(Geometry::Polygon { exterior: ring(exterior, dim)?, interiors })
 }
 
+fn insert_property(values: &mut Map<String, Value>, name: &str, value: Value) {
+    match values.get_mut(name) {
+        Some(Value::Array(items)) => items.push(value),
+        Some(previous) => *previous = Value::Array(vec![previous.clone(), value]),
+        None => {
+            values.insert(name.into(), value);
+        }
+    }
+}
+
 fn scalar_property(node: &Node) -> Value {
     let mut values = Map::new();
     for child in &node.children {
-        let value = scalar_property(child);
-        if let Some(previous) = values.get_mut(&child.name) {
-            if let Value::Array(items) = previous {
-                items.push(value);
-            } else {
-                *previous = Value::Array(vec![previous.clone(), value]);
-            }
-        } else {
-            values.insert(child.name.clone(), value);
-        }
+        insert_property(&mut values, &child.name, scalar_property(child));
     }
     if values.is_empty() {
         if node.attr("", "uom").is_some() || node.attr("", "codeSpace").is_some() {
@@ -271,10 +272,10 @@ fn attributes(node: &Node) -> Value {
                     "boolAttribute" if matches!(text, "false" | "0") => Value::Bool(false),
                     _ => Value::String(text.into()),
                 };
-                attrs.insert(name.into(), v);
+                insert_property(&mut attrs, name, v);
             }
         } else {
-            attrs.insert(child.name.clone(), scalar_property(child));
+            insert_property(&mut attrs, &child.name, scalar_property(child));
         }
     }
     Value::Object(attrs)
@@ -349,6 +350,9 @@ struct Reader<'a> {
     next_object: usize,
     unknown_crs: bool,
     active: HashSet<&'a str>,
+    active_links: HashSet<&'a str>,
+    objects: HashMap<&'a str, Vec<usize>>,
+    visits: usize,
     emitted: HashMap<(String, String, Option<String>, bool), usize>,
 }
 
@@ -472,6 +476,10 @@ impl<'a> Reader<'a> {
     }
 
     fn walk(&mut self, node: &'a Node, mut context: Context<'a>, base: &[FieldValue], depth: usize) -> Result<()> {
+        self.visits += 1;
+        if self.visits > 1_000_000 {
+            return Err(invalid("XLink expansion exceeds the 1,000,000 node-visit limit"));
+        }
         if depth > 256 {
             return Err(invalid("XLink nesting or cycle limit exceeded"));
         }
@@ -500,7 +508,13 @@ impl<'a> Reader<'a> {
         }
         let resolved = self.link(node)?;
         if !std::ptr::eq(node, resolved) {
-            return self.walk(resolved, context, base, depth + 1);
+            let id = resolved.id().ok_or_else(|| invalid("XLink target has no ID"))?;
+            if !self.active_links.insert(id) {
+                return Err(invalid("cyclic geometry XLink"));
+            }
+            let result = self.walk(resolved, context, base, depth + 1);
+            self.active_links.remove(id);
+            return result;
         }
         if is_object(node) {
             return self.object(node, Some(&base[0]), context);
@@ -569,6 +583,32 @@ impl<'a> Reader<'a> {
     }
 
     fn object(&mut self, node: &'a Node, parent: Option<&FieldValue>, mut context: Context<'a>) -> Result<()> {
+        if let Some(id) = node.id() {
+            if self.active.contains(id) {
+                return Err(invalid("cyclic city-object hierarchy"));
+            }
+            if let Some(rows) = self.objects.get(id).cloned() {
+                if let Some(FieldValue::Text(parent)) = parent {
+                    for row in rows {
+                        let previous = &self.layer.features[row].attributes[3];
+                        let (mut parents, old_len) = match previous {
+                            FieldValue::Text(text) => (serde_json::from_str::<Vec<String>>(text).map_err(invalid)?, text.len()),
+                            _ => (Vec::new(), 0),
+                        };
+                        if !parents.contains(parent) {
+                            parents.push(parent.clone());
+                            let text = serde_json::to_string(&parents).map_err(invalid)?;
+                            self.used = self.used.saturating_sub(old_len).saturating_add(text.len());
+                            if self.used > 256 * 1024 * 1024 {
+                                return Err(invalid("flat feature payload exceeds the 256 MiB expansion limit"));
+                            }
+                            self.layer.features[row].attributes[3] = FieldValue::Text(text);
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
         context.semantic = None;
         context.geometry_type = None;
         let identity = if let Some(id) = node.id() {
@@ -617,6 +657,8 @@ impl<'a> Reader<'a> {
         }
         if let Some(id) = node.id() {
             self.active.remove(id);
+            let rows = (start..self.layer.features.len()).filter(|&i| self.layer.features[i].attributes[0] == attrs[0]).collect();
+            self.objects.insert(id, rows);
         }
         Ok(())
     }
@@ -650,6 +692,9 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
         next_object: 0,
         unknown_crs: false,
         active: HashSet::new(),
+        active_links: HashSet::new(),
+        objects: HashMap::new(),
+        visits: 0,
         emitted: HashMap::new(),
     };
     let envelope = root.child("boundedBy").and_then(|n| n.child("Envelope"));
@@ -690,5 +735,58 @@ pub(crate) fn looks_like(bytes: &[u8]) -> bool {
             Ok((_, Event::Start(_) | Event::Empty(_) | Event::Eof)) | Err(_) => return false,
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../tests/support/citygml.rs"]
+mod test_data;
+
+#[cfg(test)]
+mod tests {
+    use super::test_data::{FACE, model};
+
+    #[test]
+    fn malformed_xml_links_coordinates_and_namespaces_fail_explicitly() {
+        let base = model("3.0", &format!("<b:lod2MultiSurface>{FACE}</b:lod2MultiSurface>"), "EPSG:32632");
+        for text in [
+            base.replace("10 0 0 10 10 0", "NaN 0 0 10 10 0"),
+            base.replace("</c:CityModel>", ""),
+            base.replace("</b:Building>", "</b:BuildingPart>"),
+            base.replace("http://www.opengis.net/citygml/3.0", "urn:fake"),
+            model("3.0", r##"<b:lod2MultiSurface l:href="#missing"/>"##, "EPSG:32632"),
+            model("3.0", r#"<b:lod2MultiSurface l:href="https://example.invalid/model.gml#face"/>"#, "EPSG:32632"),
+            model("3.0", &format!("<b:lod2Geometry>{FACE}{FACE}</b:lod2Geometry>"), "EPSG:32632"),
+        ] {
+            assert!(super::parse(text.as_bytes()).is_err(), "accepted {}", &text[..text.len().min(200)]);
+        }
+    }
+
+    #[test]
+    fn mixed_unknown_and_known_crs_are_rejected_in_both_orders() {
+        let unknown = "<b:lod1Geometry><g:Point><g:pos>1 2 3</g:pos></g:Point></b:lod1Geometry>";
+        let known = "<b:lod1Geometry><g:Point srsName=\"EPSG:32631\"><g:pos>1 2 3</g:pos></g:Point></b:lod1Geometry>";
+        for body in [format!("{unknown}{known}"), format!("{known}{unknown}")] {
+            let text = model("3.0", &body, "EPSG:32632").replace("srsName=\"EPSG:32632\"", "");
+            assert!(super::parse(text.as_bytes()).unwrap_err().to_string().contains("without CRS mixed"));
+        }
+    }
+
+    #[test]
+    fn geometry_reference_cycles_and_branching_expansion_fail_with_bounded_work() {
+        let cycle = r##"<b:lod2MultiSurface><g:CompositeSurface g:id="loop"><g:surfaceMember l:href="#loop"/><g:surfaceMember l:href="#loop"/></g:CompositeSurface></b:lod2MultiSurface>"##;
+        assert!(super::parse(model("3.0", cycle, "EPSG:32632").as_bytes()).unwrap_err().to_string().contains("cyclic geometry XLink"));
+        let mut graph = String::from("<b:lod2MultiSurface><g:MultiSurface>");
+        for i in 0..22 {
+            graph.push_str(&format!(r##"<g:CompositeSurface g:id="node{i}"><g:surfaceMember l:href="#node{}"/><g:surfaceMember l:href="#node{}"/></g:CompositeSurface>"##, i+1, i+1));
+        }
+        graph.push_str(r#"<g:CompositeSurface g:id="node22"/></g:MultiSurface></b:lod2MultiSurface>"#);
+        assert!(super::parse(model("3.0", &graph, "EPSG:32632").as_bytes()).unwrap_err().to_string().contains("node-visit limit"));
+    }
+
+    #[test]
+    fn nonlinear_curve_segments_are_rejected_by_the_native_reader() {
+        let body = "<b:lod2MultiCurve><g:Curve><g:segments><g:GeodesicString><g:posList>1 2 3 4 5 6</g:posList></g:GeodesicString></g:segments></g:Curve></b:lod2MultiCurve>";
+        assert!(super::parse(model("3.0", body, "EPSG:32632").as_bytes()).unwrap_err().to_string().contains("nonlinear"));
     }
 }
