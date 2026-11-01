@@ -363,7 +363,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | ESRI Shapefile | Shapefile | ✓ | ✓ | shp |
 | GeoJSON | GeoJSON | ✓ | ✓ | geojson, json |
 | CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | ✓ | city.json, cityjson, json (by content) |
-| CityGML | CityGML 2.0 and 3.0 (flat XYZ view) | ✓ | — | citygml, gml/xml (by content) |
+| CityGML | CityGML 2.0 and 3.0 (flat XYZ view) | ✓ | ✓ | citygml, gml/xml (by content) |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
 | KML | KML | ✓ | ✓ | kml |
@@ -544,8 +544,52 @@ External geometry references, linked coordinate/ring content, nonlinear curve
 segments, RasterRelief coverage data and DTD/entity declarations are outside this
 native reader. Builds with the optional GDAL backend retain Terrio’s normal
 fallback policy; an explicit
-`GDAL:` input selects GDAL directly. CityGML writing is
-a separate step in [#462](https://github.com/opengeos/terrio/issues/462).
+`GDAL:` input selects GDAL directly.
+
+The native writer defaults to CityGML 3.0. Select 2.0 with
+`terrio convert source.city.json output.citygml --citygml-version 2.0`,
+Python `citygml_version="2.0"`, or JavaScript `citygmlVersion: "2.0"`.
+For a `.gml` filename, select `--format CityGML` explicitly; the default `.gml`
+writer remains ordinary GML. Version options on other formats are rejected.
+
+The writer groups the common flat fields by `city_id` and emits supported native
+object types, owning relationships and geometry properties in schema order.
+Ordinary vector features become GenericCityObject in 2.0 and GenericOccupiedSpace
+in 3.0. Faces use MultiSurface, curves use MultiCurve, and compatible point
+properties retain points. TINRelief requires triangles without holes. Coordinates
+are written as full-precision floating-point XYZ without integer quantization;
+missing Z becomes zero, while M and nonfinite values are rejected.
+
+Typed JSON attributes and original object IDs/types are retained in standard
+GenericAttributeSet annotations with code space `urn:terrio:citygml:flat-object`.
+Each ordinary primitive has a GML name annotation with code space
+`urn:terrio:citygml:flat-primitive` retaining its fractional LoD and per-face source
+properties. TIN triangles use an ordered table on their containing
+TriangulatedSurface, with code space `urn:terrio:citygml:flat-patches`, because
+GML surface patches cannot carry names. The table must match the native triangle
+count. The native LoD is the integer part; a relief object requires one
+unambiguous integer LoD. A geometry-free ReliefFeature retains an explicit
+source LoD or derives it from agreeing components. Terrio reads these annotations
+back into the flat fields; other software can read the native objects and geometry
+and access the JSON as generic text. Geometry is always in the native GML
+coordinates, never in an annotation. Standard generic attributes from other
+producers retain scalar types, whitespace and set code spaces too.
+
+Native thematic boundaries are used where the target class and LoD allow them.
+CityGML 3.0 LoD 1 unclassified faces use GenericThematicSurface boundaries.
+This flat conversion does not reconstruct solids/shells, appearance, templates,
+indexed semantic tables or ADEs. Target classes, owning relationships and
+class/LoD/geometry combinations unavailable in the selected version fail
+explicitly. Multiple owning parents are rejected. In particular, CityGML 3.0 has
+one explicit point property per object at LoD 0; other point arrangements need an
+implicit representation, which this flat writer does not reconstruct.
+
+A declared CRS needs an EPSG identifier or registered EPSG compound components;
+unknown CRS stays absent. Nonspatial models retain their CRS in a GML name
+annotation with code space `urn:terrio:citygml:crs`, without inventing an envelope.
+Create mode replaces the complete model. Layer append/overwrite modes refuse an
+existing CityGML model before modifying it, because layer names are not persistent
+city-model identifiers.
 
 Conformance follows the OGC [CityGML 2.0 encoding](https://schemas.opengis.net/citygml/2.0/)
 and [CityGML 3.0 encoding](https://docs.ogc.org/is/21-006r2/21-006r2.html) and published

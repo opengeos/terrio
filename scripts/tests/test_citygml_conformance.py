@@ -90,7 +90,7 @@ def test_direct_scalar_measures_are_compared_with_units():
         compare(expected, owners, actual)
 
 
-@pytest.mark.parametrize("name", ["citygml", "cityjson", "cityjson-write"])
+@pytest.mark.parametrize("name", ["citygml", "cityjson", "cityjson-write", "citygml-write"])
 def test_specification_suites_run_without_gdal(monkeypatch, tmp_path, name):
     import conformance
 

@@ -727,6 +727,43 @@ def suite_cityjson_write(ctx):
     return suite
 
 
+def suite_citygml_write(ctx):
+    """Published native XML schemas and an independent primitive/metadata traversal."""
+    suite = Suite("citygml-write", "CityGML writer", "OGC CityGML 2.0/3.0 schemas and published CityJSON source models",
+                  "Both native versions through CLI, Python paths/bytes and optional Node/WASM. "
+                  "Native XML coordinates, holes, object types, owning hierarchy, integer LoD and CRS "
+                  "are checked independently of Terrio's reader; standard generic annotations retain "
+                  "typed flat attributes, original IDs/types, fractional LoD and per-face properties. "
+                  "Includes published CityGML models, Den Haag/Delft/Rotterdam, cached 3DBAG pages "
+                  "and all 33 schema-derived CityJSON core classes for CityGML 3.0. Exact XYZ; no quantization. "
+                  "This does not reconstruct source solids, appearance or semantic tables.")
+    missing = missing_modules("terrio", "lxml", "pyproj")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    root = Path(ctx.data) / "citymodels"
+    required = [root/name for name in ("lod3_building_v2.gml", "lod2_buildings_v3.gml", "DH_01_subs.city.json", "delft.json", "rotterdam_subset.json")]
+    required += [root/"gml-schemas", root/"schemas/2.0.2/cityobjects.schema.json"]
+    if any(not path.exists() for path in required):
+        suite.skipped = "prepare CityGML and CityJSON fixtures/schemas with their comparison scripts' --fetch options"
+        return suite
+    command = [sys.executable, str(SCRIPTS/"compare_citygml_writer.py"), ctx.data, "--terrio", ctx.terrio, "--json"]
+    node = ROOT/"js/pkg-node/terrio.js"
+    if node_citygml_writer_available(node):
+        command += ["--node-package",str(node)]
+    code,out,err = run(command)
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("city models",result["name"],result["status"],result["detail"]))
+    if code or not results:
+        suite.error = tail(err or out) or "no comparison results"
+    return suite
+
+
 def suite_cad(ctx):
     """CAD geometry interchange against public GDAL drawings and real OSM roads."""
     suite = Suite(
@@ -2269,6 +2306,21 @@ try {const out=JSON.parse(new TextDecoder().decode(d.toBytes('probe.city.json',{
     return result.returncode == 0
 
 
+def node_citygml_writer_available(module):
+    """Check the instance method and actual 2.0 namespace, not just the export list."""
+    if not node_exports_available(module,["open"]):
+        return False
+    code = """const t=require(process.argv[1]);
+const doc={type:'CityJSON',version:'2.0',transform:{scale:[1,1,1],translate:[0,0,0]},CityObjects:{probe:{type:'Building'}},vertices:[]};
+const d=t.open(new TextEncoder().encode(JSON.stringify(doc)),'probe.city.json');
+try{const xml=new TextDecoder().decode(d.toBytes('probe.citygml',{citygmlVersion:'2.0'}));process.exitCode=xml.includes('xmlns:core="http://www.opengis.net/citygml/2.0"')?0:1;}finally{d.free();}"""
+    try:
+        result = subprocess.run(["node","-e",code,str(module.resolve())],capture_output=True,text=True,timeout=30)
+    except (OSError,subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def suite_rpftoc(ctx):
     """All RPF TOC surfaces cross-read by GDAL 3.13.3 on prepared CADRG frames."""
     suite = Suite("rpftoc", "CADRG RPF table of contents", "GDAL 3.13.3 RPFTOC/NITF",
@@ -2803,6 +2855,7 @@ SUITES = OrderedDict(
         ("cad", suite_cad),
         ("cityjson", suite_cityjson),
         ("cityjson-write", suite_cityjson_write),
+        ("citygml-write", suite_citygml_write),
         ("citygml", suite_citygml),
         ("shapefile-archives", suite_shapefile_archives),
         ("vsi", suite_vsi),
@@ -3074,7 +3127,7 @@ def main():
 
     def go(name):
         start = datetime.datetime.now()
-        if gdal_missing and name not in ("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write"):
+        if gdal_missing and name not in ("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write"):
             fn = SUITES[name]
             s = Suite(name, name, "", fn.__doc__ or "")
             s.skipped = "needs the Python modules " + ", ".join(gdal_missing)

@@ -235,6 +235,29 @@ test("CityJSON writer selects 1.1 and 2.0 and preserves vertical face classifica
   source.free();
 });
 
+test("CityGML writer selects both native versions and retains flat XYZ metadata", () => {
+  const doc={type:"CityJSON",version:"2.0",transform:{scale:[1,1,1],translate:[0,0,0]},
+    metadata:{referenceSystem:"https://www.opengis.net/def/crs/EPSG/0/7415"},
+    vertices:[[10,0,0],[10,1,0],[10,1,1]],CityObjects:{house:{type:"Building",attributes:{label:"A & B",nested:[1,true]},
+      geometry:[{type:"MultiSurface",lod:"2.2",boundaries:[[[0,1,2]]],semantics:{surfaces:[{type:"WallSurface",finish:"brick"}],values:[0]}}]}}};
+  const source=terrio.open(new TextEncoder().encode(JSON.stringify(doc)),"source.city.json");
+  for(const version of ["2.0","3.0"]) {
+    const bytes=source.toBytes("output.citygml",{citygmlVersion:version});
+    assert.match(new TextDecoder().decode(bytes),new RegExp(`citygml/${version}`));
+    const restored=terrio.open(bytes,"output.citygml");
+    const face=restored.toGeoJSON().features.find(f=>f.geometry);
+    assert.deepEqual(face.geometry.coordinates[0].slice(0,3),doc.vertices);
+    assert.equal(face.properties.city_id,"house");
+    assert.equal(face.properties.lod,"2.2");
+    assert.deepEqual(JSON.parse(face.properties.attributes),doc.CityObjects.house.attributes);
+    assert.deepEqual(JSON.parse(face.properties.surface_semantics),{type:"WallSurface",finish:"brick"});
+    restored.free();
+  }
+  assert.throws(()=>source.toBytes("wrong.geojson",{citygmlVersion:"2.0"}),/applies to CityGML/);
+  assert.throws(()=>source.toBytes("wrong.citygml",{citygmlVersion:"1.0"}),/version must be/);
+  source.free();
+});
+
 test("vector from GeoJSON, to other formats and back", () => {
   const ds = terrio.fromGeoJSON(SQUARES, "squares");
   assert.equal(ds.kind, "vector");

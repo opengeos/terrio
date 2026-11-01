@@ -411,6 +411,151 @@ fn has_geometry(node: &Node) -> bool {
         || node.children.iter().any(has_geometry)
 }
 
+fn generic_attribute(node: &Node) -> Option<(String, Value)> {
+    if !matches!(node.ns.as_str(), "http://www.opengis.net/citygml/generics/2.0" | "http://www.opengis.net/citygml/generics/3.0") {
+        return None;
+    }
+    let name = node.attr("", "name").or_else(|| node.child("name").map(|n| n.text.trim()))?;
+    let kind = node.name.to_ascii_lowercase();
+    let value = if kind == "genericattributeset" {
+        let mut values = Map::new();
+        for child in &node.children {
+            if child.name == "genericAttribute" {
+                for item in &child.children {
+                    if let Some((name, value)) = generic_attribute(item) {
+                        insert_property(&mut values, &name, value);
+                    }
+                }
+            } else if let Some((name, value)) = generic_attribute(child) {
+                insert_property(&mut values, &name, value);
+            }
+        }
+        Value::Object(values)
+    } else {
+        let value = node.child("value")?;
+        let text = value.text.trim();
+        match kind.as_str() {
+            "intattribute" => text.parse::<i64>().map_or_else(|_| Value::String(text.into()), |v| json!(v)),
+            "doubleattribute" => {
+                text.parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or_else(|| Value::String(text.into()), Value::Number)
+            }
+            "boolattribute" if matches!(text, "true" | "1") => Value::Bool(true),
+            "boolattribute" if matches!(text, "false" | "0") => Value::Bool(false),
+            "measureattribute" | "codeattribute" => scalar_property(value),
+            _ => Value::String(value.text.clone()),
+        }
+    };
+    let value = if kind == "genericattributeset" {
+        if let Some(code) = node.attr("", "codeSpace").or_else(|| node.child("codeSpace").map(|n| n.text.trim())) {
+            json!({"value":value,"codeSpace":code})
+        } else {
+            value
+        }
+    } else {
+        value
+    };
+    Some((name.to_owned(), value))
+}
+
+fn source_metadata(node: &Node) -> Result<Option<Value>> {
+    let mut found = None;
+    for child in &node.children {
+        for set in std::iter::once(child).chain(child.children.iter().filter(|_| child.name == "genericAttribute")) {
+            if !set.name.eq_ignore_ascii_case("genericattributeset") {
+                continue;
+            }
+            let code = set.attr("", "codeSpace").or_else(|| set.child("codeSpace").map(|n| n.text.trim()));
+            if code != Some("urn:terrio:citygml:flat-object") {
+                continue;
+            }
+            let (name, value) = generic_attribute(set).ok_or_else(|| invalid("invalid flat-object annotation"))?;
+            if name != "terrio:flat-object" || found.is_some() {
+                return Err(invalid("ambiguous flat-object annotation"));
+            }
+            let text = value
+                .get("value")
+                .unwrap_or(&value)
+                .get("json")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("flat-object annotation needs JSON text"))?;
+            let value: Value = serde_json::from_str(text).map_err(invalid)?;
+            if value["version"] != 1
+                || !value["attributes"].is_object()
+                || !value["city_id"].as_str().is_some_and(|s| !s.is_empty())
+                || !value["city_type"].is_string()
+            {
+                return Err(invalid("invalid flat-object annotation fields"));
+            }
+            found = Some(value);
+        }
+    }
+    Ok(found)
+}
+
+fn validate_primitive_metadata(value: &Value) -> Result<()> {
+    if value["version"] != 1
+        || !value["lod"].as_str().is_some_and(|s| !s.is_empty())
+        || !(value["surface_semantics"].is_null() || value["surface_semantics"].is_object())
+    {
+        return Err(invalid("invalid flat-primitive annotation fields"));
+    }
+    Ok(())
+}
+
+// Surface patches are not GML objects and cannot carry gml:name. Their flat
+// annotations live on the containing TriangulatedSurface, in patch order.
+fn index_patch_metadata(node: &Node, out: &mut HashMap<*const Node, Rc<Value>>) -> Result<()> {
+    if node.gml() && node.name == "TriangulatedSurface" {
+        let names: Vec<_> = node
+            .children
+            .iter()
+            .filter(|n| n.gml() && n.name == "name" && n.attr("", "codeSpace") == Some("urn:terrio:citygml:flat-patches"))
+            .collect();
+        if names.len() > 1 {
+            return Err(invalid("ambiguous flat-patches annotation"));
+        }
+        if let Some(name) = names.first() {
+            let mut value: Value = serde_json::from_str(&name.text).map_err(invalid)?;
+            if value["version"] != 1 {
+                return Err(invalid("unknown flat-patches annotation version"));
+            }
+            let entries =
+                value.get_mut("patches").and_then(Value::as_array_mut).ok_or_else(|| invalid("flat-patches annotation needs an array"))?;
+            let patches = node
+                .children
+                .iter()
+                .find(|n| n.gml() && n.name == "trianglePatches")
+                .ok_or_else(|| invalid("annotated TIN has no trianglePatches"))?;
+            if entries.len() != patches.children.len() || patches.children.iter().any(|n| !n.gml() || n.name != "Triangle") {
+                return Err(invalid("flat-patches annotation count does not match native triangles"));
+            }
+            for (patch, entry) in patches.children.iter().zip(entries.drain(..)) {
+                validate_primitive_metadata(&entry)?;
+                out.insert(patch as *const Node, Rc::new(entry));
+            }
+        }
+    }
+    for child in &node.children {
+        index_patch_metadata(child, out)?;
+    }
+    Ok(())
+}
+
+fn primitive_metadata(node: &Node) -> Result<Option<Value>> {
+    let mut found = None;
+    for name in
+        node.children.iter().filter(|n| n.gml() && n.name == "name" && n.attr("", "codeSpace") == Some("urn:terrio:citygml:flat-primitive"))
+    {
+        if found.is_some() {
+            return Err(invalid("ambiguous flat-primitive annotation"));
+        }
+        let value: Value = serde_json::from_str(&name.text).map_err(invalid)?;
+        validate_primitive_metadata(&value)?;
+        found = Some(value);
+    }
+    Ok(found)
+}
+
 fn attributes(node: &Node) -> Value {
     let mut attrs = Map::new();
     for child in &node.children {
@@ -421,7 +566,15 @@ fn attributes(node: &Node) -> Value {
         {
             continue;
         }
-        if child.name.ends_with("Attribute") {
+        if let Some((name, value)) = generic_attribute(child) {
+            insert_property(&mut attrs, &name, value);
+        } else if child.name == "genericAttribute" && child.city() {
+            for item in &child.children {
+                if let Some((name, value)) = generic_attribute(item) {
+                    insert_property(&mut attrs, &name, value);
+                }
+            }
+        } else if child.name.ends_with("Attribute") {
             if let (Some(name), Some(value)) = (child.attr("", "name"), child.child("value")) {
                 let text = value.text.trim();
                 let v = match child.name.as_str() {
@@ -477,6 +630,11 @@ fn is_object(node: &Node) -> bool {
                 | "CityFurniture"
                 | "CityObjectGroup"
                 | "GenericCityObject"
+                | "GenericLogicalSpace"
+                | "Section"
+                | "Intersection"
+                | "IntBridgeInstallation"
+                | "IntTunnelInstallation"
                 | "GenericOccupiedSpace"
                 | "GenericUnoccupiedSpace"
                 | "LandUse"
@@ -488,6 +646,7 @@ fn is_object(node: &Node) -> bool {
                 | "MassPointRelief"
                 | "BreaklineRelief"
                 | "Road"
+                | "Waterway"
                 | "Railway"
                 | "Track"
                 | "Square"
@@ -551,12 +710,14 @@ struct Reader<'a> {
     references: HashMap<&'a str, Reference>,
     used: usize,
     next_object: usize,
+    logical_ids: HashSet<String>,
     unknown_crs: bool,
     active: HashSet<&'a str>,
     active_links: HashSet<&'a str>,
     objects: HashMap<&'a str, ObjectRows<'a>>,
     validated: HashSet<(&'a str, usize, Option<&'a str>)>,
     face_semantics: HashMap<usize, Rc<str>>,
+    patch_annotations: HashMap<*const Node, Rc<Value>>,
     surface_semantics: HashMap<*const Node, Rc<str>>,
     semantic_values: HashMap<Value, Rc<str>>,
     geometry_contexts: HashMap<*const Node, (usize, Option<&'a str>)>,
@@ -848,10 +1009,23 @@ impl<'a> Reader<'a> {
         if let Some(key) = key {
             self.emitted.insert(key, self.layer.features.len());
         }
+        let source = if let Some(value) = self.patch_annotations.get(&(node as *const Node)) {
+            Some(value.clone())
+        } else {
+            primitive_metadata(node)?.map(Rc::new)
+        };
         let mut attrs = base.to_vec();
         attrs[LOD] = context.lod.map_or(FieldValue::Null, |s| FieldValue::Text(s.to_owned()));
         attrs[GEOMETRY_TYPE] = FieldValue::Text(context.geometry_type.unwrap_or(&node.name).into());
         attrs[SURFACE_SEMANTICS] = context.semantic.as_ref().map_or(FieldValue::Null, |s| FieldValue::Text(s.to_string()));
+        if let Some(source) = source {
+            attrs[LOD] = FieldValue::Text(source["lod"].as_str().unwrap().to_owned());
+            attrs[SURFACE_SEMANTICS] = if source["surface_semantics"].is_null() {
+                FieldValue::Null
+            } else {
+                FieldValue::Text(source["surface_semantics"].to_string())
+            };
+        }
         let index = self.layer.features.len();
         super::city::push(&mut self.layer, Some(geometry), &attrs, &mut self.used)?;
         if let Some(value) = &context.semantic {
@@ -977,6 +1151,42 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    // Keep annotation parsing and JSON construction off the recursive walk's
+    // stack frame, so the global nesting limit remains safe in debug builds.
+    fn object_attributes(&mut self, node: &'a Node, parent: Option<&FieldValue>) -> Result<Vec<FieldValue>> {
+        let source = source_metadata(node)?;
+        let identity = if let Some(source) = &source {
+            source["city_id"].as_str().unwrap().to_owned()
+        } else if let Some(id) = node.id() {
+            id.to_owned()
+        } else {
+            loop {
+                let id = format!("_terrio_object_{}", self.next_object);
+                self.next_object += 1;
+                if !self.ids.contains_key(id.as_str()) {
+                    break id;
+                }
+            }
+        };
+        if !self.logical_ids.insert(identity.clone()) {
+            return Err(invalid("duplicate logical city-object identity"));
+        }
+        let parents = match parent {
+            Some(FieldValue::Text(p)) => FieldValue::Text(json!([p]).to_string()),
+            _ => FieldValue::Null,
+        };
+        Ok(vec![
+            FieldValue::Text(identity),
+            FieldValue::Text(source.as_ref().map_or_else(|| node.name.clone(), |s| s["city_type"].as_str().unwrap().to_owned())),
+            FieldValue::Null,
+            parents,
+            FieldValue::Text(source.as_ref().map_or_else(|| attributes(node), |s| s["attributes"].clone()).to_string()),
+            FieldValue::Null,
+            FieldValue::Null,
+            FieldValue::Null,
+        ])
+    }
+
     fn object(&mut self, node: &'a Node, parent: Option<&FieldValue>, mut context: Context<'a>, depth: usize) -> Result<()> {
         if depth > MAX_NESTING {
             return Err(invalid("city-object or geometry nesting limit exceeded"));
@@ -1028,36 +1238,17 @@ impl<'a> Reader<'a> {
         }
         context.semantic = None;
         context.geometry_type = None;
-        let identity = if let Some(id) = node.id() {
-            id.to_owned()
-        } else {
-            loop {
-                let id = format!("_terrio_object_{}", self.next_object);
-                self.next_object += 1;
-                if !self.ids.contains_key(id.as_str()) {
-                    break id;
-                }
-            }
-        };
+        if node.ns.contains("/relief/")
+            && let Some(lod) = node.child("lod")
+        {
+            context.lod = Some(lod.text.trim());
+        }
         if let Some(id) = node.id()
             && !self.active.insert(id)
         {
             return Err(invalid("cyclic city-object hierarchy"));
         }
-        let parents = match parent {
-            Some(FieldValue::Text(p)) => FieldValue::Text(json!([p]).to_string()),
-            _ => FieldValue::Null,
-        };
-        let attrs = vec![
-            FieldValue::Text(identity),
-            FieldValue::Text(node.name.clone()),
-            FieldValue::Null,
-            parents,
-            FieldValue::Text(attributes(node).to_string()),
-            FieldValue::Null,
-            FieldValue::Null,
-            FieldValue::Null,
-        ];
+        let attrs = self.object_attributes(node, parent)?;
         let start = self.layer.features.len();
         for child in &node.children {
             self.walk(child, context.clone(), &attrs, depth + 1)?;
@@ -1142,6 +1333,8 @@ fn parse_with_limits(bytes: &[u8], input_limit: usize, max_reference_visits: usi
     }
     let mut ids = HashMap::new();
     index(&root, &mut ids)?;
+    let mut patch_annotations = HashMap::new();
+    index_patch_metadata(&root, &mut patch_annotations)?;
     let mut reader = Reader {
         ids,
         layer: super::city::layer("CityGML"),
@@ -1149,12 +1342,14 @@ fn parse_with_limits(bytes: &[u8], input_limit: usize, max_reference_visits: usi
         references: HashMap::new(),
         used: 0,
         next_object: 0,
+        logical_ids: HashSet::new(),
         unknown_crs: false,
         active: HashSet::new(),
         active_links: HashSet::new(),
         objects: HashMap::new(),
         validated: HashSet::new(),
         face_semantics: HashMap::new(),
+        patch_annotations,
         surface_semantics: HashMap::new(),
         semantic_values: HashMap::new(),
         geometry_contexts: HashMap::new(),
@@ -1167,7 +1362,12 @@ fn parse_with_limits(bytes: &[u8], input_limit: usize, max_reference_visits: usi
     let envelope = root.child("boundedBy").and_then(|n| n.child("Envelope"));
     let root_dim = dimension(&root, 0)?;
     let dim = envelope.map(|n| dimension(n, root_dim)).transpose()?.unwrap_or(root_dim);
-    let crs = root.attr("", "srsName").or_else(|| envelope.and_then(|n| n.attr("", "srsName")));
+    let crs = root.attr("", "srsName").or_else(|| envelope.and_then(|n| n.attr("", "srsName"))).or_else(|| {
+        root.children
+            .iter()
+            .find(|n| n.gml() && n.name == "name" && n.attr("", "codeSpace") == Some("urn:terrio:citygml:crs"))
+            .map(|n| n.text.trim())
+    });
     let context = Context { dim, crs, ..Default::default() };
     for member in root.children.iter().filter(|n| n.city() && n.name == "cityObjectMember") {
         let resolved = reader.link(member)?;
@@ -1261,6 +1461,23 @@ mod test_data;
 #[cfg(test)]
 mod tests {
     use super::test_data::{FACE, model};
+
+    #[test]
+    fn standard_generic_attributes_preserve_types_whitespace_and_set_code_space() {
+        for version in ["2.0", "3.0"] {
+            let body = if version == "2.0" {
+                r#"<gen:genericAttributeSet xmlns:gen="http://www.opengis.net/citygml/generics/2.0" name="info" codeSpace="urn:example:info"><gen:stringAttribute name="label"><gen:value> A &amp; B </gen:value></gen:stringAttribute><gen:intAttribute name="count"><gen:value>42</gen:value></gen:intAttribute></gen:genericAttributeSet>"#
+            } else {
+                r#"<c:genericAttribute><gen:GenericAttributeSet xmlns:gen="http://www.opengis.net/citygml/generics/3.0"><gen:name>info</gen:name><gen:codeSpace>urn:example:info</gen:codeSpace><gen:genericAttribute><gen:StringAttribute><gen:name>label</gen:name><gen:value> A &amp; B </gen:value></gen:StringAttribute></gen:genericAttribute><gen:genericAttribute><gen:IntAttribute><gen:name>count</gen:name><gen:value>42</gen:value></gen:IntAttribute></gen:genericAttribute></gen:GenericAttributeSet></c:genericAttribute>"#
+            };
+            let layers = super::parse(model(version, body, "EPSG:32632").as_bytes()).unwrap();
+            let wbvector::FieldValue::Text(text) = &layers[0].features[0].attributes[4] else { panic!() };
+            let attrs: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(attrs["info"]["value"]["label"], " A & B ");
+            assert_eq!(attrs["info"]["value"]["count"], 42);
+            assert_eq!(attrs["info"]["codeSpace"], "urn:example:info");
+        }
+    }
 
     #[test]
     fn surface_patches_do_not_duplicate_coordinates_into_object_attributes() {

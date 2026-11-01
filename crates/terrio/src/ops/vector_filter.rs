@@ -651,8 +651,13 @@ pub fn write_vector_with_mode(layers: &[Layer], path: &str, options: &VectorWrit
     if mode == WriteMode::Create || !std::path::Path::new(path).exists() {
         return crate::write_vector(layers, path, options);
     }
-    if options.driver.or_else(|| crate::formats::VectorDriver::for_extension(path)) == Some(crate::formats::VectorDriver::CityJSON) {
-        return Err(crate::Error::Unsupported("CityJSON has no persistent layer names; append/overwrite layer modes cannot update an existing model. Use create mode to replace the complete model".into()));
+    if let Some(driver @ (crate::formats::VectorDriver::CityJSON | crate::formats::VectorDriver::CityGML)) =
+        options.driver.or_else(|| crate::formats::VectorDriver::for_extension(path))
+    {
+        return Err(crate::Error::Unsupported(format!(
+            "{} has no persistent layer names; append/overwrite layer modes cannot update an existing model. Use create mode to replace the complete model",
+            driver.name()
+        )));
     }
     // GeoPackages are updated in place, keeping their other tables.
     let driver = options.driver.or_else(|| crate::formats::VectorDriver::for_extension(path));

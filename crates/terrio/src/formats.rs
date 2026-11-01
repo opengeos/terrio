@@ -399,7 +399,7 @@ impl VectorDriver {
             Self::GeoJSONSeq => ("GeoJSONSeq", "GeoJSON text sequences", &["geojsonl", "geojsons", "geojsonseq"], true, true),
             Self::TopoJSON => ("TopoJSON", "TopoJSON", &["topojson"], true, true),
             Self::CityJSON => ("CityJSON", "CityJSON 3D city models", &["city.json", "cityjson"], true, true),
-            Self::CityGML => ("CityGML", "CityGML 3D city models", &["citygml"], true, false),
+            Self::CityGML => ("CityGML", "CityGML 3D city models", &["citygml"], true, true),
             Self::GPKG => ("GPKG", "GeoPackage", &["gpkg"], true, true),
             Self::Parquet => ("Parquet", "GeoParquet", &["parquet", "geoparquet"], true, true),
             Self::FlatGeobuf => ("FlatGeobuf", "FlatGeobuf", &["fgb"], true, true),

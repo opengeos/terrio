@@ -230,6 +230,7 @@ struct WriteOptions {
     preserve_declared_geometry_type: bool,
     /// CityJSON output version: "1.1" or "2.0" (default).
     cityjson_version: Option<String>,
+    citygml_version: Option<String>,
     allow_ballpark: Option<bool>,
     only_best: bool,
     /// Take the heights of 2D CRSs as ellipsoidal heights, as GDAL does after `PromoteTo3D`.
@@ -721,6 +722,7 @@ impl Dataset {
     /// Vector GeoPackage option `preserveDeclaredGeometryType` retains the layer's
     /// declared geometry type, including Unknown, instead of inferring it.
     /// CityJSON output: `cityjsonVersion` is "1.1" or "2.0" (the default).
+    /// CityGML output: `citygmlVersion` is "2.0" or "3.0" (the default).
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
         let resources = kmz_resources(&options)?;
@@ -742,9 +744,10 @@ impl Dataset {
                     || !resources.is_empty()
                     || o.preserve_declared_geometry_type
                     || o.cityjson_version.is_some()
+                    || o.citygml_version.is_some()
                 {
                     return Err(JsError::new(
-                        "layers, where, select, limit, kmzResources, cityjsonVersion and preserveDeclaredGeometryType apply to vector datasets",
+                        "layers, where, select, limit, kmzResources, cityjsonVersion, citygmlVersion and preserveDeclaredGeometryType apply to vector datasets",
                     ));
                 }
                 let driver = o
@@ -829,6 +832,7 @@ impl Dataset {
                 options.tiles.min_zoom = o.minzoom;
                 options.tiles.max_zoom = o.maxzoom;
                 options.cityjson_version = o.cityjson_version.as_deref().map(str::parse).transpose().map_err(js_err)?;
+                options.citygml_version = o.citygml_version.as_deref().map(str::parse).transpose().map_err(js_err)?;
                 options.kmz.resources = resources;
                 terrio::memory::write_vector_bytes(&out, filename, &options).map_err(js_err)
             }

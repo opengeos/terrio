@@ -3,11 +3,14 @@
 
 //! CityJSON encoding of the existing flat vector view, according to the published schemas.
 //! GDAL 3.13.3 has no CityJSON writer and is not a conformance reference.
+use super::city_write::{COMMON_FIELDS, Primitive, field, flatten, has_city_fields, json_field, property, xyz};
 use crate::{Error, Result, crs::SpatialRef};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
-use wbvector::{Coord, Feature, FieldType, FieldValue, Geometry, Layer, Ring};
+use wbvector::{Coord, FieldValue, Layer};
+#[cfg(test)]
+use wbvector::{Feature, FieldType, Geometry, Ring};
 
 /// The CityJSON version to write. The current default is 2.0.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -41,68 +44,6 @@ fn invalid(message: impl std::fmt::Display) -> Error {
     Error::InvalidArgument(format!("CityJSON writer: {message}"))
 }
 
-#[derive(Clone, Copy)]
-enum Primitive<'a> {
-    Point(&'a Coord),
-    Line(&'a [Coord]),
-    Surface(&'a Ring, &'a [Ring]),
-}
-impl Primitive<'_> {
-    fn positions(&self, mut f: impl FnMut(&Coord) -> Result<()>) -> Result<()> {
-        match self {
-            Self::Point(p) => f(p)?,
-            Self::Line(line) => {
-                for p in *line {
-                    f(p)?;
-                }
-            }
-            Self::Surface(exterior, holes) => {
-                for ring in std::iter::once(*exterior).chain(holes.iter()) {
-                    for p in &ring.0 {
-                        f(p)?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-    fn kind(self) -> &'static str {
-        match self {
-            Self::Point(_) => "MultiPoint",
-            Self::Line(_) => "MultiLineString",
-            Self::Surface(_, _) => "MultiSurface",
-        }
-    }
-}
-fn flatten<'a>(geometry: &'a Geometry, depth: usize, out: &mut Vec<Primitive<'a>>) -> Result<()> {
-    if depth > 256 {
-        return Err(invalid("geometry nesting exceeds 256"));
-    }
-    match geometry {
-        Geometry::Point(p) => out.push(Primitive::Point(p)),
-        Geometry::MultiPoint(ps) => out.extend(ps.iter().map(Primitive::Point)),
-        Geometry::LineString(ps) => out.push(Primitive::Line(ps)),
-        Geometry::MultiLineString(lines) => out.extend(lines.iter().map(|p| Primitive::Line(p))),
-        Geometry::Polygon { exterior, interiors } => out.push(Primitive::Surface(exterior, interiors)),
-        Geometry::MultiPolygon(polygons) => out.extend(polygons.iter().map(|(e, h)| Primitive::Surface(e, h))),
-        Geometry::GeometryCollection(geometries) => {
-            for g in geometries {
-                flatten(g, depth + 1, out)?;
-            }
-        }
-    }
-    Ok(())
-}
-fn xyz(p: &Coord) -> Result<[f64; 3]> {
-    let values = [p.x, p.y, p.z.unwrap_or(0.0)];
-    if values.iter().any(|v| !v.is_finite()) {
-        return Err(invalid("coordinates must be finite"));
-    }
-    if p.m.is_some() {
-        return Err(invalid("CityJSON has XYZ coordinates; remove measure coordinates before writing"));
-    }
-    Ok(values)
-}
 struct Vertices {
     offset: [f64; 3],
     scale: [f64; 3],
@@ -186,32 +127,6 @@ struct Object<'a> {
     attrs: Map<String, Value>,
     parents: Vec<String>,
     primitives: Vec<(Rc<str>, Option<Rc<Value>>, Primitive<'a>)>,
-}
-fn field<'a>(layer: &Layer, feature: &'a Feature, name: &str) -> &'a FieldValue {
-    layer.schema.field_index(name).and_then(|i| feature.attributes.get(i)).unwrap_or(&FieldValue::Null)
-}
-fn json_field(value: &FieldValue) -> Result<Value> {
-    match value {
-        FieldValue::Null => Ok(Value::Null),
-        FieldValue::Text(s) => serde_json::from_str(s).map_err(invalid),
-        _ => Err(invalid("flat JSON metadata fields must contain JSON text")),
-    }
-}
-fn property(value: &FieldValue, kind: FieldType) -> Result<Value> {
-    Ok(match value {
-        FieldValue::Null => Value::Null,
-        FieldValue::Integer(v) => json!(v),
-        FieldValue::Float(v) if v.is_finite() => json!(v),
-        FieldValue::Float(_) => return Err(invalid("attribute numbers must be finite")),
-        FieldValue::Boolean(v) => json!(v),
-        FieldValue::Text(v) if kind == FieldType::Json => serde_json::from_str(v).map_err(invalid)?,
-        FieldValue::Text(v) | FieldValue::Date(v) | FieldValue::DateTime(v) => json!(v),
-        FieldValue::Blob(v) => json!(v.iter().map(|x| format!("{x:02X}")).collect::<String>()),
-    })
-}
-const COMMON_FIELDS: &[&str] = &["city_id", "city_type", "lod", "parents", "attributes", "geometry_type", "semantics", "surface_semantics"];
-fn has_city_fields(layer: &Layer) -> bool {
-    layer.schema.field_index("city_id").is_some() && layer.schema.field_index("city_type").is_some()
 }
 
 const KINDS: &[&str] = &[

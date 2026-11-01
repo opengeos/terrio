@@ -273,6 +273,7 @@ pub use dataset::{
     write_raster, write_raster_dataset, write_vector,
 };
 pub use drivers::gtiff_write::GeoTiffWriter;
+pub use drivers::vector::citygml_write::CityGmlVersion;
 pub use drivers::vector::cityjson_write::CityJsonVersion;
 pub use drivers::vector::csv::{CsvGeometry, CsvOptions};
 pub use drivers::vector::geojson::{GeoJsonIdType, GeoJsonOptions};

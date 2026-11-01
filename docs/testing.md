@@ -108,6 +108,30 @@ added a 1 KiB identification read to each. These limits apply to native parsing;
 the optional GDAL fallback can accept inputs that the native reader refuses. The extra prefix read is bounded even
 when opening must inspect beyond it to find the root.
 
+The native CityGML writer uses the same cached OGC schemas and real GML/CityJSON
+fixtures. Run its independent XML comparison after building current bindings:
+
+```sh
+python scripts/conformance.py ../terrio-data --only citygml-write --strict
+```
+
+This suite needs `lxml`, `pyproj` and current Python bindings; Node/WASM is included
+when a complete package supports the writer's version option. It checks the
+actual native XML coordinates, rings, class, owning hierarchy, integer LoD and
+CRS separately from the generic flat-field annotations. XYZ is exact: the writer
+does not quantize. Samples include both published CityGML fixtures, Den Haag,
+Delft, Rotterdam, optional cached 3DBAG pages and all 33 CityJSON core classes
+exported as CityGML 3.0. Unavailable target-version class/LoD combinations are
+explicit writer errors rather than silent reclassifications.
+
+The checked-in native property-order tables can be regenerated from the official
+schema cache; schema text and downloaded data stay outside the repository:
+
+```sh
+python scripts/generate_citygml_writer_profiles.py ../terrio-data/citymodels/gml-schemas/schemas.opengis.net/citygml crates/terrio/src/drivers/vector/citygml_write_profiles.rs
+cargo fmt --all
+```
+
 The optional live 3DBAG bbox regression from PR #464 can also be cached externally:
 
 ```sh
