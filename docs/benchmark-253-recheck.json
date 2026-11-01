@@ -15,7 +15,7 @@
           "--thread-counts",
           "1,2",
           "--out",
-          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/s1.md"
+          "<scratch>/s1.md"
         ],
         "source_commit": "afc7539adcad35386c844d7fea6faf6b381d0559",
         "platform": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
@@ -28,7 +28,7 @@
         ],
         "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
         "proj_search_paths": [
-          "/home/qiusheng/miniconda3/envs/gdal/share/proj"
+          "<gdal-prefix>/share/proj"
         ],
         "terrio": "terrio 0.6.0",
         "budgets": [
@@ -47,14 +47,14 @@
           "task": "GeoTIFF → COG (Deflate): USGS 3DEP tile",
           "commands": [
             [
-              "/home/qiusheng/Documents/GitHub/terrio-253/target/release/terrio",
+              "<repo>/target/release/terrio",
               "convert",
               "--co",
               "RESAMPLING=AVERAGE",
               "--co",
               "COG_OVERVIEW_POLICY=GDAL_3_13",
-              "/home/qiusheng/Documents/GitHub/terrio-data/usgs_dem.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-szie4wmo/terrio/a.tif",
+              "<data>/usgs_dem.tif",
+              "<scratch>/terrio-bench-szie4wmo/terrio/a.tif",
               "-f",
               "COG",
               "--compress",
@@ -71,8 +71,8 @@
               "OVERVIEWS=IGNORE_EXISTING",
               "-co",
               "RESAMPLING=AVERAGE",
-              "/home/qiusheng/Documents/GitHub/terrio-data/usgs_dem.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-szie4wmo/gdal/a.tif"
+              "<data>/usgs_dem.tif",
+              "<scratch>/terrio-bench-szie4wmo/gdal/a.tif"
             ]
           ],
           "load_average_end": [
@@ -211,7 +211,7 @@
           "--thread-counts",
           "1,2",
           "--out",
-          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/s2.md"
+          "<scratch>/s2.md"
         ],
         "source_commit": "afc7539adcad35386c844d7fea6faf6b381d0559",
         "platform": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
@@ -224,7 +224,7 @@
         ],
         "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
         "proj_search_paths": [
-          "/home/qiusheng/miniconda3/envs/gdal/share/proj"
+          "<gdal-prefix>/share/proj"
         ],
         "terrio": "terrio 0.6.0",
         "budgets": [
@@ -243,18 +243,18 @@
           "task": "GeoTIFF → Zarr: SRTM 90 m",
           "commands": [
             [
-              "/home/qiusheng/Documents/GitHub/terrio-253/target/release/terrio",
+              "<repo>/target/release/terrio",
               "convert",
-              "/home/qiusheng/Documents/GitHub/terrio-data/srtm90.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-c3roi396/terrio/c.zarr"
+              "<data>/srtm90.tif",
+              "<scratch>/terrio-bench-c3roi396/terrio/c.zarr"
             ],
             [
               "gdal_translate",
               "-q",
               "-of",
               "Zarr",
-              "/home/qiusheng/Documents/GitHub/terrio-data/srtm90.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-c3roi396/gdal/c.zarr"
+              "<data>/srtm90.tif",
+              "<scratch>/terrio-bench-c3roi396/gdal/c.zarr"
             ]
           ],
           "load_average_end": [
@@ -395,7 +395,7 @@
           "--thread-counts",
           "1,2",
           "--out",
-          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/s3.md"
+          "<scratch>/s3.md"
         ],
         "source_commit": "afc7539adcad35386c844d7fea6faf6b381d0559",
         "platform": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
@@ -408,7 +408,7 @@
         ],
         "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
         "proj_search_paths": [
-          "/home/qiusheng/miniconda3/envs/gdal/share/proj"
+          "<gdal-prefix>/share/proj"
         ],
         "terrio": "terrio 0.6.0",
         "budgets": [
@@ -427,12 +427,12 @@
           "task": "Warp to NAD83 / UTM 13N, bilinear: USGS 3DEP tile",
           "commands": [
             [
-              "/home/qiusheng/Documents/GitHub/terrio-253/target/release/terrio",
+              "<repo>/target/release/terrio",
               "warp",
               "--kernel-version",
               "3.13",
-              "/home/qiusheng/Documents/GitHub/terrio-data/usgs_dem.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-u9slthdl/terrio/f.tif",
+              "<data>/usgs_dem.tif",
+              "<scratch>/terrio-bench-u9slthdl/terrio/f.tif",
               "--t-srs",
               "EPSG:26913",
               "-r",
@@ -448,8 +448,8 @@
               "EPSG:26913",
               "-r",
               "bilinear",
-              "/home/qiusheng/Documents/GitHub/terrio-data/usgs_dem.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-u9slthdl/gdal/f.tif"
+              "<data>/usgs_dem.tif",
+              "<scratch>/terrio-bench-u9slthdl/gdal/f.tif"
             ]
           ],
           "load_average_end": [
@@ -590,7 +590,7 @@
           "--thread-counts",
           "1,2",
           "--out",
-          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/s4.md"
+          "<scratch>/s4.md"
         ],
         "source_commit": "afc7539adcad35386c844d7fea6faf6b381d0559",
         "platform": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
@@ -603,7 +603,7 @@
         ],
         "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
         "proj_search_paths": [
-          "/home/qiusheng/miniconda3/envs/gdal/share/proj"
+          "<gdal-prefix>/share/proj"
         ],
         "terrio": "terrio 0.6.0",
         "budgets": [
@@ -622,13 +622,13 @@
           "task": "Mosaic 4 USGS 3DEP tiles → VRT",
           "commands": [
             [
-              "/home/qiusheng/Documents/GitHub/terrio-253/target/release/terrio",
+              "<repo>/target/release/terrio",
               "mosaic",
-              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n40w106.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n40w107.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n41w106.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n41w107.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-s7brfgej/terrio/h.vrt"
+              "<data>/USGS_1_n40w106.tif",
+              "<data>/USGS_1_n40w107.tif",
+              "<data>/USGS_1_n41w106.tif",
+              "<data>/USGS_1_n41w107.tif",
+              "<scratch>/terrio-bench-s7brfgej/terrio/h.vrt"
             ],
             [
               "gdal",
@@ -642,11 +642,11 @@
               "average",
               "-f",
               "VRT",
-              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n40w106.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n40w107.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n41w106.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n41w107.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-s7brfgej/gdal/h.vrt"
+              "<data>/USGS_1_n40w106.tif",
+              "<data>/USGS_1_n40w107.tif",
+              "<data>/USGS_1_n41w106.tif",
+              "<data>/USGS_1_n41w107.tif",
+              "<scratch>/terrio-bench-s7brfgej/gdal/h.vrt"
             ]
           ],
           "load_average_end": [
@@ -787,7 +787,7 @@
           "--thread-counts",
           "1,2",
           "--out",
-          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/s5.md"
+          "<scratch>/s5.md"
         ],
         "source_commit": "afc7539adcad35386c844d7fea6faf6b381d0559",
         "platform": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
@@ -800,7 +800,7 @@
         ],
         "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
         "proj_search_paths": [
-          "/home/qiusheng/miniconda3/envs/gdal/share/proj"
+          "<gdal-prefix>/share/proj"
         ],
         "terrio": "terrio 0.6.0",
         "budgets": [
@@ -819,15 +819,15 @@
           "task": "Shapefile → GeoPackage: 7,342 populated places",
           "commands": [
             [
-              "/home/qiusheng/Documents/GitHub/terrio-253/target/release/terrio",
+              "<repo>/target/release/terrio",
               "convert",
-              "/home/qiusheng/Documents/GitHub/terrio-data/ne_places/ne_10m_populated_places_simple.shp",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-1qeyowf6/terrio/i.gpkg"
+              "<data>/ne_places/ne_10m_populated_places_simple.shp",
+              "<scratch>/terrio-bench-1qeyowf6/terrio/i.gpkg"
             ],
             [
               "ogr2ogr",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-1qeyowf6/gdal/i.gpkg",
-              "/home/qiusheng/Documents/GitHub/terrio-data/ne_places/ne_10m_populated_places_simple.shp"
+              "<scratch>/terrio-bench-1qeyowf6/gdal/i.gpkg",
+              "<data>/ne_places/ne_10m_populated_places_simple.shp"
             ]
           ],
           "load_average_end": [
@@ -968,7 +968,7 @@
           "--thread-counts",
           "1,2",
           "--out",
-          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/s6.md"
+          "<scratch>/s6.md"
         ],
         "source_commit": "afc7539adcad35386c844d7fea6faf6b381d0559",
         "platform": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
@@ -981,7 +981,7 @@
         ],
         "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
         "proj_search_paths": [
-          "/home/qiusheng/miniconda3/envs/gdal/share/proj"
+          "<gdal-prefix>/share/proj"
         ],
         "terrio": "terrio 0.6.0",
         "budgets": [
@@ -1000,10 +1000,10 @@
           "task": "Filter + reproject: US counties → EPSG:5070",
           "commands": [
             [
-              "/home/qiusheng/Documents/GitHub/terrio-253/target/release/terrio",
+              "<repo>/target/release/terrio",
               "convert",
-              "/home/qiusheng/Documents/GitHub/terrio-data/UScounties.gpkg",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-1qe52wu4/terrio/m.gpkg",
+              "<data>/UScounties.gpkg",
+              "<scratch>/terrio-bench-1qe52wu4/terrio/m.gpkg",
               "--where",
               "STATE_FIPS = '47'",
               "--t-srs",
@@ -1015,8 +1015,8 @@
               "STATE_FIPS = '47'",
               "-t_srs",
               "EPSG:5070",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-1qe52wu4/gdal/m.gpkg",
-              "/home/qiusheng/Documents/GitHub/terrio-data/UScounties.gpkg"
+              "<scratch>/terrio-bench-1qe52wu4/gdal/m.gpkg",
+              "<data>/UScounties.gpkg"
             ]
           ],
           "load_average_end": [
@@ -1158,7 +1158,7 @@
           "--thread-counts",
           "1,2",
           "--out",
-          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/s7.md"
+          "<scratch>/s7.md"
         ],
         "source_commit": "afc7539adcad35386c844d7fea6faf6b381d0559",
         "platform": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
@@ -1171,7 +1171,7 @@
         ],
         "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
         "proj_search_paths": [
-          "/home/qiusheng/miniconda3/envs/gdal/share/proj"
+          "<gdal-prefix>/share/proj"
         ],
         "terrio": "terrio 0.6.0",
         "budgets": [
@@ -1190,20 +1190,20 @@
           "task": "Hillshade of the mosaic",
           "commands": [
             [
-              "/home/qiusheng/Documents/GitHub/terrio-253/target/release/terrio",
+              "<repo>/target/release/terrio",
               "dem",
               "hillshade",
               "--kernel-version",
               "3.13",
-              "/home/qiusheng/Documents/GitHub/terrio-large-data/dem16.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-ug1b4zfw/terrio/e.tif"
+              "<large-data>/dem16.tif",
+              "<scratch>/terrio-bench-ug1b4zfw/terrio/e.tif"
             ],
             [
               "gdaldem",
               "hillshade",
               "-q",
-              "/home/qiusheng/Documents/GitHub/terrio-large-data/dem16.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-ug1b4zfw/gdal/e.tif"
+              "<large-data>/dem16.tif",
+              "<scratch>/terrio-bench-ug1b4zfw/gdal/e.tif"
             ]
           ],
           "load_average_end": [
@@ -1337,7 +1337,7 @@
           "--thread-counts",
           "1,2",
           "--out",
-          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/s8.md"
+          "<scratch>/s8.md"
         ],
         "source_commit": "afc7539adcad35386c844d7fea6faf6b381d0559",
         "platform": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
@@ -1350,7 +1350,7 @@
         ],
         "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
         "proj_search_paths": [
-          "/home/qiusheng/miniconda3/envs/gdal/share/proj"
+          "<gdal-prefix>/share/proj"
         ],
         "terrio": "terrio 0.6.0",
         "budgets": [
@@ -1369,20 +1369,20 @@
           "task": "Slope of the mosaic",
           "commands": [
             [
-              "/home/qiusheng/Documents/GitHub/terrio-253/target/release/terrio",
+              "<repo>/target/release/terrio",
               "dem",
               "slope",
               "--kernel-version",
               "3.13",
-              "/home/qiusheng/Documents/GitHub/terrio-large-data/dem16.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-o1xrt015/terrio/f.tif"
+              "<large-data>/dem16.tif",
+              "<scratch>/terrio-bench-o1xrt015/terrio/f.tif"
             ],
             [
               "gdaldem",
               "slope",
               "-q",
-              "/home/qiusheng/Documents/GitHub/terrio-large-data/dem16.tif",
-              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/r253/terrio-bench-o1xrt015/gdal/f.tif"
+              "<large-data>/dem16.tif",
+              "<scratch>/terrio-bench-o1xrt015/gdal/f.tif"
             ]
           ],
           "load_average_end": [
