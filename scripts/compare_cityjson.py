@@ -10,12 +10,14 @@ Checks CLI, Python paths/bytes, and optionally the Node/WebAssembly package.
 
 import argparse
 from collections import Counter
+from copy import deepcopy
 import json
 import re
 from pathlib import Path
 import subprocess
 import tempfile
 from urllib.request import urlopen
+from urllib.parse import urlparse
 
 FIXTURES = ["DH_01_subs.city.json", "delft.json", "rotterdam/rotterdam_subset.json"]
 CJIO_COMMIT = "35728539127f71b1d5ae458169ff84050e5e20ad"
@@ -38,6 +40,43 @@ def fetch(data):
             if not path.exists():
                 url = f"https://raw.githubusercontent.com/cityjson/specs/{version}/schemas/{name}.schema.json"
                 path.write_bytes(urlopen(url, timeout=30).read())
+
+
+def fetch_3dbag(data):
+    """Cache the reported live API bbox as per-page, single-transform CityJSON files."""
+    root = data / "citymodels"
+    root.mkdir(parents=True, exist_ok=True)
+    url = "https://api.3dbag.nl/collections/pand/items?bbox=85000,446700.034,85300.011,447000&limit=1000"
+
+    def shift(value, offset):
+        return [shift(v, offset) for v in value] if isinstance(value, list) else value + offset
+
+    for page_number in range(1, 11):
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.netloc != "api.3dbag.nl" or parsed.path != "/collections/pand/items":
+            raise ValueError(f"unexpected 3DBAG page link {url}")
+        suffix = "" if page_number == 1 else f"-page{page_number}"
+        cached = root / f"3dbag-degenerate-api{suffix}.json"
+        if not cached.exists():
+            cached.write_bytes(urlopen(url, timeout=30).read())
+        page = json.loads(cached.read_bytes())
+        doc = deepcopy(page["metadata"])
+        for feature in page["features"]:
+            offset = len(doc["vertices"])
+            doc["vertices"].extend(feature["vertices"])
+            for identity, original in feature["CityObjects"].items():
+                obj = deepcopy(original)
+                for geometry in obj.get("geometry", []):
+                    geometry["boundaries"] = shift(geometry["boundaries"], offset)
+                if identity in doc["CityObjects"]:
+                    raise ValueError(f"duplicate API object {identity}")
+                doc["CityObjects"][identity] = obj
+        (root / f"3dbag-degenerate-page{page_number}.city.json").write_text(json.dumps(doc))
+        next_urls = [link["href"] for link in page["links"] if link["rel"] == "next"]
+        if not next_urls:
+            return
+        url = next_urls[0]
+    raise ValueError("3DBAG bbox pagination exceeded ten pages")
 
 
 def validate_schema(doc, folder):
@@ -71,7 +110,7 @@ def reference(doc):
                 yield from walk(child, depth - 1)
 
     for identity, obj in doc["CityObjects"].items():
-        base = dict(city_id=identity, city_type=obj["type"], parents=obj.get("parents"), attributes=obj.get("attributes"))
+        base = dict(city_id=identity, city_type=obj["type"], parents=obj.get("parents"), attributes=obj.get("attributes"), skipped_rings=0, skipped_faces=0)
         geometries = obj.get("geometry", [])
         if not geometries:
             result.append((base | dict(lod=None, geometry_type=None, semantics=None, surface_semantics=None), None))
@@ -100,10 +139,19 @@ def reference(doc):
                 semantics = source.get("semantics")
                 semantic_values = list(walk(semantics["values"], depth)) if semantics else [None] * len(faces)
                 assert len(semantic_values) == len(faces)
-                if not faces:
-                    result.append((props, None))
-                for face, semantic in zip(faces, semantic_values):
+                candidates = []
+                skipped_rings = 0
+                for face in faces:
                     rings = [[local_vertices[i] for i in ring] for ring in face]
+                    valid = [len(set(map(tuple, ring))) >= 3 for ring in rings]
+                    skipped_rings += sum(not value for value in valid)
+                    candidates.append([ring for ring, keep in zip(rings, valid) if keep] if valid and valid[0] else None)
+                props = props | dict(skipped_rings=skipped_rings, skipped_faces=sum(r is None for r in candidates))
+                if not any(r is not None for r in candidates):
+                    result.append((props, None))
+                for rings, semantic in zip(candidates, semantic_values):
+                    if rings is None:
+                        continue
                     face_props = props | dict(surface_semantics=semantics["surfaces"][semantic] if semantic is not None else None)
                     result.append((face_props, {"type": "Polygon", "coordinates": rings}))
     return result
@@ -142,17 +190,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data", type=Path)
     parser.add_argument("--fetch", action="store_true")
+    parser.add_argument("--fetch-3dbag", action="store_true")
     parser.add_argument("--terrio", default="target/release/terrio")
     parser.add_argument("--node-package", type=Path)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--extra-fixture", type=Path, action="append", default=[])
     args = parser.parse_args()
     if args.fetch:
         fetch(args.data)
+    if args.fetch_3dbag:
+        fetch_3dbag(args.data)
     import terrio
 
     results = []
-    for name in FIXTURES:
-        path = args.data / "citymodels" / Path(name).name
+    paths = [args.data / "citymodels" / Path(name).name for name in FIXTURES]
+    paths += sorted((args.data / "citymodels").glob("3dbag-degenerate-page*.city.json"))
+    paths += [p for p in args.extra_fixture if p not in paths]
+    for path in paths:
         doc = json.loads(path.read_bytes())
         version = "1.1.3" if doc["version"] == "1.1" else "2.0.2"
         validate_schema(doc, args.data / "citymodels" / "schemas" / version)
@@ -166,7 +220,7 @@ def main():
             ("Python bytes", terrio.open_bytes(path.read_bytes(), filename=path.name)[0].to_geojson()),
         ]:
             compare(expected, fc)
-            results.append(dict(name=f"{path.name} {surface}", status="identical", detail=f"schema valid; {sum(expected.values())} primitives, XYZ, holes, attributes, identity, LoD, parents and semantics exact; CRS checked"))
+            results.append(dict(name=f"{path.name} {surface}", status="identical", detail=f"schema valid; {sum(expected.values())} primitives, surviving XYZ/holes, diagnostics, attributes, identity, LoD, parents and semantics exact; CRS checked"))
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "out.geojson"
             subprocess.run([args.terrio, "convert", str(path), str(target)], check=True, capture_output=True, text=True)

@@ -42,6 +42,18 @@ entrypoint includes Node when that package exists. Counts, XYZ, rings, object
 identity/type, LoD, parents, attributes and semantics text are exact; source CRS is
 checked separately. The reader exposes flat primitives, not a lossless city model.
 
+The optional live 3DBAG bbox regression from PR #464 can also be cached externally:
+
+```sh
+python scripts/compare_cityjson.py ../terrio-data --fetch-3dbag
+```
+
+It follows pagination and assembles each API page using that page's original
+transform, shifting only vertex indices. Available pages are included by the
+`cityjson` conformance suite. The comparison checks skipped-ring/face diagnostics
+and surviving semantic alignment in addition to schema validity and exact XYZ.
+The live API can change; record the cached snapshot when reporting its results.
+
 `scripts/conformance.py` runs every comparison below in one go (and the EPSG accuracy test) and
 writes a Markdown report: for each suite and each format or operation, how many cases were
 compared and how many came out identical, within tolerance or different, with the details of the

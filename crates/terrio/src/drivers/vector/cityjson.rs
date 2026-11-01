@@ -71,45 +71,79 @@ fn line(value: &Value, vertices: &Positions<'_>) -> Result<Vec<Coord>> {
     array(value)?.iter().map(|i| position(i, vertices)).collect()
 }
 
-fn ring(value: &Value, vertices: &Positions<'_>) -> Result<Ring> {
+#[derive(Default)]
+struct Diagnostics {
+    skipped_rings: usize,
+    skipped_faces: usize,
+}
+
+fn ring(value: &Value, vertices: &Positions<'_>, diagnostics: &mut Diagnostics) -> Result<Option<Ring>> {
     let mut points = line(value, vertices)?;
     if points.len() > 1 && points.first() == points.last() {
         points.pop();
     }
-    if points.len() < 3 {
-        return Err(invalid("surface ring has fewer than three vertices"));
+    // Count XYZ positions rather than XY area: vertical faces are valid surfaces.
+    // Stop after three distinct positions, keeping this linear even for long rings.
+    let mut distinct = Vec::with_capacity(3);
+    for point in &points {
+        if !distinct.contains(&point) {
+            distinct.push(point);
+        }
+        if distinct.len() == 3 {
+            break;
+        }
     }
-    Ok(Ring::new(points))
+    if distinct.len() < 3 {
+        diagnostics.skipped_rings += 1;
+        return Ok(None);
+    }
+    Ok(Some(Ring::new(points)))
 }
 
-fn surface(value: &Value, vertices: &Positions<'_>) -> Result<Geometry> {
-    let mut rings = array(value)?.iter().map(|r| ring(r, vertices));
-    let exterior = rings.next().ok_or_else(|| invalid("surface has no exterior ring"))??;
-    Ok(Geometry::Polygon { exterior, interiors: rings.collect::<Result<_>>()? })
+fn surface(value: &Value, vertices: &Positions<'_>, diagnostics: &mut Diagnostics) -> Result<Option<Geometry>> {
+    let mut rings = array(value)?.iter();
+    let exterior = rings.next().map(|r| ring(r, vertices, diagnostics)).transpose()?.flatten();
+    let mut interiors = Vec::new();
+    for value in rings {
+        if let Some(ring) = ring(value, vertices, diagnostics)? {
+            interiors.push(ring);
+        }
+    }
+    let Some(exterior) = exterior else {
+        diagnostics.skipped_faces += 1;
+        return Ok(None);
+    };
+    Ok(Some(Geometry::Polygon { exterior, interiors }))
 }
 
-/// Flatten known boundary nesting only: malformed geometry must not silently disappear.
-fn surfaces(value: &Value, depth: usize, vertices: &Positions<'_>, out: &mut Vec<Geometry>) -> Result<()> {
+// Keep a placeholder for every source face so semantic values retain their indices.
+fn surfaces(
+    value: &Value,
+    depth: usize,
+    vertices: &Positions<'_>,
+    diagnostics: &mut Diagnostics,
+    out: &mut Vec<Option<Geometry>>,
+) -> Result<()> {
     if depth == 0 {
-        out.push(surface(value, vertices)?);
+        out.push(surface(value, vertices, diagnostics)?);
     } else {
         for child in array(value)? {
-            surfaces(child, depth - 1, vertices, out)?;
+            surfaces(child, depth - 1, vertices, diagnostics, out)?;
         }
     }
     Ok(())
 }
 
-fn primitives(geometry: &Value, vertices: &Positions<'_>) -> Result<Vec<Geometry>> {
+fn primitives(geometry: &Value, vertices: &Positions<'_>, diagnostics: &mut Diagnostics) -> Result<Vec<Option<Geometry>>> {
     let boundaries = &geometry["boundaries"];
     let mut out = Vec::new();
     match geometry["type"].as_str() {
-        Some("MultiSurface" | "CompositeSurface") => surfaces(boundaries, 1, vertices, &mut out)?,
-        Some("Solid") => surfaces(boundaries, 2, vertices, &mut out)?,
-        Some("MultiSolid" | "CompositeSolid") => surfaces(boundaries, 3, vertices, &mut out)?,
+        Some("MultiSurface" | "CompositeSurface") => surfaces(boundaries, 1, vertices, diagnostics, &mut out)?,
+        Some("Solid") => surfaces(boundaries, 2, vertices, diagnostics, &mut out)?,
+        Some("MultiSolid" | "CompositeSolid") => surfaces(boundaries, 3, vertices, diagnostics, &mut out)?,
         Some("MultiPoint") => {
             for i in array(boundaries)? {
-                out.push(Geometry::Point(position(i, vertices)?));
+                out.push(Some(Geometry::Point(position(i, vertices)?)));
             }
         }
         Some("MultiLineString") => {
@@ -118,7 +152,7 @@ fn primitives(geometry: &Value, vertices: &Positions<'_>) -> Result<Vec<Geometry
                 if points.len() < 2 {
                     return Err(invalid("line has fewer than two vertices"));
                 }
-                out.push(Geometry::LineString(points));
+                out.push(Some(Geometry::LineString(points)));
             }
         }
         other => return Err(Error::Unsupported(format!("CityJSON geometry type {other:?}"))),
@@ -244,7 +278,8 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
     if !matches!(doc["version"].as_str(), Some("1.1" | "2.0")) {
         return Err(Error::Unsupported("CityJSON: supported versions are 1.1 and 2.0".into()));
     }
-    let world = vertices(&doc["vertices"], &doc["transform"])?;
+    let transform = doc.get("transform").filter(|v| v.is_object()).ok_or_else(|| invalid("top-level transform object is required"))?;
+    let world = vertices(&doc["vertices"], transform)?;
     let points = Positions { points: &world, transform: None };
     let template_points = doc
         .get("geometry-templates")
@@ -255,6 +290,9 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
     let mut layer = Layer::new("CityJSON");
     for name in ["city_id", "city_type", "lod", "parents", "attributes", "geometry_type", "semantics", "surface_semantics"] {
         layer.add_field(FieldDef::new(name, FieldType::Text));
+    }
+    for name in ["skipped_rings", "skipped_faces"] {
+        layer.add_field(FieldDef::new(name, FieldType::Integer));
     }
     if let Some(crs) = doc["metadata"]["referenceSystem"].as_str() {
         SpatialRef::parse(crs).map_err(|e| invalid(format!("referenceSystem: {e}")))?.apply_to_layer(&mut layer);
@@ -270,6 +308,8 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
             FieldValue::Null,
             FieldValue::Null,
             FieldValue::Null,
+            FieldValue::Integer(0),
+            FieldValue::Integer(0),
         ];
         let geometries = match object.get("geometry") {
             Some(value) => array(value)?,
@@ -280,6 +320,7 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
             continue;
         }
         for geometry in geometries {
+            let mut diagnostics = Diagnostics::default();
             attrs[7] = FieldValue::Null;
             attrs[2] = text(&geometry["lod"]);
             attrs[5] = text(&geometry["type"]);
@@ -290,20 +331,26 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
                     attrs[2] = text(&template["lod"]);
                 }
                 attrs[6] = text(&template["semantics"]);
-                let primitives = primitives(template, &vertices)?;
+                let primitives = primitives(template, &vertices, &mut diagnostics)?;
                 let semantics = primitive_semantics(template, primitives.len())?;
                 (primitives, semantics)
             } else {
-                let primitives = primitives(geometry, &points)?;
+                let primitives = primitives(geometry, &points, &mut diagnostics)?;
                 let semantics = primitive_semantics(geometry, primitives.len())?;
                 (primitives, semantics)
             };
-            if primitives.is_empty() {
-                push(&mut layer, None, &attrs, &mut used, limit)?;
-            }
+            attrs[8] = FieldValue::Integer(i64::try_from(diagnostics.skipped_rings).map_err(invalid)?);
+            attrs[9] = FieldValue::Integer(i64::try_from(diagnostics.skipped_faces).map_err(invalid)?);
+            let mut emitted = false;
             for (primitive, semantic) in primitives.into_iter().zip(surface_semantics) {
-                attrs[7] = semantic.map_or(FieldValue::Null, text);
-                push(&mut layer, Some(primitive), &attrs, &mut used, limit)?;
+                if let Some(primitive) = primitive {
+                    attrs[7] = semantic.map_or(FieldValue::Null, text);
+                    push(&mut layer, Some(primitive), &attrs, &mut used, limit)?;
+                    emitted = true;
+                }
+            }
+            if !emitted {
+                push(&mut layer, None, &attrs, &mut used, limit)?;
             }
         }
     }
@@ -314,7 +361,7 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
 mod tests {
     #[test]
     fn repeated_attributes_stop_at_the_flat_payload_budget() {
-        let mut doc = serde_json::json!({"type":"CityJSON","version":"2.0","vertices":[[1,2,3]],
+        let mut doc = serde_json::json!({"type":"CityJSON","version":"2.0","vertices":[[1,2,3]],"transform":{"scale":[1,1,1],"translate":[0,0,0]},
             "CityObjects":{"tree":{"type":"SolitaryVegetationObject","attributes":{"text":"x".repeat(400)},
                 "geometry":[{"type":"MultiPoint","lod":"1","boundaries":[0,0,0,0]}]}}});
         let bytes = serde_json::to_vec(&doc).unwrap();

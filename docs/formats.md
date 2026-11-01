@@ -386,6 +386,8 @@ MultiSolid/CompositeSolid, MultiPoint and MultiLineString. Use `.city.json` or
 `.cityjson`; `.json` is distinguished from GeoJSON by its root `type`, even when
 the type follows a large vertex/object payload. Bounded header identification can
 only report a root type present within its header limit.
+The top-level `transform` object is required by both supported versions; template
+vertices remain unquantized as specified.
 
 The single `CityJSON` layer is a **flat vector view**: each face is a polygon with Z
 and interior rings; lines and points are separate features. Nonspatial objects
@@ -394,6 +396,13 @@ remain null-geometry features. Fields are `city_id`, `city_type`, `lod`, `parent
 source geometry's complete JSON semantics object, repeated on its primitives).
 `surface_semantics` contains the JSON semantic record resolved for that particular
 face (for example `RoofSurface` with its properties), or null for unclassified faces.
+Rings with fewer than three distinct XYZ positions cannot form polygons in this
+view. Degenerate interior rings are omitted; a degenerate exterior omits its face.
+Surviving faces keep their original semantic records. Integer `skipped_rings` and
+`skipped_faces` fields report totals for the source geometry, repeated on each
+surviving primitive. If no primitive survives, a null-geometry feature retains the
+object metadata and counts. These counts are not totals to sum across features.
+Invalid indices and malformed boundary/semantic nesting still fail explicitly.
 `metadata.referenceSystem` supplies the CRS; absent CRS stays unknown. Coordinates
 retain the source XYZ order rather than applying geographic axis swapping.
 

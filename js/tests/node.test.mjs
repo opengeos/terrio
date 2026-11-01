@@ -179,6 +179,27 @@ test("CityJSON late root type retains vertical XYZ and unknown CRS", () => {
   ds.free();
 });
 
+test("CityJSON skips degenerate faces without shifting semantics", () => {
+  const doc = {
+    type: "CityJSON", version: "2.0", vertices: [[10, 0, 0], [10, 1, 0], [10, 1, 1]],
+    transform: { scale: [1, 1, 1], translate: [0, 0, 0] },
+    CityObjects: { house: { type: "Building", geometry: [{ type: "MultiSurface", lod: "2.2",
+      boundaries: [[[0, 0, 0]], [[0, 1, 2]]],
+      semantics: { surfaces: [{ type: "GroundSurface" }, { type: "WallSurface" }], values: [0, 1] },
+    }] } },
+  };
+  const bytes = () => new TextEncoder().encode(JSON.stringify(doc));
+  const ds = terrio.open(bytes(), "tile.city.json");
+  const features = ds.toGeoJSON().features;
+  assert.equal(features.length, 1);
+  assert.equal(features[0].properties.skipped_rings, 1);
+  assert.equal(features[0].properties.skipped_faces, 1);
+  assert.equal(JSON.parse(features[0].properties.surface_semantics).type, "WallSurface");
+  ds.free();
+  delete doc.transform;
+  assert.throws(() => terrio.open(bytes(), "missing.city.json"), /transform/);
+});
+
 test("vector from GeoJSON, to other formats and back", () => {
   const ds = terrio.fromGeoJSON(SQUARES, "squares");
   assert.equal(ds.kind, "vector");
