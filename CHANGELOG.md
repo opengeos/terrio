@@ -2,9 +2,11 @@
 
 ## Unreleased
 
-- On glibc Linux, projections call the installed C library's `asinh` and `atanh`, and warps map
-  output pixels to the source with GDAL's degree rounding. Coordinates and warped pixels can change
-  in the last bits; the #253 bilinear warp and county cases now match GDAL 3.13.3 exactly.
+- Warps map output pixels to the source with GDAL's degree rounding on every platform, except
+  between Web Mercator and WGS 84, so warped pixels can change in the last bits.
+- On glibc Linux, projections call the installed C library's `asinh` and `atanh`, so coordinates can
+  change in the last bits and are no longer reproducible across glibc releases. With the warp
+  change, the #253 bilinear warp and county cases match GDAL 3.13.3 exactly.
 - `terrio info` of a rotated raster reports the extent of its four corners, and prints the
   geotransform in place of a pixel size. South-up rasters lazily read report ordered bounds (#468).
 - `terrio formats` lists EPT as written, and the compression help and errors list LERC and JPEG XL

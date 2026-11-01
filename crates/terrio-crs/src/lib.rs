@@ -1342,8 +1342,8 @@ impl Transformer {
     /// multiplying by the reciprocal. GDAL's warper maps output pixels to the source this way.
     /// Web Mercator and WGS 84 are unchanged both ways: GDAL has its own formula from Web Mercator,
     /// and no PROJ pipeline to invert in the other direction, so it builds a direct one.
-    /// Only the horizontal path of [`transform`](Self::transform) is affected: 3D, geocentric and
-    /// vertical transformations keep the default conversion.
+    /// It applies to every transformation of this transformer, 3D ones too. GDAL parity was
+    /// measured for the 2D [`transform`](Self::transform) that the warper calls.
     pub fn with_reverse_degree_division(mut self) -> Self {
         if !self.web_mercator_to_wgs84 && !self.wgs84_to_web_mercator {
             self.src.inverted_degrees = true;
@@ -2242,6 +2242,31 @@ mod tests {
             let got = t.transform(lon, lat).unwrap();
             check(got, want, format!("({lon}, {lat}) to {got:?}, GDAL {want:?}"));
         }
+    }
+
+    #[test]
+    fn reverse_degree_division_skips_web_mercator_and_wgs84() {
+        let srs = |code| SpatialRef::from_epsg(code).unwrap();
+        let pair = |a, b| {
+            (Transformer::new(&srs(a), &srs(b)).unwrap(), Transformer::new(&srs(a), &srs(b)).unwrap().with_reverse_degree_division())
+        };
+        let bits = |p: (f64, f64)| (p.0.to_bits(), p.1.to_bits());
+        let points = |x0: f64, y0: f64, step: f64| (0..2000).map(move |i| (x0 + f64::from(i) * step, y0 + f64::from(i) * step));
+
+        let (plain, reverse) = pair(3857, 4326);
+        for (x, y) in points(100_000.0, 200_000.0, 1234.5) {
+            assert_eq!(bits(plain.transform(x, y).unwrap()), bits(reverse.transform(x, y).unwrap()));
+        }
+        let (plain, reverse) = pair(4326, 3857);
+        for (lat, lon) in points(10.0, 20.0, 0.0123) {
+            assert_eq!(bits(plain.transform(lat, lon).unwrap()), bits(reverse.transform(lat, lon).unwrap()));
+        }
+        // Geographic output of a pair GDAL inverts: some degrees round differently.
+        let (plain, reverse) = pair(26913, 4269);
+        let changed = points(400_000.0, 4_400_000.0, 12.5)
+            .filter(|(x, y)| bits(plain.transform(*x, *y).unwrap()) != bits(reverse.transform(*x, *y).unwrap()))
+            .count();
+        assert!(changed > 0, "the reverse conversion never differed");
     }
 
     #[test]

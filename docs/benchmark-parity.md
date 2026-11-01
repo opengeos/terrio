@@ -68,7 +68,8 @@ Two causes accounted for the last warp and county differences:
 - **C library functions:** PROJ calls the C library's `asinh` and `atanh`, whose
   results change between glibc releases. Terrio carried translations matching glibc
   2.39, which rounded differently from glibc 2.44. On linux-gnu it now calls the
-  installed C library, so it rounds as a PROJ using that library does. Other
+  installed C library, so it rounds as a PROJ using that library does. The same
+  binary can therefore give different last bits under different glibc releases. Other
   platforms keep Rust's `f64` functions, so these results are not claimed there.
 - **Inverted pipelines:** GDAL's reverse transformation inverts the forward pipeline,
   so PROJ divides by the forward `unitconvert` factor; multiplying by the reciprocal
