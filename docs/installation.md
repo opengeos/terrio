@@ -25,11 +25,11 @@ powershell -ExecutionPolicy ByPass -c "irm https://terrio.dev/install.ps1 | iex"
 Set `TERRIO_VERSION` to install another release, and `TERRIO_INSTALL_DIR` to install elsewhere:
 
 ```sh
-curl -LsSf https://terrio.dev/install.sh | TERRIO_VERSION=0.6.0 sh
+curl -LsSf https://terrio.dev/install.sh | TERRIO_VERSION=0.6.1 sh
 ```
 
 ```powershell
-$env:TERRIO_VERSION = "0.6.0"; irm https://terrio.dev/install.ps1 | iex
+$env:TERRIO_VERSION = "0.6.1"; irm https://terrio.dev/install.ps1 | iex
 ```
 
 The Windows installer adds the directory to your `PATH` (`TERRIO_NO_MODIFY_PATH=1` to leave it);
@@ -122,7 +122,7 @@ release, which does not allow cross-origin requests):
 ```python
 import micropip
 
-await micropip.install("./terrio-0.6.0-cp310-abi3-pyemscripten_2025_0_wasm32.whl")
+await micropip.install("./terrio-0.6.1-cp310-abi3-pyemscripten_2025_0_wasm32.whl")
 ```
 
 Files are read from and written to Pyodide's in-memory file system, or from bytes

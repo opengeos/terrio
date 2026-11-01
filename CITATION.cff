@@ -11,8 +11,8 @@ authors:
     orcid: "https://orcid.org/0000-0001-5437-4073"
   - given-names: Mavrick
     family-names: Fitzgerald
-version: 0.6.0
-date-released: 2026-10-31
+version: 0.6.1
+date-released: 2026-11-01
 doi: "10.5281/zenodo.23642204"
 repository-code: "https://github.com/opengeos/terrio"
 url: "https://terrio.dev"

@@ -1,7 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 (2026-11-01)
 
+- CityJSON 1.1 and 2.0 and CityGML 2.0 and 3.0 are read and written as flat XYZ features through
+  Rust, the CLI and MCP, Python and JavaScript. They do not keep lossless city-model topology,
+  textures or materials (#464, #470, #473, #480).
+- `terrio [command ...] --json-usage` prints a versioned, still unstable JSON catalog of the
+  commands (#461).
+- CADRG `A.TOC` indexes can be created from existing frame files through every API (#446).
+- Python and JavaScript expose contour, footprint, buffer, grouped dissolve, geometry validity and
+  repair, zonal statistics and multipart splitting directly (#445, #447).
+- `stream::GpkgLayersWriter` writes interleaved multi-layer GeoPackages from Rust (#458).
+- Python `to_bytes` and JavaScript `toBytes` reject several layers for a single-layer format
+  rather than writing only the first (#445).
+- xarray `to_raster()` exports reprojected masked integer rasters as floating point with NaN
+  nodata when their integer encoding cannot hold the new borders (#463).
+- `terrio-crs` 0.2.1 adds `Transformer::with_reverse_degree_division`, which `terrio` needs, and
+  accepts antimeridian rounding in the Mollweide and Wagner IV and V inverses (#458, #472).
+- Rust: `VectorOpenOptions` has a new `feature_server_paging` field and `VectorWriteOptions` new
+  `cityjson_version`, `citygml_version` and `citygml_lod0_surface` fields, so a struct literal of
+  either type without `..Default::default()` no longer compiles.
 - The `ESRIJSON` driver reads the JSON of ArcGIS feature-service queries as GDAL's does: files
   recognized by content, and query URLs read page by page, with the `FEATURE_SERVER_PAGING` open
   option and the `ESRIJSON:` prefix.
