@@ -173,7 +173,7 @@ impl Server {
 }
 
 /// A tool call's name and command-line arguments.
-fn tool_call(params: &Value) -> Result<(String, Vec<OsString>), RpcError> {
+pub(crate) fn tool_call(params: &Value) -> Result<(String, Vec<OsString>), RpcError> {
     let name = params.get("name").and_then(Value::as_str).ok_or((INVALID_PARAMS, "name is required".to_string()))?;
     if !commands().any(|c| c.get_name() == name) {
         return Err((INVALID_PARAMS, format!("unknown tool '{name}'")));
@@ -192,7 +192,7 @@ fn tool_call(params: &Value) -> Result<(String, Vec<OsString>), RpcError> {
 
 /// Runs `terrio <name> <args>`: the tool's result, or `None` when `cancel` was set and the command
 /// killed. A failing command is a result the model reads (`isError`), not a protocol error.
-fn call_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool) -> Option<Value> {
+pub(crate) fn call_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool) -> Option<Value> {
     let (text, failed) = match run(terrio, name, args, cancel) {
         Ok(None) => return None,
         Ok(Some((status, stdout, stderr))) => {
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn lists_every_command_but_mcp() {
+    fn lists_every_command_but_the_servers() {
         let r = request(&mut server(), "tools/list", json!({}));
         let tools = r["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -446,7 +446,7 @@ mod tests {
         for name in ["centroid", "singlepart", "vertices", "footprint", "sample", "contour", "zonal-stats", "sql"] {
             assert!(names.contains(&name), "missing processing command {name}");
         }
-        assert!(!names.contains(&"mcp") && !names.contains(&"help"));
+        assert!(!names.contains(&"mcp") && !names.contains(&"ui") && !names.contains(&"help"));
         for name in ["sample", "zonal-stats"] {
             let tool = tools.iter().find(|t| t["name"] == name).unwrap();
             let help = tool["description"].as_str().unwrap();

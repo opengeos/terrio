@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `terrio ui` serves a local page with a form for every command, a file browser, the equivalent
+  command line and cancellation. It listens on 127.0.0.1 only and needs a per-session token. The
+  `--json-usage` catalog records whether each option is `hidden`.
 - Warps map output pixels to the source with GDAL's degree rounding on every platform, except
   between Web Mercator and WGS 84, so warped pixels can change in the last bits.
 - On glibc Linux, projections call the installed C library's `asinh` and `atanh`, so coordinates can

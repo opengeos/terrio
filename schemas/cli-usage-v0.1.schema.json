@@ -189,6 +189,9 @@
             "null"
           ]
         },
+        "hidden": {
+          "type": "boolean"
+        },
         "allow_hyphen_values": {
           "type": "boolean"
         }
@@ -208,6 +211,7 @@
         "num_args",
         "action",
         "global",
+        "hidden",
         "value_names",
         "value_delimiter",
         "allow_hyphen_values"

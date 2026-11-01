@@ -93,6 +93,7 @@ Every command, in alphabetical order. `terrio --help` prints this list, and
 | [`swap-xy`](#vector-geometry-commands) | Swap the X and Y coordinates of every geometry |
 | [`tile`](#separate-file-raster-tiles) | Generate separate XYZ/TMS raster tiles in a directory |
 | [`translate`](#translate) | Subset, resize, rescale or change the type of a raster |
+| [`ui`](#ui) | Run these commands from forms in your browser |
 | [`unscale`](#unscale) | Apply band scales and offsets |
 | [`update`](#update) | Update a vector dataset from another |
 | [`update-raster`](#raster-management) | Write a raster into an existing GeoTIFF |
@@ -3491,6 +3492,38 @@ terrio mcp
 Serves the other commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code) as a Model
 Context Protocol server over standard input and output. See [AI Agents](mcp.md).
 
+## ui
+
+```sh
+terrio ui                 # opens your browser
+terrio ui --port 8080 --no-open
+```
+
+Serves a page with a form for every command, generated from the
+[command catalog](#machine-readable-command-catalog), so it always matches this binary. Pick files
+with the built-in file browser, which lists the disk of the computer running terrio; the page shows
+the equivalent command line, quoted for a POSIX shell, to copy into a script. Relative paths are
+taken from the directory `terrio ui` started in. **Cancel**, or closing the tab, stops a running command, which can leave a
+partial output file; Ctrl-C stops the server. This works through both the `terrio` binary and the
+Python package's `terrio` command.
+
+Option | Description
+--- | ---
+`--port` | Port on 127.0.0.1; by default a free one
+`--no-open` | Print the address without opening a browser
+
+The server runs commands with your permissions, including those that overwrite or delete files, so
+it listens on the loopback interface only and each API request must carry a random token, which is
+part of the printed address: treat the address as a password. The token is briefly on the command
+line of the process that opens the browser, where other users of a shared computer could read it;
+use `--no-open` there and paste the address yourself. To use it on another computer, forward the
+port (`ssh -L 8080:127.0.0.1:8080 host`, then `terrio ui --port 8080 --no-open` on the host).
+
+As with [MCP tools](#mcp), a run returns up to 100,000 bytes of output when the command ends, a
+non-zero status for a query's result (`compare`, `pixel-info`) is not a failure, and `@FILE` lists
+are refused: enter the paths one per line instead. The page has no map or preview; for that use the
+[Playground](playground.md).
+
 ## Machine-readable command catalog
 
 `terrio --json-usage` prints a versioned JSON catalog of every exposed command,
@@ -3504,7 +3537,7 @@ The payload has `schema_version: "0.1"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,
-per-occurrence `num_args` bounds, action, delimiter and value names. An unbounded
+per-occurrence `num_args` bounds, action, hidden status, delimiter and value names. An unbounded
 maximum is `null`. Types are `string`, `integer`, `number`, `boolean`, `path` or
 `unknown`; dataset locations represented as strings are tagged as paths. Custom
 parsers whose result type is not recognized report `unknown`.
@@ -3518,7 +3551,7 @@ numeric ranges and runtime parser constraints remain enforced by the CLI. The ca
 `calc` compatibility flags, even when ordinary `--help` omits them.
 
 The catalog shares the MCP command tree and excludes
-`mcp` and the generated `help` subcommand; MCP tool arguments remain `args: string[]`.
+`mcp`, `ui` and the generated `help` subcommand; MCP tool arguments remain `args: string[]`.
 
 Clap distinguishes the metadata flag from literal values. For example,
 `terrio info -- --json-usage` treats `--json-usage` as the dataset name, and

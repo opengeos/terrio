@@ -124,7 +124,8 @@ terrio convert tile.laz tile-ept/ept.json                               # write 
 
 `terrio mcp` serves the commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code) over
 the Model Context Protocol: `claude mcp add terrio -- terrio mcp` (see
-[AI Agents](https://terrio.dev/mcp/)).
+[AI Agents](https://terrio.dev/mcp/)). `terrio ui` serves the same commands as forms in your browser,
+from your own computer.
 
 ## Library
 
