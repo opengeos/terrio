@@ -45,7 +45,10 @@ def cache_path(root, url):
 
 
 def schema_locations(doc):
-    tokens = doc.getroot().get(f"{{{XSI}}}schemaLocation").split()
+    value = doc.getroot().get(f"{{{XSI}}}schemaLocation")
+    if not value or len(value.split()) % 2:
+        raise ValueError("schemaLocation must contain namespace/URL pairs")
+    tokens = value.split()
     return list(zip(tokens[::2], map(canonical, tokens[1::2])))
 
 
@@ -112,9 +115,13 @@ def source_faces(doc):
         if qname.namespace not in GML or qname.localname != "Polygon":
             continue
         ancestors = list(node.iterancestors())
-        owner = next(n for n in ancestors if etree.QName(n).localname in OBJECTS)
-        lod = next(re.match(r"lod(\d+)", etree.QName(n).localname).group(1)
-                   for n in ancestors if re.match(r"lod(\d+)", etree.QName(n).localname))
+        owner = next((n for n in ancestors if etree.QName(n).localname in OBJECTS), None)
+        if owner is None:
+            raise ValueError("source Polygon has no supported city object owner")
+        lod = next((re.match(r"lod(\d+)", etree.QName(n).localname).group(1)
+                    for n in ancestors if re.match(r"lod(\d+)", etree.QName(n).localname)), None)
+        if lod is None:
+            raise ValueError("source Polygon has no LoD property")
         semantic = None
         for ancestor in ancestors:
             if ancestor is owner:

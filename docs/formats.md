@@ -452,12 +452,14 @@ root CityModel; `.citygml` selects this driver explicitly. Ordinary GML retains
 its sibling application-schema lookup. XML and local geometry XLinks are parsed
 without fetching external resources; invalid XML, duplicate IDs, unresolved
 references, reference cycles and malformed coordinate lists fail explicitly.
-Reference expansion is limited to 1,000,000 node visits, including acyclic
-branching graphs. Repeated object references share their feature records and
-accumulate parent IDs. Repeated source properties are retained as JSON arrays.
+Reference expansion is limited to 1,000,000 visits within expanded subtrees,
+including acyclic branching graphs; ordinary inline traversal does not consume
+this budget. A global nesting limit of 256 includes linked city objects. Repeated
+object references share their feature records and accumulate parent IDs. Repeated source properties are retained as JSON arrays.
 
 The `CityGML` layer uses the eight common flat fields described for CityJSON,
-without its skipped-ring/face counters. Polygon faces retain
+without its skipped-ring/face counters. Rings with fewer than three distinct XYZ
+positions fail explicitly rather than being skipped. Polygon faces retain
 Z and interior rings; solids (including interior shells), composite surfaces,
 triangle/rectangle patches, linear curves and point collections become ordinary
 primitives. Local polygon references shared by a solid and its thematic boundary
@@ -468,16 +470,24 @@ containers. Missing object IDs receive generated IDs. Object properties are JSON
 text; measurement units and code spaces are retained with their values.
 
 Affine implicit geometry uses its matrix before adding the reference point.
-Inherited coordinate dimensions, CRS names, legacy compound OGC URNs and
+Explicit and inherited coordinate dimensions override dimensions inferred from
+the CRS when omitted. Position-level CRS declarations, legacy compound OGC URNs and
 geographic authority-axis order are supported. A flat layer requires a consistent
 CRS; mixing unknown and known CRSs, or distinct CRSs, fails explicitly.
 
-This is a materialized vector view with the shared 256 MiB estimated flat-feature
-payload limit. It does not retain solid/shell topology, full city-model hierarchy,
+UTF-8, Latin-1 and UTF-16 XML are supported. Identification examines at most
+16 KiB; opening a named `.gml` can inspect beyond a long leading comment.
+
+This is a materialized vector view with a 256 MiB raw XML limit checked before
+decoding/tree construction and the shared 256 MiB estimated flat-feature payload
+limit. Path-based input is already read into memory before the XML limit check;
+these are allocation safeguards, not a total process-memory ceiling. It does not
+retain solid/shell topology, full city-model hierarchy,
 textures/materials, ADE semantics or general metadata for lossless round trips.
 External geometry references, linked coordinate/ring content, nonlinear curve
-segments and DTD/entity declarations are outside this native reader. Builds with
-the optional GDAL backend retain Terrio’s normal fallback policy; an explicit
+segments, RasterRelief coverage data and DTD/entity declarations are outside this
+native reader. Builds with the optional GDAL backend retain Terrio’s normal
+fallback policy; an explicit
 `GDAL:` input selects GDAL directly. CityGML writing is
 a separate step in [#462](https://github.com/opengeos/terrio/issues/462).
 

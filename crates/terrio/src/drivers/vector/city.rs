@@ -5,6 +5,24 @@
 use crate::Result;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
 
+pub(super) const MAX_FEATURE_BYTES: usize = 256 * 1024 * 1024;
+
+pub(super) fn charge(used: &mut usize, cost: usize, limit: usize, format: &str) -> Result<()> {
+    *used = used.saturating_add(cost);
+    if *used > limit {
+        let limit = if limit == MAX_FEATURE_BYTES { "256 MiB".into() } else { format!("{limit} bytes") };
+        return Err(crate::Error::InvalidData(format!(
+            "{format}: flat feature payload exceeds the {limit} expansion limit (attributes and complete source semantics are repeated per primitive); split the model into smaller files"
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn charge_replacement(used: &mut usize, previous: usize, next: usize, format: &str) -> Result<()> {
+    *used = used.saturating_sub(previous);
+    charge(used, next, MAX_FEATURE_BYTES, format)
+}
+
 pub(super) fn layer(name: &str) -> Layer {
     let mut layer = Layer::new(name);
     for name in ["city_id", "city_type", "lod", "parents", "attributes", "geometry_type", "semantics", "surface_semantics"] {
@@ -14,7 +32,7 @@ pub(super) fn layer(name: &str) -> Layer {
 }
 
 pub(super) fn push(layer: &mut Layer, geometry: Option<Geometry>, attrs: &[FieldValue], used: &mut usize) -> Result<()> {
-    push_with_limit(layer, geometry, attrs, used, 256 * 1024 * 1024)
+    push_with_limit(layer, geometry, attrs, used, MAX_FEATURE_BYTES)
 }
 
 // Account for owned field text, coordinates and feature containers before cloning
@@ -43,12 +61,7 @@ pub(super) fn push_with_limit(
         .saturating_add(coordinates.saturating_mul(std::mem::size_of::<Coord>()))
         .saturating_add(std::mem::size_of_val(attrs))
         .saturating_add(std::mem::size_of::<Feature>());
-    *used = used.saturating_add(cost);
-    if *used > limit {
-        return Err(crate::Error::InvalidData(
-            "city model flat feature payload exceeds the 256 MiB expansion limit (attributes and complete source semantics are repeated per primitive); split the model into smaller files".into(),
-        ));
-    }
+    charge(used, cost, limit, &layer.name)?;
     layer.push(Feature { fid: layer.features.len() as u64, geometry, attributes: attrs.to_vec() });
     Ok(())
 }

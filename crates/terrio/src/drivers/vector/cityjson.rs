@@ -246,7 +246,7 @@ fn text(value: &Value) -> FieldValue {
 
 /// Read a CityJSON document into its ordinary, flat vector view.
 pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
-    parse_with_limit(bytes, 256 * 1024 * 1024)
+    parse_with_limit(bytes, super::city::MAX_FEATURE_BYTES)
 }
 
 fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {

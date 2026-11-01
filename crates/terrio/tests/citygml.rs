@@ -155,3 +155,58 @@ fn geometry_axis_spellings_are_normalized_before_combining() {
         assert_eq!((c.x, c.y, c.z), (4.0, 52.0, Some(30.0)));
     }
 }
+
+#[test]
+fn constructive_elements_and_building_subdivisions_keep_their_own_identity() {
+    for class in ["BuildingConstructiveElement", "BuildingUnit", "Storey"] {
+        let body = format!(
+            r#"<b:buildingSubdivision><b:{class} g:id="child"><g:name>member</g:name><b:lod2MultiSurface>{FACE}</b:lod2MultiSurface></b:{class}></b:buildingSubdivision>"#
+        );
+        let ds = read(&model("3.0", &body, "EPSG:32632"), "members.gml").unwrap();
+        let child = ds.layers[0].features.iter().find(|f| f.attributes[0] == FieldValue::Text("child".into())).unwrap();
+        assert_eq!(child.attributes[1], FieldValue::Text(class.into()));
+        assert_eq!(child.attributes[3], FieldValue::Text("[\"house\"]".into()));
+        assert!(child.geometry.is_some());
+    }
+}
+
+#[test]
+fn utf16_and_latin1_documents_keep_unicode_attributes() {
+    let text = model("3.0", "<g:name>Montréal</g:name>", "EPSG:32632");
+    for little in [true, false] {
+        let mut bytes = if little { vec![0xff, 0xfe] } else { vec![0xfe, 0xff] };
+        for value in text.encode_utf16() {
+            bytes.extend(if little { value.to_le_bytes() } else { value.to_be_bytes() });
+        }
+        let ds = terrio::memory::open_vector_bytes(bytes.clone(), "model.gml", &Default::default()).unwrap();
+        assert_eq!(ds.driver, VectorDriver::CityGML);
+        assert_eq!(terrio::inspection::identify_bytes(&bytes, "model.gml").unwrap().driver, "CityGML");
+        let FieldValue::Text(attrs) = &ds.layers[0].features[0].attributes[4] else { panic!() };
+        assert_eq!(serde_json::from_str::<serde_json::Value>(attrs).unwrap()["name"], "Montréal");
+    }
+    let bytes: Vec<u8> = text.chars().map(|c| u8::try_from(c as u32).unwrap()).collect();
+    let ds = terrio::memory::open_vector_bytes(bytes, "model.gml", &Default::default()).unwrap();
+    assert_eq!(ds.driver, VectorDriver::CityGML);
+    let FieldValue::Text(attrs) = &ds.layers[0].features[0].attributes[4] else { panic!() };
+    assert_eq!(serde_json::from_str::<serde_json::Value>(attrs).unwrap()["name"], "Montréal");
+}
+
+#[test]
+fn reverse_surface_references_keep_orientation_and_remove_adjacent_duplicates() {
+    let face = FACE.replace("10 0 0 10 10 0", "10 0 0 10 0 0 10 10 0");
+    let body = format!(
+        r##"<b:lod2MultiSurface><g:MultiSurface><g:surfaceMember>{face}</g:surfaceMember><g:surfaceMember><g:OrientableSurface orientation="-"><g:baseSurface l:href="#wall"/></g:OrientableSurface></g:surfaceMember></g:MultiSurface></b:lod2MultiSurface>"##
+    );
+    let ds = read(&model("3.0", &body, "EPSG:32632"), "reversed.gml").unwrap();
+    assert_eq!(ds.layers[0].features.len(), 2);
+    let rings: Vec<_> = ds.layers[0]
+        .features
+        .iter()
+        .map(|f| match f.geometry.as_ref().unwrap() {
+            Geometry::Polygon { exterior, .. } => exterior,
+            _ => panic!(),
+        })
+        .collect();
+    assert_eq!(rings[0].len(), 4);
+    assert_eq!(rings[1].0, rings[0].0.iter().rev().cloned().collect::<Vec<_>>());
+}

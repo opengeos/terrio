@@ -317,7 +317,7 @@ pub(crate) mod codec {
         {
             return Some(VectorDriver::CityJSON);
         }
-        if json.starts_with(b"<") && crate::drivers::vector::citygml::looks_like(json) {
+        if crate::drivers::vector::citygml::is_xml_prefix(json) && crate::drivers::vector::citygml::looks_like(json) {
             return Some(VectorDriver::CityGML);
         }
         if let Some(d) = VectorDriver::for_extension(name) {

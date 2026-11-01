@@ -208,6 +208,9 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
             return raster(RasterDriver::SRTMHGT);
         }
     }
+    if crate::drivers::vector::citygml::is_xml_prefix(bytes) && crate::drivers::vector::citygml::looks_like(bytes) {
+        return vector(VectorDriver::CityGML);
+    }
     if bytes.contains(&0) {
         return None;
     }
@@ -236,9 +239,6 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
         return vector(VectorDriver::DXF);
     }
     if text.starts_with('<') {
-        if crate::drivers::vector::citygml::looks_like(bytes) {
-            return vector(VectorDriver::CityGML);
-        }
         let mut reader = quick_xml::Reader::from_str(text);
         loop {
             match reader.read_event() {

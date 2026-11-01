@@ -3439,3 +3439,12 @@ test("singlepart preserves measured ZM coordinates through GeoPackage", async (c
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("CityGML UTF-16 positions infer two dimensions from their CRS", () => {
+  const xml = `<c:CityModel xmlns:c="http://www.opengis.net/citygml/3.0" xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0"><c:cityObjectMember><b:Building g:id="house"><g:name>Montréal</g:name><b:lod1Geometry><g:Point><g:pos srsName="EPSG:32632">10 20</g:pos></g:Point></b:lod1Geometry></b:Building></c:cityObjectMember></c:CityModel>`;
+  const ds = terrio.open(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(xml, "utf16le")]), "model.gml");
+  const feature = ds.toGeoJSON().features[0];
+  assert.deepEqual(feature.geometry.coordinates, [10, 20]);
+  assert.equal(JSON.parse(feature.properties.attributes).name, "Montréal");
+  ds.free();
+});

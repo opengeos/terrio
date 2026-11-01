@@ -13,12 +13,43 @@ use quick_xml::events::Event;
 use quick_xml::name::ResolveResult;
 use quick_xml::{NsReader, XmlVersion};
 use serde_json::{Map, Value, json};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use wbvector::{Coord, FieldValue, Geometry, Layer, Ring};
 
 const XLINK: &str = "http://www.w3.org/1999/xlink";
 const GML: &str = "http://www.opengis.net/gml";
 const GML32: &str = "http://www.opengis.net/gml/3.2";
+
+const MAX_INPUT_BYTES: usize = 256 * 1024 * 1024;
+const MAX_NESTING: usize = 256;
+const MAX_REFERENCE_VISITS: usize = 1_000_000;
+
+fn utf16_encoding(bytes: &[u8]) -> Option<&'static encoding_rs::Encoding> {
+    if bytes.starts_with(b"\xff\xfe") || bytes.starts_with(b"<\0") {
+        Some(encoding_rs::UTF_16LE)
+    } else if bytes.starts_with(b"\xfe\xff") || bytes.starts_with(b"\0<") {
+        Some(encoding_rs::UTF_16BE)
+    } else {
+        None
+    }
+}
+
+fn decode_xml(bytes: &[u8]) -> Result<Cow<'_, str>> {
+    if let Some(encoding) = utf16_encoding(bytes) {
+        let (text, errors) = encoding.decode_with_bom_removal(bytes);
+        if errors {
+            return Err(invalid("malformed UTF-16 XML"));
+        }
+        Ok(text)
+    } else {
+        let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+        Ok(match std::str::from_utf8(bytes) {
+            Ok(text) => Cow::Borrowed(text),
+            Err(_) => Cow::Owned(bytes.iter().map(|&byte| byte as char).collect()),
+        })
+    }
+}
 
 fn invalid(message: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("CityGML: {message}"))
@@ -60,7 +91,7 @@ fn namespace(value: ResolveResult<'_>) -> Result<String> {
 }
 
 fn xml(bytes: &[u8]) -> Result<Node> {
-    let decoded = super::xml::decode(bytes);
+    let decoded = decode_xml(bytes)?;
     let mut reader = NsReader::from_str(&decoded);
     let mut stack = vec![Node::default()];
     let mut count = 0usize;
@@ -70,7 +101,7 @@ fn xml(bytes: &[u8]) -> Result<Node> {
         match event {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 count += 1;
-                if count > 5_000_000 || stack.len() > 256 {
+                if count > 5_000_000 || stack.len() > MAX_NESTING {
                     return Err(invalid("XML element or nesting limit exceeded"));
                 }
                 let mut node = Node { name: e.local_name().as_ref().to_string(), ns, ..Default::default() };
@@ -128,7 +159,10 @@ fn numbers(text: &str) -> Result<Vec<f64>> {
 }
 
 fn dimension(node: &Node, inherited: usize) -> Result<usize> {
-    let dim = node.attr("", "srsDimension").map(|d| d.parse::<usize>().map_err(invalid)).transpose()?.unwrap_or(inherited);
+    let Some(value) = node.attr("", "srsDimension") else {
+        return Ok(inherited);
+    };
+    let dim = value.parse::<usize>().map_err(invalid)?;
     if !(2..=3).contains(&dim) {
         return Err(Error::Unsupported(format!("CityGML coordinate dimension {dim}")));
     }
@@ -186,7 +220,16 @@ fn ring(node: &Node, dim: usize) -> Result<Ring> {
     if points.len() > 1 && points.first() == points.last() {
         points.pop();
     }
-    if points.len() < 3 {
+    let mut distinct = Vec::with_capacity(3);
+    for point in &points {
+        if !distinct.contains(&point) {
+            distinct.push(point);
+        }
+        if distinct.len() == 3 {
+            break;
+        }
+    }
+    if distinct.len() < 3 {
         return Err(invalid("ring has fewer than three distinct positions"));
     }
     Ok(Ring::new(points))
@@ -267,7 +310,12 @@ fn attributes(node: &Node) -> Value {
             if let (Some(name), Some(value)) = (child.attr("", "name"), child.child("value")) {
                 let text = value.text.trim();
                 let v = match child.name.as_str() {
-                    "intAttribute" | "doubleAttribute" => serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.into())),
+                    "intAttribute" => text.parse::<i64>().map(|value| json!(value)).unwrap_or_else(|_| Value::String(text.into())),
+                    "doubleAttribute" => text
+                        .parse::<f64>()
+                        .ok()
+                        .and_then(serde_json::Number::from_f64)
+                        .map_or_else(|| Value::String(text.into()), Value::Number),
                     "boolAttribute" if matches!(text, "true" | "1") => Value::Bool(true),
                     "boolAttribute" if matches!(text, "false" | "0") => Value::Bool(false),
                     _ => Value::String(text.into()),
@@ -290,20 +338,26 @@ fn is_object(node: &Node) -> bool {
                 | "Room"
                 | "BuildingRoom"
                 | "BuildingInstallation"
+                | "BuildingConstructiveElement"
                 | "IntBuildingInstallation"
                 | "BuildingFurniture"
+                | "BuildingUnit"
+                | "Storey"
                 | "Door"
                 | "Window"
                 | "Bridge"
                 | "BridgePart"
                 | "BridgeRoom"
                 | "BridgeInstallation"
+                | "BridgeConstructiveElement"
+                | "BridgeConstructionElement"
                 | "BridgeFurniture"
                 | "Tunnel"
                 | "TunnelPart"
                 | "TunnelRoom"
                 | "HollowSpace"
                 | "TunnelInstallation"
+                | "TunnelConstructiveElement"
                 | "TunnelFurniture"
                 | "CityFurniture"
                 | "CityObjectGroup"
@@ -340,12 +394,30 @@ struct Context<'a> {
     geometry_type: Option<&'a str>,
     reverse: bool,
     matrix: Option<([f64; 16], [f64; 3])>,
+    expanded: bool,
+}
+
+#[derive(Clone, Copy)]
+struct Reference {
+    dimension: Option<usize>,
+    swap: bool,
+}
+
+fn axis_count(value: &Value) -> Option<usize> {
+    if let Some(axes) = value.get("coordinate_system").and_then(|v| v.get("axis")).and_then(Value::as_array) {
+        return Some(axes.len());
+    }
+    if let Some(components) = value.get("components").and_then(Value::as_array) {
+        return components.iter().try_fold(0usize, |sum, value| sum.checked_add(axis_count(value)?));
+    }
+    value.get("source_crs").and_then(axis_count)
 }
 
 struct Reader<'a> {
     ids: HashMap<&'a str, &'a Node>,
     layer: Layer,
     crs: Option<SpatialRef>,
+    references: HashMap<&'a str, Reference>,
     used: usize,
     next_object: usize,
     unknown_crs: bool,
@@ -353,6 +425,7 @@ struct Reader<'a> {
     active_links: HashSet<&'a str>,
     objects: HashMap<&'a str, Vec<usize>>,
     visits: usize,
+    max_reference_visits: usize,
     emitted: HashMap<(String, String, Option<String>, bool), usize>,
 }
 
@@ -385,26 +458,107 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn normalize(&mut self, geometry: Geometry, context: &Context<'_>) -> Result<Geometry> {
-        let mut swap = false;
-        if let Some(name) = context.crs {
-            if self.unknown_crs {
-                return Err(invalid("geometry without CRS mixed with georeferenced geometry"));
+    fn reference(&mut self, name: &'a str) -> Result<Reference> {
+        if self.unknown_crs {
+            return Err(invalid("geometry without CRS mixed with georeferenced geometry"));
+        }
+        let name = name.trim();
+        if let Some(reference) = self.references.get(name) {
+            return Ok(*reference);
+        }
+        let crs = parse_crs(name)?;
+        if self.crs.as_ref().is_some_and(|source| !source.same_as(&crs)) {
+            return Err(Error::Unsupported("CityGML: mixed CRSs in one flat layer".into()));
+        }
+        let dimension = crs
+            .to_projjson()
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|value| axis_count(&value))
+            .or_else(|| (crs.has_height() || crs.is_geocentric()).then_some(3));
+        let reference = Reference { dimension, swap: crs.is_geographic() && (name.starts_with("urn:") || name.contains("/def/crs/")) };
+        if self.crs.is_none() {
+            crs.apply_to_layer(&mut self.layer);
+            self.crs = Some(crs);
+        }
+        self.references.insert(name, reference);
+        Ok(reference)
+    }
+
+    fn coordinate_settings(
+        &mut self,
+        node: &'a Node,
+        dim: usize,
+        crs: Option<&'a str>,
+        common: &mut Option<(usize, Option<&'a str>)>,
+    ) -> Result<()> {
+        let dim = dimension(node, dim)?;
+        let crs = node.attr("", "srsName").or(crs);
+        if node.gml() && matches!(node.name.as_str(), "pos" | "posList" | "coordinates") {
+            let dim = self.coordinate_dimension(dim, crs)?;
+            if let Some((previous_dim, previous_crs)) = *common {
+                if dim != previous_dim {
+                    return Err(invalid("mixed coordinate dimensions in one geometry"));
+                }
+                if previous_crs != crs {
+                    match (previous_crs, crs) {
+                        (Some(a), Some(b)) => {
+                            // `reference` validates CRS equivalence against the layer once
+                            // for each spelling. A single primitive also needs one axis order.
+                            if self.reference(a)?.swap != self.reference(b)?.swap {
+                                return Err(invalid("mixed coordinate axis orders in one geometry"));
+                            }
+                        }
+                        _ => return Err(invalid("geometry without CRS mixed with georeferenced geometry")),
+                    }
+                }
+            } else {
+                *common = Some((dim, crs));
             }
-            let crs = parse_crs(name)?;
-            if self.crs.as_ref().is_some_and(|s| !s.same_as(&crs)) {
-                return Err(Error::Unsupported("CityGML: mixed CRSs in one flat layer".into()));
+        } else {
+            for child in &node.children {
+                self.coordinate_settings(child, dim, crs, common)?;
             }
-            swap = crs.is_geographic() && (name.starts_with("urn:") || name.contains("/def/crs/"));
-            if self.crs.is_none() {
-                crs.apply_to_layer(&mut self.layer);
-                self.crs = Some(crs);
-            }
+        }
+        Ok(())
+    }
+
+    fn coordinate_dimension(&mut self, dim: usize, crs: Option<&'a str>) -> Result<usize> {
+        let dim = if dim != 0 {
+            dim
+        } else if let Some(name) = crs {
+            self.reference(name)?.dimension.ok_or_else(|| invalid("cannot derive coordinate dimension from CRS; declare srsDimension"))?
+        } else {
+            3
+        };
+        if !(2..=3).contains(&dim) {
+            return Err(Error::Unsupported(format!("CityGML coordinate dimension {dim}")));
+        }
+        Ok(dim)
+    }
+
+    fn coordinate_context(&mut self, node: &'a Node, context: &Context<'a>) -> Result<Context<'a>> {
+        let mut common = None;
+        self.coordinate_settings(node, context.dim, context.crs, &mut common)?;
+        let mut resolved = context.clone();
+        if let Some((dim, crs)) = common {
+            resolved.dim = dim;
+            resolved.crs = crs;
+        } else {
+            resolved.dim = self.coordinate_dimension(context.dim, context.crs)?;
+        }
+        Ok(resolved)
+    }
+
+    fn normalize(&mut self, geometry: Geometry, context: &Context<'a>) -> Result<Geometry> {
+        let swap = if let Some(name) = context.crs {
+            self.reference(name)?.swap
         } else if self.crs.is_some() {
             return Err(invalid("geometry without CRS mixed with georeferenced geometry"));
         } else {
             self.unknown_crs = true;
-        }
+            false
+        };
         let convert = |mut c: Coord| -> Result<Coord> {
             if let Some((matrix, anchor)) = &context.matrix {
                 let p = [c.x, c.y, c.z.unwrap_or(0.0), 1.0];
@@ -442,7 +596,8 @@ impl<'a> Reader<'a> {
         attrs[2] = context.lod.as_ref().map_or(FieldValue::Null, |s| FieldValue::Text(s.clone()));
         attrs[5] = FieldValue::Text(context.geometry_type.unwrap_or(&node.name).into());
         attrs[7] = context.semantic.as_ref().map_or(FieldValue::Null, |s| FieldValue::Text(s.to_string()));
-        let geometry = self.normalize(primitive(node, context.dim)?, context)?;
+        let resolved = self.coordinate_context(node, context)?;
+        let geometry = self.normalize(primitive(node, resolved.dim)?, &resolved)?;
         // A solid's XLink and the thematic boundary's inline polygon denote one face.
         if let Some(id) = node.id().filter(|_| context.matrix.is_none()) {
             let key = (
@@ -461,10 +616,7 @@ impl<'a> Reader<'a> {
                         _ => 0,
                     };
                     let old = length(&self.layer.features[*index].attributes[7]);
-                    self.used = self.used.saturating_sub(old).saturating_add(length(&attrs[7]));
-                    if self.used > 256 * 1024 * 1024 {
-                        return Err(invalid("flat feature payload exceeds the 256 MiB expansion limit"));
-                    }
+                    super::city::charge_replacement(&mut self.used, old, length(&attrs[7]), "CityGML")?;
                     self.layer.features[*index].attributes[7] = attrs[7].clone();
                 }
                 return Ok(());
@@ -476,12 +628,14 @@ impl<'a> Reader<'a> {
     }
 
     fn walk(&mut self, node: &'a Node, mut context: Context<'a>, base: &[FieldValue], depth: usize) -> Result<()> {
-        self.visits += 1;
-        if self.visits > 1_000_000 {
-            return Err(invalid("XLink expansion exceeds the 1,000,000 node-visit limit"));
+        if context.expanded {
+            self.visits += 1;
+            if self.visits > self.max_reference_visits {
+                return Err(invalid("XLink expansion exceeds the reference node-visit limit"));
+            }
         }
-        if depth > 256 {
-            return Err(invalid("XLink nesting or cycle limit exceeded"));
+        if depth > MAX_NESTING {
+            return Err(invalid("city-object or geometry nesting limit exceeded"));
         }
         if node.city() && matches!(node.name.as_str(), "appearance" | "appearanceMember" | "Appearance" | "Address" | "externalReference") {
             return Ok(());
@@ -512,12 +666,13 @@ impl<'a> Reader<'a> {
             if !self.active_links.insert(id) {
                 return Err(invalid("cyclic geometry XLink"));
             }
+            context.expanded = true;
             let result = self.walk(resolved, context, base, depth + 1);
             self.active_links.remove(id);
             return result;
         }
         if is_object(node) {
-            return self.object(node, Some(&base[0]), context);
+            return self.object(node, Some(&base[0]), context, depth + 1);
         }
         if node.city() && node.name == "ImplicitGeometry" {
             let relative = node
@@ -526,7 +681,9 @@ impl<'a> Reader<'a> {
                 .ok_or_else(|| invalid("implicit geometry has no relative geometry"))?;
             let reference = node.child("referencePoint").ok_or_else(|| invalid("implicit geometry has no reference point"))?;
             let point = self.link(reference)?;
-            let coords = coordinates(point, context.dim)?;
+            let point_context = self.coordinate_context(point, &context)?;
+            let coords = coordinates(point, point_context.dim)?;
+            context.crs = point_context.crs;
             if coords.len() != 1 {
                 return Err(invalid("implicit referencePoint must have one position"));
             }
@@ -582,7 +739,10 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    fn object(&mut self, node: &'a Node, parent: Option<&FieldValue>, mut context: Context<'a>) -> Result<()> {
+    fn object(&mut self, node: &'a Node, parent: Option<&FieldValue>, mut context: Context<'a>, depth: usize) -> Result<()> {
+        if depth > MAX_NESTING {
+            return Err(invalid("city-object or geometry nesting limit exceeded"));
+        }
         if let Some(id) = node.id() {
             if self.active.contains(id) {
                 return Err(invalid("cyclic city-object hierarchy"));
@@ -598,10 +758,7 @@ impl<'a> Reader<'a> {
                         if !parents.contains(parent) {
                             parents.push(parent.clone());
                             let text = serde_json::to_string(&parents).map_err(invalid)?;
-                            self.used = self.used.saturating_sub(old_len).saturating_add(text.len());
-                            if self.used > 256 * 1024 * 1024 {
-                                return Err(invalid("flat feature payload exceeds the 256 MiB expansion limit"));
-                            }
+                            super::city::charge_replacement(&mut self.used, old_len, text.len(), "CityGML")?;
                             self.layer.features[row].attributes[3] = FieldValue::Text(text);
                         }
                     }
@@ -649,7 +806,7 @@ impl<'a> Reader<'a> {
         ];
         let start = self.layer.features.len();
         for child in &node.children {
-            self.walk(child, context.clone(), &attrs, 0)?;
+            self.walk(child, context.clone(), &attrs, depth + 1)?;
         }
         // Preserve parents/nonspatial objects even when only child objects have geometry.
         if !self.layer.features[start..].iter().any(|f| f.attributes[0] == attrs[0]) {
@@ -666,6 +823,14 @@ impl<'a> Reader<'a> {
 
 /// Parse a CityGML 2.0 or 3.0 city model into an ordinary flat vector layer.
 pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
+    parse_with_limits(bytes, MAX_INPUT_BYTES, MAX_REFERENCE_VISITS)
+}
+
+fn parse_with_limits(bytes: &[u8], input_limit: usize, max_reference_visits: usize) -> Result<Vec<Layer>> {
+    if bytes.len() > input_limit {
+        return Err(invalid(format!("input exceeds the {input_limit} byte XML limit")));
+    }
+    super::geojson::reserve_parse_memory(bytes.len(), "CityGML")?;
     let root = xml(bytes)?;
     if root.name != "CityModel" || !matches!(root.ns.as_str(), "http://www.opengis.net/citygml/2.0" | "http://www.opengis.net/citygml/3.0")
     {
@@ -688,6 +853,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
         ids,
         layer: super::city::layer("CityGML"),
         crs: None,
+        references: HashMap::new(),
         used: 0,
         next_object: 0,
         unknown_crs: false,
@@ -695,10 +861,12 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
         active_links: HashSet::new(),
         objects: HashMap::new(),
         visits: 0,
+        max_reference_visits,
         emitted: HashMap::new(),
     };
     let envelope = root.child("boundedBy").and_then(|n| n.child("Envelope"));
-    let dim = envelope.map(|n| dimension(n, 3)).transpose()?.unwrap_or(3);
+    let root_dim = dimension(&root, 0)?;
+    let dim = envelope.map(|n| dimension(n, root_dim)).transpose()?.unwrap_or(root_dim);
     let crs = root.attr("", "srsName").or_else(|| envelope.and_then(|n| n.attr("", "srsName")));
     let context = Context { dim, crs, ..Default::default() };
     for member in root.children.iter().filter(|n| n.city() && n.name == "cityObjectMember") {
@@ -708,10 +876,10 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
                 if !node.city() {
                     return Err(Error::Unsupported(format!("CityGML city object namespace {}", node.ns)));
                 }
-                reader.object(node, None, context.clone())?;
+                reader.object(node, None, context.clone(), 0)?;
             }
         } else {
-            reader.object(resolved, None, context.clone())?;
+            reader.object(resolved, None, Context { expanded: true, ..context.clone() }, 0)?;
         }
     }
     if reader.crs.is_none()
@@ -722,19 +890,46 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
     Ok(vec![reader.layer])
 }
 
-/// Whether the root element declares a supported CityGML model, including a partial header.
-pub(crate) fn looks_like(bytes: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(bytes);
+/// Whether a byte prefix can start an XML document in one of the supported encodings.
+pub(crate) fn is_xml_prefix(bytes: &[u8]) -> bool {
+    utf16_encoding(bytes).is_some() || bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes).trim_ascii_start().starts_with(b"<")
+}
+
+/// `None` means the available prefix does not contain a complete XML root tag.
+pub(crate) fn root_probe(bytes: &[u8]) -> Option<bool> {
+    let text =
+        if let Some(encoding) = utf16_encoding(bytes) { encoding.decode_with_bom_removal(bytes).0 } else { String::from_utf8_lossy(bytes) };
     let mut reader = NsReader::from_str(text.trim_start_matches('\u{feff}').trim_start());
     loop {
         match reader.read_resolved_event() {
             Ok((ResolveResult::Bound(ns), Event::Start(e) | Event::Empty(e))) => {
-                return e.local_name().as_ref() == "CityModel"
-                    && matches!(ns.as_ref(), "http://www.opengis.net/citygml/2.0" | "http://www.opengis.net/citygml/3.0");
+                return Some(
+                    e.local_name().as_ref() == "CityModel"
+                        && matches!(ns.as_ref(), "http://www.opengis.net/citygml/2.0" | "http://www.opengis.net/citygml/3.0"),
+                );
             }
-            Ok((_, Event::Start(_) | Event::Empty(_) | Event::Eof)) | Err(_) => return false,
+            Ok((_, Event::Start(_) | Event::Empty(_))) => return Some(false),
+            Ok((_, Event::Eof)) | Err(_) => return None,
             _ => {}
         }
+    }
+}
+
+/// Find the XML root without decoding the document body. Prefixes grow only when
+/// a leading declaration/comment or the root start tag needs more input.
+pub(crate) fn looks_like(bytes: &[u8]) -> bool {
+    if !is_xml_prefix(bytes) {
+        return false;
+    }
+    let mut end = bytes.len().min(8192);
+    loop {
+        if let Some(city) = root_probe(&bytes[..end]) {
+            return city;
+        }
+        if end == bytes.len() {
+            return false;
+        }
+        end = end.saturating_mul(2).min(bytes.len());
     }
 }
 
@@ -745,6 +940,69 @@ mod test_data;
 #[cfg(test)]
 mod tests {
     use super::test_data::{FACE, model};
+
+    #[test]
+    fn linked_object_chains_share_the_global_nesting_limit() {
+        let mut text = String::from(
+            r#"<c:CityModel xmlns:c="http://www.opengis.net/citygml/3.0" xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0" xmlns:l="http://www.w3.org/1999/xlink">"#,
+        );
+        for i in 0..600 {
+            text.push_str(&format!(r#"<c:cityObjectMember><b:BuildingPart g:id="part{i}">"#));
+            if i < 599 {
+                text.push_str(&format!(r##"<b:consistsOfBuildingPart l:href="#part{}"/>"##, i + 1));
+            }
+            text.push_str("</b:BuildingPart></c:cityObjectMember>");
+        }
+        text.push_str("</c:CityModel>");
+        assert!(super::parse(text.as_bytes()).unwrap_err().to_string().contains("nesting limit"));
+    }
+
+    #[test]
+    fn inline_elements_do_not_consume_the_reference_expansion_budget() {
+        let body = "<b:note>ordinary</b:note>".repeat(4096);
+        let text = model("3.0", &body, "EPSG:32632");
+        let layer = super::parse_with_limits(text.as_bytes(), super::MAX_INPUT_BYTES, 16).unwrap().remove(0);
+        assert_eq!(layer.features.len(), 1);
+    }
+
+    #[test]
+    fn input_limit_is_checked_before_xml_decoding() {
+        let text = model("3.0", "", "EPSG:32632");
+        assert!(
+            super::parse_with_limits(text.as_bytes(), text.len() - 1, super::MAX_REFERENCE_VISITS)
+                .unwrap_err()
+                .to_string()
+                .contains("XML limit")
+        );
+    }
+
+    #[test]
+    fn alternating_two_position_rings_are_rejected_explicitly() {
+        let face = FACE.replace("10 0 0 10 10 0 10 10 10 10 0 10 10 0 0", "10 0 0 10 10 0 10 0 0 10 10 0 10 0 0");
+        let text = model("3.0", &format!("<b:lod2MultiSurface>{face}</b:lod2MultiSurface>"), "EPSG:32632");
+        assert!(super::parse(text.as_bytes()).unwrap_err().to_string().contains("three distinct"));
+    }
+
+    #[test]
+    fn omitted_dimension_uses_the_crs_and_position_level_reference() {
+        for (reference, position, wanted) in [("EPSG:32632", "1 2", (1.0, 2.0, None)), ("EPSG:4979", "4 52 30", (4.0, 52.0, Some(30.0)))] {
+            let body = format!("<b:lod1Geometry><g:Point><g:pos srsName=\"{reference}\">{position}</g:pos></g:Point></b:lod1Geometry>");
+            let text = model("3.0", &body, reference).replace("srsDimension=\"3\"", "");
+            let layers = super::parse(text.as_bytes()).unwrap();
+            let wbvector::Geometry::Point(point) = layers[0].features[0].geometry.as_ref().unwrap() else { panic!() };
+            assert_eq!((point.x, point.y, point.z), wanted);
+        }
+    }
+
+    #[test]
+    fn generic_numeric_attributes_do_not_accept_json_arrays_as_numbers() {
+        let body = r#"<b:intAttribute name="bad"><b:value>[1,2]</b:value></b:intAttribute><b:doubleAttribute name="height"><b:value>12.5</b:value></b:doubleAttribute>"#;
+        let layers = super::parse(model("3.0", body, "EPSG:32632").as_bytes()).unwrap();
+        let wbvector::FieldValue::Text(attrs) = &layers[0].features[0].attributes[4] else { panic!() };
+        let attrs: serde_json::Value = serde_json::from_str(attrs).unwrap();
+        assert_eq!(attrs["bad"], "[1,2]");
+        assert_eq!(attrs["height"], 12.5);
+    }
 
     #[test]
     fn malformed_xml_links_coordinates_and_namespaces_fail_explicitly() {

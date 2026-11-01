@@ -54,10 +54,32 @@ python scripts/conformance.py ../terrio-data --only citygml --strict
 ```
 
 The suite requires current Python bindings and `lxml`; Node/WASM is included when
-`js/pkg-node/terrio.js` exists. Both source files must pass XSD validation against
+the package exports `open` and Node is runnable. Both source files must pass XSD validation against
 the cached OGC/W3C/OASIS schemas. XYZ, holes, owner/type, LoD, thematic face class
 and scalar source attributes are exact. Rust regressions additionally check local
-XLinks, implicit matrices, authority-axis order, compound CRSs and malformed input.
+XLinks (including reversed surfaces), consecutive coordinate duplicates, implicit
+matrices, inferred dimensions, UTF-16/Latin-1 input, authority-axis order, compound
+CRSs and malformed input. The independent XML oracle covers the explicit polygon
+geometry in the two published fixtures; it does not independently expand arbitrary
+XLinks or implicit geometry.
+
+CityGML dispatch and CRS-cache observations can be reproduced with:
+
+```sh
+python scripts/benchmark_citygml_dispatch.py ../terrio-data
+python scripts/benchmark_citygml_dispatch.py ../terrio-data --restrict-drivers
+```
+
+In five warm local development-binding runs, the 3,092-face example's median
+open time changed from 0.551 s before the review fixes to 0.264 s afterward.
+These are development-profile observations, not optimized performance guarantees.
+With a CityGML-only driver restriction, equal 32,834-byte generated files with
+an early root or a root after a 32 KiB comment read 33,858 and 49,218 bytes,
+respectively: one complete source read plus a 1 KiB or 16 KiB identification
+prefix. Linux `/proc/self/io` counted three and eight read calls, respectively,
+after subtracting counter-read overhead. Without the restriction, both read
+exactly the source length in two calls. The extra prefix read is bounded even
+when opening must inspect beyond it to find the root.
 
 The optional live 3DBAG bbox regression from PR #464 can also be cached externally:
 

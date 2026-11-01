@@ -40,3 +40,17 @@ def test_citygml_paths_bytes_xyz_and_metadata(tmp_path, version):
             [10, 21, 30],
             [10, 21, 31],
         ]
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "latin-1"])
+def test_inferred_2d_position_crs_and_xml_encodings(encoding):
+    xml = """<c:CityModel xmlns:c="http://www.opengis.net/citygml/3.0"
+    xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0">
+    <c:cityObjectMember><b:Building g:id="house"><g:name>Montréal</g:name>
+    <b:lod1Geometry><g:Point><g:pos srsName="EPSG:32632">10 20</g:pos></g:Point>
+    </b:lod1Geometry></b:Building></c:cityObjectMember></c:CityModel>"""
+    ds = terrio.open_bytes(xml.encode(encoding), filename="model.gml")
+    assert ds.driver == "CityGML"
+    feature = ds[0].to_geojson()["features"][0]
+    assert feature["geometry"]["coordinates"] == [10, 20]
+    assert json.loads(feature["properties"]["attributes"])["name"] == "Montréal"

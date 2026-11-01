@@ -638,7 +638,7 @@ def suite_citygml(ctx):
         return suite
     command = [sys.executable, str(SCRIPTS / "compare_citygml.py"), ctx.data, "--terrio", ctx.terrio, "--json"]
     node = ROOT / "js/pkg-node/terrio.js"
-    if node.is_file() and shutil.which("node"):
+    if node_exports_available(node, ["open"]):
         command += ["--node-package", str(node)]
     code, out, err = run(command)
     try:
@@ -675,7 +675,7 @@ def suite_cityjson(ctx):
         return suite
     command = [sys.executable, str(SCRIPTS / "compare_cityjson.py"), ctx.data, "--terrio", ctx.terrio, "--json"]
     node = ROOT / "js/pkg-node/terrio.js"
-    if node.is_file() and shutil.which("node"):
+    if node_exports_available(node, ["open"]):
         command += ["--node-package", str(node)]
     code, out, err = run(command)
     try:

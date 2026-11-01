@@ -55,3 +55,23 @@ def test_repeatable_properties_keep_all_source_occurrences():
     actual["features"][0]["properties"]["attributes"] = json.dumps(attrs)
     with pytest.raises(AssertionError):
         compare(expected, owners, actual)
+
+
+@pytest.mark.parametrize("value", [None, "", "namespace", "namespace https://schemas.opengis.net/a.xsd extra"])
+def test_schema_locations_require_complete_pairs(value):
+    from compare_citygml import schema_locations, XSI
+
+    root = etree.Element("root")
+    if value is not None:
+        root.set(f"{{{XSI}}}schemaLocation", value)
+    with pytest.raises(ValueError, match="namespace/URL pairs"):
+        schema_locations(etree.ElementTree(root))
+
+
+@pytest.mark.parametrize("owner", [False, True])
+def test_polygon_without_owner_or_lod_has_clear_error(owner):
+    root = etree.Element("{http://www.opengis.net/citygml/3.0}CityModel")
+    parent = etree.SubElement(root, "{http://www.opengis.net/citygml/building/3.0}Building") if owner else root
+    etree.SubElement(parent, "{http://www.opengis.net/gml/3.2}Polygon")
+    with pytest.raises(ValueError, match="LoD property" if owner else "city object owner"):
+        source_faces(etree.ElementTree(root))

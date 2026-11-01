@@ -753,17 +753,26 @@ pub fn identify_bytes(name: &str, bytes: &[u8]) -> Identified {
     match named_drivers(name.trim()) {
         Named::Prefix(driver) => Identified { by_name: vec![driver.to_string()], by_content: None },
         Named::Name(_, by_name) => {
-            let by_content = sniff_named(&bytes[..bytes.len().min(1024)], &by_name)
-                .or_else(|| crate::drivers::hgt::is_hgt_bytes(name.trim(), bytes).then_some("SRTMHGT"));
+            let initial = &bytes[..bytes.len().min(1024)];
+            let head =
+                if inconclusive_xml(initial) { &bytes[..bytes.len().min(crate::inspection::IDENTIFICATION_HEADER_BYTES)] } else { initial };
+            let by_content =
+                sniff_named(head, &by_name).or_else(|| crate::drivers::hgt::is_hgt_bytes(name.trim(), bytes).then_some("SRTMHGT"));
             Identified { by_name, by_content: by_content.map(str::to_string) }
         }
     }
 }
 
-// JSON without an observed root type is ambiguous. Shared .json names and explicit
-// CityJSON names must not acquire a false GeoJSON assertion from a bounded prefix.
+// Bounded prefixes must not assert a format before their JSON/XML root is known.
+fn inconclusive_xml(head: &[u8]) -> bool {
+    crate::drivers::vector::citygml::is_xml_prefix(head) && crate::drivers::vector::citygml::root_probe(head).is_none()
+}
+
 fn sniff_named(head: &[u8], names: &[String]) -> Option<&'static str> {
     let found = sniff(head);
+    if matches!(found, Some("GML" | "XML")) && inconclusive_xml(head) {
+        return None;
+    }
     if found == Some("GEOJSON") && names.iter().any(|n| n == "CITYJSON") {
         let text = String::from_utf8_lossy(head);
         crate::inspection::root_json_type(text.trim_start_matches('\u{feff}').trim_start())?;
@@ -815,6 +824,9 @@ fn named_drivers(trimmed: &str) -> Named {
             }
         }
     }
+    if name.ends_with(".gml") && by_name.iter().any(|name| name == "GML") {
+        by_name.push("CITYGML".to_string());
+    }
     // Plain JSON is shared by GeoJSON and CityJSON; the reader chooses by root type.
     if name.ends_with(".json") && by_name.iter().any(|name| name == "GEOJSON") {
         by_name.push("CITYJSON".to_string());
@@ -822,7 +834,7 @@ fn named_drivers(trimmed: &str) -> Named {
     Named::Name(location, by_name)
 }
 
-/// Up to 1024 bytes from the start of a local file.
+/// Up to 1024 bytes, extended to the identification bound for an inconclusive XML root.
 fn read_head_local(path: &Path) -> Option<Vec<u8>> {
     use std::io::Read;
     let mut f = std::fs::File::open(path).ok()?;
@@ -832,6 +844,10 @@ fn read_head_local(path: &Path) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; 1024];
     let n = f.read(&mut buf).ok()?;
     buf.truncate(n);
+    if inconclusive_xml(&buf) {
+        let remaining = crate::inspection::IDENTIFICATION_HEADER_BYTES.saturating_sub(buf.len());
+        f.take(remaining as u64).read_to_end(&mut buf).ok()?;
+    }
     Some(buf)
 }
 
@@ -1050,12 +1066,12 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     if head[..head.len().min(1024)].windows(8).any(|w| &w[..4] == b"GRIB" && (w[7] == 1 || w[7] == 2)) {
         return Some("GRIB");
     }
+    if crate::drivers::vector::citygml::is_xml_prefix(head) && crate::drivers::vector::citygml::looks_like(head) {
+        return Some("CITYGML");
+    }
     let text = String::from_utf8_lossy(head);
     let text = text.trim_start_matches('\u{feff}').trim_start();
     if text.starts_with('<') {
-        if crate::drivers::vector::citygml::looks_like(head) {
-            return Some("CITYGML");
-        }
         let lower = text.to_ascii_lowercase();
         return Some(if lower.contains("<vrtdataset") {
             "VRT"
@@ -1336,6 +1352,27 @@ mod allow_list_tests {
         assert_eq!(opened.unwrap().driver, VectorDriver::CityJSON);
         assert_eq!(bytes_opened.unwrap().driver, VectorDriver::CityJSON);
         assert!(geojson_refused.unwrap_err().to_string().contains("not allowed"));
+    }
+
+    #[test]
+    fn citygml_after_a_leading_comment_is_not_refused_as_generic_xml() {
+        let body = r#"<c:CityModel xmlns:c="http://www.opengis.net/citygml/3.0"/>"#;
+        for padding in [4096, crate::inspection::IDENTIFICATION_HEADER_BYTES * 2] {
+            let bytes = format!("<!--{}-->{body}", "x".repeat(padding)).into_bytes();
+            let id = identify_bytes("late.gml", &bytes);
+            assert!(id.by_name.contains(&"CITYGML".to_string()));
+            assert_eq!(id.by_content.as_deref(), (padding < crate::inspection::IDENTIFICATION_HEADER_BYTES).then_some("CITYGML"));
+            let (_dir, path) = temp("late.gml", &bytes);
+            crate::config::push_scope(std::collections::HashMap::from([(
+                "TERRIO_ALLOWED_DRIVERS".to_string(),
+                Some("CityGML".to_string()),
+            )]));
+            let allowed = check_allowed(&path, Some(Kind::Vector));
+            let opened = crate::open_vector(&path, &Default::default());
+            crate::config::pop_scope();
+            allowed.unwrap();
+            assert_eq!(opened.unwrap().driver, VectorDriver::CityGML);
+        }
     }
 
     #[test]
