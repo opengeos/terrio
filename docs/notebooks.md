@@ -8,8 +8,8 @@ locally after `pip install terrio matplotlib`.
 
 [JupyterLite](https://jupyterlite.readthedocs.io) runs Python and the latest terrio release in
 your browser, compiled to WebAssembly, with nothing to install: choose **Run > Run All Cells**. The
-first run downloads Python and its packages, and your changes last until you reload unless you
-download the notebook.
+first run downloads Python and its packages. Edits you save stay in this browser, so download the
+notebook to keep them elsewhere.
 
 <div markdown="0">
   <p>

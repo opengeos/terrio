@@ -37,7 +37,7 @@ jobs:
         working-directory: lite
         run: |
           uv venv --python 3.12
-          uv pip install -r requirements.txt playwright
+          uv pip install -r requirements.txt
           .venv/bin/jupyter lite build
       - name: Run the JupyterLite notebooks in a browser
         run: |

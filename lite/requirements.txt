@@ -4,5 +4,7 @@ jupyterlite-core==0.8.7
 # .github/workflows/release-build.yml). Later kernels run Pyodide 314 and reject that wheel.
 jupyterlite-pyodide-kernel==0.8.0b0
 # Indexes the notebooks in content/.
-jupyter-server
-libarchive-c
+jupyter-server==2.21.1
+libarchive-c==5.3
+# Runs the notebooks in scripts/test_jupyterlite.py.
+playwright==1.64.1

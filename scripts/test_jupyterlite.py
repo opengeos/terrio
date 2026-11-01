@@ -10,6 +10,7 @@ Needs Playwright with Chromium.
 import functools
 import http.server
 import json
+import re
 import sys
 import threading
 from pathlib import Path
@@ -19,11 +20,13 @@ from playwright.sync_api import sync_playwright
 TIMEOUT_MS = 480_000
 
 STDERR = ".jp-OutputArea-output[data-mime-type='application/vnd.jupyter.stderr']"
+# Error output contains this, case-insensitively, in Python and in the browser.
+ERROR = "traceback|error"
 
 # True once every code cell has an execution count, or a cell has failed, which stops the run.
-FINISHED = """([cells, stderr]) => {
+FINISHED = """([cells, stderr, error]) => {
     const failed = [...document.querySelectorAll(stderr)]
-        .some((e) => /Traceback|Error/.test(e.innerText));
+        .some((e) => new RegExp(error, "i").test(e.innerText));
     const prompts = [...document.querySelectorAll(".jp-CodeCell .jp-InputArea-prompt")];
     const ran = prompts.every((p) => /^\\[\\d+\\]:$/.test(p.innerText.trim()));
     return failed || (prompts.length === cells && ran);
@@ -72,11 +75,11 @@ def run_notebook(browser, base_url, name, cells):
     page.wait_for_selector(".jp-Notebook .jp-CodeCell", timeout=TIMEOUT_MS)
     page.get_by_role("menuitem", name="Run", exact=True).click()
     page.get_by_role("menuitem", name="Run All Cells", exact=True).click()
-    page.wait_for_function(FINISHED, arg=[cells, STDERR], timeout=TIMEOUT_MS)
+    page.wait_for_function(FINISHED, arg=[cells, STDERR, ERROR], timeout=TIMEOUT_MS)
     errors = page.locator(STDERR)
     texts = [errors.nth(i).inner_text() for i in range(errors.count())]
     page.close()
-    return [text for text in texts if "Traceback" in text or "Error" in text]
+    return [text for text in texts if re.search(ERROR, text, re.IGNORECASE)]
 
 
 def main():
