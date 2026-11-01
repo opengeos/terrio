@@ -12,10 +12,11 @@ const MAX_MEMBERS: usize = 4;
 fuzz_target!(|data: &[u8]| {
     // The SOZip functions take paths: the archive is written to a file named after this process.
     let path = std::env::temp_dir().join(format!("terrio-fuzz-sozip-{}.zip", std::process::id()));
+    // A temporary directory whose path is not UTF-8 cannot be named in a `&str` path: skip.
+    let Some(archive) = path.to_str().map(str::to_owned) else { return };
     if std::fs::write(&path, data).is_err() {
         return;
     }
-    let archive = path.to_string_lossy().into_owned();
     let _ = terrio::vsi::sozip::validate(&archive);
     for member in terrio::vsi::sozip::list(&archive).unwrap_or_default().iter().take(MAX_MEMBERS) {
         let Ok(Some(mut r)) = terrio::LazyRaster::open_tiff(&format!("/vsizip/{{{archive}}}/{}", member.name)) else { continue };

@@ -418,6 +418,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "graviola"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ceed5ad5e9637af6fbc9de8734d9c6014ceacf3d8c5736e8eafa72d839fa0ac"
+dependencies = [
+ "cfg-if",
+ "getrandom 0.4.3",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1317,6 +1327,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustls-graviola"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf5d0a370be690f7f1aa4e1b912fde3f5f9a5c53285062fd2d6ac1a52ab3e883"
+dependencies = [
+ "graviola",
+ "rustls",
+]
+
+[[package]]
 name = "rustls-pki-types"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1548,7 +1568,7 @@ dependencies = [
 
 [[package]]
 name = "terrio"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -1573,11 +1593,13 @@ dependencies = [
  "ras-commander-fast-hdf",
  "rayon",
  "rstar 0.13.0",
+ "rustls-graviola",
  "ruzstd 0.9.1",
  "same-file",
  "serde",
  "serde_json",
  "sha2",
+ "shlex",
  "spade",
  "tar",
  "tempfile",
@@ -1598,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "terrio-crs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "geographiclib-rs",
  "rayon",

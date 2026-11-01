@@ -55,7 +55,9 @@ impl Error {
     /// directory (os error 21)") do not name. Other errors are returned as they are: those of
     /// another file a dataset refers to (a VRT's source), those whose message names `path` already,
     /// and those of archive members and remote datasets, whose URL may hold a signature. The
-    /// variant and the I/O error's kind, which picks the Python exception, are kept.
+    /// variant and the I/O error's kind, which picks the Python exception, are kept; the OS error
+    /// code is not (`raw_os_error` gives `None` for an error named here), as an I/O error with a
+    /// message of its own has none.
     pub(crate) fn naming_local_file(self, path: &str) -> Error {
         let Error::Io(e) = self else { return self };
         let caused_by_path = match crate::vfs::Location::parse(path) {
@@ -63,7 +65,8 @@ impl Error {
             crate::vfs::Location::Local(file) => file.is_dir(),
             _ => false,
         };
-        if !caused_by_path || e.to_string().contains(path) {
+        // Named already: in quotes, as here and in other messages of terrio.
+        if !caused_by_path || e.to_string().contains(&format!("'{path}'")) {
             return Error::Io(e);
         }
         Error::Io(std::io::Error::new(e.kind(), format!("'{path}': {e}")))
@@ -120,5 +123,13 @@ mod tests {
                 "{path}: {error:?}"
             );
         }
+    }
+
+    /// A relative path that is also a word of the operating system's message ("No" in "No such
+    /// file or directory") is named: only the path in quotes counts as named already.
+    #[test]
+    fn a_path_that_is_a_word_of_the_message_is_named() {
+        let error = Error::Io(std::io::Error::from_raw_os_error(2)).naming_local_file("No");
+        assert!(matches!(&error, Error::Io(e) if e.kind() == ErrorKind::NotFound && e.to_string().starts_with("'No': ")), "{error:?}");
     }
 }
