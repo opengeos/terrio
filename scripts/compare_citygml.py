@@ -12,6 +12,7 @@ import argparse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import json
+import hashlib
 from pathlib import Path
 import re
 import subprocess
@@ -23,6 +24,8 @@ from lxml import etree
 
 COMMIT = "203325705c79bb4a30483f1f279385674bb953fd"
 FIXTURES = ["lod3_building_v2.gml", "lod2_buildings_v3.gml"]
+FIXTURE_SHA256 = {'lod3_building_v2.gml': 'b6c11f7f57f8f934ef4a8e48e40c727e15d15b016e5c977e7be59b86430183c4', 'lod2_buildings_v3.gml': 'bac5481415cabedafb492001588f3fc8a4ab8797e1c70391c95114b6cc428246'}
+
 XSD = "http://www.w3.org/2001/XMLSchema"
 XSI = "http://www.w3.org/2001/XMLSchema-instance"
 GML = {"http://www.opengis.net/gml", "http://www.opengis.net/gml/3.2"}
@@ -52,6 +55,13 @@ def schema_locations(doc):
     return list(zip(tokens[::2], map(canonical, tokens[1::2])))
 
 
+def checked_fixture(path):
+    payload = path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != FIXTURE_SHA256[path.name]:
+        raise ValueError(f"pinned CityGML fixture checksum differs: {path.name}")
+    return payload
+
+
 def fetch(data):
     folder = data / "citymodels"
     folder.mkdir(parents=True, exist_ok=True)
@@ -59,7 +69,11 @@ def fetch(data):
         path = folder / name
         if not path.exists():
             url = f"https://raw.githubusercontent.com/citygml4j/citygml4j/{COMMIT}/citygml4j-samples/input/datasets/{name}"
-            path.write_bytes(urlopen(url, timeout=30).read())
+            payload = urlopen(url, timeout=30).read()
+            if hashlib.sha256(payload).hexdigest() != FIXTURE_SHA256[name]:
+                raise ValueError(f"downloaded CityGML fixture checksum differs: {name}")
+            path.write_bytes(payload)
+        checked_fixture(path)
     root = folder / "gml-schemas"
     pending = {url for name in FIXTURES for _, url in schema_locations(etree.parse(str(folder / name)))}
     seen = set()
@@ -70,7 +84,7 @@ def fetch(data):
             payload = urlopen(url, timeout=30).read()
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(payload)
-        schema = etree.fromstring(path.read_bytes())
+        schema = etree.fromstring(path.read_bytes(), etree.XMLParser(no_network=True, resolve_entities=False))
         return [canonical(urljoin(url, n.get("schemaLocation"))) for n in schema
                 if n.tag in {f"{{{XSD}}}import", f"{{{XSD}}}include", f"{{{XSD}}}redefine"} and n.get("schemaLocation")]
 
@@ -203,7 +217,7 @@ def main():
     results = []
     for name in FIXTURES:
         path = args.data / "citymodels" / name
-        doc = etree.parse(str(path), etree.XMLParser(no_network=True, resolve_entities=False))
+        doc = etree.ElementTree(etree.fromstring(checked_fixture(path), etree.XMLParser(no_network=True, resolve_entities=False)))
         validate_schema(doc, args.data / "citymodels/gml-schemas")
         expected, owners = source_faces(doc)
         source = terrio.open_vector(str(path))

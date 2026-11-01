@@ -105,3 +105,12 @@ def test_specification_suites_run_without_gdal(monkeypatch, tmp_path, name):
     monkeypatch.setattr(conformance, "markdown", lambda *args: "")
     monkeypatch.setattr(sys, "argv", ["conformance.py", str(tmp_path), "--terrio", sys.executable, "--only", name, "--strict"])
     assert conformance.main() == 1
+
+
+def test_modified_pinned_fixture_is_rejected_before_schema_validation(tmp_path):
+    from compare_citygml import checked_fixture
+
+    path = tmp_path / "lod3_building_v2.gml"
+    path.write_bytes(b"<CityModel/>")
+    with pytest.raises(ValueError, match="checksum differs"):
+        checked_fixture(path)

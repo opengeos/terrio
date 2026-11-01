@@ -208,7 +208,7 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
             return raster(RasterDriver::SRTMHGT);
         }
     }
-    if crate::drivers::vector::citygml::is_xml_prefix(bytes) && crate::drivers::vector::citygml::looks_like(bytes) {
+    if crate::drivers::vector::citygml::looks_like(bytes) {
         return vector(VectorDriver::CityGML);
     }
     if bytes.contains(&0) {
