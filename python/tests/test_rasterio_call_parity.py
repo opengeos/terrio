@@ -21,9 +21,7 @@ from terrio.rio.errors import NotGeoreferencedWarning, RasterioIOError
 def _write_tif(path, nodata=None):
     data = np.arange(64 * 64, dtype="uint16").reshape(1, 64, 64)
     profile = dict(driver="GTiff", width=64, height=64, count=1, dtype="uint16", nodata=nodata)
-    with rio.open(
-        path, "w", crs="EPSG:32631", transform=rio.transform.from_origin(0, 64, 1, 1), **profile
-    ) as dst:
+    with rio.open(path, "w", crs="EPSG:32631", transform=rio.transform.from_origin(0, 64, 1, 1), **profile) as dst:
         dst.write(data)
     return data
 
@@ -119,9 +117,7 @@ def test_driver_list_refuses_other_formats_without_opening_them(tmp_path):
             '<SimpleSource><SourceFilename relativeToVRT="1">real.tif</SourceFilename>'
             "<SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>"
         )
-        with pytest.raises(
-            RasterioIOError, match="not recognized as being in a supported file format"
-        ):
+        with pytest.raises(RasterioIOError, match="not recognized as being in a supported file format"):
             rio.io.DatasetReader(str(tmp_path / name), driver=["GTiff"])
     with rio.io.DatasetReader(str(tmp_path / "real.tif"), driver=["GTiff"]) as src:
         assert src.driver == "GTiff"
@@ -170,9 +166,7 @@ def test_empty_dir_ignores_msk_sidecars(tmp_path):
     mask[:32] = 0
     profile = dict(driver="GTiff", width=64, height=64, count=1, dtype="uint16")
     with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=False):
-        with rasterio.open(
-            tif, "w", crs="EPSG:32631", transform=rio.transform.from_origin(0, 64, 1, 1), **profile
-        ) as dst:
+        with rasterio.open(tif, "w", crs="EPSG:32631", transform=rio.transform.from_origin(0, 64, 1, 1), **profile) as dst:
             dst.write(np.arange(64 * 64, dtype="uint16").reshape(1, 64, 64))
             dst.write_mask(mask)
     assert Path(f"{tif}.msk").is_file()
@@ -188,11 +182,7 @@ def _mem_name(data):
     """The name a tile server gives an array to open it as a dataset (rasterio PR 2512)."""
     info = data.__array_interface__
     count, height, width = data.shape
-    bands, lines, pixels = info["strides"] or (
-        data.itemsize * height * width,
-        data.itemsize * width,
-        data.itemsize,
-    )
+    bands, lines, pixels = info["strides"] or (data.itemsize * height * width, data.itemsize * width, data.itemsize)
     typename = rio.dtypes._gdal_typename(data.dtype.name)
     return (
         f"MEM:::DATAPOINTER={info['data'][0]},PIXELS={width},LINES={height},BANDS={count},"
@@ -237,10 +227,7 @@ def test_from_gcps_matches_gdal():
     rng = np.random.default_rng(7)
 
     def exact(points):
-        return [
-            (r, c, 0.5 * c + 0.1 * r + 500000.0, -0.05 * c - 0.5 * r + 4000000.0, 0.0)
-            for r, c in points
-        ]
+        return [(r, c, 0.5 * c + 0.1 * r + 500000.0, -0.05 * c - 0.5 * r + 4000000.0, 0.0) for r, c in points]
 
     grid = [(r, c) for r in (0.0, 512.0, 1023.0) for c in (0.0, 700.5, 1400.0)]
     cases = {
@@ -253,10 +240,7 @@ def test_from_gcps_matches_gdal():
             (5536.0, 0.0, 349465.1616, 4372771.5918, 0.0),
         ],
         "exact grid": exact(grid),
-        "noisy grid": [
-            (r, c, x + rng.normal(0, 0.01), y + rng.normal(0, 0.01), z)
-            for r, c, x, y, z in exact(grid)
-        ],
+        "noisy grid": [(r, c, x + rng.normal(0, 0.01), y + rng.normal(0, 0.01), z) for r, c, x, y, z in exact(grid)],
         "poor fit": [(r, c, x + rng.normal(0, 5.0), y, z) for r, c, x, y, z in exact(grid)],
     }
     for label, gcps in cases.items():
@@ -268,8 +252,6 @@ def test_from_gcps_matches_gdal():
             got = rio.transform.from_gcps([GroundControlPoint(*g) for g in gcps])
         assert tuple(got) == tuple(expected), label
         assert not w_gdal
-        assert [w.category for w in w_terrio] == (
-            [NotGeoreferencedWarning] if label == "poor fit" else []
-        ), label
+        assert [w.category for w in w_terrio] == ([NotGeoreferencedWarning] if label == "poor fit" else []), label
     with pytest.warns(NotGeoreferencedWarning):
         rio.transform.from_gcps([GroundControlPoint(0, 0, 1, 1)] * 3)

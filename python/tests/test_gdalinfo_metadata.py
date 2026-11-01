@@ -75,9 +75,7 @@ def test_nbits_and_one_bit_color_table_are_gdals(tmp_path, nbits, dtype, photome
 def test_miniswhite_is_gdals(tmp_path):
     path = tmp_path / "miniswhite.tif"
     data = (np.arange(48 * 64).reshape(1, 48, 64) % 2).astype("uint8")
-    with rasterio.open(
-        path, "w", **BASE, count=1, dtype="uint8", nbits=1, photometric="MINISWHITE"
-    ) as dst:
+    with rasterio.open(path, "w", **BASE, count=1, dtype="uint8", nbits=1, photometric="MINISWHITE") as dst:
         dst.write(data)
     with rasterio.open(path) as g, trio.open(path) as t:
         assert g.tags(ns="IMAGE_STRUCTURE")["MINISWHITE"] == "YES"

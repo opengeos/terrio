@@ -21,9 +21,7 @@ import terrio.rio as rio
 
 def _run(code: str) -> str:
     """Runs `code` in a fresh interpreter and returns its standard output; fails on an error."""
-    result = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(code)], capture_output=True, text=True, timeout=120
-    )
+    result = subprocess.run([sys.executable, "-c", textwrap.dedent(code)], capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout
 
@@ -313,10 +311,7 @@ def test_the_pth_line_installs_compat_before_user_code(tmp_path):
     (tmp_path / "terrio-compat.pth").write_text(terrio.compat.PTH_LINE)
     code = f"import site, sys; site.addsitedir({str(tmp_path)!r}); exec(sys.argv[1])"
     result = subprocess.run(
-        [sys.executable, "-c", code, textwrap.dedent(_IDENTITY)],
-        capture_output=True,
-        text=True,
-        timeout=120,
+        [sys.executable, "-c", code, textwrap.dedent(_IDENTITY)], capture_output=True, text=True, timeout=120
     )
     assert result.returncode == 0, result.stderr
 
