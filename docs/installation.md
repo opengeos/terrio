@@ -186,11 +186,12 @@ Remove terrio the way you installed it:
 | conda or mamba | `conda remove terrio` or `mamba remove terrio` |
 | Cargo or cargo-binstall | `cargo uninstall terrio-cli` |
 | npm | `npm uninstall terrio-js` |
-| Docker | `docker image rm ghcr.io/opengeos/terrio` |
+| Pyodide | `micropip.uninstall("terrio")` |
+| Docker | `docker image rm ghcr.io/opengeos/terrio:<tag>` (`latest` or the version you pulled) |
 
 If you installed with `TERRIO_INSTALL_DIR`, delete the binary from that directory instead. The
-Windows installer also adds its directory to your `PATH`, unless told not to; remove the entry in
-your user environment variables if nothing else uses it.
+Windows installer adds its directory to your `PATH` if it isn't there already; if it did, you can
+remove the entry from your user environment variables when nothing else uses that directory.
 
 To find the copies on your `PATH`, run `which -a terrio` (`where.exe terrio` on Windows). Their
 locations usually show how each was installed.
