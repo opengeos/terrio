@@ -17,7 +17,7 @@ pub(super) const MAX_FEATURE_BYTES: usize = 256 * 1024 * 1024;
 pub(super) fn charge(used: &mut usize, cost: usize, limit: usize, format: &str) -> Result<()> {
     *used = used.saturating_add(cost);
     if *used > limit {
-        let limit = if limit == MAX_FEATURE_BYTES { "256 MiB".into() } else { format!("{limit} bytes") };
+        let limit = if limit.is_multiple_of(1024 * 1024) { format!("{} MiB", limit / (1024 * 1024)) } else { format!("{limit} bytes") };
         return Err(crate::Error::InvalidData(format!(
             "{format}: flat feature payload exceeds the {limit} expansion limit (attributes and complete source semantics are repeated per primitive); split the model into smaller files"
         )));

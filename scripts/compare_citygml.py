@@ -22,6 +22,9 @@ from urllib.request import urlopen
 
 from lxml import etree
 
+if not __debug__:
+    raise RuntimeError("CityGML conformance checks require assertions; remove Python -O")
+
 COMMIT = "203325705c79bb4a30483f1f279385674bb953fd"
 FIXTURES = ["lod3_building_v2.gml", "lod2_buildings_v3.gml"]
 FIXTURE_SHA256 = {'lod3_building_v2.gml': 'b6c11f7f57f8f934ef4a8e48e40c727e15d15b016e5c977e7be59b86430183c4', 'lod2_buildings_v3.gml': 'bac5481415cabedafb492001588f3fc8a4ab8797e1c70391c95114b6cc428246'}
@@ -237,7 +240,7 @@ def main():
             surfaces.append(("Node/WASM", json.loads(output)))
         for surface, fc in surfaces:
             compare(expected, owners, fc)
-            results.append(dict(name=f"{name} {surface}", status="identical", detail=f"schema valid; {len(expected)} faces; exact XYZ, holes, owner/type, LoD, thematic class and direct scalar source properties; compound CRS checked"))
+            results.append(dict(name=f"{name} {surface}", status="identical", detail=f"schema valid; {len(expected)} faces; exact XYZ, holes, owner/type, LoD, thematic class and direct scalar source properties; source compound CRS checked"))
     print(json.dumps(results, indent=2) if args.json else "\n".join(f"{r['name']}: {r['detail']}" for r in results))
 
 

@@ -199,6 +199,9 @@ fn xml_with_limit(bytes: &[u8], tree_limit: usize) -> Result<Node> {
 }
 
 fn numbers(text: &str) -> Result<Vec<f64>> {
+    if text.split_whitespace().count() != 16 {
+        return Err(invalid("implicit matrix must have 16 values"));
+    }
     text.split_whitespace()
         .map(|s| s.parse::<f64>().ok().filter(|v| v.is_finite()).ok_or_else(|| invalid("nonfinite or invalid coordinate")))
         .collect()
@@ -215,6 +218,32 @@ fn dimension(node: &Node, inherited: usize) -> Result<usize> {
     Ok(dim)
 }
 
+fn preflight_coordinates(node: &Node, inherited: usize, remaining: usize) -> Result<usize> {
+    let dim = dimension(node, inherited)?;
+    let count = if node.gml() && matches!(node.name.as_str(), "pos" | "posList") {
+        node.text.split_whitespace().count().div_ceil(dim)
+    } else if node.gml() && node.name == "coordinates" {
+        let tuples = node.attr("", "ts").unwrap_or(" ");
+        if tuples.trim().is_empty() {
+            node.text.split_whitespace().count()
+        } else {
+            node.text.split(tuples).filter(|s| !s.trim().is_empty()).count()
+        }
+    } else {
+        let mut total = 0usize;
+        for child in &node.children {
+            let cost = preflight_coordinates(child, dim, remaining.saturating_sub(total))?;
+            total = total.saturating_add(cost);
+        }
+        return Ok(total);
+    };
+    let bytes = count.saturating_mul(std::mem::size_of::<Coord>());
+    if bytes > remaining {
+        return Err(invalid("coordinate expansion exceeds the remaining flat feature payload limit"));
+    }
+    Ok(bytes)
+}
+
 fn coordinates(node: &Node, inherited: usize) -> Result<Vec<Coord>> {
     if node.gml()
         && (matches!(node.name.as_str(), "Arc" | "ArcString" | "Circle" | "BSpline" | "Bezier")
@@ -224,44 +253,63 @@ fn coordinates(node: &Node, inherited: usize) -> Result<Vec<Coord>> {
     }
     let dim = dimension(node, inherited)?;
     if node.gml() && matches!(node.name.as_str(), "pos" | "posList") {
-        let values = numbers(&node.text)?;
-        if values.len() % dim != 0 || (node.name == "pos" && values.len() != dim) {
+        let count = node.text.split_whitespace().count();
+        if !count.is_multiple_of(dim) || (node.name == "pos" && count != dim) {
             return Err(invalid("coordinate count does not match srsDimension"));
         }
-        if let Some(count) = node.attr("", "count")
-            && count.parse::<usize>().map_err(invalid)? != values.len() / dim
+        if let Some(declared) = node.attr("", "count")
+            && declared.parse::<usize>().map_err(invalid)? != count / dim
         {
             return Err(invalid("posList count does not match coordinates"));
         }
-        return Ok(values.chunks_exact(dim).map(|p| Coord { x: p[0], y: p[1], z: (dim == 3).then(|| p[2]), m: None }).collect());
+        let mut out = Vec::new();
+        out.try_reserve_exact(count / dim).map_err(invalid)?;
+        let mut values = node.text.split_whitespace();
+        for _ in 0..count / dim {
+            let mut p = [0.0; 3];
+            for value in &mut p[..dim] {
+                *value = values.next().unwrap().parse::<f64>().map_err(invalid)?;
+                if !value.is_finite() {
+                    return Err(invalid("nonfinite or invalid coordinate"));
+                }
+            }
+            out.push(Coord { x: p[0], y: p[1], z: (dim == 3).then_some(p[2]), m: None });
+        }
+        return Ok(out);
     }
     if node.gml() && node.name == "coordinates" {
         let separator = node.attr("", "cs").unwrap_or(",");
         let decimal = node.attr("", "decimal").unwrap_or(".");
         let tuples = node.attr("", "ts").unwrap_or(" ");
-        let tuples: Vec<&str> =
-            if tuples.trim().is_empty() { node.text.split_whitespace().collect() } else { node.text.split(tuples).collect() };
-        return tuples
-            .into_iter()
-            .filter(|p| !p.trim().is_empty())
-            .map(|p| {
-                let values = p
-                    .split(separator)
-                    .map(|n| n.trim().replace(decimal, ".").parse::<f64>().map_err(invalid))
-                    .collect::<Result<Vec<_>>>()?;
-                if values.len() != dim || values.iter().any(|v| !v.is_finite()) {
+        let tuples: Box<dyn Iterator<Item = &str> + '_> =
+            if tuples.trim().is_empty() { Box::new(node.text.split_whitespace()) } else { Box::new(node.text.split(tuples)) };
+        let mut out = Vec::new();
+        for tuple in tuples.filter(|p| !p.trim().is_empty()) {
+            let mut values = tuple.split(separator);
+            let mut p = [0.0; 3];
+            for value in &mut p[..dim] {
+                let text = values.next().ok_or_else(|| invalid("invalid coordinate tuple"))?;
+                *value = text.trim().replace(decimal, ".").parse::<f64>().map_err(invalid)?;
+                if !value.is_finite() {
                     return Err(invalid("invalid coordinate tuple"));
                 }
-                Ok(Coord { x: values[0], y: values[1], z: values.get(2).copied(), m: None })
-            })
-            .collect();
+            }
+            if values.next().is_some() {
+                return Err(invalid("invalid coordinate tuple"));
+            }
+            out.try_reserve(1).map_err(invalid)?;
+            out.push(Coord { x: p[0], y: p[1], z: (dim == 3).then_some(p[2]), m: None });
+        }
+        return Ok(out);
     }
     if node.attr(XLINK, "href").is_some() {
         return Err(Error::Unsupported("CityGML: linked coordinate/ring content is not supported".into()));
     }
     let mut out = Vec::new();
     for child in &node.children {
-        out.extend(coordinates(child, dim)?);
+        let points = coordinates(child, dim)?;
+        out.try_reserve(points.len()).map_err(invalid)?;
+        out.extend(points);
     }
     Ok(out)
 }
@@ -448,6 +496,7 @@ struct Context<'a> {
     reverse: bool,
     matrix: Option<([f64; 16], [f64; 3])>,
     expanded: bool,
+    validate_only: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -467,8 +516,7 @@ fn axis_count(value: &Value) -> Option<usize> {
 }
 
 struct ObjectRows<'a> {
-    dimension: usize,
-    crs: Option<&'a str>,
+    contexts: HashSet<(usize, Option<&'a str>)>,
     rows: Vec<usize>,
     parents: Vec<String>,
     seen: HashSet<String>,
@@ -495,11 +543,18 @@ struct Reader<'a> {
     objects: HashMap<&'a str, ObjectRows<'a>>,
     validated: HashSet<(&'a str, usize, Option<&'a str>)>,
     face_semantics: HashMap<usize, Rc<str>>,
+    surface_semantics: HashMap<*const Node, Rc<str>>,
+    semantic_values: HashMap<Value, Rc<str>>,
+    geometry_contexts: HashMap<*const Node, (usize, Option<&'a str>)>,
     coordinate_bytes: usize,
     max_coordinate_bytes: usize,
     visits: usize,
     max_reference_visits: usize,
     emitted: HashMap<(String, String, Option<&'a str>, bool), usize>,
+}
+
+fn authority_axis_order(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("epsg") && (name.starts_with("urn:") || name.contains("/def/crs/"))
 }
 
 fn parse_crs(name: &str) -> Result<SpatialRef> {
@@ -549,12 +604,7 @@ impl<'a> Reader<'a> {
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .and_then(|value| axis_count(&value))
             .or_else(|| (crs.has_height() || crs.is_geocentric()).then_some(3));
-        let reference = Reference {
-            dimension,
-            swap: crs.is_geographic()
-                && !name.to_ascii_uppercase().ends_with("CRS84")
-                && (name.starts_with("urn:") || name.contains("/def/crs/")),
-        };
+        let reference = Reference { dimension, swap: crs.is_geographic() && authority_axis_order(name) };
         if self.crs.is_none() {
             crs.apply_to_layer(&mut self.layer);
             self.crs = Some(crs);
@@ -680,10 +730,40 @@ impl<'a> Reader<'a> {
         })
     }
 
+    fn check_geometry_context(&mut self, node: &'a Node, context: &Context<'a>) -> Result<()> {
+        // Resolve leaf overrides before comparing a shared primitive's context.
+        let swap = context.crs.map(|name| self.reference(name).map(|r| r.swap)).transpose()?;
+        if let Some((dim, crs)) = self.geometry_contexts.get(&(node as *const Node)).copied() {
+            let previous = crs.map(|name| self.reference(name).map(|r| r.swap)).transpose()?;
+            if dim != context.dim || previous != swap {
+                return Err(invalid("conflicting effective coordinate contexts for a reused city object"));
+            }
+        } else {
+            self.geometry_contexts.insert(node as *const Node, (context.dim, context.crs));
+        }
+        Ok(())
+    }
+
+    fn surface_semantic(&mut self, node: &Node) -> Rc<str> {
+        if let Some(value) = self.surface_semantics.get(&(node as *const Node)) {
+            value.clone()
+        } else {
+            let mut props = attributes(node).as_object().cloned().unwrap_or_default();
+            props.insert("type".into(), Value::String(node.name.clone()));
+            let value = Value::Object(props);
+            let text = self.semantic_values.entry(value.clone()).or_insert_with(|| Rc::from(value.to_string())).clone();
+            self.surface_semantics.insert(node as *const Node, text.clone());
+            text
+        }
+    }
+
     fn update_semantic(&mut self, index: usize, value: Option<&Rc<str>>) -> Result<()> {
         if let Some(value) = value
             && !self.face_semantics.get(&index).is_some_and(|previous| Rc::ptr_eq(previous, value))
         {
+            if self.face_semantics.contains_key(&index) {
+                return Err(invalid("conflicting thematic classifications for a shared primitive"));
+            }
             let old = match &self.layer.features[index].attributes[SURFACE_SEMANTICS] {
                 FieldValue::Text(text) => text.len(),
                 _ => 0,
@@ -696,6 +776,11 @@ impl<'a> Reader<'a> {
     }
 
     fn emit(&mut self, node: &'a Node, context: &Context<'a>, base: &[FieldValue]) -> Result<()> {
+        if context.validate_only {
+            let resolved = self.coordinate_context(node, context)?;
+            self.check_geometry_context(node, &resolved)?;
+            return Ok(());
+        }
         let id = node.id().filter(|_| context.matrix.is_none());
         let key = id.map(|id| {
             (
@@ -724,6 +809,9 @@ impl<'a> Reader<'a> {
             }
         }
         let resolved = self.coordinate_context(node, context)?;
+        self.check_geometry_context(node, &resolved)?;
+        let remaining = super::city::MAX_FEATURE_BYTES.saturating_sub(self.used);
+        preflight_coordinates(node, resolved.dim, remaining)?;
         let geometry = self.normalize(primitive(node, resolved.dim)?, &resolved)?;
         if let Some(key) = validation {
             self.validated.insert(key);
@@ -771,10 +859,8 @@ impl<'a> Reader<'a> {
                 context.geometry_type = None;
             }
         }
-        if node.city() && node.name.ends_with("Surface") && !node.name.starts_with("lod") {
-            let mut props = attributes(node).as_object().cloned().unwrap_or_default();
-            props.insert("type".into(), Value::String(node.name.clone()));
-            context.semantic = Some(Rc::from(Value::Object(props).to_string()));
+        if !context.validate_only && node.city() && node.name.ends_with("Surface") && !node.name.starts_with("lod") {
+            context.semantic = Some(self.surface_semantic(node));
         }
         if node.gml() && node.name == "OrientableSurface" && node.attr("", "orientation") == Some("-") {
             context.reverse = !context.reverse;
@@ -801,6 +887,10 @@ impl<'a> Reader<'a> {
             let reference = node.child("referencePoint").ok_or_else(|| invalid("implicit geometry has no reference point"))?;
             let point = self.link(reference)?;
             let point_context = self.coordinate_context(point, &context)?;
+            if let Some(name) = point_context.crs {
+                self.reference(name)?;
+            }
+            preflight_coordinates(point, point_context.dim, std::mem::size_of::<Coord>())?;
             let coords = coordinates(point, point_context.dim)?;
             context.crs = point_context.crs;
             if coords.len() != 1 {
@@ -868,23 +958,28 @@ impl<'a> Reader<'a> {
         if let Some(envelope) = envelope {
             context.dim = dimension(envelope, context.dim)?;
         }
+        if context.validate_only {
+            context.semantic = None;
+            context.geometry_type = None;
+            for child in &node.children {
+                self.walk(child, context.clone(), &[FieldValue::Null], depth + 1)?;
+            }
+            return Ok(());
+        }
         if let Some(id) = node.id() {
             if self.active.contains(id) {
                 return Err(invalid("cyclic city-object hierarchy"));
             }
-            if let Some(object) = self.objects.get(id) {
-                let (dimension, crs) = (object.dimension, object.crs);
-                if self.coordinate_dimension(dimension, crs)? != self.coordinate_dimension(context.dim, context.crs)? {
-                    return Err(invalid("conflicting dimensions for a reused city object"));
+            if self.objects.get(id).is_some_and(|o| !o.contexts.contains(&(context.dim, context.crs))) {
+                let mut validation = context.clone();
+                validation.validate_only = true;
+                validation.semantic = None;
+                validation.geometry_type = None;
+                for child in &node.children {
+                    // Keep the owning object's base fields for nested object references.
+                    self.walk(child, validation.clone(), &[FieldValue::Null], depth + 1)?;
                 }
-                let consistent = match (crs, context.crs) {
-                    (None, None) => true,
-                    (Some(a), Some(b)) => self.reference(a)?.swap == self.reference(b)?.swap,
-                    _ => false,
-                };
-                if !consistent {
-                    return Err(invalid("conflicting CRS contexts for a reused city object"));
-                }
+                self.objects.get_mut(id).unwrap().contexts.insert((context.dim, context.crs));
             }
             if let Some(object) = self.objects.get_mut(id) {
                 if let Some(FieldValue::Text(parent)) = parent
@@ -952,7 +1047,12 @@ impl<'a> Reader<'a> {
             };
             self.objects.insert(
                 id,
-                ObjectRows { dimension: context.dim, crs: context.crs, rows, seen: parents.iter().cloned().collect(), parents },
+                ObjectRows {
+                    contexts: HashSet::from([(context.dim, context.crs)]),
+                    rows,
+                    seen: parents.iter().cloned().collect(),
+                    parents,
+                },
             );
         }
         Ok(())
@@ -1026,6 +1126,9 @@ fn parse_with_limits(bytes: &[u8], input_limit: usize, max_reference_visits: usi
         objects: HashMap::new(),
         validated: HashSet::new(),
         face_semantics: HashMap::new(),
+        surface_semantics: HashMap::new(),
+        semantic_values: HashMap::new(),
+        geometry_contexts: HashMap::new(),
         coordinate_bytes: 0,
         max_coordinate_bytes,
         visits: 0,
@@ -1118,6 +1221,39 @@ mod tests {
     use super::test_data::{FACE, model};
 
     #[test]
+    fn coordinate_expansion_is_preflighted_for_the_whole_primitive() {
+        let root = super::xml(model("3.0", FACE, "EPSG:32632").as_bytes()).unwrap();
+        let face = &root.children.last().unwrap().children[0].children[0];
+        assert!(super::preflight_coordinates(face, 3, 8 * std::mem::size_of::<wbvector::Coord>()).is_err());
+        assert_eq!(
+            super::preflight_coordinates(face, 3, 9 * std::mem::size_of::<wbvector::Coord>()).unwrap(),
+            9 * std::mem::size_of::<wbvector::Coord>()
+        );
+    }
+
+    #[test]
+    fn shared_surfaces_reuse_equal_semantics_and_reject_conflicting_classes() {
+        let body = format!(
+            r##"<b:boundedBy><b:WallSurface g:id="surface"><g:name>brick</g:name><b:lod2MultiSurface>{FACE}</b:lod2MultiSurface></b:WallSurface></b:boundedBy>{}<b:boundedBy><b:WallSurface><g:name>brick</g:name><b:lod2MultiSurface l:href="#wall"/></b:WallSurface></b:boundedBy>"##,
+            r##"<b:boundedBy l:href="#surface"/>"##.repeat(1000)
+        );
+        let text = model("3.0", &body, "EPSG:32632");
+        assert_eq!(super::parse(text.as_bytes()).unwrap()[0].features.len(), 1);
+        let conflicting = text.replacen("<b:WallSurface><g:name>", "<b:RoofSurface><g:name>", 1).replacen(
+            "</b:WallSurface></b:boundedBy></b:Building>",
+            "</b:RoofSurface></b:boundedBy></b:Building>",
+            1,
+        );
+        assert!(super::parse(conflicting.as_bytes()).unwrap_err().to_string().contains("conflicting thematic"));
+    }
+
+    #[test]
+    fn implicit_anchor_crs_is_checked_even_with_explicit_dimension() {
+        let body = r#"<b:lod1ImplicitRepresentation><b:ImplicitGeometry><b:referencePoint><g:Point srsName="EPSG:4326" srsDimension="3"><g:pos>1 2 3</g:pos></g:Point></b:referencePoint><b:relativeGeometry><g:Point srsName="EPSG:32632"><g:pos>1 2 3</g:pos></g:Point></b:relativeGeometry></b:ImplicitGeometry></b:lod1ImplicitRepresentation>"#;
+        assert!(super::parse(model("3.0", body, "EPSG:32632").as_bytes()).unwrap_err().to_string().contains("mixed CRSs"));
+    }
+
+    #[test]
     fn oversized_paths_are_rejected_by_the_native_read_preflight() {
         use std::io::Write;
         let folder = tempfile::tempdir().unwrap();
@@ -1139,6 +1275,9 @@ mod tests {
 
     #[test]
     fn crs84_authority_urls_keep_longitude_first() {
+        for name in ["urn:ogc:def:crs:OGC:1.3:CRS83", "urn:ogc:def:crs:OGC:1.3:CRS27"] {
+            assert!(!super::authority_axis_order(name));
+        }
         for name in ["http://www.opengis.net/def/crs/OGC/1.3/CRS84", "urn:ogc:def:crs:OGC:1.3:CRS84"] {
             let text = model("3.0", "<b:lod1Geometry><g:Point><g:pos>4 52 30</g:pos></g:Point></b:lod1Geometry>", name);
             let layer = super::parse(text.as_bytes()).unwrap().remove(0);
@@ -1184,6 +1323,10 @@ mod tests {
             assert!(super::parse(text.as_bytes()).is_err());
             let overridden = text.replace("g:id=\"part\"", "g:id=\"part\" srsName=\"EPSG:32632\" srsDimension=\"3\"");
             super::parse(overridden.as_bytes()).unwrap();
+            for tag in ["<g:Point>", "<g:pos>"] {
+                let overridden = text.replace(tag, &tag.replace('>', " srsName=\"EPSG:32632\" srsDimension=\"3\">"));
+                super::parse(overridden.as_bytes()).unwrap();
+            }
         }
     }
 

@@ -14,7 +14,7 @@ use crate::{Error, Result};
 use serde_json::Value;
 use wbvector::{Coord, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
 
-// Mutable attribute slots are named to keep LoD, source and face semantics distinct.
+// Shared field slots keep LoD, source and face semantics distinct.
 use super::city::{GEOMETRY_TYPE, LOD, SEMANTICS, SURFACE_SEMANTICS};
 const SKIPPED_RINGS: usize = 8;
 const SKIPPED_FACES: usize = 9;

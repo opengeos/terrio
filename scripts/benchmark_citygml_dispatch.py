@@ -23,6 +23,8 @@ def main():
     parser.add_argument("--repeat", type=int, default=5)
     parser.add_argument("--restrict-drivers", action="store_true", help="exercise the CityGML-only identification gate")
     args = parser.parse_args()
+    if args.repeat < 1:
+        parser.error("--repeat must be at least 1")
     if not Path("/proc/self/io").is_file():
         parser.error("this I/O benchmark requires Linux with /proc/self/io")
     import terrio
