@@ -268,22 +268,23 @@ stats = terrio.zonal_stats("zones.gpkg", ["dem.tif", "imagery.tif"],
 parts = terrio.singlepart("countries.gpkg", layer="countries")
 ```
 
-Both return a selected `Layer`; use `layer=` for a multi-layer source. Raster
-inputs accept one path or `Raster`, or a sequence of them. All raster pixels are
-materialized, including lazy and remote inputs. Zonal controls follow the CLI, with deterministic binding prefixes:
-`bands` defaults to `[1]`; statistics default to count/min/max/mean/sum/stddev,
-with median also supported. Standard deviation is population-based. Omitted
-prefixes are `raster1`, `raster2`, etc., producing `PREFIX_bN_STATISTIC` fields;
-the CLI instead defaults to each input path stem. Set explicit prefixes for the
-same field names across surfaces. Explicit prefixes must be nonblank, one per raster.
-Field-name collisions, including repeated prefixes/bands or existing zone fields,
-receive `_2`, `_3`, etc. suffixes from the shared engine. Repeated raster path
-entries are materialized separately; paths are not cached. Each polygon is transformed
-into each raster's CRS before center/all-touched membership is evaluated. Nodata
-and nonfinite values are excluded; empty zones have count zero and null other
-statistics. `t_srs` reprojects output geometry; `decimal_places` (0–15) rounds
-only newly computed floating statistics. Counts and source attributes are unchanged.
+Both return a selected `Layer`; use `layer=` for a multi-layer source. Raster inputs
+accept one path or `Raster`, or a sequence of them. All raster pixels are materialized,
+including lazy and remote inputs. Zonal controls follow the CLI, with deterministic
+binding prefixes: `bands` defaults to `[1]`; statistics default to
+count/min/max/mean/sum/stddev, with median also supported. Standard deviation is
+population-based. Omitted prefixes are `raster1`, `raster2`, etc., producing
+`PREFIX_bN_STATISTIC` fields; the CLI instead defaults to each input path stem. Set
+explicit prefixes for the same field names across surfaces. Explicit prefixes must be
+nonblank, one per raster. Field-name collisions, including repeated prefixes/bands or
+existing zone fields, receive `_2`, `_3`, etc. suffixes from the shared engine. Repeated
+raster path entries are materialized separately; paths are not cached. Each polygon is
+transformed into each raster's CRS before center/all-touched membership is evaluated.
+Nodata and nonfinite values are excluded; empty zones have count zero and null other
+statistics. `t_srs` reprojects output geometry; `decimal_places` (0–15) rounds only
+newly computed floating statistics. Counts and source attributes are unchanged.
 Weighted/fractional statistics are not implemented.
+
 The shared engine's geometry, CRS, precision and eager-memory limits apply.
 
 `singlepart` recursively splits multipart geometries and collections, preserving

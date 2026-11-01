@@ -261,10 +261,26 @@ def main():
             )
         output = []
         for request in requests:
-            if request.get("operation") == "singlepart":
-                layer = terrio.singlepart(request["zones"])
-                encoded = str(Path(request["output"]).with_suffix(".python.gpkg"))
-                layer.write(encoded)
+            try:
+                if request.get("operation") == "singlepart":
+                    layer = terrio.singlepart(request["zones"])
+                    encoded = str(Path(request["output"]).with_suffix(".python.gpkg"))
+                    layer.write(encoded)
+                    output.append(
+                        (
+                            "python",
+                            dict(
+                                name=request["name"],
+                                geojson=layer.to_geojson(),
+                                crs=layer.crs or layer.crs_wkt,
+                                output=encoded,
+                            ),
+                        )
+                    )
+                    continue
+                layer = terrio.zonal_stats(
+                    request["zones"], request["rasters"], **request["options"]
+                )
                 output.append(
                     (
                         "python",
@@ -272,41 +288,39 @@ def main():
                             name=request["name"],
                             geojson=layer.to_geojson(),
                             crs=layer.crs or layer.crs_wkt,
-                            output=encoded,
                         ),
                     )
                 )
-                continue
-            layer = terrio.zonal_stats(
-                request["zones"], request["rasters"], **request["options"]
-            )
-            output.append(
-                (
-                    "python",
-                    dict(
-                        name=request["name"],
-                        geojson=layer.to_geojson(),
-                        crs=layer.crs or layer.crs_wkt,
-                    ),
-                )
-            )
+            except Exception as error:
+                output.append(("python", dict(name=request["name"], error=f"{type(error).__name__}: {error}")))
         if args.js:
             path = Path(temp) / "requests.json"
             path.write_text(json.dumps(requests))
-            response = subprocess.run(
-                [
-                    "node",
-                    str(Path(__file__).with_name("run_zonal_bindings.mjs")),
-                    str(args.js.resolve()),
-                    str(path),
-                ],
-                check=True,
-                text=True,
-                capture_output=True,
-            )
-            output.extend(("js", row) for row in json.loads(response.stdout))
+            try:
+                response = subprocess.run(
+                    [
+                        "node",
+                        str(Path(__file__).with_name("run_zonal_bindings.mjs")),
+                        str(args.js.resolve()),
+                        str(path),
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=600,
+                )
+                if response.returncode:
+                    raise RuntimeError(f"Node exited {response.returncode}: {response.stderr[-4000:]}")
+                rows = json.loads(response.stdout)
+                if (not isinstance(rows, list) or len(rows) != len(requests)
+                        or {row["name"] for row in rows} != {request["name"] for request in requests}):
+                    raise ValueError("Node result inventory differs from requested cases")
+            except Exception as error:
+                rows = [dict(name=request["name"], error=f"{type(error).__name__}: {error}") for request in requests]
+            output.extend(("js", row) for row in rows)
         for backend, row in output:
             try:
+                if "error" in row:
+                    raise RuntimeError(row["error"])
                 if row["name"].startswith("singlepart-"):
                     detail = compare_singlepart(
                         row,
@@ -316,7 +330,7 @@ def main():
                 else:
                     detail = compare(row, *references[row["name"]])
                     status = "tolerance"
-            except (AssertionError, RuntimeError) as error:
+            except Exception as error:
                 detail = str(error)
                 status = "differs"
             results.append(

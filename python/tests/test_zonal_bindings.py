@@ -198,7 +198,13 @@ def test_invalid_zonal_options_precede_raster_reads():
             terrio.zonal_stats(zones, "not-a-real-raster.tif", **options)
 
 
-def test_negative_decimal_precision_reports_unsigned_conversion_error():
+@pytest.mark.parametrize("precision", [-1, 256])
+def test_unsigned_decimal_precision_reports_conversion_error(precision):
     zones, raster = inputs()
     with pytest.raises(OverflowError):
-        terrio.zonal_stats(zones, raster, decimal_places=-1)
+        terrio.zonal_stats(zones, raster, decimal_places=precision)
+
+
+def test_raw_bytes_are_not_a_path_or_raster_input():
+    with pytest.raises(ValueError, match="expected a path or a terrio.Raster"):
+        terrio.mosaic(b"not-a-raster-upload")
