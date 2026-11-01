@@ -1,0 +1,9 @@
+{
+  "LiteBuildConfig": {
+    "contents": ["content"],
+    "output_dir": "../site/lite"
+  },
+  "PipliteAddon": {
+    "piplite_urls": ["wheels"]
+  }
+}

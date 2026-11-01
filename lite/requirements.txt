@@ -1,0 +1,10 @@
+# Builds the JupyterLite site served at /lite/.
+jupyterlite-core==0.8.7
+# The last kernel on Pyodide 0.29, the release terrio's Pyodide wheel is built for (PYODIDE_VERSION in
+# .github/workflows/release-build.yml). Later kernels run Pyodide 314 and reject that wheel.
+jupyterlite-pyodide-kernel==0.8.0b0
+# Indexes the notebooks in content/.
+jupyter-server==2.21.1
+libarchive-c==5.3
+# Runs the notebooks in scripts/test_jupyterlite.py.
+playwright==1.64.1
