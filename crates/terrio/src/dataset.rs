@@ -658,12 +658,14 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    // City-model documents with no recognized extension use a bounded root probe.
+    // City-model documents and ESRI JSON with no recognized extension (a downloaded query result)
+    // use a bounded root probe.
     #[cfg(not(target_family = "wasm"))]
     if VectorDriver::for_extension(path).is_none() && RasterDriver::for_extension(path).is_none() && !Path::new(path).is_dir() {
         let driver = crate::inspection::identify(path, false).ok().flatten().and_then(|identified| match identified.driver.as_str() {
             "CityGML" => Some(VectorDriver::CityGML),
             "CityJSON" => Some(VectorDriver::CityJSON),
+            "ESRIJSON" => Some(VectorDriver::ESRIJSON),
             _ => None,
         });
         if let Some(driver) = driver {
@@ -788,16 +790,20 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
     let (driver, preloaded) = if matches!(driver, VectorDriver::GeoJSON | VectorDriver::GML) {
         let bytes =
             if driver == VectorDriver::GML { crate::drivers::vector::citygml::read_path_bytes(path, true)? } else { std::fs::read(path)? };
-        let city = if driver == VectorDriver::GeoJSON {
-            let text = std::str::from_utf8(&bytes).map_err(|e| Error::InvalidData(format!("JSON input is not UTF-8: {e}")))?;
-            crate::inspection::root_json_type(text.trim_start_matches('\u{feff}').trim_start()).as_deref() == Some("CityJSON")
+        let text = if driver == VectorDriver::GeoJSON {
+            Some(std::str::from_utf8(&bytes).map_err(|e| Error::InvalidData(format!("JSON input is not UTF-8: {e}")))?)
         } else {
-            false
+            None
         };
+        let city = text.is_some_and(|text| {
+            crate::inspection::root_json_type(text.trim_start_matches('\u{feff}').trim_start()).as_deref() == Some("CityJSON")
+        });
         let driver = if city {
             VectorDriver::CityJSON
         } else if driver == VectorDriver::GML && crate::drivers::vector::citygml::looks_like(&bytes) {
             VectorDriver::CityGML
+        } else if text.is_some_and(crate::drivers::vector::esrijson::is_esrijson) {
+            VectorDriver::ESRIJSON
         } else {
             driver
         };

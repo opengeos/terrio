@@ -320,6 +320,16 @@ pub(crate) mod codec {
         if crate::drivers::vector::citygml::looks_like(json) {
             return Some(VectorDriver::CityGML);
         }
+        // ESRI JSON shares `.json` with GeoJSON, and query results often have no extension.
+        if json.starts_with(b"{")
+            && matches!(VectorDriver::for_extension(name), None | Some(VectorDriver::GeoJSON))
+            && extension(name).as_deref() != Some("geojson")
+        {
+            let head = json.get(..crate::drivers::vector::esrijson::HEAD_BYTES).unwrap_or(json);
+            if crate::drivers::vector::esrijson::is_esrijson(&String::from_utf8_lossy(head)) {
+                return Some(VectorDriver::ESRIJSON);
+            }
+        }
         if let Some(d) = VectorDriver::for_extension(name) {
             return Some(d);
         }

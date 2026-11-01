@@ -112,6 +112,9 @@ pub enum VectorDriver {
     CityJSON,
     /// CityGML 2.0 and 3.0, as a flat XYZ vector view (read only).
     CityGML,
+    /// The JSON of ArcGIS feature-service queries (`f=json`), as GDAL's ESRIJSON driver reads it
+    /// (read only). Shares `.json` with GeoJSON: recognized by its content.
+    ESRIJSON,
     /// GeoPackage.
     GPKG,
     /// GeoParquet.
@@ -371,6 +374,8 @@ impl VectorDriver {
         Self::TopoJSON,
         Self::CityJSON,
         Self::CityGML,
+        // After GeoJSON, so that `.json` names GeoJSON by its extension: ESRIJSON is told by content.
+        Self::ESRIJSON,
         Self::GPKG,
         Self::Parquet,
         Self::FlatGeobuf,
@@ -400,6 +405,7 @@ impl VectorDriver {
             Self::TopoJSON => ("TopoJSON", "TopoJSON", &["topojson"], true, true),
             Self::CityJSON => ("CityJSON", "CityJSON 3D city models", &["city.json", "cityjson"], true, true),
             Self::CityGML => ("CityGML", "CityGML 3D city models", &["citygml"], true, true),
+            Self::ESRIJSON => ("ESRIJSON", "ESRIJSON", &["json"], true, false),
             Self::GPKG => ("GPKG", "GeoPackage", &["gpkg"], true, true),
             Self::Parquet => ("Parquet", "GeoParquet", &["parquet", "geoparquet"], true, true),
             Self::FlatGeobuf => ("FlatGeobuf", "FlatGeobuf", &["fgb"], true, true),
@@ -500,6 +506,7 @@ impl VectorDriver {
             Self::Parquet
             | Self::CityJSON
             | Self::CityGML
+            | Self::ESRIJSON
             | Self::DXF
             | Self::DWG
             | Self::GeoJSONSeq
@@ -998,7 +1005,7 @@ const RASTER_CONTENT: &[&str] = &["GTIFF", "JP2", "PNG", "JPEG", "WEBP", "GRIB",
 /// The formats [`sniff`] names that terrio reads as vectors under names of theirs.
 #[cfg(remote)]
 const VECTOR_CONTENT: &[&str] =
-    &["GEOJSON", "TOPOJSON", "CITYJSON", "CITYGML", "PARQUET", "FLATGEOBUF", "ESRI SHAPEFILE", "KML", "GPX", "GML"];
+    &["GEOJSON", "TOPOJSON", "CITYJSON", "CITYGML", "ESRIJSON", "PARQUET", "FLATGEOBUF", "ESRI SHAPEFILE", "KML", "GPX", "GML"];
 
 /// Whether terrio reads files of the format [`sniff`] names `format` under names of theirs: as
 /// rasters, or, `generic`, as rasters or vectors.
@@ -1085,6 +1092,8 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
             "STAC"
         } else if text.contains("\"Topology\"") {
             "TOPOJSON"
+        } else if crate::drivers::vector::esrijson::is_esrijson(text) {
+            "ESRIJSON"
         } else {
             "GEOJSON"
         });
