@@ -61,6 +61,18 @@ if [ ! -e census_states.kml ]; then
 fi
 [ -e world-110m.topojson ] || curl -sSfL -o world-110m.topojson https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json
 [ -e us-states-10m.topojson ] || curl -sSfL -o us-states-10m.topojson https://cdn.jsdelivr.net/npm/us-atlas@3.0.1/states-10m.json
+# A page of two public feature services, as JSON and as GeoJSON from the same service: the ESRIJSON
+# test compares them. They change with the services, so the test holds no fixed values, and a
+# service that is gone only skips it.
+fs_query='query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&resultRecordCount=2000&orderByFields=OBJECTID'
+for page in \
+  "counties https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/USA_Counties_Generalized_Boundaries/FeatureServer/0" \
+  "quakes https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/USGS_Seismic_Data_v1/FeatureServer/0"; do
+  set -- $page
+  for format in json geojson; do
+    [ -e "featureservice_$1.$format" ] || curl -sSfL -o "featureservice_$1.$format" "$2/$fs_query&f=$format" || true
+  done
+done
 [ -e liechtenstein.osm.pbf ] || curl -sSfL -o liechtenstein.osm.pbf https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf
 # Vector tiles in a PMTiles archive (ZIP code tabulation areas, by Protomaps, made with Tippecanoe).
 [ -e cb_2018_us_zcta510_500k.pmtiles ] || curl -sSfL -o cb_2018_us_zcta510_500k.pmtiles \

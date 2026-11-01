@@ -364,6 +364,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | GeoJSON | GeoJSON | ✓ | ✓ | geojson, json |
 | CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | ✓ | city.json, cityjson, json (by content) |
 | CityGML | CityGML 2.0 and 3.0 (flat XYZ view) | ✓ | ✓ | citygml, gml/xml (by content) |
+| ESRIJSON | JSON of ArcGIS feature-service queries, from files and URLs | ✓ | — | json (by content), query URLs |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
 | KML | KML | ✓ | ✓ | kml |
@@ -616,6 +617,36 @@ city-model identifiers.
 Conformance follows the OGC [CityGML 2.0 encoding](https://schemas.opengis.net/citygml/2.0/)
 and [CityGML 3.0 encoding](https://docs.ogc.org/is/21-006r2/21-006r2.html) and published
 schemas. GDAL 3.13.3's partial CityGML reader is informational.
+
+### ESRIJSON
+
+The `ESRIJSON` driver reads the JSON of ArcGIS feature-service queries (`f=json`) as GDAL's
+ESRIJSON driver does. A `.json` file, or one without an extension, is recognized by its content:
+`geometryType`, `fieldAliases`, `esriFieldType` names, features with rings or attributes, or a
+`spatialReference` by WKID. A URL is read as a query when it has `f=json`, `f=pjson` or
+`resultRecordCount=` and answers ESRI JSON; `ESRIJSON:` before a URL or a path names the driver.
+
+```sh
+terrio info "https://example.org/arcgis/rest/services/A/FeatureServer/0/query?where=1%3D1&outFields=*&f=json"
+```
+
+Without a `resultOffset` in the URL, the following pages are read while the service answers
+`exceededTransferLimit`, asking for as many features as its first page holds unless the URL gives
+a `resultRecordCount`. The open option `FEATURE_SERVER_PAGING=YES` or `NO` decides otherwise, as in
+GDAL. Reading stops at 4 GiB, and a page that adds nothing while saying there are more, or that has
+other fields than the first, is an error. As GDAL's documentation advises, add
+`orderByFields=OBJECTID+ASC` so that pages don't overlap. Authentication goes in the URL
+(`token=`) or the usual HTTP options.
+
+Fields follow `fields`, else `fieldAliases` (as text), else the attributes' values. Terrio has no
+field subtypes: small integers are integers, single-precision numbers are reals, GUIDs are text,
+and `esriFieldTypeTimeOnly` is text. `esriFieldTypeDate` values, milliseconds since 1970, are UTC
+date-times. The object id field is kept, and gives the features their ids. Polygon rings are sorted
+into polygons by containment, whatever their orientation. The CRS is `latestWkid`, else `wkid`,
+else `wkt`; a WKID that is not an EPSG code is tried as an ESRI one, and an unknown one leaves the
+CRS unknown. A service's error answer is an error with its message, and curve geometries
+(`curvePaths`, `curveRings`) are refused rather than read without their arcs. Query URLs are not
+read in WebAssembly builds, which have no network stack: fetch the JSON and open its bytes.
 
 ### Other vector formats
 

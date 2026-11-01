@@ -551,6 +551,8 @@ WebAssembly (the `terrio-js` npm package):
 
 ## Later
 
+- [x] ArcGIS feature-service JSON (the `ESRIJSON` driver): files by content and query URLs page by
+      page, as GDAL's driver reads them.
 - [x] HEC-RAS geometry and plan HDF files as vector layers (the `HECRAS` driver, `hecras` feature).
       Done: the 2D mesh cells, cell centres, faces and perimeters, the 1D cross
       sections, rivers, structures and storage areas, boundary-condition lines, reference lines and
