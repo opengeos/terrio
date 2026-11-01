@@ -8,7 +8,6 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from osgeo import gdal, osr
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,8 +57,24 @@ def mollweide_longitude(case, point):
     return x / (2 * math.sqrt(2) / math.pi * math.cos(theta))
 
 
+def mollweide_roundtrip_error(case, point, back):
+    """Compare the two valid antimeridian images after a GDAL forward roundtrip."""
+    parameters = dict(token.lstrip("+").split("=", 1) for token in shlex.split(case["target"]) if "=" in token)
+    factor = case["metres_per_unit"]
+    x0 = float(parameters.get("x_0", 0))
+    dx = min(abs(back[0] - point[0]) * factor, abs((back[0] + point[0]) * factor - 2 * x0))
+    return max(dx, abs(back[1] - point[1]) * factor)
+
+
+def inverse_probes(points, projected, case):
+    """Pair inverse inputs with their own independent geographic reference, if available."""
+    return [(p, source) for source, p in zip(points, projected, strict=True) if p is not None] + case["inverse_samples"]
+
+
 def ellipsoidal_eqc():
     """Whether GDAL's PROJ has the ellipsoidal eqc (older PROJ applies the spherical formulas)."""
+    from osgeo import osr
+
     source, target = osr.SpatialReference(), osr.SpatialReference()
     source.SetFromUserInput("+proj=longlat +datum=WGS84")
     target.SetFromUserInput("+proj=eqc +datum=WGS84")
@@ -69,6 +84,8 @@ def ellipsoidal_eqc():
 
 
 def main():
+    from osgeo import gdal, osr
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data", nargs="?")
     parser.add_argument("--terrio", default=str(ROOT / "target/release/terrio"))
@@ -109,14 +126,13 @@ def main():
                         )
                         assert error <= 0.001, f"forward {error} metres"
                         maximum_forward = max(maximum_forward, error)
-            inverse_points = [p for p in expected if p is not None] + [
-                s[0] for s in case["inverse_samples"]
-            ]
+            probes = inverse_probes(points, expected, case)
+            inverse_points = [p for p, _ in probes]
             expected_inverse = [oracle(inverse, p) for p in inverse_points]
             actual = native(args.terrio, case["target"], case["source"], inverse_points)
             maximum_inverse = 0.0
             edge_differences = 0
-            for point, got, want in zip(inverse_points, actual, expected_inverse, strict=True):
+            for (point, reference), got, want in zip(probes, actual, expected_inverse, strict=True):
                 if past_pole(case, point):
                     # PROJ's spherical sinusoidal inverse returns a latitude past a pole, which
                     # the rotation turns into a point; terrio's sinusoidal refuses it.
@@ -128,9 +144,17 @@ def main():
                     # against the original geographic sample rather than skipping its values.
                     lam = mollweide_longitude(case, point)
                     assert abs(abs(lam) - math.pi) <= 8 * math.ulp(math.pi), "not on Mollweide edge"
-                    index = expected.index(point)
-                    want = points[index]
                     edge_differences += 1
+                    if reference is None:
+                        # A standalone inverse probe may have no geographic oracle because
+                        # PROJ refused its edge. Independently validate GDAL's forward image.
+                        back = oracle(forward, got)
+                        assert back is not None, "edge inverse has no valid forward image"
+                        error = mollweide_roundtrip_error(case, point, back)
+                        assert error <= 0.001, f"edge roundtrip {error} metres"
+                        maximum_forward = max(maximum_forward, error)
+                        continue
+                    want = reference
                 assert (got is None) == (want is None), "inverse domain differs"
                 if want is not None:
                     dlon = ((got[0] - want[0] + 180) % 360 - 180) * math.cos(

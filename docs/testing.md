@@ -1948,7 +1948,9 @@ row through four levels, stable ties across external merge runs, exact SQLite pa
 bytes at interior-node split boundaries, and propagation of spill read failures.
 A two-layer export with fixed 1,000-feature chunks used 61.3, 73.4 and 62.6 MiB peak
 RSS for 100,000, 1,000,000 and 10,000,000 total point features respectively in local
-optimized runs. GDAL confirmed both layers' counts and R-tree counts, and SQLite's
+optimized runs. The 10-million-feature writer took 12.36 s and produced an
+817,631,232-byte GeoPackage; temporary-pass I/O was not instrumented.
+GDAL confirmed both layers' counts and R-tree counts, and SQLite's
 integrity check passed in each file. These observations complement the fixed sort-buffer
 and page-buffer limits; they are not a portable RSS threshold. The existing `streams`
 conformance suite also cross-reads the spill-backed GeoPackage conversion path.

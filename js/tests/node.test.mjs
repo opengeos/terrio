@@ -1779,10 +1779,9 @@ test("general oblique transformation matches PROJ", () => {
       assert.ok(Math.abs(inverse[1][0] - lat) <= (pole ? 1e-6 : 1e-8), `${c.name} inverse latitude ${i}`);
     }
     // One batched call over every reversible sample, including the antimeridian.
-    const interior = reversible;
-    const batch = terrio.transformPoints(interior.map(s => s[2][0]), interior.map(s => s[2][1]), c.target, c.source);
-    for (let i = 0; i < interior.length; i++) {
-      assert.deepEqual([batch[0][i], batch[1][i]], singleResults.get(interior[i]), `${c.name} batch/single inverse ${i}`);
+    const batch = terrio.transformPoints(reversible.map(s => s[2][0]), reversible.map(s => s[2][1]), c.target, c.source);
+    for (let i = 0; i < reversible.length; i++) {
+      assert.deepEqual([batch[0][i], batch[1][i]], singleResults.get(reversible[i]), `${c.name} batch/single inverse ${i}`);
     }
     const pastPole = point => c.refuses_past_pole && Math.abs((point[1] * c.metres_per_unit - c.false_northing_metres) / c.radius_metres) > Math.PI / 2;
     const refused = samples.filter(s => s[3] === null).map(s => s[2]).concat(c.inverse_samples.filter(([p, e]) => e === null || pastPole(p)).map(([p]) => p));

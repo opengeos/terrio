@@ -65,11 +65,9 @@ fn rotated_projections_pole_forms_figures_and_units_match_frozen_proj() {
                 } else {
                     let actual =
                         inverse.transform(expected.0, expected.1).unwrap_or_else(|e| panic!("{name} {encoding} inverse {point:?}: {e}"));
-                    let expected = if edge { serde_json::json!([point.0, point.1]) } else { sample[3].clone() };
-                    let error = angular_error(actual, &expected);
-                    // asin near a pole loses sqrt(epsilon) radians on some platform libms.
-                    let tolerance = if expected[1].as_f64().unwrap().abs() == 90.0 { 1e-6 } else { 1e-8 };
-                    assert!(error <= tolerance, "{name} {encoding} {point:?}: inverse error {error} degrees");
+                    let geographic = if edge { serde_json::json!([point.0, point.1]) } else { sample[3].clone() };
+                    let error = angular_error(actual, &geographic);
+                    assert!(error <= 1e-8, "{name} {encoding} {point:?}: inverse error {error} degrees");
                 }
             }
             for sample in case["inverse_samples"].as_array().unwrap() {

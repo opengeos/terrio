@@ -474,6 +474,7 @@ impl Mode {
                     if t.nodata.is_some() && v == empty {
                         continue;
                     }
+                    // Decoded Byte samples (or 0/1 mask samples) are integers in 0..=255.
                     let i = v as usize;
                     if self.bytes[i] == 0 {
                         self.touched.push(i);

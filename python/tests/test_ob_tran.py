@@ -45,9 +45,7 @@ def test_ob_tran_oracle(case):
     expected = np.asarray([s[3] for s in reversible])
     delta = actual - expected
     delta[:, 0] = ((delta[:, 0] + 180) % 360 - 180) * np.cos(np.deg2rad(expected[:, 1]))
-    # asin at a pole loses sqrt(epsilon) radians on some platform libms.
-    tolerance = np.where(np.abs(expected[:, 1]) == 90, 1e-6, 1e-8)
-    assert np.all(np.abs(delta) <= tolerance[:, None])
+    assert np.all(np.abs(delta) <= 1e-8)
 
     # PROJ's spherical sinusoidal inverse returns a latitude past a pole, which the rotation turns
     # into a point; terrio's sinusoidal refuses it (as crates/terrio-crs/tests/ob_tran.rs checks).

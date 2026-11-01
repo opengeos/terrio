@@ -989,8 +989,9 @@ impl FeatureSink for GpkgSink {
 ///
 /// In native builds, rows, spatial-index entries and SQLite page directories are spooled
 /// to temporary files. Memory depends on schemas, the current chunk, fixed sort buffers
-/// and tree-depth bookkeeping, rather than the total feature count. Call [`Self::finish`] to write tables, R-trees and
-/// metadata. Dropping an unfinished writer leaves an incomplete output file.
+/// and tree-depth bookkeeping, rather than the total feature count. Call [`Self::finish`]
+/// to write tables, R-trees and metadata. Dropping an unfinished writer leaves an
+/// incomplete output file.
 /// Requires the `sqlite` feature. Existing files are truncated by successful creation.
 ///
 /// ```no_run
