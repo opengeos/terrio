@@ -177,6 +177,11 @@ class BenchmarkTests(unittest.TestCase):
     def test_main_caches_cases_and_marks_failed_duration(self):
         from osgeo import gdal
 
+        original_config = {
+            name: gdal.GetConfigOption(name)
+            for name in ["GDAL_PAM_ENABLED", "GDAL_NUM_THREADS"]
+        }
+
         def large_cases(data, out, budget):
             return [("test", "cached case", ["terrio", str(Path(out) / "out.tif")], ["gdal", str(Path(out) / "out.tif")])]
 
@@ -206,6 +211,8 @@ class BenchmarkTests(unittest.TestCase):
                 benchmark.main()
             finally:
                 os.chdir(original_cwd)
+                for name, value in original_config.items():
+                    gdal.SetConfigOption(name, value)
         # One metadata list, then one list for each tool's output directory.
         self.assertEqual(factory.call_count, 3)
         self.assertIn("| failed |", output.getvalue())

@@ -42,6 +42,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 
 | Area | Script | Checks |
 |---|---|---|
+| Remaining analysis bindings | `scripts/compare_zonal_bindings_with_gdal.py` (`zonal-bindings`) | Twelve Python/Node cases: real counties on DEM/NLCD grids and Landsat pixel zones, both membership rules, multiple rasters/bands, seven statistics, empty/nodata zones, rounding and output CRS. GDAL masks + NumPy statistics: counts/nulls exact, relative 1e-10 or absolute 1e-9 floating tolerance, geometry XY 1e-12 source degrees / 1e-5 projected metres, exact Z presence and Z values within 1e-9 source units on 3D Landsat zones (including projected output). GeoJSON/FlatGeobuf countries split into exact recursive OGR parts with attributes, sequential IDs and CRS. Requires current bindings and GDAL 3.13; six cases without the optional Node package, built with `wasm-pack build js --release --target nodejs --out-dir pkg-node --out-name terrio --no-opt`. |
 | RPF table of contents | `scripts/compare_rpftoc_with_gdal.py` (`rpftoc`) | Twenty-five cross-reads of flat two-scale Landsat mosaics, a historical polar frame, WI 3.5M and synthetic frames centered on both poles through CLI/MCP, Python native/bytes and Node (20 cases without the optional Node package). Exact samples, masks, palettes, types, nodata, CRS, GEOREF, classification and producer metadata; affine limit 1e-7 CRS units. Native reads stay below 1 KiB per frame. GDAL 3.13.3 requires an explicit 3.5M override to correct its verified fractional-scale truncation. Prepare external data with `scripts/make_rpftoc_fixtures.py DATA`; the suite requires GDAL 3.13 and current bindings. |
 | Tile publication | `scripts/compare_tile_publication_with_gdal.py` (`tile-publication`) | Three real Landsat XYZ/TMS cases: exact PNG payloads, KML overlay bounds and complete local links, custom MapML substitutions, and GDAL cross-read STACTA grids and samples. One case corrects the independently verified GDAL default-256 scale defect for 64-pixel tiles. Seven Leaflet/OpenLayers pages were also checked in real Chrome on global XYZ/TMS, Mercator and anisotropic raster grids, including zoom changes, tile requests, rendered pixels and screenshots. Native tests cover typed STACTA in projected US feet and nondefault tile sizes. |
 | Retile layouts | `scripts/compare_retile_with_gdal.py` (`retile`) | 28 Landsat/USGS DEM cases: samples, masks, nodata, types, georeferencing, band properties, filenames, edge crops, overlap, row directories, three recursive levels, all five kernels, COG, Byte, CSV extents and Shapefile indexes. Fourteen exact; fourteen account explicitly for GDAL six-decimal index-origin rounding, one-ULP bilinear Float32 differences and its verified COG Byte-conversion defect. The defect workaround compares native COG samples with GDAL GTiff retile and validates all native COG layouts fully. Six verifier tests reject excessive roundoff, nonfinite, mask and grid changes and incorrect reference workarounds. |
@@ -152,6 +153,12 @@ extraction (38,199,120 payload bytes total, two range GETs, one source file;
 these wrappers do not provide windowed contour or footprint execution. Contour
 conformance bounds length per elevation by relative `1e-10` or the reported absolute
 distance tolerance, without an allowance proportional to vertex count.
+
+The direct zonal bindings use the existing eager raster engine. A cold-cache
+zonal run on the same 51,486,544-byte HTTP-served USGS raster reads 16,384 bytes
+at lazy open and another 38,182,736 during analysis: 38,199,120 bytes total,
+two range GETs and one source file, even for one small zone. The adapters do not
+provide windowed zonal execution.
 
 ## Running the tests
 
@@ -500,8 +507,9 @@ integer counts and nulls must match exactly. Rust/CLI regressions cover positive
 and negative halfway rounding, huge finite values, Z/M preservation, precision
 limits and errors before output creation. Decimal places affect only computed
 numeric attributes, not coordinates or format-specific trailing-zero display.
-The options also apply to Python's bundled CLI and MCP; there are currently no
-direct point-sampling or zonal-statistics functions in Python/JavaScript bindings.
+The options also apply to Python's bundled CLI and MCP. Direct zonal statistics
+are exposed as Python `zonal_stats` and JavaScript `zonalStats`; direct
+point-sampling functions remain unavailable in the language bindings.
 
 ## Standalone CRS feature coverage
 

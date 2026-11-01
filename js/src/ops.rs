@@ -59,7 +59,7 @@ pub(crate) fn input_raster(v: &JsValue) -> Result<RasterDataset, JsError> {
 }
 
 /// Rasters given to an operation: one, or an array of them.
-fn input_rasters(v: &JsValue) -> Result<Vec<RasterDataset>, JsError> {
+pub(crate) fn input_rasters(v: &JsValue) -> Result<Vec<RasterDataset>, JsError> {
     let out: Vec<RasterDataset> = if js_sys::Array::is_array(v) {
         js_sys::Array::from(v).iter().map(|i| input_raster(&i)).collect::<Result<_, _>>()?
     } else {

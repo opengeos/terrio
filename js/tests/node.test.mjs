@@ -3305,3 +3305,90 @@ test("multi-layer analysis output cannot silently drop layers in single-layer fo
   const restored=terrio.open(result.toBytes("all.topojson"),"all.topojson");
   assert.equal(restored.layerNames().length,2);
 });
+
+test("zonalStats exposes multiple rasters, bands, nodata and membership controls", () => {
+  const raster=terrio.rasterFromArray(new Float32Array([1,2,3,-99,10,20,30,-99]),2,2,[0,1,0,2,0,-1],"EPSG:4326",-99);
+  const zones={type:"FeatureCollection",features:[{type:"Feature",id:7,properties:{zone:"full"},geometry:{type:"Polygon",coordinates:[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}},{type:"Feature",id:8,properties:{zone:"empty"},geometry:null}]};
+  const out=terrio.zonalStats(zones,[raster,raster],{bands:[2,1],prefixes:["a","b"],stats:["count","mean","stddev","median"],decimalPlaces:2,tSrs:"EPSG:3857"});
+  const [a,b]=out.toGeoJSON().features;
+  assert.equal(out.crs,"EPSG:3857");
+  assert.equal(a.properties.a_b2_count,3);assert.equal(a.properties.a_b2_mean,20);
+  assert.equal(a.properties.a_b1_stddev,0.82);assert.equal(a.properties.b_b2_stddev,8.16);
+  assert.equal(b.properties.a_b1_count,0);assert.equal(b.properties.a_b1_mean,null);
+  const small={type:"Polygon",coordinates:[[[0.9,0.9],[1.1,0.9],[1.1,1.1],[0.9,1.1],[0.9,0.9]]]};
+  assert.equal(terrio.zonalStats(small,[raster],{}).toGeoJSON().features[0].properties.raster1_b1_count,0);
+  assert.equal(terrio.zonalStats(small,[raster],{allTouched:true}).toGeoJSON().features[0].properties.raster1_b1_count,3);
+  for(const options of [{prefixes:[]},{prefixes:[" "]},{bands:[]},{bands:[3]},{stats:[]},{stats:["mean","mean"]},{stats:["bad"]},{decimalPlaces:16},{decimalPlaces:NaN}])assert.throws(()=>terrio.zonalStats(zones,[raster],options));
+  assert.throws(()=>terrio.zonalStats(zones,[],{}),/no input rasters/);
+  assert.throws(()=>terrio.zonalStats(zones,new Uint8Array([0]),{stats:["bad"]}),/unknown zonal/);
+  assert.throws(()=>terrio.zonalStats(zones,new Uint8Array([0]),{prefixes:[""]}),/cannot be empty/);
+});
+
+
+test("zonalStats retains every named layer and its statistics", () => {
+  const raster=terrio.rasterFromArray(new Float32Array([1,2,3,-99]),2,2,[0,1,0,2,0,-1],"EPSG:4326",-99);
+  const zones=(name,ring)=>terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{name},geometry:{type:"Polygon",coordinates:[ring]}}]},name);
+  const source=terrio.concat([zones("a",[[0,0],[2,0],[2,2],[0,2],[0,0]]),zones("b",[[0,0],[1,0],[1,1],[0,1],[0,0]])],{mode:"stack"});
+  const result=terrio.zonalStats(source,[raster],{stats:["count","mean"]});
+  const expected=[{count:3,mean:2},{count:1,mean:3}];
+  assert.deepEqual(result.layerNames(),source.layerNames());
+  for (const [index,name] of result.layerNames().entries()) {
+    const features=result.toGeoJSON(name).features;
+    assert.equal(features.length,1);
+    assert.equal(features[0].properties.name,["a","b"][index]);
+    assert.equal(features[0].properties.raster1_b1_count,expected[index].count);
+    assert.equal(features[0].properties.raster1_b1_mean,expected[index].mean);
+  }
+});
+
+
+test("singlepart recursively splits collections, retaining XYZ, attributes and nulls", () => {
+ const source={type:"FeatureCollection",features:[{type:"Feature",properties:{name:"parts"},geometry:{type:"GeometryCollection",geometries:[{type:"MultiPoint",coordinates:[[1,2,3],[4,5,6]]},{type:"MultiLineString",coordinates:[[[0,0,7],[1,1,8]]]}]}},{type:"Feature",properties:{name:"null"},geometry:null},{type:"Feature",properties:{name:"empty"},geometry:{type:"MultiPoint",coordinates:[]}}]};
+ const result=terrio.singlepart(source).toGeoJSON().features;
+ assert.equal(result.length,4);
+ assert.deepEqual(result[0].geometry.coordinates,[1,2,3]);
+ assert.deepEqual(result[2].geometry.coordinates,[[0,0,7],[1,1,8]]);
+ assert.deepEqual(result[2].properties,{name:"parts"});assert.equal(result[3].geometry,null);
+});
+
+
+test("singlepart preserves measured ZM coordinates through GeoPackage", async (context) => {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import("node:sqlite"));
+  } catch {
+    context.skip("node:sqlite is unavailable");
+    return;
+  }
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const directory = mkdtempSync(join(tmpdir(), "terrio-singlepart-"));
+  let database;
+  try {
+    const source = terrio.open(new TextEncoder().encode(
+      'WKT,name\n"MULTIPOINT ZM ((1 2 3 4),(5 6 7 8))",parts\n'
+    ), "measured.csv");
+    const filename = join(directory, "parts.gpkg");
+    writeFileSync(filename, terrio.singlepart(source).toBytes("parts.gpkg"));
+    database = new DatabaseSync(filename, { readOnly: true });
+    const metadata = database.prepare("SELECT table_name, column_name FROM gpkg_geometry_columns").get();
+    const quote = (identifier) => '"' + identifier.replaceAll('"', '""') + '"';
+    const rows = database.prepare(
+      `SELECT ${quote(metadata.column_name)} AS geometry FROM ${quote(metadata.table_name)} ORDER BY fid`
+    ).all();
+    const coordinates = rows.map(({ geometry }) => {
+      const bytes = Buffer.from(geometry);
+      // GeoPackage header plus its optional envelope precedes ISO WKB.
+      const offset = 8 + [0, 4, 6, 6, 8][(bytes[3] >> 1) & 7] * 8;
+      const littleEndian = bytes[offset] === 1;
+      assert.equal(littleEndian ? bytes.readUInt32LE(offset + 1) : bytes.readUInt32BE(offset + 1), 3001);
+      return Array.from({ length: 4 }, (_, index) => littleEndian
+        ? bytes.readDoubleLE(offset + 5 + index * 8)
+        : bytes.readDoubleBE(offset + 5 + index * 8));
+    });
+    assert.deepEqual(coordinates, [[1, 2, 3, 4], [5, 6, 7, 8]]);
+  } finally {
+    database?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

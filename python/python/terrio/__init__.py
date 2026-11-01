@@ -148,6 +148,7 @@ from terrio._terrio import (
     sieve,
     simplify,
     simplify_coverage,
+    singlepart,
     sort,
     sozip_create,
     sozip_list,
@@ -178,6 +179,7 @@ from terrio._terrio import (
     write_raster,
     write_vector,
     xyz,
+    zonal_stats,
 )
 from terrio.errors import (
     CRSError,
@@ -333,6 +335,8 @@ __all__ = [
     "dissolve",
     "footprint",
     "make_valid",
+    "singlepart",
+    "zonal_stats",
     "rgb_to_palette",
     "palette_to_rgb",
     "attach_palette",

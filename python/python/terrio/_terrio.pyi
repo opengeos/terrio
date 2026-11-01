@@ -98,6 +98,8 @@ __all__ = [
     "dissolve",
     "footprint",
     "make_valid",
+    "singlepart",
+    "zonal_stats",
     "rgb_to_palette",
     "palette_to_rgb",
     "attach_palette",
@@ -2423,4 +2425,27 @@ def check_geometry(src: Any, *, layer: str | None = None) -> Layer:
 
 def make_valid(src: Any, *, layer: str | None = None) -> Layer:
     """Repair invalid geometries in one layer, preserving attributes and IDs."""
+    ...
+
+def zonal_stats(
+    zones: Any,
+    rasters: str | os.PathLike[str] | Raster | Sequence[str | os.PathLike[str] | Raster],
+    *,
+    bands: Sequence[int] | None = None,
+    prefixes: Sequence[str] | None = None,
+    stats: Sequence[str] | None = None,
+    all_touched: bool = False,
+    t_srs: str | None = None,
+    decimal_places: int | None = None,
+    layer: str | None = None,
+) -> Layer:
+    """Summarize bands for polygon zones; materializes source raster pixels.
+
+    Field-name collisions receive _2, _3, etc. suffixes. Repeated raster path
+    entries are read separately, without a path cache.
+    """
+    ...
+
+def singlepart(src: Any, *, layer: str | None = None) -> Layer:
+    """Split multipart/collection geometry recursively; output IDs start at one."""
     ...

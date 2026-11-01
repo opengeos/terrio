@@ -135,3 +135,65 @@ pub fn check_geometry(src: &JsValue) -> Result<Dataset, JsError> {
 pub fn make_valid(src: &JsValue) -> Result<Dataset, JsError> {
     vector_op(src, topology::make_valid)
 }
+
+#[derive(Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+struct ZonalOptions {
+    bands: Vec<usize>,
+    prefixes: Option<Vec<String>>,
+    stats: Option<Vec<String>>,
+    all_touched: bool,
+    t_srs: Option<String>,
+    decimal_places: Option<u8>,
+}
+impl Default for ZonalOptions {
+    fn default() -> Self {
+        Self { bands: vec![1], prefixes: None, stats: None, all_touched: false, t_srs: None, decimal_places: None }
+    }
+}
+/// Statistics for each polygon and raster band. Source pixels are materialized.
+/// Options: bands, prefixes, stats, allTouched, tSrs, decimalPlaces.
+/// Default prefixes raster1, raster2, etc. produce PREFIX_bN_STATISTIC fields.
+#[wasm_bindgen(js_name=zonalStats)]
+pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    use terrio::ops::zonal::{Statistic, ZonalInput};
+    if options.is_object() {
+        let raw = js_sys::Reflect::get(&options, &JsValue::from_str("decimalPlaces")).map_err(|_| JsError::new("invalid decimalPlaces"))?;
+        if raw.as_f64().is_some_and(|x| !x.is_finite()) {
+            return Err(JsError::new("decimalPlaces must be a finite integer"));
+        }
+    }
+    let a: ZonalOptions = parse_options(&options)?;
+    if a.prefixes.as_ref().is_some_and(|p| p.iter().any(|p| p.trim().is_empty())) {
+        return Err(JsError::new("raster field prefixes cannot be empty"));
+    }
+    let options = terrio::ops::zonal::ZonalOptions {
+        stats: a
+            .stats
+            .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
+            .transpose()
+            .map_err(js_err)?
+            .unwrap_or_else(|| terrio::ops::zonal::ZonalOptions::default().stats),
+        all_touched: a.all_touched,
+        dst_srs: a.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?,
+        decimal_places: a.decimal_places,
+    };
+    let rasters = crate::ops::input_rasters(rasters)?;
+    let prefixes = a.prefixes.unwrap_or_else(|| (1..=rasters.len()).map(|i| format!("raster{i}")).collect());
+    if prefixes.len() != rasters.len() {
+        return Err(JsError::new("give one prefix per raster, or omit prefixes"));
+    }
+    let mut inputs = Vec::new();
+    for (raster, prefix) in rasters.iter().zip(&prefixes) {
+        for &band in &a.bands {
+            inputs.push(ZonalInput { prefix: format!("{prefix}_b{band}"), raster, band });
+        }
+    }
+    vector_op(zones, |layer| terrio::ops::zonal::zonal_stats(layer, &inputs, &options))
+}
+
+/// Recursively split multipart geometries/collections in every layer; IDs restart at one.
+#[wasm_bindgen]
+pub fn singlepart(src: &JsValue) -> Result<Dataset, JsError> {
+    vector_op(src, |layer| Ok(terrio::ops::geometry::singleparts(layer)))
+}

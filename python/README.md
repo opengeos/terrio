@@ -262,6 +262,38 @@ source geometries and add validity/reason fields. Repair preserves attributes,
 IDs, CRS and already-valid Z/M; repaired geometry is constructed in XY. These
 call the same Rust engines as the CLI and retain their documented limits.
 
+### Zonal statistics and multipart splitting
+
+```python
+stats = terrio.zonal_stats("zones.gpkg", ["dem.tif", "imagery.tif"],
+    bands=[1], prefixes=["dem", "scene"], stats=["count", "mean", "median"],
+    all_touched=True, t_srs="EPSG:3857", decimal_places=2)
+parts = terrio.singlepart("countries.gpkg", layer="countries")
+```
+
+Both return a selected `Layer`; use `layer=` for a multi-layer source. Raster inputs
+accept one path or `Raster`, or a sequence of them. All raster pixels are materialized,
+including lazy and remote inputs. Zonal controls follow the CLI, with deterministic
+binding prefixes: `bands` defaults to `[1]`; statistics default to
+count/min/max/mean/sum/stddev, with median also supported. Standard deviation is
+population-based. Omitted prefixes are `raster1`, `raster2`, etc., producing
+`PREFIX_bN_STATISTIC` fields; the CLI instead defaults to each input path stem. Set
+explicit prefixes for the same field names across surfaces. Explicit prefixes must be
+nonblank, one per raster. Field-name collisions, including repeated prefixes/bands or
+existing zone fields, receive `_2`, `_3`, etc. suffixes from the shared engine. Repeated
+raster path entries are materialized separately; paths are not cached. Each polygon is
+transformed into each raster's CRS before center/all-touched membership is evaluated.
+Nodata and nonfinite values are excluded; empty zones have count zero and null other
+statistics. `t_srs` reprojects output geometry; `decimal_places` (0–15) rounds only
+newly computed floating statistics. Counts and source attributes are unchanged.
+Weighted/fractional statistics are not implemented.
+
+The shared engine's geometry, CRS, precision and eager-memory limits apply.
+
+`singlepart` recursively splits multipart geometries and collections, preserving
+attributes, Z/M and CRS. Null and empty single geometries remain; empty multipart
+geometries yield no features. Output feature IDs restart at one.
+
 ### Chained processing
 
 `terrio.pipeline(command, inputs=None, *, write=False, base_file=None, input_kind=None)` evaluates

@@ -13,6 +13,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dissolve, m)?)?;
     m.add_function(wrap_pyfunction!(check_geometry, m)?)?;
     m.add_function(wrap_pyfunction!(make_valid, m)?)?;
+    m.add_function(wrap_pyfunction!(zonal_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(singlepart, m)?)?;
     Ok(())
 }
 
@@ -112,4 +114,63 @@ fn check_geometry(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>)
 #[pyo3(signature=(src, *, layer=None))]
 fn make_valid(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> PyResult<PyLayer> {
     vector_op(py, src, layer, topology::make_valid)
+}
+
+/// Summarize raster bands for polygon zones. All input raster pixels are materialized.
+/// Prefix defaults are raster1, raster2, etc.; fields are PREFIX_bN_STATISTIC.
+#[pyfunction]
+#[pyo3(signature=(zones, rasters, *, bands=None, prefixes=None, stats=None, all_touched=false, t_srs=None, decimal_places=None, layer=None))]
+#[allow(clippy::too_many_arguments)]
+fn zonal_stats(
+    py: Python<'_>,
+    zones: &Bound<'_, PyAny>,
+    rasters: &Bound<'_, PyAny>,
+    bands: Option<Vec<usize>>,
+    prefixes: Option<Vec<String>>,
+    stats: Option<Vec<String>>,
+    all_touched: bool,
+    t_srs: Option<String>,
+    decimal_places: Option<u8>,
+    layer: Option<String>,
+) -> PyResult<PyLayer> {
+    use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions};
+    if prefixes.as_ref().is_some_and(|p| p.iter().any(|p| p.trim().is_empty())) {
+        return Err(pyo3::exceptions::PyValueError::new_err("raster field prefixes cannot be empty"));
+    }
+    let options = ZonalOptions {
+        stats: stats
+            .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
+            .transpose()
+            .py()?
+            .unwrap_or_else(|| ZonalOptions::default().stats),
+        all_touched,
+        dst_srs: t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().py()?,
+        decimal_places,
+    };
+    let zones = crate::vector_geom::one_layer(py, zones, layer)?;
+    let rasters: Vec<_> = crate::ops::input_rasters(py, rasters)?.into_iter().map(|(_, raster)| raster).collect();
+    let prefixes = prefixes.unwrap_or_else(|| (1..=rasters.len()).map(|i| format!("raster{i}")).collect());
+    if prefixes.len() != rasters.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err("give one prefix per raster, or omit prefixes"));
+    }
+    let bands = bands.unwrap_or_else(|| vec![1]);
+    let inner = py
+        .detach_result(|| {
+            let mut inputs = Vec::new();
+            for (raster, prefix) in rasters.iter().zip(&prefixes) {
+                for &band in &bands {
+                    inputs.push(ZonalInput { prefix: format!("{prefix}_b{band}"), raster, band });
+                }
+            }
+            terrio::ops::zonal::zonal_stats(&zones, &inputs, &options)
+        })
+        .py()?;
+    Ok(PyLayer { inner })
+}
+
+/// Recursively split multipart geometries/collections; IDs restart at one.
+#[pyfunction]
+#[pyo3(signature=(src, *, layer=None))]
+fn singlepart(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> PyResult<PyLayer> {
+    vector_op(py, src, layer, |layer| Ok(terrio::ops::geometry::singleparts(layer)))
 }

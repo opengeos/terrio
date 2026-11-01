@@ -71,10 +71,12 @@ comparisons in the GDAL conformance workflow, and exposes applicable functionali
 Rust, CLI, Python, JavaScript and MCP. Supported subsets and numerical tolerances remain
 documented; additional feature scope belongs in separate tracking issues.
 
-## In progress: Additional GDAL command coverage
+## Additional GDAL command coverage
 
-[#289](https://github.com/opengeos/terrio/issues/289) tracks the remaining unified GDAL
-commands. Command-group progress:
+[#289](https://github.com/opengeos/terrio/issues/289) tracks unified GDAL command
+equivalents and their documented subsets. It remains open at the maintainer's request;
+additional option and output depth is tracked in [#288](https://github.com/opengeos/terrio/issues/288).
+Command-group progress:
 
 - [x] Palette conversion: RGB median cut, supplied palettes, RGB/RGBA expansion and
       attachment across Rust, CLI/MCP, Python and JavaScript; real Landsat/OPERA
@@ -116,10 +118,11 @@ commands. Command-group progress:
       [#420](https://github.com/opengeos/terrio/pull/420), with 24 exact
       GDAL 3.13.3 comparisons, including real counties and dimensional inputs.
 
-- [ ] Raster/vector pipelines: linear processing chains with read, write and
+- [x] Raster/vector pipelines: linear processing chains with read, write and
       materialize steps, saved GDALG definitions and deferred named outputs through
-      Rust, CLI/MCP, Python and JavaScript. Part of
-      [#289](https://github.com/opengeos/terrio/issues/289); pending review and merge.
+      Rust, CLI/MCP, Python and JavaScript. Landed in
+      [#428](https://github.com/opengeos/terrio/pull/428), with 45 registered
+      GDAL 3.13.3 comparisons covering pipelines and direct metadata regressions.
 
 - [x] Coverage simplification: shared-edge topology preservation, boundary options
       and active-layer copying across Rust, CLI/MCP, Python and JavaScript. Landed in
@@ -232,10 +235,14 @@ commands. Command-group progress:
 - [x] Polygonization preserves exterior rings and holes on south-up and rotated grids, and
       classifies rings correctly for small pixels at large coordinate origins.
 - [x] Metadata-only CADRG RPF table-of-contents creation through Rust, CLI/MCP,
-      Python and WebAssembly, with bounded frame reads, polar grids and atomic native output.
+      Python and WebAssembly, with bounded frame reads, polar grids and atomic native output
+      ([#446](https://github.com/opengeos/terrio/pull/446)).
       Part of [#289](https://github.com/opengeos/terrio/issues/289).
 - [x] Python and WebAssembly contour, footprint, buffer, grouped dissolve, geometry validity
       and repair functions, using the shared Rust engines.
+- [x] Python and WebAssembly zonal statistics and recursive multipart splitting, using the
+      shared Rust engines with explicit eager-raster and dimensional limits
+      ([#447](https://github.com/opengeos/terrio/pull/447)).
 - [x] Contour lines with interval/fixed levels, nodata handling and optional elevations in Z;
       multi-raster zonal statistics with GDAL's centre/all-touched pixel rules and per-raster CRS
       transformations; a standalone read-only SQL command using the existing query engine.
