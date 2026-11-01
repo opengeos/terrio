@@ -231,8 +231,11 @@ fn raster_info_at(ds: &RasterDataset, options: &InfoOptions, path: Option<&str>,
     let r = &ds.raster;
     let crs = ds.crs();
     let gt = ds.geo_transform();
-    let extent =
-        if gt[2] == 0.0 && gt[4] == 0.0 { [r.x_min, r.y_min, r.x_max(), r.y_max()] } else { corner_extent(&corners(&gt, r.cols, r.rows)) };
+    let extent = if crate::dataset::is_north_up(&gt) {
+        [r.x_min, r.y_min, r.x_max(), r.y_max()]
+    } else {
+        corner_extent(&corners(&gt, r.cols, r.rows))
+    };
     // A complex band's statistics and histogram are those of its real parts, as GDAL's.
     let part = if ds.complex { 2 } else { 1 };
     let bands = (0..ds.band_count())
@@ -688,6 +691,11 @@ fn osm_vector_info(_path: &str) -> crate::Result<Option<VectorInfo>> {
     Ok(None)
 }
 
+/// Whether a geotransform has no rotation terms: its grid is north-up or south-up.
+fn is_axis_aligned(gt: &[f64; 6]) -> bool {
+    gt[2] == 0.0 && gt[4] == 0.0
+}
+
 /// The four corners of a raster's grid under its geotransform.
 fn corners(gt: &[f64; 6], cols: usize, rows: usize) -> [(f64, f64); 4] {
     let (w, h) = (cols as f64, rows as f64);
@@ -704,7 +712,7 @@ fn corner_extent(corners: &[(f64, f64); 4]) -> [f64; 4] {
 /// The WGS 84 bounds of a raster: of its extent when north-up or south-up, and of its four
 /// corners when rotated, whose axis-aligned extent reaches beyond the grid.
 fn raster_wgs84_extent(crs: &SpatialRef, gt: &[f64; 6], cols: usize, rows: usize, extent: [f64; 4]) -> Option<[f64; 4]> {
-    if gt[2] == 0.0 && gt[4] == 0.0 || crs.is_unknown() {
+    if is_axis_aligned(gt) || crs.is_unknown() {
         return wgs84_extent(crs, extent);
     }
     let t = Transformer::new(crs, &SpatialRef::from_epsg(4326).ok()?).ok()?;
@@ -736,7 +744,7 @@ impl Info {
                 let _ = writeln!(s, "CRS: {}", r.crs.line());
                 let g = r.geo_transform;
                 let _ = writeln!(s, "Origin: ({}, {})", g[0], g[3]);
-                if g[2] == 0.0 && g[4] == 0.0 {
+                if is_axis_aligned(&g) {
                     let _ = writeln!(s, "Pixel size: ({}, {})", g[1], g[5]);
                 } else {
                     let _ = writeln!(s, "Geotransform: ({}, {}, {}, {}, {}, {})", g[0], g[1], g[2], g[3], g[4], g[5]);

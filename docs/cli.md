@@ -249,7 +249,9 @@ HDF5 and GeoPackage files are listed as `gdalinfo` lists them (`SUBDATASET_N_NAM
 `SUBDATASET_N_DESC`).
 
 A rotated raster's extent is the box around its four corners, and its text summary prints the
-geotransform in place of a pixel size. The extent and WGS 84 extent match `gdalinfo`'s corners.
+geotransform in place of a pixel size. The WGS 84 extent is the box of the
+four transformed corners, as in `gdalinfo`, so it can miss an edge that bulges beyond them under a
+strongly curved projection.
 
 `--oo KEY=VALUE` opens a vector dataset with an open option, as `convert --oo` does: for
 example the HEC-RAS options that join stored results to a layer (`terrio info plan.p03.hdf -l
