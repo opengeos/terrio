@@ -471,7 +471,12 @@ The writer retains supported per-face classification and properties, not source
 solid/shell topology or semantic parent/child indices. It rebuilds object children
 from the retained parent IDs; group memberships absent from the flat fields,
 materials, textures, templates and extensions are not reconstructed. Supported
-CityGML aliases such as Window/Door become their CityJSON core equivalents, with
+CityGML Window/Door objects use a lossy `BuildingConstructiveElement` projection,
+with the original class in `terrio:sourceCityType`. This is Terrio’s identity-preserving
+projection, not a normative CityGML-to-CityJSON equivalence: the CityJSON
+[specification](https://www.cityjson.org/specs/2.0.2/#3.3) represents Window/Door
+as surface semantics, while its core object types omit filling elements. Other
+CityGML aliases use supported CityJSON core types, with
 the original type in `terrio:sourceCityType`. Unsupported object/classification
 types fail explicitly. Reader diagnostics are not city-model attributes and are
 not written. These are flat conversions, not lossless city-model round trips.

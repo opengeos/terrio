@@ -194,3 +194,23 @@ fn collinear_xyz_rings_are_retained_without_an_area_validity_test() {
     let feature = ds.layers[0].features.iter().find(|f| f.geometry.is_some()).unwrap();
     assert_eq!(feature.attributes[9], FieldValue::Integer(0));
 }
+
+#[test]
+fn existing_cityjson_rejects_layer_update_modes_without_modifying_the_model() {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("existing.city.json");
+    let bytes = br#"{"type":"CityJSON","version":"2.0","transform":{"scale":[1,1,1],"translate":[0,0,0]},"CityObjects":{"old":{"type":"GenericCityObject"}},"vertices":[]}"#;
+    std::fs::write(&path, bytes).unwrap();
+    let layer = wbvector::Layer::new("new_layer");
+    for mode in [terrio::ops::vector_filter::WriteMode::Append, terrio::ops::vector_filter::WriteMode::Overwrite] {
+        let error = terrio::ops::vector_filter::write_vector_with_mode(
+            std::slice::from_ref(&layer),
+            path.to_str().unwrap(),
+            &Default::default(),
+            mode,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("CityJSON has no persistent layer names"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+}

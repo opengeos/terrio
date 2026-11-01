@@ -6,6 +6,7 @@
 use crate::{Error, Result, crs::SpatialRef};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 use wbvector::{Coord, Feature, FieldType, FieldValue, Geometry, Layer, Ring};
 
 /// The CityJSON version to write. The current default is 2.0.
@@ -184,7 +185,7 @@ struct Object<'a> {
     kind: String,
     attrs: Map<String, Value>,
     parents: Vec<String>,
-    primitives: Vec<(String, Option<Value>, Primitive<'a>)>,
+    primitives: Vec<(Rc<str>, Option<Rc<Value>>, Primitive<'a>)>,
 }
 fn field<'a>(layer: &Layer, feature: &'a Feature, name: &str) -> &'a FieldValue {
     layer.schema.field_index(name).and_then(|i| feature.attributes.get(i)).unwrap_or(&FieldValue::Null)
@@ -341,6 +342,8 @@ fn semantic(value: &FieldValue) -> Result<Option<Value>> {
 fn objects(layers: &[Layer], version: CityJsonVersion) -> Result<BTreeMap<String, Object<'_>>> {
     let mut objects: BTreeMap<String, Object<'_>> = BTreeMap::new();
     let mut reserved = HashSet::new();
+    let mut metadata: HashMap<String, (usize, Vec<&FieldValue>)> = HashMap::new();
+    let mut semantic_cache: HashMap<&str, Option<Rc<Value>>> = HashMap::new();
     for layer in layers {
         if has_city_fields(layer) {
             for f in &layer.features {
@@ -380,50 +383,84 @@ fn objects(layers: &[Layer], version: CityJsonVersion) -> Result<BTreeMap<String
                 "GenericCityObject"
             };
             let kind = kind(source_kind, version)?;
-            let parents = if flat {
-                let value = json_field(field(layer, f, "parents"))?;
-                if value.is_null() { Vec::new() } else { serde_json::from_value::<Vec<String>>(value).map_err(invalid)? }
-            } else {
-                Vec::new()
-            };
-            let mut attrs = if flat {
-                match json_field(field(layer, f, "attributes"))? {
-                    Value::Null => Map::new(),
-                    Value::Object(map) => map,
-                    _ => return Err(invalid("attributes must be a JSON object")),
+            let raw: Vec<&FieldValue> = layer
+                .schema
+                .fields()
+                .iter()
+                .zip(&f.attributes)
+                .filter(|(def, _)| {
+                    !matches!(
+                        def.name.as_str(),
+                        "lod" | "geometry_type" | "surface_semantics" | "semantics" | "skipped_rings" | "skipped_faces"
+                    )
+                })
+                .map(|(_, value)| value)
+                .collect();
+            if !metadata.get(&id).is_some_and(|(layer, values)| *layer == li && values == &raw) {
+                let parents = if flat {
+                    let value = json_field(field(layer, f, "parents"))?;
+                    if value.is_null() { Vec::new() } else { serde_json::from_value::<Vec<String>>(value).map_err(invalid)? }
+                } else {
+                    Vec::new()
+                };
+                let mut attrs = if flat {
+                    match json_field(field(layer, f, "attributes"))? {
+                        Value::Null => Map::new(),
+                        Value::Object(map) => map,
+                        _ => return Err(invalid("attributes must be a JSON object")),
+                    }
+                } else {
+                    Map::new()
+                };
+                for (def, value) in layer.schema.fields().iter().zip(&f.attributes) {
+                    if flat
+                        && (COMMON_FIELDS.contains(&def.name.as_str()) || matches!(def.name.as_str(), "skipped_rings" | "skipped_faces"))
+                    {
+                        continue;
+                    }
+                    let value = property(value, def.field_type)?;
+                    if attrs.get(&def.name).is_some_and(|previous| previous != &value) {
+                        return Err(invalid(format!("conflicting attribute {} on {id}", def.name)));
+                    }
+                    attrs.insert(def.name.clone(), value);
                 }
-            } else {
-                Map::new()
-            };
-            for (def, value) in layer.schema.fields().iter().zip(&f.attributes) {
-                if flat && (COMMON_FIELDS.contains(&def.name.as_str()) || matches!(def.name.as_str(), "skipped_rings" | "skipped_faces")) {
-                    continue;
+                if source_kind != kind {
+                    if attrs.get("terrio:sourceCityType").is_some_and(|value| value != &json!(source_kind)) {
+                        return Err(invalid("terrio:sourceCityType conflicts with the source classification"));
+                    }
+                    attrs.insert("terrio:sourceCityType".into(), json!(source_kind));
                 }
-                let value = property(value, def.field_type)?;
-                if attrs.get(&def.name).is_some_and(|previous| previous != &value) {
-                    return Err(invalid(format!("conflicting attribute {} on {id}", def.name)));
+                let entry = objects.entry(id.clone()).or_insert_with(|| Object {
+                    layer: li,
+                    kind: kind.clone(),
+                    attrs: attrs.clone(),
+                    parents: parents.clone(),
+                    primitives: Vec::new(),
+                });
+                if entry.layer != li || entry.kind != kind || entry.attrs != attrs || entry.parents != parents {
+                    return Err(invalid(format!("conflicting metadata for object {id}")));
                 }
-                attrs.insert(def.name.clone(), value);
+                metadata.insert(id.clone(), (li, raw));
             }
-            if source_kind != kind {
-                if attrs.get("terrio:sourceCityType").is_some_and(|value| value != &json!(source_kind)) {
-                    return Err(invalid("terrio:sourceCityType conflicts with the source classification"));
-                }
-                attrs.insert("terrio:sourceCityType".into(), json!(source_kind));
-            }
-            let entry = objects.entry(id.clone()).or_insert_with(|| Object {
-                layer: li,
-                kind: kind.clone(),
-                attrs: attrs.clone(),
-                parents: parents.clone(),
-                primitives: Vec::new(),
-            });
-            if entry.layer != li || entry.kind != kind || entry.attrs != attrs || entry.parents != parents {
-                return Err(invalid(format!("conflicting metadata for object {id}")));
-            }
+            let entry = objects.get_mut(&id).unwrap();
             if let Some(g) = &f.geometry {
-                let lod = lod(if flat { field(layer, f, "lod") } else { &FieldValue::Null }, version)?;
-                let semantic = if flat { semantic(field(layer, f, "surface_semantics"))? } else { None };
+                let lod: Rc<str> = Rc::from(lod(if flat { field(layer, f, "lod") } else { &FieldValue::Null }, version)?);
+                let semantic = if flat {
+                    match field(layer, f, "surface_semantics") {
+                        FieldValue::Text(text) => {
+                            if let Some(value) = semantic_cache.get(text.as_str()) {
+                                value.clone()
+                            } else {
+                                let value = semantic(&FieldValue::Text(text.clone()))?.map(Rc::new);
+                                semantic_cache.insert(text, value.clone());
+                                value
+                            }
+                        }
+                        value => semantic(value)?.map(Rc::new),
+                    }
+                } else {
+                    None
+                };
                 let mut parts = Vec::new();
                 flatten(g, 0, &mut parts)?;
                 for p in parts {
@@ -539,7 +576,7 @@ fn crs(layers: &[Layer]) -> Result<Option<u32>> {
     Ok(first)
 }
 
-type GeometryBuckets<'a> = BTreeMap<(String, &'static str), Vec<(Option<Value>, Primitive<'a>)>>;
+type GeometryBuckets<'a> = BTreeMap<(Rc<str>, &'static str), Vec<(Option<Rc<Value>>, Primitive<'a>)>>;
 
 /// Encode the flat layers; surfaces become MultiSurface, never reconstructed solids.
 pub(crate) fn to_bytes(layers: &[Layer], version: CityJsonVersion) -> Result<Vec<u8>> {
@@ -571,7 +608,7 @@ pub(crate) fn to_bytes(layers: &[Layer], version: CityJsonVersion) -> Result<Vec
                     } else {
                         let index = surfaces.len();
                         semantic_indices.insert(semantic.clone(), index);
-                        surfaces.push(semantic);
+                        surfaces.push((*semantic).clone());
                         index
                     };
                     json!(index)
@@ -579,7 +616,7 @@ pub(crate) fn to_bytes(layers: &[Layer], version: CityJsonVersion) -> Result<Vec
                     Value::Null
                 });
             }
-            let mut geometry = json!({"type":kind,"lod":lod,"boundaries":boundaries});
+            let mut geometry = json!({"type":kind,"lod":lod.as_ref(),"boundaries":boundaries});
             if !surfaces.is_empty() {
                 geometry["semantics"] = json!({"surfaces":surfaces,"values":values});
             }
@@ -722,6 +759,18 @@ mod tests {
         assert_eq!(output["CityObjects"]["b"]["type"], "Building");
         assert_eq!(output["CityObjects"]["b"]["attributes"]["height"], 10.0);
         assert_eq!(output["CityObjects"]["b"]["geometry"][0]["lod"], "2");
+    }
+
+    #[test]
+    fn metadata_cache_accepts_reordered_json_and_still_rejects_changed_values() {
+        let mut layers = source();
+        let mut duplicate = layers[0].features[1].clone();
+        layers[0].features[1].attributes[4] = FieldValue::Text(r#"{"a":1,"b":2}"#.into());
+        duplicate.attributes[4] = FieldValue::Text(r#"{"b":2,"a":1}"#.into());
+        layers[0].push(duplicate);
+        to_bytes(&layers, CityJsonVersion::V2_0).unwrap();
+        layers[0].features.last_mut().unwrap().attributes[4] = FieldValue::Text(r#"{"b":3,"a":1}"#.into());
+        assert!(to_bytes(&layers, CityJsonVersion::V2_0).unwrap_err().to_string().contains("conflicting metadata"));
     }
 
     #[test]

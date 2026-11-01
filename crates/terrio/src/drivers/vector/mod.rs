@@ -129,9 +129,6 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
         VectorDriver::KML => kml::write(std::slice::from_ref(layer), path)?,
         VectorDriver::KMZ => kml::write_kmz(std::slice::from_ref(layer), path, &options.kmz)?,
         VectorDriver::TopoJSON => topojson::write(layer, path)?,
-        VectorDriver::CityJSON => {
-            std::fs::write(path, cityjson_write::to_bytes(std::slice::from_ref(layer), options.cityjson_version.unwrap_or_default())?)?
-        }
         VectorDriver::MapInfo if crate::formats::extension(path).as_deref() == Some("tab") => tab::write(layer, path)?,
         VectorDriver::MapInfo => mapinfo::write(layer, path)?,
         _ => return Ok(false),
