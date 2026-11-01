@@ -377,10 +377,10 @@ fn respond(stream: &mut TcpStream, (status, content_type, body): Reply, security
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::SocketAddr;
 
     /// Serves a session on a free port, with `terrio` as its command line.
-    fn start(terrio: Vec<OsString>) -> (SocketAddr, Arc<Session>) {
+    #[cfg(unix)]
+    fn start(terrio: Vec<OsString>) -> (std::net::SocketAddr, Arc<Session>) {
         std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .stack_size(crate::STACK_SIZE)
