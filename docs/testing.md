@@ -95,9 +95,6 @@ python scripts/benchmark_citygml_dispatch.py ../terrio-data
 python scripts/benchmark_citygml_dispatch.py ../terrio-data --restrict-drivers
 ```
 
-At commit `dff75c08`, five warm local development-binding runs recorded that the 3,092-face example's median
-open time changed from 0.551 s before the review fixes to 0.264 s afterward.
-These are development-profile observations, not optimized performance guarantees.
 With a CityGML-only driver restriction, equal 32,834-byte generated files with
 an early root or a root after a 32 KiB comment read 33,858 and 49,218 bytes,
 respectively: one complete source read plus a 1 KiB or 16 KiB identification

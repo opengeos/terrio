@@ -512,13 +512,17 @@ indexed semantics object. Nested city objects retain parent IDs and nonspatial
 containers. Missing object IDs receive generated IDs. Object properties are JSON
 text; measurement units and code spaces are retained with their values.
 
-Affine implicit geometry uses its matrix before adding the reference point.
+Affine implicit geometry uses its matrix before adding the reference point and
+promotes positions to XYZ, using zero for an absent input Z. Conflicting anchor
+and relative-geometry CRSs are rejected.
 Explicit and inherited coordinate dimensions override dimensions inferred from
 the CRS when omitted. Position-level CRS declarations, legacy compound OGC URNs and
 geographic authority-axis order are supported. A flat layer requires a consistent
 CRS; mixing unknown and known CRSs, or distinct CRSs, fails explicitly.
 
-UTF-8, Latin-1 and UTF-16 XML are supported. Other declared encodings recognized
+UTF-8, Latin-1 and UTF-16 XML are supported. Undeclared input that is not valid
+UTF-8 intentionally falls back to Latin-1 for compatibility; declare Windows-1252
+explicitly when its additional characters are intended. Other declared encodings recognized
 by `encoding_rs`, including Windows-1252, are decoded using their declaration. Identification examines at most
 16 KiB; opening a named `.gml` can inspect beyond a long leading comment.
 
@@ -529,7 +533,9 @@ attribute and text allocations with capacity slack. Local CityGML paths are
 size-checked before payload allocation. Oversized shared XML names with an
 inconclusive 16 KiB root prefix are refused; identified non-CityGML XML keeps its
 existing read policy. These are allocation safeguards, not a total process-memory
-ceiling. It does not
+ceiling. Reference expansion has whole-document totals of one million node visits
+and 64 MiB of coordinate text parsed through XLinks. A shared primitive with
+contradictory thematic classifications is rejected. It does not
 retain solid/shell topology, full city-model hierarchy,
 textures/materials, ADE semantics or general metadata for lossless round trips.
 External geometry references, linked coordinate/ring content, nonlinear curve
