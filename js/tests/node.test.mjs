@@ -213,6 +213,28 @@ test("CityJSON skips degenerate faces without shifting semantics", () => {
   assert.throws(() => terrio.open(bytes(), "missing.city.json"), /transform/);
 });
 
+test("CityJSON writer selects 1.1 and 2.0 and preserves vertical face classification", () => {
+  const doc = {type:"CityJSON", version:"2.0", transform:{scale:[1,1,1],translate:[0,0,0]},
+    metadata:{referenceSystem:"https://www.opengis.net/def/crs/EPSG/0/7415"},
+    vertices:[[10,0,0],[10,10,0],[10,10,10],[10,0,10]],
+    CityObjects:{house:{type:"Building",attributes:{name:"house"},geometry:[{type:"MultiSurface",lod:"2.2",boundaries:[[[0,1,2,3]]],semantics:{surfaces:[{type:"WallSurface"}],values:[0]}}]}}};
+  const source=terrio.open(new TextEncoder().encode(JSON.stringify(doc)),"source.city.json");
+  for (const version of ["1.1","2.0"]) {
+    const bytes=source.toBytes("output.city.json",{cityjsonVersion:version});
+    const output=JSON.parse(new TextDecoder().decode(bytes));
+    assert.equal(output.version,version);
+    assert.equal(output.CityObjects.house.geometry[0].type,"MultiSurface");
+    const restored=terrio.open(bytes,"output.city.json");
+    const f=restored.toGeoJSON().features[0];
+    assert.deepEqual(f.geometry.coordinates[0].slice(0,4),doc.vertices);
+    assert.equal(JSON.parse(f.properties.surface_semantics).type,"WallSurface");
+    restored.free();
+  }
+  assert.throws(()=>source.toBytes("wrong.geojson",{cityjsonVersion:"2.0"}),/applies to CityJSON/);
+  assert.throws(()=>source.toBytes("wrong.city.json",{cityjsonVersion:"3.0"}),/version must be/);
+  source.free();
+});
+
 test("vector from GeoJSON, to other formats and back", () => {
   const ds = terrio.fromGeoJSON(SQUARES, "squares");
   assert.equal(ds.kind, "vector");

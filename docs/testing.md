@@ -44,6 +44,30 @@ entrypoint includes Node when that package exists. Counts, XYZ, rings, object
 identity/type, LoD, parents, attributes and semantics text are exact; source CRS is
 checked separately. The reader exposes flat primitives, not a lossless city model.
 
+The writer has a separate suite for both output versions:
+
+```sh
+python scripts/conformance.py ../terrio-data --only cityjson-write --strict
+```
+
+It validates the published schemas for every distinct output payload and compares
+an independent source traversal with the written boundaries. CLI, Python paths/bytes
+and optional Node/WASM are checked. Identical output bytes reuse their schema/oracle
+result. Primitive structure, identity/type, parents, attributes, LoD, per-face
+classification and CRS are exact. XYZ uses half an output quantization step plus
+four floating-point ULPs; constant axes use ULPs only. The report records maximum
+coordinate error rather than claiming an exact geometry round trip. The full Delft
+model includes 54 GenericCityObjects, which 1.1 cannot represent: each API must
+reject that conversion. A separately labelled subset without those objects is
+validated as 1.1, while the complete model is validated as 2.0. No classification
+or cross-object links are rewritten to create the subset. A generated sample also
+covers all 33 core object types listed by the published 2.0 schema.
+
+A local optimized run passed 56 comparisons across the real files, two cached
+3DBAG pages and the core-type sample: 48 schema-valid outputs within the stated
+coordinate tolerance and eight expected 1.1 rejection checks. Maximum observed
+XYZ error was 8.89e-15 source units; metadata and primitive structure were exact.
+
 CityGML uses the same specifications-first approach. Fetch the pinned citygml4j
 2.0/3.0 building examples and their published schema dependencies into the external
 data directory, then compare every explicit polygon against the source XML:

@@ -108,7 +108,7 @@ pub enum VectorDriver {
     GeoJSONSeq,
     /// TopoJSON.
     TopoJSON,
-    /// CityJSON 1.1 and 2.0, as a flat XYZ vector view (read only).
+    /// CityJSON 1.1 and 2.0, as a flat XYZ vector view.
     CityJSON,
     /// CityGML 2.0 and 3.0, as a flat XYZ vector view (read only).
     CityGML,
@@ -398,7 +398,7 @@ impl VectorDriver {
             Self::GeoJSON => ("GeoJSON", "GeoJSON", &["geojson", "json"], true, true),
             Self::GeoJSONSeq => ("GeoJSONSeq", "GeoJSON text sequences", &["geojsonl", "geojsons", "geojsonseq"], true, true),
             Self::TopoJSON => ("TopoJSON", "TopoJSON", &["topojson"], true, true),
-            Self::CityJSON => ("CityJSON", "CityJSON 3D city models", &["city.json", "cityjson"], true, false),
+            Self::CityJSON => ("CityJSON", "CityJSON 3D city models", &["city.json", "cityjson"], true, true),
             Self::CityGML => ("CityGML", "CityGML 3D city models", &["citygml"], true, false),
             Self::GPKG => ("GPKG", "GeoPackage", &["gpkg"], true, true),
             Self::Parquet => ("Parquet", "GeoParquet", &["parquet", "geoparquet"], true, true),

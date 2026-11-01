@@ -86,6 +86,9 @@ pub struct Args {
     /// an existing file is taken whole, even with an `=`. Repeat it for several files.
     #[arg(long = "kmz-resource", value_name = "PATH[=FILE]")]
     kmz_resources: Vec<String>,
+    /// CityJSON output version (default: 2.0).
+    #[arg(long, value_parser = ["1.1", "2.0"])]
+    cityjson_version: Option<String>,
     #[command(flatten)]
     vector: super::vector_opts::VectorArgs,
     #[command(flatten)]
@@ -141,7 +144,8 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
     if !a.kmz_resources.is_empty() {
         return Ok(None);
     }
-    let mut write = VectorWriteOptions { driver, ..Default::default() };
+    let mut write =
+        VectorWriteOptions { driver, cityjson_version: a.cityjson_version.as_deref().map(str::parse).transpose()?, ..Default::default() };
     for (k, v) in key_values(&a.creation_options)? {
         if !(write.csv.set(k, v)? || write.geojson.set(k, v)?) {
             return Ok(None);
@@ -209,6 +213,12 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
 }
 
 pub fn run(mut a: Args) -> terrio::Result<()> {
+    if a.cityjson_version.is_some()
+        && a.format.as_deref().map_or_else(|| VectorDriver::for_extension(&a.output), VectorDriver::from_name)
+            != Some(VectorDriver::CityJSON)
+    {
+        return Err(terrio::Error::InvalidArgument("--cityjson-version applies to CityJSON output".into()));
+    }
     let coordinate_options = a.vector.coordinate_options()?;
     a.input = super::with_driver(&a.input, a.driver.as_deref())?;
     if terrio::pointcloud::is_point_cloud_path(&a.input) {
@@ -271,7 +281,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     match ds {
         Dataset::Raster(mut r) => {
             let append = a.vector.append_only();
-            if a.vector.is_set() && !append {
+            if (a.vector.is_set() && !append) || a.cityjson_version.is_some() {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
             if let Some(dst) = t_srs {
@@ -388,7 +398,11 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 .as_deref()
                 .map(|f| VectorDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown vector format '{f}'"))))
                 .transpose()?;
-            let mut options = VectorWriteOptions { driver, ..Default::default() };
+            let mut options = VectorWriteOptions {
+                driver,
+                cityjson_version: a.cityjson_version.as_deref().map(str::parse).transpose()?,
+                ..Default::default()
+            };
             options.tiles.min_zoom = a.minzoom;
             options.tiles.max_zoom = a.maxzoom;
             if !a.kmz_resources.is_empty() {
