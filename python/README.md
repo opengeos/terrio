@@ -294,6 +294,38 @@ Use `input_kind="raster"` or `input_kind="vector"` to force the input family;
 `"auto"` chooses detection. A `raster` or `vector` prefix in the command string
 also selects a family. An explicit `input_kind` overrides that prefix.
 
+## RPF table of contents
+
+```python
+report = terrio.rpftoc_create("frames", "A.TOC", producer_id="ACME", country_code="US")
+toc = terrio.rpftoc_bytes([("zone/000C9010.ON2", frame_bytes)], classification="U")
+```
+
+These functions index existing CADRG frames without decoding their compressed
+pixels. `rpftoc_create` recursively scans a local directory, skips symlinks and
+atomically publishes the TOC after validation. Its default output is `input/A.TOC`;
+a supplied output must be in the input directory or an ancestor, so frame paths
+remain relative without `..`. Existing output requires `overwrite=True`, which
+replaces any file at that path, not only a TOC; input frames remain protected. The
+report includes frame/group counts, skipped non-NITF candidates, metadata bytes
+read and output bytes. New Unix output follows the process umask; overwrites
+preserve its existing Unix mode bits, but not ownership, extended ACLs or other
+extended attributes. Unreadable directories fail the entire native scan instead of producing an incomplete index.
+Directory trees must remain stable during creation; callers
+must synchronize concurrent directory changes. Use `rpftoc_bytes` with an
+application-managed writer when those publication properties are required.
+
+`rpftoc_bytes` borrows bounded metadata ranges from each named Python `bytes`
+value and returns a TOC; retain those frame files at the supplied relative paths
+beside it. Both accept `scale` (otherwise inferred per series), `producer_id`
+(up to five ASCII bytes), `producer_name` (27), `country_code` (two uppercase
+letters or empty) and `classification` (`U`, `R`, `C`, `S`, `T`). Frame corners
+must match the selected scale/zone. Historical polar interval fields are
+normalized to the standard grid. CIB and non-CADRG products are unsupported. Recognized NITF candidates that are
+unsupported or malformed fail the operation before publication; they are not skipped.
+The encoded TRE payload must fit 99,999 bytes; oversized indexes fail before
+publication. The operation creates an index rather than embedding frame images.
+
 ## Retile and publish raster folders
 
 ```python

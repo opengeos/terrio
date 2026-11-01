@@ -422,6 +422,14 @@ def xarray_api(tmp: Path) -> None:
     print(acc.crs, acc.transform(), acc.resolution(), merged.shape, ds.terrio.crs)
 
 
+def rpf_metadata_api(
+    frame_bytes: bytes, input_dir: Path, output: Path
+) -> tuple[bytes, dict[str, int]]:
+    toc: bytes = terrio.rpftoc_bytes([("zone/000C9010.ON2", frame_bytes)], country_code="US")
+    report: dict[str, int] = terrio.rpftoc_create(input_dir, output, overwrite=True)
+    return toc, report
+
+
 def main() -> None:
     """Runs every example in a temporary directory."""
     with tempfile.TemporaryDirectory() as d:

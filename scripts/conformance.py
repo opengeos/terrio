@@ -2119,6 +2119,64 @@ def suite_analysis_output(ctx):
     return suite
 
 
+def node_exports_available(module, names):
+    """An optional Node backend needs a complete package and the requested exports."""
+    if shutil.which("node") is None or not module.is_file() or not module.with_name("terrio_bg.wasm").is_file():
+        return False
+    try:
+        result = subprocess.run([
+            "node", "-e",
+            "const t=require(process.argv[1]);process.exit(process.argv.slice(2).every(n=>typeof t[n]==='function')?0:1)",
+            str(module.resolve()), *names,
+        ], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def suite_rpftoc(ctx):
+    """All RPF TOC surfaces cross-read by GDAL 3.13.3 on prepared CADRG frames."""
+    suite = Suite("rpftoc", "CADRG RPF table of contents", "GDAL 3.13.3 RPFTOC/NITF",
+                  "Flat two-scale Landsat mosaics, a historical polar frame, nominal WI 3.5M and independent synthetic frames centered on both poles: exact samples, masks, palettes, types, nodata and CRS; affine tolerance 1e-7 CRS units. Native metadata reads stay below 1 KiB/frame. Fractional scale uses GDAL's explicit 3.5M override to correct its verified default 3M truncation.")
+    if missing_modules("osgeo", "numpy", "terrio"):
+        suite.skipped = "needs GDAL >= 3.13, NumPy and current RPF Python bindings"
+        return suite
+    from osgeo import gdal
+    import terrio
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000 or not hasattr(terrio, "rpftoc_bytes"):
+        suite.skipped = "needs GDAL >= 3.13 and current RPF Python bindings"
+        return suite
+    driver_algorithm = gdal.GetGlobalAlgorithmRegistry().InstantiateAlg("driver")
+    if (gdal.GetDriverByName("NITF") is None or gdal.GetDriverByName("RPFTOC") is None
+            or "rpftoc" not in driver_algorithm.GetSubAlgorithmNames()):
+        suite.skipped = "needs GDAL NITF/RPFTOC drivers and the rpftoc algorithm"
+        return suite
+    if any(not (Path(ctx.data) / directory).is_dir() for directory in ["rpftoc_landsat", "rpftoc_polar", "rpftoc_fractional3500000", "rpftoc_pole_centers/north-rgb", "rpftoc_pole_centers/south-rgb"]):
+        suite.skipped = "run scripts/make_rpftoc_fixtures.py DATA to prepare CADRG references"
+        return suite
+    command = [sys.executable, str(SCRIPTS / "compare_rpftoc_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"]
+    module = ROOT / "js" / "pkg-node" / "terrio.js"
+    node = node_exports_available(module, ["rpftocCreate"])
+    if node:
+        command += ["--js", module]
+    else:
+        suite.cases.append(Case("RPFTOC", "Node backend", NOT_COMPARED, "needs Node and both js/pkg-node/terrio.js and terrio_bg.wasm"))
+    code, out, err = run(command)
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    expected = 25 if node else 20
+    if len(results) != expected:
+        suite.cases.append(Case("RPFTOC", "case count", DIFFERS, f"expected {expected} results, got {len(results)}"))
+    for result in results:
+        suite.cases.append(Case("RPFTOC", result["name"], {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS), result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_analysis_bindings(ctx):
     """Real-data analysis results through the installed Python and optional Node APIs."""
     suite = Suite("analysis-bindings", "Analysis language bindings", "GDAL 3.13.3 / OGR / GEOS",
@@ -2618,6 +2676,7 @@ SUITES = OrderedDict(
         ("vector-geom", suite_vector_geom),
         ("vector-clip", suite_vector_clip),
         ("vector-dataset", suite_vector_dataset),
+        ("rpftoc", suite_rpftoc),
         ("footprint", suite_footprint),
         ("analysis-bindings", suite_analysis_bindings),
         ("analysis-output", suite_analysis_output),

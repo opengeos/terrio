@@ -3249,6 +3249,47 @@ test("rasterTiles emits publication companions with uniform STACTA bands", () =>
   assert.equal(files.get("0/0/0.png")[25],4); // PNG gray + alpha color type.
 });
 
+test("rpftocCreate indexes bounded frame metadata and rejects inconsistent options", () => {
+  const parts = [], encoder = new TextEncoder();
+  const text = value => parts.push(encoder.encode(value));
+  const number = (value, width, setter) => { const b = new Uint8Array(width); new DataView(b.buffer)[setter](0, value, false); parts.push(b); };
+  const u16 = value => number(value, 2, "setUint16"), u32 = value => number(value, 4, "setUint32");
+  const f64 = value => number(value, 8, "setFloat64");
+  const prefix = new Uint8Array(360).fill(32); prefix.set(encoder.encode("NITF02.00")); prefix[119]=85; parts.push(prefix);
+  text("0010000000000000000000000000000000"); text("00062000RPFHDR00048");
+  const location = parts.reduce((n, p) => n + p.length, 0) + 48 + 5;
+  parts.push(new Uint8Array([0])); u16(48); text("000C9010.ON2"); parts.push(new Uint8Array([0]));
+  text("MIL-C-89038    19941006U    "); u32(location); text("00000");
+  u16(34); u32(14); u16(2); u16(10); u32(116);
+  u16(130); u32(96); u32(location + 34); u16(136); u32(20); u32(location + 130);
+  const sx = 360 / 201728, sy = 90 / 66816, west = -180 + 21 * sx * 1536;
+  const south = Math.floor(32 / (sy * 1536)) * (sy * 1536) + 3 * sy * 1536;
+  const east = west + sx * 1536, north = south + sy * 1536;
+  [north,west,south,west,north,east,south,east,99.9*400384/(4*66816),99.9*302592/201728,sy,sx].forEach(f64);
+  parts.push(new Uint8Array([0,1,0,36,0,1,0,1,0,6,0,6])); u32(256); u32(256);
+  const bytes = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let offset = 0; for (const p of parts) { bytes.set(p, offset); offset += p.length; }
+  bytes.set(encoder.encode(String(location).padStart(6,"0")),354);
+  bytes.set(encoder.encode(String(bytes.length).padStart(12,"0")),342);
+  const frames = [{filename:"zone/000C9010.ON2",bytes}];
+  assert.throws(()=>terrio.rpftocCreate([{filename:"CON/000C9010.ON2",bytes}],{}),/relative/);
+  assert.throws(()=>terrio.rpftocCreate([{filename:"zone/000C9010.ON2",bytes:bytes.subarray(0,bytes.length-1)}],{}),/file length/);
+  const output = terrio.rpftocCreate(frames, {countryCode:"US"});
+  assert.notDeepStrictEqual(output,terrio.rpftocCreate(frames,{}));
+  const ascii = data => new TextDecoder().decode(data);
+  assert.equal(ascii(output.subarray(0,9)),"NITF02.00");
+  assert.equal(Number(ascii(output.subarray(342,354))), output.length);
+  assert.ok(ascii(output).includes("./zone/"));
+  assert.throws(()=>terrio.rpftocCreate(frames,{scale:500000}),/scale|aligned/);
+  assert.throws(()=>terrio.rpftocCreate(frames,{scale:NaN}),/finite/);
+  assert.throws(()=>terrio.rpftocCreate([{filename:"../000C9010.ON2",bytes}],{}),/relative/);
+  assert.throws(()=>terrio.rpftocCreate(frames.concat(frames),{}),/duplicate/);
+  assert.throws(()=>terrio.rpftocCreate([{filename:"000C9010.ON2",bytes:[]}],{}),/Uint8Array/);
+  bytes[119]=83;
+  assert.throws(()=>terrio.rpftocCreate(frames,{}),/highest frame/);
+  assert.equal(terrio.rpftocCreate(frames,{classification:"S"})[119],83);
+
+});
 
 test("multi-layer analysis output cannot silently drop layers in single-layer formats", () => {
   const point = marker => ({type:"FeatureCollection", features:[{type:"Feature",properties:{marker},geometry:{type:"Point",coordinates:[0,0]}}]});

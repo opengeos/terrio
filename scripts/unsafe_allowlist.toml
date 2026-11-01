@@ -52,6 +52,11 @@ count = 2
 origin = "existing"
 reason = "SSE reciprocal square root intrinsics, part of the x86-64 baseline; the second from #265, an SSE intrinsic in DEM operations"
 
+[files."crates/terrio/src/ops/rpftoc/native.rs"]
+count = 1
+origin = "added"
+reason = "Windows RPF frame identity: GetFileInformationByHandle on an owned live file handle into a correctly sized initialized output, with its return value checked"
+
 [files."crates/terrio/src/par.rs"]
 count = 7
 origin = "added"
