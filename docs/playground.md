@@ -2,7 +2,7 @@
 
 Try terrio in your browser. This page runs the [npm package](javascript.md), terrio compiled to
 WebAssembly: files are read and written on your computer and never uploaded. The first visit
-downloads about 6 MB.
+downloads about 9 MB.
 
 <div id="terrio-playground" markdown="0">
   <p class="tp-status" id="tp-status">Loading terrio…</p>

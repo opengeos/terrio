@@ -205,6 +205,7 @@ def _ensure_nodata_dtype(original_nodata: Any, new_dtype: Any) -> Any:
 
     Raises:
         OverflowError: If the value does not fit.
+        ValueError: If NumPy cannot convert the value, such as NaN to an integer.
     """
     new_dtype = np.dtype(new_dtype)
     if np.issubdtype(new_dtype, np.complexfloating):
@@ -219,6 +220,8 @@ def _ensure_nodata_dtype(original_nodata: Any, new_dtype: Any) -> Any:
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             nodata = new_dtype.type(original)
+    except ValueError as error:
+        raise ValueError(message) from error
     except (OverflowError, RuntimeWarning) as error:
         raise OverflowError(message) from error
     if not np.isnan(nodata) and original != nodata:
@@ -1771,7 +1774,10 @@ class TerrioArray(XRasterBase):
         Args:
             raster_path: The output path.
             driver: The driver (default: from the extension).
-            dtype: The output data type (default: the encoded or the array's).
+            dtype: The output data type (default: the encoded or the array's). If the
+                encoded type is integer but nodata is NaN without an encoded fill value,
+                defaults to the floating array type. For integer output, set a representable
+                encoded fill value with `write_nodata(value, encoded=True)` first.
             tags: Metadata items to write (with the array's attributes).
             windowed: Write block by block (else the whole array at once).
             recalc_transform: Compute the transform from the coordinates.

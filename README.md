@@ -15,13 +15,12 @@ Pure-Rust geospatial raster, vector and point cloud data I/O.
   <img src="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-banner.webp" alt="terrio: geospatial data I/O in pure Rust. Rasters, vectors and point clouds, from the command line, Python, JavaScript and Rust, with an MCP server for AI agents" width="800">
 </p>
 
-Documentation: <https://terrio.dev>
+Documentation: <https://terrio.dev> · [Playground](https://terrio.dev/playground/) · [Notebooks](https://terrio.dev/notebooks/)
 
-terrio aims to read, write, convert and reproject the geospatial formats most workflows use, without
+terrio reads, writes, converts and reprojects the geospatial formats most workflows use, without
 C dependencies, so that it builds anywhere Rust does, including WebAssembly.
 
-**Status:** early development. Reading, writing and converting work; the processing operations are
-in progress. See [ROADMAP.md](ROADMAP.md).
+**Status:** early development. The API may change before 1.0. See [ROADMAP.md](ROADMAP.md).
 
 terrio builds on the pure-Rust format libraries of
 [whitebox_next_gen](https://github.com/jblindsay/whitebox_next_gen) (`wbraster`, `wbvector`,
@@ -154,13 +153,13 @@ module) for HTTP.
 Datasets can also be opened from bytes and written to bytes (`terrio::memory`), for data
 already in memory and for WebAssembly, which has no file system.
 
-An optional GDAL backend (the `gdal` cargo feature, off by default and the only C dependency)
+An optional GDAL backend (the `gdal` cargo feature, off by default, and a C dependency)
 opens what terrio has no driver for (HDF4, NITF and the rest of GDAL's formats)
 into the same data model, and writes rasters with GDAL's drivers: `terrio::open("GDAL:file.hdf")`,
 `terrio info --driver gdal`, or a plain path when terrio's own drivers cannot open it.
 
 Every driver is on by default; each family of them is a cargo feature that can be turned off,
-for a smaller dependency tree and WebAssembly module: `parquet`, `remote` (URLs and object
+for a smaller dependency tree and WebAssembly module: `cad` (DWG and DXF), `parquet`, `remote` (URLs and object
 storage), `netcdf-hdf5`, `sqlite` (GeoPackage), `tiles` (MBTiles, PMTiles, MVT), `avif`, `zarr`,
 `jp2`, `grib`, `flatgeobuf`, `osm`, `pointcloud`, `lerc`, `lzma` and `hecras` (HEC-RAS geometry and
 plan HDF files). GeoTIFF and COG, the plain raster
@@ -168,7 +167,7 @@ and vector formats, the CRS engine and the operations are always built. A COG wr
 needs only:
 
 ```toml
-terrio = { version = "0.3", default-features = false, features = ["geotiff"] }
+terrio = { version = "0.6", default-features = false, features = ["geotiff"] }
 ```
 
 See [the features](https://terrio.dev/rust/#features) for what each one adds.
@@ -250,7 +249,7 @@ the build machine.
 The `terrio-js` npm package is the library compiled to WebAssembly, for browsers and Node.js:
 
 ```js
-import init, { open, transformPoints } from "terrio-js";
+import init, { open, readPoints, transformPoints } from "terrio-js";
 
 await init();
 const dem = open(new Uint8Array(await (await fetch("dem.tif")).arrayBuffer()), "dem.tif");
@@ -314,9 +313,11 @@ TERRIO_TEST_DATA=../terrio-data cargo test --release --test epsg_accuracy -- --n
 | `crates/terrio-crs` | Standalone coordinate systems, transformations and datum grids |
 | `crates/terrio-cli` | The `terrio` command-line tool |
 | `python` | Python bindings (PyO3, NumPy), the `terrio` package on PyPI |
-| `js` | WebAssembly bindings (wasm-bindgen), the `terrio` package on npm |
+| `js` | WebAssembly bindings (wasm-bindgen), the `terrio-js` package on npm |
 
 See [ROADMAP.md](ROADMAP.md) for what is planned and in what order.
+
+New to Rust? [Contributing](docs/contributing.md) walks you through a first change.
 
 ## Acknowledgements
 

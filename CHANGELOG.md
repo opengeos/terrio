@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The command line page opens with every command in alphabetical order, with its `--help`
+  summary, and a test keeps the list current. The rest of the site was corrected against the code.
 - The documentation site runs the notebooks in the browser with JupyterLite, with
   terrio's wheel served by the site and installed by each notebook, at
   <https://terrio.dev/notebooks/>.

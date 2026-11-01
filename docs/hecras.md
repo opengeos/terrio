@@ -175,7 +175,7 @@ not read.
 The driver is the `hecras` Cargo feature, part of the default features; it implies
 `netcdf-hdf5`.
 
-- **Rust**: `terrio = "0.5"` includes it. With `default-features = false`, add it:
+- **Rust**: `terrio = "0.6"` includes it. With `default-features = false`, add it:
   `features = ["hecras"]`. The `terrio::hecras` module gives the typed API.
 - **Command line**: the `terrio` binary and `cargo install terrio-cli` include it;
   `terrio formats` lists `HECRAS`.

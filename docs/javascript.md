@@ -5,7 +5,8 @@ WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a fil
 format, and written back to bytes. Try it without installing anything on the [Playground](playground.md).
 
 ```js
-import init, { open, fromGeoJSON, rasterFromArray, transformPoints, describeCrs } from "terrio-js";
+import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs } from "terrio-js";
+import { tableFromIPC, tableToIPC } from "apache-arrow";
 
 await init(); // in Node.js: await init({ module_or_path: fs.readFileSync(wasmPath) })
 
@@ -36,7 +37,7 @@ In WebAssembly, these formats are read from and written to memory:
 | | Read | Write |
 |---|---|---|
 | Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
-| Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoPackage, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, KML, KMZ (`kmzResources` packs icon images), GML, GPX, PMTiles, MBTiles (`minzoom`, `maxzoom` options) |
+| Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoPackage, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives, DWG, DXF | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, CSV, GeoParquet, DWG, DXF, Shapefile (`.shp.zip`), KML, KMZ (`kmzResources` packs icon images), GML, GPX, PMTiles, MBTiles (`minzoom`, `maxzoom` options) |
 
 \* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
 whole, within WebAssembly's 4 GB of memory; with the file's bytes, that takes about four times the
@@ -62,7 +63,7 @@ archive of the `.jp2` file and the `.aux.xml` sidecar that holds the value, as G
 
 The package holds two WebAssembly modules with the same API. `terrio-js` has every format above;
 `terrio-js/core` leaves out the heaviest ones (GeoParquet and Arrow IPC, netCDF and HDF5, point
-clouds, JPEG 2000, GRIB, Zarr, AVIF tiles and OpenStreetMap) and keeps GeoTIFF/COG with all its
+clouds, JPEG 2000, GRIB, Zarr, AVIF tiles, OpenStreetMap, CAD and HEC-RAS) and keeps GeoTIFF/COG with all its
 compressions, GeoJSON and the other text formats, FlatGeobuf, GeoPackage, Shapefile, PMTiles and
 MBTiles, the CRS transformations and the operations, at about half the size:
 
@@ -85,8 +86,7 @@ with a dynamic `import("terrio-js")`: datasets belong to the module that opened 
 is passed only to the functions of its own module.
 
 Both modules are built for size: whole-program LTO, the codecs optimized for speed and the rest
-for size, and wasm-opt -Oz. The full module is 21% smaller than before (20.6 MB, 6.7 MB gzipped)
-and decodes and writes as fast.
+for size, and wasm-opt -Oz. The full module's sizes are in the table above.
 
 ## Threads: `terrio-js/load` and `terrio-js/threads`
 
@@ -416,6 +416,18 @@ Byte inputs/results are materialized; large-file editing should use native APIs.
 so compute a template's extent from its geotransform. `createRaster` returns an
 in-memory dataset, so the file-only `copyOverviews` option of the CLI and Python
 is unavailable; add overviews to the encoded bytes with `addOverviews`.
+
+## Operations
+
+`translate(src, options)`, `warp(src, options)`, `mosaic(srcs, options)`, `rasterize(src, options)`,
+`polygonize(src, options)`, `dem(src, processing, options)`, `calc(expression, inputs, options)`,
+`proximity(src, options)`, `sieve(src, options)`, `fillNodata(src, options)`,
+`contour(src, options)`, `footprint(src, options)`, `buffer(src, distance, options)`,
+`dissolve(src, options)` and `singlepart(src)` follow the matching [commands](cli.md), with
+camelCase options. So do `zonalStats`, `makeValid`, `checkGeometry`, `clipVector`, `layerAlgebra`,
+`checkCoverage`, `simplifyCoverage`, `cleanCoverage`, `blend`, `identify`, `checkDataset`,
+`pipeline`, `retile`, `planRetile`, `rasterIndex`, `vectorIndex`, `rpftocCreate` and `vsiStat`.
+`takeWarnings` returns the warnings collected so far.
 
 ## File management
 

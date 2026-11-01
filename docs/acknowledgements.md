@@ -2,7 +2,8 @@
 
 terrio stands on the work of many projects and their authors. Thank you to all of them.
 
-terrio is released under the MIT License, but much of it is ported or adapted from these
+terrio is released under the MIT License, except its point cloud eigensolver
+(`pointcloud/filters/selfadjoint.rs`), a port of Eigen under MPL-2.0, but much of it is ported or adapted from these
 projects, and the copyright in that code and data remains with their authors: Frank Warmerdam,
 Even Rouault and the GDAL contributors; Gerald Evenden, Frank Warmerdam, Even Rouault and the PROJ
 contributors; Hobu, Inc. and the PDAL contributors; and the authors of the other projects below.
@@ -180,8 +181,8 @@ retain exact source paths and copyright notices.
 ## Notices and licenses
 
 [`NOTICE`](https://github.com/opengeos/terrio/blob/main/NOTICE) holds the copyright and license
-notices of the code and data terrio adapts (GDAL, PROJ, CSF, the EPSG dataset, Esri's projection
-data, rasterio, rioxarray, Apache Arrow and the IJG), whose copyright remains with their authors,
+notices of the code and data terrio adapts (GDAL, PROJ, PDAL, JTS, Eigen, CSF, the EPSG dataset, Esri's
+projection data, rasterio, rioxarray, Apache Arrow, acadrust, ras-commander, the IJG and others), whose copyright remains with their authors,
 and
 [`LICENSE-THIRD-PARTY.md`](https://github.com/opengeos/terrio/blob/main/LICENSE-THIRD-PARTY.md)
 the licenses of every Rust crate terrio's packages and binaries are built with, generated with

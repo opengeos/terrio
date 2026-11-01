@@ -2,11 +2,11 @@
 
 ```toml
 [dependencies]
-terrio = { git = "https://github.com/opengeos/terrio" }
+terrio = "0.6"
 ```
 
-The API reference, with an example on each entry point, is on [docs.rs](https://docs.rs/terrio)
-once terrio is published; until then, `cargo doc -p terrio --open` builds it. The crate
+The API reference, with an example on each entry point, is on [docs.rs](https://docs.rs/terrio);
+`cargo doc -p terrio --open` builds it locally. The crate
 documentation opens with a tour of the API.
 
 ## Opening datasets
@@ -93,8 +93,8 @@ terrio::stream::convert("buildings.gpkg", "buildings.fgb", &ConvertOptions::defa
 # Ok::<(), terrio::Error>(())
 ```
 
-Writers whose headers or column types depend on the values (CSV, Shapefile, FlatGeobuf,
-GeoParquet) take a `LayerProfile` of all the features, which `convert` computes in a first pass
+Writers whose headers or column types depend on the values (CSV, Shapefile, GeoPackage,
+and GeoParquet with integer or date fields) take a `LayerProfile` of all the features, which `convert` computes in a first pass
 over the input, so that a streamed file is identical to the one `write_vector` writes.
 
 With the `sqlite` feature, `stream::GpkgLayersWriter::create(path, &schemas)` writes
@@ -260,6 +260,11 @@ rasters; `vector_filter` (with the `sql` parser), `rasterize` and `polygonize`; 
 (with its expression parser and NumPy-typed evaluator), `proximity` and `sieve`. Each takes an
 options struct mirroring the command-line options.
 
+Other modules follow the matching sections of the [CLI reference](cli.md): `ops::{blend,
+fill_nodata, edit, update, overview, layer_algebra, coverage, coverage_clean, coverage_simplify,
+pipeline, raster_tile, raster_retile, tile_index, rpftoc, vector_clip}` and the top-level
+`dataset_files`, `gpkg_maintenance`, `parquet_metadata`, `inspection`, `catalog` and `check`.
+
 `ops::neighbors::{neighbors, neighbors_to_path}` computes focal statistics (`gdal raster
 neighbors`) from `NeighborsOptions` (kernels, `NeighborMethod`s, size, band, output type and
 `NeighborsNodata`); the `_to_path` form reads a `LazyRaster` and writes GeoTIFF/COG strips.
@@ -319,8 +324,9 @@ let cleaned = topology::clean(&repaired, &CleanOptions { snap_grid: 0.01 })?;
 # Ok::<(), terrio::Error>(())
 ```
 
-The commands are also available through the Python package's `terrio` CLI and MCP. Dedicated
-Python and JavaScript operation bindings are not yet provided for these additions.
+The commands are also available through the CLI and MCP. Python has `buffer`, `dissolve`,
+`make_valid`, `check_geometry` and `layer_algebra`; JavaScript has `buffer`, `dissolve`,
+`makeValid`, `checkGeometry` and `layerAlgebra`. `overlay` and `clean` have no dedicated binding.
 
 `ops::vector_geom` holds the equivalents of GDAL 3.13's `gdal vector simplify`, `segmentize`,
 `convex-hull`, `concave-hull`, `swap-xy`, `set-geom-type`, `combine` and `sort` (see
@@ -545,7 +551,7 @@ features off and names the ones it uses, for a smaller dependency tree, faster b
 smaller WebAssembly module. A COG writer, say:
 
 ```toml
-terrio = { version = "0.3", default-features = false, features = ["geotiff"] }
+terrio = { version = "0.6", default-features = false, features = ["geotiff"] }
 ```
 
 The core, always built, is GeoTIFF and COG (deflate, LZW, PackBits, ZSTD, WebP, JPEG and JPEG
@@ -573,6 +579,8 @@ the operations and the streams. The other drivers are features:
 | `hecras` | on | HEC-RAS geometry and plan HDF files as vector layers, read only (the `HECRAS` driver and the `hecras` module, through the `ras-commander-fast-hdf` engine; needs `netcdf-hdf5`). See [HEC-RAS](hecras.md). |
 | `gdal` | off | The optional GDAL backend: formats terrio has no driver for, through GDAL (needs GDAL installed). See [the GDAL backend](gdal.md#the-optional-gdal-backend). |
 | `ndarray` | off | Raster pixels as `ndarray` arrays, without copying them: views, owned transfers and the masks of lazy reads, with the crate re-exported as `terrio::ndarray`; floating-point windows as owned arrays, bands first or last. See [ndarray](#ndarray). |
+| `cad` | on | DWG and DXF, read and written, through acadrust. See [CAD drawings](formats.md#cad-drawings-dwg-and-dxf). |
+| `libzstd` | off | Zstandard through the zstd C library, natively: faster decoding and better compression than the default `ruzstd`. |
 
 The drivers stay in the API whatever the features (`formats::RasterDriver`,
 `formats::VectorDriver`): those a build leaves out are listed as neither read nor written, and
@@ -608,9 +616,7 @@ terrio is heading for a stable 1.0 API. What to rely on, and the decisions behin
 ## WebAssembly
 
 The library builds for `wasm32-unknown-unknown`, with any features; network access and
-temporary files are native only. No C compiler is needed, except for the `parquet` feature, whose
-Zstandard codec is the zstd C library (it needs clang for WebAssembly); Zstandard GeoTIFFs are
-decoded in pure Rust there. JPEG 2000 (the `jp2` feature) works there too, with two settings in the program that is built: the global
+temporary files are native only. No C compiler is needed: Zstandard is decoded in pure Rust. JPEG 2000 (the `jp2` feature) works there too, with two settings in the program that is built: the global
 allocator `terrio::NullSafeAllocator` (the OpenJPEG port releases null pointers, which the
 WebAssembly allocator does not tolerate), and the link flag `-C link-arg=--allow-undefined` for
 `wasm32-unknown-unknown`, as in the repository's `.cargo/config.toml` (the port is built as a C
