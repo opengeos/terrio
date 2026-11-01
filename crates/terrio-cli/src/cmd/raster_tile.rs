@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     doc/source/programs/gdal_raster_tile.rst
+// No code is translated from these sources.
+
 //! Directory tiles using the shared incremental renderer.
 use terrio::ops::raster_tile::{self as tile, Convention, GridOptions, TileLimits, TileOptions};
 
@@ -51,6 +56,21 @@ pub struct Args {
     resume: bool,
     #[arg(long, default_value_t = 1_000_000)]
     max_tiles: u64,
+    /// Publication companions: none, all, leaflet, openlayers, mapml, stac. Repeat as needed.
+    #[arg(long = "webviewer", value_delimiter = ',')]
+    webviewer: Vec<String>,
+    /// URL of the published tile directory itself.
+    #[arg(long)]
+    url: Option<String>,
+    #[arg(long, default_value = "")]
+    title: String,
+    #[arg(long, default_value = "")]
+    copyright: String,
+    /// Read a MapML template containing GDAL-style ${TITLE}, ${URL}, etc.
+    #[arg(long)]
+    mapml_template: Option<std::path::PathBuf>,
+    #[arg(long)]
+    kml: bool,
     /// Report grid without reading pixels or creating output.
     #[arg(long)]
     dry_run: bool,
@@ -79,6 +99,14 @@ pub fn run(args: &Args) -> terrio::Result<()> {
         output_nodata: args.output_nodata,
         skip_blank: args.skip_blank,
         max_tiles: args.max_tiles,
+        publication: terrio::ops::raster_publication::PublicationOptions {
+            viewers: args.webviewer.clone(),
+            url: args.url.clone(),
+            title: args.title.clone(),
+            copyright: args.copyright.clone(),
+            mapml_template: args.mapml_template.as_deref().map(read_mapml_template).transpose()?,
+            kml: args.kml,
+        },
     };
     let mut source = super::rasterout::open_lazy(&args.input)?;
     if args.dry_run {
@@ -89,4 +117,40 @@ pub fn run(args: &Args) -> terrio::Result<()> {
         println!("{}", serde_json::to_string_pretty(&report).map_err(|e| terrio::Error::InvalidData(e.to_string()))?);
     }
     Ok(())
+}
+
+fn read_mapml_template(path: &std::path::Path) -> terrio::Result<String> {
+    let file = std::fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    bounded_template(file, length)
+}
+
+fn bounded_template(reader: impl std::io::Read, length: u64) -> terrio::Result<String> {
+    use std::io::Read;
+    let limit = terrio::ops::raster_publication::MAX_METADATA;
+    let too_large = || terrio::Error::InvalidArgument("MapML template exceeds its 16 MiB byte budget".into());
+    if length > limit as u64 {
+        return Err(too_large());
+    }
+    let mut text = String::new();
+    reader.take((limit + 1) as u64).read_to_string(&mut text)?;
+    if text.len() > limit {
+        return Err(too_large());
+    }
+    Ok(text)
+}
+
+#[cfg(test)]
+mod template_tests {
+    #[test]
+    fn oversized_templates_are_rejected_before_reading() {
+        struct NoRead;
+        impl std::io::Read for NoRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("oversized template must not be read")
+            }
+        }
+        assert!(super::bounded_template(NoRead, (terrio::ops::raster_publication::MAX_METADATA + 1) as u64).is_err());
+        assert_eq!(super::bounded_template(&b"<mapml/>"[..], 8).unwrap(), "<mapml/>");
+    }
 }

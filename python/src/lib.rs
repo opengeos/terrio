@@ -1,6 +1,7 @@
 //! Python bindings for terrio: the `terrio._terrio` extension module, wrapped by the `terrio`
 //! Python package.
 
+mod analysis;
 mod arrow;
 #[cfg(not(target_os = "emscripten"))]
 mod cli;
@@ -16,6 +17,7 @@ mod multidim;
 mod ops;
 mod palette;
 mod parquet_metadata;
+mod pipeline;
 mod pixel;
 mod pointcloud;
 mod pyogrio;
@@ -23,6 +25,7 @@ mod query;
 mod raster;
 mod raster_tile;
 mod rio;
+mod rpftoc;
 mod stream;
 mod terrain;
 mod tile_index;
@@ -125,18 +128,23 @@ static HTTP_RETRY_LOGGER: std::sync::Mutex<Option<Py<PyAny>>> = std::sync::Mutex
 /// `terrio.compat` logs them as rasterio logs GDAL's.
 #[pyfunction]
 fn _set_http_retry_logger(callback: Option<Py<PyAny>>) {
-    let on = callback.is_some();
+    #[cfg(not(target_family = "wasm"))]
+    terrio::http::record_retry_warnings(callback.is_some());
     // The previous callable is released last, after the lock (releasing it may run Python code).
     let _previous = std::mem::replace(&mut *HTTP_RETRY_LOGGER.lock().unwrap_or_else(std::sync::PoisonError::into_inner), callback);
-    terrio::http::record_retry_warnings(on);
 }
 
 /// Passes the HTTP retry warnings recorded so far to the callable [`_set_http_retry_logger`] set,
 /// called without the lock held; its errors are ignored, as rasterio's GDAL error handler cannot
 /// raise them either.
+#[cfg(not(target_family = "wasm"))]
 fn pass_on_http_retries(py: Python<'_>) {
     pass_on(py, terrio::http::take_retry_warnings(), &HTTP_RETRY_LOGGER);
 }
+
+/// WebAssembly has no network stack, hence no HTTP retries to pass on.
+#[cfg(target_family = "wasm")]
+fn pass_on_http_retries(_py: Python<'_>) {}
 
 /// The callable the warper's nodata warnings are passed to (see [`_set_warp_nodata_logger`]).
 static WARP_NODATA_LOGGER: std::sync::Mutex<Option<Py<PyAny>>> = std::sync::Mutex::new(None);
@@ -229,6 +237,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_set_http_retry_logger, m)?)?;
     m.add_function(wrap_pyfunction!(_set_warp_nodata_logger, m)?)?;
     ops::register(m)?;
+    analysis::register(m)?;
     config::register(m)?;
     manage::register(m)?;
     dataset_files::register(m)?;
@@ -240,8 +249,10 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     terrain::register(m)?;
     tile_index::register(m)?;
     raster_tile::register(m)?;
+    rpftoc::register(m)?;
     query::register(m)?;
     pixel::register(m)?;
+    pipeline::register(m)?;
     palette::register(m)?;
     focal::register(m)?;
     pointcloud::register(m)?;

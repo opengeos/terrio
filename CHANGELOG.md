@@ -1,12 +1,62 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-10-31)
+
+### Standalone CRS crate
+
+- `terrio-crs` 0.2.0 carries the CRS work since 0.1.0: geocentric and IAU CRSs,
+  PROJJSON, and more projections. `TransformOptions` has a new public field,
+  `promote_to_3d`: struct literals need it or `..Default::default()`.
+- The crate's default build has no C dependency, on native targets as well as
+  WebAssembly. Its default features changed: Zstandard TIFF grids are no longer
+  read unless the optional `libzstd` feature (the zstd C library) is enabled, and
+  such a grid is treated as unavailable, so a transformation that needs it falls
+  back to the next operation, possibly a ballpark one, without an error. Set
+  `only_best` (`ONLY_BEST=YES`) to get an error instead. PROJ's grids are
+  DEFLATE-compressed.
+
+### No C dependencies
+
+- The default builds of the CLI, the Python package, the Rust crates and the JavaScript
+  package have no C dependencies, and CI builds them without a C compiler.
+- `libzstd` is no longer a default feature of `terrio`. Zstandard GeoTIFF and EPT tiles are decoded
+  and written with `ruzstd`, which decodes more slowly and writes at its fastest level (about zstd's
+  level 1) whatever level is asked for. Enable `libzstd` to use the zstd C library.
+- Zstandard GeoParquet is read with the same codec, rather than through the `parquet` crate's zstd.
+- HTTPS uses `rustls-graviola` rather than `ring` on x86-64 and AArch64. An HTTPS request panics on
+  a CPU without the features it needs; see [Architecture](docs/architecture.md#pure-rust).
+
+### Raster dataset masks
+
+- Preserve internal GeoTIFF and `.msk` validity masks in `convert`, including
+  extracted windows and overviews. Stream masks alongside GeoTIFF/COG pixels
+  and use them when generating COG overviews. Lazy warps, CLI output and Python
+  inputs now apply source masks, including multiple sources and cutlines (#431).
+- Masked inputs are refused, rather than written without their mask, by
+  `convert` to any output other than GeoTIFF and COG (PMTiles, MBTiles and GDAL
+  drivers included), by `convert --append` and by `convert --t-srs`. Write
+  GeoTIFF or COG to keep the validity, or use `warp` to apply it. The library,
+  Python and JavaScript writers refuse tile archives but keep the pixel, alpha
+  and nodata serialization of other non-GeoTIFF formats, which do not store the
+  mask.
 
 ### Docker image
 
 - Publish the `terrio` command-line tool as a Docker image for linux/amd64 and
   linux/arm64 to the GitHub Container Registry (`ghcr.io/opengeos/terrio`) with
   each release.
+
+### Licensing
+
+- Geometry routines are ports of JTS or independent implementations (#402).
+- Point cloud radius searches sort with Rust's standard library (#414).
+- The repository follows the [REUSE specification](https://reuse.software): files
+  adapted from other projects carry SPDX headers naming their sources, and
+  `NOTICE` lists every upstream project and its copyright holders (#415, #435).
+- `LICENSE` names its copyright holders again (#416).
+- Package metadata declares MIT AND MPL-2.0: the point cloud eigensolver
+  (`pointcloud/filters/selfadjoint.rs`) is MPL-2.0 (#435).
+- Earlier releases ship older notices; upgrading is recommended.
 
 ### Geometry implementation provenance
 
@@ -349,3 +399,7 @@
   and later without Docker.
 - `terrio.rio.MemoryFile` removes its files when it is dropped unclosed, as
   rasterio's leaves nothing.
+- The internal mask overviews that `overviews` adds and refreshes keep the tile
+  height of the overview they mask in whole tiles, as GDAL writes them. Mask
+  overviews smaller than a tile had a `TileLength` that was not a multiple of 16,
+  and refreshed or re-added ones short tiles that GDAL failed to read.

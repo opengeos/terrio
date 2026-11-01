@@ -90,9 +90,10 @@ jobs:
       - run: cargo test --workspace
         env:
           TERRIO_SQLITE_REFERENCE_PYTHON: python3
-      # The `ndarray` feature, off by default: its module and its tests.
-      - run: cargo clippy -p terrio --features ndarray --lib --test ndarray -- -D warnings
-      - run: cargo test -p terrio --features ndarray --test ndarray
+      # The `ndarray` feature, off by default: its module and its tests (floating-point reads as
+      # arrays, against GDAL's, in `float_reads`).
+      - run: cargo clippy -p terrio --features ndarray --lib --test ndarray --test float_reads -- -D warnings
+      - run: cargo test -p terrio --features ndarray --test ndarray --test float_reads
 
   gdal:
     name: GDAL backend (feature build)
@@ -246,10 +247,28 @@ jobs:
           cargo test -p terrio-crs --all-features
           cargo check -p terrio-crs --target wasm32-unknown-unknown
           cargo check -p terrio-crs --all-features --target wasm32-unknown-unknown
+      - name: The standalone CRS crate has no C dependency
+        run: |
+          set -o pipefail
+          for target in x86_64-unknown-linux-gnu wasm32-unknown-unknown; do
+            crates=$(cargo tree -p terrio-crs -e normal,build --target "$target" --prefix none | cut -d' ' -f1 | sort -u)
+            # Pure-Rust crates whose names end in -sys are not C dependencies.
+            found=$(echo "$crates" | grep -E '^(cc|cmake|bindgen|pkg-config|cxx-build)$|-sys$' | grep -vE '^(js|web|linux-raw)-sys$' || true)
+            if [ -n "$found" ]; then echo "C build dependencies for $target: $found"; exit 1; fi
+          done
+      # The memory64 build has no C compiler that targets it, so it must not need one. `cc` is left
+      # out: rusty_av1d depends on it, but builds no C or assembly with its assembly feature off.
+      - name: The JavaScript package has no C dependency
+        run: |
+          set -o pipefail
+          for target in wasm32-unknown-unknown wasm64-unknown-unknown; do
+            crates=$(cargo tree -p terrio-js -e normal,build --target "$target" --prefix none | cut -d' ' -f1 | sort -u)
+            found=$(echo "$crates" | grep -E '^(ring|cmake|bindgen|pkg-config|cxx-build)$|-sys$' | grep -vE '^(js|web|linux-raw)-sys$' || true)
+            if [ -n "$found" ]; then echo "C dependencies for $target: $found"; exit 1; fi
+          done
       - name: The core for WebAssembly
         run: cargo build -p terrio --no-default-features --features geotiff --target wasm32-unknown-unknown
-      # Every default feature but GeoParquet (whose Zstandard is the zstd C library) builds for
-      # WebAssembly without a C compiler (#180).
+      # Every default feature builds for WebAssembly without a C compiler (#180).
       - name: WebAssembly without a C toolchain
         env:
           CC: "false"
@@ -258,7 +277,19 @@ jobs:
           CC_wasm32_unknown_unknown: "false"
         run: >-
           cargo build -p terrio --target wasm32-unknown-unknown --no-default-features
-          --features geotiff,remote,avif,netcdf-hdf5,osm,lzma,flatgeobuf,jp2,lerc,pointcloud,tiles,zarr,sqlite,grib,hecras
+          --features geotiff,cad,parquet,remote,avif,netcdf-hdf5,osm,lzma,flatgeobuf,jp2,lerc,pointcloud,tiles,zarr,sqlite,grib,hecras
+      - name: The default command-line build without a C toolchain
+        env:
+          CC: "false"
+          CXX: "false"
+          AR: "false"
+        # The build is the check; the names only fail faster, and with a clearer message.
+        run: |
+          set -o pipefail
+          crates=$(cargo tree -p terrio-cli -e normal,build --prefix none | cut -d' ' -f1 | sort -u)
+          found=$(echo "$crates" | grep -E '^(ring|cmake|bindgen|pkg-config|cxx-build)$|-sys$' | grep -vE '^(js|web|linux-raw)-sys$' || true)
+          if [ -n "$found" ]; then echo "C dependencies: $found"; exit 1; fi
+          cargo build -p terrio-cli
       - name: A GeoTIFF build pulls none of the optional codecs
         run: |
           crates=$(cargo tree -p terrio -e normal --no-default-features --features geotiff --prefix none | cut -d' ' -f1 | sort -u)
@@ -326,7 +357,7 @@ jobs:
           cache-environment: true
       - name: Benchmark harness regression tests
         shell: micromamba-shell {0}
-        run: python -m unittest discover -s scripts/tests -v
+        run: python -m pytest -v scripts/tests
       - uses: actions/cache@v6
         with:
           path: terrio-data

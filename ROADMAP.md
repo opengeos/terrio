@@ -96,11 +96,45 @@ commands. Command-group progress:
       NOAA wind comparisons registered as `mdmosaic`. Landed in
       [#373](https://github.com/opengeos/terrio/pull/373).
 
-- [ ] Separate-file raster tiles: XYZ/TMS PNG and typed GeoTIFF output through
+- [x] Separate-file raster tiles: XYZ/TMS PNG and typed GeoTIFF output through
       Rust, CLI/MCP, Python and JavaScript, with bounded source windows and
       non-overwriting resume. Real Landsat/USGS comparisons are registered as
       `raster-tiles`; direct-source lower zooms differ from GDAL's generated-image
-      pyramid. Retile file layouts and publication helpers remain unimplemented.
+      pyramid. Retile layouts, recursive pyramids, CSV/vector indexes and
+      Leaflet/OpenLayers, MapML, STACTA and KML publication helpers are implemented
+      in [#440](https://github.com/opengeos/terrio/pull/440), with registered
+      `retile` and `tile-publication` comparisons against GDAL 3.13.3.
+
+- [x] Vector clipping: points, lines, polygons and collections, with bbox,
+      geometry, filtered vector/raster templates and region CRS transforms through
+      Rust, CLI/MCP, Python and JavaScript. Landed in
+      [#419](https://github.com/opengeos/terrio/pull/419), with 27 GDAL 3.13.3
+      comparisons and measured remote template I/O.
+
+- [x] Polygon coverage validation: indexed overlap, shared-node and narrow-gap
+      checks through Rust, CLI/MCP, Python and JavaScript. Landed in
+      [#420](https://github.com/opengeos/terrio/pull/420), with 24 exact
+      GDAL 3.13.3 comparisons, including real counties and dimensional inputs.
+
+- [ ] Raster/vector pipelines: linear processing chains with read, write and
+      materialize steps, saved GDALG definitions and deferred named outputs through
+      Rust, CLI/MCP, Python and JavaScript. Part of
+      [#289](https://github.com/opengeos/terrio/issues/289); pending review and merge.
+
+- [x] Coverage simplification: shared-edge topology preservation, boundary options
+      and active-layer copying across Rust, CLI/MCP, Python and JavaScript. Landed in
+      [#424](https://github.com/opengeos/terrio/pull/424), with 48 exact GDAL 3.13.3
+      simplification comparisons and documented dimensional metadata behavior.
+
+- [x] Layer algebra: intersection, union, symmetric difference, identity, update,
+      clip and erase for polygon, line, point and collection inputs across
+      Rust, CLI/MCP, Python and JavaScript. Landed in
+      [#427](https://github.com/opengeos/terrio/pull/427).
+
+- [x] Coverage cleaning: snapping, progressive overlap assignment and enclosed-gap
+      filling across Rust, CLI/MCP, Python and JavaScript. Landed in
+      [#426](https://github.com/opengeos/terrio/pull/426), with 236 GDAL 3.13.3
+      comparisons and documented, independently checked ordering-dependent results.
 
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
@@ -197,6 +231,11 @@ commands. Command-group progress:
       point sampling across multiple rasters, through the Rust API, CLI and MCP.
 - [x] Polygonization preserves exterior rings and holes on south-up and rotated grids, and
       classifies rings correctly for small pixels at large coordinate origins.
+- [x] Metadata-only CADRG RPF table-of-contents creation through Rust, CLI/MCP,
+      Python and WebAssembly, with bounded frame reads, polar grids and atomic native output.
+      Part of [#289](https://github.com/opengeos/terrio/issues/289).
+- [x] Python and WebAssembly contour, footprint, buffer, grouped dissolve, geometry validity
+      and repair functions, using the shared Rust engines.
 - [x] Contour lines with interval/fixed levels, nodata handling and optional elevations in Z;
       multi-raster zonal statistics with GDAL's centre/all-touched pixel rules and per-raster CRS
       transformations; a standalone read-only SQL command using the existing query engine.
@@ -603,6 +642,21 @@ copying, converting or reordering them.
       (`LazyRaster::read_mask_array2`).
 - Out of scope: complex bands as `Complex<T>` (they are viewed as their component bands),
   `multidim::Buffer`, and decoding into caller-provided buffers.
+
+## Analysis-ready floating-point reads (#422)
+
+Windows read as `f32` or `f64` values, NaN where GDAL's mask band marks pixels invalid.
+
+- [x] `LazyRaster::read_window_f32` and `read_window_f64` (`FloatReadOptions`: bands, overview and
+      optional unscaling with each band's scale and offset or a netCDF variable's packing), and
+      their `RasterDataset` counterparts: per-dataset masks (internal, `.msk`, overviews') in place
+      of nodata values, which are compared in each band's own type as GDAL's nodata mask band
+      compares them. Identical to GDAL 3.13.2 on 38 cases (`tests/data/float_reads`), and to
+      rasterio on the 35 its GDAL opens.
+- [x] With the `ndarray` feature, owned `Array3` and `Array2` arrays, bands first or last
+      (`BandLayout`), written in that layout as the pixels are converted.
+- Out of scope: alpha bands as masks (GDAL's `GMF_ALPHA`), the Python and JavaScript bindings
+  (Python's `terrio.rio` reads masked arrays already), and writing NaN back as nodata values.
 
 ## Decisions
 

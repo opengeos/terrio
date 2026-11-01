@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.12.1:
+//     port/cpl_conv.cpp
+//   rasterio 1.5.2:
+//     rasterio/env.py
+// No code is translated from these sources.
+
 //! Configuration options: environment variables, overridden for the calling thread.
 //!
 //! terrio reads its settings from environment variables named as GDAL's configuration options.

@@ -26,6 +26,8 @@ struct Cli {
 enum Command {
     /// Summarize a raster, vector dataset or point cloud.
     Info(cmd::info::Args),
+    /// Create a metadata-only A.TOC index from existing CADRG frames.
+    RpftocCreate(cmd::rpftoc::Args),
     /// Repack a GeoPackage in place, preserving all encoded records and schema objects.
     GpkgRepack(cmd::gpkg::RepackArgs),
     /// Validate a self-contained GeoPackage against core and extension requirements.
@@ -107,6 +109,10 @@ enum Command {
     VectorClip(cmd::vector_clip::Args),
     /// Overlay valid polygon layers in a common CRS, preserving both sets of attributes.
     Overlay(cmd::processing::OverlayArgs),
+    /// Polygon, line and point layer algebra (seven operations).
+    LayerAlgebra(cmd::processing::LayerAlgebraArgs),
+    /// Chain raster/vector operations without serialized intermediate files; load/save GDALG.
+    Pipeline(cmd::pipeline::Args),
     /// Dissolve polygons across a layer or by selected attributes.
     Dissolve(cmd::processing::DissolveArgs),
     /// Report geometry validity and the first reason for each feature.
@@ -116,6 +122,10 @@ enum Command {
     MakeValid(cmd::processing::GeometryArgs),
     /// Find overlapping interiors, unmatched shared nodes and narrow gaps in polygon coverages.
     CheckCoverage(cmd::processing::CheckCoverageArgs),
+    /// Simplify shared polygon coverage boundaries while preserving topology.
+    SimplifyCoverage(cmd::processing::SimplifyCoverageArgs),
+    /// Snap shared boundaries and remove overlaps and enclosed narrow gaps from polygon coverages.
+    CleanCoverage(cmd::processing::CleanCoverageArgs),
     /// Snap, deduplicate, close rings, remove collapsed parts and repair polygon topology.
     Clean(cmd::processing::CleanArgs),
     /// Topology-preserving Douglas-Peucker simplification per feature (like gdal vector
@@ -178,6 +188,8 @@ enum Command {
     RasterIndex(cmd::tile_index::RasterArgs),
     /// Generate separate XYZ/TMS raster tiles in a directory.
     Tile(cmd::raster_tile::Args),
+    /// Retile mosaics into overlapping files and recursive pyramid levels.
+    Retile(cmd::raster_retile::Args),
     /// Create a raster footprint catalog with GTI virtual-raster metadata.
     GtiCreate(cmd::tile_index::RasterArgs),
     /// Create a vector envelope index of vector dataset layers.
@@ -298,6 +310,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
     };
     let result = match cli.command {
         Command::Info(a) => cmd::info::run(a),
+        Command::RpftocCreate(a) => cmd::rpftoc::run(&a),
         Command::GpkgRepack(a) => cmd::gpkg::repack(a),
         Command::GpkgValidate(a) => cmd::gpkg::validate(a),
         Command::Identify(a) => cmd::inspection::identify(a),
@@ -331,10 +344,14 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Buffer(a) => cmd::processing::buffer(a),
         Command::VectorClip(a) => cmd::vector_clip::run(a),
         Command::Overlay(a) => cmd::processing::overlay(a),
+        Command::LayerAlgebra(a) => cmd::processing::layer_algebra(a),
+        Command::Pipeline(a) => cmd::pipeline::run(a),
         Command::Dissolve(a) => cmd::processing::dissolve(a),
         Command::IsValid(a) => cmd::processing::validity(a),
         Command::MakeValid(a) => cmd::processing::make_valid(a),
         Command::CheckCoverage(a) => cmd::processing::check_coverage(a),
+        Command::SimplifyCoverage(a) => cmd::processing::simplify_coverage(a),
+        Command::CleanCoverage(a) => cmd::processing::clean_coverage(a),
         Command::Clean(a) => cmd::processing::clean(a),
         Command::Simplify(a) => cmd::vector_geom::simplify(a),
         Command::Segmentize(a) => cmd::vector_geom::segmentize(a),
@@ -360,6 +377,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Warp(a) => cmd::warp::run(a),
         Command::Catalog(a) => cmd::catalog::run(a),
         Command::Tile(a) => cmd::raster_tile::run(&a),
+        Command::Retile(a) => cmd::raster_retile::run(a),
         Command::RasterIndex(a) | Command::GtiCreate(a) => cmd::tile_index::raster(a),
         Command::VectorIndex(a) => cmd::tile_index::vector(a),
         Command::Mosaic(a) => cmd::mosaic::run(a),

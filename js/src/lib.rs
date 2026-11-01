@@ -12,6 +12,7 @@
 //! const points = readPoints(lazBytes, "lidar.laz", { classes: [2] }); // LAS, LAZ, COPC
 //! ```
 
+mod analysis;
 mod dataset_files;
 mod gpkg_maintenance;
 mod grid;
@@ -21,12 +22,14 @@ mod multidim;
 mod ops;
 mod palette;
 mod parquet_metadata;
+mod pipeline;
 mod pixel;
 #[cfg(feature = "pointcloud")]
 mod pointcloud;
 mod query;
 mod raster_tile;
 mod remote;
+mod rpftoc;
 #[cfg(feature = "threads")]
 mod threads;
 mod tile_index;
@@ -223,6 +226,8 @@ fn dtype_name(t: DataType) -> &'static str {
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct WriteOptions {
+    /// GPKG: retain the declared layer geometry type, including Unknown.
+    preserve_declared_geometry_type: bool,
     allow_ballpark: Option<bool>,
     only_best: bool,
     /// Take the heights of 2D CRSs as ellipsoidal heights, as GDAL does after `PromoteTo3D`.
@@ -711,6 +716,8 @@ impl Dataset {
     /// GeoTIFF/COG preserve dataset masks for raster writes without tSrs; a masked raster with
     /// tSrs is refused because separate-mask reprojection is not implemented.
     /// Text over 254 UTF-8 bytes and unsupported DBF values are explicit errors.
+    /// Vector GeoPackage option `preserveDeclaredGeometryType` retains the layer's
+    /// declared geometry type, including Unknown, instead of inferring it.
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
         let resources = kmz_resources(&options)?;
@@ -725,8 +732,16 @@ impl Dataset {
         let t_srs = o.t_srs.as_deref().map(SpatialRef::parse).transpose().map_err(js_err)?;
         match &mut *self.inner.borrow_mut() {
             Inner::Raster(r) => {
-                if o.layers.is_some() || o.r#where.is_some() || o.select.is_some() || o.limit.is_some() || !resources.is_empty() {
-                    return Err(JsError::new("layers, where, select, limit and kmzResources apply to vector datasets"));
+                if o.layers.is_some()
+                    || o.r#where.is_some()
+                    || o.select.is_some()
+                    || o.limit.is_some()
+                    || !resources.is_empty()
+                    || o.preserve_declared_geometry_type
+                {
+                    return Err(JsError::new(
+                        "layers, where, select, limit, kmzResources and preserveDeclaredGeometryType apply to vector datasets",
+                    ));
                 }
                 let driver = o
                     .format
@@ -805,7 +820,8 @@ impl Dataset {
                     ..Default::default()
                 };
                 let out = terrio::ops::vector_filter::translate(&chosen, &translate).map_err(js_err)?;
-                let mut options = VectorWriteOptions { driver, ..Default::default() };
+                let mut options =
+                    VectorWriteOptions { driver, preserve_declared_geometry_type: o.preserve_declared_geometry_type, ..Default::default() };
                 options.tiles.min_zoom = o.minzoom;
                 options.tiles.max_zoom = o.maxzoom;
                 options.kmz.resources = resources;

@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 const require = createRequire(import.meta.url);
 // TERRIO_JS_LOAD: the npm package's `load.js` (js/pkg, built by js/build.mjs), whose module the
@@ -2510,9 +2511,15 @@ test("palette conversion APIs preserve colors, masks and serialized tables", () 
 });
 
 
-test("masked toBytes reprojection is refused explicitly", () => {
+test("masked sources warp with their mask and refuse reprojection", () => {
   const bytes = new Uint8Array(Buffer.from("SUkqAAgAAAANAAABAwABAAAAAgAAAAEBAwABAAAAAgAAAAIBAwABAAAACAAAAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAA8gAAABUBAwABAAAAAQAAABYBAwABAAAAAgAAABcBBAABAAAABAAAABwBAwABAAAAAQAAAFMBAwABAAAAAQAAAA6DDAADAAAAqgAAAIKEDAAGAAAAwgAAAPYAAAAAAAAAAADwPwAAAAAAAPA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAABAQEBDQD+AAQAAQAAAAQAAAAAAQMAAQAAAAIAAAABAQMAAQAAAAIAAAACAQMAAQAAAAEAAAADAQMAAQAAAAgAAAAGAQMAAQAAAAQAAAARAQQAAQAAAJgBAAAVAQMAAQAAAAEAAAAWAQMAAQAAAAIAAAAXAQQAAQAAAA0AAAAcAQMAAQAAAAEAAAA9AQMAAQAAAAEAAABTAQMAAQAAAAEAAAAAAAAAeJwBAgD9/0DAAUIBAQ==", "base64"));
   const dataset = terrio.open(bytes, "masked.tif");
+  // GDAL 3.13.2: the full-resolution path and repeated-source compositing use the mask.
+  for (const source of [dataset, bytes, [dataset, dataset]]) {
+    const warped = terrio.warp(source, {ts: [2, 2], overview: "NONE"});
+    assert.deepEqual([...warped.readBand(1)], [0, 1, 1, 1]);
+    warped.free();
+  }
   assert.throws(() => dataset.toBytes("output.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
   const copy = terrio.open(dataset.toBytes("output.tif"), "copy.tif");
   assert.throws(() => copy.toBytes("reprojected.tif", {tSrs: "EPSG:3857"}), /does not preserve dataset masks/);
@@ -2852,6 +2859,41 @@ test("checkCoverage uses GDAL schema and flags overlaps and narrow gaps", () => 
 });
 
 
+test("simplifyCoverage simplifies shared edges and preserves exterior boundaries", () => {
+  const source = {type: "FeatureCollection", features: [
+    {type: "Feature", properties: {name: "west"}, geometry: {type: "Polygon", coordinates: [[[0,0],[2,0],[1.8,1],[2.2,2],[1.8,3],[2,4],[0,4],[0,0]]]}},
+    {type: "Feature", properties: {name: "east"}, geometry: {type: "Polygon", coordinates: [[[2,0],[4,0],[4,4],[2,4],[1.8,3],[2.2,2],[1.8,1],[2,0]]]}}
+  ]};
+  const result = terrio.simplifyCoverage(source, 1, {preserveBoundary: true});
+  const features = result.toGeoJSON().features;
+  assert.equal(features.length, 2);
+  assert.deepEqual(features.map(f => f.properties.name), ["west", "east"]);
+  assert.ok(features.every(f => f.geometry.coordinates[0].length === 5));
+  assert.equal(terrio.checkCoverage(result).toGeoJSON().features.length, 0);
+  const polygon = {type:"Polygon",coordinates:[[[0,0],[2,0],[4,0],[6,0],[6,2],[6,4],[4,4],[2,4],[0,4],[0,2],[0,0]]]};
+  assert.equal(terrio.simplifyCoverage(polygon, 100).toGeoJSON().features[0].geometry.coordinates[0].length, 4);
+  assert.throws(() => terrio.simplifyCoverage(source, -1), /tolerance/);
+});
+
+
+test("GPKG toBytes can retain declared geometry types", () => {
+  const source = terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry:{type:"Point",coordinates:[1,2]}}]});
+  const bytes = source.toBytes("unknown.gpkg", {preserveDeclaredGeometryType:true});
+  assert.deepEqual(terrio.open(bytes,"unknown.gpkg").toGeoJSON().features[0].geometry, {type:"Point",coordinates:[1,2]});
+  assert.throws(() => source.toBytes("out.geojson", {preserveDeclaredGeometryType:true}), /GPKG/);
+});
+
+test("GPKG toBytes uses valid optional M declarations for mixed layouts", () => {
+  const source = terrio.open(new TextEncoder().encode('WKT\n"POINT M (1 2 3)"\n"POINT (4 5)"\n'), "mixed.csv");
+  for (const preserve of [false, true]) {
+    const bytes = source.toBytes("mixed.gpkg", {preserveDeclaredGeometryType: preserve});
+    const report = terrio.validateGpkg(bytes, {fullCheck: true});
+    assert.equal(report.valid, true, JSON.stringify(report));
+    assert.equal(report.complete, true);
+  }
+  source.free();
+});
+
 test("checkCoverage emits XY diagnostics for elevated polygons", () => {
   const geometry = {type: "Polygon", coordinates: [[[0,0,1],[2,0,2],[0,2,3],[0,0,1]]]};
   const feature = {type: "Feature", properties: {}, geometry};
@@ -2919,4 +2961,347 @@ test("rasterTiles handles per-channel nodata without hiding valid RGB channels",
   });
   assert.equal(report.written, 1);
   raster.free();
+});
+
+
+test("simplifyCoverage selects one layer or copies inactive layers", () => {
+  const geometry={type:"Polygon",coordinates:[[[0,0],[2,0],[2,2],[0,2],[0,0]]]};
+  const data=name=>terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry}]},name);
+  const source=terrio.concat([data("a"),data("b")],{mode:"stack"});
+  const names=source.layerNames();
+  const selected=terrio.simplifyCoverage(source,0,{layer:names[0]});
+  assert.deepEqual(selected.layerNames(),[names[0]]);
+  const copied=terrio.simplifyCoverage(source,0,{activeLayer:names[0]});
+  assert.deepEqual(copied.layerNames(),names);
+  assert.throws(()=>terrio.simplifyCoverage(source,0,{layer:"missing"}),/not found/);
+  assert.throws(()=>terrio.simplifyCoverage(source,0,{layer:names[0],activeLayer:names[0]}),/mutually exclusive/);
+});
+
+test("GPKG toBytes registers optional Z for mixed height layouts", () => {
+  const source=terrio.open(new TextEncoder().encode('WKT\n"POINT Z (1 2 3)"\n"POINT (4 5)"\n'),"mixed.csv");
+  for(const preserve of [false,true]) {
+    const bytes=source.toBytes("mixed.gpkg",{preserveDeclaredGeometryType:preserve});
+    const report=terrio.validateGpkg(bytes,{fullCheck:true});
+    assert.equal(report.valid,true,JSON.stringify(report));
+  }
+});
+
+
+test("GPKG toBytes preserves valid typed-empty polygon bodies", () => {
+  const source=terrio.fromGeoJSON({type:"FeatureCollection",features:[
+    {type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[[[0,0,1],[2,0,2],[0,2,3],[0,0,1]]]}},
+    {type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[[]]}}
+  ]});
+  assert.equal(source.toGeoJSON().features[1].geometry.type,"Polygon");
+  const bytes=source.toBytes("empty.gpkg");
+  const report=terrio.validateGpkg(bytes,{fullCheck:true});
+  assert.equal(report.valid,true,JSON.stringify(report));
+});
+
+test("layerAlgebra implements seven operations and lower-dimension policy", () => {
+  const data=(coordinates,id)=>({type:"FeatureCollection",features:[{type:"Feature",properties:{id},geometry:{type:"LineString",coordinates}}]});
+  const a=data([[0,0],[3,3]],1),b=data([[0,3],[3,0]],2);
+  for (const [operation,count] of [["intersection",1],["union",3],["sym-difference",2],["identity",2],["update",2],["clip",1],["erase",1]]) {
+    const result=terrio.layerAlgebra(a,b,operation);
+    assert.equal(result.toGeoJSON().features.length,count);
+    if(operation==="update") assert.deepEqual(result.toGeoJSON().features[1].properties,{id:2});
+    result.free();
+  }
+  assert.equal(terrio.layerAlgebra(a,b,"intersection",{keepLowerDimensionGeometries:false}).toGeoJSON().features.length,0);
+  assert.equal(terrio.layerAlgebra(a,b,"clip",{keepLowerDimensionGeometries:false}).toGeoJSON().features.length,1);
+  assert.throws(()=>terrio.layerAlgebra(a,b,"unknown"),/operation must/);
+  assert.throws(()=>terrio.layerAlgebra(a,b,"clip",{unknown:true}),/unknown field/);
+});
+
+test("layerAlgebra selects one layer from each source", () => {
+  const g={type:"FeatureCollection",features:[{type:"Feature",properties:{id:1},geometry:{type:"Point",coordinates:[1,2]}}]};
+  const a=terrio.fromGeoJSON(g,"a"),b=terrio.fromGeoJSON(g,"b");
+  const combined=terrio.concat([a,b],{mode:"stack"}),names=combined.layerNames();
+  const result=terrio.layerAlgebra(combined,combined,"intersection",{layer:names[0],methodLayer:names[1],inputPrefix:"a_",methodPrefix:"b_"});
+  assert.deepEqual(result.toGeoJSON().features[0].properties,{a_id:1,b_id:1});
+  assert.throws(()=>terrio.layerAlgebra(combined,a,"clip"),/one layer/);
+  assert.throws(()=>terrio.layerAlgebra(a,b,"clip",{methodLayer:"missing"}),/not found/);
+});
+
+test("pipeline composes vector aliases and exports deferred files", () => {
+  const input = terrio.fromGeoJSON({type:"FeatureCollection",features:[0,3].map(score=>({type:"Feature",properties:{score,name:`point-${score}`},geometry:{type:"Point",coordinates:[score,1]}}))});
+  const before = input.toGeoJSON();
+  const result = terrio.pipeline("read source ! filter --where 'score > 1' ! select name,_ogr_geometry_ ! buffer 1 ! materialize ! write selected.geojson", {source:input});
+  assert.deepEqual(result.outputNames, ["selected.geojson"]);
+  assert.equal(result.dataset.toGeoJSON().features.length, 1);
+  assert.deepEqual(input.toGeoJSON(),before);
+  const bytes = result.outputBytes()["selected.geojson"];
+  assert.ok(bytes instanceof Uint8Array);
+  assert.equal(JSON.parse(new TextDecoder().decode(bytes)).features.length,1);
+  const table = terrio.pipeline("read source ! select name",{source:input});
+  assert.ok(table.dataset.toGeoJSON().features.every(f=>f.geometry===null));
+});
+
+test("pipeline preserves exact UInt64 pixels through uploaded bytes", () => {
+  const pixels = new BigUint64Array([9007199254740993n,9007199254740995n,18446744073709551614n,1n]);
+  const source = terrio.rasterFromArray(pixels,2,2,[0,1,0,2,0,-1],"EPSG:4326");
+  const result = terrio.pipeline("read image ! select 1 ! materialize ! write copy.tif",{image:{bytes:source.toBytes("input.tif"),filename:"input.tif"}});
+  assert.deepEqual(result.dataset.readBand(1), pixels);
+  const exported = terrio.open(result.outputBytes()["copy.tif"],"copy.tif");
+  assert.deepEqual(exported.readBand(1),pixels);
+  assert.deepEqual(source.readBand(1),pixels);
+});
+
+test("pipeline saved definitions round-trip aliases without evaluating on save", () => {
+  const saved = terrio.pipeline("read image ! select 1 ! write definition.gdalg.json");
+  assert.equal(saved.dataset,undefined);
+  const text = new TextDecoder().decode(saved.outputBytes()["definition.gdalg.json"]);
+  assert.equal(JSON.parse(text).type,"gdal_streamed_alg");
+  const source = terrio.createRaster(null,{size:[2,2],burn:[7],crs:"EPSG:4326",bbox:[0,0,2,2]});
+  const result = terrio.pipeline(text,{image:source});
+  assert.deepEqual([...result.dataset.readBand(1)],[7,7,7,7]);
+  assert.throws(()=>terrio.pipeline("read missing"),/missing pipeline input alias/);
+  assert.throws(()=>terrio.pipeline("read image ! external sh",{image:source}),/unsupported/);
+  assert.throws(()=>terrio.pipeline("read image",{image:source},{typo:true}),/unknown field/);
+});
+
+test("pipeline crop views read the matching source overview", () => {
+  const values = Uint16Array.from({length:64*64},(_,i)=>i);
+  const original = terrio.rasterFromArray(values,64,64,[0,1,0,64,0,-1],"EPSG:3857");
+  const bytes = original.toBytes("pyramid.tif",{overviews:[2,4],overviewResampling:"nearest"});
+  const source = terrio.open(bytes,"pyramid.tif");
+  const result = terrio.pipeline("read image ! clip --bbox 8,8,40,48 ! select 1",{image:source});
+  assert.deepEqual(result.dataset.overviews,[[16,20],[8,10]]);
+  assert.deepEqual(result.dataset.readBand(1,[0,0,3,3],0),source.readBand(1,[4,8,3,3],0));
+  assert.deepEqual(result.dataset.readBand(1,[0,0,3,3],1),source.readBand(1,[2,4,3,3],1));
+});
+
+test("pipeline dissolve unions components within each feature", () => {
+  const geometries = [
+    {type:"MultiLineString",coordinates:[[[0,0],[4,0]],[[2,0],[6,0]]]},
+    {type:"MultiLineString",coordinates:[[[0,0],[4,4]],[[0,4],[4,0]]]},
+    {type:"MultiPoint",coordinates:[[1,1],[1,1],[2,2]]},
+    {type:"MultiPolygon",coordinates:[[[[0,0],[2,0],[2,2],[0,2],[0,0]]],[[[1,0],[3,0],[3,2],[1,2],[1,0]]]]},
+    {type:"MultiPoint",coordinates:[]},null,
+  ];
+  const source = terrio.fromGeoJSON({type:"FeatureCollection",features:geometries.map((geometry,id)=>({type:"Feature",properties:{id},geometry}))});
+  const before = source.toGeoJSON();
+  const result = terrio.pipeline("read source ! dissolve",{source});
+  const features = result.dataset.toGeoJSON().features;
+  assert.deepEqual(features.map(f=>f.properties),geometries.map((_,id)=>({id})));
+  assert.equal(features[0].geometry.type,"LineString");
+  assert.equal(features[0].geometry.coordinates.length,4);
+  assert.equal(features[1].geometry.type,"MultiLineString");
+  assert.equal(features[1].geometry.coordinates.length,4);
+  assert.equal(features[2].geometry.coordinates.length,2);
+  assert.equal(features[3].geometry.type,"Polygon");
+  assert.deepEqual(features[4].geometry,{type:"GeometryCollection",geometries:[]});
+  assert.equal(features[5].geometry,null);
+  assert.deepEqual(source.toGeoJSON(),before);
+});
+
+test("pipeline inputKind overrides prefixes and controls uploaded inputs", () => {
+  const source = terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{id:1},geometry:{type:"Point",coordinates:[1,2]}}]});
+  const bytes = source.toBytes("source.gpkg");
+  const result = terrio.pipeline("raster read source",{source:{bytes,filename:"source.gpkg"}},{inputKind:"vector"});
+  assert.equal(result.dataset.toGeoJSON().features.length,1);
+  assert.throws(()=>terrio.pipeline("read source",{source},{inputKind:"raster"}),/input kind/);
+  assert.throws(()=>terrio.pipeline("read missing",{}, {inputKind:"invalid"}),/input kind/);
+});
+
+test("cleanCoverage repairs overlaps with feature correspondence", () => {
+  const rectangle = (x,y,w,h) => ({type:"Polygon", coordinates:[[[x,y],[x+w,y],[x+w,y+h],[x,y+h],[x,y]]]});
+  const src = {type:"FeatureCollection",features:[rectangle(0,0,4,4),rectangle(1,1,1,1)].map((geometry,i)=>({type:"Feature",geometry,properties:{source_id:i}}))};
+  for (const mergeStrategy of ["longest-border","max-area","min-area","min-index"]) {
+    const result = terrio.cleanCoverage(src,{mergeStrategy});
+    assert.equal(result.toGeoJSON().features.length,2);
+    assert.equal(terrio.checkCoverage(result).toGeoJSON().features.length,0);
+    assert.deepEqual(result.toGeoJSON().features.map(f=>f.properties.source_id),[0,1]);
+  }
+  assert.throws(()=>terrio.cleanCoverage(src,{mergeStrategy:"unknown"}),/merge_strategy/);
+  assert.throws(()=>terrio.cleanCoverage(src,{maximumGapWidth:-1}),/gap width/);
+  assert.throws(()=>terrio.cleanCoverage(src,{activeLayer:"missing"}),/not found/);
+});
+
+
+test("cleanCoverage selects layers and copies inactive elevated points", () => {
+  const polygon=terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}]},"coverage");
+  const point=terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry:{type:"Point",coordinates:[1,2,3]}}]},"point");
+  const source=terrio.concat([polygon,point],{mode:"stack"});
+  const names=source.layerNames();
+  const selected=terrio.cleanCoverage(source,{layer:names[0]});
+  assert.deepEqual(selected.layerNames(),[names[0]]);
+  const copied=terrio.cleanCoverage(source,{activeLayer:names[0]});
+  assert.deepEqual(copied.layerNames(),names);
+  assert.deepEqual(copied.toGeoJSON(names[1]).features[0].geometry.coordinates,[1,2,3]);
+  assert.throws(()=>terrio.cleanCoverage(source,{layer:names[0],activeLayer:names[0]}),/mutually exclusive/);
+});
+
+
+test("cleanCoverage rejects null and non-polygonal active features", () => {
+  for(const geometry of [null,{type:"Point",coordinates:[1,2]}]) {
+    assert.throws(()=>terrio.cleanCoverage({type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry}]}),/polygonal geometry/);
+  }
+});
+
+
+test("pipeline definition saves and unused aliases do not decode inputs", () => {
+  const invalid = {bytes:new Uint8Array([1,2,3]),filename:"invalid.tif"};
+  const saved = terrio.pipeline("read unused ! write saved.gdalg.json",{unused:invalid});
+  assert.equal(saved.dataset,undefined);
+  assert.equal(JSON.parse(new TextDecoder().decode(saved.outputBytes()["saved.gdalg.json"])).type,"gdal_streamed_alg");
+  const source = terrio.createRaster(null,{size:[2,2],burn:[7],crs:"EPSG:4326",bbox:[0,0,2,2]});
+  const result = terrio.pipeline("read image ! write __proto__ --format GTiff",{image:source,unused:invalid});
+  const outputs = result.outputBytes();
+  assert.ok(Object.hasOwn(outputs,"__proto__"));
+  assert.deepEqual(Object.keys(outputs),["__proto__"]);
+  assert.ok(outputs["__proto__"] instanceof Uint8Array);
+  assert.equal(Object.getPrototypeOf(outputs),Object.prototype);
+  assert.throws(()=>terrio.pipeline("read unused",{unused:invalid}),/invalid|supported|recogniz|format/i);
+});
+
+test("contour exposes band selection, elevation fields and 3D vertices", () => {
+  const source=terrio.rasterFromArray(new Float32Array([0,10,0,10,0,20,0,20]),2,2,[0,1,0,2,0,-1],"EPSG:4326");
+  const result=terrio.contour(source,{band:2,levels:[10],withZ:true,fieldName:"height",layerName:"lines"}).toGeoJSON();
+  assert.equal(result.features.length,1);
+  const line=result.features[0];assert.equal(line.properties.height,10);
+  assert.ok(line.geometry.coordinates.every(p=>Math.abs(p[0]-1)<1e-6 && p[2]===10));
+  assert.deepEqual([Math.min(...line.geometry.coordinates.map(p=>p[1])),Math.max(...line.geometry.coordinates.map(p=>p[1]))],[0,2]);
+  assert.throws(()=>terrio.contour(source,{}),/interval or/);
+  assert.throws(()=>terrio.contour(source,{interval:10,nodata:-9999,ignoreNodata:true}),/cannot be used together/);
+  for (const nodata of [NaN,Infinity,-Infinity,null]) {
+    assert.throws(()=>terrio.contour(source,{levels:[10],nodata}),/non-finite number/);
+  }
+  for (const nodata of ["nan","inf","-inf"]) {
+    assert.equal(terrio.contour(source,{levels:[10],nodata}).toGeoJSON().features.length,1);
+    assert.throws(()=>terrio.contour(source,{levels:[10],nodata,ignoreNodata:true}),/cannot be used together/);
+  }
+  assert.throws(()=>terrio.contour(source,{levels:[10],interval:NaN}),/non-finite number/);
+
+});
+
+test("footprint exposes mask, band combination and explicit attributes", () => {
+  const source=terrio.rasterFromArray(new Uint8Array([1,0,0,0,0,1,0,0]),2,2,[0,1,0,2,0,-1],"EPSG:4326",0);
+  const geo=result=>result.toGeoJSON();
+  const both=geo(terrio.footprint(source,{singlepart:true,attributes:{source:"test"}}));
+  assert.equal(both.features.length,1);assert.deepEqual(both.features[0].properties,{source:"test"});
+  assert.equal(geo(terrio.footprint(source,{intersection:true})).features.length,0);
+  const mask=terrio.rasterFromArray(new Uint8Array([1,0,0,0]),2,2,[0,1,0,2,0,-1],"EPSG:4326");
+  const selected=geo(terrio.footprint(source,{mask,bands:[1]}));
+  const points=selected.features[0].geometry.coordinates[0][0].map(p=>p.join(","));
+  assert.deepEqual(new Set(points),new Set(["0,1","1,1","1,2","0,2"]));
+});
+
+test("geometry checks, repairs, buffer and grouped dissolve use the shared engines", () => {
+  const geo=result=>result.toGeoJSON();
+  const source={type:"FeatureCollection",features:[{type:"Feature",properties:{group:"a"},geometry:{type:"Polygon",coordinates:[[[0,0],[2,2],[0,2],[2,0],[0,0]]]}}]};
+  const before=geo(terrio.checkGeometry(source)).features[0];
+  assert.equal(before.properties.is_valid,false);assert.notEqual(before.properties.valid_reason,"Valid Geometry");
+  const after=geo(terrio.checkGeometry(terrio.makeValid(source))).features[0];
+  assert.equal(after.properties.is_valid,true);assert.equal(after.properties.group,"a");
+  assert.deepEqual(before.geometry,source.features[0].geometry);
+  const points={type:"FeatureCollection",features:[[0,"a"],[1,"a"],[5,"b"]].map(([x,group])=>({type:"Feature",properties:{group},geometry:{type:"Point",coordinates:[x,0]}}))};
+  const buffered=terrio.buffer(points,1,{quadrantSegments:4});assert.equal(geo(buffered).features.length,3);
+  assert.equal(geo(terrio.dissolve(buffered,{fields:["group"]})).features.length,2);
+  assert.ok(geo(terrio.checkGeometry(buffered)).features.every(f=>f.properties.is_valid));
+  assert.throws(()=>terrio.buffer(points,1,{quadrantSegments:0}));
+});
+
+
+test("retile callbacks and parent read-back agree after bounded cache eviction", () => {
+  const source = terrio.rasterFromArray(Uint8Array.from({length:1056*1056},(_,i)=>i%251),1056,1056,[0,1,0,1056,0,-1],"EPSG:3857");
+  const options = {tileSize:[64,64],levels:1,resampling:"bilinear",csv:"tiles.csv"};
+  const first=new Map(); const second=new Map(); let reads=0;
+  const a=terrio.retile(source,options,(name,bytes)=>first.set(name,bytes));
+  const b=terrio.retile(source,options,(name,bytes)=>second.set(name,bytes),name=>{reads++;return second.get(name)||null;});
+  assert.equal(a.written,370);assert.equal(b.written,a.written);assert.ok(reads>0);
+  const foreign=new Map();
+  const c=terrio.retile(source,options,(name,bytes)=>foreign.set(name,bytes),name=>{const bytes=foreign.get(name);return bytes?runInNewContext("Object.defineProperty(new Uint8Array(bytes), Symbol.toStringTag, {value: 'custom'})",{bytes}):null;});
+  assert.equal(c.written,a.written);
+  for(const [name,bytes] of first)assert.deepEqual(foreign.get(name),bytes,name);
+  assert.deepEqual([...first.keys()],[...second.keys()]);
+  for(const [name,bytes] of first)assert.deepEqual(second.get(name),bytes,name);
+  const exception={message:"read-back sentinel"};
+  assert.throws(()=>terrio.retile(source,options,()=>{},()=>{throw exception;}),error=>error===exception);
+});
+
+test("retile plans recursive levels and preserves callback exceptions", () => {
+  const source=terrio.rasterFromArray(Uint16Array.from({length:64},(_,i)=>i+1),8,8,[0,1,0,8,0,-1],"EPSG:4326");
+  const options={tileSize:[4,4],levels:2,prefix:"sample"};
+  assert.equal(terrio.planRetile(source,options).planned,6);
+  const files=new Map();
+  const report=terrio.retile(source,options,(name,bytes)=>files.set(name,bytes));
+  assert.equal(report.written,6);
+  const top=terrio.open(files.get("2/sample_1_1.tif"),"tile.tif");
+  assert.deepEqual([...top.readBand(1)],[28,32,60,64]);
+  const exception={message:"write sentinel"};
+  assert.throws(()=>terrio.retile(source,options,()=>{throw exception;}),error=>error===exception);
+});
+
+test("rasterTiles emits publication companions with uniform STACTA bands", () => {
+  const source=terrio.rasterFromArray(new Uint8Array(128*64).fill(100),128,64,[-180,2.8125,0,90,0,-2.8125],"EPSG:4326");
+  const files=new Map();
+  const report=terrio.rasterTiles(source,{
+    tilingScheme:"WorldCRS84Quad",grid:{tileSize:64,minZoom:0,maxZoom:0},resampling:"nearest",
+    publication:{viewers:["all"],kml:true,title:"${URL} & map",mapmlTemplate:"<title>${TITLE}</title>"},
+  },(name,bytes)=>files.set(name,bytes));
+  assert.equal(report.written,2);
+  for(const name of ["leaflet.html","openlayers.html","mapml.mapml","doc.kml","stacta.json","0/0/0.kml"])assert.ok(files.has(name),name);
+  const text=name=>new TextDecoder().decode(files.get(name));
+  assert.equal(text("mapml.mapml"),"<title>${URL} &amp; map</title>");
+  assert.equal(JSON.parse(text("stacta.json")).asset_templates.bands.bands.length,2);
+  assert.deepEqual([...files.get("0/0/0.png").slice(0,8)],[137,80,78,71,13,10,26,10]);
+  assert.equal(files.get("0/0/0.png")[25],4); // PNG gray + alpha color type.
+});
+
+test("rpftocCreate indexes bounded frame metadata and rejects inconsistent options", () => {
+  const parts = [], encoder = new TextEncoder();
+  const text = value => parts.push(encoder.encode(value));
+  const number = (value, width, setter) => { const b = new Uint8Array(width); new DataView(b.buffer)[setter](0, value, false); parts.push(b); };
+  const u16 = value => number(value, 2, "setUint16"), u32 = value => number(value, 4, "setUint32");
+  const f64 = value => number(value, 8, "setFloat64");
+  const prefix = new Uint8Array(360).fill(32); prefix.set(encoder.encode("NITF02.00")); prefix[119]=85; parts.push(prefix);
+  text("0010000000000000000000000000000000"); text("00062000RPFHDR00048");
+  const location = parts.reduce((n, p) => n + p.length, 0) + 48 + 5;
+  parts.push(new Uint8Array([0])); u16(48); text("000C9010.ON2"); parts.push(new Uint8Array([0]));
+  text("MIL-C-89038    19941006U    "); u32(location); text("00000");
+  u16(34); u32(14); u16(2); u16(10); u32(116);
+  u16(130); u32(96); u32(location + 34); u16(136); u32(20); u32(location + 130);
+  const sx = 360 / 201728, sy = 90 / 66816, west = -180 + 21 * sx * 1536;
+  const south = Math.floor(32 / (sy * 1536)) * (sy * 1536) + 3 * sy * 1536;
+  const east = west + sx * 1536, north = south + sy * 1536;
+  [north,west,south,west,north,east,south,east,99.9*400384/(4*66816),99.9*302592/201728,sy,sx].forEach(f64);
+  parts.push(new Uint8Array([0,1,0,36,0,1,0,1,0,6,0,6])); u32(256); u32(256);
+  const bytes = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let offset = 0; for (const p of parts) { bytes.set(p, offset); offset += p.length; }
+  bytes.set(encoder.encode(String(location).padStart(6,"0")),354);
+  bytes.set(encoder.encode(String(bytes.length).padStart(12,"0")),342);
+  const frames = [{filename:"zone/000C9010.ON2",bytes}];
+  assert.throws(()=>terrio.rpftocCreate([{filename:"CON/000C9010.ON2",bytes}],{}),/relative/);
+  assert.throws(()=>terrio.rpftocCreate([{filename:"zone/000C9010.ON2",bytes:bytes.subarray(0,bytes.length-1)}],{}),/file length/);
+  const output = terrio.rpftocCreate(frames, {countryCode:"US"});
+  assert.notDeepStrictEqual(output,terrio.rpftocCreate(frames,{}));
+  const ascii = data => new TextDecoder().decode(data);
+  assert.equal(ascii(output.subarray(0,9)),"NITF02.00");
+  assert.equal(Number(ascii(output.subarray(342,354))), output.length);
+  assert.ok(ascii(output).includes("./zone/"));
+  assert.throws(()=>terrio.rpftocCreate(frames,{scale:500000}),/scale|aligned/);
+  assert.throws(()=>terrio.rpftocCreate(frames,{scale:NaN}),/finite/);
+  assert.throws(()=>terrio.rpftocCreate([{filename:"../000C9010.ON2",bytes}],{}),/relative/);
+  assert.throws(()=>terrio.rpftocCreate(frames.concat(frames),{}),/duplicate/);
+  assert.throws(()=>terrio.rpftocCreate([{filename:"000C9010.ON2",bytes:[]}],{}),/Uint8Array/);
+  bytes[119]=83;
+  assert.throws(()=>terrio.rpftocCreate(frames,{}),/highest frame/);
+  assert.equal(terrio.rpftocCreate(frames,{classification:"S"})[119],83);
+
+});
+
+test("multi-layer analysis output cannot silently drop layers in single-layer formats", () => {
+  const point = marker => ({type:"FeatureCollection", features:[{type:"Feature",properties:{marker},geometry:{type:"Point",coordinates:[0,0]}}]});
+  const a=terrio.fromGeoJSON(point("a"),"a"), b=terrio.fromGeoJSON(point("b"),"b");
+  const source=terrio.concat([a,b],{mode:"stack"});
+  const result=terrio.buffer(source,1);
+  const names=result.layerNames();assert.equal(names.length,2);
+  for (const filename of ["all.geojson","all.geojsonl","all.csv","all.gml"]) {
+    assert.throws(()=>result.toBytes(filename),/one layer/);
+  }
+  const selected=JSON.parse(new TextDecoder().decode(result.toBytes("selected.geojson",{layers:[names[1]]})));
+  assert.equal(selected.features.length,1);assert.equal(selected.features[0].properties.marker,"b");
+  const restored=terrio.open(result.toBytes("all.topojson"),"all.topojson");
+  assert.equal(restored.layerNames().length,2);
 });

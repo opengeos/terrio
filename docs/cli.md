@@ -7,6 +7,7 @@ terrio <COMMAND>
   check           Read dataset content and report decoding failures
   info            Summarize a raster, vector dataset or point cloud
   convert         Convert a dataset to another format, optionally reprojecting it
+  pipeline        Chain raster/vector operations or load/save GDALG definitions
   concat          Concatenate vector layers and datasets (like gdal vector concat and ogrmerge.py)
   partition       Split a vector dataset into files by field values (like gdal vector partition)
   set-field-type  Change field types with GDAL's value conversions (like gdal vector set-field-type)
@@ -163,6 +164,44 @@ have `a_` and `b_` prefixes, followed by text `a_source_fid`/`b_source_fid` fiel
 Null and empty geometries contribute no area; touching lines and points are omitted. Results
 have sequential IDs from 1. Overlaps within an input retain source feature multiplicity;
 dissolve the input first when disjoint coverage is required.
+
+`layer-algebra OPERATION input method output` supports `intersection`, `union`,
+`sym-difference`, `identity`, `update`, `clip` and `erase` for valid polygon, line,
+point, multipart and collection inputs in matching CRS. It constructs XY output;
+Z/M ordinates are dropped. Overlapping polygon components in a collection are
+queried as their union. Untouched single-part collections keep their outer type.
+Inputs are materialized. `--layer` selects input
+layers; `--method-layer` chooses one method layer. Existing output requires
+explicit `--overwrite` or `--append`; failed preflight preserves output files.
+
+Intersection, union, symmetric difference and identity include both attribute
+schemas with default `input_` and `method_` prefixes. Clip, erase and update use
+the input schema without a default prefix. `--input-prefix` and `--method-prefix`
+override these defaults. Prefix collisions receive numeric suffixes. Update
+copies method values whose original names match the output field names; adding
+an input prefix can therefore leave method values null. Null input geometry is
+skipped; update also retains typed-empty method geometry. IDs are sequential
+from one, with source multiplicity retained. The general output geometry type is
+inferred from results rather than preserving an unknown input declaration.
+
+`--keep-lower-dimension-geometries true|false` defaults to true. When false,
+intersection, identity and union omit a pair intersection whose dimension is
+below the smaller input geometry dimension. A mixed collection is retained when
+its maximum dimension qualifies. Clip always retains lower-dimensional results;
+erase and update subtract full method geometry. Symmetric difference subtracts
+both sides regardless of this option. Individual point cuts do not remove line
+length; line/line crossings node the remaining linework.
+
+Rust exposes `ops::layer_algebra::{layer_algebra, LayerAlgebraOperation,
+LayerAlgebraOptions}`. Python `terrio.layer_algebra(src, method, operation, *,
+layer=None, method_layer=None, keep_lower_dimension_geometries=True,
+input_prefix=None, method_prefix=None)` returns a Layer. JavaScript
+`layerAlgebra(src, method, operation, {layer, methodLayer,
+keepLowerDimensionGeometries, inputPrefix, methodPrefix})` returns a Dataset.
+Each binding requires one layer per input unless selected. CLI registration
+supplies the MCP tool. Field selection, output type forcing and on-the-fly
+reprojection are outside this operation's option subset; prepare inputs with
+`convert` when needed.
 
 `dissolve` also accepts only valid Polygon/MultiPolygon features. Without `--field` it merges
 the whole layer; repeat or comma-separate `--field` (alias `--by`) to group by typed attribute
@@ -2847,6 +2886,163 @@ returns one Layer, accepting the usual vector path, dataset, layer or GeoJSON
 inputs. JavaScript `checkCoverage(src, {maximumGapWidth: 0, includeValid: false})`
 returns a Dataset and checks each input layer independently.
 
+### Simplify polygon coverages
+
+`terrio simplify-coverage counties.gpkg simplified.gpkg --tolerance 100` applies
+Visvalingam-Whyatt simplification to common coverage edges. The tolerance is the
+square root of the triangle-area threshold, in input CRS units. Shared nodes
+and matching boundaries remain consistent across adjacent features. Use a
+projected CRS for metre-based tolerances. `--preserve-boundary` retains exterior
+and hole boundaries, simplifying shared internal edges only.
+
+Input polygons must individually be valid and form a valid coverage; run
+`check-coverage` first. The operation materializes each layer and does not repair
+invalid coverages. Polygon and MultiPolygon features, including empty polygons,
+are supported. Null and non-polygon active inputs are rejected. The feature,
+polygon-part and hole counts and Polygon/MultiPolygon kinds are retained. Rings
+can simplify to three distinct vertices (four coordinates with closure), matching
+GDAL 3.13.3 with GEOS 3.14.1. Attributes, names and CRS are retained. Output feature
+IDs are sequential from 1, as in GDAL's default writer.
+
+`--layer` selects input layers. `--active-layer NAME` processes one selected
+layer and copies the other selected layers, including non-polygon data; output
+IDs are new in those layers too. An unknown active name is an error. Standard
+vector format, output-layer, append and overwrite options apply. GeoPackage
+output retains the input declaration, including `Unknown`, instead of inferring
+a concrete type from homogeneous features. GDAL geometry-field selection,
+upsert, skip-errors, GDALG output and driver-specific options are outside this
+command's subset. The command also supplies the MCP tool.
+
+Rust exposes `ops::coverage_simplify::{simplify_coverage, simplify_coverage_layers,
+CoverageSimplifyOptions}`. Python
+`terrio.simplify_coverage(src, tolerance, preserve_boundary=False, layer=None)`
+returns one Layer. With `active_layer="counties"`, it returns a `VectorDataset`,
+simplifying that layer and copying the other input layers. `layer` and
+`active_layer` are mutually exclusive. JavaScript
+`simplifyCoverage(src, tolerance, {preserveBoundary: false, activeLayer: "counties"})`
+returns a Dataset, copying inactive layers. Inputs use the usual vector paths,
+datasets, layers and GeoJSON forms of their respective bindings.
+
+For general GeoPackage writes, Rust `VectorWriteOptions`, Python `Layer.write`,
+`Layer.to_bytes`, `VectorDataset.write` and `write_vector` offer
+`preserve_declared_geometry_type=True`. JavaScript `Dataset.toBytes` accepts
+`preserveDeclaredGeometryType: true`. This option applies to GPKG output and
+retains base geometry declarations when creating/replacing layers; appending to an existing
+layer keeps its base geometry declaration, with dimension flags promoted to
+optional when needed to retain mixed layouts. The existing default infers the common
+feature type. The pure Rust GeoPackage encoders preserve M values by default, independent
+of this option, for native files, memory outputs and streams. Mixed measured
+and unmeasured geometries use optional M declarations, preserving their layouts. Streamed Z flags
+also reflect any coordinate with Z, matching the encoded payload even when the
+first coordinate is two-dimensional; absent ordinates are encoded as zero. This
+intentionally changes the default streaming and whole-layer output: later Z
+values previously dropped in that layout now survive, and vertices lacking Z
+receive `0.0`. Missing M ordinates within a measured geometry likewise receive
+zero. This encoding rule applies independently of declaration preservation.
+Ordinary updates retain the in-place transaction path, with the
+existing atomic rewrite fallback when in-place editing is unsupported.
+
+General CLI writers currently infer geometry declarations and do not expose a
+`preserve_declared_geometry_type` flag. `simplify-coverage` enables declaration
+preservation for its GeoPackage output. This is a scope limit of the general
+CLI/MCP writer options; the simplification operation itself preserves declarations
+across all public surfaces.
+
+Retained simplified vertices keep their Z values; GEOS drops M values from active
+polygon layers. Inactive layers retain their coordinates, including Z and M in
+GeoPackage output. Unknown GeoPackage declarations allow optional Z. The shared
+Layer model does not store source required/optional dimensional declarations, so
+this option cannot reproduce those hints for empty layers or explicitly required
+Z/M declarations. This is a metadata limitation even when coordinates match.
+
+Coverage simplification follows GDAL 3.13.3 / GEOS 3.14.1 and JTS when
+reassembling shared edges: exterior/hole vertex direction can change with input
+feature order. Ring direction is not preserved; polygon roles and topology are
+preserved. For example, reversing the two-feature shared-zigzag fixture yields
+signed exterior areas +8 and -8 in both Terrio and GDAL.
+
+For `simplifyCoverage`, JavaScript `layer` selects a single output layer and is
+mutually exclusive with `activeLayer`, which copies inactive layers.
+Interior shared-span vertices take Z from the representative edge encountered
+first. Shared endpoints use the preceding output span's Z; the first ring
+vertex uses the following span's Z. Neighbors can therefore retain different
+endpoint heights. Per-feature heights on shared spans are not independently
+preserved.
+
+With `preserve_declared_geometry_type` (JavaScript
+`preserveDeclaredGeometryType`), GeoPackage writers reject non-null features
+incompatible with a concrete declared type. Unknown declarations accept every
+geometry; GeometryCollection declarations also accept multipart subtypes.
+
+Mixed 2D/3D features use optional Z by default in every pure-Rust GeoPackage
+whole-layer, memory and streaming writer, independently of the preserve option;
+append/update also promote the declaration when needed. Null geometries do not
+force Z or M to optional. A typed-empty geometry encoded with an XY WKB type
+still counts as 2D for this registration, unlike SQL NULL.
+
+
+### Clean polygon coverages
+
+`terrio clean-coverage input.gpkg output.gpkg` snaps and nodes polygon
+boundaries, assigns overlaps to a neighboring source feature and optionally
+fills enclosed narrow gaps. This is a pure-Rust operation. Each polygon must
+individually be valid; use `make-valid` first for invalid polygons. Null and
+non-polygonal active features are rejected before output creation; inactive
+layers are copied without applying this restriction.
+
+- `--snapping-distance D`: planar distance in input CRS units. The default
+  negative value selects extent diameter / 1e8; zero disables proximity snapping.
+- `--merge-strategy longest-border|max-area|min-area|min-index`: choose overlap
+  ownership, breaking ties by input order. The default is `longest-border`.
+  Area/border scores use already assigned faces, including earlier overlaps.
+- `--maximum-gap-width W`: merge enclosed gaps whose maximum inscribed diameter
+  is at most W, into the neighbor with longest common boundary. Zero disables
+  filling. Open inlets are retained. Holes are treated as enclosed gaps.
+- `--active-layer NAME`: clean one selected layer and copy inactive layers.
+  The standard `--layer`, output format/name and append/overwrite options apply.
+
+The whole selected layer is materialized. Planar topology uses XY; representative Z
+vertices are retained and intersection elevations are interpolated. Active-layer
+M values are dropped. Output attributes and CRS survive, with sequential IDs;
+removed/covered features retain empty Polygon geometry. Geographic coordinates
+use degrees: reproject before supplying distances in metres. This operation can
+alter boundaries and a merged narrow gap can introduce a spike. Ownership is
+classified against the original input polygons after snapping, matching JTS.
+General gap widths use a bounded inscribed-circle search with tolerance
+0.0001 times the requested radius. If the iteration bound is exhausted without
+finding a larger radius, the gap is classified within the width. Near-threshold
+or pathological gaps can therefore be approximate. Triangles and convex
+quadrilaterals use the exact radius shortcut.
+
+Rust exposes `ops::coverage_clean::{clean_coverage, clean_coverage_layers,
+CoverageCleanOptions, CoverageMergeStrategy}`. Python
+`terrio.clean_coverage(src, snapping_distance=-1, merge_strategy="longest-border",
+maximum_gap_width=0, layer=None)` returns a Layer; `active_layer="name"` returns
+a VectorDataset and is mutually exclusive with `layer`. JavaScript
+`cleanCoverage(src, {snappingDistance, mergeStrategy, maximumGapWidth,
+layer, activeLayer})` returns a Dataset. The CLI also supplies the MCP tool.
+Without `layer` or `activeLayer`, CLI and JavaScript process every input layer,
+following their dataset return/output contracts. Python's default returns one
+Layer and requires `layer=` when its source has multiple layers. `active_layer=`
+(or `activeLayer`) cleans the named layer and copies the others on both bindings.
+
+Coverage cleaning can have multiple ordering-dependent results for interacting
+overlaps. GDAL 3.13.3 / GEOS 3.14.1 itself changes longest-border ownership when
+only the starting vertices of unchanged polygon rings are rotated. Terrio uses
+a fixed graph traversal; per-feature ownership need not match one particular
+reference traversal. The comparer reports such differences explicitly: it checks
+exact cyclic-input reference alternatives, then independently replays greedy
+ownership on GDAL-polygonized input faces when necessary. Both results must have
+a legal complete merge order, preserve the input union, attributes, IDs and CRS,
+and pass GDAL coverage validation. Per-feature geometric equality is not claimed
+for these cases; Polygon/MultiPolygon types may follow the differing owners.
+The ordinary per-feature geometric tolerance is not widened.
+
+Cleaning infers output geometry declarations from the result. A one-part result
+is Polygon, including when the input GeoPackage declares MultiPolygon. This
+reflects the topology operation's Polygon collapse; coverage simplification
+separately supports preserving its input declaration.
+
 ## Separate-file raster tiles
 
 `terrio tile INPUT OUTPUT_DIR` writes separate `z/x/y.png` tiles. The default
@@ -2870,7 +3066,8 @@ PNG tiles get alpha for nodata, dataset masks and padded edges. Each color
 channel's nodata is excluded before interpolation; the pixel remains opaque when
 other channels are valid. GeoTIFF outputs without alpha retain dataset masks and
 exclude masked samples from resampling. Fully opaque
-tiles omit automatic alpha; `--add-alpha` retains it on every tile and
+tiles omit automatic alpha unless STACTA publication requires a uniform band
+count; `--add-alpha` retains it on every tile and
 `--no-alpha` removes it. `--output-nodata` sets invalid-pixel backgrounds,
 including the color beneath fully transparent pixels when alpha is enabled. With `--no-alpha`, invalid image pixels become the background;
 PNG has no separate validity mask. A gray PNG with explicit output nodata uses
@@ -2912,8 +3109,8 @@ Interpolating kernels use premultiplied alpha; exact GDAL agreement is currently
 validated for nearest-neighbor tiling. Affine georeferencing is required;
 global schemes also require a known source CRS;
 image/alpha tiles refuse Int64/UInt64 input to avoid float conversion losses;
-additional GDAL matrix sets, KML/viewer publication and `gdal_retile` file layouts
-are not currently implemented.
+additional GDAL matrix sets are not currently implemented. Publication companions
+and the separate `retile` layout are described below.
 
 Rendering holds one output tile and bounded source windows. By default a decoded
 source window may use at most 64 MiB and the output buffer 256 MiB; requests
@@ -2957,3 +3154,297 @@ decimation factor, with a minimum of one pixel, matching GDAL 3.13.3. When a
 dimension is at least that factor, trailing native rows/columns that do not fill
 a decimated pixel are outside that lower zoom. Maximum zoom covers the full
 source. Output edge tiles may include padding.
+
+### Publishing folder tiles
+
+```sh
+terrio tile input.tif published --webviewer all --kml \
+  --url https://example.org/maps/published/ --title "Imagery"
+```
+
+`--webviewer` accepts `none` (default), `all`, `leaflet`, `openlayers`, `mapml`
+or `stac`. `all` selects the companions applicable to the chosen grid. Leaflet
+requires a global PNG grid; OpenLayers supports PNG grids, including raster
+grids with unequal X/Y resolution. MapML requires global XYZ tiles. STACTA
+(`stacta.json`) requires XYZ, a known CRS, square pixels and blank tiles retained, and can be reopened
+as a raster. Leaflet/OpenLayers pages fetch pinned public library distributions.
+Serve the generated directory over HTTP to view it in a browser.
+
+`--kml` requires a known CRS and writes `doc.kml` plus tile overlays and child
+links for either XYZ or TMS. `--url` names the tile directory itself; no output
+basename is appended. Omit it for relative links. `--copyright` supplies plain
+text attribution. Titles and attribution are escaped for HTML/XML.
+`--mapml-template FILE` reads template contents; Python/JavaScript instead pass
+the contents as `publication.mapml_template` / `publication.mapmlTemplate`.
+Substitution is single-pass, so placeholders inside a title remain literal.
+
+Python and JavaScript accept these options in a nested `publication` object,
+for example `publication={"viewers": ["all"], "kml": True}` in Python.
+The JavaScript callback receives companion files as well as encoded tiles.
+Unsupported explicitly requested companions fail during planning. Publication
+metadata is bounded to 16 MiB per file, strings have individual limits, and root
+KML links are limited to 20,000. Resume preserves existing companions as well
+as images; use a new directory after changing options.
+
+## retile
+
+```sh
+terrio retile west.tif east.tif -o retiled --tile-size 512 512 \
+  --overlap 16 --levels 3 --resampling bilinear \
+  --csv tiles.csv --tile-index tiles.gpkg
+terrio retile input.tif -o retiled --row-directories --pyramid-only --levels 2
+```
+
+`retile` implements `gdal_retile` file layouts through the shared Rust engine
+and the MCP `retile` tool. Inputs must have north-up affine grids, matching CRS
+and band counts, and noncomplex samples. `--source-srs` assigns a CRS without
+reprojecting; use `warp` for reprojection. Later inputs overwrite earlier
+inputs, including nodata. Physical dataset masks are ignored, matching classic
+`gdal_retile` behavior.
+
+Files use `PREFIX_ROW_COLUMN.tif`, with one-based, zero-padded row/column numbers
+from the top left. The prefix defaults to the first input's filename stem.
+Level zero is in the root; additional levels use `1/`, `2/`, etc.
+`--row-directories` instead writes `LEVEL/ROW/PREFIX_ROW_COLUMN.tif`, including
+level zero. Edge tiles are cropped. `--overlap` must be smaller than both tile
+dimensions. Each pyramid level floor-divides the original dimensions by its
+power of two; levels yielding zero width or height are rejected.
+
+Pyramids sample the preceding emitted level, with interpolation clipped to the
+tile footprint. Stored input overviews are ignored. `--pyramid-only` starts with
+level one sampled from the original mosaic. Supported resamplers are nearest
+(default), bilinear, cubic, cubicspline and lanczos. `--format` accepts GTiff
+or COG; `--output-type` changes sample type, and repeatable `--co NAME=VALUE`
+supplies writer options. Same-type aligned base tiles preserve native UInt64
+values. Source band scale/offset, descriptions, units and statistics are not
+copied; output color defaults, palette and nodata follow the retile policy.
+
+`--csv NAME.csv` creates a per-level filename/extent table, with `;` by default
+and `--csv-delimiter` for another single character. `--tile-index` accepts a
+`.shp`, `.geojson` or `.gpkg` basename; `--tile-index-field` defaults to `location`.
+Index filenames are relative to the level directory. Metadata is limited to
+100,000 records per level and CSV files to 16 MiB. `--max-tiles` defaults to one
+million; `--dry-run` validates metadata and reports the layout without reading
+pixels. Directory publication and `--resume` follow the same rules as `tile`.
+Missing pyramid tiles read existing parent files, so resumed parents must match
+the expected dimensions, bands and type.
+
+Rendering uses bounded source windows and a parent cache limited to 64 MiB and
+256 tiles, in addition to one output tile and decoder/encoder buffers. Planning checks the output and
+direct base-copy buffers from metadata, using cropped edge dimensions. Resampled
+source and previous-level windows retain a 64 MiB per-window runtime limit; a
+dry-run does not preflight every adaptive resampling window. Reduce tile sizes
+if sampling exceeds that limit. Native
+directory output reads emitted parent files after eviction. Each cached parent
+is decoded from its emitted encoding, adding a decode pass so higher levels
+see the actual samples, including lossy writer effects. Write-only callback
+sinks regenerate evicted parents; callbacks can supply read-back to avoid this
+additional work. Inputs must remain unchanged throughout generation, including
+across callbacks. Write-only regeneration assumes stable source samples; supply
+parent read-back when emitted parent bytes must be reused independently of the
+source. No full input mosaic is materialized.
+
+Rust exposes `ops::raster_retile::{plan, generate, to_directory, RetileOptions,
+RetileSource}`. Python `terrio.retile(source_or_sources, output, **options)`
+accepts paths or open rasters, including lazy readers; options use snake_case,
+with `dry_run=True` and `resume=True` as native controls. JavaScript exposes
+`planRetile(inputs, options)` and `retile(inputs, options, onFile, readFile?)`.
+Inputs are uploaded bytes, shared datasets or arrays of them; options accept
+camelCase. Both callbacks are synchronous. `onFile(path, Uint8Array)` stores
+each image/index/CSV file; optional `readFile(path)` returns earlier bytes or
+null. Callback exceptions propagate unchanged. JavaScript does not implement
+native filesystem resume.
+
+GDAL 3.13.3 real-data comparisons cover 28 Landsat/USGS DEM cases, including
+overlap, row directories, three recursive levels, all resamplers, COG and Byte
+output. Fourteen are exact. The other fourteen explicitly account for GDAL's
+six-decimal input-index origin rounding; bilinear DEM differences are bounded
+to one Float32 ULP (287 samples, maximum absolute delta 0.000244140625).
+The GDAL COG retile path incorrectly converts Float32 elevations through Byte;
+that defect is independently verified before using GDAL GTiff retile as the
+sample oracle. Native COGs preserve the elevations and pass full COG validation.
+
+## Pipelines
+
+`terrio pipeline` composes raster and vector operations through the shared Rust
+`terrio::ops::pipeline::Pipeline` engine. Separate steps with `!`; quote SQL
+expressions and paths with spaces for your shell:
+
+```sh
+terrio pipeline read counties.geojson ! filter --where 'population > 10000' ! select name,population,_ogr_geometry_ ! write selected.gpkg
+terrio pipeline read image.tif ! clip --bbox 2,2,8,8 ! select 1 ! resize --size 256,256 ! write subset.tif
+terrio pipeline --save subset.gdalg.json read image.tif ! select 1
+terrio pipeline --load subset.gdalg.json --output subset.tif
+```
+
+Global options (`--load`, `--save`, `--output`, `--input-kind`, `--overwrite`)
+precede the steps. The input kind can be `auto`, `raster` or `vector`.
+`read` must be first and `write`, when supplied, must be last. Supported
+intermediate steps are `filter`, `select`, `clip`, `reproject`, `resize`,
+`set-type`, `buffer`, `simplify`, `segmentize`, `swap-xy`, `dissolve`,
+`as-features`, `rasterize` and `materialize`. Unknown steps and options are
+rejected. `set-type` requires `--output-data-type`.
+
+| Step | Supported arguments and options |
+|---|---|
+| `read` | Input path or alias, optionally `--input`; repeatable vector `--layer` selectors |
+| `filter` | Vector `--where` expression and/or `--bbox xmin,ymin,xmax,ymax` spatial selection |
+| `select` | Comma-separated positional fields/bands, `--fields`, or repeatable `--band`; raster bands are one-based |
+| `clip` | Required `--bbox xmin,ymin,xmax,ymax`, in the current dataset CRS |
+| `reproject` | Required `--output-crs`; raster-only `--size width,height`, `--resolution x,y`, `--resampling` |
+| `resize` | Raster `--size width,height` (pixels or percentages) or `--resolution x,y`; optional `--resampling` |
+| `set-type` | Required raster `--output-data-type` |
+| `buffer` | Vector distance, positional or `--distance`; `--quadrant-segments` defaults to 8 |
+| `simplify`, `segmentize` | Vector tolerance (`--tolerance`) or maximum length (`--max-length`), also accepted positionally |
+| `swap-xy`, `dissolve` | Vector operations with no additional options |
+| `as-features` | Raster `--geometry-type`, `--skip-nodata`, `--include-xy`, `--include-row-col`, `--output-layer` |
+| `rasterize` | Required `--size` or `--resolution`; `--extent`, repeatable `--burn`, `--attribute-name`, `--all-touched`, `--output-data-type`, `--nodata` |
+| `write` | Destination, positional or `--output`; `--format`, `--overwrite`, native-vector `--append`, vector `--output-layer` |
+| `materialize` | No options for an in-memory snapshot; optional `--output` with the write options above for a named checkpoint |
+
+`--size` and `--resolution` are mutually exclusive. Resampling names use the
+shared raster resamplers. Unknown options are rejected rather than forwarded to
+an external GDAL executable. Python and JavaScript use these same step strings
+and validation rules; JavaScript encodes named outputs to bytes instead of
+writing native files.
+
+Raster reads, numeric band selection and north-up bounding-box clips retain lazy
+window and overview access. Vector layers and transformed raster results reside
+in memory. `materialize` takes an in-memory snapshot; add `--output checkpoint.tif`
+(or a vector destination) to request a persisted checkpoint. There are no implicit
+serialized intermediate datasets. Existing destinations require `--overwrite`;
+destination collisions, format availability and overwrite policy are checked before
+any checkpoint or final output is written.
+
+`.gdalg.json` definitions use `type: gdal_streamed_alg` and `command_line`.
+Saving omits the final write and does not evaluate the source. CLI saves resolve
+input paths to absolute paths; imported relative paths resolve against the
+saved definition unless `relative_paths_relative_to_this_file` is false.
+Nested saved pipelines are limited to 16 levels. Definitions execute supported
+Terrio operations directly and never invoke a shell or external program.
+
+This is a linear pipeline implementation. It does not expose every option of
+GDAL's individual steps. Raster bounding-box clips must fit inside a north-up
+source; use reprojection before resizing rotated grids. Complex raster band/crop
+views are unsupported. Mixed pipelines can use `as-features` and `rasterize` to
+change dataset family. Raster resize samples the pixel and validity planes
+independently; reprojection excludes masked pixels from interpolation.
+
+Vector `select` includes only the listed fields. Include `_ogr_geometry_` to retain
+geometry and its CRS; selecting attributes alone produces a nonspatial table.
+
+Pipeline `dissolve` unions components within each feature, nodes intersecting
+lines and merges degree-two line chains; it preserves rows and attributes.
+The standalone `terrio dissolve` groups polygon features across a layer instead.
+Constructed dissolve geometry is XY. Reprojection uses the source validity mask
+when sampling but, like GDAL's default reproject step, does not emit a physical
+output mask. Resize retains a separately sampled validity plane.
+
+Grid-changing and type-conversion steps clear derived `STATISTICS_*` metadata.
+Descriptive band metadata, scale, offset and units are retained. GDAL 3.13.3's
+clip/resize/type steps can omit a unit string; Terrio retains the source unit.
+
+Python's `input_kind` keyword and JavaScript's `inputKind` option accept
+`"auto"`, `"raster"`, or `"vector"`. These override a family prefix in the
+command string. Plain `materialize` steps interoperate in
+saved GDALG definitions. GDAL 3.13.3 requires its
+`GDAL_ALGORITHM_ALLOW_WRITES_IN_STREAM=YES` configuration option when opening a
+definition with a named checkpoint, because opening that stream writes the
+checkpoint file.
+
+Native masked COG output currently reads the final raster and mask into memory
+before encoding; the COG row writer cannot stream that mask. This is separate
+from lazy input/view reads and from the streaming unmasked COG path. Byte exports
+also encode a complete in-memory dataset.
+
+Vector output uses the native writer's feature-ID policy. GeoPackage output
+assigns sequential IDs when the schema has no explicit `fid` field; GDAL can
+retain source IDs instead. The pipeline conformance suite identifies this
+discrete writer-policy difference in its case details and checks the native
+sequence independently. Source identifiers needed as data should be retained in
+an ordinary attribute field. Writer option parity remains
+part of [#288](https://github.com/opengeos/terrio/issues/288).
+
+A saved definition used as a nested `read` input contributes its evaluated dataset;
+its checkpoint and write artifacts are discarded. Execute a definition directly
+with `--load` to request its own named checkpoints. Output preflight checks are
+completed before writing, but multi-file writes are not transactional: an
+encoding or I/O failure can leave earlier outputs in place. CLI runs without
+`write`, `--output`, or `--save` print a dataset summary without saving a file.
+Resize requires a north-up grid; reproject south-up, flipped or rotated grids first.
+Detached in-memory vector results report the GeoJSON memory-container driver;
+this value does not retain the source file driver's provenance.
+
+`relative_paths_relative_to_this_file` applies to input paths only. Named
+checkpoint and final output paths resolve against the caller's working directory.
+Executing a definition directly with `--load` executes its write options, including
+explicit `--overwrite`; this is an instruction to run that definition, including
+its requested output writes. Nested `read` definitions continue to discard writes.
+
+Each Python/JavaScript `dataset` property access creates an independent wrapper;
+vector features are copied on each access and at write/checkpoint snapshots. Keep
+and reuse one returned dataset when repeated access is needed. Native in-place
+raster output also snapshots the returned dataset and write artifact independently,
+which can read the source twice. High-degree line dissolve remains quadratic;
+its segment-neighborhood indexes are rebuilt per segment.
+
+A standalone `!` token is reserved as a step separator even when quoted; use
+`./!` to name a file literally called `!`. Raster bounding boxes round to source
+pixel windows; a box that rounds to an empty window is rejected.
+
+
+## RPF table of contents
+
+`terrio rpftoc-create INPUT [OUTPUT]` indexes existing CADRG frames recursively,
+without decoding compressed pixel components. `OUTPUT` defaults to `INPUT/A.TOC`.
+The command is also an MCP tool. It supports `--scale`, `--producer-id` (five
+printable ASCII bytes), `--producer-name` (27), `--country-code` (two uppercase
+letters), `--classification U|R|C|S|T` and `--overwrite`. The index classification must be
+at least as high as every indexed frame. Scale is inferred per
+series unless overridden; mismatched corners, intervals or zones fail validation.
+The JSON report includes frame/group counts, skipped non-frame candidate counts,
+metadata bytes read and output size. On Unix, new output follows the process
+umask; overwrites preserve the existing file mode. `--overwrite` replaces any
+existing file at OUTPUT, not only a TOC; input frames remain protected.
+
+The output parent must be the input directory or an ancestor. This preserves safe
+relative frame paths, including when the TOC is placed above a nested frame tree.
+Symlinks and non-NITF 2.0/2.1 candidates are skipped; the latter are counted in
+`skipped_files`, along with previous TOC indexes other than the selected output.
+Malformed supported input NITF frames fail validation. Explicit overwrite may
+replace a malformed file at the selected output path; validated input frames
+remain protected. An output
+cannot replace an input frame. Frame path
+components must be UTF-8 and cannot contain `:`, backslashes or NUL bytes.
+Unrepresentable paths fail rather than being silently omitted. Components ending
+in dots or spaces, or reserved Windows device names such as `CON`, `NUL`,
+`COM1` and `LPT1` (including extensions), are rejected to follow
+[Windows filename conventions](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file#naming-conventions).
+Duplicate paths or grid cells within one scale/zone are rejected. File opens
+refuse symlinks and verify the inventoried file identity before reading metadata. Validation
+finishes before atomic publication; an existing TOC is preserved on errors.
+CADRG NITF 2.0/2.1 metadata and northern/southern ARC/polar grids are supported;
+CIB, other RPF products and TRE overflow chains are unsupported. A recognized
+NITF candidate that is unsupported or malformed aborts the run before publication;
+it is not counted as a skipped non-NITF file. Declared NITF file size must match
+the actual size, so truncation after metadata is detected without reading pixels.
+
+Unreadable directories fail the whole scan rather than publishing an incomplete
+inventory. Select a CADRG frame tree, rather than an entire drive root.
+
+Native creation requires a stable local directory tree: callers must synchronize
+concurrent changes to input and output directories. File identity checks detect
+replaced frames; they do not make pathname traversal or publication a confinement
+boundary against other local writers. Atomic overwrite preserves Unix mode bits;
+it creates a replacement file and does not preserve ownership, extended ACLs or
+other extended attributes. Applications requiring those properties should manage
+publication of `rpftoc_bytes` themselves. Limits include
+100,000 candidate frames (an inspection safety cap, not serializable capacity),
+200,000 directory entries, 64 directory levels, 1 MiB
+NITF headers, 64 KiB location tables and a 99,999-byte encoded TRE payload.
+Large indexes must be partitioned by the caller. Historical polar nominal
+interval fields are normalized from the scale and verified frame geometry.
+
+The nominal scale catalogue retains fractional scales such as `WI` at 3.5M.
+GDAL 3.13.3 truncates that catalogue value to 3M, producing incorrect index
+georeferencing; comparisons use its explicit `--scale 3500000` reference instead.

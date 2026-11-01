@@ -1,6 +1,7 @@
 //! Managing rasters in place: overviews (`gdaladdo`), with the safety of the updates (a failure
 //! leaves the file as it was; read-only, remote and COG inputs are refused).
 
+use std::collections::BTreeMap;
 use terrio::ops::Resampling;
 use terrio::ops::overview::{
     DeleteOptions, OverviewOptions, RefreshOptions, add_overviews, add_overviews_to_bytes, delete_overviews, refresh_overviews,
@@ -115,6 +116,113 @@ fn automatic_levels_and_masks_follow_gdal() {
     let ovr = level(&path, Some(0));
     let block = [full[64], full[65], full[128 + 64], full[128 + 65]];
     assert_eq!(ovr[32], (block.iter().sum::<f64>() / 4.0 + 0.5).floor());
+}
+
+/// The directories of a little-endian classic TIFF: the SHORT and LONG values of each tag.
+fn directories(bytes: &[u8]) -> Vec<BTreeMap<u16, Vec<usize>>> {
+    assert_eq!(&bytes[..4], b"II*\0", "a little-endian classic TIFF");
+    let short = |p: usize| u16::from_le_bytes([bytes[p], bytes[p + 1]]) as usize;
+    let long = |p: usize| u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap()) as usize;
+    let mut dirs = Vec::new();
+    let mut at = long(4);
+    while at != 0 {
+        let n = short(at);
+        let mut dir = BTreeMap::new();
+        for e in (0..n).map(|e| at + 2 + 12 * e) {
+            let (size, count) = match short(e + 2) {
+                3 => (2, long(e + 4)),
+                4 => (4, long(e + 4)),
+                _ => continue,
+            };
+            let start = if size * count <= 4 { e + 8 } else { long(e + 8) };
+            let values = (0..count).map(|i| if size == 2 { short(start + 2 * i) } else { long(start + 4 * i) }).collect();
+            dir.insert(short(e) as u16, values);
+        }
+        dirs.push(dir);
+        at = long(at + 2 + 12 * n);
+    }
+    dirs
+}
+
+/// The `NewSubfileType` of a directory: 1 for an overview, 5 for an overview's mask.
+fn subfile(dir: &BTreeMap<u16, Vec<usize>>) -> usize {
+    dir.get(&254).map_or(0, |v| v[0])
+}
+
+/// The tile offsets of the first mask overview.
+fn first_mask_tiles(path: &str) -> Vec<usize> {
+    directories(&std::fs::read(path).unwrap()).into_iter().find(|d| subfile(d) == 5).unwrap()[&324].clone()
+}
+
+/// Asserts that the TIFF has `levels` mask overviews, each tiled like the overview it masks with
+/// a `TileLength` that is a multiple of 16, and each of its tiles whole: `ceil(width / 8) *
+/// height` bytes once inflated. libtiff, and so GDAL, fails to read a short tile, which terrio's
+/// reader accepts.
+fn assert_whole_mask_tiles(bytes: &[u8], levels: usize, case: &str) {
+    let dirs = directories(bytes);
+    let masks: Vec<_> = dirs.iter().filter(|d| subfile(d) == 5).collect();
+    assert_eq!(masks.len(), levels, "{case}: mask overviews");
+    for m in masks {
+        let size = (m[&256][0], m[&257][0]);
+        let data = dirs.iter().find(|d| subfile(d) == 1 && (d[&256][0], d[&257][0]) == size).expect("the overview masked");
+        let (tile_w, tile_h) = (m[&322][0], m[&323][0]);
+        assert_eq!((tile_w, tile_h), (data[&322][0], data[&323][0]), "{case}: tiles of the {size:?} mask");
+        assert!(tile_h.is_multiple_of(16), "{case}: TileLength {tile_h} of the {size:?} mask");
+        let (offsets, counts) = (&m[&324], &m[&325]);
+        assert_eq!(offsets.len(), size.0.div_ceil(tile_w) * size.1.div_ceil(tile_h), "{case}: tiles of the {size:?} mask");
+        for (o, n) in offsets.iter().zip(counts) {
+            let mut tile = Vec::new();
+            std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&bytes[*o..o + n]), &mut tile).unwrap();
+            assert_eq!(tile.len(), tile_w.div_ceil(8) * tile_h, "{case}: a tile of the {size:?} mask");
+        }
+    }
+}
+
+/// The per-dataset mask of each overview.
+fn mask_levels(path: &str) -> Vec<Vec<u8>> {
+    let mut r = terrio::open_raster_lazy(path).unwrap();
+    r.overviews().into_iter().enumerate().map(|(i, (w, h))| r.read_mask(Window::new(0, 0, w, h), Some(i)).unwrap().unwrap()).collect()
+}
+
+#[test]
+fn mask_overviews_are_written_in_whole_tiles() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ds = sample(256, 200);
+    ds.has_nodata = false;
+    ds.band_nodata = vec![None];
+    let mask: Vec<u8> = (0..256 * 200).map(|i| if i % 256 < 25 || (i % 256 * 7 + i / 256 * 3) % 13 == 0 { 0 } else { 255 }).collect();
+    let masked = RasterWriteOptions { mask: Some(mask), ..tiled() };
+    // In 64-pixel tiles: the first overview's last block row has 36 rows, and the others are
+    // shorter than a tile.
+    let nearest = OverviewOptions { levels: vec![2, 4, 8], resampling: Resampling::Nearest, ..Default::default() };
+    let added = write(dir.path(), "added.tif", &ds, &masked);
+    assert_eq!(add_overviews(&added, &nearest).unwrap(), vec![(128, 100), (64, 50), (32, 25)]);
+    let in_memory = add_overviews_to_bytes(&std::fs::read(write(dir.path(), "bytes.tif", &ds, &masked)).unwrap(), &nearest).unwrap();
+    assert_whole_mask_tiles(&in_memory, 3, "added in memory");
+    assert_whole_mask_tiles(&refresh_overviews_in_bytes(&in_memory, &RefreshOptions::default()).unwrap(), 3, "refreshed in memory");
+    // Overviews written with the image, laid out as GDAL lays them out: masks in whole tiles.
+    let written = write(dir.path(), "written.tif", &ds, &RasterWriteOptions { overviews: vec![2, 4, 8], ..masked.clone() });
+    // An extent over the right tile column of the first overview's last block row.
+    let bbox = vec![[500000.0 + 30.0 * 150.0, 4094000.0, 500000.0 + 30.0 * 256.0, 4095000.0]];
+    for path in [&added, &written] {
+        assert_whole_mask_tiles(&std::fs::read(path).unwrap(), 3, path);
+        let masks = mask_levels(path);
+        // Existing mask overviews are re-encoded: refreshed whole, over an extent, and added again.
+        let whole = RefreshOptions::default();
+        refresh_overviews(path, &whole).unwrap();
+        assert_whole_mask_tiles(&std::fs::read(path).unwrap(), 3, &format!("{path} refreshed"));
+        assert_eq!(mask_levels(path), masks, "{path} refreshed");
+        let before = first_mask_tiles(path);
+        refresh_overviews(path, &RefreshOptions { bbox: bbox.clone(), ..whole }).unwrap();
+        let after = first_mask_tiles(path);
+        let replaced: Vec<usize> = (0..after.len()).filter(|&i| after[i] != before[i]).collect();
+        assert_eq!(replaced, vec![3], "{path}: the first mask overview's tiles refreshed over the extent");
+        assert_whole_mask_tiles(&std::fs::read(path).unwrap(), 3, &format!("{path} refreshed over an extent"));
+        assert_eq!(mask_levels(path), masks, "{path} refreshed over an extent");
+        assert_eq!(add_overviews(path, &nearest).unwrap(), vec![(128, 100), (64, 50), (32, 25)]);
+        assert_whole_mask_tiles(&std::fs::read(path).unwrap(), 3, &format!("{path} added again"));
+        assert_eq!(mask_levels(path), masks, "{path} added again");
+    }
 }
 
 #[test]

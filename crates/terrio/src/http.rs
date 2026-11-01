@@ -940,8 +940,23 @@ fn agent(options: &HttpOptions) -> ureq::Agent {
     })
 }
 
+/// HTTPS without a C compiler (`ureq` uses `ring` on the other architectures).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn tls_config() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::Rustls)
+        .unversioned_rustls_crypto_provider(Arc::new(rustls_graviola::default_provider()))
+        .build()
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn tls_config() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::default()
+}
+
 fn new_agent(options: &HttpOptions) -> ureq::Agent {
     ureq::Agent::config_builder()
+        .tls_config(tls_config())
         .http_status_as_error(false)
         .max_redirects(0)
         .accept_encoding("identity")

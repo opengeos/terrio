@@ -143,6 +143,13 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
         raster: A raster to polygonize.
     """
     layer = terrio.Layer.from_geojson(POLYGONS, name="parcels", crs="EPSG:32610")
+    simplified: terrio.Layer = terrio.simplify_coverage(layer, 1.0, preserve_boundary=True)
+    simplified.to_bytes("coverage.gpkg", preserve_declared_geometry_type=True)
+    copied: terrio.VectorDataset = terrio.simplify_coverage([layer], 1.0, active_layer="parcels")
+    copied.write(str(tmp / "coverage-copy.gpkg"), preserve_declared_geometry_type=True)
+    cleaned: terrio.Layer = terrio.clean_coverage(layer, snapping_distance=0, maximum_gap_width=1)
+    clean_copied: terrio.VectorDataset = terrio.clean_coverage([layer], active_layer="parcels")
+    print(len(cleaned), clean_copied.layer_names)
     layer.name = "parcels"
     print(layer.name, layer.crs, layer.crs_wkt is not None, layer.geometry_type, len(layer))
     fields: dict[str, str] = layer.fields
@@ -158,6 +165,18 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
     reprojected = layer.to_crs("EPSG:4326")
     clipped_vector: terrio.Layer = terrio.clip_vector(layer, bbox=[0.0, 0.0, 2.0, 2.0])
     _ = clipped_vector.to_geojson()
+    algebra: terrio.Layer = terrio.layer_algebra(layer, layer, "identity")
+    _ = algebra.to_geojson()
+
+    contours: terrio.Layer = terrio.contour(raster, interval=10, with_z=True)
+    footprint: terrio.Layer = terrio.footprint(
+        raster, bands=[1], intersection=True, attributes={"source": "typed"}
+    )
+    buffered: terrio.Layer = terrio.buffer(layer, 0.1, quadrant_segments=8)
+    dissolved: terrio.Layer = terrio.dissolve(layer)
+    checked: terrio.Layer = terrio.check_geometry(layer)
+    repaired: terrio.Layer = terrio.make_valid(layer)
+    print(len(contours), len(footprint), len(buffered), len(dissolved), len(checked), len(repaired))
 
     gpkg = str(tmp / "parcels.gpkg")
     layer.write(gpkg)
@@ -401,6 +420,14 @@ def xarray_api(tmp: Path) -> None:
     merged = txr.merge_arrays([opened, opened])
     ds = xr.open_dataset(str(tmp / "xr.tif"), engine="terrio")
     print(acc.crs, acc.transform(), acc.resolution(), merged.shape, ds.terrio.crs)
+
+
+def rpf_metadata_api(
+    frame_bytes: bytes, input_dir: Path, output: Path
+) -> tuple[bytes, dict[str, int]]:
+    toc: bytes = terrio.rpftoc_bytes([("zone/000C9010.ON2", frame_bytes)], country_code="US")
+    report: dict[str, int] = terrio.rpftoc_create(input_dir, output, overwrite=True)
+    return toc, report
 
 
 def main() -> None:

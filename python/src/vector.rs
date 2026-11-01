@@ -358,18 +358,21 @@ impl PyLayer {
     ///
     /// Args:
     ///     path: The output path. Its extension tells the format unless `driver` is given.
+    ///     preserve_declared_geometry_type: GPKG: retain the declared type, including Unknown.
     ///     driver: The format's short name, such as `"GeoJSON"`, `"GPKG"` or `"ESRI Shapefile"`.
     ///     kmz_resources: KMZ output: files packed into the archive, such as icon images, by the
     ///         relative path the styles refer to them with (`{"icons/pin.png": png_bytes}`).
-    #[pyo3(signature = (path, driver=None, *, kmz_resources=None))]
+    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false))]
     fn write(
         &self,
         py: Python<'_>,
         path: &str,
         driver: Option<&str>,
         kmz_resources: Option<std::collections::BTreeMap<String, pyo3::pybacked::PyBackedBytes>>,
+        preserve_declared_geometry_type: bool,
     ) -> PyResult<()> {
         let mut options = crate::ops::vector_write_options(driver)?;
+        options.preserve_declared_geometry_type = preserve_declared_geometry_type;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layers = std::slice::from_ref(&self.inner);
         py.detach_result(|| terrio::write_vector(layers, path, &options)).py()
@@ -379,6 +382,7 @@ impl PyLayer {
     ///
     /// Args:
     ///     filename: A file name whose extension tells the format, such as `"out.fgb"`.
+    ///     preserve_declared_geometry_type: GPKG: retain the declared type, including Unknown.
     ///     driver: The format's short name, overriding the extension.
     ///     kmz_resources: KMZ output: files packed into the archive, such as icon images, by the
     ///         relative path the styles refer to them with (`{"icons/pin.png": png_bytes}`).
@@ -388,15 +392,17 @@ impl PyLayer {
     ///     return a ZIP archive (MIME `application/zip`) with geometry, index, attributes,
     ///     encoding and CRS members. Bare `.shp` names and unsupported DBF values
     ///     (including text over 254 UTF-8 bytes) raise an error.
-    #[pyo3(signature = (filename="layer.geojson", driver=None, *, kmz_resources=None))]
+    #[pyo3(signature = (filename="layer.geojson", driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false))]
     fn to_bytes<'py>(
         &self,
         py: Python<'py>,
         filename: &str,
         driver: Option<&str>,
         kmz_resources: Option<std::collections::BTreeMap<String, pyo3::pybacked::PyBackedBytes>>,
+        preserve_declared_geometry_type: bool,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let mut options = crate::ops::vector_write_options(driver)?;
+        options.preserve_declared_geometry_type = preserve_declared_geometry_type;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layers = std::slice::from_ref(&self.inner);
         let bytes = py.detach_result(|| terrio::memory::write_vector_bytes(layers, filename, &options)).py()?;
@@ -460,15 +466,17 @@ impl PyVectorDataset {
     ///     driver: The format's short name.
     ///     kmz_resources: KMZ output: files packed into the archive, such as icon images, by the
     ///         relative path the styles refer to them with (`{"icons/pin.png": png_bytes}`).
-    #[pyo3(signature = (path, driver=None, *, kmz_resources=None))]
+    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false))]
     fn write(
         &self,
         py: Python<'_>,
         path: &str,
         driver: Option<&str>,
         kmz_resources: Option<std::collections::BTreeMap<String, pyo3::pybacked::PyBackedBytes>>,
+        preserve_declared_geometry_type: bool,
     ) -> PyResult<()> {
         let mut options = crate::ops::vector_write_options(driver)?;
+        options.preserve_declared_geometry_type = preserve_declared_geometry_type;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layers = self.layer_copies(py);
         py.detach_result(|| terrio::write_vector(&layers, path, &options)).py()

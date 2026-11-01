@@ -37,6 +37,9 @@
 //!
 //! [`open_raster_lazy`] opens a GeoTIFF or COG, local or remote, by its headers; a
 //! [`LazyRaster::read_window`] decodes only the tiles it needs, fetched with HTTP range requests.
+//! [`LazyRaster::read_window_f32`] reads a window as `f32` values instead, NaN where GDAL's mask
+//! band marks pixels invalid (their nodata value, or the raster's mask), scales and offsets
+//! applied on request ([`FloatReadOptions`]).
 //!
 //! ```no_run
 //! let mut cog = terrio::open_raster_lazy("https://example.com/cog.tif")?;
@@ -152,7 +155,9 @@
 //!   a raster's pixels, of shape `(bands, rows, cols)` or of one band, borrowed or mutable
 //!   (`RasterArrayExt`); moves of a dataset's pixels into an owned array and back
 //!   (`RasterDataset::into_array3` and `RasterDataset::from_array3`); the masks of lazy reads as
-//!   arrays (`LazyRaster::read_mask_array2`). The crate is re-exported as `terrio::ndarray`.
+//!   arrays (`LazyRaster::read_mask_array2`); floating-point windows, NaN where pixels are
+//!   invalid, as owned arrays, bands first or last (`LazyRaster::read_window_array3`). The crate is
+//!   re-exported as `terrio::ndarray`.
 //!
 //! # Minimum supported Rust version
 //!
@@ -198,6 +203,7 @@ mod drivers;
 #[cfg(test)]
 mod entry_allow_list_tests;
 mod error;
+mod float_read;
 pub mod formats;
 #[cfg(feature = "hecras")]
 #[cfg_attr(docsrs, doc(cfg(feature = "hecras")))]
@@ -273,6 +279,7 @@ pub use drivers::vector::hecras_options::HecRasOpenOptions;
 pub use drivers::vector::kml::KmzOptions;
 pub use drivers::vector::shapefile::{OrganizePolygons, ShapefileOptions};
 pub use error::{Error, Result};
+pub use float_read::FloatReadOptions;
 /// The `ndarray` crate, of the version terrio's array views of raster pixels use.
 #[cfg(feature = "ndarray")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ndarray")))]
@@ -280,7 +287,7 @@ pub use ndarray;
 // Raster pixels as `ndarray` arrays, without copying them.
 #[cfg(feature = "ndarray")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ndarray")))]
-pub use ndarray_ext::{ArrayError, RasterArrayExt, RasterElement};
+pub use ndarray_ext::{ArrayError, BandLayout, FloatElement, RasterArrayExt, RasterElement};
 
 /// The raster type: pixels, georeferencing and CRS, in memory.
 pub use wbraster::{DataType, Raster, RasterConfig};

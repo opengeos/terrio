@@ -171,6 +171,12 @@ runs it in parallel, [ureq](https://crates.io/crates/ureq) fetches remote data,
 JPEG writing (through `jpeg-encoder`) is based in part on the work of the Independent JPEG
 Group.
 
+Polygon coverage simplification ports JTS's shared-edge topology construction,
+TPVW corner removal and ring rebuilding from commit
+`3460207216f3091cd7f72d48d6ddd1b561b2b8fd`, using the Eclipse Distribution License
+1.0 (BSD-3-Clause). Its source header, NOTICE entries and JTS provenance document
+retain exact source paths and copyright notices.
+
 ## Notices and licenses
 
 [`NOTICE`](https://github.com/opengeos/terrio/blob/main/NOTICE) holds the copyright and license

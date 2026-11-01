@@ -11,8 +11,8 @@ use terrio::formats::RasterDriver;
 use terrio::ndarray::{Array2, Array3, ArrayViewMut2, Axis, ShapeBuilder, arr2, s};
 use terrio::raster::{CrsInfo, RasterData};
 use terrio::{
-    BandMetadata, DataType, Error, Gcp, Geolocation, LazyRaster, Raster, RasterArrayExt, RasterDataset, RasterElement, RasterWriteOptions,
-    Window, WindowOptions,
+    BandLayout, BandMetadata, DataType, Error, FloatReadOptions, Gcp, Geolocation, LazyRaster, Raster, RasterArrayExt, RasterDataset,
+    RasterElement, RasterWriteOptions, Window, WindowOptions,
 };
 
 /// Allocations, reallocations and releases of memory, and the bytes allocated.
@@ -600,4 +600,40 @@ fn lazy_masks_are_arrays() {
     let pixels = lazy.read_window(window, &WindowOptions::default()).unwrap();
     assert_eq!(pixels.raster.data.as_u16_slice().unwrap()[0], 1 + 8 + 2);
     assert_eq!(tiff(false).0.read_mask_array2(window, None).unwrap(), None);
+}
+
+/// Floating-point arrays of `Float32` pixels read as `f32` band after band take over the buffer the
+/// pixels are read into, converted where they are; bands last, or as `f64`, they are converted into
+/// a buffer of their own. The pixels of a raster in memory are read on this thread: what the
+/// reads allocate is counted whole.
+#[test]
+fn float_arrays_of_float_pixels_take_the_read_buffer() {
+    let mut lazy = LazyRaster::from(dataset(2, 0));
+    let window = Window::new(5, 3, 40, 30);
+    let options = FloatReadOptions::default();
+    let buffer = 2 * 40 * 30 * size_of::<f32>();
+    // Once first: the conversion's thread pool is set up on its first use.
+    for layout in [BandLayout::BandsFirst, BandLayout::BandsLast] {
+        lazy.read_window_array3::<f64>(window, &options, layout).unwrap();
+    }
+    let (read, reading) = counted(|| lazy.read_window(window, &WindowOptions::default()).unwrap());
+    assert!(reading.bytes >= buffer);
+    let (first, converting) = counted(|| lazy.read_window_array3::<f32>(window, &options, BandLayout::BandsFirst).unwrap());
+    assert!(converting.bytes < reading.bytes + buffer, "{converting:?}, reading {reading:?}");
+    let (last, interleaving) = counted(|| lazy.read_window_array3::<f32>(window, &options, BandLayout::BandsLast).unwrap());
+    assert!(interleaving.bytes >= reading.bytes + buffer, "{interleaving:?}, reading {reading:?}");
+    let (_, widening) = counted(|| lazy.read_window_array3::<f64>(window, &options, BandLayout::BandsFirst).unwrap());
+    assert!(widening.bytes >= reading.bytes + 2 * buffer, "{widening:?}, reading {reading:?}");
+    // The pixels read, NaN for the nodata value (pixel 7 of the first band, outside the window).
+    let pixels = f32s(&read.raster.data);
+    assert_eq!(first.as_slice().unwrap(), pixels);
+    assert_eq!(first.dim(), (2, 30, 40));
+    assert_eq!(last.dim(), (30, 40, 2));
+    assert_eq!(last.index_axis(Axis(2), 1), first.index_axis(Axis(0), 1));
+    let mut nodata = dataset(1, 0);
+    let ds = nodata.clone();
+    nodata.band_nodata = vec![Some(ds.raster.data.get_f64(3 * COLS + 6))];
+    let band = nodata.read_window_array2::<f64>(window, &options).unwrap();
+    assert!(band[[0, 1]].is_nan());
+    assert_eq!(band[[0, 0]], ds.raster.data.get_f64(3 * COLS + 5));
 }

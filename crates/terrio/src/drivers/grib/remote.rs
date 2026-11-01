@@ -1,3 +1,9 @@
+// Written to match the behavior of:
+//   GDAL v3.12.2:
+//     frmts/grib/gribdataset.cpp
+//     frmts/grib/degrib/degrib/inventory.cpp
+// No code is translated from these sources.
+
 //! Remote GRIB files read by range, so that reading a band costs its message rather than the
 //! file: at open, the header of each message (its sections up to the first octets of its data)
 //! is read to find the next message and to describe its bands; a band's message is fetched whole
@@ -238,7 +244,7 @@ pub(crate) fn open(remote: &Remote) -> Result<crate::LazyRaster> {
             all.push(b);
         }
     }
-    let (ds, split) = header(&all)?;
+    let (ds, split) = header(&all, file_len)?;
     drop(all);
     let (cols, rows) = (ds.raster.cols, ds.raster.rows);
     let store = Store::Remote(Box::new(Messages { fetch, file_len, messages, bands }));

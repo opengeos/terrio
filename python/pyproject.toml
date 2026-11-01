@@ -7,7 +7,7 @@ name = "terrio"
 dynamic = ["version"]
 description = "Geospatial raster, vector and point cloud data I/O in Rust, without installing GDAL"
 readme = "README.md"
-license = "MIT"
+license = "MIT AND MPL-2.0"
 requires-python = ">=3.10"
 authors = [{ name = "Qiusheng Wu", email = "giswqs@gmail.com" }]
 keywords = ["gis", "geospatial", "raster", "vector", "geotiff", "gdal"]

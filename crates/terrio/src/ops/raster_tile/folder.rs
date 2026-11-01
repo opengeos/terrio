@@ -1,3 +1,8 @@
+// Written to match the behavior of:
+//   GDAL v3.13.3:
+//     apps/gdalalg_raster_tile.cpp
+// No code is translated from these sources.
+
 //! Bounded folder generation. Tile sinks let WASM clients consume tiles incrementally.
 use super::*;
 use crate::crs::SpatialRef;
@@ -39,6 +44,8 @@ pub struct TileOptions {
     /// Refuse plans exceeding this many tiles before reading pixels.
     #[serde(alias = "maxTiles")]
     pub max_tiles: u64,
+    /// Optional viewer, KML, MapML and STACTA companions.
+    pub publication: crate::ops::raster_publication::PublicationOptions,
 }
 impl Default for TileOptions {
     fn default() -> Self {
@@ -53,6 +60,7 @@ impl Default for TileOptions {
             output_nodata: None,
             skip_blank: false,
             max_tiles: 1_000_000,
+            publication: Default::default(),
         }
     }
 }
@@ -76,6 +84,11 @@ pub trait FolderSink {
     /// Whether this tile is already present (used by resume). Default: no.
     fn exists(&mut self, _name: &str) -> Result<bool> {
         Ok(false)
+    }
+    /// Read a previously emitted file, when storage supports it. Retile pyramids
+    /// use this for parent tiles; write-only sinks regenerate parents with a bounded cache.
+    fn get(&mut self, _name: &str) -> Result<Option<Vec<u8>>> {
+        Ok(None)
     }
     /// Consume one encoded tile. Called after rendering and encoding complete.
     fn put(&mut self, name: &str, bytes: &[u8]) -> Result<()>;
@@ -103,11 +116,27 @@ pub fn plan(source: &RasterDataset, options: &TileOptions) -> Result<(TilePlan, 
         return Err(Error::Unsupported("folder tiling currently requires affine georeferencing".into()));
     }
     validate_rendering(source, options, extension)?;
+    let validate_publication = |plan: &TilePlan| {
+        if plan.count()? > options.max_tiles {
+            return Err(invalid("the plan exceeds max_tiles"));
+        }
+        crate::ops::raster_publication::Publication::new(
+            plan,
+            source,
+            &options.publication,
+            &options.tiling_scheme,
+            options.convention,
+            extension,
+            options.skip_blank,
+        )
+        .map(|_| ())
+    };
     let scheme = options.tiling_scheme.to_ascii_lowercase();
     if scheme == "raster" {
         let mut plan = TilePlan::raster(r.cols, r.rows, source.geo_transform(), &options.grid)?;
         let crs = source.crs();
         plan.crs = crs.authority_code().or_else(|| crs.to_wkt()).or(crs.proj4);
+        validate_publication(&plan)?;
         return Ok((plan, None));
     }
     if source.crs().is_unknown() {
@@ -120,7 +149,9 @@ pub fn plan(source: &RasterDataset, options: &TileOptions) -> Result<(TilePlan, 
     };
     let (gt, w, h) = crate::ops::warp::suggested_grid(r.cols, r.rows, source.geo_transform(), &source.crs(), &crs)?;
     let extent = [gt[0], gt[3] + h as f64 * gt[5], gt[0] + w as f64 * gt[1], gt[3]];
-    Ok((TilePlan::global(scheme, extent, gt[1].abs(), &options.grid)?, Some(crs)))
+    let plan = TilePlan::global(scheme, extent, gt[1].abs(), &options.grid)?;
+    validate_publication(&plan)?;
+    Ok((plan, Some(crs)))
 }
 
 fn validate_rendering(source: &RasterDataset, options: &TileOptions, extension: &str) -> Result<(bool, bool, [Resampling; 2])> {
@@ -182,6 +213,15 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
         return Err(invalid("the plan exceeds max_tiles"));
     }
     let (alpha, color, methods) = validate_rendering(&info.raster, options, extension)?;
+    let publication = crate::ops::raster_publication::Publication::new(
+        &plan,
+        &info.raster,
+        &options.publication,
+        &options.tiling_scheme,
+        options.convention,
+        extension,
+        options.skip_blank,
+    )?;
     let preserve_mask = extension == "tif" && !alpha && source.has_mask()?;
     let limits = RenderLimits::default();
     let mut report = TileReport { planned, ..Default::default() };
@@ -191,6 +231,7 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
             let name = format!("{}/{}/{}.{}", cell.zoom, cell.x, cell.y, extension);
             if sink.exists(&name)? {
                 report.resumed += 1;
+                publication.cell(&cell, true, sink)?;
                 continue;
             }
             let mut warp = WarpOptions {
@@ -240,7 +281,7 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
                 }
             }
             // GDAL omits an automatically generated alpha channel on fully opaque tiles.
-            if extension == "png" && options.alpha.is_none() {
+            if extension == "png" && options.alpha.is_none() && !publication.fixed_alpha() {
                 let n = tile.raster.cols * tile.raster.rows;
                 let bands = tile.raster.bands;
                 if (0..n).all(|i| tile.raster.data.get_f64((bands - 1) * n + i) == 255.0) {
@@ -252,6 +293,7 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
             }
             if options.skip_blank && color_blank {
                 report.blank += 1;
+                publication.cell(&cell, false, sink)?;
                 continue;
             }
             // Image metadata/georeferencing cannot be embedded in PNG; the compact tile
@@ -273,8 +315,17 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
             };
             sink.put(&name, &bytes)?;
             report.written += 1;
+            publication.cell(&cell, true, sink)?;
         }
     }
+    let mut published = info.raster.clone();
+    if color {
+        published.raster.bands = color_bands(&info.raster)? + usize::from(alpha);
+    }
+    if extension == "png" {
+        published.raster.data_type = DataType::U8;
+    }
+    publication.finish(&published, sink)?;
     Ok(report)
 }
 
@@ -448,54 +499,74 @@ pub fn to_directory(source: &mut dyn WarpSource, options: &TileOptions, output: 
     if planned.count()? > options.max_tiles {
         return Err(invalid("the plan exceeds max_tiles"));
     }
-    validate_rendering(&info.raster, options, format(options)?.1)?;
-    if output.exists() {
-        if !resume {
-            return Err(invalid("output directory exists; use resume to fill missing tiles"));
+    generate(source, options, &mut DirectorySink::new(output, resume)?)
+}
+
+pub(crate) struct DirectorySink<'a> {
+    root: &'a std::path::Path,
+    resume: bool,
+}
+impl DirectorySink<'_> {
+    pub(crate) fn path(&self, name: &str) -> Result<std::path::PathBuf> {
+        if name.is_empty() || std::path::Path::new(name).components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+            return Err(invalid("output paths must be relative normal components"));
         }
-        if std::fs::symlink_metadata(output)?.file_type().is_symlink() || !output.is_dir() {
-            return Err(invalid("output must be a real directory"));
-        }
-    } else {
-        std::fs::create_dir(output)?;
-    }
-    struct Local<'a> {
-        root: &'a std::path::Path,
-        resume: bool,
-    }
-    impl Local<'_> {
-        fn path(&self, name: &str) -> Result<std::path::PathBuf> {
-            let path = self.root.join(name);
-            // Refuse symlinked descendants even in resume mode.
-            let mut current = self.root.to_path_buf();
-            for component in std::path::Path::new(name).components() {
-                current.push(component);
-                match std::fs::symlink_metadata(&current) {
-                    Ok(meta) if meta.file_type().is_symlink() => return Err(invalid("symlinks are not accepted in tile output")),
-                    Ok(_) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
-                }
+        let path = self.root.join(name);
+        // Refuse symlinked descendants even in resume mode.
+        let mut current = self.root.to_path_buf();
+        for component in std::path::Path::new(name).components() {
+            current.push(component);
+            match std::fs::symlink_metadata(&current) {
+                Ok(meta) if meta.file_type().is_symlink() => return Err(invalid("symlinks are not accepted in tile output")),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
             }
-            Ok(path)
         }
+        Ok(path)
     }
-    impl FolderSink for Local<'_> {
-        fn exists(&mut self, name: &str) -> Result<bool> {
-            let path = self.path(name)?;
-            if path.exists() && !path.is_file() {
-                return Err(invalid("an output tile path is not a file"));
+}
+impl FolderSink for DirectorySink<'_> {
+    fn get(&mut self, name: &str) -> Result<Option<Vec<u8>>> {
+        let path = self.path(name)?;
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.is_file() || metadata.len() > (RenderLimits::default().max_output_bytes + 16 * 1024 * 1024) as u64 {
+            return Err(invalid("parent tile is not a bounded regular file"));
+        }
+        Ok(Some(std::fs::read(path)?))
+    }
+    fn exists(&mut self, name: &str) -> Result<bool> {
+        let path = self.path(name)?;
+        if path.exists() && !path.is_file() {
+            return Err(invalid("an output tile path is not a file"));
+        }
+        Ok(self.resume && path.is_file())
+    }
+    fn put(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
+        use std::io::Write;
+        let path = self.path(name)?;
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        crate::vsi::write_local_atomic_with_replace(&path, false, |file| Ok(file.write_all(bytes)?))
+    }
+}
+impl<'a> DirectorySink<'a> {
+    pub(crate) fn new(root: &'a std::path::Path, resume: bool) -> Result<Self> {
+        if root.exists() {
+            if !resume {
+                return Err(invalid("root directory exists; use resume to fill missing tiles"));
             }
-            Ok(self.resume && path.is_file())
+            if std::fs::symlink_metadata(root)?.file_type().is_symlink() || !root.is_dir() {
+                return Err(invalid("root must be a real directory"));
+            }
+        } else {
+            std::fs::create_dir(root)?;
         }
-        fn put(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
-            use std::io::Write;
-            let path = self.path(name)?;
-            std::fs::create_dir_all(path.parent().unwrap())?;
-            crate::vsi::write_local_atomic_with_replace(&path, false, |file| Ok(file.write_all(bytes)?))
-        }
+        Ok(Self { root, resume })
     }
-    generate(source, options, &mut Local { root: output, resume })
 }
 
 #[cfg(test)]

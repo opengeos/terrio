@@ -15,6 +15,9 @@ GDAL. Wheels need only NumPy (and the small `affine` package).
 
 ```sh
 pip install terrio
+# or, from conda-forge, with either of
+conda install -c conda-forge terrio
+mamba install -c conda-forge terrio
 ```
 
 It installs the `terrio` command line too (`terrio info`, `convert`, `warp`, `translate`...; see
@@ -222,3 +225,130 @@ index = terrio.raster_index({"/vsis3/bucket/tile.tif": signed_url})
 ```
 
 This stores the credential-free mapping key; readers need their own credentials.
+
+### Contours, footprints and geometry analysis
+
+```python
+lines = terrio.contour(raster, interval=10, with_z=True, field_name="elevation")
+area = terrio.footprint(raster, bands=[1], singlepart=True, attributes={"source": "scene"})
+report = terrio.check_geometry(layer)
+repaired = terrio.make_valid(layer)
+buffered = terrio.buffer(repaired, 100, quadrant_segments=30)
+groups = terrio.dissolve(buffered, fields=["region"])
+```
+
+These functions return a `Layer`. Raster inputs accept a path or open raster,
+including a lazy raster; contour and footprint materialize the pixels for the
+full operation. Contour supports band selection, interval/offset, additional
+fixed levels, nodata override or ignoring nodata, 3D vertices and custom
+elevation/layer names. Footprint supports selected-band union or intersection,
+a mask on the same grid, singlepart output and explicit text attributes. No
+source-path attribute is added automatically in the bindings.
+
+Omitted or empty footprint bands selects every band, combined by union unless
+intersection is requested. Footprint attribute fields are sorted alphabetically.
+Footprint validity uses finite samples and the dataset nodata value. Alpha bands
+and external mask files are not interpreted implicitly; supply an explicit mask
+when those pixels should be excluded.
+
+Vector inputs accept paths, layers, datasets or GeoJSON; pass `layer="name"`
+when the input has several layers. These functions return one selected `Layer`;
+JavaScript deliberately processes all layers and returns a `Dataset`. Shared
+byte exports to single-layer formats now reject multiple layers instead of
+silently writing the first; select a layer explicitly before exporting.
+Buffers use planar CRS units and round
+joins/caps. Dissolve optionally groups by field names. Geometry checks retain
+source geometries and add validity/reason fields. Repair preserves attributes,
+IDs, CRS and already-valid Z/M; repaired geometry is constructed in XY. These
+call the same Rust engines as the CLI and retain their documented limits.
+
+### Chained processing
+
+`terrio.pipeline(command, inputs=None, *, write=False, base_file=None, input_kind=None)` evaluates
+supported GDAL-style steps through the Rust pipeline engine. `command` is a step
+string or saved GDALG JSON text. Steps follow POSIX quoting, so a backslash outside
+quotes escapes the next character: quote Windows paths in single quotes
+(`'C:\data\in.tif'`) or use forward slashes. Inputs can use native paths or aliases mapped to
+`Raster`, vector objects, or paths:
+
+```python
+result = terrio.pipeline(
+    "read counties ! filter --where 'population > 10000' "
+    "! select name,_ogr_geometry_ ! write selected.gpkg",
+    {"counties": counties},
+)
+selected = result.dataset  # Raster or VectorDataset
+payload = result.output_bytes()["selected.gpkg"]  # creates no file
+result.write_outputs()  # explicit persistence, with overwrite checks
+```
+
+`write=True` persists requested outputs before returning. `output_names` lists
+write and named materialize destinations. A saved-definition output has no final
+dataset and can be exported with `output_bytes()` without reading its sources.
+For imported JSON text, `base_file` supplies the saved file's location for relative
+references. Raster band/crop views retain lazy window access; transformations and
+vector results reside in memory. Include `_ogr_geometry_` in vector `select` to
+retain geometry and CRS. See the CLI pipeline reference for supported steps and
+operation limits.
+
+Use `input_kind="raster"` or `input_kind="vector"` to force the input family;
+`"auto"` chooses detection. A `raster` or `vector` prefix in the command string
+also selects a family. An explicit `input_kind` overrides that prefix.
+
+## RPF table of contents
+
+```python
+report = terrio.rpftoc_create("frames", "A.TOC", producer_id="ACME", country_code="US")
+toc = terrio.rpftoc_bytes([("zone/000C9010.ON2", frame_bytes)], classification="U")
+```
+
+These functions index existing CADRG frames without decoding their compressed
+pixels. `rpftoc_create` recursively scans a local directory, skips symlinks and
+atomically publishes the TOC after validation. Its default output is `input/A.TOC`;
+a supplied output must be in the input directory or an ancestor, so frame paths
+remain relative without `..`. Existing output requires `overwrite=True`, which
+replaces any file at that path, not only a TOC; input frames remain protected. The
+report includes frame/group counts, skipped non-NITF candidates, metadata bytes
+read and output bytes. New Unix output follows the process umask; overwrites
+preserve its existing Unix mode bits, but not ownership, extended ACLs or other
+extended attributes. Unreadable directories fail the entire native scan instead of producing an incomplete index.
+Directory trees must remain stable during creation; callers
+must synchronize concurrent directory changes. Use `rpftoc_bytes` with an
+application-managed writer when those publication properties are required.
+
+`rpftoc_bytes` borrows bounded metadata ranges from each named Python `bytes`
+value and returns a TOC; retain those frame files at the supplied relative paths
+beside it. Both accept `scale` (otherwise inferred per series), `producer_id`
+(up to five ASCII bytes), `producer_name` (27), `country_code` (two uppercase
+letters or empty) and `classification` (`U`, `R`, `C`, `S`, `T`). Frame corners
+must match the selected scale/zone. Historical polar interval fields are
+normalized to the standard grid. CIB and non-CADRG products are unsupported. Recognized NITF candidates that are
+unsupported or malformed fail the operation before publication; they are not skipped.
+The encoded TRE payload must fit 99,999 bytes; oversized indexes fail before
+publication. The operation creates an index rather than embedding frame images.
+
+## Retile and publish raster folders
+
+```python
+report = terrio.retile(
+    ["west.tif", "east.tif"], "retiled",
+    tile_size=[512, 512], overlap=16, levels=3,
+    resampling="bilinear", csv="tiles.csv", tile_index="tiles.gpkg",
+)
+```
+
+Inputs may be paths or open `Raster` objects, including lazy rasters. Later
+inputs overwrite earlier ones, including nodata. Retile requires matching CRS,
+band counts and north-up affine grids. `dry_run=True` returns the metadata plan;
+`resume=True` fills missing files. GTiff and COG, row directories, pyramid-only
+output, type conversion and writer options are supported. Pyramids read the
+previous emitted level with a bounded cache; source overviews are ignored.
+Existing resumed parents supply pixels for missing children. The default filename
+prefix is the first source path stem, or `input_1` when the first source is an
+in-memory `Raster`. Set `prefix="name"` to choose it explicitly.
+
+`terrio.raster_tiles(source, output, publication={"viewers": ["all"], "kml": True})`
+adds applicable Leaflet/OpenLayers pages, MapML, STACTA and KML companions.
+`publication.url` names the tile directory itself. Serve the directory over HTTP
+to use the viewers. See the [CLI reference](../docs/cli.md#retile) for supported
+options, memory limits, resume rules and measured GDAL differences.

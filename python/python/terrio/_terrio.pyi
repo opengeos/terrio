@@ -9,6 +9,8 @@ from numpy.typing import DTypeLike, NDArray
 
 # PyO3 sets `__all__` to the names added to the module.
 __all__ = [
+    "PipelineResult",
+    "pipeline",
     "create_raster",
     "edit_raster",
     "move_raster",
@@ -48,9 +50,13 @@ __all__ = [
     "convert",
     "sql",
     "clip_vector",
+    "layer_algebra",
     "rasterize",
     "raster_index",
     "raster_tiles",
+    "rpftoc_create",
+    "rpftoc_bytes",
+    "retile",
     "vector_index",
     "DatasetIndex",
     "pansharpen",
@@ -86,6 +92,12 @@ __all__ = [
     "enhance_luts",
     "unscale",
     "blend",
+    "buffer",
+    "check_geometry",
+    "contour",
+    "dissolve",
+    "footprint",
+    "make_valid",
     "rgb_to_palette",
     "palette_to_rgb",
     "attach_palette",
@@ -114,7 +126,9 @@ __all__ = [
     "FeatureStream",
     "open_stream",
     "check_coverage",
+    "clean_coverage",
     "simplify",
+    "simplify_coverage",
     "segmentize",
     "convex_hull",
     "concave_hull",
@@ -408,6 +422,7 @@ class Layer:
         driver: str | None = None,
         *,
         kmz_resources: Mapping[str, bytes] | None = None,
+        preserve_declared_geometry_type: bool = False,
     ) -> None: ...
     def to_bytes(
         self,
@@ -415,6 +430,7 @@ class Layer:
         driver: str | None = None,
         *,
         kmz_resources: Mapping[str, bytes] | None = None,
+        preserve_declared_geometry_type: bool = False,
     ) -> bytes: ...
 
 @final
@@ -436,6 +452,7 @@ class VectorDataset:
         driver: str | None = None,
         *,
         kmz_resources: Mapping[str, bytes] | None = None,
+        preserve_declared_geometry_type: bool = False,
     ) -> None: ...
 
 @final
@@ -850,6 +867,8 @@ def write_vector(
     crs: str | None = None,
     append: bool = False,
     overwrite: bool = False,
+    *,
+    preserve_declared_geometry_type: bool = False,
 ) -> None: ...
 @final
 class FeatureStream:
@@ -2051,6 +2070,17 @@ def raster_tiles(
     """Plan or write separate raster tiles, with nested grid options."""
     ...
 
+def retile(
+    sources: str | os.PathLike[str] | Raster | Sequence[str | os.PathLike[str] | Raster],
+    output: str | os.PathLike[str],
+    *,
+    resume: bool = False,
+    dry_run: bool = False,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Retile mosaics into overlapping files and recursive pyramid levels."""
+    ...
+
 def vector_index(sources: Any, dst: str | None = None, **kwargs: Any) -> DatasetIndex:
     """Create source layer envelope polygons, retaining original layer indexes."""
     ...
@@ -2255,4 +2285,142 @@ def check_coverage(
     layer: str | None = None,
 ) -> Layer:
     """Invalid coverage edges, retaining CRS; XY diagnostics, empty schema and new IDs."""
+    ...
+
+@overload
+def simplify_coverage(
+    src: Any,
+    tolerance: float,
+    *,
+    preserve_boundary: bool = False,
+    layer: str | None = None,
+    active_layer: None = None,
+) -> Layer: ...
+@overload
+def simplify_coverage(
+    src: Any,
+    tolerance: float,
+    *,
+    preserve_boundary: bool = False,
+    layer: None = None,
+    active_layer: str,
+) -> VectorDataset: ...
+def layer_algebra(
+    src: Any,
+    method: Any,
+    operation: str,
+    *,
+    layer: str | None = None,
+    method_layer: str | None = None,
+    keep_lower_dimension_geometries: bool = True,
+    input_prefix: str | None = None,
+    method_prefix: str | None = None,
+) -> Layer:
+    """Attribute-preserving planar XY layer algebra, with matching input CRS."""
+    ...
+@final
+class PipelineResult:
+    @property
+    def dataset(self) -> Raster | VectorDataset | None: ...
+    @property
+    def output_names(self) -> list[str]: ...
+    def output_bytes(self) -> dict[str, bytes]: ...
+    def write_outputs(self) -> None: ...
+
+def pipeline(
+    command: str,
+    inputs: dict[str, Any] | None = None,
+    *,
+    write: bool = False,
+    base_file: str | None = None,
+    input_kind: Literal["auto", "raster", "vector"] | None = None,
+) -> PipelineResult: ...
+@overload
+def clean_coverage(
+    src: Any,
+    *,
+    snapping_distance: float = -1.0,
+    merge_strategy: Literal[
+        "longest-border", "max-area", "min-area", "min-index"
+    ] = "longest-border",
+    maximum_gap_width: float = 0.0,
+    layer: str | None = None,
+    active_layer: None = None,
+) -> Layer: ...
+@overload
+def clean_coverage(
+    src: Any,
+    *,
+    snapping_distance: float = -1.0,
+    merge_strategy: Literal[
+        "longest-border", "max-area", "min-area", "min-index"
+    ] = "longest-border",
+    maximum_gap_width: float = 0.0,
+    layer: None = None,
+    active_layer: str,
+) -> VectorDataset: ...
+def rpftoc_create(
+    input: str | os.PathLike[str],
+    output: str | os.PathLike[str] | None = None,
+    *,
+    scale: int | None = None,
+    producer_id: str = "TERRI",
+    producer_name: str = "Terrio",
+    country_code: str = "",
+    classification: str = "U",
+    overwrite: bool = False,
+) -> dict[str, int]: ...
+def rpftoc_bytes(
+    frames: Sequence[tuple[str, bytes]],
+    *,
+    scale: int | None = None,
+    producer_id: str = "TERRI",
+    producer_name: str = "Terrio",
+    country_code: str = "",
+    classification: str = "U",
+) -> bytes: ...
+def contour(
+    src: str | os.PathLike[str] | Raster,
+    *,
+    band: int = 1,
+    interval: float | None = None,
+    offset: float = 0.0,
+    levels: Sequence[float] | None = None,
+    nodata: float | None = None,
+    ignore_nodata: bool = False,
+    with_z: bool = False,
+    field_name: str = "ELEV",
+    layer_name: str = "contour",
+) -> Layer:
+    """Extract contours, materializing source pixels; options match the shared engine."""
+    ...
+
+def footprint(
+    src: str | os.PathLike[str] | Raster,
+    *,
+    bands: Sequence[int] | None = None,
+    intersection: bool = False,
+    mask: str | os.PathLike[str] | Raster | None = None,
+    singlepart: bool = False,
+    attributes: Mapping[str, str] | None = None,
+) -> Layer:
+    """Return valid-data polygons; omitted/empty bands selects every band (union by default)."""
+    ...
+
+def buffer(
+    src: Any, distance: float, *, quadrant_segments: int = 30, layer: str | None = None
+) -> Layer:
+    """Planar buffers of one vector layer, preserving attributes, IDs and CRS."""
+    ...
+
+def dissolve(src: Any, *, fields: Sequence[str] | None = None, layer: str | None = None) -> Layer:
+    """Dissolve one vector layer, optionally grouped by field names."""
+    ...
+
+def check_geometry(src: Any, *, layer: str | None = None) -> Layer:
+    """Annotate one layer with is_valid and valid_reason fields."""
+    ...
+
+def make_valid(src: Any, *, layer: str | None = None) -> Layer:
+    """Repair invalid geometries in one layer, preserving attributes and IDs."""
     ...

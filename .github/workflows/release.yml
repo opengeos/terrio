@@ -157,8 +157,6 @@ jobs:
           registry-url: https://registry.npmjs.org
       # Trusted publishing needs npm 11.5.1 or later.
       - run: npm install -g npm@latest
-      # The memory64 module's C code (Zstandard) needs clang 20 or later (js/build.mjs).
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-20
       - name: Build the package (browsers, bundlers, and Node.js through init)
         run: |
           node js/build.mjs

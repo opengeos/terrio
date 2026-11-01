@@ -1,7 +1,8 @@
 # Installation
 
 terrio is published on [crates.io](https://crates.io/crates/terrio),
-[PyPI](https://pypi.org/project/terrio/) and [npm](https://www.npmjs.com/package/terrio-js) (as `terrio-js`).
+[PyPI](https://pypi.org/project/terrio/), [conda-forge](https://anaconda.org/conda-forge/terrio) and
+[npm](https://www.npmjs.com/package/terrio-js) (as `terrio-js`).
 
 ## Command-line tool
 
@@ -24,11 +25,11 @@ powershell -ExecutionPolicy ByPass -c "irm https://terrio.opengeos.org/install.p
 Set `TERRIO_VERSION` to install another release, and `TERRIO_INSTALL_DIR` to install elsewhere:
 
 ```sh
-curl -LsSf https://terrio.opengeos.org/install.sh | TERRIO_VERSION=0.5.0 sh
+curl -LsSf https://terrio.opengeos.org/install.sh | TERRIO_VERSION=0.6.0 sh
 ```
 
 ```powershell
-$env:TERRIO_VERSION = "0.5.0"; irm https://terrio.opengeos.org/install.ps1 | iex
+$env:TERRIO_VERSION = "0.6.0"; irm https://terrio.opengeos.org/install.ps1 | iex
 ```
 
 The Windows installer adds the directory to your `PATH` (`TERRIO_NO_MODIFY_PATH=1` to leave it);
@@ -53,6 +54,7 @@ The command also comes with the Python package (`python -m terrio` runs it too):
 
 ```sh
 pip install terrio      # or: uv tool install terrio, pipx install terrio
+conda install -c conda-forge terrio
 ```
 
 A Docker image for linux/amd64 and linux/arm64 is published to the
@@ -83,11 +85,18 @@ cargo add terrio
 
 ```sh
 pip install terrio
+# or, from conda-forge, with either of
+conda install -c conda-forge terrio
+mamba install -c conda-forge terrio
 ```
 
 Wheels are built for Linux (x86_64 and aarch64, glibc and musl), macOS (Intel and Apple silicon)
 and Windows (x64 and ARM64), for Python 3.10 and later. They need only NumPy (and the small
 `affine` package).
+
+The [conda-forge package](https://github.com/conda-forge/terrio-feedstock) needs Python 3.12 or
+later, as its recipe currently sets. It can follow a new release after a delay, so check
+`terrio.__version__` for the version you have.
 
 ### Pyodide
 
@@ -100,14 +109,17 @@ release or a copy served next to the page:
 import micropip
 
 await micropip.install(
-    "https://github.com/opengeos/terrio/releases/download/v0.5.0/"
-    "terrio-0.5.0-cp310-abi3-pyemscripten_2025_0_wasm32.whl"
+    "https://github.com/opengeos/terrio/releases/download/v0.6.0/"
+    "terrio-0.6.0-cp310-abi3-pyemscripten_2025_0_wasm32.whl"
 )
 ```
 
 Files are read from and written to Pyodide's in-memory file system, or from bytes
 (`terrio.open_bytes`); remote URLs are not read (there is no HTTP client in WebAssembly): fetch
-them with `pyodide.http` first.
+them with `pyodide.http` first. Palette functions take `Raster` objects, bytes or RGBA sequences
+for their color maps and do not write a `dst` (use `Raster.write`). `raster_index` and
+`vector_index` take a mapping of locations to in-memory datasets, and their results serialize with
+`DatasetIndex.to_bytes`: these paths rely on native output protection absent from this build.
 
 ### With the GDAL backend
 

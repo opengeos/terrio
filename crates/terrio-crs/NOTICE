@@ -149,8 +149,7 @@ crates/terrio-crs/data/epsg.tsv.zst, datums.tsv.zst, epsg_vertical.tsv.zst and p
 and the EPSG definitions in crates/terrio-crs/data/esri.tsv.zst, are derived from the EPSG
 Geodetic Parameter Dataset (https://epsg.org), owned by the International Association of Oil &
 Gas Producers (IOGP), through PROJ's database and GDAL. They are redistributed under the EPSG
-Dataset Terms of Use (https://epsg.org/terms-of-use.html, reproduced in
-LICENSES/LicenseRef-EPSG.txt), with this attribution. They are not the EPSG Dataset itself, and
+Dataset Terms of Use (https://epsg.org/terms-of-use.html), with this attribution. They are not the EPSG Dataset itself, and
 terrio is not endorsed by IOGP. The EPSG method and parameter names and codes in
 crates/terrio-crs/src/projjson_write.rs and crates/terrio/src/drivers/vector/projjson.rs come
 from the same dataset.
@@ -190,7 +189,7 @@ seed-igh, seed-ob_tran-moll, method-qsc, method-healpix and method-rhealpix nume
 ddd9fac70ec370acd9651ebb8b46035207347ad5, generated with PROJ 9.9.0.
 The CRS-study oracle version is retained separately from projection-suite data.
 The repository carries no license yet; terrio has asked its author for one (see
-LICENSES/LicenseRef-rust-proj-capability.txt).
+LICENSES/LicenseRef-rust-proj-capability.txt in https://github.com/opengeos/terrio).
 
 -------------------------------------------------------------------------------
 Apache License, Version 2.0

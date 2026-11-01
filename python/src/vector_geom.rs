@@ -3,7 +3,7 @@
 //! names).
 
 use crate::ops::input_layers;
-use crate::vector::PyLayer;
+use crate::vector::{PyLayer, PyVectorDataset};
 use crate::{Detach, PyResultExt, invalid};
 use pyo3::prelude::*;
 use terrio::Layer;
@@ -15,8 +15,11 @@ use terrio::ops::vector_geom::{
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simplify, m)?)?;
     m.add_function(wrap_pyfunction!(clip_vector, m)?)?;
+    m.add_function(wrap_pyfunction!(layer_algebra, m)?)?;
 
     m.add_function(wrap_pyfunction!(check_coverage, m)?)?;
+    m.add_function(wrap_pyfunction!(simplify_coverage, m)?)?;
+    m.add_function(wrap_pyfunction!(clean_coverage, m)?)?;
     m.add_function(wrap_pyfunction!(segmentize, m)?)?;
     m.add_function(wrap_pyfunction!(convex_hull, m)?)?;
     m.add_function(wrap_pyfunction!(concave_hull, m)?)?;
@@ -28,7 +31,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// The single layer an operation works on: `src`'s only layer, or the one named `layer`.
-fn one_layer(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> PyResult<Layer> {
+pub(crate) fn one_layer(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> PyResult<Layer> {
     let mut layers = input_layers(py, src, layer.clone().map(|l| vec![l]))?;
     match layers.len() {
         1 => Ok(layers.remove(0)),
@@ -366,4 +369,102 @@ fn check_coverage(
     let options = terrio::ops::coverage::CoverageCheckOptions { maximum_gap_width, include_valid };
     let inner = py.detach_result(|| terrio::ops::coverage::check_coverage(&input, &options)).py()?;
     Ok(PyLayer { inner })
+}
+
+/// Simplify shared polygon coverage boundaries without creating gaps or overlaps.
+///
+/// Args:
+///     src: Polygonal vector input forming a valid coverage, or multiple layers.
+///     tolerance: Square root of the triangle-area threshold, in input CRS units.
+///     preserve_boundary: Retain exterior/hole boundaries.
+///     layer: Select one layer and return a Layer; mutually exclusive with active_layer.
+///     active_layer: Simplify this layer and copy the others, returning a VectorDataset.
+///
+/// Returns:
+///     Layer or VectorDataset: Simplified coverage with attributes/CRS and sequential IDs.
+#[pyfunction]
+#[pyo3(signature = (src, tolerance, *, preserve_boundary=false, layer=None, active_layer=None))]
+fn simplify_coverage(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    tolerance: f64,
+    preserve_boundary: bool,
+    layer: Option<String>,
+    active_layer: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let options = terrio::ops::coverage_simplify::CoverageSimplifyOptions { tolerance, preserve_boundary };
+    if let Some(active) = active_layer {
+        if layer.is_some() {
+            return Err(invalid("layer and active_layer are mutually exclusive"));
+        }
+        let input = input_layers(py, src, None)?;
+        let layers = py.detach_result(|| terrio::ops::coverage_simplify::simplify_coverage_layers(&input, &options, Some(&active))).py()?;
+        let dataset = terrio::VectorDataset { layers, driver: terrio::formats::VectorDriver::GeoJSON };
+        return Ok(Py::new(py, PyVectorDataset::new(py, dataset)?)?.into_any());
+    }
+    let input = one_layer(py, src, layer)?;
+    let inner = py.detach_result(|| terrio::ops::coverage_simplify::simplify_coverage(&input, &options)).py()?;
+    Ok(Py::new(py, PyLayer { inner })?.into_any())
+}
+
+/// Planar XY layer algebra. All seven operations accept polygon, line, point and
+/// collection inputs. CRS must match. Returns a new Layer with sequential IDs.
+/// Intersection/union/sym-difference/identity include both schemas; update,
+/// clip and erase use input fields only. Sources are materialized in memory.
+#[pyfunction]
+#[pyo3(signature=(src, method, operation, *, layer=None, method_layer=None, keep_lower_dimension_geometries=true, input_prefix=None, method_prefix=None))]
+#[allow(clippy::too_many_arguments)]
+fn layer_algebra(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    method: &Bound<'_, PyAny>,
+    operation: &str,
+    layer: Option<String>,
+    method_layer: Option<String>,
+    keep_lower_dimension_geometries: bool,
+    input_prefix: Option<String>,
+    method_prefix: Option<String>,
+) -> PyResult<PyLayer> {
+    let op = operation.parse().py()?;
+    let a = one_layer(py, src, layer)?;
+    let b = one_layer(py, method, method_layer)?;
+    let options = terrio::ops::layer_algebra::LayerAlgebraOptions { keep_lower_dimension_geometries, input_prefix, method_prefix };
+    let inner = py.detach_result(|| terrio::ops::layer_algebra::layer_algebra(&a, &b, op, &options)).py()?;
+    Ok(PyLayer { inner })
+}
+
+/// Snap and node polygon coverage boundaries, assigning overlaps and filling enclosed narrow gaps.
+/// Distances use planar input CRS units. Negative snapping_distance selects the default;
+/// zero disables proximity snapping. Topology is XY; Z survives/interpolates and M
+/// is dropped on cleaned layers. With active_layer, return a
+/// VectorDataset containing the cleaned selection and unchanged inactive layers.
+#[pyfunction]
+#[pyo3(signature = (src, *, snapping_distance=-1.0, merge_strategy="longest-border", maximum_gap_width=0.0, layer=None, active_layer=None))]
+#[allow(clippy::too_many_arguments)]
+fn clean_coverage(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    snapping_distance: f64,
+    merge_strategy: &str,
+    maximum_gap_width: f64,
+    layer: Option<String>,
+    active_layer: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let options = terrio::ops::coverage_clean::CoverageCleanOptions {
+        snapping_distance,
+        merge_strategy: merge_strategy.parse().py()?,
+        maximum_gap_width,
+    };
+    if let Some(active) = active_layer {
+        if layer.is_some() {
+            return Err(invalid("layer and active_layer are mutually exclusive"));
+        }
+        let input = input_layers(py, src, None)?;
+        let layers = py.detach_result(|| terrio::ops::coverage_clean::clean_coverage_layers(&input, Some(&active), &options)).py()?;
+        let dataset = terrio::VectorDataset { layers, driver: terrio::formats::VectorDriver::GeoJSON };
+        return Ok(Py::new(py, PyVectorDataset::new(py, dataset)?)?.into_any());
+    }
+    let input = one_layer(py, src, layer)?;
+    let inner = py.detach_result(|| terrio::ops::coverage_clean::clean_coverage(&input, &options)).py()?;
+    Ok(Py::new(py, PyLayer { inner })?.into_any())
 }

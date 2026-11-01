@@ -43,6 +43,8 @@ pub mod compare;
 pub mod concat;
 pub mod contour;
 pub mod coverage;
+pub mod coverage_clean;
+pub mod coverage_simplify;
 pub mod create;
 pub mod dem;
 pub mod edit;
@@ -70,6 +72,8 @@ pub mod pixel;
 pub mod pixel_info;
 pub mod polygonize;
 pub mod proximity;
+pub mod raster_publication;
+pub mod raster_retile;
 pub mod raster_tile;
 pub mod rasterio;
 pub mod rasterize;
@@ -759,3 +763,12 @@ mod tests {
         assert!((c - 3.0).abs() < 1e-12 && (r - 4.0).abs() < 1e-12);
     }
 }
+
+/// Attribute-preserving polygon, line and point layer algebra.
+pub mod layer_algebra;
+
+/// In-memory raster/vector pipelines and GDALG saved definitions.
+pub mod pipeline;
+
+/// CADRG frame metadata and RPF table-of-contents support.
+pub mod rpftoc;

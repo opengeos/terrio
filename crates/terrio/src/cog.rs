@@ -70,6 +70,28 @@ impl Window {
             && self.x.checked_add(self.width).is_some_and(|e| e <= width)
             && self.y.checked_add(self.height).is_some_and(|e| e <= height)
     }
+
+    /// The error of a read of the window from an image of `width` x `height` pixels, unless it
+    /// [`fits`](Self::fits).
+    pub(crate) fn check(&self, width: usize, height: usize) -> Result<()> {
+        if self.fits(width, height) {
+            return Ok(());
+        }
+        Err(Error::InvalidArgument(format!(
+            "window {}x{} at ({}, {}) is outside the {width}x{height} image",
+            self.width, self.height, self.x, self.y
+        )))
+    }
+}
+
+/// The bands a read of `bands` (numbered from 1, all for none) reads of a raster of `count` bands,
+/// or the error of a band it does not have.
+pub(crate) fn read_bands(bands: &[usize], count: usize) -> Result<Vec<usize>> {
+    let bands: Vec<usize> = if bands.is_empty() { (1..=count).collect() } else { bands.to_vec() };
+    if let Some(b) = bands.iter().find(|b| **b == 0 || **b > count) {
+        return Err(Error::InvalidArgument(format!("no band {b}: the raster has {count} band(s)")));
+    }
+    Ok(bands)
 }
 
 /// What [`LazyRaster::read_window`] reads.
@@ -177,6 +199,11 @@ enum Inner {
 /// A raster read by window, at full resolution or from an overview, by a driver other than the
 /// GeoTIFF one (STAC mosaics, Zarr pyramids).
 pub(crate) trait WindowSource: Send + Sync {
+    /// Whether the source explicitly supplies an affine transform, when known.
+    fn geotransform_present(&self) -> Option<bool> {
+        None
+    }
+
     /// The declared type of one band, for sources with heterogeneous band types.
     fn band_data_type(&self, _band: usize) -> Option<DataType> {
         None
@@ -244,6 +271,7 @@ pub(crate) trait StreamedSource: Sync {
 
 #[derive(Clone)]
 struct SharedRaster {
+    referenced: bool,
     reader: Arc<Mutex<LazyRaster>>,
     overviews: Vec<(usize, usize)>,
     block: Option<(usize, usize)>,
@@ -256,6 +284,9 @@ impl SharedRaster {
     }
 }
 impl WindowSource for SharedRaster {
+    fn geotransform_present(&self) -> Option<bool> {
+        Some(self.referenced)
+    }
     fn band_data_type(&self, band: usize) -> Option<DataType> {
         self.lock().ok().map(|reader| reader.band_data_type(band))
     }
@@ -334,11 +365,20 @@ impl LazyRaster {
         let block = self.block_size();
         let alpha = self.alpha_band();
         let mask = self.has_mask();
+        let referenced = self.geotransform_present();
         let replacement = Self::from(header.clone());
         let original = std::mem::replace(self, replacement);
-        let shared = SharedRaster { reader: Arc::new(Mutex::new(original)), overviews, block, alpha, mask };
+        let shared = SharedRaster { referenced, reader: Arc::new(Mutex::new(original)), overviews, block, alpha, mask };
         *self = Self::from_source(header.clone(), Box::new(shared.clone()));
         Self::from_source(header, Box::new(shared))
+    }
+
+    pub(crate) fn geotransform_present(&self) -> bool {
+        match &self.inner {
+            Inner::Tiff(t) => t.tags.geo_transform.is_some(),
+            Inner::Source(_, source) => source.geotransform_present().unwrap_or(true),
+            Inner::Memory(_) => true,
+        }
     }
 
     pub(crate) fn input_paths(&self) -> Result<Vec<String>> {
@@ -698,6 +738,13 @@ impl LazyRaster {
         }
     }
 
+    /// Exact integer nodata from native TIFF tags. PAM overrides remain f64 metadata.
+    pub(crate) fn band_integer_nodata(&self, band: usize, overview: Option<usize>) -> Option<i128> {
+        let Inner::Tiff(tiff) = &self.inner else { return None };
+        let tags = tiff.tags_at_level(overview.map_or(0, |i| i + 1));
+        if tags.band_nodata.iter().any(|(b, _)| *b == band) { None } else { tags.integer_nodata }
+    }
+
     /// The declared band type, falling back to the shared raster type.
     pub(crate) fn band_data_type(&self, band: usize) -> DataType {
         match &self.inner {
@@ -925,6 +972,9 @@ impl LazyRaster {
     /// # Ok::<(), terrio::Error>(())
     /// ```
     pub fn write(&mut self, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
+        let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+        self.refuse_masked_tile_archive(driver, options)?;
+        let source_mask = options.mask.is_none() && self.has_mask() && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
         // Tile archives are built a tile row at a time (see `crate::tiles`). A source that cannot
         // list the files it reads, or an output replacing one of them, is read whole, as before.
         #[cfg(all(feature = "tiles", not(target_family = "wasm")))]
@@ -946,6 +996,7 @@ impl LazyRaster {
         let value_size = self.data_type().size_bytes();
         if let Inner::Source(ds, s) = &self.inner
             && let Some(s) = s.streamed()
+            && !source_mask
             && !crate::ops::strips::overwrites(path, &s.checked_inputs()?)
         {
             // Strips of a row of blocks, several read at once: blocks slow to decode overlap the
@@ -964,31 +1015,47 @@ impl LazyRaster {
             )?;
             return out.finish();
         }
-        let Inner::Tiff(t) = &self.inner else { return crate::write_raster_dataset(&self.read()?, path, options) };
         // An output that replaces the input is written from the input read whole.
-        let inputs = self.input_paths()?;
-        let zip = t.zip.is_some();
-        if (t.file.is_none() && !zip) || crate::ops::strips::overwrites(path, &inputs) {
-            return crate::write_raster_dataset(&self.read()?, path, options);
+        let requires_inventory =
+            matches!(&self.inner, Inner::Tiff(_)) || matches!(&self.inner, Inner::Source(_, source) if source.streamed().is_some());
+        let can_stream = if requires_inventory {
+            !crate::ops::strips::overwrites(path, &self.input_paths()?)
+        } else {
+            self.input_paths().is_ok_and(|inputs| !crate::ops::strips::overwrites(path, &inputs))
+        };
+        let can_stream = can_stream
+            && match &self.inner {
+                Inner::Tiff(t) => t.file.is_some() || t.zip.is_some(),
+                Inner::Source(_, _) => source_mask,
+                _ => false,
+            };
+        if !can_stream {
+            let mut options = options.clone();
+            self.prepare_output_mask(path, &mut options, Window::full(width, height), None)?;
+            return crate::write_raster_dataset(&self.read()?, path, &options);
         }
         // The header the whole raster is read with.
         let mut header = self.header();
-        header.raster.crs = t.tags.crs_info();
-        header.raster.metadata = t.tags.metadata.clone();
-        header.band_metadata = t.tags.band_properties.clone();
-        header.color_table = t.tags.color_table.clone();
-        header.gcps = t.tags.gcps.clone();
+        if let Inner::Tiff(t) = &self.inner {
+            header.raster.crs = t.tags.crs_info();
+            header.raster.metadata = t.tags.metadata.clone();
+            header.band_metadata = t.tags.band_properties.clone();
+            header.color_table = t.tags.color_table.clone();
+            header.gcps = t.tags.gcps.clone();
+        }
         let rows = crate::ops::strips::strip_rows(width, bands, value_size, block);
-        let mut out = crate::ops::strips::StripWriter::create(&header, path, options)?;
+        let mut out = crate::ops::strips::StripWriter::create_masked(&header, path, options, source_mask)?;
         let read = WindowOptions::default();
         crate::ops::strips::pipelined(
             height.div_ceil(rows),
             |i| {
                 let y = i * rows;
                 let h = rows.min(height - y);
-                Ok((self.read_window(Window::new(0, y, width, h), &read)?.raster.data, h))
+                let window = Window::new(0, y, width, h);
+                let mask = if source_mask { self.read_mask(window, None)? } else { None };
+                Ok((self.read_window(window, &read)?.raster.data, h, mask))
             },
-            |_, (data, h)| out.write(data, h),
+            |_, (data, h, mask)| out.write_masked(data, h, mask),
         )?;
         out.finish()
     }
@@ -997,16 +1064,8 @@ impl LazyRaster {
     /// georeferenced to the window.
     pub fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
         let (lw, lh) = self.level_size(options.overview)?;
-        if !window.fits(lw, lh) {
-            return Err(Error::InvalidArgument(format!(
-                "window {}x{} at ({}, {}) is outside the {lw}x{lh} image",
-                window.width, window.height, window.x, window.y
-            )));
-        }
-        let bands: Vec<usize> = if options.bands.is_empty() { (1..=self.band_count()).collect() } else { options.bands.clone() };
-        if let Some(b) = bands.iter().find(|b| **b == 0 || **b > self.band_count()) {
-            return Err(Error::InvalidArgument(format!("no band {b}: the raster has {} band(s)", self.band_count())));
-        }
+        window.check(lw, lh)?;
+        let bands = read_bands(&options.bands, self.band_count())?;
         let band_nodata: Vec<Option<f64>> = if let Inner::Tiff(t) = &self.inner {
             let tags = t.tags_at_level(options.overview.map_or(0, |i| i + 1));
             bands.iter().map(|b| tags.band_nodata.iter().find(|(i, _)| i == b).map(|(_, v)| *v).or(tags.nodata)).collect()
@@ -1020,7 +1079,19 @@ impl LazyRaster {
                 let data = t.read(level, window, &bands)?;
                 (data, t.tags.nodata.unwrap_or(-9999.0), t.tags.nodata.is_some(), Some(t.tags.crs_info()))
             }
-            Inner::Memory(ds) => (cut(&ds.raster, window, &bands), ds.raster.nodata, ds.has_nodata, Some(ds.raster.crs.clone())),
+            Inner::Memory(ds) => {
+                let r = &ds.raster;
+                if r.cols.checked_mul(r.rows).and_then(|n| n.checked_mul(r.bands)) != Some(r.data.len()) {
+                    return Err(Error::InvalidData(format!(
+                        "the raster holds {} values for {} band(s) of {} x {} pixels",
+                        r.data.len(),
+                        r.bands,
+                        r.cols,
+                        r.rows
+                    )));
+                }
+                (cut(r, window, &bands), r.nodata, ds.has_nodata, Some(r.crs.clone()))
+            }
             Inner::Source(ds, s) => {
                 let data = s.read(options.overview.map_or(0, |i| i + 1), window, &bands)?;
                 (data, ds.raster.nodata, ds.has_nodata, Some(ds.raster.crs.clone()))
@@ -1071,6 +1142,11 @@ impl LazyRaster {
         if bands == [1] {
             ds.color_table = color_table.clone();
         }
+        if options.overview.is_some() || window != Window::full(lw, lh) {
+            for band in &mut ds.band_metadata {
+                band.items.retain(|(key, _)| !key.starts_with("STATISTICS_"));
+            }
+        }
         Ok(ds)
     }
 
@@ -1088,10 +1164,7 @@ impl LazyRaster {
         if let Some(r) = rows.iter().find(|r| **r >= lh) {
             return Err(Error::InvalidArgument(format!("row {r} is outside the {lw}x{lh} image")));
         }
-        let bands: Vec<usize> = if options.bands.is_empty() { (1..=self.band_count()).collect() } else { options.bands.clone() };
-        if let Some(b) = bands.iter().find(|b| **b == 0 || **b > self.band_count()) {
-            return Err(Error::InvalidArgument(format!("no band {b}: the raster has {} band(s)", self.band_count())));
-        }
+        let bands = read_bands(&options.bands, self.band_count())?;
         match &mut self.inner {
             Inner::Source(_, s) => s.read_sampled(options.overview.map_or(0, |i| i + 1), cols, rows, &bands),
             Inner::Tiff(_) | Inner::Memory(_) => Ok(None),
@@ -1122,6 +1195,14 @@ impl LazyRaster {
             }
     }
 
+    /// Tile archive writers cannot retain a dataset mask or an explicit one.
+    fn refuse_masked_tile_archive(&self, driver: Option<RasterDriver>, options: &crate::RasterWriteOptions) -> Result<()> {
+        if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && (self.has_mask() || options.mask.is_some()) {
+            return Err(Error::InvalidArgument("tile archive writes do not preserve dataset masks; use an explicit alpha band".into()));
+        }
+        Ok(())
+    }
+
     /// Prepares inherited validity for an output window. GeoTIFF/COG retain
     /// per-dataset masks unless an explicit mask is supplied. Tile archives
     /// reject masked sources because their writers cannot retain that validity.
@@ -1135,9 +1216,7 @@ impl LazyRaster {
     ) -> Result<()> {
         use crate::formats::RasterDriver;
         let driver = options.driver.or_else(|| RasterDriver::for_extension(filename));
-        if matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles)) && (self.has_mask() || options.mask.is_some()) {
-            return Err(Error::InvalidArgument("tile archive writes do not preserve dataset masks; use an explicit alpha band".into()));
-        }
+        self.refuse_masked_tile_archive(driver, options)?;
         if options.mask.is_none() && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
             options.mask = self.read_mask(window, overview)?;
         }
@@ -1150,12 +1229,7 @@ impl LazyRaster {
     /// neighbour, as GDAL does).
     pub fn read_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
         let (lw, lh) = self.level_size(overview)?;
-        if !window.fits(lw, lh) {
-            return Err(Error::InvalidArgument(format!(
-                "window {}x{} at ({}, {}) is outside the {lw}x{lh} image",
-                window.width, window.height, window.x, window.y
-            )));
-        }
+        window.check(lw, lh)?;
         // An external overview is its own TIFF dataset. GDAL does not inherit
         // the base TIFF's mask when that dataset has no mask of its own.
         if let Inner::Tiff(t) = &mut self.inner
@@ -1685,6 +1759,19 @@ impl TiffRaster {
 
         // Missing (sparse) chunks read as nodata, or 0, as in GDAL.
         let mut out = try_new_filled(self.data_type, len, self.tags.nodata.unwrap_or(0.0))?;
+        if let Some(nodata) = self.tags.integer_nodata {
+            match &mut out {
+                RasterData::U64(values) => values.fill(nodata as u64),
+                RasterData::I64(values) => values.fill(nodata as i64),
+                _ => {}
+            }
+        }
+        for (output_band, band) in bands.iter().enumerate() {
+            if let Some((_, nodata)) = self.tags.band_nodata.iter().find(|(b, _)| b == band) {
+                let plane = w.width * w.height;
+                crate::pixel::with_data!(&mut out, values => values[output_band * plane..(output_band + 1) * plane].fill(*nodata as _));
+            }
+        }
         let spp = if planar { parts } else { self.samples * parts };
         // Chunks with data, and where they go.
         let mut wanted: Vec<u32> = Vec::new();
@@ -1984,6 +2071,55 @@ mod tests {
             assert_eq!(read.raster.data.to_f64_vec(), vec![11.; 12]);
         }
         assert_eq!(pixels.load(Ordering::Relaxed), 36);
+    }
+
+    /// A masked input larger than one strip must never be requested whole, for pixels or masks.
+    #[test]
+    fn masked_geotiff_writes_keep_pixel_and_mask_reads_windowed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct MaskedSource(Arc<AtomicUsize>);
+        const WIDTH: usize = 128;
+        const HEIGHT: usize = 65537;
+        impl WindowSource for MaskedSource {
+            fn overviews(&self) -> Vec<(usize, usize)> {
+                Vec::new()
+            }
+            fn block_size(&self) -> Option<(usize, usize)> {
+                Some((WIDTH, 16))
+            }
+            fn has_mask(&self) -> bool {
+                true
+            }
+            fn input_paths(&self) -> Result<Vec<String>> {
+                Ok(Vec::new())
+            }
+            fn read_mask(&mut self, _: usize, window: Window) -> Result<Option<Vec<u8>>> {
+                assert!(window.height < HEIGHT, "the source mask must stay windowed");
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Ok(Some(
+                    (0..window.width * window.height).map(|i| if (window.x + i % window.width) < WIDTH / 2 { 0 } else { 255 }).collect(),
+                ))
+            }
+            fn read(&mut self, _: usize, window: Window, _: &[usize]) -> Result<RasterData> {
+                assert!(window.height < HEIGHT, "the source pixels must stay windowed");
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Ok(RasterData::F64(vec![100.; window.width * window.height]))
+            }
+        }
+        let grid = crate::ops::Grid { width: WIDTH, height: HEIGHT, geo_transform: [0., 1., 0., HEIGHT as f64, 0., -1.] };
+        let header = crate::ops::raster_header(grid, DataType::F64, 1, None, &crate::crs::SpatialRef::parse("EPSG:3857").unwrap()).unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let mut source = LazyRaster::from_source(header, Box::new(MaskedSource(reads.clone())));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("masked.tif");
+        source
+            .write(path.to_str().unwrap(), &crate::RasterWriteOptions { compression: Some("DEFLATE".into()), ..Default::default() })
+            .unwrap();
+        assert_eq!(reads.load(Ordering::Relaxed), 4, "two pixel strips and two mask strips");
+        let mut output = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        let window = Window::new(WIDTH / 2 - 1, HEIGHT - 2, 2, 2);
+        assert_eq!(output.read_mask(window, None).unwrap(), Some(vec![0, 255, 0, 255]));
+        assert_eq!(output.read_window(window, &Default::default()).unwrap().raster.data.to_f64_vec(), vec![100.; 4]);
     }
 
     /// A source that cannot list the files it reads is still written as a tile archive (read

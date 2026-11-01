@@ -1,3 +1,10 @@
+// Written to match the behavior of:
+//   GDAL v3.12.1:
+//     ogr/ogrspatialreference.cpp
+//   PROJ 9.7.1:
+//     src/iso19111/io.cpp
+// No code is translated from these sources.
+
 //! PROJJSON (<https://proj.org/specifications/projjson.html>) of a CRS as GDAL writes it
 //! (`OSRExportToPROJJSON`, PROJ 9.7.1's `proj_as_projjson` in GDAL 3.12.1), without PROJ.
 //!

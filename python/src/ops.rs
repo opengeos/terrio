@@ -376,11 +376,12 @@ fn write_netcdf_groups(
 ///         GeoArrow metadata, otherwise EPSG:4326 for GeoJSON.
 ///     append: Add the features to the layers of an existing output.
 ///     overwrite: Replace the layers of the same name in an existing output.
+///     preserve_declared_geometry_type: GPKG: retain the declared base geometry type, including Unknown.
 ///
 /// Raises:
 ///     InvalidArgumentError: If several layers go to a single-layer format.
 #[pyfunction]
-#[pyo3(signature = (data, path, driver=None, layer_name=None, crs=None, append=false, overwrite=false))]
+#[pyo3(signature = (data, path, driver=None, layer_name=None, crs=None, append=false, overwrite=false, *, preserve_declared_geometry_type=false))]
 #[allow(clippy::too_many_arguments)]
 fn write_vector(
     py: Python<'_>,
@@ -391,10 +392,12 @@ fn write_vector(
     crs: Option<&str>,
     append: bool,
     overwrite: bool,
+    preserve_declared_geometry_type: bool,
 ) -> PyResult<()> {
     let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer").to_string();
     let layers = layers_from_object(data, Some(layer_name.unwrap_or(&stem)), crs)?;
-    let options = vector_write_options(driver)?;
+    let mut options = vector_write_options(driver)?;
+    options.preserve_declared_geometry_type = preserve_declared_geometry_type;
     let mode = write_mode(append, overwrite)?;
     py.detach_result(|| terrio::ops::vector_filter::write_vector_with_mode(&layers, path, &options, mode)).py()
 }
@@ -1311,6 +1314,25 @@ fn warp(
         Python(Py<PyRaster>),
     }
     impl terrio::ops::warp::WarpSource for Input {
+        fn has_mask(&mut self) -> terrio::Result<bool> {
+            match self {
+                Self::File(r) => Ok(r.has_mask()),
+                Self::Python(obj) => Python::attach(|py| {
+                    let r = obj.bind(py).try_borrow().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
+                    Ok(r.inner.has_mask())
+                }),
+            }
+        }
+        fn read_mask(&mut self, window: Window, overview: Option<usize>) -> terrio::Result<Option<Vec<u8>>> {
+            match self {
+                Self::File(r) => r.read_mask(window, overview),
+                Self::Python(obj) => Python::attach(|py| {
+                    let mut r = obj.bind(py).try_borrow_mut().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
+                    let lazy = &mut r.inner;
+                    py.detach_result(|| lazy.read_mask(window, overview))
+                }),
+            }
+        }
         fn with_dataset(&self, visit: &mut dyn FnMut(&RasterDataset)) -> terrio::Result<bool> {
             match self {
                 Self::File(r) => terrio::ops::warp::WarpSource::with_dataset(r.as_ref(), visit),

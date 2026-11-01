@@ -663,6 +663,141 @@ fn geoparquet_row_groups_do_not_follow_chunks() {
     same_content(&a, &b);
 }
 
+#[test]
+fn geopackage_streams_register_optional_measures_across_chunks() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut layer = Layer::new("mixed").with_epsg(4326);
+    layer.features = vec![
+        Feature {
+            fid: 1,
+            attributes: vec![],
+            geometry: Some(Geometry::Point(wbvector::Coord { m: Some(3.), ..wbvector::Coord::xy(1., 2.) })),
+        },
+        Feature { fid: 2, attributes: vec![], geometry: Some(Geometry::point(4., 5.)) },
+    ];
+    let check = |path: &str| {
+        let db = crate::drivers::sqlite::Db::new(std::fs::read(path).unwrap()).unwrap();
+        let table = db.table("gpkg_geometry_columns").unwrap();
+        assert_eq!(table.get(&table.rows[0], "m").unwrap().as_i64(), Some(2));
+        let back = crate::open_vector(path, &Default::default()).unwrap();
+        for (a, b) in layer.features.iter().zip(&back.layers[0].features) {
+            assert_eq!(a.geometry, b.geometry);
+        }
+    };
+    let single = directory.path().join("single.gpkg").to_string_lossy().into_owned();
+    let mut writer = FeatureWriter::create(&single, &layer, Some(&LayerProfile::of(&layer)), &Default::default()).unwrap();
+    writer.write(&layer).unwrap();
+    writer.finish().unwrap();
+    check(&single);
+    let multi = directory.path().join("multi.gpkg").to_string_lossy().into_owned();
+    let mut sink = GpkgLayersSink::create(&multi, &[schema_of(&layer)], false).unwrap().unwrap();
+    for feature in &layer.features {
+        let mut chunk = schema_of(&layer);
+        chunk.features.push(feature.clone());
+        sink.write(0, &chunk).unwrap();
+    }
+    sink.finish().unwrap();
+    check(&multi);
+}
+
+#[test]
+fn geopackage_streams_register_optional_heights_across_chunks() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut layer = Layer::new("mixed").with_epsg(4326);
+    layer.features = vec![
+        Feature {
+            fid: 1,
+            attributes: vec![],
+            geometry: Some(Geometry::Point(wbvector::Coord { z: Some(3.), ..wbvector::Coord::xy(1., 2.) })),
+        },
+        Feature { fid: 2, attributes: vec![], geometry: Some(Geometry::point(4., 5.)) },
+    ];
+    layer.geom_type = Some(wbvector::GeometryType::Point);
+    let check = |path: &str| {
+        let db = crate::drivers::sqlite::Db::new(std::fs::read(path).unwrap()).unwrap();
+        let table = db.table("gpkg_geometry_columns").unwrap();
+        assert_eq!(table.get(&table.rows[0], "z").unwrap().as_i64(), Some(2));
+        let back = crate::open_vector(path, &Default::default()).unwrap();
+        for (a, b) in layer.features.iter().zip(&back.layers[0].features) {
+            assert_eq!(a.geometry, b.geometry);
+        }
+    };
+    let single = directory.path().join("single.gpkg").to_string_lossy().into_owned();
+    let mut writer = FeatureWriter::create(&single, &layer, Some(&LayerProfile::of(&layer)), &Default::default()).unwrap();
+    writer.write(&layer).unwrap();
+    writer.finish().unwrap();
+    check(&single);
+    let multi = directory.path().join("multi.gpkg").to_string_lossy().into_owned();
+    let mut sink = GpkgLayersSink::create(&multi, &[schema_of(&layer)], false).unwrap().unwrap();
+    for feature in &layer.features {
+        let mut chunk = schema_of(&layer);
+        chunk.features.push(feature.clone());
+        sink.write(0, &chunk).unwrap();
+    }
+    sink.finish().unwrap();
+    check(&multi);
+}
+
+#[test]
+fn geopackage_streams_register_z_found_after_the_first_coordinate() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("late-z.gpkg").to_string_lossy().into_owned();
+    let mut layer = Layer::new("late_z").with_epsg(4326);
+    layer.features.push(Feature {
+        fid: 1,
+        attributes: vec![],
+        geometry: Some(Geometry::LineString(vec![
+            wbvector::Coord::xy(0., 0.),
+            wbvector::Coord { z: Some(12.), ..wbvector::Coord::xy(1., 1.) },
+        ])),
+    });
+    let mut writer = FeatureWriter::create(&path, &layer, Some(&LayerProfile::of(&layer)), &Default::default()).unwrap();
+    writer.write(&layer).unwrap();
+    writer.finish().unwrap();
+    let db = crate::drivers::sqlite::Db::new(std::fs::read(&path).unwrap()).unwrap();
+    let table = db.table("gpkg_geometry_columns").unwrap();
+    assert_eq!(table.get(&table.rows[0], "z").unwrap().as_i64(), Some(1));
+    let back = crate::open_vector(&path, &Default::default()).unwrap();
+    let coordinates = back.layers[0].features[0].geometry.as_ref().unwrap().all_coords();
+    assert_eq!((coordinates[0].z, coordinates[1].z), (Some(0.), Some(12.)));
+}
+
+#[test]
+fn geopackage_streams_preserve_measures_and_register_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut layer = polygons(3);
+    for feature in &mut layer.features {
+        crate::vector::map_coords(feature.geometry.as_mut().unwrap(), &mut |c| {
+            c.m = Some(c.x + c.y);
+            Ok(())
+        })
+        .unwrap();
+    }
+    for preserve in [false, true] {
+        layer.geom_type = if preserve { None } else { Some(wbvector::GeometryType::Polygon) };
+        let check = |path: &str| {
+            let back = crate::open_vector(path, &Default::default()).unwrap();
+            same_content(&layer, &back.layers[0]);
+            let db = crate::drivers::sqlite::Db::new(std::fs::read(path).unwrap()).unwrap();
+            let t = db.table("gpkg_geometry_columns").unwrap();
+            assert_eq!(t.get(&t.rows[0], "m").unwrap().as_i64(), Some(1));
+            assert_eq!(t.get(&t.rows[0], "z").unwrap().as_i64(), Some(if preserve { 2 } else { 1 }));
+            assert_eq!(t.get(&t.rows[0], "geometry_type_name").unwrap().as_str(), Some(if preserve { "GEOMETRY" } else { "POLYGON" }));
+        };
+        let single = dir.path().join(format!("single-{preserve}.gpkg")).to_string_lossy().into_owned();
+        let options = VectorWriteOptions { preserve_declared_geometry_type: preserve, ..Default::default() };
+        let mut writer = FeatureWriter::create(&single, &layer, Some(&LayerProfile::of(&layer)), &options).unwrap();
+        writer.write(&layer).unwrap();
+        writer.finish().unwrap();
+        check(&single);
+        let multi = dir.path().join(format!("multi-{preserve}.gpkg")).to_string_lossy().into_owned();
+        let mut sink = GpkgLayersSink::create(&multi, &[schema_of(&layer)], preserve).unwrap().unwrap();
+        sink.write(0, &layer).unwrap();
+        sink.finish().unwrap();
+        check(&multi);
+    }
+}
+
 /// A GeoJSON collection without a `crs` member streams in the CRS GDAL gives it, as a whole read
 /// does: EPSG:4979 when its geometry type has heights; a text sequence stays in WGS 84.
 #[test]
@@ -682,4 +817,18 @@ fn geojson_streams_take_gdals_default_crs() {
         .unwrap();
     let readers = open_layers(&seq.to_string_lossy(), &Default::default(), 4).unwrap();
     assert_eq!(readers[0].layer().crs_epsg(), Some(4326), "sequence");
+}
+
+#[test]
+fn geopackage_streams_reject_incompatible_preserved_types() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut layer = polygons(1);
+    layer.geom_type = Some(wbvector::GeometryType::Point);
+    let options = VectorWriteOptions { preserve_declared_geometry_type: true, ..Default::default() };
+    let single = directory.path().join("bad.gpkg").to_string_lossy().into_owned();
+    assert!(FeatureWriter::create(&single, &layer, Some(&LayerProfile::of(&layer)), &options).is_err());
+    assert!(!std::path::Path::new(&single).exists());
+    let multi = directory.path().join("bad-multi.gpkg").to_string_lossy().into_owned();
+    let mut sink = GpkgLayersSink::create(&multi, &[schema_of(&layer)], true).unwrap().unwrap();
+    assert!(sink.write(0, &layer).unwrap_err().to_string().contains("does not match declared"));
 }

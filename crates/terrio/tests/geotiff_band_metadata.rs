@@ -44,3 +44,59 @@ fn band_properties_round_trip() {
     // Role items are band properties, not band metadata items.
     assert!(ds.band_metadata[0].items.is_empty());
 }
+
+#[test]
+fn default_band_items_survive_lazy_eager_and_copy_reads_but_unscale_drops_statistics() {
+    let config = RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::U8, ..Default::default() };
+    let raster = terrio::Raster::from_data_native(config, RasterData::U8(vec![1, 2, 3, 4])).unwrap();
+    let mut source = RasterDataset::new(raster, false);
+    source.band_metadata = vec![BandMetadata {
+        scale: Some(2.),
+        offset: Some(10.),
+        items: vec![("SOURCE".into(), "sensor & instrument".into()), ("STATISTICS_MINIMUM".into(), "1".into())],
+        ..Default::default()
+    }];
+    let bytes = terrio::memory::write_raster_bytes(&source, "source.tif", &Default::default()).unwrap();
+    let lazy = terrio::LazyRaster::from_tiff_bytes(bytes.clone()).unwrap().unwrap();
+    let eager = terrio::memory::open_raster_bytes(bytes, "source.tif").unwrap();
+    assert_eq!(lazy.header().band_metadata[0].items, source.band_metadata[0].items);
+    assert_eq!(eager.band_metadata[0].items, source.band_metadata[0].items);
+    let copied = terrio::memory::write_raster_bytes(&eager, "copy.tif", &Default::default()).unwrap();
+    let copied = terrio::memory::open_raster_bytes(copied, "copy.tif").unwrap();
+    assert_eq!(copied.band_metadata[0].items, source.band_metadata[0].items);
+    let unscaled = terrio::ops::pixel::unscale(&eager, &Default::default()).unwrap();
+    let bytes = terrio::memory::write_raster_bytes(&unscaled, "unscaled.tif", &Default::default()).unwrap();
+    let output = terrio::memory::open_raster_bytes(bytes, "unscaled.tif").unwrap();
+    assert_eq!(output.band_metadata[0].items, [("SOURCE".into(), "sensor & instrument".into())]);
+    assert_eq!(output.raster.data.to_f64_vec(), [12., 14., 16., 18.]);
+}
+
+#[test]
+fn statistics_follow_whole_band_copies_but_not_crops_resizes_or_value_changes() {
+    use terrio::ops::translate::{Scale, Size, TranslateOptions, translate};
+    let config = RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::U8, ..Default::default() };
+    let raster = terrio::Raster::from_data_native(config, RasterData::U8(vec![1, 2, 3, 4])).unwrap();
+    let mut dataset = RasterDataset::new(raster, false);
+    dataset.band_metadata = vec![BandMetadata {
+        items: vec![("SOURCE".into(), "sensor".into()), ("STATISTICS_MINIMUM".into(), "1".into())],
+        ..Default::default()
+    }];
+    let bytes = terrio::memory::write_raster_bytes(&dataset, "source.tif", &Default::default()).unwrap();
+    let mut lazy = terrio::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
+    let full = lazy.read().unwrap();
+    assert_eq!(full.band_metadata[0].items, dataset.band_metadata[0].items);
+    let crop = lazy.read_window(terrio::Window::new(1, 1, 1, 1), &Default::default()).unwrap();
+    assert_eq!(crop.raster.data.to_f64_vec(), [4.]);
+    assert_eq!(crop.band_metadata[0].items, [("SOURCE".into(), "sensor".into())]);
+    assert_eq!(translate(&full, &Default::default()).unwrap().band_metadata[0].items, full.band_metadata[0].items);
+    for options in [
+        TranslateOptions { src_win: Some((1., 1., 1., 1.)), ..Default::default() },
+        TranslateOptions { out_size: Some((Size::Pixels(1), Size::Pixels(1))), ..Default::default() },
+        TranslateOptions { output_type: Some(DataType::F32), ..Default::default() },
+        TranslateOptions { scale: Some(Scale { src: Some((1., 4.)), dst: Some((0., 255.)) }), ..Default::default() },
+        TranslateOptions { assign_nodata: Some(Some(1.)), ..Default::default() },
+    ] {
+        let result = translate(&full, &options).unwrap();
+        assert_eq!(result.band_metadata[0].items, [("SOURCE".into(), "sensor".into())]);
+    }
+}

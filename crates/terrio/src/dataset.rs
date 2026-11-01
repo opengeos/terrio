@@ -1,3 +1,17 @@
+// SPDX-FileCopyrightText: Copyright (c) 1998, Frank Warmerdam
+// SPDX-FileCopyrightText: Copyright (c) 2008-2012, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+//
+// Derived from (translated to Rust and modified):
+//   GDAL v3.12.1:
+//     port/cpl_vsisimple.cpp
+//
+// Written to match the behavior of:
+//   GDAL v3.12.1:
+//     frmts/gtiff/gtiffdataset_write.cpp
+// No code is translated from these sources.
+
 //! Opening, reading and writing datasets.
 
 use crate::crs::SpatialRef;
@@ -671,6 +685,12 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         Err(raster_err) if !wbvector_fallback_allowed() => Err(Error::Unsupported(format!(
             "'{path}': format not recognized ({raster_err}; TERRIO_WBVECTOR_FALLBACK=YES lets wbvector detect it)"
         ))),
+        // GeoParquet by its magic number, with terrio's own driver: wbvector is built without it.
+        #[cfg(feature = "parquet")]
+        Err(_) if has_parquet_magic(path) => {
+            crate::formats::check_driver_allowed(VectorDriver::Parquet.name(), path, crate::formats::Kind::Vector)?;
+            read_vector_local(path, VectorDriver::Parquet, options).map(Dataset::Vector)
+        }
         Err(raster_err) => match wbvector::VectorFormat::detect(path) {
             Ok(format) => {
                 // Found by its content (an XML element anywhere in its first 4 KiB, a zip archive as
@@ -686,6 +706,14 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             Err(_) => Err(Error::Unsupported(format!("'{path}': format not recognized ({raster_err})"))),
         },
     }
+}
+
+/// Whether a file starts with Parquet's magic number.
+#[cfg(feature = "parquet")]
+fn has_parquet_magic(path: &str) -> bool {
+    use std::io::Read;
+    let mut magic = [0u8; 4];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && &magic == b"PAR1"
 }
 
 /// Whether a raster that neither its extension nor terrio's own drivers recognise may be handed
@@ -1153,6 +1181,11 @@ fn parse_compression(s: &str) -> Result<wbraster::GeoTiffCompression> {
 pub struct VectorWriteOptions {
     /// The output format. By default, chosen from the output path's extension.
     pub driver: Option<VectorDriver>,
+    /// GeoPackage: retain each layer's declared base geometry type, including Unknown,
+    /// when creating or replacing layers. By default the feature types are inferred.
+    /// Unknown declarations allow optional Z. Required/optional source dimensional
+    /// hints are not represented by Layer and cannot be reproduced by this option.
+    pub preserve_declared_geometry_type: bool,
     /// How to write CSV files.
     pub csv: crate::drivers::vector::csv::CsvOptions,
     /// How to write GeoJSON files.
@@ -1185,13 +1218,13 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
             // With the GDAL backend, the GDAL driver of the extension (`.gdb`...).
             #[cfg(feature = "gdal")]
             if let Some(d) = crate::gdal_backend::driver_for_path(path, true) {
-                ensure_kmz_resources_apply(options, None)?;
+                ensure_vector_options_apply(options, None)?;
                 return crate::gdal_backend::write_vector(layers, path, &d, &[], &[]);
             }
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{path}': give it explicitly")));
         }
     };
-    ensure_kmz_resources_apply(options, Some(driver))?;
+    ensure_vector_options_apply(options, Some(driver))?;
     driver.ensure_built()?;
     if !driver.info().write {
         return Err(Error::Unsupported(format!("the {} driver cannot write", driver.name())));
@@ -1199,7 +1232,14 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
     match (driver, layers) {
         (_, []) => Err(Error::InvalidArgument("no layers to write".into())),
         #[cfg(feature = "sqlite")]
-        (VectorDriver::GPKG, _) => crate::drivers::vector::geopackage::write(layers, path),
+        (VectorDriver::GPKG, _) => {
+            if options.preserve_declared_geometry_type {
+                std::fs::write(path, crate::drivers::vector::geopackage::to_bytes_with_geometry_types(layers, true)?)?;
+                Ok(())
+            } else {
+                crate::drivers::vector::geopackage::write(layers, path)
+            }
+        }
         #[cfg(feature = "cad")]
         (d @ (VectorDriver::DXF | VectorDriver::DWG), _) => {
             std::fs::write(path, crate::drivers::vector::cad::to_bytes(layers, d)?)?;
@@ -1224,9 +1264,11 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
     }
 }
 
-/// KMZ resources are packed into KMZ archives only, so any other output refuses them rather than
-/// dropping them. `driver` is `None` for a format only GDAL writes.
-pub(crate) fn ensure_kmz_resources_apply(options: &VectorWriteOptions, driver: Option<VectorDriver>) -> Result<()> {
+/// Refuses format-specific vector options on other output formats rather than dropping them. `driver` is `None` for a format only GDAL writes.
+pub(crate) fn ensure_vector_options_apply(options: &VectorWriteOptions, driver: Option<VectorDriver>) -> Result<()> {
+    if options.preserve_declared_geometry_type && driver != Some(VectorDriver::GPKG) {
+        return Err(Error::InvalidArgument("preserve_declared_geometry_type applies to GPKG output".into()));
+    }
     if options.kmz.resources.is_empty() || driver == Some(VectorDriver::KMZ) {
         return Ok(());
     }
@@ -1485,6 +1527,27 @@ mod tests {
         crate::config::pop_scope();
         let ds = opened.expect("wbraster reads the grid when the option allows it");
         assert_eq!((ds.raster.cols, ds.raster.rows), (2, 2));
+    }
+
+    /// GeoParquet without its extension is found by its magic number when the option allows the
+    /// fallback, and read by terrio's driver.
+    #[cfg(all(feature = "parquet", not(feature = "gdal")))]
+    #[test]
+    fn geoparquet_is_detected_by_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("places.payload");
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/parquet_zstd/zstd_v1.parquet"), &path).unwrap();
+        let path = path.to_str().unwrap();
+        assert!(crate::open(path).is_err());
+        crate::config::push_scope([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))].into());
+        let opened = crate::open(path);
+        let options = crate::VectorOpenOptions { spatial_filter: Some((-5.5, -2.5, 5.5, 2.5)), ..Default::default() };
+        let filtered = super::open_local(path, &options);
+        crate::config::pop_scope();
+        let crate::Dataset::Vector(v) = opened.unwrap() else { panic!("not a vector") };
+        assert_eq!((v.driver, v.layers[0].len()), (crate::formats::VectorDriver::Parquet, 500));
+        let crate::Dataset::Vector(v) = filtered.unwrap() else { panic!("not a vector") };
+        assert_eq!(v.layers[0].len(), 30);
     }
 
     /// A vector file only `wbvector`'s detection recognises (GPX named `.payload`) is refused

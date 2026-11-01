@@ -1,6 +1,9 @@
 // Written to match the behavior of:
 //   GDAL v3.13.3:
 //     frmts/gtiff/gtiffdataset_read.cpp, gt_wkt_srs.cpp
+//   libtiff 4.7.1 (bundled with GDAL v3.12.1):
+//     frmts/gtiff/libtiff/tif_dirread.c
+//     frmts/gtiff/libtiff/tif_codec.c
 // No code is translated from these sources.
 
 //! Reads a GeoTIFF's georeferencing tags directly, to fill in what the raster driver misses:
@@ -44,6 +47,8 @@ pub(crate) struct GeoTags {
     pub pixel_is_point: bool,
     /// The `GDAL_NODATA` value.
     pub nodata: Option<f64>,
+    /// The exact value of a 64-bit integer GDAL_NODATA tag, before conversion to metadata f64.
+    pub integer_nodata: Option<i128>,
     /// One-based nodata overrides from PAM.
     pub band_nodata: Vec<(usize, f64)>,
     /// For palette images, the file offsets of the `PhotometricInterpretation` values, in every
@@ -524,11 +529,13 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
     // start of the text, as GDAL 3.12.1 reads it (`GTiffDataset::OpenOffset`, for 33 to 64 bits
     // of SampleFormat 2 or 1, libtiff's default): `9.2233720368547758e+18`, which GDAL writes for
     // 2^63 given as a double, is 9. Other samples take the text as a number.
-    out.nodata = ascii(GDAL_NODATA).filter(|s| !s.is_empty()).and_then(|s| match (first(258).unwrap_or(1), first(339).unwrap_or(1)) {
-        (33..=64, 2) => Some(c_strtoll(s) as f64),
-        (33..=64, 1) => Some(c_strtoull(s) as f64),
-        _ => parse_nodata(s.trim()),
+    let raw_nodata = ascii(GDAL_NODATA).filter(|s| !s.is_empty());
+    out.integer_nodata = raw_nodata.and_then(|s| match (first(258).unwrap_or(1), first(339).unwrap_or(1)) {
+        (33..=64, 2) => Some(i128::from(c_strtoll(s))),
+        (33..=64, 1) => Some(i128::from(c_strtoull(s))),
+        _ => None,
     });
+    out.nodata = out.integer_nodata.map(|v| v as f64).or_else(|| raw_nodata.and_then(|s| parse_nodata(s.trim())));
     // GDAL rounds the nodata value of Float32 bands to Float32, so that it equals the samples
     // written with it (-9999.1 is -9999.099609375).
     if first(258) == Some(32) && first(339) == Some(3) {
@@ -536,6 +543,13 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
     }
     out.metadata = ascii(GDAL_METADATA).map(crate::drivers::gtiff_write::parse_gdal_metadata).unwrap_or_default();
     out.band_metadata = ascii(GDAL_METADATA).map(crate::drivers::gtiff_write::parse_gdal_band_metadata).unwrap_or_default();
+    // Expose default-domain items alongside the band's descriptive roles. Lazy
+    // headers and eager reads both carry band_properties into output datasets.
+    for (index, name, value) in &out.band_metadata {
+        if let Some(band) = out.band_properties.get_mut(*index) {
+            band.items.push((name.clone(), value.clone()));
+        }
+    }
 
     if let Some(keys) = keys {
         apply_geokeys(&mut out, keys, doubles(GEO_DOUBLE_PARAMS), ascii(GEO_ASCII_PARAMS));
