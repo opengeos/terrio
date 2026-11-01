@@ -885,7 +885,7 @@ fn esripbf_pages_match_the_services_own_json() {
             let (va, vb) = (vertices(&a.geometry), vertices(&b.geometry));
             assert_eq!(va.len(), vb.len(), "{page}, feature {i}");
             for (x, y) in va.iter().zip(&vb) {
-                // A scale of 1e-9 degrees, against what JSON prints.
+                // Quantized to 1e-9 degrees: within 1e-7 of what JSON prints.
                 assert!((x.x - y.x).abs() < 1e-7 && (x.y - y.y).abs() < 1e-7, "{page}, feature {i}: {x:?} and {y:?}");
                 assert!(near(x.z, y.z) && near(x.m, y.m), "{page}, feature {i}: {x:?} and {y:?}");
             }

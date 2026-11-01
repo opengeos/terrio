@@ -141,7 +141,8 @@ fn a_refused_query_says_so() {
 #[test]
 fn a_query_that_answers_no_features_is_not_read_as_a_layer() {
     let (base, _) = serve();
-    assert!(terrio::open_vector(&format!("{base}/count/query?returnCountOnly=true&f=pbf"), &Default::default()).is_err());
+    let plain = terrio::open_vector(&format!("{base}/count/query?returnCountOnly=true&f=pbf"), &Default::default());
+    assert!(plain.unwrap_err().to_string().contains("count"));
     let named = terrio::open_vector(&format!("ESRIPBF:{base}/count/query?returnCountOnly=true&f=pbf"), &Default::default());
     assert!(named.unwrap_err().to_string().contains("count"));
 }

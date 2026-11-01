@@ -54,11 +54,17 @@ fn pbf_still_names_openstreetmap_and_esripbf_is_not_written() {
 }
 
 #[test]
-fn a_file_that_is_not_one_stays_with_its_driver() {
+fn openstreetmap_pbf_is_told_apart() {
+    // The start of an OpenStreetMap file: a header length, then a blob header of type `OSMHeader`.
+    let osm = b"\x00\x00\x00\x0d\x0a\x09OSMHeader\x18\x00";
+    assert_eq!(terrio::formats::sniff(osm), Some("OSM"));
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("broken.pbf");
-    std::fs::write(&path, b"not a protocol buffer").unwrap();
-    assert!(!terrio::open_vector(path.to_str().unwrap(), &Default::default()).is_ok_and(|ds| ds.driver == VectorDriver::ESRIPBF));
+    let path = dir.path().join("cut.pbf");
+    std::fs::write(&path, osm).unwrap();
+    let path = path.to_str().unwrap();
+    assert_eq!(terrio::inspection::identify(path, false).unwrap().unwrap().driver, "OSM");
+    // The OpenStreetMap reader reads it, as empty layers.
+    assert_eq!(terrio::open_vector(path, &Default::default()).unwrap().driver, VectorDriver::OSM);
 }
 
 #[test]

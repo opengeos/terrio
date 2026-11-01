@@ -321,9 +321,7 @@ pub(crate) mod codec {
             return Some(VectorDriver::CityGML);
         }
         // The protocol buffer of a query shares `.pbf` with OpenStreetMap.
-        if matches!(VectorDriver::for_extension(name), None | Some(VectorDriver::OSM))
-            && extension(name).as_deref() != Some("osm")
-            && crate::drivers::vector::esripbf::is_esripbf(bytes)
+        if matches!(VectorDriver::for_extension(name), None | Some(VectorDriver::OSM)) && crate::drivers::vector::esripbf::is_esripbf(bytes)
         {
             return Some(VectorDriver::ESRIPBF);
         }

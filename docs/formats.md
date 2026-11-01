@@ -676,12 +676,14 @@ prints rounded to seven.
 terrio convert "https://example.org/arcgis/rest/services/A/FeatureServer/0/query?where=1%3D1&outFields=*&orderByFields=OBJECTID&f=pbf" out.gpkg
 ```
 
-A URL is read as a query when it has `f=pbf` and answers one, and paging works as above. A `.pbf`
-file, or one without an extension, is recognized by its content: `.pbf` otherwise names
-OpenStreetMap. `ESRIPBF:` before a URL or a path names the driver. A service answers a query it
-refuses with nothing: that is an error, and `f=json` shows the reason. An answer with a count, ids
-or an extent is refused, as are curve and shape-buffer geometries. Query URLs are not read in
-WebAssembly builds: fetch the bytes and open them.
+A URL is read as a query when it has `f=pbf` and answers one, and paging works as above, with the
+same `TERRIO_JSON_MAX_SIZE` cap on each page. A `.pbf` file, or one whose extension no driver
+claims, is recognized by its content; `.pbf` names OpenStreetMap otherwise, and `.osm.pbf` always.
+`ESRIPBF:` before a URL or a path names the driver. A service answers a query it refuses with
+nothing: that is an error, and `f=json` shows the reason. An answer with a count, ids or an extent
+is refused, as are curve and shape-buffer geometries and a point with more than one vertex. The
+format gives no field widths, which `f=json` does. Query URLs are not read in WebAssembly builds:
+fetch the bytes and open them.
 
 ### Other vector formats
 

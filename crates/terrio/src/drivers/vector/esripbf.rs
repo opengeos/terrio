@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 
-// Written from the published description of the format, `FeatureCollection.proto` in the
-// arcgis-pbf repository. GDAL has no such driver: its fields, values and geometries follow what
+// Written from the published description of the format, `FeatureCollection.proto` in
+// https://github.com/Esri/arcgis-pbf. GDAL has no such driver: its fields, values and geometries follow what
 // `super::esrijson` reads from the same service as JSON.
 
 //! The FeatureCollection protocol buffer of ArcGIS feature-service queries (`f=pbf`): one layer,
@@ -22,8 +22,10 @@ fn invalid(message: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("ESRIPBF: {message}"))
 }
 
-/// How much of a file [`is_esripbf`] needs: the version, and the start of the feature result.
-pub(crate) const HEAD_BYTES: usize = 64;
+/// How much of a file [`is_esripbf`] needs: the version (at most 32 bytes), and the start of the
+/// feature result. Format identification reads more.
+#[cfg(test)]
+const HEAD_BYTES: usize = 64;
 
 /// A reader of protocol buffer fields, which refuses what runs past its bytes.
 struct Reader<'a> {
@@ -103,6 +105,35 @@ fn zigzag(v: u64) -> i64 {
 /// then a query result holding a feature result, whose first field is one the format defines.
 pub(crate) fn is_esripbf(bytes: &[u8]) -> bool {
     signs(bytes).unwrap_or(false)
+}
+
+/// Whether the start of some bytes is such an answer of any kind: a feature result, or a count, ids
+/// or an extent, which [`page`] then refuses by name.
+#[cfg_attr(not(remote), allow(dead_code))]
+pub(crate) fn is_query_answer(bytes: &[u8]) -> bool {
+    is_esripbf(bytes) || answer_kind(bytes).is_ok_and(|kind| matches!(kind, Some(2..=4)))
+}
+
+/// The field number of the result an answer starts with, after its optional version.
+#[cfg_attr(not(remote), allow(dead_code))]
+fn answer_kind(bytes: &[u8]) -> Result<Option<u64>> {
+    let mut r = Reader::new(bytes);
+    let mut key = r.key()?;
+    if key == (1, 2) {
+        let version = r.message()?;
+        if version.len() > 32 || !version.iter().all(u8::is_ascii_graphic) {
+            return Ok(None);
+        }
+        key = r.key()?;
+    }
+    if key != (2, 2) {
+        return Ok(None);
+    }
+    r.varint()?;
+    Ok(match r.key()? {
+        (kind, 2) => Some(kind),
+        _ => None,
+    })
 }
 
 fn signs(bytes: &[u8]) -> Result<bool> {
@@ -267,7 +298,7 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
         return Err(invalid("the answer is empty, as a service's is to a query it refuses: f=json shows why"));
     }
     // A service may answer in JSON whatever was asked for, as an error.
-    if bytes.first() == Some(&b'{') {
+    if bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes).trim_ascii_start().first() == Some(&b'{') {
         return super::esrijson::page(bytes, name);
     }
     super::geojson::reserve_parse_memory(bytes.len(), "ESRIPBF")?;
@@ -499,7 +530,7 @@ fn part(c: &mut Reader, count: Option<usize>, shape: &Shape) -> Result<Vec<Coord
         let y = if t.upper_left { t.translate[1] - dy } else { t.translate[1] + dy };
         let z = shape.has_z.then(|| t.translate[3] + t.scale[3] * third as f64);
         let m = shape.has_m.then(|| t.translate[2] + t.scale[2] * (if shape.has_z { fourth } else { third }) as f64);
-        if !(x.is_finite() && y.is_finite()) {
+        if !(x.is_finite() && y.is_finite() && z.is_none_or(f64::is_finite) && m.is_none_or(f64::is_finite)) {
             return Err(invalid("a coordinate is not finite"));
         }
         vertices.push(Coord { x, y, z, m });
@@ -541,7 +572,14 @@ fn read_geometry(bytes: &[u8], shape: &Shape) -> Result<Option<Geometry>> {
         return Err(invalid("it has more coordinates than its parts count"));
     }
     match shape.kind {
-        POINT => Ok(parts.into_iter().flatten().next().map(Geometry::Point)),
+        POINT => {
+            let mut vertices = parts.into_iter().flatten();
+            let point = vertices.next();
+            if vertices.next().is_some() {
+                return Err(invalid("a point has more than one vertex"));
+            }
+            Ok(point.map(Geometry::Point))
+        }
         MULTIPOINT => Ok(Some(Geometry::MultiPoint(parts.into_iter().flatten().collect()))),
         POLYLINE => Ok(featureservice::polyline(parts)),
         POLYGON => Ok(super::polygons_from_rings(parts)),
@@ -797,7 +835,12 @@ mod tests {
         let long = answer(&[number(7, POLYLINE), message(15, &geometry(&[1], &[1, 1, 2, 2]))]);
         let huge = answer(&[number(7, POLYLINE), message(15, &geometry(&[u64::MAX / 2], &[1, 1]))]);
         let mesh = answer(&[number(7, 4), message(15, &geometry(&[1], &[1, 1]))]);
+        let two_points = answer(&[number(7, POINT), message(15, &geometry(&[2], &[1, 1, 1, 1]))]);
+        let z_scale = message(12, &message(2, &[double(1, 1.0), double(2, 1.0), double(4, f64::NAN)].concat()));
+        let nan_z = answer(&[number(10, 1), z_scale, message(15, &geometry(&[], &[1, 1, 1]))]);
         for (bytes, says) in [
+            (&two_points, "more than one vertex"),
+            (&nan_z, "not finite"),
             (&count, "count"),
             (&curve, "curve"),
             (&shape, "shape-buffer"),
@@ -812,7 +855,7 @@ mod tests {
         }
         assert!(parse(&[], "x").unwrap_err().to_string().contains("empty"));
         assert!(parse(&message(1, b"2.0"), "x").unwrap_err().to_string().contains("no feature result"));
-        let json = br#"{"error":{"code":400,"message":"Invalid query"}}"#;
+        let json = b"\xEF\xBB\xBF \n{\"error\":{\"code\":400,\"message\":\"Invalid query\"}}";
         assert!(parse(json, "x").unwrap_err().to_string().contains("Invalid query"));
     }
 
@@ -852,8 +895,11 @@ mod tests {
         assert!(!is_esripbf(b"\x00\x00\x00\x0d\x0a\x09OSMHeader"));
         // A vector tile: its layers are field 3.
         assert!(!is_esripbf(&message(3, &message(1, b"layer"))));
-        // A count result.
-        assert!(!is_esripbf(&message(2, &message(2, &number(1, 5)))));
+        // A count result: an answer, without features.
+        let count = message(2, &message(2, &number(1, 5)));
+        assert!(!is_esripbf(&count));
+        assert!(is_query_answer(&count) && is_query_answer(&whole));
+        assert!(!is_query_answer(&message(3, &message(1, b"layer"))));
         // A version that is not one.
         assert!(!is_esripbf(&[message(1, &[0, 1, 2]), message(2, &message(1, &number(7, 3)))].concat()));
     }

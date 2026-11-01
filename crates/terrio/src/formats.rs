@@ -838,6 +838,10 @@ fn named_drivers(trimmed: &str) -> Named {
     if name.ends_with(".gml") && by_name.iter().any(|name| name == "GML") {
         by_name.push("CITYGML".to_string());
     }
+    // `.osm.pbf` is OpenStreetMap's alone, as `for_extension` reads it.
+    if name.ends_with(".osm.pbf") {
+        by_name.retain(|d| d == "OSM");
+    }
     // Plain JSON is shared by GeoJSON and CityJSON; the reader chooses by root type.
     if name.ends_with(".json") && by_name.iter().any(|name| name == "GEOJSON") {
         by_name.push("CITYJSON".to_string());
@@ -1071,6 +1075,14 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     }
     if starts(b"SQLite format 3\0") {
         return Some("GPKG");
+    }
+    // OpenStreetMap PBF: a big-endian header length, then a header blob of type `OSMHeader`. Named
+    // here so that `.pbf`, which also names ESRIPBF, is judged by what it holds.
+    if let Some(length) = head.get(..4).and_then(|h| h.try_into().ok()).map(u32::from_be_bytes)
+        && (1..=65_536).contains(&length)
+        && head.get(4..).is_some_and(|rest| rest.windows(11).take(length as usize).any(|w| w == b"\x0a\x09OSMHeader"))
+    {
+        return Some("OSM");
     }
     if starts(b"PMTiles") {
         return Some("PMTILES");

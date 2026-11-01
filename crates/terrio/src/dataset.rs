@@ -613,11 +613,13 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
         let cap = crate::http::json_max_size();
         let mut bytes = Vec::new();
         (&mut *reader).take(esrijson::HEAD_BYTES as u64).read_to_end(&mut bytes)?;
-        // A service answers a query it refuses with nothing when asked for the protocol buffer.
+        // Asked for the protocol buffer, a service answers a query it refuses with nothing, and one
+        // for a count, ids or an extent with that answer, which the reader refuses by name.
+        let pbf = featureservice::asks_for_pbf(url);
         recognized = recognized.or_else(|| {
             if esrijson::is_esrijson(&bytes) {
                 Some(VectorDriver::ESRIJSON)
-            } else if esripbf::is_esripbf(&bytes) || (bytes.is_empty() && featureservice::asks_for_pbf(url)) {
+            } else if esripbf::is_esripbf(&bytes) || (pbf && (bytes.is_empty() || esripbf::is_query_answer(&bytes))) {
                 Some(VectorDriver::ESRIPBF)
             } else {
                 None
@@ -777,17 +779,21 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    // City-model documents and ESRI JSON with no recognized extension (a downloaded query result)
-    // use a bounded root probe.
+    // City-model documents, ESRI JSON and protocol buffers with no recognized extension (a downloaded
+    // query result) use a bounded root probe, as does `.pbf`, which a query's protocol buffer shares
+    // with OpenStreetMap.
     #[cfg(not(target_family = "wasm"))]
-    if VectorDriver::for_extension(path).is_none() && RasterDriver::for_extension(path).is_none() && !Path::new(path).is_dir() {
+    let pbf = VectorDriver::for_extension(path) == Some(VectorDriver::OSM) && ext == "pbf";
+    #[cfg(not(target_family = "wasm"))]
+    if (VectorDriver::for_extension(path).is_none() || pbf) && RasterDriver::for_extension(path).is_none() && !Path::new(path).is_dir() {
         let driver = crate::inspection::identify(path, false).ok().flatten().and_then(|identified| match identified.driver.as_str() {
+            "ESRIPBF" => Some(VectorDriver::ESRIPBF),
+            _ if pbf => None,
             "CityGML" => Some(VectorDriver::CityGML),
             "CityJSON" => Some(VectorDriver::CityJSON),
             // Its first bytes show ESRI JSON, but a root `type` further on can say GeoJSON: the JSON
             // reader decides on the whole document.
             "ESRIJSON" => Some(VectorDriver::GeoJSON),
-            "ESRIPBF" => Some(VectorDriver::ESRIPBF),
             _ => None,
         });
         if let Some(driver) = driver {
@@ -905,15 +911,6 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
     Ok(ds)
 }
 
-/// Whether a `.pbf` file's first bytes show a feature-service query's protocol buffer.
-fn shows_esripbf(path: &str) -> Result<bool> {
-    use crate::drivers::vector::esripbf;
-    use std::io::Read;
-    let mut head = Vec::new();
-    std::fs::File::open(path)?.take(esripbf::HEAD_BYTES as u64).read_to_end(&mut head)?;
-    Ok(esripbf::is_esripbf(&head))
-}
-
 fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<VectorDataset> {
     // `.json` is shared with GeoJSON. The root type may follow megabytes of vertices or
     // CityObjects, beyond the bounded identifier. These formats already require a whole
@@ -942,9 +939,6 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
         };
         crate::formats::check_driver_allowed(driver.name(), path, crate::formats::Kind::Vector)?;
         (driver, Some(bytes))
-    } else if driver == VectorDriver::OSM && crate::formats::extension(path).as_deref() == Some("pbf") && shows_esripbf(path)? {
-        crate::formats::check_driver_allowed(VectorDriver::ESRIPBF.name(), path, crate::formats::Kind::Vector)?;
-        (VectorDriver::ESRIPBF, None)
     } else {
         (driver, None)
     };
