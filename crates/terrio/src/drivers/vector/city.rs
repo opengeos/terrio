@@ -5,6 +5,13 @@
 use crate::Result;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
 
+pub(super) const CITY_ID: usize = 0;
+pub(super) const LOD: usize = 2;
+pub(super) const PARENTS: usize = 3;
+pub(super) const GEOMETRY_TYPE: usize = 5;
+pub(super) const SEMANTICS: usize = 6;
+pub(super) const SURFACE_SEMANTICS: usize = 7;
+
 pub(super) const MAX_FEATURE_BYTES: usize = 256 * 1024 * 1024;
 
 pub(super) fn charge(used: &mut usize, cost: usize, limit: usize, format: &str) -> Result<()> {

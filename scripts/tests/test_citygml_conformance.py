@@ -75,3 +75,16 @@ def test_polygon_without_owner_or_lod_has_clear_error(owner):
     etree.SubElement(parent, "{http://www.opengis.net/gml/3.2}Polygon")
     with pytest.raises(ValueError, match="LoD property" if owner else "city object owner"):
         source_faces(etree.ElementTree(root))
+
+
+def test_direct_scalar_measures_are_compared_with_units():
+    import json
+
+    expected, owners, actual = example()
+    height = etree.SubElement(owners["house"], "{http://www.opengis.net/citygml/building/3.0}measuredHeight", uom="m")
+    height.text = "12.5"
+    actual["features"][0]["properties"]["attributes"] = json.dumps({"name": "house", "measuredHeight": {"value": "12.5", "uom": "m"}})
+    compare(expected, owners, actual)
+    actual["features"][0]["properties"]["attributes"] = '{"name":"house","measuredHeight":{"value":"99","uom":"m"}}'
+    with pytest.raises(AssertionError):
+        compare(expected, owners, actual)
