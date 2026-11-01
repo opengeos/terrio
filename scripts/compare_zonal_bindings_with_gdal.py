@@ -102,7 +102,7 @@ def compare(result, expected, source, options):
                     or abs(value - wanted_value) > (1e-5 if reprojected else 1e-12)
                     for value, wanted_value in zip(point[:2], wanted_point[:2], strict=True)
                 ):
-                    raise AssertionError("output geometry XY/Z pairing differs")
+                    raise AssertionError("output geometry differs: XY/Z pairing")
                 if any(
                     not math.isfinite(value)
                     or not math.isclose(value, wanted_value, rel_tol=0, abs_tol=1e-9)
