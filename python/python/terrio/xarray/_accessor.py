@@ -205,6 +205,7 @@ def _ensure_nodata_dtype(original_nodata: Any, new_dtype: Any) -> Any:
 
     Raises:
         OverflowError: If the value does not fit.
+        ValueError: If NumPy cannot convert the value, such as NaN to an integer.
     """
     new_dtype = np.dtype(new_dtype)
     if np.issubdtype(new_dtype, np.complexfloating):
@@ -219,7 +220,9 @@ def _ensure_nodata_dtype(original_nodata: Any, new_dtype: Any) -> Any:
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             nodata = new_dtype.type(original)
-    except (OverflowError, ValueError, RuntimeWarning) as error:
+    except ValueError as error:
+        raise ValueError(message) from error
+    except (OverflowError, RuntimeWarning) as error:
         raise OverflowError(message) from error
     if not np.isnan(nodata) and original != nodata:
         raise OverflowError(message)

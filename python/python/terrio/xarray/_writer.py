@@ -345,8 +345,8 @@ def write_raster(
     if kwargs.get("nodata") is not None:
         try:
             kwargs["nodata"] = _ensure_nodata_dtype(kwargs["nodata"], numpy_dtype)
-        except OverflowError as error:
-            raise OverflowError(
+        except (OverflowError, ValueError) as error:
+            raise type(error)(
                 f"{error} Choose a floating output dtype (for example dtype='float32'), "
                 "or set a representable fill value with "
                 "write_nodata(value, encoded=True) before to_raster()."

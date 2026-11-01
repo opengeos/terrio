@@ -339,7 +339,10 @@ def test_to_raster_round_trips(files, tmp_path):
 @pytest.mark.parametrize("source_nodata", [None, -32768])
 @pytest.mark.parametrize("mode", ["eager", "windowed", "delayed"])
 def test_masked_integer_warp_export(tmp_path, source_nodata, mode):
-    """Warp borders survive export, with GDAL 3.13.3-compatible nodata and grids."""
+    """Warp borders round-trip with their grid and floating or encoded integer nodata.
+
+    The GDAL 3.13.3 cross-read is a separate manual validation.
+    """
     source = tmp_path / "source.tif"
     pixels = np.arange(16, dtype="int16").reshape(4, 4)
     with rio.open(
@@ -387,13 +390,19 @@ def test_masked_integer_warp_export(tmp_path, source_nodata, mode):
             else:
                 assert raw.nodata == source_nodata
         if source_nodata is None:
-            with pytest.raises(OverflowError, match="write_nodata.*encoded=True"):
+            with pytest.raises(ValueError, match="write_nodata.*encoded=True"):
                 da.terrio.to_raster(tmp_path / "invalid.tif", dtype="int16")
             assert not (tmp_path / "invalid.tif").exists()
             encoded = da.terrio.write_nodata(-32768, encoded=True)
             encoded.terrio.to_raster(tmp_path / "integer.tif", dtype="int16")
             with txr.open_rasterio(tmp_path / "integer.tif", masked=True) as back:
                 np.testing.assert_array_equal(back.values, da.values)
+
+
+def test_write_nan_nodata_to_integer_keeps_value_error():
+    da = xr.DataArray(np.ones((2, 2), dtype="int16"), dims=("y", "x"))
+    with pytest.raises(ValueError, match="nodata value.*nan.*dtype.*int16"):
+        da.terrio.write_nodata(np.nan)
 
 
 def test_to_raster_float_override_preserves_fractions(tmp_path):
