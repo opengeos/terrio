@@ -324,11 +324,9 @@ pub(crate) mod codec {
         if json.starts_with(b"{")
             && matches!(VectorDriver::for_extension(name), None | Some(VectorDriver::GeoJSON))
             && extension(name).as_deref() != Some("geojson")
+            && std::str::from_utf8(json).is_ok_and(crate::drivers::vector::esrijson::is_esrijson_document)
         {
-            let head = json.get(..crate::drivers::vector::esrijson::HEAD_BYTES).unwrap_or(json);
-            if crate::drivers::vector::esrijson::is_esrijson(&String::from_utf8_lossy(head)) {
-                return Some(VectorDriver::ESRIJSON);
-            }
+            return Some(VectorDriver::ESRIJSON);
         }
         if let Some(d) = VectorDriver::for_extension(name) {
             return Some(d);
@@ -441,6 +439,8 @@ pub(crate) mod codec {
             return Ok(Dataset::Raster(RasterDataset::with_driver(raster, RasterDriver::AAIGrid, true)));
         }
         let driver = vector_driver(&bytes, name).ok_or_else(|| Error::Unsupported(format!("'{name}': format not recognized")))?;
+        // The content may have chosen the driver from past the bytes the allow-list judged.
+        crate::formats::check_driver_allowed(driver.name(), name, Kind::Vector)?;
         let Some(layers) = crate::drivers::vector::read_bytes(bytes, name, driver, options)? else {
             return Err(Error::Unsupported(format!(
                 "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoPackage, JPEG 2000, GRIB, netCDF, \

@@ -27,6 +27,43 @@ fn page(offset: usize, count: usize) -> String {
     )
 }
 
+/// A page like [`page`]'s without an object id field.
+fn no_object_ids(offset: usize, count: usize) -> String {
+    let end = (offset + count).min(TOTAL);
+    let features: Vec<String> =
+        (offset..end).map(|i| format!(r#"{{"attributes":{{"NAME":"n{i}"}},"geometry":{{"x":{i},"y":{i}}}}}"#)).collect();
+    format!(
+        r#"{{"geometryType":"esriGeometryPoint","fields":[{{"name":"NAME","type":"esriFieldTypeString"}}],"features":[{}],"exceededTransferLimit":{}}}"#,
+        features.join(","),
+        end < TOTAL
+    )
+}
+
+/// The path of a query whose server ignores ranges.
+const IGNORES_RANGES: &str = "/ignores-ranges/query";
+
+const LARGE_FEATURES: usize = 4000;
+
+/// A page larger than ten times the first range a lazy open asks for.
+fn large_page() -> String {
+    let features: Vec<String> = (0..LARGE_FEATURES)
+        .map(|i| format!(r#"{{"attributes":{{"OBJECTID":{},"NAME":"{}"}},"geometry":{{"x":1,"y":2}}}}"#, i + 1, "n".repeat(50)))
+        .collect();
+    format!(
+        r#"{{"objectIdFieldName":"OBJECTID","geometryType":"esriGeometryPoint","fields":[{{"name":"OBJECTID","type":"esriFieldTypeOID"}},{{"name":"NAME","type":"esriFieldTypeString"}}],"features":[{}]}}"#,
+        features.join(",")
+    )
+}
+
+const BIG_GEOJSON_BYTES: usize = 300_000;
+
+fn big_geojson() -> String {
+    format!(
+        r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{"a":"{}"}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}]}}"#,
+        "x".repeat(BIG_GEOJSON_BYTES)
+    )
+}
+
 /// A service of [`TOTAL`] features at `/FeatureServer/0/query`, at most two per page, with other
 /// paths for the error cases. Returns its base URL and the requests it received.
 fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
@@ -79,10 +116,25 @@ fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
                 }
                 "/other/query" => page(offset, count),
                 "/denied/query" => r#"{"error":{"code":498,"message":"Invalid token."}}"#.to_string(),
+                "/repeats/query" => page(0, 2),
+                "/noid/query" => no_object_ids(offset, count),
+                "/emptylast/query" if offset > 0 => r#"{"features":[]}"#.to_string(),
+                "/emptylast/query" => r#"{"features":[{"attributes":{"A":1},"geometry":{"x":1,"y":2}}],"exceededTransferLimit":true}"#.to_string(),
+                "/FeatureServer/0" => {
+                    r#"{"id":0,"type":"Feature Layer","geometryType":"esriGeometryPoint","fields":[{"name":"A","type":"esriFieldTypeString"}]}"#
+                        .to_string()
+                }
+                IGNORES_RANGES => large_page(),
+                "/ogc/big.geojson" => big_geojson(),
                 _ => r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"a":1},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#.to_string(),
             };
             let data = body.into_bytes();
             let len = data.len();
+            if path == IGNORES_RANGES {
+                // As ArcGIS Server answers: the whole answer, with neither its length nor a range.
+                let _ = stream.write_all(&[b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".as_slice(), &data].concat());
+                continue;
+            }
             let (status, a, b) = match range {
                 Some((a, b)) => ("206 Partial Content", a, b.unwrap_or(len - 1).min(len - 1)),
                 None => ("200 OK", 0, len - 1),
@@ -128,7 +180,7 @@ fn a_query_is_read_page_by_page() {
 }
 
 #[test]
-fn the_url_s_page_size_and_the_prefix_are_kept() {
+fn url_page_size_and_prefix_are_kept() {
     let (base, requests) = serve();
     let url = format!("ESRIJSON:{base}/FeatureServer/0/query?resultRecordCount=2");
     let ds = terrio::open_vector(&url, &Default::default()).unwrap();
@@ -178,6 +230,35 @@ fn a_service_s_errors_and_stalls_are_errors() {
     assert!(error("/fails/query?f=json").contains("Server is busy"));
     assert!(error("/other/query?f=json").contains("other fields"));
     assert!(error("/stalls/query?f=json").contains("has none"));
+    assert!(error("/repeats/query?f=json").contains("same as the one before"));
+    assert!(error("/FeatureServer/0?f=json").contains("no features"));
+}
+
+#[test]
+fn features_without_object_ids_are_numbered_across_pages() {
+    let (base, _) = serve();
+    let ds = terrio::open_vector(&format!("{base}/noid/query?f=json"), &Default::default()).unwrap();
+    assert_eq!(ids(&ds), [0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn an_empty_last_page_without_fields_ends_the_reading() {
+    let (base, _) = serve();
+    let ds = terrio::open_vector(&format!("{base}/emptylast/query?f=json"), &Default::default()).unwrap();
+    assert_eq!(ds.layers[0].features.len(), 1);
+}
+
+#[test]
+fn a_server_that_ignores_ranges_is_read_and_described() {
+    let (base, requests) = serve();
+    let url = format!("{base}{IGNORES_RANGES}?f=json");
+    assert!(large_page().len() > 160 * 1024, "larger than a lazy open accepts");
+    assert_eq!(terrio::open_vector(&url, &Default::default()).unwrap().layers[0].features.len(), LARGE_FEATURES);
+    assert_eq!(requests.lock().unwrap().len(), 1, "one request");
+
+    let Ok(terrio::info::Info::Vector(info)) = terrio::info::info_path(&url, &Default::default()) else { panic!("not a vector dataset") };
+    assert_eq!(info.driver, "ESRIJSON");
+    assert_eq!(terrio::inspection::identify(&url, false).unwrap().unwrap().driver, "ESRIJSON");
 }
 
 #[test]
@@ -186,4 +267,16 @@ fn other_json_at_such_a_url_is_read_as_before() {
     let ds = terrio::open_vector(&format!("{base}/ogc/data.geojson?f=json"), &Default::default()).unwrap();
     assert_eq!(ds.driver, VectorDriver::GeoJSON);
     assert_eq!(ds.layers[0].features.len(), 1);
+}
+
+#[test]
+fn other_json_at_such_a_url_is_not_downloaded_twice() {
+    let (base, _) = serve();
+    let ds = terrio::open_vector(&format!("{base}/ogc/big.geojson?f=json"), &Default::default()).unwrap();
+    assert_eq!(ds.driver, VectorDriver::GeoJSON);
+    let host = base.trim_start_matches("http://");
+    let stats = terrio::http::fetch_stats_by_host();
+    let (_, fetched) = stats.iter().find(|(h, _)| h == host).unwrap();
+    let whole = big_geojson().len() as u64;
+    assert!(fetched.bytes < whole + whole / 4, "{} bytes fetched of a document of {whole}", fetched.bytes);
 }

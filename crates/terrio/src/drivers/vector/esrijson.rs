@@ -28,14 +28,35 @@ fn invalid(message: impl std::fmt::Display) -> Error {
 /// How much of a document [`is_esrijson`] looks at, as GDAL's driver does.
 pub(crate) const HEAD_BYTES: usize = 6000;
 
-/// Whether the start of a JSON text is ESRI JSON, by GDAL's signs: a geometry type, field
-/// aliases, ESRI field types, features with rings or attributes, or a spatial reference by WKID.
-/// A service's error answer counts too, so that it is reported as one. A GeoJSON
-/// `FeatureCollection` is not.
-pub(crate) fn is_esrijson(text: &str) -> bool {
-    let text = text.trim_start_matches('\u{feff}').trim_start();
-    let text = text.get(..text.char_indices().nth(HEAD_BYTES).map_or(text.len(), |(i, _)| i)).unwrap_or(text);
-    if !text.starts_with('{') || text.contains("\"FeatureCollection\"") {
+/// Whether a JSON text's root `type` says it is GeoJSON or TopoJSON. The signs of ESRI JSON can
+/// appear among such a document's properties. ESRI JSON's own `type`, as a layer's description
+/// has (`Feature Layer`), is none of these.
+fn is_other_format(text: &str) -> bool {
+    crate::inspection::root_json_type(text).is_some_and(|t| {
+        matches!(
+            t.as_str(),
+            "FeatureCollection"
+                | "Feature"
+                | "Point"
+                | "MultiPoint"
+                | "LineString"
+                | "MultiLineString"
+                | "Polygon"
+                | "MultiPolygon"
+                | "GeometryCollection"
+                | "Topology"
+        )
+    })
+}
+
+/// Whether the start of a JSON text, its first [`HEAD_BYTES`], is ESRI JSON, by GDAL's signs: a
+/// geometry type, field aliases, ESRI field types, features with rings or attributes, or a spatial
+/// reference by WKID. A service's error answer counts too, so that it is reported as one. A text
+/// whose root `type` is GeoJSON's or TopoJSON's does not.
+pub(crate) fn is_esrijson(bytes: &[u8]) -> bool {
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes).trim_ascii_start();
+    let text = String::from_utf8_lossy(bytes.get(..HEAD_BYTES).unwrap_or(bytes));
+    if !text.starts_with('{') || is_other_format(&text) {
         return false;
     }
     if (text.contains("\"geometryType\"") && text.contains("\"esriGeometry"))
@@ -49,6 +70,11 @@ pub(crate) fn is_esrijson(text: &str) -> bool {
         || compact.starts_with("{\"features\":[{\"attributes\":{")
         || compact.starts_with("{\"error\":{\"code\":")
         || compact.contains("\"spatialReference\":{\"wkid\":")
+}
+
+/// [`is_esrijson`] for a whole document, whose root `type` may follow its first bytes.
+pub(crate) fn is_esrijson_document(text: &str) -> bool {
+    is_esrijson(text.as_bytes()) && !is_other_format(text.trim_start_matches('\u{feff}').trim_start())
 }
 
 /// Reads an ESRI JSON file; the layer is named after it.
@@ -77,9 +103,23 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     let features = match doc.get("features") {
         Some(Value::Array(features)) => features.as_slice(),
         Some(_) => return Err(invalid("features is not an array")),
-        None => &[],
+        // A service's description (a URL without its `/query`) shows the signs and has no features.
+        None => return Err(invalid("the document has no features: it is not a query's result")),
     };
-    let fields = schema(doc, features);
+    let mut fields = schema(doc, features);
+    // The layer keeps a name once, and values are by position.
+    let mut names = std::collections::HashSet::new();
+    fields.retain(|f| names.insert(f.def.name.clone()));
+    let cells = features.len().saturating_mul(fields.len()).saturating_mul(std::mem::size_of::<FieldValue>());
+    let mut probe: Vec<u8> = Vec::new();
+    probe.try_reserve_exact(cells).map_err(|_| {
+        invalid(format!(
+            "{} features of {} fields need about {cells} bytes of memory, more than is available",
+            features.len(),
+            fields.len()
+        ))
+    })?;
+    drop(probe);
     let mut layer = Layer::new(name);
     for f in &fields {
         layer.add_field(f.def.clone());
@@ -107,7 +147,11 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
         };
         layer.push(Feature { fid: fid.unwrap_or(n as u64), geometry, attributes: values });
     }
-    Ok(featureservice::Page { layer, more: doc.get("exceededTransferLimit").and_then(Value::as_bool).unwrap_or(false) })
+    Ok(featureservice::Page {
+        layer,
+        more: doc.get("exceededTransferLimit").and_then(Value::as_bool).unwrap_or(false),
+        object_ids: object_id.is_some(),
+    })
 }
 
 fn spatial_reference(sr: Option<&Value>) -> Option<crate::crs::SpatialRef> {
@@ -132,32 +176,23 @@ fn schema(doc: &Map<String, Value>, features: &[Value]) -> Vec<Field> {
     if let Some(Value::Object(aliases)) = doc.get("fieldAliases") {
         return aliases.keys().map(|name| Field { def: FieldDef::new(name, FieldType::Text), object_id: false }).collect();
     }
-    let mut seen: Vec<(String, Option<FieldType>)> = Vec::new();
+    let mut seen: Vec<(&str, Option<FieldType>)> = Vec::new();
+    let mut index = std::collections::HashMap::new();
     for attributes in features.iter().filter_map(|f| f.get("attributes").and_then(Value::as_object)) {
         for (name, v) in attributes {
-            let t = match v {
-                Value::Null => None,
-                Value::Number(n) if n.is_i64() || n.is_u64() => Some(FieldType::Integer),
-                Value::Number(_) => Some(FieldType::Float),
-                _ => Some(FieldType::Text),
-            };
-            match seen.iter_mut().find(|(n, _)| n == name) {
-                Some((_, kind)) => {
-                    *kind = match (*kind, t) {
-                        (k, None) => k,
-                        (None, t) => t,
-                        (Some(a), Some(b)) if a == b => Some(a),
-                        (Some(FieldType::Integer), Some(FieldType::Float)) | (Some(FieldType::Float), Some(FieldType::Integer)) => {
-                            Some(FieldType::Float)
-                        }
-                        _ => Some(FieldType::Text),
-                    }
-                }
-                None => seen.push((name.clone(), t)),
+            // Booleans and nested values are read as text.
+            let t =
+                super::topojson::json_type(v).map(|t| if matches!(t, FieldType::Integer | FieldType::Float) { t } else { FieldType::Text });
+            let at = *index.entry(name.as_str()).or_insert_with(|| {
+                seen.push((name.as_str(), None));
+                seen.len() - 1
+            });
+            if let Some((_, kind)) = seen.get_mut(at) {
+                *kind = super::topojson::widen(*kind, t);
             }
         }
     }
-    seen.into_iter().map(|(name, t)| Field { def: FieldDef::new(&name, t.unwrap_or(FieldType::Text)), object_id: false }).collect()
+    seen.into_iter().map(|(name, t)| Field { def: FieldDef::new(name, t.unwrap_or(FieldType::Text)), object_id: false }).collect()
 }
 
 /// An attribute value, as the field's type reads it.
@@ -169,9 +204,11 @@ fn value(v: Option<&Value>, field: &FieldDef) -> FieldValue {
             .or_else(|| v.as_f64().filter(|f| f.is_finite()).map(|f| f as i64))
             .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
             .map_or(FieldValue::Null, FieldValue::Integer),
-        FieldType::Float => {
-            v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())).map_or(FieldValue::Null, FieldValue::Float)
-        }
+        FieldType::Float => v
+            .as_f64()
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+            .filter(|f: &f64| f.is_finite())
+            .map_or(FieldValue::Null, FieldValue::Float),
         FieldType::DateTime => match v.as_i64().or_else(|| v.as_f64().filter(|f| f.is_finite()).map(|f| f as i64)) {
             Some(ms) => featureservice::date_time(ms),
             None => v.as_str().map_or(FieldValue::Null, |s| FieldValue::DateTime(s.to_string())),
@@ -187,32 +224,38 @@ fn value(v: Option<&Value>, field: &FieldDef) -> FieldValue {
     }
 }
 
-/// A position's numbers.
-fn numbers(v: &Value) -> std::result::Result<Vec<f64>, String> {
+/// A position. X and Y must be finite numbers; a Z or M of null or `"NaN"` is none.
+fn position(v: &Value, has_z: bool, has_m: bool) -> std::result::Result<Coord, String> {
     let a = v.as_array().ok_or("a position is not an array")?;
-    if !(2..=4).contains(&a.len()) {
+    let not_finite = || "a coordinate is not a finite number".to_string();
+    let [x, y, extra @ ..] = a.as_slice() else {
+        return Err(format!("a position has {} numbers, not 2 to 4", a.len()));
+    };
+    if extra.len() > 2 {
         return Err(format!("a position has {} numbers, not 2 to 4", a.len()));
     }
-    a.iter().map(|n| n.as_f64().filter(|f| f.is_finite()).ok_or_else(|| "a coordinate is not a finite number".to_string())).collect()
+    let number = |n: &Value| n.as_f64().filter(|f| f.is_finite()).ok_or_else(not_finite);
+    let extra = extra
+        .iter()
+        .map(|n| if n.is_null() || n.as_str() == Some("NaN") { Ok(None) } else { number(n).map(Some) })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(featureservice::coordinate(number(x)?, number(y)?, &extra, has_z, has_m))
 }
 
 fn positions(v: &Value, has_z: bool, has_m: bool) -> std::result::Result<Vec<Coord>, String> {
-    let a = v.as_array().ok_or("a path or ring is not an array")?;
-    a.iter()
-        .map(|p| {
-            let n = numbers(p)?;
-            featureservice::coordinate(&n, has_z, has_m).ok_or_else(|| "a position has fewer than two numbers".into())
-        })
-        .collect()
+    v.as_array().ok_or("a path or ring is not an array")?.iter().map(|p| position(p, has_z, has_m)).collect()
 }
 
 fn parts(v: &Value, has_z: bool, has_m: bool) -> std::result::Result<Vec<Vec<Coord>>, String> {
     v.as_array().ok_or("paths or rings are not an array")?.iter().map(|p| positions(p, has_z, has_m)).collect()
 }
 
-/// A geometry. A point whose `x` is null or `"NaN"` is empty: no geometry.
+/// A geometry. An empty object, or a point whose `x` is null or `"NaN"`, is no geometry.
 fn geometry(g: &Value, has_z: bool, has_m: bool) -> std::result::Result<Option<Geometry>, String> {
     let g = g.as_object().ok_or("a geometry is not an object")?;
+    if g.is_empty() {
+        return Ok(None);
+    }
     let has_z = g.get("hasZ").and_then(Value::as_bool).unwrap_or(has_z);
     let has_m = g.get("hasM").and_then(Value::as_bool).unwrap_or(has_m);
     if let Some(x) = g.get("x") {
@@ -224,10 +267,10 @@ fn geometry(g: &Value, has_z: bool, has_m: bool) -> std::result::Result<Option<G
         return Ok(Some(Geometry::MultiPoint(positions(points, has_z, has_m)?)));
     }
     if let Some(paths) = g.get("paths") {
-        return Ok(Some(featureservice::polyline(parts(paths, has_z, has_m)?)));
+        return Ok(featureservice::polyline(parts(paths, has_z, has_m)?));
     }
     if let Some(rings) = g.get("rings") {
-        return Ok(featureservice::polygon(parts(rings, has_z, has_m)?));
+        return Ok(super::polygons_from_rings(parts(rings, has_z, has_m)?));
     }
     if g.contains_key("curvePaths") || g.contains_key("curveRings") {
         return Err("curve geometries are not read".into());
@@ -322,6 +365,8 @@ mod tests {
             (r#"{"features": [{"geometry": {"paths": [[[0,"a"]]]}}]}"#, "finite"),
             (r#"{"features": [{"geometry": {"envelope": 1}}]}"#, "no x"),
             (r#"{"features": 3}"#, "not an array"),
+            (r#"{"id": 0, "type": "Feature Layer", "geometryType": "esriGeometryPoint"}"#, "no features"),
+            (r#"{"x": 1, "y": 2, "spatialReference": {"wkid": 4326}}"#, "no features"),
             (r#"[1]"#, "not a JSON object"),
             ("{", "ESRIJSON"),
         ] {
@@ -331,14 +376,73 @@ mod tests {
     }
 
     #[test]
-    fn recognized_as_gdal_recognizes_it() {
-        assert!(is_esrijson(r#"{"objectIdFieldName":"OID","geometryType":"esriGeometryPoint"}"#));
-        assert!(is_esrijson(r#"{"displayFieldName":"","fieldAliases":{"A":"A"}}"#));
-        assert!(is_esrijson(r#"{"fields":[{"name":"A","type":"esriFieldTypeString"}]}"#));
-        assert!(is_esrijson("{ \"features\" : [ { \"attributes\" : { } } ] }"));
-        assert!(is_esrijson(r#"{"x":1,"y":2,"spatialReference":{"wkid":4326}}"#));
-        assert!(!is_esrijson(r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{}}]}"#));
-        assert!(!is_esrijson(r#"{"type":"Topology","objects":{}}"#));
-        assert!(!is_esrijson("not json"));
+    fn a_null_z_or_m_is_none_and_an_empty_geometry_no_geometry() {
+        let doc = r#"{"hasM": true, "hasZ": true, "features": [
+            {"geometry": {"paths": [[[0,0,1,null],[1,1,null,2],[2,2,null,null],[3,3,"NaN",4]]]}},
+            {"geometry": {}},
+            {"geometry": {"paths": []}}
+        ]}"#;
+        let l = parse(doc.as_bytes(), "x").unwrap();
+        let Some(Geometry::LineString(line)) = &l.features[0].geometry else { panic!("not a line") };
+        let extra: Vec<_> = line.iter().map(|c| (c.z, c.m)).collect();
+        assert_eq!(extra, [(Some(1.0), None), (None, Some(2.0)), (None, None), (None, Some(4.0))]);
+        assert!(l.features[1].geometry.is_none());
+        assert!(l.features[2].geometry.is_none());
+        // X and Y are required, and so is a number where a Z is given.
+        for bad in ["[null,1]", "[1,null]", r#"[1,2,"a"]"#, "[1,2,3,4,5]", "[1]"] {
+            let doc = format!(r#"{{"features": [{{"geometry": {{"paths": [[{bad}]]}}}}]}}"#);
+            assert!(parse(doc.as_bytes(), "x").is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_repeated_field_name_does_not_shift_the_values() {
+        let doc = r#"{"fields": [{"name": "A", "type": "esriFieldTypeString"}, {"name": "A", "type": "esriFieldTypeString"},
+            {"name": "B", "type": "esriFieldTypeString"}], "features": [{"attributes": {"A": "a", "B": "b"}}]}"#;
+        let l = parse(doc.as_bytes(), "x").unwrap();
+        assert_eq!(l.schema.fields().len(), 2);
+        assert_eq!(l.features[0].attributes, [FieldValue::Text("a".into()), FieldValue::Text("b".into())]);
+    }
+
+    #[test]
+    fn a_real_of_text_that_is_not_finite_is_null() {
+        let doc = r#"{"fields": [{"name": "A", "type": "esriFieldTypeDouble"}], "features": [
+            {"attributes": {"A": "NaN"}}, {"attributes": {"A": "inf"}}, {"attributes": {"A": "1.5"}}]}"#;
+        let l = parse(doc.as_bytes(), "x").unwrap();
+        assert_eq!(field(&l, 0, "A"), &FieldValue::Null);
+        assert_eq!(field(&l, 1, "A"), &FieldValue::Null);
+        assert_eq!(field(&l, 2, "A"), &FieldValue::Float(1.5));
+    }
+
+    #[test]
+    fn booleans_and_nested_values_without_fields_are_text() {
+        let doc = r#"{"features": [{"attributes": {"A": true, "B": [1]}}]}"#;
+        let l = parse(doc.as_bytes(), "x").unwrap();
+        assert_eq!(field(&l, 0, "A"), &FieldValue::Text("true".into()));
+        assert_eq!(field(&l, 0, "B"), &FieldValue::Text("[1]".into()));
+    }
+
+    #[test]
+    fn content_signs_are_recognized() {
+        let is = |text: &str| is_esrijson(text.as_bytes());
+        assert!(is(r#"{"objectIdFieldName":"OID","geometryType":"esriGeometryPoint"}"#));
+        assert!(is(r#"{"displayFieldName":"","fieldAliases":{"A":"A"}}"#));
+        assert!(is(r#"{"fields":[{"name":"A","type":"esriFieldTypeString"}]}"#));
+        assert!(is("\u{feff} { \"features\" : [ { \"attributes\" : { } } ] }"));
+        assert!(is(r#"{"x":1,"y":2,"spatialReference":{"wkid":4326}}"#));
+        assert!(is(r#"{"fieldAliases":{"A":"A"},"features":[{"attributes":{"A":"FeatureCollection"}}]}"#));
+        assert!(!is(r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{}}]}"#));
+        assert!(!is(r#"{"type":"Feature","properties":{"spatialReference":{"wkid":4326}},"geometry":null}"#));
+        assert!(!is(r#"{"type":"Point","coordinates":[1,2],"spatialReference":{"wkid":4326}}"#));
+        assert!(!is(r#"{"type":"Topology","objects":{"a":{"properties":{"fieldAliases":1}}}}"#));
+        assert!(!is("not json"));
+    }
+
+    #[test]
+    fn a_root_type_past_the_head_is_seen_in_the_whole_document() {
+        let padding = "x".repeat(HEAD_BYTES);
+        let doc = format!(r#"{{"features":[{{"properties":{{"fieldAliases":"{padding}"}}}}],"type":"FeatureCollection"}}"#);
+        assert!(is_esrijson(doc.as_bytes()), "its first bytes show only the sign");
+        assert!(!is_esrijson_document(&doc));
     }
 }

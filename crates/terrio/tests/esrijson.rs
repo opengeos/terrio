@@ -57,6 +57,47 @@ fn geojson_stays_geojson_and_esrijson_is_not_written() {
 }
 
 #[test]
+fn geojson_with_esri_looking_properties_stays_geojson() {
+    let props = r#""properties":{"spatialReference":{"wkid":4326},"fieldAliases":{"a":"a"}}"#;
+    let point = r#""geometry":{"type":"Point","coordinates":[1,2]}"#;
+    let feature = format!(r#"{{"type":"Feature",{props},{point}}}"#);
+    // Sorted keys put the root `type` last, here past the bytes that identify a format.
+    let padding = "x".repeat(7000);
+    let sorted = format!(
+        r#"{{"features":[{{"geometry":{{"coordinates":[1,2],"type":"Point"}},"properties":{{"fieldAliases":"{padding}"}},"type":"Feature"}}],"type":"FeatureCollection"}}"#
+    );
+    let dir = tempfile::tempdir().unwrap();
+    for (doc, name) in [(&feature, "feature.json"), (&feature, "feature.geojson"), (&sorted, "sorted.json")] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, doc).unwrap();
+        let ds = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(ds.driver, VectorDriver::GeoJSON, "{name}");
+        assert_eq!(ds.layers[0].features.len(), 1, "{name}");
+        let ds = terrio::memory::open_vector_bytes(doc.clone().into_bytes(), name, &Default::default()).unwrap();
+        assert_eq!(ds.driver, VectorDriver::GeoJSON, "{name} in memory");
+    }
+}
+
+#[test]
+fn a_geojson_name_is_not_read_as_esrijson() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cities.geojson");
+    std::fs::write(&path, PAGE).unwrap();
+    // Read by the GeoJSON driver, which may refuse it, not by this one.
+    assert!(!terrio::open_vector(path.to_str().unwrap(), &Default::default()).is_ok_and(|ds| ds.driver == VectorDriver::ESRIJSON));
+}
+
+#[test]
+fn a_service_description_is_an_error_not_an_empty_layer() {
+    let doc = r#"{"id":0,"type":"Feature Layer","geometryType":"esriGeometryPoint","fields":[{"name":"A","type":"esriFieldTypeString"}]}"#;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("layer.json");
+    std::fs::write(&path, doc).unwrap();
+    let e = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
+    assert!(e.contains("no features"), "{e}");
+}
+
+#[test]
 fn a_service_error_is_an_error() {
     let bytes = br#"{"error":{"code":498,"message":"Invalid token."}}"#.to_vec();
     let e = terrio::memory::open_vector_bytes(bytes, "query", &Default::default()).unwrap_err().to_string();

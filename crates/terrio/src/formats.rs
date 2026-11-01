@@ -727,9 +727,11 @@ pub fn identify(path: &str) -> Identified {
         // A member of an archive, local or remote: its first bytes, read from the archive.
         crate::vfs::member_head(&location, 1024)
     } else if by_name.is_empty() {
-        read_head_remote(&location).map(|(head, len)| {
-            remote_len = Some(len);
-            head
+        read_head_query(trimmed, &location).or_else(|| {
+            read_head_remote(&location).map(|(head, len)| {
+                remote_len = Some(len);
+                head
+            })
         })
     } else {
         None
@@ -853,6 +855,23 @@ fn read_head_local(path: &Path) -> Option<Vec<u8>> {
 }
 
 /// Up to 1024 bytes from the start of a remote file, and the file's length.
+/// The first bytes of a feature-service query, whose server may ignore ranges.
+fn read_head_query(path: &str, location: &crate::vfs::Location) -> Option<Vec<u8>> {
+    #[cfg(remote)]
+    {
+        use crate::drivers::vector::{esrijson, featureservice};
+        if !featureservice::is_query_url(path) {
+            return None;
+        }
+        featureservice::query_head(&location.remote()?, esrijson::HEAD_BYTES as u64).ok()
+    }
+    #[cfg(not(remote))]
+    {
+        let _ = (path, location);
+        None
+    }
+}
+
 fn read_head_remote(location: &crate::vfs::Location) -> Option<(Vec<u8>, u64)> {
     #[cfg(remote)]
     {
@@ -1093,7 +1112,7 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
             "STAC"
         } else if text.contains("\"Topology\"") {
             "TOPOJSON"
-        } else if crate::drivers::vector::esrijson::is_esrijson(text) {
+        } else if crate::drivers::vector::esrijson::is_esrijson(text.as_bytes()) {
             "ESRIJSON"
         } else {
             "GEOJSON"

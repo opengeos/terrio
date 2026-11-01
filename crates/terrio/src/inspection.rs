@@ -262,7 +262,7 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
     if root_type.as_deref() == Some("CityJSON") {
         return vector(VectorDriver::CityJSON);
     }
-    if crate::drivers::vector::esrijson::is_esrijson(json) {
+    if crate::drivers::vector::esrijson::is_esrijson(json.as_bytes()) {
         return vector(VectorDriver::ESRIJSON);
     }
     if root_type.as_deref() == Some("Topology") {
@@ -373,7 +373,12 @@ pub(crate) fn identify_unjudged(path: &str, deep: bool) -> Result<Option<Identif
         #[cfg(remote)]
         crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => {
             let remote = location.remote().ok_or_else(|| crate::Error::InvalidArgument("not remote".into()))?;
-            let (header, length) = crate::http::read_prefix(&remote, IDENTIFICATION_HEADER_BYTES)?;
+            // A feature-service query's server may ignore ranges.
+            let (header, length) = if crate::drivers::vector::featureservice::is_query_url(path) {
+                (crate::drivers::vector::featureservice::query_head(&remote, IDENTIFICATION_HEADER_BYTES as u64)?, None)
+            } else {
+                crate::http::read_prefix(&remote, IDENTIFICATION_HEADER_BYTES)?
+            };
             identify_header(&header, path, length)
         }
         #[cfg(not(remote))]

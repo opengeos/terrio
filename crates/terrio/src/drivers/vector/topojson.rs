@@ -192,7 +192,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
     Ok(layers)
 }
 
-fn json_type(v: &Value) -> Option<FieldType> {
+pub(super) fn json_type(v: &Value) -> Option<FieldType> {
     Some(match v {
         Value::Null => return None,
         Value::Bool(_) => FieldType::Boolean,
@@ -204,7 +204,7 @@ fn json_type(v: &Value) -> Option<FieldType> {
 }
 
 /// Merges the type of a field with the type of another of its values (`None` for nulls).
-fn widen(a: Option<FieldType>, b: Option<FieldType>) -> Option<FieldType> {
+pub(super) fn widen(a: Option<FieldType>, b: Option<FieldType>) -> Option<FieldType> {
     match (a, b) {
         (a, None) => a,
         (None, b) => b,

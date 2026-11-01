@@ -569,11 +569,13 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
 
 /// A feature-service query: a URL with GDAL's signs of one that answers ESRI JSON, or one named by
 /// the `ESRIJSON:` prefix. Read here, before the formats that fetch a URL by range: a query's
-/// answer is made per request. Other URLs (`None`) go on as usual, as do those that fail here,
-/// and report their own errors.
+/// answer is made per request, and many ArcGIS servers ignore ranges. One request is made: only its
+/// first bytes are read unless they show ESRI JSON. Other URLs (`None`) go on as usual, as do those
+/// whose request fails before its answer is recognized, and report their own errors.
 #[cfg(remote)]
-fn open_feature_service(path: &str, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
+pub(crate) fn open_feature_service(path: &str, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
     use crate::drivers::vector::{esrijson, featureservice};
+    use std::io::Read;
     let prefix = "ESRIJSON:";
     let named = path.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix));
     let url = if named { path.get(prefix.len()..)? } else { path };
@@ -583,25 +585,40 @@ fn open_feature_service(path: &str, options: &VectorOpenOptions) -> Option<Resul
     if !named && !featureservice::is_query_url(url) {
         return None;
     }
-    let bytes = match crate::http::get(&crate::http::Remote::Url(url.to_string())) {
-        Ok(bytes) => bytes,
-        Err(e) if named => return Some(Err(e)),
-        Err(_) => return None,
-    };
-    let head = String::from_utf8_lossy(bytes.get(..esrijson::HEAD_BYTES).unwrap_or(&bytes));
-    if !named && !esrijson::is_esrijson(&head) {
-        return None;
+    let mut recognized = named;
+    let answer = crate::http::with_reader(&crate::http::Remote::Url(url.to_string()), |reader| {
+        let cap = crate::http::json_max_size();
+        let mut bytes = Vec::new();
+        (&mut *reader).take(esrijson::HEAD_BYTES as u64).read_to_end(&mut bytes)?;
+        recognized = recognized || esrijson::is_esrijson(&bytes);
+        if !recognized {
+            return Ok(None);
+        }
+        reader.take(cap.saturating_sub(bytes.len() as u64).saturating_add(1)).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > cap {
+            return Err(crate::http::over_cap(url, cap));
+        }
+        Ok(Some(bytes))
+    });
+    match answer {
+        Ok(Some(bytes)) => Some(read_feature_service(url, &bytes, options)),
+        Ok(None) => None,
+        Err(e) if recognized => Some(Err(e)),
+        Err(_) => None,
     }
-    let dataset = || -> Result<VectorDataset> {
-        crate::formats::check_driver_allowed(VectorDriver::ESRIJSON.name(), url, crate::formats::Kind::Vector)?;
-        let decode = |page: &[u8]| esrijson::page(page, "ESRIJSON");
-        let stop_at = options.max_features.map(|max| options.skip_features.saturating_add(max));
-        let layer = featureservice::read_pages(url, decode(&bytes)?, bytes.len(), options.feature_server_paging, stop_at, &decode)?;
-        let mut layers = select_layers(vec![layer], url, options)?;
-        layers.iter_mut().for_each(|l| options.keep_range(l));
-        Ok(finish_vector(layers, url, VectorDriver::ESRIJSON))
-    };
-    Some(dataset())
+}
+
+/// A feature-service query from its first page's bytes, with the pages after it.
+#[cfg(remote)]
+fn read_feature_service(url: &str, first: &[u8], options: &VectorOpenOptions) -> Result<VectorDataset> {
+    use crate::drivers::vector::{esrijson, featureservice};
+    crate::formats::check_driver_allowed(VectorDriver::ESRIJSON.name(), url, crate::formats::Kind::Vector)?;
+    let decode = |page: &[u8]| esrijson::page(page, "ESRIJSON");
+    let stop_at = options.max_features.map(|max| options.skip_features.saturating_add(max));
+    let layer = featureservice::read_pages(url, first, options.feature_server_paging, stop_at, &decode)?;
+    let mut layers = select_layers(vec![layer], url, options)?;
+    layers.iter_mut().for_each(|l| options.keep_range(l));
+    Ok(finish_vector(layers, url, VectorDriver::ESRIJSON))
 }
 
 pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
@@ -858,7 +875,9 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
             VectorDriver::CityJSON
         } else if driver == VectorDriver::GML && crate::drivers::vector::citygml::looks_like(&bytes) {
             VectorDriver::CityGML
-        } else if text.is_some_and(crate::drivers::vector::esrijson::is_esrijson) {
+        } else if crate::formats::extension(path).as_deref() == Some("json")
+            && text.is_some_and(crate::drivers::vector::esrijson::is_esrijson_document)
+        {
             VectorDriver::ESRIJSON
         } else {
             driver

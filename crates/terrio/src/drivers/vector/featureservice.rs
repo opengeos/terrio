@@ -7,9 +7,8 @@
 //     ogr/ogresrijsongeometry.cpp
 // No code is translated from these sources.
 
-//! What the `ESRIJSON` and `ESRIPBF` drivers share: the query results of an ArcGIS feature
-//! service, as JSON (`f=json`) or as the FeatureCollection protocol buffer (`f=pbf`), give the
-//! same fields, values, geometries and spatial reference.
+//! The query results of an ArcGIS feature service: their paging, fields, values, geometries and
+//! spatial reference, apart from how a page is encoded.
 //!
 //! Fields are typed as GDAL's ESRIJSON driver types them. Terrio's data model has no subtypes, so
 //! `esriFieldTypeSmallInteger` is an integer and `esriFieldTypeSingle` a real, and GUIDs are
@@ -29,6 +28,9 @@ pub(crate) struct Page {
     /// The service has more features (`exceededTransferLimit`).
     #[cfg_attr(not(remote), allow(dead_code))]
     pub more: bool,
+    /// Its features' ids are object ids, not their place in the page.
+    #[cfg_attr(not(remote), allow(dead_code))]
+    pub object_ids: bool,
 }
 
 /// The most bytes read from a service for one dataset: a service that never stops paging ends here.
@@ -36,12 +38,25 @@ pub(crate) struct Page {
 const MAX_TOTAL_BYTES: u64 = 4 << 30;
 
 /// Whether a URL is likely a feature-service query, by GDAL's signs: `f=json`, `f=pjson` or
-/// `resultRecordCount=`, without the `/items?` of OGC API Features. What it answers decides.
+/// `resultRecordCount=`, as parameters of its own, without the `/items?` of OGC API Features. What
+/// it answers decides.
 #[cfg(remote)]
 pub(crate) fn is_query_url(url: &str) -> bool {
     (url.starts_with("http://") || url.starts_with("https://"))
-        && (url.contains("f=json") || url.contains("f=pjson") || url.contains("resultRecordCount="))
+        && (matches!(query_value(url, "f"), Some("json" | "pjson")) || query_value(url, "resultRecordCount").is_some())
         && !url.contains("/items?")
+}
+
+/// The first bytes of a query's answer, from a plain request: the answer is made per request, and
+/// many ArcGIS servers ignore ranges.
+#[cfg(remote)]
+pub(crate) fn query_head(remote: &crate::http::Remote, maximum: u64) -> crate::Result<Vec<u8>> {
+    use std::io::Read;
+    crate::http::with_reader(remote, |reader| {
+        let mut head = Vec::new();
+        reader.take(maximum).read_to_end(&mut head)?;
+        Ok(head)
+    })
 }
 
 /// The value of a query parameter of a URL.
@@ -72,19 +87,19 @@ fn pages_wanted(url: &str, option: Option<bool>) -> bool {
 
 /// The layer of a query's first page and the pages after it. The following requests ask for as
 /// many features as the first page holds when the URL does not say, as GDAL's do, from
-/// `resultOffset` on. Reading stops once `stop_at` features are read, and a page that adds nothing
-/// while saying there are more is an error, as is a page with other fields.
+/// `resultOffset` on. Reading stops once `stop_at` features are read. A page that adds nothing while
+/// saying there are more is an error, as is a page with other fields, and a page the same as the one
+/// before it: the service ignores the offset. Features without object ids are numbered across pages.
 #[cfg(remote)]
 pub(crate) fn read_pages(
     url: &str,
-    first: Page,
-    first_bytes: usize,
+    first: &[u8],
     option: Option<bool>,
     stop_at: Option<usize>,
     decode: &dyn Fn(&[u8]) -> crate::Result<Page>,
 ) -> crate::Result<Layer> {
     let invalid = |message: String| crate::Error::InvalidData(format!("feature service: {message}"));
-    let Page { mut layer, mut more } = first;
+    let Page { mut layer, mut more, .. } = decode(first)?;
     if !pages_wanted(url, option) {
         return Ok(layer);
     }
@@ -95,7 +110,8 @@ pub(crate) fn read_pages(
     };
     let names = |l: &Layer| l.schema.fields().iter().map(|f| f.name.clone()).collect::<Vec<_>>();
     let fields = names(&layer);
-    let mut total = first_bytes as u64;
+    let mut total = first.len() as u64;
+    let mut previous = std::borrow::Cow::Borrowed(first);
     while more && stop_at.is_none_or(|n| layer.features.len() < n) {
         if layer.features.is_empty() {
             return Err(invalid("the service says there are more features, but its page has none".into()));
@@ -106,17 +122,27 @@ pub(crate) fn read_pages(
         if total > MAX_TOTAL_BYTES {
             return Err(invalid(format!("the results exceed {MAX_TOTAL_BYTES} bytes; ask for fewer features")));
         }
+        if bytes == *previous {
+            return Err(invalid(format!(
+                "the page at offset {offset} is the same as the one before it: the service seems to ignore the offset (FEATURE_SERVER_PAGING=NO reads one page)"
+            )));
+        }
         let page = decode(&bytes)?;
         if page.more && page.layer.features.is_empty() {
             return Err(invalid(format!("the page at offset {offset} has no features, but says there are more")));
         }
-        if names(&page.layer) != fields {
+        // A last page without features and without `fields` names none.
+        if !page.layer.features.is_empty() && names(&page.layer) != fields {
             return Err(invalid(format!("the page at offset {offset} has other fields than the first")));
         }
         more = page.more;
-        for feature in page.layer.features {
+        for mut feature in page.layer.features {
+            if !page.object_ids {
+                feature.fid = layer.features.len() as u64;
+            }
             layer.push(feature);
         }
+        previous = std::borrow::Cow::Owned(bytes);
     }
     Ok(layer)
 }
@@ -184,32 +210,22 @@ pub(crate) fn layer_geometry_type(esri: &str) -> Option<GeometryType> {
     }
 }
 
-/// A coordinate from a position's numbers: X, Y, then Z when the geometry has Z, then M when it
-/// has M. Three numbers in a geometry with M and no Z are X, Y and M.
-pub(crate) fn coordinate(values: &[f64], has_z: bool, has_m: bool) -> Option<Coord> {
-    let (x, y) = (*values.first()?, *values.get(1)?);
-    let (z, m) = match values.len() {
-        2 => (None, None),
-        3 if has_m && !has_z => (None, values.get(2).copied()),
-        3 => (values.get(2).copied(), None),
-        _ => (values.get(2).copied(), values.get(3).copied()),
-    };
-    Some(Coord { x, y, z, m })
+/// A coordinate from a position's X, Y and the values after them (`None` for a null one): Z when
+/// the geometry has Z, then M when it has M. One value in a geometry with M and no Z is M.
+pub(crate) fn coordinate(x: f64, y: f64, extra: &[Option<f64>], has_z: bool, has_m: bool) -> Coord {
+    let first = extra.first().copied().flatten();
+    let second = extra.get(1).copied().flatten();
+    let (z, m) = if extra.len() == 1 && has_m && !has_z { (None, first) } else { (first, second) };
+    Coord { x, y, z, m }
 }
 
-/// A polyline's geometry: one path is a line string, several a multi line string.
-pub(crate) fn polyline(mut paths: Vec<Vec<Coord>>) -> Geometry {
+/// A polyline's geometry: one path is a line string, several a multi line string, none no geometry.
+pub(crate) fn polyline(mut paths: Vec<Vec<Coord>>) -> Option<Geometry> {
     match paths.len() {
-        1 => Geometry::LineString(paths.pop().unwrap_or_default()),
-        0 => Geometry::LineString(Vec::new()),
-        _ => Geometry::MultiLineString(paths),
+        0 => None,
+        1 => paths.pop().map(Geometry::LineString),
+        _ => Some(Geometry::MultiLineString(paths)),
     }
-}
-
-/// A polygon's geometry, its rings sorted into exteriors and holes by containment. `None`
-/// when no ring has three vertices.
-pub(crate) fn polygon(rings: Vec<Vec<Coord>>) -> Option<Geometry> {
-    super::polygons_from_rings(rings)
 }
 
 #[cfg(test)]
@@ -222,13 +238,18 @@ mod tests {
 
     #[cfg(remote)]
     #[test]
-    fn query_urls_are_recognized_as_gdal_recognizes_them() {
+    fn query_url_signs_are_recognized() {
         assert!(is_query_url("https://x.org/arcgis/rest/services/A/FeatureServer/0/query?where=1=1&f=json"));
         assert!(is_query_url("https://x.org/a/query?f=pjson"));
         assert!(is_query_url("https://x.org/a/query?resultRecordCount=10"));
         assert!(!is_query_url("https://x.org/ogc/collections/a/items?f=json"));
         assert!(!is_query_url("https://x.org/a/query?f=geojson"));
         assert!(!is_query_url("/local/query?f=json"));
+        // Only as parameters of their own.
+        assert!(!is_query_url("https://x.org/a.tif?conf=json"));
+        assert!(!is_query_url("https://x.org/a?pdf=json"));
+        assert!(!is_query_url("https://x.org/a?f=jsonp"));
+        assert!(!is_query_url("https://x.org/f=json"));
     }
 
     #[cfg(remote)]
@@ -252,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn fields_are_typed_as_gdal_types_them() {
+    fn esri_field_types_map_to_terrio_types() {
         let cases = [
             ("esriFieldTypeOID", FieldType::Integer),
             ("esriFieldTypeSmallInteger", FieldType::Integer),
@@ -308,19 +329,23 @@ mod tests {
 
     #[test]
     fn positions_read_z_and_m_as_the_geometry_declares() {
-        let p = |v: &[f64], z, m| coordinate(v, z, m).map(|c| (c.z, c.m));
-        assert_eq!(p(&[1.0, 2.0], false, false), Some((None, None)));
-        assert_eq!(p(&[1.0, 2.0, 3.0], true, false), Some((Some(3.0), None)));
-        assert_eq!(p(&[1.0, 2.0, 3.0], false, true), Some((None, Some(3.0))));
-        assert_eq!(p(&[1.0, 2.0, 3.0], true, true), Some((Some(3.0), None)));
-        assert_eq!(p(&[1.0, 2.0, 3.0, 4.0], true, true), Some((Some(3.0), Some(4.0))));
-        assert_eq!(p(&[1.0], false, false), None);
+        let p = |extra: &[Option<f64>], z, m| {
+            let c = coordinate(1.0, 2.0, extra, z, m);
+            (c.z, c.m)
+        };
+        assert_eq!(p(&[], false, false), (None, None));
+        assert_eq!(p(&[Some(3.0)], true, false), (Some(3.0), None));
+        assert_eq!(p(&[Some(3.0)], false, true), (None, Some(3.0)));
+        assert_eq!(p(&[Some(3.0)], true, true), (Some(3.0), None));
+        assert_eq!(p(&[Some(3.0), Some(4.0)], true, true), (Some(3.0), Some(4.0)));
+        assert_eq!(p(&[None, Some(4.0)], true, true), (None, Some(4.0)));
     }
 
     #[test]
-    fn one_path_is_a_line_and_several_a_multi_line() {
-        assert!(matches!(polyline(vec![vec![c(0.0, 0.0), c(1.0, 1.0)]]), Geometry::LineString(l) if l.len() == 2));
-        assert!(matches!(polyline(vec![vec![c(0.0, 0.0)], vec![c(1.0, 1.0)]]), Geometry::MultiLineString(l) if l.len() == 2));
+    fn one_path_is_a_line_several_a_multi_line_and_none_no_geometry() {
+        assert!(matches!(polyline(vec![vec![c(0.0, 0.0), c(1.0, 1.0)]]), Some(Geometry::LineString(l)) if l.len() == 2));
+        assert!(matches!(polyline(vec![vec![c(0.0, 0.0)], vec![c(1.0, 1.0)]]), Some(Geometry::MultiLineString(l)) if l.len() == 2));
+        assert!(polyline(Vec::new()).is_none());
     }
 
     #[test]
@@ -328,6 +353,7 @@ mod tests {
         let square = |x: f64, s: f64| vec![c(x, 0.0), c(x + s, 0.0), c(x + s, s), c(x, s), c(x, 0.0)];
         // A hole listed before its exterior, and a second exterior.
         let rings = vec![square(1.0, 1.0), square(0.0, 4.0), square(10.0, 1.0)];
+        let polygon = crate::drivers::vector::polygons_from_rings;
         let Some(Geometry::MultiPolygon(polygons)) = polygon(rings) else { panic!("not a multi polygon") };
         assert_eq!(polygons.len(), 2);
         assert_eq!(polygons.iter().map(|(_, holes)| holes.len()).sum::<usize>(), 1);
@@ -335,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn layer_types_are_declared_as_gdal_declares_them() {
+    fn geometry_type_names_declare_layer_types() {
         assert_eq!(layer_geometry_type("esriGeometryPolyline"), Some(GeometryType::LineString));
         assert_eq!(layer_geometry_type("esriGeometryPolygon"), Some(GeometryType::Polygon));
         assert_eq!(layer_geometry_type("esriGeometryEnvelope"), None);

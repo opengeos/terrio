@@ -70,7 +70,14 @@ for page in \
   "quakes https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/USGS_Seismic_Data_v1/FeatureServer/0"; do
   set -- $page
   for format in json geojson; do
-    [ -e "featureservice_$1.$format" ] || curl -sSfL -o "featureservice_$1.$format" "$2/$fs_query&f=$format" || true
+    out="featureservice_$1.$format"
+    [ -e "$out" ] && continue
+    # A service's error comes with status 200, and neither it nor a partial download is a page.
+    if curl -sSfL -o "$out.part" "$2/$fs_query&f=$format" && ! grep -q '^{"error"' "$out.part"; then
+      mv "$out.part" "$out"
+    else
+      rm -f "$out.part"
+    fi
   done
 done
 [ -e liechtenstein.osm.pbf ] || curl -sSfL -o liechtenstein.osm.pbf https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf

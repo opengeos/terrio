@@ -623,8 +623,11 @@ schemas. GDAL 3.13.3's partial CityGML reader is informational.
 The `ESRIJSON` driver reads the JSON of ArcGIS feature-service queries (`f=json`) as GDAL's
 ESRIJSON driver does. A `.json` file, or one without an extension, is recognized by its content:
 `geometryType`, `fieldAliases`, `esriFieldType` names, features with rings or attributes, or a
-`spatialReference` by WKID. A URL is read as a query when it has `f=json`, `f=pjson` or
-`resultRecordCount=` and answers ESRI JSON; `ESRIJSON:` before a URL or a path names the driver.
+`spatialReference` by WKID, unless its root `type` is GeoJSON's or TopoJSON's. A `.geojson` file
+stays GeoJSON. A URL is read as a query when it has a parameter `f=json`, `f=pjson` or
+`resultRecordCount=` and answers ESRI JSON; `ESRIJSON:` before a URL or a path names the driver. A
+document without `features`, such as a layer's description (a URL without its `/query`), is an
+error.
 
 ```sh
 terrio info "https://example.org/arcgis/rest/services/A/FeatureServer/0/query?where=1%3D1&outFields=*&f=json"
@@ -633,8 +636,12 @@ terrio info "https://example.org/arcgis/rest/services/A/FeatureServer/0/query?wh
 Without a `resultOffset` in the URL, the following pages are read while the service answers
 `exceededTransferLimit`, asking for as many features as its first page holds unless the URL gives
 a `resultRecordCount`. The open option `FEATURE_SERVER_PAGING=YES` or `NO` decides otherwise, as in
-GDAL. Reading stops at 4 GiB, and a page that adds nothing while saying there are more, or that has
-other fields than the first, is an error. As GDAL's documentation advises, add
+GDAL. A page over `TERRIO_JSON_MAX_SIZE` (100 MiB by default) is an error, as are results over
+4 GiB, a page that adds nothing while saying there are more, a page with other fields than the
+first, and a page the same as the one before it (a service that ignores the offset; rows without
+an object id that happen to repeat a whole page need `FEATURE_SERVER_PAGING=NO` and an offset of
+their own). Features without an object id field are numbered across pages. As GDAL's documentation
+advises, add
 `orderByFields=OBJECTID+ASC` so that pages don't overlap. Authentication goes in the URL
 (`token=`) or the usual HTTP options.
 
