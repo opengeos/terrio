@@ -21,7 +21,7 @@ mamba install -c conda-forge terrio
 ```
 
 It installs the `terrio` command line too (`terrio info`, `convert`, `warp`, `translate`...; see
-[Command Line](https://terrio.opengeos.org/cli/)):
+[Command Line](https://terrio.dev/cli/)):
 
 ```sh
 terrio convert countries.shp europe.gpkg --where "CONTINENT = 'Europe'"
@@ -31,7 +31,7 @@ terrio convert countries.shp europe.gpkg --where "CONTINENT = 'Europe'"
 
 rasterio scripts run with an import change: `terrio.rio` follows rasterio's API (datasets,
 windows, CRSs, features, warping, merging, masking, warped VRTs, memory files), compared with
-rasterio on real files. See [Coming from rasterio](https://terrio.opengeos.org/rasterio/).
+rasterio on real files. See [Coming from rasterio](https://terrio.dev/rasterio/).
 
 ```python
 import terrio.rio as rasterio
@@ -46,7 +46,7 @@ with rasterio.open("https://example.com/cog.tif") as src:  # read lazily, by win
 `terrio.xarray` is rioxarray's API without installing GDAL (`pip install "terrio[xarray]"`):
 rasters open lazily as DataArrays with rioxarray's coordinates, attributes and encoding, and the
 `.terrio` accessor has rioxarray's `.rio` methods. See
-[xarray](https://terrio.opengeos.org/xarray/).
+[xarray](https://terrio.dev/xarray/).
 
 ```python
 import xarray as xr

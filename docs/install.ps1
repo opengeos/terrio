@@ -1,6 +1,6 @@
 # Installs the terrio command-line tool from its GitHub release, on Windows:
 #
-#     powershell -ExecutionPolicy ByPass -c "irm https://terrio.opengeos.org/install.ps1 | iex"
+#     powershell -ExecutionPolicy ByPass -c "irm https://terrio.dev/install.ps1 | iex"
 #
 # Settings, from the environment:
 #   TERRIO_VERSION         the release to install (0.4.0 or v0.4.0); the latest by default

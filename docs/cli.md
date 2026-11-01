@@ -75,8 +75,8 @@ terrio <COMMAND>
   mcp             Serve these commands to AI agents over the Model Context Protocol
 ```
 
-Install it with `curl -LsSf https://terrio.opengeos.org/install.sh | sh` (on Windows,
-`irm https://terrio.opengeos.org/install.ps1 | iex` in PowerShell), `pip install terrio` or
+Install it with `curl -LsSf https://terrio.dev/install.sh | sh` (on Windows,
+`irm https://terrio.dev/install.ps1 | iex` in PowerShell), `pip install terrio` or
 `cargo install terrio-cli`; see [Installation](installation.md).
 
 Every input can be a local path, a URL, a cloud object or a zip archive member; see

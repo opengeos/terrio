@@ -13,7 +13,7 @@ Release:        1%{?dist}
 Summary:        Pure-Rust geospatial raster and vector data I/O
 
 License:        MIT AND MPL-2.0
-URL:            https://terrio.opengeos.org
+URL:            https://terrio.dev
 Source0:        https://github.com/opengeos/terrio/archive/refs/tags/v%{version}.tar.gz#/%{name}-%{version}.tar.gz
 
 BuildRequires:  cargo >= 1.90
