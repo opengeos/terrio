@@ -82,7 +82,7 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
         VectorDriver::DXF | VectorDriver::DWG => vec![cad::parse(std::fs::read(path)?, driver)?],
         VectorDriver::GeoJSON => vec![geojson::read(path)?],
         VectorDriver::CityJSON => cityjson::parse(&std::fs::read(path)?)?,
-        VectorDriver::CityGML => citygml::parse(&std::fs::read(path)?)?,
+        VectorDriver::CityGML => citygml::parse(&citygml::read_path_bytes(path, false)?)?,
         VectorDriver::GeoJSONSeq => {
             let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
             vec![geojson::parse_seq(&std::fs::read(path)?, stem)?]

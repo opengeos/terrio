@@ -88,3 +88,20 @@ def test_direct_scalar_measures_are_compared_with_units():
     actual["features"][0]["properties"]["attributes"] = '{"name":"house","measuredHeight":{"value":"99","uom":"m"}}'
     with pytest.raises(AssertionError):
         compare(expected, owners, actual)
+
+
+@pytest.mark.parametrize("name", ["citygml", "cityjson"])
+def test_specification_suites_run_without_gdal(monkeypatch, tmp_path, name):
+    import conformance
+
+    def suite(ctx):
+        return conformance.Suite(name, name, "schema", "", cases=[
+            conformance.Case("selection", "executed", conformance.DIFFERS, "intentional sentinel")])
+
+    monkeypatch.setattr(conformance, "SUITES", {name: suite})
+    monkeypatch.setattr(conformance, "missing_modules", lambda *names: ["osgeo", "numpy"])
+    monkeypatch.setattr(conformance, "format_names", lambda path: {})
+    monkeypatch.setattr(conformance, "versions", lambda ctx: {})
+    monkeypatch.setattr(conformance, "markdown", lambda *args: "")
+    monkeypatch.setattr(sys, "argv", ["conformance.py", str(tmp_path), "--terrio", sys.executable, "--only", name, "--strict"])
+    assert conformance.main() == 1

@@ -786,7 +786,8 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
     // CityObjects, beyond the bounded identifier. These formats already require a whole
     // document read; inspect those same bytes rather than opening the file twice.
     let (driver, preloaded) = if matches!(driver, VectorDriver::GeoJSON | VectorDriver::GML) {
-        let bytes = std::fs::read(path)?;
+        let bytes =
+            if driver == VectorDriver::GML { crate::drivers::vector::citygml::read_path_bytes(path, true)? } else { std::fs::read(path)? };
         let city = if driver == VectorDriver::GeoJSON {
             let text = std::str::from_utf8(&bytes).map_err(|e| Error::InvalidData(format!("JSON input is not UTF-8: {e}")))?;
             crate::inspection::root_json_type(text.trim_start_matches('\u{feff}').trim_start()).as_deref() == Some("CityJSON")

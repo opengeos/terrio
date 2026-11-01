@@ -23,6 +23,8 @@ def main():
     parser.add_argument("--repeat", type=int, default=5)
     parser.add_argument("--restrict-drivers", action="store_true", help="exercise the CityGML-only identification gate")
     args = parser.parse_args()
+    if not Path("/proc/self/io").is_file():
+        parser.error("this I/O benchmark requires Linux with /proc/self/io")
     import terrio
 
     if args.restrict_drivers:
@@ -54,6 +56,28 @@ def main():
         results.append(dict(name=path.name, restrict_drivers=args.restrict_drivers, file_bytes=path.stat().st_size,
                             features=len(dataset[0]), median_seconds=median(times),
                             seconds=times, read_bytes=reads, read_calls=calls))
+    # Sparse files exercise rejection without allocating a large source buffer.
+    for suffix in ["gml", "citygml"]:
+        path = folder / f"oversized.{suffix}"
+        with path.open("wb") as stream:
+            stream.write(root.encode())
+            stream.truncate(256 * 1024 * 1024 + 1)
+        before, after = counters(), counters()
+        overhead = {key: after[key] - before[key] for key in ("rchar", "syscr")}
+        before = counters()
+        start = time.perf_counter()
+        try:
+            terrio.open_vector(str(path))
+        except terrio.errors.InvalidDataError as error:
+            assert "256 MiB XML limit" in str(error), str(error)
+        else:
+            raise AssertionError("oversized XML was accepted")
+        elapsed = time.perf_counter() - start
+        after = counters()
+        results.append(dict(name=path.name, restrict_drivers=args.restrict_drivers,
+                            file_bytes=path.stat().st_size, rejected_before_parsing=True,
+                            seconds=elapsed, read_bytes=after["rchar"] - before["rchar"] - overhead["rchar"],
+                            read_calls=after["syscr"] - before["syscr"] - overhead["syscr"]))
     print(json.dumps(results, indent=2))
 
 

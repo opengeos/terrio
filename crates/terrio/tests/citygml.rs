@@ -210,3 +210,17 @@ fn reverse_surface_references_keep_orientation_and_remove_adjacent_duplicates() 
     assert_eq!(rings[0].len(), 4);
     assert_eq!(rings[1].0, rings[0].0.iter().rev().cloned().collect::<Vec<_>>());
 }
+
+#[test]
+fn oversized_local_citygml_is_rejected_by_size_before_parsing() {
+    use std::io::Write;
+    let folder = tempfile::tempdir().unwrap();
+    for extension in ["citygml", "gml"] {
+        let path = folder.path().join(format!("oversized.{extension}"));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(model("3.0", "", "EPSG:32632").as_bytes()).unwrap();
+        file.set_len(256 * 1024 * 1024 + 1).unwrap();
+        let error = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap_err();
+        assert!(error.to_string().contains("256 MiB XML limit"), "{error}");
+    }
+}

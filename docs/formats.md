@@ -483,8 +483,12 @@ by `encoding_rs`, including Windows-1252, are decoded using their declaration. I
 
 This is a materialized vector view with a 256 MiB raw XML limit checked before
 decoding/tree construction and the shared 256 MiB estimated flat-feature payload
-limit. Path-based input is already read into memory before the XML limit check;
-these are allocation safeguards, not a total process-memory ceiling. It does not
+limit. A separate 256 MiB estimate bounds XML tree storage, including element,
+attribute and text allocations with capacity slack. Local CityGML paths are
+size-checked before payload allocation. Oversized shared XML names with an
+inconclusive 16 KiB root prefix are refused; identified non-CityGML XML keeps its
+existing read policy. These are allocation safeguards, not a total process-memory
+ceiling. It does not
 retain solid/shell topology, full city-model hierarchy,
 textures/materials, ADE semantics or general metadata for lossless round trips.
 External geometry references, linked coordinate/ring content, nonlinear curve
