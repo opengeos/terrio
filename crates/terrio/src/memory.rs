@@ -320,6 +320,13 @@ pub(crate) mod codec {
         if crate::drivers::vector::citygml::looks_like(json) {
             return Some(VectorDriver::CityGML);
         }
+        // The protocol buffer of a query shares `.pbf` with OpenStreetMap.
+        if matches!(VectorDriver::for_extension(name), None | Some(VectorDriver::OSM))
+            && extension(name).as_deref() != Some("osm")
+            && crate::drivers::vector::esripbf::is_esripbf(bytes)
+        {
+            return Some(VectorDriver::ESRIPBF);
+        }
         // ESRI JSON shares `.json` with GeoJSON, and query results often have no extension.
         if json.starts_with(b"{")
             && matches!(VectorDriver::for_extension(name), None | Some(VectorDriver::GeoJSON))

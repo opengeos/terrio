@@ -12,6 +12,7 @@ pub(crate) mod cityjson_write;
 pub mod csv;
 pub(crate) mod datetime;
 pub mod esrijson;
+pub mod esripbf;
 pub(crate) mod featureservice;
 #[cfg(feature = "flatgeobuf")]
 pub mod flatgeobuf;
@@ -89,6 +90,7 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
         VectorDriver::CityJSON => cityjson::parse(&std::fs::read(path)?)?,
         VectorDriver::CityGML => citygml::parse(&citygml::read_path_bytes(path, false)?)?,
         VectorDriver::ESRIJSON => vec![esrijson::read(path)?],
+        VectorDriver::ESRIPBF => vec![esripbf::read(path)?],
         VectorDriver::GeoJSONSeq => {
             let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
             vec![geojson::parse_seq(&std::fs::read(path)?, stem)?]
@@ -161,6 +163,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
         VectorDriver::CityJSON => cityjson::parse(&bytes)?,
         VectorDriver::CityGML => citygml::parse(&bytes)?,
         VectorDriver::ESRIJSON => vec![esrijson::parse(&bytes, stem)?],
+        VectorDriver::ESRIPBF => vec![esripbf::parse(&bytes, stem)?],
         VectorDriver::GeoJSONSeq => vec![geojson::parse_seq(&bytes, stem)?],
         VectorDriver::CSV => {
             let tsv = crate::formats::extension(name).as_deref() == Some("tsv");

@@ -55,6 +55,22 @@ pub(crate) struct Page {
 #[cfg(remote)]
 const MAX_TOTAL_BYTES: u64 = 4 << 30;
 
+/// The memory for attribute values that any document may take, whatever its size.
+const MAX_SPARSE_CELL_BYTES: usize = 1 << 30;
+
+/// Refuses a page whose attribute values would take far more memory than its size explains: a small
+/// page can declare many fields for many features. An argument error rather than InvalidData: the
+/// GDAL fallback retries InvalidData, and GDAL would build these cells.
+pub(crate) fn check_values(driver: &str, features: usize, fields: usize, document: usize) -> crate::Result<()> {
+    let cells = features.saturating_mul(fields).saturating_mul(std::mem::size_of::<FieldValue>());
+    if cells > MAX_SPARSE_CELL_BYTES.max(document.saturating_mul(super::geojson::PARSE_MEMORY_PER_BYTE)) {
+        return Err(crate::Error::InvalidArgument(format!(
+            "{driver}: {features} features of {fields} fields need about {cells} bytes of memory, too many for a document of {document} bytes"
+        )));
+    }
+    Ok(())
+}
+
 /// Whether a URL is likely a feature-service query, by GDAL's signs: `f=json`, `f=pjson` or
 /// `resultRecordCount=`, as parameters of its own, without the `/items?` of OGC API Features. What
 /// it answers decides.
