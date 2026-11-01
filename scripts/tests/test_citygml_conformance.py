@@ -114,3 +114,11 @@ def test_modified_pinned_fixture_is_rejected_before_schema_validation(tmp_path):
     path.write_bytes(b"<CityModel/>")
     with pytest.raises(ValueError, match="checksum differs"):
         checked_fixture(path)
+
+
+def test_rejects_extra_attribute_keys_without_source_counterparts():
+    expected, owners, actual = example()
+    actual = deepcopy(actual)
+    actual["features"][0]["properties"]["attributes"] = '{"name":"house","fabricated":"value"}'
+    with pytest.raises(AssertionError):
+        compare(expected, owners, actual)
