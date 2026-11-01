@@ -446,13 +446,15 @@ on `write_vector`, `convert`, layer/dataset `write` and layer `to_bytes`, and
 JavaScript uses `toBytes("output.city.json", {cityjsonVersion: "1.1"})`.
 
 Layers with `city_id` and `city_type` fields use the city-object convention:
-`lod` is optional (default `"0"`), and `parents`, `attributes` and
+`lod` is optional (null or empty text defaults to `"0"`), and `parents`, `attributes` and
 `surface_semantics` contain JSON text when present. Other columns become object
 attributes. Features sharing an ID are grouped by LoD and primitive type;
 conflicting attributes, types or parents are errors. Core second-level types
 (parts, installations, constructive elements, furnishings, rooms and building
 subdivisions) require exactly one parent, as specified in CityJSON section 2.
-Top-level core types have no parent. Null-geometry objects remain.
+This flat projection requires other core types to be unparented; it does not
+reconstruct group membership or same-type transportation subdivisions.
+Null-geometry objects remain.
 Other layers become one `GenericCityObject` per feature, with generated IDs and
 all columns as attributes. That generic type requires version 2.0. Several layers
 can share a file when their CRSs are consistent and explicit IDs do not collide.
@@ -469,17 +471,28 @@ reprojected first. Unknown CRS remains absent.
 
 The writer retains supported per-face classification and properties, not source
 solid/shell topology or semantic parent/child indices. It rebuilds object children
-from the retained parent IDs; group memberships absent from the flat fields,
-materials, textures, templates and extensions are not reconstructed. Supported
+from the retained structural parent IDs. Group membership, same-type transportation
+subdivisions, materials, textures, templates and extensions are not reconstructed. Supported
 CityGML Window/Door objects use a lossy `BuildingConstructiveElement` projection,
 with the original class in `terrio:sourceCityType`. This is Terrio’s identity-preserving
 projection, not a normative CityGML-to-CityJSON equivalence: the CityJSON
 [specification](https://www.cityjson.org/specs/2.0.2/#3.3) represents Window/Door
 as surface semantics, while its core object types omit filling elements. Other
-CityGML aliases use supported CityJSON core types, with
-the original type in `terrio:sourceCityType`. Unsupported object/classification
+supported aliases are Room/Storey, BridgeConstructionElement, HollowSpace/TunnelRoom,
+Square, GenericOccupiedSpace/GenericUnoccupiedSpace and the IntBuilding/Bridge/TunnelInstallation
+classes. They retain the original type in `terrio:sourceCityType`. Other CityGML
+classes, including traffic subdivisions and relief aggregations, fail explicitly.
+Second-level target objects need their required containing parent; a standalone
+Door, Window, installation or Storey is refused rather than assigned an invented parent.
+Unsupported object/classification
 types fail explicitly. Reader diagnostics are not city-model attributes and are
-not written. These are flat conversions, not lossless city-model round trips.
+not written. Both `city_id` and `city_type` columns enable the flat city-model
+interpretation. Without that pair, ordinary vector columns (including a lone
+`city_id` or `city_type`) remain ordinary attributes on generated generic objects.
+Null-valued columns remain explicit JSON null attributes. Conflicting values or
+number types between the JSON attributes and scalar columns are rejected.
+Writers build the complete vertex pool, JSON tree and output buffer in memory;
+large models can require several times their encoded size. These are flat conversions, not lossless city-model round trips.
 
 The [CityJSON 1.1](https://www.cityjson.org/specs/1.1.3/) and
 [2.0 specifications](https://www.cityjson.org/specs/2.0.2/) and their published JSON
