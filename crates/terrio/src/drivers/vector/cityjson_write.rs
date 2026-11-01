@@ -561,14 +561,19 @@ pub(crate) fn to_bytes(layers: &[Layer], version: CityJsonVersion) -> Result<Vec
             let kind = if object.kind == "TINRelief" { "CompositeSurface" } else { kind };
             let mut boundaries = Vec::new();
             let mut surfaces = Vec::new();
+            let mut semantic_indices = HashMap::new();
             let mut values = Vec::new();
             for (semantic, p) in parts {
                 boundaries.push(vertices.encode(p)?);
                 values.push(if let Some(semantic) = semantic {
-                    let index = surfaces.iter().position(|s| s == &semantic).unwrap_or_else(|| {
+                    let index = if let Some(&index) = semantic_indices.get(&semantic) {
+                        index
+                    } else {
+                        let index = surfaces.len();
+                        semantic_indices.insert(semantic.clone(), index);
                         surfaces.push(semantic);
-                        surfaces.len() - 1
-                    });
+                        index
+                    };
                     json!(index)
                 } else {
                     Value::Null
@@ -637,6 +642,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn many_face_semantics_deduplicate_independently_of_object_key_order() {
+        let mut layers = source();
+        let template = layers[0].features[1].clone();
+        layers[0].features.truncate(1);
+        for tag in 0..1024 {
+            let mut feature = template.clone();
+            feature.attributes[7] = FieldValue::Text(format!("{{\"type\":\"WallSurface\",\"tag\":{tag}}}"));
+            layers[0].push(feature);
+        }
+        let mut duplicate = template;
+        duplicate.attributes[7] = FieldValue::Text("{\"tag\":0,\"type\":\"WallSurface\"}".into());
+        layers[0].push(duplicate);
+        let doc: Value = serde_json::from_slice(&to_bytes(&layers, CityJsonVersion::V2_0).unwrap()).unwrap();
+        let semantics = &doc["CityObjects"]["part"]["geometry"][0]["semantics"];
+        assert_eq!(semantics["surfaces"].as_array().unwrap().len(), 1024);
+        let values = semantics["values"].as_array().unwrap();
+        assert_eq!(values.len(), 1025);
+        assert_eq!(values.last().unwrap(), 0);
     }
 
     #[test]

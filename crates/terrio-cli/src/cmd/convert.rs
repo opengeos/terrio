@@ -281,7 +281,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     match ds {
         Dataset::Raster(mut r) => {
             let append = a.vector.append_only();
-            if a.vector.is_set() && !append || a.cityjson_version.is_some() {
+            if (a.vector.is_set() && !append) || a.cityjson_version.is_some() {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
             if let Some(dst) = t_srs {

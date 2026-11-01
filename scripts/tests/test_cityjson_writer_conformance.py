@@ -66,3 +66,20 @@ def test_subset_cannot_silently_remove_object_links(direction):
     source["CityObjects"]["generic"] = {"type": "GenericCityObject", direction: ["house"]}
     with pytest.raises(ValueError, match="object links"):
         compatible_source(source, "1.1")
+
+
+@pytest.mark.parametrize("kind", ["missing", "ignores_version", "supported"])
+def test_optional_node_writer_probe_requires_method_and_version_option(tmp_path, kind):
+    import shutil
+    from conformance import node_cityjson_writer_available
+
+    if not shutil.which("node"):
+        pytest.skip("Node is not installed")
+    module = tmp_path / "terrio.js"
+    module.with_name("terrio_bg.wasm").write_bytes(b"presence marker")
+    method = "" if kind == "missing" else (
+        "toBytes(name,options){return Buffer.from(JSON.stringify({version:"
+        + ("'2.0'" if kind == "ignores_version" else "options.cityjsonVersion")
+        + "}));},")
+    module.write_text("module.exports={open(){return {" + method + "free(){}};}};")
+    assert node_cityjson_writer_available(module) == (kind == "supported")

@@ -712,7 +712,7 @@ def suite_cityjson_write(ctx):
         return suite
     command = [sys.executable, str(SCRIPTS / "compare_cityjson_writer.py"), ctx.data, "--terrio", ctx.terrio, "--json"]
     node = ROOT / "js/pkg-node/terrio.js"
-    if node_exports_available(node, ["open"]):
+    if node_cityjson_writer_available(node):
         command += ["--node-package", str(node)]
     code, out, err = run(command)
     try:
@@ -2253,6 +2253,21 @@ def node_exports_available(module, names):
     return result.returncode == 0
 
 
+def node_cityjson_writer_available(module):
+    """Probe the instance method and version option required by the writer suite."""
+    if not node_exports_available(module, ["open"]):
+        return False
+    code = """const t=require(process.argv[1]);
+const doc={type:'CityJSON',version:'2.0',transform:{scale:[1,1,1],translate:[0,0,0]},CityObjects:{probe:{type:'Building'}},vertices:[]};
+const d=t.open(new TextEncoder().encode(JSON.stringify(doc)),'probe.city.json');
+try {const out=JSON.parse(new TextDecoder().decode(d.toBytes('probe.city.json',{cityjsonVersion:'1.1'})));process.exitCode=out.version==='1.1'?0:1;}finally{d.free();}"""
+    try:
+        result = subprocess.run(["node", "-e", code, str(module.resolve())], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def suite_rpftoc(ctx):
     """All RPF TOC surfaces cross-read by GDAL 3.13.3 on prepared CADRG frames."""
     suite = Suite("rpftoc", "CADRG RPF table of contents", "GDAL 3.13.3 RPFTOC/NITF",
@@ -3058,7 +3073,7 @@ def main():
 
     def go(name):
         start = datetime.datetime.now()
-        if gdal_missing and name not in ("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson"):
+        if gdal_missing and name not in ("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write"):
             fn = SUITES[name]
             s = Suite(name, name, "", fn.__doc__ or "")
             s.skipped = "needs the Python modules " + ", ".join(gdal_missing)

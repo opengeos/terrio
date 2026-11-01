@@ -449,7 +449,10 @@ Layers with `city_id` and `city_type` fields use the city-object convention:
 `lod` is optional (default `"0"`), and `parents`, `attributes` and
 `surface_semantics` contain JSON text when present. Other columns become object
 attributes. Features sharing an ID are grouped by LoD and primitive type;
-conflicting attributes, types or parents are errors. Null-geometry objects remain.
+conflicting attributes, types or parents are errors. Core second-level types
+(parts, installations, constructive elements, furnishings, rooms and building
+subdivisions) require exactly one parent, as specified in CityJSON section 2.
+Top-level core types have no parent. Null-geometry objects remain.
 Other layers become one `GenericCityObject` per feature, with generated IDs and
 all columns as attributes. That generic type requires version 2.0. Several layers
 can share a file when their CRSs are consistent and explicit IDs do not collide.

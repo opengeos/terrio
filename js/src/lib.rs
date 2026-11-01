@@ -720,6 +720,7 @@ impl Dataset {
     /// Text over 254 UTF-8 bytes and unsupported DBF values are explicit errors.
     /// Vector GeoPackage option `preserveDeclaredGeometryType` retains the layer's
     /// declared geometry type, including Unknown, instead of inferring it.
+    /// CityJSON output: `cityjsonVersion` is "1.1" or "2.0" (the default).
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
         let resources = kmz_resources(&options)?;
