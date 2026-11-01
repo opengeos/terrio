@@ -64,3 +64,33 @@ fn invalid_catalog_paths_report_usage_errors() {
         assert!(output.stdout.is_empty());
     }
 }
+
+/// `docs/cli.md` lists every command in alphabetical order, with the summary `--help` prints.
+#[test]
+fn documented_command_list_matches_the_catalog() {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog: Value = serde_json::from_slice(&run(&["--json-usage"], dir.path()).stdout).unwrap();
+    let mut expected: Vec<(String, String)> = catalog["command"]["subcommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|command| {
+            let summary = command["description"].as_str().unwrap().lines().next().unwrap().trim_end_matches('.');
+            (command["name"].as_str().unwrap().to_string(), summary.to_string())
+        })
+        .collect();
+    // The catalog leaves out `mcp`, which serves it.
+    expected.push(("mcp".to_string(), "Serve these commands to AI agents over MCP".to_string()));
+    expected.sort();
+
+    let docs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/cli.md")).unwrap();
+    let documented: Vec<(String, String)> = docs
+        .lines()
+        .filter_map(|line| line.strip_prefix("| [`")?.split_once("`](")?.1.split_once(") | ").map(|(_, rest)| (line, rest)))
+        .map(|(line, summary)| {
+            let name = line.strip_prefix("| [`").unwrap().split_once('`').unwrap().0;
+            (name.to_string(), summary.trim_end_matches(" |").to_string())
+        })
+        .collect();
+    assert_eq!(documented, expected);
+}
