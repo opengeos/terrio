@@ -690,6 +690,43 @@ def suite_cityjson(ctx):
     return suite
 
 
+def suite_cityjson_write(ctx):
+    """Both writer versions are checked against schemas and an independent XYZ oracle."""
+    suite = Suite("cityjson-write", "CityJSON writer", "CityJSON 1.1/2.0 specifications and published JSON Schemas",
+                  "Real Den Haag, Delft and Rotterdam sources (plus cached 3DBAG pages) and a schema-derived core-type sample written "
+                  "as 1.1 and 2.0 through CLI, Python paths/bytes and optional Node/WASM. "
+                  "GenericCityObject sources must reject 1.1; a labelled compatible subset is also checked. "
+                  "Schemas, primitive structure, identity/type, parents, attributes, LoD, face "
+                  "classification and CRS are checked. XYZ tolerance: half an output quantization "
+                  "step plus four floating-point ULPs; constant axes use ULPs only. "
+                  "Solid topology, semantic hierarchy and appearance are outside the flat model.")
+    missing = missing_modules("terrio", "jsonschema", "referencing")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    root = Path(ctx.data) / "citymodels"
+    required = [root / name for name in ("DH_01_subs.city.json", "delft.json", "rotterdam_subset.json")]
+    required += [root / "schemas" / version / "cityjson.schema.json" for version in ("1.1.3", "2.0.2")]
+    if any(not path.is_file() for path in required):
+        suite.skipped = "prepare fixtures/schemas with scripts/compare_cityjson.py DATA --fetch"
+        return suite
+    command = [sys.executable, str(SCRIPTS / "compare_cityjson_writer.py"), ctx.data, "--terrio", ctx.terrio, "--json"]
+    node = ROOT / "js/pkg-node/terrio.js"
+    if node_exports_available(node, ["open"]):
+        command += ["--node-package", str(node)]
+    code, out, err = run(command)
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("city models", result["name"], result["status"], result["detail"]))
+    if code or not results:
+        suite.error = tail(err or out) or "no comparison results"
+    return suite
+
+
 def suite_cad(ctx):
     """CAD geometry interchange against public GDAL drawings and real OSM roads."""
     suite = Suite(
@@ -2749,6 +2786,7 @@ SUITES = OrderedDict(
         ("vector-roundtrip", suite_vector_roundtrip),
         ("cad", suite_cad),
         ("cityjson", suite_cityjson),
+        ("cityjson-write", suite_cityjson_write),
         ("citygml", suite_citygml),
         ("shapefile-archives", suite_shapefile_archives),
         ("vsi", suite_vsi),

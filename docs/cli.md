@@ -520,6 +520,10 @@ payloads. See [validation details and known differences](testing.md#geopackage-s
 
 ## convert
 
+CityJSON output defaults to 2.0. Select 1.1 with `--cityjson-version 1.1`; use
+`.city.json`/`.cityjson` or `--format CityJSON`. See [CityJSON](formats.md#cityjson)
+for the flat model and coordinate quantization limits.
+
 ```sh
 terrio convert INPUT OUTPUT [-f FORMAT] [options]
 ```

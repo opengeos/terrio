@@ -1221,6 +1221,8 @@ fn parse_compression(s: &str) -> Result<wbraster::GeoTiffCompression> {
 pub struct VectorWriteOptions {
     /// The output format. By default, chosen from the output path's extension.
     pub driver: Option<VectorDriver>,
+    /// CityJSON output version (1.1 or 2.0). The default is 2.0.
+    pub cityjson_version: Option<crate::CityJsonVersion>,
     /// GeoPackage: retain each layer's declared base geometry type, including Unknown,
     /// when creating or replacing layers. By default the feature types are inferred.
     /// Unknown declarations allow optional Z. Required/optional source dimensional
@@ -1289,6 +1291,10 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
         (VectorDriver::KML, _) => crate::drivers::vector::kml::write(layers, path),
         (VectorDriver::KMZ, _) => crate::drivers::vector::kml::write_kmz(layers, path, &options.kmz),
         (VectorDriver::TopoJSON, _) => crate::drivers::vector::topojson::write_layers(layers, path),
+        (VectorDriver::CityJSON, _) => {
+            std::fs::write(path, crate::drivers::vector::cityjson_write::to_bytes(layers, options.cityjson_version.unwrap_or_default())?)?;
+            Ok(())
+        }
         #[cfg(feature = "tiles")]
         (VectorDriver::MBTiles | VectorDriver::PMTiles | VectorDriver::MVT, _) => {
             crate::tiles::write_vector(layers, path, driver, &options.tiles)
@@ -1306,6 +1312,9 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
 
 /// Refuses format-specific vector options on other output formats rather than dropping them. `driver` is `None` for a format only GDAL writes.
 pub(crate) fn ensure_vector_options_apply(options: &VectorWriteOptions, driver: Option<VectorDriver>) -> Result<()> {
+    if options.cityjson_version.is_some() && driver != Some(VectorDriver::CityJSON) {
+        return Err(Error::InvalidArgument("cityjson_version applies to CityJSON output".into()));
+    }
     if options.preserve_declared_geometry_type && driver != Some(VectorDriver::GPKG) {
         return Err(Error::InvalidArgument("preserve_declared_geometry_type applies to GPKG output".into()));
     }

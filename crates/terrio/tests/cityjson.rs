@@ -123,16 +123,18 @@ fn solid_semantics_follow_shell_nesting_and_null_classifications() {
 }
 
 #[test]
-fn detection_looks_at_root_type_and_read_only_driver_rejects_writes() {
+fn detection_looks_at_root_type_and_writer_produces_cityjson() {
     let bytes = serde_json::to_vec(&document("MultiPoint", json!([0]))).unwrap();
     assert_eq!(terrio::inspection::identify_bytes(&bytes, "x.json").unwrap().driver, "CityJSON");
     assert_eq!(VectorDriver::for_extension("X.CITY.JSON"), Some(VectorDriver::CityJSON));
-    assert!(!VectorDriver::CityJSON.info().write);
+    assert!(VectorDriver::CityJSON.info().write);
     let dir = tempfile::tempdir().unwrap();
-    let ds = read(&document("MultiPoint", json!([0])), "x.city.json");
+    let ds = read(&document("MultiSurface", json!([[[0, 1, 2, 3]]])), "x.city.json");
     let path = dir.path().join("out.city.json");
-    assert!(terrio::write_vector(&ds.layers, path.to_str().unwrap(), &Default::default()).is_err());
-    assert!(!path.exists());
+    terrio::write_vector(&ds.layers, path.to_str().unwrap(), &Default::default()).unwrap();
+    let output: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(output["type"], "CityJSON");
+    assert_eq!(output["version"], "2.0");
     let ordinary = br#"{"type":"FeatureCollection","features":[],"note":{"type":"CityJSON"}}"#;
     assert_eq!(terrio::inspection::identify_bytes(ordinary, "x.json").unwrap().driver, "GeoJSON");
 }

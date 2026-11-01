@@ -22,6 +22,17 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - Proprietary formats that need vendor SDKs (MrSID, ECW, FileGDB raster).
 - Database drivers (PostGIS, Oracle, SQL Server) in the core crate.
 
+## City models (#462)
+
+Use the existing flat vector model and the published schemas as the conformance
+reference. Preserve XYZ faces and object fields; lossless solid topology and
+appearance require a separate future design.
+
+- [x] CityJSON 1.1/2.0 reader, merged in [#464](https://github.com/opengeos/terrio/pull/464).
+- [ ] CityGML 2.0/3.0 reader ([#470](https://github.com/opengeos/terrio/pull/470)).
+- [ ] CityJSON 1.1/2.0 writer.
+- [ ] CityGML writer.
+
 ## Machine-readable CLI metadata (#386)
 
 - [x] Unstable v0.1 `--json-usage` catalog from the shared clap/MCP command tree:
