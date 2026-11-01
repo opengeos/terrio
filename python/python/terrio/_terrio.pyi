@@ -426,6 +426,8 @@ class Layer:
         kmz_resources: Mapping[str, bytes] | None = None,
         preserve_declared_geometry_type: bool = False,
         cityjson_version: Literal["1.1", "2.0"] | None = None,
+        citygml_version: Literal["2.0", "3.0"] | None = None,
+        citygml_lod0_surface: Literal["footprint", "roof-edge"] | None = None,
     ) -> None: ...
     def to_bytes(
         self,
@@ -435,6 +437,8 @@ class Layer:
         kmz_resources: Mapping[str, bytes] | None = None,
         preserve_declared_geometry_type: bool = False,
         cityjson_version: Literal["1.1", "2.0"] | None = None,
+        citygml_version: Literal["2.0", "3.0"] | None = None,
+        citygml_lod0_surface: Literal["footprint", "roof-edge"] | None = None,
     ) -> bytes: ...
 
 @final
@@ -458,6 +462,8 @@ class VectorDataset:
         kmz_resources: Mapping[str, bytes] | None = None,
         preserve_declared_geometry_type: bool = False,
         cityjson_version: Literal["1.1", "2.0"] | None = None,
+        citygml_version: Literal["2.0", "3.0"] | None = None,
+        citygml_lod0_surface: Literal["footprint", "roof-edge"] | None = None,
     ) -> None: ...
 
 @final
@@ -875,6 +881,8 @@ def write_vector(
     *,
     preserve_declared_geometry_type: bool = False,
     cityjson_version: Literal["1.1", "2.0"] | None = None,
+    citygml_version: Literal["2.0", "3.0"] | None = None,
+    citygml_lod0_surface: Literal["footprint", "roof-edge"] | None = None,
 ) -> None: ...
 @final
 class FeatureStream:
@@ -933,6 +941,8 @@ def convert(
     overview_resampling: str | None = None,
     ct_opt: Mapping[str, str] | None = None,
     cityjson_version: Literal["1.1", "2.0"] | None = None,
+    citygml_version: Literal["2.0", "3.0"] | None = None,
+    citygml_lod0_surface: Literal["footprint", "roof-edge"] | None = None,
 ) -> None: ...
 
 # Operations.

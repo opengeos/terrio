@@ -1563,3 +1563,15 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+
+-------------------------------------------------------------------------------
+OGC CityGML schemas (https://schemas.opengis.net/citygml/)
+-------------------------------------------------------------------------------
+
+The generated CityGML writer profile tables in
+crates/terrio/src/drivers/vector/citygml_write_profiles.rs record element names,
+substitution relationships and property ordering from the published OGC CityGML
+2.0 and 3.0 schemas. The generator and encoder are original Terrio code; schema
+text and documentation are not bundled. The schemas and standards are published
+by the Open Geospatial Consortium. See scripts/generate_citygml_writer_profiles.py
+for the reproducible extraction procedure.

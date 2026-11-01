@@ -1226,6 +1226,10 @@ pub struct VectorWriteOptions {
     pub driver: Option<VectorDriver>,
     /// CityJSON output version (1.1 or 2.0). The default is 2.0.
     pub cityjson_version: Option<crate::CityJsonVersion>,
+    /// CityGML XML version (2.0 or 3.0). The default is 3.0.
+    pub citygml_version: Option<crate::CityGmlVersion>,
+    /// CityGML 2.0 building LoD 0 property when the flat input has no source hint.
+    pub citygml_lod0_surface: Option<crate::CityGmlLod0Surface>,
     /// GeoPackage: retain each layer's declared base geometry type, including Unknown,
     /// when creating or replacing layers. By default the feature types are inferred.
     /// Unknown declarations allow optional Z. Required/optional source dimensional
@@ -1294,6 +1298,18 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
         (VectorDriver::KML, _) => crate::drivers::vector::kml::write(layers, path),
         (VectorDriver::KMZ, _) => crate::drivers::vector::kml::write_kmz(layers, path, &options.kmz),
         (VectorDriver::TopoJSON, _) => crate::drivers::vector::topojson::write_layers(layers, path),
+        (VectorDriver::CityGML, _) => {
+            let bytes = crate::drivers::vector::citygml_write::to_bytes(
+                layers,
+                options.citygml_version.unwrap_or_default(),
+                options.citygml_lod0_surface,
+            )?;
+            crate::vsi::write_local_atomic(std::path::Path::new(path), |out| {
+                use std::io::Write;
+                out.write_all(&bytes)?;
+                Ok(())
+            })
+        }
         (VectorDriver::CityJSON, _) => {
             let bytes = crate::drivers::vector::cityjson_write::to_bytes(layers, options.cityjson_version.unwrap_or_default())?;
             crate::vsi::write_local_atomic(std::path::Path::new(path), |out| {
@@ -1319,6 +1335,9 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
 
 /// Refuses format-specific vector options on other output formats rather than dropping them. `driver` is `None` for a format only GDAL writes.
 pub(crate) fn ensure_vector_options_apply(options: &VectorWriteOptions, driver: Option<VectorDriver>) -> Result<()> {
+    if (options.citygml_version.is_some() || options.citygml_lod0_surface.is_some()) && driver != Some(VectorDriver::CityGML) {
+        return Err(Error::InvalidArgument("citygml_version/citygml_lod0_surface applies to CityGML output".into()));
+    }
     if options.cityjson_version.is_some() && driver != Some(VectorDriver::CityJSON) {
         return Err(Error::InvalidArgument("cityjson_version applies to CityJSON output".into()));
     }
