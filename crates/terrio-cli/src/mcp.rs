@@ -10,7 +10,7 @@
 //! meanwhile. A cancelled call (`notifications/cancelled`) kills its command, and so does the
 //! client going away.
 
-use clap::CommandFactory;
+use crate::usage::commands;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -328,13 +328,6 @@ fn initialize(params: &Value) -> Value {
         "serverInfo": {"name": "terrio", "title": "terrio", "version": env!("CARGO_PKG_VERSION")},
         "instructions": INSTRUCTIONS,
     })
-}
-
-/// The commands served as tools: all but `mcp` itself and `help`.
-fn commands() -> impl Iterator<Item = clap::Command> {
-    let mut cli = crate::Cli::command();
-    cli.build();
-    cli.get_subcommands().filter(|c| !matches!(c.get_name(), "mcp" | "help")).cloned().collect::<Vec<_>>().into_iter()
 }
 
 /// Whether the help of `c` or of one of its subcommands (`filter merge`) offers `@FILE` lists.

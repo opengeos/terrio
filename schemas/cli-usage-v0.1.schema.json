@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Terrio CLI usage catalog v0.1 (unstable)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "unstable",
+    "program",
+    "version",
+    "command"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "0.1"
+    },
+    "unstable": {
+      "const": true
+    },
+    "program": {
+      "const": "terrio"
+    },
+    "version": {
+      "type": "string"
+    },
+    "command": {
+      "$ref": "#/$defs/command"
+    }
+  },
+  "$defs": {
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "type": "string"
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/argument"
+          }
+        },
+        "subcommands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/command"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "description",
+        "aliases",
+        "arguments",
+        "subcommands"
+      ]
+    },
+    "argument": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "short": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "long": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "short_aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "long_aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "position": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "path",
+            "unknown"
+          ]
+        },
+        "default": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "num_args": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        },
+        "action": {
+          "enum": [
+            "set",
+            "append",
+            "set_true",
+            "set_false",
+            "count",
+            "help",
+            "help_short",
+            "help_long",
+            "version",
+            "unknown"
+          ]
+        },
+        "global": {
+          "type": "boolean"
+        },
+        "value_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "value_delimiter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "allow_hyphen_values": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "short",
+        "long",
+        "short_aliases",
+        "long_aliases",
+        "position",
+        "description",
+        "type",
+        "default",
+        "choices",
+        "required",
+        "num_args",
+        "action",
+        "global",
+        "value_names",
+        "value_delimiter",
+        "allow_hyphen_values"
+      ]
+    }
+  }
+}

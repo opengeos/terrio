@@ -8,6 +8,7 @@
 
 mod cmd;
 mod mcp;
+mod usage;
 
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
@@ -17,6 +18,9 @@ use std::sync::{Arc, Mutex};
 #[derive(Parser)]
 #[command(name = "terrio", version, about)]
 struct Cli {
+    /// Print the versioned command catalog as JSON, without opening datasets.
+    #[arg(id = "json_usage", long = "json-usage", global = true, hide = true)]
+    _json_usage: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -443,7 +447,18 @@ const STACK_SIZE: usize = 8 << 20;
 
 /// [`run_as`], on the calling thread.
 fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32 {
-    let cli = match Cli::try_parse_from(cmd::calc::rewrite_args(args)) {
+    let args = cmd::calc::rewrite_args(args);
+    if let Some(catalog) = usage::requested(&args) {
+        use std::io::Write;
+        if let Err(error) = writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&catalog).expect("JSON command catalog"))
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            eprintln!("terrio: {error}");
+            return 1;
+        }
+        return 0;
+    }
+    let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(e) => {
             // --help and --version print to standard output and succeed; usage errors do not.
@@ -451,6 +466,10 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
             return e.exit_code();
         }
     };
+    if cli._json_usage {
+        eprintln!("JSON usage is not available for this command");
+        return 2;
+    }
     let result = match cli.command {
         Command::Info(a) => cmd::info::run(a),
         Command::RpftocCreate(a) => cmd::rpftoc::run(&a),
