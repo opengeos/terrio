@@ -20,7 +20,7 @@ use std::path::{MAIN_SEPARATOR_STR, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The page: one file with no external resources, so that it works offline.
 const PAGE: &str = include_str!("ui.html");
@@ -28,15 +28,15 @@ const PAGE: &str = include_str!("ui.html");
 const MAX_HEAD: usize = 64 << 10;
 /// The longest request body accepted, in bytes.
 const MAX_BODY: usize = 1 << 20;
-/// The most connections handled at once; more are dropped, so that local clients cannot exhaust
-/// threads or memory without the token. A browser keeps few open, plus one per running command.
+/// The most connections handled at once; more are dropped, which bounds threads and memory. A
+/// local process without the token can still fill the slots, each for up to [`REQUEST_TIMEOUT`],
+/// and so block the page while it does: a nuisance on the user's own computer, not a way in. A
+/// browser keeps few open, plus one per running command.
 const MAX_CONNECTIONS: usize = 64;
-/// How long a client may take to send its request.
+/// How long a client may take to send its whole request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often a run checks whether its command is done and its client still there.
 const POLL: Duration = Duration::from_millis(50);
-const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
-
 /// Arguments of `terrio ui`.
 #[derive(clap::Args)]
 pub struct Args {
@@ -58,6 +58,10 @@ struct Session {
     port: u16,
     /// The `--json-usage` catalog, as JSON.
     catalog: String,
+    /// The page, whose script carries this session's nonce.
+    page: String,
+    /// The `Content-Security-Policy` header, which allows only that script.
+    security_policy: String,
 }
 
 /// Serves the page until the process is stopped.
@@ -77,11 +81,21 @@ pub fn serve(args: Args, terrio: Vec<OsString>) -> std::io::Result<()> {
 
 /// A session with a new token.
 fn session(terrio: Vec<OsString>, port: u16) -> std::io::Result<Session> {
-    let mut secret = [0u8; 16];
-    getrandom::fill(&mut secret).map_err(|e| std::io::Error::other(format!("no random numbers for the session token: {e}")))?;
-    let token = secret.iter().map(|b| format!("{b:02x}")).collect();
+    let token = random_hex()?;
+    let nonce = random_hex()?;
+    let page = PAGE.replacen("<script>", &format!("<script nonce=\"{nonce}\">"), 1);
+    let security_policy = format!(
+        "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    );
     let catalog = crate::usage::requested(&["terrio".into(), "--json-usage".into()]).expect("the root catalog").to_string();
-    Ok(Session { terrio, token, port, catalog })
+    Ok(Session { terrio, token, port, catalog, page, security_policy })
+}
+
+/// 128 random bits, in hexadecimal.
+fn random_hex() -> std::io::Result<String> {
+    let mut secret = [0u8; 16];
+    getrandom::fill(&mut secret).map_err(|e| std::io::Error::other(format!("no random numbers for the session: {e}")))?;
+    Ok(secret.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Answers connections, each on a thread of its own, since a run lasts as long as its command.
@@ -156,6 +170,9 @@ fn read_request(stream: &mut impl Read) -> Result<Request, String> {
     let (mut data, mut buf) = (Vec::new(), [0u8; 8192]);
     let head_end = loop {
         if let Some(end) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+            if end > MAX_HEAD {
+                return Err("request head too long".into());
+            }
             break end;
         }
         if data.len() > MAX_HEAD {
@@ -193,11 +210,30 @@ fn read_request(stream: &mut impl Read) -> Result<Request, String> {
     Ok(Request { method, path, headers, body })
 }
 
+/// Reads a socket until a deadline shared by all its reads, so that a client sending a byte now
+/// and then cannot hold its connection for longer.
+struct UntilDeadline<'a> {
+    stream: &'a TcpStream,
+    deadline: Instant,
+}
+
+impl Read for UntilDeadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(ErrorKind::TimedOut, "request took too long"));
+        }
+        self.stream.set_read_timeout(Some(remaining))?;
+        let mut stream = self.stream;
+        stream.read(buf)
+    }
+}
+
 /// Handles one connection, which carries one request.
 fn connection(mut stream: TcpStream, session: &Session) {
-    let _ = stream.set_read_timeout(Some(REQUEST_TIMEOUT));
     let _ = stream.set_write_timeout(Some(REQUEST_TIMEOUT));
-    let reply = match read_request(&mut stream) {
+    let request = read_request(&mut UntilDeadline { stream: &stream, deadline: Instant::now() + REQUEST_TIMEOUT });
+    let reply = match request {
         Ok(request) => match check(&request, session) {
             Ok(()) if request.method == "POST" && request.path == "/api/run" => match parse_run(&request) {
                 Ok((name, args)) => match run_until_client_leaves(&stream, session, &name, args) {
@@ -211,7 +247,7 @@ fn connection(mut stream: TcpStream, session: &Session) {
         },
         Err(message) => failure(400, &message),
     };
-    respond(&mut stream, reply);
+    respond(&mut stream, reply, &session.security_policy);
 }
 
 /// A reply's status, content type and body.
@@ -244,7 +280,7 @@ fn same_secret(a: &str, b: &str) -> bool {
 /// Every request but a run, which needs the connection.
 fn route(request: &Request, session: &Session) -> Reply {
     match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/") => (200, "text/html; charset=utf-8", PAGE.to_string()),
+        ("GET", "/") => (200, "text/html; charset=utf-8", session.page.clone()),
         ("GET", "/api/catalog") => {
             let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
             let catalog = format!("{{\"cwd\":{},\"separator\":{},\"catalog\":{}}}", json!(cwd), json!(MAIN_SEPARATOR_STR), session.catalog);
@@ -266,6 +302,7 @@ fn parse_run(request: &Request) -> Result<(String, Vec<OsString>), String> {
 }
 
 /// Runs a command: its result, or `None` when the client closed the connection, which kills it.
+/// A client that only shuts down its writing side counts as gone too: browsers do not do that.
 fn run_until_client_leaves(stream: &TcpStream, session: &Session, name: &str, args: Vec<OsString>) -> Option<Value> {
     let cancel = AtomicBool::new(false);
     std::thread::scope(|scope| {
@@ -291,8 +328,8 @@ fn run_until_client_leaves(stream: &TcpStream, session: &Session, name: &str, ar
 }
 
 /// The entries of the directory named in the request (`{"path": …}`; the working directory when
-/// empty), directories first. Names that are not valid Unicode are left out: the page could not
-/// send them back.
+/// empty), directories first. Names that are not valid Unicode are left out, since the page could
+/// not send them back, and so are names with line breaks, which its lists of paths separate by.
 fn list_directory(body: &[u8]) -> Result<Value, String> {
     let params: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
     let path = match params.get("path").and_then(Value::as_str) {
@@ -304,7 +341,7 @@ fn list_directory(body: &[u8]) -> Result<Value, String> {
         .map_err(|e| format!("{}: {e}", path.display()))?
         .flatten()
         .filter_map(|entry| {
-            let name = entry.file_name().into_string().ok()?;
+            let name = entry.file_name().into_string().ok().filter(|name| !name.contains(['\n', '\r']))?;
             // Follows symbolic links, so that a link to a directory can be opened.
             let metadata = std::fs::metadata(entry.path()).ok();
             let is_dir = metadata.as_ref().is_some_and(|m| m.is_dir());
@@ -320,7 +357,7 @@ fn display(path: &Path) -> String {
     path.display().to_string()
 }
 
-fn respond(stream: &mut TcpStream, (status, content_type, body): Reply) {
+fn respond(stream: &mut TcpStream, (status, content_type, body): Reply, security_policy: &str) {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -330,7 +367,7 @@ fn respond(stream: &mut TcpStream, (status, content_type, body): Reply) {
         _ => "Error",
     };
     let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Security-Policy: {CONTENT_SECURITY_POLICY}\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Security-Policy: {security_policy}\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(body.as_bytes()));
@@ -371,7 +408,14 @@ mod tests {
     }
 
     fn test_session() -> Session {
-        Session { terrio: vec![], token: "secret".into(), port: 8000, catalog: "{}".into() }
+        Session {
+            terrio: vec![],
+            token: "secret".into(),
+            port: 8000,
+            catalog: "{}".into(),
+            page: String::new(),
+            security_policy: String::new(),
+        }
     }
 
     #[test]
@@ -415,6 +459,9 @@ mod tests {
 
         let raw = format!("POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_BODY + 1);
         assert!(read_request(&mut raw.as_bytes()).unwrap_err().contains("too long"));
+        // A head that ends in the read that takes it over the limit.
+        let raw = format!("GET / HTTP/1.1\r\nX: {}\r\n\r\n", "a".repeat(MAX_HEAD));
+        assert!(read_request(&mut raw.as_bytes()).unwrap_err().contains("too long"));
         let raw = vec![b'a'; MAX_HEAD + 8193];
         assert!(read_request(&mut &raw[..]).unwrap_err().contains("too long"));
         assert!(read_request(&mut &b"GET"[..]).is_err());
@@ -433,6 +480,48 @@ mod tests {
 
         let missing = json!({"path": dir.path().join("missing").to_str().unwrap()}).to_string();
         assert!(list_directory(missing.as_bytes()).unwrap_err().contains("missing"));
+    }
+
+    #[test]
+    fn a_trickling_client_does_not_outlast_the_deadline() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        std::thread::spawn(move || {
+            while client.write_all(b"a").is_ok() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let (server, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        let mut reader = UntilDeadline { stream: &server, deadline: started + Duration::from_millis(200) };
+        // Whether the deadline passes between reads or during one, the request fails in time.
+        assert!(read_request(&mut reader).is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn leaves_out_names_with_line_breaks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("two\nlines.tif"), b"").unwrap();
+        let body = json!({"path": dir.path().to_str().unwrap()}).to_string();
+        assert_eq!(list_directory(body.as_bytes()).unwrap()["entries"], json!([]));
+    }
+
+    #[test]
+    fn the_only_script_allowed_is_the_pages() {
+        let s = std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(crate::STACK_SIZE)
+                .spawn_scoped(scope, || session(vec![], 1).unwrap())
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        let nonce = s.security_policy.split("'nonce-").nth(1).unwrap().split('\'').next().unwrap();
+        assert!(s.page.contains(&format!("<script nonce=\"{nonce}\">")));
+        assert_eq!(s.page.matches("<script").count(), 1);
+        assert!(!s.security_policy.contains("script-src 'unsafe-inline'") && nonce != s.token);
     }
 
     #[test]

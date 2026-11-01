@@ -250,7 +250,7 @@ function show(command) {
     details.append(el("div", { className: "option-grid" }, ...optional.map((f) => f.node)));
     form.append(details);
   }
-  form.append(el("div", { className: "bar" }, run, cancel, copy, status), el("h2", { textContent: "Command" }), preview, output);
+  form.append(el("div", { className: "bar" }, run, cancel, copy, status), el("h2", { textContent: "Command (POSIX shell quoting)" }), preview, output);
 
   const render = () => {
     const tokens = commandLine(command, fields);
@@ -340,11 +340,18 @@ function choose(path) {
   byId("browse").close();
 }
 
+// Only the latest listing counts: an earlier, slower one must not replace it.
+let lastListing = 0;
 async function browseTo(path) {
   const list = byId("browse-list");
+  const listing = ++lastListing;
+  let result;
   try {
-    browsing = await api("/api/list", { path });
+    result = await api("/api/list", { path });
+    if (listing !== lastListing) return;
+    browsing = result;
   } catch (error) {
+    if (listing !== lastListing) return;
     // The list and "Use this folder" must not offer a directory the header no longer names.
     byId("browse-path").textContent = error.message;
     list.replaceChildren();
@@ -368,7 +375,9 @@ function openBrowser(input) {
   const last = input.value.trim().split("\n").pop();
   const cut = last ? last.lastIndexOf(separator) : -1;
   byId("browse").showModal();
-  browseTo(cut > 0 ? last.slice(0, cut) : browsing.path);
+  const parent = cut > 0 ? last.slice(0, cut) : "";
+  // `C:` is the current directory of drive C, not its root.
+  browseTo(parent.endsWith(":") ? parent + separator : parent || browsing.path);
 }
 
 byId("browse-up").addEventListener("click", () => browsing.parent && browseTo(browsing.parent));

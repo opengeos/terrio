@@ -3502,8 +3502,8 @@ terrio ui --port 8080 --no-open
 Serves a page with a form for every command, generated from the
 [command catalog](#machine-readable-command-catalog), so it always matches this binary. Pick files
 with the built-in file browser, which lists the disk of the computer running terrio; the page shows
-the equivalent command line to copy into a script. Relative paths are taken from the directory
-`terrio ui` started in. **Cancel**, or closing the tab, stops a running command, which can leave a
+the equivalent command line, quoted for a POSIX shell, to copy into a script. Relative paths are
+taken from the directory `terrio ui` started in. **Cancel**, or closing the tab, stops a running command, which can leave a
 partial output file; Ctrl-C stops the server. This works through both the `terrio` binary and the
 Python package's `terrio` command.
 
