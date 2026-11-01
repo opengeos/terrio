@@ -47,14 +47,26 @@ def past_pole(case, point):
     return case["refuses_past_pole"] and abs(northing) > math.pi / 2
 
 
+def moll_family(case):
+    return any(f"+o_proj={name}" in case["target"].split() for name in ["moll", "wag4", "wag5"])
+
+
 def mollweide_longitude(case, point):
-    """Recover Mollweide longitude in radians, removing false origins in metres."""
+    """Recover Mollweide/Wagner longitude in radians, removing false origins in metres."""
     parameters = dict(token.lstrip("+").split("=", 1) for token in shlex.split(case["target"]) if "=" in token)
     radius, factor = case["radius_metres"], case["metres_per_unit"]
     x = (point[0] * factor - float(parameters.get("x_0", 0))) / radius
     y = (point[1] * factor - case["false_northing_metres"]) / radius
-    theta = math.asin(y / math.sqrt(2))
-    return x / (2 * math.sqrt(2) / math.pi * math.cos(theta))
+    if parameters.get("o_proj") == "wag5":
+        cx, cy = 0.90977, 1.65014
+    elif parameters.get("o_proj") == "wag4":
+        p = math.pi / 3
+        r = math.sqrt(2 * math.pi * math.sin(p) / (2 * p + math.sin(2 * p)))
+        cx, cy = 2 * r / math.pi, r / math.sin(p)
+    else:
+        cx, cy = 2 * math.sqrt(2) / math.pi, math.sqrt(2)
+    theta = math.asin(y / cy)
+    return x / (cx * math.cos(theta))
 
 
 def mollweide_roundtrip_error(case, point, back):
@@ -97,8 +109,20 @@ def main():
     reference = json.loads(
         (ROOT / "crates/terrio-crs/tests/data/ob_tran_reference.json").read_text()
     )
-    results = []
+    # The frozen grid supplies the geographic probes. Derive Wagner cases with GDAL's
+    # own WKT encodings, so every member of the shared inverse kernel is compared live.
+    extra = []
     for case in reference["cases"]:
+        if "+o_proj=moll" not in case["target"].split():
+            continue
+        for name in ["wag4", "wag5"]:
+            target = case["target"].replace("+o_proj=moll", f"+o_proj={name}")
+            srs = osr.SpatialReference()
+            srs.SetFromUserInput(target)
+            extra.append(dict(case, name=case["name"].replace("ob_tran moll ", f"ob_tran {name} "), target=target,
+                              wkt1=srs.ExportToWkt(["FORMAT=WKT1_GDAL"]), wkt2=srs.ExportToWkt(["FORMAT=WKT2_2019"])))
+    results = []
+    for case in [*reference["cases"], *extra]:
         if "+o_proj=eqc " in case["target"] and "+datum=" in case["target"] and not ellipsoidal_eqc():
             detail = "this PROJ has no ellipsoidal eqc (PROJ 9.8.1, which the corpus uses, does)"
             results.append(dict(name=case["name"], status="not compared", detail=detail))
@@ -138,12 +162,12 @@ def main():
                     # the rotation turns into a point; terrio's sinusoidal refuses it.
                     assert got is None, "inverse past a pole"
                     continue
-                if want is None and got is not None and "+o_proj=moll" in case["target"]:
+                if want is None and got is not None and moll_family(case):
                     # The only accepted GDAL refusal is the documented eight-ulp domain band.
                     # Verify the unrotated Mollweide domain analytically, then check the inverse
                     # against the original geographic sample rather than skipping its values.
                     lam = mollweide_longitude(case, point)
-                    assert abs(abs(lam) - math.pi) <= 8 * math.ulp(math.pi), "not on Mollweide edge"
+                    assert abs(abs(lam) - math.pi) <= 8 * math.ulp(math.pi), "not on Mollweide/Wagner edge"
                     edge_differences += 1
                     if reference is None:
                         # A standalone inverse probe may have no geographic oracle because

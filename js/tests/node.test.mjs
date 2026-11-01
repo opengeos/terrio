@@ -1754,7 +1754,7 @@ test("general oblique transformation matches PROJ", () => {
   const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/ob_tran_reference.json", import.meta.url), "utf8"));
   for (const c of reference.cases) {
     const samples = c.samples.filter(s => s[2] !== null).map(s =>
-      s[3] === null && c.target.includes("+o_proj=moll") ? [...s.slice(0, 3), s.slice(0, 2)] : s);
+      s[3] === null && ["moll", "wag4", "wag5"].some(p => c.target.split(/\s+/).includes(`+o_proj=${p}`)) ? [...s.slice(0, 3), s.slice(0, 2)] : s);
     for (const target of [c.target, c.wkt2, c.wkt1]) {
       const result = terrio.transformPoints(samples.map(s => s[0]), samples.map(s => s[1]), c.source, target);
       for (let i = 0; i < samples.length; i++) for (let j = 0; j < 2; j++) {
@@ -1787,6 +1787,20 @@ test("general oblique transformation matches PROJ", () => {
     const refused = samples.filter(s => s[3] === null).map(s => s[2]).concat(c.inverse_samples.filter(([p, e]) => e === null || pastPole(p)).map(([p]) => p));
     for (const point of refused) {
       assert.throws(() => terrio.transformPoints([point[0]], [point[1]], c.target, c.source), undefined, `${c.name} inverse ${point}`);
+    }
+  }
+});
+
+test("general oblique Mollweide and Wagner inverse edges", () => {
+  const source = "+proj=longlat +R=6371000";
+  for (const projection of ["moll", "wag4", "wag5"]) {
+    const target = `+proj=ob_tran +o_proj=${projection} +o_lon_p=0 +o_lat_p=45 +lon_0=147 +R=6371000`;
+    const lon = [-33, -33, 147], lat = [-75, -30, -60];
+    const [x, y] = terrio.transformPoints(lon, lat, source, target);
+    const [backLon, backLat] = terrio.transformPoints(x, y, target, source);
+    for (let i = 0; i < lon.length; i++) {
+      assert.ok(Math.abs((backLon[i] - lon[i] + 540) % 360 - 180) <= 1e-8, `${projection} longitude ${i}`);
+      assert.ok(Math.abs(backLat[i] - lat[i]) <= 1e-8, `${projection} latitude ${i}`);
     }
   }
 });

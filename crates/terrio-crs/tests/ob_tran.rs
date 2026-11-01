@@ -57,8 +57,13 @@ fn rotated_projections_pole_forms_figures_and_units_match_frozen_proj() {
                 let actual = actual.unwrap_or_else(|e| panic!("{name} {encoding} {point:?}: {e}"));
                 let error = (actual.0 - expected.0).abs().max((actual.1 - expected.1).abs()) * factor;
                 assert!(error <= 0.001, "{name} {encoding} {point:?}: forward error {error} m");
-                // Mollweide antimeridian samples now invert, even where PROJ refused them.
-                let edge = case["target"].as_str().unwrap().contains("+o_proj=moll") && sample[3].is_null();
+                // Mollweide-family antimeridian samples now invert, even where PROJ refused them.
+                let edge = case["target"]
+                    .as_str()
+                    .unwrap()
+                    .split_whitespace()
+                    .any(|p| matches!(p, "+o_proj=moll" | "+o_proj=wag4" | "+o_proj=wag5"))
+                    && sample[3].is_null();
                 if sample[3].is_null() && !edge {
                     let actual = inverse.transform(expected.0, expected.1);
                     assert!(actual.is_err(), "{name} {encoding}: inverse must refuse {expected:?}, as PROJ does: {actual:?}");
@@ -112,5 +117,22 @@ fn conflicting_pole_forms_take_proj_precedence() {
         let target = SpatialRef::parse(&format!("{base} {pole}")).unwrap();
         let actual = Transformer::new(&geographic, &target).unwrap().transform(18.0, 50.0).unwrap();
         assert!((actual.0 - expected.0).abs() < 0.001 && (actual.1 - expected.1).abs() < 0.001, "{pole}: {actual:?}");
+    }
+}
+
+/// Unmodified oblique edge inputs invert for every shared kernel (GDAL 3.13.3 domain policy differs).
+#[test]
+fn rotated_mollweide_and_wagner_accept_antimeridians() {
+    let source = SpatialRef::parse("+proj=longlat +R=6371000").unwrap();
+    for projection in ["moll", "wag4", "wag5"] {
+        let target =
+            SpatialRef::parse(&format!("+proj=ob_tran +o_proj={projection} +o_lon_p=0 +o_lat_p=45 +lon_0=147 +R=6371000")).unwrap();
+        let forward = Transformer::new(&source, &target).unwrap();
+        let inverse = Transformer::new(&target, &source).unwrap();
+        for (lon, lat) in [(-33.0, -75.0), (-33.0, -30.0), (147.0, -60.0)] {
+            let (x, y) = forward.transform(lon, lat).unwrap();
+            let back = inverse.transform(x, y).unwrap();
+            assert!(angular_error(back, &serde_json::json!([lon, lat])) <= 1e-8, "{projection} {lon} {lat}: {back:?}");
+        }
     }
 }

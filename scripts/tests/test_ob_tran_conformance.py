@@ -42,6 +42,13 @@ class MollweideEdgeTests(unittest.TestCase):
                 )
                 self.assertAlmostEqual(mollweide_longitude(case, point), lam, delta=8 * math.ulp(math.pi))
 
+    def test_wagner_edges_use_their_own_kernel_constants(self):
+        for name, cx, cy in [("wag4", 0.8630951398862577, 1.565481415999337), ("wag5", 0.90977, 1.65014)]:
+            case = {"target": f"+proj=ob_tran +o_proj={name}", "radius_metres": 1, "metres_per_unit": 1, "false_northing_metres": 0}
+            for sign in [-1, 1]:
+                point = [sign * cx * math.pi * math.cos(0.37), cy * math.sin(0.37)]
+                self.assertAlmostEqual(mollweide_longitude(case, point), sign * math.pi, delta=8 * math.ulp(math.pi))
+
 
 if __name__ == "__main__":
     unittest.main()
