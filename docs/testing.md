@@ -44,6 +44,46 @@ entrypoint includes Node when that package exists. Counts, XYZ, rings, object
 identity/type, LoD, parents, attributes and semantics text are exact; source CRS is
 checked separately. The reader exposes flat primitives, not a lossless city model.
 
+CityGML uses the same specifications-first approach. Fetch the pinned citygml4j
+2.0/3.0 building examples and their published schema dependencies into the external
+data directory, then compare every explicit polygon against the source XML:
+
+```sh
+python scripts/compare_citygml.py ../terrio-data --fetch
+python scripts/conformance.py ../terrio-data --only citygml --strict
+```
+
+The suite requires current Python bindings and `lxml`; Node/WASM is included when
+the package exports `open` and Node is runnable. Both source files must pass XSD validation against
+the cached OGC/W3C/OASIS schemas. XYZ, holes, owner/type, LoD, thematic face class
+and direct scalar source properties (including units/code spaces) are exact. Rust regressions additionally check local
+XLinks (including reversed surfaces), consecutive coordinate duplicates, implicit
+matrices, inferred dimensions, UTF-16/Latin-1 input, authority-axis order, compound
+CRSs and malformed input. The independent XML oracle covers the explicit polygon
+geometry in the two published fixtures; it does not independently expand arbitrary
+XLinks or implicit geometry.
+
+CityGML dispatch and CRS-cache observations require Linux with `/proc/self/io`:
+reproduce them with:
+
+```sh
+python scripts/benchmark_citygml_dispatch.py ../terrio-data
+python scripts/benchmark_citygml_dispatch.py ../terrio-data --restrict-drivers
+```
+
+With a CityGML-only driver restriction, equal 32,834-byte generated files with
+an early root or a root after a 32 KiB comment read 33,858 and 49,218 bytes,
+respectively: one complete source read plus a 1 KiB or 16 KiB identification
+prefix. Linux `/proc/self/io` counted three and eight read calls, respectively,
+after subtracting counter-read overhead. After adding the bounded local-path
+reader, an optimized run counted four and nine calls for these restricted cases,
+and three calls without the restriction; source byte counts were unchanged.
+Oversized sparse CityGML inputs (256 MiB + 1 byte) were rejected after reading
+16 KiB for `.gml` and zero source bytes for `.citygml`. The driver restriction
+added a 1 KiB identification read to each. These limits apply to native parsing;
+the optional GDAL fallback can accept inputs that the native reader refuses. The extra prefix read is bounded even
+when opening must inspect beyond it to find the root.
+
 The optional live 3DBAG bbox regression from PR #464 can also be cached externally:
 
 ```sh

@@ -658,14 +658,17 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    // CityJSON commonly shares `.json` with GeoJSON; use the bounded root-type probe.
+    // City-model documents with no recognized extension use a bounded root probe.
     #[cfg(not(target_family = "wasm"))]
-    if VectorDriver::for_extension(path).is_none()
-        && RasterDriver::for_extension(path).is_none()
-        && !Path::new(path).is_dir()
-        && crate::inspection::identify(path, false).ok().flatten().is_some_and(|i| i.driver == "CityJSON")
-    {
-        return read_vector_local(path, VectorDriver::CityJSON, options).map(Dataset::Vector);
+    if VectorDriver::for_extension(path).is_none() && RasterDriver::for_extension(path).is_none() && !Path::new(path).is_dir() {
+        let driver = crate::inspection::identify(path, false).ok().flatten().and_then(|identified| match identified.driver.as_str() {
+            "CityGML" => Some(VectorDriver::CityGML),
+            "CityJSON" => Some(VectorDriver::CityJSON),
+            _ => None,
+        });
+        if let Some(driver) = driver {
+            return read_vector_local(path, driver, options).map(Dataset::Vector);
+        }
     }
     if let Some(driver) = VectorDriver::for_extension(path) {
         return read_vector_local(path, driver, options).map(Dataset::Vector);
@@ -782,11 +785,22 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
     // `.json` is shared with GeoJSON. The root type may follow megabytes of vertices or
     // CityObjects, beyond the bounded identifier. These formats already require a whole
     // document read; inspect those same bytes rather than opening the file twice.
-    let (driver, json) = if driver == VectorDriver::GeoJSON {
-        let bytes = std::fs::read(path)?;
-        let text = std::str::from_utf8(&bytes).map_err(|e| Error::InvalidData(format!("JSON input is not UTF-8: {e}")))?;
-        let city = crate::inspection::root_json_type(text.trim_start_matches('\u{feff}').trim_start()).as_deref() == Some("CityJSON");
-        let driver = if city { VectorDriver::CityJSON } else { driver };
+    let (driver, preloaded) = if matches!(driver, VectorDriver::GeoJSON | VectorDriver::GML) {
+        let bytes =
+            if driver == VectorDriver::GML { crate::drivers::vector::citygml::read_path_bytes(path, true)? } else { std::fs::read(path)? };
+        let city = if driver == VectorDriver::GeoJSON {
+            let text = std::str::from_utf8(&bytes).map_err(|e| Error::InvalidData(format!("JSON input is not UTF-8: {e}")))?;
+            crate::inspection::root_json_type(text.trim_start_matches('\u{feff}').trim_start()).as_deref() == Some("CityJSON")
+        } else {
+            false
+        };
+        let driver = if city {
+            VectorDriver::CityJSON
+        } else if driver == VectorDriver::GML && crate::drivers::vector::citygml::looks_like(&bytes) {
+            VectorDriver::CityGML
+        } else {
+            driver
+        };
         crate::formats::check_driver_allowed(driver.name(), path, crate::formats::Kind::Vector)?;
         (driver, Some(bytes))
     } else {
@@ -799,7 +813,8 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
         layers.iter_mut().for_each(|l| options.keep_range(l));
         return Ok(finish_vector(layers, path, driver));
     }
-    let native = match json {
+    let native = match preloaded {
+        Some(bytes) if driver == VectorDriver::GML => Some(crate::drivers::vector::gml::parse_path_bytes(&bytes, path)?),
         Some(bytes) => crate::drivers::vector::read_bytes(bytes, path, driver, options)?,
         None => crate::drivers::vector::read(path, driver, options)?,
     };

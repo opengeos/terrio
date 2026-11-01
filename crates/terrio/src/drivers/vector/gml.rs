@@ -41,7 +41,12 @@ const GEOMETRIES: &[&str] = &[
 
 /// Reads a GML file: one layer per feature type.
 pub fn read(path: &str) -> Result<Vec<Layer>> {
-    let text = xml::decode(&std::fs::read(path)?);
+    parse_path_bytes(&std::fs::read(path)?, path)
+}
+
+/// Parse already-read GML bytes while retaining the native sibling schema lookup.
+pub(crate) fn parse_path_bytes(bytes: &[u8], path: &str) -> Result<Vec<Layer>> {
+    let text = xml::decode(bytes);
     let root = xml::parse(&text)?;
     let xsd = std::fs::read(Path::new(path).with_extension("xsd")).ok().and_then(|b| xml::parse(&xml::decode(&b)).ok());
     parse(&root, xsd.as_ref())

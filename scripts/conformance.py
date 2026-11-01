@@ -620,6 +620,39 @@ def suite_shapefile_rings(ctx):
     return suite
 
 
+def suite_citygml(ctx):
+    """CityGML is checked against schemas and source coordinates, not GDAL's subset."""
+    suite = Suite("citygml", "CityGML reader", "OGC CityGML 2.0/3.0 encoding schemas and source XML",
+                  "Real citygml4j 2.0/3.0 building examples, validated with published XSDs cached "
+                  "offline; exact XYZ, holes, owner/type, LoD, thematic class and source scalar "
+                  "attributes across CLI, Python path/bytes and optional Node/WASM. Compound "
+                  "CRS is checked. Synthetic tests cover implicit geometry and invalid links. "
+                  "GDAL 3.13.3 is informational only.")
+    missing = missing_modules("terrio", "lxml")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    root = Path(ctx.data) / "citymodels"
+    if not all((root / name).is_file() for name in ("lod3_building_v2.gml", "lod2_buildings_v3.gml")) or not (root / "gml-schemas").is_dir():
+        suite.skipped = "prepare fixtures and schemas with scripts/compare_citygml.py DATA --fetch"
+        return suite
+    command = [sys.executable, str(SCRIPTS / "compare_citygml.py"), ctx.data, "--terrio", ctx.terrio, "--json"]
+    node = ROOT / "js/pkg-node/terrio.js"
+    if node_exports_available(node, ["open"]):
+        command += ["--node-package", str(node)]
+    code, out, err = run(command)
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("city models", result["name"], result["status"], result["detail"]))
+    if code or not results:
+        suite.error = tail(err or out) or "no comparison results"
+    return suite
+
+
 def suite_cityjson(ctx):
     """CityJSON's specification is authoritative; GDAL has no CityJSON driver."""
     suite = Suite(
@@ -642,7 +675,7 @@ def suite_cityjson(ctx):
         return suite
     command = [sys.executable, str(SCRIPTS / "compare_cityjson.py"), ctx.data, "--terrio", ctx.terrio, "--json"]
     node = ROOT / "js/pkg-node/terrio.js"
-    if node.is_file() and shutil.which("node"):
+    if node_exports_available(node, ["open"]):
         command += ["--node-package", str(node)]
     code, out, err = run(command)
     try:
@@ -2717,6 +2750,7 @@ SUITES = OrderedDict(
         ("vector-roundtrip", suite_vector_roundtrip),
         ("cad", suite_cad),
         ("cityjson", suite_cityjson),
+        ("citygml", suite_citygml),
         ("shapefile-archives", suite_shapefile_archives),
         ("vsi", suite_vsi),
         ("shapefile-rings", suite_shapefile_rings),
@@ -2987,7 +3021,7 @@ def main():
 
     def go(name):
         start = datetime.datetime.now()
-        if gdal_missing and name not in ("pointclouds", "crs", "grib", "vsi", "hecras"):
+        if gdal_missing and name not in ("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson"):
             fn = SUITES[name]
             s = Suite(name, name, "", fn.__doc__ or "")
             s.skipped = "needs the Python modules " + ", ".join(gdal_missing)

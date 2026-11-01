@@ -179,6 +179,19 @@ test("CityJSON late root type retains vertical XYZ and unknown CRS", () => {
   ds.free();
 });
 
+test("CityGML 3.0 reads vertical XYZ with object identity and CRS", () => {
+  const xml = `<CityModel xmlns="http://www.opengis.net/citygml/3.0" xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0">
+    <cityObjectMember><b:Building g:id="house"><b:function>office</b:function><b:function>retail</b:function><b:lod2MultiSurface><g:MultiSurface srsName="EPSG:32632" srsDimension="3"><g:surfaceMember><g:Polygon><g:exterior><g:LinearRing><g:posList>10 20 30 10 21 30 10 21 31 10 20 30</g:posList></g:LinearRing></g:exterior></g:Polygon></g:surfaceMember></g:MultiSurface></b:lod2MultiSurface></b:Building></cityObjectMember></CityModel>`;
+  const ds = terrio.open(new TextEncoder().encode(xml), "model.gml");
+  const features = ds.toGeoJSON().features;
+  assert.equal(features.length, 1);
+  assert.equal(features[0].properties.city_id, "house");
+  assert.equal(features[0].properties.lod, "2");
+  assert.deepEqual(JSON.parse(features[0].properties.attributes).function, ["office", "retail"]);
+  assert.deepEqual(features[0].geometry.coordinates[0].slice(0, 3), [[10, 20, 30], [10, 21, 30], [10, 21, 31]]);
+  ds.free();
+});
+
 test("CityJSON skips degenerate faces without shifting semantics", () => {
   const doc = {
     type: "CityJSON", version: "2.0", vertices: [[10, 0, 0], [10, 1, 0], [10, 1, 1]],
@@ -3425,4 +3438,20 @@ test("singlepart preserves measured ZM coordinates through GeoPackage", async (c
     database?.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("CityGML UTF-16 positions infer two dimensions from their CRS", () => {
+  const xml = `<c:CityModel xmlns:c="http://www.opengis.net/citygml/3.0" xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0"><c:cityObjectMember><b:Building g:id="house"><g:name>Montréal</g:name><b:lod1Geometry><g:Point><g:pos srsName="EPSG:32632">10 20</g:pos></g:Point></b:lod1Geometry></b:Building></c:cityObjectMember></c:CityModel>`;
+  const ds = terrio.open(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(xml, "utf16le")]), "model.gml");
+  const feature = ds.toGeoJSON().features[0];
+  assert.deepEqual(feature.geometry.coordinates, [10, 20]);
+  assert.equal(JSON.parse(feature.properties.attributes).name, "Montréal");
+  ds.free();
+});
+
+test("CityGML declared Windows-1252 preserves currency symbols", () => {
+  const xml = `<?xml version="1.0" encoding="windows-1252"?><c:CityModel xmlns:c="http://www.opengis.net/citygml/3.0" xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0"><c:cityObjectMember><b:Building g:id="house"><g:name>\x80</g:name></b:Building></c:cityObjectMember></c:CityModel>`;
+  const ds = terrio.open(Buffer.from(xml, "latin1"), "model.gml");
+  assert.equal(JSON.parse(ds.toGeoJSON().features[0].properties.attributes).name, "€");
+  ds.free();
 });

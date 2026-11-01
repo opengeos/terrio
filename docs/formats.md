@@ -363,6 +363,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | ESRI Shapefile | Shapefile | ✓ | ✓ | shp |
 | GeoJSON | GeoJSON | ✓ | ✓ | geojson, json |
 | CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | — | city.json, cityjson, json (by content) |
+| CityGML | CityGML 2.0 and 3.0 (flat XYZ view) | ✓ | — | citygml, gml/xml (by content) |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
 | KML | KML | ✓ | ✓ | kml |
@@ -442,6 +443,72 @@ thresholds; the benchmark above records actual counters and timings.
 The [CityJSON 1.1](https://www.cityjson.org/specs/1.1.3/) and
 [2.0 specifications](https://www.cityjson.org/specs/2.0.2/) and their published JSON
 Schemas define conformance. GDAL 3.13.3 has no CityJSON driver.
+
+### CityGML
+
+The pure-Rust `CityGML` reader accepts 2.0 and 3.0 city models, using namespace
+URIs rather than prefix names. `.gml` is distinguished from ordinary GML by the
+root CityModel; `.citygml` selects this driver explicitly. Ordinary GML retains
+its sibling application-schema lookup. XML and local geometry XLinks are parsed
+without fetching external resources; invalid XML, duplicate IDs, unresolved
+references, reference cycles and malformed coordinate lists fail explicitly.
+Reference expansion is limited to 1,000,000 visits within expanded subtrees,
+including acyclic branching graphs; ordinary inline traversal does not consume
+this budget. Reference-expanded primitive conversions additionally have a 64 MiB
+coordinate-text work budget; repeated references with an already validated
+CRS/dimension reuse validation. A global nesting limit of 256 includes linked city objects. Repeated
+object references share their feature records and accumulate parent IDs. Repeated source properties are retained as JSON arrays.
+
+The `CityGML` layer uses the eight common flat fields described for CityJSON,
+without its skipped-ring/face counters. Rings with fewer than three distinct XYZ
+positions fail explicitly rather than being skipped. Polygon faces retain
+Z and interior rings; solids (including interior shells), composite surfaces,
+triangle/rectangle patches, linear curves and point collections become ordinary
+primitives. Local polygon references shared by a solid and its thematic boundary
+produce one face per owner/LoD/orientation, with the boundary's semantic record in
+`surface_semantics`. `semantics` stays null because CityGML has no CityJSON-style
+indexed semantics object. Nested city objects retain parent IDs and nonspatial
+containers. Missing object IDs receive generated IDs. Object properties are JSON
+text; measurement units and code spaces are retained with their values.
+
+Affine implicit geometry uses its matrix before adding the reference point and
+promotes positions to XYZ, using zero for an absent input Z. Conflicting anchor
+and relative-geometry CRSs are rejected.
+Explicit and inherited coordinate dimensions override dimensions inferred from
+the CRS when omitted. Position-level CRS declarations, legacy compound OGC URNs and
+geographic authority-axis order are supported. A flat layer requires a consistent
+CRS; mixing unknown and known CRSs, or distinct CRSs, fails explicitly.
+
+UTF-8, Latin-1 and UTF-16 XML are supported. Undeclared input that is not valid
+UTF-8 intentionally falls back to Latin-1 for compatibility; declare Windows-1252
+explicitly when its additional characters are intended. Other declared encodings recognized
+by `encoding_rs`, including Windows-1252, are decoded using their declaration. Identification examines at most
+16 KiB; opening a named `.gml` can inspect beyond a long leading comment.
+
+This is a materialized vector view with a 256 MiB raw XML limit checked before
+decoding/tree construction and the shared 256 MiB estimated flat-feature payload
+limit. A separate 256 MiB estimate bounds XML tree storage, including element,
+attribute and text allocations with capacity slack. Local CityGML paths are
+size-checked before payload allocation. Oversized shared XML names with an
+inconclusive 16 KiB root prefix are refused; identified non-CityGML XML keeps its
+existing read policy. These are allocation safeguards, not a total process-memory
+ceiling. Transcoding can allocate an additional UTF-8 buffer; for example, Latin-1
+can expand to twice its source size. The raw input and decoded text are separate
+from the XML-tree and flat-payload estimates. Reference expansion has whole-document totals of one million node visits
+and 64 MiB of coordinate text parsed through XLinks. A shared primitive with
+contradictory thematic classifications is rejected. It does not
+retain solid/shell topology, full city-model hierarchy,
+textures/materials, ADE semantics or general metadata for lossless round trips.
+External geometry references, linked coordinate/ring content, nonlinear curve
+segments, RasterRelief coverage data and DTD/entity declarations are outside this
+native reader. Builds with the optional GDAL backend retain Terrio’s normal
+fallback policy; an explicit
+`GDAL:` input selects GDAL directly. CityGML writing is
+a separate step in [#462](https://github.com/opengeos/terrio/issues/462).
+
+Conformance follows the OGC [CityGML 2.0 encoding](https://schemas.opengis.net/citygml/2.0/)
+and [CityGML 3.0 encoding](https://docs.ogc.org/is/21-006r2/21-006r2.html) and published
+schemas. GDAL 3.13.3's partial CityGML reader is informational.
 
 ### Other vector formats
 
