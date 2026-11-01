@@ -120,6 +120,7 @@ def main():
             srs = osr.SpatialReference()
             srs.SetFromUserInput(target)
             extra.append(dict(case, name=case["name"].replace("ob_tran moll ", f"ob_tran {name} "), target=target,
+                              inverse_samples=[(point, None) for point, _ in case["inverse_samples"]],
                               wkt1=srs.ExportToWkt(["FORMAT=WKT1_GDAL"]), wkt2=srs.ExportToWkt(["FORMAT=WKT2_2019"])))
     results = []
     for case in [*reference["cases"], *extra]:
