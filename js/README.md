@@ -334,6 +334,25 @@ Use `{ inputKind: "raster" }` or `{ inputKind: "vector" }` to force the input
 family, including ambiguous uploaded files; `"auto"` chooses detection. This
 option overrides a `raster` or `vector` prefix in the command string.
 
+## RPF table of contents
+
+```js
+const toc = terrio.rpftocCreate([
+  {filename: "zone/000C9010.ON2", bytes: frameBytes},
+], {producerId: "ACME", countryCode: "US", classification: "U"});
+```
+
+`rpftocCreate` returns A.TOC bytes referring to existing CADRG frame files. Keep
+the named frames at those safe relative paths beside the TOC. The adapter copies
+only bounded metadata ranges from each uploaded `Uint8Array`, without decoding
+compressed pixels. Options are `scale` (otherwise inferred per series),
+`producerId` (five ASCII bytes), `producerName` (27), `countryCode` (two uppercase
+letters or empty) and `classification` (`U`, `R`, `C`, `S`, `T`). Corners must
+match the selected scale/zone; legacy polar interval fields are normalized.
+CIB/non-CADRG products are unsupported and fail the operation; unsupported or
+malformed recognized NITF inputs are not skipped. Encoded TRE metadata must fit 99,999
+bytes; oversized indexes fail. Frame images are referenced rather than embedded.
+
 ## Retile and publish raster folders
 
 ```js

@@ -231,6 +231,9 @@ commands. Command-group progress:
       point sampling across multiple rasters, through the Rust API, CLI and MCP.
 - [x] Polygonization preserves exterior rings and holes on south-up and rotated grids, and
       classifies rings correctly for small pixels at large coordinate origins.
+- [x] Metadata-only CADRG RPF table-of-contents creation through Rust, CLI/MCP,
+      Python and WebAssembly, with bounded frame reads, polar grids and atomic native output.
+      Part of [#289](https://github.com/opengeos/terrio/issues/289).
 - [x] Python and WebAssembly contour, footprint, buffer, grouped dissolve, geometry validity
       and repair functions, using the shared Rust engines.
 - [x] Contour lines with interval/fixed levels, nodata handling and optional elevations in Z;
