@@ -165,7 +165,16 @@ impl Vertices {
             indices.pop();
         }
         let distinct = indices.iter().collect::<HashSet<_>>().len();
-        if distinct < if ring { 3 } else { 2 } {
+        let minimum = if ring { 3 } else { 2 };
+        if distinct < minimum {
+            let source_distinct = points
+                .iter()
+                .map(|p| xyz(p).map(|v| v.map(|x| if x == 0.0 { 0 } else { x.to_bits() })))
+                .collect::<Result<HashSet<_>>>()?
+                .len();
+            if source_distinct < minimum {
+                return Err(invalid(format!("a ring or line needs at least {minimum} distinct source XYZ positions")));
+            }
             return Err(invalid("a ring or line collapses under integer quantization"));
         }
         Ok(indices)
@@ -253,6 +262,9 @@ fn kind(name: &str, version: CityJsonVersion) -> Result<String> {
     let mapped = match name {
         "Door" | "Window" => "BuildingConstructiveElement",
         "Room" => "BuildingRoom",
+        "IntBuildingInstallation" => "BuildingInstallation",
+        "IntBridgeInstallation" => "BridgeInstallation",
+        "IntTunnelInstallation" => "TunnelInstallation",
         "Storey" => "BuildingStorey",
         "BridgeConstructionElement" => "BridgeConstructiveElement",
         "HollowSpace" | "TunnelRoom" => "TunnelHollowSpace",
@@ -265,35 +277,36 @@ fn kind(name: &str, version: CityJsonVersion) -> Result<String> {
     }
     Ok(mapped.into())
 }
+fn point_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "OtherConstruction"
+            | "BuildingInstallation"
+            | "BuildingConstructiveElement"
+            | "BuildingFurniture"
+            | "CityObjectGroup"
+            | "GenericCityObject"
+            | "TunnelInstallation"
+            | "TunnelConstructiveElement"
+            | "TunnelFurniture"
+            | "BridgeInstallation"
+            | "BridgeConstructiveElement"
+            | "BridgeFurniture"
+            | "SolitaryVegetationObject"
+            | "CityFurniture"
+    )
+}
 fn allowed(kind: &str, primitive: Primitive<'_>) -> bool {
     match primitive {
         Primitive::Surface(_, _) => true,
-        Primitive::Point(_) => matches!(
-            kind,
-            "OtherConstruction"
-                | "BuildingInstallation"
-                | "BuildingConstructiveElement"
-                | "BuildingFurniture"
-                | "CityObjectGroup"
-                | "GenericCityObject"
-                | "TunnelInstallation"
-                | "TunnelConstructiveElement"
-                | "TunnelFurniture"
-                | "BridgeInstallation"
-                | "BridgeConstructiveElement"
-                | "BridgeFurniture"
-                | "SolitaryVegetationObject"
-                | "CityFurniture"
-        ),
-        Primitive::Line(_) => {
-            allowed(kind, Primitive::Point(&Coord { x: 0.0, y: 0.0, z: None, m: None }))
-                || matches!(kind, "Road" | "Railway" | "TransportSquare" | "Waterway" | "WaterBody")
-        }
+        Primitive::Point(_) => point_kind(kind),
+        Primitive::Line(_) => point_kind(kind) || matches!(kind, "Road" | "Railway" | "TransportSquare" | "Waterway" | "WaterBody"),
     }
 }
 fn lod(value: &FieldValue, version: CityJsonVersion) -> Result<String> {
     let value = match value {
         FieldValue::Null => "0",
+        FieldValue::Text(s) if s.is_empty() => "0",
         FieldValue::Text(s) => s,
         _ => return Err(invalid("LoD must be text")),
     };
@@ -382,7 +395,7 @@ fn objects(layers: &[Layer], version: CityJsonVersion) -> Result<BTreeMap<String
             } else {
                 "GenericCityObject"
             };
-            let kind = kind(source_kind, version)?;
+            let object_kind = kind(source_kind, version)?;
             let raw: Vec<&FieldValue> = layer
                 .schema
                 .fields()
@@ -424,7 +437,7 @@ fn objects(layers: &[Layer], version: CityJsonVersion) -> Result<BTreeMap<String
                     }
                     attrs.insert(def.name.clone(), value);
                 }
-                if source_kind != kind {
+                if source_kind != object_kind {
                     if attrs.get("terrio:sourceCityType").is_some_and(|value| value != &json!(source_kind)) {
                         return Err(invalid("terrio:sourceCityType conflicts with the source classification"));
                     }
@@ -432,12 +445,12 @@ fn objects(layers: &[Layer], version: CityJsonVersion) -> Result<BTreeMap<String
                 }
                 let entry = objects.entry(id.clone()).or_insert_with(|| Object {
                     layer: li,
-                    kind: kind.clone(),
+                    kind: object_kind.clone(),
                     attrs: attrs.clone(),
                     parents: parents.clone(),
                     primitives: Vec::new(),
                 });
-                if entry.layer != li || entry.kind != kind || entry.attrs != attrs || entry.parents != parents {
+                if entry.layer != li || entry.kind != object_kind || entry.attrs != attrs || entry.parents != parents {
                     return Err(invalid(format!("conflicting metadata for object {id}")));
                 }
                 metadata.insert(id.clone(), (li, raw));
@@ -464,13 +477,13 @@ fn objects(layers: &[Layer], version: CityJsonVersion) -> Result<BTreeMap<String
                 let mut parts = Vec::new();
                 flatten(g, 0, &mut parts)?;
                 for p in parts {
-                    if !allowed(&kind, p) {
-                        return Err(invalid(format!("{} is not permitted for {kind}", p.kind())));
+                    if !allowed(&object_kind, p) {
+                        return Err(invalid(format!("{} is not permitted for {object_kind}", p.kind())));
                     }
                     if !matches!(p, Primitive::Surface(_, _)) && semantic.is_some() {
                         return Err(invalid("surface semantics attached to a point or line"));
                     }
-                    if kind == "TINRelief"
+                    if object_kind == "TINRelief"
                         && matches!(p,Primitive::Surface(e,h) if !h.is_empty() || e.0.iter().map(|c|(c.x.to_bits(),c.y.to_bits(),c.z.map(f64::to_bits))).collect::<HashSet<_>>().len()!=3)
                     {
                         return Err(invalid("TINRelief requires triangular faces without holes"));
@@ -482,7 +495,7 @@ fn objects(layers: &[Layer], version: CityJsonVersion) -> Result<BTreeMap<String
     }
     Ok(objects)
 }
-fn children(objects: &BTreeMap<String, Object<'_>>) -> Result<BTreeMap<String, Vec<String>>> {
+fn children(objects: &BTreeMap<String, Object<'_>>, version: CityJsonVersion) -> Result<BTreeMap<String, Vec<String>>> {
     let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut indegree = HashMap::new();
     for (id, object) in objects {
@@ -516,6 +529,20 @@ fn children(objects: &BTreeMap<String, Object<'_>>) -> Result<BTreeMap<String, V
             }
             let family = ["Building", "Bridge", "Tunnel"].into_iter().find(|family| object.kind.starts_with(family));
             if family.is_some_and(|family| !objects[parent].kind.starts_with(family)) {
+                return Err(invalid(format!("parent {parent} has an incompatible type for {} {id}", object.kind)));
+            }
+            let parent_kind = objects[parent].kind.as_str();
+            let compatible = match object.kind.as_str() {
+                "BuildingInstallation" | "BuildingConstructiveElement" | "BuildingFurniture" | "BuildingStorey" => {
+                    matches!(parent_kind, "Building" | "BuildingPart" | "BuildingRoom")
+                }
+                "BridgeInstallation" | "BridgeFurniture" => matches!(parent_kind, "Bridge" | "BridgePart" | "BridgeRoom"),
+                "TunnelInstallation" | "TunnelConstructiveElement" | "TunnelHollowSpace" | "TunnelFurniture" => {
+                    matches!(parent_kind, "Tunnel" | "TunnelPart")
+                }
+                _ => true,
+            };
+            if version == CityJsonVersion::V2_0 && !compatible {
                 return Err(invalid(format!("parent {parent} has an incompatible type for {} {id}", object.kind)));
             }
             children.entry(parent.clone()).or_default().push(id.clone());
@@ -585,7 +612,7 @@ pub(crate) fn to_bytes(layers: &[Layer], version: CityJsonVersion) -> Result<Vec
     }
     let crs = crs(layers)?;
     let objects = objects(layers, version)?;
-    let children = children(&objects)?;
+    let children = children(&objects, version)?;
     let mut vertices = Vertices::new(&objects)?;
     let mut encoded = Map::new();
     for (id, object) in objects {
@@ -799,6 +826,53 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_partial_city_column_pairs_remain_attributes() {
+        for name in ["city_id", "city_type"] {
+            let mut layer = Layer::new("ordinary");
+            layer.add_field(wbvector::FieldDef::new(name, FieldType::Text));
+            layer.push(Feature { fid: 0, attributes: vec![FieldValue::Text("original".into())], geometry: None });
+            let output: Value = serde_json::from_slice(&to_bytes(&[layer], CityJsonVersion::V2_0).unwrap()).unwrap();
+            let object = &output["CityObjects"]["_terrio_0_0"];
+            assert_eq!(object["type"], "GenericCityObject");
+            assert_eq!(object["attributes"][name], "original");
+        }
+        assert_eq!(lod(&FieldValue::Text(String::new()), CityJsonVersion::V2_0).unwrap(), "0");
+    }
+
+    #[test]
+    fn furniture_cannot_own_restricted_building_bridge_or_tunnel_children() {
+        for (family, kinds) in [
+            ("Building", &["BuildingInstallation", "BuildingConstructiveElement", "BuildingFurniture", "BuildingStorey"][..]),
+            ("Bridge", &["BridgeInstallation", "BridgeFurniture"][..]),
+            ("Tunnel", &["TunnelInstallation", "TunnelConstructiveElement", "TunnelHollowSpace", "TunnelFurniture"][..]),
+        ] {
+            for kind in kinds {
+                let doc = json!({"type":"CityJSON","version":"2.0","transform":{"scale":[1,1,1],"translate":[0,0,0]},
+                    "vertices":[],"CityObjects":{
+                    "root":{"type":family},
+                    "furniture":{"type":format!("{family}Furniture"),"parents":["root"]},
+                    "child":{"type":kind,"parents":["furniture"]}}});
+                let layers = super::super::cityjson::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
+                assert!(to_bytes(&layers, CityJsonVersion::V2_0).unwrap_err().to_string().contains("incompatible type"));
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_source_lines_and_rings_are_distinguished_from_quantization_collapse() {
+        let point = Coord { x: 1.0, y: 2.0, z: Some(3.0), m: None };
+        for geometry in [
+            Geometry::LineString(vec![]),
+            Geometry::LineString(vec![point.clone()]),
+            Geometry::Polygon { exterior: Ring::new(vec![point; 3]), interiors: vec![] },
+        ] {
+            let mut layer = Layer::new("invalid");
+            layer.push(Feature { fid: 0, attributes: vec![], geometry: Some(geometry) });
+            assert!(to_bytes(&[layer], CityJsonVersion::V2_0).unwrap_err().to_string().contains("distinct source XYZ"));
+        }
+    }
+
+    #[test]
     fn quantization_uses_safe_integers_for_tiny_and_large_coordinate_ranges() {
         for span in [f64::from_bits(1), 1e-300, 1.0, 1e250, f64::MAX] {
             let mut layer = Layer::new("points");
@@ -822,7 +896,14 @@ mod tests {
             let result = super::super::cityjson::parse(&bytes).unwrap();
             for (feature, expected) in result[0].features.iter().zip([-span, span]) {
                 let Geometry::Point(p) = feature.geometry.as_ref().unwrap() else { panic!() };
-                assert!((p.x - expected).abs() <= span * 1e-14);
+                let ulp = |v: f64| {
+                    let v = v.abs();
+                    if v.next_up().is_finite() { v.next_up() - v } else { v - v.next_down() }
+                };
+                let scale = doc["transform"]["scale"][0].as_f64().unwrap();
+                let offset = doc["transform"]["translate"][0].as_f64().unwrap();
+                let bound = scale / 2.0 + 4.0 * ulp(expected).max(ulp(p.x)).max(ulp(offset));
+                assert!((p.x - expected).abs() <= bound, "span {span}, reconstructed {}, bound {bound}", p.x);
             }
         }
     }
