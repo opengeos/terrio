@@ -3327,16 +3327,17 @@ test("zonalStats exposes multiple rasters, bands, nodata and membership controls
 
 test("zonalStats retains every named layer and its statistics", () => {
   const raster=terrio.rasterFromArray(new Float32Array([1,2,3,-99]),2,2,[0,1,0,2,0,-1],"EPSG:4326",-99);
-  const zones=name=>terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{name},geometry:{type:"Polygon",coordinates:[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}]},name);
-  const source=terrio.concat([zones("a"),zones("b")],{mode:"stack"});
+  const zones=(name,ring)=>terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{name},geometry:{type:"Polygon",coordinates:[ring]}}]},name);
+  const source=terrio.concat([zones("a",[[0,0],[2,0],[2,2],[0,2],[0,0]]),zones("b",[[0,0],[1,0],[1,1],[0,1],[0,0]])],{mode:"stack"});
   const result=terrio.zonalStats(source,[raster],{stats:["count","mean"]});
+  const expected=[{count:3,mean:2},{count:1,mean:3}];
   assert.deepEqual(result.layerNames(),source.layerNames());
   for (const [index,name] of result.layerNames().entries()) {
     const features=result.toGeoJSON(name).features;
     assert.equal(features.length,1);
     assert.equal(features[0].properties.name,["a","b"][index]);
-    assert.equal(features[0].properties.raster1_b1_count,3);
-    assert.equal(features[0].properties.raster1_b1_mean,2);
+    assert.equal(features[0].properties.raster1_b1_count,expected[index].count);
+    assert.equal(features[0].properties.raster1_b1_mean,expected[index].mean);
   }
 });
 

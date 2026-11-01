@@ -317,7 +317,9 @@ const parts = terrio.singlepart(countries);
 Results are vector `Dataset` objects containing every input layer. This follows the
 other JavaScript analysis functions; Python returns one selected `Layer`. Zones accept
 datasets, uploads or GeoJSON. Rasters accept datasets/uploads, one or an array; all
-pixels are materialized, including lazy sources. Options and limits match Python/CLI:
+pixels are materialized, including lazy sources. Repeated raster entries are
+materialized separately; inputs are not cached or deduplicated. Options and limits
+match Python/CLI:
 bands default to `[1]`; count/min/max/mean/sum/population stddev default statistics,
 optional median; center or `allTouched` membership; per-raster CRS transforms;
 nodata/nonfinite exclusion; zero count/null statistics for empty zones; output
