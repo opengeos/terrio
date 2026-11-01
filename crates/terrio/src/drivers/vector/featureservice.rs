@@ -28,9 +28,9 @@ pub(crate) struct Page {
     /// The service has more features (`exceededTransferLimit`).
     #[cfg_attr(not(remote), allow(dead_code))]
     pub more: bool,
-    /// Its features' ids are object ids, not their place in the page.
+    /// The features without an object id, whose ids are their place in the page, in order.
     #[cfg_attr(not(remote), allow(dead_code))]
-    pub object_ids: bool,
+    pub by_position: Vec<usize>,
 }
 
 /// The most bytes read from a service for one dataset: a service that never stops paging ends here.
@@ -89,7 +89,8 @@ fn pages_wanted(url: &str, option: Option<bool>) -> bool {
 /// many features as the first page holds when the URL does not say, as GDAL's do, from
 /// `resultOffset` on. Reading stops once `stop_at` features are read. A page that adds nothing while
 /// saying there are more is an error, as is a page with other fields, and a page the same as the one
-/// before it: the service ignores the offset. Features without object ids are numbered across pages.
+/// before it, by its bytes or its first object id: the service ignores the offset. Features without
+/// object ids are numbered by their place in the whole layer.
 #[cfg(remote)]
 pub(crate) fn read_pages(
     url: &str,
@@ -99,7 +100,13 @@ pub(crate) fn read_pages(
     decode: &dyn Fn(&[u8]) -> crate::Result<Page>,
 ) -> crate::Result<Layer> {
     let invalid = |message: String| crate::Error::InvalidData(format!("feature service: {message}"));
-    let Page { mut layer, mut more, .. } = decode(first)?;
+    let Page { mut layer, mut more, by_position } = decode(first)?;
+    // A service that ignores the offset answers the same features again, whatever else changes in
+    // its answer: the first object id of a page shows it.
+    let first_object_id = |l: &Layer, by_position: &[usize]| {
+        l.features.iter().enumerate().find(|(i, _)| by_position.binary_search(i).is_err()).map(|(_, f)| f.fid)
+    };
+    let mut previous_id = first_object_id(&layer, &by_position);
     if !pages_wanted(url, option) {
         return Ok(layer);
     }
@@ -122,12 +129,14 @@ pub(crate) fn read_pages(
         if total > MAX_TOTAL_BYTES {
             return Err(invalid(format!("the results exceed {MAX_TOTAL_BYTES} bytes; ask for fewer features")));
         }
-        if bytes == *previous {
+        let page = decode(&bytes)?;
+        let id = first_object_id(&page.layer, &page.by_position);
+        if bytes == *previous || (id.is_some() && id == previous_id) {
             return Err(invalid(format!(
                 "the page at offset {offset} is the same as the one before it: the service seems to ignore the offset (FEATURE_SERVER_PAGING=NO reads one page)"
             )));
         }
-        let page = decode(&bytes)?;
+        previous_id = id;
         if page.more && page.layer.features.is_empty() {
             return Err(invalid(format!("the page at offset {offset} has no features, but says there are more")));
         }
@@ -136,8 +145,9 @@ pub(crate) fn read_pages(
             return Err(invalid(format!("the page at offset {offset} has other fields than the first")));
         }
         more = page.more;
-        for mut feature in page.layer.features {
-            if !page.object_ids {
+        // Features without an object id are numbered by their place in the whole layer.
+        for (i, mut feature) in page.layer.features.into_iter().enumerate() {
+            if page.by_position.binary_search(&i).is_ok() {
                 feature.fid = layer.features.len() as u64;
             }
             layer.push(feature);
@@ -187,7 +197,7 @@ pub(crate) fn date_time(ms: i64) -> FieldValue {
 /// from a service, so it is read only as WKT (`SpatialRef::parse` would also open a file it names),
 /// and text without WKT's `KEYWORD[` start names no CRS.
 pub(crate) fn spatial_reference(latest_wkid: Option<u32>, wkid: Option<u32>, wkt: Option<&str>) -> Option<SpatialRef> {
-    if let Some(code) = latest_wkid.or(wkid).filter(|&c| c > 0) {
+    if let Some(code) = latest_wkid.filter(|&c| c > 0).or(wkid.filter(|&c| c > 0)) {
         return SpatialRef::from_epsg(code).or_else(|_| SpatialRef::from_esri(code)).ok();
     }
     let wkt = wkt.map(str::trim)?;
@@ -315,6 +325,8 @@ mod tests {
         assert_eq!(spatial_reference(None, Some(4326), None).and_then(|c| c.authority()), Some(("EPSG", 4326)));
         assert!(spatial_reference(None, Some(102100), None).is_some());
         assert!(spatial_reference(None, None, None).is_none());
+        // A latest WKID of zero names none: the WKID still does.
+        assert_eq!(spatial_reference(Some(0), Some(4326), None).and_then(|c| c.authority()), Some(("EPSG", 4326)));
     }
 
     #[test]

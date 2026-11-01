@@ -133,6 +133,7 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     let has_z = doc.get("hasZ").and_then(Value::as_bool).unwrap_or(false);
     let has_m = doc.get("hasM").and_then(Value::as_bool).unwrap_or(false);
     let object_id = fields.iter().position(|f| f.object_id);
+    let mut by_position = Vec::new();
     for (n, f) in features.iter().enumerate() {
         let empty = Map::new();
         let attributes = f.get("attributes").and_then(Value::as_object).unwrap_or(&empty);
@@ -145,13 +146,12 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
             None | Some(Value::Null) => None,
             Some(g) => geometry(g, has_z, has_m).map_err(|e| invalid(format!("feature {n}: {e}")))?,
         };
+        if fid.is_none() {
+            by_position.push(n);
+        }
         layer.push(Feature { fid: fid.unwrap_or(n as u64), geometry, attributes: values });
     }
-    Ok(featureservice::Page {
-        layer,
-        more: doc.get("exceededTransferLimit").and_then(Value::as_bool).unwrap_or(false),
-        object_ids: object_id.is_some(),
-    })
+    Ok(featureservice::Page { layer, more: doc.get("exceededTransferLimit").and_then(Value::as_bool).unwrap_or(false), by_position })
 }
 
 fn spatial_reference(sr: Option<&Value>) -> Option<crate::crs::SpatialRef> {
@@ -195,21 +195,27 @@ fn schema(doc: &Map<String, Value>, features: &[Value]) -> Vec<Field> {
     seen.into_iter().map(|(name, t)| Field { def: FieldDef::new(name, t.unwrap_or(FieldType::Text)), object_id: false }).collect()
 }
 
+/// A number as a whole one, when it fits in 64 bits: one outside that range is none, not the
+/// nearest that fits.
+fn whole(v: &Value) -> Option<i64> {
+    // 2^63, which an `f64` holds exactly; `i64::MAX` as an `f64` rounds up to it.
+    const LIMIT: f64 = 9_223_372_036_854_775_808.0;
+    v.as_i64().or_else(|| v.as_f64().filter(|f| f.is_finite() && (-LIMIT..LIMIT).contains(f)).map(|f| f as i64))
+}
+
 /// An attribute value, as the field's type reads it.
 fn value(v: Option<&Value>, field: &FieldDef) -> FieldValue {
     let Some(v) = v.filter(|v| !v.is_null()) else { return FieldValue::Null };
     match field.field_type {
-        FieldType::Integer => v
-            .as_i64()
-            .or_else(|| v.as_f64().filter(|f| f.is_finite()).map(|f| f as i64))
-            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
-            .map_or(FieldValue::Null, FieldValue::Integer),
+        FieldType::Integer => {
+            whole(v).or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())).map_or(FieldValue::Null, FieldValue::Integer)
+        }
         FieldType::Float => v
             .as_f64()
             .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
             .filter(|f: &f64| f.is_finite())
             .map_or(FieldValue::Null, FieldValue::Float),
-        FieldType::DateTime => match v.as_i64().or_else(|| v.as_f64().filter(|f| f.is_finite()).map(|f| f as i64)) {
+        FieldType::DateTime => match whole(v) {
             Some(ms) => featureservice::date_time(ms),
             None => v.as_str().map_or(FieldValue::Null, |s| FieldValue::DateTime(s.to_string())),
         },
@@ -354,6 +360,19 @@ mod tests {
         let l = parse(doc.as_bytes(), "x").unwrap();
         let types: Vec<FieldType> = l.schema.fields().iter().map(|f| f.field_type).collect();
         assert_eq!(types, [FieldType::Float, FieldType::Text, FieldType::Text]);
+    }
+
+    #[test]
+    fn a_whole_number_past_64_bits_is_null_not_the_largest() {
+        let doc = r#"{"fields": [{"name": "A", "type": "esriFieldTypeBigInteger"}, {"name": "D", "type": "esriFieldTypeDate"}],
+            "features": [{"attributes": {"A": 18446744073709551615, "D": 1e300}}, {"attributes": {"A": -9.3e18, "D": 1.5}},
+                         {"attributes": {"A": 9223372036854775807, "D": -1}}]}"#;
+        let l = parse(doc.as_bytes(), "x").unwrap();
+        assert_eq!(field(&l, 0, "A"), &FieldValue::Null);
+        assert_eq!(field(&l, 0, "D"), &FieldValue::Null);
+        assert_eq!(field(&l, 1, "A"), &FieldValue::Null);
+        assert_eq!(field(&l, 1, "D"), &FieldValue::DateTime("1970-01-01T00:00:00.001Z".into()));
+        assert_eq!(field(&l, 2, "A"), &FieldValue::Integer(i64::MAX));
     }
 
     #[test]

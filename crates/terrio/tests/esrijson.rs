@@ -76,6 +76,11 @@ fn geojson_with_esri_looking_properties_stays_geojson() {
         let ds = terrio::memory::open_vector_bytes(doc.clone().into_bytes(), name, &Default::default()).unwrap();
         assert_eq!(ds.driver, VectorDriver::GeoJSON, "{name} in memory");
     }
+    // Without an extension, the identification sees only the first bytes; the reader, the whole.
+    let path = dir.path().join("sorted");
+    std::fs::write(&path, &sorted).unwrap();
+    let ds = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap();
+    assert_eq!((ds.driver, ds.layers[0].features.len()), (VectorDriver::GeoJSON, 1));
 }
 
 #[test]

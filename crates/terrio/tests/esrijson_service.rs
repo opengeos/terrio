@@ -27,6 +27,13 @@ fn page(offset: usize, count: usize) -> String {
     )
 }
 
+fn late_geojson() -> String {
+    let padding = "x".repeat(7000);
+    format!(
+        r#"{{"features":[{{"geometry":{{"coordinates":[1,2],"type":"Point"}},"properties":{{"fieldAliases":"{padding}"}},"type":"Feature"}}],"type":"FeatureCollection"}}"#
+    )
+}
+
 /// A page like [`page`]'s without an object id field.
 fn no_object_ids(offset: usize, count: usize) -> String {
     let end = (offset + count).min(TOTAL);
@@ -117,7 +124,13 @@ fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
                 "/other/query" => page(offset, count),
                 "/denied/query" => r#"{"error":{"code":498,"message":"Invalid token."}}"#.to_string(),
                 "/repeats/query" => page(0, 2),
+                // The same features, with something else that changes on every answer.
+                "/repeats-stamped/query" => page(0, 2).replacen('{', &format!(r#"{{"stamp":{offset},"#), 1),
                 "/noid/query" => no_object_ids(offset, count),
+                // An object id field, and features that leave it null.
+                "/nullid/query" => page(offset, count).replace(r#""OBJECTID":"#, r#""OBJECTID":null,"ID":"#),
+                // GeoJSON whose first bytes show a sign of ESRI JSON, and whose root type comes last.
+                "/late/query" => late_geojson(),
                 "/emptylast/query" if offset > 0 => r#"{"features":[]}"#.to_string(),
                 "/emptylast/query" => r#"{"features":[{"attributes":{"A":1},"geometry":{"x":1,"y":2}}],"exceededTransferLimit":true}"#.to_string(),
                 "/FeatureServer/0" => {
@@ -231,7 +244,11 @@ fn a_service_s_errors_and_stalls_are_errors() {
     assert!(error("/other/query?f=json").contains("other fields"));
     assert!(error("/stalls/query?f=json").contains("has none"));
     assert!(error("/repeats/query?f=json").contains("same as the one before"));
+    assert!(error("/repeats-stamped/query?f=json").contains("same as the one before"));
     assert!(error("/FeatureServer/0?f=json").contains("no features"));
+    // So with every entry point, GDAL backend or not: a recognized answer is not handed on.
+    assert!(terrio::open(&format!("{base}/other/query?f=json")).is_err_and(|e| e.to_string().contains("other fields")));
+    assert!(terrio::list_layers(&format!("{base}/denied/query?f=json")).is_err_and(|e| e.to_string().contains("Invalid token.")));
 }
 
 #[test]
@@ -239,6 +256,17 @@ fn features_without_object_ids_are_numbered_across_pages() {
     let (base, _) = serve();
     let ds = terrio::open_vector(&format!("{base}/noid/query?f=json"), &Default::default()).unwrap();
     assert_eq!(ids(&ds), [0, 1, 2, 3, 4]);
+    // Also those of a layer with an object id field that leave it null.
+    let ds = terrio::open_vector(&format!("{base}/nullid/query?f=json"), &Default::default()).unwrap();
+    assert_eq!(ids(&ds), [0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn a_url_s_answer_is_judged_on_the_whole_document() {
+    let (base, requests) = serve();
+    let ds = terrio::open_vector(&format!("{base}/late/query?f=json"), &Default::default()).unwrap();
+    assert_eq!((ds.driver, ds.layers[0].features.len()), (VectorDriver::GeoJSON, 1));
+    assert_eq!(requests.lock().unwrap().len(), 1, "read from the same answer");
 }
 
 #[test]

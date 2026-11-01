@@ -360,6 +360,9 @@ pub fn open(path: &str) -> Result<Dataset> {
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
         return crate::gdal_backend::open(rest);
     }
+    if let Some(result) = open_feature_service(path, &VectorOpenOptions::default()) {
+        return result.map(Dataset::Vector);
+    }
     let result = open_native(path);
     #[cfg(feature = "gdal")]
     let result = gdal_fallback(path, result, crate::gdal_backend::open);
@@ -367,10 +370,6 @@ pub fn open(path: &str) -> Result<Dataset> {
 }
 
 pub(crate) fn open_native(path: &str) -> Result<Dataset> {
-    #[cfg(remote)]
-    if let Some(result) = open_feature_service(path, &VectorOpenOptions::default()) {
-        return result.map(Dataset::Vector);
-    }
     if let Some(result) = crate::catalog::open_lazy(path) {
         return result?.read().map(Dataset::Raster);
     }
@@ -561,6 +560,9 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
         return crate::gdal_backend::open_vector(rest, options);
     }
+    if let Some(result) = open_feature_service(path, options) {
+        return result;
+    }
     let result = open_vector_native(path, options);
     #[cfg(feature = "gdal")]
     let result = gdal_fallback(path, result, |p| crate::gdal_backend::open_vector(p, options));
@@ -568,20 +570,35 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
 }
 
 /// A feature-service query: a URL with GDAL's signs of one that answers ESRI JSON, or one named by
-/// the `ESRIJSON:` prefix. Read here, before the formats that fetch a URL by range: a query's
-/// answer is made per request, and many ArcGIS servers ignore ranges. One request is made: only its
-/// first bytes are read unless they show ESRI JSON. Other URLs (`None`) go on as usual, as do those
-/// whose request fails before its answer is recognized, and report their own errors.
-#[cfg(remote)]
+/// the `ESRIJSON:` prefix, which also names a local file. Read before the other readers and before
+/// GDAL: a query's answer is made per request, and many ArcGIS servers ignore ranges; and an answer
+/// recognized here and found wrong (a service's error, a page with other fields, a service that
+/// ignores the offset) is an error, not something for GDAL to read what it can of without a word.
+/// Other paths (`None`) go on as usual, as do URLs whose request fails before their answer is
+/// recognized, which report their own errors.
 pub(crate) fn open_feature_service(path: &str, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
-    use crate::drivers::vector::{esrijson, featureservice};
-    use std::io::Read;
     let prefix = "ESRIJSON:";
     let named = path.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix));
-    let url = if named { path.get(prefix.len()..)? } else { path };
-    if named && !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Some(vfs::resolve(url).and_then(|local| read_vector_local(local.as_str(), VectorDriver::ESRIJSON, options)));
+    let target = if named { path.get(prefix.len()..)? } else { path };
+    let url = target.starts_with("http://") || target.starts_with("https://");
+    if named && !url {
+        return Some(vfs::resolve(target).and_then(|local| read_vector_local(local.as_str(), VectorDriver::ESRIJSON, options)));
     }
+    open_query(target, named, options)
+}
+
+/// [`open_feature_service`] for a URL, in a build that has no network: one named for this driver
+/// says so.
+#[cfg(not(remote))]
+fn open_query(_url: &str, named: bool, _options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
+    named.then(|| Err(Error::disabled("remote")))
+}
+
+/// [`open_feature_service`] for a URL.
+#[cfg(remote)]
+fn open_query(url: &str, named: bool, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
+    use crate::drivers::vector::{esrijson, featureservice};
+    use std::io::Read;
     if !named && !featureservice::is_query_url(url) {
         return None;
     }
@@ -601,11 +618,27 @@ pub(crate) fn open_feature_service(path: &str, options: &VectorOpenOptions) -> O
         Ok(Some(bytes))
     });
     match answer {
+        // Its first bytes showed ESRI JSON's signs, but a root `type` further on can say GeoJSON:
+        // read the same bytes as that, without asking again.
+        Ok(Some(bytes)) if !named && std::str::from_utf8(&bytes).is_ok_and(|text| !esrijson::is_esrijson_document(text)) => {
+            Some(read_geojson_answer(url, bytes, options))
+        }
         Ok(Some(bytes)) => Some(read_feature_service(url, &bytes, options)),
         Ok(None) => None,
         Err(e) if recognized => Some(Err(e)),
         Err(_) => None,
     }
+}
+
+/// A URL's GeoJSON answer, from its bytes.
+#[cfg(remote)]
+fn read_geojson_answer(url: &str, bytes: Vec<u8>, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    let driver = VectorDriver::GeoJSON;
+    let layers = crate::drivers::vector::read_bytes(bytes, url, driver, options)?
+        .ok_or_else(|| Error::Unsupported(format!("the {} driver cannot read from memory", driver.name())))?;
+    let mut layers = select_layers(layers, url, options)?;
+    layers.iter_mut().for_each(|l| options.keep_range(l));
+    Ok(finish_vector(layers, url, driver))
 }
 
 /// A feature-service query from its first page's bytes, with the pages after it.
@@ -622,10 +655,6 @@ fn read_feature_service(url: &str, first: &[u8], options: &VectorOpenOptions) ->
 }
 
 pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
-    #[cfg(remote)]
-    if let Some(result) = open_feature_service(path, options) {
-        return result;
-    }
     if let Some(result) = crate::stac::open(path) {
         return match result? {
             Dataset::Vector(v) => Ok(v),
@@ -652,6 +681,9 @@ pub fn list_layers(path: &str) -> Result<Vec<String>> {
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
         return crate::gdal_backend::list_layers(rest);
     }
+    if let Some(result) = open_feature_service(path, &VectorOpenOptions { feature_server_paging: Some(false), ..Default::default() }) {
+        return result.map(|v| v.layers.into_iter().map(|l| l.name).collect());
+    }
     let result = list_layers_native(path);
     #[cfg(feature = "gdal")]
     let result = gdal_fallback(path, result, crate::gdal_backend::list_layers);
@@ -659,10 +691,6 @@ pub fn list_layers(path: &str) -> Result<Vec<String>> {
 }
 
 fn list_layers_native(path: &str) -> Result<Vec<String>> {
-    #[cfg(remote)]
-    if let Some(result) = open_feature_service(path, &VectorOpenOptions { feature_server_paging: Some(false), ..Default::default() }) {
-        return result.map(|v| v.layers.into_iter().map(|l| l.name).collect());
-    }
     if is_tile_archive(path) {
         #[cfg(feature = "tiles")]
         return crate::tiles::layer_names(path);
@@ -738,7 +766,9 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         let driver = crate::inspection::identify(path, false).ok().flatten().and_then(|identified| match identified.driver.as_str() {
             "CityGML" => Some(VectorDriver::CityGML),
             "CityJSON" => Some(VectorDriver::CityJSON),
-            "ESRIJSON" => Some(VectorDriver::ESRIJSON),
+            // Its first bytes show ESRI JSON, but a root `type` further on can say GeoJSON: the JSON
+            // reader decides on the whole document.
+            "ESRIJSON" => Some(VectorDriver::GeoJSON),
             _ => None,
         });
         if let Some(driver) = driver {
@@ -875,7 +905,7 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
             VectorDriver::CityJSON
         } else if driver == VectorDriver::GML && crate::drivers::vector::citygml::looks_like(&bytes) {
             VectorDriver::CityGML
-        } else if crate::formats::extension(path).as_deref() == Some("json")
+        } else if matches!(crate::formats::extension(path).as_deref(), Some("json") | None)
             && text.is_some_and(crate::drivers::vector::esrijson::is_esrijson_document)
         {
             VectorDriver::ESRIJSON

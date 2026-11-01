@@ -778,23 +778,27 @@ fn esrijson_pages_match_the_services_own_geojson() {
     use terrio::FieldValue;
     use wbvector::Geometry;
     let Some(dir) = std::env::var_os("TERRIO_TEST_DATA").map(PathBuf::from) else { return };
-    fn vertices(g: &Option<Geometry>) -> std::collections::BTreeSet<(i64, i64)> {
-        let mut out = std::collections::BTreeSet::new();
-        let mut add = |c: &wbvector::Coord| {
-            out.insert(((c.x * 1e7).round() as i64, (c.y * 1e7).round() as i64));
+    // A geometry's parts, each with its holes, as sets of rounded positions: the order of parts and
+    // of a ring's vertices may differ, but a hole must stay in its polygon.
+    type Ring = std::collections::BTreeSet<(i64, i64)>;
+    fn vertices(g: &Option<Geometry>) -> Vec<(Ring, Vec<Ring>)> {
+        let ring =
+            |cs: &[wbvector::Coord]| -> Ring { cs.iter().map(|c| ((c.x * 1e7).round() as i64, (c.y * 1e7).round() as i64)).collect() };
+        let polygon = |e: &wbvector::Ring, hs: &[wbvector::Ring]| {
+            let mut holes: Vec<Ring> = hs.iter().map(|h| ring(h.coords())).collect();
+            holes.sort();
+            (ring(e.coords()), holes)
         };
-        match g {
-            Some(Geometry::Point(c)) => add(c),
-            Some(Geometry::MultiPoint(cs) | Geometry::LineString(cs)) => cs.iter().for_each(&mut add),
-            Some(Geometry::MultiLineString(ls)) => ls.iter().flatten().for_each(&mut add),
-            Some(Geometry::Polygon { exterior, interiors }) => {
-                exterior.coords().iter().chain(interiors.iter().flat_map(|r| r.coords())).for_each(&mut add)
-            }
-            Some(Geometry::MultiPolygon(ps)) => {
-                ps.iter().for_each(|(e, hs)| e.coords().iter().chain(hs.iter().flat_map(|r| r.coords())).for_each(&mut add))
-            }
-            _ => {}
-        }
+        let mut out: Vec<(Ring, Vec<Ring>)> = match g {
+            Some(Geometry::Point(c)) => vec![(ring(std::slice::from_ref(c)), Vec::new())],
+            Some(Geometry::MultiPoint(cs)) => cs.iter().map(|c| (ring(std::slice::from_ref(c)), Vec::new())).collect(),
+            Some(Geometry::LineString(cs)) => vec![(ring(cs), Vec::new())],
+            Some(Geometry::MultiLineString(ls)) => ls.iter().map(|l| (ring(l), Vec::new())).collect(),
+            Some(Geometry::Polygon { exterior, interiors }) => vec![polygon(exterior, interiors)],
+            Some(Geometry::MultiPolygon(ps)) => ps.iter().map(|(e, hs)| polygon(e, hs)).collect(),
+            _ => Vec::new(),
+        };
+        out.sort();
         out
     }
     let same = |a: &FieldValue, b: &FieldValue| match (a, b) {
