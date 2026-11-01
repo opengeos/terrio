@@ -318,6 +318,8 @@ TERRIO_TEST_DATA=../terrio-data cargo test --release --test epsg_accuracy -- --n
 
 See [ROADMAP.md](ROADMAP.md) for what is planned and in what order.
 
+New to Rust? [Contributing](docs/contributing.md) walks you through a first change.
+
 ## Acknowledgements
 
 terrio builds on the work of many projects and their authors, who hold the copyright in the code
