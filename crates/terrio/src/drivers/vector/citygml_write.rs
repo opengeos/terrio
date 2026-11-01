@@ -474,7 +474,11 @@ fn primitive(part: Primitive<'_>, lod: &str, semantic: &Value, reference: &Refer
             positions(points, reference, false)?
         ),
         Primitive::Surface(exterior, holes) => {
-            if tin && (!holes.is_empty() || exterior.0.iter().map(coordinate_key).collect::<HashSet<_>>().len() != 3) {
+            let corners = exterior.0.len()
+                - usize::from(
+                    exterior.0.len() > 1 && coordinate_key(exterior.0.first().unwrap()) == coordinate_key(exterior.0.last().unwrap()),
+                );
+            if tin && (!holes.is_empty() || corners != 3 || exterior.0.iter().map(coordinate_key).collect::<HashSet<_>>().len() != 3) {
                 return Err(invalid("TINRelief requires triangular faces without holes"));
             }
             let mut content = String::new();
@@ -737,6 +741,9 @@ fn render(
 }
 
 pub(crate) fn to_bytes(layers: &[Layer], version: CityGmlVersion, lod0_surface: Option<CityGmlLod0Surface>) -> Result<Vec<u8>> {
+    encode(layers, version, lod0_surface).map_err(|e| super::city_write::format_error(e, "CityGML"))
+}
+fn encode(layers: &[Layer], version: CityGmlVersion, lod0_surface: Option<CityGmlLod0Surface>) -> Result<Vec<u8>> {
     if lod0_surface.is_some() && version != CityGmlVersion::V2_0 {
         return Err(invalid("citygml_lod0_surface applies to CityGML 2.0 output"));
     }
@@ -909,6 +916,38 @@ mod tests {
             assert!(std::str::from_utf8(&rewritten).unwrap().contains(&format!("<bldg:{}>", choice.property())));
             assert!(to_bytes(&source, CityGmlVersion::V3_0, Some(choice)).unwrap_err().to_string().contains("2.0 output"));
         }
+    }
+
+    #[test]
+    fn tin_requires_three_actual_corners_and_keeps_format_specific_errors() {
+        let mut doc = json!({"type":"CityJSON","version":"2.0","transform":{"scale":[1,1,1],"translate":[0,0,0]},
+            "vertices":[[0,0,0],[1,0,0],[0,1,1]],"CityObjects":{"tin":{"type":"TINRelief",
+                "geometry":[{"type":"CompositeSurface","lod":"2","boundaries":[[[0,1,2,1]]]}]}}});
+        let layers = super::super::cityjson::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        for version in [CityGmlVersion::V2_0, CityGmlVersion::V3_0] {
+            assert!(to_bytes(&layers, version, None).unwrap_err().to_string().contains("triangular faces"));
+        }
+        doc["CityObjects"]["tin"]["geometry"][0]["boundaries"] = json!([[[0, 1, 2, 0]]]);
+        let layers = super::super::cityjson::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(to_bytes(&layers, CityGmlVersion::V3_0, None).is_ok());
+        let mut measured = Layer::new("measured");
+        measured.push(Feature {
+            fid: 0,
+            attributes: vec![],
+            geometry: Some(Geometry::Point(Coord { x: 1.0, y: 2.0, z: None, m: Some(3.0) })),
+        });
+        assert!(
+            to_bytes(std::slice::from_ref(&measured), CityGmlVersion::V3_0, None)
+                .unwrap_err()
+                .to_string()
+                .contains("CityGML writer: CityGML has XYZ coordinates")
+        );
+        assert!(
+            super::super::cityjson_write::to_bytes(&[measured], crate::CityJsonVersion::V2_0)
+                .unwrap_err()
+                .to_string()
+                .contains("CityJSON writer: CityJSON has XYZ coordinates")
+        );
     }
 
     #[test]

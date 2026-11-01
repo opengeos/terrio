@@ -56,10 +56,11 @@ The [#253 investigation](benchmark-parity.md) records complete error measurement
 metadata/schema fixes, native WebP corrections and explicit GDAL 3.13 COG/terrain
 profiles. [All eight affected cases were rerun](benchmark-253-rerun.md), including
 fresh timing samples and CPU tuning at budgets one and two. Six passed exact output
-validation in that rerun. Warp and counties have since been corrected and now agree
-exactly with GDAL 3.13.3 on glibc Linux, but have not been retimed. Background CPU
-activity exceeded the unchanged measurement limit, so no new speed ratios are
-eligible. The tables below retain their original samples.
+validation in that rerun. Warp and counties have since been corrected, and a
+[recheck](benchmark-parity.md#final-validation-and-timed-reruns) on `afc7539a` passed
+exact validation on all eight cases, on glibc Linux. Background CPU activity exceeded the
+unchanged measurement limit on seven of them, so no new speed ratios are claimed. The
+tables below retain their original samples.
 
 ## Correctness gates
 
@@ -92,8 +93,10 @@ A controlled check used the same `gdalinfo -json -stats srtm90.tif` command with
 GDAL 3.13.3 with `GDAL_NUM_THREADS=1` matched the full-resolution NumPy reduction (minimum 15,
 maximum 4338); with eight threads it returned minimum 26 and maximum 4148. GDAL 3.12.2 matched
 NumPy at both thread counts. This identifies a thread-dependent discrepancy in the tested GDAL
-3.13.3 build, not a requested approximate-statistics mode or a stored-statistics cache. Its internal
-cause remains unisolated; the invalid eight-thread result is excluded from speed comparisons.
+3.13.3 build, not a requested approximate-statistics mode or a stored-statistics cache. GDAL's
+reported valid percentage falls with the thread count, 12.54 at eight threads, as
+[measured here](benchmark-parity.md#gdal-multithreaded-statistics). Its internal cause remains
+unisolated; the invalid eight-thread result is excluded from speed comparisons.
 
 ## Rerun on 24 October 2026
 

@@ -100,10 +100,11 @@ def test_version_options_reject_other_formats_before_io(tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["append", "overwrite"])
-def test_existing_models_reject_layer_modes_without_mutation(tmp_path, mode):
+@pytest.mark.parametrize("filename", ["existing.citygml", "existing.gml"])
+def test_existing_models_reject_layer_modes_without_mutation(tmp_path, mode, filename):
     source = terrio.open_bytes(json.dumps(model()).encode(), filename="input.city.json")
-    path = tmp_path / "existing.citygml"
-    source.write(str(path))
+    path = tmp_path / filename
+    source.write(str(path), driver="CityGML")
     before = path.read_bytes()
     with pytest.raises(terrio.UnsupportedError, match="no persistent layer names"):
         terrio.write_vector(source, str(path), **{mode: True})

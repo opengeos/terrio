@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: MIT
 """Validate CityJSON writer output against published schemas and source XYZ.
 
-GDAL 3.13.3 has no CityJSON driver. Geometry is compared by an independent
-boundary traversal, with half an output quantization step plus four floating
-point ULPs of tolerance. Object metadata and face classification are exact.
+GDAL 3.13.3 has no CityJSON driver. Source/output flattening reuses reference()
+from the reader's Python conformance oracle, independently of the Rust writer.
+XYZ tolerance is half an output quantization step plus four floating-point ULPs.
+Object metadata and face classification are exact.
 """
 import argparse
 from collections import defaultdict
@@ -109,7 +110,7 @@ def core_type_source(folder):
     definitions = json.loads((folder / "cityobjects.schema.json").read_bytes())
     objects = {}
     for name, definition in definitions.items():
-        if not name[0].isupper() or name == "ExtensionObject":
+        if not name[:1].isupper() or name == "ExtensionObject":
             continue
         required = {field for item in definition.get("allOf", []) for field in item.get("required", [])}
         obj = dict(type=name, attributes=dict(name=name), geometry=[dict(
@@ -121,6 +122,8 @@ def core_type_source(folder):
         if "children" in required:
             obj["children"] = []
         objects["core-" + name] = obj
+    if len(objects) != 33:
+        raise ValueError(f"expected 33 core classes in the pinned CityJSON 2.0.2 schema, found {len(objects)}")
     for identity, obj in list(objects.items()):
         for parent in obj.get("parents", []):
             objects[parent].setdefault("children", []).append(identity)
@@ -192,53 +195,54 @@ def main():
     root = args.data / "citymodels"
     paths = [root / Path(name).name for name in FIXTURES]
     paths += sorted(root.glob("3dbag-degenerate-page*.city.json"))
-    synthetic = root / "writer-core-types.city.json"
-    synthetic.write_text(json.dumps(core_type_source(root / "schemas/2.0.2")))
-    paths.append(synthetic)
-    results = []
-    for path in paths:
-        original = json.loads(path.read_bytes())
-        validate_schema(original, root / "schemas" / schema_version(original["version"]))
-        verified = {}
-        for version in ["1.1", "2.0"]:
-            source, removed = compatible_source(original, version)
-            with tempfile.TemporaryDirectory() as temporary:
-                folder = Path(temporary)
-                input_path = path
-                label = path.name
-                if removed:
-                    layer = terrio.open_vector(str(path))[0]
-                    for surface in rejected_generic_outputs(args, path, layer, folder):
-                        results.append(dict(name=f"{path.name} 1.1 {surface} rejection", status="identical",
-                                            detail=f"explicitly rejected {len(removed)} GenericCityObjects unsupported by 1.1; no output file created"))
-                    validate_schema(source, root / "schemas" / schema_version(source["version"]))
-                    input_path = folder / "supported-subset.city.json"
-                    input_path.write_text(json.dumps(source))
-                    label += f" supported subset (excluded {len(removed)} GenericCityObjects)"
-                layer = terrio.open_vector(str(input_path))[0]
-                outputs = []
-                cli = folder / "cli.city.json"
-                run_cli([args.terrio, "convert", str(input_path), str(cli), "--cityjson-version", version])
-                outputs.append(("CLI", cli.read_bytes()))
-                python = folder / "python.city.json"
-                layer.write(str(python), cityjson_version=version)
-                outputs.append(("Python path", python.read_bytes()))
-                outputs.append(("Python bytes", layer.to_bytes("output.city.json", cityjson_version=version)))
-                if args.node_package:
-                    target = folder / "node.city.json"
-                    run_cli(node_write_command(args.node_package, input_path, target, version))
-                    outputs.append(("Node/WASM", target.read_bytes()))
-                for surface, data in outputs:
-                    output = json.loads(data)
-                    assert output["version"] == version
-                    digest = hashlib.sha256(data).digest()
-                    if digest not in verified:
-                        validate_schema(output, root / "schemas" / schema_version(version))
-                        verified[digest] = compare(source, output)
-                    count, error = verified[digest]
-                    results.append(dict(name=f"{label} {version} {surface}", status="within tolerance",
-                                        detail=f"schema valid; {count} flat primitives; exact identity/type, parents, attributes, LoD and face classification; CRS checked; max XYZ error {error:.12g}, within half a quantization step + 4 ULPs"))
-            print(f"validated {path.name} -> {version}", file=sys.stderr, flush=True)
+    with tempfile.TemporaryDirectory() as sample_directory:
+        synthetic = Path(sample_directory) / "writer-core-types.city.json"
+        synthetic.write_text(json.dumps(core_type_source(root / "schemas/2.0.2")))
+        paths.append(synthetic)
+        results = []
+        for path in paths:
+            original = json.loads(path.read_bytes())
+            validate_schema(original, root / "schemas" / schema_version(original["version"]))
+            verified = {}
+            for version in ["1.1", "2.0"]:
+                source, removed = compatible_source(original, version)
+                with tempfile.TemporaryDirectory() as temporary:
+                    folder = Path(temporary)
+                    input_path = path
+                    label = path.name
+                    if removed:
+                        layer = terrio.open_vector(str(path))[0]
+                        for surface in rejected_generic_outputs(args, path, layer, folder):
+                            results.append(dict(name=f"{path.name} 1.1 {surface} rejection", status="expected rejection",
+                                                detail=f"explicitly rejected {len(removed)} GenericCityObjects unsupported by 1.1; no output file created"))
+                        validate_schema(source, root / "schemas" / schema_version(source["version"]))
+                        input_path = folder / "supported-subset.city.json"
+                        input_path.write_text(json.dumps(source))
+                        label += f" supported subset (excluded {len(removed)} GenericCityObjects)"
+                    layer = terrio.open_vector(str(input_path))[0]
+                    outputs = []
+                    cli = folder / "cli.city.json"
+                    run_cli([args.terrio, "convert", str(input_path), str(cli), "--cityjson-version", version])
+                    outputs.append(("CLI", cli.read_bytes()))
+                    python = folder / "python.city.json"
+                    layer.write(str(python), cityjson_version=version)
+                    outputs.append(("Python path", python.read_bytes()))
+                    outputs.append(("Python bytes", layer.to_bytes("output.city.json", cityjson_version=version)))
+                    if args.node_package:
+                        target = folder / "node.city.json"
+                        run_cli(node_write_command(args.node_package, input_path, target, version))
+                        outputs.append(("Node/WASM", target.read_bytes()))
+                    for surface, data in outputs:
+                        output = json.loads(data)
+                        assert output["version"] == version
+                        digest = hashlib.sha256(data).digest()
+                        if digest not in verified:
+                            validate_schema(output, root / "schemas" / schema_version(version))
+                            verified[digest] = compare(source, output)
+                        count, error = verified[digest]
+                        results.append(dict(name=f"{label} {version} {surface}", status="within tolerance",
+                                            detail=f"schema valid; {count} flat primitives; exact identity/type, parents, attributes, LoD and face classification; CRS checked; max XYZ error {error:.12g}, within half a quantization step + 4 ULPs"))
+                print(f"validated {path.name} -> {version}", file=sys.stderr, flush=True)
     print(json.dumps(results, indent=2) if args.json else "\n".join(f"{r['name']}: {r['detail']}" for r in results))
 
 

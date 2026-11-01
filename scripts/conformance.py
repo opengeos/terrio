@@ -88,6 +88,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 
 IDENTICAL = "identical"
+EXPECTED_REJECTION = "expected rejection"
 TOLERANCE = "within tolerance"
 DIFFERS = "differs"
 # A case whose reference values could not be computed (no coordinates to compare), reported apart.
@@ -670,6 +671,7 @@ def suite_cityjson(ctx):
     root = Path(ctx.data) / "citymodels"
     required = [root / name for name in ("DH_01_subs.city.json", "delft.json", "rotterdam_subset.json")]
     required += [root / "schemas" / version / "cityjson.schema.json" for version in ("1.1.3", "2.0.2")]
+    required.append(root / "schemas/2.0.2/cityobjects.schema.json")
     if any(not p.is_file() for p in required):
         suite.skipped = "prepare fixtures/schemas with scripts/compare_cityjson.py DATA --fetch"
         return suite
@@ -691,7 +693,7 @@ def suite_cityjson(ctx):
 
 
 def suite_cityjson_write(ctx):
-    """Both writer versions are checked against schemas and an independent XYZ oracle."""
+    """Both writer versions are checked against schemas and the shared reader-reference XYZ traversal."""
     suite = Suite("cityjson-write", "CityJSON writer", "CityJSON 1.1/2.0 specifications and published JSON Schemas",
                   "Real Den Haag, Delft and Rotterdam sources (plus cached 3DBAG pages) and a schema-derived core-type sample written "
                   "as 1.1 and 2.0 through CLI, Python paths/bytes and optional Node/WASM. "
@@ -707,6 +709,7 @@ def suite_cityjson_write(ctx):
     root = Path(ctx.data) / "citymodels"
     required = [root / name for name in ("DH_01_subs.city.json", "delft.json", "rotterdam_subset.json")]
     required += [root / "schemas" / version / "cityjson.schema.json" for version in ("1.1.3", "2.0.2")]
+    required.append(root / "schemas/2.0.2/cityobjects.schema.json")
     if any(not path.is_file() for path in required):
         suite.skipped = "prepare fixtures/schemas with scripts/compare_cityjson.py DATA --fetch"
         return suite
@@ -2944,13 +2947,14 @@ def tally(cases):
         cases: The cases.
 
     Returns:
-        A ``(total, identical, within tolerance, not compared, differing)`` tuple.
+        A ``(total, identical, within tolerance, expected rejections, not compared, differing)`` tuple.
     """
     n = len(cases)
     same = sum(1 for c in cases if c.status == IDENTICAL)
     tol = sum(1 for c in cases if c.status == TOLERANCE)
+    rejected = sum(1 for c in cases if c.status == EXPECTED_REJECTION)
     unchecked = sum(1 for c in cases if c.status == NOT_COMPARED)
-    return n, same, tol, unchecked, n - same - tol - unchecked
+    return n, same, tol, rejected, unchecked, n - same - tol - rejected - unchecked
 
 
 def versions(ctx):
@@ -3030,7 +3034,8 @@ def markdown(suites, ctx, vers):
             "files: the files of `scripts/fetch_test_data.sh` (Natural Earth, USGS 3DEP, Sentinel-2, NASA "
             "ECOSTRESS and OPERA, OpenStreetMap and more, with copies GDAL derives in other formats), and "
             "synthetic rasters for the driver round trips. Each case is **identical** to the reference, "
-            "**within tolerance** (the suite says which), or **differs**. Regenerate this page with:"
+            "**within tolerance** (the suite says which), an **expected rejection**, **not compared**, "
+            "or **differs**. Regenerate this page with:"
         ),
         "",
         "```sh",
@@ -3042,19 +3047,19 @@ def markdown(suites, ctx, vers):
         "",
         "## Summary",
         "",
-        "| Suite | Reference | Cases | Identical | Within tolerance | Not compared | Differs |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| Suite | Reference | Cases | Identical | Within tolerance | Expected rejection | Not compared | Differs |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
-    totals = [0, 0, 0, 0, 0]
+    totals = [0, 0, 0, 0, 0, 0]
     for s in suites:
         link = f"[{s.title}](#{re.sub(r'[^a-z0-9 -]', '', s.title.lower()).replace(' ', '-')})"
         if s.skipped or s.error:
             note = f"skipped: {s.skipped}" if s.skipped else "could not run"
-            lines.append(f"| {link} | {s.reference} | {note} | | | | |")
+            lines.append(f"| {link} | {s.reference} | {note} | | | | | |")
             continue
-        n, same, tol, unchecked, diff = tally(s.cases)
-        totals = [a + b for a, b in zip(totals, (n, same, tol, unchecked, diff), strict=True)]
-        lines.append(f"| {link} | {s.reference} | {n:,} | {same:,} | {tol:,} | {unchecked:,} | {diff:,} |")
+        n, same, tol, rejected, unchecked, diff = tally(s.cases)
+        totals = [a + b for a, b in zip(totals, (n, same, tol, rejected, unchecked, diff), strict=True)]
+        lines.append(f"| {link} | {s.reference} | {n:,} | {same:,} | {tol:,} | {rejected:,} | {unchecked:,} | {diff:,} |")
     lines.append("| **All** | | " + " | ".join(f"**{t:,}**" for t in totals) + " |")
     for s in suites:
         lines += ["", f"## {s.title}", "", s.criteria, ""]
@@ -3064,13 +3069,13 @@ def markdown(suites, ctx, vers):
         if s.error:
             lines += ["The suite could not run:", "", "```text", s.error, "```"]
             continue
-        lines += ["| Format or operation | Cases | Identical | Within tolerance | Not compared | Differs |", "|---|---:|---:|---:|---:|---:|"]
+        lines += ["| Format or operation | Cases | Identical | Within tolerance | Expected rejection | Not compared | Differs |", "|---|---:|---:|---:|---:|---:|---:|"]
         groups = OrderedDict()
         for c in s.cases:
             groups.setdefault(c.group, []).append(c)
         for group, cases in groups.items():
-            n, same, tol, unchecked, diff = tally(cases)
-            lines.append(f"| {md_escape(group)} | {n:,} | {same:,} | {tol:,} | {unchecked:,} | {diff:,} |")
+            n, same, tol, rejected, unchecked, diff = tally(cases)
+            lines.append(f"| {md_escape(group)} | {n:,} | {same:,} | {tol:,} | {rejected:,} | {unchecked:,} | {diff:,} |")
         others = [c for c in s.cases if c.status != IDENTICAL]
         if others:
             limit = ctx.max_details
@@ -3139,11 +3144,11 @@ def main():
                 s = Suite(name, name, "", "")
                 s.error = f"{type(e).__name__}: {e}"
         s.seconds = (datetime.datetime.now() - start).total_seconds()
-        n, same, tol, unchecked, diff = tally(s.cases)
+        n, same, tol, rejected, unchecked, diff = tally(s.cases)
         state = (
             f"skipped ({s.skipped})"
             if s.skipped
-            else ("ERROR" if s.error else f"{n} cases: {same} identical, {tol} within tolerance, {unchecked} not compared, {diff} differ")
+            else ("ERROR" if s.error else f"{n} cases: {same} identical, {tol} within tolerance, {rejected} expected rejection, {unchecked} not compared, {diff} differ")
         )
         print(f"{name:<17} {state} [{s.seconds:.0f} s]", file=sys.stderr, flush=True)
         return s

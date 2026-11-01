@@ -492,6 +492,29 @@ fn source_metadata(node: &Node) -> Result<Option<Value>> {
     Ok(found)
 }
 
+fn ignored_content(node: &Node) -> bool {
+    node.city() && matches!(node.name.as_str(), "appearance" | "appearanceMember" | "Appearance" | "Address" | "externalReference")
+}
+
+// Reserve declared logical IDs before generating anonymous IDs. Inspect only one
+// annotation at a time, rather than retaining every object's parsed attributes.
+fn index_logical_ids(root: &Node) -> Result<HashSet<String>> {
+    let mut reserved = HashSet::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if ignored_content(node) {
+            continue;
+        }
+        if is_object(node)
+            && let Some(source) = source_metadata(node)?
+        {
+            reserved.insert(source["city_id"].as_str().unwrap().to_owned());
+        }
+        pending.extend(node.children.iter());
+    }
+    Ok(reserved)
+}
+
 fn validate_primitive_metadata(value: &Value) -> Result<()> {
     if value["version"] != 1
         || !value["lod"].as_str().is_some_and(|s| !s.is_empty())
@@ -711,6 +734,7 @@ struct Reader<'a> {
     used: usize,
     next_object: usize,
     logical_ids: HashSet<String>,
+    reserved_logical_ids: HashSet<String>,
     unknown_crs: bool,
     active: HashSet<&'a str>,
     active_links: HashSet<&'a str>,
@@ -1044,7 +1068,7 @@ impl<'a> Reader<'a> {
         if depth > MAX_NESTING {
             return Err(invalid("city-object or geometry nesting limit exceeded"));
         }
-        if node.city() && matches!(node.name.as_str(), "appearance" | "appearanceMember" | "Appearance" | "Address" | "externalReference") {
+        if ignored_content(node) {
             return Ok(());
         }
         if node.city() && node.name == "RasterRelief" {
@@ -1163,7 +1187,7 @@ impl<'a> Reader<'a> {
             loop {
                 let id = format!("_terrio_object_{}", self.next_object);
                 self.next_object += 1;
-                if !self.ids.contains_key(id.as_str()) {
+                if !self.ids.contains_key(id.as_str()) && !self.reserved_logical_ids.contains(&id) {
                     break id;
                 }
             }
@@ -1333,6 +1357,7 @@ fn parse_with_limits(bytes: &[u8], input_limit: usize, max_reference_visits: usi
     }
     let mut ids = HashMap::new();
     index(&root, &mut ids)?;
+    let reserved_logical_ids = index_logical_ids(&root)?;
     let mut patch_annotations = HashMap::new();
     index_patch_metadata(&root, &mut patch_annotations)?;
     let mut reader = Reader {
@@ -1343,6 +1368,7 @@ fn parse_with_limits(bytes: &[u8], input_limit: usize, max_reference_visits: usi
         used: 0,
         next_object: 0,
         logical_ids: HashSet::new(),
+        reserved_logical_ids,
         unknown_crs: false,
         active: HashSet::new(),
         active_links: HashSet::new(),
@@ -1461,6 +1487,40 @@ mod test_data;
 #[cfg(test)]
 mod tests {
     use super::test_data::{FACE, model};
+
+    #[test]
+    fn anonymous_objects_avoid_declared_logical_ids_in_both_document_orders() {
+        let mut layer = wbvector::Layer::new("ordinary");
+        layer.push(wbvector::Feature { fid: 0, attributes: vec![], geometry: None });
+        let data = super::super::citygml_write::to_bytes(&[layer], crate::CityGmlVersion::V3_0, None).unwrap();
+        let base = String::from_utf8(data)
+            .unwrap()
+            .replace("gml:id=\"_terrio_0_0\"", "gml:id=\"fixed\"")
+            .replace("_terrio_0_0", "_terrio_object_0");
+        assert!(base.contains("gml:id=\"fixed\""));
+        assert!(!base.contains("gml:id=\"_terrio_object_0\""));
+        let anonymous = "<core:cityObjectMember><gen:GenericOccupiedSpace/></core:cityObjectMember>";
+        for text in [
+            base.replacen("<core:cityObjectMember>", &format!("{anonymous}<core:cityObjectMember>"), 1),
+            base.replace("</core:CityModel>", &format!("{anonymous}</core:CityModel>")),
+        ] {
+            let layers = super::parse(text.as_bytes()).unwrap();
+            let ids: std::collections::HashSet<_> = layers[0]
+                .features
+                .iter()
+                .map(|f| match &f.attributes[0] {
+                    wbvector::FieldValue::Text(id) => id.as_str(),
+                    _ => panic!(),
+                })
+                .collect();
+            assert_eq!(ids, std::collections::HashSet::from(["_terrio_object_0", "_terrio_object_1"]));
+        }
+        let start = base.find("<core:cityObjectMember>").unwrap();
+        let end = base.find("</core:cityObjectMember>").unwrap() + "</core:cityObjectMember>".len();
+        let duplicate = base[start..end].replace("gml:id=\"fixed\"", "gml:id=\"fixed2\"");
+        let duplicate = base.replace("</core:CityModel>", &format!("{duplicate}</core:CityModel>"));
+        assert!(super::parse(duplicate.as_bytes()).unwrap_err().to_string().contains("duplicate logical city-object identity"));
+    }
 
     #[test]
     fn standard_generic_attributes_preserve_types_whitespace_and_set_code_space() {

@@ -83,3 +83,42 @@ def test_optional_node_writer_probe_requires_method_and_version_option(tmp_path,
         + "}));},")
     module.write_text("module.exports={open(){return {" + method + "free(){}};}};")
     assert node_cityjson_writer_available(module) == (kind == "supported")
+
+
+@pytest.mark.parametrize("schema", [{}, {"definitions": {"Building": {}}}])
+def test_core_sample_cannot_pass_with_missing_or_restructured_definitions(tmp_path, schema):
+    import json
+    from compare_cityjson_writer import core_type_source
+
+    (tmp_path / "cityobjects.schema.json").write_text(json.dumps(schema))
+    with pytest.raises(ValueError, match="expected 33 core classes"):
+        core_type_source(tmp_path)
+
+
+def test_expected_rejection_is_a_separate_successful_conformance_outcome(monkeypatch, tmp_path):
+    import conformance
+
+    case = conformance.Case("versions", "unsupported 1.1", conformance.EXPECTED_REJECTION, "rejected without output")
+    assert conformance.tally([case]) == (1, 0, 0, 1, 0, 0)
+    monkeypatch.setattr(conformance, "SUITES", {"cityjson-write": lambda ctx: conformance.Suite(
+        "cityjson-write", "writer", "schema", "", cases=[case])})
+    monkeypatch.setattr(conformance, "missing_modules", lambda *names: [])
+    monkeypatch.setattr(conformance, "format_names", lambda path: {})
+    monkeypatch.setattr(conformance, "versions", lambda ctx: {})
+    monkeypatch.setattr(conformance, "markdown", lambda *args: "")
+    monkeypatch.setattr(sys, "argv", ["conformance.py", str(tmp_path), "--terrio", sys.executable,
+                                     "--only", "cityjson-write", "--strict"])
+    assert conformance.main() == 0
+
+
+def test_expected_rejections_are_separate_in_markdown_summary():
+    from types import SimpleNamespace
+    import conformance
+
+    suite = conformance.Suite("writer", "Writer", "schema", "", cases=[
+        conformance.Case("versions", "unsupported", conformance.EXPECTED_REJECTION, "rejected")])
+    report = conformance.markdown([suite], SimpleNamespace(max_details=10), [])
+    assert "| 1 | 0 | 0 | 1 | 0 | 0 |" in report
+    assert "Expected rejection" in report
+    rows = report.split("## Summary", 1)[1].split("## Writer", 1)[0].splitlines()
+    assert {row.count("|") for row in rows if row.startswith("|")} == {9}

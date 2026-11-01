@@ -10,6 +10,16 @@ fn invalid(message: impl std::fmt::Display) -> Error {
     Error::InvalidArgument(format!("City-model writer: {message}"))
 }
 
+pub(super) fn format_error(error: Error, format: &str) -> Error {
+    match error {
+        Error::InvalidArgument(message) if message.starts_with("City-model writer: ") => {
+            let reason = message.strip_prefix("City-model writer: ").unwrap().replace("City-model output", format);
+            Error::InvalidArgument(format!("{format} writer: {reason}"))
+        }
+        other => other,
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum Primitive<'a> {
     Point(&'a Coord),

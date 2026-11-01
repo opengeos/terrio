@@ -651,16 +651,19 @@ pub fn write_vector_with_mode(layers: &[Layer], path: &str, options: &VectorWrit
     if mode == WriteMode::Create || !std::path::Path::new(path).exists() {
         return crate::write_vector(layers, path, options);
     }
-    if let Some(driver @ (crate::formats::VectorDriver::CityJSON | crate::formats::VectorDriver::CityGML)) =
-        options.driver.or_else(|| crate::formats::VectorDriver::for_extension(path))
-    {
-        return Err(crate::Error::Unsupported(format!(
-            "{} has no persistent layer names; append/overwrite layer modes cannot update an existing model. Use create mode to replace the complete model",
-            driver.name()
-        )));
-    }
-    // GeoPackages are updated in place, keeping their other tables.
+
     let driver = options.driver.or_else(|| crate::formats::VectorDriver::for_extension(path));
+    let check_layer_updates = |driver| {
+        if let Some(driver @ (crate::formats::VectorDriver::CityJSON | crate::formats::VectorDriver::CityGML)) = driver {
+            return Err(crate::Error::Unsupported(format!(
+                "{} has no persistent layer names; append/overwrite layer modes cannot update an existing model. Use create mode to replace the complete model",
+                driver.name()
+            )));
+        }
+        Ok(())
+    };
+    check_layer_updates(driver)?;
+    // GeoPackages are updated in place, keeping their other tables.
     if let Some(d) = driver {
         d.ensure_built()?;
     }
@@ -680,7 +683,12 @@ pub fn write_vector_with_mode(layers: &[Layer], path: &str, options: &VectorWrit
     if matches!(driver, Some(crate::formats::VectorDriver::MBTiles | crate::formats::VectorDriver::PMTiles)) {
         return crate::tiles::update_vector(path, layers, &options.tiles, mode == WriteMode::Overwrite);
     }
-    let mut existing = crate::open_vector(path, &Default::default())?.layers;
+    let existing = crate::open_vector(path, &Default::default())?;
+    // Use the detected content driver too: `.json` can contain a CityJSON model,
+    // even when its root type occurs after the bounded identification prefix.
+    // Reuse this normal update read, without opening or reading the file again.
+    check_layer_updates(Some(existing.driver))?;
+    let mut existing = existing.layers;
     for layer in layers {
         match existing.iter_mut().find(|l| l.name == layer.name) {
             Some(target) if mode == WriteMode::Append => append_features(target, layer),

@@ -1299,19 +1299,24 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
         (VectorDriver::KMZ, _) => crate::drivers::vector::kml::write_kmz(layers, path, &options.kmz),
         (VectorDriver::TopoJSON, _) => crate::drivers::vector::topojson::write_layers(layers, path),
         (VectorDriver::CityGML, _) => {
-            std::fs::write(
-                path,
-                crate::drivers::vector::citygml_write::to_bytes(
-                    layers,
-                    options.citygml_version.unwrap_or_default(),
-                    options.citygml_lod0_surface,
-                )?,
+            let bytes = crate::drivers::vector::citygml_write::to_bytes(
+                layers,
+                options.citygml_version.unwrap_or_default(),
+                options.citygml_lod0_surface,
             )?;
-            Ok(())
+            crate::vsi::write_local_atomic(std::path::Path::new(path), |out| {
+                use std::io::Write;
+                out.write_all(&bytes)?;
+                Ok(())
+            })
         }
         (VectorDriver::CityJSON, _) => {
-            std::fs::write(path, crate::drivers::vector::cityjson_write::to_bytes(layers, options.cityjson_version.unwrap_or_default())?)?;
-            Ok(())
+            let bytes = crate::drivers::vector::cityjson_write::to_bytes(layers, options.cityjson_version.unwrap_or_default())?;
+            crate::vsi::write_local_atomic(std::path::Path::new(path), |out| {
+                use std::io::Write;
+                out.write_all(&bytes)?;
+                Ok(())
+            })
         }
         #[cfg(feature = "tiles")]
         (VectorDriver::MBTiles | VectorDriver::PMTiles | VectorDriver::MVT, _) => {
