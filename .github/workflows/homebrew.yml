@@ -15,6 +15,8 @@ on:
     paths:
       - packaging/homebrew/**
       - .github/workflows/homebrew.yml
+      # Names the archives the cask downloads.
+      - .github/workflows/release-build.yml
   workflow_call:
     inputs:
       version:
@@ -50,10 +52,11 @@ jobs:
           GH_REPO: opengeos/terrio
           VERSION: ${{ inputs.version }}
         run: |
-          tag="${VERSION:-$(gh release view --json tagName --jq .tagName)}"
+          # Without a version (a pull request), the newest final release: the renderer takes no other.
+          tag="${VERSION:-$(gh release list --json tagName --jq '[.[].tagName | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0]')}"
           tag="v${tag#v}"
           gh release download "$tag" --pattern '*.sha256' --dir "$RUNNER_TEMP/sums"
-          cat "$RUNNER_TEMP"/sums/*.sha256 > "$RUNNER_TEMP/SHA256SUMS"
+          awk 1 "$RUNNER_TEMP"/sums/*.sha256 > "$RUNNER_TEMP/SHA256SUMS"
           packaging/homebrew/render.sh "$tag" "$RUNNER_TEMP/SHA256SUMS" tap
           cat tap/Casks/terrio.rb
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
@@ -71,7 +74,8 @@ jobs:
       matrix:
         os: [macos-latest, macos-15-intel, ubuntu-latest, ubuntu-24.04-arm]
     steps:
-      - uses: Homebrew/actions/setup-homebrew@main
+      # Pinned to a commit, as this job gates the one that publishes.
+      - uses: Homebrew/actions/setup-homebrew@d482da0e602890d3160aade42e72c8556103bf04 # 2026.10.26.1
       - uses: actions/download-artifact@v8
         with:
           name: homebrew-cask
@@ -107,7 +111,8 @@ jobs:
   publish:
     name: Push to the tap
     needs: [render, test]
-    if: github.event_name != 'pull_request'
+    # Only from trusted refs, as this job holds the tap's key.
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     concurrency:
       group: homebrew-tap
@@ -130,6 +135,12 @@ jobs:
           git clone --depth 1 git@github.com:opengeos/homebrew-terrio.git "$RUNNER_TEMP/tap"
           cd "$RUNNER_TEMP/tap"
           mkdir -p Casks
+          # Never move the tap back to an older release, by a manual run or a patch of an old version.
+          current="$(sed -n 's/^ *version "\(.*\)"/\1/p' Casks/terrio.rb 2>/dev/null || true)"
+          if [ -n "$current" ] && [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]; then
+            echo "::warning::The tap has $current, newer than $VERSION; leaving it."
+            exit 0
+          fi
           cp "$RUNNER_TEMP/cask/terrio.rb" Casks/
           git add Casks
           if git diff --cached --quiet; then

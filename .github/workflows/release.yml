@@ -60,7 +60,8 @@ jobs:
   homebrew:
     # The cask, once the release's binaries and checksums are on GitHub.
     needs: [github-release]
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Final releases only: the cask's renderer refuses a pre-release, which the tap must not offer.
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     uses: ./.github/workflows/homebrew.yml
     with:
       version: ${{ github.ref_name }}

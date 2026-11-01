@@ -37,18 +37,16 @@ the shell installer prints the line to add when it isn't on it. Run the installe
 terrio, and delete the binary to uninstall it.
 
 On macOS and Linux, [Homebrew](https://brew.sh) installs the release's binary from the
-[opengeos/terrio tap](https://github.com/opengeos/homebrew-terrio), updated with each release
-(`brew trust` is for Homebrew 5.1 and later; skip it on older versions):
+[opengeos/terrio tap](https://github.com/opengeos/homebrew-terrio), updated with each release:
 
 ```sh
-brew tap opengeos/terrio
-brew trust opengeos/terrio
-brew install --cask terrio
+brew install --cask opengeos/terrio/terrio
 ```
 
 `brew upgrade --cask terrio` updates it and `brew uninstall --cask terrio` removes it. The macOS
 binaries are not notarized, so the cask removes the quarantine attribute that would make Gatekeeper
-refuse to run the command.
+refuse to run the command. Its checksums come from the same GitHub release as the binaries: they
+catch a corrupted download, but are not an independent check of the release.
 
 On Arch Linux and its derivatives, the [AUR](https://aur.archlinux.org/packages/terrio-bin) has
 `terrio-bin` (the release's binary) and `terrio` (built from source); on Fedora,
