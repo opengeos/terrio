@@ -16,9 +16,6 @@ import subprocess
 import tempfile
 from urllib.request import urlopen
 
-import jsonschema
-from referencing import Registry, Resource
-
 FIXTURES = ["DH_01_subs.city.json", "delft.json", "rotterdam/rotterdam_subset.json"]
 CJIO_COMMIT = "35728539127f71b1d5ae458169ff84050e5e20ad"
 SCHEMAS = ["cityjson", "cityobjects", "geomprimitives", "geomtemplates", "metadata", "appearance"]
@@ -43,6 +40,9 @@ def fetch(data):
 
 
 def validate_schema(doc, folder):
+    import jsonschema
+    from referencing import Registry, Resource
+
     registry = Registry()
     schemas = {}
     for name in SCHEMAS:
