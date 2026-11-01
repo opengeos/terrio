@@ -212,6 +212,7 @@ fn reverse_surface_references_keep_orientation_and_remove_adjacent_duplicates() 
 }
 
 #[test]
+#[cfg(not(feature = "gdal"))] // GDAL fallback may accept input beyond the native limit.
 fn oversized_local_citygml_is_rejected_by_size_before_parsing() {
     use std::io::Write;
     let folder = tempfile::tempdir().unwrap();

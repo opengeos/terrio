@@ -1118,6 +1118,19 @@ mod tests {
     use super::test_data::{FACE, model};
 
     #[test]
+    fn oversized_paths_are_rejected_by_the_native_read_preflight() {
+        use std::io::Write;
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("oversized.gml");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(model("3.0", "", "EPSG:32632").as_bytes()).unwrap();
+        file.set_len(super::MAX_INPUT_BYTES as u64 + 1).unwrap();
+        for shared in [false, true] {
+            assert!(super::read_path_bytes(path.to_str().unwrap(), shared).unwrap_err().to_string().contains("256 MiB XML limit"));
+        }
+    }
+
+    #[test]
     fn xml_tree_storage_is_limited_before_many_empty_nodes_are_allocated() {
         let text = model("3.0", &"<b:note/>".repeat(1000), "EPSG:32632");
         assert!(super::xml_with_limit(text.as_bytes(), 16 * 1024).unwrap_err().to_string().contains("XML tree payload"));
