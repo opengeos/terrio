@@ -3519,3 +3519,26 @@ test("CityGML 2.0 building LoD 0 requires and preserves its native surface choic
     }
   } finally { source.free(); }
 });
+
+test("ESRIJSON is recognized by content and keeps its holes and CRS", () => {
+  const page = {
+    geometryType: "esriGeometryPolygon",
+    spatialReference: { wkid: 4326 },
+    fields: [
+      { name: "OBJECTID", type: "esriFieldTypeOID" },
+      { name: "NAME", type: "esriFieldTypeString" },
+    ],
+    features: [{
+      attributes: { OBJECTID: 7, NAME: "Lake" },
+      geometry: { rings: [[[0, 0], [0, 4], [4, 4], [4, 0], [0, 0]], [[1, 1], [2, 1], [2, 2], [1, 2], [1, 1]]] },
+    }],
+  };
+  const ds = terrio.open(new TextEncoder().encode(JSON.stringify(page)), "lakes.json");
+  const fc = ds.toGeoJSON();
+  assert.equal(fc.features.length, 1);
+  assert.equal(fc.features[0].properties.NAME, "Lake");
+  assert.equal(fc.features[0].geometry.type, "Polygon");
+  assert.equal(fc.features[0].geometry.coordinates.length, 2);
+  assert.equal(ds.crs, "EPSG:4326");
+  ds.free();
+});

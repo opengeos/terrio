@@ -454,6 +454,11 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
         let mut r = LazyRaster::from_tiles(crate::tiles::raster::TileRaster::new(archive, None)?);
         return Ok(Info::Raster(Box::new(lazy_raster_info(&mut r, options)?)));
     }
+    // A feature-service query's server may ignore the ranges the probes below ask for.
+    #[cfg(remote)]
+    if let Some(result) = crate::dataset::open_feature_service(path, &Default::default()) {
+        return Ok(Info::Vector(vector_info(&result?)));
+    }
     if !matches!(loc, crate::vfs::Location::Zip { .. })
         && let Some(mut r) = LazyRaster::open_tiff(path)?
     {

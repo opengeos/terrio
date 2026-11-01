@@ -882,7 +882,7 @@ impl Client {
 }
 
 /// The error of a body over its cap.
-fn over_cap(url: &str, cap: u64) -> Error {
+pub(crate) fn over_cap(url: &str, cap: u64) -> Error {
     Error::Http(format!("{}: the response is larger than the {cap} bytes allowed", redact(url)))
 }
 

@@ -23,8 +23,9 @@ terrio rasterize counties.gpkg counties.tif -a FIPS --tr 0.01 0.01
   netCDF-4, with groups), HDF5, ERDAS Imagine,
   ENVI, Esri grids, GeoPackage tiles, VRT and more. See [Formats](formats.md).
 - **Vectors**: GeoPackage, GeoParquet, FlatGeobuf, Shapefile, GeoJSON (and GeoJSONSeq), CSV,
-  KML/KMZ, GML, GPX, TopoJSON, MapInfo and OpenStreetMap PBF; layers larger than memory read and
-  converted as streams of features.
+  KML/KMZ, GML, GPX, TopoJSON, MapInfo and OpenStreetMap PBF, with layers larger than memory read
+  and converted as streams of features in the formats that allow it; and ArcGIS feature-service
+  JSON, whose layers are read into memory whole.
 - **HEC-RAS**: the 2D meshes, cross sections, structures and other features of HEC-RAS geometry
   and plan HDF files, with their stored attributes and results, as vector layers. See
   [HEC-RAS](hecras.md).

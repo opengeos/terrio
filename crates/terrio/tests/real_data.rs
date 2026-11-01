@@ -769,6 +769,72 @@ fn topojson_objects_as_layers() {
     assert_eq!(back.layers.iter().map(|l| l.len()).collect::<Vec<_>>(), [177, 1]);
 }
 
+/// A page of a real feature service, read as `f=json` by the ESRIJSON driver, against the same page
+/// as `f=geojson`, which the service itself converted, read by the GeoJSON driver: the same
+/// features, attributes and vertices. Dates are left out: GeoJSON gives them as plain numbers.
+/// The pages change with the services, so no values are fixed, and a missing page skips the test.
+#[test]
+fn esrijson_pages_match_the_services_own_geojson() {
+    use terrio::FieldValue;
+    use wbvector::Geometry;
+    let Some(dir) = std::env::var_os("TERRIO_TEST_DATA").map(PathBuf::from) else { return };
+    // A geometry's parts, each with its holes, as sets of rounded positions: the order of parts and
+    // of a ring's vertices may differ, but a hole must stay in its polygon.
+    type Ring = std::collections::BTreeSet<(i64, i64)>;
+    fn vertices(g: &Option<Geometry>) -> Vec<(Ring, Vec<Ring>)> {
+        let ring =
+            |cs: &[wbvector::Coord]| -> Ring { cs.iter().map(|c| ((c.x * 1e7).round() as i64, (c.y * 1e7).round() as i64)).collect() };
+        let polygon = |e: &wbvector::Ring, hs: &[wbvector::Ring]| {
+            let mut holes: Vec<Ring> = hs.iter().map(|h| ring(h.coords())).collect();
+            holes.sort();
+            (ring(e.coords()), holes)
+        };
+        let mut out: Vec<(Ring, Vec<Ring>)> = match g {
+            Some(Geometry::Point(c)) => vec![(ring(std::slice::from_ref(c)), Vec::new())],
+            Some(Geometry::MultiPoint(cs)) => cs.iter().map(|c| (ring(std::slice::from_ref(c)), Vec::new())).collect(),
+            Some(Geometry::LineString(cs)) => vec![(ring(cs), Vec::new())],
+            Some(Geometry::MultiLineString(ls)) => ls.iter().map(|l| (ring(l), Vec::new())).collect(),
+            Some(Geometry::Polygon { exterior, interiors }) => vec![polygon(exterior, interiors)],
+            Some(Geometry::MultiPolygon(ps)) => ps.iter().map(|(e, hs)| polygon(e, hs)).collect(),
+            _ => Vec::new(),
+        };
+        out.sort();
+        out
+    }
+    let same = |a: &FieldValue, b: &FieldValue| match (a, b) {
+        (FieldValue::Integer(x), FieldValue::Float(y)) | (FieldValue::Float(y), FieldValue::Integer(x)) => (*x as f64 - y).abs() < 1e-9,
+        (FieldValue::Float(x), FieldValue::Float(y)) => (x - y).abs() <= 1e-9 * x.abs().max(1.0),
+        (FieldValue::DateTime(_), _) | (_, FieldValue::DateTime(_)) => true,
+        _ => a == b,
+    };
+    for page in ["counties", "quakes"] {
+        let (json, geojson) = (dir.join(format!("featureservice_{page}.json")), dir.join(format!("featureservice_{page}.geojson")));
+        if !json.exists() || !geojson.exists() {
+            continue;
+        }
+        let esri = terrio::open_vector(json.to_str().unwrap(), &Default::default()).unwrap();
+        let plain = terrio::open_vector(geojson.to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(esri.driver, terrio::formats::VectorDriver::ESRIJSON, "{page}");
+        assert_eq!(plain.driver, terrio::formats::VectorDriver::GeoJSON, "{page}");
+        let (e, g) = (&esri.layers[0], &plain.layers[0]);
+        assert!(!e.is_empty() && e.len() == g.len(), "{page}: {} and {} features", e.len(), g.len());
+        assert_eq!(e.crs_epsg(), Some(4326), "{page}");
+        for (i, (a, b)) in e.features.iter().zip(&g.features).enumerate() {
+            assert_eq!(vertices(&a.geometry), vertices(&b.geometry), "{page}, feature {i}");
+            for (n, field) in e.schema.fields().iter().enumerate() {
+                let other = g.schema.field_index(&field.name).unwrap_or_else(|| panic!("{page}: no field {}", field.name));
+                assert!(
+                    same(&a.attributes[n], &b.attributes[other]),
+                    "{page}, feature {i}, {}: {:?} and {:?}",
+                    field.name,
+                    a.attributes[n],
+                    b.attributes[other]
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn mapinfo_mif() {
     let Some(v) = vector("countries.mif") else { return };

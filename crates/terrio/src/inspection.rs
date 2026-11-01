@@ -285,6 +285,11 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
             VectorDriver::GeoJSON
         });
     }
+    // After the root types above, which this header may show past the bytes ESRI JSON's signs are
+    // looked for in.
+    if !matches!(ext.as_str(), "geojson" | "topojson") && crate::drivers::vector::esrijson::is_esrijson(json.as_bytes()) {
+        return vector(VectorDriver::ESRIJSON);
+    }
     if matches!(ext.as_str(), "csv" | "tsv") && !text.is_empty() {
         return vector(VectorDriver::CSV);
     }
@@ -370,7 +375,12 @@ pub(crate) fn identify_unjudged(path: &str, deep: bool) -> Result<Option<Identif
         #[cfg(remote)]
         crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => {
             let remote = location.remote().ok_or_else(|| crate::Error::InvalidArgument("not remote".into()))?;
-            let (header, length) = crate::http::read_prefix(&remote, IDENTIFICATION_HEADER_BYTES)?;
+            // A feature-service query's server may ignore ranges.
+            let (header, length) = if crate::drivers::vector::featureservice::is_query_url(path) {
+                (crate::drivers::vector::featureservice::query_head(&remote, IDENTIFICATION_HEADER_BYTES as u64)?, None)
+            } else {
+                crate::http::read_prefix(&remote, IDENTIFICATION_HEADER_BYTES)?
+            };
             identify_header(&header, path, length)
         }
         #[cfg(not(remote))]
@@ -507,6 +517,17 @@ pub fn identify_many(paths: &[String], options: &IdentifyOptions) -> Vec<Identif
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_root_type_after_esri_signs_identifies_geojson() {
+        let padding = "x".repeat(7000);
+        let doc = format!(r#"{{"features":[{{"properties":{{"fieldAliases":"{padding}"}}}}],"type":"FeatureCollection"}}"#);
+        assert_eq!(identify_bytes(doc.as_bytes(), "a.json").unwrap().driver, "GeoJSON");
+        let page = r#"{"fieldAliases":{"a":"a"},"features":[]}"#;
+        assert_eq!(identify_bytes(page.as_bytes(), "a.json").unwrap().driver, "ESRIJSON");
+        assert_eq!(identify_bytes(br#"{"type":"Feature Layer","fieldAliases":{}}"#, "a.json").unwrap().driver, "ESRIJSON");
+    }
+
     #[test]
     fn dted_user_header_is_anchored_at_the_start() {
         let mut bytes = vec![b' '; 128];

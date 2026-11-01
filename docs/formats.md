@@ -364,6 +364,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | GeoJSON | GeoJSON | ✓ | ✓ | geojson, json |
 | CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | ✓ | city.json, cityjson, json (by content) |
 | CityGML | CityGML 2.0 and 3.0 (flat XYZ view) | ✓ | ✓ | citygml, gml/xml (by content) |
+| ESRIJSON | JSON of ArcGIS feature-service queries, from files and URLs | ✓ | — | json (by content), query URLs |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
 | KML | KML | ✓ | ✓ | kml |
@@ -616,6 +617,51 @@ city-model identifiers.
 Conformance follows the OGC [CityGML 2.0 encoding](https://schemas.opengis.net/citygml/2.0/)
 and [CityGML 3.0 encoding](https://docs.ogc.org/is/21-006r2/21-006r2.html) and published
 schemas. GDAL 3.13.3's partial CityGML reader is informational.
+
+### ESRIJSON
+
+The `ESRIJSON` driver reads the JSON of ArcGIS feature-service queries (`f=json`) as GDAL's
+ESRIJSON driver does. A `.json` file, or one without an extension, is recognized by its first
+6,000 bytes, as in GDAL: `geometryType`, `fieldAliases`, `esriFieldType` names, features with rings
+or attributes, or a `spatialReference` by WKID; a file whose signs come later needs the `ESRIJSON:`
+prefix. Opening judges the whole document: a GeoJSON or TopoJSON root `type` anywhere in it rules
+ESRI JSON out, and a query URL's answer is judged the same way. `terrio identify` sees only the
+first 16 KiB, so it can report ESRIJSON for a `.json` GeoJSON file with such signs and a root `type`
+past that point, which still opens as GeoJSON. A `.geojson` file stays GeoJSON. A URL is read as a
+query when it has a parameter `f=json`, `f=pjson` or `resultRecordCount=` and answers ESRI JSON;
+`ESRIJSON:` before a URL or a path names the driver. A
+document without `features`, such as a layer's description (a URL without its `/query`), is an
+error.
+
+```sh
+terrio info "https://example.org/arcgis/rest/services/A/FeatureServer/0/query?where=1%3D1&outFields=*&f=json"
+```
+
+Without a `resultOffset` in the URL, the following pages are read while the service answers
+`exceededTransferLimit`, asking for as many features as its first page holds unless the URL gives
+a `resultRecordCount`. The open option `FEATURE_SERVER_PAGING=YES` or `NO` decides otherwise, as in
+GDAL. A page over `TERRIO_JSON_MAX_SIZE` (100 MiB by default) is an error, as are results over
+4 GiB, a page that adds nothing while saying there are more, a page with other fields than the
+first, and a page the same as the one before it (a service that ignores the offset; rows without
+an object id that happen to repeat a whole page need `FEATURE_SERVER_PAGING=NO` and an offset of
+their own). Features without an object id are numbered by their place in the whole layer, or after
+every object id when another feature's object id holds that number. As GDAL's documentation
+advises, order by the layer's object id field (`orderByFields=OBJECTID+ASC` when it is named so) so
+that pages don't overlap. Authentication goes in the URL (`token=`) or the usual HTTP options. All
+the pages are held in memory, and `terrio info` reads them all to count the features: a
+`resultOffset` in the URL describes just that page. In builds with the GDAL backend, an answer
+recognized as a query's and found wrong stays an error rather than going to GDAL, which would read
+what it can of it.
+
+Fields follow `fields`, else `fieldAliases` (as text), else the attributes' values. Terrio has no
+field subtypes: small integers are integers, single-precision numbers are reals, GUIDs are text,
+and `esriFieldTypeTimeOnly` is text. `esriFieldTypeDate` values, milliseconds since 1970, are UTC
+date-times. The object id field is kept, and gives the features their ids. Polygon rings are sorted
+into polygons by containment, whatever their orientation. The CRS is the first known of `latestWkid`,
+`wkid` and `wkt` (a WKID of 0 names none; GDAL 3.13.3 stops at an unknown `latestWkid`, with no
+CRS); a WKID that is not an EPSG code is tried as an ESRI one. A service's error answer is an error with its message, and curve geometries
+(`curvePaths`, `curveRings`) are refused rather than read without their arcs. Query URLs are not
+read in WebAssembly builds, which have no network stack: fetch the JSON and open its bytes.
 
 ### Other vector formats
 

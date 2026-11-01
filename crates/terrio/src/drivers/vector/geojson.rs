@@ -170,7 +170,7 @@ pub fn parse(bytes: &[u8], default_name: &str) -> Result<Layer> {
 /// The memory parsing GeoJSON takes per byte of input, at most for common files: the document's
 /// values and the layer built from them come to about 15 bytes per byte for points with a few
 /// properties (measured on 200,000 features).
-const PARSE_MEMORY_PER_BYTE: usize = 16;
+pub(super) const PARSE_MEMORY_PER_BYTE: usize = 16;
 
 /// Reserves, and releases, the address space parsing `len` bytes of GeoJSON takes, so that a
 /// document too large for the memory available fails with an error rather than aborting the

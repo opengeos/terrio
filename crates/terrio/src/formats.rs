@@ -112,6 +112,9 @@ pub enum VectorDriver {
     CityJSON,
     /// CityGML 2.0 and 3.0, as a flat XYZ vector view (read only).
     CityGML,
+    /// The JSON of ArcGIS feature-service queries (`f=json`), as GDAL's ESRIJSON driver reads it
+    /// (read only). Shares `.json` with GeoJSON: recognized by its content.
+    ESRIJSON,
     /// GeoPackage.
     GPKG,
     /// GeoParquet.
@@ -371,6 +374,8 @@ impl VectorDriver {
         Self::TopoJSON,
         Self::CityJSON,
         Self::CityGML,
+        // After GeoJSON, so that `.json` names GeoJSON by its extension: ESRIJSON is told by content.
+        Self::ESRIJSON,
         Self::GPKG,
         Self::Parquet,
         Self::FlatGeobuf,
@@ -400,6 +405,7 @@ impl VectorDriver {
             Self::TopoJSON => ("TopoJSON", "TopoJSON", &["topojson"], true, true),
             Self::CityJSON => ("CityJSON", "CityJSON 3D city models", &["city.json", "cityjson"], true, true),
             Self::CityGML => ("CityGML", "CityGML 3D city models", &["citygml"], true, true),
+            Self::ESRIJSON => ("ESRIJSON", "ESRIJSON", &["json"], true, false),
             Self::GPKG => ("GPKG", "GeoPackage", &["gpkg"], true, true),
             Self::Parquet => ("Parquet", "GeoParquet", &["parquet", "geoparquet"], true, true),
             Self::FlatGeobuf => ("FlatGeobuf", "FlatGeobuf", &["fgb"], true, true),
@@ -500,6 +506,7 @@ impl VectorDriver {
             Self::Parquet
             | Self::CityJSON
             | Self::CityGML
+            | Self::ESRIJSON
             | Self::DXF
             | Self::DWG
             | Self::GeoJSONSeq
@@ -720,9 +727,11 @@ pub fn identify(path: &str) -> Identified {
         // A member of an archive, local or remote: its first bytes, read from the archive.
         crate::vfs::member_head(&location, 1024)
     } else if by_name.is_empty() {
-        read_head_remote(&location).map(|(head, len)| {
-            remote_len = Some(len);
-            head
+        read_head_query(trimmed, &location).or_else(|| {
+            read_head_remote(&location).map(|(head, len)| {
+                remote_len = Some(len);
+                head
+            })
         })
     } else {
         None
@@ -794,6 +803,7 @@ fn named_drivers(trimmed: &str) -> Named {
         ("GPKG:", "GPKG"),
         ("GDAL:", "GDAL"),
         ("MEM:", "MEM"),
+        ("ESRIJSON:", "ESRIJSON"),
     ] {
         if upper.starts_with(prefix) {
             return Named::Prefix(driver);
@@ -842,6 +852,23 @@ fn read_head_local(path: &Path) -> Option<Vec<u8>> {
         f.take(remaining as u64).read_to_end(&mut buf).ok()?;
     }
     Some(buf)
+}
+
+/// The first bytes of a feature-service query, whose server may ignore ranges.
+fn read_head_query(path: &str, location: &crate::vfs::Location) -> Option<Vec<u8>> {
+    #[cfg(remote)]
+    {
+        use crate::drivers::vector::{esrijson, featureservice};
+        if !featureservice::is_query_url(path) {
+            return None;
+        }
+        featureservice::query_head(&location.remote()?, esrijson::HEAD_BYTES as u64).ok()
+    }
+    #[cfg(not(remote))]
+    {
+        let _ = (path, location);
+        None
+    }
 }
 
 /// Up to 1024 bytes from the start of a remote file, and the file's length.
@@ -998,7 +1025,7 @@ const RASTER_CONTENT: &[&str] = &["GTIFF", "JP2", "PNG", "JPEG", "WEBP", "GRIB",
 /// The formats [`sniff`] names that terrio reads as vectors under names of theirs.
 #[cfg(remote)]
 const VECTOR_CONTENT: &[&str] =
-    &["GEOJSON", "TOPOJSON", "CITYJSON", "CITYGML", "PARQUET", "FLATGEOBUF", "ESRI SHAPEFILE", "KML", "GPX", "GML"];
+    &["GEOJSON", "TOPOJSON", "CITYJSON", "CITYGML", "ESRIJSON", "PARQUET", "FLATGEOBUF", "ESRI SHAPEFILE", "KML", "GPX", "GML"];
 
 /// Whether terrio reads files of the format [`sniff`] names `format` under names of theirs: as
 /// rasters, or, `generic`, as rasters or vectors.
@@ -1081,6 +1108,8 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     if text.starts_with('{') || text.starts_with('[') {
         return Some(if crate::inspection::root_json_type(text).as_deref() == Some("CityJSON") {
             "CITYJSON"
+        } else if crate::drivers::vector::esrijson::is_esrijson(text.as_bytes()) {
+            "ESRIJSON"
         } else if text.contains("\"stac_version\"") {
             "STAC"
         } else if text.contains("\"Topology\"") {
@@ -1445,5 +1474,18 @@ mod allow_list_tests {
         assert!(!both.contains(&"GPKG".to_string()), "the vector list drops GPKG");
         assert!(!both.contains(&"MEM".to_string()), "a name of neither kind needs both lists");
         assert_eq!(allowed_by_every_kind(&[None, None]), None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sniff;
+
+    #[test]
+    fn a_query_page_naming_other_formats_is_sniffed_as_esrijson() {
+        let page = br#"{"fields":[{"name":"Topology","type":"esriFieldTypeString"},{"name":"stac_version","type":"esriFieldTypeString"}],"features":[]}"#;
+        assert_eq!(sniff(page), Some("ESRIJSON"));
+        assert_eq!(sniff(br#"{"type":"Topology","objects":{}}"#), Some("TOPOJSON"));
+        assert_eq!(sniff(br#"{"type":"Feature","stac_version":"1.0.0","geometry":null}"#), Some("STAC"));
     }
 }
