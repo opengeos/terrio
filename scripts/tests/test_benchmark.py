@@ -34,6 +34,16 @@ class BenchmarkTests(unittest.TestCase):
             with patch.object(benchmark, "gdal_kernel_version", return_value=version):
                 self.assertEqual(benchmark.terrio_dem("terrio", "slope")[-1], version)
                 self.assertEqual("COG_OVERVIEW_POLICY=GDAL_3_13" in benchmark.terrio_cog("terrio"), version == "3.13")
+                self.assertIn("RESAMPLING=AVERAGE", benchmark.terrio_cog("terrio"))
+
+    def test_cog_commands_request_average_from_both_tools(self):
+        with patch.object(benchmark.os.path, "exists", return_value=True):
+            rows = benchmark.cases("data", "out", 2) + benchmark.large_cases("large", "out", 2)
+        cogs = [row for row in rows if "COG (Deflate)" in row[1]]
+        self.assertEqual(len(cogs), 2)
+        for _group, _task, terrio, reference in cogs:
+            self.assertIn("RESAMPLING=AVERAGE", terrio)
+            self.assertIn("RESAMPLING=AVERAGE", reference)
 
     def test_successful_but_wrong_output_is_not_scored(self):
         with tempfile.TemporaryDirectory() as root:
