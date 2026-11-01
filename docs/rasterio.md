@@ -91,7 +91,7 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
 | `rio.warp` | `reproject` (arrays, bands, datasets; rotated, south-up, GCP and RPC sources, with GDAL's transformer options; every resampling but `gauss`; binary `src_alpha`/`dst_alpha` bands, and masked arrays warped with their mask as an alpha band, as rasterio does), `calculate_default_transform` (bounds, GCPs or RPCs), `aligned_target`, `transform`, `transform_bounds`, `transform_geom` |
 | `rio.merge` | `merge` (`bounds`, `res`, `nodata`, `dtype`, `indexes`, `method` first/last/min/max/sum/count or a function, `target_aligned_pixels`, `masked`, `dst_path`) |
 | `rio.mask` | `mask` (`crop`, `pad`, `all_touched`, `invert`, `filled`, `nodata`, `indexes`), `raster_geometry_mask` |
-| `rio.vrt` | `WarpedVRT` (`crs`, `transform`, `width`, `height`, `resampling`, `tolerance`, `src_nodata`, `nodata`, `dtype`, `add_alpha`, `src_alpha`, `dst_alpha`, `init_dest_nodata`, `warp_mem_limit`; sources georeferenced by a transform or GCPs): GDAL's implicit overviews and read paths; the source is read by the windows each warped region needs |
+| `rio.vrt` | `WarpedVRT` (`crs`, `transform`, `width`, `height`, `resampling`, `tolerance`, `src_nodata`, `nodata`, `dtype`, `add_alpha`, `src_alpha`, `dst_alpha`, `init_dest_nodata`, `warp_mem_limit`; sources georeferenced by a transform, GCPs or RPCs): GDAL's implicit overviews and read paths; the source is read by the windows each warped region needs |
 | `rio.io` | `MemoryFile`, `ZipMemoryFile`, `DatasetReader`, `DatasetWriter` |
 | `rio.control`, `rio.rpc` | `GroundControlPoint`; `RPC` (`to_dict`, `to_gdal`, `from_gdal`); datasets' `gcps` and `rpcs`, read and written |
 | `rio.shutil` | `exists`, `copy` (paths or datasets, creation options), `copyfiles`, `delete` |
@@ -169,7 +169,7 @@ differences remain:
 - `overview --build` (and any command opening a file for update) on a COG: GDAL refuses to update
   the COG layout unless `IGNORE_COG_LAYOUT_BREAK` is set; terrio.rio rewrites the file.
 - `merge` and `stack` with `--resampling cubic` (and other kernels) differ next to nodata pixels,
-  as the API's resampled reads do (see below).
+  as the API's resampled reads do (see above).
 - Coordinates projected by terrio (bounds, blocks, shapes in WGS 84, `transform`) differ from
   PROJ's in the last digits.
 
@@ -189,8 +189,7 @@ directory to keep the downloads).
 - `reproject` with partially transparent alpha (values between 0 and the alpha maximum), which
   GDAL blends by density, and a masked 16-bit array into an unmasked destination (GDAL reads its
   mask as a 255/65535 density): both raise rather than differ.
-- `WarpedVRT` of a dataset georeferenced by RPCs (`reproject` and `calculate_default_transform`
-  take RPCs), the `gauss` resampling in `reproject` (reads, overviews and `build_overviews`
+- The `gauss` resampling in `reproject` (reads, overviews and `build_overviews`
   support it), WKT2 output, and the RPC transformer's `RPC_FOOTPRINT`: terrio does not implement
   them. An `RPC_DEM` is read whole into memory, with its horizontal CRS only: GDAL moves the
   heights of a DEM in a compound CRS (a geoid) to the ellipsoid (`RPC_DEM_APPLY_VDATUM_SHIFT`),
@@ -200,8 +199,7 @@ directory to keep the downloads).
   few centimetres from GDAL's own thin plate splines (which terrio's match, as `gdalwarp -tps`
   does).
 - Lossy GeoTIFF codecs: JPEG in YCbCr decodes as GDAL decodes it; LERC, LZMA and JPEG XL chunks
-  are decoded, with parity against GDAL not measured. GeoTIFFs with 1, 2 or 4 bits per sample are
-  not decoded correctly (12 bits is).
+  are decoded, with parity against GDAL not measured.
 - `r+` rewrites the file (overviews are rebuilt from the updated pixels, where GDAL keeps the old
   ones). COG writes stream row by row, except COGs with an internal mask, copied source overviews,
   explicit overview factors, and compressions other than NONE, LZW, DEFLATE, ZSTD and PACKBITS,

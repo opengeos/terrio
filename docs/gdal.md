@@ -19,6 +19,14 @@ terrio's commands map onto GDAL's utilities, with GDAL's option names in kebab c
 | `gdal_sieve.py` | `terrio sieve` |
 | `gdalsrsinfo`, `gdaltransform` | `terrio crs` |
 | `gdalinfo --formats`, `ogrinfo --formats` | `terrio formats` |
+| `gdaladdo` | `terrio overviews` |
+| `gdal_contour` | `terrio contour` |
+| `gdal_fillnodata.py` | `terrio fill-nodata` |
+| `gdal_grid` | `terrio vector-grid` |
+| `gdal_viewshed` | `terrio viewshed` |
+| `gdallocationinfo` | `terrio pixel-info` |
+| `gdal2xyz.py` | `terrio xyz` |
+| `nearblack` | `terrio nearblack` |
 
 ## Options
 
@@ -50,10 +58,12 @@ are not supported.
 
 ## Differences to know
 
-- terrio reads datasets into memory, except GeoTIFFs, which can be read window by window. Very
-  large non-GeoTIFF inputs need enough memory.
-- Downsampling with `warp` or `translate` reads full resolution; GDAL may use overviews.
-- Rotated geotransforms are not supported.
+- terrio reads most raster formats whole into memory. GeoTIFF/COG and JPEG 2000 are read by
+  window, Zarr by chunk, and large vector layers and point clouds as streams. See
+  [Formats](formats.md).
+- Downsampling with `translate` reads full resolution, where GDAL may use overviews. `warp` chooses
+  an overview as GDAL does (`--overview AUTO`, the default).
+- `warp` and `terrio.rio` handle rotated geotransforms. `translate` refuses them.
 - GeoTIFFs are written with terrio's own writer; COGs pass GDAL's COG validator.
 - Only the drivers listed in [Formats](formats.md) exist, unless terrio is built with the
   optional GDAL backend (below).
@@ -65,8 +75,8 @@ See [CAD drawings](formats.md#cad-drawings-dwg-and-dxf) for the native subset.
 ## The optional GDAL backend
 
 For the long tail of formats (HDF4, NITF, KEA, PCIDSK, SQLite, spreadsheets...),
-terrio can hand files to GDAL. The backend is a cargo feature, `gdal`, off by default: it is
-terrio's only C dependency, and builds need GDAL 3.4 or later installed where `pkg-config` (or
+terrio can hand files to GDAL. The backend is a cargo feature, `gdal`, off by default: it adds
+a C dependency, and builds need GDAL 3.4 or later installed where `pkg-config` (or
 `GDAL_HOME`) finds it.
 
 ```sh

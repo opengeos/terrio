@@ -8,8 +8,8 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 
 - Pure Rust by default. Every default feature builds for `wasm32-unknown-unknown`; anything that
   needs C sits behind an opt-in feature.
-- Reuse the ecosystem. The format codecs and projections come from whitebox_next_gen's pure-Rust
-  crates (`wbraster`, `wbvector`, `wbprojection`), plus `tiff` for GeoTIFF decoding. Where a
+- Reuse the ecosystem. Many format codecs come from whitebox_next_gen's pure-Rust
+  crates (`wbraster`, `wbvector`), with `wbprojection` as a projection fallback, plus `tiff` for GeoTIFF decoding. Where a
   codec is wrong or missing, terrio supplies its own driver and reports the problem upstream.
 - One data model across formats, so a driver is a small amount of code and conversions are free.
 - Read cloud data in place: range requests, lazy tiles and chunks, no full download.
@@ -33,7 +33,7 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 ## Completed: Practical GDAL feature parity
 
 All nine items in [#238](https://github.com/opengeos/terrio/issues/238) are complete
-as of 2026-10-24. The [gap analysis](docs/gdal-parity-recommendations.md) records the
+as of 2026-10-24. The [gap analysis](https://terrio.dev/gdal-parity-recommendations/) records the
 supported scope and validation criteria. These additions build on the operations
 and drivers below.
 
@@ -72,7 +72,7 @@ and drivers below.
 - [x] Native multidimensional API: groups, named dimensions, coordinate arrays, lazy time/depth
       slicing and transposition across netCDF/HDF5/Zarr, retaining the existing raster views.
       Done in [#252](https://github.com/opengeos/terrio/pull/252); the supported numeric/raw-CF
-      subset is documented in the [multidimensional guide](docs/multidim.md).
+      subset is documented in the [multidimensional guide](https://terrio.dev/multidim/).
 
 The completed scope preserves pure-Rust/default WebAssembly builds, registers real-data
 comparisons in the GDAL conformance workflow, and exposes applicable functionality through
@@ -293,7 +293,7 @@ Command-group progress:
       drivers read them; PMTiles read in place over HTTP; rasters written as tile pyramids and vector
       layers as MVT tiles (archives or directories), as GDAL writes them; invalid polygons repaired
       by an independent tile-grid implementation, checked against GDAL/GEOS with documented
-      [compatibility limits](docs/make-valid-implementation.md); AVIF tiles; existing archives updated (rasters
+      [compatibility limits](https://terrio.dev/make-valid-implementation/); AVIF tiles; existing archives updated (rasters
       and vector layers appended). Checked against GDAL (`scripts/compare_tiles_with_gdal.py`).
 - [x] STAC items and collections as datasets. Done: items, item collections, collections and STAC
       API searches (local or remote, following `next` links) as footprint layers read as GDAL reads
@@ -310,7 +310,7 @@ Command-group progress:
       as nodata with `GDAL_STACTA_SKIP_MISSING_METATILE`; summaries, whole rasters, windows and
       overviews identical to GDAL's on its STACTA test data and on `gdal raster tile` pyramids,
       local and over HTTP (`scripts/compare_stac_geozarr.py stacta`).
-- [x] GRIB 1 and 2, read only. Done: a pure-Rust driver read as GDAL's GRIB driver reads files (a
+- [x] GRIB 1 and 2 read, GRIB2 written. Done: a pure-Rust driver read as GDAL's GRIB driver reads files (a
       Float64 band per message or field, GDAL's `GRIB_*` band metadata and descriptions from its
       tables and degrib's naming rules, its grids, earth shapes and 0-360 rewrapping, units
       normalized, nodata where bitmaps mask points), GRIB2 packings decoded as g2clib decodes them
@@ -615,7 +615,7 @@ WebAssembly (the `terrio-js` npm package):
       exposed by the existing Rust, CLI/MCP, Python and full JavaScript/WASM vector APIs.
       Common linework, curves, text, faces, polygon hatches and inserted blocks are supported;
       output includes horizontal polygon holes. Drawing coordinates have no inferred CRS.
-      See [supported entities and limits](docs/formats.md#cad-drawings-dwg-and-dxf).
+      See [supported entities and limits](https://terrio.dev/formats/#cad-drawings-dwg-and-dxf).
 - [ ] Additional CAD entities (splines, dimensions, meshes, ACIS solids) and acadrust's optional
       STL, COLLADA, OBJ, glTF/GLB and FBX importers.
 
@@ -632,7 +632,7 @@ WebAssembly (the `terrio-js` npm package):
   measured first CRS use increases from about 10.6 ms to 17.9–18.1 ms. Repeated
   calls remain about 3.4–3.7 µs. This initialization tradeoff removes the duplicate
   table-decoder dependency; TIFF codecs remain supported. See
-  [the measurement report](docs/crs-footprint.md#native-first-use-cost).
+  [the measurement report](https://terrio.dev/crs-footprint/#native-first-use-cost).
 - [x] Geocentric Cartesian XYZ endpoints, EPSG/PROJ/WKT definitions, datum and
       projected composition, and Rust/CLI/MCP/Python/JavaScript/WASM validation
       against pinned and live GDAL/PROJ references (#269, #286).
@@ -643,7 +643,7 @@ WebAssembly (the `terrio-js` npm package):
       vertical, compound, bound and IAU planetary CRSs, refusing what it would describe wrongly:
       Rust, CLI and MCP (`terrio crs --projjson`), Python (`CRS.to_projjson()`) and JavaScript
       (`crsToProjjson`), compared with live PROJ/GDAL by `scripts/conformance.py`.
-- IAU and additional projection capabilities remain scoped separately in #271–#272.
+- IAU_2015 CRSs are done (#271); additional projections remain in #272.
 
 ## ndarray interoperability (#298)
 
@@ -686,8 +686,8 @@ Windows read as `f32` or `f64` values, NaN where GDAL's mask band marks pixels i
 - HTTP goes through `ureq` (with rustls) and S3 requests are signed by terrio itself, rather than
   through `object_store`, to keep the API synchronous and the dependencies small.
 - GeoPackage is read and written by terrio's own SQLite file reader and writer (pure Rust): no
-  C dependency, and files written in one go.
-- terrio carries its own EPSG table (`crates/terrio-crs/data/epsg.tsv.zst`, about 220 KB, generated
+  C dependency; existing files are updated in place.
+- terrio carries its own EPSG table (`crates/terrio-crs/data/epsg.tsv.zst`, about 350 KB, generated
   from GDAL and PROJ by `scripts/gen_epsg_table.py`): the PROJ strings of the CRSs, their WKT and
   the datum transformations GDAL lists for them, so that terrio picks the same transformation as
   GDAL for each point. The projection formulas are PROJ's, ported to Rust; `wbprojection` remains

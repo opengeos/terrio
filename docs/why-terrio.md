@@ -13,9 +13,9 @@ terrio is for reading, writing, converting and reprojecting the common raster an
   and ships as a single binary, a Python wheel and an npm package.
 - **One `open()` for many formats.** Rasters and vectors are detected from the file and read into
   one data model, so converting between any two formats is a single call.
-- **GDAL is the reference.** Every driver and operation is compared with GDAL 3.12 on real files
-  in continuous integration, and differences are treated as bugs: the
-  [conformance report](conformance.md) lists over 20,000 comparisons and every one that differs.
+- **GDAL is the reference.** Drivers and operations are compared with GDAL on real files, and
+  differences are treated as bugs: the
+  [conformance report](conformance.md) lists over 40,000 comparisons and every one that differs.
   Coordinate transformations use the same operations GDAL picks for each EPSG CRS.
 - **GDAL's command line, reimplemented.** `info`, `convert`, `translate`, `warp`, `mosaic`,
   `rasterize` and `polygonize` take GDAL's options, so existing scripts translate directly.
@@ -95,10 +95,9 @@ another library and not in terrio, use it.
   use GDAL, directly, through the `gdal` crate, or through terrio's `gdal` feature.
 - **You need the fastest conversion or warping today:** GDAL. terrio is faster for some tasks and
   slower for others; see [Benchmarks](benchmarks.md).
-- **You need datum grids or vertical datums:** PROJ, through GDAL or the `proj` crate. terrio does
-  not apply NTv2 or other shift grids yet.
-- **You need geometry algorithms** (buffers, intersections, simplification): `geo`, with terrio
-  reading and writing the data.
+- **You need geometry algorithms terrio's commands don't have:** `geo`, with terrio reading and
+  writing the data. terrio has planar buffers, overlays, dissolves, hulls, simplification and
+  validity repair.
 - **You work in columnar data:** GeoArrow, GeoParquet and DuckDB.
 
 ## When terrio fits

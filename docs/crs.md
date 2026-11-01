@@ -82,7 +82,7 @@ let (easting, northing) = transform.transform(-105.0, 40.0)?;
 
 | Configuration | Behavior |
 |---|---|
-| Default | EPSG/ESRI tables, WKT and PROJ strings, 40 native methods from the 117-method test corpus, datum operations, epochs, and local or registered grids; offline |
+| Default | EPSG/ESRI tables, WKT and PROJ strings, 43 native methods from the 117-method test corpus, datum operations, epochs, and local or registered grids; offline |
 | `wbprojection-fallback` | 46 additional projection methods and legacy WKT/identification fallback; enabled by Terrio |
 | `grid-transport` (native) | An application supplies `network::GridTransport` with seekable readers; the engine retains lazy TIFF block decoding |
 | Terrio's `remote` feature | Supplies Terrio's existing HTTP range reader, request controls and cache to the shared engine |
@@ -114,7 +114,7 @@ grids are Deflate-compressed (all 11 sampled, among them those this page and the
 concerns grids recompressed with Zstandard.
 The [dependency and build measurements](crs-footprint.md) record both standalone
 configurations and full Terrio before/after extraction. Extraction and validation are tracked in
-[#268](https://github.com/opengeos/terrio/issues/268). Capability additions are tracked separately in #269–#272.
+[#268](https://github.com/opengeos/terrio/issues/268). Remaining projection coverage is tracked in #272.
 
 ### Publication and release workflow
 
@@ -296,8 +296,8 @@ Where none applies, heights are kept. Vertical CRSs of one datum (NAVD88 height 
 US survey feet) only convert units.
 
 ```sh
-TERRIO_NETWORK=ON terrio crs EPSG:4267+7968 --to EPSG:4267+5703 -105.27 40.01 1700   # VERTCON: 1701.0026
-terrio crs EPSG:4258+5783 --to EPSG:4258+5785 13.4 52.5 100                       # DHHN92 to SNN76: 99.856
+TERRIO_NETWORK=ON terrio crs EPSG:4267+7968 --to EPSG:4267+5703 --dim 3 -105.27 40.01 1700   # VERTCON: 1701.0026
+terrio crs EPSG:4258+5783 --to EPSG:4258+5785 --dim 3 13.4 52.5 100                       # DHHN92 to SNN76: 99.856
 ```
 
 These are listed in `crates/terrio-crs/data/epsg_vertical.tsv.zst` (`scripts/gen_vertical_table.py`)
@@ -370,8 +370,8 @@ apply.
 
 ## Attribution
 
-EPSG definitions come from the [EPSG Geodetic Parameter Dataset](https://epsg.org), through the
-`wbprojection` crate and PROJ. The grid algorithms follow [PROJ](https://proj.org) (MIT licence);
+EPSG definitions come from the [EPSG Geodetic Parameter Dataset](https://epsg.org), generated from
+GDAL and PROJ by `scripts/gen_epsg_table.py`. The grid algorithms follow [PROJ](https://proj.org) (MIT licence);
 the grids themselves come from [PROJ-data](https://cdn.proj.org), under their producers' licences.
 
 ## Geocentric Cartesian CRSs

@@ -9,11 +9,15 @@ crates/terrio        the library
   tiles/             PMTiles, MBTiles and MVT: archives, tile pyramids, vector tile clipping
   vfs.rs             locations: paths, URLs, s3://, gs://, az://, zip archives, /vsi prefixes
   http.rs, s3.rs     range requests with a block cache; AWS Signature Version 4
-  crs.rs             parsing, identification and transformation of coordinate systems
+  crs.rs             terrio::crs, over crates/terrio-crs
+  multidim/          native groups, dimensions and arrays
+  pointcloud/        LAS, LAZ, COPC, EPT, PLY, E57 and filters
+  vsi/               terrio vsi file management
   ops/               translate, warp, mosaic, vrt, vector filters and SQL, rasterize, polygonize
   memory.rs          datasets from and to bytes
   info.rs            summaries
-crates/terrio-cli    the terrio command
+crates/terrio-crs    standalone coordinate systems: parsing, identification, transformation
+crates/terrio-cli    the terrio command and MCP server
 python/              Python bindings (PyO3, NumPy)
 js/                  WebAssembly bindings (wasm-bindgen)
 scripts/             test data, comparisons with GDAL, benchmarks
@@ -23,7 +27,8 @@ scripts/             test data, comparisons with GDAL, benchmarks
 
 Rasters are held as `wbraster::Raster`: typed pixel buffers, band after band and row after row,
 with the georeferencing and CRS. `RasterDataset` adds the driver and whether nodata is declared.
-GeoTIFFs and tile archives (PMTiles, MBTiles) can also be opened lazily, to read windows and
+GeoTIFFs, tile archives (PMTiles, MBTiles), JPEG 2000, Zarr, GRIB and raw-layout rasters can also
+be opened lazily, to read windows and
 overviews without loading the image.
 
 Vector datasets are `wbvector::Layer`s: features with OGC simple-feature geometries (with Z and
@@ -31,8 +36,8 @@ M), typed attributes and a schema.
 
 ## Building on whitebox_next_gen
 
-The `wbraster`, `wbvector` and `wbprojection` crates supply the data model, many codecs and the
-projection engine. Testing them against GDAL found codecs that decoded wrong pixels or lost
+The `wbraster`, `wbvector` and `wbprojection` crates supply the data model, many codecs and a
+fallback for projections terrio does not compute itself. Testing them against GDAL found codecs that decoded wrong pixels or lost
 georeferencing, so terrio has its own drivers for GeoTIFF, JPEG 2000, Zarr, netCDF, HFA,
 GeoPackage (on its own SQLite file reader and writer), the Esri formats, FlatGeobuf, CSV,
 GeoJSON, GeoParquet, GML, GPX, KML, TopoJSON, MapInfo, OSM and shapefile writing. Upstream bugs

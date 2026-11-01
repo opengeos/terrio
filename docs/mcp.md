@@ -5,8 +5,8 @@ such as Claude Code, Claude Desktop, Cursor or VS Code's Copilot can run terrio'
 data. Ask it to "summarize this GeoTIFF", "convert these shapefiles to GeoPackage in EPSG:3857" or
 "make a hillshade of dem.tif" and it calls the matching command.
 
-Each [command](cli.md) is a tool: `info`, `convert`, `translate`, `warp`, `mosaic`, `rasterize`,
-`polygonize`, `dem`, `calc`, `proximity`, `sieve`, `crs`, `formats`, `grid` and `filter`. A tool
+Each [command](cli.md) except `mcp` itself is a tool, from `info`, `convert` and `warp` to `vsi`,
+`pipeline` and `mdread`. A tool
 takes the command line after the command name as a list of arguments, and its description is the
 command's `--help`, so the agent sees every option. The server speaks over standard input and
 output, and runs each call as a separate `terrio` process: its output goes back to the agent, and
@@ -55,8 +55,9 @@ and `convert` take the HECRAS open options (`--oo "CELL_SUMMARIES=Maximum Water 
 plan to GeoPackage".
 
 The tools read and write whatever the commands can: local files, and inputs from URLs and cloud
-storage (see [Remote Data](remote-data.md)). `info`, `crs` and `formats` only read; the other
-commands write their output files, and can overwrite existing ones. The `vsi` tool also copies
+storage (see [Remote Data](remote-data.md)). `info`, `formats`, `crs`, `mdinfo`, `mdread`, `compare`,
+`validate-cog`, `gpkg-validate`, `identify`, `dataset-files` and `check` are annotated read-only;
+the other commands can write output files, and can overwrite existing ones. The `vsi` tool also copies
 local files to S3 or Azure destinations and recursively deletes local directories or object
 prefixes with the same options and path guards as the CLI. It uses credentials available to the
 server process. Its write/destructive annotations are hints, not authorization enforcement;
@@ -67,6 +68,8 @@ a mutation.
 The CLI's protected-path and object-prefix guards are the complete built-in path boundary:
 other local paths writable by the server are allowed, including recursive mutations outside
 its current directory. The tool does not add a filesystem sandbox.
+
+Over MCP, `@FILE` input lists are refused: pass each input as an item of `args`.
 
 
 Relative paths are relative to the directory the client started the server in; agents do better

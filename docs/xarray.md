@@ -57,8 +57,9 @@ work too); errors have rioxarray's names (`terrio.xarray.exceptions`: `MissingCR
   `BackendArray` indexed through `explicit_indexing_adapter`: an index or slice of the array
   reads that window of the bands it selects, and nothing else. GeoTIFFs and COGs (local, or
   `https://`, `s3://`, `gs://`, `az://` and GDAL's `/vsicurl/` paths) are read tile by tile, and
-  remote ones fetch only the tiles a window needs, with HTTP range requests; other formats terrio
-  reads (Zarr, netCDF, ERDAS Imagine, JPEG 2000...) are read into memory when first read.
+  remote ones fetch only the tiles a window needs, with HTTP range requests; JPEG 2000, Zarr and raw-layout
+  rasters (ENVI, EHdr, SRTM HGT) are also read by window; other formats (netCDF, ERDAS Imagine...)
+  are read into memory when first read.
 - **Dask.** `chunks` (an int, a dict, `True` or `"auto"` for chunks aligned on the file's blocks,
   as rioxarray chooses them) makes dask arrays, with rioxarray's chunks. Reads are thread-safe
   and parallel: each concurrent reader borrows a terrio raster of its own (lazily read files are
@@ -187,7 +188,7 @@ quicklook (RPCs) images, every variable, coordinate and attribute, the GCPs and 
 ## Differences
 
 - Only the CF convention is written (`convention="CF"`); Zarr `proj:` and `spatial:` attributes
-  are read. A grid mapping without `crs_wkt` or `spatial_ref` (CF attributes only) gives no CRS.
+  are read.
 - Metadata of formats other than GeoTIFF comes from terrio's readers: tags, band descriptions,
   block shapes (`preferred_chunks`) and `.aux.xml` statistics of netCDF, Zarr, JPEG 2000 or
   GeoPackage rasters can differ from GDAL's; pixels, coordinates and CRSs are the same. Over
