@@ -569,37 +569,43 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
     result
 }
 
-/// A feature-service query: a URL with GDAL's signs of one that answers ESRI JSON, or one named by
-/// the `ESRIJSON:` prefix, which also names a local file. Read before the other readers and before
-/// GDAL: a query's answer is made per request, and many ArcGIS servers ignore ranges; and an answer
-/// recognized here and found wrong (a service's error, a page with other fields, a service that
-/// ignores the offset) is an error, not something for GDAL to read what it can of without a word.
-/// Other paths (`None`) go on as usual, as do URLs whose request fails before their answer is
-/// recognized, which report their own errors.
+/// A feature-service query: a URL with the signs of one that answers ESRI JSON or its protocol
+/// buffer, or one named by the `ESRIJSON:` or `ESRIPBF:` prefix, which also names a local file. Read
+/// before the other readers and before GDAL: a query's answer is made per request, and many ArcGIS
+/// servers ignore ranges; and an answer recognized here and found wrong (a service's error, a page
+/// with other fields, a service that ignores the offset) is an error, not something for GDAL to read
+/// what it can of without a word. Other paths (`None`) go on as usual, as do URLs whose request
+/// fails before their answer is recognized, which report their own errors.
 pub(crate) fn open_feature_service(path: &str, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
-    let prefix = "ESRIJSON:";
-    let named = path.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix));
-    let target = if named { path.get(prefix.len()..)? } else { path };
-    let url = target.starts_with("http://") || target.starts_with("https://");
-    if named && !url {
-        return Some(vfs::resolve(target).and_then(|local| read_vector_local(local.as_str(), VectorDriver::ESRIJSON, options)));
+    let prefixed = [("ESRIJSON:", VectorDriver::ESRIJSON), ("ESRIPBF:", VectorDriver::ESRIPBF)]
+        .into_iter()
+        .find(|(prefix, _)| path.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix)));
+    let target = match prefixed {
+        Some((prefix, _)) => path.get(prefix.len()..)?,
+        None => path,
+    };
+    let named = prefixed.map(|(_, driver)| driver);
+    if let Some(driver) = named
+        && !(target.starts_with("http://") || target.starts_with("https://"))
+    {
+        return Some(vfs::resolve(target).and_then(|local| read_vector_local(local.as_str(), driver, options)));
     }
     open_query(target, named, options)
 }
 
-/// [`open_feature_service`] for a URL, in a build that has no network: one named for this driver
-/// says so.
+/// [`open_feature_service`] for a URL, in a build that has no network: one named for a driver says
+/// so.
 #[cfg(not(remote))]
-fn open_query(_url: &str, named: bool, _options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
-    named.then(|| Err(Error::disabled("remote")))
+fn open_query(_url: &str, named: Option<VectorDriver>, _options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
+    named.map(|_| Err(Error::disabled("remote")))
 }
 
 /// [`open_feature_service`] for a URL.
 #[cfg(remote)]
-fn open_query(url: &str, named: bool, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
-    use crate::drivers::vector::{esrijson, featureservice};
+fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
+    use crate::drivers::vector::{esrijson, esripbf, featureservice};
     use std::io::Read;
-    if !named && !featureservice::is_query_url(url) {
+    if named.is_none() && !featureservice::is_query_url(url) {
         return None;
     }
     let mut recognized = named;
@@ -607,8 +613,17 @@ fn open_query(url: &str, named: bool, options: &VectorOpenOptions) -> Option<Res
         let cap = crate::http::json_max_size();
         let mut bytes = Vec::new();
         (&mut *reader).take(esrijson::HEAD_BYTES as u64).read_to_end(&mut bytes)?;
-        recognized = recognized || esrijson::is_esrijson(&bytes);
-        if !recognized {
+        // A service answers a query it refuses with nothing when asked for the protocol buffer.
+        recognized = recognized.or_else(|| {
+            if esrijson::is_esrijson(&bytes) {
+                Some(VectorDriver::ESRIJSON)
+            } else if esripbf::is_esripbf(&bytes) || (bytes.is_empty() && featureservice::asks_for_pbf(url)) {
+                Some(VectorDriver::ESRIPBF)
+            } else {
+                None
+            }
+        });
+        if recognized.is_none() {
             return Ok(None);
         }
         reader.take(cap.saturating_sub(bytes.len() as u64).saturating_add(1)).read_to_end(&mut bytes)?;
@@ -617,16 +632,17 @@ fn open_query(url: &str, named: bool, options: &VectorOpenOptions) -> Option<Res
         }
         Ok(Some(bytes))
     });
-    match answer {
+    match (answer, recognized) {
         // Its first bytes showed ESRI JSON's signs, but a root `type` further on can say GeoJSON:
         // read the same bytes as that, without asking again.
-        Ok(Some(bytes)) if !named && std::str::from_utf8(&bytes).is_ok_and(|text| !esrijson::is_esrijson_document(text)) => {
+        (Ok(Some(bytes)), Some(VectorDriver::ESRIJSON))
+            if named.is_none() && std::str::from_utf8(&bytes).is_ok_and(|text| !esrijson::is_esrijson_document(text)) =>
+        {
             Some(read_geojson_answer(url, bytes, options))
         }
-        Ok(Some(bytes)) => Some(read_feature_service(url, &bytes, options)),
-        Ok(None) => None,
-        Err(e) if recognized => Some(Err(e)),
-        Err(_) => None,
+        (Ok(Some(bytes)), Some(driver)) => Some(read_feature_service(url, &bytes, driver, options)),
+        (Err(e), Some(_)) => Some(Err(e)),
+        _ => None,
     }
 }
 
@@ -643,15 +659,17 @@ fn read_geojson_answer(url: &str, bytes: Vec<u8>, options: &VectorOpenOptions) -
 
 /// A feature-service query from its first page's bytes, with the pages after it.
 #[cfg(remote)]
-fn read_feature_service(url: &str, first: &[u8], options: &VectorOpenOptions) -> Result<VectorDataset> {
-    use crate::drivers::vector::{esrijson, featureservice};
-    crate::formats::check_driver_allowed(VectorDriver::ESRIJSON.name(), url, crate::formats::Kind::Vector)?;
-    let decode = |page: &[u8]| esrijson::page(page, "ESRIJSON");
+fn read_feature_service(url: &str, first: &[u8], driver: VectorDriver, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    use crate::drivers::vector::{esrijson, esripbf, featureservice};
+    crate::formats::check_driver_allowed(driver.name(), url, crate::formats::Kind::Vector)?;
+    let decode = |page: &[u8]| {
+        if driver == VectorDriver::ESRIPBF { esripbf::page(page, driver.name()) } else { esrijson::page(page, driver.name()) }
+    };
     let stop_at = options.max_features.map(|max| options.skip_features.saturating_add(max));
     let layer = featureservice::read_pages(url, first, options.feature_server_paging, stop_at, &decode)?;
     let mut layers = select_layers(vec![layer], url, options)?;
     layers.iter_mut().for_each(|l| options.keep_range(l));
-    Ok(finish_vector(layers, url, VectorDriver::ESRIJSON))
+    Ok(finish_vector(layers, url, driver))
 }
 
 pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {

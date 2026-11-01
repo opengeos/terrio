@@ -365,6 +365,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | ✓ | city.json, cityjson, json (by content) |
 | CityGML | CityGML 2.0 and 3.0 (flat XYZ view) | ✓ | ✓ | citygml, gml/xml (by content) |
 | ESRIJSON | JSON of ArcGIS feature-service queries, from files and URLs | ✓ | — | json (by content), query URLs |
+| ESRIPBF | Protocol buffers of ArcGIS feature-service queries, from files and URLs | ✓ | — | pbf (by content), query URLs |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
 | KML | KML | ✓ | ✓ | kml |
@@ -662,6 +663,25 @@ into polygons by containment, whatever their orientation. The CRS is the first k
 CRS); a WKID that is not an EPSG code is tried as an ESRI one. A service's error answer is an error with its message, and curve geometries
 (`curvePaths`, `curveRings`) are refused rather than read without their arcs. Query URLs are not
 read in WebAssembly builds, which have no network stack: fetch the JSON and open its bytes.
+
+### ESRIPBF
+
+The `ESRIPBF` driver reads the protocol buffer of the same queries (`f=pbf`), which GDAL has no
+driver for. It gives the same fields, values and geometries as `ESRIJSON`, to the scale the service
+quantizes coordinates to, in fewer bytes and faster to decode: use it for large queries, on services
+that list `PBF` in their `supportedQueryFormats`. Single-precision fields keep digits that `f=json`
+prints rounded to seven.
+
+```sh
+terrio convert "https://example.org/arcgis/rest/services/A/FeatureServer/0/query?where=1%3D1&outFields=*&orderByFields=OBJECTID&f=pbf" out.gpkg
+```
+
+A URL is read as a query when it has `f=pbf` and answers one, and paging works as above. A `.pbf`
+file, or one without an extension, is recognized by its content: `.pbf` otherwise names
+OpenStreetMap. `ESRIPBF:` before a URL or a path names the driver. A service answers a query it
+refuses with nothing: that is an error, and `f=json` shows the reason. An answer with a count, ids
+or an extent is refused, as are curve and shape-buffer geometries. Query URLs are not read in
+WebAssembly builds: fetch the bytes and open them.
 
 ### Other vector formats
 

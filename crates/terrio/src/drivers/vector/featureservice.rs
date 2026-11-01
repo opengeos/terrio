@@ -72,13 +72,19 @@ pub(crate) fn check_values(driver: &str, features: usize, fields: usize, documen
 }
 
 /// Whether a URL is likely a feature-service query, by GDAL's signs: `f=json`, `f=pjson` or
-/// `resultRecordCount=`, as parameters of its own, without the `/items?` of OGC API Features. What
-/// it answers decides.
+/// `resultRecordCount=`, as parameters of its own, without the `/items?` of OGC API Features; or
+/// by `f=pbf`, which GDAL does not read. What it answers decides.
 #[cfg(remote)]
 pub(crate) fn is_query_url(url: &str) -> bool {
     (url.starts_with("http://") || url.starts_with("https://"))
-        && (matches!(query_value(url, "f"), Some("json" | "pjson")) || query_value(url, "resultRecordCount").is_some())
+        && (matches!(query_value(url, "f"), Some("json" | "pjson" | "pbf")) || query_value(url, "resultRecordCount").is_some())
         && !url.contains("/items?")
+}
+
+/// Whether a URL asks for the protocol buffer.
+#[cfg(remote)]
+pub(crate) fn asks_for_pbf(url: &str) -> bool {
+    query_value(url, "f") == Some("pbf")
 }
 
 /// The first bytes of a query's answer, from a plain request: the answer is made per request, and
@@ -298,6 +304,9 @@ mod tests {
     fn query_url_signs_are_recognized() {
         assert!(is_query_url("https://x.org/arcgis/rest/services/A/FeatureServer/0/query?where=1=1&f=json"));
         assert!(is_query_url("https://x.org/a/query?f=pjson"));
+        assert!(is_query_url("https://x.org/a/query?f=pbf"));
+        assert!(asks_for_pbf("https://x.org/a/query?f=pbf"));
+        assert!(!asks_for_pbf("https://x.org/a/query?f=json"));
         assert!(is_query_url("https://x.org/a/query?resultRecordCount=10"));
         assert!(!is_query_url("https://x.org/ogc/collections/a/items?f=json"));
         assert!(!is_query_url("https://x.org/a/query?f=geojson"));

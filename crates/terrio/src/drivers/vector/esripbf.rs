@@ -263,6 +263,13 @@ fn spatial_reference(bytes: &[u8]) -> Result<Option<crate::crs::SpatialRef>> {
 
 /// A page of a query's results: its layer, and whether the service has more.
 pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
+    if bytes.is_empty() {
+        return Err(invalid("the answer is empty, as a service's is to a query it refuses: f=json shows why"));
+    }
+    // A service may answer in JSON whatever was asked for, as an error.
+    if bytes.first() == Some(&b'{') {
+        return super::esrijson::page(bytes, name);
+    }
     super::geojson::reserve_parse_memory(bytes.len(), "ESRIPBF")?;
     let result = feature_result(bytes)?;
 
@@ -397,7 +404,7 @@ fn cell(bytes: &[u8]) -> Result<Cell<'_>> {
     while !r.done() {
         match r.key()? {
             (1, 2) => out = Cell::Text(r.message()?),
-            // Through its shortest text, as `f=json` gives it: 0.1, not 0.10000000149011612.
+            // Through its shortest text: 0.1, not 0.10000000149011612.
             (2, 5) => out = Cell::Real(f32::from_le_bytes(r.fixed()?).to_string().parse().unwrap_or(f64::NAN)),
             (3, 1) => out = Cell::Real(r.double()?),
             (4 | 8, 0) => out = Cell::Int(zigzag(r.varint()?)),
@@ -803,7 +810,10 @@ mod tests {
             let e = parse(bytes, "x").unwrap_err().to_string();
             assert!(e.contains(says), "{says}: {e}");
         }
-        assert!(parse(&[], "x").unwrap_err().to_string().contains("no feature result"));
+        assert!(parse(&[], "x").unwrap_err().to_string().contains("empty"));
+        assert!(parse(&message(1, b"2.0"), "x").unwrap_err().to_string().contains("no feature result"));
+        let json = br#"{"error":{"code":400,"message":"Invalid query"}}"#;
+        assert!(parse(json, "x").unwrap_err().to_string().contains("Invalid query"));
     }
 
     #[test]

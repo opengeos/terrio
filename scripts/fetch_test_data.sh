@@ -61,19 +61,20 @@ if [ ! -e census_states.kml ]; then
 fi
 [ -e world-110m.topojson ] || curl -sSfL -o world-110m.topojson https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json
 [ -e us-states-10m.topojson ] || curl -sSfL -o us-states-10m.topojson https://cdn.jsdelivr.net/npm/us-atlas@3.0.1/states-10m.json
-# A page of two public feature services, as JSON and as GeoJSON from the same service: the ESRIJSON
-# test compares them. They change with the services, so the test holds no fixed values, and a
-# service that is gone only skips it.
+# A page of two public feature services, as JSON, as GeoJSON and as a protocol buffer from the same
+# service: the ESRIJSON and ESRIPBF tests compare them. They change with the services, so the tests
+# hold no fixed values, and a service that is gone only skips them.
 fs_query='query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&resultRecordCount=2000&orderByFields=OBJECTID'
 for page in \
   "counties https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/USA_Counties_Generalized_Boundaries/FeatureServer/0" \
   "quakes https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/USGS_Seismic_Data_v1/FeatureServer/0"; do
   set -- $page
-  for format in json geojson; do
+  for format in json geojson pbf; do
     out="featureservice_$1.$format"
     [ -e "$out" ] && continue
-    # A service's error comes with status 200, and neither it nor a partial download is a page.
-    if curl -sSfL -o "$out.part" "$2/$fs_query&f=$format" && ! grep -q '^{"error"' "$out.part"; then
+    # A service's error comes with status 200, as JSON or as nothing, and neither it nor a partial
+    # download is a page.
+    if curl -sSfL -o "$out.part" "$2/$fs_query&f=$format" && [ -s "$out.part" ] && ! grep -q '^{"error"' "$out.part"; then
       mv "$out.part" "$out"
     else
       rm -f "$out.part"

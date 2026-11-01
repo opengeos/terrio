@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The `ESRIPBF` driver reads the protocol buffer of ArcGIS feature-service queries (`f=pbf`), which
+  GDAL has no driver for: files recognized by content, and query URLs read page by page as
+  `ESRIJSON` reads them, with the `ESRIPBF:` prefix (#475).
+
 ## 0.6.1 (2026-11-01)
 
 - CityJSON 1.1 and 2.0 and CityGML 2.0 and 3.0 are read and written as flat XYZ features through

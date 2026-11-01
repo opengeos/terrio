@@ -835,6 +835,73 @@ fn esrijson_pages_match_the_services_own_geojson() {
     }
 }
 
+/// The same page of a public service as a protocol buffer and as JSON: the same features in the
+/// same order, with the same ids, attributes and vertices, to the protocol buffer's quantization.
+#[test]
+fn esripbf_pages_match_the_services_own_json() {
+    use terrio::FieldValue;
+    use wbvector::{Coord, Geometry};
+    let Some(dir) = std::env::var_os("TERRIO_TEST_DATA").map(PathBuf::from) else { return };
+    fn vertices(g: &Option<Geometry>) -> Vec<Coord> {
+        match g {
+            Some(Geometry::Point(c)) => vec![c.clone()],
+            Some(Geometry::MultiPoint(cs) | Geometry::LineString(cs)) => cs.clone(),
+            Some(Geometry::MultiLineString(ls)) => ls.iter().flatten().cloned().collect(),
+            Some(Geometry::Polygon { exterior, interiors }) => {
+                exterior.coords().iter().chain(interiors.iter().flat_map(|r| r.coords())).cloned().collect()
+            }
+            Some(Geometry::MultiPolygon(ps)) => {
+                ps.iter().flat_map(|(e, hs)| e.coords().iter().chain(hs.iter().flat_map(|r| r.coords()))).cloned().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+    // JSON prints a single-precision number with seven significant digits: -122.1502 for what the
+    // protocol buffer holds as -122.15017.
+    let same = |a: &FieldValue, b: &FieldValue| match (a, b) {
+        (FieldValue::Float(x), FieldValue::Float(y)) => (x - y).abs() <= 1e-6 * x.abs().max(1.0),
+        _ => a == b,
+    };
+    let near = |a: Option<f64>, b: Option<f64>| match (a, b) {
+        (Some(x), Some(y)) => (x - y).abs() < 1e-6,
+        (None, None) => true,
+        _ => false,
+    };
+    for page in ["counties", "quakes"] {
+        let (pbf, json) = (dir.join(format!("featureservice_{page}.pbf")), dir.join(format!("featureservice_{page}.json")));
+        if !pbf.exists() || !json.exists() {
+            continue;
+        }
+        let quantized = terrio::open_vector(pbf.to_str().unwrap(), &Default::default()).unwrap();
+        let plain = terrio::open_vector(json.to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(quantized.driver, terrio::formats::VectorDriver::ESRIPBF, "{page}");
+        let (p, j) = (&quantized.layers[0], &plain.layers[0]);
+        assert!(!p.is_empty() && p.len() == j.len(), "{page}: {} and {} features", p.len(), j.len());
+        assert_eq!((p.crs_epsg(), p.geom_type), (j.crs_epsg(), j.geom_type), "{page}");
+        let names = |l: &wbvector::Layer| l.schema.fields().iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(p), names(j), "{page}");
+        for (i, (a, b)) in p.features.iter().zip(&j.features).enumerate() {
+            assert_eq!(a.fid, b.fid, "{page}, feature {i}");
+            let (va, vb) = (vertices(&a.geometry), vertices(&b.geometry));
+            assert_eq!(va.len(), vb.len(), "{page}, feature {i}");
+            for (x, y) in va.iter().zip(&vb) {
+                // A scale of 1e-9 degrees, against what JSON prints.
+                assert!((x.x - y.x).abs() < 1e-7 && (x.y - y.y).abs() < 1e-7, "{page}, feature {i}: {x:?} and {y:?}");
+                assert!(near(x.z, y.z) && near(x.m, y.m), "{page}, feature {i}: {x:?} and {y:?}");
+            }
+            for (n, field) in p.schema.fields().iter().enumerate() {
+                assert!(
+                    same(&a.attributes[n], &b.attributes[n]),
+                    "{page}, feature {i}, {}: {:?} and {:?}",
+                    field.name,
+                    a.attributes[n],
+                    b.attributes[n]
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn mapinfo_mif() {
     let Some(v) = vector("countries.mif") else { return };
