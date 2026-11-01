@@ -20,6 +20,16 @@ from compare_raster_analysis_with_gdal import (
 gdal.UseExceptions()
 
 
+def vertices(coordinates):
+    """Visit polygon/multipolygon positions in the engine's preserved vertex order."""
+    if coordinates:
+        if isinstance(coordinates[0], (int, float)):
+            yield coordinates
+        else:
+            for part in coordinates:
+                yield from vertices(part)
+
+
 def compare(result, expected, source, options):
     """Reject lost features/attributes/geometry/CRS and statistics outside explicit bounds."""
     actual = result["geojson"]["features"]
@@ -74,10 +84,25 @@ def compare(result, expected, source, options):
                 raise AssertionError("output geometry missing")
             geometry = ogr.CreateGeometryFromJson(json.dumps(original["geometry"]))
             geometry.Transform(transform)
+            expected_json = json.loads(geometry.ExportToJson())
+            if feature["geometry"]["type"] != expected_json["type"]:
+                raise AssertionError("output geometry type differs")
+            expected_coordinates = expected_json["coordinates"]
+            actual_points = list(vertices(feature["geometry"]["coordinates"]))
+            expected_points = list(vertices(expected_coordinates))
+            if len(actual_points) != len(expected_points):
+                raise AssertionError("output geometry differs: vertex count")
+            for point, wanted_point in zip(actual_points, expected_points, strict=True):
+                if len(point) != len(wanted_point):
+                    raise AssertionError("output geometry dimension differs")
+                if any(
+                    not math.isfinite(value)
+                    or not math.isclose(value, wanted_value, rel_tol=0, abs_tol=1e-9)
+                    for value, wanted_value in zip(point[2:], wanted_point[2:], strict=True)
+                ):
+                    raise AssertionError("output geometry Z differs")
             actual_geometry = from_geojson(json.dumps(feature["geometry"]))
             expected_geometry = from_wkb(bytes(geometry.ExportToWkb()))
-            if actual_geometry.geom_type != expected_geometry.geom_type:
-                raise AssertionError("output geometry type differs")
             distances = (
                 float(hausdorff_distance(actual_geometry, expected_geometry)),
                 float(
@@ -92,7 +117,7 @@ def compare(result, expected, source, options):
                 for distance in distances
             ):
                 raise AssertionError("output geometry differs")
-    return "GDAL masks + NumPy: counts/nulls/source attributes exact; seven statistics relative 1e-10 / absolute 1e-9; geometry 1e-12 source degrees or 1e-5 projected metres"
+    return "GDAL masks + NumPy: counts/nulls/source attributes exact; seven statistics relative 1e-10 / absolute 1e-9; geometry XY 1e-12 source degrees or 1e-5 projected metres; Z presence exact and values absolute 1e-9 source units"
 
 
 def prepare(data, work):
@@ -106,6 +131,14 @@ def prepare(data, work):
     gt[0] += 500 * gt[1] + 500 * gt[2]
     gt[3] += 500 * gt[4] + 500 * gt[5]
     write_zones(native, gt)
+    # Nonconstant Z on real Landsat pixel zones exercises 3D preservation,
+    # including the projected-output case; closed vertices retain the same Z.
+    native_zones = json.loads(native.read_text())
+    for feature in native_zones["features"]:
+        if feature["geometry"] is not None:
+            for point in vertices(feature["geometry"]["coordinates"]):
+                point.append(100 + point[0] * 0.001 + point[1] * 0.001)
+    native.write_text(json.dumps(native_zones))
     gdal.VectorTranslate(
         str(zones),
         str(native),

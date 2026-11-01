@@ -104,6 +104,31 @@ def test_lost_polygon_hole_is_rejected():
     compare(result, expected, source, {})
 
 
+@pytest.mark.parametrize("change", ["none", "drop", "add", "value", "nan"])
+def test_zonal_geometry_preserves_z_presence_and_values(change):
+    result, expected, source = example()
+    source_ring = source[0]["geometry"]["coordinates"][0]
+    result_ring = result["geojson"]["features"][0]["geometry"]["coordinates"][0]
+    for ring in [source_ring, result_ring]:
+        for point in ring:
+            point.append(100 + point[0] + point[1])
+    if change == "drop":
+        for point in result_ring:
+            point.pop()
+    elif change == "add":
+        for point in source_ring:
+            point.pop()
+    elif change == "value":
+        result_ring[1][2] += 0.01
+    elif change == "nan":
+        result_ring[1][2] = float("nan")
+    if change == "none":
+        compare(result, expected, source, {})
+    else:
+        with pytest.raises(AssertionError, match="output geometry"):
+            compare(result, expected, source, {})
+
+
 @pytest.mark.parametrize("field", ["r0_b1_count", "r0_b1_mean"])
 def test_booleans_cannot_stand_in_for_numeric_statistics(field):
     result, expected, source = example()
