@@ -658,6 +658,15 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
+    // CityJSON commonly shares `.json` with GeoJSON; use the bounded root-type probe.
+    #[cfg(not(target_family = "wasm"))]
+    if VectorDriver::for_extension(path).is_none()
+        && RasterDriver::for_extension(path).is_none()
+        && !Path::new(path).is_dir()
+        && crate::inspection::identify(path, false)?.is_some_and(|i| i.driver == "CityJSON")
+    {
+        return read_vector_local(path, VectorDriver::CityJSON, options).map(Dataset::Vector);
+    }
     if let Some(driver) = VectorDriver::for_extension(path) {
         return read_vector_local(path, driver, options).map(Dataset::Vector);
     }
@@ -770,6 +779,19 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
 }
 
 fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    // `.json` is shared with GeoJSON. The root type may follow megabytes of vertices or
+    // CityObjects, beyond the bounded identifier. These formats already require a whole
+    // document read; inspect those same bytes rather than opening the file twice.
+    let (driver, json) = if driver == VectorDriver::GeoJSON {
+        let bytes = std::fs::read(path)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let city = crate::inspection::root_json_type(text.trim_start_matches('\u{feff}').trim_start()).as_deref() == Some("CityJSON");
+        let driver = if city { VectorDriver::CityJSON } else { driver };
+        crate::formats::check_driver_allowed(driver.name(), path, crate::formats::Kind::Vector)?;
+        (driver, Some(bytes))
+    } else {
+        (driver, None)
+    };
     driver.ensure_built()?;
     #[cfg(feature = "sqlite")]
     if driver == VectorDriver::GPKG {
@@ -777,7 +799,11 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
         layers.iter_mut().for_each(|l| options.keep_range(l));
         return Ok(finish_vector(layers, path, driver));
     }
-    let mut layers = if let Some(layers) = crate::drivers::vector::read(path, driver, options)? {
+    let native = match json {
+        Some(bytes) => crate::drivers::vector::read_bytes(bytes, path, driver, options)?,
+        None => crate::drivers::vector::read(path, driver, options)?,
+    };
+    let mut layers = if let Some(layers) = native {
         select_layers(layers, path, options)?
     } else {
         let format = driver.to_wb().ok_or_else(|| Error::Unsupported(format!("the {} driver cannot read", driver.name())))?;

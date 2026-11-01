@@ -361,6 +361,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | FlatGeobuf | FlatGeobuf | ✓ | ✓ | fgb |
 | ESRI Shapefile | Shapefile | ✓ | ✓ | shp |
 | GeoJSON | GeoJSON | ✓ | ✓ | geojson, json |
+| CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | — | city.json, cityjson, json (by content) |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
 | KML | KML | ✓ | ✓ | kml |
@@ -376,6 +377,38 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | PMTiles | PMTiles v3 vector tiles (MVT) | ✓ | ✓ | pmtiles |
 | MBTiles | MBTiles vector tiles (MVT) | ✓ | ✓ | mbtiles |
 | MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, pbf |
+
+### CityJSON
+
+The pure-Rust `CityJSON` reader accepts versions 1.1 and 2.0, including quantized XYZ
+vertices, affine geometry templates, MultiSurface/CompositeSurface, Solid (all shells),
+MultiSolid/CompositeSolid, MultiPoint and MultiLineString. Use `.city.json` or
+`.cityjson`; `.json` is distinguished from GeoJSON by its root `type`, even when
+the type follows a large vertex/object payload. Bounded header identification can
+only report a root type present within its header limit.
+
+The single `CityJSON` layer is a **flat vector view**: each face is a polygon with Z
+and interior rings; lines and points are separate features. Nonspatial objects
+remain null-geometry features. Fields are `city_id`, `city_type`, `lod`, `parents`
+(a JSON array), `attributes` (a JSON object), `geometry_type` and `semantics` (the
+source geometry's complete JSON semantics object, repeated on its primitives).
+`surface_semantics` contains the JSON semantic record resolved for that particular
+face (for example `RoofSurface` with its properties), or null for unclassified faces.
+`metadata.referenceSystem` supplies the CRS; absent CRS stays unknown. Coordinates
+retain the source XYZ order rather than applying geographic axis swapping.
+
+This view retains vertical faces but does not model solids, shell membership or
+the object hierarchy as geometry. It does not preserve textures, materials,
+extensions or general city-model metadata. CityJSONFeature sequences are outside
+this reader. Unsupported geometry types and invalid vertex/template references
+fail explicitly. Reading currently materializes the document and flat features;
+there is no spatial/window index. CityJSON writing is a separate step in [#462](https://github.com/opengeos/terrio/issues/462).
+
+The [CityJSON 1.1](https://www.cityjson.org/specs/1.1.3/) and
+[2.0 specifications](https://www.cityjson.org/specs/2.0.2/) and their published JSON
+Schemas define conformance. GDAL 3.13.3 has no CityJSON driver.
+
+### Other vector formats
 
 HEC-RAS geometry and plan files (`HECRAS`, which GDAL does not have) are recognized by content,
 an HDF5 signature and the root `File Type` HEC-RAS writes, and give the mesh, 1D and 2D feature

@@ -1,0 +1,261 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+
+//! CityJSON 1.1 and 2.0, interpreted according to the published CityJSON specifications.
+//!
+//! The ordinary vector view is deliberately flat: one feature per surface (including solid
+//! interior shells), line or point, retaining XYZ, holes, object identity, type, LoD, parents
+//! and attributes. Solids are not polygons in XY: vertical faces must retain their vertices.
+//! Semantics are retained as JSON text for inspection, not as a second city data model.
+//! GDAL 3.13.3 has no CityJSON driver and is not the reference for this format.
+
+use crate::crs::SpatialRef;
+use crate::{Error, Result};
+use serde_json::Value;
+use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
+
+fn invalid(message: impl std::fmt::Display) -> Error {
+    Error::InvalidData(format!("CityJSON: {message}"))
+}
+
+fn array(value: &Value) -> Result<&[Value]> {
+    value.as_array().map(Vec::as_slice).ok_or_else(|| invalid("expected an array"))
+}
+
+fn triple(value: &Value) -> Result<[f64; 3]> {
+    let a = array(value)?;
+    if a.len() != 3 {
+        return Err(invalid("expected three coordinates"));
+    }
+    let number = |v: &Value| v.as_f64().filter(|v| v.is_finite()).ok_or_else(|| invalid("nonfinite or nonnumeric coordinate"));
+    Ok([number(&a[0])?, number(&a[1])?, number(&a[2])?])
+}
+
+fn vertices(value: &Value, transform: &Value) -> Result<Vec<Coord>> {
+    let (scale, translate) =
+        if transform.is_null() { ([1.0; 3], [0.0; 3]) } else { (triple(&transform["scale"])?, triple(&transform["translate"])?) };
+    array(value)?
+        .iter()
+        .map(|v| {
+            let p = triple(v)?;
+            let p: [f64; 3] = std::array::from_fn(|i| p[i] * scale[i] + translate[i]);
+            if p.iter().any(|v| !v.is_finite()) {
+                return Err(invalid("transformed coordinate is not finite"));
+            }
+            Ok(Coord { x: p[0], y: p[1], z: Some(p[2]), m: None })
+        })
+        .collect()
+}
+
+fn index(value: &Value) -> Result<usize> {
+    value.as_u64().and_then(|i| usize::try_from(i).ok()).ok_or_else(|| invalid("vertex or template index must be a nonnegative integer"))
+}
+
+fn position(value: &Value, vertices: &[Coord]) -> Result<Coord> {
+    vertices.get(index(value)?).cloned().ok_or_else(|| invalid("vertex index out of bounds"))
+}
+
+fn line(value: &Value, vertices: &[Coord]) -> Result<Vec<Coord>> {
+    array(value)?.iter().map(|i| position(i, vertices)).collect()
+}
+
+fn ring(value: &Value, vertices: &[Coord]) -> Result<Ring> {
+    let mut points = line(value, vertices)?;
+    if points.len() > 1 && points.first() == points.last() {
+        points.pop();
+    }
+    if points.len() < 3 {
+        return Err(invalid("surface ring has fewer than three vertices"));
+    }
+    Ok(Ring::new(points))
+}
+
+fn surface(value: &Value, vertices: &[Coord]) -> Result<Geometry> {
+    let mut rings = array(value)?.iter().map(|r| ring(r, vertices));
+    let exterior = rings.next().ok_or_else(|| invalid("surface has no exterior ring"))??;
+    Ok(Geometry::Polygon { exterior, interiors: rings.collect::<Result<_>>()? })
+}
+
+/// Flatten known boundary nesting only: malformed geometry must not silently disappear.
+fn surfaces(value: &Value, depth: usize, vertices: &[Coord], out: &mut Vec<Geometry>) -> Result<()> {
+    if depth == 0 {
+        out.push(surface(value, vertices)?);
+    } else {
+        for child in array(value)? {
+            surfaces(child, depth - 1, vertices, out)?;
+        }
+    }
+    Ok(())
+}
+
+fn primitives(geometry: &Value, vertices: &[Coord]) -> Result<Vec<Geometry>> {
+    let boundaries = &geometry["boundaries"];
+    let mut out = Vec::new();
+    match geometry["type"].as_str() {
+        Some("MultiSurface" | "CompositeSurface") => surfaces(boundaries, 1, vertices, &mut out)?,
+        Some("Solid") => surfaces(boundaries, 2, vertices, &mut out)?,
+        Some("MultiSolid" | "CompositeSolid") => surfaces(boundaries, 3, vertices, &mut out)?,
+        Some("MultiPoint") => {
+            for i in array(boundaries)? {
+                out.push(Geometry::Point(position(i, vertices)?));
+            }
+        }
+        Some("MultiLineString") => {
+            for l in array(boundaries)? {
+                let points = line(l, vertices)?;
+                if points.len() < 2 {
+                    return Err(invalid("line has fewer than two vertices"));
+                }
+                out.push(Geometry::LineString(points));
+            }
+        }
+        other => return Err(Error::Unsupported(format!("CityJSON geometry type {other:?}"))),
+    }
+    Ok(out)
+}
+
+fn semantic_values(boundaries: &Value, values: &Value, surfaces: &[Value], depth: usize, out: &mut Vec<FieldValue>) -> Result<()> {
+    if depth == 0 {
+        out.push(if values.is_null() {
+            FieldValue::Null
+        } else {
+            let surface = surfaces.get(index(values)?).ok_or_else(|| invalid("semantic surface index out of bounds"))?;
+            if !surface.is_object() {
+                return Err(invalid("semantic surface must be an object"));
+            }
+            text(surface)
+        });
+    } else {
+        let boundaries = array(boundaries)?;
+        let values = array(values)?;
+        if boundaries.len() != values.len() {
+            return Err(invalid("semantic values do not match boundary nesting"));
+        }
+        for (boundary, value) in boundaries.iter().zip(values) {
+            semantic_values(boundary, value, surfaces, depth - 1, out)?;
+        }
+    }
+    Ok(())
+}
+
+fn primitive_semantics(geometry: &Value, count: usize) -> Result<Vec<FieldValue>> {
+    if geometry["semantics"].is_null() {
+        return Ok(vec![FieldValue::Null; count]);
+    }
+    let depth = match geometry["type"].as_str() {
+        Some("MultiSurface" | "CompositeSurface") => 1,
+        Some("Solid") => 2,
+        Some("MultiSolid" | "CompositeSolid") => 3,
+        _ => return Err(invalid("semantics require a surface or solid geometry")),
+    };
+    let semantics = &geometry["semantics"];
+    let mut out = Vec::new();
+    semantic_values(&geometry["boundaries"], &semantics["values"], array(&semantics["surfaces"])?, depth, &mut out)?;
+    Ok(out)
+}
+
+fn instance(geometry: &Value, doc: &Value, world: &[Coord]) -> Result<(Value, Vec<Coord>)> {
+    let templates = &doc["geometry-templates"];
+    let template =
+        array(&templates["templates"])?.get(index(&geometry["template"])?).ok_or_else(|| invalid("template index out of bounds"))?.clone();
+    let points = vertices(&templates["vertices-templates"], &Value::Null)?;
+    let matrix = array(&geometry["transformationMatrix"])?;
+    if matrix.len() != 16 {
+        return Err(invalid("instance matrix must have 16 entries"));
+    }
+    let matrix = matrix.iter().map(|v| v.as_f64().ok_or_else(|| invalid("nonnumeric instance matrix"))).collect::<Result<Vec<_>>>()?;
+    if matrix[12..] != [0.0, 0.0, 0.0, 1.0] {
+        return Err(invalid("instance matrix must be affine"));
+    }
+    let anchors = array(&geometry["boundaries"])?;
+    if anchors.len() != 1 {
+        return Err(invalid("instance must have exactly one anchor vertex"));
+    }
+    let anchor = position(&anchors[0], world)?;
+    let offset = [anchor.x, anchor.y, anchor.z.unwrap_or(0.0)];
+    let points = points
+        .iter()
+        .map(|c| {
+            let p = [c.x, c.y, c.z.unwrap_or(0.0), 1.0];
+            let p: [f64; 3] = std::array::from_fn(|i| (0..4).map(|j| matrix[i * 4 + j] * p[j]).sum::<f64>() + offset[i]);
+            if p.iter().any(|v| !v.is_finite()) {
+                return Err(invalid("instance coordinate is not finite"));
+            }
+            Ok(Coord { x: p[0], y: p[1], z: Some(p[2]), m: None })
+        })
+        .collect::<Result<_>>()?;
+    Ok((template, points))
+}
+
+fn text(value: &Value) -> FieldValue {
+    if value.is_null() { FieldValue::Null } else { FieldValue::Text(value.as_str().map_or_else(|| value.to_string(), str::to_owned)) }
+}
+
+/// Read a CityJSON document into its ordinary, flat vector view.
+pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
+    let doc: Value = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).map_err(invalid)?;
+    if doc["type"] != "CityJSON" {
+        return Err(invalid("expected a CityJSON document"));
+    }
+    if !matches!(doc["version"].as_str(), Some("1.1" | "2.0")) {
+        return Err(Error::Unsupported("CityJSON: supported versions are 1.1 and 2.0".into()));
+    }
+    let points = vertices(&doc["vertices"], &doc["transform"])?;
+    let objects = doc["CityObjects"].as_object().ok_or_else(|| invalid("missing CityObjects object"))?;
+    let mut layer = Layer::new("CityJSON");
+    for name in ["city_id", "city_type", "lod", "parents", "attributes", "geometry_type", "semantics", "surface_semantics"] {
+        layer.add_field(FieldDef::new(name, FieldType::Text));
+    }
+    if let Some(crs) = doc["metadata"]["referenceSystem"].as_str() {
+        SpatialRef::parse(crs).map_err(|e| invalid(format!("referenceSystem: {e}")))?.apply_to_layer(&mut layer);
+    }
+    for (id, object) in objects {
+        let kind = object["type"].as_str().ok_or_else(|| invalid(format!("object {id}: missing type")))?;
+        let mut attrs = vec![
+            FieldValue::Text(id.clone()),
+            FieldValue::Text(kind.into()),
+            FieldValue::Null,
+            text(&object["parents"]),
+            text(&object["attributes"]),
+            FieldValue::Null,
+            FieldValue::Null,
+            FieldValue::Null,
+        ];
+        let geometries = match object.get("geometry") {
+            Some(value) => array(value)?,
+            None => &[],
+        };
+        if geometries.is_empty() {
+            layer.push(Feature { fid: layer.features.len() as u64, geometry: None, attributes: attrs });
+            continue;
+        }
+        for geometry in geometries {
+            attrs[7] = FieldValue::Null;
+            attrs[2] = text(&geometry["lod"]);
+            attrs[5] = text(&geometry["type"]);
+            attrs[6] = text(&geometry["semantics"]);
+            let (primitives, surface_semantics) = if geometry["type"] == "GeometryInstance" {
+                let (template, vertices) = instance(geometry, &doc, &points)?;
+                if attrs[2] == FieldValue::Null {
+                    attrs[2] = text(&template["lod"]);
+                }
+                attrs[6] = text(&template["semantics"]);
+                let primitives = primitives(&template, &vertices)?;
+                let semantics = primitive_semantics(&template, primitives.len())?;
+                (primitives, semantics)
+            } else {
+                let primitives = primitives(geometry, &points)?;
+                let semantics = primitive_semantics(geometry, primitives.len())?;
+                (primitives, semantics)
+            };
+            if primitives.is_empty() {
+                layer.push(Feature { fid: layer.features.len() as u64, geometry: None, attributes: attrs.clone() });
+            }
+            for (primitive, semantic) in primitives.into_iter().zip(surface_semantics) {
+                attrs[7] = semantic;
+                layer.push(Feature { fid: layer.features.len() as u64, geometry: Some(primitive), attributes: attrs.clone() });
+            }
+        }
+    }
+    Ok(vec![layer])
+}

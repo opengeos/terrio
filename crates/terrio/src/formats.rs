@@ -108,6 +108,8 @@ pub enum VectorDriver {
     GeoJSONSeq,
     /// TopoJSON.
     TopoJSON,
+    /// CityJSON 1.1 and 2.0, as a flat XYZ vector view (read only).
+    CityJSON,
     /// GeoPackage.
     GPKG,
     /// GeoParquet.
@@ -365,6 +367,7 @@ impl VectorDriver {
         Self::GeoJSON,
         Self::GeoJSONSeq,
         Self::TopoJSON,
+        Self::CityJSON,
         Self::GPKG,
         Self::Parquet,
         Self::FlatGeobuf,
@@ -392,6 +395,7 @@ impl VectorDriver {
             Self::GeoJSON => ("GeoJSON", "GeoJSON", &["geojson", "json"], true, true),
             Self::GeoJSONSeq => ("GeoJSONSeq", "GeoJSON text sequences", &["geojsonl", "geojsons", "geojsonseq"], true, true),
             Self::TopoJSON => ("TopoJSON", "TopoJSON", &["topojson"], true, true),
+            Self::CityJSON => ("CityJSON", "CityJSON 3D city models", &["city.json", "cityjson"], true, false),
             Self::GPKG => ("GPKG", "GeoPackage", &["gpkg"], true, true),
             Self::Parquet => ("Parquet", "GeoParquet", &["parquet", "geoparquet"], true, true),
             Self::FlatGeobuf => ("FlatGeobuf", "FlatGeobuf", &["fgb"], true, true),
@@ -461,6 +465,9 @@ impl VectorDriver {
     /// The driver for a path's extension.
     pub fn for_extension(path: &str) -> Option<Self> {
         let lower = path.to_ascii_lowercase();
+        if lower.ends_with(".city.json") {
+            return Some(Self::CityJSON);
+        }
         if lower.ends_with(".osm.pbf") {
             return Some(Self::OSM);
         }
@@ -487,6 +494,7 @@ impl VectorDriver {
             #[cfg(not(feature = "osm"))]
             Self::OSM => return None,
             Self::Parquet
+            | Self::CityJSON
             | Self::DXF
             | Self::DWG
             | Self::GeoJSONSeq
@@ -724,7 +732,7 @@ pub fn identify(path: &str) -> Identified {
     // An SRTM tile has no signature: its name and size are its content, as GDAL's SRTMHGT driver
     // identifies it, and terrio reads it whatever driver its extension names (`.img`, HFA's). A
     // remote file's size is the one its first request gave.
-    let by_content = head.as_deref().and_then(sniff).or_else(|| {
+    let by_content = head.as_deref().and_then(|h| sniff_named(h, &by_name)).or_else(|| {
         let tile = match remote_len {
             Some(len) => crate::drivers::hgt::is_tile(&location.file_name(), len, head.as_deref().unwrap_or_default()),
             None => location.is_local() && crate::drivers::hgt::is_hgt(Path::new(trimmed)),
@@ -740,11 +748,22 @@ pub fn identify_bytes(name: &str, bytes: &[u8]) -> Identified {
     match named_drivers(name.trim()) {
         Named::Prefix(driver) => Identified { by_name: vec![driver.to_string()], by_content: None },
         Named::Name(_, by_name) => {
-            let by_content = sniff(&bytes[..bytes.len().min(1024)])
+            let by_content = sniff_named(&bytes[..bytes.len().min(1024)], &by_name)
                 .or_else(|| crate::drivers::hgt::is_hgt_bytes(name.trim(), bytes).then_some("SRTMHGT"));
             Identified { by_name, by_content: by_content.map(str::to_string) }
         }
     }
+}
+
+// JSON without an observed root type is ambiguous. A CityJSON name should not
+// acquire a false GeoJSON content assertion when vertices precede the root type.
+fn sniff_named(head: &[u8], names: &[String]) -> Option<&'static str> {
+    let found = sniff(head);
+    if found == Some("GEOJSON") && names.iter().any(|n| n == "CITYJSON") {
+        let text = String::from_utf8_lossy(head);
+        crate::inspection::root_json_type(text.trim_start_matches('\u{feff}').trim_start())?;
+    }
+    found
 }
 
 /// What a dataset's name says its format is.
@@ -777,7 +796,9 @@ fn named_drivers(trimmed: &str) -> Named {
     let name = location.file_name().to_ascii_lowercase();
     let mut by_name = Vec::new();
     let without_query = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
-    if without_query.split(['/', '\\']).any(|c| c.to_ascii_lowercase().ends_with(".zarr")) {
+    if name.ends_with(".city.json") {
+        by_name.push("CITYJSON".to_string());
+    } else if without_query.split(['/', '\\']).any(|c| c.to_ascii_lowercase().ends_with(".zarr")) {
         by_name.push("ZARR".to_string());
     } else {
         for d in all_drivers() {
@@ -958,7 +979,7 @@ const RASTER_CONTENT: &[&str] = &["GTIFF", "JP2", "PNG", "JPEG", "WEBP", "GRIB",
 
 /// The formats [`sniff`] names that terrio reads as vectors under names of theirs.
 #[cfg(remote)]
-const VECTOR_CONTENT: &[&str] = &["GEOJSON", "TOPOJSON", "PARQUET", "FLATGEOBUF", "ESRI SHAPEFILE", "KML", "GPX", "GML"];
+const VECTOR_CONTENT: &[&str] = &["GEOJSON", "TOPOJSON", "CITYJSON", "PARQUET", "FLATGEOBUF", "ESRI SHAPEFILE", "KML", "GPX", "GML"];
 
 /// Whether terrio reads files of the format [`sniff`] names `format` under names of theirs: as
 /// rasters, or, `generic`, as rasters or vectors.
@@ -1036,7 +1057,9 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
         });
     }
     if text.starts_with('{') || text.starts_with('[') {
-        return Some(if text.contains("\"stac_version\"") {
+        return Some(if crate::inspection::root_json_type(text).as_deref() == Some("CityJSON") {
+            "CITYJSON"
+        } else if text.contains("\"stac_version\"") {
             "STAC"
         } else if text.contains("\"Topology\"") {
             "TOPOJSON"

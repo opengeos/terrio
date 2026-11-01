@@ -620,6 +620,43 @@ def suite_shapefile_rings(ctx):
     return suite
 
 
+def suite_cityjson(ctx):
+    """CityJSON's specification is authoritative; GDAL has no CityJSON driver."""
+    suite = Suite(
+        "cityjson", "CityJSON reader", "CityJSON 1.1/2.0 specifications and published JSON Schemas",
+        "Real Den Haag, Delft and Rotterdam models validated with published schemas; CLI and "
+        "Python path/bytes reads compared against an independent boundary/coordinate traversal. "
+        "Exact XYZ (including vertical faces), holes, primitive counts, object identity/type, "
+        "LoD, parents, attributes, semantics text and CRS. This is a flat vector view, not a "
+        "lossless city-model round trip. GDAL 3.13.3 has no CityJSON driver.",
+    )
+    missing = missing_modules("terrio", "jsonschema", "referencing")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    root = Path(ctx.data) / "citymodels"
+    required = [root / name for name in ("DH_01_subs.city.json", "delft.json", "rotterdam_subset.json")]
+    required += [root / "schemas" / version / "cityjson.schema.json" for version in ("1.1.3", "2.0.2")]
+    if any(not p.is_file() for p in required):
+        suite.skipped = "prepare fixtures/schemas with scripts/compare_cityjson.py DATA --fetch"
+        return suite
+    command = [sys.executable, str(SCRIPTS / "compare_cityjson.py"), ctx.data, "--terrio", ctx.terrio, "--json"]
+    node = ROOT / "js/pkg-node/terrio.js"
+    if node.is_file() and shutil.which("node"):
+        command += ["--node-package", str(node)]
+    code, out, err = run(command)
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("city models", result["name"], result["status"], result["detail"]))
+    if code or not results:
+        suite.error = tail(err or out) or "no comparison results"
+    return suite
+
+
 def suite_cad(ctx):
     """CAD geometry interchange against public GDAL drawings and real OSM roads."""
     suite = Suite(
@@ -2678,6 +2715,7 @@ SUITES = OrderedDict(
         ("histograms", suite_histograms),
         ("vector-roundtrip", suite_vector_roundtrip),
         ("cad", suite_cad),
+        ("cityjson", suite_cityjson),
         ("shapefile-archives", suite_shapefile_archives),
         ("vsi", suite_vsi),
         ("shapefile-rings", suite_shapefile_rings),

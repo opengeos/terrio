@@ -26,6 +26,22 @@ GDAL:
 
 ## The conformance suite
 
+CityJSON uses its published schemas and specifications as the reference because
+GDAL 3.13.3 has no CityJSON driver. Prepare the real CityJSON 1.1 Den Haag and 2.0
+Delft/Rotterdam fixtures and versioned schemas outside the repository, then run:
+
+```sh
+python scripts/compare_cityjson.py ../terrio-data --fetch
+python scripts/conformance.py ../terrio-data --only cityjson --strict
+```
+
+The script requires current Python bindings, `jsonschema` and `referencing`; it
+checks the optimized CLI and Python path/bytes reads. With
+`--node-package js/pkg-node/terrio.js` it also checks WebAssembly. The conformance
+entrypoint includes Node when that package exists. Counts, XYZ, rings, object
+identity/type, LoD, parents, attributes and semantics text are exact; source CRS is
+checked separately. The reader exposes flat primitives, not a lossless city model.
+
 `scripts/conformance.py` runs every comparison below in one go (and the EPSG accuracy test) and
 writes a Markdown report: for each suite and each format or operation, how many cases were
 compared and how many came out identical, within tolerance or different, with the details of the
