@@ -30,7 +30,8 @@ pub(crate) const HEAD_BYTES: usize = 6000;
 
 /// Whether the start of a JSON text is ESRI JSON, by GDAL's signs: a geometry type, field
 /// aliases, ESRI field types, features with rings or attributes, or a spatial reference by WKID.
-/// A GeoJSON `FeatureCollection` is not.
+/// A service's error answer counts too, so that it is reported as one. A GeoJSON
+/// `FeatureCollection` is not.
 pub(crate) fn is_esrijson(text: &str) -> bool {
     let text = text.trim_start_matches('\u{feff}').trim_start();
     let text = text.get(..text.char_indices().nth(HEAD_BYTES).map_or(text.len(), |(i, _)| i)).unwrap_or(text);
@@ -46,6 +47,7 @@ pub(crate) fn is_esrijson(text: &str) -> bool {
     let compact: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
     compact.starts_with("{\"features\":[{\"geometry\":{\"rings\":[")
         || compact.starts_with("{\"features\":[{\"attributes\":{")
+        || compact.starts_with("{\"error\":{\"code\":")
         || compact.contains("\"spatialReference\":{\"wkid\":")
 }
 
@@ -57,6 +59,12 @@ pub fn read(path: &str) -> Result<Layer> {
 
 /// Parses ESRI JSON into a layer named `name`.
 pub fn parse(bytes: &[u8], name: &str) -> Result<Layer> {
+    page(bytes, name).map(|page| page.layer)
+}
+
+/// A page of a query's results: its layer, and whether the service has more
+/// (`exceededTransferLimit`).
+pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     super::geojson::reserve_parse_memory(bytes.len(), "ESRIJSON")?;
     let doc: Value = serde_json::from_slice(bytes).map_err(invalid)?;
@@ -99,7 +107,7 @@ pub fn parse(bytes: &[u8], name: &str) -> Result<Layer> {
         };
         layer.push(Feature { fid: fid.unwrap_or(n as u64), geometry, attributes: values });
     }
-    Ok(layer)
+    Ok(featureservice::Page { layer, more: doc.get("exceededTransferLimit").and_then(Value::as_bool).unwrap_or(false) })
 }
 
 fn spatial_reference(sr: Option<&Value>) -> Option<crate::crs::SpatialRef> {

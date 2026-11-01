@@ -21,7 +21,105 @@
 //! it has M: with three numbers, the third is M only when the geometry has M and no Z.
 
 use crate::crs::SpatialRef;
-use wbvector::{Coord, FieldDef, FieldType, FieldValue, Geometry, GeometryType};
+use wbvector::{Coord, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
+
+/// One page of a query's results.
+pub(crate) struct Page {
+    pub layer: Layer,
+    /// The service has more features (`exceededTransferLimit`).
+    #[cfg_attr(not(remote), allow(dead_code))]
+    pub more: bool,
+}
+
+/// The most bytes read from a service for one dataset: a service that never stops paging ends here.
+#[cfg(remote)]
+const MAX_TOTAL_BYTES: u64 = 4 << 30;
+
+/// Whether a URL is likely a feature-service query, by GDAL's signs: `f=json`, `f=pjson` or
+/// `resultRecordCount=`, without the `/items?` of OGC API Features. What it answers decides.
+#[cfg(remote)]
+pub(crate) fn is_query_url(url: &str) -> bool {
+    (url.starts_with("http://") || url.starts_with("https://"))
+        && (url.contains("f=json") || url.contains("f=pjson") || url.contains("resultRecordCount="))
+        && !url.contains("/items?")
+}
+
+/// The value of a query parameter of a URL.
+#[cfg(remote)]
+fn query_value<'a>(url: &'a str, key: &str) -> Option<&'a str> {
+    let query = url.split('#').next()?.split_once('?')?.1;
+    query.split('&').find_map(|pair| pair.split_once('=').filter(|(k, _)| *k == key).map(|(_, v)| v))
+}
+
+/// A URL with a query parameter set, replacing the one it has.
+#[cfg(remote)]
+fn with_query_value(url: &str, key: &str, value: &str) -> String {
+    let (url, fragment) = url.split_once('#').map_or((url, None), |(u, f)| (u, Some(f)));
+    let (base, query) = url.split_once('?').unwrap_or((url, ""));
+    let mut pairs: Vec<String> =
+        query.split('&').filter(|p| !p.is_empty() && p.split('=').next() != Some(key)).map(str::to_string).collect();
+    pairs.push(format!("{key}={value}"));
+    let fragment = fragment.map(|f| format!("#{f}")).unwrap_or_default();
+    format!("{base}?{}{fragment}", pairs.join("&"))
+}
+
+/// Whether to read a query's following pages, as GDAL's `FEATURE_SERVER_PAGING` decides: by
+/// default unless the URL gives a `resultOffset`; with the option, as it says.
+#[cfg(remote)]
+fn pages_wanted(url: &str, option: Option<bool>) -> bool {
+    option.unwrap_or_else(|| query_value(url, "resultOffset").is_none())
+}
+
+/// The layer of a query's first page and the pages after it. The following requests ask for as
+/// many features as the first page holds when the URL does not say, as GDAL's do, from
+/// `resultOffset` on. Reading stops once `stop_at` features are read, and a page that adds nothing
+/// while saying there are more is an error, as is a page with other fields.
+#[cfg(remote)]
+pub(crate) fn read_pages(
+    url: &str,
+    first: Page,
+    first_bytes: usize,
+    option: Option<bool>,
+    stop_at: Option<usize>,
+    decode: &dyn Fn(&[u8]) -> crate::Result<Page>,
+) -> crate::Result<Layer> {
+    let invalid = |message: String| crate::Error::InvalidData(format!("feature service: {message}"));
+    let Page { mut layer, mut more } = first;
+    if !pages_wanted(url, option) {
+        return Ok(layer);
+    }
+    let start: u64 = query_value(url, "resultOffset").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let base = match query_value(url, "resultRecordCount") {
+        Some(_) => url.to_string(),
+        None => with_query_value(url, "resultRecordCount", &layer.features.len().to_string()),
+    };
+    let names = |l: &Layer| l.schema.fields().iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+    let fields = names(&layer);
+    let mut total = first_bytes as u64;
+    while more && stop_at.is_none_or(|n| layer.features.len() < n) {
+        if layer.features.is_empty() {
+            return Err(invalid("the service says there are more features, but its page has none".into()));
+        }
+        let offset = start.saturating_add(layer.features.len() as u64);
+        let bytes = crate::http::get(&crate::http::Remote::Url(with_query_value(&base, "resultOffset", &offset.to_string())))?;
+        total = total.saturating_add(bytes.len() as u64);
+        if total > MAX_TOTAL_BYTES {
+            return Err(invalid(format!("the results exceed {MAX_TOTAL_BYTES} bytes; ask for fewer features")));
+        }
+        let page = decode(&bytes)?;
+        if page.more && page.layer.features.is_empty() {
+            return Err(invalid(format!("the page at offset {offset} has no features, but says there are more")));
+        }
+        if names(&page.layer) != fields {
+            return Err(invalid(format!("the page at offset {offset} has other fields than the first")));
+        }
+        more = page.more;
+        for feature in page.layer.features {
+            layer.push(feature);
+        }
+    }
+    Ok(layer)
+}
 
 /// The Terrio type of an `esriFieldType…` name, as GDAL maps it; unknown names are text.
 pub(crate) fn field_type(esri: &str) -> FieldType {
@@ -120,6 +218,37 @@ mod tests {
 
     fn c(x: f64, y: f64) -> Coord {
         Coord { x, y, z: None, m: None }
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn query_urls_are_recognized_as_gdal_recognizes_them() {
+        assert!(is_query_url("https://x.org/arcgis/rest/services/A/FeatureServer/0/query?where=1=1&f=json"));
+        assert!(is_query_url("https://x.org/a/query?f=pjson"));
+        assert!(is_query_url("https://x.org/a/query?resultRecordCount=10"));
+        assert!(!is_query_url("https://x.org/ogc/collections/a/items?f=json"));
+        assert!(!is_query_url("https://x.org/a/query?f=geojson"));
+        assert!(!is_query_url("/local/query?f=json"));
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn query_parameters_are_read_and_replaced() {
+        let url = "https://x.org/q?where=a%3D1&resultOffset=5&f=json#top";
+        assert_eq!(query_value(url, "resultOffset"), Some("5"));
+        assert_eq!(query_value(url, "offset"), None);
+        assert_eq!(query_value("https://x.org/q", "f"), None);
+        assert_eq!(with_query_value(url, "resultOffset", "9"), "https://x.org/q?where=a%3D1&f=json&resultOffset=9#top");
+        assert_eq!(with_query_value("https://x.org/q", "f", "json"), "https://x.org/q?f=json");
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn paging_follows_the_option_else_the_offset() {
+        assert!(pages_wanted("https://x.org/q?f=json", None));
+        assert!(!pages_wanted("https://x.org/q?f=json&resultOffset=0", None));
+        assert!(pages_wanted("https://x.org/q?f=json&resultOffset=0", Some(true)));
+        assert!(!pages_wanted("https://x.org/q?f=json", Some(false)));
     }
 
     #[test]

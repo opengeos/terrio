@@ -58,7 +58,15 @@ fn geojson_stays_geojson_and_esrijson_is_not_written() {
 
 #[test]
 fn a_service_error_is_an_error() {
-    let e =
-        terrio::memory::open_vector_bytes(br#"{"error":{"code":498,"message":"Invalid token."}}"#.to_vec(), "query", &Default::default());
-    assert!(e.is_err());
+    let bytes = br#"{"error":{"code":498,"message":"Invalid token."}}"#.to_vec();
+    let e = terrio::memory::open_vector_bytes(bytes, "query", &Default::default()).unwrap_err().to_string();
+    assert!(e.contains("Invalid token."), "{e}");
+}
+
+#[test]
+fn the_prefix_names_the_driver_for_a_local_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cities.json");
+    std::fs::write(&path, PAGE).unwrap();
+    check(&terrio::open_vector(&format!("esrijson:{}", path.display()), &Default::default()).unwrap());
 }

@@ -295,6 +295,9 @@ pub struct VectorOpenOptions {
     /// At most this many features per layer after the skipped ones (pyogrio's
     /// `max_features`); `None` reads to the end.
     pub max_features: Option<usize>,
+    /// Whether to read a feature-service query's following pages (`FEATURE_SERVER_PAGING`, as in
+    /// GDAL's ESRIJSON driver). By default, unless its URL gives a `resultOffset`.
+    pub feature_server_paging: Option<bool>,
     /// How to read HEC-RAS geometry and plan HDF files: meshes and the stored values to join.
     pub hecras: crate::drivers::vector::hecras_options::HecRasOpenOptions,
 }
@@ -314,6 +317,10 @@ impl VectorOpenOptions {
     /// # Ok::<(), terrio::Error>(())
     /// ```
     pub fn set(&mut self, key: &str, value: &str) -> Result<bool> {
+        if key.eq_ignore_ascii_case("FEATURE_SERVER_PAGING") {
+            self.feature_server_paging = Some(crate::tiles::parse_bool(value)?);
+            return Ok(true);
+        }
         Ok(self.csv.set(key, value)? || self.shapefile.set(key, value)? || self.tiles.set(key, value)? || self.hecras.set(key, value)?)
     }
 
@@ -360,6 +367,10 @@ pub fn open(path: &str) -> Result<Dataset> {
 }
 
 pub(crate) fn open_native(path: &str) -> Result<Dataset> {
+    #[cfg(remote)]
+    if let Some(result) = open_feature_service(path, &VectorOpenOptions::default()) {
+        return result.map(Dataset::Vector);
+    }
     if let Some(result) = crate::catalog::open_lazy(path) {
         return result?.read().map(Dataset::Raster);
     }
@@ -556,7 +567,48 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
     result
 }
 
+/// A feature-service query: a URL with GDAL's signs of one that answers ESRI JSON, or one named by
+/// the `ESRIJSON:` prefix. Read here, before the formats that fetch a URL by range: a query's
+/// answer is made per request. Other URLs (`None`) go on as usual, as do those that fail here,
+/// and report their own errors.
+#[cfg(remote)]
+fn open_feature_service(path: &str, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
+    use crate::drivers::vector::{esrijson, featureservice};
+    let prefix = "ESRIJSON:";
+    let named = path.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix));
+    let url = if named { path.get(prefix.len()..)? } else { path };
+    if named && !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Some(vfs::resolve(url).and_then(|local| read_vector_local(local.as_str(), VectorDriver::ESRIJSON, options)));
+    }
+    if !named && !featureservice::is_query_url(url) {
+        return None;
+    }
+    let bytes = match crate::http::get(&crate::http::Remote::Url(url.to_string())) {
+        Ok(bytes) => bytes,
+        Err(e) if named => return Some(Err(e)),
+        Err(_) => return None,
+    };
+    let head = String::from_utf8_lossy(bytes.get(..esrijson::HEAD_BYTES).unwrap_or(&bytes));
+    if !named && !esrijson::is_esrijson(&head) {
+        return None;
+    }
+    let dataset = || -> Result<VectorDataset> {
+        crate::formats::check_driver_allowed(VectorDriver::ESRIJSON.name(), url, crate::formats::Kind::Vector)?;
+        let decode = |page: &[u8]| esrijson::page(page, "ESRIJSON");
+        let stop_at = options.max_features.map(|max| options.skip_features.saturating_add(max));
+        let layer = featureservice::read_pages(url, decode(&bytes)?, bytes.len(), options.feature_server_paging, stop_at, &decode)?;
+        let mut layers = select_layers(vec![layer], url, options)?;
+        layers.iter_mut().for_each(|l| options.keep_range(l));
+        Ok(finish_vector(layers, url, VectorDriver::ESRIJSON))
+    };
+    Some(dataset())
+}
+
 pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    #[cfg(remote)]
+    if let Some(result) = open_feature_service(path, options) {
+        return result;
+    }
     if let Some(result) = crate::stac::open(path) {
         return match result? {
             Dataset::Vector(v) => Ok(v),
@@ -590,6 +642,10 @@ pub fn list_layers(path: &str) -> Result<Vec<String>> {
 }
 
 fn list_layers_native(path: &str) -> Result<Vec<String>> {
+    #[cfg(remote)]
+    if let Some(result) = open_feature_service(path, &VectorOpenOptions { feature_server_paging: Some(false), ..Default::default() }) {
+        return result.map(|v| v.layers.into_iter().map(|l| l.name).collect());
+    }
     if is_tile_archive(path) {
         #[cfg(feature = "tiles")]
         return crate::tiles::layer_names(path);
