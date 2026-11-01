@@ -137,6 +137,7 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
 /// from memory itself. Formats made of several files are read from their main file alone (a
 /// shapefile without attributes or CRS): see [`read_parts`].
 pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Option<Vec<Layer>>> {
+    crate::formats::check_driver_allowed(driver.name(), name, crate::formats::Kind::Vector)?;
     driver.ensure_built()?;
     if matches!(driver, VectorDriver::Shapefile | VectorDriver::MapInfo) {
         return read_parts(&bytes, name, driver, &|_: &str| None, options).map(Some);

@@ -8,7 +8,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from compare_cityjson import compare, key, reference
+from compare_cityjson import compare, convert_cli, key, reference, schema_version
 
 
 def fixture():
@@ -74,3 +74,20 @@ def test_degenerate_oracle_preserves_semantic_indices():
     assert rows[0][0]["skipped_rings"] == 1
     assert rows[0][0]["skipped_faces"] == 1
     assert rows[0][0]["surface_semantics"] == {"type":"WallSurface"}
+
+
+@pytest.mark.parametrize("version", ["1.0", "2.0.1", "3.0", None])
+def test_unsupported_schema_version_fails_explicitly(version):
+    with pytest.raises(ValueError, match="no published schema"):
+        schema_version(version)
+
+
+def test_cli_failure_keeps_stderr_in_the_report(monkeypatch):
+    import subprocess
+
+    def fail(*args, **kwargs):
+        raise subprocess.CalledProcessError(2, args[0], stderr="CityJSON: invalid vertex index")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="invalid vertex index"):
+        convert_cli("terrio", "input.city.json", "output.geojson")

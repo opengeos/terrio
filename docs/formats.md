@@ -402,6 +402,8 @@ Surviving faces keep their original semantic records. Integer `skipped_rings` an
 `skipped_faces` fields report totals for the source geometry, repeated on each
 surviving primitive. If no primitive survives, a null-geometry feature retains the
 object metadata and counts. These counts are not totals to sum across features.
+The test is limited to distinct XYZ positions; collinear rings with at least three
+distinct positions are retained. No area or general polygon-validity test is applied.
 Invalid indices and malformed boundary/semantic nesting still fail explicitly.
 `metadata.referenceSystem` supplies the CRS; absent CRS stays unknown. Coordinates
 retain the source XYZ order rather than applying geographic axis swapping.
