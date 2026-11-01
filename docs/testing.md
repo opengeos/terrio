@@ -71,15 +71,20 @@ python scripts/benchmark_citygml_dispatch.py ../terrio-data
 python scripts/benchmark_citygml_dispatch.py ../terrio-data --restrict-drivers
 ```
 
-In five warm local development-binding runs, the 3,092-face example's median
+At commit `dff75c08`, five warm local development-binding runs recorded that the 3,092-face example's median
 open time changed from 0.551 s before the review fixes to 0.264 s afterward.
 These are development-profile observations, not optimized performance guarantees.
 With a CityGML-only driver restriction, equal 32,834-byte generated files with
 an early root or a root after a 32 KiB comment read 33,858 and 49,218 bytes,
 respectively: one complete source read plus a 1 KiB or 16 KiB identification
 prefix. Linux `/proc/self/io` counted three and eight read calls, respectively,
-after subtracting counter-read overhead. Without the restriction, both read
-exactly the source length in two calls. The extra prefix read is bounded even
+after subtracting counter-read overhead. After adding the bounded local-path
+reader, an optimized run counted four and nine calls for these restricted cases,
+and three calls without the restriction; source byte counts were unchanged.
+Oversized sparse CityGML inputs (256 MiB + 1 byte) were rejected after reading
+16 KiB for `.gml` and zero source bytes for `.citygml`. The driver restriction
+added a 1 KiB identification read to each. These limits apply to native parsing;
+the optional GDAL fallback can accept inputs that the native reader refuses. The extra prefix read is bounded even
 when opening must inspect beyond it to find the root.
 
 The optional live 3DBAG bbox regression from PR #464 can also be cached externally:
