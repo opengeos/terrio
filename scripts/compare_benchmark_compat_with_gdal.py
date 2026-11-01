@@ -9,11 +9,12 @@ import subprocess
 import tempfile
 
 import numpy as np
-from osgeo import gdal
+from osgeo import gdal, ogr
 
-from benchmark_validation import compare_rasters
+from benchmark_validation import compare_rasters, compare_vectors
 
 gdal.UseExceptions()
+ogr.UseExceptions()
 
 
 def main():
@@ -306,6 +307,53 @@ def main():
                         f"JPEG-XL {label} {bands} bands {'tiles' if tiled else 'strips'} independent roundtrip",
                         jxl,
                     )
+
+        dem = args.data / "usgs_dem.tif"
+        counties = args.data / "UScounties.gpkg"
+
+        def warp_exact():
+            actual, reference = tmp / "warp-terrio.tif", tmp / "warp-gdal.tif"
+            command(
+                [
+                    args.terrio,
+                    "warp",
+                    "--kernel-version",
+                    version,
+                    dem,
+                    actual,
+                    "--t-srs",
+                    "EPSG:26913",
+                    "-r",
+                    "bilinear",
+                ]
+            )
+            command(["gdalwarp", "-q", "-t_srs", "EPSG:26913", "-r", "bilinear", dem, reference])
+            exact(actual, reference)
+
+        def counties_exact():
+            actual, reference = tmp / "counties-terrio.gpkg", tmp / "counties-gdal.gpkg"
+            where = "STATE_FIPS = '47'"
+            command(
+                [
+                    args.terrio,
+                    "convert",
+                    counties,
+                    actual,
+                    "--where",
+                    where,
+                    "--t-srs",
+                    "EPSG:5070",
+                ]
+            )
+            command(["ogr2ogr", "-where", where, "-t_srs", "EPSG:5070", reference, counties])
+            differences = compare_vectors(ogr.Open(str(actual)), ogr.Open(str(reference)))
+            if differences:
+                raise AssertionError("; ".join(differences))
+
+        if dem.exists():
+            run("Bilinear NAD83 to UTM warp bit-identical", warp_exact)
+        if counties.exists():
+            run("Counties to Conus Albers coordinates bit-identical", counties_exact)
 
     if args.json:
         print(json.dumps(records, indent=2))

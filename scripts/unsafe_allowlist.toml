@@ -12,6 +12,11 @@
 # entry's `origin` is "existing" for sites present before the change that added this allow-list and
 # "added" for those that change added; scripts/check_unsafe.py accepts no other value.
 
+[files."crates/terrio-crs/src/math.rs"]
+count = 1
+origin = "added"
+reason = "Declares glibc's asinh and atanh, pure f64 functions marked safe, so projections round as a PROJ using the same C library does"
+
 [files."crates/terrio-cli/src/main.rs"]
 count = 2
 origin = "existing"

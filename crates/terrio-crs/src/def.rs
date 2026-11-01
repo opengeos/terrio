@@ -31,6 +31,9 @@ use std::sync::Arc;
 pub(crate) struct Def {
     /// The projection, `None` for a geographic CRS.
     proj: Option<Arc<dyn Proj>>,
+    /// Converts degrees as the inverse of a PROJ `unitconvert` step does, dividing by the factor
+    /// of the forward step. See [`crate::Transformer::into_inverted_pipeline`].
+    pub(crate) inverted_degrees: bool,
     geocentric: bool,
     /// Geographic planetocentric latitude rather than ellipsoidal geodetic latitude.
     ocentric: bool,
@@ -455,6 +458,7 @@ impl Def {
         let (lam0, phi0, x0, y0) = (setup.lam0, setup.phi0, setup.x0, setup.y0);
         let mut d = Self {
             proj,
+            inverted_degrees: false,
             geocentric,
             ocentric: geographic && rot.is_none() && p.has("geoc"),
             body: None,
@@ -624,6 +628,7 @@ impl Def {
             let ell = Ell::from_a_es(e.a, 2.0 * e.f - e.f * e.f);
             let mut d = Self {
                 proj: None,
+                inverted_degrees: false,
                 geocentric: false,
                 ocentric: false,
                 body: None,
@@ -753,7 +758,12 @@ impl Def {
         let (e, n) = self.unaxis(u, v);
         let (lam, phi) = match &self.proj {
             None => {
-                let (lam, phi) = ((e * self.to_deg).to_radians(), (n * self.to_deg).to_radians());
+                let (lam, phi) = if self.inverted_degrees {
+                    let factor = 1.0 / 1.0_f64.to_radians();
+                    (e * self.to_deg / factor, n * self.to_deg / factor)
+                } else {
+                    ((e * self.to_deg).to_radians(), (n * self.to_deg).to_radians())
+                };
                 let phi = if self.ocentric { phi.sin().atan2((1.0 - self.ell.es) * phi.cos()) } else { phi };
                 // Longitudes are relative to `+lon_0` too, as PROJ's `+proj=longlat +lon_0=10`.
                 let (lam, phi) = match &self.rot {
@@ -800,7 +810,12 @@ impl Def {
                     Some(r) => r.fwd(adjlon(lon - self.lam0), lat),
                     None => (adjlon(lon - self.lam0), if self.ocentric { ((1.0 - self.ell.es) * lat.sin()).atan2(lat.cos()) } else { lat }),
                 };
-                (lam.to_degrees() / self.to_deg, phi.to_degrees() / self.to_deg)
+                if self.inverted_degrees {
+                    let factor = 1.0_f64.to_radians();
+                    (lam / factor / self.to_deg, phi / factor / self.to_deg)
+                } else {
+                    (lam.to_degrees() / self.to_deg, phi.to_degrees() / self.to_deg)
+                }
             }
             Some(p) => {
                 if lat.abs() > HALFPI + 1e-12 {
@@ -1037,4 +1052,28 @@ pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
         return u.num(1);
     }
     root.children("AXIS").find_map(|a| a.child("LENGTHUNIT")).and_then(|u| u.num(1))
+}
+
+#[cfg(test)]
+mod inverted_degrees_tests {
+    use super::*;
+
+    /// Radians that dividing by π/180 and multiplying by 180/π round differently.
+    #[test]
+    fn inverted_pipelines_divide_by_the_forward_factor() {
+        let mut def = Def::new(&SpatialRef { epsg: Some(4269), ..Default::default() }).unwrap();
+        let factor = 1.0_f64.to_radians();
+        let radians: Vec<f64> = (1..2000).map(|i| f64::from(i) * 7.3e-4).collect();
+        let plain: Vec<_> = radians.iter().map(|r| def.project(*r, 0.25).unwrap()).collect();
+        def.inverted_degrees = true;
+        let mut changed = 0;
+        for (r, before) in radians.iter().zip(&plain) {
+            let (u, v) = def.project(*r, 0.25).unwrap();
+            let (lon, lat) = if def.axis[0] == b'e' { (u, v) } else { (v, u) };
+            assert_eq!(lon.to_bits(), (r / factor).to_bits());
+            assert_eq!(lat.to_bits(), (0.25 / factor).to_bits());
+            changed += usize::from((u, v) != *before);
+        }
+        assert!(changed > 0, "the two conversions never differed");
+    }
 }

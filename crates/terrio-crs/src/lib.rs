@@ -1334,6 +1334,17 @@ impl CoordinateOperation {
 }
 
 impl Transformer {
+    /// This transformer, as GDAL's reverse transformation runs it: the inverse of the pipeline
+    /// from the target to the source (`OGRCoordinateTransformation::GetInverse()`), rather than a
+    /// pipeline of its own. PROJ then undoes the forward pipeline's `unitconvert` by dividing by
+    /// its factor, which rounds about a tenth of the degrees differently from multiplying by the
+    /// inverse factor. GDAL's warper maps output pixels to the source this way.
+    pub fn into_inverted_pipeline(mut self) -> Self {
+        self.src.inverted_degrees = true;
+        self.dst.inverted_degrees = true;
+        self
+    }
+
     /// A transformer from `src` to `dst`.
     pub fn new(src: &SpatialRef, dst: &SpatialRef) -> Result<Self> {
         Self::with_options(src, dst, &TransformOptions::default())
@@ -2175,13 +2186,23 @@ mod tests {
     /// PROJ 9.7.1, through rasterio's `warp.transform`, both ways. Its constants and its forward
     /// projection go through `tsfn`; in the form PROJ used before 9 every latitude below was a
     /// few units in the last place off, and the extent of a grid warped from it with them. Bit
-    /// for bit where the C library is glibc, as `asinh` and `atanh` are.
+    /// for bit on the glibc the values were recorded on (2.39), whose `asinh` and `atanh` PROJ and
+    /// Terrio share; other releases round those differently, so within 4 units in the last place.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn lambert_conformal_conic_matches_proj_bit_for_bit() {
         const LCC: &str = r#"PROJCS["undefined",GEOGCS["undefined",DATUM["undefined",SPHEROID["undefined",6378137,298.257223563]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["standard_parallel_1",25],PARAMETER["standard_parallel_2",60],PARAMETER["latitude_of_origin",42.5],PARAMETER["central_meridian",-100],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#;
         let (lcc, wgs84) = (SpatialRef::parse(LCC).unwrap(), SpatialRef::from_epsg(4326).unwrap());
-        let bits = |p: (f64, f64)| (p.0.to_bits(), p.1.to_bits());
+        unsafe extern "C" {
+            safe fn gnu_get_libc_version() -> *const std::ffi::c_char;
+        }
+        // SAFETY: glibc returns a static NUL-terminated string.
+        let recorded_libc = unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) }.to_bytes() == b"2.39";
+        let check = |got: (f64, f64), want: (f64, f64), label: String| {
+            let ulps = |a: f64, b: f64| (a.to_bits() as i64).wrapping_sub(b.to_bits() as i64).unsigned_abs();
+            let allowed = if recorded_libc { 0 } else { 4 };
+            assert!(ulps(got.0, want.0) <= allowed && ulps(got.1, want.1) <= allowed, "{label}");
+        };
         // A 1 km grid's corners, the projection's origin and points beyond the standard parallels.
         let inverse = [
             ((-5802750.0, -38500.0), (-160.3055519816432, 21.866370142929064)),
@@ -2196,7 +2217,7 @@ mod tests {
         let t = Transformer::new(&lcc, &wgs84).unwrap();
         for ((x, y), want) in inverse {
             let got = t.transform(x, y).unwrap();
-            assert_eq!(bits(got), bits(want), "({x}, {y}) to {got:?}, GDAL {want:?}");
+            check(got, want, format!("({x}, {y}) to {got:?}, GDAL {want:?}"));
         }
         let forward = [
             ((-157.5, 21.0), (-5640537.969442342, -305411.69883608964)),
@@ -2209,7 +2230,7 @@ mod tests {
         let t = Transformer::new(&wgs84, &lcc).unwrap();
         for ((lon, lat), want) in forward {
             let got = t.transform(lon, lat).unwrap();
-            assert_eq!(bits(got), bits(want), "({lon}, {lat}) to {got:?}, GDAL {want:?}");
+            check(got, want, format!("({lon}, {lat}) to {got:?}, GDAL {want:?}"));
         }
     }
 

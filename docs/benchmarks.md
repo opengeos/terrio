@@ -55,9 +55,10 @@ They are machine-specific snapshots, not guarantees of performance on other data
 The [#253 investigation](benchmark-parity.md) records complete error measurements,
 metadata/schema fixes, native WebP corrections and explicit GDAL 3.13 COG/terrain
 profiles. [All eight affected cases were rerun](benchmark-253-rerun.md), including
-fresh timing samples and CPU tuning at budgets one and two. Six pass exact output
-validation; warp and counties retain documented numerical residuals. Background
-CPU activity exceeded the unchanged measurement limit, so no new speed ratios are
+fresh timing samples and CPU tuning at budgets one and two. Six passed exact output
+validation in that rerun. Warp and counties have since been corrected and now agree
+exactly with GDAL 3.13.3 on glibc Linux, but have not been retimed. Background CPU
+activity exceeded the unchanged measurement limit, so no new speed ratios are
 eligible. The tables below retain their original samples.
 
 ## Correctness gates

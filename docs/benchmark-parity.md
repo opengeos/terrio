@@ -56,27 +56,30 @@ geometry gates remain exact.
 
 ## Residual numerical differences
 
-| Case | Before | After |
+| Case | Before | After, GDAL 3.13.3 and PROJ 9.9.0 on glibc 2.44 |
 |---|---|---|
-| Bilinear USGS warp | 12,551,806 differing valid pixels; max 7.502197 m | Matching 3.13 kernel: six pixels; max 0.000244140625 m, one Float32 ULP |
-| Counties to EPSG:5070 | 95 differing geometries; max 7.21775e-9 m | Modern authalic-q formula: max 3.026798e-9 m; schema, attributes and coordinate counts agree |
+| Bilinear USGS warp | 12,551,806 differing valid pixels; max 7.502197 m | Matching 3.13 kernel: zero of 12,777,305 pixels; masks identical |
+| Counties to EPSG:5070 | 95 differing geometries; max 7.21775e-9 m | Zero differing geometries; every coordinate bit-identical |
 | Slope | 95,360,773 differing valid pixels; max four ULPs | Zero differences with 3.13 profile |
 | Hillshade | 1,675 differing valid pixels; max one Byte level | Zero differences with 3.13 profile |
 
-The warp and county outputs still fail the exact benchmark gate and receive no
-speed ratio. Projection arithmetic uses platform transcendental implementations:
-for an identical authalic-q intermediate, Rust's `atanh` and the reference C
-library differ by one Float64 ULP. Replacing the older logarithmic ratio with
-PROJ's modern `atanh` formulation also avoids cancellation near the equator; a
-regression checks that precision independently of the benchmark. This correction
-applies globally to authalic projections using `qsfn` (including Albers, LAEA and
-CEA), so their default coordinates may change in the last bits. It is intentionally
-independent of the opt-in COG overview and terrain kernel policies. The existing
-EPSG accuracy, PROJ-string/WKT and ellipsoidal-projection reference tests pass in
-release mode, including the real `epsg_points.tsv` fixture, at their existing
-reference tolerances. Coordinate bit identity is not claimed. These residuals
-are documented numerical differences, not a claim of exact parity. Existing warp
-conformance retains its explicit 0.002 m tolerance; benchmark gates are not relaxed.
+Two causes accounted for the last warp and county differences:
+
+- **C library functions:** PROJ calls the C library's `asinh` and `atanh`, whose
+  results change between glibc releases. Terrio carried translations matching glibc
+  2.39, which rounded differently from glibc 2.44. On linux-gnu it now calls the
+  installed C library, so it rounds as a PROJ using that library does. Other
+  platforms keep Rust's `f64` functions, so these results are not claimed there.
+- **Inverted pipelines:** GDAL's reverse transformation inverts the forward pipeline,
+  so PROJ divides by the forward `unitconvert` factor; multiplying by the reciprocal
+  rounds about a tenth of the degrees differently. The warper's reverse
+  transformation now does the same. Other Terrio transformations are unchanged, as
+  `ogr2ogr` runs a forward pipeline.
+
+These results are fixture-specific. Other CRS pairs can retain last-bit differences:
+a NAD83 to EPSG:5070 warp of the same DEM still has 11 of 15,160,628 pixels differing
+by one Float32 ULP (0.000244140625 m). Existing warp conformance keeps its explicit
+0.002 m tolerance; the two cases above are checked exactly by `benchmark-compat`.
 
 Error statistics use common-valid finite samples; differing masks and nonfinite
 samples are counted separately. Relative error divides by the absolute reference
@@ -109,8 +112,7 @@ Their reported failure patterns now have independent regressions, but those
 particular assets cannot be certified. The native JPEG XL regressions pass on macOS and Windows, but the precise vendor
 failure still requires its reproduction.
 The GDAL multithreaded statistics observation is an upstream report, not a Terrio
-fix. Keep the multi-report issue open while these items or the exact numerical
-parity requirement remain outstanding.
+fix. Keep the multi-report issue open while these items remain outstanding.
 
 ## Final validation and timed reruns
 
@@ -121,6 +123,8 @@ compatibility/codec cases. Python passes 55 API tests; release WASM passes 99
 JavaScript tests with two skips. The CLI and Python bindings were built in
 release mode; WASM uses Rust release optimization without the optional wasm-opt
 postpass.
+
+The rerun below predates the warp and county corrections above.
 
 [All eight benchmark cases were rerun](benchmark-253-rerun.md) with fresh timings,
 independent tuning at one/two CPUs, seven small-file or five large-file samples,
