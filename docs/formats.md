@@ -533,7 +533,9 @@ attribute and text allocations with capacity slack. Local CityGML paths are
 size-checked before payload allocation. Oversized shared XML names with an
 inconclusive 16 KiB root prefix are refused; identified non-CityGML XML keeps its
 existing read policy. These are allocation safeguards, not a total process-memory
-ceiling. Reference expansion has whole-document totals of one million node visits
+ceiling. Transcoding can allocate an additional UTF-8 buffer; for example, Latin-1
+can expand to twice its source size. The raw input and decoded text are separate
+from the XML-tree and flat-payload estimates. Reference expansion has whole-document totals of one million node visits
 and 64 MiB of coordinate text parsed through XLinks. A shared primitive with
 contradictory thematic classifications is rejected. It does not
 retain solid/shell topology, full city-model hierarchy,

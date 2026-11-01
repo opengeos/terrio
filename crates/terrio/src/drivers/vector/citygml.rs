@@ -393,7 +393,21 @@ fn scalar_property(node: &Node) -> Value {
 }
 
 fn has_geometry(node: &Node) -> bool {
-    node.gml() && matches!(node.name.as_str(), "Polygon" | "Point" | "Curve" | "MultiSurface" | "Solid" | "LineString" | "Envelope")
+    node.gml()
+        && matches!(
+            node.name.as_str(),
+            "Polygon"
+                | "PolygonPatch"
+                | "Triangle"
+                | "Rectangle"
+                | "Point"
+                | "Curve"
+                | "MultiSurface"
+                | "Solid"
+                | "LineString"
+                | "LineStringSegment"
+                | "Envelope"
+        )
         || node.children.iter().any(has_geometry)
 }
 
@@ -554,7 +568,8 @@ struct Reader<'a> {
 }
 
 fn authority_axis_order(name: &str) -> bool {
-    name.to_ascii_lowercase().contains("epsg") && (name.starts_with("urn:") || name.contains("/def/crs/"))
+    let lower = name.to_ascii_lowercase();
+    lower.contains("epsg") && (lower.starts_with("urn:") || lower.contains("/def/crs/"))
 }
 
 fn parse_crs(name: &str) -> Result<SpatialRef> {
@@ -700,6 +715,12 @@ impl<'a> Reader<'a> {
         };
         let convert = |mut c: Coord| -> Result<Coord> {
             if let Some((matrix, anchor)) = &context.matrix {
+                // Stored anchors use canonical XY. Matrix input/output follow the
+                // relative geometry's declared axes until the final normalization.
+                let mut anchor = *anchor;
+                if swap {
+                    anchor.swap(0, 1);
+                }
                 let p = [c.x, c.y, c.z.unwrap_or(0.0), 1.0];
                 let p: [f64; 3] = std::array::from_fn(|i| (0..4).map(|j| matrix[i * 4 + j] * p[j]).sum::<f64>() + anchor[i]);
                 if p.iter().any(|v| !v.is_finite()) {
@@ -800,8 +821,16 @@ impl<'a> Reader<'a> {
         {
             return self.update_semantic(index, context.semantic.as_ref());
         }
-        // A changed inherited CRS/dimension must still be checked, even on a
-        // dedupe hit. Bound coordinate work independently of XML node visits.
+        if let Some(index) = previous {
+            let resolved = self.coordinate_context(node, context)?;
+            self.check_geometry_context(node, &resolved)?;
+            if let Some(key) = validation {
+                self.validated.insert(key);
+            }
+            return self.update_semantic(index, context.semantic.as_ref());
+        }
+        // Bound numerical work for newly emitted primitives independently of
+        // XML node visits; deduplicated reuse above allocates no coordinates.
         if context.expanded {
             self.coordinate_bytes = self.coordinate_bytes.saturating_add(coordinate_text_bytes(node));
             if self.coordinate_bytes > self.max_coordinate_bytes {
@@ -815,9 +844,6 @@ impl<'a> Reader<'a> {
         let geometry = self.normalize(primitive(node, resolved.dim)?, &resolved)?;
         if let Some(key) = validation {
             self.validated.insert(key);
-        }
-        if let Some(index) = previous {
-            return self.update_semantic(index, context.semantic.as_ref());
         }
         if let Some(key) = key {
             self.emitted.insert(key, self.layer.features.len());
@@ -896,7 +922,10 @@ impl<'a> Reader<'a> {
             if coords.len() != 1 {
                 return Err(invalid("implicit referencePoint must have one position"));
             }
-            let anchor = [coords[0].x, coords[0].y, coords[0].z.unwrap_or(0.0)];
+            let mut anchor = [coords[0].x, coords[0].y, coords[0].z.unwrap_or(0.0)];
+            if point_context.crs.map(|name| self.reference(name).map(|r| r.swap)).transpose()?.unwrap_or(false) {
+                anchor.swap(0, 1);
+            }
             let mut matrix = [0.0; 16];
             for i in 0..4 {
                 matrix[i * 5] = 1.0;
@@ -1171,7 +1200,20 @@ fn parse_with_limits(bytes: &[u8], input_limit: usize, max_reference_visits: usi
 
 /// Whether a byte prefix can start an XML document in one of the supported encodings.
 pub(crate) fn is_xml_prefix(bytes: &[u8]) -> bool {
-    utf16_encoding(bytes).is_some() || bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes).trim_ascii_start().starts_with(b"<")
+    if let Some(encoding) = utf16_encoding(bytes) {
+        let little = std::ptr::eq(encoding, encoding_rs::UTF_16LE);
+        let payload = bytes.strip_prefix(b"\xff\xfe").or_else(|| bytes.strip_prefix(b"\xfe\xff")).unwrap_or(bytes);
+        // Inspect UTF-16 code units directly: a large non-XML input needs no
+        // decoded String, while arbitrary leading XML whitespace still works.
+        return payload
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| if little { u16::from_le_bytes([p[0], p[1]]) } else { u16::from_be_bytes([p[0], p[1]]) })
+            .find(|c| !matches!(c, 9 | 10 | 13 | 32))
+            .is_some_and(|c| c == u16::from(b'<'));
+    }
+    bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes).trim_ascii_start().starts_with(b"<")
 }
 
 /// `None` means the available prefix does not contain a complete XML root tag.
@@ -1219,6 +1261,97 @@ mod test_data;
 #[cfg(test)]
 mod tests {
     use super::test_data::{FACE, model};
+
+    #[test]
+    fn surface_patches_do_not_duplicate_coordinates_into_object_attributes() {
+        for (primitive, container, property) in [
+            ("Triangle", "TriangulatedSurface", "trianglePatches"),
+            ("PolygonPatch", "Surface", "patches"),
+            ("Rectangle", "Surface", "patches"),
+        ] {
+            let positions = if primitive == "Rectangle" { "0 0 0 1 0 0 1 1 0 0 1 0 0 0 0" } else { "0 0 0 0 1 0 0 1 1 0 0 0" };
+            let geometry = format!(
+                "<g:{container}><g:{property}><g:{primitive}><g:exterior><g:LinearRing><g:posList>{positions}</g:posList></g:LinearRing></g:exterior></g:{primitive}></g:{property}></g:{container}>"
+            );
+            let text = if primitive == "Triangle" {
+                model("3.0", &format!("<dem:lod>2</dem:lod><dem:tin>{geometry}</dem:tin>"), "EPSG:32632")
+                    .replace(
+                        "<b:Building g:id=\"house\">",
+                        "<dem:TINRelief xmlns:dem=\"http://www.opengis.net/citygml/relief/3.0\" g:id=\"terrain\">",
+                    )
+                    .replace("</b:Building>", "</dem:TINRelief>")
+            } else {
+                model(
+                    "3.0",
+                    &format!(
+                        "<b:lod2MultiSurface><g:MultiSurface><g:surfaceMember>{geometry}</g:surfaceMember></g:MultiSurface></b:lod2MultiSurface>"
+                    ),
+                    "EPSG:32632",
+                )
+            };
+            let layers = super::parse(text.as_bytes()).unwrap();
+            assert_eq!(layers[0].features.len(), 1);
+            let wbvector::FieldValue::Text(text) = &layers[0].features[0].attributes[4] else { panic!() };
+            let attrs: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(attrs, if primitive == "Triangle" { serde_json::json!({"lod":"2"}) } else { serde_json::json!({}) });
+            assert!(matches!(layers[0].features[0].geometry, Some(wbvector::Geometry::Polygon { .. })));
+        }
+    }
+
+    #[test]
+    fn utf16_non_xml_is_rejected_without_decoding_the_payload() {
+        for little in [true, false] {
+            for text in [
+                format!("{{\"type\":\"FeatureCollection\",\"text\":\"{}\"}}", "x".repeat(100_000)),
+                format!("id,name\n1,{}", "x".repeat(100_000)),
+            ] {
+                let mut bytes = if little { vec![0xff, 0xfe] } else { vec![0xfe, 0xff] };
+                bytes.extend(text.encode_utf16().flat_map(|unit| if little { unit.to_le_bytes() } else { unit.to_be_bytes() }));
+                assert!(!super::is_xml_prefix(&bytes));
+                assert!(!super::looks_like(&bytes));
+            }
+            let text = format!("{}{}", " \t\r\n".repeat(4096), model("3.0", "", "EPSG:32632"));
+            let mut bytes = if little { vec![0xff, 0xfe] } else { vec![0xfe, 0xff] };
+            bytes.extend(text.encode_utf16().flat_map(|unit| if little { unit.to_le_bytes() } else { unit.to_be_bytes() }));
+            assert!(super::looks_like(&bytes));
+        }
+    }
+
+    #[test]
+    fn uppercase_authority_urns_normalize_latitude_first_positions() {
+        let text = model("3.0", "<b:lod0Geometry><g:Point><g:pos>52 4 3</g:pos></g:Point></b:lod0Geometry>", "URN:OGC:DEF:CRS:EPSG::4326");
+        let layers = super::parse(text.as_bytes()).unwrap();
+        let Some(wbvector::Geometry::Point(point)) = &layers[0].features[0].geometry else { panic!() };
+        assert_eq!((point.x, point.y, point.z), (4.0, 52.0, Some(3.0)));
+    }
+
+    #[test]
+    fn implicit_anchors_use_the_relative_geometry_axis_order() {
+        for (anchor, relative) in [(false, true), (true, false), (true, true)] {
+            let name = |urn| if urn { "urn:ogc:def:crs:EPSG::4326" } else { "EPSG:4326" };
+            let anchor_values = if anchor { "52 4 3" } else { "4 52 3" };
+            let relative_values = if relative { "2 1 4" } else { "1 2 4" };
+            let body = format!(
+                "<b:lod1ImplicitRepresentation><b:ImplicitGeometry><b:referencePoint><g:Point srsName=\"{}\" srsDimension=\"3\"><g:pos>{anchor_values}</g:pos></g:Point></b:referencePoint><b:relativeGeometry><g:Point srsName=\"{}\" srsDimension=\"3\"><g:pos>{relative_values}</g:pos></g:Point></b:relativeGeometry></b:ImplicitGeometry></b:lod1ImplicitRepresentation>",
+                name(anchor),
+                name(relative)
+            );
+            let layers = super::parse(model("3.0", &body, "EPSG:4326").as_bytes()).unwrap();
+            let Some(wbvector::Geometry::Point(point)) = &layers[0].features[0].geometry else { panic!() };
+            assert_eq!((point.x, point.y, point.z), (5.0, 54.0, Some(7.0)));
+        }
+    }
+
+    #[test]
+    fn deduplicated_effective_context_changes_do_not_allocate_or_reparse_coordinates() {
+        let face = FACE.replace("<g:posList>", "<g:posList srsDimension=\"3\">");
+        let body = format!(
+            r##"<b:lod2MultiSurface>{face}</b:lod2MultiSurface><b:lod2MultiSurface srsDimension="2"><g:surfaceMember l:href="#wall"/></b:lod2MultiSurface>"##
+        );
+        let text = model("3.0", &body, "EPSG:32632");
+        let layers = super::parse_with_limits(text.as_bytes(), super::MAX_INPUT_BYTES, super::MAX_REFERENCE_VISITS, 1).unwrap();
+        assert_eq!(layers[0].features.len(), 1);
+    }
 
     #[test]
     fn coordinate_expansion_is_preflighted_for_the_whole_primitive() {

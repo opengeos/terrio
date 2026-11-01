@@ -78,7 +78,7 @@ def fetch(data):
             path.write_bytes(payload)
         checked_fixture(path)
     root = folder / "gml-schemas"
-    pending = {url for name in FIXTURES for _, url in schema_locations(etree.parse(str(folder / name)))}
+    pending = {url for name in FIXTURES for _, url in schema_locations(etree.parse(str(folder / name), etree.XMLParser(no_network=True, resolve_entities=False)))}
     seen = set()
 
     def load(url):
@@ -190,6 +190,12 @@ def compare(expected, owners, fc):
                 source_values.setdefault(name, []).append(expected_value)
         for name, values in source_values.items():
             assert attrs[name] == (values[0] if len(values) == 1 else values), (name, attrs)
+        allowed = {etree.QName(child).localname for child in owner}
+        allowed |= {child.get("name") for child in owner if etree.QName(child).localname.endswith("Attribute") and child.get("name")}
+        for child in owner:
+            if etree.QName(child).localname == "genericAttribute":
+                allowed |= {name.text for item in child for name in item if etree.QName(name).localname == "name"}
+        assert set(attrs) <= allowed, (set(attrs) - allowed, attrs)
         if feature["geometry"] is None:
             assert not any(row[0] == props["city_id"] for row in expected)
             continue
