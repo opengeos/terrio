@@ -85,7 +85,7 @@ cargo add terrio
 
 ```sh
 pip install terrio
-# or, from conda-forge
+# or, from conda-forge, with either of
 conda install -c conda-forge terrio
 mamba install -c conda-forge terrio
 ```
@@ -94,8 +94,9 @@ Wheels are built for Linux (x86_64 and aarch64, glibc and musl), macOS (Intel an
 and Windows (x64 and ARM64), for Python 3.10 and later. They need only NumPy (and the small
 `affine` package).
 
-The conda-forge package needs Python 3.12 or later, and can follow a new release by a few days:
-`terrio.__version__` shows the version you have.
+The [conda-forge package](https://github.com/conda-forge/terrio-feedstock) needs Python 3.12 or
+later, as its recipe currently sets. It can follow a new release after a delay, so check
+`terrio.__version__` for the version you have.
 
 ### Pyodide
 

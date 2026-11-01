@@ -196,7 +196,7 @@ COPC octrees itself.
 
 ```sh
 pip install terrio
-# or, from conda-forge
+# or, from conda-forge, with either of
 conda install -c conda-forge terrio
 mamba install -c conda-forge terrio
 ```
