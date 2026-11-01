@@ -15,7 +15,7 @@ pub struct OutputArgs {
     /// extension.
     #[arg(short = 'f', long = "format", visible_alias = "of")]
     pub format: Option<String>,
-    /// GeoTIFF/COG compression: NONE, LZW, DEFLATE, PACKBITS, JPEG, WEBP. GeoPackage tiles: PNG, JPEG.
+    /// GeoTIFF/COG compression: NONE, LZW, DEFLATE, ZSTD, PACKBITS, LERC, LERC_DEFLATE, LERC_ZSTD, JXL, JPEG, WEBP. GeoPackage tiles: PNG, JPEG.
     #[arg(long)]
     pub compress: Option<String>,
     /// GeoTIFF/COG tile size.

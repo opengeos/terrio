@@ -33,7 +33,7 @@ pub struct Args {
     /// Reproject into this CRS.
     #[arg(long = "t-srs", value_name = "CRS")]
     t_srs: Option<String>,
-    /// Compression: GeoTIFF/COG NONE, LZW, DEFLATE, ZSTD, PACKBITS, JPEG, WEBP; Zarr NONE, ZLIB (v2),
+    /// Compression: GeoTIFF/COG NONE, LZW, DEFLATE, ZSTD, PACKBITS, LERC, LERC_DEFLATE, LERC_ZSTD, JXL, JPEG, WEBP; Zarr NONE, ZLIB (v2),
     /// GZIP, ZSTD; GeoPackage tiles PNG, JPEG.
     #[arg(long)]
     compress: Option<String>,
