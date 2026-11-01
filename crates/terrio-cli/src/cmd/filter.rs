@@ -36,9 +36,12 @@ struct Io {
 }
 
 #[derive(clap::Subcommand)]
+#[command(next_display_order = None)]
 enum Filter {
-    /// Classify ground points with the Simple Morphological Filter (PDAL's filters.smrf): of the
-    /// returns classified, ground points become class 2 and others class 1.
+    /// Classify ground with the Simple Morphological Filter.
+    ///
+    /// Of the returns classified, ground points become class 2 and others class 1 (PDAL's
+    /// filters.smrf).
     Smrf {
         #[command(flatten)]
         io: Io,
@@ -76,8 +79,10 @@ enum Filter {
         #[arg(long = "only-ground")]
         only_ground: bool,
     },
-    /// Classify outliers as noise (PDAL's filters.outlier): statistical (mean distance to the
-    /// nearest neighbours) or radius (too few neighbours within a radius).
+    /// Classify outliers as noise.
+    ///
+    /// Statistical (mean distance to the nearest neighbours) or radius (too few neighbours within a
+    /// radius) (PDAL's filters.outlier).
     Outlier {
         #[command(flatten)]
         io: Io,
@@ -103,8 +108,9 @@ enum Filter {
         #[arg(long)]
         remove: bool,
     },
-    /// Keep the points within ranges of dimensions (PDAL's filters.range), read and written in
-    /// chunks.
+    /// Keep the points within ranges of dimensions.
+    ///
+    /// Reads and writes in chunks (PDAL's filters.range).
     Range {
         #[command(flatten)]
         io: Io,
@@ -112,8 +118,9 @@ enum Filter {
         #[arg(long)]
         limits: String,
     },
-    /// Poisson sampling (PDAL's filters.sample): keep the points at least a radius from those kept
-    /// before them.
+    /// Poisson sampling (PDAL's filters.sample).
+    ///
+    /// Keeps the points at least a radius from those kept before them.
     Sample {
         #[command(flatten)]
         io: Io,
@@ -124,7 +131,9 @@ enum Filter {
         #[arg(long = "voxel", value_name = "CELL")]
         cell: Option<f64>,
     },
-    /// Keep the first point of each voxel (PDAL's filters.voxeldownsize).
+    /// Keep the first point of each voxel.
+    ///
+    /// PDAL's filters.voxeldownsize.
     #[command(name = "voxeldownsize")]
     VoxelDownsize {
         #[command(flatten)]
@@ -136,8 +145,9 @@ enum Filter {
         #[arg(long, default_value = "center")]
         mode: String,
     },
-    /// Keep the point nearest the center of each voxel (PDAL's
-    /// filters.voxelcenternearestneighbor).
+    /// Keep the point nearest the center of each voxel.
+    ///
+    /// PDAL's filters.voxelcenternearestneighbor.
     #[command(name = "voxelcenternearestneighbor")]
     VoxelCenterNearestNeighbor {
         #[command(flatten)]
@@ -146,8 +156,10 @@ enum Filter {
         #[arg(long, default_value_t = 1.0)]
         cell: f64,
     },
-    /// Classify ground points with the Progressive Morphological Filter (PDAL's filters.pmf): of
-    /// the returns classified, ground points become class 2 and others class 1.
+    /// Classify ground with the Progressive Morphological Filter.
+    ///
+    /// Of the returns classified, ground points become class 2 and others class 1 (PDAL's
+    /// filters.pmf).
     Pmf {
         #[command(flatten)]
         io: Io,
@@ -185,8 +197,10 @@ enum Filter {
         #[arg(long = "only-ground")]
         only_ground: bool,
     },
-    /// Classify ground points with the Cloth Simulation Filter (PDAL's filters.csf): of the
-    /// returns classified, ground points become class 2 and others class 1.
+    /// Classify ground with the Cloth Simulation Filter.
+    ///
+    /// Of the returns classified, ground points become class 2 and others class 1 (PDAL's
+    /// filters.csf).
     Csf {
         #[command(flatten)]
         io: Io,
@@ -227,7 +241,9 @@ enum Filter {
         #[arg(long = "only-ground")]
         only_ground: bool,
     },
-    /// Classify low noise with the Extended Local Minimum (PDAL's filters.elm).
+    /// Classify low noise with the Extended Local Minimum.
+    ///
+    /// PDAL's filters.elm.
     Elm {
         #[command(flatten)]
         io: Io,
@@ -241,8 +257,9 @@ enum Filter {
         #[arg(long = "noise-class", value_name = "CLASS", default_value_t = 7)]
         class: u8,
     },
-    /// Compute heights above the nearest ground points, in HeightAboveGround (PDAL's
-    /// filters.hag_nn).
+    /// Compute heights above the nearest ground points.
+    ///
+    /// Written to HeightAboveGround (PDAL's filters.hag_nn).
     #[command(name = "hag_nn")]
     HagNn {
         #[command(flatten)]
@@ -256,8 +273,10 @@ enum Filter {
         #[arg(long = "max-distance", default_value_t = 0.0)]
         max_distance: f64,
     },
-    /// Compute heights above a Delaunay triangulation of the nearest ground points, in
-    /// HeightAboveGround (PDAL's filters.hag_delaunay).
+    /// Compute heights above a Delaunay ground triangulation.
+    ///
+    /// Triangulates the nearest ground points; written to HeightAboveGround (PDAL's
+    /// filters.hag_delaunay).
     #[command(name = "hag_delaunay")]
     HagDelaunay {
         #[command(flatten)]
@@ -268,7 +287,9 @@ enum Filter {
         #[arg(long, default_value_t = 10)]
         count: usize,
     },
-    /// Keep the points in boxes, polygons, circles or spheres (PDAL's filters.crop).
+    /// Keep the points in boxes, polygons, circles or spheres.
+    ///
+    /// PDAL's filters.crop.
     Crop {
         #[command(flatten)]
         io: Io,
@@ -305,8 +326,10 @@ enum Filter {
         #[arg(long)]
         end: Option<usize>,
     },
-    /// Keep the points for which an expression is true (PDAL's filters.expression), read and
-    /// written in chunks, such as "Classification == 2 && Z > 100".
+    /// Keep the points for which an expression is true.
+    ///
+    /// Reads and writes in chunks, such as "Classification == 2 && Z > 100" (PDAL's
+    /// filters.expression).
     Expression {
         #[command(flatten)]
         io: Io,
@@ -342,8 +365,10 @@ enum Filter {
         #[command(flatten)]
         write: super::points::PointWriteArgs,
     },
-    /// Split points into squares (PDAL's filters.splitter): a file per square when the output's
-    /// file name has a '#' (replaced by 1, 2...), else all in one file, square after square.
+    /// Split points into squares.
+    ///
+    /// Writes a file per square when the output's file name has a '#' (replaced by 1, 2...), else
+    /// all in one file, square after square (PDAL's filters.splitter).
     Splitter {
         #[command(flatten)]
         io: Io,
@@ -357,8 +382,10 @@ enum Filter {
         #[arg(long, default_value_t = 0.0)]
         buffer: f64,
     },
-    /// Split points into squarish chips of at most a number of points (PDAL's filters.chipper): a
-    /// file per chip when the output's file name has a '#', else all in one file.
+    /// Split points into squarish chips.
+    ///
+    /// Each chip has at most a number of points: a file per chip when the output's file name has a
+    /// '#', else all in one file (PDAL's filters.chipper).
     Chipper {
         #[command(flatten)]
         io: Io,
@@ -366,8 +393,9 @@ enum Filter {
         #[arg(long, default_value_t = 5000)]
         capacity: usize,
     },
-    /// Compute normals and curvature (PDAL's filters.normal): NormalX, NormalY, NormalZ and
-    /// Curvature.
+    /// Compute normals and curvature.
+    ///
+    /// Written to NormalX, NormalY, NormalZ and Curvature (PDAL's filters.normal).
     Normal {
         #[command(flatten)]
         io: Io,
@@ -381,7 +409,9 @@ enum Filter {
         #[arg(long = "not-always-up")]
         not_always_up: bool,
     },
-    /// Label Euclidean clusters (PDAL's filters.cluster), in ClusterID.
+    /// Label Euclidean clusters.
+    ///
+    /// Written to ClusterID (PDAL's filters.cluster).
     Cluster {
         #[command(flatten)]
         io: Io,
@@ -398,7 +428,9 @@ enum Filter {
         #[arg(long = "2d")]
         two_d: bool,
     },
-    /// Label density-based clusters (PDAL's filters.dbscan), in ClusterID: from 0, -1 for noise.
+    /// Label density-based clusters.
+    ///
+    /// Written to ClusterID: from 0, -1 for noise (PDAL's filters.dbscan).
     Dbscan {
         #[command(flatten)]
         io: Io,
@@ -412,8 +444,10 @@ enum Filter {
         #[arg(long, value_delimiter = ',', default_value = "X,Y,Z")]
         dimensions: Vec<String>,
     },
-    /// Compute features of the covariance of each point's neighbours (PDAL's
-    /// filters.covariancefeatures): Linearity, Planarity, Scattering, Verticality and others.
+    /// Compute covariance features of each point's neighbours.
+    ///
+    /// Linearity, Planarity, Scattering, Verticality and others (PDAL's
+    /// filters.covariancefeatures).
     #[command(name = "covariancefeatures")]
     CovarianceFeatures {
         #[command(flatten)]
@@ -435,8 +469,9 @@ enum Filter {
         #[arg(long)]
         optimized: bool,
     },
-    /// Compute the eigenvalues of the covariance of each point's neighbours (PDAL's
-    /// filters.eigenvalues): Eigenvalue0, Eigenvalue1 and Eigenvalue2, ascending.
+    /// Compute covariance eigenvalues of each point's neighbours.
+    ///
+    /// Written to Eigenvalue0, Eigenvalue1 and Eigenvalue2, ascending (PDAL's filters.eigenvalues).
     Eigenvalues {
         #[command(flatten)]
         io: Io,
@@ -449,7 +484,9 @@ enum Filter {
         #[arg(long)]
         normalize: bool,
     },
-    /// Label approximately coplanar points (PDAL's filters.approximatecoplanar), in Coplanar.
+    /// Label approximately coplanar points.
+    ///
+    /// Written to Coplanar (PDAL's filters.approximatecoplanar).
     #[command(name = "approximatecoplanar")]
     ApproximateCoplanar {
         #[command(flatten)]
@@ -464,7 +501,9 @@ enum Filter {
         #[arg(long, default_value_t = 6.0)]
         thresh2: f64,
     },
-    /// Estimate the rank of each point's neighbourhood (PDAL's filters.estimaterank), in Rank.
+    /// Estimate the rank of each point's neighbourhood.
+    ///
+    /// Written to Rank (PDAL's filters.estimaterank).
     #[command(name = "estimaterank")]
     EstimateRank {
         #[command(flatten)]
@@ -476,8 +515,10 @@ enum Filter {
         #[arg(long, default_value_t = 0.01)]
         thresh: f64,
     },
-    /// Compute local outlier factors (PDAL's filters.lof): NNDistance,
-    /// LocalReachabilityDistance and LocalOutlierFactor.
+    /// Compute local outlier factors.
+    ///
+    /// Written to NNDistance, LocalReachabilityDistance and LocalOutlierFactor (PDAL's
+    /// filters.lof).
     Lof {
         #[command(flatten)]
         io: Io,
@@ -485,8 +526,9 @@ enum Filter {
         #[arg(long, default_value_t = 10)]
         minpts: usize,
     },
-    /// Compute the distance to each point's nearest neighbours (PDAL's filters.nndistance), in
-    /// NNDistance.
+    /// Compute the distance to each point's nearest neighbours.
+    ///
+    /// Written to NNDistance (PDAL's filters.nndistance).
     #[command(name = "nndistance")]
     NnDistance {
         #[command(flatten)]
@@ -498,8 +540,9 @@ enum Filter {
         #[arg(long, default_value = "kth")]
         mode: String,
     },
-    /// Compute the density of points around each point (PDAL's filters.radialdensity), in
-    /// RadialDensity.
+    /// Compute the density of points around each point.
+    ///
+    /// Written to RadialDensity (PDAL's filters.radialdensity).
     #[command(name = "radialdensity")]
     RadialDensity {
         #[command(flatten)]
@@ -508,8 +551,10 @@ enum Filter {
         #[arg(long, default_value_t = 1.0)]
         radius: f64,
     },
-    /// Compute the share of each point's neighbours that do not have it as theirs, in percent
-    /// (PDAL's filters.reciprocity), in Reciprocity.
+    /// Compute the share of non-reciprocal neighbours.
+    ///
+    /// The percentage of each point's neighbours that do not have it as theirs, written to
+    /// Reciprocity (PDAL's filters.reciprocity).
     Reciprocity {
         #[command(flatten)]
         io: Io,
@@ -517,8 +562,10 @@ enum Filter {
         #[arg(long, default_value_t = 8)]
         knn: usize,
     },
-    /// Compute how far each point is from the centre of the smallest ball around its neighbours
-    /// (PDAL's filters.miniball), in Miniball.
+    /// Compute the distance to the neighbours' miniball centre.
+    ///
+    /// How far each point is from the centre of the smallest ball around its neighbours, written to
+    /// Miniball (PDAL's filters.miniball).
     Miniball {
         #[command(flatten)]
         io: Io,
@@ -526,8 +573,10 @@ enum Filter {
         #[arg(long, default_value_t = 8)]
         knn: usize,
     },
-    /// Smooth elevations (PDAL's filters.zsmooth): a percentile of the Z of the neighbours in x
-    /// and y, in a dimension.
+    /// Smooth elevations.
+    ///
+    /// Writes a percentile of the Z of the neighbours in x and y to a dimension (PDAL's
+    /// filters.zsmooth).
     Zsmooth {
         #[command(flatten)]
         io: Io,
@@ -541,8 +590,9 @@ enum Filter {
         #[arg(long = "medianpercent", default_value_t = 50.0)]
         median_percent: f64,
     },
-    /// Classify ground points by skewness balancing (PDAL's filters.skewnessbalancing); the points
-    /// come out sorted by Z, as PDAL writes them.
+    /// Classify ground points by skewness balancing.
+    ///
+    /// The points come out sorted by Z, as PDAL writes them (PDAL's filters.skewnessbalancing).
     #[command(name = "skewnessbalancing")]
     SkewnessBalancing {
         #[command(flatten)]
@@ -579,8 +629,10 @@ enum Filter {
         #[arg(long)]
         invert: bool,
     },
-    /// Sort the points (PDAL's filters.sort): by the first dimension, then stably by each of the
-    /// others in turn.
+    /// Sort the points.
+    ///
+    /// Sorts by the first dimension, then stably by each of the others in turn (PDAL's
+    /// filters.sort).
     Sort {
         #[command(flatten)]
         io: Io,
@@ -591,7 +643,9 @@ enum Filter {
         #[arg(long, default_value = "asc")]
         order: String,
     },
-    /// Keep the point of the largest (or smallest) value of a dimension (PDAL's filters.locate).
+    /// Keep the point of a dimension's largest or smallest value.
+    ///
+    /// PDAL's filters.locate.
     Locate {
         #[command(flatten)]
         io: Io,
@@ -602,7 +656,9 @@ enum Filter {
         #[arg(long, default_value = "max")]
         minmax: String,
     },
-    /// Keep the points within the interquartile fences of a dimension (PDAL's filters.iqr).
+    /// Keep the points within a dimension's interquartile fences.
+    ///
+    /// PDAL's filters.iqr.
     Iqr {
         #[command(flatten)]
         io: Io,
@@ -613,8 +669,9 @@ enum Filter {
         #[arg(short, long, default_value_t = 1.5)]
         k: f64,
     },
-    /// Keep the points within median absolute deviations of the median of a dimension (PDAL's
-    /// filters.mad).
+    /// Keep the points within MADs of a dimension's median.
+    ///
+    /// MAD is the median absolute deviation (PDAL's filters.mad).
     Mad {
         #[command(flatten)]
         io: Io,
@@ -628,8 +685,9 @@ enum Filter {
         #[arg(long = "mad-multiplier", default_value_t = 1.4862)]
         mad_multiplier: f64,
     },
-    /// Keep the points within a range of a raster's values (PDAL's filters.dem); the raster is
-    /// taken to be in the points' CRS.
+    /// Keep the points within a range of a raster's values.
+    ///
+    /// The raster is taken to be in the points' CRS (PDAL's filters.dem).
     Dem {
         #[command(flatten)]
         io: Io,
@@ -643,8 +701,10 @@ enum Filter {
         #[arg(long, default_value_t = 1)]
         band: usize,
     },
-    /// Set dimensions from raster bands (PDAL's filters.colorization): Red, Green and Blue from
-    /// bands 1, 2 and 3 by default; the raster is taken to be in the points' CRS.
+    /// Set dimensions from raster bands.
+    ///
+    /// Sets Red, Green and Blue from bands 1, 2 and 3 by default; the raster is taken to be in the
+    /// points' CRS (PDAL's filters.colorization).
     Colorization {
         #[command(flatten)]
         io: Io,
@@ -655,8 +715,9 @@ enum Filter {
         #[arg(long, default_value = "Red,Green,Blue")]
         dimensions: String,
     },
-    /// Set a dimension from an attribute of the polygons the points are in (PDAL's
-    /// filters.overlay).
+    /// Set a dimension from attributes of enclosing polygons.
+    ///
+    /// Uses an attribute of the polygons the points are in (PDAL's filters.overlay).
     Overlay {
         #[command(flatten)]
         io: Io,
@@ -673,10 +734,12 @@ enum Filter {
         #[arg(long)]
         layer: Option<String>,
     },
-    /// Trace the boundary of the points on a grid of hexagons (PDAL's filters.hexbin), read in
-    /// chunks: the union of the hexagons with at least --threshold points, polygons with holes,
-    /// written to a vector dataset as one multipolygon feature (with its area, density, point and
-    /// hexagon counts). The grid is anchored at the first point, as PDAL's.
+    /// Trace the points' boundary on a grid of hexagons.
+    ///
+    /// Reads in chunks: the union of the hexagons with at least --threshold points, polygons with
+    /// holes, written to a vector dataset as one multipolygon feature (with its area, density,
+    /// point and hexagon counts). The grid is anchored at the first point, as PDAL's (PDAL's
+    /// filters.hexbin).
     Hexbin {
         /// The point cloud (LAS, LAZ, COPC, EPT, PLY or E57; a path, URL or `s3://` object).
         input: String,

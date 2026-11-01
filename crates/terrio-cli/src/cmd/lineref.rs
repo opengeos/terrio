@@ -17,13 +17,19 @@ pub struct Args {
 }
 
 #[derive(clap::Subcommand)]
+#[command(next_display_order = None)]
 enum Mode {
-    /// Cut a route into parts of equal position length from reference points with known
-    /// positions (ogrlineref -create).
+    /// Cut a route into parts of equal position length.
+    ///
+    /// Uses reference points with known positions (ogrlineref -create).
     Create(CreateArgs),
-    /// The position of coordinates on the parts (ogrlineref -get_pos).
+    /// Get the position of coordinates on the parts.
+    ///
+    /// Like ogrlineref -get_pos.
     GetPos(GetPosArgs),
-    /// The coordinates of a position on the parts (ogrlineref -get_coord).
+    /// Get the coordinates of a position on the parts.
+    ///
+    /// Like ogrlineref -get_coord.
     GetCoord(GetCoordArgs),
     /// The route between two positions (ogrlineref -get_subline).
     GetSubline(GetSublineArgs),
