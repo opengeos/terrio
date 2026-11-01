@@ -19,8 +19,8 @@ issue to talk through what you have in mind before starting anything large.
     - macOS: `xcode-select --install`
     - Windows: the Visual Studio build tools, which the rustup installer offers
 
-2. Get the code and check that it builds. Fork the repository first if you plan to open a pull
-   request, and clone your fork.
+2. Get the code and check that it builds. To open a pull request later, fork the repository on
+   GitHub and clone your fork in place of the URL below.
 
     ```sh
     git clone https://github.com/opengeos/terrio
@@ -115,6 +115,9 @@ maturin develop
 python -m pytest tests/test_blend.py
 ```
 
+On Windows, activate the environment with `.venv\Scripts\activate.bat` in cmd or
+`.venv\Scripts\Activate.ps1` in PowerShell.
+
 If maturin reports that both `VIRTUAL_ENV` and `CONDA_PREFIX` are set, run `conda deactivate` until
 no conda environment is active, then activate the virtual environment again. Some test files
 compare with other libraries such as rasterio and xarray; the `python` job of
@@ -172,7 +175,14 @@ expects a first Rust change to be perfect.
 
 ## Before opening a pull request
 
-Work on a branch, and run these for every Rust change:
+Work on a branch, and run this for every change. It checks whitespace, TOML, YAML and JSON, and
+Rust formatting and lints when Rust files changed. Install it once with `pip install pre-commit`.
+
+```sh
+pre-commit run --all-files
+```
+
+Add these for every Rust change:
 
 ```sh
 cargo fmt --all
@@ -187,10 +197,9 @@ TERRIO_TEST_DATA=../terrio-data cargo test --workspace    # drivers and operatio
 cargo build -p terrio --target wasm32-unknown-unknown     # library changes: it must build for the web
 RUSTDOCFLAGS="-D warnings" cargo doc -p terrio --no-deps  # new or changed public items
 cargo +1.90 check --workspace --all-targets               # new language features or dependencies
-pre-commit run --all-files                                # also checks whitespace, TOML, YAML and JSON
 ```
 
-The last two need a one-time install: `rustup toolchain install 1.90` and `pip install pre-commit`.
+The last one needs a one-time install: `rustup toolchain install 1.90`.
 
 Continuous integration runs the cargo commands on Linux for pull requests, skipping the real-data
 tests when only documentation changed. If you cannot run one locally, say so in the description; a
