@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `terrio info` of a rotated raster reports the extent of its four corners, and prints the
+  geotransform in place of a pixel size. South-up rasters lazily read report ordered bounds (#468).
+- `terrio formats` lists EPT as written, and the compression help and errors list LERC and JPEG XL
+  (#467).
 - The command line page opens with every command in alphabetical order, with its `--help`
   summary, and a test keeps the list current. The rest of the site was corrected against the code.
 - The documentation site runs the notebooks in the browser with JupyterLite, with

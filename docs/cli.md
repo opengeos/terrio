@@ -248,6 +248,9 @@ summarized from their header alone, and their overviews are listed. The subdatas
 HDF5 and GeoPackage files are listed as `gdalinfo` lists them (`SUBDATASET_N_NAME` and
 `SUBDATASET_N_DESC`).
 
+A rotated raster's extent is the box around its four corners, and its text summary prints the
+geotransform in place of a pixel size. The extent and WGS 84 extent match `gdalinfo`'s corners.
+
 `--oo KEY=VALUE` opens a vector dataset with an open option, as `convert --oo` does: for
 example the HEC-RAS options that join stored results to a layer (`terrio info plan.p03.hdf -l
 mesh_cells --oo "CELL_SUMMARIES=Maximum Water Surface"`; see [HEC-RAS](hecras.md)).

@@ -527,14 +527,7 @@ pub fn all_drivers() -> Vec<DriverInfo> {
             read: true,
             write: true,
         },
-        DriverInfo {
-            name: "EPT",
-            long_name: "Entwine Point Tile",
-            kind: Kind::PointCloud,
-            extensions: &["json"],
-            read: true,
-            write: false,
-        },
+        DriverInfo { name: "EPT", long_name: "Entwine Point Tile", kind: Kind::PointCloud, extensions: &["json"], read: true, write: true },
         DriverInfo { name: "PLY", long_name: "Polygon File Format", kind: Kind::PointCloud, extensions: &["ply"], read: true, write: true },
         DriverInfo {
             name: "E57",
@@ -1186,6 +1179,12 @@ mod allow_list_tests {
         assert_eq!(identify("STACIT:\"https://x/search\":asset=red").by_name, vec!["STACIT".to_string()]);
         assert_eq!(identify("https://x.blob.core.windows.net/c/a.TIF?sv=1&sig=2").by_name, vec!["GTIFF".to_string(), "COG".to_string()]);
         assert_eq!(identify("https://x/store.zarr/group/b02").by_name, vec!["ZARR".to_string()]);
+    }
+
+    #[cfg(feature = "pointcloud")]
+    #[test]
+    fn ept_is_listed_as_written() {
+        assert!(all_drivers().iter().any(|d| d.name == "EPT" && d.read && d.write));
     }
 
     #[test]
