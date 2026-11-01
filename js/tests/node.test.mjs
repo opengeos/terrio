@@ -3537,6 +3537,7 @@ test("ESRIJSON is recognized by content and keeps its holes and CRS", () => {
   const fc = ds.toGeoJSON();
   assert.equal(fc.features.length, 1);
   assert.equal(fc.features[0].properties.NAME, "Lake");
+  assert.equal(fc.features[0].geometry.type, "Polygon");
   assert.equal(fc.features[0].geometry.coordinates.length, 2);
   assert.equal(ds.crs, "EPSG:4326");
   ds.free();

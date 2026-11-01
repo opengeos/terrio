@@ -22,6 +22,24 @@
 use crate::crs::SpatialRef;
 use wbvector::{Coord, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
+/// Numbers the features at `by_position`, which have no object id, by their place in the layer. A
+/// place that another feature's object id holds takes a number after every object id and place, as
+/// ids must stay unique: updates and appends match features by them.
+pub(crate) fn number_by_position(layer: &mut Layer, by_position: &[usize]) {
+    let object_ids: std::collections::HashSet<u64> =
+        layer.features.iter().enumerate().filter(|(i, _)| by_position.binary_search(i).is_err()).map(|(_, f)| f.fid).collect();
+    let highest = object_ids.iter().copied().max().unwrap_or(0);
+    let mut next = highest.max(layer.features.len() as u64).saturating_add(1);
+    for &i in by_position {
+        layer.features[i].fid = if object_ids.contains(&(i as u64)) {
+            next = next.saturating_add(1);
+            next - 1
+        } else {
+            i as u64
+        };
+    }
+}
+
 /// One page of a query's results.
 pub(crate) struct Page {
     pub layer: Layer,
@@ -89,8 +107,9 @@ fn pages_wanted(url: &str, option: Option<bool>) -> bool {
 /// many features as the first page holds when the URL does not say, as GDAL's do, from
 /// `resultOffset` on. Reading stops once `stop_at` features are read. A page that adds nothing while
 /// saying there are more is an error, as is a page with other fields, and a page the same as the one
-/// before it, by its bytes or its first object id: the service ignores the offset. Features without
-/// object ids are numbered by their place in the whole layer.
+/// before it, by its bytes, its first object id or, without object ids, its features: the service
+/// ignores the offset. Features without object ids are numbered by [`number_by_position`] over the
+/// whole layer.
 #[cfg(remote)]
 pub(crate) fn read_pages(
     url: &str,
@@ -100,7 +119,7 @@ pub(crate) fn read_pages(
     decode: &dyn Fn(&[u8]) -> crate::Result<Page>,
 ) -> crate::Result<Layer> {
     let invalid = |message: String| crate::Error::InvalidData(format!("feature service: {message}"));
-    let Page { mut layer, mut more, by_position } = decode(first)?;
+    let Page { mut layer, mut more, mut by_position } = decode(first)?;
     // A service that ignores the offset answers the same features again, whatever else changes in
     // its answer: the first object id of a page shows it.
     let first_object_id = |l: &Layer, by_position: &[usize]| {
@@ -119,6 +138,7 @@ pub(crate) fn read_pages(
     let fields = names(&layer);
     let mut total = first.len() as u64;
     let mut previous = std::borrow::Cow::Borrowed(first);
+    let mut previous_len = layer.features.len();
     while more && stop_at.is_none_or(|n| layer.features.len() < n) {
         if layer.features.is_empty() {
             return Err(invalid("the service says there are more features, but its page has none".into()));
@@ -131,7 +151,13 @@ pub(crate) fn read_pages(
         }
         let page = decode(&bytes)?;
         let id = first_object_id(&page.layer, &page.by_position);
-        if bytes == *previous || (id.is_some() && id == previous_id) {
+        let repeats_features = || {
+            let last = &layer.features[layer.features.len() - previous_len..];
+            id.is_none()
+                && last.len() == page.layer.features.len()
+                && last.iter().zip(&page.layer.features).all(|(a, b)| a.geometry == b.geometry && a.attributes == b.attributes)
+        };
+        if bytes == *previous || (id.is_some() && id == previous_id) || repeats_features() {
             return Err(invalid(format!(
                 "the page at offset {offset} is the same as the one before it: the service seems to ignore the offset (FEATURE_SERVER_PAGING=NO reads one page)"
             )));
@@ -145,15 +171,15 @@ pub(crate) fn read_pages(
             return Err(invalid(format!("the page at offset {offset} has other fields than the first")));
         }
         more = page.more;
-        // Features without an object id are numbered by their place in the whole layer.
-        for (i, mut feature) in page.layer.features.into_iter().enumerate() {
-            if page.by_position.binary_search(&i).is_ok() {
-                feature.fid = layer.features.len() as u64;
-            }
+        previous_len = page.layer.features.len();
+        let offset_in_layer = layer.features.len();
+        by_position.extend(page.by_position.iter().map(|i| i + offset_in_layer));
+        for feature in page.layer.features {
             layer.push(feature);
         }
         previous = std::borrow::Cow::Owned(bytes);
     }
+    number_by_position(&mut layer, &by_position);
     Ok(layer)
 }
 
@@ -192,13 +218,18 @@ pub(crate) fn date_time(ms: i64) -> FieldValue {
     FieldValue::DateTime(super::datetime::format_datetime(ms, true))
 }
 
-/// The spatial reference a service names: `latestWkid`, else `wkid`, else WKT. A WKID that is
-/// not an EPSG code is tried as one of the ESRI authority's (102100 and its kin). The text comes
+/// The spatial reference a service names: `latestWkid`, else `wkid`, else WKT, the first of them
+/// that is known. A WKID that is not an EPSG code is tried as one of the ESRI authority's (102100
+/// and its kin). GDAL 3.13.3 stops at an unknown `latestWkid`, with no CRS. The text comes
 /// from a service, so it is read only as WKT (`SpatialRef::parse` would also open a file it names),
 /// and text without WKT's `KEYWORD[` start names no CRS.
 pub(crate) fn spatial_reference(latest_wkid: Option<u32>, wkid: Option<u32>, wkt: Option<&str>) -> Option<SpatialRef> {
-    if let Some(code) = latest_wkid.filter(|&c| c > 0).or(wkid.filter(|&c| c > 0)) {
-        return SpatialRef::from_epsg(code).or_else(|_| SpatialRef::from_esri(code)).ok();
+    let known = |code: Option<u32>| {
+        let code = code.filter(|&c| c > 0)?;
+        SpatialRef::from_epsg(code).or_else(|_| SpatialRef::from_esri(code)).ok()
+    };
+    if let Some(crs) = known(latest_wkid).or_else(|| known(wkid)) {
+        return Some(crs);
     }
     let wkt = wkt.map(str::trim)?;
     let keyword = wkt.split_once('[')?.0.trim_end();
@@ -325,6 +356,10 @@ mod tests {
         assert_eq!(spatial_reference(None, Some(4326), None).and_then(|c| c.authority()), Some(("EPSG", 4326)));
         assert!(spatial_reference(None, Some(102100), None).is_some());
         assert!(spatial_reference(None, None, None).is_none());
+        // An unknown `latestWkid` leaves `wkid` and the WKT to name it; GDAL 3.13.3 gives no CRS.
+        assert_eq!(spatial_reference(Some(999_999), Some(4326), None).and_then(|c| c.authority()), Some(("EPSG", 4326)));
+        let wgs84 = crate::crs::SpatialRef::from_epsg(4326).unwrap().to_wkt().unwrap();
+        assert!(spatial_reference(Some(999_999), Some(999_998), Some(&wgs84)).is_some());
         // A latest WKID of zero names none: the WKID still does.
         assert_eq!(spatial_reference(Some(0), Some(4326), None).and_then(|c| c.authority()), Some(("EPSG", 4326)));
     }

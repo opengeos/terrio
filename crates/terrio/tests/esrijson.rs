@@ -120,6 +120,52 @@ fn a_service_error_is_an_error() {
     let bytes = br#"{"error":{"code":498,"message":"Invalid token."}}"#.to_vec();
     let e = terrio::memory::open_vector_bytes(bytes, "query", &Default::default()).unwrap_err().to_string();
     assert!(e.contains("Invalid token."), "{e}");
+    // Whatever the order of its members, and without a code.
+    for doc in [r#"{"error":{"message":"Invalid token.","code":498}}"#, r#"{"error":{"message":"Invalid token."}}"#] {
+        let e = terrio::memory::open_vector_bytes(doc.as_bytes().to_vec(), "query", &Default::default()).unwrap_err().to_string();
+        assert!(e.contains("Invalid token."), "{e}");
+    }
+}
+
+#[test]
+fn a_page_with_metadata_before_its_features_is_recognized() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("query");
+    std::fs::write(&path, r#"{"objectIdFieldName":"OID","features":[{"attributes":{"OID":1}}]}"#).unwrap();
+    let path = path.to_str().unwrap();
+    assert_eq!(terrio::inspection::identify(path, false).unwrap().unwrap().driver, "ESRIJSON");
+    let ds = terrio::open_vector(path, &Default::default()).unwrap();
+    assert_eq!((ds.driver, ds.layers[0].features.len()), (VectorDriver::ESRIJSON, 1));
+}
+
+fn points(object_ids: &[&str]) -> String {
+    let features: Vec<String> =
+        object_ids.iter().map(|id| format!(r#"{{"attributes":{{"OBJECTID":{id}}},"geometry":{{"x":1,"y":2}}}}"#)).collect();
+    format!(
+        r#"{{"geometryType":"esriGeometryPoint","fields":[{{"name":"OBJECTID","type":"esriFieldTypeOID"}}],"features":[{}]}}"#,
+        features.join(",")
+    )
+}
+
+#[test]
+fn a_feature_without_an_object_id_does_not_take_another_s_id() {
+    let doc = points(&["null", "0", "null", "2"]);
+    let ds = terrio::memory::open_vector_bytes(doc.into_bytes(), "q.json", &Default::default()).unwrap();
+    let ids: Vec<u64> = ds.layers[0].features.iter().map(|f| f.fid).collect();
+    assert_eq!(ids, [5, 0, 6, 2]);
+    // Places no object id holds stay the features' ids.
+    let doc = points(&["null", "7", "null"]);
+    let ds = terrio::memory::open_vector_bytes(doc.into_bytes(), "q.json", &Default::default()).unwrap();
+    let ids: Vec<u64> = ds.layers[0].features.iter().map(|f| f.fid).collect();
+    assert_eq!(ids, [0, 7, 2]);
+}
+
+#[test]
+fn fields_times_features_cannot_exceed_what_the_document_justifies() {
+    let fields: Vec<String> = (0..20_000).map(|i| format!(r#"{{"name":"F{i}","type":"esriFieldTypeString"}}"#)).collect();
+    let doc = format!(r#"{{"fields":[{}],"features":[{}]}}"#, fields.join(","), vec!["{}"; 1_000_000].join(","));
+    let e = terrio::memory::open_vector_bytes(doc.into_bytes(), "q.json", &Default::default()).unwrap_err().to_string();
+    assert!(e.contains("features of 20000 fields"), "{e}");
 }
 
 #[test]

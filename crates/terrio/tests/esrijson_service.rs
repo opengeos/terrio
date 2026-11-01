@@ -127,6 +127,15 @@ fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
                 // The same features, with something else that changes on every answer.
                 "/repeats-stamped/query" => page(0, 2).replacen('{', &format!(r#"{{"stamp":{offset},"#), 1),
                 "/noid/query" => no_object_ids(offset, count),
+                // The same features without object ids, with something that changes on every answer.
+                "/noid-repeats/query" => no_object_ids(0, 2).replacen('{', &format!(r#"{{"stamp":{offset},"#), 1),
+                // A null object id on the first page, whose place is an object id of the second.
+                "/mixedid/query" if offset > 0 => {
+                    r#"{"fields":[{"name":"OBJECTID","type":"esriFieldTypeOID"}],"features":[{"attributes":{"OBJECTID":0},"geometry":{"x":1,"y":2}}]}"#.to_string()
+                }
+                "/mixedid/query" => {
+                    r#"{"fields":[{"name":"OBJECTID","type":"esriFieldTypeOID"}],"features":[{"attributes":{"OBJECTID":null},"geometry":{"x":0,"y":0}}],"exceededTransferLimit":true}"#.to_string()
+                }
                 // An object id field, and features that leave it null.
                 "/nullid/query" => page(offset, count).replace(r#""OBJECTID":"#, r#""OBJECTID":null,"ID":"#),
                 // GeoJSON whose first bytes show a sign of ESRI JSON, and whose root type comes last.
@@ -245,6 +254,7 @@ fn a_service_s_errors_and_stalls_are_errors() {
     assert!(error("/stalls/query?f=json").contains("has none"));
     assert!(error("/repeats/query?f=json").contains("same as the one before"));
     assert!(error("/repeats-stamped/query?f=json").contains("same as the one before"));
+    assert!(error("/noid-repeats/query?f=json").contains("same as the one before"));
     assert!(error("/FeatureServer/0?f=json").contains("no features"));
     // So with every entry point, GDAL backend or not: a recognized answer is not handed on.
     assert!(terrio::open(&format!("{base}/other/query?f=json")).is_err_and(|e| e.to_string().contains("other fields")));
@@ -259,6 +269,9 @@ fn features_without_object_ids_are_numbered_across_pages() {
     // Also those of a layer with an object id field that leave it null.
     let ds = terrio::open_vector(&format!("{base}/nullid/query?f=json"), &Default::default()).unwrap();
     assert_eq!(ids(&ds), [0, 1, 2, 3, 4]);
+    // An object id on a later page keeps its number, and the feature at that place moves on.
+    let ds = terrio::open_vector(&format!("{base}/mixedid/query?f=json"), &Default::default()).unwrap();
+    assert_eq!(ids(&ds), [3, 0]);
 }
 
 #[test]

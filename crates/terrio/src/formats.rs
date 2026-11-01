@@ -1108,12 +1108,12 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     if text.starts_with('{') || text.starts_with('[') {
         return Some(if crate::inspection::root_json_type(text).as_deref() == Some("CityJSON") {
             "CITYJSON"
+        } else if crate::drivers::vector::esrijson::is_esrijson(text.as_bytes()) {
+            "ESRIJSON"
         } else if text.contains("\"stac_version\"") {
             "STAC"
         } else if text.contains("\"Topology\"") {
             "TOPOJSON"
-        } else if crate::drivers::vector::esrijson::is_esrijson(text.as_bytes()) {
-            "ESRIJSON"
         } else {
             "GEOJSON"
         });
@@ -1474,5 +1474,18 @@ mod allow_list_tests {
         assert!(!both.contains(&"GPKG".to_string()), "the vector list drops GPKG");
         assert!(!both.contains(&"MEM".to_string()), "a name of neither kind needs both lists");
         assert_eq!(allowed_by_every_kind(&[None, None]), None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sniff;
+
+    #[test]
+    fn a_query_page_naming_other_formats_is_sniffed_as_esrijson() {
+        let page = br#"{"fields":[{"name":"Topology","type":"esriFieldTypeString"},{"name":"stac_version","type":"esriFieldTypeString"}],"features":[]}"#;
+        assert_eq!(sniff(page), Some("ESRIJSON"));
+        assert_eq!(sniff(br#"{"type":"Topology","objects":{}}"#), Some("TOPOJSON"));
+        assert_eq!(sniff(br#"{"type":"Feature","stac_version":"1.0.0","geometry":null}"#), Some("STAC"));
     }
 }

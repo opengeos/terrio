@@ -28,6 +28,9 @@ fn invalid(message: impl std::fmt::Display) -> Error {
 /// How much of a document [`is_esrijson`] looks at, as GDAL's driver does.
 pub(crate) const HEAD_BYTES: usize = 6000;
 
+/// The memory for attribute values that any document may take, whatever its size.
+const MAX_SPARSE_CELL_BYTES: usize = 1 << 30;
+
 /// Whether a JSON text's root `type` says it is GeoJSON or TopoJSON. The signs of ESRI JSON can
 /// appear among such a document's properties. ESRI JSON's own `type`, as a layer's description
 /// has (`Feature Layer`), is none of these.
@@ -66,9 +69,9 @@ pub(crate) fn is_esrijson(bytes: &[u8]) -> bool {
         return true;
     }
     let compact: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-    compact.starts_with("{\"features\":[{\"geometry\":{\"rings\":[")
-        || compact.starts_with("{\"features\":[{\"attributes\":{")
-        || compact.starts_with("{\"error\":{\"code\":")
+    compact.contains("\"features\":[{\"geometry\":{\"rings\":[")
+        || compact.contains("\"features\":[{\"attributes\":{")
+        || compact.starts_with("{\"error\":{")
         || compact.contains("\"spatialReference\":{\"wkid\":")
 }
 
@@ -110,16 +113,17 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     // The layer keeps a name once, and values are by position.
     let mut names = std::collections::HashSet::new();
     fields.retain(|f| names.insert(f.def.name.clone()));
+    // Every feature takes a value per field, given or not, so a small document can ask for far more
+    // than its size.
     let cells = features.len().saturating_mul(fields.len()).saturating_mul(std::mem::size_of::<FieldValue>());
-    let mut probe: Vec<u8> = Vec::new();
-    probe.try_reserve_exact(cells).map_err(|_| {
-        invalid(format!(
-            "{} features of {} fields need about {cells} bytes of memory, more than is available",
+    if cells > MAX_SPARSE_CELL_BYTES.max(bytes.len().saturating_mul(super::geojson::PARSE_MEMORY_PER_BYTE)) {
+        return Err(invalid(format!(
+            "{} features of {} fields need about {cells} bytes of memory, too many for a document of {} bytes",
             features.len(),
-            fields.len()
-        ))
-    })?;
-    drop(probe);
+            fields.len(),
+            bytes.len()
+        )));
+    }
     let mut layer = Layer::new(name);
     for f in &fields {
         layer.add_field(f.def.clone());
@@ -151,6 +155,7 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
         }
         layer.push(Feature { fid: fid.unwrap_or(n as u64), geometry, attributes: values });
     }
+    featureservice::number_by_position(&mut layer, &by_position);
     Ok(featureservice::Page { layer, more: doc.get("exceededTransferLimit").and_then(Value::as_bool).unwrap_or(false), by_position })
 }
 
