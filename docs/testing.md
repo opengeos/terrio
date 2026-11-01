@@ -42,6 +42,21 @@ entrypoint includes Node when that package exists. Counts, XYZ, rings, object
 identity/type, LoD, parents, attributes and semantics text are exact; source CRS is
 checked separately. The reader exposes flat primitives, not a lossless city model.
 
+CityGML uses the same specifications-first approach. Fetch the pinned citygml4j
+2.0/3.0 building examples and their published schema dependencies into the external
+data directory, then compare every explicit polygon against the source XML:
+
+```sh
+python scripts/compare_citygml.py ../terrio-data --fetch
+python scripts/conformance.py ../terrio-data --only citygml --strict
+```
+
+The suite requires current Python bindings and `lxml`; Node/WASM is included when
+`js/pkg-node/terrio.js` exists. Both source files must pass XSD validation against
+the cached OGC/W3C/OASIS schemas. XYZ, holes, owner/type, LoD, thematic face class
+and scalar source attributes are exact. Rust regressions additionally check local
+XLinks, implicit matrices, authority-axis order, compound CRSs and malformed input.
+
 `scripts/conformance.py` runs every comparison below in one go (and the EPSG accuracy test) and
 writes a Markdown report: for each suite and each format or operation, how many cases were
 compared and how many came out identical, within tolerance or different, with the details of the

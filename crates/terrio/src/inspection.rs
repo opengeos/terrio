@@ -236,6 +236,9 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
         return vector(VectorDriver::DXF);
     }
     if text.starts_with('<') {
+        if crate::drivers::vector::citygml::looks_like(bytes) {
+            return vector(VectorDriver::CityGML);
+        }
         let mut reader = quick_xml::Reader::from_str(text);
         loop {
             match reader.read_event() {

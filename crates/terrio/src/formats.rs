@@ -110,6 +110,8 @@ pub enum VectorDriver {
     TopoJSON,
     /// CityJSON 1.1 and 2.0, as a flat XYZ vector view (read only).
     CityJSON,
+    /// CityGML 2.0 and 3.0, as a flat XYZ vector view (read only).
+    CityGML,
     /// GeoPackage.
     GPKG,
     /// GeoParquet.
@@ -368,6 +370,7 @@ impl VectorDriver {
         Self::GeoJSONSeq,
         Self::TopoJSON,
         Self::CityJSON,
+        Self::CityGML,
         Self::GPKG,
         Self::Parquet,
         Self::FlatGeobuf,
@@ -396,6 +399,7 @@ impl VectorDriver {
             Self::GeoJSONSeq => ("GeoJSONSeq", "GeoJSON text sequences", &["geojsonl", "geojsons", "geojsonseq"], true, true),
             Self::TopoJSON => ("TopoJSON", "TopoJSON", &["topojson"], true, true),
             Self::CityJSON => ("CityJSON", "CityJSON 3D city models", &["city.json", "cityjson"], true, false),
+            Self::CityGML => ("CityGML", "CityGML 3D city models", &["citygml"], true, false),
             Self::GPKG => ("GPKG", "GeoPackage", &["gpkg"], true, true),
             Self::Parquet => ("Parquet", "GeoParquet", &["parquet", "geoparquet"], true, true),
             Self::FlatGeobuf => ("FlatGeobuf", "FlatGeobuf", &["fgb"], true, true),
@@ -495,6 +499,7 @@ impl VectorDriver {
             Self::OSM => return None,
             Self::Parquet
             | Self::CityJSON
+            | Self::CityGML
             | Self::DXF
             | Self::DWG
             | Self::GeoJSONSeq
@@ -979,7 +984,8 @@ const RASTER_CONTENT: &[&str] = &["GTIFF", "JP2", "PNG", "JPEG", "WEBP", "GRIB",
 
 /// The formats [`sniff`] names that terrio reads as vectors under names of theirs.
 #[cfg(remote)]
-const VECTOR_CONTENT: &[&str] = &["GEOJSON", "TOPOJSON", "CITYJSON", "PARQUET", "FLATGEOBUF", "ESRI SHAPEFILE", "KML", "GPX", "GML"];
+const VECTOR_CONTENT: &[&str] =
+    &["GEOJSON", "TOPOJSON", "CITYJSON", "CITYGML", "PARQUET", "FLATGEOBUF", "ESRI SHAPEFILE", "KML", "GPX", "GML"];
 
 /// Whether terrio reads files of the format [`sniff`] names `format` under names of theirs: as
 /// rasters, or, `generic`, as rasters or vectors.
@@ -1043,6 +1049,9 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     let text = String::from_utf8_lossy(head);
     let text = text.trim_start_matches('\u{feff}').trim_start();
     if text.starts_with('<') {
+        if crate::drivers::vector::citygml::looks_like(head) {
+            return Some("CITYGML");
+        }
         let lower = text.to_ascii_lowercase();
         return Some(if lower.contains("<vrtdataset") {
             "VRT"

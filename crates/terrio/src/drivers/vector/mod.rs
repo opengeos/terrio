@@ -3,6 +3,8 @@
 
 #[cfg(feature = "cad")]
 pub(crate) mod cad;
+mod city;
+pub mod citygml;
 pub mod cityjson;
 pub mod csv;
 pub(crate) mod datetime;
@@ -80,6 +82,7 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
         VectorDriver::DXF | VectorDriver::DWG => vec![cad::parse(std::fs::read(path)?, driver)?],
         VectorDriver::GeoJSON => vec![geojson::read(path)?],
         VectorDriver::CityJSON => cityjson::parse(&std::fs::read(path)?)?,
+        VectorDriver::CityGML => citygml::parse(&std::fs::read(path)?)?,
         VectorDriver::GeoJSONSeq => {
             let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
             vec![geojson::parse_seq(&std::fs::read(path)?, stem)?]
@@ -149,6 +152,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
         VectorDriver::DXF | VectorDriver::DWG => vec![cad::parse(bytes, driver)?],
         VectorDriver::GeoJSON => vec![geojson::parse(&bytes, stem)?],
         VectorDriver::CityJSON => cityjson::parse(&bytes)?,
+        VectorDriver::CityGML => citygml::parse(&bytes)?,
         VectorDriver::GeoJSONSeq => vec![geojson::parse_seq(&bytes, stem)?],
         VectorDriver::CSV => {
             let tsv = crate::formats::extension(name).as_deref() == Some("tsv");

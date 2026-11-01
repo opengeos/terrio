@@ -12,7 +12,7 @@
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
 use serde_json::Value;
-use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
+use wbvector::{Coord, FieldValue, Geometry, Layer, Ring};
 
 fn invalid(message: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("CityJSON: {message}"))
@@ -207,34 +207,6 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
     parse_with_limit(bytes, 256 * 1024 * 1024)
 }
 
-// Account for owned field text, coordinates and feature containers before cloning
-// a primitive. wbvector owns String values; it cannot share repeated attributes.
-fn push(layer: &mut Layer, geometry: Option<Geometry>, attrs: &[FieldValue], used: &mut usize, limit: usize) -> Result<()> {
-    let coordinates = match &geometry {
-        Some(Geometry::Point(_)) => 1,
-        Some(Geometry::LineString(points)) => points.len(),
-        Some(Geometry::Polygon { exterior, interiors }) => exterior.len() + interiors.iter().map(Ring::len).sum::<usize>(),
-        _ => 0,
-    };
-    let text = attrs
-        .iter()
-        .map(|a| match a {
-            FieldValue::Text(s) => s.len(),
-            _ => 0,
-        })
-        .sum::<usize>();
-    let cost = text
-        .saturating_add(coordinates.saturating_mul(std::mem::size_of::<Coord>()))
-        .saturating_add(std::mem::size_of_val(attrs))
-        .saturating_add(std::mem::size_of::<Feature>());
-    *used = used.saturating_add(cost);
-    if *used > limit {
-        return Err(invalid("flat feature payload exceeds the 256 MiB expansion limit; split the city model into smaller files"));
-    }
-    layer.push(Feature { fid: layer.features.len() as u64, geometry, attributes: attrs.to_vec() });
-    Ok(())
-}
-
 fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
     let mut used = 0usize;
     let doc: Value = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).map_err(invalid)?;
@@ -252,10 +224,7 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
         .transpose()?
         .unwrap_or_default();
     let objects = doc["CityObjects"].as_object().ok_or_else(|| invalid("missing CityObjects object"))?;
-    let mut layer = Layer::new("CityJSON");
-    for name in ["city_id", "city_type", "lod", "parents", "attributes", "geometry_type", "semantics", "surface_semantics"] {
-        layer.add_field(FieldDef::new(name, FieldType::Text));
-    }
+    let mut layer = super::city::layer("CityJSON");
     if let Some(crs) = doc["metadata"]["referenceSystem"].as_str() {
         SpatialRef::parse(crs).map_err(|e| invalid(format!("referenceSystem: {e}")))?.apply_to_layer(&mut layer);
     }
@@ -276,7 +245,7 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
             None => &[],
         };
         if geometries.is_empty() {
-            push(&mut layer, None, &attrs, &mut used, limit)?;
+            super::city::push_with_limit(&mut layer, None, &attrs, &mut used, limit)?;
             continue;
         }
         for geometry in geometries {
@@ -299,11 +268,11 @@ fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Vec<Layer>> {
                 (primitives, semantics)
             };
             if primitives.is_empty() {
-                push(&mut layer, None, &attrs, &mut used, limit)?;
+                super::city::push_with_limit(&mut layer, None, &attrs, &mut used, limit)?;
             }
             for (primitive, semantic) in primitives.into_iter().zip(surface_semantics) {
                 attrs[7] = semantic.map_or(FieldValue::Null, text);
-                push(&mut layer, Some(primitive), &attrs, &mut used, limit)?;
+                super::city::push_with_limit(&mut layer, Some(primitive), &attrs, &mut used, limit)?;
             }
         }
     }

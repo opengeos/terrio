@@ -362,6 +362,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | ESRI Shapefile | Shapefile | ✓ | ✓ | shp |
 | GeoJSON | GeoJSON | ✓ | ✓ | geojson, json |
 | CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | — | city.json, cityjson, json (by content) |
+| CityGML | CityGML 2.0 and 3.0 (flat XYZ view) | ✓ | — | citygml, gml/xml (by content) |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
 | KML | KML | ✓ | ✓ | kml |
@@ -414,6 +415,41 @@ available it rejects output instead of writing GeoJSON under a CityJSON filename
 The [CityJSON 1.1](https://www.cityjson.org/specs/1.1.3/) and
 [2.0 specifications](https://www.cityjson.org/specs/2.0.2/) and their published JSON
 Schemas define conformance. GDAL 3.13.3 has no CityJSON driver.
+
+### CityGML
+
+The pure-Rust `CityGML` reader accepts 2.0 and 3.0 city models, using namespace
+URIs rather than prefix names. `.gml` is distinguished from ordinary GML by the
+root CityModel; `.citygml` selects this driver explicitly. Ordinary GML retains
+its sibling application-schema lookup. XML and local geometry XLinks are parsed
+without fetching external resources; invalid XML, duplicate IDs, unresolved
+references, reference cycles and malformed coordinate lists fail explicitly.
+
+The `CityGML` layer uses the same flat fields as CityJSON. Polygon faces retain
+Z and interior rings; solids (including interior shells), composite surfaces,
+triangle/rectangle patches, linear curves and point collections become ordinary
+primitives. Local polygon references shared by a solid and its thematic boundary
+produce one face per owner/LoD/orientation, with the boundary's semantic record in
+`surface_semantics`. `semantics` stays null because CityGML has no CityJSON-style
+indexed semantics object. Nested city objects retain parent IDs and nonspatial
+containers. Missing object IDs receive generated IDs. Object properties are JSON
+text; measurement units and code spaces are retained with their values.
+
+Affine implicit geometry uses its matrix before adding the reference point.
+Inherited coordinate dimensions, CRS names, legacy compound OGC URNs and
+geographic authority-axis order are supported. A flat layer requires a consistent
+CRS; mixing unknown and known CRSs, or distinct CRSs, fails explicitly.
+
+This is a materialized vector view with the shared 256 MiB estimated flat-feature
+payload limit. It does not retain solid/shell topology, full city-model hierarchy,
+textures/materials, ADE semantics or general metadata for lossless round trips.
+External geometry references, linked coordinate/ring content, nonlinear curve
+segments and DTD/entity declarations are outside this reader. CityGML writing is
+a separate step in [#462](https://github.com/opengeos/terrio/issues/462).
+
+Conformance follows the OGC [CityGML 2.0 encoding](https://schemas.opengis.net/citygml/2.0/)
+and [CityGML 3.0 encoding](https://docs.ogc.org/is/21-006r2/21-006r2.html) and published
+schemas. GDAL 3.13.3's partial CityGML reader is informational.
 
 ### Other vector formats
 

@@ -179,6 +179,18 @@ test("CityJSON late root type retains vertical XYZ and unknown CRS", () => {
   ds.free();
 });
 
+test("CityGML 3.0 reads vertical XYZ with object identity and CRS", () => {
+  const xml = `<CityModel xmlns="http://www.opengis.net/citygml/3.0" xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0">
+    <cityObjectMember><b:Building g:id="house"><b:lod2MultiSurface><g:MultiSurface srsName="EPSG:32632" srsDimension="3"><g:surfaceMember><g:Polygon><g:exterior><g:LinearRing><g:posList>10 20 30 10 21 30 10 21 31 10 20 30</g:posList></g:LinearRing></g:exterior></g:Polygon></g:surfaceMember></g:MultiSurface></b:lod2MultiSurface></b:Building></cityObjectMember></CityModel>`;
+  const ds = terrio.open(new TextEncoder().encode(xml), "model.gml");
+  const features = ds.toGeoJSON().features;
+  assert.equal(features.length, 1);
+  assert.equal(features[0].properties.city_id, "house");
+  assert.equal(features[0].properties.lod, "2");
+  assert.deepEqual(features[0].geometry.coordinates[0].slice(0, 3), [[10, 20, 30], [10, 21, 30], [10, 21, 31]]);
+  ds.free();
+});
+
 test("vector from GeoJSON, to other formats and back", () => {
   const ds = terrio.fromGeoJSON(SQUARES, "squares");
   assert.equal(ds.kind, "vector");
