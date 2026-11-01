@@ -17,27 +17,37 @@ pub struct Args {
 }
 
 #[derive(clap::Subcommand)]
+#[command(next_display_order = None)]
 enum Command {
-    /// List a directory (or describe a file): local, /vsimem/, S3, GCS, Azure, HTTP index pages,
-    /// zip and tar archives (like `gdal vsi list`).
+    /// List a directory or describe a file.
+    ///
+    /// Supports local, /vsimem/, S3, GCS, Azure, HTTP index pages, zip and tar archives (like `gdal
+    /// vsi list`).
     #[command(visible_alias = "ls")]
     List(ListArgs),
-    /// Copy a file, or a directory with -r, between locations; archive members can be copied out
-    /// (like `gdal vsi copy`).
+    /// Copy a file or directory between locations.
+    ///
+    /// Directories need -r; archive members can be copied out (like `gdal vsi copy`).
     #[command(visible_alias = "cp")]
     Copy(CopyArgs),
-    /// Delete a file, or a directory and its contents with -r (like `gdal vsi delete`). Refuses
-    /// empty paths, roots, the home and current directories, whole buckets, archives and HTTP.
+    /// Delete a file or directory.
+    ///
+    /// Directories and their contents need -r (like `gdal vsi delete`). Refuses empty paths, roots,
+    /// the home and current directories, whole buckets, archives and HTTP.
     #[command(visible_aliases = ["rm", "rmdir", "del"])]
     Delete(DeleteArgs),
-    /// Move or rename a file or directory (like `gdal vsi move`): the source is deleted only once
-    /// it was copied in full.
+    /// Move or rename a file or directory.
+    ///
+    /// The source is deleted only once it was copied in full (like `gdal vsi move`).
     #[command(visible_aliases = ["mv", "ren", "rename"])]
     Move(MoveArgs),
-    /// Copy the files missing or out of date in the target; nothing is deleted (like
-    /// `gdal vsi sync`).
+    /// Copy files missing or out of date in the target.
+    ///
+    /// Nothing is deleted (like `gdal vsi sync`).
     Sync(SyncArgs),
-    /// Seek-optimized ZIP (SOZip 1.0): create, list, optimize, validate (like `gdal vsi sozip`).
+    /// Seek-optimized ZIP (SOZip 1.0).
+    ///
+    /// Create, list, optimize, validate (like `gdal vsi sozip`).
     Sozip(SozipArgs),
 }
 
@@ -48,16 +58,23 @@ struct SozipArgs {
 }
 
 #[derive(clap::Subcommand)]
+#[command(next_display_order = None)]
 enum SozipCommand {
-    /// Create a SOZip archive from files, or add them to an existing archive (like
-    /// `gdal vsi sozip create`).
+    /// Create a SOZip archive, or add files to an existing one.
+    ///
+    /// Like `gdal vsi sozip create`.
     Create(SozipCreateArgs),
-    /// List an archive's members with their SOZip status (like `gdal vsi sozip list`).
+    /// List an archive's members with their SOZip status.
+    ///
+    /// Like `gdal vsi sozip list`.
     List(SozipListArgs),
-    /// Rewrite a zip archive as a SOZip archive (like `gdal vsi sozip optimize`).
+    /// Rewrite a zip archive as a SOZip archive.
+    ///
+    /// Like `gdal vsi sozip optimize`.
     Optimize(SozipOptimizeArgs),
-    /// Check an archive and its SOZip indexes; exits with status 1 when invalid (like
-    /// `gdal vsi sozip validate`).
+    /// Check an archive and its SOZip indexes.
+    ///
+    /// Exits with status 1 when invalid (like `gdal vsi sozip validate`).
     Validate(SozipValidateArgs),
 }
 

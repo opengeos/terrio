@@ -11,6 +11,9 @@
 - A first range request answered 206 with an unknown total length
   (`Content-Range: bytes 0-16383/*`) fails with its own message, distinct from
   that of a 206 without `Content-Range` (#451).
+- `terrio --help` and the nested command lists are sorted alphabetically, with a
+  one-line summary of at most 60 characters per command. Details such as the
+  matching GDAL or PDAL tool moved to each command's own `--help`.
 
 ## 0.6.0 (2026-10-31)
 

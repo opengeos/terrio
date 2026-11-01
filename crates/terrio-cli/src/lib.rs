@@ -22,157 +22,250 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[command(next_display_order = None)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
     /// Summarize a raster, vector dataset or point cloud.
     Info(cmd::info::Args),
-    /// Create a metadata-only A.TOC index from existing CADRG frames.
+    /// Create an A.TOC index from existing CADRG frames.
+    ///
+    /// The index is metadata-only.
     RpftocCreate(cmd::rpftoc::Args),
-    /// Repack a GeoPackage in place, preserving all encoded records and schema objects.
+    /// Repack a GeoPackage in place.
+    ///
+    /// Preserves all encoded records and schema objects.
     GpkgRepack(cmd::gpkg::RepackArgs),
-    /// Validate a self-contained GeoPackage against core and extension requirements.
+    /// Validate a self-contained GeoPackage.
+    ///
+    /// Checks core and extension requirements.
     GpkgValidate(cmd::gpkg::ValidateArgs),
-    /// Identify many datasets from bounded headers, without decoding their payloads.
+    /// Identify many datasets from their headers.
+    ///
+    /// Reads bounded headers, without decoding payloads.
     Identify(cmd::inspection::IdentifyArgs),
-    /// Copy a dataset and every associated file, preserving encoded data.
+    /// Copy a dataset and every associated file.
+    ///
+    /// Preserves encoded data.
     DatasetCopy(cmd::dataset_files::TransferArgs),
-    /// Rename a dataset and its associated files; directory datasets include the complete subtree.
+    /// Rename a dataset and its associated files.
+    ///
+    /// Directory datasets include the complete subtree.
     DatasetRename(cmd::dataset_files::TransferArgs),
-    /// Delete owned dataset files, preserving referenced VRT assets.
-    /// Directory datasets include the complete subtree, including extra files.
+    /// Delete a dataset's owned files.
+    ///
+    /// Preserves referenced VRT assets. Directory datasets include the complete subtree, including
+    /// extra files.
     DatasetDelete(cmd::dataset_files::DeleteArgs),
     /// List the owned files of a dataset.
     DatasetFiles(cmd::dataset_files::FilesArgs),
-    /// Create a Parquet metadata-only file from explicit partitions.
+    /// Create a metadata-only Parquet file.
+    ///
+    /// Built from explicit partitions.
     ParquetCreateMetadata(cmd::parquet_metadata::Args),
-    /// Read all exposed dataset content to detect decoding failures.
+    /// Read all exposed content to detect decoding failures.
     Check(cmd::inspection::CheckArgs),
-    /// Inspect native scientific groups, named dimensions and arrays without reading payloads.
+    /// Inspect native scientific groups, dimensions and arrays.
+    ///
+    /// Reports named dimensions, without reading payloads.
     Mdinfo(cmd::multidim::InfoArgs),
-    /// Read a native multidimensional hyperslab with named-axis slicing and transposition.
+    /// Read a native multidimensional hyperslab.
+    ///
+    /// Supports named-axis slicing and transposition.
     Mdread(cmd::multidim::ReadArgs),
-    /// Snapshot native numeric groups, coordinates and chunks between netCDF-4 and Zarr.
+    /// Convert native numeric data between netCDF-4 and Zarr.
+    ///
+    /// Snapshots groups, coordinates and chunks.
     Mdconvert(cmd::multidim::ConvertArgs),
-    /// Mosaic multidimensional arrays by their dimension coordinates.
+    /// Mosaic multidimensional arrays by dimension coordinates.
     Mdmosaic(cmd::multidim::MosaicArgs),
-    /// Convert a dataset to another format, optionally reprojecting it. Point clouds convert to
-    /// LAS, LAZ, COPC or vector point layers.
+    /// Convert a dataset to another format.
+    ///
+    /// Optionally reprojects it. Point clouds convert to LAS, LAZ, COPC or vector point layers.
     Convert(cmd::convert::Args),
     /// List the formats terrio reads and writes.
     Formats(cmd::formats::Args),
-    /// Describe a coordinate reference system, or transform coordinates between two.
+    /// Describe a CRS, or transform coordinates between two.
     Crs(cmd::crs::Args),
     /// Burn vector geometries into a raster.
     Rasterize(cmd::rasterize::Args),
-    /// Turn a raster band into polygons of connected pixels with the same value.
+    /// Turn a raster band into polygons.
+    ///
+    /// Each polygon covers connected pixels with the same value.
     Polygonize(cmd::polygonize::Args),
-    /// One planar, two-dimensional centroid per feature, preserving attributes and CRS.
+    /// Compute one centroid per feature.
+    ///
+    /// Planar and two-dimensional, preserving attributes and CRS.
     #[command(visible_alias = "centroids")]
     Centroid(cmd::processing::GeometryArgs),
-    /// Split multipart geometries and collections, preserving attributes and Z/M.
+    /// Split multipart geometries and collections.
+    ///
+    /// Preserves attributes and Z/M.
     #[command(visible_alias = "multipart-to-singlepart")]
     Singlepart(cmd::processing::GeometryArgs),
-    /// Extract vertices as points, with source attributes and part/ring/vertex indices.
+    /// Extract vertices as points.
+    ///
+    /// Keeps source attributes and adds part, ring and vertex indices.
     #[command(visible_alias = "extract-vertices")]
     Vertices(cmd::processing::GeometryArgs),
-    /// Exact valid-data footprint of a raster, with holes and disconnected regions.
+    /// Compute the exact valid-data footprint of a raster.
+    ///
+    /// Includes holes and disconnected regions.
     Footprint(cmd::processing::FootprintArgs),
-    /// Compare two rasters: files, CRS, geotransform, sizes, bands, pixels, overviews, masks,
-    /// metadata and subdatasets (like gdal raster compare and gdalcompare.py). The exit status is
-    /// the number of differences.
+    /// Compare two rasters.
+    ///
+    /// Compares files, CRS, geotransform, sizes, bands, pixels, overviews, masks, metadata and
+    /// subdatasets (like gdal raster compare and gdalcompare.py). The exit status is the number of
+    /// differences.
     Compare(cmd::compare::Args),
-    /// Query pixel values at pixel/line or georeferenced positions, from arguments, standard input
-    /// or a vector dataset (like gdal raster pixel-info and gdallocationinfo).
+    /// Query pixel values at given positions.
+    ///
+    /// Positions are pixel/line or georeferenced, from arguments, standard input or a vector
+    /// dataset (like gdal raster pixel-info and gdallocationinfo).
     #[command(visible_alias = "locationinfo")]
     PixelInfo(cmd::pixel_info::Args),
-    /// Check that a GeoTIFF is a Cloud Optimized GeoTIFF, with the checks and messages of
-    /// rio-cogeo's cog_validate (GDAL's validate_cloud_optimized_geotiff.py): only headers and
-    /// chunk offsets are read. The exit status is 1 when the file is not a valid COG.
+    /// Check that a GeoTIFF is a Cloud Optimized GeoTIFF.
+    ///
+    /// Uses the checks and messages of rio-cogeo's cog_validate (GDAL's
+    /// validate_cloud_optimized_geotiff.py): only headers and chunk offsets are read. The exit
+    /// status is 1 when the file is not a valid COG.
     ValidateCog(cmd::validate_cog::Args),
-    /// Write raster pixels as XYZ text: one line of coordinates and band values per pixel (like
-    /// gdal2xyz.py).
+    /// Write raster pixels as XYZ text (like gdal2xyz.py).
+    ///
+    /// Writes one line of coordinates and band values per pixel.
     Xyz(cmd::xyz::Args),
-    /// Sample one or more raster bands at points, transforming coordinates for each raster.
+    /// Sample raster bands at points.
+    ///
+    /// Samples one or more bands, transforming coordinates for each raster.
     #[command(visible_alias = "point-sample")]
     Sample(cmd::processing::SampleArgs),
-    /// Contour lines from a raster band, with interval or fixed elevation levels.
+    /// Trace contour lines from a raster band.
+    ///
+    /// Uses interval or fixed elevation levels.
     #[command(visible_alias = "contours")]
     Contour(cmd::processing::ContourArgs),
-    /// Per-polygon statistics across multiple raster bands, with CRS transformations.
+    /// Compute per-polygon statistics of raster bands.
+    ///
+    /// Handles multiple bands and CRS transformations.
     #[command(visible_alias = "zonal")]
     ZonalStats(cmd::processing::ZonalArgs),
-    /// Query vector layers with read-only SELECT, WHERE, ORDER BY and LIMIT.
+    /// Query vector layers with read-only SQL.
+    ///
+    /// Supports SELECT, WHERE, ORDER BY and LIMIT.
     Sql(cmd::processing::SqlArgs),
     /// Planar buffer in input CRS units, with round caps and joins.
     Buffer(cmd::processing::BufferArgs),
-    /// Clip points, lines and polygons to a bbox, geometry or polygon/raster template.
+    /// Clip features to a bbox, geometry or template.
+    ///
+    /// Clips points, lines and polygons; a template is a polygon or raster dataset.
     VectorClip(cmd::vector_clip::Args),
-    /// Overlay valid polygon layers in a common CRS, preserving both sets of attributes.
+    /// Overlay valid polygon layers.
+    ///
+    /// Works in a common CRS, preserving both sets of attributes.
     Overlay(cmd::processing::OverlayArgs),
     /// Polygon, line and point layer algebra (seven operations).
     LayerAlgebra(cmd::processing::LayerAlgebraArgs),
-    /// Chain raster/vector operations without serialized intermediate files; load/save GDALG.
+    /// Chain raster and vector operations.
+    ///
+    /// Runs without serialized intermediate files; loads and saves GDALG.
     Pipeline(cmd::pipeline::Args),
     /// Dissolve polygons across a layer or by selected attributes.
     Dissolve(cmd::processing::DissolveArgs),
-    /// Report geometry validity and the first reason for each feature.
+    /// Report the validity of each feature's geometry.
+    ///
+    /// Includes the first reason for each feature.
     #[command(visible_alias = "validity")]
     IsValid(cmd::processing::GeometryArgs),
-    /// Repair invalid geometries, preserving attributes and reporting failures.
+    /// Repair invalid geometries.
+    ///
+    /// Preserves attributes and reports failures.
     MakeValid(cmd::processing::GeometryArgs),
-    /// Find overlapping interiors, unmatched shared nodes and narrow gaps in polygon coverages.
+    /// Find errors in polygon coverages.
+    ///
+    /// Finds overlapping interiors, unmatched shared nodes and narrow gaps.
     CheckCoverage(cmd::processing::CheckCoverageArgs),
-    /// Simplify shared polygon coverage boundaries while preserving topology.
+    /// Simplify shared polygon coverage boundaries.
+    ///
+    /// Preserves topology.
     SimplifyCoverage(cmd::processing::SimplifyCoverageArgs),
-    /// Snap shared boundaries and remove overlaps and enclosed narrow gaps from polygon coverages.
+    /// Repair polygon coverages.
+    ///
+    /// Snaps shared boundaries and removes overlaps and enclosed narrow gaps.
     CleanCoverage(cmd::processing::CleanCoverageArgs),
-    /// Snap, deduplicate, close rings, remove collapsed parts and repair polygon topology.
+    /// Clean up vector geometries.
+    ///
+    /// Snaps, deduplicates, closes rings, removes collapsed parts and repairs polygon topology.
     Clean(cmd::processing::CleanArgs),
-    /// Topology-preserving Douglas-Peucker simplification per feature (like gdal vector
-    /// simplify and ogr2ogr -simplify).
+    /// Simplify features with Douglas-Peucker.
+    ///
+    /// Topology-preserving, per feature (like gdal vector simplify and ogr2ogr -simplify).
     Simplify(cmd::vector_geom::SimplifyArgs),
-    /// Add vertices so that no segment is longer than a length (like gdal vector segmentize).
+    /// Add vertices to limit segment length.
+    ///
+    /// No segment stays longer than a given length (like gdal vector segmentize).
     Segmentize(cmd::vector_geom::SegmentizeArgs),
-    /// The convex hull of each feature's geometry (like gdal vector convex-hull).
+    /// Compute the convex hull of each feature.
+    ///
+    /// Like gdal vector convex-hull.
     ConvexHull(cmd::vector_geom::HullArgs),
-    /// The concave hull of each feature's geometry, of its polygons for polygons (like gdal
-    /// vector concave-hull).
+    /// Compute the concave hull of each feature.
+    ///
+    /// For polygons, the hull is of the feature's polygons (like gdal vector concave-hull).
     ConcaveHull(cmd::vector_geom::ConcaveHullArgs),
-    /// Swap the X and Y coordinates of every geometry (like gdal vector swap-xy).
+    /// Swap the X and Y coordinates of every geometry.
+    ///
+    /// Like gdal vector swap-xy.
     SwapXy(cmd::vector_geom::HullArgs),
-    /// Change geometry types and dimensions: multi/single, a given type, XY/XYZ/XYM/XYZM (like
-    /// gdal vector set-geom-type).
+    /// Change geometry types and dimensions.
+    ///
+    /// Converts multi/single, to a given type, or XY/XYZ/XYM/XYZM (like gdal vector set-geom-type).
     SetGeomType(cmd::vector_geom::SetGeomTypeArgs),
-    /// Combine geometries into collections, by groups of field values (like gdal vector combine).
+    /// Combine geometries into collections.
+    ///
+    /// Groups by field values (like gdal vector combine).
     Combine(cmd::vector_geom::CombineArgs),
-    /// Sort features spatially, along a Hilbert curve or an STR tree (like gdal vector sort).
+    /// Sort features spatially.
+    ///
+    /// Sorts along a Hilbert curve or an STR tree (like gdal vector sort).
     Sort(cmd::vector_geom::SortArgs),
-    /// Concatenate vector layers and datasets into one or several layers (like gdal vector concat
-    /// and ogrmerge.py).
+    /// Concatenate vector layers and datasets.
+    ///
+    /// Writes one or several layers (like gdal vector concat and ogrmerge.py).
     Concat(cmd::vector_dataset::ConcatArgs),
-    /// Split a vector dataset into files by field values, Hive-style or flat (like gdal vector
-    /// partition).
+    /// Split a vector dataset into files by field values.
+    ///
+    /// Writes Hive-style or flat (like gdal vector partition).
     Partition(cmd::vector_dataset::PartitionArgs),
-    /// Change the type of vector fields, converting their values as GDAL does (like gdal vector
-    /// set-field-type).
+    /// Change the type of vector fields.
+    ///
+    /// Converts their values as GDAL does (like gdal vector set-field-type).
     SetFieldType(cmd::vector_dataset::SetFieldTypeArgs),
-    /// Point geometries from coordinate fields (like gdal vector make-point).
+    /// Make point geometries from coordinate fields.
+    ///
+    /// Like gdal vector make-point.
     MakePoint(cmd::vector_dataset::MakePointArgs),
-    /// Create a vector dataset or layer from an OGR_SCHEMA, a template dataset or explicit fields
-    /// (like gdal vector create).
+    /// Create a vector dataset or layer.
+    ///
+    /// Starts from an OGR_SCHEMA, a template dataset or explicit fields (like gdal vector create).
     Create(cmd::vector_dataset::CreateArgs),
-    /// Print the OGR_SCHEMA JSON of a vector dataset (like gdal vector export-schema).
+    /// Print the OGR_SCHEMA JSON of a vector dataset.
+    ///
+    /// Like gdal vector export-schema.
     ExportSchema(cmd::vector_dataset::ExportSchemaArgs),
-    /// Rename vector layers, in place in GeoPackages or on output (like gdal vector
-    /// rename-layer).
+    /// Rename vector layers.
+    ///
+    /// Works in place in GeoPackages or on output (like gdal vector rename-layer).
     RenameLayer(cmd::vector_dataset::RenameLayerArgs),
-    /// Edit the CRS, geometry type and metadata of vector layers, in place in GeoPackages or on
-    /// output (like gdal vector edit).
+    /// Edit the CRS, geometry type and metadata of vector layers.
+    ///
+    /// Works in place in GeoPackages or on output (like gdal vector edit).
     Edit(cmd::vector_dataset::EditArgs),
-    /// Update an existing vector dataset from another, matching features by FID or key fields
-    /// (like gdal vector update).
+    /// Update a vector dataset from another.
+    ///
+    /// Matches features by FID or key fields (like gdal vector update).
     Update(cmd::vector_dataset::UpdateArgs),
-    /// Subset, resize, rescale or change the type of a raster (like gdal_translate).
+    /// Subset, resize, rescale or change the type of a raster.
+    ///
+    /// Like gdal_translate.
     Translate(cmd::translate::Args),
     /// Convert RGB Byte images to indexed color.
     RgbToPalette(cmd::palette::RgbArgs),
@@ -182,89 +275,139 @@ enum Command {
     AttachPalette(cmd::palette::AttachArgs),
     /// Reproject and resample rasters (like gdalwarp).
     Warp(cmd::warp::Args),
-    /// Read an indexed raster catalog, selecting tiles spatially and compositing in z-order.
+    /// Read an indexed raster catalog.
+    ///
+    /// Selects tiles spatially and composites them in z-order.
     Catalog(cmd::catalog::Args),
     /// Create a raster footprint index, with optional GTI metadata.
     RasterIndex(cmd::tile_index::RasterArgs),
     /// Generate separate XYZ/TMS raster tiles in a directory.
     Tile(cmd::raster_tile::Args),
-    /// Retile mosaics into overlapping files and recursive pyramid levels.
+    /// Retile mosaics into overlapping files and pyramids.
+    ///
+    /// Builds recursive pyramid levels.
     Retile(cmd::raster_retile::Args),
-    /// Create a raster footprint catalog with GTI virtual-raster metadata.
+    /// Create a virtual-raster footprint catalog (GTI).
     GtiCreate(cmd::tile_index::RasterArgs),
     /// Create a vector envelope index of vector dataset layers.
     VectorIndex(cmd::tile_index::VectorArgs),
-    /// Mosaic rasters into one, or into a virtual raster (like gdalbuildvrt and gdal_merge).
+    /// Mosaic rasters into one, or into a virtual raster.
+    ///
+    /// Like gdalbuildvrt and gdal_merge.
     Mosaic(cmd::mosaic::Args),
-    /// Terrain analysis: hillshade, slope, aspect, color relief, TRI, TPI, roughness (like gdaldem).
+    /// Terrain analysis: hillshade, slope, aspect and more.
+    ///
+    /// Computes hillshade, slope, aspect, color relief, TRI, TPI and roughness (like gdaldem).
     Dem(cmd::dem::Args),
-    /// Raster algebra: band math in NumPy syntax over one or more rasters (like gdal_calc.py).
+    /// Raster algebra: band math in NumPy syntax.
+    ///
+    /// Works over one or more rasters (like gdal_calc.py).
     Calc(cmd::calc::Args),
-    /// Distance from every pixel to the nearest target pixel (like gdal_proximity.py).
+    /// Compute the distance to the nearest target pixel.
+    ///
+    /// Computed for every pixel (like gdal_proximity.py).
     Proximity(cmd::proximity::Args),
-    /// Weighted Brovey pansharpening of panchromatic and spectral bands.
+    /// Weighted Brovey pansharpening.
+    ///
+    /// Combines panchromatic and spectral bands.
     Pansharpen(cmd::pansharpen::Args),
-    /// Single-observer visibility or minimum visible height (like gdal_viewshed).
+    /// Single-observer visibility or minimum visible height.
+    ///
+    /// Like gdal_viewshed.
     Viewshed(cmd::viewshed::Args),
-    /// Build, delete or refresh the overviews of a GeoTIFF in place or in its .ovr sidecar (like
-    /// gdaladdo and gdal raster overview add/delete/refresh).
+    /// Build, delete or refresh GeoTIFF overviews.
+    ///
+    /// Works in place or in a .ovr sidecar (like gdaladdo and gdal raster overview
+    /// add/delete/refresh).
     #[command(visible_alias = "addo")]
     Overviews(cmd::overviews::Args),
-    /// Edit a GeoTIFF in place: CRS, geotransform, nodata, metadata, statistics, histograms (like
-    /// gdal raster edit and gdal_edit.py), or move its georeferencing to another CRS (gdalmove.py).
+    /// Edit a GeoTIFF in place.
+    ///
+    /// Edits CRS, geotransform, nodata, metadata, statistics and histograms (like gdal raster edit
+    /// and gdal_edit.py), or moves its georeferencing to another CRS (gdalmove.py).
     EditRaster(cmd::edit::Args),
-    /// Create a raster filled with burn values, from scratch or like a template (like gdal raster
-    /// create and gdal_create).
+    /// Create a raster filled with burn values.
+    ///
+    /// Starts from scratch or like a template (like gdal raster create and gdal_create).
     CreateRaster(cmd::create::Args),
-    /// Write a raster into an existing GeoTIFF, reprojected to its grid (like gdal raster update).
+    /// Write a raster into an existing GeoTIFF.
+    ///
+    /// Reprojects it to the GeoTIFF's grid (like gdal raster update).
     UpdateRaster(cmd::update::Args),
-    /// Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py).
+    /// Merge small raster areas into their largest neighbour.
+    ///
+    /// Merges areas smaller than a threshold (like gdal_sieve.py).
     Sieve(cmd::sieve::Args),
     /// Fill raster holes by interpolation, as gdal_fillnodata.
     FillNodata(cmd::fill_nodata::Args),
-    /// Apply band scales and offsets to get physical values (like gdal raster unscale).
+    /// Apply band scales and offsets.
+    ///
+    /// Produces physical values (like gdal raster unscale).
     Unscale(cmd::pixel::UnscaleArgs),
     /// Blend two Byte images with alpha and opacity.
     Blend(cmd::pixel::BlendArgs),
-    /// Replace nodata values with an alpha band (like gdal raster nodata-to-alpha).
+    /// Replace nodata values with an alpha band.
+    ///
+    /// Like gdal raster nodata-to-alpha.
     NodataToAlpha(cmd::pixel::NodataToAlphaArgs),
-    /// Map values or ranges of values to new values (like gdal raster reclassify).
+    /// Map values or ranges of values to new values.
+    ///
+    /// Like gdal raster reclassify.
     Reclassify(cmd::pixel::ReclassifyArgs),
-    /// One vector feature per pixel, with band values as fields (like gdal raster as-features).
+    /// Write one vector feature per pixel.
+    ///
+    /// Band values become fields (like gdal raster as-features).
     AsFeatures(cmd::pixel::AsFeaturesArgs),
-    /// Focal statistics and convolution kernels over each pixel's neighbourhood (like
-    /// gdal raster neighbors).
+    /// Focal statistics and convolution kernels.
+    ///
+    /// Computed over each pixel's neighbourhood (like gdal raster neighbors).
     #[command(visible_alias = "focal")]
     Neighbors(cmd::neighbors::Args),
-    /// Set the noisy, nearly black or white collar of an image to exact black or white,
-    /// optionally transparent, by flood fill from the edges (like gdal raster clean-collar).
+    /// Clean the noisy collar of an image.
+    ///
+    /// Sets a nearly black or white collar to exact black or white, optionally transparent, by
+    /// flood fill from the edges (like gdal raster clean-collar).
     CleanCollar(cmd::clean_collar::Args),
-    /// Set nearly black or white borders to exact black or white, by two scan passes (like
-    /// nearblack; clean-collar with nearblack's defaults).
+    /// Set nearly black or white borders to exact values.
+    ///
+    /// Sets them to exact black or white by two scan passes (like nearblack; clean-collar with
+    /// nearblack's defaults).
     Nearblack(cmd::clean_collar::Args),
-    /// Contrast enhancement by lookup tables: histogram equalization and LUT files (like
-    /// gdalenhance).
+    /// Enhance contrast by lookup tables.
+    ///
+    /// Uses histogram equalization and LUT files (like gdalenhance).
     Enhance(cmd::enhance::Args),
-    /// Grid a point cloud into a raster: min, max, mean, IDW, count or standard deviation per cell
-    /// (like PDAL's writers.gdal), or a TIN or nearest-neighbour interpolation (like gdal_grid).
-    /// For vector points, see vector-grid.
+    /// Grid a point cloud into a raster.
+    ///
+    /// Computes min, max, mean, IDW, count or standard deviation per cell (like PDAL's
+    /// writers.gdal), or a TIN or nearest-neighbour interpolation (like gdal_grid). For vector
+    /// points, see vector-grid.
     Grid(cmd::grid::Args),
-    /// Grid scattered vector points into a raster: inverse distance, nearest neighbour, moving
-    /// average, linear (Delaunay) or data metrics in a search ellipse (like gdal vector grid and
-    /// gdal_grid).
+    /// Grid scattered vector points into a raster.
+    ///
+    /// Uses inverse distance, nearest neighbour, moving average, linear (Delaunay) or data metrics
+    /// in a search ellipse (like gdal vector grid and gdal_grid).
     VectorGrid(cmd::vector_grid::Args),
-    /// Linear referencing (like ogrlineref): cut a route into parts from reference points, and
-    /// convert between positions along it and coordinates.
+    /// Linear referencing (like ogrlineref).
+    ///
+    /// Cuts a route into parts from reference points, and converts between positions along it and
+    /// coordinates.
     Lineref(cmd::lineref::Args),
-    /// Filter a point cloud as PDAL's filters do: ground classification (SMRF, PMF, CSF), noise,
-    /// heights above ground, crops, expressions, assignments, tiles, normals, clusters, sampling,
-    /// covariance features, outlier factors, raster values and polygon attributes.
+    /// Filter a point cloud as PDAL's filters do.
+    ///
+    /// Covers ground classification (SMRF, PMF, CSF), noise, heights above ground, crops,
+    /// expressions, assignments, tiles, normals, clusters, sampling, covariance features, outlier
+    /// factors, raster values and polygon attributes.
     Filter(cmd::filter::Args),
-    /// Manage files on local, in-memory (/vsimem/), cloud (S3, GCS, Azure), HTTP and archive
-    /// (zip, tar) locations: list, copy, delete, move, sync (like `gdal vsi`).
+    /// Manage local, in-memory, cloud and archive files.
+    ///
+    /// Works on local, in-memory (/vsimem/), cloud (S3, GCS, Azure), HTTP and archive (zip, tar)
+    /// locations: list, copy, delete, move, sync (like `gdal vsi`).
     Vsi(cmd::vsi::Args),
-    /// Serve these commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code…) as a
-    /// Model Context Protocol server over standard input and output.
+    /// Serve these commands to AI agents over MCP.
+    ///
+    /// Runs a Model Context Protocol server over standard input and output, for Claude Code, Claude
+    /// Desktop, Cursor, VS Code…
     Mcp,
 }
 
@@ -449,6 +592,49 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(super::STACK_SIZE)
             .spawn(|| <super::Cli as clap::CommandFactory>::command().debug_assert())
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// The names a command's `--help` lists under "Commands:", in the order shown.
+    fn listed_subcommands(help: &str) -> Vec<&str> {
+        help.lines()
+            .skip_while(|line| *line != "Commands:")
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .filter(|line| line.starts_with("  ") && !line.starts_with("   "))
+            .filter_map(|line| line.split_whitespace().next())
+            .collect()
+    }
+
+    /// The longest summary a command list may show, to keep each entry on one line of a terminal.
+    const MAX_SUMMARY_CHARS: usize = 60;
+
+    fn assert_help_sorted_and_brief(command: &mut clap::Command) {
+        let help = command.render_help().to_string();
+        let names = listed_subcommands(&help);
+        assert_eq!(names.len(), command.get_subcommands().filter(|c| !c.is_hide_set()).count(), "{help}");
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted, "subcommands of `{}`", command.get_name());
+        for subcommand in command.get_subcommands() {
+            let summary = subcommand.get_about().map(ToString::to_string).unwrap_or_default();
+            assert!(!summary.is_empty() && summary.chars().count() <= MAX_SUMMARY_CHARS, "`{}`: {summary}", subcommand.get_name());
+        }
+        // Clap generates each `help` command's list in declaration order, without the enum's setting.
+        command.get_subcommands_mut().filter(|c| c.get_name() != "help").for_each(assert_help_sorted_and_brief);
+    }
+
+    #[test]
+    fn help_lists_subcommands_alphabetically_with_brief_summaries() {
+        std::thread::Builder::new()
+            .stack_size(super::STACK_SIZE)
+            .spawn(|| {
+                let mut command = <super::Cli as clap::CommandFactory>::command();
+                command.build();
+                assert_help_sorted_and_brief(&mut command);
+            })
             .unwrap()
             .join()
             .unwrap();
