@@ -136,7 +136,11 @@ fn value_type(arg: &Arg, path: &[String]) -> &'static str {
 fn argument(arg: &Arg, path: &[String]) -> Value {
     let range = arg.get_num_args().unwrap_or_else(|| if arg.get_action().takes_values() { 1.into() } else { 0.into() });
     let max = range.max_values();
-    let choices: Vec<_> = arg.get_value_parser().possible_values().into_iter().flatten().map(|v| v.get_name().to_string()).collect();
+    let choices: Vec<_> = if arg.get_action().takes_values() {
+        arg.get_value_parser().possible_values().into_iter().flatten().map(|v| v.get_name().to_string()).collect()
+    } else {
+        Vec::new()
+    };
     let action = match arg.get_action() {
         ArgAction::Set => "set",
         ArgAction::Append => "append",
@@ -283,6 +287,7 @@ mod tests {
         assert_eq!(arg("ts")["type"], "integer");
         assert_eq!(arg("tap")["type"], "boolean");
         assert_eq!(arg("tap")["default"], json!(["false"]));
+        assert_eq!(arg("tap")["choices"], json!([]));
         assert_eq!(arg("resampling")["default"], json!(["near"]));
         let result = usage(&["terrio", "validate-cog", "--json-usage"]).unwrap();
         let profile = result["command"]["arguments"].as_array().unwrap().iter().find(|a| a["name"] == "profile").unwrap();

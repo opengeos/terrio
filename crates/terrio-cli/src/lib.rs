@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 #[command(name = "terrio", version, about)]
 struct Cli {
     /// Print the versioned command catalog as JSON, without opening datasets.
-    #[arg(id = "json_usage", long = "json-usage", global = true)]
+    #[arg(id = "json_usage", long = "json-usage", global = true, hide = true)]
     _json_usage: bool,
     #[command(subcommand)]
     command: Command,
@@ -449,7 +449,13 @@ const STACK_SIZE: usize = 8 << 20;
 fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32 {
     let args = cmd::calc::rewrite_args(args);
     if let Some(catalog) = usage::requested(&args) {
-        println!("{}", serde_json::to_string_pretty(&catalog).expect("JSON command catalog"));
+        use std::io::Write;
+        if let Err(error) = writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&catalog).expect("JSON command catalog"))
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            eprintln!("terrio: {error}");
+            return 1;
+        }
         return 0;
     }
     let cli = match Cli::try_parse_from(args) {
