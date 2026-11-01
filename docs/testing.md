@@ -1954,8 +1954,8 @@ GDAL confirmed both layers' counts and R-tree counts, and SQLite's
 integrity check passed in each file. These observations complement the fixed sort-buffer
 and page-buffer limits; they are not a portable RSS threshold. Small conversions
 measured over 20 runs (after two warmups) took 25.78 → 26.35 ms for two points and
-34.92 → 36.00 ms for 176 countries, before → after (medians). The existing `streams`
-conformance suite also cross-reads the spill-backed GeoPackage conversion path.
+34.92 → 36.00 ms for 176 countries, before → after (medians). The existing `gpkg`
+conformance suite cross-reads GeoPackage conversions and their R-tree spatial filters.
 
 `raster_file_identity` replaces a TIFF with a different tile layout, then reads one
 and several chunks through the old and new handles. It also unlinks an unread file.
