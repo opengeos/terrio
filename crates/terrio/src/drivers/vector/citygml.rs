@@ -442,7 +442,7 @@ fn is_object(node: &Node) -> bool {
 struct Context<'a> {
     dim: usize,
     crs: Option<&'a str>,
-    lod: Option<String>,
+    lod: Option<&'a str>,
     semantic: Option<Rc<str>>,
     geometry_type: Option<&'a str>,
     reverse: bool,
@@ -499,7 +499,7 @@ struct Reader<'a> {
     max_coordinate_bytes: usize,
     visits: usize,
     max_reference_visits: usize,
-    emitted: HashMap<(String, String, Option<String>, bool), usize>,
+    emitted: HashMap<(String, String, Option<&'a str>, bool), usize>,
 }
 
 fn parse_crs(name: &str) -> Result<SpatialRef> {
@@ -704,7 +704,7 @@ impl<'a> Reader<'a> {
                     _ => String::new(),
                 },
                 id.to_owned(),
-                context.lod.clone(),
+                context.lod,
                 context.reverse,
             )
         });
@@ -735,7 +735,7 @@ impl<'a> Reader<'a> {
             self.emitted.insert(key, self.layer.features.len());
         }
         let mut attrs = base.to_vec();
-        attrs[LOD] = context.lod.as_ref().map_or(FieldValue::Null, |s| FieldValue::Text(s.clone()));
+        attrs[LOD] = context.lod.map_or(FieldValue::Null, |s| FieldValue::Text(s.to_owned()));
         attrs[GEOMETRY_TYPE] = FieldValue::Text(context.geometry_type.unwrap_or(&node.name).into());
         attrs[SURFACE_SEMANTICS] = context.semantic.as_ref().map_or(FieldValue::Null, |s| FieldValue::Text(s.to_string()));
         let index = self.layer.features.len();
@@ -765,9 +765,9 @@ impl<'a> Reader<'a> {
         context.dim = dimension(node, context.dim)?;
         context.crs = node.attr("", "srsName").or(context.crs);
         if node.city() && node.name.starts_with("lod") {
-            let digits: String = node.name[3..].chars().take_while(char::is_ascii_digit).collect();
-            if !digits.is_empty() {
-                context.lod = Some(digits);
+            let digits = node.name.as_bytes()[3..].iter().take_while(|byte| byte.is_ascii_digit()).count();
+            if digits != 0 {
+                context.lod = Some(&node.name[3..3 + digits]);
                 context.geometry_type = None;
             }
         }
@@ -1153,6 +1153,8 @@ mod tests {
         let text = model("2.0", body, "EPSG:32632");
         assert!(super::parse(text.as_bytes()).unwrap_err().to_string().contains("coordinate tuple"));
         super::parse(text.replace("srsDimension=\"3\"", "srsDimension=\"2\"").as_bytes()).unwrap();
+        let wrong = text.replace("srsDimension=\"3\"", "srsDimension=\"2\"").replace("1,2</g:coordinates>", "1,2,3</g:coordinates>");
+        assert!(super::parse(wrong.as_bytes()).unwrap_err().to_string().contains("coordinate tuple"));
         let start = text.find("<g:boundedBy>").unwrap();
         let end = text.find("</g:boundedBy>").unwrap() + "</g:boundedBy>".len();
         let unknown = format!("{}{}", &text[..start], &text[end..]);

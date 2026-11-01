@@ -1066,7 +1066,7 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     if head[..head.len().min(1024)].windows(8).any(|w| &w[..4] == b"GRIB" && (w[7] == 1 || w[7] == 2)) {
         return Some("GRIB");
     }
-    if crate::drivers::vector::citygml::is_xml_prefix(head) && crate::drivers::vector::citygml::looks_like(head) {
+    if crate::drivers::vector::citygml::looks_like(head) {
         return Some("CITYGML");
     }
     let text = String::from_utf8_lossy(head);
