@@ -175,7 +175,7 @@ def test_json_usage_matches_published_schema(path):
 
 
 def test_ui(tmp_path):
-    """Serves the forms' API through ``python -m terrio``, whose commands run in this interpreter."""
+    """Serves the forms' API through ``python -m terrio``, running commands in this interpreter."""
     (tmp_path / "points.geojson").write_text(json.dumps(POINTS))
     server = subprocess.Popen(
         [sys.executable, "-m", "terrio", "ui", "--no-open"],
