@@ -113,35 +113,6 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 -------------------------------------------------------------------------------
-fdlibm (https://www.netlib.org/fdlibm/)
--------------------------------------------------------------------------------
-
-Terrio files derived from fdlibm source files (each file's header names them):
-  crates/terrio-crs/src/math.rs
-
-The copyright notices of those source files:
-  Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
-
-asinh is translated from the GNU C Library's sysdeps/ieee754/dbl-64/s_asinh.c (glibc 2.39),
-fdlibm code that carries this notice:
-
-  Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
-
-  Developed at SunPro, a Sun Microsystems, Inc. business.
-  Permission to use, copy, modify, and distribute this
-  software is freely granted, provided that this notice
-  is preserved.
-
-atanh is translated from fdlibm 5.3's e_atanh.c, which carries this notice:
-
-  Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
-
-  Developed at SunSoft, a Sun Microsystems, Inc. business.
-  Permission to use, copy, modify, and distribute this
-  software is freely granted, provided that this notice
-  is preserved.
-
--------------------------------------------------------------------------------
 EPSG Geodetic Parameter Dataset
 -------------------------------------------------------------------------------
 

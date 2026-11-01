@@ -370,6 +370,11 @@ impl Transformer {
             .map(|t| Self(t.with_warning_handler(crate::warnings::warn)))
             .map_err(Into::into)
     }
+    /// This transformer, as GDAL's warper runs its reverse transformation (see
+    /// [`terrio_crs::Transformer::with_reverse_degree_division`]).
+    pub(crate) fn with_reverse_degree_division(self) -> Self {
+        Self(self.0.with_reverse_degree_division())
+    }
     /// Transform an x/y coordinate pair.
     pub fn transform(&self, x: f64, y: f64) -> Result<(f64, f64)> {
         self.0.transform(x, y).map_err(Into::into)

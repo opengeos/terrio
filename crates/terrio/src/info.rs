@@ -230,7 +230,12 @@ pub fn raster_info(ds: &RasterDataset, options: &InfoOptions) -> RasterInfo {
 fn raster_info_at(ds: &RasterDataset, options: &InfoOptions, path: Option<&str>, mut lazy: Option<&mut LazyRaster>) -> RasterInfo {
     let r = &ds.raster;
     let crs = ds.crs();
-    let extent = [r.x_min, r.y_min, r.x_max(), r.y_max()];
+    let gt = ds.geo_transform();
+    let extent = if crate::dataset::is_north_up(&gt) {
+        [r.x_min, r.y_min, r.x_max(), r.y_max()]
+    } else {
+        corner_extent(&corners(&gt, r.cols, r.rows))
+    };
     // A complex band's statistics and histogram are those of its real parts, as GDAL's.
     let part = if ds.complex { 2 } else { 1 };
     let bands = (0..ds.band_count())
@@ -259,8 +264,8 @@ fn raster_info_at(ds: &RasterDataset, options: &InfoOptions, path: Option<&str>,
         driver: ds.driver.name().to_string(),
         size: [r.cols, r.rows],
         band_count: ds.band_count(),
-        geo_transform: ds.geo_transform(),
-        wgs84_extent: wgs84_extent(&crs, extent),
+        geo_transform: gt,
+        wgs84_extent: raster_wgs84_extent(&crs, &gt, r.cols, r.rows, extent),
         crs: CrsSummary::new(&crs),
         extent,
         bands,
@@ -364,8 +369,7 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
     }
     let crs = r.crs();
     let gt = r.geo_transform();
-    let (w, h) = (r.width() as f64, r.height() as f64);
-    let extent = [gt[0], gt[3] + h * gt[5], gt[0] + w * gt[1], gt[3]];
+    let extent = corner_extent(&corners(&gt, r.width(), r.height()));
     // Complex bands count once, typed as GDAL types them (`CFloat32`), as for a dataset read whole.
     let part = if r.is_complex() { 2 } else { 1 };
     let data_type = if r.is_complex() { format!("C{}", gdal_type_name(r.data_type())) } else { gdal_type_name(r.data_type()).to_string() };
@@ -388,7 +392,7 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
         size: [r.width(), r.height()],
         band_count: r.band_count() / part,
         geo_transform: gt,
-        wgs84_extent: wgs84_extent(&crs, extent),
+        wgs84_extent: raster_wgs84_extent(&crs, &gt, r.width(), r.height(), extent),
         crs: CrsSummary::new(&crs),
         extent,
         bands,
@@ -687,6 +691,38 @@ fn osm_vector_info(_path: &str) -> crate::Result<Option<VectorInfo>> {
     Ok(None)
 }
 
+/// Whether a geotransform has no rotation terms: its grid is north-up or south-up.
+fn is_axis_aligned(gt: &[f64; 6]) -> bool {
+    gt[2] == 0.0 && gt[4] == 0.0
+}
+
+/// The four corners of a raster's grid under its geotransform.
+fn corners(gt: &[f64; 6], cols: usize, rows: usize) -> [(f64, f64); 4] {
+    let (w, h) = (cols as f64, rows as f64);
+    [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].map(|(p, l)| (gt[0] + p * gt[1] + l * gt[2], gt[3] + p * gt[4] + l * gt[5]))
+}
+
+/// The bounds `[min_x, min_y, max_x, max_y]` of the corners of a raster's grid.
+fn corner_extent(corners: &[(f64, f64); 4]) -> [f64; 4] {
+    corners.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |e, &(x, y)| {
+        [e[0].min(x), e[1].min(y), e[2].max(x), e[3].max(y)]
+    })
+}
+
+/// The WGS 84 bounds of a raster: of its extent when north-up or south-up, and of its four
+/// corners when rotated, whose axis-aligned extent reaches beyond the grid.
+fn raster_wgs84_extent(crs: &SpatialRef, gt: &[f64; 6], cols: usize, rows: usize, extent: [f64; 4]) -> Option<[f64; 4]> {
+    if is_axis_aligned(gt) || crs.is_unknown() {
+        return wgs84_extent(crs, extent);
+    }
+    let t = Transformer::new(crs, &SpatialRef::from_epsg(4326).ok()?).ok()?;
+    let mut points = corners(gt, cols, rows);
+    for p in &mut points {
+        *p = t.transform(p.0, p.1).ok()?;
+    }
+    Some(corner_extent(&points))
+}
+
 fn wgs84_extent(crs: &SpatialRef, e: [f64; 4]) -> Option<[f64; 4]> {
     if crs.is_unknown() {
         return None;
@@ -708,7 +744,11 @@ impl Info {
                 let _ = writeln!(s, "CRS: {}", r.crs.line());
                 let g = r.geo_transform;
                 let _ = writeln!(s, "Origin: ({}, {})", g[0], g[3]);
-                let _ = writeln!(s, "Pixel size: ({}, {})", g[1], g[5]);
+                if is_axis_aligned(&g) {
+                    let _ = writeln!(s, "Pixel size: ({}, {})", g[1], g[5]);
+                } else {
+                    let _ = writeln!(s, "Geotransform: ({}, {}, {}, {}, {}, {})", g[0], g[1], g[2], g[3], g[4], g[5]);
+                }
                 let _ = writeln!(s, "Extent: {}", fmt_box(&r.extent));
                 if let Some(w) = &r.wgs84_extent {
                     let _ = writeln!(s, "WGS 84 extent: {}", fmt_box(w));

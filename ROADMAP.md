@@ -29,7 +29,7 @@ reference. Preserve XYZ faces and object fields; lossless solid topology and
 appearance require a separate future design.
 
 - [x] CityJSON 1.1/2.0 reader, merged in [#464](https://github.com/opengeos/terrio/pull/464).
-- [ ] CityGML 2.0/3.0 reader ([#470](https://github.com/opengeos/terrio/pull/470)).
+- [x] CityGML 2.0/3.0 reader ([#470](https://github.com/opengeos/terrio/pull/470)).
 - [ ] CityJSON 1.1/2.0 writer ([#473](https://github.com/opengeos/terrio/pull/473)).
 - [ ] CityGML writer.
 

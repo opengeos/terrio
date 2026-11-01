@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: PROJ contributors
 // SPDX-FileCopyrightText: Copyright (c) 2000, Frank Warmerdam
 // SPDX-FileCopyrightText: Copyright (c) 2025 Javier Jimenez Shaw
-// SPDX-FileCopyrightText: Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
-// SPDX-License-Identifier: MIT AND SunPro
+// SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):
 //   PROJ 9.8.1:
@@ -19,10 +18,6 @@
 //     src/latitudes.cpp
 //   PROJ 9.9.0:
 //     src/latitudes.cpp
-//   GNU C Library 2.39 (fdlibm code, under Sun Microsystems' notice):
-//     sysdeps/ieee754/dbl-64/s_asinh.c
-//   fdlibm 5.3:
-//     e_atanh.c
 
 //! Ellipsoids, units and the helper functions map projections share, after PROJ's
 //! (<https://proj.org>, MIT licence) definitions and algorithms; PROJ's notice is in `NOTICE`.
@@ -182,107 +177,44 @@ pub(crate) fn adjlon(lon: f64) -> f64 {
     if l == -PI && lon > 0.0 { PI } else { l }
 }
 
-// `asinh` is translated from the GNU C Library's `sysdeps/ieee754/dbl-64/s_asinh.c` (glibc 2.39),
-// fdlibm code that carries this notice:
-//
-// ====================================================
-// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
-//
-// Developed at SunPro, a Sun Microsystems, Inc. business.
-// Permission to use, copy, modify, and distribute this
-// software is freely granted, provided that this notice
-// is preserved.
-// ====================================================
-
-/// `asin` clamped to [-1, 1].
-/// `asinh` as glibc 2.39 computes it (`sysdeps/ieee754/dbl-64/s_asinh.c`), which PROJ calls:
-/// Rust's `f64::asinh` has its own formula, which differs in the last bit for about a tenth of
-/// the inputs. Built on `ln`, `ln_1p` and `sqrt`, which are the C library's on linux-gnu; elsewhere
-/// PROJ uses another C library, and `f64::asinh` stands in.
+// PROJ calls the C library's `asinh` and `atanh`, whose results change between glibc releases (2.44
+// rounds differently from 2.39 for about a quarter of the `atanh` inputs in a Conus Albers latitude
+// range), and Rust's `f64` methods have formulas of their own. So on linux-gnu, where Rust's `ln`,
+// `ln_1p`, `sin` and `cos` are the same C library's already, call them too: whichever glibc is
+// installed, Terrio and a PROJ using that glibc get the same bits.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-pub(crate) fn asinh(x: f64) -> f64 {
-    // glibc's `ln2` (6.93147180559945286227e-01) is this double.
-    use std::f64::consts::LN_2 as LN2;
-    let ix = ((x.to_bits() >> 32) as u32) & 0x7fff_ffff;
-    // |x| < 2^-28: asinh(x) is x.
-    if ix < 0x3e30_0000 {
-        return x;
+mod c_library {
+    unsafe extern "C" {
+        pub(super) safe fn asinh(x: f64) -> f64;
+        pub(super) safe fn atanh(x: f64) -> f64;
     }
-    let w = if ix > 0x41b0_0000 {
-        // |x| > 2^28, or infinite or NaN.
-        if ix >= 0x7ff0_0000 {
-            return x + x;
-        }
-        x.abs().ln() + LN2
-    } else {
-        let xa = x.abs();
-        if ix > 0x4000_0000 {
-            // 2 < |x| <= 2^28.
-            (2.0 * xa + 1.0 / ((xa * xa + 1.0).sqrt() + xa)).ln()
-        } else {
-            let t = xa * xa;
-            (xa + t / (1.0 + (1.0 + t).sqrt())).ln_1p()
-        }
-    };
-    w.copysign(x)
 }
 
-/// `asinh`: the C library's where its formula is not known.
+/// `asinh`: the C library's on linux-gnu.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) fn asinh(x: f64) -> f64 {
+    c_library::asinh(x)
+}
+
+/// `atanh`: the C library's on linux-gnu.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) fn atanh(x: f64) -> f64 {
+    c_library::atanh(x)
+}
+
+/// `asinh`: Rust's where PROJ uses another C library.
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 pub(crate) fn asinh(x: f64) -> f64 {
     x.asinh()
 }
 
-// `atanh` is translated from fdlibm 5.3's `e_atanh.c` (https://www.netlib.org/fdlibm/), which
-// carries this notice:
-//
-// ====================================================
-// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
-//
-// Developed at SunSoft, a Sun Microsystems, Inc. business.
-// Permission to use, copy, modify, and distribute this
-// software is freely granted, provided that this notice
-// is preserved.
-// ====================================================
-
-/// `atanh` as fdlibm computes it (`e_atanh.c`), which gives glibc 2.39's results, which PROJ
-/// calls; built on `ln_1p`, the C library's on linux-gnu (see [`asinh`]).
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-// `(x - x) / (x - x)` is fdlibm's NaN for |x| > 1, computed at run time as fdlibm computes it.
-#[allow(clippy::eq_op)]
-pub(crate) fn atanh(x: f64) -> f64 {
-    let hx = (x.to_bits() >> 32) as u32;
-    let lx = x.to_bits() as u32;
-    let ix = hx & 0x7fff_ffff;
-    // |x| > 1, or NaN.
-    if (ix | ((lx | lx.wrapping_neg()) >> 31)) > 0x3ff0_0000 {
-        return (x - x) / (x - x);
-    }
-    // |x| = 1.
-    if ix == 0x3ff0_0000 {
-        return x / 0.0;
-    }
-    // |x| < 2^-28: atanh(x) is x.
-    if ix < 0x3e30_0000 {
-        return x;
-    }
-    let xa = x.abs();
-    let t = if ix < 0x3fe0_0000 {
-        // |x| < 0.5.
-        let t = xa + xa;
-        0.5 * (t + t * xa / (1.0 - xa)).ln_1p()
-    } else {
-        0.5 * ((xa + xa) / (1.0 - xa)).ln_1p()
-    };
-    if hx >> 31 == 0 { t } else { -t }
-}
-
-/// `atanh`: the C library's where its formula is not known.
+/// `atanh`: Rust's where PROJ uses another C library.
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 pub(crate) fn atanh(x: f64) -> f64 {
     x.atanh()
 }
 
+/// `asin` clamped to [-1, 1].
 pub(crate) fn aasin(v: f64) -> f64 {
     v.clamp(-1.0, 1.0).asin()
 }
@@ -311,7 +243,7 @@ pub(crate) fn qsfn(sinphi: f64, e: f64, one_es: f64) -> f64 {
         if div1 == 0.0 {
             return f64::INFINITY;
         }
-        one_es * (sinphi / div1 + con.atanh() / e)
+        one_es * (sinphi / div1 + atanh(con) / e)
     } else {
         sinphi + sinphi
     }
@@ -325,13 +257,13 @@ pub(crate) fn sinhpsi2tanphi(taup: f64, e: f64) -> f64 {
     let tmax = 2.0 / rooteps;
     let e2m = 1.0 - e * e;
     let stol = tol * taup.abs().max(1.0);
-    let mut tau = if taup.abs() > 70.0 { taup * (e * e.atanh()).exp() } else { taup / e2m };
+    let mut tau = if taup.abs() > 70.0 { taup * (e * atanh(e)).exp() } else { taup / e2m };
     if tau.abs() >= tmax {
         return tau;
     }
     for _ in 0..5 {
         let tau1 = (1.0 + tau * tau).sqrt();
-        let sig = (e * (e * tau / tau1).atanh()).sinh();
+        let sig = (e * atanh(e * tau / tau1)).sinh();
         let taupa = (1.0 + sig * sig).sqrt() * tau - sig * tau1;
         let dtau = (taup - taupa) * (1.0 + e2m * tau * tau) / (e2m * tau1 * (1.0 + taupa * taupa).sqrt());
         tau += dtau;
@@ -523,7 +455,7 @@ pub(crate) fn authlat_inverse(beta: f64, apa: &[f64; 6], e: f64, one_es: f64, qp
     for _ in 0..10 {
         let (sinphi, cosphi) = phi.sin_cos();
         let t = 1.0 - es * (sinphi * sinphi);
-        let delta = t * t / (2.0 * cosphi) * (q_div_one_es - sinphi / t - (e * sinphi).atanh() / e);
+        let delta = t * t / (2.0 * cosphi) * (q_div_one_es - sinphi / t - atanh(e * sinphi) / e);
         if !delta.is_finite() || delta.abs() < 1e-15 {
             break;
         }
@@ -535,105 +467,6 @@ pub(crate) fn authlat_inverse(beta: f64, apa: &[f64; 6], e: f64, one_es: f64, qp
 /// π/4, for the formulas below.
 pub(crate) const FORTPI: f64 = FRAC_PI_4;
 pub(crate) const HALFPI: f64 = FRAC_PI_2;
-
-/// `asinh` and `atanh` bit for bit glibc's (2.39): digests of their results over more than a
-/// million inputs each, edge cases included, computed with Python's `math` module (which calls
-/// glibc) over the inputs `inputs()` below generates, in the same order:
-///
-/// ```text
-/// asinh: n=1450179 digest=0xa5618f3884af810c
-/// atanh: n=1075082 digest=0xf9ea50ee57c7ddb2
-/// ```
-#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
-mod glibc_tests {
-    use super::{asinh, atanh};
-
-    /// The SplitMix64 generator.
-    struct SplitMix64(u64);
-
-    impl SplitMix64 {
-        fn next(&mut self) -> u64 {
-            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            z ^ (z >> 31)
-        }
-    }
-
-    /// The next value toward +infinity (C's `nextafter(x, INFINITY)`).
-    fn up(x: f64) -> f64 {
-        if x.is_nan() || x == f64::INFINITY {
-            x
-        } else if x == 0.0 {
-            f64::from_bits(1)
-        } else if x > 0.0 {
-            f64::from_bits(x.to_bits() + 1)
-        } else {
-            f64::from_bits(x.to_bits() - 1)
-        }
-    }
-
-    /// The inputs, in the order the reference digests were computed over.
-    fn inputs() -> Vec<f64> {
-        let two = |k: i64| f64::from_bits(((1023 + k) as u64) << 52);
-        let mut v = Vec::new();
-        let edges = [0.0, 5e-324, 2.2250738585072014e-308, two(-28), 0.5, 1.0, 2.0, two(28), 1e-300, 1e300, f64::MAX, f64::INFINITY];
-        for e in edges {
-            for x in [e, up(e), -up(-e)] {
-                v.push(x);
-                v.push(-x);
-            }
-        }
-        v.push(f64::NAN);
-        for k in 1..54 {
-            v.push(1.0 - two(-k));
-            v.push(-(1.0 - two(-k)));
-        }
-        let mut r = SplitMix64(0x5EED);
-        for _ in 0..300_000 {
-            v.push(f64::from_bits(r.next()));
-        }
-        for _ in 0..300_000 {
-            v.push(((r.next() >> 11) as f64 * two(-53)) * 2.0 - 1.0);
-        }
-        for _ in 0..250_000 {
-            let u = r.next();
-            let exp = 1023 - 40 + (u >> 52) % 81;
-            v.push(f64::from_bits(((u >> 63) << 63) | (exp << 52) | (u & ((1 << 52) - 1))));
-        }
-        for _ in 0..400_000 {
-            let u = r.next();
-            let x = (u >> 11) as f64 * two(-53);
-            v.push(if u & 1 == 1 { -x } else { x });
-        }
-        for _ in 0..200_000 {
-            // 3.14, not pi: latitudes just inside the poles, as the reference generator made them
-            // (the digests are of exactly these values).
-            #[allow(clippy::approx_constant)]
-            let phi = ((r.next() >> 11) as f64 * two(-53) - 0.5) * 3.14;
-            v.push(phi.tan());
-        }
-        v
-    }
-
-    #[test]
-    fn asinh_and_atanh_are_glibc_s() {
-        let fold = |h: u64, x: f64| (h ^ x.to_bits()).wrapping_mul(0x100_0000_01B3);
-        let (mut h_asinh, mut h_atanh, mut n_asinh, mut n_atanh) = (0xCBF2_9CE4_8422_2325, 0xCBF2_9CE4_8422_2325, 0, 0);
-        for x in inputs() {
-            h_asinh = fold(h_asinh, asinh(x));
-            n_asinh += 1;
-            if x.is_nan() || x.abs() < 1.0 {
-                h_atanh = fold(h_atanh, atanh(x));
-                n_atanh += 1;
-            }
-        }
-        assert_eq!((n_asinh, n_atanh), (1_450_179, 1_075_082));
-        assert_eq!(h_asinh, 0xa561_8f38_84af_810c, "asinh differs from glibc's");
-        assert_eq!(h_atanh, 0xf9ea_50ee_57c7_ddb2, "atanh differs from glibc's");
-    }
-}
 
 #[cfg(test)]
 mod tests {

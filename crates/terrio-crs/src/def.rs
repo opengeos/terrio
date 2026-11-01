@@ -31,6 +31,9 @@ use std::sync::Arc;
 pub(crate) struct Def {
     /// The projection, `None` for a geographic CRS.
     proj: Option<Arc<dyn Proj>>,
+    /// Converts degrees as the inverse of a PROJ `unitconvert` step does, dividing by the factor
+    /// of the forward step. See [`crate::Transformer::with_reverse_degree_division`].
+    pub(crate) inverted_degrees: bool,
     geocentric: bool,
     /// Geographic planetocentric latitude rather than ellipsoidal geodetic latitude.
     ocentric: bool,
@@ -455,6 +458,7 @@ impl Def {
         let (lam0, phi0, x0, y0) = (setup.lam0, setup.phi0, setup.x0, setup.y0);
         let mut d = Self {
             proj,
+            inverted_degrees: false,
             geocentric,
             ocentric: geographic && rot.is_none() && p.has("geoc"),
             body: None,
@@ -624,6 +628,7 @@ impl Def {
             let ell = Ell::from_a_es(e.a, 2.0 * e.f - e.f * e.f);
             let mut d = Self {
                 proj: None,
+                inverted_degrees: false,
                 geocentric: false,
                 ocentric: false,
                 body: None,
@@ -753,7 +758,13 @@ impl Def {
         let (e, n) = self.unaxis(u, v);
         let (lam, phi) = match &self.proj {
             None => {
-                let (lam, phi) = ((e * self.to_deg).to_radians(), (n * self.to_deg).to_radians());
+                let (lam, phi) = if self.inverted_degrees {
+                    // The forward step went from radians to degrees, with this factor.
+                    let factor = 1.0 / 1.0_f64.to_radians();
+                    (e * self.to_deg / factor, n * self.to_deg / factor)
+                } else {
+                    ((e * self.to_deg).to_radians(), (n * self.to_deg).to_radians())
+                };
                 let phi = if self.ocentric { phi.sin().atan2((1.0 - self.ell.es) * phi.cos()) } else { phi };
                 // Longitudes are relative to `+lon_0` too, as PROJ's `+proj=longlat +lon_0=10`.
                 let (lam, phi) = match &self.rot {
@@ -800,7 +811,13 @@ impl Def {
                     Some(r) => r.fwd(adjlon(lon - self.lam0), lat),
                     None => (adjlon(lon - self.lam0), if self.ocentric { ((1.0 - self.ell.es) * lat.sin()).atan2(lat.cos()) } else { lat }),
                 };
-                (lam.to_degrees() / self.to_deg, phi.to_degrees() / self.to_deg)
+                if self.inverted_degrees {
+                    // The forward step went from degrees to radians, with this factor.
+                    let factor = 1.0_f64.to_radians();
+                    (lam / factor / self.to_deg, phi / factor / self.to_deg)
+                } else {
+                    (lam.to_degrees() / self.to_deg, phi.to_degrees() / self.to_deg)
+                }
             }
             Some(p) => {
                 if lat.abs() > HALFPI + 1e-12 {
@@ -1037,4 +1054,43 @@ pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
         return u.num(1);
     }
     root.children("AXIS").find_map(|a| a.child("LENGTHUNIT")).and_then(|u| u.num(1))
+}
+
+#[cfg(test)]
+mod inverted_degrees_tests {
+    use super::*;
+
+    fn nad83(inverted_degrees: bool) -> Def {
+        let mut def = Def::new(&SpatialRef { epsg: Some(4269), ..Default::default() }).unwrap();
+        def.inverted_degrees = inverted_degrees;
+        def
+    }
+
+    #[test]
+    fn project_divides_by_the_forward_factor() {
+        let (plain, inverted) = (nad83(false), nad83(true));
+        let factor = 1.0_f64.to_radians();
+        let mut changed = 0;
+        for radians in (1..2000).map(|i| f64::from(i) * 7.3e-4) {
+            let (u, v) = inverted.project(radians, 0.25).unwrap();
+            assert_eq!((u, v), inverted.axis(radians / factor, 0.25 / factor));
+            changed += usize::from((u, v) != plain.project(radians, 0.25).unwrap());
+        }
+        assert!(changed > 0, "the two conversions never differed");
+    }
+
+    #[test]
+    fn unproject_divides_by_the_forward_factor() {
+        let (plain, inverted) = (nad83(false), nad83(true));
+        let factor = 1.0 / 1.0_f64.to_radians();
+        let mut changed = 0;
+        for degrees in (1..2000).map(|i| f64::from(i) * 0.05) {
+            let (u, v) = plain.axis(degrees, 30.0);
+            let (lon, lat) = inverted.unproject(u, v).unwrap();
+            assert_eq!(lon.to_bits(), (degrees / factor).to_bits());
+            assert_eq!(lat.to_bits(), (30.0 / factor).to_bits());
+            changed += usize::from((lon, lat) != plain.unproject(u, v).unwrap());
+        }
+        assert!(changed > 0, "the two conversions never differed");
+    }
 }

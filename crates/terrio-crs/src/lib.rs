@@ -1118,6 +1118,8 @@ pub struct Transformer {
     heights: Option<Box<Heights>>,
     /// Web Mercator to WGS 84, which GDAL computes itself rather than with PROJ.
     web_mercator_to_wgs84: bool,
+    /// The reverse of [`web_mercator_to_wgs84`](Self::web_mercator_to_wgs84).
+    wgs84_to_web_mercator: bool,
     /// A point motion operation moving coordinates of one datum between two coordinate epochs
     /// (the Canada velocity grids of NAD83(CSRS), NKG_RF17vel), as PROJ applies it.
     motion: Option<Vec<datum::Step>>,
@@ -1334,6 +1336,22 @@ impl CoordinateOperation {
 }
 
 impl Transformer {
+    /// This transformer, converting degrees as GDAL 3.13.3's reverse transformation does. GDAL
+    /// inverts the forward pipeline (`OGRProjCT::GetInverse()`), so PROJ undoes its `unitconvert`
+    /// by dividing by the factor, which rounds about a tenth of the degrees differently from
+    /// multiplying by the reciprocal. GDAL's warper maps output pixels to the source this way.
+    /// Web Mercator and WGS 84 are unchanged both ways: GDAL has its own formula from Web Mercator,
+    /// and no PROJ pipeline to invert in the other direction, so it builds a direct one.
+    /// It applies to every transformation of this transformer, 3D ones too. GDAL parity was
+    /// measured for the 2D [`transform`](Self::transform) that the warper calls.
+    pub fn with_reverse_degree_division(mut self) -> Self {
+        if !self.web_mercator_to_wgs84 && !self.wgs84_to_web_mercator {
+            self.src.inverted_degrees = true;
+            self.dst.inverted_degrees = true;
+        }
+        self
+    }
+
     /// A transformer from `src` to `dst`.
     pub fn new(src: &SpatialRef, dst: &SpatialRef) -> Result<Self> {
         Self::with_options(src, dst, &TransformOptions::default())
@@ -1412,6 +1430,7 @@ impl Transformer {
         };
         let src_horizontal = s.horizontal();
         let identity = src.same_as(dst) && motion.is_none();
+        let wgs84_to_web_mercator = web_mercator_to_wgs84(dst, src);
         let web_mercator_to_wgs84 = web_mercator_to_wgs84(src, dst);
         Ok(Self {
             identity,
@@ -1427,6 +1446,7 @@ impl Transformer {
             same_vertical_datum,
             src_horizontal,
             web_mercator_to_wgs84,
+            wgs84_to_web_mercator,
             best_route: std::sync::OnceLock::new(),
             policy: opts.clone(),
             missing_grid_checked: std::sync::OnceLock::new(),
@@ -2175,13 +2195,24 @@ mod tests {
     /// PROJ 9.7.1, through rasterio's `warp.transform`, both ways. Its constants and its forward
     /// projection go through `tsfn`; in the form PROJ used before 9 every latitude below was a
     /// few units in the last place off, and the extent of a grid warped from it with them. Bit
-    /// for bit where the C library is glibc, as `asinh` and `atanh` are.
+    /// for bit on the glibc the values were recorded on (2.39), whose `asinh` and `atanh` PROJ and
+    /// Terrio share; other releases round those differently, so within 4 units in the last place.
+    /// Exact parity on the installed glibc is checked against GDAL by `benchmark-compat`.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
-    fn lambert_conformal_conic_matches_proj_bit_for_bit() {
+    fn lambert_conformal_conic_matches_proj() {
         const LCC: &str = r#"PROJCS["undefined",GEOGCS["undefined",DATUM["undefined",SPHEROID["undefined",6378137,298.257223563]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic_2SP"],PARAMETER["standard_parallel_1",25],PARAMETER["standard_parallel_2",60],PARAMETER["latitude_of_origin",42.5],PARAMETER["central_meridian",-100],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#;
         let (lcc, wgs84) = (SpatialRef::parse(LCC).unwrap(), SpatialRef::from_epsg(4326).unwrap());
-        let bits = |p: (f64, f64)| (p.0.to_bits(), p.1.to_bits());
+        unsafe extern "C" {
+            safe fn gnu_get_libc_version() -> *const std::ffi::c_char;
+        }
+        // SAFETY: glibc returns a static NUL-terminated string.
+        let recorded_libc = unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) }.to_bytes() == b"2.39";
+        let check = |got: (f64, f64), want: (f64, f64), label: String| {
+            let ulps = |a: f64, b: f64| (a.to_bits() as i64).wrapping_sub(b.to_bits() as i64).unsigned_abs();
+            let allowed = if recorded_libc { 0 } else { 4 };
+            assert!(ulps(got.0, want.0) <= allowed && ulps(got.1, want.1) <= allowed, "{label}");
+        };
         // A 1 km grid's corners, the projection's origin and points beyond the standard parallels.
         let inverse = [
             ((-5802750.0, -38500.0), (-160.3055519816432, 21.866370142929064)),
@@ -2196,7 +2227,7 @@ mod tests {
         let t = Transformer::new(&lcc, &wgs84).unwrap();
         for ((x, y), want) in inverse {
             let got = t.transform(x, y).unwrap();
-            assert_eq!(bits(got), bits(want), "({x}, {y}) to {got:?}, GDAL {want:?}");
+            check(got, want, format!("({x}, {y}) to {got:?}, GDAL {want:?}"));
         }
         let forward = [
             ((-157.5, 21.0), (-5640537.969442342, -305411.69883608964)),
@@ -2209,8 +2240,33 @@ mod tests {
         let t = Transformer::new(&wgs84, &lcc).unwrap();
         for ((lon, lat), want) in forward {
             let got = t.transform(lon, lat).unwrap();
-            assert_eq!(bits(got), bits(want), "({lon}, {lat}) to {got:?}, GDAL {want:?}");
+            check(got, want, format!("({lon}, {lat}) to {got:?}, GDAL {want:?}"));
         }
+    }
+
+    #[test]
+    fn reverse_degree_division_skips_web_mercator_and_wgs84() {
+        let srs = |code| SpatialRef::from_epsg(code).unwrap();
+        let pair = |a, b| {
+            (Transformer::new(&srs(a), &srs(b)).unwrap(), Transformer::new(&srs(a), &srs(b)).unwrap().with_reverse_degree_division())
+        };
+        let bits = |p: (f64, f64)| (p.0.to_bits(), p.1.to_bits());
+        let points = |x0: f64, y0: f64, step: f64| (0..2000).map(move |i| (x0 + f64::from(i) * step, y0 + f64::from(i) * step));
+
+        let (plain, reverse) = pair(3857, 4326);
+        for (x, y) in points(100_000.0, 200_000.0, 1234.5) {
+            assert_eq!(bits(plain.transform(x, y).unwrap()), bits(reverse.transform(x, y).unwrap()));
+        }
+        let (plain, reverse) = pair(4326, 3857);
+        for (lat, lon) in points(10.0, 20.0, 0.0123) {
+            assert_eq!(bits(plain.transform(lat, lon).unwrap()), bits(reverse.transform(lat, lon).unwrap()));
+        }
+        // Geographic output of a pair GDAL inverts: some degrees round differently.
+        let (plain, reverse) = pair(26913, 4269);
+        let changed = points(400_000.0, 4_400_000.0, 12.5)
+            .filter(|(x, y)| bits(plain.transform(*x, *y).unwrap()) != bits(reverse.transform(*x, *y).unwrap()))
+            .count();
+        assert!(changed > 0, "the reverse conversion never differed");
     }
 
     #[test]

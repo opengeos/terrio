@@ -1212,7 +1212,9 @@ fn parse_compression(s: &str) -> Result<wbraster::GeoTiffCompression> {
         "JPEG" => C::Jpeg,
         "WEBP" => C::WebP,
         other => {
-            return Err(Error::InvalidArgument(format!("unknown compression '{other}' (NONE, LZW, DEFLATE, ZSTD, PACKBITS, JPEG, WEBP)")));
+            return Err(Error::InvalidArgument(format!(
+                "unknown compression '{other}' (NONE, LZW, DEFLATE, ZSTD, PACKBITS, LERC, LERC_DEFLATE, LERC_ZSTD, JXL, JPEG, WEBP)"
+            )));
         }
     })
 }
