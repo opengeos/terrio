@@ -91,6 +91,39 @@ def main():
             results.append(dict(name=case["name"], status=status, detail=detail))
         except Exception as error:
             results.append(dict(name=case["name"], status="differs", detail=repr(error)))
+    # Explicit line poles, their finite neighbours and PROJ-only setup switches. These
+    # supplement the frozen corpus with the installed GDAL/PROJ oracle.
+    for figure in ["+R=6371000", "+datum=WGS84"]:
+        source = "+proj=longlat " + figure
+        # At lat_0=0 the same-meridian line has lam_0=20 and gamma_0=0.
+        b = 1.0 if figure.startswith("+R") else 1 / math.sqrt(1 - 0.0066943799901413165)
+        pole = 20 + 90 / b
+        points = [(pole, 0), (20 - 90 / b, 0), (pole - 0.1, 0), (pole + 0.1, 0), (20, 90), (20, -90)]
+        for flags in ["", " +lon_0=120 +no_off", " +no_rot"]:
+            target = "+proj=omerc +lat_1=10 +lon_1=20 +lat_2=40 +lon_2=20 " + figure + flags
+            name = "line poles and switches: " + figure + flags
+            try:
+                definitions = []
+                for text in [source, target]:
+                    srs = osr.SpatialReference()
+                    srs.SetFromUserInput(text)
+                    srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                    definitions.append(srs)
+                forward = osr.CreateCoordinateTransformation(*definitions)
+                expected = [oracle(forward, point) for point in points]
+                assert expected[0] is None and expected[1] is None, "oracle did not refuse line poles"
+                actual = native(args.terrio, source, target, points)
+                maximum = 0.0
+                for got, want in zip(actual, expected, strict=True):
+                    assert (got is None) == (want is None), "line-pole domain differs"
+                    if want is not None:
+                        error = max(abs(a - b) for a, b in zip(got, want, strict=True))
+                        assert error <= 0.001, f"forward {error} metres"
+                        maximum = max(maximum, error)
+                results.append(dict(name=name, status="identical" if maximum == 0 else "within tolerance",
+                                    detail=f"max forward {maximum} m; both line-pole refusals matched"))
+            except Exception as error:
+                results.append(dict(name=name, status="differs", detail=repr(error)))
     for case in reference["invalid"]:
         definition = case["definition"] + " +datum=WGS84"
         proj_refuses = True
