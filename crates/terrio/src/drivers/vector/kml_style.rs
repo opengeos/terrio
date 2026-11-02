@@ -134,7 +134,22 @@ pub type Members = std::collections::BTreeMap<String, Element>;
 const MAX_STYLE_DEPTH: usize = 8;
 
 /// The definitions of a document (`<Style>` and `<StyleMap>` with an id), first of an id winning.
-type Definitions<'a> = HashMap<&'a str, &'a Element>;
+pub type Definitions<'a> = HashMap<&'a str, &'a Element>;
+
+/// The definitions of a KMZ archive's documents, by name.
+pub type MemberIndex<'a> = HashMap<&'a str, Definitions<'a>>;
+
+/// Indexes the documents of a KMZ archive once, for all its documents' [`Styles`].
+pub fn index_members(members: &Members) -> MemberIndex<'_> {
+    members
+        .iter()
+        .map(|(name, document)| {
+            let mut defined = Vec::new();
+            collect_definitions(document, &mut defined);
+            (name.as_str(), index(&defined))
+        })
+        .collect()
+}
 
 /// One KML document's styles, as a placemark's `styleUrl` finds them.
 pub struct Styles<'a> {
@@ -142,26 +157,23 @@ pub struct Styles<'a> {
     own: Vec<&'a Element>,
     /// The document's name in its KMZ archive; empty outside one.
     member: &'a str,
-    /// The definitions of each document, by name, this one's included.
-    documents: HashMap<&'a str, Definitions<'a>>,
+    /// This document's definitions, by id.
+    definitions: Definitions<'a>,
+    /// The definitions of the archive's other documents, by name.
+    members: &'a MemberIndex<'a>,
     /// Ids whose definition here differs from the dataset's style table, which `@id` could not
     /// tell apart: this document's placemarks get the style itself.
     shadowed: HashSet<String>,
 }
 
 impl<'a> Styles<'a> {
-    /// The styles of the document at `root`, which is `member` of a KMZ archive holding `members`.
-    pub fn new(root: &'a Element, member: &'a str, members: &'a Members) -> Self {
+    /// The styles of the document at `root`, which is `member` of a KMZ archive whose documents
+    /// `members` indexes.
+    pub fn new(root: &'a Element, member: &'a str, members: &'a MemberIndex<'a>) -> Self {
         let mut own = Vec::new();
         collect_definitions(root, &mut own);
-        let mut documents: HashMap<&'a str, Definitions<'a>> = HashMap::with_capacity(members.len() + 1);
-        for (name, document) in members {
-            let mut defined = Vec::new();
-            collect_definitions(document, &mut defined);
-            documents.insert(name, index(&defined));
-        }
-        documents.insert(member, index(&own));
-        Self { own, member, documents, shadowed: HashSet::new() }
+        let definitions = index(&own);
+        Self { own, member, definitions, members, shadowed: HashSet::new() }
     }
 
     /// Adds the document's styles to the dataset's style table. An id another document of the
@@ -225,7 +237,7 @@ impl<'a> Styles<'a> {
             }
         }
         stack.splice(0..0, inline);
-        merged(&stack).or_else(|| Some(reference(url)))
+        merged(&stack).or_else(|| (!url.starts_with('#')).then(|| url.to_string()))
     }
 
     /// Pushes the `<Style>` elements a definition comes to, strongest first: a `<Style>` itself,
@@ -250,16 +262,19 @@ impl<'a> Styles<'a> {
         }
         let Some((document, id)) = url.split_once('#') else { return };
         let target = if document.is_empty() { Some(member.to_string()) } else { member_of(document, member) };
-        let Some((name, definitions)) = target.and_then(|t| self.documents.get_key_value(t.as_str())) else { return };
+        let Some(target) = target else { return };
+        // This document under its own name, whichever way the link names it.
+        let (name, definitions) = if target == self.member {
+            (self.member, &self.definitions)
+        } else if let Some((name, definitions)) = self.members.get_key_value(target.as_str()) {
+            (*name, definitions)
+        } else {
+            return;
+        };
         if let Some(e) = definitions.get(id) {
             self.resolve(e, name, depth, out);
         }
     }
-}
-
-/// How an unresolved `styleUrl` reads in a style field.
-fn reference(url: &str) -> String {
-    url.strip_prefix('#').map_or_else(|| url.to_string(), |id| format!("@{id}"))
 }
 
 /// Every `<Style>` and `<StyleMap>` with an id below `e`, in document order. Placemarks' own
@@ -487,7 +502,7 @@ mod tests {
             </Document></kml>"#,
         )
         .unwrap();
-        let members = Members::new();
+        let members = MemberIndex::new();
         let t = Styles::new(&doc, "", &members).table();
         let get = |k: &str| t.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         // As GDAL's LIBKML driver gives them.
@@ -540,7 +555,7 @@ mod tests {
     /// The style of each placemark of a document.
     fn styles_of(kml: &str) -> Vec<Option<String>> {
         let doc = xml::parse(kml).unwrap();
-        let members = Members::new();
+        let members = MemberIndex::new();
         let styles = Styles::new(&doc, "", &members);
         let mut placemarks = Vec::new();
         doc.find_all("Placemark", &mut placemarks);
@@ -608,7 +623,7 @@ mod tests {
             </Document></kml>"##,
         )
         .unwrap();
-        let members = Members::new();
+        let members = MemberIndex::new();
         assert!(Styles::new(&doc, "", &members).table().is_empty());
     }
 

@@ -123,10 +123,11 @@ pub fn parse_kmz_styled(bytes: Vec<u8>, default_name: &str) -> Result<Styled> {
         pending.extend(kml_style::linked_members(&document, &name));
         members.insert(name, document);
     }
+    let index = kml_style::index_members(&members);
     let mut table = Vec::new();
-    let mut layers = layers_of(&root, &main, &members, default_name, false, &mut table);
+    let mut layers = layers_of(&root, &main, &index, default_name, false, &mut table);
     for (member, document, name) in &documents {
-        layers.extend(layers_of(document, member, &members, name, true, &mut table));
+        layers.extend(layers_of(document, member, &index, name, true, &mut table));
     }
     Ok((layers, table))
 }
@@ -152,7 +153,7 @@ pub fn parse(text: &str, default_name: &str) -> Result<Vec<Layer>> {
 pub fn parse_styled(text: &str, default_name: &str) -> Result<Styled> {
     let root = xml::parse(text)?;
     let mut table = Vec::new();
-    let layers = layers_of(&root, "", &kml_style::Members::new(), default_name, false, &mut table);
+    let layers = layers_of(&root, "", &kml_style::MemberIndex::new(), default_name, false, &mut table);
     Ok((layers, table))
 }
 
@@ -162,7 +163,7 @@ pub fn parse_styled(text: &str, default_name: &str) -> Result<Styled> {
 fn layers_of(
     root: &Element,
     member: &str,
-    members: &kml_style::Members,
+    members: &kml_style::MemberIndex<'_>,
     default_name: &str,
     root_layer: bool,
     table: &mut Vec<(String, String)>,
@@ -1050,6 +1051,11 @@ mod tests {
         let (layers, _) = parse_kmz_styled(kmz, "a").unwrap();
         assert_eq!(style(&layers[0], 0), "@s");
         assert_eq!(style(&layers[1], 0), "#s");
+        // Nor beside an inline style that sets nothing OGR holds.
+        let plain = format!("<kml><Document><name>B</name>{}</Document></kml>", pin("#s", "<Style><BalloonStyle/></Style>"));
+        let kmz = archive(&[("doc.kml", main), ("layers/a.kml", &doc("ff0000ff", "A")), ("layers/b.kml", &plain)]);
+        let (layers, _) = parse_kmz_styled(kmz, "a").unwrap();
+        assert!(layers[1].schema.field_index(kml_style::FIELD).is_none());
     }
 
     #[test]
