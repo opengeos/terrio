@@ -532,6 +532,7 @@ fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
     let named = |m: String| if m.contains(local) { m.replace(local, shown) } else { format!("'{shown}': {m}") };
     match e {
         Error::Unsupported(m) => Error::Unsupported(named(m)),
+        Error::ResourceLimit(m) => Error::ResourceLimit(named(m)),
         Error::InvalidData(m) => Error::InvalidData(named(m)),
         Error::InvalidArgument(m) => Error::InvalidArgument(named(m)),
         Error::Raster(e) => Error::InvalidData(named(e.to_string())),
@@ -878,6 +879,9 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     }
     // Unknown extension: let the drivers sniff the content.
     let raster = read_raster_local(path);
+    if raster.as_ref().is_err_and(Error::is_resource_refusal) {
+        return raster.map(Dataset::Raster);
+    }
     // GDAL recognizes formats more reliably than the vector library's guess (which reads any
     // SQLite database as a GeoPackage).
     #[cfg(feature = "gdal")]
@@ -1745,6 +1749,37 @@ pub(crate) mod fallible {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resource_errors_name_the_remote_source_without_cached_paths_or_queries() {
+        let local = "/private/cache/input.hdf";
+        let error = super::naming_dataset(
+            crate::Error::ResourceLimit(format!("budget exceeded at {local}")),
+            "https://example.com/input.hdf?signature=secret",
+            local,
+        );
+        assert!(matches!(&error, crate::Error::ResourceLimit(_)));
+        assert_eq!(error.to_string(), "budget exceeded at https://example.com/input.hdf");
+    }
+
+    #[cfg(feature = "grib")]
+    #[test]
+    fn extensionless_raster_resource_refusals_are_terminal() {
+        if std::env::var("TERRIO_GRIB_MAX_POINTS").as_deref() != Ok("1") {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "dataset::tests::extensionless_raster_resource_refusals_are_terminal"])
+                .env("TERRIO_GRIB_MAX_POINTS", "1")
+                .output()
+                .unwrap();
+            assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stdout));
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input");
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/grib/temperature.grib2"), &path).unwrap();
+        let result = crate::open(path.to_str().unwrap());
+        assert!(matches!(result, Err(crate::Error::ResourceLimit(_))), "{result:?}");
+    }
+
     /// The memory a process can use counts its cgroup's limit and those of the groups above it
     /// (version 2's `memory.max`, version 1's `memory.limit_in_bytes`), as GDAL's
     /// `CPLGetPhysicalRAM` does: in a 2 GiB cgroup on a machine of 32 GiB without an address-space

@@ -1177,7 +1177,7 @@ fn geometry_from(g: &gdal::vector::Geometry, budget: &mut VectorBudget) -> Resul
     let original_size = unsafe { gdal_sys::OGR_G_WkbSizeEx(g.c_geometry()) };
     budget.charge(original_size.saturating_mul(WKB_STORAGE_FACTOR))?;
     if original_size == 0 {
-        return Err(Error::ResourceLimit("GDAL: cannot size the geometry for the vector budget".into()));
+        return Err(Error::InvalidData("GDAL: cannot size the geometry WKB".into()));
     }
     let mut original = crate::dataset::fallible::filled_now(original_size, 0u8, "GDAL geometry WKB")
         .map_err(|error| Error::ResourceLimit(error.to_string()))?;
