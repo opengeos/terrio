@@ -3953,4 +3953,20 @@ mod tests {
             assert_eq!(seen.lock().unwrap().len(), count, "the repeated metadata read stays cached");
         }
     }
+
+    #[test]
+    fn wfs_identification_reads_a_bounded_prefix_not_the_capabilities_document() {
+        let _serial = stats_test_guard();
+        let mut document =
+            br#"<wfs:WFS_Capabilities xmlns:wfs="http://www.opengis.net/wfs/2.0" version="2.0.0"><FeatureTypeList/><!--"#.to_vec();
+        document.extend(vec![b'x'; 1_000_000]);
+        document.extend_from_slice(b"--></wfs:WFS_Capabilities>");
+        let (base, _) = serve_recording(document, None);
+        let found = crate::inspection::identify(&format!("WFS:{base}/ows?map=demo"), false).unwrap().unwrap();
+        assert_eq!(found.driver, "WFS");
+        assert!(!found.deep);
+        let stats = fetch_stats_by_host().into_iter().find(|(host, _)| host == host_of(&base)).unwrap().1;
+        assert_eq!(stats.requests, 1);
+        assert_eq!(stats.bytes, crate::inspection::IDENTIFICATION_HEADER_BYTES as u64);
+    }
 }

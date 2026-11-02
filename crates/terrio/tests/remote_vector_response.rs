@@ -76,11 +76,15 @@ fn extensionless_gml_response_opens_by_content() {
 fn large_getfeature_responses_do_not_require_range_support() {
     let mut document: serde_json::Value = serde_json::from_slice(GEOJSON).unwrap();
     document["padding"] = serde_json::Value::String("x".repeat(200_000));
-    let (base, requests) = serve(serde_json::to_vec(&document).unwrap());
-    let url = format!("{base}/ows?SERVICE=WFS&REQUEST=Get%46eature");
-    let ds = terrio::open_vector(&url, &Default::default()).unwrap();
-    assert_eq!(ds.layers[0].features.len(), 1);
-    assert_eq!(requests.lock().unwrap().len(), 1);
+    for name in ["ows", "ows.json", "ows.geojson"] {
+        let (base, requests) = serve(serde_json::to_vec(&document).unwrap());
+        let url = format!("{base}/{name}?SERVICE=WFS&REQUEST=Get%46eature");
+        let ds = terrio::open_vector(&url, &Default::default()).unwrap();
+        assert_eq!(ds.layers[0].features.len(), 1);
+        let terrio::info::Info::Vector(info) = terrio::info::info_path(&url, &Default::default()).unwrap() else { panic!("not vector") };
+        assert_eq!(info.layers[0].feature_count, 1);
+        assert_eq!(requests.lock().unwrap().len(), 2, "one streamed response per operation: {name}");
+    }
 }
 
 #[test]
@@ -110,4 +114,14 @@ fn service_responses_obey_the_actual_driver_allow_list() {
             assert_eq!(requests.lock().unwrap().len(), 1, "rejected at the identification probe");
         }
     }
+}
+
+#[test]
+fn gml_getfeature_named_json_is_identified_before_stac() {
+    let (base, requests) = serve(GML.to_vec());
+    let url = format!("{base}/ows.json?SERVICE=WFS&REQUEST=GetFeature");
+    let terrio::info::Info::Vector(info) = terrio::info::info_path(&url, &Default::default()).unwrap() else { panic!("not vector") };
+    assert_eq!(info.driver, "GML");
+    assert_eq!(info.layers[0].feature_count, 1);
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }

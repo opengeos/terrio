@@ -1142,6 +1142,11 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &st
 
 /// Whether a path may be a STAC document: a `.json` file or URL, or an API endpoint.
 pub(crate) fn may_be_stac(path: &str) -> bool {
+    // A protocol request owns its response regardless of the endpoint's extension.
+    #[cfg(remote)]
+    if crate::drivers::vector::wfs::is_feature_request(path) {
+        return false;
+    }
     let base = path.split(['?', '#']).next().unwrap_or(path).to_ascii_lowercase();
     if base.ends_with(".json") || base.ends_with(".geojson") {
         return true;

@@ -106,7 +106,7 @@ mod client;
 #[cfg(remote)]
 pub use client::{ServiceInfo, ServiceLayerInfo};
 #[cfg(remote)]
-pub(crate) use client::{feature_exception, info, list_layers, open};
+pub(crate) use client::{capabilities_head, feature_exception, info, list_layers, open};
 
 #[cfg(all(test, remote))]
 mod tests {

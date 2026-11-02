@@ -346,8 +346,19 @@ pub(crate) fn identify_unjudged(path: &str, deep: bool) -> Result<Option<Identif
     if let Some(target) = crate::drivers::vector::wfs::service_target(path) {
         #[cfg(remote)]
         {
-            crate::drivers::vector::wfs::info(target)?;
-            return Ok(vector(VectorDriver::WFS));
+            let header = crate::drivers::vector::wfs::capabilities_head(target, IDENTIFICATION_HEADER_BYTES as u64)?;
+            let recognized = crate::drivers::vector::wfs::is_capabilities(&header);
+            if !recognized && !deep {
+                return Ok(None);
+            }
+            if !recognized {
+                crate::drivers::vector::wfs::info(target)?;
+            }
+            let mut found = vector(VectorDriver::WFS);
+            if let Some(found) = &mut found {
+                found.deep = !recognized;
+            }
+            return Ok(found);
         }
         #[cfg(not(remote))]
         {

@@ -2171,3 +2171,8 @@ with one 16,384-byte range request. Repeating `info` uses the cache without anot
 request. The vector-content probe therefore reuses the raster reader's first
 range. ArcGIS queries retain their original 6,000-byte identification prefix;
 WFS GetFeature identification uses 16,384 bytes.
+
+WFS identification without `--deep` also stays header-only: the regression serves
+a capabilities document over 1 MiB and records one request consuming 16,384 bytes.
+An explicit deep fallback may read the complete capabilities metadata when its
+root cannot be recognized from that prefix.

@@ -218,20 +218,29 @@ fn fetch(url: &str, cap: u64) -> Result<Vec<u8>> {
     crate::http::get_capped_following(&Remote::Url(url.to_string()), cap.min(crate::http::json_max_size()), Redirects::Any)
 }
 
+fn capabilities_url(source: &str) -> Result<String> {
+    if !(source.starts_with("https://") || source.starts_with("http://")) {
+        return Err(Error::InvalidArgument("WFS requires an HTTP(S) endpoint".into()));
+    }
+    Ok(if parameter(source, "request").is_some_and(|value| value.eq_ignore_ascii_case("GetCapabilities")) {
+        source.to_string()
+    } else {
+        let mut values = vec![("SERVICE", "WFS".into()), ("REQUEST", "GetCapabilities".into())];
+        if let Some(version) = parameter(source, "version") {
+            values.push(("VERSION", version.into()));
+        }
+        request_url(source, &values)
+    })
+}
+
+pub(crate) fn capabilities_head(source: &str, maximum: u64) -> Result<Vec<u8>> {
+    let url = capabilities_url(source)?;
+    crate::drivers::vector::featureservice::query_head(&Remote::Url(url), maximum)
+}
+
 impl Service {
     fn load(source: &str) -> Result<Self> {
-        if !(source.starts_with("https://") || source.starts_with("http://")) {
-            return Err(Error::InvalidArgument("WFS requires an HTTP(S) endpoint".into()));
-        }
-        let url = if parameter(source, "request").is_some_and(|v| v.eq_ignore_ascii_case("GetCapabilities")) {
-            source.to_string()
-        } else {
-            let mut kvp = vec![("SERVICE", "WFS".into()), ("REQUEST", "GetCapabilities".into())];
-            if let Some(version) = parameter(source, "version") {
-                kvp.push(("VERSION", version.into()));
-            }
-            request_url(source, &kvp)
-        };
+        let url = capabilities_url(source)?;
         let root = parse_xml(&fetch(&url, METADATA_CAP)?, 0)?;
         if root.name != "WFS_Capabilities" {
             return Err(invalid(format!("expected WFS_Capabilities at {}, got {}", safe_url(source), root.name)));
