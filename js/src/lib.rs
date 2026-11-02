@@ -276,6 +276,23 @@ enum Inner {
     Vector(Vec<Layer>, VectorDriver),
 }
 
+/// A layer of a dataset, or a copy with its style references resolved.
+enum ResolvedLayer<'a> {
+    Borrowed(std::cell::Ref<'a, Layer>),
+    Owned(Layer),
+}
+
+impl std::ops::Deref for ResolvedLayer<'_> {
+    type Target = Layer;
+
+    fn deref(&self) -> &Layer {
+        match self {
+            Self::Borrowed(l) => l,
+            Self::Owned(l) => l,
+        }
+    }
+}
+
 /// A dataset's shared styles: each id with its OGR style string.
 pub(crate) type StyleTable = Rc<Vec<(String, String)>>;
 
@@ -354,14 +371,15 @@ impl Dataset {
         STYLE_TABLES.with(|t| t.borrow().get(&handle).cloned())
     }
 
-    /// One layer with its style references replaced by their definitions.
-    fn resolved_layer(&self, layer: &JsValue) -> Result<Layer, JsError> {
-        let l = self.layer(layer)?.clone();
+    /// One layer with its style references replaced by their definitions: borrowed when the
+    /// dataset has no style table.
+    fn resolved_layer(&self, layer: &JsValue) -> Result<ResolvedLayer<'_>, JsError> {
+        let l = self.layer(layer)?;
         if self.style_table.is_empty() {
-            return Ok(l);
+            return Ok(ResolvedLayer::Borrowed(l));
         }
-        let mut resolved = resolve_styles(vec![l], &self.style_table);
-        resolved.pop().ok_or_else(|| JsError::new("no layer"))
+        let mut resolved = resolve_styles(vec![l.clone()], &self.style_table);
+        resolved.pop().map(ResolvedLayer::Owned).ok_or_else(|| JsError::new("no layer"))
     }
 
     /// The dataset a JavaScript value is, when it is one.

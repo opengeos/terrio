@@ -100,7 +100,8 @@ pub fn parse_kmz_styled(bytes: Vec<u8>, default_name: &str) -> Result<Styled> {
             documents.push((member.clone(), xml::parse(&read_limited(member, u64::MAX)?)?, name));
         }
     }
-    // The documents styles live in, as far as links from one to the next go. Each is read once, and
+    // The documents styles live in, as far as links from one to the next go. Each is read once here
+    // (a layer document a styleUrl names was also read above), and
     // one that cannot be read, or past the limits, leaves its links as raw URLs.
     let mut budget = MAX_STYLE_DOCUMENT_BYTES;
     let archived: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
