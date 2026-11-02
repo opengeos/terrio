@@ -203,7 +203,7 @@ fn expand_entity(
         let mut kept = Vec::with_capacity(handles.len());
         for handle in &handles {
             let member = doc.get_entity(*handle).ok_or_else(|| Error::InvalidData(format!("CAD: missing block member {handle}")))?;
-            match member_clone_work(doc, member, budget) {
+            match member_clone_work(doc, member, !insert.has_uniform_scale(), budget) {
                 Ok(()) => kept.push(*handle),
                 // Left out of the expansion below, which must not decompose it.
                 Err(Error::Unsupported(_)) => budget.skip(member),
@@ -263,10 +263,12 @@ fn set_block_members(doc: &mut CadDocument, block: &str, handles: Vec<Handle>) {
     }
 }
 
-/// Spends the work of cloning a block member, including the child block of a nested INSERT, which
-/// a shear fallback can clone: an unsupported entity there refuses the nested INSERT as a whole.
-/// The child is charged before its scan, so that a refused one still costs what it took to find.
-fn member_clone_work(doc: &CadDocument, member: &EntityType, budget: &mut WorkBudget) -> Result<()> {
+/// Spends the work of cloning a block member, including the child block of a nested INSERT. Under
+/// a non-uniform parent (`may_shear`) a shear fallback can clone that child, so an unsupported entity
+/// there refuses the nested INSERT as a whole. Otherwise the reference stays one, and the child's
+/// members are refused one at a time when it expands. The child is charged before its scan, so that
+/// a refused one still costs what it took to find.
+fn member_clone_work(doc: &CadDocument, member: &EntityType, may_shear: bool, budget: &mut WorkBudget) -> Result<()> {
     budget.spend(clone_extra_work(member)?)?;
     if let EntityType::Insert(nested) = member
         && let Some(child) = doc.block_records.get(&nested.block_name)
@@ -274,7 +276,11 @@ fn member_clone_work(doc: &CadDocument, member: &EntityType, budget: &mut WorkBu
         budget.spend(child.entity_handles.len())?;
         for handle in &child.entity_handles {
             let entity = doc.get_entity(*handle).ok_or_else(|| Error::InvalidData(format!("CAD: missing block member {handle}")))?;
-            budget.spend(clone_extra_work(entity)?)?;
+            match clone_extra_work(entity) {
+                Ok(work) => budget.spend(work)?,
+                Err(Error::Unsupported(_)) if !may_shear => {}
+                Err(error) => return Err(error),
+            }
         }
     }
     Ok(())
@@ -939,10 +945,11 @@ mod tests {
         }
     }
 
-    /// A nested reference is refused whole: a shear fallback could clone its child block.
+    /// Under a stretch a shear fallback could clone the child block, so the reference is refused
+    /// whole. Otherwise it expands, and only the refused member of the child is lost.
     #[test]
-    fn nested_reference_to_a_block_with_a_refused_entity_is_skipped_alone() {
-        for stretch in [1.0, 2.0] {
+    fn nested_references_lose_a_refused_entity_alone_unless_stretched() {
+        for (stretch, features, kind) in [(1.0, 2, "3DSOLID"), (2.0, 1, "INSERT")] {
             let mut doc = CadDocument::new();
             add_block(&mut doc, "inner", vec![EntityType::Solid3D(Default::default()), EntityType::Point(Point::at(Vector3::ZERO))]);
             let nested = EntityType::Insert(acadrust::entities::Insert::new("inner", Vector3::ZERO));
@@ -950,9 +957,9 @@ mod tests {
             doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("outer", Vector3::ZERO).with_scale(stretch, 1.0, 1.0)))
                 .unwrap();
             let (layer, skipped) = layer_from_document(doc, 64).unwrap();
-            assert_eq!(layer.features.len(), 1);
-            assert_eq!(layer.features[0].geometry, Some(Geometry::Point(Coord::xyz(stretch, 0.0, 0.0))));
-            assert_eq!(skipped.keys().map(String::as_str).collect::<Vec<_>>(), ["INSERT"]);
+            assert_eq!(layer.features.len(), features);
+            assert!(layer.features.iter().any(|f| f.geometry == Some(Geometry::Point(Coord::xyz(stretch, 0.0, 0.0)))));
+            assert_eq!(skipped.keys().map(String::as_str).collect::<Vec<_>>(), [kind]);
         }
     }
 

@@ -810,9 +810,9 @@ multipolygons with one polygon per face; faces with fewer than three distinct co
 INSERT expands block geometry (up to 32 levels, one million output features and a shared
 work budget of one million entity visits/clones, including skipped leaves and generated segments);
 unused block definitions are excluded. Empty ordinary block references are skipped silently; array
-inserts and external/non-explodable references are skipped with the warning above, as is a nested
-reference to a block holding an entity refused before expansion (thick entities, 3DSOLID, REGION,
-BODY); missing blocks and exceeded limits produce errors. Expanded entities
+inserts and external/non-explodable references are skipped with the warning above, as is, under a
+non-uniformly scaled INSERT, a nested reference to a block holding an entity refused before
+expansion (thick entities, 3DSOLID, REGION, BODY); missing blocks and exceeded limits produce errors. Expanded entities
 receive new handles. Viewports and
 sequence markers carry no exported geometry.
 Closed polylines remain lines. Curves are linearized at a maximum four-degree step; curve samples
