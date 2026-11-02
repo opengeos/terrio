@@ -122,7 +122,7 @@ fn fields_times_features_cannot_exceed_what_the_answer_justifies() {
 fn decoded_pbf_obeys_memory_estimates() {
     const CHILD: &str = "TERRIO_PBF_MEMORY_CHILD";
     if std::env::var_os(CHILD).is_none() {
-        for scenario in ["coordinates", "cells"] {
+        for scenario in ["coordinates", "cells", "file"] {
             let result = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "decoded_pbf_obeys_memory_estimates", "--nocapture", "--test-threads=1"])
                 .env(CHILD, scenario)
@@ -132,13 +132,21 @@ fn decoded_pbf_obeys_memory_estimates() {
         }
         return;
     }
-    let answer = if std::env::var(CHILD).unwrap() == "coordinates" {
+    let scenario = std::env::var(CHILD).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large.pbf");
+    if scenario == "file" {
+        std::fs::File::create(&path).unwrap().set_len(64 << 20).unwrap();
+    }
+    let answer = if scenario == "coordinates" {
         let coordinates = vec![0u8; 2_000_000];
         let geometry = long_message(2, &long_message(3, &coordinates));
         let result = [vec![7 << 3, 2], transform(), long_message(15, &geometry)].concat();
         let answer = long_message(2, &long_message(1, &result));
         drop((coordinates, geometry, result));
         answer
+    } else if scenario == "file" {
+        Vec::new()
     } else {
         let fields: Vec<u8> =
             (0..1000).flat_map(|i| message(13, &[message(1, format!("F{i}").as_bytes()), vec![2 << 3, 4]].concat())).collect();
@@ -155,6 +163,11 @@ fn decoded_pbf_obeys_memory_estimates() {
         assert_eq!(libc::setrlimit(libc::RLIMIT_CORE, &no_core), 0);
         assert_eq!(libc::setrlimit(libc::RLIMIT_AS, &limit), 0);
     }
-    let error = terrio::memory::open_vector_bytes(answer, "line.pbf", &Default::default()).unwrap_err();
+    let error = if scenario == "file" {
+        terrio::open_vector(&format!("ESRIPBF:{}", path.display()), &Default::default()).unwrap_err()
+    } else {
+        terrio::memory::open_vector_bytes(answer, "line.pbf", &Default::default()).unwrap_err()
+    };
+    assert!(matches!(&error, terrio::Error::ResourceLimit(_)), "{error}");
     assert!(error.to_string().starts_with("ESRIPBF:"), "{error}");
 }

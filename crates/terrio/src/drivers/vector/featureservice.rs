@@ -10,7 +10,7 @@
 //! The query results of an ArcGIS feature service: their paging, fields, values, geometries and
 //! spatial reference, apart from how a page is encoded.
 //!
-//! Fields are typed as GDAL's ESRIJSON driver types them. Terrio's data model has no subtypes, so
+//! Fields are typed as GDAL 3.13.3's ESRIJSON driver types them. Terrio's data model has no subtypes, so
 //! `esriFieldTypeSmallInteger` is an integer and `esriFieldTypeSingle` a real, and GUIDs are
 //! text. Dates are UTC date-times from milliseconds since 1970. The object id field
 //! (`esriFieldTypeOID`) is an integer field that also gives each feature its id.
@@ -169,8 +169,8 @@ pub(crate) fn read_pages(
         Some(_) => url.to_string(),
         None => with_query_value(url, "resultRecordCount", &layer.features.len().to_string()),
     };
-    let names = |l: &Layer| l.schema.fields().iter().map(|f| f.name.clone()).collect::<Vec<_>>();
-    let fields = names(&layer);
+    let schema = |l: &Layer| l.schema.fields().iter().map(|f| (f.name.clone(), f.field_type)).collect::<Vec<_>>();
+    let fields = schema(&layer);
     let mut total = first.len() as u64;
     let mut previous = std::borrow::Cow::Borrowed(first);
     let mut previous_len = layer.features.len();
@@ -202,7 +202,7 @@ pub(crate) fn read_pages(
             return Err(invalid(format!("the page at offset {offset} has no features, but says there are more")));
         }
         // A last page without features and without `fields` names none.
-        if !page.layer.features.is_empty() && names(&page.layer) != fields {
+        if !page.layer.features.is_empty() && schema(&page.layer) != fields {
             return Err(invalid(format!("the page at offset {offset} has other fields than the first")));
         }
         more = page.more;

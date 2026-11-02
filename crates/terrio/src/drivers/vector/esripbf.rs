@@ -7,7 +7,8 @@
 
 //! The FeatureCollection protocol buffer of ArcGIS feature-service queries (`f=pbf`): one layer,
 //! with what `f=json` gives. See [`super::featureservice`] for how fields, values and geometries
-//! are read.
+//! are read. GDAL 3.13.3 has no ESRIPBF driver; the reference is Esri's published protocol
+//! and the same service's JSON response.
 //!
 //! Coordinates are integers to scale and translate as the result's `transform` says. X and Y are
 //! differences from the previous vertex, starting over at each part; Z and M are each vertex's own,
@@ -167,6 +168,7 @@ fn signs(bytes: &[u8]) -> Result<bool> {
 /// Reads such an answer from a file; the layer is named after it.
 pub fn read(path: &str) -> Result<Layer> {
     let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("ESRIPBF");
+    reserve_parse_memory(usize::try_from(std::fs::metadata(path)?.len()).unwrap_or(usize::MAX))?;
     page(&std::fs::read(path)?, stem, path).map(|page| page.layer)
 }
 
@@ -356,6 +358,7 @@ pub(crate) fn page(bytes: &[u8], name: &str, source: &str) -> Result<featureserv
         if let Err(denied) = crate::formats::check_driver_allowed("ESRIJSON", source, crate::formats::Kind::Vector) {
             return Err(json_service_error(bytes).unwrap_or(denied));
         }
+        // ESRIJSON page errors use this prefix; change both sites together if the label changes.
         let relabel = |m: String| m.strip_prefix("ESRIJSON: ").map_or_else(|| m.clone(), |rest| format!("ESRIPBF: {rest}"));
         let page = super::esrijson::page(bytes, name).map_err(|e| match e {
             Error::InvalidData(m) => Error::InvalidData(relabel(m)),
@@ -568,7 +571,7 @@ fn value(cell: &Cell, field: &FieldDef) -> FieldValue {
             Some(ms) => featureservice::date_time(ms),
             None => text.map_or(FieldValue::Null, |s| FieldValue::DateTime(s.into_owned())),
         },
-        FieldType::Date => match cell.as_i64() {
+        FieldType::Date => match cell.as_i64().filter(|_| !matches!(cell, Cell::Real(_))) {
             Some(ms) => FieldValue::Date(super::datetime::format_date(ms.div_euclid(86_400_000))),
             None => text.map_or(FieldValue::Null, |s| FieldValue::Date(s.into_owned())),
         },
@@ -929,6 +932,23 @@ mod tests {
         let l = parse(&bytes, "x").unwrap();
         let Some(Geometry::Polygon { interiors, .. }) = &l.features[0].geometry else { panic!("not a polygon") };
         assert_eq!(interiors.len(), 1);
+    }
+
+    #[test]
+    fn real_date_only_values_are_null_as_in_json() {
+        for millis in [1.5, 0.0, -1.5] {
+            let bytes = answer(&[field_of("D", 14), message(15, &value_field(double(3, millis)))]);
+            let pbf = parse(&bytes, "x").unwrap();
+            let json = serde_json::json!({
+                "fields": [{"name": "D", "type": "esriFieldTypeDateOnly"}],
+                "features": [{"attributes": {"D": millis}}]
+            });
+            let json = crate::drivers::vector::esrijson::parse(&serde_json::to_vec(&json).unwrap(), "x").unwrap();
+            assert_eq!(cells(&pbf, 0), [FieldValue::Null]);
+            assert_eq!(cells(&pbf, 0), cells(&json, 0));
+        }
+        let integer = answer(&[field_of("D", 14), message(15, &value_field(number(4, sint(0))))]);
+        assert_eq!(cells(&parse(&integer, "x").unwrap(), 0), [FieldValue::Date("1970-01-01".into())]);
     }
 
     #[test]

@@ -43,8 +43,12 @@ fn page(offset: u64) -> Vec<u8> {
 
 /// [`page`], its features with their object ids or leaving them null.
 fn page_with(offset: u64, object_ids: bool) -> Vec<u8> {
+    page_with_type(offset, object_ids, 6)
+}
+
+fn page_with_type(offset: u64, object_ids: bool, kind: u64) -> Vec<u8> {
     let end = (offset + 2).min(TOTAL);
-    let field = message(13, &[message(1, b"OBJECTID"), number(2, 6)].concat());
+    let field = message(13, &[message(1, b"OBJECTID"), number(2, kind)].concat());
     let srs = message(8, &number(1, 4326));
     let double = |field: u64, v: f64| {
         let mut out = Vec::new();
@@ -93,6 +97,7 @@ fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
                 .unwrap_or(0);
             let body: Vec<u8> = match target.split('?').next().unwrap_or("/") {
                 "/query" => page(offset),
+                "/typed/query" => page_with_type(offset, true, if offset == 0 { 6 } else { 4 }),
                 "/late-geojson/query" => format!(r#"{{"fieldAliases":{{}},"padding":"{}","features":[{{"type":"Feature","properties":{{"name":"kept"}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}],"type":"FeatureCollection"}}"#, "x".repeat(7000)).into_bytes(),
                 "/refused/query" | "/empty.pbf" => Vec::new(),
                 "/denied/query" => br#"{"error":{"code":498,"message":"Invalid token."}}"#.to_vec(),
@@ -202,4 +207,12 @@ fn uppercase_pbf_queries_are_paged_without_a_record_count() {
     let ds = terrio::open_vector(&format!("{base}/query?f=PBF"), &Default::default()).unwrap();
     assert_eq!(ids(&ds), [1, 2, 3, 4, 5]);
     assert_eq!(requests.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn changed_field_types_between_pages_are_refused() {
+    let (base, requests) = serve();
+    let error = terrio::open_vector(&format!("{base}/typed/query?f=pbf"), &Default::default()).unwrap_err();
+    assert!(error.to_string().contains("other fields"), "{error}");
+    assert_eq!(requests.lock().unwrap().len(), 2);
 }
