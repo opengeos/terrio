@@ -232,7 +232,7 @@ fn cad_unsupported_spline_uses_available_backend() {
 
 /// Polyface meshes are what AutoCAD's POLYLINE holds for many 3D drawings.
 #[test]
-fn cad_polyface_meshes_read_as_3d_multipolygons_through_gpkg() {
+fn cad_polyface_meshes_read_as_3d_multipolygons() {
     let mut mesh = PolyfaceMesh::new();
     for (x, y, z) in [(0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (2.0, 2.0, 3.0), (0.0, 2.0, 3.0)] {
         mesh.add_vertex_xyz(x, y, z);
