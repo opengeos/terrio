@@ -221,7 +221,7 @@ fn expand_entity(
             set_block_members(doc, &insert.block_name, handles);
         }
         budget.spend(parts.len())?;
-        // Every member was refused and is already counted: the INSERT itself is not at fault.
+        // Refused members are already counted; with no part left to expand, the INSERT is not at fault.
         if parts.is_empty() && partial {
             return Ok(());
         }
@@ -1008,7 +1008,8 @@ mod tests {
         add_block(&mut doc, "child", members);
         let references = (0..50).map(|_| EntityType::Insert(acadrust::entities::Insert::new("child", Vector3::ZERO))).collect();
         add_block(&mut doc, "parent", references);
-        doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("parent", Vector3::ZERO))).unwrap();
+        // Stretched, so that each reference is refused rather than expanded: only the scans cost much.
+        doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("parent", Vector3::ZERO).with_scale(2.0, 1.0, 1.0))).unwrap();
         // Enough for the references alone, not for scanning the child behind each one.
         assert!(matches!(layer_from_document(doc, 500), Err(Error::ResourceLimit(_))));
     }
