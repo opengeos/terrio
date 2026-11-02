@@ -349,6 +349,33 @@ fn extension_of(name: &str) -> Option<String> {
     Path::new(name).extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase())
 }
 
+/// Percent-decodes a URL query component (`+` is a space).
+pub(crate) fn decode_query_component(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.bytes().any(|b| matches!(b, b'%' | b'+')) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = b
+            .get(i + 1..i + 3)
+            .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (b[i], hex) {
+            (b'+', _) => out.push(b' '),
+            (b'%', Some(v)) => {
+                out.push(v);
+                i += 2;
+            }
+            (c, _) => out.push(c),
+        }
+        i += 1;
+    }
+    std::borrow::Cow::Owned(String::from_utf8_lossy(&out).into_owned())
+}
+
 /// The scheme and host (with its port) of a URL, lowercased: what decides whether two URLs are
 /// of the same origin. `None` when `url` has no scheme.
 pub(crate) fn url_origin(url: &str) -> Option<(String, String)> {
@@ -844,6 +871,12 @@ impl Seek for RemoteArchive {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn query_component_escapes_require_two_hex_digits() {
+        assert_eq!(super::decode_query_component("%+1-%G0-%1-%"), "% 1-%G0-%1-%");
+        assert_eq!(super::decode_query_component("%2b%20%41"), "+ A");
+    }
+
     use super::*;
 
     /// The URL an `az://` path resolves to under the options GDAL 3.12.1 reads

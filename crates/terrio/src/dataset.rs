@@ -322,6 +322,8 @@ pub struct VectorOpenOptions {
     /// Whether to read a feature-service query's following pages (`FEATURE_SERVER_PAGING`, as in
     /// GDAL's ESRIJSON driver). By default, unless its URL gives a `resultOffset`.
     pub feature_server_paging: Option<bool>,
+    /// Native WFS paging and retained-data budgets.
+    pub wfs: crate::drivers::vector::wfs::WfsOpenOptions,
     /// How to read HEC-RAS geometry and plan HDF files: meshes and the stored values to join.
     pub hecras: crate::drivers::vector::hecras_options::HecRasOpenOptions,
     /// How to read XLSX workbooks: header rows, field types and geometry columns.
@@ -348,8 +350,11 @@ impl VectorOpenOptions {
             return Ok(true);
         }
         // The XLSX options share the names of CSV's geometry options, and each format keeps its own.
-        let known =
-            self.csv.set(key, value)? || self.shapefile.set(key, value)? || self.tiles.set(key, value)? || self.hecras.set(key, value)?;
+        let known = self.csv.set(key, value)?
+            || self.shapefile.set(key, value)?
+            || self.tiles.set(key, value)?
+            || self.hecras.set(key, value)?
+            || self.wfs.set(key, value)?;
         Ok(self.xlsx.set(key, value)? || known)
     }
 
@@ -389,7 +394,7 @@ pub fn open(path: &str) -> Result<Dataset> {
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
         return crate::gdal_backend::open(rest);
     }
-    if let Some(result) = open_feature_service(path, &VectorOpenOptions::default()) {
+    if let Some(result) = open_remote_vector(path, &VectorOpenOptions::default()) {
         return result.map(Dataset::Vector);
     }
     let result = open_native(path);
@@ -590,7 +595,7 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
         return crate::gdal_backend::open_vector(rest, options);
     }
-    if let Some(result) = open_feature_service(path, options) {
+    if let Some(result) = open_remote_vector(path, options) {
         return result;
     }
     let result = open_vector_native(path, options);
@@ -599,14 +604,24 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
     result
 }
 
-/// A feature-service query: a URL with the signs of one that answers ESRI JSON or its protocol
+/// A vector response or feature-service query: opaque remote GeoJSON/GML names, and URLs with
+/// the signs of a service that answers ESRI JSON or its protocol
 /// buffer, or one named by the `ESRIJSON:` or `ESRIPBF:` prefix, which also names a local file. Read
 /// before the other readers and before GDAL: a query's answer is made per request, and many ArcGIS
 /// servers ignore ranges; and an answer recognized here and found wrong (a service's error, a page
 /// with other fields, a service that ignores the offset) is an error, not something for GDAL to read
 /// what it can of without a word. Other paths (`None`) go on as usual, as do URLs whose request
 /// fails before their answer is recognized, which report their own errors.
-pub(crate) fn open_feature_service(path: &str, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
+pub(crate) fn open_remote_vector(path: &str, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
+    if let Some(target) = crate::drivers::vector::wfs::service_target(path) {
+        #[cfg(remote)]
+        return Some(crate::drivers::vector::wfs::open(target, options));
+        #[cfg(not(remote))]
+        {
+            let _ = target;
+            return Some(Err(Error::disabled("remote")));
+        }
+    }
     let prefixed = [("ESRIJSON:", VectorDriver::ESRIJSON), ("ESRIPBF:", VectorDriver::ESRIPBF)]
         .into_iter()
         .find(|(prefix, _)| path.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix)));
@@ -620,45 +635,107 @@ pub(crate) fn open_feature_service(path: &str, options: &VectorOpenOptions) -> O
     {
         return Some(vfs::resolve(target).and_then(|local| read_vector_local(local.as_str(), driver, options)));
     }
-    open_query(target, named, options)
+    if let Some(result) = open_query(target, named, options) {
+        return Some(result);
+    }
+    #[cfg(remote)]
+    if named.is_none() {
+        return open_remote_vector_response(target, options);
+    }
+    None
 }
 
-/// [`open_feature_service`] for a URL, in a build that has no network: one named for a driver says
+/// A single remote GeoJSON/GML document under an opaque name. Reuse the normal bounded range
+/// probe and cache so raster and unknown-format reads retain their existing I/O behavior.
+#[cfg(remote)]
+fn open_remote_vector_response(url: &str, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
+    let loc = vfs::Location::parse(url);
+    let remote = loc.remote()?;
+    if crate::stac::may_be_stac(url)
+        || crate::drivers::vector::wfs::is_feature_request(url)
+        || crate::drivers::vector::featureservice::is_query_url(url)
+        || !judged_by_content(&loc.file_name(), true)
+    {
+        return None;
+    }
+    let (head, _) = match crate::http::head_and_len(&remote, crate::http::FIRST_READ) {
+        Ok(header) => header,
+        Err(error) if error.is_resource_refusal() => return Some(Err(error)),
+        Err(_) => return None,
+    };
+    let driver = remote_vector_response_driver(&head)?;
+    let result = crate::formats::check_driver_allowed(driver.name(), url, crate::formats::Kind::Vector)
+        .and_then(|()| crate::http::get_file(&remote, crate::http::Redirects::Any))
+        .and_then(|bytes| read_vector_answer(url, bytes, driver, options));
+    #[cfg(feature = "gdal")]
+    let result = gdal_fallback(url, result, |path| crate::gdal_backend::open_vector(path, options));
+    Some(result)
+}
+
+#[cfg(remote)]
+fn remote_vector_response_driver(head: &[u8]) -> Option<VectorDriver> {
+    match crate::inspection::identify_bytes_unjudged(head, "response")?.driver.as_str() {
+        "GeoJSON" => Some(VectorDriver::GeoJSON),
+        "GML" => Some(VectorDriver::GML),
+        _ => None,
+    }
+}
+
+/// [`open_remote_vector`] for a URL, in a build that has no network: one named for a driver says
 /// so.
 #[cfg(not(remote))]
 fn open_query(_url: &str, named: Option<VectorDriver>, _options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
     named.map(|_| Err(Error::disabled("remote")))
 }
 
-/// [`open_feature_service`] for a URL.
+/// [`open_remote_vector`] for a URL.
 #[cfg(remote)]
 fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
     use crate::drivers::vector::{esrijson, esripbf, featureservice};
     use std::io::Read;
-    if named.is_none() && !featureservice::is_query_url(url) {
+    let wfs = crate::drivers::vector::wfs::is_feature_request(url);
+    if named.is_none() && !featureservice::is_query_url(url) && !wfs {
         return None;
     }
     let mut recognized = named;
-    let answer = crate::http::with_reader(&crate::http::Remote::Url(url.to_string()), |reader| {
+    let answer = crate::http::with_reader_status(&crate::http::Remote::Url(url.to_string()), wfs, |status, reader| {
         let cap = crate::http::json_max_size();
         let mut bytes = Vec::new();
-        (&mut *reader).take(esrijson::HEAD_BYTES as u64).read_to_end(&mut bytes)?;
+        let head_bytes = if wfs { crate::http::FIRST_READ } else { esrijson::HEAD_BYTES as u64 };
+        (&mut *reader).take(head_bytes).read_to_end(&mut bytes)?;
+        if wfs && !(200..300).contains(&status) {
+            recognized = Some(VectorDriver::WFS);
+            (&mut *reader).take(cap.saturating_sub(bytes.len() as u64).saturating_add(1)).read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > cap {
+                return Err(crate::http::over_cap(url, cap));
+            }
+            return Err(if crate::drivers::vector::wfs::is_exception(&bytes) {
+                crate::drivers::vector::wfs::feature_exception(&bytes)
+            } else {
+                Error::Http(format!("{}: status {status}", url.split(['?', '#']).next().unwrap_or(url)))
+            });
+        }
         // Asked for the protocol buffer, a service answers a query it refuses with nothing, or with
         // its error in JSON, and one for a count, ids or an extent with that answer, which the reader
         // refuses by name: all of them this driver's to report.
         let pbf = featureservice::asks_for_pbf(url);
         let refused = bytes.is_empty() && featureservice::is_query_path(url);
         recognized = recognized.or_else(|| {
-            if pbf && (refused || esrijson::is_esrijson(&bytes) || esripbf::is_query_answer(&bytes)) {
+            if wfs && crate::drivers::vector::wfs::is_exception(&bytes) {
+                Some(VectorDriver::WFS)
+            } else if pbf && (refused || esrijson::is_esrijson(&bytes) || esripbf::is_query_answer(&bytes)) {
                 Some(VectorDriver::ESRIPBF)
             } else if esrijson::is_esrijson(&bytes) {
                 Some(VectorDriver::ESRIJSON)
             } else if esripbf::is_esripbf(&bytes) {
                 Some(VectorDriver::ESRIPBF)
             } else {
-                None
+                remote_vector_response_driver(&bytes)
             }
         });
+        if let Some(driver @ (VectorDriver::GeoJSON | VectorDriver::GML)) = recognized {
+            crate::formats::check_driver_allowed(driver.name(), url, crate::formats::Kind::Vector)?;
+        }
         if recognized.is_none() {
             return Ok(None);
         }
@@ -676,28 +753,33 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
                 && esripbf::is_json(&bytes)
                 && std::str::from_utf8(&bytes).is_ok_and(|text| !esrijson::is_esrijson_document(text)) =>
         {
-            Some(read_geojson_answer(url, bytes, options))
+            Some(read_vector_answer(url, bytes, VectorDriver::GeoJSON, options))
         }
         (Ok(Some(bytes)), Some(VectorDriver::ESRIPBF))
             if bytes.is_empty() && featureservice::is_query_path(url) && featureservice::asks_for_pbf(url) =>
         {
             Some(Err(Error::InvalidData("ESRIPBF: the answer is empty: a service refuses a query this way, and f=json shows why".into())))
         }
+        (Ok(Some(bytes)), Some(driver @ (VectorDriver::GeoJSON | VectorDriver::GML))) => {
+            Some(read_vector_answer(url, bytes, driver, options))
+        }
+        (Ok(Some(bytes)), Some(VectorDriver::WFS)) => Some(Err(crate::drivers::vector::wfs::feature_exception(&bytes))),
         (Ok(Some(bytes)), Some(driver)) => Some(read_feature_service(url, &bytes, driver, options)),
+        (Err(e), _) if e.is_resource_refusal() => Some(Err(e)),
         (Err(e), Some(_)) => Some(Err(e)),
         _ => None,
     }
 }
 
-/// A URL's GeoJSON answer, from its bytes.
+/// A URL's vector answer, from its bytes; keep signed queries out of layer names and diagnostics.
 #[cfg(remote)]
-fn read_geojson_answer(url: &str, bytes: Vec<u8>, options: &VectorOpenOptions) -> Result<VectorDataset> {
-    let driver = VectorDriver::GeoJSON;
-    let layers = crate::drivers::vector::read_bytes(bytes, url, driver, options)?
+fn read_vector_answer(url: &str, bytes: Vec<u8>, driver: VectorDriver, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    let shown = url.trim().split(['?', '#']).next().unwrap_or(url);
+    let layers = crate::drivers::vector::read_bytes(bytes, shown, driver, options)?
         .ok_or_else(|| Error::Unsupported(format!("the {} driver cannot read from memory", driver.name())))?;
-    let mut layers = select_layers(layers, url, options)?;
+    let mut layers = select_layers(layers, shown, options)?;
     layers.iter_mut().for_each(|l| options.keep_range(l));
-    Ok(finish_vector(layers, url, driver))
+    Ok(finish_vector(layers, shown, driver))
 }
 
 /// A feature-service query from its first page's bytes, with the pages after it.
@@ -749,11 +831,20 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
 /// The layer names of a vector dataset, without reading the features when the format allows it.
 pub fn list_layers(path: &str) -> Result<Vec<String>> {
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
+    if let Some(target) = crate::drivers::vector::wfs::service_target(path) {
+        #[cfg(remote)]
+        return crate::drivers::vector::wfs::list_layers(target);
+        #[cfg(not(remote))]
+        {
+            let _ = target;
+            return Err(Error::disabled("remote"));
+        }
+    }
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
         return crate::gdal_backend::list_layers(rest);
     }
-    if let Some(result) = open_feature_service(path, &VectorOpenOptions { feature_server_paging: Some(false), ..Default::default() }) {
+    if let Some(result) = open_remote_vector(path, &VectorOpenOptions { feature_server_paging: Some(false), ..Default::default() }) {
         return result.map(|v| v.layers.into_iter().map(|l| l.name).collect());
     }
     let result = list_layers_native(path);

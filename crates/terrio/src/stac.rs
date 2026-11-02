@@ -196,26 +196,6 @@ fn next_request(doc: &Value, cur: &Request) -> Option<Request> {
     Some(Request { url, body: Some(body), headers })
 }
 
-/// Percent-decodes a URL query component (`+` is a space).
-fn url_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        let hex = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
-        match (b[i], hex) {
-            (b'+', _) => out.push(b' '),
-            (b'%', Some(v)) => {
-                out.push(v);
-                i += 2;
-            }
-            (c, _) => out.push(c),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// A `datetime` search parameter with its dates and months as RFC 3339 instants, as
 /// pystac-client sends it (`2023-07` is `2023-07-01T00:00:00Z/2023-07-31T23:59:59Z`): servers
 /// reject bare dates in `POST` bodies.
@@ -264,7 +244,7 @@ fn post_request(source: &str) -> Request {
     let mut body = serde_json::Map::new();
     for kv in query.split('&').filter(|kv| !kv.is_empty()) {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-        let (k, v) = (url_decode(k), url_decode(v));
+        let (k, v) = (crate::vfs::decode_query_component(k).into_owned(), crate::vfs::decode_query_component(v).into_owned());
         let list = || Value::Array(v.split(',').map(|s| Value::String(s.trim().to_string())).collect());
         let value = match k.as_str() {
             "bbox" => Value::Array(v.split(',').filter_map(|n| n.trim().parse::<f64>().ok()).map(Value::from).collect()),
@@ -1161,7 +1141,12 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &st
 // Entry points
 
 /// Whether a path may be a STAC document: a `.json` file or URL, or an API endpoint.
-fn may_be_stac(path: &str) -> bool {
+pub(crate) fn may_be_stac(path: &str) -> bool {
+    // A protocol request owns its response regardless of the endpoint's extension.
+    #[cfg(remote)]
+    if crate::drivers::vector::wfs::is_feature_request(path) {
+        return false;
+    }
     let base = path.split(['?', '#']).next().unwrap_or(path).to_ascii_lowercase();
     if base.ends_with(".json") || base.ends_with(".geojson") {
         return true;

@@ -14,7 +14,7 @@ pub struct Element {
     pub name: String,
     /// The namespace prefix, empty when there is none.
     pub prefix: String,
-    /// The attributes, by local name, unescaped.
+    /// The attributes, by qualified name, unescaped.
     pub attrs: Vec<(String, String)>,
     /// The child elements, in document order.
     pub children: Vec<Element>,
@@ -23,9 +23,23 @@ pub struct Element {
 }
 
 impl Element {
-    /// The value of an attribute, by local name.
+    /// An ordinary attribute by local name, preferring an unqualified attribute.
     pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        self.attrs
+            .iter()
+            .find(|(key, _)| key == name && key != "xmlns")
+            .or_else(|| {
+                self.attrs.iter().find(|(key, _)| key != "xmlns" && !key.starts_with("xmlns:") && key.rsplit(':').next() == Some(name))
+            })
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// A namespace declaration on this element, separate from ordinary attributes.
+    pub fn namespace(&self, prefix: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find(|(key, _)| if prefix.is_empty() { key == "xmlns" } else { key.strip_prefix("xmlns:") == Some(prefix) })
+            .map(|(_, value)| value.as_str())
     }
 
     /// The first child with a local name.
@@ -67,16 +81,25 @@ fn local(name: &str) -> String {
     name.rsplit_once(':').map_or(name, |(_, l)| l).to_string()
 }
 
-fn element(e: &BytesStart) -> Element {
-    let attrs = e
-        .attributes()
-        .flatten()
-        .map(|a| (local(a.key.as_ref()), a.normalized_value(XmlVersion::Implicit1_0).map(|v| v.into_owned()).unwrap_or_default()))
-        .collect();
+fn element(e: &BytesStart, strict: bool) -> Result<Element> {
+    let mut attrs = Vec::new();
+    for attribute in e.attributes() {
+        let attribute = match attribute {
+            Ok(attribute) => attribute,
+            Err(error) if strict => return Err(Error::InvalidData(format!("XML attribute: {error}"))),
+            Err(_) => continue,
+        };
+        let value = match attribute.normalized_value(XmlVersion::Implicit1_0) {
+            Ok(value) => value.into_owned(),
+            Err(error) if strict => return Err(Error::InvalidData(format!("XML attribute: {error}"))),
+            Err(_) => String::new(),
+        };
+        attrs.push((attribute.key.as_ref().to_string(), value));
+    }
     let name = e.name();
     let qname: &str = name.as_ref();
     let prefix = qname.rsplit_once(':').map(|(p, _)| p.to_string()).unwrap_or_default();
-    Element { name: local(qname), prefix, attrs, ..Default::default() }
+    Ok(Element { name: local(qname), prefix, attrs, ..Default::default() })
 }
 
 /// Decodes a document's bytes: UTF-8 (with or without a byte order mark), or Latin-1 when the
@@ -91,35 +114,41 @@ pub fn decode(bytes: &[u8]) -> String {
 
 /// Parses a document and returns its root element.
 pub fn parse(text: &str) -> Result<Element> {
-    parse_with_limits(text, usize::MAX, usize::MAX)
+    parse_with_limits(text, usize::MAX, usize::MAX, false)
 }
 
-/// Parse with a caller-specific element bound and a 256-level nesting bound.
+/// Parse legacy XML with a caller-specific element bound and a 256-level nesting bound.
 pub fn parse_limited(text: &str, max_elements: usize) -> Result<Element> {
-    parse_with_limits(text, max_elements, 256)
+    parse_with_limits(text, max_elements, 256, false)
 }
 
-fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize) -> Result<Element> {
+/// Parse well-formed service XML within the same element and nesting budgets.
+#[cfg(remote)]
+pub fn parse_strict_limited(text: &str, max_elements: usize) -> Result<Element> {
+    parse_with_limits(text, max_elements, 256, true)
+}
+
+fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize, strict: bool) -> Result<Element> {
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("XML: {e}"));
     let mut reader = Reader::from_str(text);
-    reader.config_mut().check_end_names = false;
+    reader.config_mut().check_end_names = strict;
     let mut stack: Vec<Element> = vec![Element::default()];
     let mut elements = 0usize;
     loop {
         let event = reader.read_event().map_err(|e| err(&e))?;
         if matches!(&event, Event::Start(_) | Event::Empty(_)) {
             if elements >= max_elements {
-                return Err(Error::InvalidData(format!("XML: element count exceeds {max_elements}")));
+                return Err(Error::ResourceLimit(format!("XML: element count exceeds {max_elements}")));
             }
             elements += 1;
         }
         if matches!(&event, Event::Start(_) | Event::Empty(_)) && stack.len() > max_depth {
-            return Err(Error::InvalidData(format!("XML: nesting exceeds {max_depth} element levels")));
+            return Err(Error::ResourceLimit(format!("XML: nesting exceeds {max_depth} element levels")));
         }
         match event {
-            Event::Start(e) => stack.push(element(&e)),
+            Event::Start(e) => stack.push(element(&e, strict)?),
             Event::Empty(e) => {
-                let el = element(&e);
+                let el = element(&e, strict)?;
                 if let Some(parent) = stack.last_mut() {
                     parent.children.push(el);
                 }
@@ -154,6 +183,9 @@ fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize) -> Resul
                         _ => None,
                     },
                 };
+                if strict && c.is_none() {
+                    return Err(Error::InvalidData(format!("XML: unresolved entity reference &{};", &*r)));
+                }
                 if let (Some(c), Some(top)) = (c, stack.last_mut()) {
                     top.text.push(c);
                 }
@@ -162,7 +194,10 @@ fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize) -> Resul
             _ => {}
         }
     }
-    // Close elements left open by a truncated document.
+    if strict && stack.len() != 1 {
+        return Err(Error::InvalidData("XML: unclosed elements in a truncated document".into()));
+    }
+    // Preserve the legacy permissive reader for ordinary file formats.
     while stack.len() > 1 {
         let el = stack.pop().unwrap_or_default();
         if let Some(parent) = stack.last_mut() {
@@ -170,6 +205,9 @@ fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize) -> Resul
         }
     }
     let doc = stack.pop().unwrap_or_default();
+    if strict && (doc.children.len() != 1 || !doc.text.trim().is_empty()) {
+        return Err(Error::InvalidData("XML: expected one root element".into()));
+    }
     doc.children.into_iter().next().ok_or_else(|| Error::InvalidData("XML: no root element".into()))
 }
 

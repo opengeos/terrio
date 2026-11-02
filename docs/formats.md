@@ -364,6 +364,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | GeoJSON | GeoJSON | ✓ | ✓ | geojson, json |
 | CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | ✓ | city.json, cityjson, json (by content) |
 | CityGML | CityGML 2.0 and 3.0 (flat XYZ view) | ✓ | ✓ | citygml, gml/xml (by content) |
+| WFS | Read-only WFS 1.0, 1.1 and 2.0 services | ✓ | — | WFS: endpoint or GetCapabilities URL |
 | ESRIJSON | JSON of ArcGIS feature-service queries, from files and URLs | ✓ | — | json (by content), query URLs |
 | ESRIPBF | Protocol buffers of ArcGIS feature-service queries, from files and URLs | ✓ | — | pbf (by content), query URLs |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
@@ -620,6 +621,81 @@ Conformance follows the OGC [CityGML 2.0 encoding](https://schemas.opengis.net/c
 and [CityGML 3.0 encoding](https://docs.ogc.org/is/21-006r2/21-006r2.html) and published
 schemas. GDAL 3.13.3's partial CityGML reader is informational.
 
+### WFS
+
+Native builds with HTTP support read WFS 1.0.0, 1.1.0, 2.0.0 and 2.0.2 simple features without
+GDAL. Use a `WFS:` prefix before an HTTP(S) endpoint, or open a URL containing
+`SERVICE=WFS` and `REQUEST=GetCapabilities` directly. The capabilities document is
+identified as WFS, rather than GML feature data.
+
+```sh
+terrio info 'WFS:https://example.org/ows' --json
+terrio info 'WFS:https://example.org/ows' --layer 'namespace:roads'
+terrio convert 'WFS:https://example.org/ows' roads.gpkg --layer 'namespace:roads' --oo WFS_PAGE_SIZE=500
+```
+
+A service summary and `list_layers` fetch capabilities only. JSON summaries have
+`metadata_only: true` and null feature counts, not zero; fields are empty until a
+layer is read. Selecting a layer for CLI `info` reads its schema and features to
+report actual counts. Reads use `DescribeFeatureType` and `GetFeature`, preserving
+the source namespace-qualified names, declared fields, source `gml_id` and default
+CRS. Numeric feature IDs are zero-based offsets in the query's response order;
+skipping features retains their original offsets in both paging modes. Source
+`gml_id` values provide the service's identifiers. Empty layers retain their
+schema and CRS. A read without a layer selection reads all advertised layers.
+
+`VectorOpenOptions.wfs` in Rust and the `options` mapping in Python accept the
+same options as CLI/MCP `--oo`:
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `WFS_PAGE_SIZE` | 1000 | Positive feature count requested per page. |
+| `WFS_PAGING` | automatic | WFS 2 pages unless the service disables paging; WFS 1 reads one response. `YES` also requests the WFS 1 vendor paging extension; `NO` requests a single page. |
+| `WFS_MAX_VECTOR_BYTES` | 1073741824 | Positive retained-data estimate across selected layers, including dense attribute cells. |
+
+WFS 1 services can cap an unpaged response; enable paging only if the server
+supports it. WFS 1 `numberOfFeatures` describes the returned page, so it is not
+used as a total matching count. With paging disabled explicitly, the single response is limited to
+`WFS_PAGE_SIZE` returned features unless a feature limit is supplied. Skip is
+included in the requested count. An advertised matching count larger than an
+unpaged read produces a warning when no explicit feature limit was requested.
+Pages are retained in memory, with fallible
+allocation checks. Each feature response is capped at 64 MiB and metadata at
+16 MiB, also respecting `TERRIO_JSON_MAX_SIZE`. These limits bound individual
+responses and estimated retained data, not total process memory. XML decoding also
+preflights a workspace estimate of 64 times the response size plus retained data,
+checking usable memory and virtual address space. A 64 MiB feature page therefore
+requires a 4 GiB workspace estimate and may be refused before reaching its byte cap.
+On platforms where allocations commit backing storage, this temporary reservation
+also requires that commit capacity. Service errors,
+malformed XML and repeated pages are errors. Spatial filters use the advertised
+CRS and authority axis order; CRS84 keeps longitude first.
+
+This driver reads inline GML 2/3/3.2 simple features. Local scalar restrictions
+and feature-type extensions are resolved with a maximum derivation depth of 256.
+Schemas supply field types and whitespace rules; other restriction facets are
+not validated. Integer fields use signed 64-bit values; `xs:unsignedLong` is kept
+as text to preserve its full range. The source `gml_id` field is nullable when
+features omit source identifiers. Malformed numeric and boolean field values are errors.
+Property namespaces follow schema qualification and element references. Standard
+GML base metadata (`name`, `description`, `identifier`, `metaDataProperty` and
+`boundedBy`) is omitted; `gml:id` is retained as `gml_id`, and application fields
+with those local names remain fields. Imported application type
+definitions, list/union property types and mixed geometry CRS/axis orders are
+rejected. Transactions, complex or repeated properties, linked geometries, multiple geometry columns, nonlinear
+curves and composite surface patches are unsupported and reported as errors.
+It has no WebAssembly network interface: fetch a GetFeature response and open its
+bytes as GML or GeoJSON there. An extensionless HTTP GetFeature URL returning
+GeoJSON or GML also opens directly, using the detected response format; it reads
+that response rather than discovering or paging the service, following the
+corresponding file reader's schema inference and parsing rules. Query strings are
+preserved for requests and omitted from dataset names. HTTP diagnostics mask the
+credential parameter names recognized by the common HTTP layer; arbitrary vendor
+query parameters can still appear in transport errors.
+
+The protocol references are [OGC WFS 2.0](https://docs.ogc.org/is/09-025r2/09-025r2.html)
+and [GDAL's WFS driver](https://gdal.org/en/stable/drivers/vector/wfs.html).
+
 ### ESRIJSON
 
 The `ESRIJSON` driver reads the JSON of ArcGIS feature-service queries (`f=json`) as GDAL's
@@ -817,8 +893,10 @@ reads it.
 
 ### CAD drawings (DWG and DXF)
 
-**The native reader is strict:** an unsupported geometric entity fails the entire drawing.
-The optional GDAL backend can provide fallback for entities outside the native subset below.
+**The native reader skips what it cannot represent:** an entity outside the subset below is left
+out, and a warning names how many of each type and the top-level entity holding the first one. In
+a build with the optional GDAL backend, a drawing with such entities goes to GDAL when GDAL can
+open it.
 
 The default-enabled `cad` Cargo feature uses [acadrust](https://github.com/hakanaktt/acadrust)
 without native libraries or its optional thread pool. It is included in the full JavaScript/WASM
@@ -843,22 +921,25 @@ upstream codec's input file size. Layer filters select `entities`; attribute fil
 `--where "Layer = 'survey'"` select drawing layers.
 
 Supported entities are POINT, LINE, straight and bulged LWPOLYLINE/POLYLINE, 3D polylines,
-CIRCLE, ARC, ELLIPSE, TEXT/MTEXT, SOLID/TRACE, 3DFACE and HATCH with polyline, line or circular-arc
-boundaries. INSERT expands block geometry (up to 32 levels, one million output features and a shared
+CIRCLE, ARC, ELLIPSE, TEXT/MTEXT, SOLID/TRACE, 3DFACE, polyface mesh POLYLINE, MESH (its base cage,
+without subdivision) and HATCH with polyline, line or circular-arc boundaries. Meshes become 3D
+multipolygons with one polygon per face; faces with fewer than three distinct corners are dropped.
+INSERT expands block geometry (up to 32 levels, one million output features and a shared
 work budget of one million entity visits/clones, including skipped leaves and generated segments);
-unused block definitions are excluded. Empty ordinary block references are skipped; missing
-blocks, array inserts and external/non-explodable references produce errors. Expanded entities
+unused block definitions are excluded. Empty ordinary block references are skipped silently; array
+inserts and external/non-explodable references are skipped with the warning above, as is, under a
+non-uniformly scaled INSERT, a nested reference to a block holding an entity refused before
+expansion (thick entities, 3DSOLID, REGION, BODY); missing blocks and exceeded limits produce errors. Expanded entities
 receive new handles. Viewports and
 sequence markers carry no exported geometry.
 Closed polylines remain lines. Curves are linearized at a maximum four-degree step; curve samples
 can differ from GDAL's. Hatch rings are organized by containment into polygons with holes. Edge boundaries must be
 listed in connected sequence; individual edges and the first edge may be reversed, but arbitrary
 edge reordering is unsupported. Endpoint joins use an absolute tolerance of 1e-7 drawing units.
-Unsupported entities (including splines, dimensions, ACIS solids and mesh entities), unsupported
-hatch boundaries, fitted polylines and extruded/thick geometry produce an error identifying the
-unsupported data rather than silently discarding it. The optional GDAL backend can read entities
-outside the native subset through its existing fallback; there is no skip-and-discard mode. Text is returned as raw CAD text; font styles
-and MTEXT formatting are not interpreted. Styling, external references and CAD object dictionaries
+Unsupported entities (including splines, dimensions, ACIS solids and polygon meshes), hatches with
+unsupported boundaries, fitted polylines and extruded/thick geometry are left out with the warning
+above, as are meshes with no face of three distinct corners. Text is returned as raw CAD text; font
+styles and MTEXT formatting are not interpreted. Styling, external references and CAD object dictionaries
 are outside Terrio's vector model.
 
 On export, points become POINT (or TEXT when the `Text` attribute is nonempty), lines become LINE

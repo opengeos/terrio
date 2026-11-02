@@ -132,6 +132,8 @@ pub enum VectorDriver {
     KMZ,
     /// GML.
     GML,
+    /// OGC Web Feature Service, read-only (the native remote transport).
+    WFS,
     /// GPS Exchange Format.
     GPX,
     /// AutoCAD DXF (ASCII or binary). Requires the `cad` feature.
@@ -393,6 +395,7 @@ impl VectorDriver {
         Self::KML,
         Self::KMZ,
         Self::GML,
+        Self::WFS,
         Self::GPX,
         Self::DXF,
         Self::DWG,
@@ -427,6 +430,7 @@ impl VectorDriver {
             Self::KML => ("KML", "Keyhole Markup Language", &["kml"], true, true),
             Self::KMZ => ("KMZ", "Zipped KML", &["kmz"], true, true),
             Self::GML => ("GML", "Geography Markup Language", &["gml"], true, true),
+            Self::WFS => ("WFS", "OGC Web Feature Service", &[], true, false),
             Self::GPX => ("GPX", "GPS Exchange Format", &["gpx"], true, true),
             Self::DXF => ("DXF", "AutoCAD DXF", &["dxf"], true, true),
             Self::DWG => ("DWG", "AutoCAD DWG", &["dwg"], true, true),
@@ -455,6 +459,7 @@ impl VectorDriver {
             Self::OSM => ("osm", cfg!(feature = "osm")),
             Self::HECRAS => ("hecras", cfg!(feature = "hecras")),
             Self::XLSX => ("xlsx", cfg!(feature = "xlsx")),
+            Self::WFS => ("remote", cfg!(remote)),
             Self::MBTiles | Self::PMTiles | Self::MVT => ("tiles", cfg!(feature = "tiles")),
             _ => return None,
         };
@@ -524,6 +529,7 @@ impl VectorDriver {
             | Self::CityGML
             | Self::ESRIJSON
             | Self::ESRIPBF
+            | Self::WFS
             | Self::DXF
             | Self::DWG
             | Self::GeoJSONSeq
@@ -810,6 +816,9 @@ enum Named {
 
 /// The drivers a dataset's name points to (see [`Named`]).
 fn named_drivers(trimmed: &str) -> Named {
+    if crate::drivers::vector::wfs::service_target(trimmed).is_some() {
+        return Named::Prefix("WFS");
+    }
     let upper = trimmed.to_ascii_uppercase();
     for (prefix, driver) in [
         ("STACIT:", "STACIT"),
@@ -882,10 +891,12 @@ fn read_head_query(path: &str, location: &crate::vfs::Location) -> Option<Vec<u8
     #[cfg(remote)]
     {
         use crate::drivers::vector::{esrijson, featureservice};
-        if !featureservice::is_query_url(path) {
+        if !featureservice::is_query_url(path) && !crate::drivers::vector::wfs::is_feature_request(path) {
             return None;
         }
-        featureservice::query_head(&location.remote()?, esrijson::HEAD_BYTES as u64).ok()
+        let maximum =
+            if crate::drivers::vector::wfs::is_feature_request(path) { crate::http::FIRST_READ } else { esrijson::HEAD_BYTES as u64 };
+        featureservice::query_head(&location.remote()?, maximum).ok()
     }
     #[cfg(not(remote))]
     {
@@ -1121,6 +1132,9 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     // and an edition (1 or 2) in the first kilobyte.
     if head[..head.len().min(1024)].windows(8).any(|w| &w[..4] == b"GRIB" && (w[7] == 1 || w[7] == 2)) {
         return Some("GRIB");
+    }
+    if crate::drivers::vector::wfs::is_capabilities(head) {
+        return Some("WFS");
     }
     if crate::drivers::vector::citygml::looks_like(head) {
         return Some("CITYGML");

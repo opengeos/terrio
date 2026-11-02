@@ -14,13 +14,17 @@
 //! Writing produces GML 3.2 with an `.xsd` schema, like GDAL's default output.
 
 use super::xml::{self, Element};
+#[path = "gml_schema.rs"]
+mod schema;
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
+pub(crate) use schema::{ApplicationSchema, PropertyKind};
+use schema::{Scalar, is_gml};
 use std::fmt::Write as _;
 use std::path::Path;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
 
-const GEOMETRIES: &[&str] = &[
+pub(crate) const GEOMETRIES: &[&str] = &[
     "Point",
     "LineString",
     "LinearRing",
@@ -52,18 +56,55 @@ pub(crate) fn parse_path_bytes(bytes: &[u8], path: &str) -> Result<Vec<Layer>> {
     parse(&root, xsd.as_ref())
 }
 
-/// The feature elements of a collection (or the root itself when it is a feature).
-fn feature_elements(root: &Element) -> Vec<&Element> {
+/// A feature and the namespace scopes on its collection/member path.
+#[derive(Clone, Copy)]
+pub(crate) struct FeatureRef<'a> {
+    pub element: &'a Element,
+    pub parent: &'a Element,
+    pub root: &'a Element,
+}
+impl<'a> FeatureRef<'a> {
+    pub fn namespace(&self, node: &'a Element, prefix: &str) -> Option<&'a str> {
+        node.namespace(prefix)
+            .or_else(|| self.element.namespace(prefix))
+            .or_else(|| self.parent.namespace(prefix))
+            .or_else(|| self.root.namespace(prefix))
+            .filter(|namespace| !namespace.is_empty())
+    }
+    fn id(&self) -> Option<&'a str> {
+        self.element
+            .attrs
+            .iter()
+            .find_map(|(key, value)| {
+                let (prefix, local) = key.split_once(':')?;
+                (local == "id" && is_gml(self.namespace(self.element, prefix))).then_some(value.as_str())
+            })
+            .or_else(|| {
+                self.element
+                    .attrs
+                    .iter()
+                    .find(|(key, _)| key == "fid")
+                    .or_else(|| self.element.attrs.iter().find(|(key, _)| key == "id"))
+                    .map(|(_, value)| value.as_str())
+            })
+    }
+    pub fn property_kind(&self, property: &'a Element, model: &ApplicationSchema<'_>) -> Result<PropertyKind> {
+        model.kind(&property.name, self.namespace(property, &property.prefix))
+    }
+}
+
+fn feature_refs(root: &Element) -> Vec<FeatureRef<'_>> {
     let mut out = Vec::new();
-    for c in &root.children {
-        match c.name.as_str() {
-            "featureMember" | "member" => out.extend(c.children.first()),
-            "featureMembers" => out.extend(c.children.iter()),
-            _ => {}
-        }
+    for parent in &root.children {
+        let children = match parent.name.as_str() {
+            "featureMember" | "member" => &parent.children[..parent.children.len().min(1)],
+            "featureMembers" => &parent.children[..],
+            _ => continue,
+        };
+        out.extend(children.iter().map(|element| FeatureRef { element, parent, root }));
     }
     if out.is_empty() && !root.name.ends_with("FeatureCollection") && root.children.iter().any(|c| geometry_child(c).is_some()) {
-        out.push(root);
+        out.push(FeatureRef { element: root, parent: root, root });
     }
     out
 }
@@ -75,79 +116,126 @@ fn geometry_child(prop: &Element) -> Option<&Element> {
 
 /// Parses a GML document into layers.
 pub fn parse(root: &Element, xsd: Option<&Element>) -> Result<Vec<Layer>> {
+    parse_impl(root, xsd, None)
+}
+
+pub(crate) fn parse_with_schema(root: &Element, schema: &ApplicationSchema<'_>) -> Result<Vec<Layer>> {
+    parse_impl(root, None, Some(schema))
+}
+
+fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&ApplicationSchema<'_>>) -> Result<Vec<Layer>> {
     struct Raw<'a> {
         id: Option<&'a str>,
         geometry: Option<&'a Element>,
         values: Vec<(&'a str, &'a str)>,
     }
-    let mut groups: Vec<(String, Vec<Raw>)> = Vec::new();
-    for f in feature_elements(root) {
-        let mut raw = Raw { id: f.attr("id").or_else(|| f.attr("fid")), geometry: None, values: Vec::new() };
-        for p in &f.children {
-            if p.name == "boundedBy" {
-                continue;
-            }
-            match geometry_child(p) {
-                Some(g) => {
-                    if raw.geometry.is_none() {
-                        raw.geometry = Some(g);
-                    }
-                }
-                None if p.children.is_empty() => raw.values.push((&p.name, p.text.trim())),
-                None => {}
-            }
-        }
-        match groups.iter_mut().find(|(n, _)| *n == f.name) {
-            Some((_, v)) => v.push(raw),
-            None => groups.push((f.name.clone(), vec![raw])),
+    let mut groups: Vec<(String, Vec<FeatureRef<'_>>)> = Vec::new();
+    for feature in feature_refs(root) {
+        match groups.iter_mut().find(|(name, _)| *name == feature.element.name) {
+            Some((_, rows)) => rows.push(feature),
+            None => groups.push((feature.element.name.clone(), vec![feature])),
         }
     }
-
     let mut layers = Vec::new();
-    for (name, raws) in groups {
-        let mut layer = Layer::new(&name);
-        layer.add_field(FieldDef::new("gml_id", FieldType::Text).not_null());
-        let declared = xsd.map(|x| xsd_fields(x, &name)).unwrap_or_default();
-        let mut fields: Vec<(String, FieldType)> = declared;
-        if fields.is_empty() {
-            let mut names: Vec<&str> = Vec::new();
-            for r in &raws {
-                for (n, _) in &r.values {
-                    if !names.contains(n) {
-                        names.push(n);
+    for (name, features) in groups {
+        // Local GML has historically inferred fields when its companion schema
+        // depends on unavailable imports. A WFS read supplies a strict compiled model.
+        let owned = match xsd.map(|schema| ApplicationSchema::compile(schema, &name)).transpose() {
+            Err(error @ Error::ResourceLimit(_)) => return Err(error),
+            Err(_) => None,
+            Ok(model) => model,
+        };
+        let model = compiled.or(owned.as_ref());
+        let mut raws = Vec::new();
+        for feature in features {
+            if let Some(model) = compiled
+                && feature.namespace(feature.element, &feature.element.prefix) != model.namespace
+            {
+                return Err(Error::InvalidData("GML: feature namespace differs from application schema".into()));
+            }
+            let mut raw = Raw { id: feature.id(), geometry: None, values: Vec::new() };
+            for property in &feature.element.children {
+                if property.name == "gml_id" {
+                    return Err(Error::Unsupported("GML: application property gml_id conflicts with the source identifier".into()));
+                }
+                if let Some(model) = compiled {
+                    match feature.property_kind(property, model)? {
+                        PropertyKind::Metadata => continue,
+                        PropertyKind::Scalar(_) => {
+                            if !property.children.is_empty() {
+                                return Err(Error::Unsupported("GML: complex scalar properties are unsupported".into()));
+                            }
+                            raw.values.push((&property.name, &property.text));
+                        }
+                        PropertyKind::Geometry(_) => {
+                            if raw.geometry.is_none() {
+                                raw.geometry = geometry_child(property);
+                            }
+                        }
+                    }
+                } else if property.name != "boundedBy" {
+                    match geometry_child(property) {
+                        Some(geometry) if raw.geometry.is_none() => raw.geometry = Some(geometry),
+                        None if property.children.is_empty() => raw.values.push((&property.name, property.text.trim())),
+                        _ => {}
                     }
                 }
             }
-            for n in names {
-                let values = raws.iter().flat_map(|r| r.values.iter().filter(|(k, _)| *k == n).map(|(_, v)| *v));
-                fields.push((n.to_string(), super::csv::infer_type(values)));
-            }
+            raws.push(raw);
         }
-        for (n, t) in &fields {
-            layer.add_field(FieldDef::new(n, *t));
-        }
-
-        // The CRS: the first srsName on a geometry (or the collection's envelope).
-        let srs_name = raws
-            .iter()
-            .filter_map(|r| r.geometry)
-            .find_map(|g| srs_name_of(g))
-            .or_else(|| root.child("boundedBy").and_then(|b| b.find("Envelope")).and_then(|e| e.attr("srsName")));
-        let srs = srs_name.and_then(|s| SpatialRef::parse(s).ok());
-        let swap = srs_name.is_some_and(lat_lon_order) && srs.as_ref().is_some_and(SpatialRef::is_geographic);
-        if let Some(s) = &srs {
-            s.apply_to_layer(&mut layer);
-        }
-
-        for (fid, r) in raws.iter().enumerate() {
-            let mut attributes = vec![FieldValue::Null; fields.len() + 1];
-            attributes[0] = r.id.map_or(FieldValue::Null, |id| FieldValue::Text(id.to_string()));
-            for (k, v) in &r.values {
-                if let Some(i) = fields.iter().position(|(n, _)| n == k) {
-                    attributes[i + 1] = if v.is_empty() { FieldValue::Null } else { value(v, fields[i].1) };
+        let mut layer = Layer::new(&name);
+        layer.add_field(FieldDef::new("gml_id", FieldType::Text));
+        let mut fields: Vec<(String, Scalar)> =
+            model.map(|model| model.scalars().map(|(name, scalar)| (name.into(), scalar)).collect()).unwrap_or_default();
+        if compiled.is_none() && fields.is_empty() {
+            let mut names = Vec::new();
+            for raw in &raws {
+                for (name, _) in &raw.values {
+                    if !names.contains(name) {
+                        names.push(*name);
+                    }
                 }
             }
-            let geometry = r.geometry.and_then(|g| geometry(g, 2)).map(|g| if swap { swap_xy(g) } else { g });
+            for name in names {
+                let values = raws.iter().flat_map(|raw| raw.values.iter().filter(|(key, _)| *key == name).map(|(_, value)| *value));
+                fields.push((name.into(), Scalar::inferred(super::csv::infer_type(values))));
+            }
+        }
+        for (name, scalar) in &fields {
+            layer.add_field(FieldDef::new(name, scalar.field_type));
+        }
+        let srs_name = raws
+            .iter()
+            .filter_map(|raw| raw.geometry)
+            .find_map(srs_name_of)
+            .or_else(|| root.child("boundedBy").and_then(|node| node.find("Envelope")).and_then(|node| node.attr("srsName")));
+        let srs = srs_name.and_then(|srs| parse_srs_name(srs).ok());
+        let swap = srs_name.is_some_and(lat_lon_order) && srs.as_ref().is_some_and(SpatialRef::is_geographic);
+        if let Some(srs) = &srs {
+            srs.apply_to_layer(&mut layer);
+        }
+        for (fid, raw) in raws.iter().enumerate() {
+            let mut attributes = vec![FieldValue::Null; fields.len() + 1];
+            attributes[0] = raw.id.map_or(FieldValue::Null, |id| FieldValue::Text(id.into()));
+            for (key, text) in &raw.values {
+                if let Some(index) = layer.schema.field_index(key) {
+                    let scalar = fields[index - 1].1;
+                    let text = scalar.normalize(text);
+                    let parsed = if text.is_empty() { FieldValue::Null } else { value(&text, scalar.field_type) };
+                    if compiled.is_some()
+                        && !text.is_empty()
+                        && ((matches!(scalar.field_type, FieldType::Integer | FieldType::Float) && matches!(&parsed, FieldValue::Text(_)))
+                            || scalar.field_type == FieldType::Boolean && !matches!(text.as_ref(), "true" | "false" | "1" | "0"))
+                    {
+                        return Err(Error::InvalidData(format!("WFS: malformed value for field {key}")));
+                    }
+                    attributes[index] = parsed;
+                }
+            }
+            let geometry = raw
+                .geometry
+                .and_then(|geometry_node| geometry(geometry_node, 2))
+                .map(|geometry| if swap { swap_xy(geometry) } else { geometry });
             layer.push(Feature { fid: fid as u64, geometry, attributes });
         }
         layers.push(layer);
@@ -169,47 +257,46 @@ fn value(v: &str, t: FieldType) -> FieldValue {
     }
 }
 
-/// The fields an application schema declares for a feature type, in order.
-fn xsd_fields(xsd: &Element, feature: &str) -> Vec<(String, FieldType)> {
-    let type_name = xsd
-        .children_named("element")
-        .find(|e| e.attr("name") == Some(feature))
-        .and_then(|e| e.attr("type"))
-        .map(|t| t.rsplit(':').next().unwrap_or(t).to_string())
-        .unwrap_or_else(|| format!("{feature}Type"));
-    let Some(ct) = xsd.children_named("complexType").find(|c| c.attr("name") == Some(&type_name)) else { return Vec::new() };
-    let mut elements = Vec::new();
-    ct.find_all("element", &mut elements);
-    elements
-        .into_iter()
-        .filter_map(|e| {
-            let name = e.attr("name")?;
-            let base = e.attr("type").or_else(|| e.find("restriction").and_then(|r| r.attr("base"))).unwrap_or("string");
-            if base.starts_with("gml:") {
-                return None;
+/// The CRS declaration the single-type GML collection parser will use.
+pub(crate) fn collection_srs_name<'a>(root: &'a Element, model: &ApplicationSchema<'_>) -> Result<Option<&'a str>> {
+    for feature in feature_refs(root) {
+        if feature.namespace(feature.element, &feature.element.prefix) != model.namespace {
+            return Err(Error::InvalidData("WFS: GetFeature returned a different feature namespace".into()));
+        }
+        for property in &feature.element.children {
+            if matches!(feature.property_kind(property, model)?, PropertyKind::Geometry(_))
+                && let Some(srs) = geometry_child(property).and_then(srs_name_of)
+            {
+                return Ok(Some(srs));
             }
-            let t = match base.rsplit(':').next().unwrap_or(base) {
-                "integer" | "int" | "long" | "short" | "byte" | "nonNegativeInteger" | "positiveInteger" | "negativeInteger"
-                | "nonPositiveInteger" | "unsignedInt" | "unsignedShort" | "unsignedByte" | "unsignedLong" => FieldType::Integer,
-                "decimal" | "double" | "float" => FieldType::Float,
-                "date" => FieldType::Date,
-                "dateTime" => FieldType::DateTime,
-                "boolean" => FieldType::Boolean,
-                _ => FieldType::Text,
-            };
-            Some((name.to_string(), t))
-        })
-        .collect()
+        }
+    }
+    Ok(root.child("boundedBy").and_then(|node| node.find("Envelope")).and_then(|node| node.attr("srsName")))
 }
 
 fn srs_name_of(g: &Element) -> Option<&str> {
     g.attr("srsName").or_else(|| g.children.iter().find_map(srs_name_of))
 }
 
+/// GML 2 also uses the pre-URN OGC EPSG dictionary URL (GDAL 3.13.3).
+/// This identifier keeps traditional XY order and does not fetch the dictionary.
+pub(crate) fn parse_srs_name(name: &str) -> Result<SpatialRef> {
+    let name = name.trim();
+    for prefix in ["http://www.opengis.net/gml/srs/epsg.xml#", "https://www.opengis.net/gml/srs/epsg.xml#"] {
+        if let Some(code) = name.strip_prefix(prefix)
+            && !code.is_empty()
+            && code.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return SpatialRef::parse(&format!("EPSG:{code}"));
+        }
+    }
+    SpatialRef::parse(name)
+}
+
 /// Whether a srsName form declares the authority's axis order (latitude first for EPSG geographic
 /// CRSs): URNs and `http://www.opengis.net/def/crs/` URLs, but not `EPSG:4326` or the old
 /// `epsg.xml#4326` URLs.
-fn lat_lon_order(srs_name: &str) -> bool {
+pub(crate) fn lat_lon_order(srs_name: &str) -> bool {
     let s = srs_name.to_ascii_lowercase();
     (s.starts_with("urn:") || s.contains("/def/crs/")) && s.contains("epsg")
 }
@@ -582,7 +669,7 @@ mod tests {
 
     #[test]
     fn reads_gml2_and_gml3() {
-        let gml2 = r#"<wfs:FeatureCollection xmlns:wfs="w" xmlns:gml="g" xmlns:x="x"><gml:featureMember><x:roads fid="r.1"><x:name>A</x:name><x:lanes>2</x:lanes>
+        let gml2 = r#"<wfs:FeatureCollection xmlns:wfs="w" xmlns:gml="http://www.opengis.net/gml" xmlns:x="x"><gml:featureMember><x:roads fid="r.1"><x:name>A</x:name><x:lanes>2</x:lanes>
             <x:geom><gml:MultiLineString srsName="EPSG:4326"><gml:lineStringMember><gml:LineString><gml:coordinates>1,2 3,4</gml:coordinates></gml:LineString></gml:lineStringMember></gml:MultiLineString></x:geom></x:roads></gml:featureMember></wfs:FeatureCollection>"#;
         let layers = parse(&xml::parse(gml2).unwrap(), None).unwrap();
         let l = &layers[0];
@@ -592,11 +679,66 @@ mod tests {
         assert_eq!(l.features[0].geometry, Some(Geometry::MultiLineString(vec![vec![Coord::xy(1.0, 2.0), Coord::xy(3.0, 4.0)]])));
 
         // GML 3.2 with a URN: latitude first.
-        let gml3 = r#"<ogr:FeatureCollection xmlns:ogr="o" xmlns:gml="g"><ogr:featureMember><ogr:t gml:id="t.0"><ogr:geometryProperty><gml:Polygon srsName="urn:ogc:def:crs:EPSG::4326"><gml:exterior><gml:LinearRing><gml:posList>10 1 10 2 11 2 10 1</gml:posList></gml:LinearRing></gml:exterior></gml:Polygon></ogr:geometryProperty></ogr:t></ogr:featureMember></ogr:FeatureCollection>"#;
+        let gml3 = r#"<ogr:FeatureCollection xmlns:ogr="o" xmlns:gml="http://www.opengis.net/gml"><ogr:featureMember><ogr:t gml:id="t.0"><ogr:geometryProperty><gml:Polygon srsName="urn:ogc:def:crs:EPSG::4326"><gml:exterior><gml:LinearRing><gml:posList>10 1 10 2 11 2 10 1</gml:posList></gml:LinearRing></gml:exterior></gml:Polygon></ogr:geometryProperty></ogr:t></ogr:featureMember></ogr:FeatureCollection>"#;
         let l = &parse(&xml::parse(gml3).unwrap(), None).unwrap()[0];
         let Some(Geometry::Polygon { exterior, .. }) = &l.features[0].geometry else { panic!("no polygon") };
         assert_eq!((exterior.0[0].x, exterior.0[0].y), (1.0, 10.0));
         assert_eq!(l.features[0].attributes[0], FieldValue::Text("t.0".into()));
+    }
+
+    #[test]
+    fn application_source_identifier_collision_is_refused() {
+        let root = xml::parse(r#"<FeatureCollection><featureMember><road id="r1"><gml_id>app</gml_id><geom><Point><pos>1 2</pos></Point></geom></road></featureMember></FeatureCollection>"#).unwrap();
+        assert!(matches!(parse(&root, None), Err(Error::Unsupported(_))));
+        let schema = xml::parse(r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="road"><xs:complexType><xs:sequence><xs:element name="rank" type="xs:int"/></xs:sequence></xs:complexType></xs:element></xs:schema>"#).unwrap();
+        assert!(matches!(parse(&root, Some(&schema)), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn unavailable_companion_schema_types_keep_local_inference() {
+        let root = xml::parse(r#"<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs" xmlns:t="urn:test" xmlns:gml="http://www.opengis.net/gml"><gml:featureMember><t:road fid="r1"><t:code>007</t:code><t:geom><gml:Point><gml:pos>1 2</gml:pos></gml:Point></t:geom></t:road></gml:featureMember></wfs:FeatureCollection>"#).unwrap();
+        let schema = xml::parse(r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:f="urn:foreign" targetNamespace="urn:test"><xs:import namespace="urn:foreign"/><xs:element name="road" type="f:RoadType"/></xs:schema>"#).unwrap();
+        let layers = parse(&root, Some(&schema)).unwrap();
+        assert_eq!(layers[0].features.len(), 1);
+        assert_eq!(layers[0].features[0].geometry, Some(Geometry::point(1., 2.)));
+        assert_eq!(layers[0].features[0].attributes[1], FieldValue::Integer(7));
+    }
+
+    #[test]
+    fn inferred_text_keeps_internal_whitespace() {
+        let root = xml::parse(
+            "<FeatureCollection><featureMember><road><name>  Main   Street\nNorth  </name></road></featureMember></FeatureCollection>",
+        )
+        .unwrap();
+        let layer = &parse(&root, None).unwrap()[0];
+        assert_eq!(layer.features[0].attributes[1], FieldValue::Text("Main   Street\nNorth".into()));
+    }
+
+    #[test]
+    fn partial_companion_schemas_keep_permissive_file_reads() {
+        let root = xml::parse(r#"<FeatureCollection xmlns:t="urn:other" xmlns:gml="http://www.opengis.net/gml"><featureMember><t:road><gml:boundedBy/><t:rank>7</t:rank><t:extra>ignored</t:extra><t:geom><gml:Point><gml:pos>1 2</gml:pos></gml:Point></t:geom></t:road></featureMember></FeatureCollection>"#).unwrap();
+        let schema = xml::parse(r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:t="urn:test" targetNamespace="urn:test"><xs:element name="road" type="t:RoadType"/><xs:complexType name="RoadType"><xs:sequence><xs:element name="rank" type="xs:int"/></xs:sequence></xs:complexType></xs:schema>"#).unwrap();
+        let layer = &parse(&root, Some(&schema)).unwrap()[0];
+        assert_eq!(layer.schema.fields().len(), 2);
+        assert_eq!(layer.features[0].attributes[1], FieldValue::Integer(7));
+        assert_eq!(layer.features[0].geometry, Some(Geometry::point(1., 2.)));
+        let mut duplicate = schema.clone();
+        duplicate.children.push(schema.children[0].clone());
+        let layers = parse(&root, Some(&duplicate)).unwrap();
+        assert!(layers[0].schema.field_index("extra").is_some(), "bad companion schemas fall back to inference");
+    }
+
+    #[test]
+    fn legacy_epsg_dictionary_identifiers_keep_traditional_xy() {
+        let root = xml::parse(r#"<FeatureCollection><featureMember><road><geom><Point srsName="http://www.opengis.net/gml/srs/epsg.xml#4326"><coordinates>10,50</coordinates></Point></geom></road></featureMember></FeatureCollection>"#).unwrap();
+        let layers = parse(&root, None).unwrap();
+        assert_eq!(layers[0].crs_epsg(), Some(4326));
+        assert_eq!(layers[0].features[0].geometry, Some(Geometry::point(10., 50.)));
+        assert_eq!(
+            parse_srs_name("https://www.opengis.net/gml/srs/epsg.xml#25832").unwrap().authority_code().as_deref(),
+            Some("EPSG:25832")
+        );
+        assert!(parse_srs_name("http://www.opengis.net/gml/srs/epsg.xml#bad").is_err());
     }
 
     #[test]
