@@ -1092,12 +1092,12 @@ fn select_layers(layers: Vec<Layer>, path: &str, options: &VectorOpenOptions) ->
     let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
     let single = layers.len() == 1;
     let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
-    let missing: Vec<&str> =
-        options.layers.iter().map(String::as_str).filter(|n| !names.iter().any(|name| name == n) && !(single && *n == stem)).collect();
-    if !missing.is_empty() {
-        return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", missing.join(", "), names.join(", "))));
+    let kept: Vec<Layer> =
+        layers.into_iter().filter(|l| options.layers.contains(&l.name) || single && options.layers.iter().any(|n| n == stem)).collect();
+    if kept.is_empty() {
+        return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
     }
-    Ok(layers.into_iter().filter(|l| options.layers.contains(&l.name) || single && options.layers.iter().any(|n| n == stem)).collect())
+    Ok(kept)
 }
 
 /// Normalizes what drivers leave inconsistent: the layer name and the CRS of formats that are

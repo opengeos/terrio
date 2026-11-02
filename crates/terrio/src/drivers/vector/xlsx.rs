@@ -14,12 +14,13 @@
 //! creation option writes them. Without those options sheets hold no geometries, as in GDAL.
 //!
 //! Where this differs from GDAL on purpose: a `date1904` workbook's dates are honored (GDAL reads
-//! them four years early), a date format's quoted text does not make it a date format, a date-styled
-//! cell that holds no number makes its column text, a boolean column that also holds other numbers becomes an integer field
-//! (GDAL keeps it boolean and loses them), repeated headings get unique names, phonetic guides in
-//! shared strings are left out of the text, column widths are written per column (GDAL writes
-//! overlapping ranges), and sheet names are made valid for Excel. A time of day reads as `HH:MM:SS`
-//! text, since layers have no time type, so it is written back as text.
+//! them four years early), a date format's quoted text does not make it a date format, a
+//! date-styled cell that holds no number makes its column text, a boolean column that also holds
+//! other numbers becomes an integer field (GDAL keeps it boolean and loses them), repeated headings
+//! get unique names, phonetic guides in shared strings are left out of the text, column widths are
+//! written per column (GDAL writes overlapping ranges), and sheet names are made valid for Excel. A
+//! time of day reads as `HH:MM:SS` text, since layers have no time type, so it is written back as
+//! text.
 //!
 //! The first feature's null values are written as blank cells, which GDAL's driver and this one
 //! count as non-text when they look for a header. A layer whose first feature is all text cannot be
@@ -39,8 +40,6 @@ const MAX_ROWS: usize = 1_048_576;
 const MAX_COLUMNS: usize = 16_384;
 const MAX_CELL_TEXT_UTF16: usize = 32_767;
 const MAX_SHEET_NAME: usize = 31;
-/// GDAL's limit on the column of a cell reference.
-const MAX_REFERENCED_COLUMN: usize = 2000;
 /// GDAL's limits on the empty rows a gap between two rows makes.
 const MAX_ROW_GAP: usize = 10_000;
 const MAX_GAP_CELLS: usize = 100_000;
@@ -528,8 +527,9 @@ struct WorkbookParts {
     sheets: Vec<(String, String)>,
     /// Whether dates count from 1904.
     date1904: bool,
-    /// The shared strings part its relationships name.
+    /// The shared strings and styles parts its relationships name.
     strings: Option<String>,
+    styles: Option<String>,
 }
 
 /// Reads the workbook part and its relationships.
@@ -546,7 +546,8 @@ fn workbook_sheets<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Res
     let rels_part = format!("{dir}_rels/{file}.rels");
     let rels = read_part(zip, &rels_part)?.ok_or_else(not_workbook)?;
     let rels = relationships(&rels, &rels_part)?;
-    let strings = rels.iter().find(|(_, kind, _)| kind.ends_with("/sharedStrings")).map(|(_, _, target)| resolve_target(base, target));
+    let part_of = |suffix: &str| rels.iter().find(|(_, kind, _)| kind.ends_with(suffix)).map(|(_, _, target)| resolve_target(base, target));
+    let (strings, styles) = (part_of("/sharedStrings"), part_of("/styles"));
     let targets: HashMap<String, String> = rels
         .into_iter()
         .filter(|(_, kind, _)| kind.contains("/worksheet"))
@@ -569,7 +570,7 @@ fn workbook_sheets<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Res
                 }
                 _ => {}
             },
-            Event::Eof => return Ok(WorkbookParts { sheets, date1904, strings }),
+            Event::Eof => return Ok(WorkbookParts { sheets, date1904, strings, styles }),
             _ => {}
         }
     }
@@ -680,7 +681,7 @@ fn reference_column(reference: &str) -> Option<usize> {
     let mut column = None;
     for b in letters {
         let next = column.map_or(0, |c: usize| (c + 1) * 26) + (b - b'A') as usize;
-        column = Some(next.min(MAX_REFERENCED_COLUMN));
+        column = Some(next.min(MAX_COLUMNS));
     }
     column
 }
@@ -689,6 +690,10 @@ fn reference_column(reference: &str) -> Option<usize> {
 struct SharedParts {
     strings: Vec<String>,
     styles: Vec<CellKind>,
+}
+
+fn too_many_columns(part: &str) -> Error {
+    Error::ResourceLimit(format!("XLSX: '{part}' holds a row of more than the {MAX_COLUMNS} columns a sheet can"))
 }
 
 fn too_many_rows(part: &str) -> Error {
@@ -731,7 +736,13 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
         Ok(())
     };
     let start_cell = |e: &BytesStart<'_>, cells: &mut Vec<Cell>, budget: &mut usize| -> Result<(bool, CellKind)> {
+        if cells.len() >= MAX_COLUMNS {
+            return Err(too_many_columns(part));
+        }
         if let Some(column) = attribute(e, "r").as_deref().and_then(reference_column) {
+            if column >= MAX_COLUMNS {
+                return Err(too_many_columns(part));
+            }
             take_cells(budget, column.saturating_sub(cells.len()))?;
             while cells.len() < column {
                 cells.push(Cell { kind: CellKind::Gap, value: String::new() });
@@ -832,7 +843,7 @@ pub fn read(path: &str, only: &[String], options: &XlsxOptions) -> Result<Vec<La
 /// `only` names when it is not empty.
 pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<Vec<Layer>> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
-    let WorkbookParts { sheets, date1904, strings: strings_part } = workbook_sheets(&mut zip)?;
+    let WorkbookParts { sheets, date1904, strings: strings_part, styles: styles_part } = workbook_sheets(&mut zip)?;
     let (mut budget, mut table_budget) = (MAX_CELLS, MAX_CELLS);
     let mut strings = Vec::new();
     for name in strings_part.iter().map(String::as_str).chain(["xl/sharedStrings.xml", "xl/SharedStrings.xml"]) {
@@ -841,11 +852,17 @@ pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<V
             break;
         }
     }
-    let styles = read_part(&mut zip, "xl/styles.xml")?.map(|text| style_kinds(&text)).transpose()?.unwrap_or_default();
+    let mut styles = Vec::new();
+    for name in styles_part.iter().map(String::as_str).chain(["xl/styles.xml"]) {
+        if let Some(text) = read_part(&mut zip, name)? {
+            styles = style_kinds(&text)?;
+            break;
+        }
+    }
     let shared = SharedParts { strings, styles };
     let mut layers = Vec::with_capacity(sheets.len());
-    // Naming a sheet there is not leaves the caller to report the names there are.
-    let filter = !only.is_empty() && only.iter().all(|name| sheets.iter().any(|(sheet, _)| sheet == name));
+    // Naming no sheet here leaves the caller to report the names there are.
+    let filter = sheets.iter().any(|(name, _)| only.contains(name));
     for (name, part) in sheets {
         if filter && !only.contains(&name) {
             continue;
@@ -1542,6 +1559,28 @@ mod tests {
     }
 
     #[test]
+    fn columns_past_a_sheets_limit_are_refused() {
+        let options = XlsxOptions::default();
+        let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
+        let run = |row: String| {
+            let data = format!("<sheetData><row>{row}</row></sheetData>");
+            read_sheet(&data, "s", &shared, &mut SheetTable::new(&options), &mut MAX_CELLS.clone())
+        };
+        assert!(run("<c/>".repeat(MAX_COLUMNS)).is_ok());
+        assert!(matches!(run("<c/>".repeat(MAX_COLUMNS + 1)), Err(Error::ResourceLimit(m)) if m.contains("columns")));
+        assert!(matches!(run("<c r=\"XFE1\"/>".into()), Err(Error::ResourceLimit(m)) if m.contains("columns")));
+    }
+
+    #[test]
+    fn cells_past_gdals_field_limit_keep_their_columns() {
+        let data = "<row r=\"1\"><c r=\"A1\"><v>1</v></c><c r=\"CAA1\"><v>2</v></c><c r=\"CAC1\"><v>3</v></c></row>";
+        let l = one_sheet(data, &XlsxOptions::default());
+        let column = reference_column("CAC1").unwrap();
+        assert_eq!(l.schema.len(), column + 1);
+        assert_eq!(l.features[0].attributes[column], FieldValue::Integer(3));
+    }
+
+    #[test]
     fn a_row_past_the_limit_is_refused_whatever_its_gap() {
         let options = XlsxOptions::default();
         let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
@@ -1582,17 +1621,6 @@ mod tests {
     }
 
     #[test]
-    fn every_named_sheet_must_exist() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("o.xlsx");
-        let path = path.to_str().unwrap();
-        crate::write_vector(&[Layer::new("a"), Layer::new("b")], path, &Default::default()).unwrap();
-        let open = crate::VectorOpenOptions { layers: vec!["a".into(), "nope".into()], ..Default::default() };
-        let error = crate::open_vector(path, &open).unwrap_err().to_string();
-        assert!(error.contains("nope") && error.contains("b"), "{error}");
-    }
-
-    #[test]
     fn a_long_cell_value_costs_more_than_one_cell() {
         let options = XlsxOptions::default();
         let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
@@ -1621,7 +1649,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_strings_are_found_through_the_relationships() {
+    fn shared_strings_and_styles_are_found_through_the_relationships() {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let member = zip::write::SimpleFileOptions::default();
         let mut add = |name: &str, body: String| {
@@ -1633,14 +1661,19 @@ mod tests {
             "xl/_rels/workbook.xml.rels",
             format!(
                 "<Relationships><Relationship Id=\"rId1\" Type=\"{OD_RELS}/worksheet\" Target=\"sheet.xml\"/>\
-                 <Relationship Id=\"rId2\" Type=\"{OD_RELS}/sharedStrings\" Target=\"text/strings.xml\"/></Relationships>"
+                 <Relationship Id=\"rId2\" Type=\"{OD_RELS}/sharedStrings\" Target=\"text/strings.xml\"/>\
+                 <Relationship Id=\"rId3\" Type=\"{OD_RELS}/styles\" Target=\"text/looks.xml\"/></Relationships>"
             ),
         );
         add("xl/text/strings.xml", "<sst><si><t>a</t></si></sst>".into());
-        add("xl/sheet.xml", "<worksheet><sheetData><row r=\"1\"><c t=\"s\"><v>0</v></c></row></sheetData></worksheet>".into());
+        add("xl/text/looks.xml", "<styleSheet><cellXfs><xf numFmtId=\"14\"/></cellXfs></styleSheet>".into());
+        add(
+            "xl/sheet.xml",
+            "<worksheet><sheetData><row r=\"1\"><c t=\"s\"><v>0</v></c><c s=\"0\"><v>45293</v></c></row></sheetData></worksheet>".into(),
+        );
         let bytes = zip.finish().unwrap().into_inner();
         let l = parse(bytes, &[], &XlsxOptions::default()).unwrap().remove(0);
-        assert_eq!(l.features[0].attributes, [FieldValue::Text("a".into())]);
+        assert_eq!(l.features[0].attributes, [FieldValue::Text("a".into()), FieldValue::Date("2024-01-02".into())]);
     }
 
     #[test]
@@ -1831,7 +1864,7 @@ mod tests {
             assert_eq!(column_letters(column), letters);
             assert_eq!(reference_column(&format!("{letters}7")), Some(column));
         }
-        assert_eq!(reference_column("ZZZ1"), Some(MAX_REFERENCED_COLUMN));
+        assert_eq!(reference_column("ZZZ1"), Some(MAX_COLUMNS));
         assert_eq!(reference_column("7"), None);
     }
 }
