@@ -76,14 +76,15 @@ impl XlsxOptions {
         Self { macro_enabled: self.macro_enabled || crate::formats::extension(name).as_deref() == Some("xlsm"), ..self.clone() }
     }
 
-    /// Sets an option by name: the open options `HEADERS` (AUTO, FORCE, DISABLE), `FIELD_TYPES`
-    /// (AUTO, STRING), `X_POSSIBLE_NAMES`, `Y_POSSIBLE_NAMES`, `Z_POSSIBLE_NAMES`,
-    /// `GEOM_POSSIBLE_NAMES` (comma-separated) and `KEEP_GEOM_COLUMNS` (YES/NO), and the creation
-    /// option `GEOMETRY` (AS_XY, AS_WKT, NONE). Returns `false` for other names.
+    /// Sets an open option by name: `HEADERS` (AUTO, FORCE, DISABLE), `FIELD_TYPES` (AUTO, STRING),
+    /// `X_POSSIBLE_NAMES`, `Y_POSSIBLE_NAMES`, `Z_POSSIBLE_NAMES`, `GEOM_POSSIBLE_NAMES`
+    /// (comma-separated) and `KEEP_GEOM_COLUMNS` (YES/NO). Returns `false` for other names, the
+    /// creation options of [`set_creation`](Self::set_creation) among them.
     ///
     /// ```
     /// let mut options = terrio::XlsxOptions::default();
     /// assert!(options.set("HEADERS", "FORCE")?);
+    /// assert!(!options.set("GEOMETRY", "AS_XY")?);
     /// assert!(!options.set("NO_SUCH_OPTION", "1")?);
     /// # Ok::<(), terrio::Error>(())
     /// ```
@@ -111,16 +112,30 @@ impl XlsxOptions {
             "Z_POSSIBLE_NAMES" => self.z_possible_names = list(),
             "GEOM_POSSIBLE_NAMES" => self.geom_possible_names = list(),
             "KEEP_GEOM_COLUMNS" => self.keep_geom_columns = matches!(upper.as_str(), "YES" | "TRUE" | "ON" | "1"),
-            "GEOMETRY" => {
-                self.geometry = match upper.as_str() {
-                    "AS_WKT" => CsvGeometry::AsWkt,
-                    "AS_XY" => CsvGeometry::AsXy,
-                    "NONE" => CsvGeometry::None,
-                    _ => return Err(Error::InvalidArgument(format!("unknown XLSX GEOMETRY '{value}' (AS_WKT, AS_XY, NONE)"))),
-                }
-            }
             _ => return Ok(false),
         }
+        Ok(true)
+    }
+
+    /// Sets a layer creation option by name: `GEOMETRY` (AS_XY, AS_WKT, NONE). Returns `false` for
+    /// other names, the open options of [`set`](Self::set) among them.
+    ///
+    /// ```
+    /// let mut options = terrio::XlsxOptions::default();
+    /// assert!(options.set_creation("GEOMETRY", "AS_XY")?);
+    /// assert!(!options.set_creation("HEADERS", "FORCE")?);
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn set_creation(&mut self, key: &str, value: &str) -> Result<bool> {
+        if !key.eq_ignore_ascii_case("GEOMETRY") {
+            return Ok(false);
+        }
+        self.geometry = match value.to_ascii_uppercase().as_str() {
+            "AS_WKT" => CsvGeometry::AsWkt,
+            "AS_XY" => CsvGeometry::AsXy,
+            "NONE" => CsvGeometry::None,
+            _ => return Err(Error::InvalidArgument(format!("unknown XLSX GEOMETRY '{value}' (AS_WKT, AS_XY, NONE)"))),
+        };
         Ok(true)
     }
 }

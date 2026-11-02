@@ -17,8 +17,12 @@
 //! them four years early), a boolean column that also holds other numbers becomes an integer field
 //! (GDAL keeps it boolean and loses them), repeated headings get unique names, phonetic guides in
 //! shared strings are left out of the text, column widths are written per column (GDAL writes
-//! overlapping ranges), and sheet names are made valid for Excel. A time of day reads as `HH:MM:SS` text, since layers have no time type, so it is
-//! written back as text.
+//! overlapping ranges), and sheet names are made valid for Excel. A time of day reads as `HH:MM:SS`
+//! text, since layers have no time type, so it is written back as text.
+//!
+//! The first feature's null values are written as blank cells, which GDAL's driver and this one
+//! count as non-text when they look for a header. A layer whose first feature is all text cannot be
+//! told from a table without a header, so its names read back as data unless `HEADERS=FORCE` is set.
 
 use super::xlsx_options::{XlsxFieldTypes, XlsxHeaders, XlsxOptions};
 use super::{csv, datetime, wkt, xml};
@@ -43,6 +47,10 @@ const MAX_GAP_CELLS: usize = 100_000;
 /// a workbook may hold: an untrusted file is refused rather than exhausting memory.
 const MAX_PART_BYTES: u64 = 2 << 30;
 const MAX_CELLS: usize = 100_000_000;
+/// What a row costs against that limit, for the row entry and feature it holds even without a cell.
+const ROW_CELLS: usize = 4;
+/// The bytes of a repeated shared string that cost as much as another cell.
+const CELL_BYTES: usize = 32;
 /// Excel's serial number of 1970-01-01, and the days between its 1900 and 1904 date systems.
 const UNIX_EPOCH_SERIAL: i64 = 25_569;
 const DATE1904_OFFSET_DAYS: i64 = 1462;
@@ -354,8 +362,8 @@ impl GeometryColumns {
 fn table_layer(mut table: SheetTable<'_>, name: &str, date1904: bool, table_budget: &mut usize) -> Result<Layer> {
     table.finish();
     let SheetTable { columns, rows, options, .. } = table;
-    // The table's blanks become values too: the sheets' tables share the limit as well.
-    take_cells(table_budget, rows.len().saturating_mul(columns.len()))?;
+    // The table's blanks become values and its rows features: the sheets' tables share the limit too.
+    take_cells(table_budget, rows.len().saturating_mul(columns.len().saturating_add(ROW_CELLS)))?;
     let geometry = GeometryColumns::find(&columns, options);
     let kept: Vec<usize> = (0..columns.len()).filter(|&i| options.keep_geom_columns || !geometry.holds(i)).collect();
     let mut layer = Layer::new(name);
@@ -430,7 +438,12 @@ fn read_part<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, name: &str) 
     if bytes.len() as u64 > MAX_PART_BYTES {
         return Err(too_large());
     }
-    Ok(Some(xml::decode(&bytes)))
+    // Valid text keeps its bytes, so that a large part is not held twice.
+    Ok(Some(match String::from_utf8(bytes) {
+        Ok(text) if text.starts_with('\u{FEFF}') => text['\u{FEFF}'.len_utf8()..].to_string(),
+        Ok(text) => text,
+        Err(e) => xml::decode(e.as_bytes()),
+    }))
 }
 
 fn attribute(e: &BytesStart<'_>, local_name: &str) -> Option<String> {
@@ -539,7 +552,7 @@ fn workbook_sheets<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Res
     }
 }
 
-fn shared_strings(text: &str) -> Result<Vec<String>> {
+fn shared_strings(text: &str, budget: &mut usize) -> Result<Vec<String>> {
     let part = "sharedStrings.xml";
     let mut reader = quick_xml::Reader::from_str(text);
     let mut strings = Vec::new();
@@ -552,9 +565,15 @@ fn shared_strings(text: &str) -> Result<Vec<String>> {
                 "t" => in_text = phonetic == 0,
                 _ => {}
             },
-            Event::Empty(e) if e.local_name().as_ref() == "si" => strings.push(String::new()),
+            Event::Empty(e) if e.local_name().as_ref() == "si" => {
+                take_cells(budget, 1)?;
+                strings.push(String::new());
+            }
             Event::End(e) => match e.local_name().as_ref() {
-                "si" => strings.push(std::mem::take(&mut current)),
+                "si" => {
+                    take_cells(budget, 1)?;
+                    strings.push(std::mem::take(&mut current));
+                }
                 "rPh" => phonetic = phonetic.saturating_sub(1),
                 "t" => in_text = false,
                 _ => {}
@@ -632,6 +651,10 @@ struct SharedParts {
     styles: Vec<CellKind>,
 }
 
+fn too_many_rows(part: &str) -> Error {
+    Error::ResourceLimit(format!("XLSX: '{part}' holds more than the {MAX_ROWS} rows a sheet can"))
+}
+
 /// Reads a worksheet's rows into its table.
 fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTable<'_>, budget: &mut usize) -> Result<()> {
     let mut reader = quick_xml::Reader::from_str(text);
@@ -642,8 +665,11 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
     let (mut in_cell, mut lookup, mut kind) = (false, false, CellKind::General);
     let (mut value, mut in_value, mut value_seen, mut in_phonetic) = (String::new(), false, false, false);
     let start_row = |table: &mut SheetTable<'_>, e: &BytesStart<'_>, budget: &mut usize| -> Result<()> {
-        // Rows hold memory without any cell: each counts as one.
-        take_cells(budget, 1)?;
+        // No sheet has more rows, and rows hold memory without any cell.
+        if table.line >= MAX_ROWS {
+            return Err(too_many_rows(part));
+        }
+        take_cells(budget, ROW_CELLS)?;
         let Some(row) = attribute(e, "r").and_then(|r| r.parse::<usize>().ok()).filter(|&r| r > 0) else { return Ok(()) };
         let (target, line) = (row - 1, table.line);
         if target <= line {
@@ -655,7 +681,10 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
         if gap > MAX_ROW_GAP || (fields > 0 && gap > MAX_GAP_CELLS / fields) {
             return Ok(());
         }
-        take_cells(budget, gap)?;
+        if target >= MAX_ROWS {
+            return Err(too_many_rows(part));
+        }
+        take_cells(budget, gap.saturating_mul(ROW_CELLS))?;
         for _ in 0..gap {
             table.end_line(Vec::new());
         }
@@ -683,6 +712,8 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
         take_cells(budget, 1)?;
         let value = if lookup {
             let found = value.trim().parse::<usize>().ok().and_then(|i| shared.strings.get(i));
+            // Each cell owns a copy, so one long string in many cells takes memory the XML does not.
+            take_cells(budget, found.map_or(0, |s| s.len() / CELL_BYTES))?;
             found.cloned().unwrap_or(value)
         } else {
             value
@@ -756,16 +787,16 @@ pub fn read(path: &str, only: &[String], options: &XlsxOptions) -> Result<Vec<La
 pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<Vec<Layer>> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
     let (sheets, date1904) = workbook_sheets(&mut zip)?;
+    let (mut budget, mut table_budget) = (MAX_CELLS, MAX_CELLS);
     let mut strings = Vec::new();
     for name in ["xl/sharedStrings.xml", "xl/SharedStrings.xml"] {
         if let Some(text) = read_part(&mut zip, name)? {
-            strings = shared_strings(&text)?;
+            strings = shared_strings(&text, &mut budget)?;
             break;
         }
     }
     let styles = read_part(&mut zip, "xl/styles.xml")?.map(|text| style_kinds(&text)).transpose()?.unwrap_or_default();
     let shared = SharedParts { strings, styles };
-    let (mut budget, mut table_budget) = (MAX_CELLS, MAX_CELLS);
     let mut layers = Vec::with_capacity(sheets.len());
     // Naming no sheet here leaves the caller to report the names there are.
     let filter = sheets.iter().any(|(name, _)| only.contains(name));
@@ -831,13 +862,14 @@ const STYLES: &str = "<numFmts count=\"6\">\n\
 </cellXfs>\n\
 <cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>\n";
 
-/// Text as XML: escaped, without the control characters XML cannot hold.
+/// Whether XML 1.0 can hold a character.
+fn xml_legal(c: char) -> bool {
+    (c >= ' ' && !matches!(c, '\u{FFFE}' | '\u{FFFF}')) || matches!(c, '\t' | '\n' | '\r')
+}
+
+/// Text as XML: escaped, without the characters XML cannot hold.
 fn xml_text(s: &str) -> String {
-    if s.chars().any(|c| c < ' ' && !matches!(c, '\t' | '\n' | '\r')) {
-        xml::escape(&s.chars().filter(|&c| c >= ' ' || matches!(c, '\t' | '\n' | '\r')).collect::<String>())
-    } else {
-        xml::escape(s)
-    }
+    if s.chars().all(xml_legal) { xml::escape(s) } else { xml::escape(&s.chars().filter(|&c| xml_legal(c)).collect::<String>()) }
 }
 
 /// The shared strings table being written.
@@ -1003,6 +1035,8 @@ fn sheet_xml(layer: &Layer, options: &XlsxOptions, strings: &mut StringTable) ->
     out.push_str("<sheetData>\n");
     let letters: Vec<String> = (0..names.len()).map(column_letters).collect();
     let mut row = 1usize;
+    // Blanks in the row after the header are cells that are not text, which tell it is a header.
+    let blank_row = if has_header { 2 } else { 0 };
     if has_header {
         let _ = write!(out, "<row r=\"{row}\">");
         for (name, letter) in names.iter().zip(&letters) {
@@ -1018,7 +1052,12 @@ fn sheet_xml(layer: &Layer, options: &XlsxOptions, strings: &mut StringTable) ->
         let geometry = geometry_values(feature, &extra);
         let attributes = (0..fields).map(|i| feature.attributes.get(i).unwrap_or(&null));
         for (value, letter) in geometry.iter().chain(attributes).zip(&letters) {
-            value_cell(&mut out, &format!("{letter}{row}"), value, strings)?;
+            let blank = matches!(value, FieldValue::Null) || matches!(value, FieldValue::Float(v) if !v.is_finite());
+            if blank && row == blank_row {
+                let _ = write!(out, "<c r=\"{letter}{row}\"/>");
+            } else {
+                value_cell(&mut out, &format!("{letter}{row}"), value, strings)?;
+            }
         }
         out.push_str("</row>\n");
         row += 1;
@@ -1027,22 +1066,34 @@ fn sheet_xml(layer: &Layer, options: &XlsxOptions, strings: &mut StringTable) ->
     Ok(out)
 }
 
+/// The start of a text, of `max` UTF-16 units at most, the units Excel counts.
+fn truncate_utf16(s: &str, max: usize) -> String {
+    let mut used = 0;
+    s.chars()
+        .take_while(|c| {
+            used += c.len_utf16();
+            used <= max
+        })
+        .collect()
+}
+
 /// Unique sheet names Excel accepts: without `[]:*?/\`, without quotes at their ends, of 31
-/// characters at most. Names that differ only in case are the same name to Excel.
+/// UTF-16 units at most. Names that differ only in case are the same name to Excel.
 fn sheet_names(layers: &[Layer]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     layers
         .iter()
         .enumerate()
         .map(|(i, layer)| {
-            let cleaned: String = layer.name.chars().map(|c| if "[]:*?/\\".contains(c) || c < ' ' { '_' } else { c }).collect();
+            let cleaned: String =
+                layer.name.chars().map(|c| if "[]:*?/\\".contains(c) || !xml_legal(c) || c < ' ' { '_' } else { c }).collect();
             let cleaned = cleaned.trim_matches('\'');
             let base = if cleaned.is_empty() { format!("Sheet{}", i + 1) } else { cleaned.to_string() };
-            let mut name: String = base.chars().take(MAX_SHEET_NAME).collect();
+            let mut name = truncate_utf16(&base, MAX_SHEET_NAME);
             let mut n = 2;
             while !seen.insert(name.to_lowercase()) {
                 let suffix = format!("_{n}");
-                name = base.chars().take(MAX_SHEET_NAME - suffix.chars().count()).chain(suffix.chars()).collect();
+                name = truncate_utf16(&base, MAX_SHEET_NAME - suffix.len()) + suffix.as_str();
                 n += 1;
             }
             name
@@ -1386,11 +1437,68 @@ mod tests {
             read_sheet(data, "s", &shared, &mut table, &mut budget).map(|()| budget)
         };
         // An empty row, gap rows and gap cells all count, each once.
-        assert_eq!(run("<sheetData><row r=\"1\"/></sheetData>", 10).unwrap(), 9);
-        assert_eq!(run("<sheetData><row r=\"4\"/></sheetData>", 10).unwrap(), 6);
-        assert_eq!(run("<sheetData><row r=\"1\"><c r=\"C1\"><v>1</v></c></row></sheetData>", 10).unwrap(), 6);
-        assert!(matches!(run("<sheetData><row r=\"1\"><c r=\"ZZZ1\"/></row></sheetData>", 10), Err(Error::ResourceLimit(_))));
-        assert!(matches!(run(&"<sheetData>".to_string().add_rows(20), 10), Err(Error::ResourceLimit(_))));
+        assert_eq!(run("<sheetData><row r=\"1\"/></sheetData>", 20).unwrap(), 20 - ROW_CELLS);
+        assert_eq!(run("<sheetData><row r=\"4\"/></sheetData>", 20).unwrap(), 20 - 4 * ROW_CELLS);
+        assert_eq!(run("<sheetData><row r=\"1\"><c r=\"C1\"><v>1</v></c></row></sheetData>", 20).unwrap(), 20 - ROW_CELLS - 3);
+        assert!(matches!(run("<sheetData><row r=\"1\"><c r=\"ZZZ1\"/></row></sheetData>", 20), Err(Error::ResourceLimit(_))));
+        assert!(matches!(run(&"<sheetData>".to_string().add_rows(20), 20), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn rows_past_a_sheets_limit_are_refused() {
+        let options = XlsxOptions::default();
+        let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
+        let run = |data: &str| {
+            let mut table = SheetTable::new(&options);
+            read_sheet(data, "s", &shared, &mut table, &mut MAX_CELLS.clone())
+        };
+        assert!(run(&"<sheetData>".to_string().add_rows(MAX_ROWS)).is_ok());
+        let too_many = run(&"<sheetData>".to_string().add_rows(MAX_ROWS + 1));
+        assert!(matches!(too_many, Err(Error::ResourceLimit(m)) if m.contains("rows")));
+    }
+
+    #[test]
+    fn rows_without_columns_count_as_features() {
+        let options = XlsxOptions::default();
+        let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
+        let table = || {
+            let mut table = SheetTable::new(&options);
+            read_sheet(&"<sheetData>".to_string().add_rows(3), "s", &shared, &mut table, &mut 100).unwrap();
+            table
+        };
+        assert!(table_layer(table(), "s", false, &mut (3 * ROW_CELLS)).is_ok());
+        assert!(matches!(table_layer(table(), "s", false, &mut (3 * ROW_CELLS - 1)), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn shared_strings_count_against_the_cell_limit() {
+        let mut budget = 3;
+        assert_eq!(shared_strings("<si/><si><t>a</t></si><si/>", &mut budget).unwrap(), ["", "a", ""]);
+        assert_eq!(budget, 0);
+        assert!(matches!(shared_strings("<si/>", &mut budget), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn a_long_shared_string_costs_each_cell_that_copies_it() {
+        let options = XlsxOptions::default();
+        let shared = SharedParts { strings: vec!["x".repeat(10 * CELL_BYTES)], styles: Vec::new() };
+        let mut table = SheetTable::new(&options);
+        let cell = "<c t=\"s\"><v>0</v></c>";
+        let data = format!("<sheetData><row>{cell}{cell}</row></sheetData>");
+        let mut budget = 100;
+        read_sheet(&data, "s", &shared, &mut table, &mut budget).unwrap();
+        assert_eq!(budget, 100 - ROW_CELLS - 2 * (1 + 10));
+        let mut table = SheetTable::new(&options);
+        assert!(matches!(read_sheet(&data, "s", &shared, &mut table, &mut 20), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_left_out_of_a_part() {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("a.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"\xEF\xBB\xBF<a/>").unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(zip.finish().unwrap().into_inner())).unwrap();
+        assert_eq!(read_part(&mut zip, "a.xml").unwrap().unwrap(), "<a/>");
     }
 
     fn sample_layer() -> Layer {
@@ -1454,6 +1562,64 @@ mod tests {
         assert!(l.features[0].geometry.is_none());
     }
 
+    /// A layer of a text and an integer field, with these first and second features.
+    fn name_and_id(first: [FieldValue; 2], second: [FieldValue; 2]) -> Layer {
+        let mut l = Layer::new("t");
+        l.add_field(FieldDef::new("name", FieldType::Text));
+        l.add_field(FieldDef::new("id", FieldType::Integer));
+        for (fid, attributes) in [first, second].into_iter().enumerate() {
+            l.features.push(Feature { fid: fid as u64, geometry: None, attributes: attributes.to_vec() });
+        }
+        l
+    }
+
+    #[test]
+    fn nulls_in_the_first_feature_keep_the_field_names() {
+        let text = |s: &str| FieldValue::Text(s.into());
+        for first in [[text("a"), FieldValue::Null], [FieldValue::Null, FieldValue::Null]] {
+            let layer = name_and_id(first.clone(), [text("b"), FieldValue::Integer(2)]);
+            let bytes = to_bytes(&[layer], &XlsxOptions::default()).unwrap();
+            let l = parse(bytes, &[], &XlsxOptions::default()).unwrap().remove(0);
+            assert_eq!(field_names(&l), ["name", "id"]);
+            assert_eq!(field_types(&l), [FieldType::Text, FieldType::Integer]);
+            assert_eq!(l.features.len(), 2);
+            assert_eq!(l.features[0].attributes, first);
+            assert_eq!(l.features[1].attributes[1], FieldValue::Integer(2));
+        }
+    }
+
+    #[test]
+    fn an_all_text_layer_needs_the_header_forced() {
+        let mut layer = Layer::new("t");
+        layer.add_field(FieldDef::new("name", FieldType::Text));
+        layer.features.push(Feature { fid: 0, geometry: None, attributes: vec![FieldValue::Text("a".into())] });
+        let bytes = to_bytes(&[layer], &XlsxOptions::default()).unwrap();
+        let auto = parse(bytes.clone(), &[], &XlsxOptions::default()).unwrap().remove(0);
+        assert_eq!(field_names(&auto), ["Field1"]);
+        assert_eq!(auto.features.len(), 2);
+        let mut force = XlsxOptions::default();
+        force.set("HEADERS", "FORCE").unwrap();
+        let forced = parse(bytes, &[], &force).unwrap().remove(0);
+        assert_eq!(field_names(&forced), ["name"]);
+        assert_eq!(forced.features.len(), 1);
+    }
+
+    #[test]
+    fn characters_xml_forbids_are_left_out() {
+        let mut layer = name_and_id(
+            [FieldValue::Text("a\u{FFFE}b\u{FFFF}\u{1}c\td".into()), FieldValue::Integer(1)],
+            [FieldValue::Text("e".into()), FieldValue::Integer(2)],
+        );
+        layer.name = "s\u{FFFF}".into();
+        let bytes = to_bytes(&[layer], &XlsxOptions::default()).unwrap();
+        let l = parse(bytes.clone(), &[], &XlsxOptions::default()).unwrap().remove(0);
+        assert_eq!(l.name, "s_");
+        assert_eq!(l.features[0].attributes[0], FieldValue::Text("abc\td".into()));
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let strings = read_part(&mut zip, "xl/sharedStrings.xml").unwrap().unwrap();
+        assert!(!strings.contains(['\u{FFFE}', '\u{FFFF}']));
+    }
+
     #[test]
     fn the_same_layers_make_the_same_bytes() {
         let layers = [sample_layer()];
@@ -1463,12 +1629,12 @@ mod tests {
     #[test]
     fn writes_geometry_columns_on_request() {
         let mut options = XlsxOptions::default();
-        options.set("GEOMETRY", "AS_XY").unwrap();
+        options.set_creation("GEOMETRY", "AS_XY").unwrap();
         let bytes = to_bytes(&[sample_layer()], &options).unwrap();
         let l = parse(bytes, &[], &XlsxOptions::default()).unwrap().remove(0);
         assert_eq!(&field_names(&l)[..2], ["X", "Y"]);
         assert_eq!(l.features[0].attributes[0], FieldValue::Float(1.5));
-        options.set("GEOMETRY", "AS_WKT").unwrap();
+        options.set_creation("GEOMETRY", "AS_WKT").unwrap();
         let bytes = to_bytes(&[sample_layer()], &options).unwrap();
         let mut read = XlsxOptions::default();
         read.set("GEOM_POSSIBLE_NAMES", "WKT").unwrap();
@@ -1486,6 +1652,10 @@ mod tests {
         assert_eq!(names[3], format!("{}_2", "x".repeat(29)));
         assert_eq!(names[4], "Sheet5");
         assert_eq!(names[5], "q");
+        // Excel counts UTF-16 units: each of these characters is two.
+        let names = sheet_names(&["\u{1F600}".repeat(20), "\u{1F600}".repeat(16)].map(Layer::new));
+        assert_eq!(names[0], "\u{1F600}".repeat(15));
+        assert_eq!(names[1], format!("{}_2", "\u{1F600}".repeat(14)));
     }
 
     #[test]

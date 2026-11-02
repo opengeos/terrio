@@ -146,7 +146,8 @@ def gdal_sheets(path, options):
         options: Open options, as ``KEY=VALUE``.
 
     Returns:
-        A dict of layer names to ``(fields, rows)``: field names, then values as text.
+        A dict of layer names to ``(fields, rows, numeric)``: field names, values as text, and
+        whether each field holds numbers.
     """
     from osgeo import gdal, ogr
 
@@ -160,6 +161,7 @@ def gdal_sheets(path, options):
         fields = [defn.GetFieldDefn(j).GetName() for j in range(count)]
         boolean = [defn.GetFieldDefn(j).GetSubType() == ogr.OFSTBoolean for j in range(count)]
         real = [defn.GetFieldDefn(j).GetType() == ogr.OFTReal for j in range(count)]
+        numeric = [defn.GetFieldDefn(j).GetType() in (ogr.OFTInteger, ogr.OFTInteger64, ogr.OFTReal) for j in range(count)]
         rows = []
         for feature in layer:
             row = []
@@ -173,7 +175,7 @@ def gdal_sheets(path, options):
                 else:
                     row.append(normalize_text(feature.GetFieldAsString(j)))
             rows.append(row)
-        out[layer.GetName()] = (fields, rows)
+        out[layer.GetName()] = (fields, rows, numeric)
     return out
 
 
@@ -201,7 +203,7 @@ def terrio_sheets(terrio, path, options, tmp):
         tmp: A directory for the outputs.
 
     Returns:
-        A dict of layer names to ``(fields, rows)``, as :func:`gdal_sheets` makes.
+        A dict of layer names to ``(fields, rows)``.
     """
     info = subprocess.run([terrio, "info", "--json", path], capture_output=True, text=True, check=True)
     layers = json.loads(info.stdout)["layers"]
@@ -243,12 +245,13 @@ def to_text(value):
     return normalize_text(str(value))
 
 
-def same_value(a, b):
+def same_value(a, b, numeric):
     """Whether two values agree, the types of a number column aside.
 
     Args:
         a: terrio's value as text.
         b: GDAL's.
+        numeric: Whether GDAL's field holds numbers: only those compare as numbers.
 
     Returns:
         Whether they agree.
@@ -257,10 +260,11 @@ def same_value(a, b):
         return True
     if a is None or b is None:
         return False
-    try:
-        return float(a) == float(b)
-    except ValueError:
-        pass
+    if numeric:
+        try:
+            return float(a) == float(b)
+        except ValueError:
+            return False
     # Fractions of a second to the millisecond: GDAL prints a float's rounding.
     if len(a) < 19 or len(b) < 19 or a[:19] != b[:19]:
         return False
@@ -281,12 +285,12 @@ def compare(ours, theirs):
         A dict of layer names to lists of differences.
     """
     results = {}
-    for name, (fields, rows) in theirs.items():
+    for name, (fields, rows, numeric) in theirs.items():
         problems = []
         if name not in ours:
             results[name] = ["missing sheet"]
             continue
-        our_fields, our_rows = ours[name]
+        our_fields, our_rows = ours[name][:2]
         # terrio makes repeated headings unique; GDAL repeats them.
         unique = []
         for field in fields:
@@ -300,8 +304,8 @@ def compare(ours, theirs):
             problems.append(f"{len(our_rows)} features != {len(rows)}")
         if not problems:
             for r, (a_row, b_row) in enumerate(zip(our_rows, rows)):
-                for field, a, b in zip(fields, a_row, b_row):
-                    if not same_value(a, b):
+                for field, a, b, is_number in zip(fields, a_row, b_row, numeric):
+                    if not same_value(a, b, is_number):
                         problems.append(f"row {r} {field}: {a!r} != {b!r}")
         results[name] = problems
     return results
@@ -361,6 +365,19 @@ def main():
         by_terrio = os.path.join(tmp, "by_terrio.xlsx")
         subprocess.run([args.terrio, "convert", by_gdal, by_terrio], check=True, capture_output=True)
         record("GDAL reading terrio's", compare(gdal_sheets(by_terrio, []), gdal_sheets(by_gdal, [])))
+        # The first feature's null must leave the field names to both drivers.
+        nulls = os.path.join(tmp, "nulls.csv")
+        with open(nulls, "w", encoding="utf-8") as f:
+            f.write("name,id\nalpha,\nbeta,2\n")
+        with open(nulls + "t", "w", encoding="utf-8") as f:
+            f.write("String,Integer\n")
+        nulls_xlsx = os.path.join(tmp, "nulls.xlsx")
+        subprocess.run([args.terrio, "convert", nulls, nulls_xlsx], check=True, capture_output=True)
+        results = compare(terrio_sheets(args.terrio, nulls_xlsx, [], tmp), gdal_sheets(nulls_xlsx, []))
+        for name, (fields, _, _) in gdal_sheets(nulls_xlsx, []).items():
+            if fields != ["name", "id"]:
+                results[name].append(f"GDAL's fields {fields}")
+        record("first feature with a null", results)
         by_terrio_fixture = os.path.join(tmp, "fixture_by_terrio.xlsx")
         subprocess.run([args.terrio, "convert", fixture, by_terrio_fixture], check=True, capture_output=True)
         record("GDAL reading terrio's fixture copy", compare(gdal_sheets(by_terrio_fixture, []), gdal_sheets(fixture, [])))

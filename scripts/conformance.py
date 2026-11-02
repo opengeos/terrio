@@ -2656,9 +2656,9 @@ def suite_xlsx(ctx):
         "A workbook of hand-laid sheets (types, widening, gaps, formulas, blank and repeated headings) "
         "read by both drivers under each HEADERS and FIELD_TYPES option, an ogr2ogr workbook read by "
         "terrio, and terrio's workbooks read by GDAL. Field names, feature counts and values must "
-        "match; numbers compared as numbers, fractions of a second within 2 ms. Known differences: "
-        "a boolean column with other numbers stays boolean in GDAL, which loses the values, and GDAL "
-        "ignored HEADERS=DISABLE on a sheet of cells without references.",
+        "match; numbers compared as numbers, fractions of a second within 2 ms. Known differences, "
+        "reported as not compared: a boolean column with other numbers stays boolean in GDAL, which "
+        "loses the values, and GDAL ignored HEADERS=DISABLE on a sheet of cells without references.",
     )
     if missing_modules("osgeo"):
         s.skipped = "needs osgeo"
@@ -2673,7 +2673,8 @@ def suite_xlsx(ctx):
             s.error = tail(err or out)
             return s
         for r in json.loads(Path(report).read_text())["cases"]:
-            s.cases.append(Case(r["name"].split(":")[0], r["name"], r["status"], r.get("detail", "")))
+            status = NOT_COMPARED if r.get("known") else r["status"]
+            s.cases.append(Case(r["name"].split(":")[0], r["name"], status, r.get("detail", "")))
     return s
 
 

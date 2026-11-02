@@ -446,7 +446,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 let known = if tiles_out {
                     options.tiles.set(k, v)?
                 } else if xlsx_out {
-                    options.xlsx.set(k, v)?
+                    options.xlsx.set_creation(k, v)?
                 } else {
                     options.csv.set(k, v)? || options.geojson.set(k, v)?
                 };
