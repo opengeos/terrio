@@ -1188,7 +1188,13 @@ fn geometry_from(g: &gdal::vector::Geometry, budget: &mut VectorBudget) -> Resul
             gdal_sys::OGR_G_DestroyGeometry(linear);
             return Err(error);
         }
-        let mut wkb = vec![0u8; size];
+        let mut wkb = match crate::dataset::fallible::filled_now(size, 0u8, "GDAL linearized geometry WKB") {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                gdal_sys::OGR_G_DestroyGeometry(linear);
+                return Err(Error::ResourceLimit(error.to_string()));
+            }
+        };
         let rv = gdal_sys::OGR_G_ExportToWkb(linear, gdal_sys::OGRwkbByteOrder::wkbNDR, wkb.as_mut_ptr());
         gdal_sys::OGR_G_DestroyGeometry(linear);
         if rv != gdal_sys::OGRErr::OGRERR_NONE {

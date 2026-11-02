@@ -11,6 +11,7 @@ import terrio
 # Tests of the memory checks: their child processes set `RLIMIT_AS` and read `/proc`, or expect
 # `usable_memory`, which reads `/proc`.
 NEEDS_LINUX_MEMORY_LIMITS = {
+    "test_resource_limits.py::test_vsi_allocation_refusal_is_a_memory_error",
     "test_grib_gdal.py::test_huge_grid_is_an_error_not_an_abort",
     "test_hardening.py::test_a_jpeg2000_too_large_to_allocate_raises",
     "test_hardening.py::test_a_jpeg_too_large_to_allocate_raises",
