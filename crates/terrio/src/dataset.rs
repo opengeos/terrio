@@ -1692,7 +1692,8 @@ pub(crate) fn ensure_vector_options_apply(options: &VectorWriteOptions, driver: 
     if options.preserve_declared_geometry_type && driver != Some(VectorDriver::GPKG) {
         return Err(Error::InvalidArgument("preserve_declared_geometry_type applies to GPKG output".into()));
     }
-    if (options.xlsx.geometry != crate::CsvGeometry::None || options.xlsx.macro_enabled) && driver != Some(VectorDriver::XLSX) {
+    let xlsx = &options.xlsx;
+    if (xlsx.geometry != crate::CsvGeometry::None || xlsx.macro_enabled || xlsx.has_layout()) && driver != Some(VectorDriver::XLSX) {
         return Err(Error::InvalidArgument("the XLSX write options apply to XLSX output".into()));
     }
     if !options.style_table.is_empty() && !driver.is_some_and(|d| d.holds_style_table()) {

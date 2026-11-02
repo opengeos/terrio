@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- XLSX layout options beyond GDAL: `HEADER_ROWS`, `RANGE` and `FIRST_ROW` when reading, and
+  `HEADER_STYLE`, `FREEZE_HEADER`, `AUTOFILTER`, `COLUMN_WIDTH`, `DATE_FORMAT`, `DATETIME_FORMAT`
+  and `CREATION_TIME` when writing. A workbook's sheets may expand to 8 GiB together (#405).
 - The `XLSX` driver reads and writes `.xlsx` and `.xlsm` workbooks in pure Rust, natively and in
   WebAssembly, as GDAL's driver does: a layer per worksheet, with the `HEADERS` and `FIELD_TYPES`
   open options. Naming coordinate or WKT columns reads geometries from them, and the `GEOMETRY`

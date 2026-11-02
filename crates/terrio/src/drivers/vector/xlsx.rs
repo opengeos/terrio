@@ -28,7 +28,7 @@
 //! count as non-text when they look for a header. A layer whose first feature is all text cannot be
 //! told from a table without a header, so its names read back as data unless `HEADERS=FORCE` is set.
 
-use super::xlsx_options::{XlsxFieldTypes, XlsxHeaders, XlsxOptions};
+use super::xlsx_options::{XlsxColumnWidth, XlsxFieldTypes, XlsxHeaders, XlsxOptions};
 use super::{csv, datetime, wkt, xml};
 use crate::{CsvGeometry, Error, Result};
 use quick_xml::events::{BytesStart, Event};
@@ -50,6 +50,8 @@ const MAX_GAP_CELLS: usize = 100_000;
 /// The most a workbook's part may expand to, and the most cells (blank ones in the table included)
 /// a workbook may hold: an untrusted file is refused rather than exhausting memory.
 const MAX_PART_BYTES: u64 = 2 << 30;
+/// The most a workbook's sheets may expand to together.
+const MAX_SHEET_BYTES: u64 = 4 * MAX_PART_BYTES;
 const MAX_CELLS: usize = 100_000_000;
 /// What a row costs against that limit, for the row entry and feature it holds even without a cell.
 const ROW_CELLS: usize = 4;
@@ -166,6 +168,12 @@ struct SheetTable<'a> {
     first_line: Vec<Cell>,
     /// The lines seen: rows, with the empty rows of gaps.
     line: usize,
+    /// The lines seen inside the rows asked for.
+    seen: usize,
+    /// The rows that name the fields, whole, while several do.
+    header_lines: Vec<Vec<Cell>>,
+    /// The sheet's merged ranges: first row and column, last row and column, from 0.
+    merges: Vec<(usize, usize, usize, usize)>,
     has_header: bool,
     columns: Vec<Column>,
     rows: Vec<(u64, Vec<Cell>)>,
@@ -178,13 +186,72 @@ impl<'a> SheetTable<'a> {
             options,
             first_line: Vec::new(),
             line: 0,
+            seen: 0,
+            header_lines: Vec::new(),
+            merges: Vec::new(),
             has_header: false,
             columns: Vec::new(),
             rows: Vec::new(),
         }
     }
 
+    /// The rows that name the fields at most: whether they do is told after them unless asked for.
+    fn header_count(&self) -> usize {
+        self.options.header_rows.unwrap_or(1)
+    }
+
+    /// A line's cells in the columns asked for.
+    fn crop(&self, mut cells: Vec<Cell>) -> Vec<Cell> {
+        if let Some(last) = self.options.last_column {
+            cells.truncate(last.saturating_add(1));
+        }
+        cells.drain(..self.options.first_column.min(cells.len()));
+        cells
+    }
+
+    /// The first line that several header rows make: each column's headings joined, a merged heading
+    /// naming every column under it. A heading's cells count once only when they are one merged range.
+    fn joined_header(&self) -> Vec<Cell> {
+        let first_row = self.options.first_row - 1;
+        let first_column = self.options.first_column;
+        let rows = first_row..first_row + self.header_lines.len();
+        let merges: Vec<_> = self.merges.iter().filter(|&&(r0, _, r1, _)| r0 < rows.end && r1 >= rows.start).copied().collect();
+        let origin = |row: usize, column: usize| {
+            let found = merges.iter().find(|&&(r0, c0, r1, c1)| (r0..=r1).contains(&(row + first_row)) && (c0..=c1).contains(&column));
+            // A heading above the rows read is not known: no row holds it.
+            found.map_or((row, column), |&(r0, c0, _, _)| (r0.checked_sub(first_row).unwrap_or(usize::MAX), c0))
+        };
+        let text = |(row, column): (usize, usize)| {
+            self.header_lines.get(row).and_then(|line| line.get(column)).map_or("", |cell| cell.value.trim())
+        };
+        // A merged heading reaches past the cells stored for it; an empty merge makes no columns.
+        let merged_end = merges
+            .iter()
+            .filter(|&&(r0, c0, _, _)| !text((r0.checked_sub(first_row).unwrap_or(usize::MAX), c0)).is_empty())
+            .map(|&(_, _, _, c1)| c1 + 1);
+        let widest = self.header_lines.iter().map(Vec::len).chain(merged_end).max().unwrap_or(0);
+        let end = self.options.last_column.map_or(widest, |last| widest.min(last.saturating_add(1)));
+        (first_column..end)
+            .map(|column| {
+                let mut parts: Vec<&str> = Vec::new();
+                let mut last_origin = None;
+                for row in 0..self.header_lines.len() {
+                    let cell = origin(row, column);
+                    let heading = text(cell);
+                    if !heading.is_empty() && last_origin != Some(cell) {
+                        parts.push(heading);
+                        last_origin = Some(cell);
+                    }
+                }
+                Cell { kind: CellKind::Text, value: parts.join(" / ") }
+            })
+            .collect()
+    }
+
     fn detect_header(&self, line: &[Cell]) -> bool {
+        if self.options.header_rows.is_some() {
+            return self.header_count() > 0;
+        }
         match self.options.headers {
             XlsxHeaders::Force => return true,
             XlsxHeaders::Disable => return false,
@@ -215,13 +282,28 @@ impl<'a> SheetTable<'a> {
     }
 
     fn end_line(&mut self, cells: Vec<Cell>) {
-        let line = self.line;
+        let row = self.line + 1;
         self.line += 1;
-        if line == 0 {
+        if row < self.options.first_row || self.options.last_row.is_some_and(|last| row > last) {
+            return;
+        }
+        let line = self.seen;
+        self.seen += 1;
+        let headers = self.header_count();
+        if headers > 1 && line < headers {
+            // Whole, for the merged ranges that start outside the columns asked for.
+            self.header_lines.push(cells);
+            if line + 1 == headers {
+                self.first_line = self.joined_header();
+            }
+            return;
+        }
+        let cells = self.crop(cells);
+        if headers <= 1 && line == 0 {
             self.first_line = cells;
             return;
         }
-        if line == 1 {
+        if line == headers.max(1) {
             self.has_header = self.detect_header(&cells);
             if self.has_header {
                 let autodetect = self.autodetect;
@@ -242,7 +324,7 @@ impl<'a> SheetTable<'a> {
                     .collect();
             } else {
                 self.columns_from_first_line();
-                self.rows.push((1, std::mem::take(&mut self.first_line)));
+                self.rows.push((self.options.first_row as u64, std::mem::take(&mut self.first_line)));
             }
         }
         for (i, cell) in cells.iter().enumerate().skip(self.columns.len()) {
@@ -257,14 +339,33 @@ impl<'a> SheetTable<'a> {
                 }
             }
         }
-        self.rows.push((line as u64 + 1, cells));
+        self.rows.push((row as u64, cells));
     }
 
-    /// Ends the sheet: a single line is data, whatever `HEADERS` says.
+    /// Ends the sheet: a single line is data, whatever `HEADERS` says, unless header rows are asked for.
     fn finish(&mut self) {
-        if self.line == 1 && !self.first_line.is_empty() {
+        // A sheet that ends within its header rows still has their names.
+        if self.header_count() > 1 && self.seen < self.header_count() && !self.header_lines.is_empty() {
+            self.first_line = self.joined_header();
+        }
+        if self.seen > self.header_count().max(1) || self.first_line.is_empty() {
+            return;
+        }
+        if self.options.header_rows.is_some_and(|rows| rows > 0) && self.seen <= self.header_count() {
+            self.columns = self
+                .first_line
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Column {
+                    name: if c.value.is_empty() { format!("Field{}", i + 1) } else { c.value.clone() },
+                    kind: ColumnType::Text,
+                    boolean: false,
+                    unknown: true,
+                })
+                .collect();
+        } else if self.seen == 1 {
             self.columns_from_first_line();
-            self.rows.push((1, std::mem::take(&mut self.first_line)));
+            self.rows.push((self.options.first_row as u64, std::mem::take(&mut self.first_line)));
         }
     }
 }
@@ -437,6 +538,28 @@ fn take_cells(budget: &mut usize, cells: usize) -> Result<()> {
     *budget =
         budget.checked_sub(cells).ok_or_else(|| Error::ResourceLimit(format!("XLSX: the workbook holds more than {MAX_CELLS} cells")))?;
     Ok(())
+}
+
+/// A sheet's merged ranges, when several header rows may need them.
+fn merged_ranges(text: &str, part: &str, budget: &mut usize) -> Result<Vec<(usize, usize, usize, usize)>> {
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut merges = Vec::new();
+    loop {
+        match reader.read_event().map_err(|e| xml_error(part, e))? {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "mergeCell" => {
+                take_cells(budget, 1)?;
+                let parsed = attribute(&e, "ref").and_then(|r| {
+                    let (start, end) = r.split_once(':')?;
+                    let row =
+                        |cell: &str| cell.trim_start_matches(|c: char| c.is_ascii_alphabetic()).parse::<usize>().ok().filter(|&r| r > 0);
+                    Some((row(start)? - 1, reference_column(start)?, row(end)? - 1, reference_column(end)?))
+                });
+                merges.extend(parsed);
+            }
+            Event::Eof => return Ok(merges),
+            _ => {}
+        }
+    }
 }
 
 /// A workbook part as text, refused when it would expand past the limit.
@@ -740,12 +863,21 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
         }
         take_cells(budget, ROW_CELLS)?;
         let Some(row) = attribute(e, "r").and_then(|r| r.parse::<usize>().ok()).filter(|&r| r > 0) else { return Ok(()) };
-        let (target, line) = (row - 1, table.line);
+        let (target, mut line) = (row - 1, table.line);
+        if target >= MAX_ROWS {
+            return Err(too_many_rows(part));
+        }
         if target <= line {
             return Ok(());
         }
-        if target >= MAX_ROWS {
-            return Err(too_many_rows(part));
+        // Rows before those asked for hold nothing, however far they go.
+        let skipped = table.options.first_row - 1;
+        if line < skipped {
+            line = target.min(skipped);
+            table.line = line;
+            if target <= line {
+                return Ok(());
+            }
         }
         let gap = target - line;
         let fields = table.first_line.len().max(table.columns.len());
@@ -812,6 +944,10 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
                 "sheetData" => in_data = true,
                 "row" if in_data => {
                     start_row(table, &e, budget)?;
+                    // Past the rows asked for, the rest of the sheet costs nothing.
+                    if table.options.last_row.is_some_and(|last| table.line >= last) {
+                        return Ok(());
+                    }
                     (in_row, cells) = (true, Vec::new());
                 }
                 "c" if in_row => {
@@ -828,6 +964,9 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
             Event::Empty(e) => match e.local_name().as_ref() {
                 "row" if in_data => {
                     start_row(table, &e, budget)?;
+                    if table.options.last_row.is_some_and(|last| table.line >= last) {
+                        return Ok(());
+                    }
                     table.end_line(Vec::new());
                 }
                 "c" if in_row => {
@@ -870,6 +1009,12 @@ pub fn read(path: &str, only: &[String], options: &XlsxOptions) -> Result<Vec<La
 /// Parses a workbook held in memory: a layer per worksheet in workbook order, or only the sheets
 /// `only` names when it is not empty.
 pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<Vec<Layer>> {
+    if options.first_row == 0 {
+        return Err(Error::InvalidArgument("XLSX: the first row to read counts from 1".into()));
+    }
+    if options.last_row.is_some_and(|last| last < options.first_row) {
+        return Err(Error::InvalidArgument("XLSX: the last row to read is before the first".into()));
+    }
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
     let WorkbookParts { sheets, date1904, strings: strings_part, styles: styles_part } = workbook_sheets(&mut zip)?;
     let (mut budget, mut table_budget) = (MAX_CELLS, MAX_CELLS);
@@ -891,6 +1036,7 @@ pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<V
     let mut layers = Vec::with_capacity(sheets.len());
     // Naming no sheet here leaves the caller to report the names there are.
     let filter = sheets.iter().any(|(name, _)| only.contains(name));
+    let mut sheet_bytes = 0u64;
     for (name, part) in sheets {
         if filter && !only.contains(&name) {
             continue;
@@ -898,6 +1044,13 @@ pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<V
         let mut table = SheetTable::new(options);
         // A workbook naming a part it lacks still lists the sheet, empty, as GDAL's driver does.
         if let Some(text) = read_part(&mut zip, &part)? {
+            sheet_bytes += text.len() as u64;
+            if sheet_bytes > MAX_SHEET_BYTES {
+                return Err(Error::ResourceLimit(format!("XLSX: the sheets expand to more than {MAX_SHEET_BYTES} bytes")));
+            }
+            if options.header_rows.is_some_and(|rows| rows > 1) {
+                table.merges = merged_ranges(&text, &part, &mut budget)?;
+            }
             read_sheet(&text, &part, &shared, &mut table, &mut budget)?;
         }
         layers.push(table_layer(table, &name, date1904, &mut table_budget)?);
@@ -930,6 +1083,58 @@ const STYLE_DATE: u8 = 1;
 const STYLE_DATETIME: u8 = 2;
 const STYLE_DATETIME_MS: u8 = 4;
 const STYLE_BOOLEAN: u8 = 5;
+
+/// The cell styles a workbook's options make: [`STYLES`]'s, and those added after them.
+#[derive(Debug, Clone, Copy)]
+struct CellStyles {
+    header: Option<u8>,
+    date: u8,
+    datetime: u8,
+    datetime_ms: u8,
+}
+
+/// The cell styles of these options, and the `styles.xml` body that holds them. Without options that
+/// style anything, it is what GDAL's driver writes.
+fn cell_styles(options: &XlsxOptions) -> (CellStyles, String) {
+    let mut styles = CellStyles { header: None, date: STYLE_DATE, datetime: STYLE_DATETIME, datetime_ms: STYLE_DATETIME_MS };
+    let (mut formats, mut xfs, mut next) = (String::new(), String::new(), 6u8);
+    let mut add_format = |code: &str, id: u8| {
+        let _ = writeln!(formats, "<numFmt numFmtId=\"{id}\" formatCode=\"{}\"/>", xml_text(code));
+        let _ = writeln!(xfs, "<xf numFmtId=\"{id}\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/>");
+        next += 1;
+        next - 1
+    };
+    let mut extra_formats = 0;
+    if let Some(code) = &options.date_format {
+        styles.date = add_format(code, 170);
+        extra_formats += 1;
+    }
+    if let Some(code) = &options.datetime_format {
+        styles.datetime = add_format(code, 171);
+        styles.datetime_ms = styles.datetime;
+        extra_formats += 1;
+    }
+    let mut body = STYLES.to_string();
+    let mut extra_xfs = extra_formats;
+    if options.header_bold {
+        let _ = writeln!(xfs, "<xf numFmtId=\"164\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\"/>");
+        styles.header = Some(next);
+        extra_xfs += 1;
+        body = body.replace(
+            "<fonts count=\"1\"><font><sz val=\"10\"/><name val=\"Arial\"/><family val=\"2\"/></font></fonts>",
+            "<fonts count=\"2\"><font><sz val=\"10\"/><name val=\"Arial\"/><family val=\"2\"/></font><font><b/><sz val=\"10\"/><name val=\"Arial\"/><family val=\"2\"/></font></fonts>",
+        );
+    }
+    if extra_formats > 0 {
+        body = body.replace("<numFmts count=\"6\">", &format!("<numFmts count=\"{}\">", 6 + extra_formats));
+        body = body.replace("</numFmts>", &format!("{formats}</numFmts>"));
+    }
+    if extra_xfs > 0 {
+        body = body.replace("<cellXfs count=\"6\">", &format!("<cellXfs count=\"{}\">", 6 + extra_xfs));
+        body = body.replace("</cellXfs>", &format!("{xfs}</cellXfs>"));
+    }
+    (styles, body)
+}
 
 /// The number formats GDAL's driver writes, the only styling of its workbooks.
 const STYLES: &str = "<numFmts count=\"6\">\n\
@@ -1033,13 +1238,32 @@ fn wall_clock_millis(s: &str) -> Option<i64> {
 
 /// Appends a cell holding a text value.
 fn text_cell(out: &mut String, reference: &str, text: &str, strings: &mut StringTable) -> Result<()> {
+    styled_text_cell(out, reference, text, None, strings)
+}
+
+/// Appends a cell holding a text value, in a style if any.
+fn styled_text_cell(out: &mut String, reference: &str, text: &str, style: Option<u8>, strings: &mut StringTable) -> Result<()> {
     if text.encode_utf16().count() > MAX_CELL_TEXT_UTF16 {
         return Err(Error::InvalidArgument(format!(
             "XLSX: cell {reference} holds more than the {MAX_CELL_TEXT_UTF16} characters a cell can"
         )));
     }
-    let _ = write!(out, "<c r=\"{reference}\" t=\"s\"><v>{}</v></c>", strings.index(text));
+    let style = style.map_or(String::new(), |s| format!(" s=\"{s}\""));
+    let _ = write!(out, "<c r=\"{reference}\"{style} t=\"s\"><v>{}</v></c>", strings.index(text));
     Ok(())
+}
+
+/// How many characters a value takes on the sheet, roughly: for fitting a column to it.
+fn display_width(value: &FieldValue, options: &XlsxOptions) -> usize {
+    match value {
+        FieldValue::Null | FieldValue::Blob(_) => 0,
+        FieldValue::Integer(v) => v.to_string().len(),
+        FieldValue::Float(v) => v.to_string().len(),
+        FieldValue::Boolean(_) => 5,
+        FieldValue::Date(_) => options.date_format.as_ref().map_or(10, |code| code.chars().count()),
+        FieldValue::DateTime(_) => options.datetime_format.as_ref().map_or(19, |code| code.chars().count()),
+        FieldValue::Text(s) => s.lines().map(|line| line.encode_utf16().count()).max().unwrap_or(0),
+    }
 }
 
 /// Appends a cell holding a number in a style.
@@ -1047,7 +1271,7 @@ fn number_cell(out: &mut String, reference: &str, style: u8, value: impl std::fm
     let _ = write!(out, "<c r=\"{reference}\" s=\"{style}\"><v>{value}</v></c>");
 }
 
-fn value_cell(out: &mut String, reference: &str, value: &FieldValue, strings: &mut StringTable) -> Result<()> {
+fn value_cell(out: &mut String, reference: &str, value: &FieldValue, styles: &CellStyles, strings: &mut StringTable) -> Result<()> {
     match value {
         FieldValue::Null => {}
         FieldValue::Integer(v) => {
@@ -1062,12 +1286,12 @@ fn value_cell(out: &mut String, reference: &str, value: &FieldValue, strings: &m
         }
         // Values Excel has no serial for stay text.
         FieldValue::Date(s) => match datetime::parse_date(s).and_then(|days| excel_serial_days(i64::from(days))) {
-            Some(serial) => number_cell(out, reference, STYLE_DATE, serial),
+            Some(serial) => number_cell(out, reference, styles.date, serial),
             None => text_cell(out, reference, s, strings)?,
         },
         FieldValue::DateTime(s) => match wall_clock_millis(s).and_then(|ms| Some((ms, excel_serial_days(ms.div_euclid(86_400_000))?))) {
             Some((ms, serial)) => {
-                let style = if ms.rem_euclid(1000) == 0 { STYLE_DATETIME } else { STYLE_DATETIME_MS };
+                let style = if ms.rem_euclid(1000) == 0 { styles.datetime } else { styles.datetime_ms };
                 number_cell(out, reference, style, ms.rem_euclid(86_400_000) as f64 / 86_400_000.0 + serial as f64);
             }
             None => text_cell(out, reference, s, strings)?,
@@ -1119,7 +1343,7 @@ fn geometry_values(feature: &Feature, header: &[&str]) -> Vec<FieldValue> {
 
 /// A worksheet's XML for a layer, as GDAL's driver lays it out: a column width of 15 (29 for
 /// date-times) and a header row unless the fields are all named `FieldN`.
-fn sheet_xml(layer: &Layer, options: &XlsxOptions, strings: &mut StringTable) -> Result<String> {
+fn sheet_xml(layer: &Layer, options: &XlsxOptions, styles: &CellStyles, strings: &mut StringTable) -> Result<(String, Option<String>)> {
     let extra = geometry_header(layer, options)?;
     let names: Vec<&str> = extra.iter().copied().chain(layer.schema.fields().iter().map(|f| f.name.as_str())).collect();
     if let Some(name) = extra.iter().find(|name| layer.schema.field_index(name).is_some()) {
@@ -1133,12 +1357,34 @@ fn sheet_xml(layer: &Layer, options: &XlsxOptions, strings: &mut StringTable) ->
         return Err(Error::InvalidArgument(format!("XLSX: '{}' has more than the {MAX_ROWS} rows a sheet can hold", layer.name)));
     }
     let mut out = format!("{XML_HEADER}<worksheet xmlns=\"{MAIN_NS}\" xmlns:r=\"{OD_RELS}\">\n");
+    if options.freeze_header && has_header {
+        out.push_str(
+            "<sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/>\
+             <selection pane=\"bottomLeft\"/></sheetView></sheetViews>\n",
+        );
+    }
     if !names.is_empty() {
+        let mut widest: Vec<usize> = names.iter().map(|name| if has_header { name.encode_utf16().count() } else { 0 }).collect();
+        if options.column_width == XlsxColumnWidth::Auto {
+            let null = FieldValue::Null;
+            for feature in &layer.features {
+                let geometry = geometry_values(feature, &extra);
+                let attributes = (0..layer.schema.len()).map(|i| feature.attributes.get(i).unwrap_or(&null));
+                for (width, value) in widest.iter_mut().zip(geometry.iter().chain(attributes)) {
+                    *width = (*width).max(display_width(value, options));
+                }
+            }
+        }
         out.push_str("<cols>\n");
-        for i in 0..names.len() {
+        for (i, longest) in widest.iter().enumerate() {
             let is_datetime = i >= extra.len() && layer.schema.fields()[i - extra.len()].field_type == FieldType::DateTime;
-            let _ =
-                writeln!(out, "<col min=\"{0}\" max=\"{0}\" width=\"{1}\" customWidth=\"1\"/>", i + 1, if is_datetime { 29 } else { 15 });
+            let width = match options.column_width {
+                XlsxColumnWidth::Default if is_datetime => 29.0,
+                XlsxColumnWidth::Default => 15.0,
+                XlsxColumnWidth::Fixed(width) => width,
+                XlsxColumnWidth::Auto => ((longest + 2) as f64).clamp(8.0, 255.0),
+            };
+            let _ = writeln!(out, "<col min=\"{0}\" max=\"{0}\" width=\"{width}\" customWidth=\"1\"/>", i + 1);
         }
         out.push_str("</cols>\n");
     }
@@ -1150,7 +1396,7 @@ fn sheet_xml(layer: &Layer, options: &XlsxOptions, strings: &mut StringTable) ->
     if has_header {
         let _ = write!(out, "<row r=\"{row}\">");
         for (name, letter) in names.iter().zip(&letters) {
-            text_cell(&mut out, &format!("{letter}{row}"), name, strings)?;
+            styled_text_cell(&mut out, &format!("{letter}{row}"), name, styles.header, strings)?;
         }
         out.push_str("</row>\n");
         row += 1;
@@ -1166,14 +1412,22 @@ fn sheet_xml(layer: &Layer, options: &XlsxOptions, strings: &mut StringTable) ->
             if blank && row == blank_row {
                 let _ = write!(out, "<c r=\"{letter}{row}\"/>");
             } else {
-                value_cell(&mut out, &format!("{letter}{row}"), value, strings)?;
+                value_cell(&mut out, &format!("{letter}{row}"), value, styles, strings)?;
             }
         }
         out.push_str("</row>\n");
         row += 1;
     }
-    out.push_str("</sheetData>\n</worksheet>\n");
-    Ok(out)
+    out.push_str("</sheetData>\n");
+    let filter = (options.autofilter && has_header).then(|| {
+        let last = &letters[letters.len() - 1];
+        (format!("A1:{last}{}", row - 1), format!("$A$1:${last}${}", row - 1))
+    });
+    if let Some((reference, _)) = &filter {
+        let _ = writeln!(out, "<autoFilter ref=\"{reference}\"/>");
+    }
+    out.push_str("</worksheet>\n");
+    Ok((out, filter.map(|(_, absolute)| absolute)))
 }
 
 /// The start of a text, of `max` UTF-16 units at most, the units Excel counts.
@@ -1216,6 +1470,11 @@ pub fn to_bytes(layers: &[Layer], options: &XlsxOptions) -> Result<Vec<u8>> {
     if layers.is_empty() {
         return Err(Error::InvalidArgument("no layers to write: a workbook needs a sheet".into()));
     }
+    if let XlsxColumnWidth::Fixed(width) = options.column_width
+        && !(width > 0.0 && width <= 255.0)
+    {
+        return Err(Error::InvalidArgument(format!("XLSX: a column width of {width} is not above 0 and up to 255")));
+    }
     // With the styles and shared strings, what the reader's limit on a part's entries allows.
     if layers.len() > MAX_WORKBOOK_ENTRIES - 2 {
         return Err(Error::InvalidArgument(format!("XLSX: more than {} sheets to write", MAX_WORKBOOK_ENTRIES - 2)));
@@ -1235,7 +1494,11 @@ pub fn to_bytes(layers: &[Layer], options: &XlsxOptions) -> Result<Vec<u8>> {
          <Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>\n\
          <Override PartName=\"/xl/sharedStrings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml\"/>\n"
     );
-    let mut workbook = format!("{XML_HEADER}<workbook xmlns=\"{MAIN_NS}\" xmlns:r=\"{OD_RELS}\">\n<sheets>\n");
+    // A view is what a frozen pane's sheet view refers to.
+    let views = if options.freeze_header { "<bookViews><workbookView/></bookViews>\n" } else { "" };
+    let mut workbook = format!("{XML_HEADER}<workbook xmlns=\"{MAIN_NS}\" xmlns:r=\"{OD_RELS}\">\n{views}<sheets>\n");
+    let (styles_used, styles_body) = cell_styles(options);
+    let mut filters = String::new();
     let mut rels = format!(
         "{XML_HEADER}<Relationships xmlns=\"{PACKAGE}/relationships\">\n\
          <Relationship Id=\"rId1\" Type=\"{OD_RELS}/styles\" Target=\"styles.xml\"/>\n\
@@ -1251,10 +1514,23 @@ pub fn to_bytes(layers: &[Layer], options: &XlsxOptions) -> Result<Vec<u8>> {
         );
         let _ = writeln!(workbook, "<sheet name=\"{}\" sheetId=\"{number}\" r:id=\"rId{}\"/>", xml_text(&name), i + 3);
         let _ = writeln!(rels, "<Relationship Id=\"rId{}\" Type=\"{OD_RELS}/worksheet\" Target=\"worksheets/sheet{number}.xml\"/>", i + 3);
-        sheets.push(sheet_xml(layer, options, &mut strings)?);
+        let (sheet, filter) = sheet_xml(layer, options, &styles_used, &mut strings)?;
+        sheets.push(sheet);
+        if let Some(absolute) = filter {
+            let quoted = name.replace('\'', "''");
+            let _ = writeln!(
+                filters,
+                "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"{i}\" hidden=\"1\">{}</definedName>",
+                xml_text(&format!("'{quoted}'!{absolute}"))
+            );
+        }
     }
     content_types.push_str("</Types>\n");
-    workbook.push_str("</sheets>\n</workbook>\n");
+    workbook.push_str("</sheets>\n");
+    if !filters.is_empty() {
+        let _ = writeln!(workbook, "<definedNames>\n{filters}</definedNames>");
+    }
+    workbook.push_str("</workbook>\n");
     rels.push_str("</Relationships>\n");
     let package_rels = format!(
         "{XML_HEADER}<Relationships xmlns=\"{PACKAGE}/relationships\">\n\
@@ -1263,14 +1539,18 @@ pub fn to_bytes(layers: &[Layer], options: &XlsxOptions) -> Result<Vec<u8>> {
          <Relationship Id=\"rId3\" Type=\"{OD_RELS}/extended-properties\" Target=\"docProps/app.xml\"/>\n\
          </Relationships>\n"
     );
+    let created = options
+        .creation_time
+        .as_ref()
+        .map_or(String::new(), |time| format!("<dcterms:created xsi:type=\"dcterms:W3CDTF\">{}</dcterms:created>\n", xml_text(time)));
     let core = format!(
         "{XML_HEADER}<cp:coreProperties xmlns:cp=\"{PACKAGE}/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
-         xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n</cp:coreProperties>\n"
+         xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n{created}</cp:coreProperties>\n"
     );
     let app = format!(
         "{XML_HEADER}<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\">\n<Application>terrio</Application>\n</Properties>\n"
     );
-    let styles = format!("{XML_HEADER}<styleSheet xmlns=\"{MAIN_NS}\">\n{STYLES}</styleSheet>\n");
+    let styles = format!("{XML_HEADER}<styleSheet xmlns=\"{MAIN_NS}\">\n{styles_body}</styleSheet>\n");
     let mut parts: Vec<(String, String)> = vec![
         ("[Content_Types].xml".into(), content_types),
         ("_rels/.rels".into(), package_rels),
@@ -1676,6 +1956,248 @@ mod tests {
         l.features.push(Feature { fid: 0, geometry: Some(Geometry::point(1.0, 2.0)), attributes: vec![FieldValue::Null] });
         let options = XlsxOptions { geometry: CsvGeometry::AsWkt, ..Default::default() };
         assert!(matches!(to_bytes(&[l], &options), Err(Error::InvalidArgument(m)) if m.contains("WKT")));
+    }
+
+    const REPORT_STRINGS: [&str; 7] =
+        ["<t>Quantity</t>", "<t>Phase Type</t>", "<t>1PH</t>", "<t>3PH</t>", "<t>Name</t>", "<t>title</t>", "<t>west</t>"];
+
+    fn report_sheet(extra: &str) -> Vec<u8> {
+        let s = |r: &str, i: usize| format!("<c r=\"{r}\" t=\"s\"><v>{i}</v></c>");
+        let n = |r: &str, v: i32| format!("<c r=\"{r}\"><v>{v}</v></c>");
+        let data = [
+            format!("<row r=\"1\">{}</row>", s("A1", 5)),
+            format!("<row r=\"3\">{}{}</row>", s("A3", 4), s("B3", 0)),
+            format!("<row r=\"4\">{}</row>", s("B4", 1)),
+            format!("<row r=\"5\">{}{}</row>", s("B5", 2), s("C5", 3)),
+            format!("<row r=\"6\">{}{}{}</row>", s("A6", 6), n("B6", 9), n("C6", 4)),
+            format!("<row r=\"7\">{}{}{}</row>", s("A7", 6), n("B7", 1), n("C7", 2)),
+        ]
+        .concat();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(workbook(&[("s", &data)], &REPORT_STRINGS, "", ""))).unwrap();
+        let sheet =
+            read_part(&mut zip, "xl/worksheets/sheet1.xml").unwrap().unwrap().replace("</sheetData>", &format!("</sheetData>{extra}"));
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..zip.len() {
+            let name = zip.by_index(i).unwrap().name().unwrap().to_string();
+            let body = if name.ends_with("sheet1.xml") { sheet.clone() } else { read_part(&mut zip, &name).unwrap().unwrap() };
+            out.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+            out.write_all(body.as_bytes()).unwrap();
+        }
+        out.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn several_header_rows_join_merged_headings() {
+        let bytes = report_sheet(
+            "<mergeCells count=\"3\"><mergeCell ref=\"B3:C3\"/><mergeCell ref=\"B4:C4\"/><mergeCell ref=\"A3:A5\"/></mergeCells>",
+        );
+        let mut options = XlsxOptions::default();
+        options.set("FIRST_ROW", "3").unwrap();
+        options.set("HEADER_ROWS", "3").unwrap();
+        let l = parse(bytes, &[], &options).unwrap().remove(0);
+        assert_eq!(field_names(&l), ["Name", "Quantity / Phase Type / 1PH", "Quantity / Phase Type / 3PH"]);
+        assert_eq!(field_types(&l), [FieldType::Text, FieldType::Integer, FieldType::Integer]);
+        assert_eq!(l.features.iter().map(|f| f.fid).collect::<Vec<_>>(), [6, 7]);
+        assert_eq!(l.features[0].attributes[2], FieldValue::Integer(4));
+    }
+
+    #[test]
+    fn repeated_headings_join_unless_one_merged_range() {
+        let s = |r: &str, i: usize| format!("<c r=\"{r}\" t=\"s\"><v>{i}</v></c>");
+        let data = format!(
+            "<row r=\"1\">{}{}</row><row r=\"2\">{}</row><row r=\"3\"><c r=\"A3\"><v>1</v></c><c r=\"B3\"><v>2</v></c><c r=\"C3\"><v>3</v></c></row>",
+            s("A1", 0),
+            s("B1", 1),
+            s("A2", 0)
+        );
+        let mut options = XlsxOptions::default();
+        options.set("HEADER_ROWS", "2").unwrap();
+        let mut table = SheetTable::new(&options);
+        table.merges = vec![(0, 1, 0, 2)];
+        let shared = SharedParts { strings: vec!["Total".into(), "Group".into()], styles: Vec::new() };
+        read_sheet(&format!("<sheetData>{data}</sheetData>"), "s", &shared, &mut table, &mut 100).unwrap();
+        let l = table_layer(table, "s", false, &mut 100).unwrap();
+        // Two separate cells repeat; a merge reaches a column with no cell of its own.
+        assert_eq!(field_names(&l), ["Total / Total", "Group", "Group_2"]);
+    }
+
+    #[test]
+    fn a_sheet_ending_within_its_header_rows_keeps_their_names() {
+        let mut options = XlsxOptions::default();
+        options.set("HEADER_ROWS", "2").unwrap();
+        let l = one_sheet("<row r=\"1\"><c t=\"s\"><v>0</v></c></row>", &options);
+        assert_eq!(field_names(&l), ["a"]);
+        assert_eq!(l.features.len(), 0);
+    }
+
+    #[test]
+    fn invalid_struct_options_are_refused() {
+        let bytes = workbook(&[("s", "")], &[], "", "");
+        let options = XlsxOptions { first_row: 0, ..Default::default() };
+        assert!(matches!(parse(bytes, &[], &options), Err(Error::InvalidArgument(_))));
+        let options = XlsxOptions { column_width: XlsxColumnWidth::Fixed(f64::INFINITY), ..Default::default() };
+        assert!(matches!(to_bytes(&[sample_layer()], &options), Err(Error::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn a_row_past_the_limit_is_refused_when_skipping_too() {
+        let mut options = XlsxOptions::default();
+        options.set("FIRST_ROW", "5").unwrap();
+        let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
+        let data = format!("<sheetData><row r=\"{}\"/></sheetData>", MAX_ROWS + 1);
+        assert!(matches!(read_sheet(&data, "s", &shared, &mut SheetTable::new(&options), &mut 100), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn reading_stops_after_the_last_row_asked_for() {
+        let mut options = XlsxOptions::default();
+        options.set("RANGE", "A1:A2").unwrap();
+        let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
+        let data = format!("{}{}", "<sheetData>".to_string().add_rows(3), "<row><c/></row>".repeat(10_000));
+        let mut budget = 20;
+        read_sheet(&data, "s", &shared, &mut SheetTable::new(&options), &mut budget).unwrap();
+        assert_eq!(budget, 20 - 3 * ROW_CELLS);
+    }
+
+    #[test]
+    fn a_first_row_after_the_last_is_refused() {
+        let mut options = XlsxOptions::default();
+        options.set("RANGE", "A1:B2").unwrap();
+        options.set("FIRST_ROW", "3").unwrap();
+        assert!(matches!(parse(workbook(&[("s", "")], &[], "", ""), &[], &options), Err(Error::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn a_range_reads_only_its_cells() {
+        let mut options = XlsxOptions::default();
+        options.set("RANGE", "B5:C6").unwrap();
+        options.set("HEADER_ROWS", "1").unwrap();
+        let l = parse(report_sheet(""), &[], &options).unwrap().remove(0);
+        assert_eq!(field_names(&l), ["1PH", "3PH"]);
+        assert_eq!(l.features.len(), 1);
+        assert_eq!(l.features[0].fid, 6);
+        assert_eq!(l.features[0].attributes, [FieldValue::Integer(9), FieldValue::Integer(4)]);
+    }
+
+    #[test]
+    fn first_row_reaches_past_a_gap_too_large_to_fill() {
+        let data = "<row r=\"30000\"><c r=\"A30000\" t=\"s\"><v>0</v></c></row><row r=\"30001\"><c r=\"A30001\"><v>1</v></c></row>";
+        let mut options = XlsxOptions::default();
+        options.set("FIRST_ROW", "30000").unwrap();
+        let l = one_sheet(data, &options);
+        assert_eq!(field_names(&l), ["a"]);
+        assert_eq!(l.features[0].fid, 30001);
+    }
+
+    #[test]
+    fn a_sheet_of_only_header_rows_has_their_fields() {
+        let mut options = XlsxOptions::default();
+        options.set("HEADER_ROWS", "1").unwrap();
+        let l = one_sheet("<row r=\"1\"><c t=\"s\"><v>0</v></c></row>", &options);
+        assert_eq!(field_names(&l), ["a"]);
+        assert_eq!(l.features.len(), 0);
+        options.set("HEADER_ROWS", "0").unwrap();
+        let l = one_sheet(TEXT_THEN_NUMBERS, &options);
+        assert_eq!(field_names(&l), ["Field1", "Field2"]);
+        assert_eq!(l.features.len(), 2);
+    }
+
+    #[test]
+    fn sheets_sharing_a_part_stay_listed() {
+        let (sheets, _) = {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let member = zip::write::SimpleFileOptions::default();
+            let mut add = |name: &str, body: String| {
+                zip.start_file(name, member).unwrap();
+                zip.write_all(body.as_bytes()).unwrap();
+            };
+            add(
+                "xl/workbook.xml",
+                format!(
+                    "<workbook xmlns:r=\"{OD_RELS}\"><sheets><sheet name=\"a\" r:id=\"r1\"/><sheet name=\"b\" r:id=\"r2\"/></sheets></workbook>"
+                ),
+            );
+            add(
+                "xl/_rels/workbook.xml.rels",
+                format!(
+                    "<Relationships><Relationship Id=\"r1\" Type=\"{OD_RELS}/worksheet\" Target=\"s.xml\"/><Relationship Id=\"r2\" Type=\"{OD_RELS}/worksheet\" Target=\"s.xml\"/></Relationships>"
+                ),
+            );
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip.finish().unwrap().into_inner())).unwrap();
+            let parts = workbook_sheets(&mut archive).unwrap();
+            (parts.sheets, parts.date1904)
+        };
+        assert_eq!(sheets.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    }
+
+    #[test]
+    fn layout_options_are_written_and_read_back() {
+        let mut options = XlsxOptions::default();
+        for (key, value) in [
+            ("HEADER_STYLE", "BOLD"),
+            ("FREEZE_HEADER", "YES"),
+            ("AUTOFILTER", "YES"),
+            ("COLUMN_WIDTH", "AUTO"),
+            ("DATE_FORMAT", "yyyy-mm-dd"),
+            ("DATETIME_FORMAT", "yyyy-mm-dd hh:mm:ss"),
+            ("CREATION_TIME", "2024-01-02T03:04:05Z"),
+        ] {
+            assert!(options.set_creation(key, value).unwrap(), "{key}");
+        }
+        let bytes = to_bytes(&[sample_layer()], &options).unwrap();
+        assert_eq!(bytes, to_bytes(&[sample_layer()], &options).unwrap());
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.clone())).unwrap();
+        let part = |zip: &mut zip::ZipArchive<_>, name: &str| read_part(zip, name).unwrap().unwrap();
+        let sheet = part(&mut zip, "xl/worksheets/sheet1.xml");
+        assert!(sheet.contains("state=\"frozen\""));
+        assert!(sheet.contains("<autoFilter ref=\"A1:F3\"/>"));
+        assert!(sheet.find("<sheetViews>").unwrap() < sheet.find("<cols>").unwrap());
+        assert!(sheet.find("</sheetData>").unwrap() < sheet.find("<autoFilter").unwrap());
+        assert!(sheet.contains("<c r=\"A1\" s=\"8\" t=\"s\">"));
+        let styles = part(&mut zip, "xl/styles.xml");
+        assert!(styles.contains("<fonts count=\"2\">") && styles.contains("<b/>"));
+        assert!(styles.contains("<numFmts count=\"8\">") && styles.contains("<cellXfs count=\"9\">"));
+        assert!(part(&mut zip, "docProps/core.xml").contains(">2024-01-02T03:04:05Z</dcterms:created>"));
+        let book = part(&mut zip, "xl/workbook.xml");
+        assert!(book.contains("_xlnm._FilterDatabase") && book.contains("my layer&apos;!$A$1:$F$3") && book.contains("<bookViews>"));
+        // The styled cells read as the same values and types.
+        let l = parse(bytes, &[], &XlsxOptions::default()).unwrap().remove(0);
+        assert_eq!(field_names(&l), ["i", "r", "s", "b", "d", "dt"]);
+        assert_eq!(l.features[0].attributes[4], FieldValue::Date("2024-01-02".into()));
+        assert_eq!(l.features[0].attributes[5], FieldValue::DateTime("2024-01-02T03:04:05.500".into()));
+    }
+
+    #[test]
+    fn default_options_keep_gdals_layout() {
+        let bytes = to_bytes(&[sample_layer()], &XlsxOptions::default()).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let sheet = read_part(&mut zip, "xl/worksheets/sheet1.xml").unwrap().unwrap();
+        assert!(sheet.contains("width=\"15\"") && sheet.contains("width=\"29\""));
+        assert!(!sheet.contains("sheetViews") && !sheet.contains("autoFilter"));
+        assert!(read_part(&mut zip, "xl/styles.xml").unwrap().unwrap().contains("<cellXfs count=\"6\">"));
+    }
+
+    #[test]
+    fn layout_option_values_are_checked() {
+        let mut options = XlsxOptions::default();
+        for (key, value) in [
+            ("COLUMN_WIDTH", "0"),
+            ("COLUMN_WIDTH", "wide"),
+            ("CREATION_TIME", "soon"),
+            ("CREATION_TIME", "2024-01-02T99:99:99Z"),
+            ("CREATION_TIME", "2024-01-02T03:04:05+01:00junk12"),
+            ("DATE_FORMAT", ""),
+            ("CREATION_TIME", "2024-01-02T03:04:05+25:00"),
+            ("HEADER_STYLE", "ITALIC"),
+            ("AUTOFILTER", "y"),
+        ] {
+            assert!(options.set_creation(key, value).is_err(), "{key}={value}");
+        }
+        for (key, value) in [("RANGE", "A5"), ("RANGE", "C5:A1"), ("FIRST_ROW", "0"), ("HEADER_ROWS", "x")] {
+            assert!(options.set(key, value).is_err(), "{key}={value}");
+        }
+        assert!(!options.set("HEADER_STYLE", "BOLD").unwrap());
+        assert!(!options.set_creation("RANGE", "A1:B2").unwrap());
     }
 
     #[test]
