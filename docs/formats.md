@@ -732,7 +732,7 @@ reads it.
   Excel's limits are refused when writing: 1,048,576 rows, 16,384 columns and 32,767 characters
   per cell. Workbooks of more than 100 million cells, with rows, shared strings and repeated long
   strings counting towards that, of a sheet past Excel's row limit, or with a part that expands
-  past 2 GiB, are refused when reading. Styles, merged cells, charts and other workbook content
+  past 2 GiB, are refused when reading. Append and overwrite layer modes refuse an existing workbook, which they would rewrite without its layout. Styles, merged cells, charts and other workbook content
   are not read or kept yet ([#405](https://github.com/opengeos/terrio/issues/405)).
 
 - **GeoPackage** layers are read with spatial filters through their R-tree index (`terrio convert

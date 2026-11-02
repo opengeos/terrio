@@ -660,6 +660,12 @@ pub fn write_vector_with_mode(layers: &[Layer], path: &str, options: &VectorWrit
                 driver.name()
             )));
         }
+        // Rewriting would lose the workbook's other sheets' layout, and sheets whose header is not detected.
+        if driver == Some(crate::formats::VectorDriver::XLSX) {
+            return Err(crate::Error::Unsupported(
+                "XLSX: append/overwrite layer modes cannot update an existing workbook without losing its styles and merged cells. Use create mode to replace the workbook".into(),
+            ));
+        }
         Ok(())
     };
     check_layer_updates(driver)?;
@@ -727,6 +733,22 @@ fn append_features(target: &mut Layer, src: &Layer) {
 mod tests {
     use super::*;
     use wbvector::{FieldDef, FieldType};
+
+    #[cfg(feature = "xlsx")]
+    #[test]
+    fn layer_modes_leave_an_existing_workbook_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("o.xlsx");
+        let path = path.to_str().unwrap();
+        let layers = [Layer::new("a"), Layer::new("b")];
+        crate::write_vector(&layers, path, &Default::default()).unwrap();
+        let before = std::fs::read(path).unwrap();
+        for mode in [WriteMode::Append, WriteMode::Overwrite] {
+            let result = write_vector_with_mode(&layers[..1], path, &Default::default(), mode);
+            assert!(matches!(result, Err(crate::Error::Unsupported(m)) if m.contains("XLSX")));
+            assert_eq!(std::fs::read(path).unwrap(), before);
+        }
+    }
 
     #[test]
     fn named_selection_rejects_partial_matches() {

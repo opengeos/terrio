@@ -585,7 +585,7 @@ fn shared_strings(text: &str, budget: &mut usize) -> Result<Vec<String>> {
             }
             Event::End(e) => match e.local_name().as_ref() {
                 "si" => {
-                    take_cells(budget, 1)?;
+                    take_cells(budget, 1 + current.len() / CELL_BYTES)?;
                     strings.push(std::mem::take(&mut current));
                 }
                 "rPh" => phonetic = phonetic.saturating_sub(1),
