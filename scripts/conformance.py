@@ -2678,6 +2678,30 @@ def suite_xlsx(ctx):
     return s
 
 
+def suite_xlsx_layout(ctx):
+    """XLSX layout options against openpyxl, which GDAL has no behavior to compare with."""
+    s = Suite(
+        "xlsx-layout",
+        "XLSX layout options",
+        "openpyxl",
+        "Workbooks written with terrio's layout options loaded by openpyxl: values, bold headers, frozen "
+        "panes, filters, column widths, number formats and the creation time. Workbooks written by "
+        "openpyxl, with merged headings over several rows and a table away from A1, read by terrio.",
+    )
+    if missing_modules("openpyxl"):
+        s.skipped = "needs openpyxl"
+        return s
+    with tempfile.TemporaryDirectory(prefix="terrio-xlsx-layout-") as tmp:
+        report = os.path.join(tmp, "report.json")
+        code, out, err = run([sys.executable, str(SCRIPTS / "compare_xlsx_with_openpyxl.py"), "--terrio", ctx.terrio, "--json", report])
+        if not os.path.isfile(report):
+            s.error = tail(err or out)
+            return s
+        for r in json.loads(Path(report).read_text())["cases"]:
+            s.cases.append(Case("xlsx layout", r["name"], r["status"], r.get("detail", "")))
+    return s
+
+
 def suite_vector_geom(ctx):
     """Vector geometry commands on real data against gdal vector and GEOS."""
     s = Suite(
@@ -2989,6 +3013,7 @@ SUITES = OrderedDict(
         ("vector-clip", suite_vector_clip),
         ("vector-dataset", suite_vector_dataset),
         ("xlsx", suite_xlsx),
+        ("xlsx-layout", suite_xlsx_layout),
         ("rpftoc", suite_rpftoc),
         ("footprint", suite_footprint),
         ("analysis-bindings", suite_analysis_bindings),
