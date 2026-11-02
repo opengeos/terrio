@@ -832,3 +832,20 @@ fn geopackage_streams_reject_incompatible_preserved_types() {
     let mut sink = GpkgLayersSink::create(&multi, &[schema_of(&layer)], true).unwrap().unwrap();
     assert!(sink.write(0, &layer).unwrap_err().to_string().contains("does not match declared"));
 }
+
+#[test]
+fn converting_kml_keeps_shared_styles_in_kml_and_resolves_them_elsewhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
+    let kml = r##"<kml><Document>
+        <Style id="base"><LineStyle><color>ff0000ff</color></LineStyle></Style>
+        <Placemark><styleUrl>#base</styleUrl><Point><coordinates>30,-2</coordinates></Point></Placemark>
+        </Document></kml>"##;
+    std::fs::write(path("a.kml"), kml).unwrap();
+    convert(&path("a.kml"), &path("o.kml"), &Default::default()).unwrap();
+    let written = std::fs::read_to_string(path("o.kml")).unwrap();
+    assert!(written.contains(r#"<Style id="base">"#) && written.contains("<styleUrl>#base</styleUrl>"), "{written}");
+    convert(&path("a.kml"), &path("o.geojson"), &Default::default()).unwrap();
+    let written = std::fs::read_to_string(path("o.geojson")).unwrap();
+    assert!(written.contains("PEN(c:#FF0000FF)") && !written.contains("@base"), "{written}");
+}

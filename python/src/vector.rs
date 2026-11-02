@@ -198,9 +198,10 @@ impl PyLayer {
 
     /// The layer as a GeoJSON FeatureCollection, in the layer's CRS.
     ///
+    /// A layer does not hold its dataset's KML style table: `OGR_STYLE` may be a raw `@id`.
+    ///
     /// Returns:
     ///     dict: The FeatureCollection.
-    /// A layer does not hold its dataset's KML style table: `OGR_STYLE` may be a raw `@id`.
     fn to_geojson<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let text = wbvector::geojson::to_string(&self.inner);
         py.import("json")?.call_method1("loads", (text,))

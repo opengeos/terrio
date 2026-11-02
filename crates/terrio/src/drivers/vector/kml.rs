@@ -39,8 +39,9 @@ const FIXED: &[(&str, FieldType)] = &[
 
 /// How many other documents of a KMZ archive its `styleUrl`s may have read for their styles.
 const MAX_STYLE_DOCUMENTS: usize = 256;
-/// How many decompressed bytes those documents may take together.
-const MAX_STYLE_DOCUMENT_BYTES: u64 = 256 << 20;
+/// How many decompressed bytes of text those documents may take together. Their parsed form takes
+/// several times that, which WASM's memory has to hold too.
+const MAX_STYLE_DOCUMENT_BYTES: u64 = 64 << 20;
 
 /// A KML document's layers, and its style table: style ids and their OGR style strings.
 pub type Styled = (Vec<Layer>, Vec<(String, String)>);
