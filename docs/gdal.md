@@ -156,12 +156,17 @@ appending to existing datasets through GDAL (`--append`), and updating GDAL data
 All GDAL vector reads, including explicit `GDAL:` paths and reads from bytes, share an
 estimated retained-data budget across selected layers. The default is 1 GiB; set
 `TERRIO_GDAL_MAX_VECTOR_BYTES` to a positive integer byte count to change it. Invalid
-settings are argument errors. Exceeding the budget raises Rust `Error::ResourceLimit`
+settings on explicit GDAL reads are argument errors. Exceeding the budget raises Rust `Error::ResourceLimit`
 (Python `ResourceLimitError`, a `MemoryError`).
 
+This introduces a default limit on GDAL vector reads that were previously unbounded.
+A large read that previously succeeded can now be refused; raise the positive byte
+budget for a trusted dataset that needs more retained data. Native driver reads
+are unaffected by this GDAL-only setting.
+
 The budget counts feature structs, every attribute cell (including missing/null values),
-schema structs and field names, text/blob payloads and eight times the geometry's WKB
-size as an estimate of nested Rust storage. Cheap GDAL feature counts allow oversized
+schema structs and field names, text/blob payloads and eight times the larger of
+the original and linearized geometry WKB sizes as an estimate of nested Rust storage. Cheap GDAL feature counts allow oversized
 sparse layers to be refused before the first feature is read; other layers are checked
 incrementally before each dense attribute allocation. Layer selection and spatial filters
 apply before counting. This is an estimate of retained data, not a process-memory limit:

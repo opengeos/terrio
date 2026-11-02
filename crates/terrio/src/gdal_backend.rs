@@ -1116,14 +1116,7 @@ fn layer_from(layer: &mut gdal::vector::Layer, name: &str, budget: &mut VectorBu
         // Null/missing values still occupy a full FieldValue each. Charge before allocation.
         budget.charge(std::mem::size_of::<Feature>())?;
         budget.charge(kinds.len().saturating_mul(std::mem::size_of::<FieldValue>()))?;
-        // WKB underestimates Rust's nested coordinate/vector storage; use a conservative factor.
-        // This is an estimate, not a bound on GDAL's parser or curve linearization workspace.
-        if let Some(g) = feature.geometry() {
-            // SAFETY: a size query on the valid borrowed geometry of this feature.
-            let bytes = unsafe { gdal_sys::OGR_G_WkbSize(g.c_geometry()) };
-            budget.charge(usize::try_from(bytes).unwrap_or(usize::MAX).saturating_mul(8))?;
-        }
-        let geometry = feature.geometry().map(geometry_from).transpose()?.flatten();
+        let geometry = feature.geometry().map(|g| geometry_from(g, budget)).transpose()?.flatten();
         let mut attributes = Vec::new();
         attributes.try_reserve_exact(kinds.len()).map_err(|_| Error::ResourceLimit("GDAL: cannot allocate feature attributes".into()))?;
         for (k, kind) in kinds.iter().enumerate() {
@@ -1162,10 +1155,14 @@ fn geometry_type(t: OGRwkbGeometryType::Type) -> Option<GeometryType> {
 }
 
 /// A GDAL geometry as a terrio one, through WKB; curves are linearized as GDAL does by default.
-fn geometry_from(g: &gdal::vector::Geometry) -> Result<Option<Geometry>> {
+fn geometry_from(g: &gdal::vector::Geometry, budget: &mut VectorBudget) -> Result<Option<Geometry>> {
     if g.is_empty() {
         return Ok(None);
     }
+    // SAFETY: a read-only size query on the valid borrowed geometry of this feature.
+    // gdal's safe API exposes WKB export, which allocates before returning its size.
+    let original_size = usize::try_from(unsafe { gdal_sys::OGR_G_WkbSize(g.c_geometry()) }).unwrap_or(usize::MAX);
+    budget.charge(original_size.saturating_mul(8))?;
     if let Ok(wkb) = g.wkb()
         && let Ok(geometry) = Geometry::from_wkb(&wkb)
     {
@@ -1178,7 +1175,13 @@ fn geometry_from(g: &gdal::vector::Geometry) -> Result<Option<Geometry>> {
         if linear.is_null() {
             return Err(Error::InvalidData(format!("GDAL: cannot linearize a {}", g.geometry_name())));
         }
-        let size = gdal_sys::OGR_G_WkbSize(linear) as usize;
+        let size = usize::try_from(gdal_sys::OGR_G_WkbSize(linear)).unwrap_or(usize::MAX);
+        // Curves may expand by orders of magnitude. Charge the retained linear result,
+        // not just the compact source, before exporting or decoding its WKB.
+        if let Err(error) = budget.charge(size.saturating_sub(original_size).saturating_mul(8)) {
+            gdal_sys::OGR_G_DestroyGeometry(linear);
+            return Err(error);
+        }
         let mut wkb = vec![0u8; size];
         let rv = gdal_sys::OGR_G_ExportToWkb(linear, gdal_sys::OGRwkbByteOrder::wkbNDR, wkb.as_mut_ptr());
         gdal_sys::OGR_G_DestroyGeometry(linear);
@@ -1255,6 +1258,24 @@ mod limits_tests {
         assert_eq!(out.features.len(), 100);
         // GDAL 3.13.3 exposes absent ESRIJSON string attributes as empty strings.
         assert_eq!(out.features[0].attributes, vec![FieldValue::Text(String::new()); 100]);
+    }
+
+    /// A compact curved source can expand substantially in GDAL 3.13.3's retained linework.
+    #[test]
+    fn linearized_curves_obey_the_retained_geometry_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("curves.gpkg");
+        let driver = gdal::DriverManager::get_driver_by_name("GPKG").unwrap();
+        let mut ds = driver.create_vector_only(&path).unwrap();
+        let mut layer = ds
+            .create_layer(gdal::vector::LayerOptions { name: "curves", ty: OGRwkbGeometryType::wkbCircularString, ..Default::default() })
+            .unwrap();
+        layer.create_feature(gdal::vector::Geometry::from_wkt("CIRCULARSTRING (1 0,-1 0,1 0)").unwrap()).unwrap();
+        let mut budget = VectorBudget { remaining: 1000, limit: 1000 };
+        assert!(matches!(layer_from(&mut layer, "curves", &mut budget), Err(Error::ResourceLimit(_))));
+        let mut budget = VectorBudget { remaining: 20000, limit: 20000 };
+        let out = layer_from(&mut layer, "curves", &mut budget).unwrap();
+        assert!(out.features[0].geometry.as_ref().unwrap().all_coords().len() > 80);
     }
 
     #[test]

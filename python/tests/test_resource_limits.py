@@ -33,6 +33,12 @@ def test_grib_resource_limit():
 def test_explicit_gdal_vector_budget(tmp_path, monkeypatch):
     import pytest
 
+    if not any(
+        driver["name"] == "GDAL" and driver["kind"] == "vector" and driver["read"]
+        for driver in terrio.drivers()
+    ):
+        pytest.skip("requires the optional GDAL backend")
+
     path = tmp_path / "point.geojson"
     path.write_text(
         '{"type":"FeatureCollection","features":[{"type":"Feature",'
@@ -41,12 +47,7 @@ def test_explicit_gdal_vector_budget(tmp_path, monkeypatch):
     )
     name = f"GDAL:{path}"
     monkeypatch.setenv("TERRIO_GDAL_MAX_VECTOR_BYTES", "1048576")
-    try:
-        terrio.open_vector(name)
-    except terrio.UnsupportedError as error:
-        if "without" in str(error):
-            pytest.skip("requires the optional GDAL backend")
-        raise
+    terrio.open_vector(name)
     monkeypatch.setenv("TERRIO_GDAL_MAX_VECTOR_BYTES", "1")
     for read in (terrio.open, terrio.open_vector):
         with pytest.raises(terrio.ResourceLimitError, match="TERRIO_GDAL_MAX_VECTOR_BYTES=1"):

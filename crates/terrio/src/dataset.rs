@@ -708,8 +708,8 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
 }
 
 /// When terrio's own drivers could not open `path`, tries GDAL; if GDAL cannot either, terrio's
-/// error is kept, except for GDAL's resource refusals and invalid options. Missing local files and invalid arguments are not retried, nor are network
-/// errors or resource-limit refusals.
+/// error is kept, except for GDAL's resource refusals. Missing local files and invalid arguments
+/// are not retried, nor are network errors or resource-limit refusals.
 #[cfg(feature = "gdal")]
 pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };
@@ -723,7 +723,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         return Err(e);
     }
     gdal(path).map_err(|gdal_error| match gdal_error {
-        Error::ResourceLimit(_) | Error::DecodedLimitExceeded { .. } | Error::InvalidArgument(_) => gdal_error,
+        Error::ResourceLimit(_) | Error::DecodedLimitExceeded { .. } => gdal_error,
         _ => e,
     })
 }
@@ -749,6 +749,8 @@ mod fallback_limits {
         let result: Result<()> = gdal_fallback("input", Err(native()), |_| Ok(()));
         assert!(result.is_ok());
         let result: Result<()> = gdal_fallback("input", Err(native()), |_| Err(Error::InvalidData("GDAL parse error".into())));
+        assert!(matches!(result, Err(Error::Unsupported(_))));
+        let result: Result<()> = gdal_fallback("input", Err(native()), |_| Err(Error::InvalidArgument("no layer named missing".into())));
         assert!(matches!(result, Err(Error::Unsupported(_))));
     }
 }
