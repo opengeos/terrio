@@ -849,6 +849,12 @@ mod tests {
 #[cfg(test)]
 mod resource_tests {
     #[test]
+    fn oversized_frame_is_a_typed_resource_refusal() {
+        let header = [0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0xff, 0xff, 0xff, 0xff, 1, 1, 0x11, 0, 0xff, 0xd9];
+        assert!(matches!(super::decode_file(&header), Err(super::DecodeError::Resource(_))));
+    }
+
+    #[test]
     fn allocation_failure_keeps_its_kind_independently_of_message_text() {
         let error = super::zeroed(&[usize::MAX, 2], "JPEG component").unwrap_err();
         assert!(super::is_resource_refusal(&error));
