@@ -72,6 +72,7 @@ test("feature selection cannot silently retain full defaults", () => {
 });
 test("selective threading and invalid targets fail before tools run", () => {
   assert.throws(() => build(["--no-default-features", "--features", "netcdf-hdf5,threads"]), /single-threaded/);
+  assert.throws(() => build(["--no-default-features", "--features", "terrio-js/threads"]), /single-threaded/);
   assert.throws(() => build(["--target", "typo"]), /target must be/);
 });
 

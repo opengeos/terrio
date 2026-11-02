@@ -38,7 +38,7 @@ const { values } = parseArgs({
 const selective = values["no-default-features"] || values.features !== undefined;
 if (!["web", "nodejs", "bundler"].includes(values.target)) throw new Error("target must be web, nodejs or bundler");
 if (selective && !values["no-default-features"]) throw new Error("selective builds require --no-default-features");
-if (selective && /(^|[,\s])threads([,\s]|$)/.test(values.features ?? "")) {
+if (selective && /(^|[,\s])(?:[^,\s/]+\/)?threads([,\s]|$)/.test(values.features ?? "")) {
   throw new Error("selective builds are single-threaded; use the standard threaded build instead");
 }
 /** The nightly Rust the threaded module is built with, pinned so that builds repeat. */

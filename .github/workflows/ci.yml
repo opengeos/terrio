@@ -230,6 +230,7 @@ jobs:
           node-version: 22
       - name: Build and test the npm package (Node.js)
         run: |
+          node --test js/tests/build.test.mjs
           wasm-pack build js --release --target nodejs --out-dir pkg-node --out-name terrio
           node --test js/tests/node.test.mjs
       # The lighter module, `terrio-js/core`: the tests of the formats it leaves out are skipped.
