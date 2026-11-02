@@ -151,18 +151,15 @@ fn line_poles_are_refused_and_both_sides_remain_finite() {
     }
 }
 
-/// Malformed point values must not become omitted defaults in GDAL 3.13.3 WKT1 dialects.
+/// Malformed parameter values must not become omitted defaults in GDAL 3.13.3 WKT1 dialects.
 #[test]
-fn wkt_point_parameters_refuse_present_invalid_values() {
+fn wkt_parameters_refuse_present_invalid_values() {
     let data: serde_json::Value = serde_json::from_str(include_str!("data/omerc_two_point_reference.json")).unwrap();
     let case = &data["cases"][0];
     let source = SpatialRef::parse(case["source"].as_str().unwrap()).unwrap();
-    for (dialect, names) in [
-        ("wkt1", ["latitude_of_point_1", "longitude_of_point_1", "latitude_of_point_2", "longitude_of_point_2"]),
-        ("wkt1_esri", ["Latitude_Of_1st_Point", "Longitude_Of_1st_Point", "Latitude_Of_2nd_Point", "Longitude_Of_2nd_Point"]),
-    ] {
+    for dialect in ["wkt1", "wkt1_esri"] {
         let wkt = case[dialect].as_str().unwrap();
-        for name in names {
+        for name in wkt.split("PARAMETER[\"").skip(1).map(|parameter| parameter.split('"').next().unwrap()) {
             let prefix = format!("PARAMETER[\"{name}\",");
             let start = wkt.find(&prefix).unwrap() + prefix.len();
             let end = start + wkt[start..].find(']').unwrap();

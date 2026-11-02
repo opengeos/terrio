@@ -282,6 +282,19 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
                     | "latitudeof2ndpoint"
                     | "longitudeofpoint2"
                     | "longitudeof2ndpoint"
+                    | "latitudeofcenter"
+                    | "latitudeoforigin"
+                    | "latitudeofnaturalorigin"
+                    | "latitudeofcentre"
+                    | "scalefactor"
+                    | "scalefactoratnaturalorigin"
+                    | "scalefactoroninitialline"
+                    | "falseeasting"
+                    | "eastingatfalseorigin"
+                    | "eastingatprojectioncentre"
+                    | "falsenorthing"
+                    | "northingatfalseorigin"
+                    | "northingatprojectioncentre"
             ) && !parameter.num(1)?.is_finite()
             {
                 return None;
