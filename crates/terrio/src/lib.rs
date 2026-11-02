@@ -129,7 +129,7 @@
 //!
 //! Every driver is on by default. With `default-features = false`, terrio keeps its core: GeoTIFF
 //! and COG, the raw and ASCII rasters, PNG, JPEG, VRT, STAC, GeoJSON, TopoJSON, Shapefile,
-//! KML/KMZ, GML, GPX, CSV, XLSX and MapInfo, the CRS engine, the operations and the streams. The other
+//! KML/KMZ, GML, GPX, CSV and MapInfo, the CRS engine, the operations and the streams. The other
 //! drivers are features:
 //!
 //! - `geotiff`: GeoTIFF and COG, always built (the feature names what a build needs:
@@ -141,6 +141,7 @@
 //! - `sqlite`: GeoPackage and SQLite/SpatiaLite;
 //! - `tiles`: MBTiles, PMTiles and MVT ([`tiles`]); `avif`: their AVIF tiles;
 //! - `zarr`, `jp2` (JPEG 2000), `flatgeobuf`, `osm` (OpenStreetMap);
+//! - `xlsx`: XLSX and XLSM workbooks, in pure Rust;
 //! - `pointcloud`: LAS, LAZ, COPC, EPT, PLY and E57 ([`pointcloud`]);
 //! - `lerc` and `lzma`: GeoTIFFs with those compressions.
 //!

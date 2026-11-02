@@ -511,8 +511,18 @@ fn relationships(text: &str, part: &str) -> Result<Vec<(String, String, String)>
     }
 }
 
-/// The name and part of each worksheet, in workbook order, and whether dates count from 1904.
-fn workbook_sheets<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Result<(Vec<(String, String)>, bool)> {
+/// What a workbook part tells of the others.
+struct WorkbookParts {
+    /// The name and part of each worksheet, in workbook order.
+    sheets: Vec<(String, String)>,
+    /// Whether dates count from 1904.
+    date1904: bool,
+    /// The shared strings part its relationships name.
+    strings: Option<String>,
+}
+
+/// Reads the workbook part and its relationships.
+fn workbook_sheets<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Result<WorkbookParts> {
     let not_workbook = || Error::InvalidData("XLSX: the archive holds no workbook".into());
     let package = read_part(zip, "_rels/.rels")?.map(|text| relationships(&text, "_rels/.rels")).transpose()?.unwrap_or_default();
     let workbook = package
@@ -524,7 +534,9 @@ fn workbook_sheets<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Res
     let (dir, file) = workbook.split_at(base.len());
     let rels_part = format!("{dir}_rels/{file}.rels");
     let rels = read_part(zip, &rels_part)?.ok_or_else(not_workbook)?;
-    let targets: HashMap<String, String> = relationships(&rels, &rels_part)?
+    let rels = relationships(&rels, &rels_part)?;
+    let strings = rels.iter().find(|(_, kind, _)| kind.ends_with("/sharedStrings")).map(|(_, _, target)| resolve_target(base, target));
+    let targets: HashMap<String, String> = rels
         .into_iter()
         .filter(|(_, kind, _)| kind.contains("/worksheet"))
         .map(|(id, _, target)| (id, resolve_target(base, &target)))
@@ -546,7 +558,7 @@ fn workbook_sheets<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Res
                 }
                 _ => {}
             },
-            Event::Eof => return Ok((sheets, date1904)),
+            Event::Eof => return Ok(WorkbookParts { sheets, date1904, strings }),
             _ => {}
         }
     }
@@ -714,7 +726,12 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
             let found = value.trim().parse::<usize>().ok().and_then(|i| shared.strings.get(i));
             // Each cell owns a copy, so one long string in many cells takes memory the XML does not.
             take_cells(budget, found.map_or(0, |s| s.len() / CELL_BYTES))?;
-            found.cloned().unwrap_or(value)
+            match found {
+                Some(text) => text.clone(),
+                // A blank cell may be typed as a shared string; a lost index must not read as text.
+                None if value.trim().is_empty() => value,
+                None => return Err(Error::InvalidData(format!("XLSX: shared string '{value}' is not in the workbook"))),
+            }
         } else {
             value
         };
@@ -786,10 +803,10 @@ pub fn read(path: &str, only: &[String], options: &XlsxOptions) -> Result<Vec<La
 /// `only` names when it is not empty.
 pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<Vec<Layer>> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
-    let (sheets, date1904) = workbook_sheets(&mut zip)?;
+    let WorkbookParts { sheets, date1904, strings: strings_part } = workbook_sheets(&mut zip)?;
     let (mut budget, mut table_budget) = (MAX_CELLS, MAX_CELLS);
     let mut strings = Vec::new();
-    for name in ["xl/sharedStrings.xml", "xl/SharedStrings.xml"] {
+    for name in strings_part.iter().map(String::as_str).chain(["xl/sharedStrings.xml", "xl/SharedStrings.xml"]) {
         if let Some(text) = read_part(&mut zip, name)? {
             strings = shared_strings(&text, &mut budget)?;
             break;
@@ -1490,6 +1507,39 @@ mod tests {
         assert_eq!(budget, 100 - ROW_CELLS - 2 * (1 + 10));
         let mut table = SheetTable::new(&options);
         assert!(matches!(read_sheet(&data, "s", &shared, &mut table, &mut 20), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn a_shared_string_index_must_resolve() {
+        let data = "<row r=\"1\"><c t=\"s\"><v>9</v></c></row>";
+        let bytes = workbook(&[("s", data)], &["<t>a</t>"], "", "");
+        assert!(matches!(parse(bytes, &[], &XlsxOptions::default()), Err(Error::InvalidData(m)) if m.contains("shared string")));
+        // A blank cell typed as a shared string stays blank.
+        let l = one_sheet("<row r=\"1\"><c t=\"s\"/><c t=\"s\"><v>0</v></c></row>", &XlsxOptions::default());
+        assert_eq!(l.features[0].attributes, [FieldValue::Null, FieldValue::Text("a".into())]);
+    }
+
+    #[test]
+    fn shared_strings_are_found_through_the_relationships() {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let member = zip::write::SimpleFileOptions::default();
+        let mut add = |name: &str, body: String| {
+            zip.start_file(name, member).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        };
+        add("xl/workbook.xml", format!("<workbook xmlns:r=\"{OD_RELS}\"><sheets><sheet name=\"s\" r:id=\"rId1\"/></sheets></workbook>"));
+        add(
+            "xl/_rels/workbook.xml.rels",
+            format!(
+                "<Relationships><Relationship Id=\"rId1\" Type=\"{OD_RELS}/worksheet\" Target=\"sheet.xml\"/>\
+                 <Relationship Id=\"rId2\" Type=\"{OD_RELS}/sharedStrings\" Target=\"text/strings.xml\"/></Relationships>"
+            ),
+        );
+        add("xl/text/strings.xml", "<sst><si><t>a</t></si></sst>".into());
+        add("xl/sheet.xml", "<worksheet><sheetData><row r=\"1\"><c t=\"s\"><v>0</v></c></row></sheetData></worksheet>".into());
+        let bytes = zip.finish().unwrap().into_inner();
+        let l = parse(bytes, &[], &XlsxOptions::default()).unwrap().remove(0);
+        assert_eq!(l.features[0].attributes, [FieldValue::Text("a".into())]);
     }
 
     #[test]
