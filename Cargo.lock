@@ -2711,7 +2711,7 @@ dependencies = [
 
 [[package]]
 name = "terrio"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "acadrust",
  "arrow-array",
@@ -2784,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "terrio-cli"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "gag",
@@ -2797,7 +2797,7 @@ dependencies = [
 
 [[package]]
 name = "terrio-crs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "geographiclib-rs",
  "rayon",
@@ -2812,7 +2812,7 @@ dependencies = [
 
 [[package]]
 name = "terrio-js"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.4.3",
@@ -2829,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "terrio-py"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "arrow-array",
  "numpy",
