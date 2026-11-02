@@ -409,3 +409,18 @@ one-based row/column filenames. Options accept camelCase or snake_case.
 adds applicable browser viewers, MapML, STACTA and KML files. The callback must
 save companion files as well as images. See the [CLI reference](../docs/cli.md#retile)
 for output layouts, supported options, limits and measured GDAL differences.
+
+## Selective scientific package
+
+For a single-threaded NetCDF/HDF5 package using the existing `netcdf-hdf5`
+Cargo feature, see [Scientific WASM builds](../docs/scientific-wasm-build.md).
+`node js/build.mjs --no-default-features --features netcdf-hdf5 --out-dir pkg-scientific`
+builds only that module, with generated declarations and project license notices.
+Use a fresh output directory. This is a custom feature selection, not another
+published npm preset; `terrio-js/core` does not include NetCDF/HDF5.
+
+Packaging regressions run without Rust or WASM tools:
+
+```sh
+node --test js/tests/build*.test.mjs
+```
