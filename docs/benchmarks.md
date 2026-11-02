@@ -53,8 +53,8 @@ They are machine-specific snapshots, not guarantees of performance on other data
 ## Output mismatch follow-up
 
 The [#253 investigation](benchmark-parity.md) records the underlying corrections.
-A [current release recheck](benchmark-253-current.md) at `328c3cc2` passes exact
-validation on all eight original public-fixture cases against GDAL 3.13.3.
+A [current release recheck](benchmark-253-current.md) at `328c3cc2` passes the established
+output validation on all eight original public-fixture cases against GDAL 3.13.3.
 It includes fresh timing samples and independent tuning at CPU budgets one and
 two; all eight rows pass the unchanged background-load gate. Separate checks at
 one, two, four and twelve CPUs match both GDAL and each tool's single-thread

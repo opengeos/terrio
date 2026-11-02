@@ -3479,5 +3479,8 @@
     ],
     "article": "https://bitruvius.com/blog/engineered-not-prompted/",
     "article_rechecked": "2026-11-02"
-  }
+  },
+  "ratio_definition": "GDAL median elapsed seconds / Terrio median elapsed seconds. Values above 1 mean Terrio is faster; values below 1 mean Terrio is slower. Markdown slower rows display the reciprocal.",
+  "pass_definition": "An empty validation list means the output gate passed; an empty measurement_issues list means the measurement gate passed. A non-null ratio requires both gates to pass. timing_notes do not change eligibility.",
+  "output_gate_definition": "Raster sample values (NaNs equal), masks and checked band properties are exact. CRS comparison is semantic; affine transforms allow absolute 1e-8 / relative 1e-12 error. Arbitrary metadata, compression and file-byte identity are outside the gate. Vector attributes/schema and normalized geometry are exact, excluding generated FIDs and layer names."
 }

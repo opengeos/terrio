@@ -10,7 +10,7 @@ geometry gates remain exact.
 ## Current release recheck
 
 A [fresh recheck at `328c3cc2`](benchmark-253-current.md), Terrio 0.6.1 against
-GDAL 3.13.3 / PROJ 9.9.0, passes the unchanged exact output gate on all eight
+GDAL 3.13.3 / PROJ 9.9.0, passes the unchanged output gate on all eight
 original public-fixture cases. It includes fresh timings, independent one/two-CPU
 tuning and complete single-thread error measurements over 508,051,812 raster
 samples. All eight cases also match at CPU counts one, two, four and twelve,

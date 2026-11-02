@@ -2,7 +2,9 @@
 
 Terrio 0.6.1 at `328c3cc2` was built in release mode and compared with GDAL
 3.13.3 / PROJ 9.9.0 on Linux/glibc 2.44, Intel Xeon w7-3445. All eight original
-public-fixture cases pass the unchanged exact output gate. This report supersedes
+public-fixture cases pass the unchanged output gate: pixels, masks and checked band
+properties are exact; affine transforms allow absolute 1e-8 / relative 1e-12 error,
+and CRSs are compared semantically. This report supersedes
 the earlier six-pass timing snapshot for these cases; it does not reproduce the
 five unavailable vendor assets. [Raw evidence](benchmark-253-current.json) retains
 commands, timing samples, CPU tuning, load estimates and full output diagnostics.
@@ -38,7 +40,7 @@ overviews, preserving the established base-mosaic scope. See the
 
 All eight cases were separately generated with each tool at **1, 2, 4 and 12
 CPUs**, with matching pool settings and Linux affinity. The 32 cross-engine
-comparisons pass the exact gate. Each higher-thread output also passes against
+comparisons pass the same output gate. Each higher-thread output also passes against
 that tool's single-thread output: 24 Terrio and 24 GDAL comparisons. This checks
 pixels and metadata, not file-byte identity, and makes no claim about other
 machines or CPU architectures.
@@ -49,7 +51,7 @@ levels, 508,051,812 stored samples and 507,793,492 common-valid finite samples.
 All pixel, mask and nonfinite difference counts are zero. Maximum absolute and
 relative common-valid errors are zero; Float32 ULP distances are zero (ULP is not
 applicable to the integer outputs). Types, nodata, color roles, scale/offset and
-units pass the exact gate; CRSs are semantically equal and affine transforms use
+units pass the output gate; CRSs are semantically equal and affine transforms use
 the established absolute 1e-8 / relative 1e-12 allowance. GeoTIFF byte layouts and
 arbitrary metadata are outside that gate.
 
