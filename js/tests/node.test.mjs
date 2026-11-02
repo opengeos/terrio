@@ -3587,3 +3587,19 @@ test("two-point oblique Mercator matches PROJ", () => {
     assert.throws(() => terrio.transformPoints([0], [0], "+proj=longlat +datum=WGS84", `${definition} +datum=WGS84`));
   }
 });
+
+test("a KML style table is read and written back", () => {
+  const kml = `<kml><Document>
+    <Style id="base"><LineStyle><color>ff0000ff</color><width>2</width></LineStyle></Style>
+    <Placemark><styleUrl>#base</styleUrl><Point><coordinates>30,-2</coordinates></Point></Placemark>
+  </Document></kml>`;
+  const style = "PEN(c:#FF0000FF,w:2.000000px)";
+  const ds = terrio.open(new TextEncoder().encode(kml), "a.kml");
+  assert.deepEqual({ ...ds.styleTable }, { base: style });
+  for (const name of ["o.kml", "o.kmz"]) {
+    const back = terrio.open(ds.toBytes(name), name);
+    assert.deepEqual({ ...back.styleTable }, { base: style });
+  }
+  const geojson = JSON.parse(new TextDecoder().decode(ds.toBytes("o.geojson")));
+  assert.equal(geojson.features[0].properties.OGR_STYLE, style);
+});

@@ -22,7 +22,7 @@ impl PyPipelineResult {
             Some(PipelineData::Raster(r)) => Ok(Py::new(py, PyRaster { inner: r.shared() })?.into_any()),
             Some(PipelineData::Vector(layers)) => Ok(Py::new(
                 py,
-                PyVectorDataset::new(py, terrio::VectorDataset { layers: layers.clone(), driver: terrio::formats::VectorDriver::GeoJSON })?,
+                PyVectorDataset::new(py, terrio::VectorDataset::new(layers.clone(), terrio::formats::VectorDriver::GeoJSON))?,
             )?
             .into_any()),
         }

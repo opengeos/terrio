@@ -18,13 +18,14 @@ pub struct PyLayer {
 pub struct PyVectorDataset {
     layers: Vec<Py<PyLayer>>,
     driver: String,
+    style_table: Vec<(String, String)>,
 }
 
 impl PyVectorDataset {
     /// Wraps a vector dataset read by terrio.
     pub(crate) fn new(py: Python<'_>, ds: VectorDataset) -> PyResult<Self> {
         let layers = ds.layers.into_iter().map(|l| Py::new(py, PyLayer { inner: l })).collect::<PyResult<_>>()?;
-        Ok(Self { layers, driver: ds.driver.name().to_string() })
+        Ok(Self { layers, driver: ds.driver.name().to_string(), style_table: ds.style_table })
     }
 
     /// Borrow one selected layer while a read-only binding operation runs.
@@ -46,9 +47,20 @@ impl PyVectorDataset {
         self.driver.clone()
     }
 
-    /// Copies of the layers.
-    pub(crate) fn layer_copies(&self, py: Python<'_>) -> Vec<Layer> {
+    /// Copies of the layers as they are, with `@id` style references.
+    fn raw_layer_copies(&self, py: Python<'_>) -> Vec<Layer> {
         self.layers.iter().map(|l| l.borrow(py).inner.clone()).collect()
+    }
+
+    /// Copies of the layers, each style reference replaced by the style table's definition, since
+    /// the table does not travel with bare layers.
+    pub(crate) fn layer_copies(&self, py: Python<'_>) -> Vec<Layer> {
+        let ds = VectorDataset {
+            layers: self.raw_layer_copies(py),
+            driver: terrio::formats::VectorDriver::GeoJSON,
+            style_table: self.style_table.clone(),
+        };
+        ds.into_resolved_layers()
     }
 }
 
@@ -365,14 +377,17 @@ impl PyLayer {
     ///     citygml_lod0_surface: CityGML 2.0 LoD 0 fallback: "footprint" or "roof-edge".
     ///     kmz_resources: KMZ output: files packed into the archive, such as icon images, by the
     ///         relative path the styles refer to them with (`{"icons/pin.png": png_bytes}`).
+    ///     style_table: KML and KMZ output: shared styles, by id, as OGR style strings, for the
+    ///         features whose `OGR_STYLE` is `@id`. Usually the `style_table` of the source dataset.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
+    #[pyo3(signature = (path, driver=None, *, kmz_resources=None, style_table=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
     fn write(
         &self,
         py: Python<'_>,
         path: &str,
         driver: Option<&str>,
         kmz_resources: Option<std::collections::BTreeMap<String, pyo3::pybacked::PyBackedBytes>>,
+        style_table: Option<Vec<(String, String)>>,
         preserve_declared_geometry_type: bool,
         cityjson_version: Option<&str>,
         citygml_version: Option<&str>,
@@ -384,6 +399,7 @@ impl PyLayer {
         options.citygml_version = crate::ops::parse_citygml_version(citygml_version)?;
         options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
+        options.style_table = style_table.unwrap_or_default();
         let layers = std::slice::from_ref(&self.inner);
         py.detach_result(|| terrio::write_vector(layers, path, &options)).py()
     }
@@ -406,13 +422,14 @@ impl PyLayer {
     ///     encoding and CRS members. Bare `.shp` names and unsupported DBF values
     ///     (including text over 254 UTF-8 bytes) raise an error.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (filename="layer.geojson", driver=None, *, kmz_resources=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
+    #[pyo3(signature = (filename="layer.geojson", driver=None, *, kmz_resources=None, style_table=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
     fn to_bytes<'py>(
         &self,
         py: Python<'py>,
         filename: &str,
         driver: Option<&str>,
         kmz_resources: Option<std::collections::BTreeMap<String, pyo3::pybacked::PyBackedBytes>>,
+        style_table: Option<Vec<(String, String)>>,
         preserve_declared_geometry_type: bool,
         cityjson_version: Option<&str>,
         citygml_version: Option<&str>,
@@ -424,6 +441,7 @@ impl PyLayer {
         options.citygml_version = crate::ops::parse_citygml_version(citygml_version)?;
         options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
+        options.style_table = style_table.unwrap_or_default();
         let layers = std::slice::from_ref(&self.inner);
         let bytes = py.detach_result(|| terrio::memory::write_vector_bytes(layers, filename, &options)).py()?;
         Ok(PyBytes::new(py, &bytes))
@@ -448,6 +466,13 @@ impl PyVectorDataset {
     #[getter]
     fn driver(&self) -> &str {
         &self.driver
+    }
+
+    /// The shared styles of a KML or KMZ document: `(id, OGR style string)` pairs, in document
+    /// order. Features using one have `@id` in their `OGR_STYLE` field. Empty for other formats.
+    #[getter]
+    fn style_table(&self) -> Vec<(String, String)> {
+        self.style_table.clone()
     }
 
     fn __len__(&self) -> usize {
@@ -508,7 +533,14 @@ impl PyVectorDataset {
         options.citygml_version = crate::ops::parse_citygml_version(citygml_version)?;
         options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
-        let layers = self.layer_copies(py);
+        // A KML or KMZ output holds the shared styles; elsewhere each feature gets its style.
+        let output = options.driver.or_else(|| terrio::formats::VectorDriver::for_extension(path));
+        let layers = if matches!(output, Some(terrio::formats::VectorDriver::KML | terrio::formats::VectorDriver::KMZ)) {
+            options.style_table.clone_from(&self.style_table);
+            self.raw_layer_copies(py)
+        } else {
+            self.layer_copies(py)
+        };
         py.detach_result(|| terrio::write_vector(&layers, path, &options)).py()
     }
 }

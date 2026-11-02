@@ -399,7 +399,7 @@ fn simplify_coverage(
         }
         let input = input_layers(py, src, None)?;
         let layers = py.detach_result(|| terrio::ops::coverage_simplify::simplify_coverage_layers(&input, &options, Some(&active))).py()?;
-        let dataset = terrio::VectorDataset { layers, driver: terrio::formats::VectorDriver::GeoJSON };
+        let dataset = terrio::VectorDataset::new(layers, terrio::formats::VectorDriver::GeoJSON);
         return Ok(Py::new(py, PyVectorDataset::new(py, dataset)?)?.into_any());
     }
     let input = one_layer(py, src, layer)?;
@@ -461,7 +461,7 @@ fn clean_coverage(
         }
         let input = input_layers(py, src, None)?;
         let layers = py.detach_result(|| terrio::ops::coverage_clean::clean_coverage_layers(&input, Some(&active), &options)).py()?;
-        let dataset = terrio::VectorDataset { layers, driver: terrio::formats::VectorDriver::GeoJSON };
+        let dataset = terrio::VectorDataset::new(layers, terrio::formats::VectorDriver::GeoJSON);
         return Ok(Py::new(py, PyVectorDataset::new(py, dataset)?)?.into_any());
     }
     let input = one_layer(py, src, layer)?;

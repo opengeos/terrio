@@ -265,7 +265,7 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     }
     let cutline = match &taken[0] {
         Some(c) => {
-            let ds = terrio::VectorDataset { layers: input_layers(c)?, driver: VectorDriver::GeoJSON };
+            let ds = terrio::VectorDataset::new(input_layers(c)?, VectorDriver::GeoJSON);
             Some(Cutline::from_vector(&ds).map_err(js_err)?)
         }
         None => None,

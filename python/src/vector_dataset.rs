@@ -65,7 +65,7 @@ fn require_new_output(dst: Option<&str>) -> PyResult<()> {
 }
 
 fn dataset(py: Python<'_>, layers: Vec<terrio::Layer>, driver: Option<VectorDriver>) -> PyResult<PyVectorDataset> {
-    PyVectorDataset::new(py, VectorDataset { layers, driver: driver.unwrap_or(VectorDriver::GPKG) })
+    PyVectorDataset::new(py, VectorDataset::new(layers, driver.unwrap_or(VectorDriver::GPKG)))
 }
 
 /// Concatenates vector datasets into one or several layers, like `terrio concat`

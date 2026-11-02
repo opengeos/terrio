@@ -84,7 +84,7 @@ impl PipelineData {
     pub fn into_dataset(self) -> Result<Dataset> {
         match self {
             Self::Raster(mut r) => Ok(Dataset::Raster(r.read()?)),
-            Self::Vector(layers) => Ok(Dataset::Vector(VectorDataset { layers, driver: VectorDriver::GeoJSON })),
+            Self::Vector(layers) => Ok(Dataset::Vector(VectorDataset::new(layers, VectorDriver::GeoJSON))),
         }
     }
     fn vectors(&self) -> Result<&[Layer]> {

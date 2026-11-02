@@ -1304,7 +1304,7 @@ fn warp(
         None => None,
         Some(c) => {
             let layers = input_layers(py, c, None)?;
-            let ds = terrio::VectorDataset { layers, driver: VectorDriver::GeoJSON };
+            let ds = terrio::VectorDataset::new(layers, VectorDriver::GeoJSON);
             Some(Cutline::from_vector(&ds).py()?)
         }
     };

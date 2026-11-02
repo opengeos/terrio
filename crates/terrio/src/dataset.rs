@@ -260,6 +260,30 @@ pub struct VectorDataset {
     pub layers: Vec<Layer>,
     /// The driver that read it.
     pub driver: VectorDriver,
+    /// The shared styles a KML or KMZ document defines, as GDAL's `GetStyleTable` gives them: each
+    /// id with its OGR style string. Features using one have `@id` in their `OGR_STYLE` field.
+    /// Empty for other formats. Hand it to [`VectorWriteOptions::style_table`] to write it back.
+    pub style_table: Vec<(String, String)>,
+}
+
+impl VectorDataset {
+    /// A dataset of layers, without a style table.
+    pub fn new(layers: Vec<Layer>, driver: VectorDriver) -> Self {
+        Self { layers, driver, style_table: Vec::new() }
+    }
+
+    /// Replaces each `@id` in the layers' `OGR_STYLE` fields with its definition in the style
+    /// table, for output that has no style table of its own to refer to. References the table does
+    /// not define stay as they are.
+    pub fn resolve_styles(&mut self) {
+        crate::drivers::vector::kml_style::resolve_references(&mut self.layers, &self.style_table);
+    }
+
+    /// The layers with their style references resolved: see [`Self::resolve_styles`].
+    pub fn into_resolved_layers(mut self) -> Vec<Layer> {
+        self.resolve_styles();
+        self.layers
+    }
 }
 
 /// A dataset of either kind.
@@ -908,10 +932,7 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
                 let driver = VectorDriver::ALL.iter().find(|d| d.to_wb().as_ref() == Some(&format)).map_or("unknown", |d| d.name());
                 crate::formats::check_driver_allowed(driver, path, crate::formats::Kind::Vector)?;
                 let layer = wbvector::read(path)?;
-                Ok(Dataset::Vector(VectorDataset {
-                    layers: vec![fix_layer(layer, path, VectorDriver::GeoJSON)],
-                    driver: VectorDriver::GeoJSON,
-                }))
+                Ok(Dataset::Vector(VectorDataset::new(vec![fix_layer(layer, path, VectorDriver::GeoJSON)], VectorDriver::GeoJSON)))
             }
             Err(_) => Err(Error::Unsupported(format!("'{path}': format not recognized ({raster_err})"))),
         },
@@ -1017,6 +1038,16 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
         layers.iter_mut().for_each(|l| options.keep_range(l));
         return Ok(finish_vector(layers, path, driver));
     }
+    if matches!(driver, VectorDriver::KML | VectorDriver::KMZ) {
+        let (layers, style_table) = match preloaded {
+            Some(bytes) => crate::drivers::vector::read_kml_bytes(bytes, path, driver)?,
+            None if driver == VectorDriver::KML => crate::drivers::vector::kml::read_styled(path)?,
+            None => crate::drivers::vector::kml::read_kmz_styled(path)?,
+        };
+        let mut layers = select_layers(layers, path, options)?;
+        layers.iter_mut().for_each(|l| options.keep_range(l));
+        return Ok(VectorDataset { style_table, ..finish_vector(layers, path, driver) });
+    }
     let native = match preloaded {
         Some(bytes) if driver == VectorDriver::GML => Some(crate::drivers::vector::gml::parse_path_bytes(&bytes, path)?),
         Some(bytes) => crate::drivers::vector::read_bytes(bytes, path, driver, options)?,
@@ -1045,7 +1076,7 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
 /// A vector dataset of layers a driver read, normalized.
 pub(crate) fn finish_vector(layers: Vec<Layer>, path: &str, driver: VectorDriver) -> VectorDataset {
     let layers = layers.into_iter().map(|l| fix_layer(l, path, driver)).collect();
-    VectorDataset { layers, driver }
+    VectorDataset::new(layers, driver)
 }
 
 /// Keeps the layers `options` asks for (all when it names none).
@@ -1447,6 +1478,9 @@ pub struct VectorWriteOptions {
     pub tiles: crate::tiles::TileWriteOptions,
     /// How to write KMZ archives: the files, such as icon images, packed with the documents.
     pub kmz: crate::drivers::vector::kml::KmzOptions,
+    /// KML and KMZ: shared styles to write as `<Style id>` elements, each id with its OGR style
+    /// string, for the features whose `OGR_STYLE` is `@id`. See [`VectorDataset::style_table`].
+    pub style_table: Vec<(String, String)>,
 }
 
 /// Writes vector layers. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers in one file;
@@ -1499,8 +1533,8 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
             Ok(())
         }
         (VectorDriver::GPX, _) => crate::drivers::vector::gpx::write_layers(layers, path),
-        (VectorDriver::KML, _) => crate::drivers::vector::kml::write(layers, path),
-        (VectorDriver::KMZ, _) => crate::drivers::vector::kml::write_kmz(layers, path, &options.kmz),
+        (VectorDriver::KML, _) => crate::drivers::vector::kml::write_styled(layers, &options.style_table, path),
+        (VectorDriver::KMZ, _) => crate::drivers::vector::kml::write_kmz_styled(layers, &options.style_table, path, &options.kmz),
         (VectorDriver::TopoJSON, _) => crate::drivers::vector::topojson::write_layers(layers, path),
         (VectorDriver::CityGML, _) => {
             let bytes = crate::drivers::vector::citygml_write::to_bytes(
@@ -1547,6 +1581,9 @@ pub(crate) fn ensure_vector_options_apply(options: &VectorWriteOptions, driver: 
     }
     if options.preserve_declared_geometry_type && driver != Some(VectorDriver::GPKG) {
         return Err(Error::InvalidArgument("preserve_declared_geometry_type applies to GPKG output".into()));
+    }
+    if !options.style_table.is_empty() && !matches!(driver, Some(VectorDriver::KML | VectorDriver::KMZ)) {
+        return Err(Error::InvalidArgument("style_table applies to KML and KMZ output".into()));
     }
     if options.kmz.resources.is_empty() || driver == Some(VectorDriver::KMZ) {
         return Ok(());

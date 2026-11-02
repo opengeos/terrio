@@ -37,19 +37,37 @@ const FIXED: &[(&str, FieldType)] = &[
     ("icon", FieldType::Text),
 ];
 
+/// A KML document's layers, and its style table: style ids and their OGR style strings.
+pub type Styled = (Vec<Layer>, Vec<(String, String)>);
+
 /// Reads a KML file.
 pub fn read(path: &str) -> Result<Vec<Layer>> {
-    parse(&xml::decode(&std::fs::read(path)?), &stem(path))
+    Ok(read_styled(path)?.0)
+}
+
+/// Reads a KML file with its style table.
+pub fn read_styled(path: &str) -> Result<Styled> {
+    parse_styled(&xml::decode(&std::fs::read(path)?), &stem(path))
 }
 
 /// Reads a KMZ file: its main document (`doc.kml`, or the first `.kml` file), and the documents
 /// in the archive it links to (GDAL writes one per layer under `layers/`).
 pub fn read_kmz(path: &str) -> Result<Vec<Layer>> {
-    parse_kmz(std::fs::read(path)?, &stem(path))
+    Ok(read_kmz_styled(path)?.0)
+}
+
+/// Reads a KMZ file with its style table.
+pub fn read_kmz_styled(path: &str) -> Result<Styled> {
+    parse_kmz_styled(std::fs::read(path)?, &stem(path))
 }
 
 /// Parses a KMZ archive held in memory. `default_name` names a root layer without a name.
 pub fn parse_kmz(bytes: Vec<u8>, default_name: &str) -> Result<Vec<Layer>> {
+    Ok(parse_kmz_styled(bytes, default_name)?.0)
+}
+
+/// Parses a KMZ archive held in memory, with the style table of its documents.
+pub fn parse_kmz_styled(bytes: Vec<u8>, default_name: &str) -> Result<Styled> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
     let names: Vec<String> = zip.file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
     let main = names
@@ -63,20 +81,40 @@ pub fn parse_kmz(bytes: Vec<u8>, default_name: &str) -> Result<Vec<Layer>> {
         zip.by_name(name)?.read_to_end(&mut bytes)?;
         Ok(xml::decode(&bytes))
     };
-    let text = read_member(&main)?;
-    let mut layers = parse(&text, default_name)?;
-    let root = xml::parse(&text)?;
+    let root = xml::parse(&read_member(&main)?)?;
+    // The documents that are layers, each with its layer name.
     let mut links = Vec::new();
     root.find_all("NetworkLink", &mut links);
+    let mut documents: Vec<(String, Element, String)> = Vec::new();
     for link in links {
         let Some(href) = link.child("Link").or_else(|| link.child("Url")).and_then(|l| l.child_text("href")) else { continue };
         let href = href.trim_start_matches("./");
         if let Some(member) = names.iter().find(|n| n.as_str() == href) {
             let name = link.child_text("name").map_or_else(|| stem(member), str::to_string);
-            layers.extend(parse_with(&read_member(member)?, &name, true)?);
+            documents.push((member.clone(), xml::parse(&read_member(member)?)?, name));
         }
     }
-    Ok(layers)
+    // The documents styles live in, as far as links from one to the next go. Each is read once, and
+    // one that cannot be read leaves its links as raw URLs.
+    let mut members = kml_style::Members::new();
+    let mut pending = kml_style::linked_members(&root, &main);
+    for (member, document, _) in &documents {
+        pending.extend(kml_style::linked_members(document, member));
+    }
+    while let Some(name) = pending.pop() {
+        if members.contains_key(&name) || !names.contains(&name) {
+            continue;
+        }
+        let Ok(document) = read_member(&name).and_then(|text| xml::parse(&text)) else { continue };
+        pending.extend(kml_style::linked_members(&document, &name));
+        members.insert(name, document);
+    }
+    let mut table = Vec::new();
+    let mut layers = layers_of(&root, &main, &members, default_name, false, &mut table);
+    for (member, document, name) in &documents {
+        layers.extend(layers_of(document, member, &members, name, true, &mut table));
+    }
+    Ok((layers, table))
 }
 
 fn stem(path: &str) -> String {
@@ -93,16 +131,31 @@ fn is_feature(e: &Element) -> bool {
 
 /// Parses KML text. `default_name` names a root layer without a name.
 pub fn parse(text: &str, default_name: &str) -> Result<Vec<Layer>> {
-    parse_with(text, default_name, false)
+    Ok(parse_styled(text, default_name)?.0)
 }
 
-/// Parses KML text; with `root_layer`, the root container is a layer even without placemarks of
-/// its own (a layer document linked from a KMZ's `doc.kml`).
-fn parse_with(text: &str, default_name: &str, root_layer: bool) -> Result<Vec<Layer>> {
+/// Parses KML text, with its style table.
+pub fn parse_styled(text: &str, default_name: &str) -> Result<Styled> {
     let root = xml::parse(text)?;
+    let mut table = Vec::new();
+    let layers = layers_of(&root, "", &kml_style::Members::new(), default_name, false, &mut table);
+    Ok((layers, table))
+}
+
+/// The layers of a document, adding its styles to `table`. `member` is its name in a KMZ archive
+/// holding the documents `members`. With `root_layer`, the root container is a layer even without
+/// placemarks of its own (a layer document linked from a KMZ's `doc.kml`).
+fn layers_of(
+    root: &Element,
+    member: &str,
+    members: &kml_style::Members,
+    default_name: &str,
+    root_layer: bool,
+    table: &mut Vec<(String, String)>,
+) -> Vec<Layer> {
     // The schemas, anywhere in the document, by id and by name.
     let mut schemas = Vec::new();
-    collect_schemas(&root, &mut schemas);
+    collect_schemas(root, &mut schemas);
 
     let mut containers: Vec<(String, Vec<&Element>, &Element)> = Vec::new();
     let top = root.children.iter().find(|c| is_container(c));
@@ -116,10 +169,11 @@ fn parse_with(text: &str, default_name: &str, root_layer: bool) -> Result<Vec<La
         }
         None => {
             let direct: Vec<&Element> = root.children.iter().filter(|c| is_feature(c)).collect();
-            containers.push((default_name.to_string(), direct, &root));
+            containers.push((default_name.to_string(), direct, root));
         }
     }
-    let styles = kml_style::table(&root);
+    let mut styles = kml_style::Styles::new(root, member, members);
+    styles.add_to(table);
     let mut layers: Vec<Layer> = containers
         .into_iter()
         .map(|(name, features, container)| {
@@ -137,7 +191,7 @@ fn parse_with(text: &str, default_name: &str, root_layer: bool) -> Result<Vec<La
             n += 1;
         }
     }
-    Ok(layers)
+    layers
 }
 
 fn collect_schemas<'a>(e: &'a Element, out: &mut Vec<&'a Element>) {
@@ -202,7 +256,7 @@ fn add_data_field(layer: &mut Layer, renames: &mut Vec<(String, String)>, name: 
     renames.push((name.to_string(), field));
 }
 
-fn layer(name: &str, features: &[&Element], schemas: &[&Element], styles: &[(String, String)]) -> Layer {
+fn layer(name: &str, features: &[&Element], schemas: &[&Element], styles: &kml_style::Styles<'_>) -> Layer {
     let mut layer = Layer::new(name).with_epsg(4326);
     for (n, t) in FIXED {
         layer.add_field(FieldDef::new(*n, *t));
@@ -234,7 +288,7 @@ fn layer(name: &str, features: &[&Element], schemas: &[&Element], styles: &[(Str
         }
     }
     // Feature styles, in an OGR_STYLE field when any feature has one.
-    let feature_styles: Vec<Option<String>> = features.iter().map(|f| kml_style::of_feature(f, styles)).collect();
+    let feature_styles: Vec<Option<String>> = features.iter().map(|f| styles.of_feature(f)).collect();
     if feature_styles.iter().any(Option::is_some) && layer.schema.field_index(kml_style::FIELD).is_none() {
         layer.add_field(FieldDef::new(kml_style::FIELD, FieldType::Text));
     }
@@ -378,9 +432,10 @@ fn ground_overlay(e: &Element) -> Option<Geometry> {
     Some(Geometry::Polygon { exterior: Ring::new(ring), interiors: vec![] })
 }
 
-/// Writes layers as a KML document: a Document per layer, with its typed Schema.
-pub fn write(layers: &[Layer], path: &str) -> Result<()> {
-    std::fs::write(path, to_string(layers)?)?;
+/// Writes layers as a KML document: a Document per layer, with its typed Schema, and a shared
+/// `<Style id>` for each entry of a style table.
+pub fn write_styled(layers: &[Layer], styles: &[(String, String)], path: &str) -> Result<()> {
+    std::fs::write(path, to_string_styled(layers, styles)?)?;
     Ok(())
 }
 
@@ -395,14 +450,17 @@ pub struct KmzOptions {
 }
 
 /// Writes layers as a KMZ archive laid out as GDAL writes it: a `doc.kml` linking to one
-/// document per layer under `layers/`, with the files of `kmz` beside those documents.
-pub fn write_kmz(layers: &[Layer], path: &str, kmz: &KmzOptions) -> Result<()> {
-    std::fs::write(path, kmz_bytes(layers, kmz)?)?;
+/// document per layer under `layers/`, with the files of `kmz` beside those documents, and a shared
+/// `<Style id>` for each entry of a style table.
+pub fn write_kmz_styled(layers: &[Layer], styles: &[(String, String)], path: &str, kmz: &KmzOptions) -> Result<()> {
+    std::fs::write(path, kmz_bytes_styled(layers, styles, kmz)?)?;
     Ok(())
 }
 
-/// Encodes layers as a KMZ archive.
-pub fn kmz_bytes(layers: &[Layer], kmz: &KmzOptions) -> Result<Vec<u8>> {
+/// Encodes layers as a KMZ archive. `doc.kml` and `style/style.kml` hold the whole style table, and
+/// each layer document the styles its placemarks refer to, since a `#id` resolves within its own
+/// document.
+pub fn kmz_bytes_styled(layers: &[Layer], styles: &[(String, String)], kmz: &KmzOptions) -> Result<Vec<u8>> {
     let resources = resource_members(&kmz.resources)?;
     let mut buf = std::io::Cursor::new(Vec::new());
     {
@@ -410,6 +468,7 @@ pub fn kmz_bytes(layers: &[Layer], kmz: &KmzOptions) -> Result<Vec<u8>> {
         let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         let mut doc = String::from(HEADER);
         doc.push_str("<Document id=\"root_doc\">\n");
+        doc.push_str(&kml_style::definitions(styles, |_| true));
         let mut files: Vec<(String, String)> = Vec::new();
         for l in layers {
             let mut file = format!("layers/{}.kml", schema_id(l));
@@ -422,6 +481,8 @@ pub fn kmz_bytes(layers: &[Layer], kmz: &KmzOptions) -> Result<Vec<u8>> {
             let mut layer_doc = String::from(HEADER);
             let _ = writeln!(layer_doc, "<Document id=\"{}\">\n<name>{}</name>", xml::escape(&schema_id(l)), xml::escape(&l.name));
             let l = in_wgs84(l)?;
+            let used = referenced_styles(&l);
+            layer_doc.push_str(&kml_style::definitions(styles, |id| used.iter().any(|u| u == id)));
             layer_doc.push_str(&schema(&l));
             layer_doc.push_str(&placemarks(&l));
             layer_doc.push_str("</Document>\n</kml>\n");
@@ -431,6 +492,12 @@ pub fn kmz_bytes(layers: &[Layer], kmz: &KmzOptions) -> Result<Vec<u8>> {
         // KML readers (libkml among them) take the archive's first document as the main one.
         zip.start_file("doc.kml", options)?;
         std::io::Write::write_all(&mut zip, doc.as_bytes())?;
+        // Where GDAL's LIBKML driver keeps a KMZ's style table.
+        if !styles.is_empty() {
+            let text = format!("{HEADER}<Document>\n{}</Document>\n</kml>\n", kml_style::definitions(styles, |_| true));
+            zip.start_file("style/style.kml", options)?;
+            std::io::Write::write_all(&mut zip, text.as_bytes())?;
+        }
         for (file, text) in &files {
             zip.start_file(file.as_str(), options)?;
             std::io::Write::write_all(&mut zip, text.as_bytes())?;
@@ -519,10 +586,12 @@ fn schema(l: &Layer) -> String {
 }
 
 /// Encodes layers as a KML document: a Document per layer, each with its Schema (so that readers
-/// tie even an empty layer to its fields).
-pub fn to_string(layers: &[Layer]) -> Result<String> {
+/// tie even an empty layer to its fields), with a shared `<Style id>` for each entry of a style
+/// table.
+pub fn to_string_styled(layers: &[Layer], styles: &[(String, String)]) -> Result<String> {
     let mut s = String::from(HEADER);
     s.push_str("<Document id=\"root_doc\">\n");
+    s.push_str(&kml_style::definitions(styles, |_| true));
     for l in layers {
         let l = in_wgs84(l)?;
         let _ = writeln!(s, "<Document id=\"{}\"><name>{}</name>", xml::escape(&schema_id(&l)), xml::escape(&l.name));
@@ -532,6 +601,20 @@ pub fn to_string(layers: &[Layer]) -> Result<String> {
     }
     s.push_str("</Document>\n</kml>\n");
     Ok(s)
+}
+
+/// The style ids a layer's features refer to (`@id`).
+fn referenced_styles(l: &Layer) -> Vec<String> {
+    let Some(i) = l.schema.fields().iter().position(|d| d.name.eq_ignore_ascii_case(kml_style::FIELD)) else { return Vec::new() };
+    let mut out: Vec<String> = Vec::new();
+    for f in &l.features {
+        if let Some(FieldValue::Text(t)) = f.attributes.get(i)
+            && let Some(id) = t.strip_prefix('@').filter(|id| !out.iter().any(|u| u == id))
+        {
+            out.push(id.to_string());
+        }
+    }
+    out
 }
 
 /// The placemarks of a layer.
@@ -730,7 +813,7 @@ mod tests {
         let layers = std::slice::from_ref(&layer);
         let png = b"\x89PNG\r\n\x1a\n".to_vec();
         let kmz = KmzOptions { resources: vec![("icons/pin.png".into(), png.clone())] };
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(kmz_bytes(layers, &kmz).unwrap())).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(kmz_bytes_styled(layers, &[], &kmz).unwrap())).unwrap();
         let mut image = Vec::new();
         zip.by_name("layers/icons/pin.png").unwrap().read_to_end(&mut image).unwrap();
         assert_eq!(image, png);
@@ -738,7 +821,7 @@ mod tests {
         zip.by_name("layers/pins.kml").unwrap().read_to_string(&mut doc).unwrap();
         assert!(doc.contains("<href>icons/pin.png</href>"), "{doc}");
         // Without resources, the archive holds the documents only, as before.
-        let plain = kmz_bytes(layers, &KmzOptions::default()).unwrap();
+        let plain = kmz_bytes_styled(layers, &[], &KmzOptions::default()).unwrap();
         assert_eq!(zip::ZipArchive::new(std::io::Cursor::new(plain)).unwrap().len(), 2);
         for path in [
             "",
@@ -755,10 +838,10 @@ mod tests {
             "pins.kml",
         ] {
             let kmz = KmzOptions { resources: vec![(path.into(), png.clone())] };
-            assert!(matches!(kmz_bytes(layers, &kmz), Err(Error::InvalidArgument(_))), "{path:?}");
+            assert!(matches!(kmz_bytes_styled(layers, &[], &kmz), Err(Error::InvalidArgument(_))), "{path:?}");
         }
         let twice = KmzOptions { resources: vec![("icons/pin.png".into(), png.clone()), ("./icons/pin.png".into(), png)] };
-        assert!(matches!(kmz_bytes(layers, &twice), Err(Error::InvalidArgument(_))));
+        assert!(matches!(kmz_bytes_styled(layers, &[], &twice), Err(Error::InvalidArgument(_))));
     }
 
     #[test]
@@ -787,7 +870,7 @@ mod tests {
         assert!(matches!(layers[1].features[1].geometry, Some(Geometry::GeometryCollection(_))));
 
         // Written and read back.
-        let back = parse(&to_string(&layers).unwrap(), "file").unwrap();
+        let back = parse(&to_string_styled(&layers, &[]).unwrap(), "file").unwrap();
         assert_eq!(back.iter().map(|l| l.len()).collect::<Vec<_>>(), [1, 2, 0]);
         assert_eq!(get(&back[0], 0, "n"), FieldValue::Integer(3));
         assert_eq!(back[1].features[0].geometry, layers[1].features[0].geometry);
@@ -795,7 +878,7 @@ mod tests {
         // A KMZ holds a document per layer, linked from doc.kml.
         let dir = tempfile::tempdir().unwrap();
         let kmz = dir.path().join("t.kmz");
-        write_kmz(&layers, kmz.to_str().unwrap(), &KmzOptions::default()).unwrap();
+        write_kmz_styled(&layers, &[], kmz.to_str().unwrap(), &KmzOptions::default()).unwrap();
         let back = read_kmz(kmz.to_str().unwrap()).unwrap();
         assert_eq!(back.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["D", "F", "Empty"]);
         assert_eq!(get(&back[0], 0, "x"), FieldValue::Float(1.5));
@@ -819,5 +902,130 @@ mod tests {
         assert_eq!(ext(1), Some(p));
         assert_eq!(ext(2), Some([2.0, 0.0, 6.0, 3.0]));
         assert_eq!(ext(5), None);
+    }
+
+    const STYLED: &str = r##"<kml><Document>
+      <Style id="base"><LineStyle><color>ff0000ff</color><width>2</width></LineStyle>
+        <PolyStyle><color>7f00ff00</color><fill>0</fill></PolyStyle></Style>
+      <StyleMap id="map"><Pair><key>normal</key><styleUrl>#base</styleUrl></Pair></StyleMap>
+      <Placemark><name>shared</name><styleUrl>#base</styleUrl>
+        <Polygon><outerBoundaryIs><LinearRing><coordinates>30,-2 31,-2 30,-1 30,-2</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
+      <Placemark><name>override</name><styleUrl>#base</styleUrl><Style><LineStyle><width>4</width></LineStyle></Style>
+        <Polygon><outerBoundaryIs><LinearRing><coordinates>30,-2 31,-2 30,-1 30,-2</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
+      <Placemark><name>mapped</name><styleUrl>#map</styleUrl><Point><coordinates>30,-2</coordinates></Point></Placemark>
+    </Document></kml>"##;
+
+    fn style(layer: &Layer, row: usize) -> String {
+        let i = layer.schema.field_index(kml_style::FIELD).unwrap();
+        match &layer.features[row].attributes[i] {
+            FieldValue::Text(t) => t.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    const BASE: &str = r#"PEN(c:#FF0000FF,w:2.000000px);BRUSH(id:"ogr-brush-1")"#;
+
+    #[test]
+    fn styles_keep_ids_fill_and_inline_overrides() {
+        let (layers, table) = parse_styled(STYLED, "a").unwrap();
+        assert_eq!(style(&layers[0], 0), "@base");
+        assert_eq!(style(&layers[0], 2), "@map");
+        let merged = style(&layers[0], 1);
+        assert!(merged.contains("c:#FF0000FF") && merged.contains("w:4"), "{merged}");
+        assert!(!merged.contains("fc:#00FF007F"), "fill 0 must not come back as a visible brush: {merged}");
+        assert_eq!(table, [("base".to_string(), BASE.to_string()), ("map".to_string(), BASE.to_string())]);
+    }
+
+    #[test]
+    fn a_style_table_is_written_and_read_back() {
+        let (layers, table) = parse_styled(STYLED, "a").unwrap();
+        let text = to_string_styled(&layers, &table).unwrap();
+        assert!(text.contains(r#"<Style id="base">"#) && text.contains("<fill>0</fill>"), "{text}");
+        assert!(text.contains("<styleUrl>#base</styleUrl>"), "{text}");
+        let (back, back_table) = parse_styled(&text, "a").unwrap();
+        assert_eq!(back_table, table);
+        assert_eq!(style(&back[0], 0), "@base");
+        assert_eq!(style(&back[0], 1), style(&layers[0], 1));
+        // Without a table, the references are written alone, as before.
+        assert!(!to_string_styled(&layers, &[]).unwrap().contains("<Style id="));
+        // A KMZ's layer documents hold the styles they use, since `#id` stays in its document.
+        let kmz = kmz_bytes_styled(&layers, &table, &KmzOptions::default()).unwrap();
+        let (back, back_table) = parse_kmz_styled(kmz.clone(), "a").unwrap();
+        assert_eq!(back_table, table);
+        assert_eq!(style(&back[0], 0), "@base");
+        let mut doc = String::new();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(kmz)).unwrap();
+        zip.by_name("layers/a.kml").unwrap().read_to_string(&mut doc).unwrap();
+        assert!(doc.contains(r#"<Style id="base">"#) && doc.contains(r#"<Style id="map">"#), "{doc}");
+        // Where GDAL looks for the table.
+        let mut shared = String::new();
+        zip.by_name("style/style.kml").unwrap().read_to_string(&mut shared).unwrap();
+        assert!(shared.contains(r#"<Style id="base">"#), "{shared}");
+    }
+
+    /// A KMZ archive of the members given.
+    fn archive(members: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(&mut buf);
+        for (name, text) in members {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zip, text.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        buf.into_inner()
+    }
+
+    fn pin(url: &str, inline: &str) -> String {
+        format!("<Placemark><styleUrl>{url}</styleUrl>{inline}<Point><coordinates>30,-2</coordinates></Point></Placemark>")
+    }
+
+    #[test]
+    fn a_style_url_into_another_kmz_member_resolves_against_it() {
+        let shared = r##"<kml><Document><Style id="pin"><LineStyle><color>ff0000ff</color></LineStyle></Style>
+            <StyleMap id="mapped"><Pair><key>normal</key><styleUrl>#pin</styleUrl></Pair></StyleMap></Document></kml>"##;
+        let doc = format!(
+            "<kml><Document>{}{}{}{}{}</Document></kml>",
+            pin("styles.kml#pin", ""),
+            pin("styles.kml#mapped", ""),
+            pin("sub/inner.kml#pin", ""),
+            pin("missing.kml#pin", ""),
+            pin("styles.kml#pin", "<Style><LineStyle><width>4</width></LineStyle></Style>"),
+        );
+        let kmz =
+            archive(&[("doc.kml", &doc), ("styles.kml", shared), ("sub/inner.kml", &format!("<kml><Document>{}</Document></kml>", ""))]);
+        let (layers, table) = parse_kmz_styled(kmz, "a").unwrap();
+        assert_eq!(style(&layers[0], 0), "PEN(c:#FF0000FF)");
+        assert_eq!(style(&layers[0], 1), "PEN(c:#FF0000FF)");
+        // A document without that style, or no such document: the URL as it is.
+        assert_eq!(style(&layers[0], 2), "sub/inner.kml#pin");
+        assert_eq!(style(&layers[0], 3), "missing.kml#pin");
+        assert_eq!(style(&layers[0], 4), "PEN(c:#FF0000FF,w:4.000000px)");
+        // Those definitions are the other document's, and not in the table of this one's.
+        assert!(table.is_empty(), "{table:?}");
+
+        // Relative to the referring document, not to the archive's root.
+        let link = |file: &str| format!("<kml><Document><NetworkLink><Link><href>{file}</href></Link></NetworkLink></Document></kml>");
+        let layer_doc = format!("<kml><Document>{}{}</Document></kml>", pin("s.kml#pin", ""), pin("../styles.kml#pin", ""));
+        let kmz =
+            archive(&[("doc.kml", &link("layers/a.kml")), ("layers/a.kml", &layer_doc), ("layers/s.kml", shared), ("styles.kml", shared)]);
+        let (layers, _) = parse_kmz_styled(kmz, "a").unwrap();
+        assert_eq!(style(&layers[0], 0), "PEN(c:#FF0000FF)");
+        assert_eq!(style(&layers[0], 1), "PEN(c:#FF0000FF)");
+    }
+
+    #[test]
+    fn an_id_two_kmz_documents_define_differently_is_not_confused() {
+        let doc = |color: &str, name: &str| {
+            format!(
+                r##"<kml><Document><name>{name}</name><Style id="s"><LineStyle><color>{color}</color></LineStyle></Style>{}</Document></kml>"##,
+                pin("#s", "")
+            )
+        };
+        let main = r#"<kml><Document><NetworkLink><Link><href>layers/a.kml</href></Link></NetworkLink><NetworkLink><Link><href>layers/b.kml</href></Link></NetworkLink></Document></kml>"#;
+        let kmz = archive(&[("doc.kml", main), ("layers/a.kml", &doc("ff0000ff", "A")), ("layers/b.kml", &doc("ff00ff00", "B"))]);
+        let (layers, table) = parse_kmz_styled(kmz, "a").unwrap();
+        assert_eq!(table, [("s".to_string(), "PEN(c:#FF0000FF)".to_string())]);
+        assert_eq!(style(&layers[0], 0), "@s");
+        assert_eq!(style(&layers[1], 0), "PEN(c:#00FF00FF)");
     }
 }

@@ -773,6 +773,20 @@ reads it.
   strings (`PEN(c:#FF0000FF,w:2.000000px);BRUSH(fc:#00FF0040)`), and written back as KML styles;
   OGR's null brush (`BRUSH(id:"ogr-brush-1")`) and null pen (`PEN(id:"ogr-pen-1")`) are written as
   PolyStyle `<fill>0</fill>` and `<outline>0</outline>`.
+- **KML shared styles** are kept as GDAL's LIBKML driver keeps them: a placemark that only refers
+  to a style of its document has `@id` in `OGR_STYLE`, and the definitions make the dataset's style
+  table (Rust `VectorDataset::style_table`, Python `style_table`, JavaScript `styleTable`), a
+  `StyleMap` standing for its `normal` style. Give the table back (Rust and Python layers
+  `style_table`; Python `VectorDataset.write`, JavaScript `toBytes` and `terrio convert` do so
+  themselves) to write shared `<Style id>` elements. Output in other formats and other CLI commands
+  get each feature's style in place of `@id` (`VectorDataset::resolve_styles`). JavaScript
+  operations that make a new dataset keep `@id` without the table.
+- **Known differences from GDAL 3.13** when reading KML styles, where KML says more than GDAL
+  keeps: `<fill>0</fill>` reads as OGR's null brush (`BRUSH(id:"ogr-brush-1")`, without the
+  PolyStyle color) and `<outline>0</outline>` as its null pen, where GDAL ignores both. A
+  placemark's inline sub-styles merge field by field over its shared style, as KML viewers merge
+  them, where GDAL takes the inline style alone. A `styleUrl` into another document of a KMZ
+  resolves against that document, relative to the referring one, where GDAL keeps the URL.
 
 ### CAD drawings (DWG and DXF)
 

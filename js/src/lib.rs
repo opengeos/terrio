@@ -288,6 +288,8 @@ thread_local! {
 pub struct Dataset {
     handle: u32,
     inner: Rc<RefCell<Inner>>,
+    /// The shared styles of a KML or KMZ document, by id.
+    style_table: Vec<(String, String)>,
 }
 
 impl Drop for Dataset {
@@ -305,7 +307,7 @@ impl Dataset {
             h
         });
         DATASETS.with(|d| d.borrow_mut().insert(handle, Rc::downgrade(&inner)));
-        Self { handle, inner }
+        Self { handle, inner, style_table: Vec::new() }
     }
 
     /// A raster dataset in memory.
@@ -321,6 +323,13 @@ impl Dataset {
     /// A vector dataset.
     pub(crate) fn from_layers(layers: Vec<Layer>, driver: VectorDriver) -> Self {
         Self::new(Inner::Vector(layers, driver))
+    }
+
+    /// A vector dataset as a driver read it, with its style table.
+    pub(crate) fn from_vector(v: terrio::VectorDataset) -> Self {
+        let mut ds = Self::from_layers(v.layers, v.driver);
+        ds.style_table = v.style_table;
+        ds
     }
 
     /// The dataset a JavaScript value is, when it is one.
@@ -377,7 +386,7 @@ pub fn open(bytes: Vec<u8>, filename: &str) -> Result<Dataset, JsError> {
     }
     Ok(match terrio::memory::open_bytes(bytes, filename).map_err(js_err)? {
         terrio::Dataset::Raster(r) => Dataset::from_raster(r),
-        terrio::Dataset::Vector(v) => Dataset::from_layers(v.layers, v.driver),
+        terrio::Dataset::Vector(v) => Dataset::from_vector(v),
     })
 }
 
@@ -420,7 +429,7 @@ pub fn open_vector(bytes: Vec<u8>, filename: &str, options: JsValue) -> Result<D
         }
     }
     let v = terrio::memory::open_vector_bytes(bytes, filename, &open).map_err(js_err)?;
-    Ok(Dataset::from_layers(v.layers, v.driver))
+    Ok(Dataset::from_vector(v))
 }
 
 /// Opens a Zarr store (v2 or v3, GeoZarr conventions included) from its files: a `Map` or an
@@ -525,6 +534,19 @@ pub fn from_arrow_ipc(bytes: Vec<u8>, name: Option<String>) -> Result<Dataset, J
 
 #[wasm_bindgen]
 impl Dataset {
+    /// The shared styles of a KML or KMZ document, `{ id: "PEN(...)" }`, in document order. Features
+    /// using one have `@id` in their `OGR_STYLE` field. Empty for other formats. `toBytes` writes
+    /// them to KML and KMZ; for other formats it gives each feature its style.
+    #[wasm_bindgen(getter, js_name = styleTable)]
+    pub fn style_table(&self) -> js_sys::Object {
+        let table = js_sys::Object::new();
+        for (id, style) in &self.style_table {
+            // A plain object accepts any string key.
+            let _ = js_sys::Reflect::set(&table, &JsValue::from_str(id), &JsValue::from_str(style));
+        }
+        table
+    }
+
     /// `"raster"` or `"vector"`.
     #[wasm_bindgen(getter)]
     pub fn kind(&self) -> String {
@@ -565,7 +587,7 @@ impl Dataset {
                 to_js(&terrio::info::Info::Raster(Box::new(info)))
             }
             Inner::Vector(layers, driver) => {
-                let ds = terrio::Dataset::Vector(terrio::VectorDataset { layers: layers.clone(), driver: *driver });
+                let ds = terrio::Dataset::Vector(terrio::VectorDataset::new(layers.clone(), *driver));
                 to_js(&terrio::info::info(&ds, &options))
             }
         }
@@ -837,6 +859,15 @@ impl Dataset {
                 options.citygml_version = o.citygml_version.as_deref().map(str::parse).transpose().map_err(js_err)?;
                 options.citygml_lod0_surface = o.citygml_lod0_surface.as_deref().map(str::parse).transpose().map_err(js_err)?;
                 options.kmz.resources = resources;
+                // A KML or KMZ output holds the shared styles; elsewhere each feature gets its style.
+                let output = options.driver.or_else(|| VectorDriver::for_extension(filename));
+                let out = if matches!(output, Some(VectorDriver::KML | VectorDriver::KMZ)) {
+                    options.style_table.clone_from(&self.style_table);
+                    out
+                } else {
+                    let ds = terrio::VectorDataset { layers: out, driver: VectorDriver::GeoJSON, style_table: self.style_table.clone() };
+                    ds.into_resolved_layers()
+                };
                 terrio::memory::write_vector_bytes(&out, filename, &options).map_err(js_err)
             }
         }

@@ -9,14 +9,25 @@
 //!
 //! Reading converts `<Style>` elements as GDAL's LIBKML driver does: `LineStyle` to `PEN`,
 //! `PolyStyle` to `BRUSH`, `IconStyle` to `SYMBOL` and `LabelStyle` to `LABEL`, colors from
-//! KML's `aabbggrr` to `#RRGGBBAA`. A `StyleMap` stands for its `normal` style. Writing goes the
-//! other way.
+//! KML's `aabbggrr` to `#RRGGBBAA`. A `StyleMap` stands for its `normal` style. A placemark that
+//! only refers to a style of its document keeps the reference (`@id`), and the document's
+//! definitions make the dataset's style table. Writing goes the other way.
+//!
+//! Three things follow KML rather than GDAL 3.13, which loses them: PolyStyle `fill` and `outline`
+//! become OGR's null brush and pen, a placemark's inline sub-styles merge over its shared style,
+//! and a `styleUrl` into another document of a KMZ resolves against that document.
 
 use super::xml::{self, Element};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 /// The name of the field holding feature styles.
 pub const FIELD: &str = "OGR_STYLE";
+
+/// OGR's null brush, for `<fill>0</fill>`.
+const NULL_BRUSH: &str = "ogr-brush-1";
+/// OGR's null pen, for `<outline>0</outline>`.
+const NULL_PEN: &str = "ogr-pen-1";
 
 /// A KML color (`aabbggrr`, optionally with `#`) as `#RRGGBBAA`.
 fn color(kml: &str) -> Option<String> {
@@ -38,41 +49,62 @@ fn kml_color(ogr: &str) -> Option<String> {
     Some(format!("{a}{}{}{}", &h[4..6], &h[2..4], &h[0..2]).to_ascii_lowercase())
 }
 
-fn num(e: &Element, name: &str) -> Option<f64> {
-    e.child_text(name)?.parse().ok()
+/// Whether a KML boolean (`0`, `false`) is off.
+fn is_off(v: &str) -> bool {
+    matches!(v.trim(), "0" | "false")
 }
 
 /// A `<Style>` element as an OGR style string; `None` when it sets nothing.
 pub fn from_kml(style: &Element) -> Option<String> {
+    merged(&[style])
+}
+
+/// The style a stack of `<Style>` elements makes, the first over the rest, as an OGR style string:
+/// each child of a sub-style (a `LineStyle`'s `width`, say) comes from the first element setting
+/// it, as KML viewers merge an inline style over a shared one. `None` when they set nothing.
+fn merged(stack: &[&Element]) -> Option<String> {
+    // The first value of a sub-style's child down the stack.
+    let child = |sub: &str, name: &str| stack.iter().find_map(|s| s.child(sub)?.child(name));
+    let text = |sub: &str, name: &str| stack.iter().find_map(|s| s.child(sub)?.child_text(name));
+    let number = |sub: &str, name: &str| text(sub, name)?.parse::<f64>().ok();
+    let has = |sub: &str| stack.iter().any(|s| s.child(sub).is_some());
     let mut tools = Vec::new();
-    if let Some(l) = style.child("LineStyle") {
+    // PolyStyle's flags: GDAL ignores them, losing an outline-only polygon.
+    let no_fill = text("PolyStyle", "fill").is_some_and(is_off);
+    let no_outline = text("PolyStyle", "outline").is_some_and(is_off);
+    if has("LineStyle") || no_outline {
         let mut p = Vec::new();
-        if let Some(c) = l.child_text("color").and_then(color) {
+        if let Some(c) = text("LineStyle", "color").and_then(color) {
             p.push(format!("c:{c}"));
         }
-        if let Some(w) = num(l, "width") {
+        if let Some(w) = number("LineStyle", "width") {
             p.push(format!("w:{w:.6}px"));
+        }
+        if no_outline {
+            p.push(format!("id:\"{NULL_PEN}\""));
         }
         tools.push(("PEN", p));
     }
-    if let Some(poly) = style.child("PolyStyle") {
-        tools.push(("BRUSH", poly.child_text("color").and_then(color).map(|c| vec![format!("fc:{c}")]).unwrap_or_default()));
+    if no_fill {
+        tools.push(("BRUSH", vec![format!("id:\"{NULL_BRUSH}\"")]));
+    } else if has("PolyStyle") {
+        tools.push(("BRUSH", text("PolyStyle", "color").and_then(color).map(|c| vec![format!("fc:{c}")]).unwrap_or_default()));
     }
-    if let Some(i) = style.child("IconStyle") {
+    if has("IconStyle") {
         let mut p = Vec::new();
-        if let Some(href) = i.child("Icon").and_then(|ic| ic.child_text("href")) {
+        if let Some(href) = child("IconStyle", "Icon").and_then(|ic| ic.child_text("href")) {
             p.push(format!("id:\"{href}\""));
         }
-        if let Some(a) = num(i, "heading") {
+        if let Some(a) = number("IconStyle", "heading") {
             p.push(format!("a:{a:.6}"));
         }
-        if let Some(c) = i.child_text("color").and_then(color) {
+        if let Some(c) = text("IconStyle", "color").and_then(color) {
             p.push(format!("c:{c}"));
         }
-        if let Some(s) = num(i, "scale") {
+        if let Some(s) = number("IconStyle", "scale") {
             p.push(format!("s:{s:.6}"));
         }
-        if let Some(h) = i.child("hotSpot") {
+        if let Some(h) = child("IconStyle", "hotSpot") {
             for (k, a) in [("dx", "x"), ("dy", "y")] {
                 if let Some(v) = h.attr(a).and_then(|v| v.trim().parse::<f64>().ok()) {
                     p.push(format!("{k}:{v:.6}"));
@@ -81,12 +113,12 @@ pub fn from_kml(style: &Element) -> Option<String> {
         }
         tools.push(("SYMBOL", p));
     }
-    if let Some(l) = style.child("LabelStyle") {
+    if has("LabelStyle") {
         let mut p = Vec::new();
-        if let Some(c) = l.child_text("color").and_then(color) {
+        if let Some(c) = text("LabelStyle", "color").and_then(color) {
             p.push(format!("c:{c}"));
         }
-        if let Some(s) = num(l, "scale") {
+        if let Some(s) = number("LabelStyle", "scale") {
             p.push(format!("w:{:.6}", s * 100.0));
         }
         tools.push(("LABEL", p));
@@ -95,54 +127,183 @@ pub fn from_kml(style: &Element) -> Option<String> {
     (!s.is_empty()).then(|| s.join(";"))
 }
 
-/// The styles a document defines (`<Style>` and `<StyleMap>` with an id, anywhere), by id, as
-/// OGR style strings. A style map stands for its `normal` style.
-pub fn table(root: &Element) -> Vec<(String, String)> {
-    let mut styles: Vec<(String, String)> = Vec::new();
-    let mut maps: Vec<&Element> = Vec::new();
-    fn walk<'a>(e: &'a Element, styles: &mut Vec<(String, String)>, maps: &mut Vec<&'a Element>) {
-        for c in &e.children {
-            match c.name.as_str() {
-                "Style" => {
-                    if let (Some(id), Some(s)) = (c.attr("id"), from_kml(c)) {
-                        styles.push((id.to_string(), s));
-                    }
-                }
-                "StyleMap" if c.attr("id").is_some() => maps.push(c),
-                "Placemark" => {}
-                _ => walk(c, styles, maps),
-            }
-        }
-    }
-    walk(root, &mut styles, &mut maps);
-    for m in maps {
-        let normal = m.children_named("Pair").find(|p| p.child_text("key") == Some("normal"));
-        let s = normal.and_then(|p| match p.child("Style") {
-            Some(st) => from_kml(st),
-            None => {
-                let url = p.child_text("styleUrl")?;
-                let id = url.strip_prefix('#')?;
-                styles.iter().find(|(k, _)| k == id).map(|(_, v)| v.clone())
-            }
-        });
-        if let (Some(id), Some(s)) = (m.attr("id"), s) {
-            styles.push((id.to_string(), s));
-        }
-    }
-    styles
+/// The other KML documents of a KMZ archive, by member name, that `styleUrl`s can point into.
+pub type Members = std::collections::BTreeMap<String, Element>;
+
+/// How deep `StyleMap`s may refer to each other, which also ends a cycle of them.
+const MAX_STYLE_DEPTH: usize = 8;
+
+/// The definitions of a document (`<Style>` and `<StyleMap>` with an id), first of an id winning.
+type Definitions<'a> = HashMap<&'a str, &'a Element>;
+
+/// One KML document's styles, as a placemark's `styleUrl` finds them.
+pub struct Styles<'a> {
+    /// The document's own definitions, in document order.
+    own: Vec<&'a Element>,
+    /// The document's name in its KMZ archive; empty outside one.
+    member: &'a str,
+    /// The definitions of each document, by name, this one's included.
+    documents: HashMap<&'a str, Definitions<'a>>,
+    /// Ids whose definition here differs from the dataset's style table, which `@id` could not
+    /// tell apart: this document's placemarks get the style itself.
+    shadowed: Vec<String>,
 }
 
-/// A placemark's style: its own `<Style>`, else its `styleUrl` resolved through the document's
-/// styles (`@id` when the document does not define it; other documents' URLs as they are).
-pub fn of_feature(f: &Element, table: &[(String, String)]) -> Option<String> {
-    if let Some(s) = f.child("Style").and_then(from_kml) {
-        return Some(s);
+impl<'a> Styles<'a> {
+    /// The styles of the document at `root`, which is `member` of a KMZ archive holding `members`.
+    pub fn new(root: &'a Element, member: &'a str, members: &'a Members) -> Self {
+        let mut own = Vec::new();
+        collect_definitions(root, &mut own);
+        let mut documents: HashMap<&'a str, Definitions<'a>> = HashMap::with_capacity(members.len() + 1);
+        for (name, document) in members {
+            let mut defined = Vec::new();
+            collect_definitions(document, &mut defined);
+            documents.insert(name, index(&defined));
+        }
+        documents.insert(member, index(&own));
+        Self { own, member, documents, shadowed: Vec::new() }
     }
-    let url = f.child_text("styleUrl")?;
-    match url.strip_prefix('#') {
-        Some(id) => Some(table.iter().find(|(k, _)| k == id).map_or_else(|| format!("@{id}"), |(_, v)| v.clone())),
-        None => Some(url.to_string()),
+
+    /// Adds the document's styles to the dataset's style table. An id another document of the
+    /// archive already defines differently keeps that definition in the table; the placemarks of
+    /// this document that use it get the style itself.
+    pub fn add_to(&mut self, table: &mut Vec<(String, String)>) {
+        for (id, style) in self.table() {
+            match table.iter().find(|(k, _)| *k == id) {
+                Some((_, known)) if *known != style => self.shadowed.push(id),
+                Some(_) => {}
+                None => table.push((id, style)),
+            }
+        }
     }
+
+    /// The styles the document defines, by id, as OGR style strings, in document order. A style
+    /// map stands for its `normal` style.
+    fn table(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for e in &self.own {
+            let Some(id) = e.attr("id") else { continue };
+            if out.iter().any(|(k, _)| k == id) {
+                continue;
+            }
+            let mut stack = Vec::new();
+            self.resolve(e, self.member, 0, &mut stack);
+            if let Some(s) = merged(&stack) {
+                out.push((id.to_string(), s));
+            }
+        }
+        out
+    }
+
+    /// A placemark's style: a reference to a style in the same document stays a reference
+    /// (`@id`), as in GDAL. Beside an inline `<Style>`, the sub-styles merge, inline over shared.
+    /// A `styleUrl` into another document of the KMZ resolves against it, relative to this one;
+    /// other URLs stay as they are.
+    pub fn of_feature(&self, f: &Element) -> Option<String> {
+        let inline = f.child("Style").filter(|s| !s.children.is_empty());
+        let Some(url) = f.child_text("styleUrl").map(str::trim) else { return inline.and_then(from_kml) };
+        let mut stack: Vec<&Element> = Vec::new();
+        self.follow(url, self.member, 0, &mut stack);
+        let own_reference = inline.is_none() && url.strip_prefix('#').is_some_and(|id| !self.shadowed.iter().any(|s| s == id));
+        if own_reference || (inline.is_none() && stack.is_empty()) {
+            return Some(reference(url));
+        }
+        stack.splice(0..0, inline);
+        merged(&stack).or_else(|| Some(reference(url)))
+    }
+
+    /// Pushes the `<Style>` elements a definition comes to, strongest first: a `<Style>` itself,
+    /// or a `StyleMap`'s `normal` pair (its inline style over the style its `styleUrl` names).
+    fn resolve<'b>(&'b self, e: &'b Element, member: &str, depth: usize, out: &mut Vec<&'b Element>) {
+        if e.name == "Style" {
+            out.push(e);
+            return;
+        }
+        let Some(pair) = e.children_named("Pair").find(|p| p.child_text("key").map(str::trim) == Some("normal")) else { return };
+        out.extend(pair.child("Style"));
+        if let Some(url) = pair.child_text("styleUrl") {
+            self.follow(url.trim(), member, depth + 1, out);
+        }
+    }
+
+    /// Pushes the `<Style>` elements a `styleUrl` leads to; none when it leads nowhere in the
+    /// archive.
+    fn follow<'b>(&'b self, url: &str, member: &str, depth: usize, out: &mut Vec<&'b Element>) {
+        if depth >= MAX_STYLE_DEPTH {
+            return;
+        }
+        let Some((document, id)) = url.split_once('#') else { return };
+        let target = if document.is_empty() { Some(member.to_string()) } else { member_of(document, member) };
+        let Some((name, definitions)) = target.and_then(|t| self.documents.get_key_value(t.as_str())) else { return };
+        if let Some(e) = definitions.get(id) {
+            self.resolve(e, name, depth, out);
+        }
+    }
+}
+
+/// How an unresolved `styleUrl` reads in a style field.
+fn reference(url: &str) -> String {
+    url.strip_prefix('#').map_or_else(|| url.to_string(), |id| format!("@{id}"))
+}
+
+/// Every `<Style>` and `<StyleMap>` with an id below `e`, in document order. Placemarks' own
+/// styles are left out: they are not shared.
+fn collect_definitions<'a>(e: &'a Element, out: &mut Vec<&'a Element>) {
+    for c in &e.children {
+        match c.name.as_str() {
+            "Style" | "StyleMap" if c.attr("id").is_some() => out.push(c),
+            "Placemark" | "Style" | "StyleMap" => {}
+            _ => collect_definitions(c, out),
+        }
+    }
+}
+
+/// Definitions by id, the first of an id winning.
+fn index<'a>(defined: &[&'a Element]) -> Definitions<'a> {
+    let mut by_id = Definitions::with_capacity(defined.len());
+    for e in defined {
+        if let Some(id) = e.attr("id") {
+            by_id.entry(id).or_insert(*e);
+        }
+    }
+    by_id
+}
+
+/// The member a relative link in document `from` names; `None` when it leaves the archive.
+pub fn member_of(link: &str, from: &str) -> Option<String> {
+    if link.contains("://") || link.starts_with('/') {
+        return None;
+    }
+    let mut parts: Vec<&str> = from.split('/').collect();
+    parts.pop();
+    for part in link.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// The members a document's `styleUrl`s name, directly: the other documents to load to resolve
+/// them. Only `.kml` members count.
+pub fn linked_members(root: &Element, from: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    root.find_all("styleUrl", &mut urls);
+    let mut out: Vec<String> = Vec::new();
+    for url in urls {
+        let Some((document, _)) = url.text.trim().split_once('#') else { continue };
+        if !document.to_ascii_lowercase().ends_with(".kml") {
+            continue;
+        }
+        if let Some(name) = member_of(document, from).filter(|n| !out.contains(n)) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 /// Splits on `sep` outside quotes and parentheses.
@@ -263,6 +424,29 @@ pub fn to_kml(style: &str) -> String {
     s
 }
 
+/// A `<Style>` element for each id of a style table that `wanted` accepts, one per line.
+pub fn definitions(table: &[(String, String)], wanted: impl Fn(&str) -> bool) -> String {
+    let mut s = String::new();
+    for (id, style) in table.iter().filter(|(id, _)| wanted(id)) {
+        let _ = writeln!(s, "<Style id=\"{}\">{}</Style>", xml::escape(id), to_kml(style));
+    }
+    s
+}
+
+/// Replaces each `@id` of the layers' `OGR_STYLE` fields with its definition in a style table.
+pub fn resolve_references(layers: &mut [wbvector::Layer], table: &[(String, String)]) {
+    for layer in layers {
+        let Some(i) = layer.schema.field_index(FIELD) else { continue };
+        for feature in &mut layer.features {
+            let Some(wbvector::FieldValue::Text(value)) = feature.attributes.get_mut(i) else { continue };
+            let definition = value.strip_prefix('@').and_then(|id| table.iter().find(|(k, _)| k == id));
+            if let Some((_, style)) = definition {
+                value.clone_from(style);
+            }
+        }
+    }
+}
+
 /// Whether a style value refers to a style rather than describing one: `@name`, or another
 /// document's URL.
 pub fn is_reference(v: &str) -> bool {
@@ -283,7 +467,8 @@ mod tests {
             </Document></kml>"#,
         )
         .unwrap();
-        let t = table(&doc);
+        let members = Members::new();
+        let t = Styles::new(&doc, "", &members).table();
         let get = |k: &str| t.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         // As GDAL's LIBKML driver gives them.
         assert_eq!(
@@ -330,5 +515,87 @@ mod tests {
         // Other brushes and pens write neither flag.
         let plain = to_kml("PEN(c:#FF0000FF);BRUSH(fc:#00FF007F)");
         assert!(!plain.contains("<fill>") && !plain.contains("<outline>"), "{plain}");
+    }
+
+    /// The style of each placemark of a document.
+    fn styles_of(kml: &str) -> Vec<Option<String>> {
+        let doc = xml::parse(kml).unwrap();
+        let members = Members::new();
+        let styles = Styles::new(&doc, "", &members);
+        let mut placemarks = Vec::new();
+        doc.find_all("Placemark", &mut placemarks);
+        placemarks.into_iter().map(|p| styles.of_feature(p)).collect()
+    }
+
+    #[test]
+    fn fill_and_outline_flags_survive_reading_and_writing() {
+        for (poly, expected) in [
+            ("<PolyStyle><color>7f00ff00</color><fill>0</fill></PolyStyle>", r#"BRUSH(id:"ogr-brush-1")"#),
+            ("<PolyStyle><fill>false</fill></PolyStyle>", r#"BRUSH(id:"ogr-brush-1")"#),
+            ("<PolyStyle><outline>0</outline></PolyStyle>", r#"PEN(id:"ogr-pen-1")"#),
+            ("<LineStyle><width>2</width></LineStyle><PolyStyle><outline>0</outline></PolyStyle>", r#"PEN(w:2.000000px,id:"ogr-pen-1")"#),
+            ("<PolyStyle><color>7f00ff00</color><fill>1</fill><outline>1</outline></PolyStyle>", "BRUSH(fc:#00FF007F)"),
+        ] {
+            let style = xml::parse(&format!("<Style>{poly}</Style>")).unwrap();
+            let ogr = from_kml(&style).unwrap();
+            assert_eq!(ogr, expected);
+            let back = xml::parse(&format!("<Style>{}</Style>", to_kml(&ogr))).unwrap();
+            assert_eq!(from_kml(&back).as_deref(), Some(expected), "{poly}");
+        }
+    }
+
+    #[test]
+    fn a_reference_stays_one_and_inline_sub_styles_merge_over_it() {
+        let got = styles_of(
+            r##"<kml><Document>
+            <Style id="base"><LineStyle><color>ff0000ff</color><width>2</width></LineStyle><PolyStyle><color>7f00ff00</color><fill>0</fill></PolyStyle></Style>
+            <StyleMap id="map"><Pair><key>normal</key><styleUrl>#base</styleUrl></Pair></StyleMap>
+            <Placemark><styleUrl>#base</styleUrl></Placemark>
+            <Placemark><styleUrl>#map</styleUrl></Placemark>
+            <Placemark><styleUrl>#base</styleUrl><Style><LineStyle><width>4</width></LineStyle></Style></Placemark>
+            <Placemark><styleUrl>#base</styleUrl><Style><PolyStyle><fill>1</fill></PolyStyle></Style></Placemark>
+            <Placemark><styleUrl>#base</styleUrl><Style/></Placemark>
+            <Placemark><styleUrl>#missing</styleUrl></Placemark>
+            <Placemark><styleUrl>#missing</styleUrl><Style><LineStyle><width>4</width></LineStyle></Style></Placemark>
+            <Placemark><styleUrl>http://x/s.kml#a</styleUrl></Placemark>
+            <Placemark/>
+            </Document></kml>"##,
+        );
+        let get = |i: usize| got[i].as_deref();
+        assert_eq!(get(0), Some("@base"));
+        assert_eq!(get(1), Some("@map"));
+        // The width is the placemark's; the color and the fill flag are the shared style's.
+        assert_eq!(get(2), Some(r#"PEN(c:#FF0000FF,w:4.000000px);BRUSH(id:"ogr-brush-1")"#));
+        // An inline flag turns the shared one back on, and the shared color with it.
+        assert_eq!(get(3), Some("PEN(c:#FF0000FF,w:2.000000px);BRUSH(fc:#00FF007F)"));
+        assert_eq!(get(4), Some("@base"));
+        assert_eq!(get(5), Some("@missing"));
+        assert_eq!(get(6), Some("PEN(w:4.000000px)"));
+        assert_eq!(get(7), Some("http://x/s.kml#a"));
+        assert_eq!(get(8), None);
+    }
+
+    #[test]
+    fn style_maps_in_a_cycle_end() {
+        let doc = xml::parse(
+            r##"<kml><Document>
+            <StyleMap id="a"><Pair><key>normal</key><styleUrl>#b</styleUrl></Pair></StyleMap>
+            <StyleMap id="b"><Pair><key>normal</key><styleUrl>#a</styleUrl></Pair></StyleMap>
+            </Document></kml>"##,
+        )
+        .unwrap();
+        let members = Members::new();
+        assert!(Styles::new(&doc, "", &members).table().is_empty());
+    }
+
+    #[test]
+    fn links_resolve_relative_to_their_document() {
+        assert_eq!(member_of("styles.kml", "doc.kml").as_deref(), Some("styles.kml"));
+        assert_eq!(member_of("styles.kml", "layers/a.kml").as_deref(), Some("layers/styles.kml"));
+        assert_eq!(member_of("../styles.kml", "layers/a.kml").as_deref(), Some("styles.kml"));
+        assert_eq!(member_of("./s/styles.kml", "doc.kml").as_deref(), Some("s/styles.kml"));
+        assert_eq!(member_of("../styles.kml", "doc.kml"), None);
+        assert_eq!(member_of("http://x/styles.kml", "doc.kml"), None);
+        assert_eq!(member_of("/styles.kml", "doc.kml"), None);
     }
 }

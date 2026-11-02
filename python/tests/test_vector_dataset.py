@@ -225,3 +225,40 @@ def test_collision_errors_are_clear():
         terrio.concat([a, b], mode="single", source_layer_field_name="name")
     with pytest.raises(terrio.InvalidArgumentError, match="duplicate layer name"):
         terrio.rename_layer([a, b], input_layer="a", output_layer="b")
+
+
+STYLED_KML = b"""<kml><Document>
+  <Style id="base"><LineStyle><color>ff0000ff</color><width>2</width></LineStyle></Style>
+  <Placemark><name>shared</name><styleUrl>#base</styleUrl><Point><coordinates>30,-2</coordinates></Point></Placemark>
+</Document></kml>"""
+BASE_STYLE = "PEN(c:#FF0000FF,w:2.000000px)"
+
+
+def ogr_style(dataset):
+    return dataset[0].to_geojson()["features"][0]["properties"]["OGR_STYLE"]
+
+
+def test_kml_style_table_is_read_and_written(tmp_path):
+    source = tmp_path / "a.kml"
+    source.write_bytes(STYLED_KML)
+    dataset = terrio.open_vector(str(source))
+    assert dataset.style_table == [("base", BASE_STYLE)]
+    assert ogr_style(dataset) == "@base"
+
+    # The dataset writes its own table to KML and KMZ.
+    for name in ("out.kml", "out.kmz"):
+        dataset.write(str(tmp_path / name))
+        back = terrio.open_vector(str(tmp_path / name))
+        assert back.style_table == [("base", BASE_STYLE)]
+        assert ogr_style(back) == "@base"
+
+    # A bare layer is given the table.
+    bytes_out = dataset[0].to_bytes("out.kml", style_table=dataset.style_table)
+    assert b'<Style id="base">' in bytes_out
+    assert b"<Style id=" not in dataset[0].to_bytes("out.kml")
+    with pytest.raises(terrio.InvalidArgumentError, match="style_table"):
+        dataset[0].to_bytes("out.geojson", style_table=dataset.style_table)
+
+    # Other formats have no table to refer to: each feature gets its style.
+    dataset.write(str(tmp_path / "out.geojson"))
+    assert ogr_style(terrio.open_vector(str(tmp_path / "out.geojson"))) == BASE_STYLE
