@@ -467,7 +467,7 @@ fn layer_bytes(layer: &Layer) -> usize {
 
 fn empty_layer(name: &str, schema: &gml::ApplicationSchema<'_>, srs: Option<&str>) -> Layer {
     let mut layer = Layer::new(name);
-    layer.add_field(FieldDef::new("gml_id", FieldType::Text).not_null());
+    layer.add_field(FieldDef::new("gml_id", FieldType::Text));
     for (name, scalar) in schema.scalars() {
         layer.add_field(FieldDef::new(name, scalar.field_type));
     }
@@ -520,6 +520,35 @@ fn validate_simple(
             || node.name == "patches" && node.children.len() > 1
         {
             return Err(Error::Unsupported("WFS: linked, curved or composite surface geometries are not supported".into()));
+        }
+        let collection_kind = match node.name.as_str() {
+            "MultiPoint" => Some(0),
+            "MultiLineString" | "MultiCurve" => Some(1),
+            "MultiPolygon" | "MultiSurface" | "CompositeSurface" => Some(2),
+            "MultiGeometry" | "GeometryCollection" => Some(3),
+            _ => None,
+        };
+        if let Some(kind) = collection_kind {
+            for member in &node.children {
+                if !member.name.ends_with("Member") && !member.name.ends_with("Members") {
+                    continue;
+                }
+                if member.name.ends_with("Member") && member.children.len() > 1 {
+                    return Err(invalid("a geometry member contains multiple geometries"));
+                }
+                for child in &member.children {
+                    let geometry = gml::geometry(child, 2).ok_or_else(|| invalid("a geometry member could not be decoded"))?;
+                    let compatible = match kind {
+                        0 => matches!(geometry, Geometry::Point(_) | Geometry::MultiPoint(_)),
+                        1 => matches!(geometry, Geometry::LineString(_) | Geometry::MultiLineString(_)),
+                        2 => matches!(geometry, Geometry::Polygon { .. } | Geometry::MultiPolygon(_)),
+                        _ => true,
+                    };
+                    if !compatible {
+                        return Err(invalid("a geometry member is incompatible with its collection"));
+                    }
+                }
+            }
         }
         for child in &node.children {
             geometry_tree(child, expected_crs, page_srs)?;
@@ -675,6 +704,11 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
         if page.features.is_empty() {
             if matched.is_some_and(|total| offset < total) {
                 return Err(invalid(format!("empty page at offset {offset} before the advertised feature count")));
+            }
+            if layer.crs.is_none()
+                && let Some(crs) = expected_crs.as_ref()
+            {
+                crs.apply_to_layer(&mut layer);
             }
             break;
         }

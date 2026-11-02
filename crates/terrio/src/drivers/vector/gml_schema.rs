@@ -190,9 +190,9 @@ fn builtin(name: &str) -> Result<Scalar> {
         "string" => (FieldType::Text, Whitespace::Preserve),
         "normalizedString" => (FieldType::Text, Whitespace::Replace),
         "integer" | "int" | "long" | "short" | "byte" | "nonNegativeInteger" | "positiveInteger" | "negativeInteger"
-        | "nonPositiveInteger" | "unsignedInt" | "unsignedShort" | "unsignedByte" | "unsignedLong" => {
-            (FieldType::Integer, Whitespace::Collapse)
-        }
+        | "nonPositiveInteger" | "unsignedInt" | "unsignedShort" | "unsignedByte" => (FieldType::Integer, Whitespace::Collapse),
+        // Vector integers are signed i64; preserve every unsigned 64-bit value as text.
+        "unsignedLong" => (FieldType::Text, Whitespace::Collapse),
         "decimal" | "double" | "float" => (FieldType::Float, Whitespace::Collapse),
         "boolean" => (FieldType::Boolean, Whitespace::Collapse),
         "date" => (FieldType::Date, Whitespace::Collapse),

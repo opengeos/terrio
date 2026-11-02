@@ -197,6 +197,12 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                 if mode == "cyclic-base" {
                     xsd = xsd.replace(r#"base="gml:AbstractFeatureType""#, &format!(r#"base="t:{name}Type""#));
                 }
+                if mode == "omitted-form" {
+                    xsd = xsd.replace(r#" elementFormDefault="qualified""#, "");
+                }
+                if mode == "unsigned-long" {
+                    xsd = xsd.replace(r#"name="rank" type="xs:int""#, r#"name="rank" type="xs:unsignedLong""#);
+                }
                 if mode == "unqualified" {
                     xsd = xsd.replace(r#"elementFormDefault="qualified""#, r#"elementFormDefault="unqualified""#);
                 }
@@ -215,7 +221,9 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                 }
                 xsd
             } else if operation.eq_ignore_ascii_case("GetFeature") {
-                if matches!(mode, "exception" | "exception-status" | "retry-exception") {
+                if mode == "retry-exception" && record.lock().unwrap().iter().filter(|request| request.contains("GetFeature")).count() > 1 {
+                    r#"<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows"><ows:Exception><ows:ExceptionText>Final exception after retry</ows:ExceptionText></ows:Exception></ows:ExceptionReport>"#.into()
+                } else if matches!(mode, "exception" | "exception-status" | "retry-exception") {
                     r#"<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows"><ows:Exception><ows:ExceptionText>Layer unavailable</ows:ExceptionText></ows:Exception></ows:ExceptionReport>"#.into()
                 } else {
                     let offset = if matches!(mode, "repeat" | "repeat-no-ids") {
@@ -241,11 +249,40 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                         if matches!(mode, "bad-integer" | "bad-float" | "bad-boolean") {
                             data = data.replace("<t:rank>1</t:rank>", "<t:rank>abc</t:rank>");
                         }
+                        if mode == "unsigned-long" {
+                            data = data.replace("<t:rank>1</t:rank>", "<t:rank>18446744073709551615</t:rank>");
+                        }
+                        if mode == "no-default-empty-crs" {
+                            data = data.replace("</wfs:FeatureCollection>", r#"<gml:boundedBy><gml:Envelope srsName="urn:ogc:def:crs:EPSG::4326"><gml:lowerCorner>49 9</gml:lowerCorner><gml:upperCorner>52 12</gml:upperCorner></gml:Envelope></gml:boundedBy></wfs:FeatureCollection>"#);
+                        }
+                        if mode.starts_with("member-") {
+                            let (container, member, geometry) = match mode {
+                                "member-point" => ("MultiPoint", "pointMember", "LineString"),
+                                "member-point-array" => ("MultiPoint", "pointMembers", "LineString"),
+                                "member-line" => ("MultiCurve", "curveMember", "Point"),
+                                "member-surface" => ("MultiSurface", "surfaceMember", "Point"),
+                                "member-invalid-point" => ("MultiPoint", "pointMember", "Point"),
+                                "member-valid-point" => ("MultiPoint", "pointMember", "Point"),
+                                _ => unreachable!(),
+                            };
+                            let position = if mode == "member-invalid-point" { "invalid" } else { "50 10" };
+                            let replacement = format!(
+                                "<t:geom><gml:{container} srsName=\"urn:ogc:def:crs:EPSG::4326\"><gml:{member}><gml:{geometry}><gml:pos>{position}</gml:pos></gml:{geometry}></gml:{member}></gml:{container}></t:geom>"
+                            );
+                            for i in 0..5 {
+                                data = data.replace(&format!(r#"<t:geom><gml:Point srsName="urn:ogc:def:crs:EPSG::4326"><gml:pos>{} {}</gml:pos></gml:Point></t:geom>"#,50+i,10+i), &replacement);
+                            }
+                        }
                         if mode == "boolean" {
                             for i in 1..=5 {
                                 data = data.replace(
                                     &format!("<t:rank>{i}</t:rank>"),
-                                    if i % 2 == 1 { "<t:rank>true</t:rank>" } else { "<t:rank>0</t:rank>" },
+                                    match i {
+                                        1 => "<t:rank>true</t:rank>",
+                                        2 => "<t:rank>0</t:rank>",
+                                        3 => "<t:rank>1</t:rank>",
+                                        _ => "<t:rank>false</t:rank>",
+                                    },
                                 );
                             }
                         }
@@ -255,7 +292,7 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                         if matches!(mode, "named-scalar" | "gml-code") {
                             data = data.replace("<t:rank>1</t:rank>", "<t:rank>  007  </t:rank>");
                         }
-                        if mode == "unqualified" {
+                        if matches!(mode, "unqualified" | "omitted-form") {
                             for property in ["geom", "name", "rank"] {
                                 data = data.replace(&format!("t:{property}"), property);
                             }
@@ -434,7 +471,7 @@ fn selected_ranges_and_empty_layers_keep_schema_and_crs() {
     options.wfs.page_size = 1;
     let ds = terrio::open_vector(&source, &options).unwrap();
     assert_eq!(ds.layers[0].features.len(), 2);
-    assert!(!ds.layers[0].schema.fields()[0].nullable);
+    assert!(ds.layers[0].schema.fields()[0].nullable);
     assert_eq!(ds.layers[0].features[0].attributes[2], FieldValue::Integer(2));
     assert_eq!(ds.layers[0].features.iter().map(|feature| feature.fid).collect::<Vec<_>>(), [1, 2]);
     let empty = terrio::open_vector(&source, &VectorOpenOptions { layers: vec!["empty".into()], ..Default::default() }).unwrap();
@@ -558,7 +595,7 @@ fn schema_namespace_aliases_preserve_fields_and_empty_geometry_types() {
     for layer in &ds.layers {
         assert_eq!(layer.schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["gml_id", "name", "rank"]);
         assert_eq!(layer.geom_type, Some(wbvector::GeometryType::Point));
-        assert!(!layer.schema.fields()[0].nullable);
+        assert!(layer.schema.fields()[0].nullable);
     }
     assert_eq!(ds.layers[1].features.len(), 0);
 }
@@ -593,7 +630,7 @@ fn anonymous_application_schemas_preserve_nonempty_and_empty_layers() {
     for layer in &ds.layers {
         assert_eq!(layer.schema.fields().len(), 3);
         assert_eq!(layer.geom_type, Some(wbvector::GeometryType::Point));
-        assert!(!layer.schema.fields()[0].nullable);
+        assert!(layer.schema.fields()[0].nullable);
         assert_eq!(layer.schema.fields()[2].field_type, wbvector::FieldType::Integer);
     }
 }
@@ -710,7 +747,7 @@ fn ordinary_attributes_cannot_shadow_namespace_declarations() {
 
 #[test]
 fn schema_scalar_types_and_inheritance_preserve_values() {
-    for mode in ["named-scalar", "gml-code", "inherited", "unqualified", "form-override", "global-ref", "gml-metadata"] {
+    for mode in ["named-scalar", "gml-code", "inherited", "unqualified", "omitted-form", "form-override", "global-ref", "gml-metadata"] {
         let (source, _) = serve("2.0.0", mode);
         let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
         let ds = terrio::open_vector(&source, &options).unwrap_or_else(|error| panic!("{mode}: {error}"));
@@ -725,7 +762,7 @@ fn schema_scalar_types_and_inheritance_preserve_values() {
         let name = layer.schema.field_index("name").unwrap();
         assert_eq!(layer.features[0].attributes[name], FieldValue::Text("point1".into()), "{mode}");
         assert_eq!(layer.schema.fields().len(), 3, "{mode}");
-        assert!(matches!(layer.features[0].geometry, Some(Geometry::Point(_))), "{mode}");
+        assert_eq!(layer.features[0].geometry, Some(Geometry::point(10., 50.)), "{mode}");
     }
 }
 
@@ -828,7 +865,7 @@ fn transient_service_errors_retry_before_returning_exception() {
         let result = terrio::open_vector(&source, &options);
         terrio::config::pop_scope();
         let error = result.unwrap_err();
-        assert!(error.to_string().contains("Layer unavailable"), "{error}");
+        assert!(error.to_string().contains("Final exception after retry"), "{error}");
         assert_eq!(requests.lock().unwrap().len(), if direct { 2 } else { 4 });
     }
 }
@@ -843,10 +880,45 @@ fn declared_numeric_and_boolean_fields_refuse_malformed_values() {
             let dataset = result.unwrap();
             assert_eq!(dataset.layers[0].features[0].attributes[2], FieldValue::Boolean(true));
             assert_eq!(dataset.layers[0].features[1].attributes[2], FieldValue::Boolean(false));
+            assert_eq!(dataset.layers[0].features[2].attributes[2], FieldValue::Boolean(true));
+            assert_eq!(dataset.layers[0].features[3].attributes[2], FieldValue::Boolean(false));
         } else {
             let error = result.unwrap_err();
             assert!(matches!(error, terrio::Error::InvalidData(_)), "{mode}: {error}");
             assert!(error.to_string().contains("malformed value for field rank"), "{mode}: {error}");
+        }
+    }
+}
+
+#[test]
+fn unsigned_long_values_and_empty_response_crs_are_preserved() {
+    let (source, _) = serve("2.0.0", "unsigned-long");
+    for layer in ["roads", "empty"] {
+        let dataset = terrio::open_vector(&source, &VectorOpenOptions { layers: vec![layer.into()], ..Default::default() }).unwrap();
+        let layer = &dataset.layers[0];
+        assert_eq!(layer.schema.fields()[2].field_type, wbvector::FieldType::Text);
+        assert!(layer.schema.fields()[0].nullable);
+        if !layer.features.is_empty() {
+            assert_eq!(layer.features[0].attributes[2], FieldValue::Text("18446744073709551615".into()));
+        }
+    }
+    let (source, _) = serve("2.0.0", "no-default-empty-crs");
+    let dataset = terrio::open_vector(&source, &VectorOpenOptions { layers: vec!["empty".into()], ..Default::default() }).unwrap();
+    assert!(dataset.layers[0].features.is_empty());
+    assert_eq!(dataset.layers[0].crs_epsg(), Some(4326));
+}
+
+#[test]
+fn incompatible_multi_geometry_members_are_refused() {
+    for mode in ["member-point", "member-point-array", "member-line", "member-surface", "member-invalid-point", "member-valid-point"] {
+        let (source, _) = serve("2.0.0", mode);
+        let result = terrio::open_vector(&source, &VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() });
+        if mode == "member-valid-point" {
+            assert!(matches!(result.unwrap().layers[0].features[0].geometry, Some(Geometry::MultiPoint(_))));
+        } else {
+            let error = result.unwrap_err();
+            assert!(matches!(error, terrio::Error::InvalidData(_)), "{mode}: {error}");
+            assert!(error.to_string().contains("geometry member"), "{mode}: {error}");
         }
     }
 }

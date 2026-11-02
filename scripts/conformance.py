@@ -2891,7 +2891,7 @@ def suite_wfs(ctx):
             suite.cases.append(Case("wfs", row["name"], row["status"], row["detail"]))
     except (ValueError, KeyError, TypeError) as error:
         suite.error = f"{error}: {tail(err or out)}"
-    if code and not suite.error:
+    if code and not suite.error and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or "WFS comparison failed")
     return suite
 

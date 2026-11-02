@@ -184,7 +184,7 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
             raws.push(raw);
         }
         let mut layer = Layer::new(&name);
-        layer.add_field(FieldDef::new("gml_id", FieldType::Text).not_null());
+        layer.add_field(FieldDef::new("gml_id", FieldType::Text));
         let mut fields: Vec<(String, Scalar)> =
             model.map(|model| model.scalars().map(|(name, scalar)| (name.into(), scalar)).collect()).unwrap_or_default();
         if compiled.is_none() && fields.is_empty() {

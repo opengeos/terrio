@@ -3,9 +3,11 @@
 """The WFS oracle ignores generated FIDs and keeps checks active under python -O."""
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -74,3 +76,24 @@ def test_optimized_python_still_rejects_mismatches():
         [sys.executable, "-O", "-c", code], capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_report_keeps_failed_comparisons_visible(monkeypatch):
+    report_path = SCRIPT.with_name("conformance.py")
+    spec = importlib.util.spec_from_file_location("wfs_report", report_path)
+    report = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, report)
+    spec.loader.exec_module(report)
+    monkeypatch.setattr(report, "missing_modules", lambda _: False)
+    row = dict(name="service features", status="differs", detail="attribute mismatch")
+    monkeypatch.setattr(report, "run", lambda _: (1, json.dumps([row]), ""))
+    context = SimpleNamespace(terrio="terrio", remote=True, data=Path("data"), max_details=10)
+    suite = report.suite_wfs(context)
+    assert not suite.error
+    assert report.tally(suite.cases)[-1] == 1
+    rendered = report.markdown([suite], context, [])
+    assert "attribute mismatch" in rendered
+    assert "The suite could not run" not in rendered
+    monkeypatch.setattr(report, "run", lambda _: (1, "not JSON", "bad response"))
+    broken = report.suite_wfs(context)
+    assert broken.error and "bad response" in broken.error
