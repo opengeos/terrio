@@ -26,7 +26,7 @@ fn invalid(message: impl std::fmt::Display) -> Error {
 /// The head the tests give [`is_esripbf`]: room for a version of at most 32 bytes and the start of
 /// the feature result. Format identification passes more.
 #[cfg(test)]
-const HEAD_BYTES: usize = 64;
+const TEST_HEAD_BYTES: usize = 64;
 
 /// A reader of protocol buffer fields, which refuses what runs past its bytes.
 struct Reader<'a> {
@@ -297,15 +297,17 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     if bytes.is_empty() {
         return Err(invalid("the answer is empty"));
     }
-    // A service may answer in JSON whatever was asked for, as an error: read as JSON, reported as
-    // this driver's.
+    // A service may answer in JSON whatever was asked for. Its error is reported as this driver's;
+    // its features are ESRI JSON, which an allow-list may leave out.
     if bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes).trim_ascii_start().first() == Some(&b'{') {
         let relabel = |m: String| m.strip_prefix("ESRIJSON: ").map_or_else(|| m.clone(), |rest| format!("ESRIPBF: {rest}"));
-        return super::esrijson::page(bytes, name).map_err(|e| match e {
+        let page = super::esrijson::page(bytes, name).map_err(|e| match e {
             Error::InvalidData(m) => Error::InvalidData(relabel(m)),
             Error::InvalidArgument(m) => Error::InvalidArgument(relabel(m)),
             e => e,
-        });
+        })?;
+        crate::formats::check_driver_allowed("ESRIJSON", "the answer", crate::formats::Kind::Vector)?;
+        return Ok(page);
     }
     super::geojson::reserve_parse_memory(bytes.len(), "ESRIPBF")?;
     let result = feature_result(bytes)?;
@@ -351,7 +353,10 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     let mut any_geometry = false;
     let mut by_position = Vec::new();
     for (n, bytes) in features.into_iter().enumerate() {
-        let (values, geometry) = feature(bytes, &fields, &columns, &shape).map_err(|e| invalid(format!("feature {n}: {e}")))?;
+        let (values, geometry) = feature(bytes, &fields, &columns, &shape).map_err(|e| match e {
+            Error::InvalidData(m) => invalid(format!("feature {n}: {}", m.strip_prefix("ESRIPBF: ").unwrap_or(&m))),
+            e => e,
+        })?;
         any_geometry |= geometry.is_some();
         let fid = object_id.and_then(|i| match values.get(i) {
             Some(FieldValue::Integer(id)) => u64::try_from(*id).ok(),
@@ -556,8 +561,8 @@ fn part(c: &mut Reader, count: Option<usize>, shape: &Shape) -> Result<Vec<Coord
 /// A geometry. One without coordinates is no geometry.
 fn read_geometry(bytes: &[u8], shape: &Shape) -> Result<Option<Geometry>> {
     let mut lengths = Vec::new();
-    // Packed, possibly in several blocks, or one number a field.
-    let mut coords: Vec<u8> = Vec::new();
+    // Packed, possibly in several blocks, or one number a field. One block, the usual, is not copied.
+    let mut coords: std::borrow::Cow<[u8]> = std::borrow::Cow::Borrowed(&[]);
     let mut r = Reader::new(bytes);
     while !r.done() {
         match r.key()? {
@@ -568,12 +573,22 @@ fn read_geometry(bytes: &[u8], shape: &Shape) -> Result<Option<Geometry>> {
                 }
             }
             (2, 0) => lengths.push(r.varint()?),
-            (3, 2) => coords.extend_from_slice(r.message()?),
-            (3, 0) => put_varint(&mut coords, r.varint()?),
+            (3, 2) => {
+                let block = r.message()?;
+                if coords.is_empty() {
+                    coords = std::borrow::Cow::Borrowed(block);
+                } else {
+                    coords.to_mut().extend_from_slice(block);
+                }
+            }
+            (3, 0) => put_varint(coords.to_mut(), r.varint()?),
             (_, wire) => r.skip(wire)?,
         }
     }
     if coords.is_empty() {
+        if lengths.iter().any(|&n| n > 0) {
+            return Err(invalid("a part has vertices, but the geometry has no coordinates"));
+        }
         return Ok(None);
     }
     let mut c = Reader::new(&coords);
@@ -952,6 +967,22 @@ mod tests {
         let json = b"\xEF\xBB\xBF \n{\"error\":{\"code\":400,\"message\":\"Invalid query\"}}";
         let e = parse(json, "x").unwrap_err().to_string();
         assert!(e.contains("Invalid query") && e.starts_with("ESRIPBF: "), "{e}");
+        // Without a list, features in JSON are read.
+        assert_eq!(parse(br#"{"features":[{"attributes":{"A":1}}]}"#, "x").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_bad_feature_is_named_under_one_prefix() {
+        let short = answer(&[number(7, POLYLINE), message(15, &geometry(&[2], &[1, 1]))]);
+        let e = parse(&short, "x").unwrap_err().to_string();
+        assert!(e.starts_with("ESRIPBF: feature 0: ") && e.matches("ESRIPBF:").count() == 1, "{e}");
+    }
+
+    #[test]
+    fn parts_with_vertices_need_coordinates() {
+        let part = |lengths: &[u64]| answer(&[number(7, POLYLINE), message(15, &message(2, &packed(2, lengths)))]);
+        assert!(parse(&part(&[2]), "x").unwrap_err().to_string().contains("no coordinates"));
+        assert!(parse(&part(&[0]), "x").unwrap().features[0].geometry.is_none());
     }
 
     #[test]
@@ -982,7 +1013,7 @@ mod tests {
         // Whatever the lengths promise past the bytes given.
         let result = [message(1, b"OBJECTID"), vec![0; 1000]].concat();
         let long = message(2, &message(1, &result));
-        assert!(is_esripbf(long.get(..HEAD_BYTES).unwrap()));
+        assert!(is_esripbf(long.get(..TEST_HEAD_BYTES).unwrap()));
 
         assert!(!is_esripbf(&[]));
         assert!(!is_esripbf(b"{\"features\":[]}"));

@@ -158,6 +158,9 @@ fn a_refused_query_says_so() {
     // An empty answer from a URL that is no query is not taken for a refused one.
     let empty = terrio::open_vector(&format!("{base}/empty.pbf?f=pbf"), &Default::default());
     assert!(!empty.is_err_and(|e| e.to_string().contains("f=json shows why")));
+    // Nor is one from a URL named for this driver: it is simply empty.
+    let named = terrio::open_vector(&format!("ESRIPBF:{base}/empty.pbf"), &Default::default()).unwrap_err().to_string();
+    assert!(named.contains("the answer is empty") && !named.contains("f=json"), "{named}");
     assert!(error("/repeats/query?f=pbf").contains("same as the one before"));
     assert!(error("/repeats-stamped/query?f=pbf").contains("same as the one before"));
     // So with every entry point, GDAL backend or not: a recognized answer is not handed on.

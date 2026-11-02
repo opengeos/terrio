@@ -646,8 +646,10 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
         {
             Some(read_geojson_answer(url, bytes, options))
         }
-        (Ok(Some(bytes)), Some(VectorDriver::ESRIPBF)) if bytes.is_empty() => {
-            Some(Err(Error::InvalidData("ESRIPBF: the answer is empty, as a service's is to a query it refuses: f=json shows why".into())))
+        (Ok(Some(bytes)), Some(VectorDriver::ESRIPBF))
+            if bytes.is_empty() && featureservice::is_query_path(url) && featureservice::asks_for_pbf(url) =>
+        {
+            Some(Err(Error::InvalidData("ESRIPBF: the answer is empty: a service refuses a query this way, and f=json shows why".into())))
         }
         (Ok(Some(bytes)), Some(driver)) => Some(read_feature_service(url, &bytes, driver, options)),
         (Err(e), Some(_)) => Some(Err(e)),

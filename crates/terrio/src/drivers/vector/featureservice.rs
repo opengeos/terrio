@@ -84,7 +84,7 @@ pub(crate) fn is_query_url(url: &str) -> bool {
 /// Whether a URL's path is a layer's `query` operation.
 #[cfg(remote)]
 pub(crate) fn is_query_path(url: &str) -> bool {
-    url.split(['?', '#']).next().is_some_and(|path| path.trim_end_matches('/').ends_with("/query"))
+    url.split(['?', '#']).next().is_some_and(|path| path.trim_end_matches('/').to_ascii_lowercase().ends_with("/query"))
 }
 
 /// Whether a URL asks for the protocol buffer.
@@ -311,6 +311,8 @@ mod tests {
         assert!(is_query_url("https://x.org/arcgis/rest/services/A/FeatureServer/0/query?where=1=1&f=json"));
         assert!(is_query_url("https://x.org/a/query?f=pjson"));
         assert!(is_query_url("https://x.org/a/query?f=pbf"));
+        assert!(is_query_path("https://x.org/a/Query/?f=pbf"));
+        assert!(!is_query_path("https://x.org/a.pbf?f=query"));
         assert!(asks_for_pbf("https://x.org/a/query?f=pbf"));
         assert!(!asks_for_pbf("https://x.org/a/query?f=json"));
         assert!(is_query_url("https://x.org/a/query?resultRecordCount=10"));

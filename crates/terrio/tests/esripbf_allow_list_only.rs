@@ -38,4 +38,15 @@ fn an_allow_list_of_esripbf_opens_it_and_not_openstreetmap() {
     std::fs::write(&path, &data).unwrap();
     let e = terrio::open_vector(path.to_str().unwrap(), &options).unwrap_err().to_string();
     assert!(e.contains("not allowed"), "{e}");
+
+    // An answer in JSON: its features are ESRI JSON, which the list leaves out; a service's error is
+    // still reported.
+    let path = dir.path().join("d.json");
+    let named = format!("ESRIPBF:{}", path.to_str().unwrap());
+    std::fs::write(&path, br#"{"features":[{"attributes":{"A":1}}]}"#).unwrap();
+    let e = terrio::open_vector(&named, &options).unwrap_err().to_string();
+    assert!(e.contains("ESRIJSON") && e.contains("not allowed"), "{e}");
+    std::fs::write(&path, br#"{"error":{"code":498,"message":"Invalid token."}}"#).unwrap();
+    let e = terrio::open_vector(&named, &options).unwrap_err().to_string();
+    assert!(e.contains("Invalid token."), "{e}");
 }

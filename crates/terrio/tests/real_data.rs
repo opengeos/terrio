@@ -822,6 +822,10 @@ fn esrijson_pages_match_the_services_own_geojson() {
         for (i, (a, b)) in e.features.iter().zip(&g.features).enumerate() {
             assert_eq!(vertices(&a.geometry), vertices(&b.geometry), "{page}, feature {i}");
             for (n, field) in e.schema.fields().iter().enumerate() {
+                // Worked out per request, so two downloads can fall on either side of an hour.
+                if field.name == "hoursOld" {
+                    continue;
+                }
                 let other = g.schema.field_index(&field.name).unwrap_or_else(|| panic!("{page}: no field {}", field.name));
                 assert!(
                     same(&a.attributes[n], &b.attributes[other]),
@@ -902,6 +906,10 @@ fn esripbf_pages_match_the_services_own_json() {
                 assert!(near(x.z, y.z) && near(x.m, y.m), "{page}, feature {i}: {x:?} and {y:?}");
             }
             for (n, field) in p.schema.fields().iter().enumerate() {
+                // Worked out per request, so two downloads can fall on either side of an hour.
+                if field.name == "hoursOld" {
+                    continue;
+                }
                 assert!(
                     same(&a.attributes[n], &b.attributes[n]),
                     "{page}, feature {i}, {}: {:?} and {:?}",
