@@ -863,11 +863,12 @@ fn esripbf_pages_match_the_services_own_json() {
         _ => a == b,
     };
     let near = |a: Option<f64>, b: Option<f64>| match (a, b) {
-        (Some(x), Some(y)) => (x - y).abs() < 1e-6,
+        // Z and M are quantized to 1e-4 of their units.
+        (Some(x), Some(y)) => (x - y).abs() < 1e-3,
         (None, None) => true,
         _ => false,
     };
-    for page in ["counties", "quakes"] {
+    for page in ["counties", "quakes", "zlines", "mlines", "zmlines"] {
         let (pbf, json) = (dir.join(format!("featureservice_{page}.pbf")), dir.join(format!("featureservice_{page}.json")));
         if !pbf.exists() || !json.exists() {
             continue;

@@ -9,8 +9,9 @@
 //! with what `f=json` gives. See [`super::featureservice`] for how fields, values and geometries
 //! are read.
 //!
-//! Coordinates are integers: differences from the previous vertex, starting over at each part,
-//! to scale and translate as the result's `transform` says. An answer that holds a count, ids or
+//! Coordinates are integers to scale and translate as the result's `transform` says. X and Y are
+//! differences from the previous vertex, starting over at each part; Z and M are each vertex's own,
+//! and an M of 0 is none, as the same answer in JSON shows. An answer that holds a count, ids or
 //! an extent, or a curve or shape-buffer geometry, is refused rather than read without its
 //! features or arcs.
 
@@ -518,18 +519,24 @@ fn part(c: &mut Reader, count: Option<usize>, shape: &Shape) -> Result<Vec<Coord
     let dimensions = 2 + usize::from(shape.has_z) + usize::from(shape.has_m);
     let t = shape.transform;
     let mut vertices = Vec::with_capacity(count.unwrap_or(0).min(c.remaining() / dimensions));
-    let mut sums = [0i64; 4];
+    let mut sums = [0i64; 2];
     while count.map_or(!c.done(), |n| vertices.len() < n) {
-        for sum in sums.iter_mut().take(dimensions) {
+        for sum in &mut sums {
             *sum = sum.wrapping_add(zigzag(c.varint()?));
         }
-        // After X and Y, Z when it has Z, then M.
-        let [a, b, third, fourth] = sums;
+        // After X and Y, Z when it has Z, then M: each vertex's own, not differences.
+        let mut own = [0i64; 2];
+        for value in own.iter_mut().take(dimensions - 2) {
+            *value = zigzag(c.varint()?);
+        }
+        let ([a, b], [third, fourth]) = (sums, own);
         let dy = t.scale[1] * b as f64;
         let x = t.translate[0] + t.scale[0] * a as f64;
         let y = if t.upper_left { t.translate[1] - dy } else { t.translate[1] + dy };
         let z = shape.has_z.then(|| t.translate[3] + t.scale[3] * third as f64);
-        let m = shape.has_m.then(|| t.translate[2] + t.scale[2] * (if shape.has_z { fourth } else { third }) as f64);
+        // A service writes 0 for a vertex without M, which JSON gives as null.
+        let quantized_m = if shape.has_z { fourth } else { third };
+        let m = (shape.has_m && quantized_m != 0).then(|| t.translate[2] + t.scale[2] * quantized_m as f64);
         if !(x.is_finite() && y.is_finite() && z.is_none_or(f64::is_finite) && m.is_none_or(f64::is_finite)) {
             return Err(invalid("a coordinate is not finite"));
         }
@@ -738,6 +745,27 @@ mod tests {
         let l = parse(&only_m, "x").unwrap();
         let Some(Geometry::MultiPoint(p)) = &l.features[0].geometry else { panic!("not a multi point") };
         assert_eq!((p[0].z, p[0].m), (None, Some(3.0)));
+    }
+
+    #[test]
+    fn z_and_m_are_each_vertex_s_own_and_an_m_of_0_is_none() {
+        // As a service's answer has them: Z from 1,527 down to -2,600 along a line, and M 8 then
+        // none. X and Y are differences; Z and M are not.
+        let scale = message(2, &[double(1, 1.0), double(2, 1.0), double(3, 0.0001), double(4, 0.0001)].concat());
+        let translate = message(3, &[double(3, -100_000.0), double(4, -100_000.0)].concat());
+        let t = message(12, &[scale, translate].concat());
+        let bytes = answer(&[
+            number(7, POLYLINE),
+            number(10, 1),
+            number(11, 1),
+            t,
+            message(15, &geometry(&[3], &[1, 1, 1_015_270_000, 1_000_080_000, 1, 1, 974_000_000, 0, 1, 1, 1_000_000_000, 1_000_100_000])),
+        ]);
+        let l = parse(&bytes, "x").unwrap();
+        let Some(Geometry::LineString(line)) = &l.features[0].geometry else { panic!("not a line") };
+        let zm: Vec<_> = line.iter().map(|c| (c.z.map(|z| z.round()), c.m.map(|m| m.round()))).collect();
+        assert_eq!(zm, [(Some(1527.0), Some(8.0)), (Some(-2600.0), None), (Some(0.0), Some(10.0))]);
+        assert_eq!((line[2].x, line[2].y), (3.0, -3.0), "X and Y still add up");
     }
 
     #[test]

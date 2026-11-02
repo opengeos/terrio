@@ -81,6 +81,24 @@ for page in \
     fi
   done
 done
+# Lines with Z and with M from the public sample server, as JSON and as a protocol buffer: the
+# ESRIPBF test compares their Z and M along each line.
+zm_query='query?where=1%3D1&outFields=*&returnGeometry=true&returnZ=true&returnM=true&resultRecordCount=2000&orderByFields=OBJECTID'
+for page in \
+  "zlines https://sampleserver6.arcgisonline.com/arcgis/rest/services/VerticalLines/FeatureServer/0" \
+  "mlines https://sampleserver6.arcgisonline.com/arcgis/rest/services/Water_Network/FeatureServer/3" \
+  "zmlines https://sampleserver6.arcgisonline.com/arcgis/rest/services/Military/FeatureServer/4"; do
+  set -- $page
+  for format in json pbf; do
+    out="featureservice_$1.$format"
+    [ -e "$out" ] && continue
+    if curl -sSfL -o "$out.part" "$2/$zm_query&f=$format" && [ -s "$out.part" ] && ! grep -q '^{"error"' "$out.part"; then
+      mv "$out.part" "$out"
+    else
+      rm -f "$out.part"
+    fi
+  done
+done
 [ -e liechtenstein.osm.pbf ] || curl -sSfL -o liechtenstein.osm.pbf https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf
 # Vector tiles in a PMTiles archive (ZIP code tabulation areas, by Protomaps, made with Tippecanoe).
 [ -e cb_2018_us_zcta510_500k.pmtiles ] || curl -sSfL -o cb_2018_us_zcta510_500k.pmtiles \

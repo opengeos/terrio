@@ -75,3 +75,33 @@ fn a_cut_file_is_an_error() {
     std::fs::write(&path, &whole[..whole.len() - 3]).unwrap();
     assert!(terrio::open_vector(path.to_str().unwrap(), &Default::default()).is_err());
 }
+
+/// A message whose length may need more than one byte.
+fn long_message(field: u8, bytes: &[u8]) -> Vec<u8> {
+    let mut out = vec![(field << 3) | 2];
+    let mut n = bytes.len() as u64;
+    while n >= 0x80 {
+        out.push((n as u8 & 0x7f) | 0x80);
+        n >>= 7;
+    }
+    out.push(n as u8);
+    [out, bytes.to_vec()].concat()
+}
+
+#[test]
+fn fields_times_features_cannot_exceed_what_the_answer_justifies() {
+    // 20,000 fields and 1,000,000 empty features: about 2 MB, and 20 billion values.
+    let fields: Vec<u8> =
+        (0..20_000).flat_map(|i| message(13, &[message(1, format!("F{i}").as_bytes()), vec![2 << 3, 4]].concat())).collect();
+    let features = message(15, &[]).repeat(1_000_000);
+    let answer = long_message(2, &long_message(1, &[fields, features].concat()));
+    // Refused by every way in, and not retried with GDAL in builds with its backend.
+    let refused = |r: terrio::Result<terrio::VectorDataset>| {
+        r.is_err_and(|e| matches!(&e, terrio::Error::InvalidArgument(m) if m.contains("features of 20000 fields")))
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("q.pbf");
+    std::fs::write(&path, &answer).unwrap();
+    assert!(refused(terrio::open_vector(path.to_str().unwrap(), &Default::default())));
+    assert!(refused(terrio::memory::open_vector_bytes(answer, "q.pbf", &Default::default())));
+}
