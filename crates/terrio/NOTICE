@@ -1377,6 +1377,18 @@ projection engine documentation (https://github.com/Esri/projection-engine-db-do
 Licensed under the Apache License, Version 2.0, reproduced at the end of this file.
 
 -------------------------------------------------------------------------------
+Esri FeatureCollection protocol buffer (https://github.com/Esri/arcgis-pbf)
+-------------------------------------------------------------------------------
+
+crates/terrio/src/drivers/vector/esripbf.rs reads the format that Esri's FeatureCollection.proto
+(proto/FeatureCollection/FeatureCollection.proto) defines, following its message and field numbers.
+No code is copied from it.
+
+  Copyright 2021 Esri
+
+Licensed under the Apache License, Version 2.0, reproduced at the end of this file.
+
+-------------------------------------------------------------------------------
 IAU_2015 definitions
 -------------------------------------------------------------------------------
 

@@ -1,6 +1,7 @@
 """ESRIJSON reaches Python through the shared driver, from paths and from bytes."""
 
 import json
+import struct
 
 import terrio
 
@@ -48,7 +49,9 @@ def test_esripbf_from_a_path_and_from_bytes(tmp_path):
     feature = _message(
         15, _message(1, _message(1, b"Lake")) + _message(2, _message(3, bytes([2, 4])))
     )
-    data = _message(2, _message(1, field + feature))
+    scale = bytes([1 << 3 | 1]) + struct.pack("<d", 1.0) + bytes([2 << 3 | 1]) + struct.pack("<d", 1.0)
+    transform = _message(12, _message(2, scale))
+    data = _message(2, _message(1, field + transform + feature))
     path = tmp_path / "lakes.pbf"
     path.write_bytes(data)
     for ds in [terrio.open_vector(str(path)), terrio.open_bytes(data, filename="lakes.pbf")]:

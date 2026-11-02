@@ -1080,7 +1080,9 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     // here so that `.pbf`, which also names ESRIPBF, is judged by what it holds.
     if let Some(length) = head.get(..4).and_then(|h| h.try_into().ok()).map(u32::from_be_bytes)
         && (1..=65_536).contains(&length)
-        && head.get(4..).is_some_and(|rest| rest.windows(11).take(length as usize).any(|w| w == b"\x0a\x09OSMHeader"))
+        && head
+            .get(4..(length as usize).saturating_add(4).min(head.len()))
+            .is_some_and(|header| header.windows(11).any(|w| w == b"\x0a\x09OSMHeader"))
     {
         return Some("OSM");
     }

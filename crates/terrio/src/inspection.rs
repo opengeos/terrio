@@ -89,7 +89,8 @@ pub fn identify_prefix(bytes: &[u8], name: &str, length: Option<u64>) -> Option<
 fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Identification> {
     let filename = crate::vfs::Location::parse(name).file_name();
     let ext = crate::formats::extension(&filename).unwrap_or_default();
-    if crate::drivers::vector::esripbf::is_esripbf(bytes) {
+    // `.osm.pbf` names and opens OpenStreetMap alone.
+    if !filename.to_ascii_lowercase().ends_with(".osm.pbf") && crate::drivers::vector::esripbf::is_esripbf(bytes) {
         return vector(VectorDriver::ESRIPBF);
     }
     if [b"II*\0".as_slice(), b"MM\0*", b"II+\0", b"MM\0+"].iter().any(|magic| bytes.starts_with(magic)) {

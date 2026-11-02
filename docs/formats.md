@@ -681,9 +681,12 @@ same `TERRIO_JSON_MAX_SIZE` cap on each page. A `.pbf` file, or one whose extens
 claims, is recognized by its content; `.pbf` names OpenStreetMap otherwise, and `.osm.pbf` always
 names and opens OpenStreetMap. X and Y are differences from the previous vertex; Z and M are each
 vertex's own, and an M of 0 is none, as the same answer in JSON gives it (a Z of 0 is the layer's
-lowest Z, as no answer seen leaves Z out that way).
+lowest Z, as no answer seen leaves Z out that way). An answer with coordinates must have the
+`transform` the format sends with them. The reader follows Esri's `FeatureCollection.proto`
+(Apache-2.0; see [Acknowledgements](acknowledgements.md)).
 `ESRIPBF:` before a URL or a path names the driver. A service answers a query it refuses with
-nothing: that is an error, and `f=json` shows the reason. An answer with a count, ids or an extent
+nothing: from a URL whose path ends in `/query`, that is an error, and `f=json` shows the reason; a
+JSON error answer is reported as this driver's. An answer with a count, ids or an extent
 is refused, as are curve and shape-buffer geometries and a point with more than one vertex. The
 format gives no field widths, which `f=json` does. Query URLs are not read in WebAssembly builds:
 fetch the bytes and open them.

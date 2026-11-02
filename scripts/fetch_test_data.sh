@@ -64,6 +64,8 @@ fi
 # A page of two public feature services, as JSON, as GeoJSON and as a protocol buffer from the same
 # service: the ESRIJSON and ESRIPBF tests compare them. They change with the services, so the tests
 # hold no fixed values, and a service that is gone only skips them.
+# Whether a downloaded answer is a service's error: JSON, after any BOM or white space.
+is_error_answer() { head -c 64 "$1" | LC_ALL=C tr -d '\357\273\277 \t\r\n' | grep -q '^{"error"'; }
 fs_query='query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&resultRecordCount=2000&orderByFields=OBJECTID'
 for page in \
   "counties https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/USA_Counties_Generalized_Boundaries/FeatureServer/0" \
@@ -74,7 +76,7 @@ for page in \
     [ -e "$out" ] && continue
     # A service's error comes with status 200, as JSON or as nothing, and neither it nor a partial
     # download is a page.
-    if curl -sSfL -o "$out.part" "$2/$fs_query&f=$format" && [ -s "$out.part" ] && ! grep -q '^{"error"' "$out.part"; then
+    if curl -sSfL -o "$out.part" "$2/$fs_query&f=$format" && [ -s "$out.part" ] && ! is_error_answer "$out.part"; then
       mv "$out.part" "$out"
     else
       rm -f "$out.part"
@@ -92,7 +94,7 @@ for page in \
   for format in json pbf; do
     out="featureservice_$1.$format"
     [ -e "$out" ] && continue
-    if curl -sSfL -o "$out.part" "$2/$zm_query&f=$format" && [ -s "$out.part" ] && ! grep -q '^{"error"' "$out.part"; then
+    if curl -sSfL -o "$out.part" "$2/$zm_query&f=$format" && [ -s "$out.part" ] && ! is_error_answer "$out.part"; then
       mv "$out.part" "$out"
     else
       rm -f "$out.part"

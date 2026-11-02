@@ -613,13 +613,17 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
         let cap = crate::http::json_max_size();
         let mut bytes = Vec::new();
         (&mut *reader).take(esrijson::HEAD_BYTES as u64).read_to_end(&mut bytes)?;
-        // Asked for the protocol buffer, a service answers a query it refuses with nothing, and one
-        // for a count, ids or an extent with that answer, which the reader refuses by name.
+        // Asked for the protocol buffer, a service answers a query it refuses with nothing, or with
+        // its error in JSON, and one for a count, ids or an extent with that answer, which the reader
+        // refuses by name: all of them this driver's to report.
         let pbf = featureservice::asks_for_pbf(url);
+        let refused = bytes.is_empty() && featureservice::is_query_path(url);
         recognized = recognized.or_else(|| {
-            if esrijson::is_esrijson(&bytes) {
+            if pbf && (refused || esrijson::is_esrijson(&bytes) || esripbf::is_query_answer(&bytes)) {
+                Some(VectorDriver::ESRIPBF)
+            } else if esrijson::is_esrijson(&bytes) {
                 Some(VectorDriver::ESRIJSON)
-            } else if esripbf::is_esripbf(&bytes) || (pbf && (bytes.is_empty() || esripbf::is_query_answer(&bytes))) {
+            } else if esripbf::is_esripbf(&bytes) {
                 Some(VectorDriver::ESRIPBF)
             } else {
                 None
@@ -641,6 +645,9 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
             if named.is_none() && std::str::from_utf8(&bytes).is_ok_and(|text| !esrijson::is_esrijson_document(text)) =>
         {
             Some(read_geojson_answer(url, bytes, options))
+        }
+        (Ok(Some(bytes)), Some(VectorDriver::ESRIPBF)) if bytes.is_empty() => {
+            Some(Err(Error::InvalidData("ESRIPBF: the answer is empty, as a service's is to a query it refuses: f=json shows why".into())))
         }
         (Ok(Some(bytes)), Some(driver)) => Some(read_feature_service(url, &bytes, driver, options)),
         (Err(e), Some(_)) => Some(Err(e)),

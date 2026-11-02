@@ -19,8 +19,14 @@ fn page() -> Vec<u8> {
     let attributes = [message(1, &[5 << 3, 7]), message(1, &message(1, b"Tunja"))].concat();
     let geometry = message(2, &message(3, &[2, 4]));
     let feature = message(15, &[attributes, geometry].concat());
-    let result = [oid, name, feature].concat();
+    let result = [oid, name, transform(), feature].concat();
     message(2, &message(1, &result))
+}
+
+/// A transform of scale 1 and translate 0, which every answer with coordinates has.
+fn transform() -> Vec<u8> {
+    let double = |field: u8, v: f64| [&[(field << 3) | 1][..], &v.to_le_bytes()].concat();
+    message(12, &message(2, &[double(1, 1.0), double(2, 1.0)].concat()))
 }
 
 fn check(ds: &terrio::VectorDataset) {
@@ -58,6 +64,10 @@ fn openstreetmap_pbf_is_told_apart() {
     // The start of an OpenStreetMap file: a header length, then a blob header of type `OSMHeader`.
     let osm = b"\x00\x00\x00\x0d\x0a\x09OSMHeader\x18\x00";
     assert_eq!(terrio::formats::sniff(osm), Some("OSM"));
+    // Only within the header's declared length.
+    assert_ne!(terrio::formats::sniff(b"\x00\x00\x00\x02\x0a\x09\x0a\x09OSMHeader"), Some("OSM"));
+    // `.osm.pbf` is identified as OpenStreetMap's, whatever it holds.
+    assert_ne!(terrio::inspection::identify_bytes(&page(), "x.osm.pbf").map(|i| i.driver), Some("ESRIPBF".to_string()));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cut.pbf");
     std::fs::write(&path, osm).unwrap();

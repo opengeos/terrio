@@ -52,6 +52,10 @@ impl<'a> Reader<'a> {
         for shift in (0..64).step_by(7) {
             let byte = *self.bytes.get(self.at).ok_or_else(|| invalid("the data ends inside a number"))?;
             self.at += 1;
+            // The tenth byte holds the 64th bit alone.
+            if shift == 63 && byte & 0x7e != 0 {
+                return Err(invalid("a number is too long"));
+            }
             value |= u64::from(byte & 0x7f) << shift;
             if byte & 0x80 == 0 {
                 return Ok(value);
@@ -173,6 +177,8 @@ pub fn parse(bytes: &[u8], name: &str) -> Result<Layer> {
 
 /// How a result's integers become coordinates.
 struct Transform {
+    /// The answer gave one: the format sends one with every result.
+    given: bool,
     upper_left: bool,
     /// X, Y, M and Z, as the format orders them.
     scale: [f64; 4],
@@ -181,7 +187,7 @@ struct Transform {
 
 impl Default for Transform {
     fn default() -> Self {
-        Self { upper_left: true, scale: [1.0; 4], translate: [0.0; 4] }
+        Self { given: false, upper_left: true, scale: [1.0; 4], translate: [0.0; 4] }
     }
 }
 
@@ -204,7 +210,7 @@ fn four(bytes: &[u8], absent: f64) -> Result<[f64; 4]> {
 }
 
 fn transform(bytes: &[u8]) -> Result<Transform> {
-    let mut t = Transform::default();
+    let mut t = Transform { given: true, ..Transform::default() };
     let mut r = Reader::new(bytes);
     while !r.done() {
         match r.key()? {
@@ -289,7 +295,7 @@ fn spatial_reference(bytes: &[u8]) -> Result<Option<crate::crs::SpatialRef>> {
 /// A page of a query's results: its layer, and whether the service has more.
 pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     if bytes.is_empty() {
-        return Err(invalid("the answer is empty, as a service's is to a query it refuses: f=json shows why"));
+        return Err(invalid("the answer is empty"));
     }
     // A service may answer in JSON whatever was asked for, as an error: read as JSON, reported as
     // this driver's.
@@ -464,7 +470,10 @@ impl Cell<'_> {
         match self {
             Cell::Int(i) => Some(*i),
             Cell::UInt(u) => i64::try_from(*u).ok(),
-            Cell::Real(f) => f.is_finite().then_some(*f as i64),
+            // A whole number past 64 bits is none, not the nearest that fits, as in ESRIJSON.
+            Cell::Real(f) => {
+                (f.is_finite() && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(f)).then_some(*f as i64)
+            }
             _ => None,
         }
     }
@@ -521,7 +530,7 @@ fn part(c: &mut Reader, count: Option<usize>, shape: &Shape) -> Result<Vec<Coord
     let mut sums = [0i64; 2];
     while count.map_or(!c.done(), |n| vertices.len() < n) {
         for sum in &mut sums {
-            *sum = sum.wrapping_add(zigzag(c.varint()?));
+            *sum = sum.checked_add(zigzag(c.varint()?)).ok_or_else(|| invalid("a coordinate is out of range"))?;
         }
         // After X and Y, Z when it has Z, then M: each vertex's own, not differences.
         let mut own = [0i64; 2];
@@ -547,7 +556,8 @@ fn part(c: &mut Reader, count: Option<usize>, shape: &Shape) -> Result<Vec<Coord
 /// A geometry. One without coordinates is no geometry.
 fn read_geometry(bytes: &[u8], shape: &Shape) -> Result<Option<Geometry>> {
     let mut lengths = Vec::new();
-    let mut coords: &[u8] = &[];
+    // Packed, possibly in several blocks, or one number a field.
+    let mut coords: Vec<u8> = Vec::new();
     let mut r = Reader::new(bytes);
     while !r.done() {
         match r.key()? {
@@ -558,14 +568,15 @@ fn read_geometry(bytes: &[u8], shape: &Shape) -> Result<Option<Geometry>> {
                 }
             }
             (2, 0) => lengths.push(r.varint()?),
-            (3, 2) => coords = r.message()?,
+            (3, 2) => coords.extend_from_slice(r.message()?),
+            (3, 0) => put_varint(&mut coords, r.varint()?),
             (_, wire) => r.skip(wire)?,
         }
     }
     if coords.is_empty() {
         return Ok(None);
     }
-    let mut c = Reader::new(coords);
+    let mut c = Reader::new(&coords);
     let mut parts = Vec::with_capacity(lengths.len().min(coords.len()));
     if lengths.is_empty() {
         parts.push(part(&mut c, None, shape)?);
@@ -577,20 +588,33 @@ fn read_geometry(bytes: &[u8], shape: &Shape) -> Result<Option<Geometry>> {
     if !c.done() {
         return Err(invalid("it has more coordinates than its parts count"));
     }
-    match shape.kind {
+    let geometry = match shape.kind {
         POINT => {
             let mut vertices = parts.into_iter().flatten();
             let point = vertices.next();
             if vertices.next().is_some() {
                 return Err(invalid("a point has more than one vertex"));
             }
-            Ok(point.map(Geometry::Point))
+            point.map(Geometry::Point)
         }
-        MULTIPOINT => Ok(Some(Geometry::MultiPoint(parts.into_iter().flatten().collect()))),
-        POLYLINE => Ok(featureservice::polyline(parts)),
-        POLYGON => Ok(super::polygons_from_rings(parts)),
-        kind => Err(invalid(format!("geometries of type {kind} are not read"))),
+        MULTIPOINT => Some(Geometry::MultiPoint(parts.into_iter().flatten().collect())),
+        POLYLINE => featureservice::polyline(parts),
+        POLYGON => super::polygons_from_rings(parts),
+        kind => return Err(invalid(format!("geometries of type {kind} are not read"))),
+    };
+    // Without a transform, its integers are no coordinates of the layer's.
+    if geometry.is_some() && !shape.transform.given {
+        return Err(invalid("it has coordinates, but the answer has no transform for them"));
     }
+    Ok(geometry)
+}
+
+fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+    while v >= 0x80 {
+        out.push((v as u8 & 0x7f) | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
 }
 
 #[cfg(test)]
@@ -768,6 +792,37 @@ mod tests {
     }
 
     #[test]
+    fn coordinates_in_several_blocks_or_unpacked_are_one_stream() {
+        let line =
+            |coords: Vec<u8>| answer(&[number(7, POLYLINE), quantized(0), message(15, &message(2, &[packed(2, &[2]), coords].concat()))]);
+        let split = line([packed(3, &[sint(1), sint(1)]), packed(3, &[sint(2), sint(2)])].concat());
+        let unpacked = line([number(3, sint(1)), number(3, sint(1)), number(3, sint(2)), number(3, sint(2))].concat());
+        for bytes in [split, unpacked] {
+            let l = parse(&bytes, "x").unwrap();
+            let Some(Geometry::LineString(p)) = &l.features[0].geometry else { panic!("not a line") };
+            assert_eq!(p.iter().map(|c| (c.x, c.y)).collect::<Vec<_>>(), [(11.0, 99.0), (13.0, 97.0)]);
+        }
+    }
+
+    #[test]
+    fn numbers_and_coordinates_past_64_bits_are_refused_or_none() {
+        // A tenth byte with more than the 64th bit, and a sum of differences past the range.
+        let too_long = answer(&[message(15, &message(2, &[0x1a, 10, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02]))]);
+        assert!(parse(&too_long, "x").unwrap_err().to_string().contains("too long"));
+        let wraps = answer(&[number(7, POLYLINE), quantized(0), message(15, &geometry(&[2], &[i64::MAX, 0, 1, 0]))]);
+        assert!(parse(&wraps, "x").unwrap_err().to_string().contains("out of range"));
+        // A real past 64 bits in an integer field is null, as in ESRIJSON.
+        let big = answer(&[field_of("A", 1), message(15, &value_field(double(3, 1e19)))]);
+        assert_eq!(parse(&big, "x").unwrap().features[0].attributes, [FieldValue::Null]);
+    }
+
+    #[test]
+    fn coordinates_without_a_transform_are_refused() {
+        let bytes = answer(&[number(7, POLYLINE), message(15, &geometry(&[2], &[1, 1, 2, 2]))]);
+        assert!(parse(&bytes, "x").unwrap_err().to_string().contains("no transform"));
+    }
+
+    #[test]
     fn a_z_of_0_is_the_z_translate() {
         // Unlike M, no answer seen gives 0 for a vertex without Z: it stays the translate's value.
         let scale = message(2, &[double(1, 1.0), double(2, 1.0), double(4, 0.0001)].concat());
@@ -892,7 +947,7 @@ mod tests {
             let e = parse(bytes, "x").unwrap_err().to_string();
             assert!(e.contains(says), "{says}: {e}");
         }
-        assert!(parse(&[], "x").unwrap_err().to_string().contains("empty"));
+        assert!(parse(&[], "x").unwrap_err().to_string().contains("the answer is empty"));
         assert!(parse(&message(1, b"2.0"), "x").unwrap_err().to_string().contains("no feature result"));
         let json = b"\xEF\xBB\xBF \n{\"error\":{\"code\":400,\"message\":\"Invalid query\"}}";
         let e = parse(json, "x").unwrap_err().to_string();

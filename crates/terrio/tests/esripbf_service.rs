@@ -46,7 +46,14 @@ fn page_with(offset: u64, object_ids: bool) -> Vec<u8> {
     let end = (offset + 2).min(TOTAL);
     let field = message(13, &[message(1, b"OBJECTID"), number(2, 6)].concat());
     let srs = message(8, &number(1, 4326));
-    let mut result = [number(9, u64::from(end < TOTAL)), srs, field].concat();
+    let double = |field: u64, v: f64| {
+        let mut out = Vec::new();
+        varint(&mut out, (field << 3) | 1);
+        out.extend_from_slice(&v.to_le_bytes());
+        out
+    };
+    let transform = message(12, &message(2, &[double(1, 1.0), double(2, 1.0)].concat()));
+    let mut result = [number(9, u64::from(end < TOTAL)), srs, field, transform].concat();
     for i in offset..end {
         let mut coords = Vec::new();
         varint(&mut coords, i * 2);
@@ -86,7 +93,7 @@ fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
                 .unwrap_or(0);
             let body: Vec<u8> = match target.split('?').next().unwrap_or("/") {
                 "/query" => page(offset),
-                "/refused/query" => Vec::new(),
+                "/refused/query" | "/empty.pbf" => Vec::new(),
                 "/denied/query" => br#"{"error":{"code":498,"message":"Invalid token."}}"#.to_vec(),
                 "/count/query" => message(2, &message(2, &number(1, 5))),
                 "/nullid/query" => page_with(offset, false),
@@ -145,7 +152,12 @@ fn a_refused_query_says_so() {
     let (base, _) = serve();
     let error = |path: &str| terrio::open_vector(&format!("{base}{path}"), &Default::default()).unwrap_err().to_string();
     assert!(error("/refused/query?f=pbf").contains("f=json shows why"));
-    assert!(error("/denied/query?f=pbf").contains("Invalid token."));
+    // A JSON error answer to `f=pbf` is this driver's to report.
+    let denied = error("/denied/query?f=pbf");
+    assert!(denied.contains("Invalid token.") && denied.starts_with("ESRIPBF: "), "{denied}");
+    // An empty answer from a URL that is no query is not taken for a refused one.
+    let empty = terrio::open_vector(&format!("{base}/empty.pbf?f=pbf"), &Default::default());
+    assert!(!empty.is_err_and(|e| e.to_string().contains("f=json shows why")));
     assert!(error("/repeats/query?f=pbf").contains("same as the one before"));
     assert!(error("/repeats-stamped/query?f=pbf").contains("same as the one before"));
     // So with every entry point, GDAL backend or not: a recognized answer is not handed on.

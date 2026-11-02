@@ -81,6 +81,12 @@ pub(crate) fn is_query_url(url: &str) -> bool {
         && !url.contains("/items?")
 }
 
+/// Whether a URL's path is a layer's `query` operation.
+#[cfg(remote)]
+pub(crate) fn is_query_path(url: &str) -> bool {
+    url.split(['?', '#']).next().is_some_and(|path| path.trim_end_matches('/').ends_with("/query"))
+}
+
 /// Whether a URL asks for the protocol buffer.
 #[cfg(remote)]
 pub(crate) fn asks_for_pbf(url: &str) -> bool {
