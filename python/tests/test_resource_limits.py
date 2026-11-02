@@ -83,6 +83,8 @@ def test_sparse_esrijson_resource_limit_from_path_and_bytes(tmp_path):
         terrio.open_vector(str(path))
     with pytest.raises(terrio.ResourceLimitError, match="features of 1000 fields"):
         terrio.open_bytes(payload, filename="sparse.json")
+    with pytest.raises(terrio.ResourceLimitError, match="ESRIPBF:.*features of 1000 fields"):
+        terrio.open_vector(f"ESRIPBF:{path}")
 
 
 def test_jpeg_allocation_refusal_is_a_memory_error(tmp_path):

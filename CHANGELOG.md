@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The `ESRIPBF` driver reads the protocol buffer of ArcGIS feature-service queries (`f=pbf`), which
+  GDAL has no driver for: files recognized by content, and query URLs read page by page as
+  `ESRIJSON` reads them, with the `ESRIPBF:` prefix (#475).
+
 - Resource and allocation refusals are terminal across native and optional GDAL reads. Python
   reports them as `ResourceLimitError` (a `MemoryError`), replacing `InvalidArgumentError`
   for GRIB/ESRIJSON limits, `TerrioError` for decoded-byte limits, and `TerrioIOError` for

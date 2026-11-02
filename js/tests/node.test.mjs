@@ -3520,6 +3520,21 @@ test("CityGML 2.0 building LoD 0 requires and preserves its native surface choic
   } finally { source.free(); }
 });
 
+test("ESRIPBF is recognized by content", () => {
+  const message = (field, bytes) => [(field << 3) | 2, bytes.length, ...bytes];
+  const text = (s) => [...new TextEncoder().encode(s)];
+  const field = message(13, [...message(1, text("NAME")), 2 << 3, 4]);
+  const feature = message(15, [...message(1, message(1, text("Lake"))), ...message(2, message(3, [2, 4]))]);
+  const one = [...new Uint8Array(new Float64Array([1]).buffer)];
+  const transform = message(12, message(2, [(1 << 3) | 1, ...one, (2 << 3) | 1, ...one]));
+  const ds = terrio.open(new Uint8Array(message(2, message(1, [...field, ...transform, ...feature]))), "lakes.pbf");
+  const fc = ds.toGeoJSON();
+  assert.equal(fc.features.length, 1);
+  assert.equal(fc.features[0].properties.NAME, "Lake");
+  assert.deepEqual(fc.features[0].geometry.coordinates, [1, -2]);
+  ds.free();
+});
+
 test("ESRIJSON is recognized by content and keeps its holes and CRS", () => {
   const page = {
     geometryType: "esriGeometryPolygon",

@@ -365,6 +365,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | ✓ | city.json, cityjson, json (by content) |
 | CityGML | CityGML 2.0 and 3.0 (flat XYZ view) | ✓ | ✓ | citygml, gml/xml (by content) |
 | ESRIJSON | JSON of ArcGIS feature-service queries, from files and URLs | ✓ | — | json (by content), query URLs |
+| ESRIPBF | Protocol buffers of ArcGIS feature-service queries, from files and URLs | ✓ | — | pbf (by content), query URLs |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
 | KML | KML | ✓ | ✓ | kml |
@@ -639,9 +640,10 @@ terrio info "https://example.org/arcgis/rest/services/A/FeatureServer/0/query?wh
 
 Without a `resultOffset` in the URL, the following pages are read while the service answers
 `exceededTransferLimit`, asking for as many features as its first page holds unless the URL gives
-a `resultRecordCount`. The open option `FEATURE_SERVER_PAGING=YES` or `NO` decides otherwise, as in
-GDAL. A page over `TERRIO_JSON_MAX_SIZE` (100 MiB by default) is an error, as are results over
-4 GiB, a page that adds nothing while saying there are more, a page with other fields than the
+a `resultRecordCount`. Format values are case-insensitive (`JSON`, `PJSON` and `PBF` also work).
+The open option `FEATURE_SERVER_PAGING=YES` or `NO` decides otherwise, as in
+GDAL. A page over `TERRIO_JSON_MAX_SIZE` (100 MiB by default) is an error, as are cumulative response bytes over
+4 GiB (a transfer cap, not a decoded-memory bound), a page that adds nothing while saying there are more, a page with other fields than the
 first, and a page the same as the one before it (a service that ignores the offset; rows without
 an object id that happen to repeat a whole page need `FEATURE_SERVER_PAGING=NO` and an offset of
 their own). Features without an object id are numbered by their place in the whole layer, or after
@@ -662,6 +664,36 @@ into polygons by containment, whatever their orientation. The CRS is the first k
 CRS); a WKID that is not an EPSG code is tried as an ESRI one. A service's error answer is an error with its message, and curve geometries
 (`curvePaths`, `curveRings`) are refused rather than read without their arcs. Query URLs are not
 read in WebAssembly builds, which have no network stack: fetch the JSON and open its bytes.
+
+### ESRIPBF
+
+The `ESRIPBF` driver reads the protocol buffer of the same queries (`f=pbf`), which GDAL has no
+driver for. It gives the same fields, values and geometries as `ESRIJSON`, to the scale the service
+quantizes coordinates to, in fewer bytes and faster to decode: use it for large queries, on services
+that list `PBF` in their `supportedQueryFormats`. Single-precision fields keep digits that `f=json`
+prints rounded to seven.
+
+```sh
+terrio convert "https://example.org/arcgis/rest/services/A/FeatureServer/0/query?where=1%3D1&outFields=*&orderByFields=OBJECTID&f=pbf" out.gpkg
+```
+
+A URL is read as a query when it has `f=pbf` and answers one, and paging works as above, with the
+same `TERRIO_JSON_MAX_SIZE` cap on each page. Before decoding PBF, an address-space estimate of
+64 times the encoded page size is checked, allowing for packed coordinate expansion and vector
+growth. Decoded attribute cells are also checked against the usable-memory ceiling where
+available. These conservative preflights are not a process-memory limit. A `.pbf` file, or one whose extension no driver
+claims, is recognized by its content; `.pbf` names OpenStreetMap otherwise, and `.osm.pbf` always
+names and opens OpenStreetMap. X and Y are differences from the previous vertex; Z and M are each
+vertex's own, and an M of 0 is none, as the same answer in JSON gives it (a Z of 0 is the transform's
+Z translate, as no answer seen leaves Z out that way). An answer with coordinates must have the
+`transform` the format sends with them. The reader follows Esri's `FeatureCollection.proto`
+(Apache-2.0; see [Acknowledgements](acknowledgements.md)).
+`ESRIPBF:` before a URL or a path names the driver. A service answers a query it refuses with
+nothing: from a URL whose path ends in `/query`, that is an error, and `f=json` shows the reason; a
+JSON error answer is reported as this driver's. An answer with a count, ids or an extent
+is refused, as are curve and shape-buffer geometries and a point with more than one vertex. The
+format gives no field widths, which `f=json` does. Query URLs are not read in WebAssembly builds:
+fetch the bytes and open them.
 
 ### Other vector formats
 

@@ -1,0 +1,218 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+
+//! Feature-service queries over HTTP as protocol buffers, from a service on a local port that
+//! ignores ranges, as ArcGIS Server does.
+
+#![cfg(all(not(target_family = "wasm"), feature = "remote"))]
+
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
+use terrio::formats::VectorDriver;
+
+const TOTAL: u64 = 5;
+
+fn varint(out: &mut Vec<u8>, mut v: u64) {
+    while v >= 0x80 {
+        out.push((v as u8 & 0x7f) | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+fn number(field: u64, v: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    varint(&mut out, field << 3);
+    varint(&mut out, v);
+    out
+}
+
+fn message(field: u64, bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    varint(&mut out, (field << 3) | 2);
+    varint(&mut out, bytes.len() as u64);
+    out.extend_from_slice(bytes);
+    out
+}
+
+/// A page of point features with ids from `offset + 1`, at most two of them.
+fn page(offset: u64) -> Vec<u8> {
+    page_with(offset, true)
+}
+
+/// [`page`], its features with their object ids or leaving them null.
+fn page_with(offset: u64, object_ids: bool) -> Vec<u8> {
+    page_with_type(offset, object_ids, 6)
+}
+
+fn page_with_type(offset: u64, object_ids: bool, kind: u64) -> Vec<u8> {
+    let end = (offset + 2).min(TOTAL);
+    let field = message(13, &[message(1, b"OBJECTID"), number(2, kind)].concat());
+    let srs = message(8, &number(1, 4326));
+    let double = |field: u64, v: f64| {
+        let mut out = Vec::new();
+        varint(&mut out, (field << 3) | 1);
+        out.extend_from_slice(&v.to_le_bytes());
+        out
+    };
+    let transform = message(12, &message(2, &[double(1, 1.0), double(2, 1.0)].concat()));
+    let mut result = [number(9, u64::from(end < TOTAL)), srs, field, transform].concat();
+    for i in offset..end {
+        let mut coords = Vec::new();
+        varint(&mut coords, i * 2);
+        varint(&mut coords, i * 2);
+        let id = if object_ids { number(5, i + 1) } else { number(10, 1) };
+        let feature = [message(1, &id), message(2, &message(3, &coords))].concat();
+        result.extend(message(15, &feature));
+    }
+    message(2, &message(1, &result))
+}
+
+/// A service of [`TOTAL`] features at `/query`, with other paths for the other answers. Returns its
+/// base URL and the requests it received.
+fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let requests: Arc<Mutex<Vec<String>>> = Arc::default();
+    let record = requests.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut first = String::new();
+            if reader.read_line(&mut first).unwrap_or(0) == 0 {
+                continue;
+            }
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && !line.trim().is_empty() {
+                line.clear();
+            }
+            let target = first.split_whitespace().nth(1).unwrap_or("/").to_string();
+            record.lock().unwrap().push(target.clone());
+            let offset = target
+                .split_once('?')
+                .and_then(|(_, q)| q.split('&').find_map(|p| p.strip_prefix("resultOffset=")))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let body: Vec<u8> = match target.split('?').next().unwrap_or("/") {
+                "/query" => page(offset),
+                "/typed/query" => page_with_type(offset, true, if offset == 0 { 6 } else { 4 }),
+                "/late-geojson/query" => format!(r#"{{"fieldAliases":{{}},"padding":"{}","features":[{{"type":"Feature","properties":{{"name":"kept"}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}],"type":"FeatureCollection"}}"#, "x".repeat(7000)).into_bytes(),
+                "/refused/query" | "/empty.pbf" => Vec::new(),
+                "/denied/query" => br#"{"error":{"code":498,"message":"Invalid token."}}"#.to_vec(),
+                "/count/query" => message(2, &message(2, &number(1, 5))),
+                "/nullid/query" => page_with(offset, false),
+                "/repeats/query" => page(0),
+                // The same features, with something else that changes on every answer.
+                "/repeats-stamped/query" => [message(1, format!("2.{offset}").as_bytes()), page(0)].concat(),
+                _ => b"not found".to_vec(),
+            };
+            let _ = stream.write_all(&[b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".as_slice(), &body].concat());
+        }
+    });
+    (url, requests)
+}
+
+fn ids(ds: &terrio::VectorDataset) -> Vec<u64> {
+    ds.layers[0].features.iter().map(|f| f.fid).collect()
+}
+
+#[test]
+fn a_query_is_read_page_by_page() {
+    let (base, requests) = serve();
+    let url = format!("{base}/query?where=1%3D1&f=pbf");
+    let ds = terrio::open_vector(&url, &Default::default()).unwrap();
+    assert_eq!(ds.driver, VectorDriver::ESRIPBF);
+    assert_eq!(ds.layers[0].name, "ESRIPBF");
+    assert_eq!(ds.layers[0].crs_epsg(), Some(4326));
+    assert_eq!(ids(&ds), [1, 2, 3, 4, 5]);
+    let queries = requests.lock().unwrap().clone();
+    assert_eq!(queries.len(), 3);
+    assert!(queries.iter().all(|q| q.contains("f=pbf")), "{queries:?}");
+    assert!(queries[1].contains("resultRecordCount=2") && queries[1].contains("resultOffset=2"), "{queries:?}");
+}
+
+#[test]
+fn the_prefix_opens_and_the_paging_option_applies() {
+    let (base, requests) = serve();
+    assert_eq!(ids(&terrio::open_vector(&format!("ESRIPBF:{base}/query?f=pbf"), &Default::default()).unwrap()), [1, 2, 3, 4, 5]);
+    assert!(requests.lock().unwrap().iter().all(|query| query.contains("f=pbf")));
+    let mut options = terrio::VectorOpenOptions::default();
+    options.set("FEATURE_SERVER_PAGING", "NO").unwrap();
+    assert_eq!(ids(&terrio::open_vector(&format!("{base}/query?f=pbf"), &options).unwrap()), [1, 2]);
+}
+
+#[test]
+fn it_is_opened_described_listed_and_identified() {
+    let (base, _) = serve();
+    let url = format!("{base}/query?f=pbf");
+    assert!(matches!(terrio::open(&url), Ok(terrio::Dataset::Vector(ds)) if ds.driver == VectorDriver::ESRIPBF));
+    let Ok(terrio::info::Info::Vector(info)) = terrio::info::info_path(&url, &Default::default()) else { panic!("not a vector dataset") };
+    assert_eq!(info.driver, "ESRIPBF");
+    assert_eq!(terrio::list_layers(&url).unwrap(), ["ESRIPBF"]);
+    assert_eq!(terrio::inspection::identify(&url, false).unwrap().unwrap().driver, "ESRIPBF");
+}
+
+#[test]
+fn a_refused_query_says_so() {
+    let (base, _) = serve();
+    let error = |path: &str| terrio::open_vector(&format!("{base}{path}"), &Default::default()).unwrap_err().to_string();
+    assert!(error("/refused/query?f=pbf").contains("f=json shows why"));
+    // A JSON error answer to `f=pbf` is this driver's to report.
+    let denied = error("/denied/query?f=pbf");
+    assert!(denied.contains("Invalid token.") && denied.starts_with("ESRIPBF: "), "{denied}");
+    // An empty answer from a URL that is no query is not taken for a refused one.
+    let empty = terrio::open_vector(&format!("{base}/empty.pbf?f=pbf"), &Default::default());
+    assert!(!empty.is_err_and(|e| e.to_string().contains("f=json shows why")));
+    // Nor is one from a URL named for this driver: it is simply empty.
+    let named = terrio::open_vector(&format!("ESRIPBF:{base}/empty.pbf"), &Default::default()).unwrap_err().to_string();
+    assert!(named.contains("the answer is empty") && !named.contains("f=json"), "{named}");
+    assert!(error("/repeats/query?f=pbf").contains("same as the one before"));
+    assert!(error("/repeats-stamped/query?f=pbf").contains("same as the one before"));
+    // So with every entry point, GDAL backend or not: a recognized answer is not handed on.
+    assert!(terrio::open(&format!("{base}/refused/query?f=pbf")).is_err_and(|e| e.to_string().contains("f=json shows why")));
+    assert!(terrio::list_layers(&format!("{base}/refused/query?f=pbf")).is_err_and(|e| e.to_string().contains("f=json shows why")));
+}
+
+#[test]
+fn features_without_object_ids_are_numbered_across_pages() {
+    let (base, _) = serve();
+    let ds = terrio::open_vector(&format!("{base}/nullid/query?f=pbf"), &Default::default()).unwrap();
+    assert_eq!(ids(&ds), [0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn a_query_that_answers_no_features_is_not_read_as_a_layer() {
+    let (base, _) = serve();
+    let plain = terrio::open_vector(&format!("{base}/count/query?returnCountOnly=true&f=pbf"), &Default::default());
+    assert!(plain.unwrap_err().to_string().contains("count"));
+    let named = terrio::open_vector(&format!("ESRIPBF:{base}/count/query?returnCountOnly=true&f=pbf"), &Default::default());
+    assert!(named.unwrap_err().to_string().contains("count"));
+}
+
+#[test]
+fn a_late_geojson_root_type_preserves_features_for_pbf_queries() {
+    let (base, _) = serve();
+    let ds = terrio::open_vector(&format!("{base}/late-geojson/query?f=pbf"), &Default::default()).unwrap();
+    assert_eq!(ds.driver, VectorDriver::GeoJSON);
+    let feature = &ds.layers[0].features[0];
+    assert_eq!(feature.attributes, [terrio::FieldValue::Text("kept".into())]);
+    assert!(matches!(&feature.geometry, Some(terrio::Geometry::Point(c)) if c.x == 1.0 && c.y == 2.0));
+}
+
+#[test]
+fn uppercase_pbf_queries_are_paged_without_a_record_count() {
+    let (base, requests) = serve();
+    let ds = terrio::open_vector(&format!("{base}/query?f=PBF"), &Default::default()).unwrap();
+    assert_eq!(ids(&ds), [1, 2, 3, 4, 5]);
+    assert_eq!(requests.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn changed_field_types_between_pages_are_refused() {
+    let (base, requests) = serve();
+    let error = terrio::open_vector(&format!("{base}/typed/query?f=pbf"), &Default::default()).unwrap_err();
+    assert!(error.to_string().contains("other fields"), "{error}");
+    assert_eq!(requests.lock().unwrap().len(), 2);
+}

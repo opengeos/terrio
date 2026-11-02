@@ -115,6 +115,9 @@ pub enum VectorDriver {
     /// The JSON of ArcGIS feature-service queries (`f=json`), as GDAL's ESRIJSON driver reads it
     /// (read only). Shares `.json` with GeoJSON: recognized by its content.
     ESRIJSON,
+    /// The protocol buffer of ArcGIS feature-service queries (`f=pbf`) (read only). Shares `.pbf`
+    /// with OpenStreetMap: recognized by its content.
+    ESRIPBF,
     /// GeoPackage.
     GPKG,
     /// GeoParquet.
@@ -388,6 +391,8 @@ impl VectorDriver {
         Self::DWG,
         Self::MapInfo,
         Self::OSM,
+        // After OSM, so that `.pbf` names OSM by its extension: ESRIPBF is told by content.
+        Self::ESRIPBF,
         Self::HECRAS,
         Self::CSV,
         Self::MBTiles,
@@ -406,6 +411,7 @@ impl VectorDriver {
             Self::CityJSON => ("CityJSON", "CityJSON 3D city models", &["city.json", "cityjson"], true, true),
             Self::CityGML => ("CityGML", "CityGML 3D city models", &["citygml"], true, true),
             Self::ESRIJSON => ("ESRIJSON", "ESRIJSON", &["json"], true, false),
+            Self::ESRIPBF => ("ESRIPBF", "ArcGIS feature-service protocol buffers", &["pbf"], true, false),
             Self::GPKG => ("GPKG", "GeoPackage", &["gpkg"], true, true),
             Self::Parquet => ("Parquet", "GeoParquet", &["parquet", "geoparquet"], true, true),
             Self::FlatGeobuf => ("FlatGeobuf", "FlatGeobuf", &["fgb"], true, true),
@@ -507,6 +513,7 @@ impl VectorDriver {
             | Self::CityJSON
             | Self::CityGML
             | Self::ESRIJSON
+            | Self::ESRIPBF
             | Self::DXF
             | Self::DWG
             | Self::GeoJSONSeq
@@ -804,6 +811,7 @@ fn named_drivers(trimmed: &str) -> Named {
         ("GDAL:", "GDAL"),
         ("MEM:", "MEM"),
         ("ESRIJSON:", "ESRIJSON"),
+        ("ESRIPBF:", "ESRIPBF"),
     ] {
         if upper.starts_with(prefix) {
             return Named::Prefix(driver);
@@ -829,6 +837,10 @@ fn named_drivers(trimmed: &str) -> Named {
     }
     if name.ends_with(".gml") && by_name.iter().any(|name| name == "GML") {
         by_name.push("CITYGML".to_string());
+    }
+    // `.osm.pbf` is OpenStreetMap's alone, as `for_extension` reads it.
+    if name.ends_with(".osm.pbf") {
+        by_name.retain(|d| d == "OSM");
     }
     // Plain JSON is shared by GeoJSON and CityJSON; the reader chooses by root type.
     if name.ends_with(".json") && by_name.iter().any(|name| name == "GEOJSON") {
@@ -1025,7 +1037,7 @@ const RASTER_CONTENT: &[&str] = &["GTIFF", "JP2", "PNG", "JPEG", "WEBP", "GRIB",
 /// The formats [`sniff`] names that terrio reads as vectors under names of theirs.
 #[cfg(remote)]
 const VECTOR_CONTENT: &[&str] =
-    &["GEOJSON", "TOPOJSON", "CITYJSON", "CITYGML", "ESRIJSON", "PARQUET", "FLATGEOBUF", "ESRI SHAPEFILE", "KML", "GPX", "GML"];
+    &["GEOJSON", "TOPOJSON", "CITYJSON", "CITYGML", "ESRIJSON", "ESRIPBF", "PARQUET", "FLATGEOBUF", "ESRI SHAPEFILE", "KML", "GPX", "GML"];
 
 /// Whether terrio reads files of the format [`sniff`] names `format` under names of theirs: as
 /// rasters, or, `generic`, as rasters or vectors.
@@ -1064,11 +1076,24 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     if starts(b"SQLite format 3\0") {
         return Some("GPKG");
     }
+    // OpenStreetMap PBF: a big-endian header length, then a header blob of type `OSMHeader`. Named
+    // here so that `.pbf`, which also names ESRIPBF, is judged by what it holds.
+    if let Some(length) = head.get(..4).and_then(|h| h.try_into().ok()).map(u32::from_be_bytes)
+        && (1..=65_536).contains(&length)
+        && head
+            .get(4..(length as usize).saturating_add(4).min(head.len()))
+            .is_some_and(|header| header.windows(11).any(|w| w == b"\x0a\x09OSMHeader"))
+    {
+        return Some("OSM");
+    }
     if starts(b"PMTiles") {
         return Some("PMTILES");
     }
     if starts(b"PAR1") {
         return Some("PARQUET");
+    }
+    if crate::drivers::vector::esripbf::is_esripbf(head) {
+        return Some("ESRIPBF");
     }
     if starts(b"fgb\x03") {
         return Some("FLATGEOBUF");

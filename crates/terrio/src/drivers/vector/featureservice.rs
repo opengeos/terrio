@@ -10,7 +10,7 @@
 //! The query results of an ArcGIS feature service: their paging, fields, values, geometries and
 //! spatial reference, apart from how a page is encoded.
 //!
-//! Fields are typed as GDAL's ESRIJSON driver types them. Terrio's data model has no subtypes, so
+//! Fields are typed as GDAL 3.13.3's ESRIJSON driver types them. Terrio's data model has no subtypes, so
 //! `esriFieldTypeSmallInteger` is an integer and `esriFieldTypeSingle` a real, and GUIDs are
 //! text. Dates are UTC date-times from milliseconds since 1970. The object id field
 //! (`esriFieldTypeOID`) is an integer field that also gives each feature its id.
@@ -51,18 +51,53 @@ pub(crate) struct Page {
     pub by_position: Vec<usize>,
 }
 
-/// The most bytes read from a service for one dataset: a service that never stops paging ends here.
+/// The most cumulative response bytes read from a service for one dataset: a service that never stops paging ends here.
 #[cfg(remote)]
 const MAX_TOTAL_BYTES: u64 = 4 << 30;
 
+/// The memory for attribute values that any document may take, whatever its size.
+const MAX_SPARSE_CELL_BYTES: usize = 1 << 30;
+
+/// Refuses a page whose attribute values would take far more memory than its size explains: a small
+/// page can declare many fields for many features. Resource refusals are terminal, so the optional
+/// GDAL fallback cannot build the cells that the native reader refused.
+pub(crate) fn check_values(driver: &str, features: usize, fields: usize, document: usize) -> crate::Result<()> {
+    let cells = features.saturating_mul(fields).saturating_mul(std::mem::size_of::<FieldValue>());
+    if cells > MAX_SPARSE_CELL_BYTES.max(document.saturating_mul(super::geojson::PARSE_MEMORY_PER_BYTE)) {
+        return Err(crate::Error::ResourceLimit(format!(
+            "{driver}: {features} features of {fields} fields need about {cells} bytes of memory, too many for a document of {document} bytes"
+        )));
+    }
+    crate::dataset::fallible::check_usable(Some(cells), || format!("{driver}: feature attributes are too large to allocate"))
+        .map_err(crate::Error::ResourceLimit)?;
+    let mut probe: Vec<u8> = Vec::new();
+    probe
+        .try_reserve_exact(cells)
+        .map_err(|_| crate::Error::ResourceLimit(format!("{driver}: cannot allocate {cells} bytes of feature attributes")))?;
+    Ok(())
+}
+
 /// Whether a URL is likely a feature-service query, by GDAL's signs: `f=json`, `f=pjson` or
-/// `resultRecordCount=`, as parameters of its own, without the `/items?` of OGC API Features. What
-/// it answers decides.
+/// `resultRecordCount=`, as parameters of its own, without the `/items?` of OGC API Features; or
+/// by `f=pbf`, which GDAL does not read. What it answers decides.
 #[cfg(remote)]
 pub(crate) fn is_query_url(url: &str) -> bool {
     (url.starts_with("http://") || url.starts_with("https://"))
-        && (matches!(query_value(url, "f"), Some("json" | "pjson")) || query_value(url, "resultRecordCount").is_some())
+        && (query_value(url, "f").is_some_and(|f| ["json", "pjson", "pbf"].iter().any(|format| f.eq_ignore_ascii_case(format)))
+            || query_value(url, "resultRecordCount").is_some())
         && !url.contains("/items?")
+}
+
+/// Whether a URL's path is a layer's `query` operation.
+#[cfg(remote)]
+pub(crate) fn is_query_path(url: &str) -> bool {
+    url.split(['?', '#']).next().is_some_and(|path| path.trim_end_matches('/').to_ascii_lowercase().ends_with("/query"))
+}
+
+/// Whether a URL asks for the protocol buffer.
+#[cfg(remote)]
+pub(crate) fn asks_for_pbf(url: &str) -> bool {
+    query_value(url, "f").is_some_and(|f| f.eq_ignore_ascii_case("pbf"))
 }
 
 /// The first bytes of a query's answer, from a plain request: the answer is made per request, and
@@ -134,8 +169,8 @@ pub(crate) fn read_pages(
         Some(_) => url.to_string(),
         None => with_query_value(url, "resultRecordCount", &layer.features.len().to_string()),
     };
-    let names = |l: &Layer| l.schema.fields().iter().map(|f| f.name.clone()).collect::<Vec<_>>();
-    let fields = names(&layer);
+    let schema = |l: &Layer| l.schema.fields().iter().map(|f| (f.name.clone(), f.field_type)).collect::<Vec<_>>();
+    let fields = schema(&layer);
     let mut total = first.len() as u64;
     let mut previous = std::borrow::Cow::Borrowed(first);
     let mut previous_len = layer.features.len();
@@ -167,7 +202,7 @@ pub(crate) fn read_pages(
             return Err(invalid(format!("the page at offset {offset} has no features, but says there are more")));
         }
         // A last page without features and without `fields` names none.
-        if !page.layer.features.is_empty() && names(&page.layer) != fields {
+        if !page.layer.features.is_empty() && schema(&page.layer) != fields {
             return Err(invalid(format!("the page at offset {offset} has other fields than the first")));
         }
         more = page.more;
@@ -282,6 +317,13 @@ mod tests {
     fn query_url_signs_are_recognized() {
         assert!(is_query_url("https://x.org/arcgis/rest/services/A/FeatureServer/0/query?where=1=1&f=json"));
         assert!(is_query_url("https://x.org/a/query?f=pjson"));
+        assert!(is_query_url("https://x.org/a/query?f=pbf"));
+        assert!(is_query_path("https://x.org/a/Query/?f=pbf"));
+        assert!(!is_query_path("https://x.org/a.pbf?f=query"));
+        assert!(asks_for_pbf("https://x.org/a/query?f=pbf"));
+        assert!(asks_for_pbf("https://x.org/a/query?f=PBF"));
+        assert!(is_query_url("https://x.org/a/query?f=PBF"));
+        assert!(!asks_for_pbf("https://x.org/a/query?f=json"));
         assert!(is_query_url("https://x.org/a/query?resultRecordCount=10"));
         assert!(!is_query_url("https://x.org/ogc/collections/a/items?f=json"));
         assert!(!is_query_url("https://x.org/a/query?f=geojson"));

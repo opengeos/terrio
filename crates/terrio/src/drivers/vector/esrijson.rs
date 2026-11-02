@@ -28,9 +28,6 @@ fn invalid(message: impl std::fmt::Display) -> Error {
 /// How much of a document [`is_esrijson`] looks at, as GDAL's driver does.
 pub(crate) const HEAD_BYTES: usize = 6000;
 
-/// The memory for attribute values that any document may take, whatever its size.
-const MAX_SPARSE_CELL_BYTES: usize = 1 << 30;
-
 /// Whether a JSON text's root `type` says it is GeoJSON or TopoJSON. The signs of ESRI JSON can
 /// appear among such a document's properties. ESRI JSON's own `type`, as a layer's description
 /// has (`Feature Layer`), is none of these.
@@ -115,16 +112,8 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     fields.retain(|f| names.insert(f.def.name.clone()));
     // Every feature takes a value per field, given or not, so a small document can ask for far more
     // than its size.
-    let cells = features.len().saturating_mul(fields.len()).saturating_mul(std::mem::size_of::<FieldValue>());
-    if cells > MAX_SPARSE_CELL_BYTES.max(bytes.len().saturating_mul(super::geojson::PARSE_MEMORY_PER_BYTE)) {
-        // Terminal: GDAL would build the cells that the native reader refused.
-        return Err(Error::ResourceLimit(format!(
-            "ESRIJSON: {} features of {} fields need about {cells} bytes of memory, too many for a document of {} bytes",
-            features.len(),
-            fields.len(),
-            bytes.len()
-        )));
-    }
+    // The shared refusal is terminal: GDAL must not allocate the cells refused here.
+    featureservice::check_values("ESRIJSON", features.len(), fields.len(), bytes.len())?;
     let mut layer = Layer::new(name);
     for f in &fields {
         layer.add_field(f.def.clone());

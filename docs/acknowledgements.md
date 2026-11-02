@@ -131,6 +131,13 @@ PROJ's database, from Esri's
 [projection engine data](https://github.com/Esri/projection-engine-db-doc), copyright Esri,
 under the Apache License 2.0.
 
+## Esri's FeatureCollection protocol buffer
+
+terrio's `ESRIPBF` reader (`crates/terrio/src/drivers/vector/esripbf.rs`) is written from Esri's
+published [`FeatureCollection.proto`](https://github.com/Esri/arcgis-pbf), copyright 2021 Esri, under
+the Apache License 2.0. It follows the message and field numbers that file defines; no code is copied
+from it.
+
 ## Python APIs
 
 terrio's Python package borrows its shape from [rasterio](https://rasterio.readthedocs.io),
