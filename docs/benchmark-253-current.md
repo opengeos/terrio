@@ -15,8 +15,11 @@ Each tool independently selected its lowest median from CPU budgets **1 and 2**,
 using a warm-up and three tuning samples per setting. Fresh measurements used
 seven samples for each small case and five for each large case, alternating tool
 order. Every invocation used a fresh output directory. Linux affinity bounded
-all child threads. The one-CPU background-load threshold was unchanged; all eight
-rows passed it. These are limited-budget, machine-specific measurements, not a
+all child threads. The one-CPU background-load threshold was unchanged. It applies
+to elapsed-time-weighted background estimates pooled across both tools in each
+paired series, separately for each tuning budget and for fresh measurements;
+it does not cap each tool or invocation independently. All eight rows passed.
+These are limited-budget, machine-specific measurements, not a
 search for the best settings across all 40 available logical CPUs.
 
 | Task | Terrio median [range] | GDAL median [range] | CPUs T / G | Terrio vs GDAL | Validation |
@@ -29,6 +32,11 @@ search for the best settings across all 40 available logical CPUs.
 | Filter + reproject: US counties → EPSG:5070 | 58 ms [55 ms–59 ms] | 51 ms [48 ms–52 ms] | 2 / 1 | 1.14× slower | pass |
 | Hillshade of the mosaic | 3.50 s [3.49 s–3.55 s] | 4.04 s [4.00 s–4.05 s] | 2 / 1 | 1.15× faster | pass |
 | Slope of the mosaic | 4.19 s [4.12 s–4.47 s] | 4.87 s [4.80 s–5.24 s] | 2 / 1 | 1.16× faster | pass |
+
+The VRT row's fresh-measurement background mean was 0.94 CPUs, close to the 1.0
+limit; individual estimates reached about 1.7 CPUs. Its 1.51× observed median
+ratio passes the documented pooled gate, and does not establish a speed advantage
+under stronger isolation or on another run.
 
 Both COG commands request fresh average overviews; Terrio selects its GDAL 3.13
 COG policy. Warp and terrain select the 3.13 arithmetic profile. Datum-grid
