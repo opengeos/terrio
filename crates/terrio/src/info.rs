@@ -13,6 +13,8 @@ use crate::dataset::{Dataset, RasterDataset, VectorDataset};
 use serde::Serialize;
 use std::fmt::Write as _;
 
+#[cfg(remote)]
+pub use crate::drivers::vector::wfs::{ServiceInfo, ServiceLayerInfo};
 pub use crate::histogram::Histogram;
 
 /// The prefix of metadata items for terrio's own use (a netCDF band's packing, for
@@ -27,6 +29,10 @@ pub enum Info {
     Raster(Box<RasterInfo>),
     /// A vector summary.
     Vector(VectorInfo),
+    /// Vector service metadata without materializing its feature layers.
+    #[cfg(remote)]
+    #[serde(rename = "vector")]
+    VectorService(ServiceInfo),
     /// A point cloud summary.
     #[cfg(feature = "pointcloud")]
     #[cfg_attr(docsrs, doc(cfg(feature = "pointcloud")))]
@@ -425,11 +431,25 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
     #[cfg(not(feature = "pointcloud"))]
     let kind = None;
     crate::formats::check_allowed(path, kind)?;
+    if let Some(target) = crate::drivers::vector::wfs::service_target(path) {
+        #[cfg(remote)]
+        return Ok(Info::VectorService(crate::drivers::vector::wfs::info(target)?));
+        #[cfg(not(remote))]
+        {
+            let _ = target;
+            return Err(crate::Error::disabled("remote"));
+        }
+    }
     if let Some(result) = crate::catalog::open_lazy(path) {
         return Ok(Info::Raster(Box::new(lazy_raster_info(&mut result?, options)?)));
     }
     if let Some(result) = crate::stac::info(path, options) {
         return result;
+    }
+    // A feature-service query's server may ignore the ranges the probes below ask for.
+    #[cfg(remote)]
+    if let Some(result) = crate::dataset::open_remote_vector(path, &Default::default()) {
+        return Ok(Info::Vector(vector_info(&result?)));
     }
     if let Some(r) = crate::drivers::open_lazy(path) {
         return Ok(Info::Raster(Box::new(lazy_raster_info_at(&mut r?, options, Some(path))?)));
@@ -453,11 +473,6 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
         }
         let mut r = LazyRaster::from_tiles(crate::tiles::raster::TileRaster::new(archive, None)?);
         return Ok(Info::Raster(Box::new(lazy_raster_info(&mut r, options)?)));
-    }
-    // A feature-service query's server may ignore the ranges the probes below ask for.
-    #[cfg(remote)]
-    if let Some(result) = crate::dataset::open_feature_service(path, &Default::default()) {
-        return Ok(Info::Vector(vector_info(&result?)));
     }
     if !matches!(loc, crate::vfs::Location::Zip { .. })
         && let Some(mut r) = LazyRaster::open_tiff(path)?
@@ -487,6 +502,8 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
             .collect();
         match &mut summary {
             Info::Vector(v) => v.subdatasets = subdatasets,
+            #[cfg(remote)]
+            Info::VectorService(_) => {}
             Info::Raster(r) if subdatasets.len() > 1 => r.subdatasets = subdatasets,
             #[cfg(feature = "pointcloud")]
             Info::PointCloud(_) => {}
@@ -798,6 +815,8 @@ impl Info {
             }
             #[cfg(feature = "pointcloud")]
             Info::PointCloud(p) => s.push_str(&p.to_text()),
+            #[cfg(remote)]
+            Info::VectorService(v) => s.push_str(&v.to_text()),
             Info::Vector(v) => {
                 let _ = writeln!(s, "Driver: {}", v.driver);
                 for l in &v.layers {

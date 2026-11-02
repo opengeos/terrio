@@ -2873,6 +2873,29 @@ def suite_coverage_clean(ctx):
     return suite
 
 
+def suite_wfs(ctx):
+    """Native WFS catalogs and complete public feature reads versus GDAL."""
+    suite = Suite("wfs", "WFS services and extensionless responses", "GDAL WFS/GML/GeoJSON",
+                  "Public WFS 1.0/1.1/2.0 catalogs; selected complete layers and opaque GetFeature URLs. "
+                  "Exact field names, attributes, source IDs and CRS; field types checked, with direct GML integer inference differences reported. "
+                  "Every linear geometry vertex within 1e-8 CRS units. Unavailable reference services are not compared. Generated numeric FIDs are ignored.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    command = [sys.executable, str(SCRIPTS / "compare_wfs_with_gdal.py"), "--terrio", ctx.terrio, "--json"]
+    if ctx.remote:
+        command.append("--remote")
+    code, out, err = run(command)
+    try:
+        for row in json.loads(out):
+            suite.cases.append(Case("wfs", row["name"], row["status"], row["detail"]))
+    except (ValueError, KeyError, TypeError) as error:
+        suite.error = f"{error}: {tail(err or out)}"
+    if code and not suite.error and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or "WFS comparison failed")
+    return suite
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -2942,6 +2965,7 @@ SUITES = OrderedDict(
         ("arrow", suite_arrow),
         ("gpkg", suite_gpkg),
         ("streams", suite_streams),
+        ("wfs", suite_wfs),
         ("tiles", suite_tiles),
         ("grib", suite_grib),
         ("pointclouds", suite_pointclouds),

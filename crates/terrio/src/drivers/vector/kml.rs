@@ -862,6 +862,17 @@ mod tests {
     }
 
     #[test]
+    fn prefixed_attributes_keep_legacy_local_name_lookup() {
+        let source = r#"<kml xmlns:p="urn:vendor"><Document><name>D</name><Placemark p:id="vendor1"><ExtendedData><Data p:name="extra"><value>payload</value></Data></ExtendedData><Point><coordinates>1,2</coordinates></Point></Placemark></Document></kml>"#;
+        let layers = parse(source, "file").unwrap();
+        let layer = &layers[0];
+        let feature = &layer.features[0];
+        assert_eq!(feature.attributes[layer.schema.field_index("id").unwrap()], FieldValue::Text("vendor1".into()));
+        assert_eq!(feature.attributes[layer.schema.field_index("extra").unwrap()], FieldValue::Text("payload".into()));
+        assert_eq!(feature.geometry, Some(Geometry::point(1., 2.)));
+    }
+
+    #[test]
     fn reads_like_libkml() {
         let kml = r##"<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>D</name>
             <Schema name="s" id="s"><SimpleField name="n" type="int"/><SimpleField name="x" type="double"/></Schema>

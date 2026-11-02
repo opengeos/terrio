@@ -413,6 +413,7 @@ struct Client {
     /// keys) is an answer rather than an error.
     missing_ok: bool,
     refused_ok: bool,
+    service_errors: bool,
     /// The most bytes a response to a request without a range may hold (see
     /// [`Client::fetch_range`]); `None`: as many as it holds.
     body_cap: Option<u64>,
@@ -512,6 +513,7 @@ impl Client {
             s3,
             missing_ok: false,
             refused_ok: false,
+            service_errors: false,
             body_cap: None,
             azure,
             config,
@@ -738,6 +740,7 @@ impl Client {
                     retry_warning(status, &self.url, self.options.retry_delay, attempt);
                     self.backoff(&mut attempt)
                 }
+                400..=599 if self.service_errors => return Ok(response),
                 _ => {
                     record_discarded(&self.url, &self.stats_name(), response);
                     let hint = match (&self.s3, status) {
@@ -1215,10 +1218,23 @@ impl io::Write for CountingWriter<'_> {
 
 /// Run one sequential archive pass against a streamed response, without range reads.
 pub(crate) fn with_reader<T>(remote: &Remote, read: impl FnOnce(&mut dyn Read) -> Result<T>) -> Result<T> {
+    with_reader_status(remote, false, |_, reader| read(reader))
+}
+
+/// Streams a protocol response, optionally returning HTTP error bodies so a service
+/// can decode its structured exception. The caller must cap all body reads and
+/// treat a non-success status as an error even when its body is not recognized.
+pub(crate) fn with_reader_status<T>(
+    remote: &Remote,
+    service_errors: bool,
+    read: impl FnOnce(u16, &mut dyn Read) -> Result<T>,
+) -> Result<T> {
     let mut client = Client::new(remote, HttpOptions::from_env());
+    client.service_errors = service_errors;
     let response = client.send_range(None)?;
+    let status = response.status().as_u16();
     let mut reader = MeasuredReader { inner: response.into_body().into_reader(), bytes: 0 };
-    let result = read(&mut reader);
+    let result = read(status, &mut reader);
     record_fetch(&client.url, &client.stats_name(), reader.bytes);
     if client.options.log {
         eprintln!("terrio:   received {} bytes", reader.bytes);
@@ -3390,7 +3406,7 @@ mod tests {
     // Without the GDAL backend: with it, what terrio refuses goes on to GDAL (gdal_fallback).
     #[cfg(not(feature = "gdal"))]
     #[test]
-    fn info_of_a_remote_file_named_for_no_driver_is_refused_after_its_first_bytes() {
+    fn remote_info_reads_known_vectors_and_bounds_unknown_format_probes() {
         let _serial = cache_test_guard();
         let scratch = std::env::temp_dir().to_string_lossy().into_owned();
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -3407,6 +3423,15 @@ mod tests {
             for name in ["x", "x.dat", "dir.json/x"] {
                 let url = format!("{base}/{name}");
                 let asked = asked_bytes(&seen);
+                if format == Some("GEOJSON") {
+                    let crate::info::Info::Vector(info) = crate::info::info_path(&url, &Default::default()).unwrap() else {
+                        panic!("not a vector")
+                    };
+                    assert_eq!(info.driver, "GeoJSON");
+                    assert_eq!(info.layers[0].feature_count, 1);
+                    assert!(asked_bytes(&seen) - asked >= 1_000_000, "valid vector read whole");
+                    continue;
+                }
                 let err = crate::info::info_path(&url, &Default::default()).map(|_| ()).unwrap_err().to_string();
                 let asked = asked_bytes(&seen) - asked;
                 assert!(asked <= FIRST_READ, "{url}: {asked} bytes: {err}");
@@ -3912,5 +3937,52 @@ mod tests {
         assert_eq!(v.layers[0].features.len(), 4000);
         let ranges = header_values(&seen, "range");
         assert_eq!(ranges.len(), seen.lock().unwrap().len(), "every request has a range: {ranges:?}");
+    }
+
+    #[cfg(feature = "geotiff")]
+    #[test]
+    fn extensionless_raster_metadata_reuses_the_vector_probe_range() {
+        let _serial = cache_test_guard();
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            let config = crate::RasterConfig { cols: 1024, rows: 1024, bands: 1, data_type: crate::DataType::U8, ..Default::default() };
+            let raster = crate::Raster::from_data_native(config, crate::raster::RasterData::U8(vec![42; 1024 * 1024])).unwrap();
+            let source = crate::RasterDataset::new(raster, false);
+            let options = crate::RasterWriteOptions { driver: Some(driver), compression: Some("NONE".into()), ..Default::default() };
+            let bytes = crate::memory::write_raster_bytes(&source, "source.tif", &options).unwrap();
+            assert!(bytes.len() > 1_000_000);
+            let (base, seen) = serve_recording(bytes, None);
+            let baseline = crate::LazyRaster::open(&format!("{base}/baseline")).unwrap();
+            assert_eq!(baseline.width(), 1024);
+            let before_requests = seen.lock().unwrap().len();
+            let before_bytes = asked_bytes(&seen);
+            let before = (before_requests, before_bytes);
+            let url = format!("{base}/info");
+            assert!(matches!(crate::info::info_path(&url, &Default::default()), Ok(crate::info::Info::Raster(_))));
+            let after_requests = seen.lock().unwrap().len() - before.0;
+            let after_bytes = asked_bytes(&seen) - before.1;
+            let after = (after_requests, after_bytes);
+            assert_eq!(after, before, "{driver:?}: metadata dispatch must reuse the first cached range");
+            assert!(after.1 <= FIRST_READ, "metadata must not fetch raster tiles");
+            eprintln!("{driver:?}: direct lazy metadata and extensionless info each use {} request(s), {} range bytes", after.0, after.1);
+            let count = seen.lock().unwrap().len();
+            crate::info::info_path(&url, &Default::default()).unwrap();
+            assert_eq!(seen.lock().unwrap().len(), count, "the repeated metadata read stays cached");
+        }
+    }
+
+    #[test]
+    fn wfs_identification_reads_a_bounded_prefix_not_the_capabilities_document() {
+        let _serial = stats_test_guard();
+        let mut document =
+            br#"<wfs:WFS_Capabilities xmlns:wfs="http://www.opengis.net/wfs/2.0" version="2.0.0"><FeatureTypeList/><!--"#.to_vec();
+        document.extend(vec![b'x'; 1_000_000]);
+        document.extend_from_slice(b"--></wfs:WFS_Capabilities>");
+        let (base, _) = serve_recording(document, None);
+        let found = crate::inspection::identify(&format!("WFS:{base}/ows?map=demo"), false).unwrap().unwrap();
+        assert_eq!(found.driver, "WFS");
+        assert!(!found.deep);
+        let stats = fetch_stats_by_host().into_iter().find(|(host, _)| host == host_of(&base)).unwrap().1;
+        assert_eq!(stats.requests, 1);
+        assert_eq!(stats.bytes, crate::inspection::IDENTIFICATION_HEADER_BYTES as u64);
     }
 }

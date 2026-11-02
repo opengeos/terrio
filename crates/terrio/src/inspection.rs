@@ -212,6 +212,9 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
             return raster(RasterDriver::SRTMHGT);
         }
     }
+    if crate::drivers::vector::wfs::is_capabilities(bytes) {
+        return vector(VectorDriver::WFS);
+    }
     if crate::drivers::vector::citygml::looks_like(bytes) {
         return vector(VectorDriver::CityGML);
     }
@@ -340,6 +343,29 @@ pub fn identify(path: &str, deep: bool) -> Result<Option<Identification>> {
 #[cfg(not(target_family = "wasm"))]
 pub(crate) fn identify_unjudged(path: &str, deep: bool) -> Result<Option<Identification>> {
     use std::io::Read;
+    if let Some(target) = crate::drivers::vector::wfs::service_target(path) {
+        #[cfg(remote)]
+        {
+            let header = crate::drivers::vector::wfs::capabilities_head(target, IDENTIFICATION_HEADER_BYTES as u64)?;
+            let recognized = crate::drivers::vector::wfs::is_capabilities(&header);
+            if !recognized && !deep {
+                return Ok(None);
+            }
+            if !recognized {
+                crate::drivers::vector::wfs::info(target)?;
+            }
+            let mut found = vector(VectorDriver::WFS);
+            if let Some(found) = &mut found {
+                found.deep = !recognized;
+            }
+            return Ok(found);
+        }
+        #[cfg(not(remote))]
+        {
+            let _ = target;
+            return Err(crate::Error::disabled("remote"));
+        }
+    }
     if path.starts_with("/vsimem/") {
         let bytes = crate::memfs::read_shared(std::path::Path::new(path))?;
         return Ok(identify_bytes_unjudged(bytes.as_ref(), path));
@@ -380,11 +406,12 @@ pub(crate) fn identify_unjudged(path: &str, deep: bool) -> Result<Option<Identif
         crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => {
             let remote = location.remote().ok_or_else(|| crate::Error::InvalidArgument("not remote".into()))?;
             // A feature-service query's server may ignore ranges.
-            let (header, length) = if crate::drivers::vector::featureservice::is_query_url(path) {
-                (crate::drivers::vector::featureservice::query_head(&remote, IDENTIFICATION_HEADER_BYTES as u64)?, None)
-            } else {
-                crate::http::read_prefix(&remote, IDENTIFICATION_HEADER_BYTES)?
-            };
+            let (header, length) =
+                if crate::drivers::vector::featureservice::is_query_url(path) || crate::drivers::vector::wfs::is_feature_request(path) {
+                    (crate::drivers::vector::featureservice::query_head(&remote, IDENTIFICATION_HEADER_BYTES as u64)?, None)
+                } else {
+                    crate::http::read_prefix(&remote, IDENTIFICATION_HEADER_BYTES)?
+                };
             identify_header(&header, path, length)
         }
         #[cfg(not(remote))]
