@@ -8,7 +8,7 @@ import zipfile
 import pytest
 
 import terrio
-from terrio.errors import InvalidArgumentError, NotFoundError, TerrioIOError
+from terrio.errors import InvalidArgumentError, NotFoundError, ResourceLimitError, TerrioIOError
 
 
 @pytest.fixture
@@ -180,9 +180,9 @@ def test_a_remote_file_larger_than_the_memory_is_refused_after_its_first_respons
         r"^a file read into memory is too large to allocate: 1125899906842624 bytes, "
         r"more than the \d+ bytes of memory the process can use$"
     )
-    with pytest.raises(TerrioIOError, match=refusal):
+    with pytest.raises(ResourceLimitError, match=refusal):
         terrio.vsi_read(url + "/read.bin")
-    with pytest.raises(TerrioIOError, match=refusal):
+    with pytest.raises(ResourceLimitError, match=refusal):
         terrio.vsi_copy(url + "/copy.bin", "/vsimem/declared/copy.bin")
     assert terrio.vsi_stat("/vsimem/declared/copy.bin") is None
     # Nothing past the first response's bytes was asked for.

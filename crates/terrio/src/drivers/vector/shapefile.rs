@@ -189,17 +189,17 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
         if start < last {
             let bytes = (last - start) * l.record_len;
             let mut buf: Vec<u8> = Vec::new();
-            buf.try_reserve_exact(bytes).map_err(|_| Error::InvalidData(format!("cannot allocate {bytes} bytes for .dbf records")))?;
+            buf.try_reserve_exact(bytes).map_err(|_| Error::ResourceLimit(format!("cannot allocate {bytes} bytes for .dbf records")))?;
             buf.resize(bytes, 0);
             f.seek(SeekFrom::Start((l.header_len + start * l.record_len) as u64))?;
             f.read_exact(&mut buf)?;
-            records.try_reserve_exact(last - start).map_err(|_| Error::InvalidData("cannot allocate .dbf records".into()))?;
+            records.try_reserve_exact(last - start).map_err(|_| Error::ResourceLimit("cannot allocate .dbf records".into()))?;
             records.extend(buf.chunks_exact(l.record_len).map(|r| l.record(r)));
         }
     }
 
     let width = layer.schema.len();
-    layer.features.try_reserve_exact(end - start).map_err(|_| Error::InvalidData("cannot allocate features".into()))?;
+    layer.features.try_reserve_exact(end - start).map_err(|_| Error::ResourceLimit("cannot allocate features".into()))?;
     let mut content = Vec::new();
     let mut records = records.into_iter();
     for fid in start..end {
@@ -909,7 +909,7 @@ fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<Fiel
     let mut records: Vec<Vec<FieldValue>> = Vec::new();
     records
         .try_reserve_exact(count)
-        .map_err(|_| Error::InvalidData(format!("the .dbf file declares {count} records, more than memory holds")))?;
+        .map_err(|_| Error::ResourceLimit(format!("the .dbf file declares {count} records, more than memory holds")))?;
     // Every record below `count` is whole in the file; they are decoded in parallel into the
     // list reserved above.
     let record = |i: usize| {

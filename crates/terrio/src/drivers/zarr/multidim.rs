@@ -45,7 +45,7 @@ impl MdSource {
         let n = counts.iter().try_fold(1usize, |n, &c| n.checked_mul(c).ok_or_else(|| bad("selected size overflows")))?;
         // Refused past the memory the process can use, allocated fallibly, as a region is.
         let bytes = crate::dataset::fallible::check_usable(n.checked_mul(size), || format!("a selection of shape {counts:?} is too large"))
-            .map_err(bad)?;
+            .map_err(limited)?;
         let mut out = crate::dataset::fallible::filled(bytes, 0u8, "a Zarr selection")?;
         let grid: Vec<_> = runs.iter().map(Vec::len).collect();
         let total = grid.iter().try_fold(1usize, |n, &c| n.checked_mul(c).ok_or_else(|| bad("chunk grid overflows")))?;

@@ -96,6 +96,10 @@ With the feature enabled:
 - `terrio::open`, `open_raster`, `open_vector` and `list_layers` (and every command) fall back to
   GDAL when terrio's own drivers cannot open a path. terrio's drivers keep priority for the
   formats they know; when GDAL cannot open a file either, terrio's error is reported.
+  Errors classified as resource refusals (`ResourceLimit`, `DecodedLimitExceeded`, or I/O
+  `OutOfMemory`) are terminal and never retried through GDAL. This includes Terrio's native
+  parser, expansion, chunk and allocation budgets. Generic parser/data errors remain eligible
+  for fallback. GDAL's own resource refusals are reported as such.
 - A `GDAL:` prefix forces GDAL, even for formats terrio reads itself: `terrio info GDAL:dem.tif`,
   or `--driver gdal` on `terrio info` and `terrio convert`.
 - GDAL's dataset names work as they are: `HDF4_SDS:UNKNOWN:"file.hdf":0`, and with a `GDAL:`
@@ -148,6 +152,30 @@ let ntf = terrio::memory::open_raster_bytes(std::fs::read("image.ntf")?, "image.
 
 Not covered: rotated geotransforms and GCP-only georeferencing (as for terrio's own drivers),
 appending to existing datasets through GDAL (`--append`), and updating GDAL datasets in place.
+
+## Vector read budget
+
+All GDAL vector reads, including explicit `GDAL:` paths and reads from bytes, share an
+estimated retained-data budget across selected layers. The default is 1 GiB; set
+`TERRIO_GDAL_MAX_VECTOR_BYTES` to a positive integer byte count to change it. Invalid
+settings on explicit GDAL reads are argument errors. Exceeding the budget raises Rust `Error::ResourceLimit`
+(Python `ResourceLimitError`, a `MemoryError`).
+
+This introduces a default limit on GDAL vector reads that were previously unbounded.
+A large read that previously succeeded can now be refused; raise the positive byte
+budget for a trusted dataset that needs more retained data. Native driver reads
+are unaffected by this GDAL-only setting.
+
+The budget counts feature structs, every attribute cell (including missing/null values),
+schema structs, layer/field names and retained CRS WKT, text/blob payloads and eight times the larger of
+the original and linearized geometry WKB sizes as an estimate of nested Rust storage. The factor is deliberately conservative: a Rust coordinate retains optional Z/M storage even
+for XY data, with additional vector capacity and nested containers. GDAL counts are queried only
+when the layer advertises fast feature counting, allowing oversized sparse layers to be refused
+before the first feature is read; other layers are checked
+incrementally before each dense attribute allocation. Layer selection and spatial filters
+apply before counting. This is an estimate of retained data, not a process-memory limit:
+allocator capacity/overhead, GDAL's parser and caches, individual field conversions and
+curve linearization workspace are outside it. Raster reads have no equivalent budget.
 
 ## Python wheels with GDAL
 

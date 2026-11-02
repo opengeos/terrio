@@ -50,17 +50,41 @@ pub(crate) enum Color {
     Auto,
 }
 
-type Result<T> = std::result::Result<T, String>;
+#[derive(Debug)]
+pub(crate) enum DecodeError {
+    Resource(String),
+    InvalidData(String),
+}
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Resource(message) | Self::InvalidData(message) => f.write_str(message),
+        }
+    }
+}
+impl std::error::Error for DecodeError {}
+impl From<String> for DecodeError {
+    fn from(message: String) -> Self {
+        Self::InvalidData(message)
+    }
+}
+impl From<&str> for DecodeError {
+    fn from(message: &str) -> Self {
+        Self::InvalidData(message.into())
+    }
+}
+type Result<T> = std::result::Result<T, DecodeError>;
 
-/// How the errors of allocations that failed start (see `crate::dataset::fallible`): not retried
-/// with another decoder.
-const ALLOCATION_FAILED: &str = "cannot allocate";
+/// Typed resource failures, preserved by the codec's format wrappers.
+pub(crate) fn is_resource_refusal(error: &DecodeError) -> bool {
+    matches!(error, DecodeError::Resource(_))
+}
 
 /// A zeroed buffer of the product of `dims` bytes, allocated fallibly: the sizes come from the
 /// frame header.
 fn zeroed(dims: &[usize], what: &str) -> Result<Vec<u8>> {
     use crate::dataset::fallible;
-    fallible::len(dims, what).and_then(|n| fallible::filled(n, 0u8, what)).map_err(|e| e.to_string())
+    fallible::len(dims, what).and_then(|n| fallible::filled(n, 0u8, what)).map_err(|e| DecodeError::Resource(e.to_string()))
 }
 
 /// A frame component.
@@ -349,7 +373,7 @@ pub(crate) fn decode(data: &[u8], color: Color) -> Result<Image> {
                     return Err("truncated frame header".into());
                 }
                 if seg[0] != 8 {
-                    return Err(format!("{}-bit JPEG is not supported", seg[0]));
+                    return Err(format!("{}-bit JPEG is not supported", seg[0]).into());
                 }
                 let height = u16::from_be_bytes([seg[1], seg[2]]) as usize;
                 let width = u16::from_be_bytes([seg[3], seg[4]]) as usize;
@@ -367,7 +391,7 @@ pub(crate) fn decode(data: &[u8], color: Color) -> Result<Image> {
                     return Err("empty JPEG image".into());
                 }
                 if width.saturating_mul(height).saturating_mul(n) > 1 << 31 {
-                    return Err(format!("JPEG image too large ({width} x {height} x {n})"));
+                    return Err(DecodeError::Resource(format!("JPEG image too large ({width} x {height} x {n})")));
                 }
                 let hmax = comps.iter().map(|c| c.h).max().unwrap_or(1);
                 let vmax = comps.iter().map(|c| c.v).max().unwrap_or(1);
@@ -419,9 +443,9 @@ pub(crate) fn decode(data: &[u8], color: Color) -> Result<Image> {
 
 /// Decodes a JPEG file as libjpeg does by default, into `(width, height, components, samples)`:
 /// with this decoder, or `jpeg-decoder` for the streams it does not read (progressive ones).
-pub(crate) fn decode_file(b: &[u8]) -> std::result::Result<Image, String> {
+pub(crate) fn decode_file(b: &[u8]) -> Result<Image> {
     decode(b, Color::Auto).or_else(|e| {
-        if e.starts_with(ALLOCATION_FAILED) {
+        if is_resource_refusal(&e) {
             return Err(e);
         }
         let mut d = jpeg_decoder::Decoder::new(std::io::Cursor::new(b));
@@ -431,7 +455,7 @@ pub(crate) fn decode_file(b: &[u8]) -> std::result::Result<Image, String> {
         let info = d.info().ok_or("no JPEG header")?;
         let samples = (info.width as usize) * (info.height as usize) * info.pixel_format.pixel_bytes();
         if samples > 1 << 31 {
-            return Err(format!("JPEG image too large ({} x {})", info.width, info.height));
+            return Err(DecodeError::Resource(format!("JPEG image too large ({} x {})", info.width, info.height)));
         }
         drop(zeroed(&[samples, 4], "a JPEG image")?);
         // On terrio's thread pool: `jpeg-decoder` decodes large images with rayon (see `par`).
@@ -465,39 +489,40 @@ fn decode_scan(
         .map(|&(_, td, ta)| Ok((dc[td].as_ref().ok_or("missing DC table")?, ac[ta].as_ref().ok_or("missing AC table")?)))
         .collect::<Result<_>>()?;
     let mut block = [0i32; 64];
-    let mut decode_block = |bits: &mut Bits, c: &mut Component, (dct, act): (&Huffman, &Huffman), pred: &mut i32, bx: usize, by: usize| {
-        block.fill(0);
-        let s = bits.decode(dct)?;
-        if s > 11 {
-            return Err("invalid JPEG DC coefficient".to_string());
-        }
-        *pred = pred.wrapping_add(bits.receive_extend(s));
-        block[0] = *pred;
-        let mut k = 1;
-        while k < 64 {
-            let rs = bits.decode(act)?;
-            let (r, s) = ((rs >> 4) as usize, rs & 15);
-            if s == 0 {
-                if r != 15 {
-                    break;
+    let mut decode_block =
+        |bits: &mut Bits, c: &mut Component, (dct, act): (&Huffman, &Huffman), pred: &mut i32, bx: usize, by: usize| -> Result<()> {
+            block.fill(0);
+            let s = bits.decode(dct)?;
+            if s > 11 {
+                return Err("invalid JPEG DC coefficient".into());
+            }
+            *pred = pred.wrapping_add(bits.receive_extend(s));
+            block[0] = *pred;
+            let mut k = 1;
+            while k < 64 {
+                let rs = bits.decode(act)?;
+                let (r, s) = ((rs >> 4) as usize, rs & 15);
+                if s == 0 {
+                    if r != 15 {
+                        break;
+                    }
+                    k += 16;
+                    continue;
                 }
-                k += 16;
-                continue;
+                k += r;
+                if k > 63 {
+                    return Err("invalid JPEG coefficient".into());
+                }
+                block[ZIGZAG[k]] = bits.receive_extend(s);
+                k += 1;
             }
-            k += r;
-            if k > 63 {
-                return Err("invalid JPEG coefficient".to_string());
+            if bx < c.bw && by < c.bh {
+                let stride = c.bw * 8;
+                let at = by * 8 * stride + bx * 8;
+                idct_islow(&block, &qt[c.tq], &mut c.plane[at..], stride);
             }
-            block[ZIGZAG[k]] = bits.receive_extend(s);
-            k += 1;
-        }
-        if bx < c.bw && by < c.bh {
-            let stride = c.bw * 8;
-            let at = by * 8 * stride + bx * 8;
-            idct_islow(&block, &qt[c.tq], &mut c.plane[at..], stride);
-        }
-        Ok(())
-    };
+            Ok(())
+        };
     let single = scan.len() == 1;
     let (units_x, units_y) = if single {
         let c = &comps[scan[0].0];
@@ -742,7 +767,7 @@ mod tests {
         };
         let stream = [vec![0xff, 0xd8], sof(1), sof(65535), vec![0xff, 0xd9]].concat();
         assert_eq!(frame_dimensions(&stream).unwrap(), (1, 1, 1));
-        assert!(matches!(decode(&stream, Color::Raw), Err(e) if e == "multiple JPEG frame headers"));
+        assert!(matches!(decode(&stream, Color::Raw), Err(super::DecodeError::InvalidData(e)) if e == "multiple JPEG frame headers"));
     }
 
     #[test]
@@ -808,7 +833,7 @@ mod tests {
         let sos = bytes.windows(2).position(|w| w == [0xff, 0xda]).unwrap();
         bytes[sos + 6] = 0x44;
         let err = decode(&bytes, Color::Auto).err().unwrap();
-        assert!(err.contains("selector"), "{err}");
+        assert!(matches!(&err, super::DecodeError::InvalidData(message) if message.contains("selector")), "{err}");
     }
 
     #[test]
@@ -818,5 +843,16 @@ mod tests {
         let mut out = [0u8; 64];
         idct_islow(&coef, &[1; 64], &mut out, 8);
         assert!(out.iter().all(|v| *v == 138));
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    #[test]
+    fn allocation_failure_keeps_its_kind_independently_of_message_text() {
+        let error = super::zeroed(&[usize::MAX, 2], "JPEG component").unwrap_err();
+        assert!(super::is_resource_refusal(&error));
+        let parser = super::DecodeError::from("cannot allocate is merely parser diagnostic text");
+        assert!(!super::is_resource_refusal(&parser));
     }
 }

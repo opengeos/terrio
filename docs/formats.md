@@ -123,7 +123,7 @@ compressed fields. This is 128 MiB of decoded Float64 values; decoder buffers an
 use additional memory. To allow larger fields, set the environment variable `TERRIO_GRIB_MAX_POINTS`
 to a larger positive integer. The limit is checked on the raster's grid (the first field's) when
 a file is opened, and on each field before it is decoded, for local, remote and in-memory files.
-A limit error is not retried with GDAL, except for a file with no raster extension that `open` detects by its content.
+A resource-limit or allocation refusal is not retried with GDAL, including when `open` detects a file by its content.
 
 GRIB2 is written as GDAL's GRIB driver writes it (`terrio.rio.open(path, "w", driver="GRIB")`,
 `terrio.rio.shutil.copy(..., driver="GRIB")`, `write_raster`), byte for byte: one message per band,
@@ -640,7 +640,8 @@ terrio info "https://example.org/arcgis/rest/services/A/FeatureServer/0/query?wh
 
 Without a `resultOffset` in the URL, the following pages are read while the service answers
 `exceededTransferLimit`, asking for as many features as its first page holds unless the URL gives
-a `resultRecordCount`. The open option `FEATURE_SERVER_PAGING=YES` or `NO` decides otherwise, as in
+a `resultRecordCount`. Format values are case-insensitive (`JSON`, `PJSON` and `PBF` also work).
+The open option `FEATURE_SERVER_PAGING=YES` or `NO` decides otherwise, as in
 GDAL. A page over `TERRIO_JSON_MAX_SIZE` (100 MiB by default) is an error, as are cumulative response bytes over
 4 GiB (a transfer cap, not a decoded-memory bound), a page that adds nothing while saying there are more, a page with other fields than the
 first, and a page the same as the one before it (a service that ignores the offset; rows without
@@ -677,7 +678,10 @@ terrio convert "https://example.org/arcgis/rest/services/A/FeatureServer/0/query
 ```
 
 A URL is read as a query when it has `f=pbf` and answers one, and paging works as above, with the
-same `TERRIO_JSON_MAX_SIZE` cap on each page. A `.pbf` file, or one whose extension no driver
+same `TERRIO_JSON_MAX_SIZE` cap on each page. Before decoding PBF, an address-space estimate of
+64 times the encoded page size is checked, allowing for packed coordinate expansion and vector
+growth. Decoded attribute cells are also checked against the usable-memory ceiling where
+available. These conservative preflights are not a process-memory limit. A `.pbf` file, or one whose extension no driver
 claims, is recognized by its content; `.pbf` names OpenStreetMap otherwise, and `.osm.pbf` always
 names and opens OpenStreetMap. X and Y are differences from the previous vertex; Z and M are each
 vertex's own, and an M of 0 is none, as the same answer in JSON gives it (a Z of 0 is the transform's

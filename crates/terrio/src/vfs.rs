@@ -494,7 +494,7 @@ impl ZipLimits {
     /// Refuses an archive (`kind`: `zip`, `tar`) that lists `entries` entries, more than allowed.
     pub(crate) fn check_entries(&self, kind: &str, entries: u64) -> Result<()> {
         if entries > self.max_entries {
-            return Err(Error::Unsupported(format!(
+            return Err(Error::ResourceLimit(format!(
                 "{kind}: the archive lists {entries} entries, more than the {} allowed (TERRIO_ZIP_MAX_ENTRIES)",
                 self.max_entries
             )));
@@ -506,7 +506,7 @@ impl ZipLimits {
     /// allowed.
     pub(crate) fn check_ratio(&self, kind: &str, name: &str, size: u64, packed: u64) -> Result<()> {
         if packed == 0 && size > 0 || packed > 0 && size / packed > self.max_ratio {
-            return Err(Error::Unsupported(format!(
+            return Err(Error::ResourceLimit(format!(
                 "{kind}: '{name}' declares {size} bytes compressed to {packed}, a ratio above the {} allowed (TERRIO_ZIP_MAX_RATIO)",
                 self.max_ratio
             )));
@@ -517,7 +517,7 @@ impl ZipLimits {
     /// Refuses `total` bytes extracted for `member` and its files, more than allowed.
     pub(crate) fn check_size(&self, kind: &str, member: &str, total: u64) -> Result<()> {
         if total > self.max_size {
-            return Err(Error::Unsupported(format!(
+            return Err(Error::ResourceLimit(format!(
                 "{kind}: '{member}' and its files hold more than the {} bytes allowed (TERRIO_ZIP_MAX_SIZE)",
                 self.max_size
             )));
@@ -584,8 +584,11 @@ fn check_directory<R: Read + Seek>(r: &mut R, limits: &ZipLimits) -> Result<Dire
         }
     }
     limits.check_entries("zip", entries)?;
-    if size > len || size > MAX_DIRECTORY_BYTES {
+    if size > len {
         return Err(zip_error(format!("a central directory of {size} bytes in an archive of {len}")));
+    }
+    if size > MAX_DIRECTORY_BYTES {
+        return Err(Error::ResourceLimit(format!("zip: a central directory of {size} bytes exceeds the {MAX_DIRECTORY_BYTES} byte limit")));
     }
     Ok(Directory { start: offset.saturating_add(archive_offset), size, archive_offset })
 }
@@ -670,7 +673,7 @@ fn extract_from<R: Read + Seek>(
     prefetch(&[(directory.start, directory.size)])?;
     let mut zip = open_archive(reader, &directory)?;
     if zip.len() as u64 > limits.max_entries {
-        return Err(Error::Unsupported(format!("zip: the archive lists more than the {} entries allowed", limits.max_entries)));
+        return Err(Error::ResourceLimit(format!("zip: the archive lists more than the {} entries allowed", limits.max_entries)));
     }
     let names = entry_names(&zip);
     let member = match inner {
@@ -1014,8 +1017,14 @@ mod tests {
     fn zip_limits_and_symlinks() {
         let (_d, zip) = archive(&[("a.tif", &[1u8; 2000], false), ("b.tif", b"b", false), ("c.tif", b"c", false)]);
         let path = format!("/vsizip/{zip}/a.tif");
-        let err = with_options(&[("TERRIO_ZIP_MAX_ENTRIES", "3")], || resolve(&path)).unwrap_err().to_string();
-        assert!(err.contains("4 entries"), "{err}");
+        let err = with_options(&[("TERRIO_ZIP_MAX_ENTRIES", "3")], || {
+            let result = resolve(&path);
+            #[cfg(feature = "gdal")]
+            let result = crate::dataset::gdal_fallback(&path, result, |_| panic!("archive entry budget retried through GDAL"));
+            result
+        })
+        .unwrap_err();
+        assert!(matches!(&err, Error::ResourceLimit(message) if message.contains("4 entries")), "{err}");
         let err = with_options(&[("TERRIO_ZIP_MAX_SIZE", "1999")], || resolve(&path)).unwrap_err().to_string();
         assert!(err.contains("TERRIO_ZIP_MAX_SIZE"), "{err}");
         assert!(with_options(&[("TERRIO_ZIP_MAX_ENTRIES", "4"), ("TERRIO_ZIP_MAX_SIZE", "2000")], || resolve(&path)).is_ok());

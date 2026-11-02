@@ -112,6 +112,7 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     fields.retain(|f| names.insert(f.def.name.clone()));
     // Every feature takes a value per field, given or not, so a small document can ask for far more
     // than its size.
+    // The shared refusal is terminal: GDAL must not allocate the cells refused here.
     featureservice::check_values("ESRIJSON", features.len(), fields.len(), bytes.len())?;
     let mut layer = Layer::new(name);
     for f in &fields {

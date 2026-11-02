@@ -750,13 +750,14 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
 }
 
 /// When terrio's own drivers could not open `path`, tries GDAL; if GDAL cannot either, terrio's
-/// error is kept. Missing local files and invalid arguments are not retried, nor are network
-/// errors.
+/// error is kept, except for GDAL's resource refusals. Missing local files and invalid arguments
+/// are not retried, nor are network errors or resource-limit refusals.
 #[cfg(feature = "gdal")]
 pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
+        e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => path.contains(':') || path.starts_with("/vsi"),
         _ => true,
@@ -764,7 +765,42 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     if !retry {
         return Err(e);
     }
-    gdal(path).map_err(|_| e)
+    gdal(path).map_err(|gdal_error| if gdal_error.is_resource_refusal() { gdal_error } else { e })
+}
+
+#[cfg(all(test, feature = "gdal"))]
+mod fallback_limits {
+    use super::*;
+
+    #[test]
+    fn resource_refusals_are_not_retried() {
+        for error in
+            [Error::DecodedLimitExceeded { resource: "VSI file", limit: 8 }, Error::ResourceLimit("document cells exceed budget".into())]
+        {
+            let result: Result<()> = gdal_fallback("input.tif", Err(error), |_| panic!("limit refusal retried through GDAL"));
+            assert!(matches!(result, Err(Error::DecodedLimitExceeded { .. } | Error::ResourceLimit(_))));
+        }
+    }
+    #[test]
+    fn allocation_refusals_are_not_retried() {
+        let allocation = fallible::filled(usize::MAX, 0u8, "a raster buffer").unwrap_err();
+        assert_eq!(allocation.kind(), std::io::ErrorKind::OutOfMemory);
+        let result: Result<()> = gdal_fallback("input.tif", Err(allocation.into()), |_| panic!("allocation refusal retried through GDAL"));
+        assert!(matches!(result, Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::OutOfMemory));
+    }
+
+    #[test]
+    fn gdal_resource_refusal_is_not_hidden_by_the_native_error() {
+        let native = || Error::Unsupported("no native driver".into());
+        let result: Result<()> = gdal_fallback("input", Err(native()), |_| Err(Error::ResourceLimit("GDAL budget".into())));
+        assert!(matches!(result, Err(Error::ResourceLimit(_))));
+        let result: Result<()> = gdal_fallback("input", Err(native()), |_| Ok(()));
+        assert!(result.is_ok());
+        let result: Result<()> = gdal_fallback("input", Err(native()), |_| Err(Error::InvalidData("GDAL parse error".into())));
+        assert!(matches!(result, Err(Error::Unsupported(_))));
+        let result: Result<()> = gdal_fallback("input", Err(native()), |_| Err(Error::InvalidArgument("no layer named missing".into())));
+        assert!(matches!(result, Err(Error::Unsupported(_))));
+    }
 }
 
 /// Whether a path names a PMTiles or MBTiles archive (not inside a zip archive).

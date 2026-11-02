@@ -107,11 +107,54 @@ fn fields_times_features_cannot_exceed_what_the_answer_justifies() {
     let answer = long_message(2, &long_message(1, &[fields, features].concat()));
     // Refused by every way in, and not retried with GDAL in builds with its backend.
     let refused = |r: terrio::Result<terrio::VectorDataset>| {
-        r.is_err_and(|e| matches!(&e, terrio::Error::InvalidArgument(m) if m.contains("features of 20000 fields")))
+        r.is_err_and(|e| matches!(&e, terrio::Error::ResourceLimit(m) if m.contains("features of 20000 fields")))
     };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("q.pbf");
     std::fs::write(&path, &answer).unwrap();
     assert!(refused(terrio::open_vector(path.to_str().unwrap(), &Default::default())));
     assert!(refused(terrio::memory::open_vector_bytes(answer, "q.pbf", &Default::default())));
+}
+
+/// Dense coordinates and sparse attribute cells must fit an isolated address space.
+#[cfg(target_os = "linux")]
+#[test]
+fn decoded_pbf_obeys_memory_estimates() {
+    const CHILD: &str = "TERRIO_PBF_MEMORY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for scenario in ["coordinates", "cells"] {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "decoded_pbf_obeys_memory_estimates", "--nocapture", "--test-threads=1"])
+                .env(CHILD, scenario)
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{}\n{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+        }
+        return;
+    }
+    let answer = if std::env::var(CHILD).unwrap() == "coordinates" {
+        let coordinates = vec![0u8; 2_000_000];
+        let geometry = long_message(2, &long_message(3, &coordinates));
+        let result = [vec![7 << 3, 2], transform(), long_message(15, &geometry)].concat();
+        let answer = long_message(2, &long_message(1, &result));
+        drop((coordinates, geometry, result));
+        answer
+    } else {
+        let fields: Vec<u8> =
+            (0..1000).flat_map(|i| message(13, &[message(1, format!("F{i}").as_bytes()), vec![2 << 3, 4]].concat())).collect();
+        let features = message(15, &[]).repeat(10_000);
+        long_message(2, &long_message(1, &[fields, features].concat()))
+    };
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let used =
+        status.lines().find(|line| line.starts_with("VmSize:")).unwrap().split_whitespace().nth(1).unwrap().parse::<u64>().unwrap() * 1024;
+    let limit = libc::rlimit { rlim_cur: used + (40 << 20), rlim_max: used + (40 << 20) };
+    let no_core = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: resource limits are lowered only for this isolated test child, with valid pointers.
+    unsafe {
+        assert_eq!(libc::setrlimit(libc::RLIMIT_CORE, &no_core), 0);
+        assert_eq!(libc::setrlimit(libc::RLIMIT_AS, &limit), 0);
+    }
+    let error = terrio::memory::open_vector_bytes(answer, "line.pbf", &Default::default()).unwrap_err();
+    assert!(error.to_string().starts_with("ESRIPBF:"), "{error}");
 }

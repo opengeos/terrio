@@ -27,9 +27,14 @@ pub enum Error {
     /// An argument or option is invalid.
     #[error("{0}")]
     InvalidArgument(String),
+    /// Reading a document would exceed a resource budget or available allocation capacity.
+    /// This refusal is terminal: the optional GDAL fallback must not retry it.
+    #[error("{0}")]
+    ResourceLimit(String),
     /// A decoded payload exceeded a decoded-byte limit: a PMTiles directory, metadata or tile
     /// (`PmTilesReadLimits`), a GeoTIFF chunk or tag value (`TiffReadLimits`), or a
-    /// bounded VSI file read (after archive decompression).
+    /// bounded VSI file read (after archive decompression). This refusal is never retried
+    /// through the optional GDAL fallback.
     #[error("{resource} exceeds decoded-byte limit {limit}")]
     DecodedLimitExceeded {
         /// The payload kind (directory, metadata, tile, TIFF chunk/tag, or VSI file).
@@ -43,6 +48,13 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether this error refuses a resource budget or allocation. Such errors are terminal:
+    /// the optional GDAL fallback must neither retry them nor hide them behind another error.
+    pub fn is_resource_refusal(&self) -> bool {
+        matches!(self, Self::ResourceLimit(_) | Self::DecodedLimitExceeded { .. })
+            || matches!(self, Self::Io(error) if error.kind() == std::io::ErrorKind::OutOfMemory)
+    }
+
     /// The error of a driver this build leaves out: terrio was built without `feature`.
     #[allow(dead_code)]
     pub(crate) fn disabled(feature: &str) -> Error {

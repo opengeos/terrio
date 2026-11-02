@@ -249,13 +249,16 @@ result or a guessed value. Refusals keep the engine's stable spelling at the sta
 |---|---|---|
 | `file_not_found` | `Error::Io` (`NotFound`) | the file is not there |
 | `io`, `internal` | `Error::Io` | the file could not be read |
-| `unsupported`, or a byte budget (`resource_limit`) | `Error::Unsupported` | a layout the engine does not support, or a dataset above the budget |
+| a byte budget (`resource_limit`) | `Error::ResourceLimit` | a dataset above the budget; terminal and never retried through GDAL |
+| `unsupported` | `Error::Unsupported` | a layout the engine does not support |
 | `not_found`, `invalid_request`, an unavailable capability | `Error::InvalidArgument` | the file does not store what was asked for, or the request is invalid |
 | `corrupt`, `structural_topology`, `invalid_geometry` | `Error::InvalidData` | the file is damaged, or its mesh topology is invalid |
 | CRS evidence that is not usable | `Error::Crs` | malformed or conflicting projection |
 
-A default open leaves a refused layer out with a warning (`Unsupported` or `InvalidArgument`);
-naming the layer shows the refusal. Damaged data and I/O errors always fail the open.
+A default open leaves a refused layer out with a warning (`Unsupported`, `InvalidArgument`, or
+a per-layer `ResourceLimit`); naming the layer shows the refusal. If every layer is refused and
+any refusal was a resource budget, the open fails with `ResourceLimit` and is never retried
+through GDAL. Root-metadata budget refusals, damaged data and I/O errors always fail the open.
 
 ## Limitations
 

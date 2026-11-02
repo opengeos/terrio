@@ -109,7 +109,7 @@ fn byte_budgets_are_refusals() {
     let mut options = MeshOptions::default().with_meshes(["Good"]);
     options.max_bytes = 16;
     let e = hdf.mesh_cells(&options).unwrap_err();
-    assert!(matches!(&e, terrio::Error::Unsupported(m) if m.contains("resource_limit")), "{e}");
+    assert!(matches!(&e, terrio::Error::ResourceLimit(m) if m.contains("resource_limit")), "{e}");
 }
 
 #[test]

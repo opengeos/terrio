@@ -46,7 +46,7 @@ use crate::formats::{RasterDriver, VectorDriver};
 use crate::vfs::Location;
 use crate::{Dataset, Error, RasterDataset, Result};
 use gdal::raster::GdalDataType;
-use gdal::vector::{FieldValue as GdalValue, LayerAccess, OGRFieldType, OGRwkbGeometryType};
+use gdal::vector::{FieldValue as GdalValue, LayerAccess, LayerCaps, OGRFieldType, OGRwkbGeometryType};
 use gdal::{Dataset as GdalDataset, DatasetOptions, DriverManager, GdalOpenFlags, Metadata};
 use wbraster::raster::RasterData;
 use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
@@ -1015,6 +1015,7 @@ fn epsg_match(srs: &gdal::spatial_ref::SpatialRef) -> Option<u32> {
 }
 
 fn vector_from(ds: GdalDataset, path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    let mut budget = VectorBudget::from_env()?;
     let names: Vec<String> = ds.layers().map(|l| l.name()).collect();
     if names.is_empty() {
         return Err(Error::Unsupported(format!("'{path}' has no vector layers")));
@@ -1028,7 +1029,7 @@ fn vector_from(ds: GdalDataset, path: &str, options: &VectorOpenOptions) -> Resu
         if let Some((x0, y0, x1, y1)) = options.spatial_filter {
             layer.set_spatial_filter_rect(x0, y0, x1, y1);
         }
-        layers.push(layer_from(&mut layer, &name)?);
+        layers.push(layer_from(&mut layer, &name, &mut budget)?);
     }
     if layers.is_empty() {
         return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
@@ -1037,10 +1038,51 @@ fn vector_from(ds: GdalDataset, path: &str, options: &VectorOpenOptions) -> Resu
     Ok(finish_vector(layers, strip_prefix(path).unwrap_or(path), VectorDriver::Gdal))
 }
 
-fn layer_from(layer: &mut gdal::vector::Layer, name: &str) -> Result<Layer> {
+/// Bounds the estimated retained vector data across every selected layer of one read.
+/// GDAL's own parser allocations and temporary conversions are outside this budget.
+struct VectorBudget {
+    remaining: usize,
+    limit: usize,
+}
+
+impl VectorBudget {
+    fn from_env() -> Result<Self> {
+        let limit = match std::env::var("TERRIO_GDAL_MAX_VECTOR_BYTES") {
+            Ok(value) => value.trim().parse::<usize>().ok().filter(|n| *n > 0),
+            Err(std::env::VarError::NotPresent) => Some(1 << 30),
+            Err(_) => None,
+        }
+        .ok_or_else(|| Error::InvalidArgument("TERRIO_GDAL_MAX_VECTOR_BYTES must be a positive integer".into()))?;
+        Ok(Self { remaining: limit, limit })
+    }
+
+    fn charge(&mut self, bytes: usize) -> Result<()> {
+        self.remaining = self
+            .remaining
+            .checked_sub(bytes)
+            .ok_or_else(|| Error::ResourceLimit(format!("GDAL vector data exceeds TERRIO_GDAL_MAX_VECTOR_BYTES={}", self.limit)))?;
+        Ok(())
+    }
+}
+
+fn layer_from(layer: &mut gdal::vector::Layer, name: &str, budget: &mut VectorBudget) -> Result<Layer> {
+    budget.charge(name.len())?;
     let mut out = Layer::new(name);
     let defn = layer.defn();
     out.geom_type = geometry_type(defn.geometry_type());
+    let field_count = defn.fields().count();
+    budget.charge(std::mem::size_of::<Layer>())?;
+    budget.charge(field_count.saturating_mul(std::mem::size_of::<FieldDef>() + std::mem::size_of::<OGRFieldType::Type>()))?;
+    // Check cheap counts before reading even the first feature of a huge sparse layer.
+    if layer.has_capability(LayerCaps::OLCFastFeatureCount)
+        && let Some(count) = layer.try_feature_count()
+    {
+        let per_feature = std::mem::size_of::<Feature>().saturating_add(field_count.saturating_mul(std::mem::size_of::<FieldValue>()));
+        let bytes = usize::try_from(count).ok().and_then(|n| n.checked_mul(per_feature));
+        if bytes.is_none_or(|n| n > budget.remaining) {
+            return Err(Error::ResourceLimit(format!("GDAL vector data exceeds TERRIO_GDAL_MAX_VECTOR_BYTES={}", budget.limit)));
+        }
+    }
     let kinds: Vec<OGRFieldType::Type> = defn.fields().map(|f| f.field_type()).collect();
     for field in defn.fields() {
         let t = match field.field_type() {
@@ -1054,7 +1096,9 @@ fn layer_from(layer: &mut gdal::vector::Layer, name: &str) -> Result<Layer> {
             }
             _ => FieldType::Text,
         };
-        let mut def = FieldDef::new(field.name(), t);
+        let field_name = field.name();
+        budget.charge(field_name.len())?;
+        let mut def = FieldDef::new(field_name, t);
         if field.width() > 0 {
             def = def.width(field.width() as usize);
         }
@@ -1068,18 +1112,36 @@ fn layer_from(layer: &mut gdal::vector::Layer, name: &str) -> Result<Layer> {
     {
         match crs.epsg {
             Some(code) => out.set_crs_epsg(Some(code)),
-            None => out.set_crs_wkt(crs.wkt),
+            None => {
+                if let Some(wkt) = &crs.wkt {
+                    budget.charge(wkt.len())?;
+                }
+                out.set_crs_wkt(crs.wkt);
+            }
         }
     }
     for (i, feature) in layer.features().enumerate() {
-        let geometry = feature.geometry().map(geometry_from).transpose()?.flatten();
-        let attributes = (0..kinds.len())
-            .map(|k| match feature.field(k) {
+        // Null/missing values still occupy a full FieldValue each. Charge before allocation.
+        budget.charge(std::mem::size_of::<Feature>())?;
+        budget.charge(kinds.len().saturating_mul(std::mem::size_of::<FieldValue>()))?;
+        let geometry = feature.geometry().map(|g| geometry_from(g, budget)).transpose()?.flatten();
+        let mut attributes = Vec::new();
+        attributes.try_reserve_exact(kinds.len()).map_err(|_| Error::ResourceLimit("GDAL: cannot allocate feature attributes".into()))?;
+        for (k, kind) in kinds.iter().enumerate() {
+            let value = match feature.field(k) {
                 Ok(Some(v)) => value_from(v),
-                Ok(None) if kinds[k] == OGRFieldType::OFTBinary => binary_field(&feature, k),
+                Ok(None) if *kind == OGRFieldType::OFTBinary => binary_field(&feature, k),
                 _ => FieldValue::Null,
-            })
-            .collect();
+            };
+            let bytes = match &value {
+                FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => s.len(),
+                FieldValue::Blob(b) => b.len(),
+                _ => 0,
+            };
+            budget.charge(bytes)?;
+            attributes.push(value);
+        }
+        out.features.try_reserve(1).map_err(|_| Error::ResourceLimit("GDAL: cannot allocate features".into()))?;
         out.push(Feature { fid: feature.fid().unwrap_or(i as u64), geometry, attributes });
     }
     Ok(out)
@@ -1100,16 +1162,36 @@ fn geometry_type(t: OGRwkbGeometryType::Type) -> Option<GeometryType> {
     })
 }
 
+// Coord stores XY and optional Z/M (48 bytes on our 64-bit targets, versus 16 bytes per XY
+// WKB vertex). Allowing for vector spare capacity and nested containers, eight is a deliberately
+// conservative storage estimate, not exact heap accounting or a process-memory bound.
+const WKB_STORAGE_FACTOR: usize = 8;
+
 /// A GDAL geometry as a terrio one, through WKB; curves are linearized as GDAL does by default.
-fn geometry_from(g: &gdal::vector::Geometry) -> Result<Option<Geometry>> {
+fn geometry_from(g: &gdal::vector::Geometry, budget: &mut VectorBudget) -> Result<Option<Geometry>> {
     if g.is_empty() {
         return Ok(None);
     }
-    if let Ok(wkb) = g.wkb()
-        && let Ok(geometry) = Geometry::from_wkb(&wkb)
+    // SAFETY: a read-only size query on the valid borrowed geometry of this feature.
+    // gdal's safe API exposes WKB export, which allocates before returning its size.
+    let original_size = unsafe { gdal_sys::OGR_G_WkbSizeEx(g.c_geometry()) };
+    budget.charge(original_size.saturating_mul(WKB_STORAGE_FACTOR))?;
+    if original_size == 0 {
+        return Err(Error::ResourceLimit("GDAL: cannot size the geometry for the vector budget".into()));
+    }
+    let mut original = crate::dataset::fallible::filled_now(original_size, 0u8, "GDAL geometry WKB")
+        .map_err(|error| Error::ResourceLimit(error.to_string()))?;
+    // SAFETY: a valid borrowed geometry; the buffer holds the size GDAL reported above.
+    let exported = unsafe { gdal_sys::OGR_G_ExportToWkb(g.c_geometry(), gdal_sys::OGRwkbByteOrder::wkbNDR, original.as_mut_ptr()) };
+    if exported == gdal_sys::OGRErr::OGRERR_NOT_ENOUGH_MEMORY {
+        return Err(Error::ResourceLimit("GDAL: cannot export geometry WKB".into()));
+    }
+    if exported == gdal_sys::OGRErr::OGRERR_NONE
+        && let Ok(geometry) = Geometry::from_wkb(&original)
     {
         return Ok(Some(geometry));
     }
+    drop(original);
     // SAFETY: `g` is a valid geometry; the linear copy GDAL returns is owned here and destroyed
     // after its WKB is exported.
     let wkb = unsafe {
@@ -1117,10 +1199,29 @@ fn geometry_from(g: &gdal::vector::Geometry) -> Result<Option<Geometry>> {
         if linear.is_null() {
             return Err(Error::InvalidData(format!("GDAL: cannot linearize a {}", g.geometry_name())));
         }
-        let size = gdal_sys::OGR_G_WkbSize(linear) as usize;
-        let mut wkb = vec![0u8; size];
+        let size = gdal_sys::OGR_G_WkbSizeEx(linear);
+        if size == 0 {
+            gdal_sys::OGR_G_DestroyGeometry(linear);
+            return Err(Error::InvalidData("GDAL: cannot size linearized geometry WKB".into()));
+        }
+        // Curves may expand by orders of magnitude. Charge the retained linear result,
+        // not just the compact source, before exporting or decoding its WKB.
+        if let Err(error) = budget.charge(size.saturating_sub(original_size).saturating_mul(WKB_STORAGE_FACTOR)) {
+            gdal_sys::OGR_G_DestroyGeometry(linear);
+            return Err(error);
+        }
+        let mut wkb = match crate::dataset::fallible::filled_now(size, 0u8, "GDAL linearized geometry WKB") {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                gdal_sys::OGR_G_DestroyGeometry(linear);
+                return Err(Error::ResourceLimit(error.to_string()));
+            }
+        };
         let rv = gdal_sys::OGR_G_ExportToWkb(linear, gdal_sys::OGRwkbByteOrder::wkbNDR, wkb.as_mut_ptr());
         gdal_sys::OGR_G_DestroyGeometry(linear);
+        if rv == gdal_sys::OGRErr::OGRERR_NOT_ENOUGH_MEMORY {
+            return Err(Error::ResourceLimit("GDAL: cannot export linearized geometry WKB".into()));
+        }
         if rv != gdal_sys::OGRErr::OGRERR_NONE {
             return Err(Error::InvalidData(format!("GDAL: cannot export a {} as WKB", g.geometry_name())));
         }
@@ -1167,5 +1268,110 @@ fn binary_field(feature: &gdal::vector::Feature, field: usize) -> FieldValue {
             return FieldValue::Blob(Vec::new());
         }
         FieldValue::Blob(std::slice::from_raw_parts(ptr, len as usize).to_vec())
+    }
+}
+
+#[cfg(test)]
+mod limits_tests {
+    use super::*;
+
+    /// A real GDAL read, checked against GDAL 3.13.3. Sparse fields still require dense cells.
+    #[test]
+    fn sparse_vector_reads_obey_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sparse.json");
+        let fields: Vec<_> = (0..100).map(|i| format!(r#"{{"name":"f{i}","type":"esriFieldTypeString"}}"#)).collect();
+        std::fs::write(
+            &path,
+            format!(r#"{{"fields":[{}],"features":[{}]}}"#, fields.join(","), vec![r#"{"attributes":{}}"#; 100].join(",")),
+        )
+        .unwrap();
+        let ds = gdal_open(path.to_str().unwrap(), GdalOpenFlags::GDAL_OF_VECTOR).unwrap();
+        let mut layer = ds.layer(0).unwrap();
+        let mut budget = VectorBudget { remaining: 32_000, limit: 32_000 };
+        assert!(matches!(layer_from(&mut layer, "sparse", &mut budget), Err(Error::ResourceLimit(_))));
+        let mut budget = VectorBudget { remaining: 1 << 20, limit: 1 << 20 };
+        let out = layer_from(&mut layer, "sparse", &mut budget).unwrap();
+        assert_eq!(out.features.len(), 100);
+        // GDAL 3.13.3 exposes absent ESRIJSON string attributes as empty strings.
+        assert_eq!(out.features[0].attributes, vec![FieldValue::Text(String::new()); 100]);
+    }
+
+    /// A compact curved source can expand substantially in GDAL 3.13.3's retained linework.
+    #[test]
+    fn linearized_curves_obey_the_retained_geometry_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("curves.gpkg");
+        let driver = gdal::DriverManager::get_driver_by_name("GPKG").unwrap();
+        let mut ds = driver.create_vector_only(&path).unwrap();
+        let mut layer = ds
+            .create_layer(gdal::vector::LayerOptions { name: "curves", ty: OGRwkbGeometryType::wkbCircularString, ..Default::default() })
+            .unwrap();
+        layer.create_feature(gdal::vector::Geometry::from_wkt("CIRCULARSTRING (1 0,-1 0,1 0)").unwrap()).unwrap();
+        let mut budget = VectorBudget { remaining: 1000, limit: 1000 };
+        assert!(matches!(layer_from(&mut layer, "curves", &mut budget), Err(Error::ResourceLimit(_))));
+        let mut budget = VectorBudget { remaining: 20000, limit: 20000 };
+        let out = layer_from(&mut layer, "curves", &mut budget).unwrap();
+        assert!(out.features[0].geometry.as_ref().unwrap().all_coords().len() > 80);
+    }
+
+    /// Retained metadata is included in the estimate, with GDAL 3.13.3.
+    #[test]
+    fn vector_names_and_custom_crs_obey_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let driver = gdal::DriverManager::get_driver_by_name("GPKG").unwrap();
+        let mut ds = driver.create_vector_only(dir.path().join("metadata.gpkg")).unwrap();
+        {
+            let mut layer = ds.create_layer(Default::default()).unwrap();
+            let mut budget = VectorBudget { remaining: 1000, limit: 1000 };
+            assert!(matches!(layer_from(&mut layer, &"n".repeat(2048), &mut budget), Err(Error::ResourceLimit(_))));
+        }
+        let wkt = format!("LOCAL_CS[\"{}\",UNIT[\"metre\",1]]", "custom".repeat(1024));
+        let srs = gdal::spatial_ref::SpatialRef::from_wkt(&wkt).unwrap();
+        let mut layer = ds.create_layer(gdal::vector::LayerOptions { name: "custom", srs: Some(&srs), ..Default::default() }).unwrap();
+        let mut budget = VectorBudget { remaining: 1000, limit: 1000 };
+        assert!(matches!(layer_from(&mut layer, "custom", &mut budget), Err(Error::ResourceLimit(_))));
+        let mut budget = VectorBudget { remaining: 20_000, limit: 20_000 };
+        assert!(layer_from(&mut layer, "custom", &mut budget).is_ok());
+        assert!(budget.remaining < 14_000);
+    }
+
+    /// GDAL 3.13.3's count must respect a GeoPackage filter before the budget preflight.
+    #[test]
+    fn filtered_geopackage_counts_only_retained_features() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("points.gpkg");
+        {
+            let driver = gdal::DriverManager::get_driver_by_name("GPKG").unwrap();
+            let mut ds = driver.create_vector_only(&path).unwrap();
+            let mut layer = ds
+                .create_layer(gdal::vector::LayerOptions { name: "points", ty: OGRwkbGeometryType::wkbPoint, ..Default::default() })
+                .unwrap();
+            for x in 0..100 {
+                layer.create_feature(gdal::vector::Geometry::from_wkt(&format!("POINT ({x} 0)")).unwrap()).unwrap();
+            }
+        }
+        let ds = gdal_open(path.to_str().unwrap(), GdalOpenFlags::GDAL_OF_VECTOR).unwrap();
+        let mut layer = ds.layer(0).unwrap();
+        layer.set_spatial_filter_rect(1.5, -1.0, 2.5, 1.0);
+        let mut budget = VectorBudget { remaining: 1000, limit: 1000 };
+        assert_eq!(layer_from(&mut layer, "points", &mut budget).unwrap().len(), 1);
+        layer.clear_spatial_filter();
+        let mut budget = VectorBudget { remaining: 1000, limit: 1000 };
+        assert!(matches!(layer_from(&mut layer, "points", &mut budget), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn vector_payload_and_multiple_layers_share_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text.geojson");
+        std::fs::write(&path, format!(r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{"text":"{}"}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}]}}"#, "x".repeat(8192))).unwrap();
+        let ds = gdal_open(path.to_str().unwrap(), GdalOpenFlags::GDAL_OF_VECTOR).unwrap();
+        let mut layer = ds.layer(0).unwrap();
+        let mut budget = VectorBudget { remaining: 4096, limit: 4096 };
+        assert!(matches!(layer_from(&mut layer, "text", &mut budget), Err(Error::ResourceLimit(_))));
+        let mut budget = VectorBudget { remaining: 16_384, limit: 16_384 };
+        assert!(layer_from(&mut layer, "first", &mut budget).is_ok());
+        assert!(matches!(layer_from(&mut layer, "second", &mut budget), Err(Error::ResourceLimit(_))));
     }
 }

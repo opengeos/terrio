@@ -333,6 +333,18 @@ fn json_service_error(bytes: &[u8]) -> Option<Error> {
     })
 }
 
+/// Packed XY can use two bytes per 48-byte Coord, before vector growth and parser storage.
+/// A 64-times address-space estimate leaves headroom beyond that dense-coordinate expansion.
+fn reserve_parse_memory(len: usize) -> Result<()> {
+    let need =
+        crate::dataset::fallible::check_usable(len.checked_mul(64), || format!("ESRIPBF: parsing {len} bytes is too large to allocate"))
+            .map_err(Error::ResourceLimit)?;
+    let mut probe: Vec<u8> = Vec::new();
+    probe.try_reserve_exact(need).map_err(|_| {
+        Error::ResourceLimit(format!("ESRIPBF: parsing {len} bytes needs about {need} bytes of memory, more than is available"))
+    })
+}
+
 /// A page of a query's results: its layer, and whether the service has more.
 pub(crate) fn page(bytes: &[u8], name: &str, source: &str) -> Result<featureservice::Page> {
     if bytes.is_empty() {
@@ -348,11 +360,12 @@ pub(crate) fn page(bytes: &[u8], name: &str, source: &str) -> Result<featureserv
         let page = super::esrijson::page(bytes, name).map_err(|e| match e {
             Error::InvalidData(m) => Error::InvalidData(relabel(m)),
             Error::InvalidArgument(m) => Error::InvalidArgument(relabel(m)),
+            Error::ResourceLimit(m) => Error::ResourceLimit(relabel(m)),
             e => e,
         })?;
         return Ok(page);
     }
-    super::geojson::reserve_parse_memory(bytes.len(), "ESRIPBF")?;
+    reserve_parse_memory(bytes.len())?;
     let result = feature_result(bytes)?;
 
     let (mut more, mut has_z, mut has_m) = (false, false, false);

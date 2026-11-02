@@ -66,7 +66,7 @@ struct WorkBudget {
 impl WorkBudget {
     fn spend(&mut self, count: usize) -> Result<()> {
         self.remaining =
-            self.remaining.checked_sub(count).ok_or_else(|| Error::InvalidData("CAD: entity expansion work limit exceeded".into()))?;
+            self.remaining.checked_sub(count).ok_or_else(|| Error::ResourceLimit("CAD: entity expansion work limit exceeded".into()))?;
         Ok(())
     }
 }
@@ -82,7 +82,7 @@ fn push_entity(
     // Count skipped leaves and INSERTs too, not only emitted features.
     budget.spend(1)?;
     if depth > 32 || layer.features.len() >= 1_000_000 {
-        return Err(Error::InvalidData("CAD: block expansion exceeds the depth (32) or feature (1000000) limit".into()));
+        return Err(Error::ResourceLimit("CAD: block expansion exceeds the depth (32) or feature (1000000) limit".into()));
     }
     if let EntityType::Insert(insert) = entity {
         // acadrust refuses MINSERT in its document-aware explosion API. Reject

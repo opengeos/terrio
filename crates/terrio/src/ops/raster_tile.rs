@@ -334,7 +334,7 @@ pub fn render_cell(
     };
     let output_bytes = bytes(cell.size[0], cell.size[1], bands, options.output_type.unwrap_or(dtype).size_bytes());
     if output_bytes.is_none_or(|n| n > limits.max_output_bytes) {
-        return Err(Error::Unsupported("the output tile exceeds the pixel-buffer budget".into()));
+        return Err(Error::ResourceLimit("the output tile exceeds the pixel-buffer budget".into()));
     }
     struct Bounded<'a> {
         inner: &'a mut dyn WarpSource,
@@ -351,7 +351,7 @@ pub fn render_cell(
         }
         fn read_mask(&mut self, window: crate::Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
             if window.width.checked_mul(window.height).is_none_or(|n| n > self.limit) {
-                return Err(Error::Unsupported("the source mask window exceeds the pixel-buffer budget".into()));
+                return Err(Error::ResourceLimit("the source mask window exceeds the pixel-buffer budget".into()));
             }
             self.inner.read_mask(window, overview)
         }
@@ -360,7 +360,7 @@ pub fn render_cell(
             let needed =
                 window.width.checked_mul(window.height).and_then(|n| n.checked_mul(bands)).and_then(|n| n.checked_mul(self.value_bytes));
             if needed.is_none_or(|n| n > self.limit) {
-                return Err(Error::Unsupported(
+                return Err(Error::ResourceLimit(
                     "the source tile window exceeds the pixel-buffer budget; use source overviews or a finer grid".into(),
                 ));
             }
@@ -600,7 +600,7 @@ mod tests {
             [RenderLimits { max_source_window_bytes: 1, ..Default::default() }, RenderLimits { max_output_bytes: 1, ..Default::default() }]
         {
             let mut source = Procedural::new();
-            assert!(render_cell(&mut source, &cell, &Default::default(), limits).is_err());
+            assert!(matches!(render_cell(&mut source, &cell, &Default::default(), limits), Err(Error::ResourceLimit(_))));
             assert!(source.windows.is_empty());
         }
     }
@@ -630,7 +630,7 @@ mod tests {
         let cell = TileCell { zoom: 0, x: 0, y: 0, size: [256, 128], geo_transform: [2000.0, 1.0, 0.0, 97000.0, 0.0, -1.0] };
         let mut source = Masked { source: Procedural::new(), masks: vec![] };
         let limits = RenderLimits { max_source_window_bytes: 1, ..Default::default() };
-        assert!(render_cell(&mut source, &cell, &Default::default(), limits).is_err());
+        assert!(matches!(render_cell(&mut source, &cell, &Default::default(), limits), Err(Error::ResourceLimit(_))));
         assert!(source.masks.is_empty());
         assert!(source.source.windows.is_empty());
         let result = render_cell(&mut source, &cell, &Default::default(), RenderLimits::default()).unwrap();

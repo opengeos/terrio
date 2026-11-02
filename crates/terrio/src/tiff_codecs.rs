@@ -856,7 +856,13 @@ impl ChunkCodec {
             return Err(TiffError::LimitsExceeded);
         }
         let color = if self.ycbcr { crate::jpeg::Color::Rgb } else { crate::jpeg::Color::Raw };
-        let image = crate::jpeg::decode(&stream, color).map_err(|e| invalid(format!("JPEG: {e}")))?;
+        let image = crate::jpeg::decode(&stream, color).map_err(|e| {
+            if crate::jpeg::is_resource_refusal(&e) {
+                TiffError::IoError(std::io::Error::new(std::io::ErrorKind::OutOfMemory, format!("JPEG: {e}")))
+            } else {
+                invalid(format!("JPEG: {e}"))
+            }
+        })?;
         let (jw, jh, spp, pixels) = (image.width, image.height, image.components, image.data);
         if spp != self.spp || jw < w || jh < h {
             return Err(invalid(format!("JPEG: a {jw} x {jh} image of {spp} components for a {w} x {h} chunk of {} samples", self.spp)));

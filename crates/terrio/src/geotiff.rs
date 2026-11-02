@@ -953,7 +953,11 @@ fn file_decoder(
     let len = file.len()?;
     file.seek(SeekFrom::Start(0))?;
     let file = PatchedReader::new(std::io::BufReader::new(file), tags);
-    let dec = tiff::decoder::Decoder::new(file).map_err(|e| crate::Error::InvalidData(format!("{}: {e}", path.display())))?;
+    let dec = tiff::decoder::Decoder::new(file).map_err(|e| match e {
+        tiff::TiffError::LimitsExceeded => limits.error()(e),
+        tiff::TiffError::IoError(e) if e.kind() == std::io::ErrorKind::OutOfMemory => crate::Error::Io(e),
+        e => crate::Error::InvalidData(format!("{}: {e}", path.display())),
+    })?;
     Ok(dec.with_limits(limits.tiff_within(len)))
 }
 
@@ -1221,7 +1225,14 @@ fn decode_in_threads<D: Read + Seek>(
     // A batch at a time: decoding never runs far ahead of placing.
     for batch in chunks.chunks(workers * 4) {
         let decoded = crate::par::map_init(batch, open, |d, &idx| -> crate::Result<DecodedChunk> {
-            let d = d.as_mut().map_err(|e| crate::Error::InvalidData(e.to_string()))?;
+            let d = d.as_mut().map_err(|e| match e {
+                crate::Error::DecodedLimitExceeded { resource, limit } => crate::Error::DecodedLimitExceeded { resource, limit: *limit },
+                crate::Error::Io(io) if io.kind() == std::io::ErrorKind::OutOfMemory => {
+                    crate::Error::Io(std::io::Error::new(io.kind(), io.to_string()))
+                }
+                e if e.is_resource_refusal() => crate::Error::ResourceLimit(e.to_string()),
+                e => crate::Error::InvalidData(e.to_string()),
+            })?;
             let c = read_chunk(d, codec, idx, limit).map_err(err)?;
             let (w, h) = d.chunk_data_dimensions(idx);
             Ok((idx, c, (w as usize, h as usize)))
@@ -1247,6 +1258,7 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
 
     let tiff_err = |e: tiff::TiffError| match e {
         tiff::TiffError::LimitsExceeded => limits.error()(e),
+        tiff::TiffError::IoError(e) if e.kind() == std::io::ErrorKind::OutOfMemory => Error::Io(e),
         e => Error::InvalidData(format!("{}: {e}", path.display())),
     };
     let mut file = FileCursor::new(std::fs::File::open(path)?);

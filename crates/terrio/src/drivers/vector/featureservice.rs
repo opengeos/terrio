@@ -59,15 +59,21 @@ const MAX_TOTAL_BYTES: u64 = 4 << 30;
 const MAX_SPARSE_CELL_BYTES: usize = 1 << 30;
 
 /// Refuses a page whose attribute values would take far more memory than its size explains: a small
-/// page can declare many fields for many features. An argument error rather than InvalidData: the
-/// GDAL fallback retries InvalidData, and GDAL would build these cells.
+/// page can declare many fields for many features. Resource refusals are terminal, so the optional
+/// GDAL fallback cannot build the cells that the native reader refused.
 pub(crate) fn check_values(driver: &str, features: usize, fields: usize, document: usize) -> crate::Result<()> {
     let cells = features.saturating_mul(fields).saturating_mul(std::mem::size_of::<FieldValue>());
     if cells > MAX_SPARSE_CELL_BYTES.max(document.saturating_mul(super::geojson::PARSE_MEMORY_PER_BYTE)) {
-        return Err(crate::Error::InvalidArgument(format!(
+        return Err(crate::Error::ResourceLimit(format!(
             "{driver}: {features} features of {fields} fields need about {cells} bytes of memory, too many for a document of {document} bytes"
         )));
     }
+    crate::dataset::fallible::check_usable(Some(cells), || format!("{driver}: feature attributes are too large to allocate"))
+        .map_err(crate::Error::ResourceLimit)?;
+    let mut probe: Vec<u8> = Vec::new();
+    probe
+        .try_reserve_exact(cells)
+        .map_err(|_| crate::Error::ResourceLimit(format!("{driver}: cannot allocate {cells} bytes of feature attributes")))?;
     Ok(())
 }
 

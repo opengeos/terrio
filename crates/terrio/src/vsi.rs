@@ -725,7 +725,7 @@ fn remote_read_dir(node: &Node, max_depth: usize) -> Result<Vec<Entry>> {
     let mut pages = 0;
     while let Some((url, rel, level)) = pending.pop() {
         if pages == listing::MAX_PAGES {
-            return Err(Error::InvalidData(format!("HTTP directory listing exceeds {} pages", listing::MAX_PAGES)));
+            return Err(Error::ResourceLimit(format!("HTTP directory listing exceeds {} pages", listing::MAX_PAGES)));
         }
         pages += 1;
         let page = if query.is_empty() { url.clone() } else { format!("{url}?{query}") };
@@ -905,7 +905,9 @@ fn zip_index(archive: &Node, reader: &mut dyn ReadSeek) -> Result<std::rc::Rc<Zi
     }
     let entries = zipdir::central_directory_within(reader, &crate::vfs::ZipLimits::from_config())?;
     let mut by_name = std::collections::HashMap::new();
-    by_name.try_reserve(entries.len()).map_err(|_| Error::InvalidData("zip: cannot allocate the index of the archive's entries".into()))?;
+    by_name
+        .try_reserve(entries.len())
+        .map_err(|_| Error::ResourceLimit("zip: cannot allocate the index of the archive's entries".into()))?;
     for (i, entry) in entries.iter().enumerate().filter(|(_, e)| !e.is_dir()) {
         by_name.entry(clean_member(&entry.name)).or_insert(i);
     }
@@ -1007,7 +1009,7 @@ impl TarLimits {
     fn count(&mut self) -> Result<()> {
         self.entries += 1;
         if self.entries > self.limits.max_entries {
-            return Err(Error::Unsupported(format!(
+            return Err(Error::ResourceLimit(format!(
                 "tar: the archive lists more than the {} entries allowed (TERRIO_ZIP_MAX_ENTRIES)",
                 self.limits.max_entries
             )));
