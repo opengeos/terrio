@@ -38,9 +38,9 @@ use std::io::{Read, Write as _};
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
 /// Excel's limits on a worksheet.
-const MAX_ROWS: usize = 1_048_576;
-const MAX_COLUMNS: usize = 16_384;
-const MAX_CELL_TEXT_UTF16: usize = 32_767;
+pub(super) const MAX_ROWS: usize = 1_048_576;
+pub(super) const MAX_COLUMNS: usize = 16_384;
+pub(super) const MAX_CELL_TEXT_UTF16: usize = 32_767;
 const MAX_SHEET_NAME: usize = 31;
 /// The most relationships or sheets a workbook part may declare: they hold memory before any cell.
 const MAX_WORKBOOK_ENTRIES: usize = 65_536;
@@ -1073,10 +1073,10 @@ pub(crate) fn looks_like(bytes: &[u8], name: &str) -> bool {
 
 // Writing
 
-const XML_HEADER: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
-const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
-const OD_RELS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-const PACKAGE: &str = "http://schemas.openxmlformats.org/package/2006";
+pub(super) const XML_HEADER: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
+pub(super) const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+pub(super) const OD_RELS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+pub(super) const PACKAGE: &str = "http://schemas.openxmlformats.org/package/2006";
 
 /// Style indexes in [`STYLES`].
 const STYLE_DATE: u8 = 1;
@@ -1165,7 +1165,7 @@ fn xml_legal(c: char) -> bool {
 }
 
 /// Text as XML: escaped, without the characters XML cannot hold.
-fn xml_text(s: &str) -> String {
+pub(super) fn xml_text(s: &str) -> String {
     let text =
         if s.chars().all(xml_legal) { xml::escape(s) } else { xml::escape(&s.chars().filter(|&c| xml_legal(c)).collect::<String>()) };
     // A parser turns a raw carriage return into a line feed.
@@ -1174,14 +1174,14 @@ fn xml_text(s: &str) -> String {
 
 /// The shared strings table being written.
 #[derive(Default)]
-struct StringTable {
+pub(super) struct StringTable {
     indexes: HashMap<String, usize>,
     strings: Vec<String>,
     count: usize,
 }
 
 impl StringTable {
-    fn index(&mut self, s: &str) -> usize {
+    pub(super) fn index(&mut self, s: &str) -> usize {
         self.count += 1;
         if let Some(&i) = self.indexes.get(s) {
             return i;
@@ -1192,7 +1192,7 @@ impl StringTable {
         i
     }
 
-    fn to_xml(&self) -> String {
+    pub(super) fn to_xml(&self) -> String {
         let mut out = format!("{XML_HEADER}<sst xmlns=\"{MAIN_NS}\" count=\"{}\" uniqueCount=\"{}\">\n", self.count, self.strings.len());
         for s in &self.strings {
             let space = if s.trim() != s { " xml:space=\"preserve\"" } else { "" };
@@ -1204,7 +1204,7 @@ impl StringTable {
 }
 
 /// A column's letters, from 0.
-fn column_letters(mut column: usize) -> String {
+pub(super) fn column_letters(mut column: usize) -> String {
     let mut letters = Vec::new();
     loop {
         letters.push(b'A' + (column % 26) as u8);
@@ -1219,7 +1219,7 @@ fn column_letters(mut column: usize) -> String {
 
 /// Excel's serial of a day since 1970: dates before its phantom 1900-02-29 are a serial lower, and
 /// it has none for dates before 1900.
-fn excel_serial_days(days: i64) -> Option<i64> {
+pub(super) fn excel_serial_days(days: i64) -> Option<i64> {
     let serial = days + UNIX_EPOCH_SERIAL;
     match serial {
         ..2 => None,
@@ -1230,7 +1230,7 @@ fn excel_serial_days(days: i64) -> Option<i64> {
 
 /// A date-time's wall clock as milliseconds since 1970, without its UTC offset: spreadsheets have no
 /// time zones, and the value reads back as it was written.
-fn wall_clock_millis(s: &str) -> Option<i64> {
+pub(super) fn wall_clock_millis(s: &str) -> Option<i64> {
     let time = s.get(10..)?;
     let end = time.char_indices().skip(1).find(|(_, c)| matches!(c, 'Z' | '+' | '-')).map_or(time.len(), |(i, _)| i);
     datetime::parse_datetime(&s[..10 + end])

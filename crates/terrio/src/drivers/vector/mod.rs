@@ -51,6 +51,8 @@ pub mod wkt;
 #[cfg(feature = "xlsx")]
 pub mod xlsx;
 pub mod xlsx_options;
+#[cfg(feature = "xlsx")]
+pub mod xlsx_workbook;
 pub mod xml;
 
 use crate::Result;

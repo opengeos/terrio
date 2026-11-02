@@ -241,7 +241,7 @@ impl XlsxOptions {
 }
 
 /// Whether a date-time's clock, and its offset of `Z` or `+hh:mm` if any, are in range, with nothing after.
-fn time_in_range(value: &str) -> bool {
+pub(super) fn time_in_range(value: &str) -> bool {
     let Some(time) = value.get(11..) else { return true };
     let number = |text: Option<&str>, max: u32| {
         text.is_some_and(|t| t.bytes().all(|b| b.is_ascii_digit()) && t.parse::<u32>().is_ok_and(|n| n <= max))
