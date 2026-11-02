@@ -149,10 +149,21 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                         .replace("http://www.opengis.net/gml\"", "http://www.opengis.net/gml/3.2\"")
                         .replace("gml:", "gml32:");
                 }
-                if mode == "imported-type" {
+                if mode == "local-default" {
+                    xsd = xsd
+                        .replace(r#"targetNamespace="urn:test""#, r#"xmlns="urn:test" targetNamespace="urn:test""#)
+                        .replace(&format!(r#"type="t:{name}Type""#), &format!(r#"type="{name}Type""#));
+                }
+                if matches!(mode, "imported-type" | "imported-default") {
                     xsd = xsd
                         .replace(r#"targetNamespace="urn:test""#, r#"xmlns:foreign="urn:foreign" targetNamespace="urn:test""#)
                         .replace(&format!(r#"type="t:{name}Type""#), &format!(r#"type="foreign:{name}Type""#));
+                    xsd = xsd.replace("<xs:complexType", r#"<xs:import namespace="urn:foreign"/><xs:complexType"#);
+                    if mode == "imported-default" {
+                        xsd = xsd
+                            .replace(r#"targetNamespace="urn:test""#, r#"xmlns="urn:foreign" targetNamespace="urn:test""#)
+                            .replace(&format!(r#"type="foreign:{name}Type""#), &format!(r#"type="{name}Type""#));
+                    }
                 }
                 if mode == "dense" {
                     let fields =
@@ -488,7 +499,7 @@ fn malformed_geometry_namespace_crs_and_entities_are_terminal_errors() {
 
 #[test]
 fn namespace_aliases_and_valid_xml_entities_remain_supported() {
-    for mode in ["namespace-alias", "good-entity"] {
+    for mode in ["namespace-alias", "good-entity", "local-default"] {
         let (source, _) = serve("2.0.0", mode);
         let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
         let ds = terrio::open_vector(&source, &options).unwrap();
@@ -540,11 +551,13 @@ fn schema_geometry_hints_do_not_mislabel_mixed_pages() {
 
 #[test]
 fn foreign_schema_type_names_cannot_resolve_to_local_collisions() {
-    let (source, requests) = serve("2.0.0", "imported-type");
-    let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
-    let error = terrio::open_vector(&source, &options).unwrap_err();
-    assert!(matches!(&error, terrio::Error::Unsupported(message) if message.contains("external application-schema")), "{error}");
-    assert_eq!(requests.lock().unwrap().len(), 2, "reject before fetching features or following imports");
+    for mode in ["imported-type", "imported-default"] {
+        let (source, requests) = serve("2.0.0", mode);
+        let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+        let error = terrio::open_vector(&source, &options).unwrap_err();
+        assert!(matches!(&error, terrio::Error::Unsupported(message) if message.contains("external application-schema")), "{error}");
+        assert_eq!(requests.lock().unwrap().len(), 2, "reject before fetching features or following imports");
+    }
 }
 
 #[test]

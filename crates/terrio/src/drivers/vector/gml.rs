@@ -199,13 +199,14 @@ pub(crate) fn xsd_complex_type<'a>(xsd: &'a Element, feature: &str) -> Result<Op
         return Ok(Some(inline));
     }
     if let Some(element) = declaration
-        && let Some((prefix, _)) = element.attr("type").and_then(|kind| kind.split_once(':'))
-        && element
-            .namespace(prefix)
-            .or_else(|| xsd.namespace(prefix))
-            .is_none_or(|namespace| namespace.is_empty() || Some(namespace) != xsd.attr("targetNamespace"))
+        && let Some(kind) = element.attr("type")
     {
-        return Err(Error::Unsupported("GML: external application-schema types are unsupported".into()));
+        let prefix = kind.split_once(':').map_or("", |(prefix, _)| prefix);
+        let namespace = element.namespace(prefix).or_else(|| xsd.namespace(prefix)).filter(|namespace| !namespace.is_empty());
+        let target = xsd.attr("targetNamespace").filter(|namespace| !namespace.is_empty());
+        if !prefix.is_empty() && namespace.is_none() || namespace != target {
+            return Err(Error::Unsupported("GML: external application-schema types are unsupported".into()));
+        }
     }
     let fallback = format!("{feature}Type");
     let name = declaration.and_then(|e| e.attr("type")).map(|s| s.rsplit(':').next().unwrap_or(s)).unwrap_or(&fallback);
