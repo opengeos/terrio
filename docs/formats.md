@@ -791,8 +791,10 @@ reads it.
 
 ### CAD drawings (DWG and DXF)
 
-**The native reader is strict:** an unsupported geometric entity fails the entire drawing.
-The optional GDAL backend can provide fallback for entities outside the native subset below.
+**The native reader skips what it cannot represent:** an entity outside the subset below is left
+out, and a warning names how many of each type and the top-level entity holding the first one. In
+a build with the optional GDAL backend, a drawing with such entities goes to GDAL when GDAL can
+open it.
 
 The default-enabled `cad` Cargo feature uses [acadrust](https://github.com/hakanaktt/acadrust)
 without native libraries or its optional thread pool. It is included in the full JavaScript/WASM
@@ -817,22 +819,25 @@ upstream codec's input file size. Layer filters select `entities`; attribute fil
 `--where "Layer = 'survey'"` select drawing layers.
 
 Supported entities are POINT, LINE, straight and bulged LWPOLYLINE/POLYLINE, 3D polylines,
-CIRCLE, ARC, ELLIPSE, TEXT/MTEXT, SOLID/TRACE, 3DFACE and HATCH with polyline, line or circular-arc
-boundaries. INSERT expands block geometry (up to 32 levels, one million output features and a shared
+CIRCLE, ARC, ELLIPSE, TEXT/MTEXT, SOLID/TRACE, 3DFACE, polyface mesh POLYLINE, MESH (its base cage,
+without subdivision) and HATCH with polyline, line or circular-arc boundaries. Meshes become 3D
+multipolygons with one polygon per face; faces with fewer than three distinct corners are dropped.
+INSERT expands block geometry (up to 32 levels, one million output features and a shared
 work budget of one million entity visits/clones, including skipped leaves and generated segments);
-unused block definitions are excluded. Empty ordinary block references are skipped; missing
-blocks, array inserts and external/non-explodable references produce errors. Expanded entities
+unused block definitions are excluded. Empty ordinary block references are skipped silently; array
+inserts and external/non-explodable references are skipped with the warning above, as is, under a
+non-uniformly scaled INSERT, a nested reference to a block holding an entity refused before
+expansion (thick entities, 3DSOLID, REGION, BODY); missing blocks and exceeded limits produce errors. Expanded entities
 receive new handles. Viewports and
 sequence markers carry no exported geometry.
 Closed polylines remain lines. Curves are linearized at a maximum four-degree step; curve samples
 can differ from GDAL's. Hatch rings are organized by containment into polygons with holes. Edge boundaries must be
 listed in connected sequence; individual edges and the first edge may be reversed, but arbitrary
 edge reordering is unsupported. Endpoint joins use an absolute tolerance of 1e-7 drawing units.
-Unsupported entities (including splines, dimensions, ACIS solids and mesh entities), unsupported
-hatch boundaries, fitted polylines and extruded/thick geometry produce an error identifying the
-unsupported data rather than silently discarding it. The optional GDAL backend can read entities
-outside the native subset through its existing fallback; there is no skip-and-discard mode. Text is returned as raw CAD text; font styles
-and MTEXT formatting are not interpreted. Styling, external references and CAD object dictionaries
+Unsupported entities (including splines, dimensions, ACIS solids and polygon meshes), hatches with
+unsupported boundaries, fitted polylines and extruded/thick geometry are left out with the warning
+above, as are meshes with no face of three distinct corners. Text is returned as raw CAD text; font
+styles and MTEXT formatting are not interpreted. Styling, external references and CAD object dictionaries
 are outside Terrio's vector model.
 
 On export, points become POINT (or TEXT when the `Text` attribute is nonempty), lines become LINE

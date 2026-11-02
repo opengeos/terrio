@@ -2,14 +2,16 @@
 //! CAD entities become one `entities` layer, with drawing layer names as attributes.
 //! Curves are linearized at at most four degrees per segment. Drawing coordinates
 //! are retained without assigning a geographic CRS. This is geometry interchange,
-//! not a lossless CAD document editor.
+//! not a lossless CAD document editor. Entities without a representation here are
+//! left out with a warning, so that one of them does not cost the rest of a drawing.
 
+use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 use std::io::Cursor;
 
 use acadrust::entities::hatch::{BoundaryEdge, BoundaryPath, PolylineEdge};
 use acadrust::entities::{EntityType, Hatch, Line, Point, Polyline3D, Text};
-use acadrust::types::{Matrix3, Vector2, Vector3};
+use acadrust::types::{Handle, Matrix3, Vector2, Vector3};
 use acadrust::{CadDocument, DwgReader, DwgWriter, DxfReader, DxfWriter};
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
 
@@ -26,18 +28,70 @@ fn unsupported(entity: &EntityType) -> Error {
 
 const MAX_CAD_WORK: usize = 1_000_000;
 
-pub(crate) fn parse(bytes: Vec<u8>, driver: VectorDriver) -> Result<Layer> {
+pub(crate) fn parse(bytes: Vec<u8>, driver: VectorDriver, options: &crate::VectorOpenOptions) -> Result<Layer> {
+    #[cfg(not(feature = "gdal"))]
+    let _ = options;
+    // Shared rather than copied: the GDAL branch below needs the bytes only for a rare drawing.
+    #[cfg(feature = "gdal")]
+    let bytes = std::sync::Arc::new(bytes);
+    #[cfg(feature = "gdal")]
+    let stream = Cursor::new(SharedBytes(std::sync::Arc::clone(&bytes)));
+    // Otherwise the reader takes them, and frees them before the expansion.
+    #[cfg(not(feature = "gdal"))]
     let stream = Cursor::new(bytes);
     let doc = if driver == VectorDriver::DWG {
         DwgReader::from_stream(stream).read().map_err(codec_error)?
     } else {
         DxfReader::from_reader(stream).map_err(codec_error)?.read().map_err(codec_error)?
     };
-    layer_from_document(doc, MAX_CAD_WORK)
+    let (layer, skipped) = layer_from_document(doc, MAX_CAD_WORK)?;
+    if skipped.is_empty() {
+        return Ok(layer);
+    }
+    // GDAL may represent what was left out. Refusing here sends the caller to its fallback, which
+    // reads the drawing again with these options; a drawing GDAL cannot open with them keeps the
+    // entities read natively. Rare enough that the second read, and in these builds the input held
+    // through the expansion, are accepted to keep one path through the fallback.
+    #[cfg(feature = "gdal")]
+    {
+        let name = if driver == VectorDriver::DWG { "drawing.dwg" } else { "drawing.dxf" };
+        if crate::gdal_backend::open_vector_bytes(std::sync::Arc::unwrap_or_clone(bytes), name, options).is_ok() {
+            return Err(Error::Unsupported(format!("CAD: {}", skipped_summary(&skipped))));
+        }
+    }
+    crate::warnings::warn(format!("CAD: {} left out of the output", skipped_summary(&skipped)));
+    Ok(layer)
 }
 
-fn layer_from_document(mut doc: CadDocument, max_work: usize) -> Result<Layer> {
-    let mut budget = WorkBudget { remaining: max_work };
+/// The readers need an owning stream, and `Arc<Vec<u8>>` is not `AsRef<[u8]>`.
+#[cfg(feature = "gdal")]
+struct SharedBytes(std::sync::Arc<Vec<u8>>);
+
+#[cfg(feature = "gdal")]
+impl AsRef<[u8]> for SharedBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// Entities of one type left out of a drawing's layer.
+#[derive(Debug)]
+struct SkippedKind {
+    count: usize,
+    /// Of the first one's top-level entity: expansion gives block members new handles.
+    first_handle: Handle,
+}
+
+/// Entities left out of a drawing's layer, by entity type.
+type Skipped = BTreeMap<String, SkippedKind>;
+
+fn skipped_summary(skipped: &Skipped) -> String {
+    let parts: Vec<_> = skipped.iter().map(|(kind, k)| format!("{} {kind} (first in entity {})", k.count, k.first_handle)).collect();
+    format!("unsupported entities: {}", parts.join(", "))
+}
+
+fn layer_from_document(mut doc: CadDocument, max_work: usize) -> Result<(Layer, Skipped)> {
+    let mut budget = WorkBudget::new(max_work);
     let mut layer = Layer::new("entities");
     for name in ["Layer", "EntityHandle", "EntityType", "Linetype", "Text"] {
         layer.add_field(FieldDef::new(name, FieldType::Text));
@@ -54,16 +108,29 @@ fn layer_from_document(mut doc: CadDocument, max_work: usize) -> Result<Layer> {
         // Arc shares the document's entity; expansion can mutate the document
         // without deep-cloning all root geometries up front.
         let entity = doc.get_entity_arc(handle).ok_or_else(|| Error::InvalidData(format!("CAD: missing entity {handle}")))?;
+        budget.root = handle;
         push_entity(&mut doc, &entity, paper, 0, &mut budget, &mut layer)?;
     }
-    Ok(layer)
+    Ok((layer, budget.skipped))
 }
 
 struct WorkBudget {
     remaining: usize,
+    skipped: Skipped,
+    /// The top-level entity being expanded.
+    root: Handle,
 }
 
 impl WorkBudget {
+    fn new(remaining: usize) -> Self {
+        Self { remaining, skipped: Skipped::new(), root: Handle::NULL }
+    }
+
+    fn skip(&mut self, entity: &EntityType) {
+        let root = self.root;
+        self.skipped.entry(entity.as_entity().entity_type().into()).or_insert(SkippedKind { count: 0, first_handle: root }).count += 1;
+    }
+
     fn spend(&mut self, count: usize) -> Result<()> {
         self.remaining =
             self.remaining.checked_sub(count).ok_or_else(|| Error::ResourceLimit("CAD: entity expansion work limit exceeded".into()))?;
@@ -71,7 +138,26 @@ impl WorkBudget {
     }
 }
 
+/// Adds an entity's features, recording an unsupported entity in the budget rather than failing.
+/// Each block member comes back through here, so that it costs only itself, not its block.
 fn push_entity(
+    doc: &mut CadDocument,
+    entity: &EntityType,
+    paper: bool,
+    depth: usize,
+    budget: &mut WorkBudget,
+    layer: &mut Layer,
+) -> Result<()> {
+    match expand_entity(doc, entity, paper, depth, budget, layer) {
+        Err(Error::Unsupported(_)) => {
+            budget.skip(entity);
+            Ok(())
+        }
+        result => result,
+    }
+}
+
+fn expand_entity(
     doc: &mut CadDocument,
     entity: &EntityType,
     paper: bool,
@@ -112,24 +198,33 @@ fn push_entity(
         // Reserve cloning work before calling the eager upstream expander.
         // Stretched bulged polylines can produce one entity per segment, and
         // nested INSERT shear fallbacks can clone the referenced child block.
-        budget.spend(record.entity_handles.len())?;
-        for handle in &record.entity_handles {
+        let handles = record.entity_handles.clone();
+        budget.spend(handles.len())?;
+        let mut kept = Vec::with_capacity(handles.len());
+        for handle in &handles {
             let member = doc.get_entity(*handle).ok_or_else(|| Error::InvalidData(format!("CAD: missing block member {handle}")))?;
-            budget.spend(clone_extra_work(member)?)?;
-            if let EntityType::Insert(nested) = member
-                && let Some(child) = doc.block_records.get(&nested.block_name)
-            {
-                budget.spend(child.entity_handles.len())?;
-                for child_handle in &child.entity_handles {
-                    let child_member = doc
-                        .get_entity(*child_handle)
-                        .ok_or_else(|| Error::InvalidData(format!("CAD: missing block member {child_handle}")))?;
-                    budget.spend(clone_extra_work(child_member)?)?;
-                }
+            match member_clone_work(doc, member, !insert.has_uniform_scale(), budget) {
+                Ok(()) => kept.push(*handle),
+                // Left out of the expansion below, which must not decompose it.
+                Err(Error::Unsupported(_)) => budget.skip(member),
+                Err(error) => return Err(error),
             }
         }
+        // The upstream expander reads the block record and has no way to exclude a member, so the
+        // refused ones are taken out for the call. The record is restored for later INSERTs.
+        let partial = kept.len() < handles.len();
+        if partial {
+            set_block_members(doc, &insert.block_name, kept);
+        }
         let parts = doc.explode_entity(entity);
+        if partial {
+            set_block_members(doc, &insert.block_name, handles);
+        }
         budget.spend(parts.len())?;
+        // Refused members are already counted; with no part left to expand, the INSERT is not at fault.
+        if parts.is_empty() && partial {
+            return Ok(());
+        }
         if parts.is_empty() {
             return Err(unsupported(entity));
         }
@@ -162,12 +257,43 @@ fn push_entity(
     Ok(())
 }
 
+fn set_block_members(doc: &mut CadDocument, block: &str, handles: Vec<Handle>) {
+    if let Some(record) = doc.block_records.get_mut(block) {
+        record.entity_handles = handles;
+    }
+}
+
+/// Spends the work of cloning a block member, including the child block of a nested INSERT. Under
+/// a non-uniform parent (`may_shear`) a shear fallback can clone that child, so an unsupported entity
+/// there refuses the nested INSERT as a whole. Otherwise the reference stays one, and the child's
+/// members are refused one at a time when it expands. The child is charged before its scan, so that
+/// a refused one still costs what it took to find.
+fn member_clone_work(doc: &CadDocument, member: &EntityType, may_shear: bool, budget: &mut WorkBudget) -> Result<()> {
+    budget.spend(clone_extra_work(member)?)?;
+    if let EntityType::Insert(nested) = member
+        && let Some(child) = doc.block_records.get(&nested.block_name)
+    {
+        budget.spend(child.entity_handles.len())?;
+        for handle in &child.entity_handles {
+            let entity = doc.get_entity(*handle).ok_or_else(|| Error::InvalidData(format!("CAD: missing block member {handle}")))?;
+            match clone_extra_work(entity) {
+                Ok(work) => budget.spend(work)?,
+                Err(Error::Unsupported(_)) if !may_shear => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn clone_extra_work(entity: &EntityType) -> Result<usize> {
     ensure_native_properties(entity)?;
     Ok(match entity {
         EntityType::LwPolyline(p) => p.vertices.len(),
         EntityType::Polyline2D(p) => p.vertices.len(),
         EntityType::Insert(i) => i.attributes.len(),
+        EntityType::PolyfaceMesh(m) => m.vertices.len() + m.faces.len(),
+        EntityType::Mesh(m) => m.vertices.len() + m.faces.iter().map(|face| 1 + face.vertices.len()).sum::<usize>(),
         // Avoid an upstream modeler decomposition outside our supported scope.
         EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) => return Err(unsupported(entity)),
         _ => 0,
@@ -298,8 +424,60 @@ fn geometry(entity: &EntityType) -> Result<Geometry> {
         EntityType::Face3D(f) => polygon(f.corners().into_iter().map(coord).collect())?,
         EntityType::Solid(s) => polygon(s.boundary_corners().into_iter().map(|v| coord(ocs(v, s.normal))).collect())?,
         EntityType::Hatch(h) => hatch_geometry(h)?,
+        EntityType::PolyfaceMesh(m) => {
+            let faces = m.faces.iter().map(|face| {
+                // Index 0 marks an unused corner; the others may be negative for a hidden edge.
+                let corners = face.vertex_indices().into_iter().filter(|i| *i != 0);
+                corners.map(|i| m.vertex(i).map(|v| v.location)).collect::<Option<Vec<_>>>()
+            });
+            mesh_geometry(faces)?.ok_or_else(|| unsupported_mesh(entity))?
+        }
+        EntityType::Mesh(m) => {
+            let faces = m.faces.iter().map(|face| face.vertices.iter().map(|i| m.vertices.get(*i).copied()).collect::<Option<Vec<_>>>());
+            mesh_geometry(faces)?.ok_or_else(|| unsupported_mesh(entity))?
+        }
         _ => return Err(unsupported(entity)),
     })
+}
+
+fn unsupported_mesh(entity: &EntityType) -> Error {
+    Error::Unsupported(format!(
+        "CAD: {} mesh without a non-degenerate face (handle {})",
+        entity.as_entity().entity_type(),
+        entity.common().handle
+    ))
+}
+
+/// A mesh's faces as a multipolygon of 3D polygons, one per face. A face of fewer than three
+/// distinct corners is dropped; other repeated corners stay, as the mesh has them. `None` when no
+/// face remains, an error when a face names a vertex the mesh does not have.
+fn mesh_geometry(faces: impl Iterator<Item = Option<Vec<Vector3>>>) -> Result<Option<Geometry>> {
+    let mut polygons = Vec::new();
+    for face in faces {
+        let Some(corners) = face else {
+            return Err(Error::InvalidData("CAD: mesh face refers to a missing vertex".into()));
+        };
+        let mut cs: Vec<_> = corners.into_iter().map(coord).collect();
+        cs.dedup();
+        if cs.len() > 1 && cs.first() == cs.last() {
+            cs.pop();
+        }
+        // Linear: stops at the third distinct corner, however large the face.
+        let mut distinct: Vec<&Coord> = Vec::with_capacity(3);
+        for c in &cs {
+            if !distinct.contains(&c) {
+                distinct.push(c);
+                if distinct.len() == 3 {
+                    break;
+                }
+            }
+        }
+        if distinct.len() == 3 {
+            cs.push(cs[0].clone());
+            polygons.push((Ring::new(cs), Vec::new()));
+        }
+    }
+    Ok((!polygons.is_empty()).then_some(Geometry::MultiPolygon(polygons)))
 }
 
 fn polygon(cs: Vec<Coord>) -> Result<Geometry> {
@@ -630,7 +808,10 @@ mod tests {
             attributes: Vec::new(),
         });
         for driver in [VectorDriver::DXF, VectorDriver::DWG] {
-            assert_eq!(parse(to_bytes(std::slice::from_ref(&layer), driver).unwrap(), driver).unwrap().features.len(), 1);
+            assert_eq!(
+                parse(to_bytes(std::slice::from_ref(&layer), driver).unwrap(), driver, &Default::default()).unwrap().features.len(),
+                1
+            );
         }
     }
 
@@ -646,7 +827,7 @@ mod tests {
                 (DxfWriter::new(&doc).write_to_vec().unwrap(), VectorDriver::DXF),
                 (DwgWriter::write_to_vec(&doc).unwrap(), VectorDriver::DWG),
             ] {
-                let layer = parse(bytes, driver).unwrap();
+                let layer = parse(bytes, driver, &Default::default()).unwrap();
                 assert_eq!(layer.features[0].geometry, Some(Geometry::Point(Coord::xyz(3.0, 7.0, 12.0))));
             }
         }
@@ -699,25 +880,220 @@ mod tests {
                 DxfReader::from_reader(stream).unwrap().read().unwrap()
             };
             assert_eq!(doc.layers.iter().filter(|l| l.name.eq_ignore_ascii_case("roads")).count(), 1);
-            assert_eq!(layer_from_document(doc, 8).unwrap().features.len(), 2);
+            assert_eq!(layer_from_document(doc, 8).unwrap().0.features.len(), 2);
         }
     }
 
-    /// Check native rejection directly, even when the public API has GDAL fallback.
+    /// Check the native reader directly, even when the public API has GDAL fallback.
     #[test]
-    fn native_reader_rejects_unsupported_splines() {
+    fn native_reader_skips_unsupported_entities_and_keeps_the_rest() {
         let mut doc = CadDocument::new();
-        let spline = acadrust::entities::Spline::from_control_points(
-            2,
-            vec![Vector3::ZERO, Vector3::new(1.0, 1.0, 0.0), Vector3::new(2.0, 0.0, 0.0)],
-        );
-        doc.add_entity(EntityType::Spline(spline)).unwrap();
-        for (bytes, driver) in
-            [(DxfWriter::new(&doc).write_to_vec().unwrap(), VectorDriver::DXF), (DwgWriter::write_to_vec(&doc).unwrap(), VectorDriver::DWG)]
-        {
-            let error = parse(bytes, driver).unwrap_err();
-            assert!(matches!(error, Error::Unsupported(ref message) if message.contains("unsupported SPLINE")), "{error}");
+        let controls = vec![Vector3::ZERO, Vector3::new(1.0, 1.0, 0.0), Vector3::new(2.0, 0.0, 0.0)];
+        for _ in 0..2 {
+            doc.add_entity(EntityType::Spline(acadrust::entities::Spline::from_control_points(2, controls.clone()))).unwrap();
         }
+        doc.add_entity(EntityType::Point(Point::at(Vector3::UNIT_X))).unwrap();
+        let (layer, skipped) = layer_from_document(doc, 16).unwrap();
+        assert_eq!(layer.features.len(), 1);
+        assert_eq!(layer.features[0].fid, 0);
+        assert_eq!(layer.features[0].geometry, Some(Geometry::Point(coord(Vector3::UNIT_X))));
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped["SPLINE"].count, 2);
+        assert!(skipped_summary(&skipped).contains("2 SPLINE (first in entity 0x"), "{}", skipped_summary(&skipped));
+    }
+
+    /// An unsupported block member costs only itself, not the block.
+    #[test]
+    fn unsupported_block_members_leave_the_other_members() {
+        let mut doc = CadDocument::new();
+        let controls = vec![Vector3::ZERO, Vector3::new(1.0, 1.0, 0.0), Vector3::new(2.0, 0.0, 0.0)];
+        add_block(
+            &mut doc,
+            "mixed",
+            vec![
+                EntityType::Spline(acadrust::entities::Spline::from_control_points(2, controls)),
+                EntityType::Point(Point::at(Vector3::ZERO)),
+            ],
+        );
+        let insert = doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("mixed", Vector3::UNIT_Z))).unwrap();
+        let (layer, skipped) = layer_from_document(doc, 64).unwrap();
+        assert_eq!(layer.features[0].geometry, Some(Geometry::Point(coord(Vector3::UNIT_Z))));
+        assert_eq!(layer.features.len(), 1);
+        assert_eq!(skipped["SPLINE"].count, 1);
+        assert_eq!(skipped["SPLINE"].first_handle, insert, "the warning must name an entity of the drawing");
+    }
+
+    /// These are refused before expansion, which must not decompose them, and stay in their block.
+    #[test]
+    fn refused_block_members_leave_the_other_members_and_the_block() {
+        let mut circle = acadrust::entities::Circle::from_coords(0.0, 0.0, 0.0, 1.0);
+        circle.thickness = 2.0;
+        for member in [EntityType::Circle(circle), EntityType::Solid3D(Default::default())] {
+            let kind = member.as_entity().entity_type();
+            let mut doc = CadDocument::new();
+            add_block(&mut doc, "mixed", vec![member, EntityType::Point(Point::at(Vector3::ZERO))]);
+            doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("mixed", Vector3::UNIT_Z))).unwrap();
+            let handles = doc.block_records.get("mixed").unwrap().entity_handles.clone();
+            let mut budget = WorkBudget::new(64);
+            let mut layer = Layer::new("entities");
+            let insert = EntityType::Insert(acadrust::entities::Insert::new("mixed", Vector3::UNIT_Z));
+            push_entity(&mut doc, &insert, false, 0, &mut budget, &mut layer).unwrap();
+            assert_eq!(layer.features.len(), 1, "{kind}");
+            assert_eq!(layer.features[0].geometry, Some(Geometry::Point(coord(Vector3::UNIT_Z))));
+            assert_eq!(budget.skipped[kind].count, 1);
+            assert_eq!(doc.block_records.get("mixed").unwrap().entity_handles, handles);
+        }
+    }
+
+    /// Under a stretch a shear fallback could clone the child block, so the reference is refused
+    /// whole. Otherwise it expands, and only the refused member of the child is lost.
+    #[test]
+    fn nested_references_lose_a_refused_entity_alone_unless_stretched() {
+        for (stretch, features, kind) in [(1.0, 2, "3DSOLID"), (2.0, 1, "INSERT")] {
+            let mut doc = CadDocument::new();
+            add_block(&mut doc, "inner", vec![EntityType::Solid3D(Default::default()), EntityType::Point(Point::at(Vector3::ZERO))]);
+            let nested = EntityType::Insert(acadrust::entities::Insert::new("inner", Vector3::ZERO));
+            add_block(&mut doc, "outer", vec![nested, EntityType::Point(Point::at(Vector3::UNIT_X))]);
+            doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("outer", Vector3::ZERO).with_scale(stretch, 1.0, 1.0)))
+                .unwrap();
+            let (layer, skipped) = layer_from_document(doc, 64).unwrap();
+            assert_eq!(layer.features.len(), features);
+            assert!(layer.features.iter().any(|f| f.geometry == Some(Geometry::Point(Coord::xyz(stretch, 0.0, 0.0)))));
+            assert_eq!(skipped.keys().map(String::as_str).collect::<Vec<_>>(), [kind]);
+        }
+    }
+
+    #[test]
+    fn meshes_follow_rotated_and_stretched_inserts() {
+        let mut face = polyface();
+        face.add_triangle(1, 2, 3);
+        let mut mesh = acadrust::entities::Mesh::new();
+        mesh.vertices = vec![Vector3::new(0.0, 0.0, 1.0), Vector3::new(2.0, 0.0, 1.0), Vector3::new(2.0, 2.0, 3.0)];
+        mesh.faces = vec![acadrust::entities::MeshFace::triangle(0, 1, 2)];
+        for member in [EntityType::PolyfaceMesh(face), EntityType::Mesh(mesh)] {
+            for (insert, expected) in [
+                (acadrust::entities::Insert::new("mesh", Vector3::ZERO).with_scale(3.0, 1.0, 1.0), (6.0, 2.0)),
+                (acadrust::entities::Insert::new("mesh", Vector3::ZERO).with_rotation(PI / 2.0), (-2.0, 2.0)),
+            ] {
+                let mut doc = CadDocument::new();
+                add_block(&mut doc, "mesh", vec![member.clone()]);
+                doc.add_entity(EntityType::Insert(insert)).unwrap();
+                let (layer, skipped) = layer_from_document(doc, 64).unwrap();
+                assert!(skipped.is_empty(), "{skipped:?}");
+                let Some(Geometry::MultiPolygon(polygons)) = &layer.features[0].geometry else { panic!("expected a multipolygon") };
+                let corner = &polygons[0].0.0[2];
+                assert!((corner.x - expected.0).abs() < 1e-9 && (corner.y - expected.1).abs() < 1e-9, "{corner:?}");
+                assert_eq!(corner.z, Some(3.0));
+            }
+        }
+    }
+
+    #[test]
+    fn a_block_of_only_refused_members_adds_nothing_else_to_the_warning() {
+        let mut circle = acadrust::entities::Circle::from_coords(0.0, 0.0, 0.0, 1.0);
+        circle.thickness = 2.0;
+        let mut doc = CadDocument::new();
+        add_block(&mut doc, "thick", vec![EntityType::Circle(circle)]);
+        doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("thick", Vector3::ZERO))).unwrap();
+        let (layer, skipped) = layer_from_document(doc, 64).unwrap();
+        assert!(layer.features.is_empty());
+        assert_eq!(skipped.keys().map(String::as_str).collect::<Vec<_>>(), ["CIRCLE"]);
+    }
+
+    #[test]
+    fn refused_child_blocks_are_charged_for_their_scan() {
+        let mut doc = CadDocument::new();
+        let mut members: Vec<_> = (0..50).map(|_| EntityType::Point(Point::at(Vector3::ZERO))).collect();
+        members.push(EntityType::Solid3D(Default::default()));
+        add_block(&mut doc, "child", members);
+        let references = (0..50).map(|_| EntityType::Insert(acadrust::entities::Insert::new("child", Vector3::ZERO))).collect();
+        add_block(&mut doc, "parent", references);
+        // Stretched, so that each reference is refused rather than expanded: only the scans cost much.
+        doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("parent", Vector3::ZERO).with_scale(2.0, 1.0, 1.0))).unwrap();
+        // Enough for the references alone, not for scanning the child behind each one.
+        assert!(matches!(layer_from_document(doc, 500), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn mesh_face_corners_are_charged_when_cloned() {
+        let mut mesh = acadrust::entities::Mesh::new();
+        mesh.vertices = vec![Vector3::ZERO];
+        mesh.faces = vec![acadrust::entities::MeshFace::new(vec![0; 100])];
+        assert_eq!(clone_extra_work(&EntityType::Mesh(mesh)).unwrap(), 102);
+    }
+
+    #[test]
+    fn work_limits_still_fail_rather_than_skip() {
+        let mut doc = CadDocument::new();
+        doc.add_entity(EntityType::Point(Point::at(Vector3::ZERO))).unwrap();
+        assert!(matches!(layer_from_document(doc, 0), Err(Error::ResourceLimit(_))));
+    }
+
+    fn polyface() -> acadrust::entities::PolyfaceMesh {
+        let mut mesh = acadrust::entities::PolyfaceMesh::new();
+        for (x, y, z) in [(0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (2.0, 2.0, 3.0), (0.0, 2.0, 3.0)] {
+            mesh.add_vertex_xyz(x, y, z);
+        }
+        mesh
+    }
+
+    #[test]
+    fn polyface_faces_become_3d_polygons_without_faces_of_under_three_corners() {
+        let mut mesh = polyface();
+        mesh.add_quad(1, 2, 3, -4);
+        mesh.add_triangle(1, -2, 3);
+        mesh.add_quad(1, 2, 1, 2);
+        mesh.add_quad(1, 2, 1, 3);
+        let geometry = geometry(&EntityType::PolyfaceMesh(mesh)).unwrap();
+        let Geometry::MultiPolygon(polygons) = geometry else { panic!("expected a multipolygon: {geometry:?}") };
+        assert_eq!(polygons.len(), 3);
+        assert_eq!(polygons[2].0.0.len(), 5, "a non-adjacent repeat stays, as in larger faces");
+        assert_eq!(polygons[0].0.0.len(), 5);
+        assert_eq!(polygons[0].0.0[3], Coord::xyz(0.0, 2.0, 3.0));
+        assert_eq!(polygons[0].0.0.first(), polygons[0].0.0.last());
+        assert_eq!(polygons[1].0.0.len(), 4);
+    }
+
+    #[test]
+    fn mesh_faces_of_any_size_become_polygons() {
+        let mut mesh = acadrust::entities::Mesh::new();
+        mesh.vertices = (0..6).map(|i| Vector3::new(f64::from(i).cos(), f64::from(i).sin(), 1.0)).collect();
+        mesh.faces = vec![acadrust::entities::MeshFace::new((0..6).collect()), acadrust::entities::MeshFace::triangle(0, 1, 2)];
+        let Geometry::MultiPolygon(polygons) = geometry(&EntityType::Mesh(mesh)).unwrap() else { panic!("expected a multipolygon") };
+        assert_eq!(polygons.iter().map(|(e, _)| e.0.len()).collect::<Vec<_>>(), [7, 4]);
+    }
+
+    #[test]
+    fn mesh_faces_naming_missing_vertices_are_invalid_data() {
+        let mut face = polyface();
+        face.add_triangle(1, 2, 9);
+        assert!(matches!(geometry(&EntityType::PolyfaceMesh(face)), Err(Error::InvalidData(_))));
+        let mut mesh = acadrust::entities::Mesh::new();
+        mesh.vertices = vec![Vector3::ZERO];
+        mesh.faces = vec![acadrust::entities::MeshFace::triangle(0, 1, 2)];
+        assert!(matches!(geometry(&EntityType::Mesh(mesh)), Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn meshes_without_a_face_are_skipped() {
+        let mut doc = CadDocument::new();
+        doc.add_entity(EntityType::PolyfaceMesh(polyface())).unwrap();
+        let (layer, skipped) = layer_from_document(doc, 8).unwrap();
+        assert!(layer.features.is_empty());
+        assert_eq!(skipped["POLYLINE"].count, 1);
+    }
+
+    #[test]
+    fn polyface_in_a_block_moves_with_the_insert() {
+        let mut mesh = polyface();
+        mesh.add_triangle(1, 2, 3);
+        let mut doc = CadDocument::new();
+        add_block(&mut doc, "mesh", vec![EntityType::PolyfaceMesh(mesh)]);
+        doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("mesh", Vector3::new(10.0, 0.0, 0.0)))).unwrap();
+        let (layer, skipped) = layer_from_document(doc, 64).unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let Some(Geometry::MultiPolygon(polygons)) = &layer.features[0].geometry else { panic!("expected a multipolygon") };
+        assert_eq!(polygons[0].0.0[1], Coord::xyz(12.0, 0.0, 1.0));
     }
 
     fn add_block(doc: &mut CadDocument, name: &str, entities: Vec<EntityType>) {
@@ -756,7 +1132,8 @@ mod tests {
         let insert = EntityType::Insert(acadrust::entities::Insert::new("large", Vector3::ZERO));
         let next_handle = doc.next_handle();
         let mut layer = Layer::new("entities");
-        let error = push_entity(&mut doc, &insert, false, 0, &mut WorkBudget { remaining: 16 }, &mut layer).unwrap_err();
+        let mut budget = WorkBudget::new(16);
+        let error = push_entity(&mut doc, &insert, false, 0, &mut budget, &mut layer).unwrap_err();
         assert!(error.to_string().contains("work limit"));
         assert_eq!(doc.next_handle(), next_handle, "upstream explosion must not run");
     }
@@ -820,7 +1197,7 @@ mod tests {
                 (DxfWriter::new(&doc).write_to_vec().unwrap(), VectorDriver::DXF),
                 (DwgWriter::write_to_vec(&doc).unwrap(), VectorDriver::DWG),
             ] {
-                let layer = parse(bytes, driver).unwrap();
+                let layer = parse(bytes, driver, &Default::default()).unwrap();
                 let Geometry::Polygon { exterior, .. } = layer.features[0].geometry.as_ref().unwrap() else { panic!("expected polygon") };
                 let expected = PI / 2.0;
                 assert!((exterior.signed_area().abs() - expected).abs() < 0.002);
@@ -829,17 +1206,18 @@ mod tests {
     }
 
     #[test]
-    fn arrays_are_rejected_before_eager_expansion() {
+    fn arrays_are_skipped_before_eager_expansion() {
         let mut doc = CadDocument::new();
         add_block(&mut doc, "array", vec![EntityType::Point(Point::at(Vector3::ZERO))]);
         let mut insert = acadrust::entities::Insert::new("array", Vector3::ZERO);
         insert.row_count = u16::MAX;
         insert.column_count = u16::MAX;
         let next_handle = doc.next_handle();
-        let error =
-            push_entity(&mut doc, &EntityType::Insert(insert), false, 0, &mut WorkBudget { remaining: 8 }, &mut Layer::new("entities"))
-                .unwrap_err();
-        assert!(matches!(error, Error::Unsupported(_)));
+        let mut budget = WorkBudget::new(8);
+        let mut layer = Layer::new("entities");
+        push_entity(&mut doc, &EntityType::Insert(insert), false, 0, &mut budget, &mut layer).unwrap();
+        assert!(layer.features.is_empty());
+        assert_eq!(budget.skipped["MINSERT"].count, 1);
         assert_eq!(doc.next_handle(), next_handle);
     }
 
@@ -851,7 +1229,7 @@ mod tests {
         block.flags.is_xref = true;
         doc.block_records.add(block).unwrap();
         doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("external", Vector3::ZERO))).unwrap();
-        assert!(matches!(layer_from_document(doc, 8), Err(Error::Unsupported(_))));
+        assert_eq!(layer_from_document(doc, 8).unwrap().1["INSERT"].count, 1);
     }
 
     #[test]
@@ -862,7 +1240,7 @@ mod tests {
         add_block(&mut doc, "thick", vec![EntityType::Circle(circle)]);
         let insert = acadrust::entities::Insert::new("thick", Vector3::ZERO).with_scale(2.0, 1.0, 1.0);
         doc.add_entity(EntityType::Insert(insert)).unwrap();
-        assert!(matches!(layer_from_document(doc, 64), Err(Error::Unsupported(_))));
+        assert_eq!(layer_from_document(doc, 64).unwrap().1["CIRCLE"].count, 1);
     }
 
     #[test]
