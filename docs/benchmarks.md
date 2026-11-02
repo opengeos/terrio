@@ -52,16 +52,18 @@ They are machine-specific snapshots, not guarantees of performance on other data
 
 ## Output mismatch follow-up
 
-The [#253 investigation](benchmark-parity.md) records complete error measurements,
-metadata/schema fixes, native WebP corrections and explicit GDAL 3.13 COG/terrain
-profiles. [All eight affected cases were rerun](benchmark-253-rerun.md), including
-fresh timing samples and CPU tuning at budgets one and two. Six passed exact output
-validation in that rerun. Warp and counties have since been corrected, and a
-[recheck](benchmark-parity.md#final-validation-and-timed-reruns) on `afc7539a` passed
-exact validation on all eight cases, on glibc Linux. Background CPU activity exceeded the
-unchanged measurement limit on seven of them, so those have no speed ratio; the eighth, COG,
-was 1.54× slower than GDAL in that single run, at a selected CPU budget of two. The tables below
-retain their original samples.
+The [#253 investigation](benchmark-parity.md) records the underlying corrections.
+A [current release recheck](benchmark-253-current.md) at `328c3cc2` passes exact
+validation on all eight original public-fixture cases against GDAL 3.13.3.
+It includes fresh timing samples and independent tuning at CPU budgets one and
+two; all eight rows pass the unchanged background-load gate. Separate checks at
+one, two, four and twelve CPUs match both GDAL and each tool's single-thread
+outputs. Full-image diagnostics and raw commands/samples are retained with the report.
+
+The [earlier rerun](benchmark-253-rerun.md), its six-pass result, and the older
+tables below are historical snapshots. Their samples are preserved rather than
+combined with the current measurements. The five vendor-reported reproductions
+still lack their exact inputs and commands, so #253 remains open for that scope.
 
 ## Correctness gates
 
