@@ -653,7 +653,9 @@ same options as CLI/MCP `--oo`:
 WFS 1 services can cap an unpaged response; enable paging only if the server
 supports it. With paging disabled explicitly, the single response is limited to
 `WFS_PAGE_SIZE` returned features unless a feature limit is supplied. Skip is
-included in the requested count. Pages are retained in memory, with fallible
+included in the requested count. An advertised matching count larger than an
+unpaged read produces a warning when no explicit feature limit was requested.
+Pages are retained in memory, with fallible
 allocation checks. Each feature response is capped at 64 MiB and metadata at
 16 MiB, also respecting `TERRIO_JSON_MAX_SIZE`. These limits bound individual
 responses and estimated retained data, not total process memory. Service errors,
@@ -667,7 +669,9 @@ It has no WebAssembly network interface: fetch a GetFeature response and open it
 bytes as GML or GeoJSON there. An extensionless HTTP GetFeature URL returning
 GeoJSON or GML also opens directly, using the detected response format; it reads
 that response rather than discovering or paging the service. Query strings are
-preserved for requests and redacted in dataset names and diagnostics.
+preserved for requests and omitted from dataset names. HTTP diagnostics mask the
+credential parameter names recognized by the common HTTP layer; arbitrary vendor
+query parameters can still appear in transport errors.
 
 The protocol references are [OGC WFS 2.0](https://docs.ogc.org/is/09-025r2/09-025r2.html)
 and [GDAL's WFS driver](https://gdal.org/en/stable/drivers/vector/wfs.html).

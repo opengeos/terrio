@@ -4,6 +4,8 @@
 //! Read-only OGC Web Feature Services, using GDAL 3.13.3 as the behavior reference.
 //! GetFeature responses use the native GML and GeoJSON readers.
 
+use crate::{Error, Result};
+
 /// The raw value of a case-insensitive OGC KVP parameter.
 #[cfg(remote)]
 pub(crate) fn parameter<'a>(url: &'a str, key: &str) -> Option<&'a str> {
@@ -21,8 +23,6 @@ pub(crate) fn is_feature_request(url: &str) -> bool {
     parameter(url, "request").is_some_and(|request| request.eq_ignore_ascii_case("GetFeature"))
         && parameter(url, "service").is_none_or(|service| service.eq_ignore_ascii_case("WFS"))
 }
-
-use crate::{Error, Result};
 
 /// Native WFS open options, used by Rust, CLI/MCP and Python.
 #[derive(Debug, Clone)]
@@ -64,11 +64,20 @@ impl WfsOpenOptions {
 
 /// A capabilities document, distinguished from GML feature data by its root.
 pub(crate) fn is_capabilities(bytes: &[u8]) -> bool {
+    has_root(bytes, &["WFS_Capabilities"])
+}
+
+#[cfg(remote)]
+pub(crate) fn is_exception(bytes: &[u8]) -> bool {
+    has_root(bytes, &["ExceptionReport", "ServiceExceptionReport", "ServiceException"])
+}
+
+fn has_root(bytes: &[u8], names: &[&str]) -> bool {
     let mut reader = quick_xml::Reader::from_reader(bytes);
     loop {
         match reader.read_event() {
             Ok(quick_xml::events::Event::Start(e) | quick_xml::events::Event::Empty(e)) => {
-                return e.local_name().as_ref() == "WFS_Capabilities";
+                return names.contains(&e.local_name().as_ref());
             }
             Ok(quick_xml::events::Event::Eof) | Err(_) => return false,
             _ => {}
@@ -98,4 +107,4 @@ mod client;
 #[cfg(remote)]
 pub use client::{ServiceInfo, ServiceLayerInfo};
 #[cfg(remote)]
-pub(crate) use client::{info, list_layers, open};
+pub(crate) use client::{feature_exception, info, list_layers, open};

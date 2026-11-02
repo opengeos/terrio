@@ -186,6 +186,9 @@ fn reserve_parse(bytes: usize, retained: usize) -> Result<()> {
     let peak = bytes.checked_mul(64).and_then(|n| n.checked_add(retained));
     crate::dataset::fallible::check_usable(peak, || "WFS: XML/page parsing exceeds usable memory".into()).map_err(limited)?;
     let needed = bytes.checked_mul(64).ok_or_else(|| limited("page parse estimate overflows"))?;
+    // Probe virtual-address-space availability fallibly before the XML parser's
+    // infallible allocations. The estimate includes the element tree and decoded strings;
+    // physical usable memory is checked above. This is a preflight, not a retained buffer.
     let mut probe = Vec::<u8>::new();
     probe.try_reserve_exact(needed).map_err(|_| limited(format!("cannot reserve estimated page parsing storage for {bytes} bytes")))?;
     Ok(())
@@ -323,6 +326,10 @@ pub(crate) fn list_layers(source: &str) -> Result<Vec<String>> {
     Ok(Service::load(source)?.types.into_iter().map(|t| t.name).collect())
 }
 
+pub(crate) fn feature_exception(bytes: &[u8]) -> Error {
+    parse_xml(bytes, 0).err().unwrap_or_else(|| invalid("the service refused GetFeature"))
+}
+
 struct Budget {
     used: usize,
     limit: usize,
@@ -341,6 +348,8 @@ impl Budget {
             .ok_or_else(|| limited(format!("dense field matrix exceeds WFS_MAX_VECTOR_BYTES={}", self.limit)))?;
         let peak = page_bytes.checked_mul(64).and_then(|n| n.checked_add(retained));
         crate::dataset::fallible::check_usable(peak, || "WFS: dense field matrix exceeds usable memory".into()).map_err(limited)?;
+        // GML allocates a dense row even for absent properties. Check that matrix
+        // fallibly before entering the decoder, then release the temporary reservation.
         let mut probe = Vec::<FieldValue>::new();
         probe.try_reserve_exact(cells).map_err(|_| limited("cannot reserve dense field matrix"))?;
         Ok(())
@@ -620,6 +629,13 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
         layer.features.append(&mut page.features);
         layer.extent = None;
         offset = offset.checked_add(returned).ok_or_else(|| limited("feature offset overflow"))?;
+        if !paging && options.max_features.is_none() && matched.is_some_and(|total| offset < total) {
+            crate::warnings::warn(format!(
+                "WFS: {} returned {offset} of {} matching features with paging disabled; enable WFS_PAGING=YES to read the rest",
+                feature.name,
+                matched.unwrap()
+            ));
+        }
         if !paging || options.max_features.is_some_and(|max| layer.features.len() >= max) || matched.is_some_and(|total| offset >= total) {
             break;
         }

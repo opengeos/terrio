@@ -366,3 +366,24 @@ fn schema_namespace_aliases_preserve_fields_and_empty_geometry_types() {
     }
     assert_eq!(ds.layers[1].features.len(), 0);
 }
+
+#[test]
+fn getfeature_urls_report_service_exception_text_without_fallback() {
+    let (source, requests) = serve("2.0.0", "exception");
+    let url = format!("{}&SERVICE=WFS&REQUEST=GetFeature", source.strip_prefix("WFS:").unwrap());
+    let error = terrio::open_vector(&url, &Default::default()).unwrap_err();
+    assert!(matches!(&error, terrio::Error::InvalidData(message) if message.contains("Layer unavailable")), "{error}");
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn incomplete_single_pages_warn_instead_of_silently_truncating() {
+    let (source, _) = serve("2.0.0", "normal");
+    let mut options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+    options.wfs.paging = Some(false);
+    options.wfs.page_size = 2;
+    terrio::warnings::take();
+    let ds = terrio::open_vector(&source, &options).unwrap();
+    assert_eq!(ds.layers[0].features.len(), 2);
+    assert!(terrio::warnings::take().iter().any(|w| w.contains("2 of 5") && w.contains("WFS_PAGING=YES")));
+}

@@ -2877,8 +2877,8 @@ def suite_wfs(ctx):
     """Native WFS catalogs and complete public feature reads versus GDAL."""
     suite = Suite("wfs", "WFS services and extensionless responses", "GDAL WFS/GML/GeoJSON",
                   "Public WFS 1.0/1.1/2.0 catalogs; selected complete layers and opaque GetFeature URLs. "
-                  "Exact fields, attributes, source IDs and CRS; every geometry vertex within 1e-8 CRS units. "
-                  "Unavailable reference services are not compared. Generated numeric FIDs are ignored.")
+                  "Exact field names, attributes, source IDs and CRS; field types checked, with direct GML integer inference differences reported. "
+                  "Every linear geometry vertex within 1e-8 CRS units. Unavailable reference services are not compared. Generated numeric FIDs are ignored.")
     if missing_modules("osgeo"):
         suite.skipped = "needs GDAL Python bindings"
         return suite

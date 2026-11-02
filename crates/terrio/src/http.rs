@@ -3922,4 +3922,34 @@ mod tests {
         let ranges = header_values(&seen, "range");
         assert_eq!(ranges.len(), seen.lock().unwrap().len(), "every request has a range: {ranges:?}");
     }
+
+    #[test]
+    fn extensionless_raster_metadata_reuses_the_vector_probe_range() {
+        let _serial = cache_test_guard();
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            let config = crate::RasterConfig { cols: 1024, rows: 1024, bands: 1, data_type: crate::DataType::U8, ..Default::default() };
+            let raster = crate::Raster::from_data_native(config, crate::raster::RasterData::U8(vec![42; 1024 * 1024])).unwrap();
+            let source = crate::RasterDataset::new(raster, false);
+            let options = crate::RasterWriteOptions { driver: Some(driver), compression: Some("NONE".into()), ..Default::default() };
+            let bytes = crate::memory::write_raster_bytes(&source, "source.tif", &options).unwrap();
+            assert!(bytes.len() > 1_000_000);
+            let (base, seen) = serve_recording(bytes, None);
+            let baseline = crate::LazyRaster::open(&format!("{base}/baseline")).unwrap();
+            assert_eq!(baseline.width(), 1024);
+            let before_requests = seen.lock().unwrap().len();
+            let before_bytes = asked_bytes(&seen);
+            let before = (before_requests, before_bytes);
+            let url = format!("{base}/info");
+            assert!(matches!(crate::info::info_path(&url, &Default::default()), Ok(crate::info::Info::Raster(_))));
+            let after_requests = seen.lock().unwrap().len() - before.0;
+            let after_bytes = asked_bytes(&seen) - before.1;
+            let after = (after_requests, after_bytes);
+            assert_eq!(after, before, "{driver:?}: metadata dispatch must reuse the first cached range");
+            assert!(after.1 <= FIRST_READ, "metadata must not fetch raster tiles");
+            eprintln!("{driver:?}: direct lazy metadata and extensionless info each use {} request(s), {} range bytes", after.0, after.1);
+            let count = seen.lock().unwrap().len();
+            crate::info::info_path(&url, &Default::default()).unwrap();
+            assert_eq!(seen.lock().unwrap().len(), count, "the repeated metadata read stays cached");
+        }
+    }
 }

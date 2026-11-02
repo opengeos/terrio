@@ -63,28 +63,40 @@ def rows(layer):
         geometry = feature.GetGeometryRef()
         result[key] = (
             values,
-            json.loads(geometry.ExportToJson()) if geometry else None,
+            json.loads(geometry.GetLinearGeometry().ExportToJson())
+            if geometry
+            else None,
         )
     return result
 
 
-def compare_layer(reference, actual):
+def snapshot(layer):
+    """Finish reference I/O before testing terrio, so reference failures stay separate."""
+    crs = layer.GetSpatialRef()
+    data = rows(layer)
+    return {
+        "crs": crs.Clone() if crs else None,
+        "rows": data,
+        "count": layer.GetFeatureCount(),
+        "fields": {f.GetName(): f.GetType() for f in layer.schema},
+    }
+
+
+def compare_layer(reference, actual, *, inferred_gml=False):
     """Check source fields, CRS, every attribute, geometry type and vertex."""
-    ref_crs, got_crs = reference.GetSpatialRef(), actual.GetSpatialRef()
+    ref_crs, got_crs = reference["crs"], actual.GetSpatialRef()
     assert (ref_crs is None) == (got_crs is None), "CRS presence differs"
     if ref_crs:
         ref_crs.SetAxisMappingStrategy(0)
         got_crs.SetAxisMappingStrategy(0)
         assert ref_crs.IsSame(got_crs), "CRS differs"
-    ref_rows, got_rows = rows(reference), rows(actual)
-    assert len(ref_rows) == reference.GetFeatureCount(), (
-        "reference source IDs are not unique"
-    )
+    ref_rows, got_rows = reference["rows"], rows(actual)
+    assert len(ref_rows) == reference["count"], "reference source IDs are not unique"
     assert len(got_rows) == actual.GetFeatureCount(), "output source IDs are not unique"
     assert ref_rows.keys() == got_rows.keys(), (
         f"source IDs/counts differ ({len(ref_rows)} vs {len(got_rows)})"
     )
-    ref_fields = {f.GetName(): f.GetType() for f in reference.schema}
+    ref_fields = reference["fields"]
     got_fields = {f.GetName(): f.GetType() for f in actual.schema}
     assert ref_fields.keys() == got_fields.keys(), (
         f"fields differ: {ref_fields.keys()} vs {got_fields.keys()}"
@@ -94,14 +106,25 @@ def compare_layer(reference, actual):
     def category(kind):
         return {0: "integer", 12: "integer", 2: "real"}.get(kind, kind)
 
-    assert {k: category(v) for k, v in ref_fields.items()} == {
-        k: category(v) for k, v in got_fields.items()
-    }, "field types differ"
+    differences = []
+    for key, kind in ref_fields.items():
+        ref_kind, got_kind = category(kind), category(got_fields[key])
+        if ref_kind != got_kind:
+            assert inferred_gml and ref_kind == "real" and got_kind == "integer", (
+                f"field type differs at {key}"
+            )
+            differences.append(key)
     for key, (attributes, geometry) in ref_rows.items():
         got_attributes, got_geometry = got_rows[key]
         assert attributes == got_attributes, f"attributes differ at {key}"
         assert close(geometry, got_geometry), f"geometry differs at {key}"
-    return f"{len(ref_rows)} features; fields/attributes/CRS exact, all vertices within 1e-8 CRS units; generated numeric FIDs ignored"
+    detail = f"{len(ref_rows)} features; field names/attributes/CRS exact, every linear geometry vertex within 1e-8 CRS units; generated numeric FIDs ignored"
+    if differences:
+        detail += (
+            "; known schema difference: direct GML without a companion XSD infers integer values for GDAL schema Real fields "
+            + ", ".join(differences)
+        )
+    return detail
 
 
 def main():
@@ -171,12 +194,9 @@ def main():
                 if not names:
                     continue
                 try:
-                    first = reference.GetLayer(0)
-                    # Force reference I/O before treating a failure in terrio as a difference.
-                    expected = rows(first)
-                    if first.GetFeatureCount() != len(expected):
+                    first = snapshot(reference.GetLayer(0))
+                    if first["count"] != len(first["rows"]):
                         raise RuntimeError("GDAL feature read was incomplete")
-                    first.ResetReading()
                 except Exception as error:
                     record(
                         name + " features",
@@ -213,6 +233,15 @@ def main():
                     reference = gdal.OpenEx(url, gdal.OF_VECTOR)
                     if reference is None:
                         raise RuntimeError("GDAL could not open response")
+                    first = snapshot(reference.GetLayer(0))
+                except Exception as error:
+                    record(
+                        "extensionless " + label,
+                        "not compared",
+                        f"reference response unavailable: {error}",
+                    )
+                    continue
+                try:
                     # Use an output file to compare complete attributes and geometries, not just counts.
                     output = str(Path(directory) / f"response-{label}.geojson")
                     command("convert", url, output)
@@ -220,7 +249,11 @@ def main():
                     record(
                         "extensionless " + label,
                         "within tolerance",
-                        compare_layer(reference.GetLayer(0), actual.GetLayer(0)),
+                        compare_layer(
+                            first,
+                            actual.GetLayer(0),
+                            inferred_gml=label == "GML",
+                        ),
                     )
                 except Exception as error:
                     record("extensionless " + label, "differs", str(error))

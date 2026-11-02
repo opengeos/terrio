@@ -821,7 +821,6 @@ fn named_drivers(trimmed: &str) -> Named {
         ("MEM:", "MEM"),
         ("ESRIJSON:", "ESRIJSON"),
         ("ESRIPBF:", "ESRIPBF"),
-        ("WFS:", "WFS"),
     ] {
         if upper.starts_with(prefix) {
             return Named::Prefix(driver);

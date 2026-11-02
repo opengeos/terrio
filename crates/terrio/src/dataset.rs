@@ -668,14 +668,17 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
     let answer = crate::http::with_reader(&crate::http::Remote::Url(url.to_string()), |reader| {
         let cap = crate::http::json_max_size();
         let mut bytes = Vec::new();
-        (&mut *reader).take(crate::http::FIRST_READ).read_to_end(&mut bytes)?;
+        let head_bytes = if wfs { crate::http::FIRST_READ } else { esrijson::HEAD_BYTES as u64 };
+        (&mut *reader).take(head_bytes).read_to_end(&mut bytes)?;
         // Asked for the protocol buffer, a service answers a query it refuses with nothing, or with
         // its error in JSON, and one for a count, ids or an extent with that answer, which the reader
         // refuses by name: all of them this driver's to report.
         let pbf = featureservice::asks_for_pbf(url);
         let refused = bytes.is_empty() && featureservice::is_query_path(url);
         recognized = recognized.or_else(|| {
-            if pbf && (refused || esrijson::is_esrijson(&bytes) || esripbf::is_query_answer(&bytes)) {
+            if wfs && crate::drivers::vector::wfs::is_exception(&bytes) {
+                Some(VectorDriver::WFS)
+            } else if pbf && (refused || esrijson::is_esrijson(&bytes) || esripbf::is_query_answer(&bytes)) {
                 Some(VectorDriver::ESRIPBF)
             } else if esrijson::is_esrijson(&bytes) {
                 Some(VectorDriver::ESRIJSON)
@@ -715,6 +718,7 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
         (Ok(Some(bytes)), Some(driver @ (VectorDriver::GeoJSON | VectorDriver::GML))) => {
             Some(read_vector_answer(url, bytes, driver, options))
         }
+        (Ok(Some(bytes)), Some(VectorDriver::WFS)) => Some(Err(crate::drivers::vector::wfs::feature_exception(&bytes))),
         (Ok(Some(bytes)), Some(driver)) => Some(read_feature_service(url, &bytes, driver, options)),
         (Err(e), _) if e.is_resource_refusal() => Some(Err(e)),
         (Err(e), Some(_)) => Some(Err(e)),
