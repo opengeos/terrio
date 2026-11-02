@@ -651,7 +651,7 @@ configurations and 2,500 forward samples, both sides of the horizon, inverse
 domain boundaries, metres/kilometres/US survey feet, offsets and non-default
 origins/tilt/azimuth. Component allowances are 1 mm projected and 1e-8 degrees
 inverse, with longitude weighted by cos(latitude) at the poles. Other projection
-families in #272 remain tracked there.
+families from #272 are documented below.
 
 ## Interrupted Goode homolosine
 
@@ -799,3 +799,5 @@ WKT2 `Hotine Oblique Mercator Two Point Natural Origin` are read, and terrio
 writes the former, as GDAL does. The `method-omerc-2pt` fixture keeps its PROJ
 9.9.0 oracle; a GDAL 3.12.2 / PROJ 9.8.1 corpus covers 12 lines and 1,524
 samples (see Testing). Allowances are 1 mm projected and 1e-8 degrees inverse.
+The line poles are refused; their finite neighbours and geographic poles are checked
+against live GDAL. PROJJSON export of this non-EPSG method remains unsupported.

@@ -46,10 +46,16 @@ fn figures_lines_units_and_domains_match_frozen_proj() {
         let forward = Transformer::new(&source, &target).unwrap();
         let inverse = Transformer::new(&target, &source).unwrap();
         // The same CRS as GDAL writes it: WKT 2, WKT 1 and ESRI's WKT 1.
-        let encodings: Vec<Transformer> = ["wkt2", "wkt1", "wkt1_esri"]
-            .iter()
-            .map(|k| Transformer::new(&source, &SpatialRef::parse(case[k].as_str().unwrap()).unwrap()).unwrap())
-            .collect();
+        let written = target.to_wkt().unwrap();
+        assert!(target.to_projjson().is_err(), "two-point PROJJSON must not become an azimuth method");
+        let encodings: Vec<(Transformer, Transformer)> =
+            [case["wkt2"].as_str().unwrap(), case["wkt1"].as_str().unwrap(), case["wkt1_esri"].as_str().unwrap(), &written]
+                .iter()
+                .map(|text| {
+                    let encoded = SpatialRef::parse(text).unwrap();
+                    (Transformer::new(&source, &encoded).unwrap(), Transformer::new(&encoded, &source).unwrap())
+                })
+                .collect();
         let factor = case["metres_per_unit"].as_f64().unwrap();
         for sample in case["samples"].as_array().unwrap() {
             let point = (sample[0].as_f64().unwrap(), sample[1].as_f64().unwrap());
@@ -62,10 +68,17 @@ fn figures_lines_units_and_domains_match_frozen_proj() {
             let expected = (sample[2][0].as_f64().unwrap(), sample[2][1].as_f64().unwrap());
             let error = (actual.0 - expected.0).abs().max((actual.1 - expected.1).abs()) * factor;
             assert!(error <= 0.001, "{name} {point:?}: forward error {error} m");
-            for (encoding, t) in ["WKT2", "WKT1", "ESRI WKT1"].iter().zip(&encodings) {
+            for (encoding, (t, reverse)) in ["WKT2", "WKT1", "ESRI WKT1", "written WKT1"].iter().zip(&encodings) {
                 let got = t.transform(point.0, point.1).unwrap();
                 let error = (got.0 - expected.0).abs().max((got.1 - expected.1).abs()) * factor;
                 assert!(error <= 0.001, "{name} {encoding} {point:?}: forward error {error} m");
+                let back = reverse.transform(expected.0, expected.1);
+                if sample[3].is_null() {
+                    assert!(back.is_err(), "{name} {encoding}: inverse must refuse {expected:?}");
+                } else {
+                    let back = back.unwrap_or_else(|e| panic!("{name} {encoding} inverse {point:?}: {e}"));
+                    assert!(angular_error(back, &sample[3]) <= 1e-8, "{name} {encoding}: inverse {point:?}");
+                }
             }
             let back = inverse.transform(expected.0, expected.1);
             if sample[3].is_null() {
@@ -106,5 +119,34 @@ fn two_point_oblique_mercator_rejects_invalid_parameters() {
         "+proj=omerc +alpha=bad +lat_1=40 +lon_1=0 +lat_2=45 +lon_2=10",
     ] {
         assert!(SpatialRef::parse(definition).is_err(), "{definition}");
+    }
+}
+
+/// Singularities and their finite neighbours, checked with GDAL 3.13.3 / PROJ 9.9.0.
+#[test]
+fn line_poles_are_refused_and_both_sides_remain_finite() {
+    let source = SpatialRef::parse("+proj=longlat +R=6371000").unwrap();
+    let target = SpatialRef::parse("+proj=omerc +lat_1=10 +lon_1=20 +lat_2=40 +lon_2=20 +R=6371000").unwrap();
+    let forward = Transformer::new(&source, &target).unwrap();
+    let inverse = Transformer::new(&target, &source).unwrap();
+    for lon in [-70.0, 110.0] {
+        assert!(forward.transform(lon, 0.0).is_err(), "line pole {lon}");
+    }
+    for (lon, x, y) in [
+        (109.9, 44877062.691809826, 0.0),
+        (110.1, 44877062.691809826, 20015086.79602057),
+        (-69.9, -44877062.691809826, 0.0),
+        (-70.1, -44877062.691809826, 20015086.79602057),
+    ] {
+        let actual = forward.transform(lon, 0.0).unwrap();
+        assert!((actual.0 - x).abs() <= 0.001 && (actual.1 - y).abs() <= 0.001);
+        let back = inverse.transform(actual.0, actual.1).unwrap();
+        assert!((back.0 - lon).abs() <= 1e-8 && back.1.abs() <= 1e-8);
+    }
+    // Geographic poles are finite; they are different points from the line's singularities.
+    for lat in [-90.0, 90.0] {
+        let actual = forward.transform(20.0, lat).unwrap();
+        assert!(actual.0.abs() <= 0.001);
+        assert!((actual.1 - lat.signum() * 10007543.398010286).abs() <= 0.001);
     }
 }

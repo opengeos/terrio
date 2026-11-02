@@ -2126,7 +2126,13 @@ Rust checks the corpus in every encoding, terrio's own WKT1, the fixture and the
 refusals; Python and Node/WASM check every sample and the refusals; CLI/MCP check
 the fixture and a refusal. The live `omerc-two-point` conformance suite compares
 the PROJ string and the three WKT encodings with GDAL, and the refusals. A forward
-point fails only at the two poles of the line, which no sample hits.
+point fails at the two poles of the line. An additional Rust regression and six
+live cases check those singularities, their finite neighbours, geographic poles,
+ignored `lon_0`/`no_off` and `no_rot`, on spherical and WGS 84 figures.
+A local GDAL 3.13.3 / PROJ 9.9.0 run matched all 24 live comparisons: 20 exact
+and four within tolerance. Maximum projected component error was below 1.37e-8 m;
+maximum inverse error was zero for the sampled coordinates. The frozen references
+retain their original oracle versions.
 
 ```sh
 cargo test -p terrio-crs --test omerc_two_point

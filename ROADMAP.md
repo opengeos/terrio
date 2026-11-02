@@ -662,7 +662,10 @@ WebAssembly (the `terrio-js` npm package):
       vertical, compound, bound and IAU planetary CRSs, refusing what it would describe wrongly:
       Rust, CLI and MCP (`terrio crs --projjson`), Python (`CRS.to_projjson()`) and JavaScript
       (`crsToProjjson`), compared with live PROJ/GDAL by `scripts/conformance.py`.
-- IAU_2015 CRSs are done (#271); additional projections remain in #272.
+- IAU_2015 CRSs are done (#271). Additional projection coverage (#272) includes near-sided and
+  tilted perspective, projected `ob_tran`, interrupted Goode homolosine, quadrilateralized
+  spherical cube, HEALPix/rHEALPix, ISEA and two-point oblique Mercator. See the CRS documentation
+  for the supported parameters, numerical allowances and the PROJ-version-specific ISEA scope.
 
 ## ndarray interoperability (#298)
 
