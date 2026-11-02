@@ -729,7 +729,6 @@ impl Client {
             }
             match status {
                 200 | 206 | 416 => return Ok(response),
-                400..=599 if self.service_errors => return Ok(response),
                 404 if self.missing_ok => return Ok(response),
                 // S3 (and GCS) answer anonymous requests for missing keys with 403; a signed
                 // request's 403 is a denied one (expired or insufficient credentials).
@@ -741,6 +740,7 @@ impl Client {
                     retry_warning(status, &self.url, self.options.retry_delay, attempt);
                     self.backoff(&mut attempt)
                 }
+                400..=599 if self.service_errors => return Ok(response),
                 _ => {
                     record_discarded(&self.url, &self.stats_name(), response);
                     let hint = match (&self.s3, status) {

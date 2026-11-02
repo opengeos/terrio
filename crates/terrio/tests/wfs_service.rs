@@ -177,6 +177,12 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                     xsd = xsd.replace("</xs:schema>", r#"<xs:simpleType name="int"><xs:restriction base="xs:string"/></xs:simpleType><xs:simpleType name="Code"><xs:restriction base="t:int"><xs:whiteSpace value="collapse"/></xs:restriction></xs:simpleType></xs:schema>"#)
                         .replace(r#"name="rank" type="xs:int""#, r#"name="rank" type="t:Code""#);
                 }
+                if matches!(mode, "bad-boolean" | "boolean") {
+                    xsd = xsd.replace(r#"name="rank" type="xs:int""#, r#"name="rank" type="xs:boolean""#);
+                }
+                if mode == "bad-float" {
+                    xsd = xsd.replace(r#"name="rank" type="xs:int""#, r#"name="rank" type="xs:double""#);
+                }
                 if mode == "gml-code" {
                     xsd = xsd.replace(r#"name="rank" type="xs:int""#, r#"name="rank" type="gml:CodeType""#);
                 }
@@ -209,7 +215,7 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                 }
                 xsd
             } else if operation.eq_ignore_ascii_case("GetFeature") {
-                if matches!(mode, "exception" | "exception-status") {
+                if matches!(mode, "exception" | "exception-status" | "retry-exception") {
                     r#"<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows"><ows:Exception><ows:ExceptionText>Layer unavailable</ows:ExceptionText></ows:Exception></ows:ExceptionReport>"#.into()
                 } else {
                     let offset = if matches!(mode, "repeat" | "repeat-no-ids") {
@@ -232,6 +238,20 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                         )
                     } else {
                         let mut data = page(if target.contains("empty") { "empty" } else { "roads" }, version, offset, count);
+                        if matches!(mode, "bad-integer" | "bad-float" | "bad-boolean") {
+                            data = data.replace("<t:rank>1</t:rank>", "<t:rank>abc</t:rank>");
+                        }
+                        if mode == "boolean" {
+                            for i in 1..=5 {
+                                data = data.replace(
+                                    &format!("<t:rank>{i}</t:rank>"),
+                                    if i % 2 == 1 { "<t:rank>true</t:rank>" } else { "<t:rank>0</t:rank>" },
+                                );
+                            }
+                        }
+                        if mode == "legacy-srs" {
+                            data = data.replace("EPSG:4326", "http://www.opengis.net/gml/srs/epsg.xml#4326");
+                        }
                         if matches!(mode, "named-scalar" | "gml-code") {
                             data = data.replace("<t:rank>1</t:rank>", "<t:rank>  007  </t:rank>");
                         }
@@ -341,8 +361,17 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
             } else {
                 "unknown operation".into()
             };
-            let status =
-                if mode == "exception-status" && operation.eq_ignore_ascii_case("GetFeature") { "400 Bad Request" } else { "200 OK" };
+            let status = if mode == "retry-exception" && operation.eq_ignore_ascii_case("GetFeature") {
+                if record.lock().unwrap().iter().filter(|request| request.contains("GetFeature")).count() == 1 {
+                    "503 Service Unavailable"
+                } else {
+                    "400 Bad Request"
+                }
+            } else if mode == "exception-status" && operation.eq_ignore_ascii_case("GetFeature") {
+                "400 Bad Request"
+            } else {
+                "200 OK"
+            };
             let header = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
             let _ = stream.write_all(header.as_bytes());
             let _ = stream.write_all(body.as_bytes());
@@ -771,6 +800,51 @@ fn unprefixed_feature_names_honor_application_default_namespace() {
             assert_eq!(requests.lock().unwrap().len(), 2, "refuse the schema mismatch before fetching features");
         } else {
             assert_eq!(result.unwrap().layers[0].features.len(), 5, "{mode}");
+        }
+    }
+}
+
+#[test]
+fn legacy_gml_crs_identifiers_are_valid_in_service_responses() {
+    let (source, _) = serve("1.0.0", "legacy-srs");
+    let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+    let dataset = terrio::open_vector(&source, &options).unwrap();
+    assert_eq!(dataset.layers[0].crs_epsg(), Some(4326));
+    assert_eq!(dataset.layers[0].features[0].geometry, Some(Geometry::point(10., 50.)));
+}
+
+#[test]
+fn transient_service_errors_retry_before_returning_exception() {
+    for direct in [false, true] {
+        let (source, requests) = serve("2.0.0", "retry-exception");
+        let source = if direct { format!("{}&SERVICE=WFS&REQUEST=GetFeature", source.strip_prefix("WFS:").unwrap()) } else { source };
+        let options = VectorOpenOptions { layers: if direct { vec![] } else { vec!["roads".into()] }, ..Default::default() };
+        terrio::config::push_scope(std::collections::HashMap::from([
+            ("TERRIO_HTTP_MAX_RETRY".into(), Some("1".into())),
+            ("TERRIO_HTTP_RETRY_DELAY".into(), Some("0".into())),
+        ]));
+        let result = terrio::open_vector(&source, &options);
+        terrio::config::pop_scope();
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("Layer unavailable"), "{error}");
+        assert_eq!(requests.lock().unwrap().len(), if direct { 2 } else { 4 });
+    }
+}
+
+#[test]
+fn declared_numeric_and_boolean_fields_refuse_malformed_values() {
+    for mode in ["bad-integer", "bad-float", "bad-boolean", "boolean"] {
+        let (source, _) = serve("2.0.0", mode);
+        let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+        let result = terrio::open_vector(&source, &options);
+        if mode == "boolean" {
+            let dataset = result.unwrap();
+            assert_eq!(dataset.layers[0].features[0].attributes[2], FieldValue::Boolean(true));
+            assert_eq!(dataset.layers[0].features[1].attributes[2], FieldValue::Boolean(false));
+        } else {
+            let error = result.unwrap_err();
+            assert!(matches!(error, terrio::Error::InvalidData(_)), "{mode}: {error}");
+            assert!(error.to_string().contains("malformed value for field rank"), "{mode}: {error}");
         }
     }
 }

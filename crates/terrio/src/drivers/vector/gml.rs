@@ -155,6 +155,9 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
             }
             let mut raw = Raw { id: feature.id(), geometry: None, values: Vec::new() };
             for property in &feature.element.children {
+                if property.name == "gml_id" {
+                    return Err(Error::Unsupported("GML: application property gml_id conflicts with the source identifier".into()));
+                }
                 if let Some(model) = compiled {
                     match feature.property_kind(property, model)? {
                         PropertyKind::Metadata => continue,
@@ -194,9 +197,6 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
                 }
             }
             for name in names {
-                if name == "gml_id" {
-                    return Err(Error::Unsupported("GML: application property gml_id conflicts with the source identifier".into()));
-                }
                 let values = raws.iter().flat_map(|raw| raw.values.iter().filter(|(key, _)| *key == name).map(|(_, value)| *value));
                 fields.push((name.into(), Scalar::inferred(super::csv::infer_type(values))));
             }
@@ -209,7 +209,7 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
             .filter_map(|raw| raw.geometry)
             .find_map(srs_name_of)
             .or_else(|| root.child("boundedBy").and_then(|node| node.find("Envelope")).and_then(|node| node.attr("srsName")));
-        let srs = srs_name.and_then(|srs| SpatialRef::parse(srs).ok());
+        let srs = srs_name.and_then(|srs| parse_srs_name(srs).ok());
         let swap = srs_name.is_some_and(lat_lon_order) && srs.as_ref().is_some_and(SpatialRef::is_geographic);
         if let Some(srs) = &srs {
             srs.apply_to_layer(&mut layer);
@@ -221,7 +221,15 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
                 if let Some(index) = layer.schema.field_index(key) {
                     let scalar = fields[index - 1].1;
                     let text = scalar.normalize(text);
-                    attributes[index] = if text.is_empty() { FieldValue::Null } else { value(&text, scalar.field_type) };
+                    let parsed = if text.is_empty() { FieldValue::Null } else { value(&text, scalar.field_type) };
+                    if compiled.is_some()
+                        && !text.is_empty()
+                        && ((matches!(scalar.field_type, FieldType::Integer | FieldType::Float) && matches!(&parsed, FieldValue::Text(_)))
+                            || scalar.field_type == FieldType::Boolean && !matches!(text.as_ref(), "true" | "false" | "1" | "0"))
+                    {
+                        return Err(Error::InvalidData(format!("WFS: malformed value for field {key}")));
+                    }
+                    attributes[index] = parsed;
                 }
             }
             let geometry = raw
@@ -268,6 +276,21 @@ pub(crate) fn collection_srs_name<'a>(root: &'a Element, model: &ApplicationSche
 
 fn srs_name_of(g: &Element) -> Option<&str> {
     g.attr("srsName").or_else(|| g.children.iter().find_map(srs_name_of))
+}
+
+/// GML 2 also uses the pre-URN OGC EPSG dictionary URL (GDAL 3.13.3).
+/// This identifier keeps traditional XY order and does not fetch the dictionary.
+pub(crate) fn parse_srs_name(name: &str) -> Result<SpatialRef> {
+    let name = name.trim();
+    for prefix in ["http://www.opengis.net/gml/srs/epsg.xml#", "https://www.opengis.net/gml/srs/epsg.xml#"] {
+        if let Some(code) = name.strip_prefix(prefix)
+            && !code.is_empty()
+            && code.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return SpatialRef::parse(&format!("EPSG:{code}"));
+        }
+    }
+    SpatialRef::parse(name)
 }
 
 /// Whether a srsName form declares the authority's axis order (latitude first for EPSG geographic
@@ -667,6 +690,8 @@ mod tests {
     fn application_source_identifier_collision_is_refused() {
         let root = xml::parse(r#"<FeatureCollection><featureMember><road id="r1"><gml_id>app</gml_id><geom><Point><pos>1 2</pos></Point></geom></road></featureMember></FeatureCollection>"#).unwrap();
         assert!(matches!(parse(&root, None), Err(Error::Unsupported(_))));
+        let schema = xml::parse(r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:element name="road"><xs:complexType><xs:sequence><xs:element name="rank" type="xs:int"/></xs:sequence></xs:complexType></xs:element></xs:schema>"#).unwrap();
+        assert!(matches!(parse(&root, Some(&schema)), Err(Error::Unsupported(_))));
     }
 
     #[test]
@@ -701,6 +726,19 @@ mod tests {
         duplicate.children.push(schema.children[0].clone());
         let layers = parse(&root, Some(&duplicate)).unwrap();
         assert!(layers[0].schema.field_index("extra").is_some(), "bad companion schemas fall back to inference");
+    }
+
+    #[test]
+    fn legacy_epsg_dictionary_identifiers_keep_traditional_xy() {
+        let root = xml::parse(r#"<FeatureCollection><featureMember><road><geom><Point srsName="http://www.opengis.net/gml/srs/epsg.xml#4326"><coordinates>10,50</coordinates></Point></geom></road></featureMember></FeatureCollection>"#).unwrap();
+        let layers = parse(&root, None).unwrap();
+        assert_eq!(layers[0].crs_epsg(), Some(4326));
+        assert_eq!(layers[0].features[0].geometry, Some(Geometry::point(10., 50.)));
+        assert_eq!(
+            parse_srs_name("https://www.opengis.net/gml/srs/epsg.xml#25832").unwrap().authority_code().as_deref(),
+            Some("EPSG:25832")
+        );
+        assert!(parse_srs_name("http://www.opengis.net/gml/srs/epsg.xml#bad").is_err());
     }
 
     #[test]

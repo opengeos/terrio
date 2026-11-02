@@ -344,7 +344,7 @@ impl Service {
                 .types
                 .iter()
                 .map(|t| {
-                    let crs = t.srs.as_deref().and_then(|s| SpatialRef::parse(s).ok());
+                    let crs = t.srs.as_deref().and_then(|s| gml::parse_srs_name(s).ok());
                     let crs = crs.as_ref().map(CrsSummary::new).unwrap_or(CrsSummary { epsg: None, name: None, wkt: None, esri: None });
                     ServiceLayerInfo {
                         name: t.name.clone(),
@@ -472,7 +472,7 @@ fn empty_layer(name: &str, schema: &gml::ApplicationSchema<'_>, srs: Option<&str
         layer.add_field(FieldDef::new(name, scalar.field_type));
     }
     layer.geom_type = schema.geometry_hint();
-    if let Some(srs) = srs.and_then(|srs| SpatialRef::parse(srs).ok()) {
+    if let Some(srs) = srs.and_then(|srs| gml::parse_srs_name(srs).ok()) {
         srs.apply_to_layer(&mut layer);
     }
     layer
@@ -491,7 +491,7 @@ fn validate_simple(
         if let Some(srs) = node.attr("srsName")
             && Some(srs) != page_srs
         {
-            let actual = SpatialRef::parse(srs).map_err(|_| invalid("a geometry declares an unrecognized CRS"))?;
+            let actual = gml::parse_srs_name(srs).map_err(|_| invalid("a geometry declares an unrecognized CRS"))?;
             if expected_crs.is_some_and(|expected| !expected.same_as(&actual)) {
                 return Err(invalid("a geometry CRS differs from the requested layer CRS"));
             }
@@ -569,7 +569,7 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
     if feature.namespace.as_deref().is_some_and(|ns| schema.attr("targetNamespace") != Some(ns)) {
         return Err(invalid("DescribeFeatureType returned a different feature namespace"));
     }
-    let mut expected_crs = feature.srs.as_deref().and_then(|s| SpatialRef::parse(s).ok());
+    let mut expected_crs = feature.srs.as_deref().and_then(|s| gml::parse_srs_name(s).ok());
     let model = gml::ApplicationSchema::compile(&schema, feature.name.rsplit(':').next().unwrap_or(&feature.name))?;
     let mut layer = empty_layer(&feature.name, &model, feature.srs.as_deref());
     budget.charge(layer_bytes(&layer))?;
@@ -602,7 +602,7 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
         if let Some((xmin, ymin, xmax, ymax)) = options.spatial_filter {
             let swap = !service.version.starts_with("1.0")
                 && feature.srs.as_deref().is_some_and(gml::lat_lon_order)
-                && feature.srs.as_deref().and_then(|s| SpatialRef::parse(s).ok()).is_some_and(|s| s.is_geographic());
+                && feature.srs.as_deref().and_then(|s| gml::parse_srs_name(s).ok()).is_some_and(|s| s.is_geographic());
             let mut bbox = if swap { format!("{ymin},{xmin},{ymax},{xmax}") } else { format!("{xmin},{ymin},{xmax},{ymax}") };
             if !service.version.starts_with("1.0")
                 && let Some(srs) = &feature.srs
@@ -623,7 +623,7 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
             }
             let page_srs = gml::collection_srs_name(&root, &model)?;
             if let Some(srs) = page_srs {
-                let actual = SpatialRef::parse(srs).map_err(|_| invalid("a geometry declares an unrecognized CRS"))?;
+                let actual = gml::parse_srs_name(srs).map_err(|_| invalid("a geometry declares an unrecognized CRS"))?;
                 if expected_crs.as_ref().is_some_and(|expected| !expected.same_as(&actual)) {
                     return Err(invalid("a geometry CRS differs from the requested layer CRS"));
                 }

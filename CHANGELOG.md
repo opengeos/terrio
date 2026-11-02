@@ -9,7 +9,8 @@
 - Native HTTP builds read WFS 1.0/1.1/2.0 services by `WFS:` endpoint or
   GetCapabilities URL, list layers without downloading features, and read selected
   simple-feature layers with schemas, CRS and configurable paging (#495).
-
+- GML source IDs resolve namespace aliases. Unrelated prefixed `id`/`fid`
+  attributes are no longer treated as source IDs.
 - The `ESRIPBF` driver reads the protocol buffer of ArcGIS feature-service queries (`f=pbf`), which
   GDAL has no driver for: files recognized by content, and query URLs read page by page as
   `ESRIJSON` reads them, with the `ESRIPBF:` prefix (#475).

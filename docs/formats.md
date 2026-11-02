@@ -670,6 +670,8 @@ CRS and authority axis order; CRS84 keeps longitude first.
 
 This driver reads inline GML 2/3/3.2 simple features. Local scalar restrictions
 and feature-type extensions are resolved with a maximum derivation depth of 256.
+Schemas supply field types and whitespace rules; other restriction facets are
+not validated. Malformed numeric and boolean field values are errors.
 Property namespaces follow schema qualification and element references. Standard
 GML base metadata (`name`, `description`, `identifier`, `metaDataProperty` and
 `boundedBy`) is omitted; `gml:id` is retained as `gml_id`, and application fields
