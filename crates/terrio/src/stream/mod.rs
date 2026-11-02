@@ -1894,7 +1894,7 @@ fn convert_whole(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     let ds = crate::open_vector(src, &options.open)?;
     // A KML or KMZ output holds the shared styles; elsewhere each feature gets its style.
     let output = options.write.driver.or_else(|| crate::formats::VectorDriver::for_extension(dst));
-    if matches!(output, Some(crate::formats::VectorDriver::KML | crate::formats::VectorDriver::KMZ)) {
+    if output.is_some_and(|d| d.holds_style_table()) {
         let write = crate::VectorWriteOptions { style_table: ds.style_table, ..options.write.clone() };
         let layers = crate::ops::vector_filter::translate_owned(ds.layers, &options.translate)?;
         return crate::write_vector(&layers, dst, &write);

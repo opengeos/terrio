@@ -180,16 +180,16 @@ impl<'a> Styles<'a> {
     /// archive already defines differently keeps that definition in the table; the placemarks of
     /// this document that use it get the style itself.
     pub fn add_to(&mut self, table: &mut Vec<(String, String)>) {
+        // Rebuilt per document: an archive has at most a few hundred of those that matter.
         let known: HashMap<String, String> = table.iter().cloned().collect();
         for (id, style) in self.table() {
-            match known.get(&id) {
-                Some(definition) if *definition != style => self.shadowed.insert(id),
-                Some(_) => false,
-                None => {
-                    table.push((id, style));
-                    true
+            if let Some(definition) = known.get(&id) {
+                if *definition != style {
+                    self.shadowed.insert(id);
                 }
-            };
+            } else {
+                table.push((id, style));
+            }
         }
     }
 
@@ -228,6 +228,10 @@ impl<'a> Styles<'a> {
             // In a KMZ, `#id` stays inside its document: `@id` could name another document's style
             // in the shared table, so one this document does not define stays as written.
             if stack.is_empty() {
+                // Defined, but leading nowhere (an empty StyleMap, a cycle): no table entry to name.
+                if self.definitions.contains_key(id) {
+                    return None;
+                }
                 return Some(if self.member.is_empty() { format!("@{id}") } else { url.to_string() });
             }
             // A style with nothing OGR can hold (a BalloonStyle alone) has no table entry to name.
@@ -599,6 +603,8 @@ mod tests {
             <Placemark/>
             <Style id="balloon"><BalloonStyle><text>t</text></BalloonStyle></Style>
             <Placemark><styleUrl>#balloon</styleUrl></Placemark>
+            <StyleMap id="empty"><Pair><key>normal</key></Pair></StyleMap>
+            <Placemark><styleUrl>#empty</styleUrl></Placemark>
             </Document></kml>"##,
         );
         let get = |i: usize| got[i].as_deref();
@@ -615,6 +621,7 @@ mod tests {
         assert_eq!(get(8), None);
         // Nothing an OGR style holds, so no table entry, and no reference to one.
         assert_eq!(get(9), None);
+        assert_eq!(get(10), None);
     }
 
     #[test]

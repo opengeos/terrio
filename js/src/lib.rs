@@ -893,7 +893,7 @@ impl Dataset {
                 options.kmz.resources = resources;
                 // A KML or KMZ output holds the shared styles; elsewhere each feature gets its style.
                 let output = options.driver.or_else(|| VectorDriver::for_extension(filename));
-                let out = if matches!(output, Some(VectorDriver::KML | VectorDriver::KMZ)) {
+                let out = if output.is_some_and(|d| d.holds_style_table()) {
                     options.style_table = self.style_table.as_ref().clone();
                     out
                 } else {

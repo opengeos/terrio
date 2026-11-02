@@ -626,7 +626,6 @@ fn referenced_styles(l: &Layer) -> std::collections::HashSet<String> {
     for f in &l.features {
         if let Some(FieldValue::Text(t)) = f.attributes.get(i)
             && let Some(id) = t.strip_prefix('@')
-            && !out.contains(id)
         {
             out.insert(id.to_string());
         }

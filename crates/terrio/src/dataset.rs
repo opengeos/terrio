@@ -1584,7 +1584,7 @@ pub(crate) fn ensure_vector_options_apply(options: &VectorWriteOptions, driver: 
     if options.preserve_declared_geometry_type && driver != Some(VectorDriver::GPKG) {
         return Err(Error::InvalidArgument("preserve_declared_geometry_type applies to GPKG output".into()));
     }
-    if !options.style_table.is_empty() && !matches!(driver, Some(VectorDriver::KML | VectorDriver::KMZ)) {
+    if !options.style_table.is_empty() && !driver.is_some_and(|d| d.holds_style_table()) {
         return Err(Error::InvalidArgument("style_table applies to KML and KMZ output".into()));
     }
     if options.kmz.resources.is_empty() || driver == Some(VectorDriver::KMZ) {

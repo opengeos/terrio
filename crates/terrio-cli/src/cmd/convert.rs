@@ -384,7 +384,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
         Dataset::Vector(v) => {
             // A KML or KMZ output holds the shared styles; elsewhere each feature gets its style.
             let kml_output = a.format.as_deref().map_or_else(|| VectorDriver::for_extension(&a.output), VectorDriver::from_name);
-            let kml_output = matches!(kml_output, Some(VectorDriver::KML | VectorDriver::KMZ));
+            let kml_output = kml_output.is_some_and(|d| d.holds_style_table());
             let style_table = if kml_output { v.style_table.clone() } else { Vec::new() };
             let source = if kml_output { v.layers } else { v.into_resolved_layers() };
             let layers = terrio::ops::vector_filter::translate_owned(source, &a.vector.to_options(t_srs)?)?;

@@ -25,27 +25,40 @@ impl From<Layer> for PyLayer {
 }
 
 impl PyLayer {
-    /// A copy of the layer with each `@id` style reference replaced by its definition.
-    pub(crate) fn resolved(&self) -> Layer {
-        resolve_styles(vec![self.inner.clone()], &self.style_table).pop().unwrap_or_else(|| self.inner.clone())
+    /// The layer with each `@id` style reference replaced by its definition: borrowed when the
+    /// dataset it came from has no style table.
+    pub(crate) fn resolved(&self) -> std::borrow::Cow<'_, Layer> {
+        if self.style_table.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.inner);
+        }
+        let mut layers = resolve_styles(vec![self.inner.clone()], &self.style_table);
+        layers.pop().map_or(std::borrow::Cow::Borrowed(&self.inner), std::borrow::Cow::Owned)
     }
 
-    /// The options and layer to write: a KML or KMZ output takes the style table (the one given,
-    /// else the layer's own), and other outputs get each feature's style.
-    fn prepare_write(&self, options: &mut terrio::VectorWriteOptions, given: Option<Vec<(String, String)>>, name: &str) -> Layer {
+    /// The layer to write: a KML or KMZ output takes the style table (the one given, else the
+    /// layer's own), and other outputs get each feature's style. A table given for other outputs is
+    /// refused by the writer.
+    fn prepare_write(
+        &self,
+        options: &mut terrio::VectorWriteOptions,
+        given: Option<Vec<(String, String)>>,
+        name: &str,
+    ) -> std::borrow::Cow<'_, Layer> {
         let output = options.driver.or_else(|| terrio::formats::VectorDriver::for_extension(name));
-        let kml = matches!(output, Some(terrio::formats::VectorDriver::KML | terrio::formats::VectorDriver::KMZ));
-        match given {
-            // Refused by the writer unless the output is KML or KMZ.
-            Some(table) => {
+        let kml = output.is_some_and(|d| d.holds_style_table());
+        match (given, kml) {
+            (Some(table), true) => {
                 options.style_table = table;
-                self.inner.clone()
+                std::borrow::Cow::Borrowed(&self.inner)
             }
-            None if kml => {
+            (None, true) => {
                 options.style_table = self.style_table.as_ref().clone();
-                self.inner.clone()
+                std::borrow::Cow::Borrowed(&self.inner)
             }
-            None => self.resolved(),
+            (given, false) => {
+                options.style_table = given.unwrap_or_default();
+                self.resolved()
+            }
         }
     }
 }
@@ -153,7 +166,7 @@ pub(crate) fn layer_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs:
 /// GeoJSON-like object.
 pub(crate) fn layers_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs: Option<&str>) -> PyResult<Vec<Layer>> {
     if let Ok(l) = obj.cast::<PyLayer>() {
-        return Ok(vec![l.borrow().resolved()]);
+        return Ok(vec![l.borrow().resolved().into_owned()]);
     }
     if let Ok(ds) = obj.cast::<PyVectorDataset>() {
         return Ok(ds.borrow().layer_copies(obj.py()));
@@ -161,7 +174,7 @@ pub(crate) fn layers_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs
     if obj.cast::<PyList>().is_ok() || obj.cast::<pyo3::types::PyTuple>().is_ok() {
         let items: Vec<Bound<'_, PyAny>> = obj.extract()?;
         if !items.is_empty() && items.iter().all(|i| i.cast::<PyLayer>().is_ok()) {
-            return items.iter().map(|i| Ok(i.cast::<PyLayer>()?.borrow().resolved())).collect();
+            return items.iter().map(|i| Ok(i.cast::<PyLayer>()?.borrow().resolved().into_owned())).collect();
         }
     }
     // Arrow data (a pyarrow Table, a Polars data frame...); GeoDataFrames keep going through
@@ -242,7 +255,7 @@ impl PyLayer {
     /// Returns:
     ///     dict: The FeatureCollection.
     fn to_geojson<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let text = wbvector::geojson::to_string(&self.resolved());
+        let text = wbvector::geojson::to_string(self.resolved().as_ref());
         py.import("json")?.call_method1("loads", (text,))
     }
 
@@ -442,7 +455,7 @@ impl PyLayer {
         options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layer = self.prepare_write(&mut options, style_table, path);
-        py.detach_result(|| terrio::write_vector(std::slice::from_ref(&layer), path, &options)).py()
+        py.detach_result(|| terrio::write_vector(std::slice::from_ref(layer.as_ref()), path, &options)).py()
     }
 
     /// Encodes the layer in a file format, in memory.
@@ -483,7 +496,8 @@ impl PyLayer {
         options.citygml_lod0_surface = crate::ops::parse_citygml_lod0_surface(citygml_lod0_surface)?;
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         let layer = self.prepare_write(&mut options, style_table, filename);
-        let bytes = py.detach_result(|| terrio::memory::write_vector_bytes(std::slice::from_ref(&layer), filename, &options)).py()?;
+        let bytes =
+            py.detach_result(|| terrio::memory::write_vector_bytes(std::slice::from_ref(layer.as_ref()), filename, &options)).py()?;
         Ok(PyBytes::new(py, &bytes))
     }
 }
@@ -575,7 +589,7 @@ impl PyVectorDataset {
         options.kmz.resources = kmz_resources.into_iter().flatten().map(|(path, bytes)| (path, bytes.to_vec())).collect();
         // A KML or KMZ output holds the shared styles; elsewhere each feature gets its style.
         let output = options.driver.or_else(|| terrio::formats::VectorDriver::for_extension(path));
-        let layers = if matches!(output, Some(terrio::formats::VectorDriver::KML | terrio::formats::VectorDriver::KMZ)) {
+        let layers = if output.is_some_and(|d| d.holds_style_table()) {
             options.style_table = self.style_table.as_ref().clone();
             self.raw_layer_copies(py)
         } else {

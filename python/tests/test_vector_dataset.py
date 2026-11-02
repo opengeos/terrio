@@ -258,6 +258,7 @@ def test_kml_style_table_is_read_and_written(tmp_path):
     other = dataset[0].to_bytes("out.kml", style_table=[("base", "PEN(c:#00FF00FF)")])
     assert b"<color>ff00ff00</color>" in other
     assert b"PEN(c:#FF0000FF" in dataset[0].to_bytes("out.geojson")
+    assert b"PEN(c:#FF0000FF" in dataset[0].to_bytes("out.geojson", style_table=[])
     with pytest.raises(terrio.InvalidArgumentError, match="style_table"):
         dataset[0].to_bytes("out.geojson", style_table=dataset.style_table)
 

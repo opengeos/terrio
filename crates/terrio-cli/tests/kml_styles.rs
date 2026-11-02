@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
+
 //! KML shared styles through `terrio convert`, on the real executable.
 
 use std::process::Command;

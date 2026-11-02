@@ -672,7 +672,7 @@ fn convert(
                     .ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown vector format '{}'", format.unwrap_or_default())))?;
                 // A KML or KMZ output holds the shared styles; elsewhere each feature gets its style.
                 let output = options.driver.or_else(|| VectorDriver::for_extension(dst));
-                let source = if matches!(output, Some(VectorDriver::KML | VectorDriver::KMZ)) {
+                let source = if output.is_some_and(|d| d.holds_style_table()) {
                     options.style_table = v.style_table;
                     v.layers
                 } else {
