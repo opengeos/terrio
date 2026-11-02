@@ -1160,7 +1160,7 @@ const STYLES: &str = "<numFmts count=\"6\">\n\
 <cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>\n";
 
 /// Whether XML 1.0 can hold a character.
-fn xml_legal(c: char) -> bool {
+pub(super) fn xml_legal(c: char) -> bool {
     (c >= ' ' && !matches!(c, '\u{FFFE}' | '\u{FFFF}')) || matches!(c, '\t' | '\n' | '\r')
 }
 

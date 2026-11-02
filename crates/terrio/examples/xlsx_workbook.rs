@@ -42,8 +42,8 @@ fn main() -> terrio::Result<()> {
     sheet.print_fit_to_width(1);
     sheet.print_area("A1:K8")?;
     sheet.print_title_rows(1, 4)?;
-    sheet.print_header("&CReport");
-    sheet.print_footer("&RPage &P");
+    sheet.print_header("&CReport")?;
+    sheet.print_footer("&RPage &P")?;
     workbook.add_sheet("Hidden")?.set_hidden(true);
     workbook.define_name("rates", "'LV Summary'!$B$5")?;
     workbook.save(&path)

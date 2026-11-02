@@ -24,7 +24,7 @@
 use super::datetime;
 use super::xlsx::{
     MAIN_NS, MAX_CELL_TEXT_UTF16, MAX_COLUMNS, MAX_ROWS, OD_RELS, PACKAGE, StringTable, XML_HEADER, column_letters, excel_serial_days,
-    wall_clock_millis, xml_text,
+    wall_clock_millis, xml_legal, xml_text,
 };
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
@@ -32,6 +32,16 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 
 const MAX_SHEET_NAME_UTF16: usize = 31;
+/// Excel's limits: on a formula, on a page header or footer, on the formats of a workbook, and on a
+/// link's address.
+const MAX_FORMULA_UTF16: usize = 8192;
+const MAX_HEADER_FOOTER_UTF16: usize = 255;
+const MAX_CELL_FORMATS: usize = 64_000;
+const MAX_URL_UTF16: usize = 2079;
+/// The most cells `merge_write` formats: each is stored.
+const MAX_MERGE_WRITE_CELLS: u64 = 1 << 20;
+/// The errors a cell can hold.
+const ERRORS: [&str; 7] = ["#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A"];
 
 fn invalid(message: String) -> Error {
     Error::InvalidArgument(format!("XLSX: {message}"))
@@ -246,9 +256,10 @@ impl Format {
         self.font_name = Some(name.into());
         self
     }
-    /// The font's size in points, to a tenth.
+    /// The font's size in points, to a tenth, from 1 to 409.
     pub fn font_size(mut self, size: f64) -> Self {
-        self.font_size_tenths = Some((size.clamp(1.0, 409.0) * 10.0).round() as u32);
+        // A size that is not a number leaves the default.
+        self.font_size_tenths = size.is_finite().then(|| (size.clamp(1.0, 409.0) * 10.0).round() as u32);
         self
     }
     /// Bold text.
@@ -468,8 +479,15 @@ impl Worksheet {
     /// Merges a range and writes a value to it. The format applies to every cell, so that borders
     /// and fills cover the range.
     pub fn merge_write(&mut self, range: &str, value: impl Into<CellValue>, format: &Format) -> Result<()> {
-        self.merge(range)?;
+        let value = value.into();
         let parsed = Range::parse(range)?;
+        // Before anything changes, so that a refusal leaves the sheet as it was.
+        check_value(&value, parsed.first_row, parsed.first_column)?;
+        let area = u64::from(parsed.last_row - parsed.first_row + 1) * u64::from(parsed.last_column - parsed.first_column + 1);
+        if area > MAX_MERGE_WRITE_CELLS {
+            return Err(invalid(format!("merge_write formats each cell of a range, and {range} has {area}: use merge")));
+        }
+        self.merge(range)?;
         for row in parsed.first_row..=parsed.last_row {
             for column in parsed.first_column..=parsed.last_column {
                 self.cells.insert((row, column), Cell { value: CellValue::Blank, format: format.clone() });
@@ -605,6 +623,9 @@ impl Worksheet {
     /// Links a cell to a URL.
     pub fn hyperlink(&mut self, cell: &str, url: &str) -> Result<()> {
         let cell = parse_cell(cell)?;
+        if url.is_empty() || url.encode_utf16().count() > MAX_URL_UTF16 || !url.chars().all(xml_legal) {
+            return Err(invalid(format!("a link's address needs 1 to {MAX_URL_UTF16} characters XML can hold")));
+        }
         self.hyperlinks.retain(|h| h.cell != cell);
         self.hyperlinks.push(Hyperlink { cell, url: url.to_string() });
         Ok(())
@@ -612,6 +633,9 @@ impl Worksheet {
     /// Attaches a comment to a cell.
     pub fn comment(&mut self, cell: &str, text: &str, author: &str) -> Result<()> {
         let cell = parse_cell(cell)?;
+        if !text.chars().chain(author.chars()).all(xml_legal) {
+            return Err(invalid("a comment holds characters XML cannot".into()));
+        }
         self.comments.retain(|c| c.cell != cell);
         self.comments.push(Comment { cell, text: text.to_string(), author: author.to_string() });
         Ok(())
@@ -656,13 +680,22 @@ impl Worksheet {
         Ok(())
     }
     /// The page header, in SpreadsheetML's codes such as `&CTitle`.
-    pub fn print_header(&mut self, text: &str) {
-        self.print.header = Some(text.to_string());
+    pub fn print_header(&mut self, text: &str) -> Result<()> {
+        self.print.header = Some(header_footer(text)?);
+        Ok(())
     }
     /// The page footer, in SpreadsheetML's codes such as `&RPage &P`.
-    pub fn print_footer(&mut self, text: &str) {
-        self.print.footer = Some(text.to_string());
+    pub fn print_footer(&mut self, text: &str) -> Result<()> {
+        self.print.footer = Some(header_footer(text)?);
+        Ok(())
     }
+}
+
+fn header_footer(text: &str) -> Result<String> {
+    if text.encode_utf16().count() > MAX_HEADER_FOOTER_UTF16 || !text.chars().all(xml_legal) {
+        return Err(invalid(format!("a page header or footer holds up to {MAX_HEADER_FOOTER_UTF16} characters XML can hold")));
+    }
+    Ok(text.to_string())
 }
 
 /// Refuses what a cell cannot hold.
@@ -672,14 +705,24 @@ fn check_value(value: &CellValue, row: u32, column: u32) -> Result<()> {
         CellValue::Text(s) if s.encode_utf16().count() > MAX_CELL_TEXT_UTF16 => {
             Err(invalid(format!("cell {} holds more than the {MAX_CELL_TEXT_UTF16} characters a cell can", at())))
         }
+        CellValue::Text(s) if !s.chars().all(xml_legal) => Err(invalid(format!("cell {} holds characters XML cannot", at()))),
         CellValue::Number(v) if !v.is_finite() => Err(invalid(format!("cell {} holds a number that is not finite", at()))),
         CellValue::Date(s) if datetime::parse_date(s).and_then(|d| excel_serial_days(i64::from(d))).is_none() => {
             Err(invalid(format!("cell {} holds '{s}', not a date from 1900 on", at())))
         }
+        CellValue::DateTime(s) if !super::xlsx_options::time_in_range(s) => {
+            Err(invalid(format!("cell {} holds '{s}', whose time is out of range", at())))
+        }
         CellValue::DateTime(s) if wall_clock_millis(s).and_then(|ms| excel_serial_days(ms.div_euclid(86_400_000))).is_none() => {
             Err(invalid(format!("cell {} holds '{s}', not a date-time from 1900 on", at())))
         }
-        CellValue::Formula { formula, .. } if formula.is_empty() => Err(invalid(format!("cell {} holds an empty formula", at()))),
+        CellValue::Error(e) if !ERRORS.contains(&e.as_str()) => Err(invalid(format!("cell {} holds '{e}', not an Excel error", at()))),
+        CellValue::Formula { formula, .. } if formula.trim_start_matches('=').is_empty() => {
+            Err(invalid(format!("cell {} holds an empty formula", at())))
+        }
+        CellValue::Formula { formula, .. } if formula.encode_utf16().count() > MAX_FORMULA_UTF16 || !formula.chars().all(xml_legal) => {
+            Err(invalid(format!("cell {} holds a formula over {MAX_FORMULA_UTF16} characters, or with characters XML cannot hold", at())))
+        }
         CellValue::Formula { cached: Some(cached), .. } => match **cached {
             CellValue::Formula { .. } => Err(invalid(format!("cell {} caches a formula", at()))),
             _ => check_value(cached, row, column),
@@ -729,7 +772,7 @@ impl Workbook {
     /// Renames a sheet. Formulas that name it are not rewritten.
     pub fn rename_sheet(&mut self, name: &str, new_name: &str) -> Result<()> {
         self.sheet(name)?;
-        if !name.eq_ignore_ascii_case(new_name) {
+        if name.to_lowercase() != new_name.to_lowercase() {
             self.check_new_name(new_name)?;
         } else {
             check_sheet_name(new_name)?;
@@ -786,8 +829,9 @@ impl Workbook {
     pub fn define_name(&mut self, name: &str, reference: &str) -> Result<()> {
         let valid = name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
             && name.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '.'))
-            && !name.to_ascii_lowercase().starts_with("_xlnm.");
-        if !valid || reference.is_empty() {
+            && !name.to_ascii_lowercase().starts_with("_xlnm.")
+            && !reserved_name(name);
+        if !valid || reference.is_empty() || !reference.chars().all(xml_legal) {
             return Err(invalid(format!("'{name}' is not a name to define")));
         }
         self.defined_names.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
@@ -816,6 +860,19 @@ impl Workbook {
     }
 }
 
+/// Whether a name reads as a cell, in A1 or R1C1 form, which Excel keeps for those.
+fn reserved_name(name: &str) -> bool {
+    if parse_cell(name).is_ok() {
+        return true;
+    }
+    let upper = name.to_ascii_uppercase();
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    match upper.split_once('C') {
+        Some((row, column)) => row.strip_prefix('R').map_or(row.is_empty(), digits) && digits(column),
+        None => upper.strip_prefix('R').is_some_and(digits),
+    }
+}
+
 fn check_sheet_name(name: &str) -> Result<()> {
     let bad = name.is_empty()
         || name.encode_utf16().count() > MAX_SHEET_NAME_UTF16
@@ -836,6 +893,8 @@ struct StyleTable {
     num_formats: Vec<String>,
     xfs: Vec<String>,
     by_format: HashMap<Format, usize>,
+    /// Where each item of the lists is.
+    seen: HashMap<(&'static str, String), usize>,
 }
 
 const DEFAULT_FONT: &str = "<font><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font>";
@@ -843,14 +902,12 @@ const DEFAULT_BORDER: &str = "<border><left/><right/><top/><bottom/><diagonal/><
 const DATE_FORMAT: &str = "yyyy-mm-dd";
 const DATETIME_FORMAT: &str = "yyyy-mm-dd hh:mm:ss";
 
-fn index_of(list: &mut Vec<String>, item: String) -> usize {
-    match list.iter().position(|x| *x == item) {
-        Some(i) => i,
-        None => {
-            list.push(item);
-            list.len() - 1
-        }
-    }
+/// An item's place in its list, adding it if new.
+fn index_of(seen: &mut HashMap<(&'static str, String), usize>, kind: &'static str, list: &mut Vec<String>, item: String) -> usize {
+    *seen.entry((kind, item)).or_insert_with_key(|(_, item)| {
+        list.push(item.clone());
+        list.len() - 1
+    })
 }
 
 fn rgb(color: u32) -> String {
@@ -859,17 +916,16 @@ fn rgb(color: u32) -> String {
 
 impl StyleTable {
     fn new() -> Self {
-        Self {
-            fonts: vec![DEFAULT_FONT.to_string()],
-            fills: vec![
-                "<fill><patternFill patternType=\"none\"/></fill>".into(),
-                "<fill><patternFill patternType=\"gray125\"/></fill>".into(),
-            ],
-            borders: vec![DEFAULT_BORDER.to_string()],
-            num_formats: Vec::new(),
-            xfs: vec!["<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>".into()],
-            by_format: HashMap::from([(Format::default(), 0)]),
+        let fonts = vec![DEFAULT_FONT.to_string()];
+        let fills: Vec<String> =
+            vec!["<fill><patternFill patternType=\"none\"/></fill>".into(), "<fill><patternFill patternType=\"gray125\"/></fill>".into()];
+        let borders = vec![DEFAULT_BORDER.to_string()];
+        let xfs = vec!["<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>".to_string()];
+        let mut seen = HashMap::new();
+        for (kind, list) in [("fonts", &fonts), ("fills", &fills), ("borders", &borders), ("xfs", &xfs)] {
+            seen.extend(list.iter().enumerate().map(|(i, item)| ((kind, item.clone()), i)));
         }
+        Self { fonts, fills, borders, num_formats: Vec::new(), xfs, by_format: HashMap::from([(Format::default(), 0)]), seen }
     }
 
     /// The index of a format's cell style, adding it if new.
@@ -883,10 +939,11 @@ impl StyleTable {
                 "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"{}\"/><bgColor indexed=\"64\"/></patternFill></fill>",
                 rgb(color)
             );
-            index_of(&mut self.fills, xml)
+            index_of(&mut self.seen, "fills", &mut self.fills, xml)
         });
         let border = self.border_id(format);
-        let num_format = format.num_format.as_ref().map_or(0, |code| 164 + index_of(&mut self.num_formats, code.clone()));
+        let num_format =
+            format.num_format.as_ref().map_or(0, |code| 164 + index_of(&mut self.seen, "num_formats", &mut self.num_formats, code.clone()));
         let mut xf = format!("<xf numFmtId=\"{num_format}\" fontId=\"{font}\" fillId=\"{fill}\" borderId=\"{border}\" xfId=\"0\"");
         for (used, attribute) in
             [(num_format != 0, "applyNumberFormat"), (font != 0, "applyFont"), (fill != 0, "applyFill"), (border != 0, "applyBorder")]
@@ -917,7 +974,7 @@ impl StyleTable {
         } else {
             let _ = write!(xf, ">{alignment}{}</xf>", protection.unwrap_or_default());
         }
-        let i = index_of(&mut self.xfs, xf);
+        let i = index_of(&mut self.seen, "xfs", &mut self.xfs, xf);
         self.by_format.insert(format.clone(), i);
         i
     }
@@ -942,7 +999,7 @@ impl StyleTable {
             let _ = write!(xml, "<color rgb=\"{}\"/>", rgb(color));
         }
         let _ = write!(xml, "<name val=\"{}\"/><family val=\"2\"/></font>", xml_text(f.font_name.as_deref().unwrap_or("Calibri")));
-        index_of(&mut self.fonts, xml)
+        index_of(&mut self.seen, "fonts", &mut self.fonts, xml)
     }
 
     fn border_id(&mut self, f: &Format) -> usize {
@@ -970,7 +1027,7 @@ impl StyleTable {
             }
         }
         xml.push_str("<diagonal/></border>");
-        index_of(&mut self.borders, xml)
+        index_of(&mut self.seen, "borders", &mut self.borders, xml)
     }
 
     fn to_xml(&self) -> String {
@@ -1392,6 +1449,9 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
             parts.push((format!("xl/drawings/vmlDrawing{number}.vml"), comments_vml(sheet)));
         }
     }
+    if styles.xfs.len() > MAX_CELL_FORMATS {
+        return Err(invalid(format!("the workbook has {} cell formats, past Excel's {MAX_CELL_FORMATS}", styles.xfs.len())));
+    }
     for (name, reference) in &workbook.defined_names {
         let _ = writeln!(names, "<definedName name=\"{}\">{}</definedName>", xml_text(name), xml_text(reference));
     }
@@ -1500,6 +1560,63 @@ mod tests {
         assert!(s.set_zoom(5).is_err());
         assert!(s.print_title_rows(3, 1).is_err());
         assert!(s.validate_list("A1", &["a,b"]).is_err());
+        assert!(s.write("A1", CellValue::Error("oops".into()), &plain).is_err());
+        assert!(s.write("A1", "a\u{1}", &plain).is_err());
+        assert!(s.write("A1", CellValue::Formula { formula: "=".into(), cached: None }, &plain).is_err());
+        assert!(s.write("A1", CellValue::Formula { formula: "x".repeat(MAX_FORMULA_UTF16 + 1), cached: None }, &plain).is_err());
+        assert!(s.write("A1", CellValue::DateTime("2024-01-02T12:00:00+99:99".into()), &plain).is_err());
+        assert!(s.print_header(&"x".repeat(256)).is_err());
+        assert!(s.print_footer("\u{1}").is_err());
+        assert!(s.hyperlink("A1", "").is_err());
+        assert!(s.comment("A1", "\u{1}", "me").is_err());
+        assert_eq!(s.value("A1").unwrap(), None);
+    }
+
+    #[test]
+    fn a_refused_merge_write_changes_nothing() {
+        let plain = Format::new();
+        let mut workbook = Workbook::new();
+        let s = workbook.add_sheet("s").unwrap();
+        s.write("B1", 1.0, &plain).unwrap();
+        assert!(s.merge_write("A1:B1", "x".repeat(MAX_CELL_TEXT_UTF16 + 1), &plain).is_err());
+        assert!(s.merged_ranges().is_empty());
+        assert_eq!(s.value("B1").unwrap(), Some(&CellValue::Number(1.0)));
+        assert!(s.merge_write("A1:XFD1048576", "t", &plain).is_err());
+        s.merge("A2:XFD1048576").unwrap();
+    }
+
+    #[test]
+    fn font_sizes_that_are_not_numbers_stay_default() {
+        assert_eq!(Format::new().font_size(f64::NAN), Format::new());
+    }
+
+    #[test]
+    fn names_that_read_as_cells_are_reserved() {
+        let mut workbook = Workbook::new();
+        for name in ["A1", "r1c1", "R", "c", "R5", "C7", "XFD1048576"] {
+            assert!(workbook.define_name(name, "x").is_err(), "{name}");
+        }
+        for name in ["Rates", "RC_1", "A1B", "Total1Cost"] {
+            assert!(workbook.define_name(name, "x").is_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn too_many_cell_formats_are_refused() {
+        let mut workbook = Workbook::new();
+        let s = workbook.add_sheet("s").unwrap();
+        for i in 0..=MAX_CELL_FORMATS as u32 {
+            s.write_at(i + 1, 1, 1.0, &Format::new().fill(i)).unwrap();
+        }
+        assert!(matches!(workbook.to_bytes(), Err(Error::InvalidArgument(m)) if m.contains("cell formats")));
+    }
+
+    #[test]
+    fn a_sheet_renames_to_its_own_case() {
+        let mut workbook = Workbook::new();
+        workbook.add_sheet("\u{C4}").unwrap();
+        workbook.rename_sheet("\u{C4}", "\u{E4}").unwrap();
+        assert_eq!(workbook.sheet_names(), ["\u{E4}"]);
     }
 
     #[test]
@@ -1599,7 +1716,7 @@ mod tests {
             s.hyperlink("A1", "https://example.com/?a=1&b=2").unwrap();
             s.print_margins(0.5, 0.5, 1.0, 1.0, 0.3, 0.3).unwrap();
             s.print_fit_to_width(1);
-            s.print_header("&CTitle");
+            s.print_header("&CTitle").unwrap();
             s.comment("A1", "note", "me").unwrap();
         });
         let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
