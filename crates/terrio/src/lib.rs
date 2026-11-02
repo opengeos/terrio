@@ -141,6 +141,7 @@
 //! - `sqlite`: GeoPackage and SQLite/SpatiaLite;
 //! - `tiles`: MBTiles, PMTiles and MVT ([`tiles`]); `avif`: their AVIF tiles;
 //! - `zarr`, `jp2` (JPEG 2000), `flatgeobuf`, `osm` (OpenStreetMap);
+//! - `xlsx`: XLSX and XLSM workbooks, in pure Rust;
 //! - `pointcloud`: LAS, LAZ, COPC, EPT, PLY and E57 ([`pointcloud`]);
 //! - `lerc` and `lzma`: GeoTIFFs with those compressions.
 //!
@@ -281,6 +282,7 @@ pub use drivers::vector::hecras_options::HecRasOpenOptions;
 pub use drivers::vector::kml::KmzOptions;
 pub use drivers::vector::shapefile::{OrganizePolygons, ShapefileOptions};
 pub use drivers::vector::wfs::WfsOpenOptions;
+pub use drivers::vector::xlsx_options::{XlsxFieldTypes, XlsxHeaders, XlsxOptions};
 pub use error::{Error, Result};
 pub use float_read::FloatReadOptions;
 /// The `ndarray` crate, of the version terrio's array views of raster pixels use.

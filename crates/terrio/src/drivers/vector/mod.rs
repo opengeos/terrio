@@ -48,6 +48,9 @@ pub mod tab;
 pub mod topojson;
 pub mod wfs;
 pub mod wkt;
+#[cfg(feature = "xlsx")]
+pub mod xlsx;
+pub mod xlsx_options;
 pub mod xml;
 
 use crate::Result;
@@ -100,6 +103,8 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
             vec![geojson::parse_seq(&std::fs::read(path)?, stem)?]
         }
         VectorDriver::CSV => vec![csv::read(path, &options.csv)?],
+        #[cfg(feature = "xlsx")]
+        VectorDriver::XLSX => xlsx::read(path, &options.layers, &options.xlsx)?,
         #[cfg(feature = "parquet")]
         VectorDriver::Parquet => vec![geoparquet::read_filtered(path, options.spatial_filter)?],
         VectorDriver::Shapefile if options.has_range() => {
@@ -183,6 +188,8 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
             let options = csv::CsvOptions { separator: options.csv.separator.or(tsv.then_some(b'\t')), ..options.csv.clone() };
             vec![csv::parse(&xml::decode(&bytes), stem, &options)?]
         }
+        #[cfg(feature = "xlsx")]
+        VectorDriver::XLSX => xlsx::parse(bytes, &options.layers, &options.xlsx)?,
         #[cfg(feature = "parquet")]
         VectorDriver::Parquet => vec![geoparquet::parse(bytes, stem)?],
         VectorDriver::GML => gml::parse(&xml::parse(&xml::decode(&bytes))?, None)?,
@@ -267,6 +274,8 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
         VectorDriver::GeoJSON => geojson::to_string(first, &options.geojson)?.into_bytes(),
         VectorDriver::GeoJSONSeq => geojson::to_seq_string(first, &options.geojson)?.into_bytes(),
         VectorDriver::CSV => csv::to_string(first, &options.csv)?.into_bytes(),
+        #[cfg(feature = "xlsx")]
+        VectorDriver::XLSX => xlsx::to_bytes(layers, &options.xlsx)?,
         #[cfg(feature = "parquet")]
         VectorDriver::Parquet => geoparquet::to_bytes(first)?,
         // Without its schema file: readers infer the field types.

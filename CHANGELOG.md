@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The `XLSX` driver reads and writes `.xlsx` and `.xlsm` workbooks in pure Rust, natively and in
+  WebAssembly, as GDAL's driver does: a layer per worksheet, with the `HEADERS` and `FIELD_TYPES`
+  open options. Naming coordinate or WKT columns reads geometries from them, and the `GEOMETRY`
+  layer creation option writes them (#405).
+
 - Remote GeoJSON and GML responses open by detected content when their URLs have no
   file extension, including WFS GetFeature requests (#494).
 - XML element-count and nesting budget refusals report `ResourceLimitError` in Python,

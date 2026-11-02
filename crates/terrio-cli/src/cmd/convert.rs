@@ -51,7 +51,8 @@ pub struct Args {
     #[arg(long, value_name = "N")]
     overview: Option<usize>,
     /// An open option, as GDAL names it: `KEY=VALUE` (CSV: X_POSSIBLE_NAMES, Y_POSSIBLE_NAMES,
-    /// GEOM_POSSIBLE_NAMES, AUTODETECT_TYPE, KEEP_GEOM_COLUMNS, SEPARATOR; Shapefile:
+    /// GEOM_POSSIBLE_NAMES, AUTODETECT_TYPE, KEEP_GEOM_COLUMNS, SEPARATOR; XLSX: HEADERS,
+    /// FIELD_TYPES, the geometry column options of CSV; Shapefile:
     /// ORGANIZE_POLYGONS, the methods of GDAL's OGR_ORGANIZE_POLYGONS; PMTiles, MBTiles and MVT:
     /// ZOOM_LEVEL, CLIP; WFS: WFS_PAGE_SIZE, WFS_PAGING, WFS_MAX_VECTOR_BYTES;
     /// HECRAS: MESHES, GEOMETRY_POLICY, CELL_SUMMARIES, FACE_SUMMARIES,
@@ -62,7 +63,8 @@ pub struct Args {
     #[arg(long = "oo", value_name = "KEY=VALUE")]
     open_options: Vec<String>,
     /// A vector layer creation option, as GDAL names it: `KEY=VALUE` (CSV: GEOMETRY=AS_WKT|AS_XY;
-    /// GeoJSON: RFC7946=YES, ID_FIELD, ID_TYPE; GeoJSONSeq: ID_FIELD, ID_TYPE; vector tiles:
+    /// XLSX: GEOMETRY=AS_XY|AS_WKT|NONE; GeoJSON: RFC7946=YES, ID_FIELD, ID_TYPE; GeoJSONSeq:
+    /// ID_FIELD, ID_TYPE; vector tiles:
     /// MINZOOM, MAXZOOM, EXTENT, BUFFER, SIMPLIFICATION,
     /// SIMPLIFICATION_MAX_ZOOM, NAME, DESCRIPTION, TYPE).
     #[arg(long = "lco", value_name = "KEY=VALUE")]
@@ -147,8 +149,9 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
             return Err(terrio::Error::InvalidArgument(format!("unknown open option '{k}'")));
         }
     }
-    // KMZ resources are packed by the whole-archive writer.
-    if !a.kmz_resources.is_empty() {
+    // KMZ resources are packed by the whole-archive writer, and XLSX, with its own creation
+    // options, is written whole.
+    if !a.kmz_resources.is_empty() || matches!(driver.or_else(|| VectorDriver::for_extension(&a.output)), Some(VectorDriver::XLSX)) {
         return Ok(None);
     }
     let mut write = VectorWriteOptions {
@@ -441,12 +444,19 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 }
                 options.kmz.resources = kmz_resources(&a.kmz_resources)?;
             }
+            let xlsx_out = matches!(driver.or_else(|| VectorDriver::for_extension(&a.output)), Some(VectorDriver::XLSX));
             let tiles_out = matches!(
                 driver.or_else(|| VectorDriver::for_extension(&a.output)),
                 Some(VectorDriver::MBTiles | VectorDriver::PMTiles | VectorDriver::MVT)
             );
             for (k, v) in key_values(&a.creation_options)? {
-                let known = if tiles_out { options.tiles.set(k, v)? } else { options.csv.set(k, v)? || options.geojson.set(k, v)? };
+                let known = if tiles_out {
+                    options.tiles.set(k, v)?
+                } else if xlsx_out {
+                    options.xlsx.set_creation(k, v)?
+                } else {
+                    options.csv.set(k, v)? || options.geojson.set(k, v)?
+                };
                 if !known {
                     return Err(terrio::Error::InvalidArgument(format!("unknown layer creation option '{k}'")));
                 }

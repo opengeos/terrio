@@ -326,6 +326,8 @@ pub struct VectorOpenOptions {
     pub wfs: crate::drivers::vector::wfs::WfsOpenOptions,
     /// How to read HEC-RAS geometry and plan HDF files: meshes and the stored values to join.
     pub hecras: crate::drivers::vector::hecras_options::HecRasOpenOptions,
+    /// How to read XLSX workbooks: header rows, field types and geometry columns.
+    pub xlsx: crate::drivers::vector::xlsx_options::XlsxOptions,
 }
 
 impl VectorOpenOptions {
@@ -333,8 +335,8 @@ impl VectorOpenOptions {
     /// [`CsvOptions::set`](crate::CsvOptions::set)), the shapefile options
     /// ([`ShapefileOptions::set`](crate::ShapefileOptions::set)), the tile archive options
     /// ([`TileOpenOptions::set`](crate::tiles::TileOpenOptions::set)) and the HECRAS options
-    /// ([`HecRasOpenOptions::set`](crate::HecRasOpenOptions::set)). Returns `false` for a name
-    /// none of them knows.
+    /// ([`HecRasOpenOptions::set`](crate::HecRasOpenOptions::set)) and the XLSX options
+    /// ([`XlsxOptions::set`](crate::XlsxOptions::set)). Returns `false` for a name none of them knows.
     ///
     /// ```
     /// let mut options = terrio::VectorOpenOptions::default();
@@ -347,11 +349,13 @@ impl VectorOpenOptions {
             self.feature_server_paging = Some(crate::tiles::parse_bool(value)?);
             return Ok(true);
         }
-        Ok(self.csv.set(key, value)?
+        // The XLSX options share the names of CSV's geometry options, and each format keeps its own.
+        let known = self.csv.set(key, value)?
             || self.shapefile.set(key, value)?
             || self.tiles.set(key, value)?
             || self.hecras.set(key, value)?
-            || self.wfs.set(key, value)?)
+            || self.wfs.set(key, value)?;
+        Ok(self.xlsx.set(key, value)? || known)
     }
 
     /// Whether a feature range is asked for.
@@ -1191,7 +1195,8 @@ fn select_layers(layers: Vec<Layer>, path: &str, options: &VectorOpenOptions) ->
 /// WGS 84 by definition.
 pub(crate) fn fix_layer(mut layer: Layer, path: &str, driver: VectorDriver) -> Layer {
     let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
-    if layer.name.is_empty() || (layer.name == "layer" && driver != VectorDriver::GPKG) {
+    // A GeoPackage table or a worksheet may be named "layer"; other drivers use it as a placeholder.
+    if layer.name.is_empty() || (layer.name == "layer" && !matches!(driver, VectorDriver::GPKG | VectorDriver::XLSX)) {
         layer.name = stem.to_string();
     }
     // Re-identify the EPSG code of stored WKT (such as a shapefile's ESRI .prj) the way GDAL does,
@@ -1570,6 +1575,8 @@ pub struct VectorWriteOptions {
     pub tiles: crate::tiles::TileWriteOptions,
     /// How to write KMZ archives: the files, such as icon images, packed with the documents.
     pub kmz: crate::drivers::vector::kml::KmzOptions,
+    /// How to write XLSX workbooks: the geometry columns, a macro-enabled workbook.
+    pub xlsx: crate::drivers::vector::xlsx_options::XlsxOptions,
     /// KML and KMZ: shared styles to write as `<Style id>` elements, each id with its OGR style
     /// string, for the features whose `OGR_STYLE` is `@id`. See [`VectorDataset::style_table`].
     /// Layers do not hold the table: without it, `@id` is written as it is, as a `styleUrl` with no
@@ -1577,7 +1584,7 @@ pub struct VectorWriteOptions {
     pub style_table: Vec<(String, String)>,
 }
 
-/// Writes vector layers. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers in one file;
+/// Writes vector layers. GeoPackage, GPX, KML, KMZ, TopoJSON and XLSX hold several layers in one file;
 /// for the other formats, write one layer at a time.
 ///
 /// With the `gdal` feature, an extension terrio has no driver for is written by the GDAL driver
@@ -1625,6 +1632,15 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
         (d @ (VectorDriver::DXF | VectorDriver::DWG), _) => {
             std::fs::write(path, crate::drivers::vector::cad::to_bytes(layers, d)?)?;
             Ok(())
+        }
+        #[cfg(feature = "xlsx")]
+        (VectorDriver::XLSX, _) => {
+            let bytes = crate::drivers::vector::xlsx::to_bytes(layers, &options.xlsx.for_name(path))?;
+            crate::vsi::write_local_atomic(std::path::Path::new(path), |out| {
+                use std::io::Write;
+                out.write_all(&bytes)?;
+                Ok(())
+            })
         }
         (VectorDriver::GPX, _) => crate::drivers::vector::gpx::write_layers(layers, path),
         (VectorDriver::KML, _) => crate::drivers::vector::kml::write_styled(layers, &options.style_table, path),
@@ -1675,6 +1691,9 @@ pub(crate) fn ensure_vector_options_apply(options: &VectorWriteOptions, driver: 
     }
     if options.preserve_declared_geometry_type && driver != Some(VectorDriver::GPKG) {
         return Err(Error::InvalidArgument("preserve_declared_geometry_type applies to GPKG output".into()));
+    }
+    if (options.xlsx.geometry != crate::CsvGeometry::None || options.xlsx.macro_enabled) && driver != Some(VectorDriver::XLSX) {
+        return Err(Error::InvalidArgument("the XLSX write options apply to XLSX output".into()));
     }
     if !options.style_table.is_empty() && !driver.is_some_and(|d| d.holds_style_table()) {
         return Err(Error::InvalidArgument("style_table applies to KML and KMZ output".into()));

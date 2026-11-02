@@ -369,6 +369,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | ESRIPBF | Protocol buffers of ArcGIS feature-service queries, from files and URLs | ✓ | — | pbf (by content), query URLs |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
+| XLSX | Office Open XML spreadsheets, a layer per worksheet | ✓ | ✓ | xlsx, xlsm |
 | KML | KML | ✓ | ✓ | kml |
 | KMZ | Zipped KML | ✓ | ✓ | kmz |
 | GML | GML | ✓ | ✓ | gml |
@@ -784,6 +785,31 @@ layers, and shapefile field names are truncated and made unique as `ogr2ogr` doe
 files are written with a `crs` member naming their CRS, which GDAL reads (it assumes none
 otherwise), and a CSV file's CRS is read from a `.prj` file next to it, as GDAL's CSV driver
 reads it.
+
+- **XLSX** workbooks are read and written without GDAL, in WebAssembly too, as GDAL's XLSX driver
+  does: a layer per worksheet, feature ids that are row numbers, and the open options `HEADERS`
+  (`AUTO`, `FORCE`, `DISABLE`) and `FIELD_TYPES` (`AUTO`, `STRING`). Formulas are not evaluated: a
+  cell reads as its cached value. Beyond GDAL, sheets of coordinates become points when their
+  columns are named (`--oo X_POSSIBLE_NAMES=lon --oo Y_POSSIBLE_NAMES=lat`, optionally
+  `Z_POSSIBLE_NAMES`; `GEOM_POSSIBLE_NAMES` for WKT; `KEEP_GEOM_COLUMNS`), with no default names
+  so that sheets stay attribute tables by default, and the `GEOMETRY` layer creation option
+  (`AS_XY`, `AS_WKT`) writes geometries, which are otherwise left out as GDAL leaves them out.
+  Differences from GDAL 3.13.3, on purpose but for one: repeated headings get unique names (`a`,
+  `a_2`), as layers cannot repeat a name; `date1904` workbooks' dates are honored (GDAL reads them
+  four years early); a boolean column that also holds other numbers becomes an integer field (GDAL
+  keeps it boolean and loses the values); phonetic guides stay out of the text; and written sheet
+  names are made valid and unique for Excel. The exception, whose cause in GDAL is not known:
+  `HEADERS=DISABLE` applies here to sheets whose cells have no references, where GDAL was seen to
+  ignore it. A layer without features is written without a header row, as GDAL writes it, so its
+  fields are not kept. The first feature's nulls are written as blank cells, so that its row still
+  marks the one above as a header; a layer whose first feature is all text reads back with
+  `Field1`, `Field2` and its names as a first row, as in GDAL, unless read with `HEADERS=FORCE`.
+  Layers have no time type, so a time of day reads as `HH:MM:SS` text and is written back as text.
+  Beyond 2,000 fields, where GDAL fails, sheets still read. Cells out of column order are refused, where GDAL shifts the row's values. Excel's limits are refused when writing: 1,048,576 rows, 16,384 columns and 32,767 characters
+  per cell. Workbooks of more than 100 million cells, with rows, shared strings and repeated long
+  strings counting towards that, of a sheet past Excel's row or column limit, or with a part that expands
+  past 2 GiB, are refused when reading. Append and overwrite layer modes refuse an existing workbook, which they would rewrite without its layout. Styles, merged cells, charts and other workbook content
+  are not read or kept yet ([#405](https://github.com/opengeos/terrio/issues/405)).
 
 - **GeoPackage** layers are read with spatial filters through their R-tree index (`terrio convert
   --spat`, `VectorOpenOptions::spatial_filter`, Python's `open_vector(bbox=...)`): the

@@ -150,6 +150,8 @@ pub enum VectorDriver {
     HECRAS,
     /// Comma-separated values with X/Y or WKT geometry columns.
     CSV,
+    /// Office Open XML spreadsheets: each worksheet is a layer (the `xlsx` feature).
+    XLSX,
     /// MBTiles vector tiles, see [`crate::tiles`].
     MBTiles,
     /// PMTiles vector tiles, see [`crate::tiles`].
@@ -403,6 +405,7 @@ impl VectorDriver {
         Self::ESRIPBF,
         Self::HECRAS,
         Self::CSV,
+        Self::XLSX,
         Self::MBTiles,
         Self::PMTiles,
         Self::MVT,
@@ -436,6 +439,7 @@ impl VectorDriver {
             // No extension of its own: HEC-RAS files share `.hdf` and `.h5` with other HDF5 files.
             Self::HECRAS => ("HECRAS", "HEC-RAS geometry and plan HDF5", &[], true, false),
             Self::CSV => ("CSV", "Comma Separated Value", &["csv", "tsv"], true, true),
+            Self::XLSX => ("XLSX", "MS Office Open XML spreadsheet", &["xlsx", "xlsm"], true, true),
             Self::MBTiles => ("MBTiles", "MBTiles", &["mbtiles"], true, true),
             Self::PMTiles => ("PMTiles", "ProtoMap Tiles", &["pmtiles"], true, true),
             Self::MVT => ("MVT", "Mapbox Vector Tiles", &["mvt"], true, true),
@@ -454,6 +458,7 @@ impl VectorDriver {
             Self::DXF | Self::DWG => ("cad", cfg!(feature = "cad")),
             Self::OSM => ("osm", cfg!(feature = "osm")),
             Self::HECRAS => ("hecras", cfg!(feature = "hecras")),
+            Self::XLSX => ("xlsx", cfg!(feature = "xlsx")),
             Self::WFS => ("remote", cfg!(remote)),
             Self::MBTiles | Self::PMTiles | Self::MVT => ("tiles", cfg!(feature = "tiles")),
             _ => return None,
@@ -529,6 +534,7 @@ impl VectorDriver {
             | Self::DWG
             | Self::GeoJSONSeq
             | Self::CSV
+            | Self::XLSX
             | Self::MBTiles
             | Self::PMTiles
             | Self::MVT
