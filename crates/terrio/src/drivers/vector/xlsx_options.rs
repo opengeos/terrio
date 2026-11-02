@@ -111,7 +111,7 @@ impl XlsxOptions {
             "Y_POSSIBLE_NAMES" => self.y_possible_names = list(),
             "Z_POSSIBLE_NAMES" => self.z_possible_names = list(),
             "GEOM_POSSIBLE_NAMES" => self.geom_possible_names = list(),
-            "KEEP_GEOM_COLUMNS" => self.keep_geom_columns = crate::tiles::parse_bool(value)?,
+            "KEEP_GEOM_COLUMNS" => self.keep_geom_columns = matches!(upper.as_str(), "YES" | "TRUE" | "ON" | "1"),
             _ => return Ok(false),
         }
         Ok(true)

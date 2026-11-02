@@ -1581,6 +1581,16 @@ mod tests {
     }
 
     #[test]
+    fn keep_geom_columns_reads_as_csv_reads_it() {
+        // The open options reach both drivers, so CSV's lenient values must keep working.
+        let mut options = crate::VectorOpenOptions::default();
+        assert!(options.set("KEEP_GEOM_COLUMNS", "y").unwrap());
+        assert!(!options.xlsx.keep_geom_columns);
+        assert!(options.set("KEEP_GEOM_COLUMNS", "YES").unwrap());
+        assert!(options.xlsx.keep_geom_columns);
+    }
+
+    #[test]
     fn a_row_past_the_limit_is_refused_whatever_its_gap() {
         let options = XlsxOptions::default();
         let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
