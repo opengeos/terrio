@@ -325,12 +325,15 @@ pub fn linked_members(root: &Element, from: &str) -> Vec<String> {
     let mut urls = Vec::new();
     root.find_all("styleUrl", &mut urls);
     let mut out: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
     for url in urls {
         let Some((document, _)) = url.text.trim().split_once('#') else { continue };
         if !document.to_ascii_lowercase().ends_with(".kml") {
             continue;
         }
-        if let Some(name) = member_of(document, from).filter(|n| !out.contains(n)) {
+        if let Some(name) = member_of(document, from)
+            && seen.insert(name.clone())
+        {
             out.push(name);
         }
     }

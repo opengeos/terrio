@@ -716,7 +716,7 @@ pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Optio
 fn sql(py: Python<'_>, src: &Bound<'_, PyAny>, query: &str, layers: Option<Vec<String>>) -> PyResult<PyLayer> {
     let inputs = input_layers(py, src, layers)?;
     let inner = py.detach_result(|| terrio::ops::sql::query(&inputs, query)).py()?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// A raster path as UTF-8, accepting Python strings and os.PathLike objects.
@@ -921,7 +921,7 @@ fn polygonize(
             Ok(layer)
         })
         .py()?;
-    Ok(PyLayer { inner: layer })
+    Ok(PyLayer::from(layer))
 }
 
 /// Transforms coordinates from one CRS to another.

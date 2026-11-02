@@ -776,12 +776,12 @@ reads it.
 - **KML shared styles** are kept as GDAL's LIBKML driver keeps them: a placemark that only refers
   to a style of its document has `@id` in `OGR_STYLE`, and the definitions make the dataset's style
   table (Rust `VectorDataset::style_table`, Python `style_table`, JavaScript `styleTable`), a
-  `StyleMap` standing for its `normal` style. Give the table back (Rust and Python layers
-  `style_table`; Python `VectorDataset.write`, JavaScript `toBytes` and `terrio convert` do so
-  themselves) to write shared `<Style id>` elements. Output in other formats, and operations and
-  CLI commands that work on layers, get each feature's style in place of `@id`
-  (`VectorDataset::resolve_styles`). A bare layer written on its own (Rust `write_vector` on
-  `dataset.layers`, Python `dataset[0].write`) does not hold the table and writes `@id` as it is.
+  `StyleMap` standing for its `normal` style. Writing to KML or KMZ emits shared `<Style id>`
+  elements: Rust takes the table in `VectorWriteOptions::style_table`, and Python, JavaScript `toBytes` and
+  `terrio convert` pass it themselves. Other output formats, operations and CLI commands that work
+  on layers get each feature's style in place of `@id` (`VectorDataset::resolve_styles`). Rust
+  `write_vector` on `dataset.layers` without the table writes `@id` as it is, and so does a Python
+  layer made by a method of another layer.
 - **Known differences from GDAL 3.13** when reading KML styles, where KML says more than GDAL
   keeps: `<fill>0</fill>` reads as OGR's null brush (`BRUSH(id:"ogr-brush-1")`, without the
   PolyStyle color) and `<outline>0</outline>` as its null pen, where GDAL ignores both. A

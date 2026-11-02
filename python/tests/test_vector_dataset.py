@@ -243,19 +243,21 @@ def test_kml_style_table_is_read_and_written(tmp_path):
     source.write_bytes(STYLED_KML)
     dataset = terrio.open_vector(str(source))
     assert dataset.style_table == [("base", BASE_STYLE)]
-    assert ogr_style(dataset) == "@base"
+    assert dataset[0].columns()["OGR_STYLE"] == ["@base"]
+    assert ogr_style(dataset) == BASE_STYLE
 
     # The dataset writes its own table to KML and KMZ.
     for name in ("out.kml", "out.kmz"):
         dataset.write(str(tmp_path / name))
         back = terrio.open_vector(str(tmp_path / name))
         assert back.style_table == [("base", BASE_STYLE)]
-        assert ogr_style(back) == "@base"
+        assert back[0].columns()["OGR_STYLE"] == ["@base"]
 
-    # A bare layer is given the table.
-    bytes_out = dataset[0].to_bytes("out.kml", style_table=dataset.style_table)
-    assert b'<Style id="base">' in bytes_out
-    assert b"<Style id=" not in dataset[0].to_bytes("out.kml")
+    # A layer writes the table of its dataset, or the one given.
+    assert b'<Style id="base">' in dataset[0].to_bytes("out.kml")
+    other = dataset[0].to_bytes("out.kml", style_table=[("base", "PEN(c:#00FF00FF)")])
+    assert b"<color>ff00ff00</color>" in other
+    assert b"PEN(c:#FF0000FF" in dataset[0].to_bytes("out.geojson")
     with pytest.raises(terrio.InvalidArgumentError, match="style_table"):
         dataset[0].to_bytes("out.geojson", style_table=dataset.style_table)
 

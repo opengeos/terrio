@@ -357,7 +357,11 @@ impl Dataset {
     /// One layer with its style references replaced by their definitions.
     fn resolved_layer(&self, layer: &JsValue) -> Result<Layer, JsError> {
         let l = self.layer(layer)?.clone();
-        Ok(resolve_styles(vec![l.clone()], &self.style_table).pop().unwrap_or(l))
+        if self.style_table.is_empty() {
+            return Ok(l);
+        }
+        let mut resolved = resolve_styles(vec![l], &self.style_table);
+        resolved.pop().ok_or_else(|| JsError::new("no layer"))
     }
 
     /// The dataset a JavaScript value is, when it is one.

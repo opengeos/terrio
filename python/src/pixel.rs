@@ -197,7 +197,7 @@ fn as_features(
             Ok(layer)
         })
         .py()?;
-    Ok(PyLayer { inner: layer })
+    Ok(PyLayer::from(layer))
 }
 
 /// Blends equal-sized Byte images. Operator names match GDAL; opacity is 0..100.

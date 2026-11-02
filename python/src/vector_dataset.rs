@@ -275,7 +275,7 @@ fn make_point(
     let first = ls.into_iter().next().ok_or_else(|| invalid("no input vector layer"))?;
     let o = terrio::ops::make_point::MakePointOptions { x, y, z, m, crs: srs(crs)? };
     let inner = with_warnings(py, || terrio::ops::make_point::make_point(&first, &o))?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// The OGR_SCHEMA of a vector dataset, like `terrio export-schema` (GDAL's

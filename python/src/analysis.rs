@@ -48,7 +48,7 @@ fn contour(
         layer_name: layer_name.into(),
     };
     let inner = py.detach_result(|| lines::contour(&input, &options)).py()?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// Exact valid-data footprint of a Raster/path, optionally restricted by a mask.
@@ -74,7 +74,7 @@ fn footprint(
         attributes: attributes.unwrap_or_default().into_iter().collect(),
     };
     let inner = py.detach_result(|| area::footprint(&input, &options)).py()?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 fn vector_op(
@@ -85,7 +85,7 @@ fn vector_op(
 ) -> PyResult<PyLayer> {
     let input = crate::vector_geom::one_layer(py, src, layer)?;
     let inner = py.detach_result(|| apply(&input)).py()?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// Planar buffer in CRS units, preserving attributes and feature IDs.
@@ -165,7 +165,7 @@ fn zonal_stats(
             terrio::ops::zonal::zonal_stats(&zones, &inputs, &options)
         })
         .py()?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// Recursively split multipart geometries/collections; IDs restart at one.

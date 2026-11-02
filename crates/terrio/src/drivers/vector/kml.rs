@@ -103,13 +103,14 @@ pub fn parse_kmz_styled(bytes: Vec<u8>, default_name: &str) -> Result<Styled> {
     // The documents styles live in, as far as links from one to the next go. Each is read once, and
     // one that cannot be read, or past the limits, leaves its links as raw URLs.
     let mut budget = MAX_STYLE_DOCUMENT_BYTES;
+    let archived: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
     let mut members = kml_style::Members::new();
     let mut pending = kml_style::linked_members(&root, &main);
     for (member, document, _) in &documents {
         pending.extend(kml_style::linked_members(document, member));
     }
     while let Some(name) = pending.pop() {
-        if members.contains_key(&name) || !names.contains(&name) || members.len() >= MAX_STYLE_DOCUMENTS || budget == 0 {
+        if members.contains_key(&name) || !archived.contains(name.as_str()) || members.len() >= MAX_STYLE_DOCUMENTS || budget == 0 {
             continue;
         }
         // One byte past the budget tells a document that does not fit from one that just does.
