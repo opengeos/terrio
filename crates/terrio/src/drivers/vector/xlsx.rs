@@ -906,6 +906,7 @@ pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<V
 }
 
 /// Whether bytes look like a workbook: a ZIP archive named so, or whose first member is under `xl/`.
+/// Excel's and this driver's workbooks start with `[Content_Types].xml`, so they need the name.
 pub(crate) fn looks_like(bytes: &[u8], name: &str) -> bool {
     if !bytes.starts_with(b"PK\x03\x04") {
         return false;
@@ -1011,10 +1012,15 @@ fn column_letters(mut column: usize) -> String {
     String::from_utf8(letters).expect("ASCII letters")
 }
 
-/// Excel's serial of a day since 1970: dates before its phantom 1900-02-29 are a serial lower.
-fn excel_serial_days(days: i64) -> i64 {
+/// Excel's serial of a day since 1970: dates before its phantom 1900-02-29 are a serial lower, and
+/// it has none for dates before 1900.
+fn excel_serial_days(days: i64) -> Option<i64> {
     let serial = days + UNIX_EPOCH_SERIAL;
-    if (2..=60).contains(&serial) { serial - 1 } else { serial }
+    match serial {
+        ..2 => None,
+        2..=60 => Some(serial - 1),
+        _ => Some(serial),
+    }
 }
 
 /// A date-time's wall clock as milliseconds since 1970, without its UTC offset: spreadsheets have no
@@ -1054,15 +1060,15 @@ fn value_cell(out: &mut String, reference: &str, value: &FieldValue, strings: &m
         FieldValue::Boolean(b) => {
             let _ = write!(out, "<c r=\"{reference}\" t=\"b\" s=\"{STYLE_BOOLEAN}\"><v>{}</v></c>", u8::from(*b));
         }
-        FieldValue::Date(s) => match datetime::parse_date(s) {
-            Some(days) => number_cell(out, reference, STYLE_DATE, excel_serial_days(i64::from(days))),
+        // Values Excel has no serial for stay text.
+        FieldValue::Date(s) => match datetime::parse_date(s).and_then(|days| excel_serial_days(i64::from(days))) {
+            Some(serial) => number_cell(out, reference, STYLE_DATE, serial),
             None => text_cell(out, reference, s, strings)?,
         },
-        FieldValue::DateTime(s) => match wall_clock_millis(s) {
-            Some(ms) => {
+        FieldValue::DateTime(s) => match wall_clock_millis(s).and_then(|ms| Some((ms, excel_serial_days(ms.div_euclid(86_400_000))?))) {
+            Some((ms, serial)) => {
                 let style = if ms.rem_euclid(1000) == 0 { STYLE_DATETIME } else { STYLE_DATETIME_MS };
-                let days = ms.div_euclid(86_400_000);
-                number_cell(out, reference, style, ms.rem_euclid(86_400_000) as f64 / 86_400_000.0 + excel_serial_days(days) as f64);
+                number_cell(out, reference, style, ms.rem_euclid(86_400_000) as f64 / 86_400_000.0 + serial as f64);
             }
             None => text_cell(out, reference, s, strings)?,
         },
@@ -1116,6 +1122,9 @@ fn geometry_values(feature: &Feature, header: &[&str]) -> Vec<FieldValue> {
 fn sheet_xml(layer: &Layer, options: &XlsxOptions, strings: &mut StringTable) -> Result<String> {
     let extra = geometry_header(layer, options)?;
     let names: Vec<&str> = extra.iter().copied().chain(layer.schema.fields().iter().map(|f| f.name.as_str())).collect();
+    if let Some(name) = extra.iter().find(|name| layer.schema.field_index(name).is_some()) {
+        return Err(Error::InvalidArgument(format!("XLSX: '{}' has a field named as the geometry column {name}", layer.name)));
+    }
     if names.len() > MAX_COLUMNS {
         return Err(Error::InvalidArgument(format!("XLSX: '{}' has more than the {MAX_COLUMNS} columns a sheet can hold", layer.name)));
     }
@@ -1206,6 +1215,10 @@ fn sheet_names(layers: &[Layer]) -> Vec<String> {
 pub fn to_bytes(layers: &[Layer], options: &XlsxOptions) -> Result<Vec<u8>> {
     if layers.is_empty() {
         return Err(Error::InvalidArgument("no layers to write: a workbook needs a sheet".into()));
+    }
+    // With the styles and shared strings, what the reader's limit on a part's entries allows.
+    if layers.len() > MAX_WORKBOOK_ENTRIES - 2 {
+        return Err(Error::InvalidArgument(format!("XLSX: more than {} sheets to write", MAX_WORKBOOK_ENTRIES - 2)));
     }
     let main_type = if options.macro_enabled {
         "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
@@ -1642,6 +1655,27 @@ mod tests {
             let l = parse(bytes, &[], &XlsxOptions::default()).unwrap().remove(0);
             assert_eq!(l.features[0].attributes[0], FieldValue::Date(date.into()));
         }
+    }
+
+    #[test]
+    fn dates_before_1900_stay_text() {
+        let mut l =
+            name_and_id([FieldValue::Text("a".into()), FieldValue::Integer(1)], [FieldValue::Text("b".into()), FieldValue::Integer(2)]);
+        l.add_field(FieldDef::new("d", FieldType::Date));
+        l.features[0].attributes.push(FieldValue::Date("1899-12-31".into()));
+        l.features[1].attributes.push(FieldValue::Date("1800-01-01".into()));
+        let read = parse(to_bytes(&[l], &XlsxOptions::default()).unwrap(), &[], &XlsxOptions::default()).unwrap().remove(0);
+        assert_eq!(read.features[0].attributes[2], FieldValue::Text("1899-12-31".into()));
+        assert_eq!(read.features[1].attributes[2], FieldValue::Text("1800-01-01".into()));
+    }
+
+    #[test]
+    fn a_field_named_as_a_geometry_column_is_refused() {
+        let mut l = Layer::new("t");
+        l.add_field(FieldDef::new("WKT", FieldType::Text));
+        l.features.push(Feature { fid: 0, geometry: Some(Geometry::point(1.0, 2.0)), attributes: vec![FieldValue::Null] });
+        let options = XlsxOptions { geometry: CsvGeometry::AsWkt, ..Default::default() };
+        assert!(matches!(to_bytes(&[l], &options), Err(Error::InvalidArgument(m)) if m.contains("WKT")));
     }
 
     #[test]
