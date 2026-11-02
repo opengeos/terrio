@@ -49,7 +49,7 @@ const MAX_PART_BYTES: u64 = 2 << 30;
 const MAX_CELLS: usize = 100_000_000;
 /// What a row costs against that limit, for the row entry and feature it holds even without a cell.
 const ROW_CELLS: usize = 4;
-/// The bytes of a repeated shared string that cost as much as another cell.
+/// The bytes of a cell's text that cost as much as another cell.
 const CELL_BYTES: usize = 32;
 /// Excel's serial number of 1970-01-01, and the days between its 1900 and 1904 date systems.
 const UNIX_EPOCH_SERIAL: i64 = 25_569;
@@ -367,6 +367,7 @@ fn table_layer(mut table: SheetTable<'_>, name: &str, date1904: bool, table_budg
     let geometry = GeometryColumns::find(&columns, options);
     let kept: Vec<usize> = (0..columns.len()).filter(|&i| options.keep_geom_columns || !geometry.holds(i)).collect();
     let mut layer = Layer::new(name);
+    let mut next_suffix: HashMap<&str, usize> = HashMap::new();
     for &i in &kept {
         let c = &columns[i];
         let field_type = match c.kind {
@@ -377,12 +378,13 @@ fn table_layer(mut table: SheetTable<'_>, name: &str, date1904: bool, table_budg
             ColumnType::DateTime => FieldType::DateTime,
             ColumnType::Text | ColumnType::Time => FieldType::Text,
         };
-        // A layer's field names are unique, where GDAL's layers repeat a repeated heading.
+        // A layer's field names are unique, where GDAL's layers repeat a repeated heading. Each
+        // heading resumes from its last suffix, so that a wide sheet of one heading stays linear.
         let mut name = c.name.clone();
-        let mut n = 2;
         while layer.schema.field_index(&name).is_some() {
+            let n = next_suffix.entry(c.name.as_str()).or_insert(2);
             name = format!("{}_{n}", c.name);
-            n += 1;
+            *n += 1;
         }
         layer.add_field(FieldDef::new(name, field_type));
     }
@@ -733,6 +735,7 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
                 None => return Err(Error::InvalidData(format!("XLSX: shared string '{value}' is not in the workbook"))),
             }
         } else {
+            take_cells(budget, value.len() / CELL_BYTES)?;
             value
         };
         cells.push(Cell { kind, value });
@@ -1507,6 +1510,24 @@ mod tests {
         assert_eq!(budget, 100 - ROW_CELLS - 2 * (1 + 10));
         let mut table = SheetTable::new(&options);
         assert!(matches!(read_sheet(&data, "s", &shared, &mut table, &mut 20), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn a_long_cell_value_costs_more_than_one_cell() {
+        let options = XlsxOptions::default();
+        let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
+        let data = format!("<sheetData><row><c><v>{}</v></c></row></sheetData>", "1".repeat(10 * CELL_BYTES));
+        let mut budget = 100;
+        read_sheet(&data, "s", &shared, &mut SheetTable::new(&options), &mut budget).unwrap();
+        assert_eq!(budget, 100 - ROW_CELLS - 1 - 10);
+    }
+
+    #[test]
+    fn many_repeated_headings_get_their_suffixes_in_order() {
+        let head = "<c t=\"s\"><v>0</v></c>".repeat(4);
+        let data = format!("<row r=\"1\">{head}</row><row r=\"2\"><c><v>1</v></c></row>");
+        let l = one_sheet(&data, &XlsxOptions::default());
+        assert_eq!(field_names(&l), ["a", "a_2", "a_3", "a_4"]);
     }
 
     #[test]

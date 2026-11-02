@@ -718,20 +718,22 @@ reads it.
   `Z_POSSIBLE_NAMES`; `GEOM_POSSIBLE_NAMES` for WKT; `KEEP_GEOM_COLUMNS`), with no default names
   so that sheets stay attribute tables by default, and the `GEOMETRY` layer creation option
   (`AS_XY`, `AS_WKT`) writes geometries, which are otherwise left out as GDAL leaves them out.
-  Differences from GDAL 3.13.3, on purpose but for one: repeated headings get unique names (`a`, `a_2`),
-  as layers cannot repeat a name; `date1904` workbooks' dates are honored (GDAL reads them four
-  years early); a boolean column that also holds other numbers becomes an integer field (GDAL
-  keeps it boolean and loses the values); phonetic guides stay out of the text; and written sheet names are made valid and
-  unique for Excel. The exception, whose cause in GDAL is not known: `HEADERS=DISABLE` applies here to
-  sheets whose cells have no references, where GDAL was seen to ignore it. A layer without features is written without a header row, as GDAL writes it, so its fields
-  are not kept. The first feature's nulls are written as blank cells, so that its row still marks the
-  one above as a header; a layer whose first feature is all text reads back with `Field1`, `Field2`
-  and its names as a first row, as in GDAL, unless read with `HEADERS=FORCE`. Layers have no time type, so a time of day reads as `HH:MM:SS` text and is
-  written back as text. Excel's limits are refused when writing: 1,048,576 rows, 16,384 columns
-  and 32,767 characters per cell. Workbooks of more than 100 million cells, with rows, shared
-  strings and repeated long strings counting towards that, of a sheet past Excel's row limit, or
-  with a part that expands past 2 GiB, are refused when reading. Styles, merged cells, charts and other workbook
-  content are not read or kept yet ([#405](https://github.com/opengeos/terrio/issues/405)).
+  Differences from GDAL 3.13.3, on purpose but for one: repeated headings get unique names (`a`,
+  `a_2`), as layers cannot repeat a name; `date1904` workbooks' dates are honored (GDAL reads them
+  four years early); a boolean column that also holds other numbers becomes an integer field (GDAL
+  keeps it boolean and loses the values); phonetic guides stay out of the text; and written sheet
+  names are made valid and unique for Excel. The exception, whose cause in GDAL is not known:
+  `HEADERS=DISABLE` applies here to sheets whose cells have no references, where GDAL was seen to
+  ignore it. A layer without features is written without a header row, as GDAL writes it, so its
+  fields are not kept. The first feature's nulls are written as blank cells, so that its row still
+  marks the one above as a header; a layer whose first feature is all text reads back with
+  `Field1`, `Field2` and its names as a first row, as in GDAL, unless read with `HEADERS=FORCE`.
+  Layers have no time type, so a time of day reads as `HH:MM:SS` text and is written back as text.
+  Excel's limits are refused when writing: 1,048,576 rows, 16,384 columns and 32,767 characters
+  per cell. Workbooks of more than 100 million cells, with rows, shared strings and repeated long
+  strings counting towards that, of a sheet past Excel's row limit, or with a part that expands
+  past 2 GiB, are refused when reading. Styles, merged cells, charts and other workbook content
+  are not read or kept yet ([#405](https://github.com/opengeos/terrio/issues/405)).
 
 - **GeoPackage** layers are read with spatial filters through their R-tree index (`terrio convert
   --spat`, `VectorOpenOptions::spatial_filter`, Python's `open_vector(bbox=...)`): the
