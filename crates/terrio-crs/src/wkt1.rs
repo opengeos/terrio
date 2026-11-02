@@ -268,6 +268,27 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     let sp1 = angle(&["standardparallel1", "standardparallel", "latitudeof1ststandardparallel"]);
     let sp2 = angle(&["standardparallel2", "latitudeof2ndstandardparallel"]);
     let method = norm(root.child("PROJECTION")?.name()?);
+    if method == "hotineobliquemercatortwopointnaturalorigin" {
+        // A present but malformed value must not be dropped and replaced by a zero default.
+        for parameter in root.children("PARAMETER") {
+            let name = norm(parameter.name()?);
+            if matches!(
+                name.as_str(),
+                "latitudeofpoint1"
+                    | "latitudeof1stpoint"
+                    | "longitudeofpoint1"
+                    | "longitudeof1stpoint"
+                    | "latitudeofpoint2"
+                    | "latitudeof2ndpoint"
+                    | "longitudeofpoint2"
+                    | "longitudeof2ndpoint"
+            ) && !parameter.num(1)?.is_finite()
+            {
+                return None;
+            }
+        }
+    }
+
     // `x_0` and `y_0` are ESRI's names for them in `PROJ_healpix`, `PROJ_rhealpix` and `PROJ_isea`.
     let proj_method = matches!(method.as_str(), "projhealpix" | "projrhealpix") || method.starts_with("projisea");
     let fe = get(&["falseeasting", "eastingatfalseorigin", "eastingatprojectioncentre"])

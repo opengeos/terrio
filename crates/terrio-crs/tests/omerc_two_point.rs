@@ -112,7 +112,7 @@ fn two_point_oblique_mercator_rejects_invalid_parameters() {
         let definition = format!("{} +datum=WGS84", case["definition"].as_str().unwrap());
         assert!(SpatialRef::parse(&definition).is_err(), "{definition}");
     }
-    // Values that aren't numbers are refused too, rather than read as PROJ reads them (0).
+    // Terrio also refuses nonnumeric and nonfinite parameter values.
     for definition in [
         "+proj=omerc +lat_1=bad +lon_1=0 +lat_2=40 +lon_2=10",
         "+proj=omerc +lat_1=40 +lon_1=0 +lat_2=45 +lon_2=NaN",
@@ -148,5 +148,29 @@ fn line_poles_are_refused_and_both_sides_remain_finite() {
         let actual = forward.transform(20.0, lat).unwrap();
         assert!(actual.0.abs() <= 0.001);
         assert!((actual.1 - lat.signum() * 10007543.398010286).abs() <= 0.001);
+    }
+}
+
+/// Malformed point values must not become omitted defaults in GDAL 3.13.3 WKT1 dialects.
+#[test]
+fn wkt_point_parameters_refuse_present_invalid_values() {
+    let data: serde_json::Value = serde_json::from_str(include_str!("data/omerc_two_point_reference.json")).unwrap();
+    let case = &data["cases"][0];
+    let source = SpatialRef::parse(case["source"].as_str().unwrap()).unwrap();
+    for (dialect, names) in [
+        ("wkt1", ["latitude_of_point_1", "longitude_of_point_1", "latitude_of_point_2", "longitude_of_point_2"]),
+        ("wkt1_esri", ["Latitude_Of_1st_Point", "Longitude_Of_1st_Point", "Latitude_Of_2nd_Point", "Longitude_Of_2nd_Point"]),
+    ] {
+        let wkt = case[dialect].as_str().unwrap();
+        for name in names {
+            let prefix = format!("PARAMETER[\"{name}\",");
+            let start = wkt.find(&prefix).unwrap() + prefix.len();
+            let end = start + wkt[start..].find(']').unwrap();
+            for value in ["\"bad\"", "NaN", "1e999"] {
+                let malformed = format!("{}{value}{}", &wkt[..start], &wkt[end..]);
+                let operation = SpatialRef::parse(&malformed).and_then(|target| Transformer::new(&source, &target));
+                assert!(operation.is_err(), "{dialect}: {name}={value} must be refused");
+            }
+        }
     }
 }
