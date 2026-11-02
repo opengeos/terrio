@@ -268,6 +268,40 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     let sp1 = angle(&["standardparallel1", "standardparallel", "latitudeof1ststandardparallel"]);
     let sp2 = angle(&["standardparallel2", "latitudeof2ndstandardparallel"]);
     let method = norm(root.child("PROJECTION")?.name()?);
+    if method == "hotineobliquemercatortwopointnaturalorigin" {
+        // A present but malformed value must not be dropped and replaced by a zero default.
+        for parameter in root.children("PARAMETER") {
+            let name = norm(parameter.name()?);
+            if matches!(
+                name.as_str(),
+                "latitudeofpoint1"
+                    | "latitudeof1stpoint"
+                    | "longitudeofpoint1"
+                    | "longitudeof1stpoint"
+                    | "latitudeofpoint2"
+                    | "latitudeof2ndpoint"
+                    | "longitudeofpoint2"
+                    | "longitudeof2ndpoint"
+                    | "latitudeofcenter"
+                    | "latitudeoforigin"
+                    | "latitudeofnaturalorigin"
+                    | "latitudeofcentre"
+                    | "scalefactor"
+                    | "scalefactoratnaturalorigin"
+                    | "scalefactoroninitialline"
+                    | "falseeasting"
+                    | "eastingatfalseorigin"
+                    | "eastingatprojectioncentre"
+                    | "falsenorthing"
+                    | "northingatfalseorigin"
+                    | "northingatprojectioncentre"
+            ) && !parameter.num(1)?.is_finite()
+            {
+                return None;
+            }
+        }
+    }
+
     // `x_0` and `y_0` are ESRI's names for them in `PROJ_healpix`, `PROJ_rhealpix` and `PROJ_isea`.
     let proj_method = matches!(method.as_str(), "projhealpix" | "projrhealpix") || method.starts_with("projisea");
     let fe = get(&["falseeasting", "eastingatfalseorigin", "eastingatprojectioncentre"])
@@ -385,6 +419,16 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             out.push("+proj=laea".into());
             push(&mut out, "lat_0", lat_0);
             push(&mut out, "lon_0", lon_0);
+        }
+        // PROJ's two-point form, with GDAL's and ESRI's parameter names.
+        "hotineobliquemercatortwopointnaturalorigin" => {
+            out.push("+proj=omerc".into());
+            push(&mut out, "lat_0", lat_0);
+            push(&mut out, "lat_1", angle(&["latitudeofpoint1", "latitudeof1stpoint"]));
+            push(&mut out, "lon_1", angle(&["longitudeofpoint1", "longitudeof1stpoint"]));
+            push(&mut out, "lat_2", angle(&["latitudeofpoint2", "latitudeof2ndpoint"]));
+            push(&mut out, "lon_2", angle(&["longitudeofpoint2", "longitudeof2ndpoint"]));
+            push(&mut out, "k", k.or(Some(1.0)));
         }
         "hotineobliquemercator" | "hotineobliquemercatorazimuthnaturalorigin" | "hotineobliquemercatorvarianta" => {
             out.push("+proj=omerc +no_uoff".into());

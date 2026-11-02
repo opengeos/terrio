@@ -19,9 +19,9 @@ use std::fmt::Write as _;
 /// The parameters the nodes describe. Any other (`+approx`, `+no_rot`, `+czech`, `+guam`,
 /// `+geoidgrids`...) is kept in the PROJ4 extension.
 const DESCRIBED: &[&str] = &[
-    "proj", "lat_0", "lon_0", "k", "k_0", "x_0", "y_0", "lat_1", "lat_2", "lat_ts", "lonc", "alpha", "gamma", "no_uoff", "no_off", "zone",
-    "south", "h", "sweep", "azi", "ellps", "datum", "a", "b", "rf", "f", "R", "towgs84", "pm", "units", "to_meter", "axis", "no_defs",
-    "wktext", "type", "nadgrids",
+    "proj", "lat_0", "lon_0", "k", "k_0", "x_0", "y_0", "lat_1", "lat_2", "lon_1", "lon_2", "lat_ts", "lonc", "alpha", "gamma", "no_uoff",
+    "no_off", "zone", "south", "h", "sweep", "azi", "ellps", "datum", "a", "b", "rf", "f", "R", "towgs84", "pm", "units", "to_meter",
+    "axis", "no_defs", "wktext", "type", "nadgrids",
 ];
 
 /// `(PROJ name, EPSG name, EPSG code)` of the ellipsoids GDAL names.
@@ -412,6 +412,20 @@ fn method(p: &Params, to_meter: f64) -> Option<Method> {
                 ("longitude_of_center", lon_0),
                 ("azimuth", 90.0),
                 ("rectified_grid_angle", 90.0),
+                ("scale_factor", k),
+                ("false_easting", fe),
+                ("false_northing", fn_),
+            ],
+        ),
+        // The centre line through two points, as GDAL writes PROJ's two-point form.
+        "omerc" if !p.has("alpha") && !p.has("gamma") => m(
+            "Hotine_Oblique_Mercator_Two_Point_Natural_Origin",
+            vec![
+                ("latitude_of_center", lat_0),
+                ("latitude_of_point_1", deg("lat_1").unwrap_or(0.0)),
+                ("longitude_of_point_1", deg("lon_1").unwrap_or(0.0)),
+                ("latitude_of_point_2", deg("lat_2").unwrap_or(0.0)),
+                ("longitude_of_point_2", deg("lon_2").unwrap_or(0.0)),
                 ("scale_factor", k),
                 ("false_easting", fe),
                 ("false_northing", fn_),

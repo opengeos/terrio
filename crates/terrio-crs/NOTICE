@@ -23,6 +23,8 @@ Terrio files derived from PROJ source files (each file's header names them):
   crates/terrio-crs/src/rotation.rs
   crates/terrio-crs/src/route.rs
 
+The two-point form of the Hotine oblique Mercator follows src/projections/omerc.cpp in PROJ 9.8.1.
+
 The copyright notices of those source files:
   Copyright (c) 2016, Thomas Knudsen / SDFE
   Copyright (c) 2017, Kristian Evers
@@ -155,7 +157,7 @@ CRS benchmark reference data
 -------------------------------------------------------------------------------
 
 The pair-4979-4978, pair-mars-iau, form-27700-projjson, seed-tpers, edge-tpers-back,
-seed-igh, seed-ob_tran-moll, method-qsc, method-healpix and method-rhealpix numeric fixtures are from Michael Sumner's rust-proj-capability
+seed-igh, seed-ob_tran-moll, method-qsc, method-healpix, method-rhealpix and method-omerc-2pt numeric fixtures are from Michael Sumner's rust-proj-capability
 (https://github.com/mdsumner/rust-proj-capability), revision
 ddd9fac70ec370acd9651ebb8b46035207347ad5, generated with PROJ 9.9.0.
 The CRS-study oracle version is retained separately from projection-suite data.

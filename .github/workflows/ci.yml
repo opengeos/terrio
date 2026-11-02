@@ -81,6 +81,13 @@ jobs:
         os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v7
+      # Two jobs died of a full disk while compiling, and their logs were lost: a notice records the
+      # space they started with. The toolchains removed are ones these jobs do not use.
+      - name: Reclaim runner disk
+        run: |
+          echo "::notice title=Free disk at start::$(df -h --output=size,used,avail . | tail -1)"
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          echo "::notice title=Free disk after reclaiming::$(df -h --output=size,used,avail . | tail -1)"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -94,12 +101,24 @@ jobs:
       # arrays, against GDAL's, in `float_reads`).
       - run: cargo clippy -p terrio --features ndarray --lib --test ndarray --test float_reads -- -D warnings
       - run: cargo test -p terrio --features ndarray --test ndarray --test float_reads
+      - name: Disk use of the build
+        if: always()
+        run: |
+          df -h .
+          du -sh target 2>/dev/null || echo "no target directory"
 
   gdal:
     name: GDAL backend (feature build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Two jobs died of a full disk while compiling, and their logs were lost: a notice records the
+      # space they started with. The toolchains removed are ones these jobs do not use.
+      - name: Reclaim runner disk
+        run: |
+          echo "::notice title=Free disk at start::$(df -h --output=size,used,avail . | tail -1)"
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          echo "::notice title=Free disk after reclaiming::$(df -h --output=size,used,avail . | tail -1)"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

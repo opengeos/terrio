@@ -277,6 +277,17 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("gamma", p.get(GAMMA).or(alpha));
         push("k", Some(p.get(K_CENTRE).or_else(|| p.get(K_NAT)).unwrap_or(1.0)));
         "omerc"
+    } else if is(&["hotineobliquemercatortwopointnaturalorigin"], &[]) {
+        // PROJ's two-point form (`+proj=omerc +lat_1 +lon_1 +lat_2 +lon_2`), as GDAL writes it.
+        fe = p.get(FE_CENTRE).unwrap_or(fe);
+        fn_ = p.get(FN_CENTRE).unwrap_or(fn_);
+        push("lat_0", p.get(LAT_CENTRE).or_else(lat_0));
+        push("lat_1", p.get(LAT_P1));
+        push("lon_1", p.get(LON_P1));
+        push("lat_2", p.get(LAT_P2));
+        push("lon_2", p.get(LON_P2));
+        push("k", Some(p.get(K_CENTRE).or_else(|| p.get(K_NAT)).unwrap_or(1.0)));
+        "omerc"
     } else if is(&["cassinisoldner"], &[9806]) {
         push("lat_0", lat_0());
         push("lon_0", lon_0());

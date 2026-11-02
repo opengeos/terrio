@@ -6,6 +6,14 @@
   GDAL has no driver for: files recognized by content, and query URLs read page by page as
   `ESRIJSON` reads them, with the `ESRIPBF:` prefix (#475).
 
+### Projections
+
+- `+proj=omerc` with two points (`+lat_1`/`+lon_1`, `+lat_2`/`+lon_2`) and no
+  azimuth is now computed as PROJ does; it was refused. GDAL's WKT1
+  `Hotine_Oblique_Mercator_Two_Point_Natural_Origin` (with GDAL's or ESRI's
+  parameter names) and WKT2 `Hotine Oblique Mercator Two Point Natural Origin`
+  are read, and the former is written.
+
 ## 0.6.1 (2026-11-01)
 
 - CityJSON 1.1 and 2.0 and CityGML 2.0 and 3.0 are read and written as flat XYZ features through
