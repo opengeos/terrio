@@ -7,7 +7,9 @@
 //!
 //! Reading follows GDAL's XLSX driver: the `HEADERS` and `FIELD_TYPES` open options, its detection
 //! of a header line, its field type widening, and feature ids that are row numbers. Rows without
-//! cells stay empty features. Formulas are not evaluated: a formula cell reads as its cached value.
+//! cells stay empty features. Past a gap too large to fill, GDAL's and this driver's ids count the
+//! rows seen instead. Formulas are not evaluated: a formula cell reads as its cached value. Cells out
+//! of column order are refused, where GDAL shifts the row's values.
 //!
 //! Beyond GDAL, naming coordinate or WKT columns (`X_POSSIBLE_NAMES`, `Y_POSSIBLE_NAMES`,
 //! `Z_POSSIBLE_NAMES`, `GEOM_POSSIBLE_NAMES`) reads geometries from them, and the `GEOMETRY`
@@ -450,7 +452,10 @@ fn read_part<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, name: &str) 
     }
     // Valid text keeps its bytes, so that a large part is not held twice.
     Ok(Some(match String::from_utf8(bytes) {
-        Ok(text) if text.starts_with('\u{FEFF}') => text['\u{FEFF}'.len_utf8()..].to_string(),
+        Ok(mut text) if text.starts_with('\u{FEFF}') => {
+            text.drain(..'\u{FEFF}'.len_utf8());
+            text
+        }
         Ok(text) => text,
         Err(e) => xml::decode(e.as_bytes()),
     }))
@@ -742,6 +747,10 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
         if let Some(column) = attribute(e, "r").as_deref().and_then(reference_column) {
             if column >= MAX_COLUMNS {
                 return Err(too_many_columns(part));
+            }
+            // Placed by position, a cell behind the others would shift the row's values.
+            if column < cells.len() {
+                return Err(Error::InvalidData(format!("XLSX: '{part}' has a cell out of column order")));
             }
             take_cells(budget, column.saturating_sub(cells.len()))?;
             while cells.len() < column {
@@ -1588,6 +1597,17 @@ mod tests {
         assert!(!options.xlsx.keep_geom_columns);
         assert!(options.set("KEEP_GEOM_COLUMNS", "YES").unwrap());
         assert!(options.xlsx.keep_geom_columns);
+    }
+
+    #[test]
+    fn cells_out_of_column_order_are_refused() {
+        let options = XlsxOptions::default();
+        let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
+        for row in ["<c r=\"B1\"/><c r=\"A1\"/>", "<c r=\"A1\"/><c r=\"A1\"/>"] {
+            let data = format!("<sheetData><row>{row}</row></sheetData>");
+            let result = read_sheet(&data, "s", &shared, &mut SheetTable::new(&options), &mut 100);
+            assert!(matches!(result, Err(Error::InvalidData(m)) if m.contains("column order")));
+        }
     }
 
     #[test]
