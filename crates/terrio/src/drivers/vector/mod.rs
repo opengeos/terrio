@@ -46,6 +46,7 @@ pub mod shapefile;
 pub mod sqlite;
 pub mod tab;
 pub mod topojson;
+pub mod wfs;
 pub mod wkt;
 pub mod xml;
 
@@ -91,6 +92,9 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
         VectorDriver::CityGML => citygml::parse(&citygml::read_path_bytes(path, false)?)?,
         VectorDriver::ESRIJSON => vec![esrijson::read(path)?],
         VectorDriver::ESRIPBF => vec![esripbf::read(path)?],
+        VectorDriver::WFS => {
+            return Err(crate::Error::InvalidArgument("WFS access requires a service URL, not a local feature file".into()));
+        }
         VectorDriver::GeoJSONSeq => {
             let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
             vec![geojson::parse_seq(&std::fs::read(path)?, stem)?]
@@ -164,6 +168,9 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
         VectorDriver::CityGML => citygml::parse(&bytes)?,
         VectorDriver::ESRIJSON => vec![esrijson::parse(&bytes, stem)?],
         VectorDriver::ESRIPBF => vec![esripbf::page(&bytes, stem, name)?.layer],
+        VectorDriver::WFS => {
+            return Err(crate::Error::InvalidArgument("WFS capabilities describe a service; open its endpoint with WFS:".into()));
+        }
         VectorDriver::GeoJSONSeq => vec![geojson::parse_seq(&bytes, stem)?],
         VectorDriver::CSV => {
             let tsv = crate::formats::extension(name).as_deref() == Some("tsv");

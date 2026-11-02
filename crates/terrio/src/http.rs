@@ -3390,7 +3390,7 @@ mod tests {
     // Without the GDAL backend: with it, what terrio refuses goes on to GDAL (gdal_fallback).
     #[cfg(not(feature = "gdal"))]
     #[test]
-    fn info_of_a_remote_file_named_for_no_driver_is_refused_after_its_first_bytes() {
+    fn remote_info_reads_known_vectors_and_bounds_unknown_format_probes() {
         let _serial = cache_test_guard();
         let scratch = std::env::temp_dir().to_string_lossy().into_owned();
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -3407,6 +3407,15 @@ mod tests {
             for name in ["x", "x.dat", "dir.json/x"] {
                 let url = format!("{base}/{name}");
                 let asked = asked_bytes(&seen);
+                if format == Some("GEOJSON") {
+                    let crate::info::Info::Vector(info) = crate::info::info_path(&url, &Default::default()).unwrap() else {
+                        panic!("not a vector")
+                    };
+                    assert_eq!(info.driver, "GeoJSON");
+                    assert_eq!(info.layers[0].feature_count, 1);
+                    assert!(asked_bytes(&seen) - asked >= 1_000_000, "valid vector read whole");
+                    continue;
+                }
                 let err = crate::info::info_path(&url, &Default::default()).map(|_| ()).unwrap_err().to_string();
                 let asked = asked_bytes(&seen) - asked;
                 assert!(asked <= FIRST_READ, "{url}: {asked} bytes: {err}");

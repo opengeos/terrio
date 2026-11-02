@@ -20,7 +20,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
 
-const GEOMETRIES: &[&str] = &[
+pub(crate) const GEOMETRIES: &[&str] = &[
     "Point",
     "LineString",
     "LinearRing",
@@ -170,7 +170,7 @@ fn value(v: &str, t: FieldType) -> FieldValue {
 }
 
 /// The fields an application schema declares for a feature type, in order.
-fn xsd_fields(xsd: &Element, feature: &str) -> Vec<(String, FieldType)> {
+pub(crate) fn xsd_fields(xsd: &Element, feature: &str) -> Vec<(String, FieldType)> {
     let type_name = xsd
         .children_named("element")
         .find(|e| e.attr("name") == Some(feature))
@@ -185,7 +185,7 @@ fn xsd_fields(xsd: &Element, feature: &str) -> Vec<(String, FieldType)> {
         .filter_map(|e| {
             let name = e.attr("name")?;
             let base = e.attr("type").or_else(|| e.find("restriction").and_then(|r| r.attr("base"))).unwrap_or("string");
-            if base.starts_with("gml:") {
+            if is_gml_type(xsd, e, base) {
                 return None;
             }
             let t = match base.rsplit(':').next().unwrap_or(base) {
@@ -202,6 +202,19 @@ fn xsd_fields(xsd: &Element, feature: &str) -> Vec<(String, FieldType)> {
         .collect()
 }
 
+/// Resolve a schema type QName using the declaration's in-scope namespace bindings.
+pub(crate) fn is_gml_type(schema: &Element, declaration: &Element, kind: &str) -> bool {
+    let prefix = kind.split_once(':').map_or("xmlns", |(prefix, _)| prefix);
+    fn binding<'a>(node: &'a Element, target: &Element, prefix: &str, inherited: Option<&'a str>) -> Option<Option<&'a str>> {
+        let current = node.attr(prefix).or(inherited);
+        if std::ptr::eq(node, target) {
+            return Some(current);
+        }
+        node.children.iter().find_map(|child| binding(child, target, prefix, current))
+    }
+    matches!(binding(schema, declaration, prefix, None).flatten(), Some("http://www.opengis.net/gml" | "http://www.opengis.net/gml/3.2"))
+}
+
 fn srs_name_of(g: &Element) -> Option<&str> {
     g.attr("srsName").or_else(|| g.children.iter().find_map(srs_name_of))
 }
@@ -209,7 +222,7 @@ fn srs_name_of(g: &Element) -> Option<&str> {
 /// Whether a srsName form declares the authority's axis order (latitude first for EPSG geographic
 /// CRSs): URNs and `http://www.opengis.net/def/crs/` URLs, but not `EPSG:4326` or the old
 /// `epsg.xml#4326` URLs.
-fn lat_lon_order(srs_name: &str) -> bool {
+pub(crate) fn lat_lon_order(srs_name: &str) -> bool {
     let s = srs_name.to_ascii_lowercase();
     (s.starts_with("urn:") || s.contains("/def/crs/")) && s.contains("epsg")
 }

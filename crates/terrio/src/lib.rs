@@ -280,6 +280,7 @@ pub use drivers::vector::geojson::{GeoJsonIdType, GeoJsonOptions};
 pub use drivers::vector::hecras_options::HecRasOpenOptions;
 pub use drivers::vector::kml::KmzOptions;
 pub use drivers::vector::shapefile::{OrganizePolygons, ShapefileOptions};
+pub use drivers::vector::wfs::WfsOpenOptions;
 pub use error::{Error, Result};
 pub use float_read::FloatReadOptions;
 /// The `ndarray` crate, of the version terrio's array views of raster pixels use.

@@ -1161,7 +1161,7 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &st
 // Entry points
 
 /// Whether a path may be a STAC document: a `.json` file or URL, or an API endpoint.
-fn may_be_stac(path: &str) -> bool {
+pub(crate) fn may_be_stac(path: &str) -> bool {
     let base = path.split(['?', '#']).next().unwrap_or(path).to_ascii_lowercase();
     if base.ends_with(".json") || base.ends_with(".geojson") {
         return true;

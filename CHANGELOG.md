@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Remote GeoJSON and GML responses open by detected content when their URLs have no
+  file extension, including WFS GetFeature requests (#494).
+- Native HTTP builds read WFS 1.0/1.1/2.0 services by `WFS:` endpoint or
+  GetCapabilities URL, list layers without downloading features, and read selected
+  simple-feature layers with schemas, CRS and configurable paging (#495).
+
 - The `ESRIPBF` driver reads the protocol buffer of ArcGIS feature-service queries (`f=pbf`), which
   GDAL has no driver for: files recognized by content, and query URLs read page by page as
   `ESRIJSON` reads them, with the `ESRIPBF:` prefix (#475).

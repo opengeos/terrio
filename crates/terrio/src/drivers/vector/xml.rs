@@ -91,30 +91,30 @@ pub fn decode(bytes: &[u8]) -> String {
 
 /// Parses a document and returns its root element.
 pub fn parse(text: &str) -> Result<Element> {
-    parse_with_limits(text, usize::MAX, usize::MAX)
+    parse_with_limits(text, usize::MAX, usize::MAX, false)
 }
 
-/// Parse with a caller-specific element bound and a 256-level nesting bound.
+/// Parse well-formed XML with a caller-specific element bound and a 256-level nesting bound.
 pub fn parse_limited(text: &str, max_elements: usize) -> Result<Element> {
-    parse_with_limits(text, max_elements, 256)
+    parse_with_limits(text, max_elements, 256, true)
 }
 
-fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize) -> Result<Element> {
+fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize, strict: bool) -> Result<Element> {
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("XML: {e}"));
     let mut reader = Reader::from_str(text);
-    reader.config_mut().check_end_names = false;
+    reader.config_mut().check_end_names = strict;
     let mut stack: Vec<Element> = vec![Element::default()];
     let mut elements = 0usize;
     loop {
         let event = reader.read_event().map_err(|e| err(&e))?;
         if matches!(&event, Event::Start(_) | Event::Empty(_)) {
             if elements >= max_elements {
-                return Err(Error::InvalidData(format!("XML: element count exceeds {max_elements}")));
+                return Err(Error::ResourceLimit(format!("XML: element count exceeds {max_elements}")));
             }
             elements += 1;
         }
         if matches!(&event, Event::Start(_) | Event::Empty(_)) && stack.len() > max_depth {
-            return Err(Error::InvalidData(format!("XML: nesting exceeds {max_depth} element levels")));
+            return Err(Error::ResourceLimit(format!("XML: nesting exceeds {max_depth} element levels")));
         }
         match event {
             Event::Start(e) => stack.push(element(&e)),
@@ -162,7 +162,10 @@ fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize) -> Resul
             _ => {}
         }
     }
-    // Close elements left open by a truncated document.
+    if strict && stack.len() != 1 {
+        return Err(Error::InvalidData("XML: unclosed elements in a truncated document".into()));
+    }
+    // Preserve the legacy permissive reader for ordinary file formats.
     while stack.len() > 1 {
         let el = stack.pop().unwrap_or_default();
         if let Some(parent) = stack.last_mut() {
@@ -170,6 +173,9 @@ fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize) -> Resul
         }
     }
     let doc = stack.pop().unwrap_or_default();
+    if strict && doc.children.len() != 1 {
+        return Err(Error::InvalidData("XML: expected one root element".into()));
+    }
     doc.children.into_iter().next().ok_or_else(|| Error::InvalidData("XML: no root element".into()))
 }
 

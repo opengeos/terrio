@@ -2141,3 +2141,22 @@ python -m pytest python/tests/test_omerc_two_point.py
 node --test --test-name-pattern='two-point oblique Mercator' js/tests/node.test.mjs
 python scripts/conformance.py ../terrio-data --only omerc-two-point --strict
 ```
+
+### WFS services
+
+`cargo test -p terrio --test wfs_service --test remote_vector_response` exercises
+HTTP request counts, WFS 1.0/1.1/2.0, empty schemas, axis order, paging, exceptions,
+allowlists and allocation refusals. Linux also checks a sparse page under an
+address-space limit in an isolated child process.
+
+```sh
+python scripts/compare_wfs_with_gdal.py --terrio target/release/terrio --remote
+python scripts/conformance.py ../terrio-data --only wfs --remote --strict
+```
+
+The live comparison uses the public GeoServer, QGIS Server and MapServer endpoints
+from #494/#495, with GDAL 3.13.3 as the reference. It checks layer catalogs and all
+features of the first layer: source IDs, field names, attribute values and CRS,
+plus every geometry type and vertex within absolute 1e-8 CRS units. Generated
+numeric FIDs are excluded. Unreachable references are reported as **not compared**.
+Without `--remote`, the suite records that no live comparison was performed.
