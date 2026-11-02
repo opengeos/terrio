@@ -351,10 +351,11 @@ impl GeometryColumns {
 }
 
 /// The layer a sheet's table makes.
-fn table_layer(mut table: SheetTable<'_>, name: &str, date1904: bool, budget: &mut usize) -> Result<Layer> {
+fn table_layer(mut table: SheetTable<'_>, name: &str, date1904: bool, table_budget: &mut usize) -> Result<Layer> {
     table.finish();
     let SheetTable { columns, rows, options, .. } = table;
-    take_cells(budget, rows.len().saturating_mul(columns.len()))?;
+    // The table's blanks become values too: the sheets' tables share the limit as well.
+    take_cells(table_budget, rows.len().saturating_mul(columns.len()))?;
     let geometry = GeometryColumns::find(&columns, options);
     let kept: Vec<usize> = (0..columns.len()).filter(|&i| options.keep_geom_columns || !geometry.holds(i)).collect();
     let mut layer = Layer::new(name);
@@ -409,7 +410,7 @@ fn table_layer(mut table: SheetTable<'_>, name: &str, date1904: bool, budget: &m
 
 fn take_cells(budget: &mut usize, cells: usize) -> Result<()> {
     *budget =
-        budget.checked_sub(cells).ok_or_else(|| Error::InvalidData(format!("XLSX: the workbook holds more than {MAX_CELLS} cells")))?;
+        budget.checked_sub(cells).ok_or_else(|| Error::ResourceLimit(format!("XLSX: the workbook holds more than {MAX_CELLS} cells")))?;
     Ok(())
 }
 
@@ -420,7 +421,7 @@ fn read_part<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, name: &str) 
         Err(zip::result::ZipError::FileNotFound) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    let too_large = || Error::InvalidData(format!("XLSX: part '{name}' expands to more than {MAX_PART_BYTES} bytes"));
+    let too_large = || Error::ResourceLimit(format!("XLSX: part '{name}' expands to more than {MAX_PART_BYTES} bytes"));
     if file.size() > MAX_PART_BYTES {
         return Err(too_large());
     }
@@ -639,25 +640,30 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
     let mut in_row = false;
     // The cell being read: its kind, whether its value indexes the shared strings, its text.
     let (mut in_cell, mut lookup, mut kind) = (false, false, CellKind::General);
-    let (mut value, mut in_value, mut value_seen) = (String::new(), false, false);
-    let start_row = |table: &mut SheetTable<'_>, e: &BytesStart<'_>| {
-        let Some(row) = attribute(e, "r").and_then(|r| r.parse::<usize>().ok()).filter(|&r| r > 0) else { return };
+    let (mut value, mut in_value, mut value_seen, mut in_phonetic) = (String::new(), false, false, false);
+    let start_row = |table: &mut SheetTable<'_>, e: &BytesStart<'_>, budget: &mut usize| -> Result<()> {
+        // Rows hold memory without any cell: each counts as one.
+        take_cells(budget, 1)?;
+        let Some(row) = attribute(e, "r").and_then(|r| r.parse::<usize>().ok()).filter(|&r| r > 0) else { return Ok(()) };
         let (target, line) = (row - 1, table.line);
         if target <= line {
-            return;
+            return Ok(());
         }
         let gap = target - line;
         let fields = table.first_line.len().max(table.columns.len());
         // As GDAL's driver: too big a gap is ignored rather than filled with empty rows.
         if gap > MAX_ROW_GAP || (fields > 0 && gap > MAX_GAP_CELLS / fields) {
-            return;
+            return Ok(());
         }
+        take_cells(budget, gap)?;
         for _ in 0..gap {
             table.end_line(Vec::new());
         }
+        Ok(())
     };
-    let start_cell = |e: &BytesStart<'_>, cells: &mut Vec<Cell>| -> (bool, CellKind) {
+    let start_cell = |e: &BytesStart<'_>, cells: &mut Vec<Cell>, budget: &mut usize| -> Result<(bool, CellKind)> {
         if let Some(column) = attribute(e, "r").as_deref().and_then(reference_column) {
+            take_cells(budget, column.saturating_sub(cells.len()))?;
             while cells.len() < column {
                 cells.push(Cell { kind: CellKind::Gap, value: String::new() });
             }
@@ -666,12 +672,12 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
             .and_then(|s| s.parse::<usize>().ok())
             .and_then(|s| shared.styles.get(s).copied())
             .unwrap_or(CellKind::General);
-        match attribute(e, "t").map(|t| t.to_ascii_lowercase()).as_deref() {
+        Ok(match attribute(e, "t").map(|t| t.to_ascii_lowercase()).as_deref() {
             Some("s") => (true, CellKind::Text),
             Some("inlinestr") => (false, CellKind::Text),
             Some("b") => (false, CellKind::Boolean),
             _ => (false, styled),
-        }
+        })
     };
     let end_cell = |cells: &mut Vec<Cell>, kind: CellKind, lookup: bool, value: String, budget: &mut usize| -> Result<()> {
         take_cells(budget, 1)?;
@@ -689,26 +695,27 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
             Event::Start(e) => match e.local_name().as_ref() {
                 "sheetData" => in_data = true,
                 "row" if in_data => {
-                    start_row(table, &e);
+                    start_row(table, &e, budget)?;
                     (in_row, cells) = (true, Vec::new());
                 }
                 "c" if in_row => {
-                    (lookup, kind) = start_cell(&e, &mut cells);
+                    (lookup, kind) = start_cell(&e, &mut cells, budget)?;
                     (in_cell, value_seen) = (true, false);
                     value.clear();
                 }
                 "v" if in_cell && !value_seen => in_value = true,
                 // Each run of an inline string; `rPh` runs hold a pronunciation, not text.
-                "t" if in_cell && kind == CellKind::Text => in_value = true,
+                "rPh" if in_cell => in_phonetic = true,
+                "t" if in_cell && kind == CellKind::Text && !in_phonetic => in_value = true,
                 _ => {}
             },
             Event::Empty(e) => match e.local_name().as_ref() {
                 "row" if in_data => {
-                    start_row(table, &e);
+                    start_row(table, &e, budget)?;
                     table.end_line(Vec::new());
                 }
                 "c" if in_row => {
-                    let (lookup, kind) = start_cell(&e, &mut cells);
+                    let (lookup, kind) = start_cell(&e, &mut cells, budget)?;
                     end_cell(&mut cells, kind, lookup, String::new(), budget)?;
                 }
                 _ => {}
@@ -727,6 +734,7 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
                     (in_value, value_seen) = (false, true);
                 }
                 "t" => in_value = false,
+                "rPh" => in_phonetic = false,
                 _ => {}
             },
             Event::Text(t) if in_value => value.push_str(&t.xml10_content()),
@@ -757,7 +765,7 @@ pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<V
     }
     let styles = read_part(&mut zip, "xl/styles.xml")?.map(|text| style_kinds(&text)).transpose()?.unwrap_or_default();
     let shared = SharedParts { strings, styles };
-    let mut budget = MAX_CELLS;
+    let (mut budget, mut table_budget) = (MAX_CELLS, MAX_CELLS);
     let mut layers = Vec::with_capacity(sheets.len());
     // Naming no sheet here leaves the caller to report the names there are.
     let filter = sheets.iter().any(|(name, _)| only.contains(name));
@@ -770,7 +778,7 @@ pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<V
         if let Some(text) = read_part(&mut zip, &part)? {
             read_sheet(&text, &part, &shared, &mut table, &mut budget)?;
         }
-        layers.push(table_layer(table, &name, date1904, &mut budget)?);
+        layers.push(table_layer(table, &name, date1904, &mut table_budget)?);
     }
     Ok(layers)
 }
@@ -1044,6 +1052,9 @@ fn sheet_names(layers: &[Layer]) -> Vec<String> {
 
 /// Encodes layers as a workbook, a sheet per layer.
 pub fn to_bytes(layers: &[Layer], options: &XlsxOptions) -> Result<Vec<u8>> {
+    if layers.is_empty() {
+        return Err(Error::InvalidArgument("no layers to write: a workbook needs a sheet".into()));
+    }
     let main_type = if options.macro_enabled {
         "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
     } else {
@@ -1121,6 +1132,17 @@ pub fn to_bytes(layers: &[Layer], options: &XlsxOptions) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    trait AddRows {
+        fn add_rows(self, count: usize) -> String;
+    }
+
+    impl AddRows for String {
+        fn add_rows(mut self, count: usize) -> String {
+            self.push_str(&"<row/>".repeat(count));
+            self
+        }
+    }
 
     /// A workbook of raw parts: sheets by name and XML body of `sheetData`.
     fn workbook(sheets: &[(&str, &str)], strings: &[&str], styles: &str, pr: &str) -> Vec<u8> {
@@ -1262,8 +1284,7 @@ mod tests {
 
     #[test]
     fn strings_keep_their_text() {
-        let data =
-            "<row r=\"1\"><c t=\"s\"><v>0</v></c><c t=\"s\"><v>1</v></c><c t=\"inlineStr\"><is><t> in &amp; line </t></is></c></row>";
+        let data = "<row r=\"1\"><c t=\"s\"><v>0</v></c><c t=\"s\"><v>1</v></c><c t=\"inlineStr\"><is><t> in &amp; line </t><rPh sb=\"0\" eb=\"1\"><t>ignored</t></rPh></is></c></row>";
         let strings = [
             "<t xml:space=\"preserve\"> a &lt;b&gt; </t>",
             "<r><t>rich</t></r><r><t> text</t></r><rPh sb=\"0\" eb=\"1\"><t>ignored</t></rPh>",
@@ -1353,7 +1374,23 @@ mod tests {
     fn too_many_cells_are_refused() {
         let mut budget = 1;
         assert!(take_cells(&mut budget, 1).is_ok());
-        assert!(matches!(take_cells(&mut budget, 1), Err(Error::InvalidData(m)) if m.contains("cells")));
+        assert!(matches!(take_cells(&mut budget, 1), Err(Error::ResourceLimit(m)) if m.contains("cells")));
+    }
+
+    #[test]
+    fn rows_and_padding_count_against_the_cell_limit() {
+        let table_options = XlsxOptions::default();
+        let run = |data: &str, mut budget: usize| {
+            let mut table = SheetTable::new(&table_options);
+            let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
+            read_sheet(data, "s", &shared, &mut table, &mut budget).map(|()| budget)
+        };
+        // An empty row, gap rows and gap cells all count, each once.
+        assert_eq!(run("<sheetData><row r=\"1\"/></sheetData>", 10).unwrap(), 9);
+        assert_eq!(run("<sheetData><row r=\"4\"/></sheetData>", 10).unwrap(), 6);
+        assert_eq!(run("<sheetData><row r=\"1\"><c r=\"C1\"><v>1</v></c></row></sheetData>", 10).unwrap(), 6);
+        assert!(matches!(run("<sheetData><row r=\"1\"><c r=\"ZZZ1\"/></row></sheetData>", 10), Err(Error::ResourceLimit(_))));
+        assert!(matches!(run(&"<sheetData>".to_string().add_rows(20), 10), Err(Error::ResourceLimit(_))));
     }
 
     fn sample_layer() -> Layer {

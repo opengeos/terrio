@@ -2658,7 +2658,7 @@ def suite_xlsx(ctx):
         "terrio, and terrio's workbooks read by GDAL. Field names, feature counts and values must "
         "match; numbers compared as numbers, fractions of a second within 2 ms. Known differences: "
         "a boolean column with other numbers stays boolean in GDAL, which loses the values, and GDAL "
-        "ignores HEADERS=DISABLE for cells without references.",
+        "ignored HEADERS=DISABLE on a sheet of cells without references.",
     )
     if missing_modules("osgeo"):
         s.skipped = "needs osgeo"

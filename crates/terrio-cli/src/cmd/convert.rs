@@ -436,6 +436,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 }
                 options.kmz.resources = kmz_resources(&a.kmz_resources)?;
             }
+            let xlsx_out = matches!(driver.or_else(|| VectorDriver::for_extension(&a.output)), Some(VectorDriver::XLSX));
             let tiles_out = matches!(
                 driver.or_else(|| VectorDriver::for_extension(&a.output)),
                 Some(VectorDriver::MBTiles | VectorDriver::PMTiles | VectorDriver::MVT)
@@ -443,10 +444,10 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
             for (k, v) in key_values(&a.creation_options)? {
                 let known = if tiles_out {
                     options.tiles.set(k, v)?
+                } else if xlsx_out {
+                    options.xlsx.set(k, v)?
                 } else {
-                    // XLSX shares CSV's GEOMETRY name, and each format keeps its own value.
-                    let xlsx = options.xlsx.set(k, v)?;
-                    options.csv.set(k, v)? || options.geojson.set(k, v)? || xlsx
+                    options.csv.set(k, v)? || options.geojson.set(k, v)?
                 };
                 if !known {
                     return Err(terrio::Error::InvalidArgument(format!("unknown layer creation option '{k}'")));

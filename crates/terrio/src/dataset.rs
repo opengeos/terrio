@@ -324,12 +324,9 @@ impl VectorOpenOptions {
             return Ok(true);
         }
         // The XLSX options share the names of CSV's geometry options, and each format keeps its own.
-        let xlsx = self.xlsx.set(key, value)?;
-        Ok(self.csv.set(key, value)?
-            || self.shapefile.set(key, value)?
-            || self.tiles.set(key, value)?
-            || self.hecras.set(key, value)?
-            || xlsx)
+        let known =
+            self.csv.set(key, value)? || self.shapefile.set(key, value)? || self.tiles.set(key, value)? || self.hecras.set(key, value)?;
+        Ok(self.xlsx.set(key, value)? || known)
     }
 
     /// Whether a feature range is asked for.

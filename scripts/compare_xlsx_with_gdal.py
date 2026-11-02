@@ -31,11 +31,21 @@ STYLES = (
     '<xf numFmtId="171"/><xf numFmtId="172"/><xf numFmtId="22"/></cellXfs></styleSheet>'
 )
 
-# Sheets whose difference from GDAL is intended: (case, sheet) to why.
-KNOWN_DIFFERENCES = {
-    ("HEADERS=DISABLE", "no references"): "GDAL ignores HEADERS=DISABLE for cells without references",
-    ("", "widening"): "GDAL keeps a boolean column with other numbers boolean, losing those values",
-}
+# Differences from GDAL that are intended: sheet, case, the exact differences, and why. Anything else
+# in these sheets is still unexpected.
+BOOLEAN_WIDENING = ["row 0 flag: '1' != 'true'", "row 1 flag: '5' != 'true'", "row 2 flag: '0' != 'false'"]
+BOOLEAN_WHY = "GDAL keeps a boolean column with other numbers boolean, losing those values"
+KNOWN_DIFFERENCES = [
+    (
+        "no references",
+        "read HEADERS=DISABLE",
+        ["fields ['Field1', 'Field2'] != ['id', 'name']", "2 features != 1"],
+        "GDAL ignored HEADERS=DISABLE on this sheet of cells without references",
+    ),
+    ("widening", "read defaults", BOOLEAN_WIDENING, BOOLEAN_WHY),
+    ("widening", "read HEADERS=FORCE", BOOLEAN_WIDENING, BOOLEAN_WHY),
+    ("widening", "GDAL reading terrio's fixture copy", BOOLEAN_WIDENING, BOOLEAN_WHY),
+]
 
 STRINGS = ["id", "name", "when", "x", "y", " spaced ", "a & b", "ünï", "day", "clock", "flag", "v"]
 
@@ -252,7 +262,12 @@ def same_value(a, b):
     except ValueError:
         pass
     # Fractions of a second to the millisecond: GDAL prints a float's rounding.
-    return a[:19] == b[:19] and abs(float("0" + a[19:]) - float("0" + b[19:])) < 2e-3 if len(a) >= 19 and len(b) >= 19 else False
+    if len(a) < 19 or len(b) < 19 or a[:19] != b[:19]:
+        return False
+    try:
+        return abs(float("0" + a[19:]) - float("0" + b[19:])) < 2e-3
+    except ValueError:
+        return False
 
 
 def compare(ours, theirs):
@@ -322,7 +337,7 @@ def main():
 
     def record(prefix, results):
         for name, problems in results.items():
-            known = next((why for (case, sheet), why in KNOWN_DIFFERENCES.items() if sheet == name and case in prefix), None)
+            known = next((why for sheet, case, expected, why in KNOWN_DIFFERENCES if (sheet, case) == (name, prefix) and problems == expected), None)
             detail = "; ".join(problems[:5])
             if problems and known:
                 detail = f"known: {known}: {detail}"
