@@ -16,6 +16,9 @@ env:
   CARGO_TERM_COLOR: always
   # CI restores dependencies; per-checkout incremental state is larger and not reused.
   CARGO_INCREMENTAL: 0
+  # Every test file links all of terrio, and full debug info in those binaries can fill the runner's
+  # disk. Line tables keep the file and line of a panic's backtrace.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   # Whether the real-data job runs: on every push to main, and for pull requests unless they
@@ -94,6 +97,11 @@ jobs:
       # arrays, against GDAL's, in `float_reads`).
       - run: cargo clippy -p terrio --features ndarray --lib --test ndarray --test float_reads -- -D warnings
       - run: cargo test -p terrio --features ndarray --test ndarray --test float_reads
+      - name: Disk use of the build
+        if: always()
+        run: |
+          df -h .
+          du -sh target
 
   gdal:
     name: GDAL backend (feature build)
