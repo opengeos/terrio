@@ -148,8 +148,9 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
             return Err(terrio::Error::InvalidArgument(format!("unknown open option '{k}'")));
         }
     }
-    // KMZ resources are packed by the whole-archive writer.
-    if !a.kmz_resources.is_empty() {
+    // KMZ resources are packed by the whole-archive writer, and XLSX, with its own creation
+    // options, is written whole.
+    if !a.kmz_resources.is_empty() || matches!(driver.or_else(|| VectorDriver::for_extension(&a.output)), Some(VectorDriver::XLSX)) {
         return Ok(None);
     }
     let mut write = VectorWriteOptions {
