@@ -379,6 +379,8 @@ impl PyLayer {
     ///         relative path the styles refer to them with (`{"icons/pin.png": png_bytes}`).
     ///     style_table: KML and KMZ output: shared styles, by id, as OGR style strings, for the
     ///         features whose `OGR_STYLE` is `@id`. Usually the `style_table` of the source dataset.
+    ///         A layer does not hold the table: without it, `@id` is written as it is. To give
+    ///         each feature its style in other formats, write the `VectorDataset` instead.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (path, driver=None, *, kmz_resources=None, style_table=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
     fn write(

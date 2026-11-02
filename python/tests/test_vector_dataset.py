@@ -262,3 +262,12 @@ def test_kml_style_table_is_read_and_written(tmp_path):
     # Other formats have no table to refer to: each feature gets its style.
     dataset.write(str(tmp_path / "out.geojson"))
     assert ogr_style(terrio.open_vector(str(tmp_path / "out.geojson"))) == BASE_STYLE
+
+
+def test_kml_styles_resolve_when_a_path_is_converted(tmp_path):
+    source = tmp_path / "a.kml"
+    source.write_bytes(STYLED_KML)
+    terrio.convert(str(source), str(tmp_path / "c.kml"))
+    assert b'<Style id="base">' in (tmp_path / "c.kml").read_bytes()
+    terrio.convert(str(source), str(tmp_path / "c.geojson"))
+    assert ogr_style(terrio.open_vector(str(tmp_path / "c.geojson"))) == BASE_STYLE

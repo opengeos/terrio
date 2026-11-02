@@ -1480,6 +1480,8 @@ pub struct VectorWriteOptions {
     pub kmz: crate::drivers::vector::kml::KmzOptions,
     /// KML and KMZ: shared styles to write as `<Style id>` elements, each id with its OGR style
     /// string, for the features whose `OGR_STYLE` is `@id`. See [`VectorDataset::style_table`].
+    /// Layers do not hold the table: without it, `@id` is written as it is, as a `styleUrl` with no
+    /// definition in KML. Elsewhere use [`VectorDataset::resolve_styles`] first.
     pub style_table: Vec<(String, String)>,
 }
 

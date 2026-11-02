@@ -37,6 +37,11 @@ const FIXED: &[(&str, FieldType)] = &[
     ("icon", FieldType::Text),
 ];
 
+/// How many other documents of a KMZ archive its `styleUrl`s may have read for their styles.
+const MAX_STYLE_DOCUMENTS: usize = 256;
+/// How many decompressed bytes those documents may take together.
+const MAX_STYLE_DOCUMENT_BYTES: u64 = 256 << 20;
+
 /// A KML document's layers, and its style table: style ids and their OGR style strings.
 pub type Styled = (Vec<Layer>, Vec<(String, String)>);
 
@@ -76,12 +81,12 @@ pub fn parse_kmz_styled(bytes: Vec<u8>, default_name: &str) -> Result<Styled> {
         .or_else(|| names.iter().find(|n| n.to_ascii_lowercase().ends_with(".kml")))
         .ok_or_else(|| Error::InvalidData("the KMZ archive holds no KML document".into()))?
         .clone();
-    let mut read_member = |name: &str| -> Result<String> {
+    let mut read_limited = |name: &str, limit: u64| -> Result<String> {
         let mut bytes = Vec::new();
-        zip.by_name(name)?.read_to_end(&mut bytes)?;
+        zip.by_name(name)?.take(limit).read_to_end(&mut bytes)?;
         Ok(xml::decode(&bytes))
     };
-    let root = xml::parse(&read_member(&main)?)?;
+    let root = xml::parse(&read_limited(&main, u64::MAX)?)?;
     // The documents that are layers, each with its layer name.
     let mut links = Vec::new();
     root.find_all("NetworkLink", &mut links);
@@ -91,21 +96,29 @@ pub fn parse_kmz_styled(bytes: Vec<u8>, default_name: &str) -> Result<Styled> {
         let href = href.trim_start_matches("./");
         if let Some(member) = names.iter().find(|n| n.as_str() == href) {
             let name = link.child_text("name").map_or_else(|| stem(member), str::to_string);
-            documents.push((member.clone(), xml::parse(&read_member(member)?)?, name));
+            documents.push((member.clone(), xml::parse(&read_limited(member, u64::MAX)?)?, name));
         }
     }
     // The documents styles live in, as far as links from one to the next go. Each is read once, and
-    // one that cannot be read leaves its links as raw URLs.
+    // one that cannot be read, or past the limits, leaves its links as raw URLs.
+    let mut budget = MAX_STYLE_DOCUMENT_BYTES;
     let mut members = kml_style::Members::new();
     let mut pending = kml_style::linked_members(&root, &main);
     for (member, document, _) in &documents {
         pending.extend(kml_style::linked_members(document, member));
     }
     while let Some(name) = pending.pop() {
-        if members.contains_key(&name) || !names.contains(&name) {
+        if members.contains_key(&name) || !names.contains(&name) || members.len() >= MAX_STYLE_DOCUMENTS || budget == 0 {
             continue;
         }
-        let Ok(document) = read_member(&name).and_then(|text| xml::parse(&text)) else { continue };
+        // One byte past the budget tells a document that does not fit from one that just does.
+        let Ok(text) = read_limited(&name, budget + 1) else { continue };
+        if text.len() as u64 > budget {
+            budget = 0;
+            continue;
+        }
+        budget -= text.len() as u64;
+        let Ok(document) = xml::parse(&text) else { continue };
         pending.extend(kml_style::linked_members(&document, &name));
         members.insert(name, document);
     }
@@ -482,7 +495,7 @@ pub fn kmz_bytes_styled(layers: &[Layer], styles: &[(String, String)], kmz: &Kmz
             let _ = writeln!(layer_doc, "<Document id=\"{}\">\n<name>{}</name>", xml::escape(&schema_id(l)), xml::escape(&l.name));
             let l = in_wgs84(l)?;
             let used = referenced_styles(&l);
-            layer_doc.push_str(&kml_style::definitions(styles, |id| used.iter().any(|u| u == id)));
+            layer_doc.push_str(&kml_style::definitions(styles, |id| used.contains(id)));
             layer_doc.push_str(&schema(&l));
             layer_doc.push_str(&placemarks(&l));
             layer_doc.push_str("</Document>\n</kml>\n");
@@ -604,14 +617,15 @@ pub fn to_string_styled(layers: &[Layer], styles: &[(String, String)]) -> Result
 }
 
 /// The style ids a layer's features refer to (`@id`).
-fn referenced_styles(l: &Layer) -> Vec<String> {
-    let Some(i) = l.schema.fields().iter().position(|d| d.name.eq_ignore_ascii_case(kml_style::FIELD)) else { return Vec::new() };
-    let mut out: Vec<String> = Vec::new();
+fn referenced_styles(l: &Layer) -> std::collections::HashSet<String> {
+    let Some(i) = l.schema.fields().iter().position(|d| d.name.eq_ignore_ascii_case(kml_style::FIELD)) else { return Default::default() };
+    let mut out = std::collections::HashSet::new();
     for f in &l.features {
         if let Some(FieldValue::Text(t)) = f.attributes.get(i)
-            && let Some(id) = t.strip_prefix('@').filter(|id| !out.iter().any(|u| u == id))
+            && let Some(id) = t.strip_prefix('@')
+            && !out.contains(id)
         {
-            out.push(id.to_string());
+            out.insert(id.to_string());
         }
     }
     out
@@ -1027,5 +1041,26 @@ mod tests {
         assert_eq!(table, [("s".to_string(), "PEN(c:#FF0000FF)".to_string())]);
         assert_eq!(style(&layers[0], 0), "@s");
         assert_eq!(style(&layers[1], 0), "PEN(c:#00FF00FF)");
+
+        // `#s` in a document that does not define it does not take another document's `s`.
+        let main = r#"<kml><Document><NetworkLink><Link><href>layers/a.kml</href></Link></NetworkLink><NetworkLink><Link><href>layers/b.kml</href></Link></NetworkLink></Document></kml>"#;
+        let plain = format!("<kml><Document><name>B</name>{}</Document></kml>", pin("#s", ""));
+        let kmz = archive(&[("doc.kml", main), ("layers/a.kml", &doc("ff0000ff", "A")), ("layers/b.kml", &plain)]);
+        let (layers, _) = parse_kmz_styled(kmz, "a").unwrap();
+        assert_eq!(style(&layers[0], 0), "@s");
+        assert_eq!(style(&layers[1], 0), "#s");
+    }
+
+    #[test]
+    fn style_documents_beyond_the_limits_stay_urls() {
+        let pins: String = (0..MAX_STYLE_DOCUMENTS + 8).map(|i| pin(&format!("s{i}.kml#p"), "")).collect();
+        let doc = format!("<kml><Document>{pins}</Document></kml>");
+        let shared = r#"<kml><Document><Style id="p"><LineStyle><color>ff0000ff</color></LineStyle></Style></Document></kml>"#;
+        let names: Vec<String> = (0..MAX_STYLE_DOCUMENTS + 8).map(|i| format!("s{i}.kml")).collect();
+        let mut files: Vec<(&str, &str)> = vec![("doc.kml", &doc)];
+        files.extend(names.iter().map(|n| (n.as_str(), shared)));
+        let (layers, _) = parse_kmz_styled(archive(&files), "a").unwrap();
+        let resolved = (0..layers[0].features.len()).filter(|&i| style(&layers[0], i).starts_with("PEN")).count();
+        assert_eq!(resolved, MAX_STYLE_DOCUMENTS);
     }
 }

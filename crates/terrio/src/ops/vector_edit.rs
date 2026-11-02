@@ -572,7 +572,7 @@ pub fn edit_to(input: &str, output: &str, o: &EditOptions, write: &crate::Vector
     if input == output || std::fs::canonicalize(input).ok().zip(std::fs::canonicalize(output).ok()).is_some_and(|(a, b)| a == b) {
         return Err(Error::InvalidArgument("input and output datasets must be different; use edit_in_place".into()));
     }
-    let mut layers = crate::open_vector(input, &Default::default())?.layers;
+    let mut layers = crate::open_vector(input, &Default::default())?.into_resolved_layers();
     edit_layers(&mut layers, o)?;
     let out_gpkg = write.driver.or_else(|| VectorDriver::for_extension(output)) == Some(VectorDriver::GPKG);
     if (o.has_metadata() || o.geometry_type.is_some_and(|(_, z, m)| z || m)) && !out_gpkg {
@@ -868,9 +868,10 @@ pub fn update(src: &[Layer], output: &str, o: &UpdateOptions) -> Result<UpdateCo
         });
     }
     let ds = crate::open_vector(output, &Default::default())?;
-    let mut layers = ds.layers;
+    let driver = ds.driver;
+    let mut layers = ds.into_resolved_layers();
     let counts = update_layers(&mut layers, src, o)?;
-    replace_dataset(&layers, output, &crate::VectorWriteOptions { driver: Some(ds.driver), ..Default::default() })?;
+    replace_dataset(&layers, output, &crate::VectorWriteOptions { driver: Some(driver), ..Default::default() })?;
     Ok(counts)
 }
 

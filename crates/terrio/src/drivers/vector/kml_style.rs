@@ -18,7 +18,7 @@
 //! and a `styleUrl` into another document of a KMZ resolves against that document.
 
 use super::xml::{self, Element};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 /// The name of the field holding feature styles.
@@ -146,7 +146,7 @@ pub struct Styles<'a> {
     documents: HashMap<&'a str, Definitions<'a>>,
     /// Ids whose definition here differs from the dataset's style table, which `@id` could not
     /// tell apart: this document's placemarks get the style itself.
-    shadowed: Vec<String>,
+    shadowed: HashSet<String>,
 }
 
 impl<'a> Styles<'a> {
@@ -161,29 +161,34 @@ impl<'a> Styles<'a> {
             documents.insert(name, index(&defined));
         }
         documents.insert(member, index(&own));
-        Self { own, member, documents, shadowed: Vec::new() }
+        Self { own, member, documents, shadowed: HashSet::new() }
     }
 
     /// Adds the document's styles to the dataset's style table. An id another document of the
     /// archive already defines differently keeps that definition in the table; the placemarks of
     /// this document that use it get the style itself.
     pub fn add_to(&mut self, table: &mut Vec<(String, String)>) {
+        let known: HashMap<String, String> = table.iter().cloned().collect();
         for (id, style) in self.table() {
-            match table.iter().find(|(k, _)| *k == id) {
-                Some((_, known)) if *known != style => self.shadowed.push(id),
-                Some(_) => {}
-                None => table.push((id, style)),
-            }
+            match known.get(&id) {
+                Some(definition) if *definition != style => self.shadowed.insert(id),
+                Some(_) => false,
+                None => {
+                    table.push((id, style));
+                    true
+                }
+            };
         }
     }
 
     /// The styles the document defines, by id, as OGR style strings, in document order. A style
     /// map stands for its `normal` style.
     fn table(&self) -> Vec<(String, String)> {
-        let mut out: Vec<(String, String)> = Vec::new();
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
         for e in &self.own {
             let Some(id) = e.attr("id") else { continue };
-            if out.iter().any(|(k, _)| k == id) {
+            if !seen.insert(id) {
                 continue;
             }
             let mut stack = Vec::new();
@@ -204,9 +209,18 @@ impl<'a> Styles<'a> {
         let Some(url) = f.child_text("styleUrl").map(str::trim) else { return inline.and_then(from_kml) };
         let mut stack: Vec<&Element> = Vec::new();
         self.follow(url, self.member, 0, &mut stack);
-        let own_reference = inline.is_none() && url.strip_prefix('#').is_some_and(|id| !self.shadowed.iter().any(|s| s == id));
-        if own_reference || (inline.is_none() && stack.is_empty()) {
-            return Some(reference(url));
+        if inline.is_none() {
+            let Some(id) = url.strip_prefix('#') else {
+                return if stack.is_empty() { Some(url.to_string()) } else { merged(&stack).or_else(|| Some(url.to_string())) };
+            };
+            // In a KMZ, `#id` stays inside its document: `@id` could name another document's style
+            // in the shared table, so one this document does not define stays as written.
+            if stack.is_empty() {
+                return Some(if self.member.is_empty() { format!("@{id}") } else { url.to_string() });
+            }
+            if !self.shadowed.contains(id) {
+                return Some(format!("@{id}"));
+            }
         }
         stack.splice(0..0, inline);
         merged(&stack).or_else(|| Some(reference(url)))
@@ -433,15 +447,19 @@ pub fn definitions(table: &[(String, String)], wanted: impl Fn(&str) -> bool) ->
     s
 }
 
-/// Replaces each `@id` of the layers' `OGR_STYLE` fields with its definition in a style table.
+/// Replaces each `@id` of the layers' `OGR_STYLE` fields, in any letter case as the writer takes
+/// them, with its definition in a style table.
 pub fn resolve_references(layers: &mut [wbvector::Layer], table: &[(String, String)]) {
+    if table.is_empty() {
+        return;
+    }
+    let definitions: HashMap<&str, &str> = table.iter().rev().map(|(id, style)| (id.as_str(), style.as_str())).collect();
     for layer in layers {
-        let Some(i) = layer.schema.field_index(FIELD) else { continue };
+        let Some(i) = layer.schema.fields().iter().position(|d| d.name.eq_ignore_ascii_case(FIELD)) else { continue };
         for feature in &mut layer.features {
             let Some(wbvector::FieldValue::Text(value)) = feature.attributes.get_mut(i) else { continue };
-            let definition = value.strip_prefix('@').and_then(|id| table.iter().find(|(k, _)| k == id));
-            if let Some((_, style)) = definition {
-                value.clone_from(style);
+            if let Some(style) = value.strip_prefix('@').and_then(|id| definitions.get(id)) {
+                *value = (*style).to_string();
             }
         }
     }

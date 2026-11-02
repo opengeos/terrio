@@ -49,7 +49,7 @@ impl From<Dataset> for PipelineData {
     fn from(ds: Dataset) -> Self {
         match ds {
             Dataset::Raster(r) => Self::Raster(LazyRaster::from(r)),
-            Dataset::Vector(v) => Self::Vector(v.layers),
+            Dataset::Vector(v) => Self::Vector(v.into_resolved_layers()),
         }
     }
 }
@@ -536,19 +536,19 @@ fn load_path(request: &ReadRequest, depth: usize) -> Result<PipelineInput> {
     }
     let data = match request.kind {
         InputKind::Raster => PipelineData::Raster(crate::open_raster_lazy(path)?),
-        InputKind::Vector => PipelineData::Vector(crate::open_vector(path, &Default::default())?.layers),
+        InputKind::Vector => PipelineData::Vector(crate::open_vector(path, &Default::default())?.into_resolved_layers()),
         InputKind::Auto => {
             if RasterDriver::for_extension(path).is_some() {
                 match crate::open_raster_lazy(path) {
                     Ok(r) => PipelineData::Raster(r),
                     Err(raster_error) => match crate::open_vector(path, &Default::default()) {
-                        Ok(v) => PipelineData::Vector(v.layers),
+                        Ok(v) => PipelineData::Vector(v.into_resolved_layers()),
                         Err(_) => return Err(raster_error),
                     },
                 }
             } else {
                 match crate::open_vector(path, &Default::default()) {
-                    Ok(ds) => PipelineData::Vector(ds.layers),
+                    Ok(ds) => PipelineData::Vector(ds.into_resolved_layers()),
                     Err(_) => PipelineData::Raster(crate::open_raster_lazy(path)?),
                 }
             }

@@ -49,7 +49,8 @@ fn source(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<String>>) -
         let path = path.into_os_string().into_string().map_err(|_| invalid("paths must be UTF-8"))?;
         let options = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
         let ds = with_warnings(py, || terrio::open_vector(&path, &options))?;
-        return Ok((ds.layers, Some(ds.driver)));
+        let driver = ds.driver;
+        return Ok((ds.into_resolved_layers(), Some(driver)));
     }
     let d = src.cast::<PyVectorDataset>().ok().and_then(|ds| VectorDriver::from_name(&ds.borrow().driver_name()));
     Ok((input_layers(py, src, layers)?, d))
@@ -474,7 +475,8 @@ fn edit_vector(
     if let (Some(path), Some(dst)) = (path_of(src), dst) {
         with_warnings(py, || ve::edit_to(&path, dst, &o, &write))?;
         let ds = with_warnings(py, || terrio::open_vector(dst, &Default::default()))?;
-        return dataset(py, ds.layers, Some(ds.driver));
+        let driver = ds.driver;
+        return dataset(py, ds.into_resolved_layers(), Some(driver));
     }
     if !(o.metadata.is_empty() && o.unset_metadata.is_empty() && o.layer_metadata.is_empty() && o.unset_layer_metadata.is_empty()) {
         return Err(invalid("metadata edits require input and output paths, or in_place=True"));

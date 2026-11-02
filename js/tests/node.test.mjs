@@ -3602,4 +3602,8 @@ test("a KML style table is read and written back", () => {
   }
   const geojson = JSON.parse(new TextDecoder().decode(ds.toBytes("o.geojson")));
   assert.equal(geojson.features[0].properties.OGR_STYLE, style);
+  assert.equal(ds.toGeoJSON().features[0].properties.OGR_STYLE, style);
+  // An id any object inherits a setter for is an entry like the others.
+  const odd = kml.replaceAll("base", "__proto__");
+  assert.equal(Object.getOwnPropertyDescriptor(terrio.open(new TextEncoder().encode(odd), "a.kml").styleTable, "__proto__").value, style);
 });

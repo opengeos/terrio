@@ -276,7 +276,18 @@ enum Inner {
     Vector(Vec<Layer>, VectorDriver),
 }
 
+/// A dataset's shared styles: each id with its OGR style string.
+pub(crate) type StyleTable = Rc<Vec<(String, String)>>;
+
+/// Layers with each `@id` style reference replaced by its definition in a style table.
+pub(crate) fn resolve_styles(layers: Vec<Layer>, table: &[(String, String)]) -> Vec<Layer> {
+    terrio::VectorDataset { layers, driver: VectorDriver::GeoJSON, style_table: table.to_vec() }.into_resolved_layers()
+}
+
 thread_local! {
+    /// The style tables of the datasets alive that have one, by handle: operations given datasets
+    /// as JavaScript values resolve the styles of those layers with them.
+    static STYLE_TABLES: RefCell<HashMap<u32, StyleTable>> = RefCell::default();
     /// The datasets alive, by handle: operations given datasets as JavaScript values find them
     /// here, without taking them from JavaScript.
     static DATASETS: RefCell<HashMap<u32, Weak<RefCell<Inner>>>> = RefCell::new(HashMap::new());
@@ -289,12 +300,13 @@ pub struct Dataset {
     handle: u32,
     inner: Rc<RefCell<Inner>>,
     /// The shared styles of a KML or KMZ document, by id.
-    style_table: Vec<(String, String)>,
+    style_table: StyleTable,
 }
 
 impl Drop for Dataset {
     fn drop(&mut self) {
         DATASETS.with(|d| d.borrow_mut().remove(&self.handle));
+        STYLE_TABLES.with(|t| t.borrow_mut().remove(&self.handle));
     }
 }
 
@@ -307,7 +319,7 @@ impl Dataset {
             h
         });
         DATASETS.with(|d| d.borrow_mut().insert(handle, Rc::downgrade(&inner)));
-        Self { handle, inner, style_table: Vec::new() }
+        Self { handle, inner, style_table: Rc::default() }
     }
 
     /// A raster dataset in memory.
@@ -328,8 +340,24 @@ impl Dataset {
     /// A vector dataset as a driver read it, with its style table.
     pub(crate) fn from_vector(v: terrio::VectorDataset) -> Self {
         let mut ds = Self::from_layers(v.layers, v.driver);
-        ds.style_table = v.style_table;
+        if !v.style_table.is_empty() {
+            let table = Rc::new(v.style_table);
+            STYLE_TABLES.with(|t| t.borrow_mut().insert(ds.handle, table.clone()));
+            ds.style_table = table;
+        }
         ds
+    }
+
+    /// The style table of the dataset a JavaScript value is, when it has one.
+    pub(crate) fn lookup_style_table(value: &JsValue) -> Option<StyleTable> {
+        let handle = js_sys::Reflect::get(value, &JsValue::from_str("__handle")).ok()?.as_f64()? as u32;
+        STYLE_TABLES.with(|t| t.borrow().get(&handle).cloned())
+    }
+
+    /// One layer with its style references replaced by their definitions.
+    fn resolved_layer(&self, layer: &JsValue) -> Result<Layer, JsError> {
+        let l = self.layer(layer)?.clone();
+        Ok(resolve_styles(vec![l.clone()], &self.style_table).pop().unwrap_or(l))
     }
 
     /// The dataset a JavaScript value is, when it is one.
@@ -539,12 +567,12 @@ impl Dataset {
     /// them to KML and KMZ; for other formats it gives each feature its style.
     #[wasm_bindgen(getter, js_name = styleTable)]
     pub fn style_table(&self) -> js_sys::Object {
-        let table = js_sys::Object::new();
-        for (id, style) in &self.style_table {
-            // A plain object accepts any string key.
-            let _ = js_sys::Reflect::set(&table, &JsValue::from_str(id), &JsValue::from_str(style));
+        // `fromEntries` makes own properties, whatever the id (`__proto__` included).
+        let entries = js_sys::Array::new();
+        for (id, style) in self.style_table.iter() {
+            entries.push(&js_sys::Array::of2(&JsValue::from_str(id), &JsValue::from_str(style)));
         }
-        table
+        js_sys::Object::from_entries(&entries).unwrap_or_else(|_| js_sys::Object::new())
     }
 
     /// `"raster"` or `"vector"`.
@@ -691,7 +719,7 @@ impl Dataset {
     /// object, in the layer's CRS.
     #[wasm_bindgen(js_name = toGeoJSON)]
     pub fn to_geojson(&self, layer: JsValue) -> Result<JsValue, JsError> {
-        let l = self.layer(&layer)?;
+        let l = self.resolved_layer(&layer)?;
         js_sys::JSON::parse(&wbvector::geojson::to_string(&l)).map_err(|_| JsError::new("invalid GeoJSON"))
     }
 
@@ -703,7 +731,7 @@ impl Dataset {
     /// encodings) and `coordinates` (`"separated"` or `"interleaved"`).
     #[wasm_bindgen(js_name = toArrowIPC)]
     pub fn to_arrow_ipc(&self, layer: JsValue, options: JsValue) -> Result<Vec<u8>, JsError> {
-        let l = self.layer(&layer)?;
+        let l = self.resolved_layer(&layer)?;
         #[cfg(not(feature = "parquet"))]
         {
             let _ = (l, options);
@@ -862,11 +890,10 @@ impl Dataset {
                 // A KML or KMZ output holds the shared styles; elsewhere each feature gets its style.
                 let output = options.driver.or_else(|| VectorDriver::for_extension(filename));
                 let out = if matches!(output, Some(VectorDriver::KML | VectorDriver::KMZ)) {
-                    options.style_table.clone_from(&self.style_table);
+                    options.style_table = self.style_table.as_ref().clone();
                     out
                 } else {
-                    let ds = terrio::VectorDataset { layers: out, driver: VectorDriver::GeoJSON, style_table: self.style_table.clone() };
-                    ds.into_resolved_layers()
+                    resolve_styles(out, &self.style_table)
                 };
                 terrio::memory::write_vector_bytes(&out, filename, &options).map_err(js_err)
             }

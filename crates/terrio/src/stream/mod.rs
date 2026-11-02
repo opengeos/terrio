@@ -229,7 +229,7 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
     let Some(driver) = driver.filter(|d| local && can_read_stream(*d)) else {
         let ds = crate::open_vector(path, options)?;
         return Ok(ds
-            .layers
+            .into_resolved_layers()
             .into_iter()
             .map(|mut l| {
                 let features = std::mem::take(&mut l.features);
@@ -753,7 +753,7 @@ fn open_gpkg(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Ve
 fn open_layers_whole(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Vec<FeatureReader>> {
     let ds = crate::open_vector(path, options)?;
     Ok(ds
-        .layers
+        .into_resolved_layers()
         .into_iter()
         .map(|mut l| {
             let features = std::mem::take(&mut l.features);
@@ -1892,7 +1892,7 @@ fn write_ahead(mut next: impl FnMut() -> Result<Option<Layer>> + Send, mut write
 
 fn convert_whole(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     let ds = crate::open_vector(src, &options.open)?;
-    let layers = crate::ops::vector_filter::translate_owned(ds.layers, &options.translate)?;
+    let layers = crate::ops::vector_filter::translate_owned(ds.into_resolved_layers(), &options.translate)?;
     crate::write_vector(&layers, dst, &options.write)
 }
 
