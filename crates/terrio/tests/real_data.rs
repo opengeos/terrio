@@ -860,6 +860,24 @@ fn esripbf_pages_match_the_services_own_json() {
             _ => Vec::new(),
         }
     }
+    // Keep variants, paths, rings and hole grouping separate before comparing coordinates.
+    fn structure(g: &Option<Geometry>) -> (&'static str, Vec<Vec<usize>>) {
+        match g {
+            None => ("null", vec![]),
+            Some(Geometry::Point(_)) => ("Point", vec![vec![1]]),
+            Some(Geometry::MultiPoint(cs)) => ("MultiPoint", vec![vec![cs.len()]]),
+            Some(Geometry::LineString(cs)) => ("LineString", vec![vec![cs.len()]]),
+            Some(Geometry::MultiLineString(ls)) => ("MultiLineString", ls.iter().map(|l| vec![l.len()]).collect()),
+            Some(Geometry::Polygon { exterior, interiors }) => {
+                ("Polygon", vec![std::iter::once(exterior.coords().len()).chain(interiors.iter().map(|r| r.coords().len())).collect()])
+            }
+            Some(Geometry::MultiPolygon(ps)) => (
+                "MultiPolygon",
+                ps.iter().map(|(e, hs)| std::iter::once(e.coords().len()).chain(hs.iter().map(|r| r.coords().len())).collect()).collect(),
+            ),
+            Some(other) => panic!("unexpected service geometry: {other:?}"),
+        }
+    }
     // JSON prints a single-precision number with seven significant digits: -122.1502 for what the
     // protocol buffer holds as -122.15017.
     let same = |a: &FieldValue, b: &FieldValue| match (a, b) {
@@ -898,6 +916,7 @@ fn esripbf_pages_match_the_services_own_json() {
         }
         for (i, (a, b)) in p.features.iter().zip(&j.features).enumerate() {
             assert_eq!(a.fid, b.fid, "{page}, feature {i}");
+            assert_eq!(structure(&a.geometry), structure(&b.geometry), "{page}, feature {i}: part grouping");
             let (va, vb) = (vertices(&a.geometry), vertices(&b.geometry));
             assert_eq!(va.len(), vb.len(), "{page}, feature {i}");
             for (x, y) in va.iter().zip(&vb) {

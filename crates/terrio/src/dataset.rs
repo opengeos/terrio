@@ -641,8 +641,10 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
     match (answer, recognized) {
         // Its first bytes showed ESRI JSON's signs, but a root `type` further on can say GeoJSON:
         // read the same bytes as that, without asking again.
-        (Ok(Some(bytes)), Some(VectorDriver::ESRIJSON))
-            if named.is_none() && std::str::from_utf8(&bytes).is_ok_and(|text| !esrijson::is_esrijson_document(text)) =>
+        (Ok(Some(bytes)), Some(VectorDriver::ESRIJSON | VectorDriver::ESRIPBF))
+            if named.is_none()
+                && esripbf::is_json(&bytes)
+                && std::str::from_utf8(&bytes).is_ok_and(|text| !esrijson::is_esrijson_document(text)) =>
         {
             Some(read_geojson_answer(url, bytes, options))
         }
@@ -685,7 +687,7 @@ fn read_feature_service(url: &str, first: &[u8], driver: VectorDriver, options: 
         if !esripbf::is_json(page) {
             allowed()?;
         }
-        esripbf::page(page, driver.name())
+        esripbf::page(page, driver.name(), url)
     };
     let stop_at = options.max_features.map(|max| options.skip_features.saturating_add(max));
     let layer = featureservice::read_pages(url, first, options.feature_server_paging, stop_at, &decode)?;

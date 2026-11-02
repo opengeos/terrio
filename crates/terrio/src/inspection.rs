@@ -89,10 +89,6 @@ pub fn identify_prefix(bytes: &[u8], name: &str, length: Option<u64>) -> Option<
 fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Identification> {
     let filename = crate::vfs::Location::parse(name).file_name();
     let ext = crate::formats::extension(&filename).unwrap_or_default();
-    // `.osm.pbf` names and opens OpenStreetMap alone.
-    if !filename.to_ascii_lowercase().ends_with(".osm.pbf") && crate::drivers::vector::esripbf::is_esripbf(bytes) {
-        return vector(VectorDriver::ESRIPBF);
-    }
     if [b"II*\0".as_slice(), b"MM\0*", b"II+\0", b"MM\0+"].iter().any(|magic| bytes.starts_with(magic)) {
         return raster(RasterDriver::GTiff);
     }
@@ -165,6 +161,10 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
     }
     if bytes.starts_with(b"AutoCAD Binary DXF") {
         return vector(VectorDriver::DXF);
+    }
+    // `.osm.pbf` names and opens OpenStreetMap alone.
+    if !filename.to_ascii_lowercase().ends_with(".osm.pbf") && crate::drivers::vector::esripbf::is_esripbf(bytes) {
+        return vector(VectorDriver::ESRIPBF);
     }
     if let Some(header) = bytes.get(..4) {
         let length = u32::from_be_bytes(header.try_into().expect("four bytes")) as usize;
@@ -530,6 +530,15 @@ mod tests {
         let page = r#"{"fieldAliases":{"a":"a"},"features":[]}"#;
         assert_eq!(identify_bytes(page.as_bytes(), "a.json").unwrap().driver, "ESRIJSON");
         assert_eq!(identify_bytes(br#"{"type":"Feature Layer","fieldAliases":{}}"#, "a.json").unwrap().driver, "ESRIJSON");
+    }
+
+    #[test]
+    fn hdf_user_blocks_take_precedence_over_structural_pbf_signs() {
+        let mut header = vec![0u8; 520];
+        header[..7].copy_from_slice(b"\x12\x05\x0a\x03\x0a\x01A");
+        assert!(crate::drivers::vector::esripbf::is_esripbf(&header));
+        header[512..].copy_from_slice(b"\x89HDF\r\n\x1a\n");
+        assert_eq!(identify_bytes(&header, "a.h5").unwrap().driver, "HDF5");
     }
 
     #[test]

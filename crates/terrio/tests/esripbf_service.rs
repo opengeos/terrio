@@ -93,6 +93,7 @@ fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
                 .unwrap_or(0);
             let body: Vec<u8> = match target.split('?').next().unwrap_or("/") {
                 "/query" => page(offset),
+                "/late-geojson/query" => format!(r#"{{"fieldAliases":{{}},"padding":"{}","features":[{{"type":"Feature","properties":{{"name":"kept"}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}],"type":"FeatureCollection"}}"#, "x".repeat(7000)).into_bytes(),
                 "/refused/query" | "/empty.pbf" => Vec::new(),
                 "/denied/query" => br#"{"error":{"code":498,"message":"Invalid token."}}"#.to_vec(),
                 "/count/query" => message(2, &message(2, &number(1, 5))),
@@ -129,8 +130,9 @@ fn a_query_is_read_page_by_page() {
 
 #[test]
 fn the_prefix_opens_and_the_paging_option_applies() {
-    let (base, _) = serve();
-    assert_eq!(ids(&terrio::open_vector(&format!("ESRIPBF:{base}/query"), &Default::default()).unwrap()), [1, 2, 3, 4, 5]);
+    let (base, requests) = serve();
+    assert_eq!(ids(&terrio::open_vector(&format!("ESRIPBF:{base}/query?f=pbf"), &Default::default()).unwrap()), [1, 2, 3, 4, 5]);
+    assert!(requests.lock().unwrap().iter().all(|query| query.contains("f=pbf")));
     let mut options = terrio::VectorOpenOptions::default();
     options.set("FEATURE_SERVER_PAGING", "NO").unwrap();
     assert_eq!(ids(&terrio::open_vector(&format!("{base}/query?f=pbf"), &options).unwrap()), [1, 2]);
@@ -182,4 +184,22 @@ fn a_query_that_answers_no_features_is_not_read_as_a_layer() {
     assert!(plain.unwrap_err().to_string().contains("count"));
     let named = terrio::open_vector(&format!("ESRIPBF:{base}/count/query?returnCountOnly=true&f=pbf"), &Default::default());
     assert!(named.unwrap_err().to_string().contains("count"));
+}
+
+#[test]
+fn a_late_geojson_root_type_preserves_features_for_pbf_queries() {
+    let (base, _) = serve();
+    let ds = terrio::open_vector(&format!("{base}/late-geojson/query?f=pbf"), &Default::default()).unwrap();
+    assert_eq!(ds.driver, VectorDriver::GeoJSON);
+    let feature = &ds.layers[0].features[0];
+    assert_eq!(feature.attributes, [terrio::FieldValue::Text("kept".into())]);
+    assert!(matches!(&feature.geometry, Some(terrio::Geometry::Point(c)) if c.x == 1.0 && c.y == 2.0));
+}
+
+#[test]
+fn uppercase_pbf_queries_are_paged_without_a_record_count() {
+    let (base, requests) = serve();
+    let ds = terrio::open_vector(&format!("{base}/query?f=PBF"), &Default::default()).unwrap();
+    assert_eq!(ids(&ds), [1, 2, 3, 4, 5]);
+    assert_eq!(requests.lock().unwrap().len(), 3);
 }

@@ -163,7 +163,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
         VectorDriver::CityJSON => cityjson::parse(&bytes)?,
         VectorDriver::CityGML => citygml::parse(&bytes)?,
         VectorDriver::ESRIJSON => vec![esrijson::parse(&bytes, stem)?],
-        VectorDriver::ESRIPBF => vec![esripbf::parse(&bytes, stem)?],
+        VectorDriver::ESRIPBF => vec![esripbf::page(&bytes, stem, name)?.layer],
         VectorDriver::GeoJSONSeq => vec![geojson::parse_seq(&bytes, stem)?],
         VectorDriver::CSV => {
             let tsv = crate::formats::extension(name).as_deref() == Some("tsv");

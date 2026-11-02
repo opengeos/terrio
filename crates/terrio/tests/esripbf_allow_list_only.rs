@@ -43,10 +43,42 @@ fn an_allow_list_of_esripbf_opens_it_and_not_openstreetmap() {
     // still reported.
     let path = dir.path().join("d.json");
     let named = format!("ESRIPBF:{}", path.to_str().unwrap());
-    std::fs::write(&path, br#"{"features":[{"attributes":{"A":1}}]}"#).unwrap();
+    std::fs::write(&path, br#"{"features":"invalid"}"#).unwrap();
     let e = terrio::open_vector(&named, &options).unwrap_err().to_string();
-    assert!(e.contains("ESRIJSON") && e.contains("not allowed"), "{e}");
-    std::fs::write(&path, br#"{"error":{"code":498,"message":"Invalid token."}}"#).unwrap();
+    assert!(e.contains("ESRIJSON") && e.contains("not allowed") && e.contains(path.to_str().unwrap()), "{e}");
+    std::fs::write(&path, br#"{"unrelated":[1,2,3],"error":{"code":498,"message":"Invalid token.","details":[{"unrelated":[1,2,3]}]}}"#)
+        .unwrap();
     let e = terrio::open_vector(&named, &options).unwrap_err().to_string();
     assert!(e.contains("Invalid token."), "{e}");
+    #[cfg(feature = "remote")]
+    {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming().take(2) {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap_or(0) > 0 && !line.trim().is_empty() {
+                    line.clear();
+                }
+                let body = if request.contains("/features/") {
+                    br#"{"features":"invalid"}"#.as_slice()
+                } else {
+                    br#"{"unrelated":[1,2],"error":{"code":498,"message":"Invalid token.","details":[{"nested":[1,2,3]}]}}"#.as_slice()
+                };
+                stream.write_all(&[b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".as_slice(), body].concat()).unwrap();
+            }
+        });
+        let source = format!("{base}/features/query");
+        let denied = terrio::open_vector(&format!("ESRIPBF:{source}?f=pbf&token=secret"), &options).unwrap_err().to_string();
+        assert!(denied.contains("ESRIJSON") && denied.contains("not allowed") && denied.contains(&source), "{denied}");
+        assert!(!denied.contains("secret"), "{denied}");
+        let error = terrio::open_vector(&format!("ESRIPBF:{base}/error/query?f=pbf&token=secret"), &options).unwrap_err().to_string();
+        assert!(error.contains("ESRIPBF") && error.contains("498") && error.contains("Invalid token."), "{error}");
+        server.join().unwrap();
+    }
 }

@@ -641,8 +641,8 @@ terrio info "https://example.org/arcgis/rest/services/A/FeatureServer/0/query?wh
 Without a `resultOffset` in the URL, the following pages are read while the service answers
 `exceededTransferLimit`, asking for as many features as its first page holds unless the URL gives
 a `resultRecordCount`. The open option `FEATURE_SERVER_PAGING=YES` or `NO` decides otherwise, as in
-GDAL. A page over `TERRIO_JSON_MAX_SIZE` (100 MiB by default) is an error, as are results over
-4 GiB, a page that adds nothing while saying there are more, a page with other fields than the
+GDAL. A page over `TERRIO_JSON_MAX_SIZE` (100 MiB by default) is an error, as are cumulative response bytes over
+4 GiB (a transfer cap, not a decoded-memory bound), a page that adds nothing while saying there are more, a page with other fields than the
 first, and a page the same as the one before it (a service that ignores the offset; rows without
 an object id that happen to repeat a whole page need `FEATURE_SERVER_PAGING=NO` and an offset of
 their own). Features without an object id are numbered by their place in the whole layer, or after
@@ -680,8 +680,8 @@ A URL is read as a query when it has `f=pbf` and answers one, and paging works a
 same `TERRIO_JSON_MAX_SIZE` cap on each page. A `.pbf` file, or one whose extension no driver
 claims, is recognized by its content; `.pbf` names OpenStreetMap otherwise, and `.osm.pbf` always
 names and opens OpenStreetMap. X and Y are differences from the previous vertex; Z and M are each
-vertex's own, and an M of 0 is none, as the same answer in JSON gives it (a Z of 0 is the layer's
-lowest Z, as no answer seen leaves Z out that way). An answer with coordinates must have the
+vertex's own, and an M of 0 is none, as the same answer in JSON gives it (a Z of 0 is the transform's
+Z translate, as no answer seen leaves Z out that way). An answer with coordinates must have the
 `transform` the format sends with them. The reader follows Esri's `FeatureCollection.proto`
 (Apache-2.0; see [Acknowledgements](acknowledgements.md)).
 `ESRIPBF:` before a URL or a path names the driver. A service answers a query it refuses with

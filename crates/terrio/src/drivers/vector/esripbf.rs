@@ -167,12 +167,13 @@ fn signs(bytes: &[u8]) -> Result<bool> {
 /// Reads such an answer from a file; the layer is named after it.
 pub fn read(path: &str) -> Result<Layer> {
     let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("ESRIPBF");
-    parse(&std::fs::read(path)?, stem)
+    page(&std::fs::read(path)?, stem, path).map(|page| page.layer)
 }
 
-/// Parses such an answer into a layer named `name`.
-pub fn parse(bytes: &[u8], name: &str) -> Result<Layer> {
-    page(bytes, name).map(|page| page.layer)
+/// Parses a test answer into a layer named `name`.
+#[cfg(test)]
+fn parse(bytes: &[u8], name: &str) -> Result<Layer> {
+    page(bytes, name, name).map(|page| page.layer)
 }
 
 /// How a result's integers become coordinates.
@@ -297,21 +298,58 @@ pub(crate) fn is_json(bytes: &[u8]) -> bool {
     bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes).trim_ascii_start().first() == Some(&b'{')
 }
 
+/// Finds a service error without materializing features that the allow-list refuses.
+fn json_service_error(bytes: &[u8]) -> Option<Error> {
+    use serde::de::{Error as _, MapAccess, Visitor};
+    #[derive(Default, serde::Deserialize)]
+    struct ServiceError {
+        message: Option<String>,
+        code: Option<i64>,
+    }
+    struct RootError<'a>(&'a mut Option<ServiceError>);
+    impl<'de> Visitor<'de> for RootError<'_> {
+        type Value = ();
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a JSON object")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<(), A::Error> {
+            while let Some(key) = map.next_key::<String>()? {
+                if key == "error" {
+                    *self.0 = Some(map.next_value::<Option<ServiceError>>()?.unwrap_or_default());
+                    return Err(A::Error::custom("service error found"));
+                }
+                map.next_value::<serde::de::IgnoredAny>()?;
+            }
+            Ok(())
+        }
+    }
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let mut found = None;
+    let _ = serde::Deserializer::deserialize_map(&mut serde_json::Deserializer::from_slice(bytes), RootError(&mut found));
+    found.map(|error| {
+        let message = error.message.as_deref().unwrap_or("no message");
+        let code = error.code.map(|c| format!(" ({c})")).unwrap_or_default();
+        invalid(format!("the service answered with an error{code}: {message}"))
+    })
+}
+
 /// A page of a query's results: its layer, and whether the service has more.
-pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
+pub(crate) fn page(bytes: &[u8], name: &str, source: &str) -> Result<featureservice::Page> {
     if bytes.is_empty() {
         return Err(invalid("the answer is empty"));
     }
     // A service may answer in JSON whatever was asked for. Its error is reported as this driver's;
     // its features are ESRI JSON, which an allow-list may leave out.
     if is_json(bytes) {
+        if let Err(denied) = crate::formats::check_driver_allowed("ESRIJSON", source, crate::formats::Kind::Vector) {
+            return Err(json_service_error(bytes).unwrap_or(denied));
+        }
         let relabel = |m: String| m.strip_prefix("ESRIJSON: ").map_or_else(|| m.clone(), |rest| format!("ESRIPBF: {rest}"));
         let page = super::esrijson::page(bytes, name).map_err(|e| match e {
             Error::InvalidData(m) => Error::InvalidData(relabel(m)),
             Error::InvalidArgument(m) => Error::InvalidArgument(relabel(m)),
             e => e,
         })?;
-        crate::formats::check_driver_allowed("ESRIJSON", "the answer", crate::formats::Kind::Vector)?;
         return Ok(page);
     }
     super::geojson::reserve_parse_memory(bytes.len(), "ESRIPBF")?;
@@ -737,7 +775,7 @@ mod tests {
             ),
             message(15, &[value_field(number(5, 8)), value_field(number(10, 1))].concat()),
         ]);
-        let page = page(&bytes, "lakes").unwrap();
+        let page = page(&bytes, "lakes", "lakes").unwrap();
         assert!(page.more);
         assert!(page.by_position.is_empty());
         let l = page.layer;
@@ -933,10 +971,10 @@ mod tests {
     #[test]
     fn features_without_an_object_id_say_so() {
         let bytes = answer(&[field_of("A", 4), message(15, &value_field(message(1, b"x")))]);
-        assert_eq!(page(&bytes, "x").unwrap().by_position, [0]);
+        assert_eq!(page(&bytes, "x", "x").unwrap().by_position, [0]);
         // With an object id field, those that leave it out.
         let bytes = answer(&[field_of("OBJECTID", 6), message(15, &value_field(number(5, 7))), message(15, &value_field(number(10, 1)))]);
-        assert_eq!(page(&bytes, "x").unwrap().by_position, [1]);
+        assert_eq!(page(&bytes, "x", "x").unwrap().by_position, [1]);
     }
 
     #[test]

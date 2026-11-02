@@ -51,7 +51,7 @@ pub(crate) struct Page {
     pub by_position: Vec<usize>,
 }
 
-/// The most bytes read from a service for one dataset: a service that never stops paging ends here.
+/// The most cumulative response bytes read from a service for one dataset: a service that never stops paging ends here.
 #[cfg(remote)]
 const MAX_TOTAL_BYTES: u64 = 4 << 30;
 
@@ -77,7 +77,8 @@ pub(crate) fn check_values(driver: &str, features: usize, fields: usize, documen
 #[cfg(remote)]
 pub(crate) fn is_query_url(url: &str) -> bool {
     (url.starts_with("http://") || url.starts_with("https://"))
-        && (matches!(query_value(url, "f"), Some("json" | "pjson" | "pbf")) || query_value(url, "resultRecordCount").is_some())
+        && (query_value(url, "f").is_some_and(|f| ["json", "pjson", "pbf"].iter().any(|format| f.eq_ignore_ascii_case(format)))
+            || query_value(url, "resultRecordCount").is_some())
         && !url.contains("/items?")
 }
 
@@ -90,7 +91,7 @@ pub(crate) fn is_query_path(url: &str) -> bool {
 /// Whether a URL asks for the protocol buffer.
 #[cfg(remote)]
 pub(crate) fn asks_for_pbf(url: &str) -> bool {
-    query_value(url, "f") == Some("pbf")
+    query_value(url, "f").is_some_and(|f| f.eq_ignore_ascii_case("pbf"))
 }
 
 /// The first bytes of a query's answer, from a plain request: the answer is made per request, and
@@ -314,6 +315,8 @@ mod tests {
         assert!(is_query_path("https://x.org/a/Query/?f=pbf"));
         assert!(!is_query_path("https://x.org/a.pbf?f=query"));
         assert!(asks_for_pbf("https://x.org/a/query?f=pbf"));
+        assert!(asks_for_pbf("https://x.org/a/query?f=PBF"));
+        assert!(is_query_url("https://x.org/a/query?f=PBF"));
         assert!(!asks_for_pbf("https://x.org/a/query?f=json"));
         assert!(is_query_url("https://x.org/a/query?resultRecordCount=10"));
         assert!(!is_query_url("https://x.org/ogc/collections/a/items?f=json"));
