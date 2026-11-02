@@ -54,20 +54,32 @@ def close(a, b):
     return a == b
 
 
+def check(condition, message):
+    """Keep verification active even under python -O or PYTHONOPTIMIZE."""
+    if not condition:
+        raise AssertionError(message)
+
+
 def rows(layer):
-    """Keep source gml_id values; generated numeric FIDs vary between drivers."""
-    result = {}
+    """Key complete source IDs; otherwise preserve rows, duplicates and multiplicity."""
+    result = []
     for feature in layer:
         values = dict(feature.items())
-        key = values.get("gml_id", str(feature.GetFID()))
         geometry = feature.GetGeometryRef()
-        result[key] = (
-            values,
-            json.loads(geometry.GetLinearGeometry().ExportToJson())
-            if geometry
-            else None,
+        result.append(
+            (
+                values.get("gml_id"),
+                values,
+                json.loads(geometry.GetLinearGeometry().ExportToJson())
+                if geometry
+                else None,
+            )
         )
-    return result
+    if all(key is not None for key, _, _ in result):
+        keyed = {key: (values, geometry) for key, values, geometry in result}
+        check(len(keyed) == len(result), "source IDs are not unique")
+        return keyed
+    return [(values, geometry) for _, values, geometry in result]
 
 
 def snapshot(layer):
@@ -85,21 +97,31 @@ def snapshot(layer):
 def compare_layer(reference, actual, *, inferred_gml=False):
     """Check source fields, CRS, every attribute, geometry type and vertex."""
     ref_crs, got_crs = reference["crs"], actual.GetSpatialRef()
-    assert (ref_crs is None) == (got_crs is None), "CRS presence differs"
+    check((ref_crs is None) == (got_crs is None), "CRS presence differs")
     if ref_crs:
         ref_crs.SetAxisMappingStrategy(0)
         got_crs.SetAxisMappingStrategy(0)
-        assert ref_crs.IsSame(got_crs), "CRS differs"
+        check(ref_crs.IsSame(got_crs), "CRS differs")
     ref_rows, got_rows = reference["rows"], rows(actual)
-    assert len(ref_rows) == reference["count"], "reference source IDs are not unique"
-    assert len(got_rows) == actual.GetFeatureCount(), "output source IDs are not unique"
-    assert ref_rows.keys() == got_rows.keys(), (
-        f"source IDs/counts differ ({len(ref_rows)} vs {len(got_rows)})"
+    check(len(ref_rows) == reference["count"], "reference feature read was incomplete")
+    check(
+        len(got_rows) == actual.GetFeatureCount(), "output feature read was incomplete"
     )
+    check(
+        isinstance(ref_rows, dict) == isinstance(got_rows, dict),
+        "source ID presence differs",
+    )
+    check(
+        len(ref_rows) == len(got_rows),
+        f"feature counts differ ({len(ref_rows)} vs {len(got_rows)})",
+    )
+    if isinstance(ref_rows, dict):
+        check(ref_rows.keys() == got_rows.keys(), "source IDs differ")
     ref_fields = reference["fields"]
     got_fields = {f.GetName(): f.GetType() for f in actual.schema}
-    assert ref_fields.keys() == got_fields.keys(), (
-        f"fields differ: {ref_fields.keys()} vs {got_fields.keys()}"
+    check(
+        ref_fields.keys() == got_fields.keys(),
+        f"fields differ: {ref_fields.keys()} vs {got_fields.keys()}",
     )
 
     # GeoJSON has one integral storage class and may infer Float from decimal values.
@@ -110,14 +132,32 @@ def compare_layer(reference, actual, *, inferred_gml=False):
     for key, kind in ref_fields.items():
         ref_kind, got_kind = category(kind), category(got_fields[key])
         if ref_kind != got_kind:
-            assert inferred_gml and ref_kind == "real" and got_kind == "integer", (
-                f"field type differs at {key}"
+            check(
+                inferred_gml and ref_kind == "real" and got_kind == "integer",
+                f"field type differs at {key}",
             )
             differences.append(key)
-    for key, (attributes, geometry) in ref_rows.items():
-        got_attributes, got_geometry = got_rows[key]
-        assert attributes == got_attributes, f"attributes differ at {key}"
-        assert close(geometry, got_geometry), f"geometry differs at {key}"
+    if isinstance(ref_rows, dict):
+        for key, (attributes, geometry) in ref_rows.items():
+            got_attributes, got_geometry = got_rows[key]
+            check(attributes == got_attributes, f"attributes differ at {key}")
+            check(close(geometry, got_geometry), f"geometry differs at {key}")
+    else:
+        unmatched = list(got_rows)
+        for attributes, geometry in ref_rows:
+            match = next(
+                (
+                    i
+                    for i, (values, shape) in enumerate(unmatched)
+                    if attributes == values and close(geometry, shape)
+                ),
+                None,
+            )
+            check(
+                match is not None,
+                "a feature without gml_id has no matching attributes/geometry",
+            )
+            unmatched.pop(match)
     detail = f"{len(ref_rows)} features; field names/attributes/CRS exact, every linear geometry vertex within 1e-8 CRS units; generated numeric FIDs ignored"
     if differences:
         detail += (
@@ -177,11 +217,16 @@ def main():
                     continue
                 try:
                     info = json.loads(command("info", url, "--json"))
-                    assert names == [layer["name"] for layer in info["layers"]], (
-                        "advertised layer names/order differ"
+                    check(
+                        names == [layer["name"] for layer in info["layers"]],
+                        "advertised layer names/order differ",
                     )
-                    assert info["metadata_only"] and all(
-                        layer["feature_count"] is None for layer in info["layers"]
+                    check(
+                        info["metadata_only"]
+                        and all(
+                            layer["feature_count"] is None for layer in info["layers"]
+                        ),
+                        "comparison failed",
                     )
                     record(
                         name + " catalog",

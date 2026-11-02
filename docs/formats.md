@@ -662,7 +662,8 @@ responses and estimated retained data, not total process memory. XML decoding al
 preflights a workspace estimate of 64 times the response size plus retained data,
 checking usable memory and virtual address space. A 64 MiB feature page therefore
 requires a 4 GiB workspace estimate and may be refused before reaching its byte cap.
-Service errors,
+On platforms where allocations commit backing storage, this temporary reservation
+also requires that commit capacity. Service errors,
 malformed XML and repeated pages are errors. Spatial filters use the advertised
 CRS and authority axis order; CRS84 keeps longitude first.
 

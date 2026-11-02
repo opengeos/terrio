@@ -513,7 +513,7 @@ fn validate_simple(feature: &Element, layer: &Layer, expected_crs: Option<&Spati
             return Err(Error::Unsupported("WFS: repeated or linked feature properties are not supported".into()));
         }
         if property.children.is_empty() {
-            if !layer.schema.fields().iter().any(|f| f.name == property.name) && !matches!(property.attr("nil"), Some("true" | "1")) {
+            if layer.schema.field_index(&property.name).is_none() && !matches!(property.attr("nil"), Some("true" | "1")) {
                 return Err(invalid(format!("undeclared property {}", property.name)));
             }
         } else {
@@ -653,6 +653,14 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
         }
         if layer.crs.is_none() {
             layer.crs = page.crs.take();
+        }
+        if layer
+            .geom_type
+            .is_some_and(|declared| page.features.iter().filter_map(|f| f.geometry.as_ref()).any(|g| g.geom_type() != declared))
+        {
+            // A schema hint must not override the geometries actually returned. None
+            // lets the standard layer reporter infer/promote types across all pages.
+            layer.geom_type = None;
         }
         let returned = page.features.len();
         if let Some(left) = remaining.filter(|_| paging) {

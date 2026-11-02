@@ -176,6 +176,11 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                         )
                     } else {
                         let mut data = page(if target.contains("empty") { "empty" } else { "roads" }, version, offset, count);
+                        if mode == "mixed-points" && offset == 2 {
+                            data = data
+                                .replace("<t:geom>", "<t:geom><gml:MultiPoint><gml:pointMember>")
+                                .replace("</t:geom>", "</gml:pointMember></gml:MultiPoint></t:geom>");
+                        }
                         if mode == "no-features" {
                             data = page("empty", version, 0, 0);
                         }
@@ -498,4 +503,15 @@ fn malformed_recognized_getfeature_does_not_retry_through_gdal() {
     let error = terrio::open_vector(&url, &Default::default()).unwrap_err();
     assert!(matches!(error, terrio::Error::InvalidData(_)), "{error}");
     assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn schema_geometry_hints_do_not_mislabel_mixed_pages() {
+    let (source, _) = serve("2.0.0", "mixed-points");
+    let mut options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+    options.wfs.page_size = 2;
+    let ds = terrio::open_vector(&source, &options).unwrap();
+    assert!(matches!(ds.layers[0].features[0].geometry, Some(Geometry::Point(_))));
+    assert!(matches!(ds.layers[0].features[2].geometry, Some(Geometry::MultiPoint(_))));
+    assert_eq!(terrio::vector::geometry_type_name(&ds.layers[0]), "MultiPoint");
 }
