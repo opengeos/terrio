@@ -14,7 +14,7 @@ pub struct Element {
     pub name: String,
     /// The namespace prefix, empty when there is none.
     pub prefix: String,
-    /// The attributes, by local name, unescaped.
+    /// The attributes, by qualified name, unescaped.
     pub attrs: Vec<(String, String)>,
     /// The child elements, in document order.
     pub children: Vec<Element>,
@@ -23,9 +23,23 @@ pub struct Element {
 }
 
 impl Element {
-    /// The value of an attribute, by local name.
+    /// An ordinary attribute by local name, preferring an unqualified attribute.
     pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        self.attrs
+            .iter()
+            .find(|(key, _)| key == name && key != "xmlns")
+            .or_else(|| {
+                self.attrs.iter().find(|(key, _)| key != "xmlns" && !key.starts_with("xmlns:") && key.rsplit(':').next() == Some(name))
+            })
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// A namespace declaration on this element, separate from ordinary attributes.
+    pub fn namespace(&self, prefix: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find(|(key, _)| if prefix.is_empty() { key == "xmlns" } else { key.strip_prefix("xmlns:") == Some(prefix) })
+            .map(|(_, value)| value.as_str())
     }
 
     /// The first child with a local name.
@@ -80,7 +94,7 @@ fn element(e: &BytesStart, strict: bool) -> Result<Element> {
             Err(error) if strict => return Err(Error::InvalidData(format!("XML attribute: {error}"))),
             Err(_) => String::new(),
         };
-        attrs.push((local(attribute.key.as_ref()), value));
+        attrs.push((attribute.key.as_ref().to_string(), value));
     }
     let name = e.name();
     let qname: &str = name.as_ref();

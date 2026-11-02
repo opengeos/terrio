@@ -236,7 +236,7 @@ impl Service {
         if root.name != "WFS_Capabilities" {
             return Err(invalid(format!("expected WFS_Capabilities at {}, got {}", safe_url(source), root.name)));
         }
-        let ns = root.attr(if root.prefix.is_empty() { "xmlns" } else { &root.prefix });
+        let ns = root.namespace(&root.prefix);
         if !matches!(ns, Some("http://www.opengis.net/wfs" | "http://www.opengis.net/wfs/2.0")) {
             return Err(invalid("capabilities have no WFS namespace"));
         }
@@ -281,10 +281,10 @@ impl Service {
             let namespace = if let Some((prefix, _)) = name.split_once(':') {
                 let node = item.child("Name").unwrap();
                 Some(
-                    node.attr(prefix)
-                        .or_else(|| item.attr(prefix))
-                        .or_else(|| list.attr(prefix))
-                        .or_else(|| root.attr(prefix))
+                    node.namespace(prefix)
+                        .or_else(|| item.namespace(prefix))
+                        .or_else(|| list.namespace(prefix))
+                        .or_else(|| root.namespace(prefix))
                         .filter(|uri| !uri.is_empty())
                         .ok_or_else(|| invalid(format!("feature type {name} has an unbound namespace prefix")))?
                         .to_string(),
@@ -434,8 +434,8 @@ fn layer_bytes(layer: &Layer) -> usize {
     bytes
 }
 
-fn declared_geometry(schema: &Element, local: &str) -> Option<GeometryType> {
-    gml::xsd_elements(schema, local).into_iter().filter_map(|(_, kind, geometry)| geometry.then_some(kind)).find_map(|kind| {
+fn declared_geometry(schema: &Element, local: &str) -> Result<Option<GeometryType>> {
+    Ok(gml::xsd_elements(schema, local)?.into_iter().filter_map(|(_, kind, geometry)| geometry.then_some(kind)).find_map(|kind| {
         let kind = kind.rsplit(':').next()?;
         Some(match kind {
             "PointPropertyType" => GeometryType::Point,
@@ -446,31 +446,36 @@ fn declared_geometry(schema: &Element, local: &str) -> Option<GeometryType> {
             "MultiPolygonPropertyType" | "MultiSurfacePropertyType" => GeometryType::MultiPolygon,
             _ => return None,
         })
-    })
+    }))
 }
 
-fn empty_layer(name: &str, schema: &Element, srs: Option<&str>) -> Layer {
+fn empty_layer(name: &str, schema: &Element, srs: Option<&str>) -> Result<Layer> {
     let local = name.rsplit(':').next().unwrap_or(name);
     let mut layer = Layer::new(name);
     layer.add_field(FieldDef::new("gml_id", FieldType::Text));
-    for (name, kind) in gml::xsd_fields(schema, local) {
+    for (name, kind) in gml::xsd_fields(schema, local)? {
         layer.add_field(FieldDef::new(name, kind));
     }
-    layer.geom_type = declared_geometry(schema, local);
+    layer.geom_type = declared_geometry(schema, local)?;
     if let Some(s) = srs.and_then(|s| SpatialRef::parse(s).ok()) {
         s.apply_to_layer(&mut layer);
     }
-    layer
+    Ok(layer)
 }
 
 // The general GML reader is deliberately permissive. A service must not silently drop
 // properties or linearize unsupported curves when it claims to return simple features.
-fn validate_simple(feature: &Element, layer: &Layer, expected_crs: Option<&SpatialRef>) -> Result<()> {
-    fn geometry_tree(node: &Element, expected_crs: Option<&SpatialRef>) -> Result<()> {
-        if let Some(srs) = node.attr("srsName") {
+fn validate_simple(feature: &Element, layer: &Layer, expected_crs: Option<&SpatialRef>, page_srs: Option<&str>) -> Result<()> {
+    fn geometry_tree(node: &Element, expected_crs: Option<&SpatialRef>, page_srs: Option<&str>) -> Result<()> {
+        if let Some(srs) = node.attr("srsName")
+            && Some(srs) != page_srs
+        {
             let actual = SpatialRef::parse(srs).map_err(|_| invalid("a geometry declares an unrecognized CRS"))?;
             if expected_crs.is_some_and(|expected| !expected.same_as(&actual)) {
                 return Err(invalid("a geometry CRS differs from the requested layer CRS"));
+            }
+            if actual.is_geographic() && page_srs.is_some_and(|reference| gml::lat_lon_order(reference) != gml::lat_lon_order(srs)) {
+                return Err(invalid("mixed geometry axis orders within a page are unsupported"));
             }
         }
         if node.attr("href").is_some()
@@ -496,7 +501,7 @@ fn validate_simple(feature: &Element, layer: &Layer, expected_crs: Option<&Spati
             return Err(Error::Unsupported("WFS: linked, curved or composite surface geometries are not supported".into()));
         }
         for child in &node.children {
-            geometry_tree(child, expected_crs)?;
+            geometry_tree(child, expected_crs, page_srs)?;
         }
         Ok(())
     }
@@ -520,11 +525,14 @@ fn validate_simple(feature: &Element, layer: &Layer, expected_crs: Option<&Spati
             if property.children.len() != 1 || !gml::GEOMETRIES.contains(&property.children[0].name.as_str()) {
                 return Err(Error::Unsupported("WFS: complex feature properties are not supported".into()));
             }
+            if layer.schema.field_index(&property.name).is_some() {
+                return Err(invalid("a geometry was supplied for a declared scalar property"));
+            }
             geometries += 1;
             if geometries > 1 {
                 return Err(Error::Unsupported("WFS: multiple geometry properties are not supported".into()));
             }
-            geometry_tree(&property.children[0], expected_crs)?;
+            geometry_tree(&property.children[0], expected_crs, page_srs)?;
             if gml::geometry(&property.children[0], 2).is_none() {
                 return Err(invalid("a geometry property could not be decoded"));
             }
@@ -543,8 +551,8 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
     if feature.namespace.as_deref().is_some_and(|ns| schema.attr("targetNamespace") != Some(ns)) {
         return Err(invalid("DescribeFeatureType returned a different feature namespace"));
     }
-    let expected_crs = feature.srs.as_deref().and_then(|s| SpatialRef::parse(s).ok());
-    let mut layer = empty_layer(&feature.name, &schema, feature.srs.as_deref());
+    let mut expected_crs = feature.srs.as_deref().and_then(|s| SpatialRef::parse(s).ok());
+    let mut layer = empty_layer(&feature.name, &schema, feature.srs.as_deref())?;
     budget.charge(layer_bytes(&layer))?;
     if options.max_features == Some(0) {
         return Ok(layer);
@@ -592,6 +600,16 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
             if root.name != "FeatureCollection" {
                 return Err(invalid(format!("GetFeature returned {}, not a feature collection", root.name)));
             }
+            let page_srs = gml::collection_srs_name(&root);
+            if let Some(srs) = page_srs {
+                let actual = SpatialRef::parse(srs).map_err(|_| invalid("a geometry declares an unrecognized CRS"))?;
+                if expected_crs.as_ref().is_some_and(|expected| !expected.same_as(&actual)) {
+                    return Err(invalid("a geometry CRS differs from the requested layer CRS"));
+                }
+                if expected_crs.is_none() {
+                    expected_crs = Some(actual);
+                }
+            }
             let matched = root.attr("numberMatched").and_then(|n| n.parse::<usize>().ok());
             let mut rows = 0usize;
             for member in &root.children {
@@ -603,12 +621,16 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
                     for feature in &member.children {
                         // Collection/member/feature are the only namespace scopes on this
                         // known path. Avoid rescanning earlier features for every row.
-                        let key = if feature.prefix.is_empty() { "xmlns" } else { &feature.prefix };
-                        let actual = feature.attr(key).or_else(|| member.attr(key)).or_else(|| root.attr(key)).filter(|s| !s.is_empty());
+                        let prefix = &feature.prefix;
+                        let actual = feature
+                            .namespace(prefix)
+                            .or_else(|| member.namespace(prefix))
+                            .or_else(|| root.namespace(prefix))
+                            .filter(|s| !s.is_empty());
                         if actual != namespace {
                             return Err(invalid("GetFeature returned a different feature namespace"));
                         }
-                        validate_simple(feature, &layer, expected_crs.as_ref())?;
+                        validate_simple(feature, &layer, expected_crs.as_ref(), page_srs)?;
                     }
                 }
             }
@@ -620,7 +642,7 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
                 }
                 layers.remove(0)
             } else {
-                empty_layer(&feature.name, &schema, feature.srs.as_deref())
+                empty_layer(&feature.name, &schema, feature.srs.as_deref())?
             };
             (page, matched)
         };

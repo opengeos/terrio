@@ -667,7 +667,8 @@ also requires that commit capacity. Service errors,
 malformed XML and repeated pages are errors. Spatial filters use the advertised
 CRS and authority axis order; CRS84 keeps longitude first.
 
-This driver reads inline GML 2/3/3.2 simple features. Transactions, complex or
+This driver reads inline GML 2/3/3.2 simple features. Imported application type
+definitions and mixed geometry CRS/axis orders are rejected. Transactions, complex or
 repeated properties, linked geometries, multiple geometry columns, nonlinear
 curves and composite surface patches are unsupported and reported as errors.
 It has no WebAssembly network interface: fetch a GetFeature response and open its

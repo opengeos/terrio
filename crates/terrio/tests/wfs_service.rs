@@ -108,6 +108,9 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
             let operation = parameter(&target, "REQUEST").unwrap_or("");
             let body = if operation.eq_ignore_ascii_case("GetCapabilities") {
                 let mut caps = capabilities(&endpoint, version);
+                if mode.starts_with("no-default") {
+                    caps = caps.replace("<DefaultCRS>urn:ogc:def:crs:EPSG::4326</DefaultCRS>", "");
+                }
                 if mode == "crs84-urn" {
                     caps = caps.replace("urn:ogc:def:crs:EPSG::4326", "urn:ogc:def:crs:OGC:1.3:CRS84");
                 }
@@ -145,6 +148,11 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                         .replace("xmlns:gml=", "xmlns:gml32=")
                         .replace("http://www.opengis.net/gml\"", "http://www.opengis.net/gml/3.2\"")
                         .replace("gml:", "gml32:");
+                }
+                if mode == "imported-type" {
+                    xsd = xsd
+                        .replace(r#"targetNamespace="urn:test""#, r#"xmlns:foreign="urn:foreign" targetNamespace="urn:test""#)
+                        .replace(&format!(r#"type="t:{name}Type""#), &format!(r#"type="foreign:{name}Type""#));
                 }
                 if mode == "dense" {
                     let fields =
@@ -193,11 +201,25 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                         if mode == "bad-point" {
                             data = data.replace("<gml:pos>50 10</gml:pos>", "<gml:pos>invalid coordinates</gml:pos>");
                         }
-                        if mode == "wrong-crs" {
+                        if matches!(mode, "wrong-crs" | "no-default-mixed") {
                             data = data.replace(
                                 r#"srsName="urn:ogc:def:crs:EPSG::4326"><gml:pos>51 11"#,
                                 r#"srsName="urn:ogc:def:crs:EPSG::3857"><gml:pos>51 11"#,
                             );
+                        }
+                        if mode == "no-default-axis" {
+                            data = data
+                                .replace(r#"srsName="urn:ogc:def:crs:EPSG::4326"><gml:pos>51 11"#, r#"srsName="EPSG:4326"><gml:pos>11 51"#);
+                        }
+                        if mode == "shadow-ns" {
+                            data = data.replace(r#"xmlns:t="urn:test""#, r#"xmlns:o="urn:noise" o:t="urn:test" xmlns:t="urn:other""#);
+                        }
+                        if mode == "shadow-ns-good" {
+                            data = data.replace(r#"xmlns:t="urn:test""#, r#"xmlns:o="urn:noise" o:t="urn:other" xmlns:t="urn:test""#);
+                        }
+                        if mode == "scalar-geometry" {
+                            data = data.replace(r#"<t:geom><gml:Point srsName="urn:ogc:def:crs:EPSG::4326"><gml:pos>50 10</gml:pos></gml:Point></t:geom>"#, "")
+                                .replace("<t:name>point1</t:name>", "<t:name><gml:Point><gml:pos>50 10</gml:pos></gml:Point></t:name>");
                         }
                         if mode == "bad-entity-attribute" {
                             data = data.replace("roads.1", "a&unknown;b");
@@ -514,4 +536,48 @@ fn schema_geometry_hints_do_not_mislabel_mixed_pages() {
     assert!(matches!(ds.layers[0].features[0].geometry, Some(Geometry::Point(_))));
     assert!(matches!(ds.layers[0].features[2].geometry, Some(Geometry::MultiPoint(_))));
     assert_eq!(terrio::vector::geometry_type_name(&ds.layers[0]), "MultiPoint");
+}
+
+#[test]
+fn foreign_schema_type_names_cannot_resolve_to_local_collisions() {
+    let (source, requests) = serve("2.0.0", "imported-type");
+    let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+    let error = terrio::open_vector(&source, &options).unwrap_err();
+    assert!(matches!(&error, terrio::Error::Unsupported(message) if message.contains("external application-schema")), "{error}");
+    assert_eq!(requests.lock().unwrap().len(), 2, "reject before fetching features or following imports");
+}
+
+#[test]
+fn undeclared_default_crs_uses_the_first_geometry_and_refuses_later_mismatches() {
+    let (source, _) = serve("2.0.0", "no-default");
+    let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+    let ds = terrio::open_vector(&source, &options).unwrap();
+    assert_eq!(ds.layers[0].crs_epsg(), Some(4326));
+    for page_size in [1, 1000] {
+        let (source, _) = serve("2.0.0", "no-default-mixed");
+        let mut options = options.clone();
+        options.wfs.page_size = page_size;
+        let error = terrio::open_vector(&source, &options).unwrap_err();
+        assert!(error.to_string().contains("CRS differs"), "{error}");
+    }
+    let (source, _) = serve("2.0.0", "no-default-axis");
+    assert!(terrio::open_vector(&source, &options).unwrap_err().to_string().contains("axis orders"));
+}
+
+#[test]
+fn geometry_in_a_scalar_property_is_an_error() {
+    let (source, _) = serve("2.0.0", "scalar-geometry");
+    let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+    let error = terrio::open_vector(&source, &options).unwrap_err();
+    assert!(error.to_string().contains("scalar property"), "{error}");
+}
+
+#[test]
+fn ordinary_attributes_cannot_shadow_namespace_declarations() {
+    let (source, _) = serve("2.0.0", "shadow-ns-good");
+    let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+    assert_eq!(terrio::open_vector(&source, &options).unwrap().layers[0].features.len(), 5);
+    let (source, _) = serve("2.0.0", "shadow-ns");
+    let error = terrio::open_vector(&source, &options).unwrap_err();
+    assert!(error.to_string().contains("feature namespace"), "{error}");
 }
