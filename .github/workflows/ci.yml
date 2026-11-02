@@ -94,6 +94,11 @@ jobs:
       # arrays, against GDAL's, in `float_reads`).
       - run: cargo clippy -p terrio --features ndarray --lib --test ndarray --test float_reads -- -D warnings
       - run: cargo test -p terrio --features ndarray --test ndarray --test float_reads
+      - name: Disk use of the build
+        if: always()
+        run: |
+          df -h .
+          du -sh target 2>/dev/null || echo "no target directory"
 
   gdal:
     name: GDAL backend (feature build)
