@@ -170,9 +170,9 @@ fn fields_times_features_cannot_exceed_what_the_document_justifies() {
     let path = dir.path().join("q.json");
     std::fs::write(&path, &doc).unwrap();
     let err = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap_err();
-    assert!(matches!(&err, terrio::Error::InvalidArgument(m) if m.contains("features of 20000 fields")), "{err}");
+    assert!(matches!(&err, terrio::Error::ResourceLimit(m) if m.contains("features of 20000 fields")), "{err}");
     let err = terrio::memory::open_vector_bytes(doc.into_bytes(), "q.json", &Default::default()).unwrap_err();
-    assert!(matches!(&err, terrio::Error::InvalidArgument(m) if m.contains("features of 20000 fields")), "{err}");
+    assert!(matches!(&err, terrio::Error::ResourceLimit(m) if m.contains("features of 20000 fields")), "{err}");
 }
 
 #[test]

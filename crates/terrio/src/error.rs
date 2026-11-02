@@ -27,9 +27,14 @@ pub enum Error {
     /// An argument or option is invalid.
     #[error("{0}")]
     InvalidArgument(String),
+    /// Reading a document would exceed a resource budget or available allocation capacity.
+    /// This refusal is terminal: the optional GDAL fallback must not retry it.
+    #[error("{0}")]
+    ResourceLimit(String),
     /// A decoded payload exceeded a decoded-byte limit: a PMTiles directory, metadata or tile
     /// (`PmTilesReadLimits`), a GeoTIFF chunk or tag value (`TiffReadLimits`), or a
-    /// bounded VSI file read (after archive decompression).
+    /// bounded VSI file read (after archive decompression). This refusal is never retried
+    /// through the optional GDAL fallback.
     #[error("{resource} exceeds decoded-byte limit {limit}")]
     DecodedLimitExceeded {
         /// The payload kind (directory, metadata, tile, TIFF chunk/tag, or VSI file).

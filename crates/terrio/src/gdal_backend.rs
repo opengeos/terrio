@@ -1015,6 +1015,7 @@ fn epsg_match(srs: &gdal::spatial_ref::SpatialRef) -> Option<u32> {
 }
 
 fn vector_from(ds: GdalDataset, path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    let mut budget = VectorBudget::from_env()?;
     let names: Vec<String> = ds.layers().map(|l| l.name()).collect();
     if names.is_empty() {
         return Err(Error::Unsupported(format!("'{path}' has no vector layers")));
@@ -1028,7 +1029,7 @@ fn vector_from(ds: GdalDataset, path: &str, options: &VectorOpenOptions) -> Resu
         if let Some((x0, y0, x1, y1)) = options.spatial_filter {
             layer.set_spatial_filter_rect(x0, y0, x1, y1);
         }
-        layers.push(layer_from(&mut layer, &name)?);
+        layers.push(layer_from(&mut layer, &name, &mut budget)?);
     }
     if layers.is_empty() {
         return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
@@ -1037,10 +1038,48 @@ fn vector_from(ds: GdalDataset, path: &str, options: &VectorOpenOptions) -> Resu
     Ok(finish_vector(layers, strip_prefix(path).unwrap_or(path), VectorDriver::Gdal))
 }
 
-fn layer_from(layer: &mut gdal::vector::Layer, name: &str) -> Result<Layer> {
+/// Bounds the estimated retained vector data across every selected layer of one read.
+/// GDAL's own parser allocations and temporary conversions are outside this budget.
+struct VectorBudget {
+    remaining: usize,
+    limit: usize,
+}
+
+impl VectorBudget {
+    fn from_env() -> Result<Self> {
+        let limit = match std::env::var("TERRIO_GDAL_MAX_VECTOR_BYTES") {
+            Ok(value) => value.trim().parse::<usize>().ok().filter(|n| *n > 0),
+            Err(std::env::VarError::NotPresent) => Some(1 << 30),
+            Err(_) => None,
+        }
+        .ok_or_else(|| Error::InvalidArgument("TERRIO_GDAL_MAX_VECTOR_BYTES must be a positive integer".into()))?;
+        Ok(Self { remaining: limit, limit })
+    }
+
+    fn charge(&mut self, bytes: usize) -> Result<()> {
+        self.remaining = self
+            .remaining
+            .checked_sub(bytes)
+            .ok_or_else(|| Error::ResourceLimit(format!("GDAL vector data exceeds TERRIO_GDAL_MAX_VECTOR_BYTES={}", self.limit)))?;
+        Ok(())
+    }
+}
+
+fn layer_from(layer: &mut gdal::vector::Layer, name: &str, budget: &mut VectorBudget) -> Result<Layer> {
     let mut out = Layer::new(name);
     let defn = layer.defn();
     out.geom_type = geometry_type(defn.geometry_type());
+    let field_count = defn.fields().count();
+    budget.charge(std::mem::size_of::<Layer>())?;
+    budget.charge(field_count.saturating_mul(std::mem::size_of::<FieldDef>() + std::mem::size_of::<OGRFieldType::Type>()))?;
+    // Check cheap counts before reading even the first feature of a huge sparse layer.
+    if let Some(count) = layer.try_feature_count() {
+        let per_feature = std::mem::size_of::<Feature>().saturating_add(field_count.saturating_mul(std::mem::size_of::<FieldValue>()));
+        let bytes = usize::try_from(count).ok().and_then(|n| n.checked_mul(per_feature));
+        if bytes.is_none_or(|n| n > budget.remaining) {
+            return Err(Error::ResourceLimit(format!("GDAL vector data exceeds TERRIO_GDAL_MAX_VECTOR_BYTES={}", budget.limit)));
+        }
+    }
     let kinds: Vec<OGRFieldType::Type> = defn.fields().map(|f| f.field_type()).collect();
     for field in defn.fields() {
         let t = match field.field_type() {
@@ -1054,7 +1093,9 @@ fn layer_from(layer: &mut gdal::vector::Layer, name: &str) -> Result<Layer> {
             }
             _ => FieldType::Text,
         };
-        let mut def = FieldDef::new(field.name(), t);
+        let field_name = field.name();
+        budget.charge(field_name.len())?;
+        let mut def = FieldDef::new(field_name, t);
         if field.width() > 0 {
             def = def.width(field.width() as usize);
         }
@@ -1072,14 +1113,34 @@ fn layer_from(layer: &mut gdal::vector::Layer, name: &str) -> Result<Layer> {
         }
     }
     for (i, feature) in layer.features().enumerate() {
+        // Null/missing values still occupy a full FieldValue each. Charge before allocation.
+        budget.charge(std::mem::size_of::<Feature>())?;
+        budget.charge(kinds.len().saturating_mul(std::mem::size_of::<FieldValue>()))?;
+        // WKB underestimates Rust's nested coordinate/vector storage; use a conservative factor.
+        // This is an estimate, not a bound on GDAL's parser or curve linearization workspace.
+        if let Some(g) = feature.geometry() {
+            // SAFETY: a size query on the valid borrowed geometry of this feature.
+            let bytes = unsafe { gdal_sys::OGR_G_WkbSize(g.c_geometry()) };
+            budget.charge(usize::try_from(bytes).unwrap_or(usize::MAX).saturating_mul(8))?;
+        }
         let geometry = feature.geometry().map(geometry_from).transpose()?.flatten();
-        let attributes = (0..kinds.len())
-            .map(|k| match feature.field(k) {
+        let mut attributes = Vec::new();
+        attributes.try_reserve_exact(kinds.len()).map_err(|_| Error::ResourceLimit("GDAL: cannot allocate feature attributes".into()))?;
+        for (k, kind) in kinds.iter().enumerate() {
+            let value = match feature.field(k) {
                 Ok(Some(v)) => value_from(v),
-                Ok(None) if kinds[k] == OGRFieldType::OFTBinary => binary_field(&feature, k),
+                Ok(None) if *kind == OGRFieldType::OFTBinary => binary_field(&feature, k),
                 _ => FieldValue::Null,
-            })
-            .collect();
+            };
+            let bytes = match &value {
+                FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => s.len(),
+                FieldValue::Blob(b) => b.len(),
+                _ => 0,
+            };
+            budget.charge(bytes)?;
+            attributes.push(value);
+        }
+        out.features.try_reserve(1).map_err(|_| Error::ResourceLimit("GDAL: cannot allocate features".into()))?;
         out.push(Feature { fid: feature.fid().unwrap_or(i as u64), geometry, attributes });
     }
     Ok(out)
@@ -1167,5 +1228,46 @@ fn binary_field(feature: &gdal::vector::Feature, field: usize) -> FieldValue {
             return FieldValue::Blob(Vec::new());
         }
         FieldValue::Blob(std::slice::from_raw_parts(ptr, len as usize).to_vec())
+    }
+}
+
+#[cfg(test)]
+mod limits_tests {
+    use super::*;
+
+    /// A real GDAL read, checked against GDAL 3.13.3. Sparse fields still require dense cells.
+    #[test]
+    fn sparse_vector_reads_obey_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sparse.json");
+        let fields: Vec<_> = (0..100).map(|i| format!(r#"{{"name":"f{i}","type":"esriFieldTypeString"}}"#)).collect();
+        std::fs::write(
+            &path,
+            format!(r#"{{"fields":[{}],"features":[{}]}}"#, fields.join(","), vec![r#"{"attributes":{}}"#; 100].join(",")),
+        )
+        .unwrap();
+        let ds = gdal_open(path.to_str().unwrap(), GdalOpenFlags::GDAL_OF_VECTOR).unwrap();
+        let mut layer = ds.layer(0).unwrap();
+        let mut budget = VectorBudget { remaining: 32_000, limit: 32_000 };
+        assert!(matches!(layer_from(&mut layer, "sparse", &mut budget), Err(Error::ResourceLimit(_))));
+        let mut budget = VectorBudget { remaining: 1 << 20, limit: 1 << 20 };
+        let out = layer_from(&mut layer, "sparse", &mut budget).unwrap();
+        assert_eq!(out.features.len(), 100);
+        // GDAL 3.13.3 exposes absent ESRIJSON string attributes as empty strings.
+        assert_eq!(out.features[0].attributes, vec![FieldValue::Text(String::new()); 100]);
+    }
+
+    #[test]
+    fn vector_payload_and_multiple_layers_share_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text.geojson");
+        std::fs::write(&path, format!(r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{"text":"{}"}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}]}}"#, "x".repeat(8192))).unwrap();
+        let ds = gdal_open(path.to_str().unwrap(), GdalOpenFlags::GDAL_OF_VECTOR).unwrap();
+        let mut layer = ds.layer(0).unwrap();
+        let mut budget = VectorBudget { remaining: 4096, limit: 4096 };
+        assert!(matches!(layer_from(&mut layer, "text", &mut budget), Err(Error::ResourceLimit(_))));
+        let mut budget = VectorBudget { remaining: 16_384, limit: 16_384 };
+        assert!(layer_from(&mut layer, "first", &mut budget).is_ok());
+        assert!(matches!(layer_from(&mut layer, "second", &mut budget), Err(Error::ResourceLimit(_))));
     }
 }

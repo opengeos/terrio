@@ -409,6 +409,8 @@ cd "$(mktemp -d)" && python -m mypy.stubtest terrio  # outside the source tree
 Errors raise `terrio.TerrioError` subclasses, which also derive from the matching built-in
 exceptions: `NotFoundError` is a `FileNotFoundError`, `TerrioIOError` an `OSError`, and
 `InvalidArgumentError`, `CRSError`, `UnsupportedError` and `InvalidDataError` are `ValueError`s.
+`ResourceLimitError` is a `MemoryError`: reading exceeded a resource budget or available
+allocation capacity, including decoded-byte limits.
 
 ## Building from source
 
