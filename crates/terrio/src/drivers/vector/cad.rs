@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 use std::io::Cursor;
-use std::sync::Arc;
 
 use acadrust::entities::hatch::{BoundaryEdge, BoundaryPath, PolylineEdge};
 use acadrust::entities::{EntityType, Hatch, Line, Point, Polyline3D, Text};
@@ -31,8 +30,13 @@ const MAX_CAD_WORK: usize = 1_000_000;
 
 pub(crate) fn parse(bytes: Vec<u8>, driver: VectorDriver) -> Result<Layer> {
     // Shared rather than copied: the GDAL branch below needs the bytes only for a rare drawing.
-    let bytes = Arc::new(bytes);
-    let stream = Cursor::new(SharedBytes(Arc::clone(&bytes)));
+    #[cfg(feature = "gdal")]
+    let bytes = std::sync::Arc::new(bytes);
+    #[cfg(feature = "gdal")]
+    let stream = Cursor::new(SharedBytes(std::sync::Arc::clone(&bytes)));
+    // Otherwise the reader takes them, and frees them before the expansion.
+    #[cfg(not(feature = "gdal"))]
+    let stream = Cursor::new(bytes);
     let doc = if driver == VectorDriver::DWG {
         DwgReader::from_stream(stream).read().map_err(codec_error)?
     } else {
@@ -47,7 +51,7 @@ pub(crate) fn parse(bytes: Vec<u8>, driver: VectorDriver) -> Result<Layer> {
     #[cfg(feature = "gdal")]
     {
         let name = if driver == VectorDriver::DWG { "drawing.dwg" } else { "drawing.dxf" };
-        if crate::gdal_backend::open_vector_bytes(Arc::unwrap_or_clone(bytes), name, &Default::default()).is_ok() {
+        if crate::gdal_backend::open_vector_bytes(std::sync::Arc::unwrap_or_clone(bytes), name, &Default::default()).is_ok() {
             return Err(Error::Unsupported(format!("CAD: {}", skipped_summary(&skipped))));
         }
     }
@@ -56,8 +60,10 @@ pub(crate) fn parse(bytes: Vec<u8>, driver: VectorDriver) -> Result<Layer> {
 }
 
 /// The readers need an owning stream, and `Arc<Vec<u8>>` is not `AsRef<[u8]>`.
-struct SharedBytes(Arc<Vec<u8>>);
+#[cfg(feature = "gdal")]
+struct SharedBytes(std::sync::Arc<Vec<u8>>);
 
+#[cfg(feature = "gdal")]
 impl AsRef<[u8]> for SharedBytes {
     fn as_ref(&self) -> &[u8] {
         &self.0
@@ -203,6 +209,8 @@ fn expand_entity(
                 Err(error) => return Err(error),
             }
         }
+        // The upstream expander reads the block record and has no way to exclude a member, so the
+        // refused ones are taken out for the call. The record is restored for later INSERTs.
         let partial = kept.len() < handles.len();
         if partial {
             set_block_members(doc, &insert.block_name, kept);
@@ -212,6 +220,7 @@ fn expand_entity(
             set_block_members(doc, &insert.block_name, handles);
         }
         budget.spend(parts.len())?;
+        // Every member was refused and is already counted: the INSERT itself is not at fault.
         if parts.is_empty() && partial {
             return Ok(());
         }
@@ -413,11 +422,11 @@ fn geometry(entity: &EntityType) -> Result<Geometry> {
                 let corners = face.vertex_indices().into_iter().filter(|i| *i != 0);
                 corners.map(|i| m.vertex(i).map(|v| v.location)).collect::<Option<Vec<_>>>()
             });
-            mesh_geometry(faces).ok_or_else(|| unsupported_mesh(entity))??
+            mesh_geometry(faces)?.ok_or_else(|| unsupported_mesh(entity))?
         }
         EntityType::Mesh(m) => {
             let faces = m.faces.iter().map(|face| face.vertices.iter().map(|i| m.vertices.get(*i).copied()).collect::<Option<Vec<_>>>());
-            mesh_geometry(faces).ok_or_else(|| unsupported_mesh(entity))??
+            mesh_geometry(faces)?.ok_or_else(|| unsupported_mesh(entity))?
         }
         _ => return Err(unsupported(entity)),
     })
@@ -434,11 +443,11 @@ fn unsupported_mesh(entity: &EntityType) -> Error {
 /// A mesh's faces as a multipolygon of 3D polygons, one per face. A face of fewer than three
 /// distinct corners is dropped; other repeated corners stay, as the mesh has them. `None` when no
 /// face remains, an error when a face names a vertex the mesh does not have.
-fn mesh_geometry(faces: impl Iterator<Item = Option<Vec<Vector3>>>) -> Option<Result<Geometry>> {
+fn mesh_geometry(faces: impl Iterator<Item = Option<Vec<Vector3>>>) -> Result<Option<Geometry>> {
     let mut polygons = Vec::new();
     for face in faces {
         let Some(corners) = face else {
-            return Some(Err(Error::InvalidData("CAD: mesh face refers to a missing vertex".into())));
+            return Err(Error::InvalidData("CAD: mesh face refers to a missing vertex".into()));
         };
         let mut cs: Vec<_> = corners.into_iter().map(coord).collect();
         cs.dedup();
@@ -460,7 +469,7 @@ fn mesh_geometry(faces: impl Iterator<Item = Option<Vec<Vector3>>>) -> Option<Re
             polygons.push((Ring::new(cs), Vec::new()));
         }
     }
-    (!polygons.is_empty()).then_some(Ok(Geometry::MultiPolygon(polygons)))
+    Ok((!polygons.is_empty()).then_some(Geometry::MultiPolygon(polygons)))
 }
 
 fn polygon(cs: Vec<Coord>) -> Result<Geometry> {
@@ -922,6 +931,48 @@ mod tests {
             assert_eq!(layer.features[0].geometry, Some(Geometry::Point(coord(Vector3::UNIT_Z))));
             assert_eq!(budget.skipped[kind].count, 1);
             assert_eq!(doc.block_records.get("mixed").unwrap().entity_handles, handles);
+        }
+    }
+
+    /// A nested reference is refused whole: a shear fallback could clone its child block.
+    #[test]
+    fn nested_reference_to_a_block_with_a_refused_entity_is_skipped_alone() {
+        for stretch in [1.0, 2.0] {
+            let mut doc = CadDocument::new();
+            add_block(&mut doc, "inner", vec![EntityType::Solid3D(Default::default()), EntityType::Point(Point::at(Vector3::ZERO))]);
+            let nested = EntityType::Insert(acadrust::entities::Insert::new("inner", Vector3::ZERO));
+            add_block(&mut doc, "outer", vec![nested, EntityType::Point(Point::at(Vector3::UNIT_X))]);
+            doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("outer", Vector3::ZERO).with_scale(stretch, 1.0, 1.0)))
+                .unwrap();
+            let (layer, skipped) = layer_from_document(doc, 64).unwrap();
+            assert_eq!(layer.features.len(), 1);
+            assert_eq!(layer.features[0].geometry, Some(Geometry::Point(Coord::xyz(stretch, 0.0, 0.0))));
+            assert_eq!(skipped.keys().map(String::as_str).collect::<Vec<_>>(), ["INSERT"]);
+        }
+    }
+
+    #[test]
+    fn meshes_follow_rotated_and_stretched_inserts() {
+        let mut face = polyface();
+        face.add_triangle(1, 2, 3);
+        let mut mesh = acadrust::entities::Mesh::new();
+        mesh.vertices = vec![Vector3::new(0.0, 0.0, 1.0), Vector3::new(2.0, 0.0, 1.0), Vector3::new(2.0, 2.0, 3.0)];
+        mesh.faces = vec![acadrust::entities::MeshFace::triangle(0, 1, 2)];
+        for member in [EntityType::PolyfaceMesh(face), EntityType::Mesh(mesh)] {
+            for (insert, expected) in [
+                (acadrust::entities::Insert::new("mesh", Vector3::ZERO).with_scale(3.0, 1.0, 1.0), (6.0, 2.0)),
+                (acadrust::entities::Insert::new("mesh", Vector3::ZERO).with_rotation(PI / 2.0), (-2.0, 2.0)),
+            ] {
+                let mut doc = CadDocument::new();
+                add_block(&mut doc, "mesh", vec![member.clone()]);
+                doc.add_entity(EntityType::Insert(insert)).unwrap();
+                let (layer, skipped) = layer_from_document(doc, 64).unwrap();
+                assert!(skipped.is_empty(), "{skipped:?}");
+                let Some(Geometry::MultiPolygon(polygons)) = &layer.features[0].geometry else { panic!("expected a multipolygon") };
+                let corner = &polygons[0].0.0[2];
+                assert!((corner.x - expected.0).abs() < 1e-9 && (corner.y - expected.1).abs() < 1e-9, "{corner:?}");
+                assert_eq!(corner.z, Some(3.0));
+            }
         }
     }
 
