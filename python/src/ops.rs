@@ -706,11 +706,13 @@ pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Optio
 ///
 /// Args:
 ///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
-///     query: SELECT statement, including computed columns, DISTINCT, summaries or LEFT JOIN.
+///     query: SELECT statement, including computed columns, DISTINCT, grouped summaries,
+///         LEFT JOIN or the documented spatial functions.
 ///     layers: Restrict the available input layers.
 ///
 /// Returns:
-///     Layer: The query result. DISTINCT and summaries discard geometry.
+///     Layer: The query result. DISTINCT, GROUP BY and summaries discard geometry.
+///     Spatial geometry expressions replace the primary geometry; see docs/sql.md for scope.
 #[pyfunction]
 #[pyo3(signature = (src, query, *, layers=None))]
 fn sql(py: Python<'_>, src: &Bound<'_, PyAny>, query: &str, layers: Option<Vec<String>>) -> PyResult<PyLayer> {

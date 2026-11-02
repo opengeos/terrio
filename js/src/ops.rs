@@ -963,7 +963,8 @@ pub fn sieve(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
 }
 
 /// Runs the documented read-only OGR SQL subset on vector inputs, returning a Dataset.
-/// SELECT expressions and LEFT JOIN retain primary geometry; DISTINCT and summaries discard it.
+/// Attribute expressions and LEFT JOIN retain primary geometry; DISTINCT, GROUP BY and summaries discard it.
+/// Supports the spatial-function subset in docs/sql.md; explicit geometry expressions replace primary geometry.
 #[wasm_bindgen]
 pub fn sql(src: JsValue, query: &str) -> Result<Dataset, JsError> {
     let layers = input_layers(&src)?;

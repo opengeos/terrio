@@ -96,6 +96,21 @@ comparisons in the GDAL conformance workflow, and exposes applicable functionali
 Rust, CLI, Python, JavaScript and MCP. Supported subsets and numerical tolerances remain
 documented; additional feature scope belongs in separate tracking issues.
 
+## GDAL parity round 2
+
+[#288](https://github.com/opengeos/terrio/issues/288) tracks agreement and additional
+scope in existing commands separately from new command coverage.
+
+- [x] Resolve the eight original public-fixture output mismatches in #253. The
+      [current measurements](benchmark-253-current.md), merged in
+      [#493](https://github.com/opengeos/terrio/pull/493), record complete raster,
+      vector and 1/2/4/12-CPU comparisons against GDAL 3.13.3. The separate
+      vendor-reported files remain unavailable and are not independently certified.
+- [ ] Grouped aggregates and the documented spatial SQL subset (area, length,
+      intersects, buffer, transform and centroid), with SQLite comparisons across
+      Rust, CLI/MCP, Python and JavaScript/WASM.
+- [ ] Cumulative viewshed, weighted/fractional zonal statistics and OGC API Features reading.
+
 ## Additional GDAL command coverage
 
 [#289](https://github.com/opengeos/terrio/issues/289) tracks unified GDAL command

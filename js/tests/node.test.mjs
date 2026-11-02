@@ -1329,6 +1329,13 @@ test("SQL computed columns, DISTINCT and summary aggregates", () => {
   assert.deepEqual(summary.features[0].properties, { n: 3, total: 4 });
   assert.equal(summary.features[0].geometry, null);
   assert.equal(terrio.sql(src, "SELECT DISTINCT v FROM layer").toGeoJSON().features.length, 2);
+  const grouped = terrio.sql(src, "SELECT v, COUNT(*) AS n, SUM(v) AS total FROM layer GROUP BY v ORDER BY v").toGeoJSON();
+  assert.deepEqual(grouped.features.map(f => f.properties), [{v:null, n:1, total:null}, {v:2, n:2, total:4}]);
+  assert.ok(grouped.features.every(f => f.geometry === null));
+  const spatial = terrio.sql(src, "SELECT ST_Centroid(ST_Buffer(geometry,1)) AS shape, ST_Area(geometry) AS area FROM layer LIMIT 1").toGeoJSON().features[0];
+  assert.deepEqual(spatial.properties, {area:0});
+  assert.equal(spatial.geometry.type, "Point");
+  assert.ok(spatial.geometry.coordinates.every(n => Math.abs(n)<1e-12));
 });
 
 test("vector dataset commands: concat, partition, setFieldType, makePoint, schemas", () => {
