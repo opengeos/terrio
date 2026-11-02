@@ -7,6 +7,22 @@ and records the corrected results. Comparisons scan complete rasters and every
 overview, including masks, types, georeferencing and metadata. Benchmark pixel and
 geometry gates remain exact.
 
+## Current release recheck
+
+A [fresh recheck at `328c3cc2`](benchmark-253-current.md), Terrio 0.6.1 against
+GDAL 3.13.3 / PROJ 9.9.0, passes the unchanged output gate on all eight
+original public-fixture cases. It includes fresh timings, independent one/two-CPU
+tuning and complete single-thread error measurements over 508,051,812 raster
+samples. All eight cases also match at CPU counts one, two, four and twelve,
+including each tool against its own single-thread output. The
+[raw evidence](benchmark-253-current.json) records these checks separately from
+historical measurements and retains their commands and scope.
+
+All 26 current `benchmark-metadata` / `benchmark-compat` conformance cases pass.
+Current-main macOS and Windows CI also passes the native GCP, WebP and eight-layout
+JPEG XL regressions. These public fixtures do not reproduce the five unavailable
+vendor cases; that external scope remains open.
+
 ## Corrections
 
 - **GCP-only TIFF to COG:** preserve all 1,599 GCPs, their CRS and pixels without
@@ -138,6 +154,9 @@ upstream.
 
 ## Final validation and timed reruns
 
+The validation and timings in this section are historical snapshots. See the
+[current release recheck](#current-release-recheck) for the newly verified state.
+
 Workspace tests (484 core tests passed, one ignored, plus workspace integration
 and binding tests), Clippy with `-D warnings`, formatting and full pre-commit
 checks pass. The 46 selected GDAL conformance cases are identical, including 20
@@ -146,7 +165,8 @@ JavaScript tests with two skips. The CLI and Python bindings were built in
 release mode; WASM uses Rust release optimization without the optional wasm-opt
 postpass.
 
-The rerun below predates the warp and county corrections above.
+The archived `benchmark-253-rerun.md` snapshot below predates the warp and county
+corrections above. The newer rechecks include them.
 
 **Recheck on `afc7539a`.** All eight cases pass the exact output gate against GDAL
 3.13.3 ([raw results](benchmark-253-recheck.json)). Other jobs were running, so seven of
