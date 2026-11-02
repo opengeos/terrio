@@ -292,6 +292,11 @@ fn spatial_reference(bytes: &[u8]) -> Result<Option<crate::crs::SpatialRef>> {
     Ok(featureservice::spatial_reference(latest, wkid, wkt.as_deref()))
 }
 
+/// Whether a page is JSON, as a service may answer whatever was asked for.
+pub(crate) fn is_json(bytes: &[u8]) -> bool {
+    bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes).trim_ascii_start().first() == Some(&b'{')
+}
+
 /// A page of a query's results: its layer, and whether the service has more.
 pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     if bytes.is_empty() {
@@ -299,7 +304,7 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     }
     // A service may answer in JSON whatever was asked for. Its error is reported as this driver's;
     // its features are ESRI JSON, which an allow-list may leave out.
-    if bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes).trim_ascii_start().first() == Some(&b'{') {
+    if is_json(bytes) {
         let relabel = |m: String| m.strip_prefix("ESRIJSON: ").map_or_else(|| m.clone(), |rest| format!("ESRIPBF: {rest}"));
         let page = super::esrijson::page(bytes, name).map_err(|e| match e {
             Error::InvalidData(m) => Error::InvalidData(relabel(m)),

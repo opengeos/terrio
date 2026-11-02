@@ -672,9 +672,20 @@ fn read_geojson_answer(url: &str, bytes: Vec<u8>, options: &VectorOpenOptions) -
 #[cfg(remote)]
 fn read_feature_service(url: &str, first: &[u8], driver: VectorDriver, options: &VectorOpenOptions) -> Result<VectorDataset> {
     use crate::drivers::vector::{esrijson, esripbf, featureservice};
-    crate::formats::check_driver_allowed(driver.name(), url, crate::formats::Kind::Vector)?;
+    let allowed = || crate::formats::check_driver_allowed(driver.name(), url, crate::formats::Kind::Vector);
+    if driver != VectorDriver::ESRIPBF {
+        allowed()?;
+    }
     let decode = |page: &[u8]| {
-        if driver == VectorDriver::ESRIPBF { esripbf::page(page, driver.name()) } else { esrijson::page(page, driver.name()) }
+        if driver != VectorDriver::ESRIPBF {
+            return esrijson::page(page, driver.name());
+        }
+        // Each page by what it holds: `page` reports a service's JSON error under any list, and
+        // checks JSON features as ESRI JSON.
+        if !esripbf::is_json(page) {
+            allowed()?;
+        }
+        esripbf::page(page, driver.name())
     };
     let stop_at = options.max_features.map(|max| options.skip_features.saturating_add(max));
     let layer = featureservice::read_pages(url, first, options.feature_server_paging, stop_at, &decode)?;
