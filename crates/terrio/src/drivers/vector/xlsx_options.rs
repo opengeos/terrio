@@ -120,6 +120,17 @@ impl Default for XlsxOptions {
 }
 
 impl XlsxOptions {
+    /// Whether an option that lays out a written sheet is set.
+    pub(crate) fn has_layout(&self) -> bool {
+        self.header_bold
+            || self.freeze_header
+            || self.autofilter
+            || self.column_width != XlsxColumnWidth::Default
+            || self.date_format.is_some()
+            || self.datetime_format.is_some()
+            || self.creation_time.is_some()
+    }
+
     /// These options for a file of this name: a `.xlsm` workbook declares itself macro-enabled.
     pub(crate) fn for_name(&self, name: &str) -> Self {
         Self { macro_enabled: self.macro_enabled || crate::formats::extension(name).as_deref() == Some("xlsm"), ..self.clone() }
@@ -128,7 +139,7 @@ impl XlsxOptions {
     /// Sets an open option by name: `HEADERS` (AUTO, FORCE, DISABLE), `FIELD_TYPES` (AUTO, STRING),
     /// `X_POSSIBLE_NAMES`, `Y_POSSIBLE_NAMES`, `Z_POSSIBLE_NAMES`, `GEOM_POSSIBLE_NAMES`
     /// (comma-separated), `KEEP_GEOM_COLUMNS` (YES/NO), `HEADER_ROWS` (a count), `FIRST_ROW` (from 1)
-    /// and `RANGE` (`A5:K40`). Returns `false` for other names, the
+    /// and `RANGE` (`A5:K40`), the last of `FIRST_ROW` and `RANGE` setting the first row. Returns `false` for other names, the
     /// creation options of [`set_creation`](Self::set_creation) among them.
     ///
     /// ```
@@ -215,7 +226,7 @@ impl XlsxOptions {
             "DATE_FORMAT" => self.date_format = Some(value.to_string()),
             "DATETIME_FORMAT" => self.datetime_format = Some(value.to_string()),
             "CREATION_TIME" => {
-                if crate::drivers::vector::datetime::parse_datetime(value).is_none() {
+                if crate::drivers::vector::datetime::parse_datetime(value).is_none() || !time_in_range(value) {
                     return Err(Error::InvalidArgument(format!("XLSX CREATION_TIME '{value}' is not an ISO 8601 date-time")));
                 }
                 self.creation_time = Some(value.to_string());
@@ -224,6 +235,20 @@ impl XlsxOptions {
         }
         Ok(true)
     }
+}
+
+/// Whether a date-time's clock and UTC offset, if any, are in range.
+fn time_in_range(value: &str) -> bool {
+    let Some(time) = value.get(11..) else { return true };
+    let number = |text: Option<&str>, max: u32| text.and_then(|t| t.parse::<u32>().ok()).is_some_and(|n| n <= max);
+    let (clock, offset) = match time.find(['Z', 'z', '+', '-']) {
+        Some(i) => time.split_at(i),
+        None => (time, ""),
+    };
+    let clock_ok = number(clock.get(0..2), 23) && number(clock.get(3..5), 59) && (clock.len() <= 5 || number(clock.get(6..8), 59));
+    let offset_ok =
+        offset.len() <= 1 || (number(offset.get(1..3), 14) && (offset.len() <= 3 || number(offset.get(offset.len() - 2..), 59)));
+    clock_ok && offset_ok
 }
 
 /// A whole number of at least `min`.

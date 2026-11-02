@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
 """Compare terrio's XLSX layout options with openpyxl, in both directions.
 
 GDAL has no behavior to compare these options with. Workbooks written by terrio are loaded with
@@ -81,7 +83,8 @@ def check_written(args, tmp, cases):
     path = os.path.join(tmp, "written.xlsx")
     flags = [a for o in LAYOUT for a in ("--lco", o)]
     subprocess.run([args.terrio, "convert", source, path, *flags], check=True, capture_output=True, text=True)
-    sheet = openpyxl.load_workbook(path).worksheets[0]
+    book = openpyxl.load_workbook(path)
+    sheet = book.worksheets[0]
     expect(cases, "written: header values", [c.value for c in sheet[1]], ["id", "name", "day", "when"])
     expect(cases, "written: bold header", [c.font.b for c in sheet[1]], [True] * 4)
     expect(cases, "written: body not bold", [bool(c.font.b) for c in sheet[2]], [False] * 4)
@@ -94,8 +97,7 @@ def check_written(args, tmp, cases):
     expect(cases, "written: frozen pane", sheet.freeze_panes, "A2")
     expect(cases, "written: filter", sheet.auto_filter.ref, "A1:D3")
     expect(cases, "written: fitted width", sheet.column_dimensions["B"].width, 20.0)
-    created = openpyxl.load_workbook(path).properties.created
-    expect(cases, "written: creation time", created, datetime.datetime(2024, 1, 2, 3, 4, 5))
+    expect(cases, "written: creation time", book.properties.created, datetime.datetime(2024, 1, 2, 3, 4, 5))
 
 
 def check_read(args, tmp, cases):

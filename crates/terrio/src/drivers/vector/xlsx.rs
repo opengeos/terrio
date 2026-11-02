@@ -210,28 +210,34 @@ impl<'a> SheetTable<'a> {
     }
 
     /// The first line that several header rows make: each column's headings joined, a merged heading
-    /// naming every column under it.
+    /// naming every column under it. A heading's cells count once only when they are one merged range.
     fn joined_header(&self) -> Vec<Cell> {
         let first_row = self.options.first_row - 1;
         let first_column = self.options.first_column;
-        let widest = self.header_lines.iter().map(Vec::len).max().unwrap_or(0);
-        let end = self.options.last_column.map_or(widest, |last| widest.min(last + 1));
-        let heading = |row: usize, column: usize| {
-            let (mut r, mut c) = (row, column);
-            if let Some(&(r0, c0, _, _)) =
-                self.merges.iter().find(|&&(r0, c0, r1, c1)| (r0..=r1).contains(&(row + first_row)) && (c0..=c1).contains(&column))
-            {
-                (r, c) = (r0.saturating_sub(first_row), c0);
-            }
-            self.header_lines.get(r).and_then(|line| line.get(c)).map_or("", |cell| cell.value.trim())
+        let rows = first_row..first_row + self.header_lines.len();
+        let merges: Vec<_> = self.merges.iter().filter(|&&(r0, _, r1, _)| r0 < rows.end && r1 >= rows.start).copied().collect();
+        let origin = |row: usize, column: usize| {
+            let found = merges.iter().find(|&&(r0, c0, r1, c1)| (r0..=r1).contains(&(row + first_row)) && (c0..=c1).contains(&column));
+            found.map_or((row, column), |&(r0, c0, _, _)| (r0.saturating_sub(first_row), c0))
         };
+        let text = |(row, column): (usize, usize)| {
+            self.header_lines.get(row).and_then(|line| line.get(column)).map_or("", |cell| cell.value.trim())
+        };
+        // A merged heading reaches past the cells stored for it; an empty merge makes no columns.
+        let merged_end =
+            merges.iter().filter(|&&(r0, c0, _, _)| !text((r0.saturating_sub(first_row), c0)).is_empty()).map(|&(_, _, _, c1)| c1 + 1);
+        let widest = self.header_lines.iter().map(Vec::len).chain(merged_end).max().unwrap_or(0);
+        let end = self.options.last_column.map_or(widest, |last| widest.min(last + 1));
         (first_column..end)
             .map(|column| {
                 let mut parts: Vec<&str> = Vec::new();
+                let mut last_origin = None;
                 for row in 0..self.header_lines.len() {
-                    let text = heading(row, column);
-                    if !text.is_empty() && parts.last() != Some(&text) {
-                        parts.push(text);
+                    let cell = origin(row, column);
+                    let heading = text(cell);
+                    if !heading.is_empty() && last_origin != Some(cell) {
+                        parts.push(heading);
+                        last_origin = Some(cell);
                     }
                 }
                 Cell { kind: CellKind::Text, value: parts.join(" / ") }
@@ -335,10 +341,14 @@ impl<'a> SheetTable<'a> {
 
     /// Ends the sheet: a single line is data, whatever `HEADERS` says, unless header rows are asked for.
     fn finish(&mut self) {
+        // A sheet that ends within its header rows still has their names.
+        if self.header_count() > 1 && self.seen < self.header_count() && !self.header_lines.is_empty() {
+            self.first_line = self.joined_header();
+        }
         if self.seen > self.header_count().max(1) || self.first_line.is_empty() {
             return;
         }
-        if self.options.header_rows.is_some_and(|rows| rows > 0) && self.seen == self.header_count() {
+        if self.options.header_rows.is_some_and(|rows| rows > 0) && self.seen <= self.header_count() {
             self.columns = self
                 .first_line
                 .iter()
@@ -695,8 +705,6 @@ fn workbook_sheets<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Res
                     if let (Some(name), Some(id)) = (attribute(&e, "name"), attribute(&e, "id"))
                         && let Some(target) = targets.get(&id)
                         && seen.insert(id.clone())
-                        // Sheets sharing a part would have it read and parsed again for each.
-                        && seen.insert(target.clone())
                     {
                         if sheets.len() >= MAX_WORKBOOK_ENTRIES {
                             return Err(too_many_entries(&workbook));
@@ -852,7 +860,10 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
         }
         take_cells(budget, ROW_CELLS)?;
         let Some(row) = attribute(e, "r").and_then(|r| r.parse::<usize>().ok()).filter(|&r| r > 0) else { return Ok(()) };
-        let (mut target, mut line) = (row - 1, table.line);
+        let (target, mut line) = (row - 1, table.line);
+        if target >= MAX_ROWS {
+            return Err(too_many_rows(part));
+        }
         if target <= line {
             return Ok(());
         }
@@ -861,13 +872,9 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
         if line < skipped {
             line = target.min(skipped);
             table.line = line;
-            target = row - 1;
             if target <= line {
                 return Ok(());
             }
-        }
-        if target >= MAX_ROWS {
-            return Err(too_many_rows(part));
         }
         let gap = target - line;
         let fields = table.first_line.len().max(table.columns.len());
@@ -992,6 +999,9 @@ pub fn read(path: &str, only: &[String], options: &XlsxOptions) -> Result<Vec<La
 /// Parses a workbook held in memory: a layer per worksheet in workbook order, or only the sheets
 /// `only` names when it is not empty.
 pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<Vec<Layer>> {
+    if options.first_row == 0 {
+        return Err(Error::InvalidArgument("XLSX: the first row to read counts from 1".into()));
+    }
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
     let WorkbookParts { sheets, date1904, strings: strings_part, styles: styles_part } = workbook_sheets(&mut zip)?;
     let (mut budget, mut table_budget) = (MAX_CELLS, MAX_CELLS);
@@ -1446,6 +1456,11 @@ fn sheet_names(layers: &[Layer]) -> Vec<String> {
 pub fn to_bytes(layers: &[Layer], options: &XlsxOptions) -> Result<Vec<u8>> {
     if layers.is_empty() {
         return Err(Error::InvalidArgument("no layers to write: a workbook needs a sheet".into()));
+    }
+    if let XlsxColumnWidth::Fixed(width) = options.column_width
+        && !(width > 0.0 && width <= 255.0)
+    {
+        return Err(Error::InvalidArgument(format!("XLSX: a column width of {width} is not above 0 and up to 255")));
     }
     // With the styles and shared strings, what the reader's limit on a part's entries allows.
     if layers.len() > MAX_WORKBOOK_ENTRIES - 2 {
@@ -1974,6 +1989,53 @@ mod tests {
     }
 
     #[test]
+    fn repeated_headings_join_unless_one_merged_range() {
+        let s = |r: &str, i: usize| format!("<c r=\"{r}\" t=\"s\"><v>{i}</v></c>");
+        let data = format!(
+            "<row r=\"1\">{}{}</row><row r=\"2\">{}</row><row r=\"3\"><c r=\"A3\"><v>1</v></c><c r=\"B3\"><v>2</v></c><c r=\"C3\"><v>3</v></c></row>",
+            s("A1", 0),
+            s("B1", 1),
+            s("A2", 0)
+        );
+        let mut options = XlsxOptions::default();
+        options.set("HEADER_ROWS", "2").unwrap();
+        let mut table = SheetTable::new(&options);
+        table.merges = vec![(0, 1, 0, 2)];
+        let shared = SharedParts { strings: vec!["Total".into(), "Group".into()], styles: Vec::new() };
+        read_sheet(&format!("<sheetData>{data}</sheetData>"), "s", &shared, &mut table, &mut 100).unwrap();
+        let l = table_layer(table, "s", false, &mut 100).unwrap();
+        // Two separate cells repeat; a merge reaches a column with no cell of its own.
+        assert_eq!(field_names(&l), ["Total / Total", "Group", "Group_2"]);
+    }
+
+    #[test]
+    fn a_sheet_ending_within_its_header_rows_keeps_their_names() {
+        let mut options = XlsxOptions::default();
+        options.set("HEADER_ROWS", "2").unwrap();
+        let l = one_sheet("<row r=\"1\"><c t=\"s\"><v>0</v></c></row>", &options);
+        assert_eq!(field_names(&l), ["a"]);
+        assert_eq!(l.features.len(), 0);
+    }
+
+    #[test]
+    fn invalid_struct_options_are_refused() {
+        let bytes = workbook(&[("s", "")], &[], "", "");
+        let options = XlsxOptions { first_row: 0, ..Default::default() };
+        assert!(matches!(parse(bytes, &[], &options), Err(Error::InvalidArgument(_))));
+        let options = XlsxOptions { column_width: XlsxColumnWidth::Fixed(f64::INFINITY), ..Default::default() };
+        assert!(matches!(to_bytes(&[sample_layer()], &options), Err(Error::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn a_row_past_the_limit_is_refused_when_skipping_too() {
+        let mut options = XlsxOptions::default();
+        options.set("FIRST_ROW", "5").unwrap();
+        let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
+        let data = format!("<sheetData><row r=\"{}\"/></sheetData>", MAX_ROWS + 1);
+        assert!(matches!(read_sheet(&data, "s", &shared, &mut SheetTable::new(&options), &mut 100), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
     fn a_range_reads_only_its_cells() {
         let mut options = XlsxOptions::default();
         options.set("RANGE", "B5:C6").unwrap();
@@ -2009,7 +2071,7 @@ mod tests {
     }
 
     #[test]
-    fn sheets_sharing_a_part_read_it_once() {
+    fn sheets_sharing_a_part_stay_listed() {
         let (sheets, _) = {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
             let member = zip::write::SimpleFileOptions::default();
@@ -2033,7 +2095,7 @@ mod tests {
             let parts = workbook_sheets(&mut archive).unwrap();
             (parts.sheets, parts.date1904)
         };
-        assert_eq!(sheets.len(), 1);
+        assert_eq!(sheets.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
     }
 
     #[test]
@@ -2086,9 +2148,15 @@ mod tests {
     #[test]
     fn layout_option_values_are_checked() {
         let mut options = XlsxOptions::default();
-        for (key, value) in
-            [("COLUMN_WIDTH", "0"), ("COLUMN_WIDTH", "wide"), ("CREATION_TIME", "soon"), ("HEADER_STYLE", "ITALIC"), ("AUTOFILTER", "y")]
-        {
+        for (key, value) in [
+            ("COLUMN_WIDTH", "0"),
+            ("COLUMN_WIDTH", "wide"),
+            ("CREATION_TIME", "soon"),
+            ("CREATION_TIME", "2024-01-02T99:99:99Z"),
+            ("CREATION_TIME", "2024-01-02T03:04:05+25:00"),
+            ("HEADER_STYLE", "ITALIC"),
+            ("AUTOFILTER", "y"),
+        ] {
             assert!(options.set_creation(key, value).is_err(), "{key}={value}");
         }
         for (key, value) in [("RANGE", "A5"), ("RANGE", "C5:A1"), ("FIRST_ROW", "0"), ("HEADER_ROWS", "x")] {
