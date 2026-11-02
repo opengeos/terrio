@@ -223,6 +223,9 @@ impl XlsxOptions {
                     _ => return Err(Error::InvalidArgument(format!("unknown XLSX COLUMN_WIDTH '{value}' (AUTO, or a width up to 255)"))),
                 }
             }
+            "DATE_FORMAT" | "DATETIME_FORMAT" if value.trim().is_empty() => {
+                return Err(Error::InvalidArgument(format!("XLSX {key} needs a number format such as yyyy-mm-dd")));
+            }
             "DATE_FORMAT" => self.date_format = Some(value.to_string()),
             "DATETIME_FORMAT" => self.datetime_format = Some(value.to_string()),
             "CREATION_TIME" => {
@@ -237,17 +240,28 @@ impl XlsxOptions {
     }
 }
 
-/// Whether a date-time's clock and UTC offset, if any, are in range.
+/// Whether a date-time's clock, and its offset of `Z` or `+hh:mm` if any, are in range, with nothing after.
 fn time_in_range(value: &str) -> bool {
     let Some(time) = value.get(11..) else { return true };
-    let number = |text: Option<&str>, max: u32| text.and_then(|t| t.parse::<u32>().ok()).is_some_and(|n| n <= max);
+    let number = |text: Option<&str>, max: u32| {
+        text.is_some_and(|t| t.bytes().all(|b| b.is_ascii_digit()) && t.parse::<u32>().is_ok_and(|n| n <= max))
+    };
     let (clock, offset) = match time.find(['Z', 'z', '+', '-']) {
         Some(i) => time.split_at(i),
         None => (time, ""),
     };
-    let clock_ok = number(clock.get(0..2), 23) && number(clock.get(3..5), 59) && (clock.len() <= 5 || number(clock.get(6..8), 59));
-    let offset_ok =
-        offset.len() <= 1 || (number(offset.get(1..3), 14) && (offset.len() <= 3 || number(offset.get(offset.len() - 2..), 59)));
+    let (clock, fraction) = clock.split_once('.').unwrap_or((clock, "0"));
+    let clock_ok = matches!(clock.len(), 5 | 8)
+        && number(clock.get(0..2), 23)
+        && clock.as_bytes().get(2) == Some(&b':')
+        && number(clock.get(3..5), 59)
+        && (clock.len() == 5 || (clock.as_bytes().get(5) == Some(&b':') && number(clock.get(6..8), 59)))
+        && !fraction.is_empty()
+        && fraction.bytes().all(|b| b.is_ascii_digit());
+    let offset_ok = match offset {
+        "" | "Z" | "z" => true,
+        _ => offset.len() == 6 && number(offset.get(1..3), 14) && offset.as_bytes().get(3) == Some(&b':') && number(offset.get(4..6), 59),
+    };
     clock_ok && offset_ok
 }
 

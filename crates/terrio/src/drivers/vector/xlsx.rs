@@ -203,7 +203,7 @@ impl<'a> SheetTable<'a> {
     /// A line's cells in the columns asked for.
     fn crop(&self, mut cells: Vec<Cell>) -> Vec<Cell> {
         if let Some(last) = self.options.last_column {
-            cells.truncate(last + 1);
+            cells.truncate(last.saturating_add(1));
         }
         cells.drain(..self.options.first_column.min(cells.len()));
         cells
@@ -218,16 +218,19 @@ impl<'a> SheetTable<'a> {
         let merges: Vec<_> = self.merges.iter().filter(|&&(r0, _, r1, _)| r0 < rows.end && r1 >= rows.start).copied().collect();
         let origin = |row: usize, column: usize| {
             let found = merges.iter().find(|&&(r0, c0, r1, c1)| (r0..=r1).contains(&(row + first_row)) && (c0..=c1).contains(&column));
-            found.map_or((row, column), |&(r0, c0, _, _)| (r0.saturating_sub(first_row), c0))
+            // A heading above the rows read is not known: no row holds it.
+            found.map_or((row, column), |&(r0, c0, _, _)| (r0.checked_sub(first_row).unwrap_or(usize::MAX), c0))
         };
         let text = |(row, column): (usize, usize)| {
             self.header_lines.get(row).and_then(|line| line.get(column)).map_or("", |cell| cell.value.trim())
         };
         // A merged heading reaches past the cells stored for it; an empty merge makes no columns.
-        let merged_end =
-            merges.iter().filter(|&&(r0, c0, _, _)| !text((r0.saturating_sub(first_row), c0)).is_empty()).map(|&(_, _, _, c1)| c1 + 1);
+        let merged_end = merges
+            .iter()
+            .filter(|&&(r0, c0, _, _)| !text((r0.checked_sub(first_row).unwrap_or(usize::MAX), c0)).is_empty())
+            .map(|&(_, _, _, c1)| c1 + 1);
         let widest = self.header_lines.iter().map(Vec::len).chain(merged_end).max().unwrap_or(0);
-        let end = self.options.last_column.map_or(widest, |last| widest.min(last + 1));
+        let end = self.options.last_column.map_or(widest, |last| widest.min(last.saturating_add(1)));
         (first_column..end)
             .map(|column| {
                 let mut parts: Vec<&str> = Vec::new();
@@ -941,6 +944,10 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
                 "sheetData" => in_data = true,
                 "row" if in_data => {
                     start_row(table, &e, budget)?;
+                    // Past the rows asked for, the rest of the sheet costs nothing.
+                    if table.options.last_row.is_some_and(|last| table.line >= last) {
+                        return Ok(());
+                    }
                     (in_row, cells) = (true, Vec::new());
                 }
                 "c" if in_row => {
@@ -957,6 +964,9 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
             Event::Empty(e) => match e.local_name().as_ref() {
                 "row" if in_data => {
                     start_row(table, &e, budget)?;
+                    if table.options.last_row.is_some_and(|last| table.line >= last) {
+                        return Ok(());
+                    }
                     table.end_line(Vec::new());
                 }
                 "c" if in_row => {
@@ -1001,6 +1011,9 @@ pub fn read(path: &str, only: &[String], options: &XlsxOptions) -> Result<Vec<La
 pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<Vec<Layer>> {
     if options.first_row == 0 {
         return Err(Error::InvalidArgument("XLSX: the first row to read counts from 1".into()));
+    }
+    if options.last_row.is_some_and(|last| last < options.first_row) {
+        return Err(Error::InvalidArgument("XLSX: the last row to read is before the first".into()));
     }
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
     let WorkbookParts { sheets, date1904, strings: strings_part, styles: styles_part } = workbook_sheets(&mut zip)?;
@@ -2036,6 +2049,25 @@ mod tests {
     }
 
     #[test]
+    fn reading_stops_after_the_last_row_asked_for() {
+        let mut options = XlsxOptions::default();
+        options.set("RANGE", "A1:A2").unwrap();
+        let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
+        let data = format!("{}{}", "<sheetData>".to_string().add_rows(3), "<row><c/></row>".repeat(10_000));
+        let mut budget = 20;
+        read_sheet(&data, "s", &shared, &mut SheetTable::new(&options), &mut budget).unwrap();
+        assert_eq!(budget, 20 - 3 * ROW_CELLS);
+    }
+
+    #[test]
+    fn a_first_row_after_the_last_is_refused() {
+        let mut options = XlsxOptions::default();
+        options.set("RANGE", "A1:B2").unwrap();
+        options.set("FIRST_ROW", "3").unwrap();
+        assert!(matches!(parse(workbook(&[("s", "")], &[], "", ""), &[], &options), Err(Error::InvalidArgument(_))));
+    }
+
+    #[test]
     fn a_range_reads_only_its_cells() {
         let mut options = XlsxOptions::default();
         options.set("RANGE", "B5:C6").unwrap();
@@ -2153,6 +2185,8 @@ mod tests {
             ("COLUMN_WIDTH", "wide"),
             ("CREATION_TIME", "soon"),
             ("CREATION_TIME", "2024-01-02T99:99:99Z"),
+            ("CREATION_TIME", "2024-01-02T03:04:05+01:00junk12"),
+            ("DATE_FORMAT", ""),
             ("CREATION_TIME", "2024-01-02T03:04:05+25:00"),
             ("HEADER_STYLE", "ITALIC"),
             ("AUTOFILTER", "y"),
