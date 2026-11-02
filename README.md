@@ -124,8 +124,26 @@ terrio convert tile.laz tile-ept/ept.json                               # write 
 
 `terrio mcp` serves the commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code) over
 the Model Context Protocol: `claude mcp add terrio -- terrio mcp` (see
-[AI Agents](https://terrio.dev/mcp/)). `terrio ui` serves the same commands as forms in your browser,
-from your own computer.
+[AI Agents](https://terrio.dev/mcp/)).
+
+## Browser UI
+
+`terrio ui` serves the same commands as forms in your browser, from your own computer:
+
+```sh
+terrio ui                        # opens your browser
+terrio ui --port 8080 --no-open  # prints the address instead
+```
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-ui.webp" alt="The terrio ui page: a searchable list of commands beside the form for terrio info, with the equivalent command line and the output of a run on a remote GeoTIFF" width="800">
+</p>
+
+Every command and option gets a form, generated from the catalog of the binary you run. Pick files
+with the built-in file browser or enter a URL, run or cancel the command, read its output, and copy
+the equivalent command line into a script. The server listens on 127.0.0.1 only and runs commands
+with your permissions, so treat its printed address, which contains a random token, as a password
+(see [`ui`](https://terrio.dev/cli/#ui)).
 
 ## Library
 
