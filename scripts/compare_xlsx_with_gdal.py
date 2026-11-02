@@ -14,11 +14,13 @@ Usage:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import zipfile
 
+DATETIME = re.compile(r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?")
 MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 RELS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
@@ -271,7 +273,7 @@ def same_value(a, b, numeric):
         except ValueError:
             return False
     # Fractions of a second to the millisecond: GDAL prints a float's rounding.
-    if len(a) < 19 or len(b) < 19 or a[:19] != b[:19]:
+    if not (DATETIME.fullmatch(a) and DATETIME.fullmatch(b)) or a[:19] != b[:19]:
         return False
     try:
         return abs(float("0" + a[19:]) - float("0" + b[19:])) < 2e-3

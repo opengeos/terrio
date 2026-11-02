@@ -42,6 +42,8 @@ const MAX_ROWS: usize = 1_048_576;
 const MAX_COLUMNS: usize = 16_384;
 const MAX_CELL_TEXT_UTF16: usize = 32_767;
 const MAX_SHEET_NAME: usize = 31;
+/// The most relationships or sheets a workbook part may declare: they hold memory before any cell.
+const MAX_WORKBOOK_ENTRIES: usize = 65_536;
 /// GDAL's limits on the empty rows a gap between two rows makes.
 const MAX_ROW_GAP: usize = 10_000;
 const MAX_GAP_CELLS: usize = 100_000;
@@ -280,7 +282,14 @@ fn serial_parts(value: &str, date1904: bool) -> Option<(i64, i64)> {
     }
     let whole = seconds.trunc() as i64;
     let millis = ((seconds - seconds.trunc()) * 1000.0).round() as i64;
-    let offset = if date1904 { DATE1904_OFFSET_DAYS } else { 0 };
+    // Excel's phantom 1900-02-29 is serial 60: earlier serials are a day later than the epoch says.
+    let offset = if date1904 {
+        DATE1904_OFFSET_DAYS
+    } else if (1.0..60.0).contains(&serial) {
+        1
+    } else {
+        0
+    };
     let total = (whole + (offset - UNIX_EPOCH_SERIAL) * SECONDS_PER_DAY as i64) * 1000 + millis;
     Some((total.div_euclid(86_400_000), total.rem_euclid(86_400_000)))
 }
@@ -509,6 +518,10 @@ fn resolve_target(base: &str, target: &str) -> String {
     parts.join("/")
 }
 
+fn too_many_entries(part: &str) -> Error {
+    Error::ResourceLimit(format!("XLSX: '{part}' declares more than {MAX_WORKBOOK_ENTRIES} entries"))
+}
+
 /// The relationships of a part: id, type and target.
 fn relationships(text: &str, part: &str) -> Result<Vec<(String, String, String)>> {
     let mut reader = quick_xml::Reader::from_str(text);
@@ -517,6 +530,9 @@ fn relationships(text: &str, part: &str) -> Result<Vec<(String, String, String)>
         match reader.read_event().map_err(|e| xml_error(part, e))? {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "Relationship" => {
                 if let (Some(id), Some(kind), Some(target)) = (attribute(&e, "Id"), attribute(&e, "Type"), attribute(&e, "Target")) {
+                    if out.len() >= MAX_WORKBOOK_ENTRIES {
+                        return Err(too_many_entries(part));
+                    }
                     out.push((id, kind, target));
                 }
             }
@@ -570,6 +586,9 @@ fn workbook_sheets<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Res
                         && let Some(target) = targets.get(&id)
                         && seen.insert(id.clone())
                     {
+                        if sheets.len() >= MAX_WORKBOOK_ENTRIES {
+                            return Err(too_many_entries(&workbook));
+                        }
                         sheets.push((name, target.clone()));
                     }
                 }
@@ -992,6 +1011,12 @@ fn column_letters(mut column: usize) -> String {
     String::from_utf8(letters).expect("ASCII letters")
 }
 
+/// Excel's serial of a day since 1970: dates before its phantom 1900-02-29 are a serial lower.
+fn excel_serial_days(days: i64) -> i64 {
+    let serial = days + UNIX_EPOCH_SERIAL;
+    if (2..=60).contains(&serial) { serial - 1 } else { serial }
+}
+
 /// A date-time's wall clock as milliseconds since 1970, without its UTC offset: spreadsheets have no
 /// time zones, and the value reads back as it was written.
 fn wall_clock_millis(s: &str) -> Option<i64> {
@@ -1030,13 +1055,14 @@ fn value_cell(out: &mut String, reference: &str, value: &FieldValue, strings: &m
             let _ = write!(out, "<c r=\"{reference}\" t=\"b\" s=\"{STYLE_BOOLEAN}\"><v>{}</v></c>", u8::from(*b));
         }
         FieldValue::Date(s) => match datetime::parse_date(s) {
-            Some(days) => number_cell(out, reference, STYLE_DATE, i64::from(days) + UNIX_EPOCH_SERIAL),
+            Some(days) => number_cell(out, reference, STYLE_DATE, excel_serial_days(i64::from(days))),
             None => text_cell(out, reference, s, strings)?,
         },
         FieldValue::DateTime(s) => match wall_clock_millis(s) {
             Some(ms) => {
                 let style = if ms.rem_euclid(1000) == 0 { STYLE_DATETIME } else { STYLE_DATETIME_MS };
-                number_cell(out, reference, style, ms as f64 / 86_400_000.0 + UNIX_EPOCH_SERIAL as f64);
+                let days = ms.div_euclid(86_400_000);
+                number_cell(out, reference, style, ms.rem_euclid(86_400_000) as f64 / 86_400_000.0 + excel_serial_days(days) as f64);
             }
             None => text_cell(out, reference, s, strings)?,
         },
@@ -1164,11 +1190,11 @@ fn sheet_names(layers: &[Layer]) -> Vec<String> {
                 layer.name.chars().map(|c| if "[]:*?/\\".contains(c) || !xml_legal(c) || c < ' ' { '_' } else { c }).collect();
             let cleaned = cleaned.trim_matches('\'');
             let base = if cleaned.is_empty() { format!("Sheet{}", i + 1) } else { cleaned.to_string() };
-            let mut name = truncate_utf16(&base, MAX_SHEET_NAME);
+            let mut name = truncate_utf16(&base, MAX_SHEET_NAME).trim_end_matches('\'').to_string();
             let mut n = 2;
             while !seen.insert(name.to_lowercase()) {
                 let suffix = format!("_{n}");
-                name = truncate_utf16(&base, MAX_SHEET_NAME - suffix.len()) + suffix.as_str();
+                name = truncate_utf16(&base, MAX_SHEET_NAME - suffix.len()).trim_end_matches('\'').to_string() + suffix.as_str();
                 n += 1;
             }
             name
@@ -1525,7 +1551,7 @@ mod tests {
         let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
         let run = |data: &str| {
             let mut table = SheetTable::new(&options);
-            read_sheet(data, "s", &shared, &mut table, &mut MAX_CELLS.clone())
+            read_sheet(data, "s", &shared, &mut table, &mut { MAX_CELLS })
         };
         assert!(run(&"<sheetData>".to_string().add_rows(MAX_ROWS)).is_ok());
         let too_many = run(&"<sheetData>".to_string().add_rows(MAX_ROWS + 1));
@@ -1573,7 +1599,7 @@ mod tests {
         let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
         let run = |row: String| {
             let data = format!("<sheetData><row>{row}</row></sheetData>");
-            read_sheet(&data, "s", &shared, &mut SheetTable::new(&options), &mut MAX_CELLS.clone())
+            read_sheet(&data, "s", &shared, &mut SheetTable::new(&options), &mut { MAX_CELLS })
         };
         assert!(run("<c/>".repeat(MAX_COLUMNS)).is_ok());
         assert!(matches!(run("<c/>".repeat(MAX_COLUMNS + 1)), Err(Error::ResourceLimit(m)) if m.contains("columns")));
@@ -1597,6 +1623,42 @@ mod tests {
         assert!(!options.xlsx.keep_geom_columns);
         assert!(options.set("KEEP_GEOM_COLUMNS", "YES").unwrap());
         assert!(options.xlsx.keep_geom_columns);
+    }
+
+    #[test]
+    fn dates_before_excels_phantom_leap_day_keep_their_serials() {
+        let layer = |d: &str| {
+            let mut l = Layer::new("t");
+            l.add_field(FieldDef::new("d", FieldType::Date));
+            l.add_field(FieldDef::new("n", FieldType::Integer));
+            l.features.push(Feature { fid: 0, geometry: None, attributes: vec![FieldValue::Date(d.into()), FieldValue::Integer(1)] });
+            l
+        };
+        for (date, serial) in [("1900-01-01", 1), ("1900-02-28", 59), ("1900-03-01", 61), ("2024-01-02", 45293)] {
+            let bytes = to_bytes(&[layer(date)], &XlsxOptions::default()).unwrap();
+            let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.clone())).unwrap();
+            let sheet = read_part(&mut zip, "xl/worksheets/sheet1.xml").unwrap().unwrap();
+            assert!(sheet.contains(&format!("<v>{serial}</v>")), "{date}: {sheet}");
+            let l = parse(bytes, &[], &XlsxOptions::default()).unwrap().remove(0);
+            assert_eq!(l.features[0].attributes[0], FieldValue::Date(date.into()));
+        }
+    }
+
+    #[test]
+    fn workbook_entries_are_capped() {
+        let entry = "<Relationship Id=\"a\" Type=\"b\" Target=\"c\"/>";
+        assert!(relationships(&entry.repeat(MAX_WORKBOOK_ENTRIES), "p").is_ok());
+        assert!(matches!(relationships(&entry.repeat(MAX_WORKBOOK_ENTRIES + 1), "p"), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn xlsx_write_options_are_refused_on_other_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("o.geojson");
+        let options =
+            crate::VectorWriteOptions { xlsx: XlsxOptions { geometry: CsvGeometry::AsWkt, ..Default::default() }, ..Default::default() };
+        let result = crate::write_vector(&[Layer::new("a")], path.to_str().unwrap(), &options);
+        assert!(matches!(result, Err(Error::InvalidArgument(m)) if m.contains("XLSX")));
     }
 
     #[test]
@@ -1866,6 +1928,9 @@ mod tests {
         assert_eq!(names[3], format!("{}_2", "x".repeat(29)));
         assert_eq!(names[4], "Sheet5");
         assert_eq!(names[5], "q");
+        // Truncating must not leave a quote at the end.
+        let names = sheet_names(&[format!("{}'b", "a".repeat(30))].map(Layer::new));
+        assert_eq!(names[0], "a".repeat(30));
         // Excel counts UTF-16 units: each of these characters is two.
         let names = sheet_names(&["\u{1F600}".repeat(20), "\u{1F600}".repeat(16)].map(Layer::new));
         assert_eq!(names[0], "\u{1F600}".repeat(15));

@@ -450,6 +450,10 @@ pub(crate) mod codec {
         #[cfg(feature = "xlsx")]
         let workbook = crate::drivers::vector::xlsx::looks_like(&bytes, name);
         #[cfg(not(feature = "xlsx"))]
+        if is_zip(&bytes) && matches!(ext.as_str(), "xlsx" | "xlsm") {
+            return Err(crate::Error::disabled("xlsx"));
+        }
+        #[cfg(not(feature = "xlsx"))]
         let workbook = false;
         if is_zip(&bytes) && ext != "kmz" && !workbook {
             return open_zip(&bytes, name, options);
