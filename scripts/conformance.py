@@ -2647,6 +2647,36 @@ def suite_vector_dataset(ctx):
 
 
 
+def suite_xlsx(ctx):
+    """XLSX workbooks read and written by terrio against GDAL's driver."""
+    s = Suite(
+        "xlsx",
+        "XLSX workbooks",
+        "GDAL's XLSX driver",
+        "A workbook of hand-laid sheets (types, widening, gaps, formulas, blank and repeated headings) "
+        "read by both drivers under each HEADERS and FIELD_TYPES option, an ogr2ogr workbook read by "
+        "terrio, and terrio's workbooks read by GDAL. Field names, feature counts and values must "
+        "match; numbers compared as numbers, fractions of a second within 2 ms. Known differences: "
+        "a boolean column with other numbers stays boolean in GDAL, which loses the values, and GDAL "
+        "ignores HEADERS=DISABLE for cells without references.",
+    )
+    if missing_modules("osgeo"):
+        s.skipped = "needs osgeo"
+        return s
+    if shutil.which("ogr2ogr") is None:
+        s.skipped = "needs the GDAL command-line tools (ogr2ogr)"
+        return s
+    with tempfile.TemporaryDirectory(prefix="terrio-xlsx-suite-") as tmp:
+        report = os.path.join(tmp, "report.json")
+        code, out, err = run([sys.executable, str(SCRIPTS / "compare_xlsx_with_gdal.py"), "--terrio", ctx.terrio, "--json", report])
+        if not os.path.isfile(report):
+            s.error = tail(err or out)
+            return s
+        for r in json.loads(Path(report).read_text())["cases"]:
+            s.cases.append(Case(r["name"].split(":")[0], r["name"], r["status"], r.get("detail", "")))
+    return s
+
+
 def suite_vector_geom(ctx):
     """Vector geometry commands on real data against gdal vector and GEOS."""
     s = Suite(
@@ -2934,6 +2964,7 @@ SUITES = OrderedDict(
         ("vector-geom", suite_vector_geom),
         ("vector-clip", suite_vector_clip),
         ("vector-dataset", suite_vector_dataset),
+        ("xlsx", suite_xlsx),
         ("rpftoc", suite_rpftoc),
         ("footprint", suite_footprint),
         ("analysis-bindings", suite_analysis_bindings),

@@ -129,7 +129,7 @@
 //!
 //! Every driver is on by default. With `default-features = false`, terrio keeps its core: GeoTIFF
 //! and COG, the raw and ASCII rasters, PNG, JPEG, VRT, STAC, GeoJSON, TopoJSON, Shapefile,
-//! KML/KMZ, GML, GPX, CSV and MapInfo, the CRS engine, the operations and the streams. The other
+//! KML/KMZ, GML, GPX, CSV, XLSX and MapInfo, the CRS engine, the operations and the streams. The other
 //! drivers are features:
 //!
 //! - `geotiff`: GeoTIFF and COG, always built (the feature names what a build needs:
@@ -280,6 +280,7 @@ pub use drivers::vector::geojson::{GeoJsonIdType, GeoJsonOptions};
 pub use drivers::vector::hecras_options::HecRasOpenOptions;
 pub use drivers::vector::kml::KmzOptions;
 pub use drivers::vector::shapefile::{OrganizePolygons, ShapefileOptions};
+pub use drivers::vector::xlsx_options::{XlsxFieldTypes, XlsxHeaders, XlsxOptions};
 pub use error::{Error, Result};
 pub use float_read::FloatReadOptions;
 /// The `ndarray` crate, of the version terrio's array views of raster pixels use.

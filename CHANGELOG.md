@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The `XLSX` driver reads and writes `.xlsx` and `.xlsm` workbooks in pure Rust, natively and in
+  WebAssembly, as GDAL's driver does: a layer per worksheet, with the `HEADERS` and `FIELD_TYPES`
+  open options. Naming coordinate or WKT columns reads geometries from them, and the `GEOMETRY`
+  layer creation option writes them (#405).
+
 - The `ESRIPBF` driver reads the protocol buffer of ArcGIS feature-service queries (`f=pbf`), which
   GDAL has no driver for: files recognized by content, and query URLs read page by page as
   `ESRIJSON` reads them, with the `ESRIPBF:` prefix (#475).

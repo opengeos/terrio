@@ -225,7 +225,9 @@ Command-group progress:
 - [x] Raster: Cloud Optimized GeoTIFF (overviews, internal tiling, all common compressions), ASCII
       grids.
 - [x] Vector: Shapefile (with `.prj`, `.cpg` and zipped), FlatGeobuf (with its spatial index),
-      GeoParquet 1.1 (with bounding-box filtering), CSV with point or WKT columns.
+      GeoParquet 1.1 (with bounding-box filtering), CSV with point or WKT columns, XLSX with GDAL's
+      driver behaviour ([#405](https://github.com/opengeos/terrio/issues/405), which tracks layout
+      options and a workbook model).
 - [x] Attribute and spatial filters pushed down to the drivers that support them.
 - [x] `terrio convert` between any two supported formats.
 

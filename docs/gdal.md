@@ -74,7 +74,7 @@ See [CAD drawings](formats.md#cad-drawings-dwg-and-dxf) for the native subset.
 
 ## The optional GDAL backend
 
-For the long tail of formats (HDF4, NITF, KEA, PCIDSK, SQLite, spreadsheets...),
+For the long tail of formats (HDF4, NITF, KEA, PCIDSK, SQLite, ODS spreadsheets...),
 terrio can hand files to GDAL. The backend is a cargo feature, `gdal`, off by default: it adds
 a C dependency, and builds need GDAL 3.4 or later installed where `pkg-config` (or
 `GDAL_HOME`) finds it.
@@ -112,7 +112,7 @@ With the feature enabled:
   itself, is written through GDAL.
 - Vector layers can be written with any GDAL vector driver, as `ogr2ogr -f` writes them: ESRI
   File Geodatabases (`terrio convert roads.gpkg roads.gdb`, GDAL's `OpenFileGDB`), DXF, MapInfo,
-  SQLite and SpatiaLite, GML, spreadsheets... (`-f "MapInfo File"`, `--dsco KEY=VALUE` and
+  SQLite and SpatiaLite, GML, ODS spreadsheets... (`-f "MapInfo File"`, `--dsco KEY=VALUE` and
   `--lco KEY=VALUE` for GDAL's dataset and layer creation options). Fields, geometry types (Z
   included; a layer of unknown type gets the type its features share, single geometries promoted
   to multi ones as `-nlt PROMOTE_TO_MULTI` does) and CRSs are kept; an existing output is
