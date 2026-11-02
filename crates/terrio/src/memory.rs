@@ -446,7 +446,12 @@ pub(crate) mod codec {
         if crate::drivers::grib::is_grib_bytes(&bytes) {
             return crate::drivers::grib::read_bytes(&bytes).map(Dataset::Raster);
         }
-        if is_zip(&bytes) && ext != "kmz" {
+        // A workbook is a ZIP archive too, read by its own driver.
+        #[cfg(feature = "xlsx")]
+        let workbook = crate::drivers::vector::xlsx::looks_like(&bytes, name);
+        #[cfg(not(feature = "xlsx"))]
+        let workbook = false;
+        if is_zip(&bytes) && ext != "kmz" && !workbook {
             return open_zip(&bytes, name, options);
         }
         if RasterDriver::for_extension(name) == Some(RasterDriver::AAIGrid) {

@@ -261,6 +261,11 @@ def same_value(a, b, numeric):
     if a is None or b is None:
         return False
     if numeric:
+        # Integers exactly: past 2^53, different ones are the same float.
+        try:
+            return int(a) == int(b)
+        except ValueError:
+            pass
         try:
             return float(a) == float(b)
         except ValueError:

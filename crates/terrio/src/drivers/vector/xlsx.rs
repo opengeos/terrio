@@ -14,7 +14,8 @@
 //! creation option writes them. Without those options sheets hold no geometries, as in GDAL.
 //!
 //! Where this differs from GDAL on purpose: a `date1904` workbook's dates are honored (GDAL reads
-//! them four years early), a boolean column that also holds other numbers becomes an integer field
+//! them four years early), a date format's quoted text does not make it a date format, a date-styled
+//! cell that holds no number makes its column text, a boolean column that also holds other numbers becomes an integer field
 //! (GDAL keeps it boolean and loses them), repeated headings get unique names, phonetic guides in
 //! shared strings are left out of the text, column widths are written per column (GDAL writes
 //! overlapping ranges), and sheet names are made valid for Excel. A time of day reads as `HH:MM:SS`
@@ -109,6 +110,10 @@ fn cell_type(cell: &Cell, autodetect: bool) -> (ColumnType, bool) {
     match cell.kind {
         CellKind::Gap | CellKind::Text => (ColumnType::Text, false),
         CellKind::Boolean => (ColumnType::Integer, true),
+        // A formula's cached text or error, say, styled as a date.
+        CellKind::Date | CellKind::Time | CellKind::DateTime if !cell.value.is_empty() && cell.value.trim().parse::<f64>().is_err() => {
+            (ColumnType::Text, false)
+        }
         CellKind::Date => (ColumnType::Date, false),
         CellKind::Time => (ColumnType::Time, false),
         CellKind::DateTime => (ColumnType::DateTime, false),
@@ -436,7 +441,11 @@ fn read_part<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, name: &str) 
         return Err(too_large());
     }
     let mut bytes = Vec::new();
-    file.by_ref().take(MAX_PART_BYTES + 1).read_to_end(&mut bytes)?;
+    // Past what the platform can allocate, as in WebAssembly, the part is too large as well.
+    file.by_ref()
+        .take(MAX_PART_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| if e.kind() == std::io::ErrorKind::OutOfMemory { too_large() } else { e.into() })?;
     if bytes.len() as u64 > MAX_PART_BYTES {
         return Err(too_large());
     }
@@ -601,6 +610,22 @@ fn shared_strings(text: &str, budget: &mut usize) -> Result<Vec<String>> {
     }
 }
 
+/// A number format without its literal text: quoted, or escaped by a backslash.
+fn unquoted_format(code: &str) -> String {
+    let (mut out, mut quoted, mut chars) = (String::new(), false, code.chars());
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted = !quoted,
+            '\\' if !quoted => {
+                chars.next();
+            }
+            c if !quoted => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The kind of value each cell style holds: from its number format, as GDAL's driver tells it.
 fn style_kinds(text: &str) -> Result<Vec<CellKind>> {
     let part = "styles.xml";
@@ -615,6 +640,7 @@ fn style_kinds(text: &str) -> Result<Vec<CellKind>> {
                         (attribute(&e, "formatCode"), attribute(&e, "numFmtId").and_then(|v| v.parse::<i32>().ok()))
                         && id >= 164
                     {
+                        let code = unquoted_format(&code);
                         let has = |upper: &str, lower: &str| code.contains(upper) || code.contains(lower);
                         let (date, time) = (has("DD", "dd") || has("YY", "yy"), has("HH", "hh"));
                         formats.insert(
@@ -689,14 +715,14 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
         if target <= line {
             return Ok(());
         }
+        if target >= MAX_ROWS {
+            return Err(too_many_rows(part));
+        }
         let gap = target - line;
         let fields = table.first_line.len().max(table.columns.len());
         // As GDAL's driver: too big a gap is ignored rather than filled with empty rows.
         if gap > MAX_ROW_GAP || (fields > 0 && gap > MAX_GAP_CELLS / fields) {
             return Ok(());
-        }
-        if target >= MAX_ROWS {
-            return Err(too_many_rows(part));
         }
         take_cells(budget, gap.saturating_mul(ROW_CELLS))?;
         for _ in 0..gap {
@@ -818,8 +844,8 @@ pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<V
     let styles = read_part(&mut zip, "xl/styles.xml")?.map(|text| style_kinds(&text)).transpose()?.unwrap_or_default();
     let shared = SharedParts { strings, styles };
     let mut layers = Vec::with_capacity(sheets.len());
-    // Naming no sheet here leaves the caller to report the names there are.
-    let filter = sheets.iter().any(|(name, _)| only.contains(name));
+    // Naming a sheet there is not leaves the caller to report the names there are.
+    let filter = !only.is_empty() && only.iter().all(|name| sheets.iter().any(|(sheet, _)| sheet == name));
     for (name, part) in sheets {
         if filter && !only.contains(&name) {
             continue;
@@ -889,7 +915,10 @@ fn xml_legal(c: char) -> bool {
 
 /// Text as XML: escaped, without the characters XML cannot hold.
 fn xml_text(s: &str) -> String {
-    if s.chars().all(xml_legal) { xml::escape(s) } else { xml::escape(&s.chars().filter(|&c| xml_legal(c)).collect::<String>()) }
+    let text =
+        if s.chars().all(xml_legal) { xml::escape(s) } else { xml::escape(&s.chars().filter(|&c| xml_legal(c)).collect::<String>()) };
+    // A parser turns a raw carriage return into a line feed.
+    text.replace('\r', "&#13;")
 }
 
 /// The shared strings table being written.
@@ -1510,6 +1539,57 @@ mod tests {
         assert_eq!(budget, 100 - ROW_CELLS - 2 * (1 + 10));
         let mut table = SheetTable::new(&options);
         assert!(matches!(read_sheet(&data, "s", &shared, &mut table, &mut 20), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn a_row_past_the_limit_is_refused_whatever_its_gap() {
+        let options = XlsxOptions::default();
+        let shared = SharedParts { strings: Vec::new(), styles: Vec::new() };
+        let data = format!("<sheetData><row r=\"{}\"/></sheetData>", MAX_ROWS + 1);
+        let result = read_sheet(&data, "s", &shared, &mut SheetTable::new(&options), &mut 100);
+        assert!(matches!(result, Err(Error::ResourceLimit(m)) if m.contains("rows")));
+    }
+
+    #[test]
+    fn text_in_a_date_format_or_style_stays_what_it_is() {
+        assert_eq!(unquoted_format(r#"#,##0.00 "odd" \d yy"#), "#,##0.00   yy");
+        let styles = "<numFmts><numFmt numFmtId=\"170\" formatCode=\"0.0 &quot;odd&quot;\"/></numFmts><cellXfs><xf numFmtId=\"170\"/><xf numFmtId=\"14\"/></cellXfs>";
+        let data = "<row r=\"1\"><c t=\"s\"><v>0</v></c><c t=\"s\"><v>1</v></c></row>\
+            <row r=\"2\"><c s=\"0\"><v>1.5</v></c><c s=\"1\" t=\"e\"><v>#N/A</v></c></row>";
+        let l = parse(workbook(&[("s", data)], &["<t>a</t>", "<t>b</t>"], styles, ""), &[], &XlsxOptions::default()).unwrap().remove(0);
+        assert_eq!(field_types(&l), [FieldType::Float, FieldType::Text]);
+        assert_eq!(l.features[0].attributes, [FieldValue::Float(1.5), FieldValue::Text("#N/A".into())]);
+    }
+
+    #[test]
+    fn carriage_returns_read_back() {
+        let layer = name_and_id(
+            [FieldValue::Text("a\r\nb".into()), FieldValue::Integer(1)],
+            [FieldValue::Text("c".into()), FieldValue::Integer(2)],
+        );
+        let bytes = to_bytes(&[layer], &XlsxOptions::default()).unwrap();
+        let l = parse(bytes, &[], &XlsxOptions::default()).unwrap().remove(0);
+        assert_eq!(l.features[0].attributes[0], FieldValue::Text("a\r\nb".into()));
+    }
+
+    #[test]
+    fn the_in_memory_codec_reads_a_workbook_rather_than_its_archive() {
+        let bytes = to_bytes(&[sample_layer()], &XlsxOptions::default()).unwrap();
+        let opened = crate::memory::codec::open(bytes, "o.xlsx", &Default::default()).unwrap();
+        let crate::Dataset::Vector(v) = opened else { panic!("a workbook is a vector dataset") };
+        assert_eq!(v.driver, crate::formats::VectorDriver::XLSX);
+        assert_eq!(v.layers[0].name, "my layer");
+    }
+
+    #[test]
+    fn every_named_sheet_must_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("o.xlsx");
+        let path = path.to_str().unwrap();
+        crate::write_vector(&[Layer::new("a"), Layer::new("b")], path, &Default::default()).unwrap();
+        let open = crate::VectorOpenOptions { layers: vec!["a".into(), "nope".into()], ..Default::default() };
+        let error = crate::open_vector(path, &open).unwrap_err().to_string();
+        assert!(error.contains("nope") && error.contains("b"), "{error}");
     }
 
     #[test]
