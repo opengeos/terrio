@@ -158,7 +158,7 @@ fn read_directory(r: &mut dyn ReadSeek, limits: Option<&crate::vfs::ZipLimits>, 
     if let Some(limits) = limits {
         limits.check_entries("zip", count)?;
         if cd_size > crate::vfs::MAX_DIRECTORY_BYTES {
-            return Err(Error::InvalidData(format!("zip: a central directory of {cd_size} bytes in an archive of {len}")));
+            return Err(Error::ResourceLimit(format!("zip: a central directory of {cd_size} bytes in an archive of {len}")));
         }
     }
     r.seek(SeekFrom::Start(cd_offset))?;

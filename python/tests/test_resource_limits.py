@@ -93,3 +93,18 @@ def test_jpeg_allocation_refusal_is_a_memory_error(tmp_path):
     result = read_limited("eager", path)
     assert_raises_allocation_error(result)
     assert result.stdout.startswith("RAISED ResourceLimitError:"), result.stdout
+
+
+def test_archive_policy_refusal_is_terminal(tmp_path, monkeypatch):
+    import zipfile
+
+    import pytest
+
+    path = tmp_path / "points.zip"
+    point = '{"type":"FeatureCollection","features":[]}'
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("a.geojson", point)
+        archive.writestr("b.geojson", point)
+    monkeypatch.setenv("TERRIO_ZIP_MAX_ENTRIES", "1")
+    with pytest.raises(terrio.ResourceLimitError, match="entries"):
+        terrio.open_vector(f"/vsizip/{path}/a.geojson")

@@ -43,9 +43,9 @@ origin = "existing"
 reason = "memmap2 map of a private unlinked temporary file, and MADV_DONTNEED on its clean pages"
 
 [files."crates/terrio/src/gdal_backend.rs"]
-count = 18
+count = 19
 origin = "existing"
-reason = "The optional GDAL backend's 17 baseline calls through gdal-sys, compiled only with the gdal feature; one additional borrowed-geometry WKB-size query (#485) preflights the budget before allocation, since the safe API exports allocated WKB."
+reason = "The optional GDAL backend's 17 baseline FFI blocks; two additions (#485) query a valid borrowed geometry size before budget charging and export into an exactly sized fallible buffer. The safe API exports infallibly allocated WKB."
 
 [files."crates/terrio/src/lib.rs"]
 count = 9

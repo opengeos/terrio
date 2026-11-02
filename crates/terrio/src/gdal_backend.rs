@@ -1174,13 +1174,24 @@ fn geometry_from(g: &gdal::vector::Geometry, budget: &mut VectorBudget) -> Resul
     }
     // SAFETY: a read-only size query on the valid borrowed geometry of this feature.
     // gdal's safe API exposes WKB export, which allocates before returning its size.
-    let original_size = usize::try_from(unsafe { gdal_sys::OGR_G_WkbSize(g.c_geometry()) }).unwrap_or(usize::MAX);
+    let original_size = unsafe { gdal_sys::OGR_G_WkbSizeEx(g.c_geometry()) };
     budget.charge(original_size.saturating_mul(WKB_STORAGE_FACTOR))?;
-    if let Ok(wkb) = g.wkb()
-        && let Ok(geometry) = Geometry::from_wkb(&wkb)
+    if original_size == 0 {
+        return Err(Error::ResourceLimit("GDAL: cannot size the geometry for the vector budget".into()));
+    }
+    let mut original = crate::dataset::fallible::filled_now(original_size, 0u8, "GDAL geometry WKB")
+        .map_err(|error| Error::ResourceLimit(error.to_string()))?;
+    // SAFETY: a valid borrowed geometry; the buffer holds the size GDAL reported above.
+    let exported = unsafe { gdal_sys::OGR_G_ExportToWkb(g.c_geometry(), gdal_sys::OGRwkbByteOrder::wkbNDR, original.as_mut_ptr()) };
+    if exported == gdal_sys::OGRErr::OGRERR_NOT_ENOUGH_MEMORY {
+        return Err(Error::ResourceLimit("GDAL: cannot export geometry WKB".into()));
+    }
+    if exported == gdal_sys::OGRErr::OGRERR_NONE
+        && let Ok(geometry) = Geometry::from_wkb(&original)
     {
         return Ok(Some(geometry));
     }
+    drop(original);
     // SAFETY: `g` is a valid geometry; the linear copy GDAL returns is owned here and destroyed
     // after its WKB is exported.
     let wkb = unsafe {
@@ -1188,7 +1199,11 @@ fn geometry_from(g: &gdal::vector::Geometry, budget: &mut VectorBudget) -> Resul
         if linear.is_null() {
             return Err(Error::InvalidData(format!("GDAL: cannot linearize a {}", g.geometry_name())));
         }
-        let size = usize::try_from(gdal_sys::OGR_G_WkbSize(linear)).unwrap_or(usize::MAX);
+        let size = gdal_sys::OGR_G_WkbSizeEx(linear);
+        if size == 0 {
+            gdal_sys::OGR_G_DestroyGeometry(linear);
+            return Err(Error::InvalidData("GDAL: cannot size linearized geometry WKB".into()));
+        }
         // Curves may expand by orders of magnitude. Charge the retained linear result,
         // not just the compact source, before exporting or decoding its WKB.
         if let Err(error) = budget.charge(size.saturating_sub(original_size).saturating_mul(WKB_STORAGE_FACTOR)) {
@@ -1204,6 +1219,9 @@ fn geometry_from(g: &gdal::vector::Geometry, budget: &mut VectorBudget) -> Resul
         };
         let rv = gdal_sys::OGR_G_ExportToWkb(linear, gdal_sys::OGRwkbByteOrder::wkbNDR, wkb.as_mut_ptr());
         gdal_sys::OGR_G_DestroyGeometry(linear);
+        if rv == gdal_sys::OGRErr::OGRERR_NOT_ENOUGH_MEMORY {
+            return Err(Error::ResourceLimit("GDAL: cannot export linearized geometry WKB".into()));
+        }
         if rv != gdal_sys::OGRErr::OGRERR_NONE {
             return Err(Error::InvalidData(format!("GDAL: cannot export a {} as WKB", g.geometry_name())));
         }

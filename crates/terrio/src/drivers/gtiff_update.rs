@@ -202,7 +202,7 @@ pub(crate) fn parse<R: Read + Seek>(r: &mut R) -> Result<Tiff> {
             count.checked_mul(entry_len as u64).filter(|n| *n <= len).ok_or_else(|| Error::InvalidData("TIFF: too many tags".into()))?;
         metadata_budget = metadata_budget
             .checked_sub(table_len + inline as u64)
-            .ok_or_else(|| Error::InvalidData("TIFF update metadata exceeds 64 MiB".into()))?;
+            .ok_or_else(|| Error::ResourceLimit("TIFF update metadata exceeds 64 MiB".into()))?;
         let mut table = vec![0u8; table_len as usize + inline];
         read_at(r, next + count_len as u64, &mut table, len)?;
         let mut entries = Vec::with_capacity(count as usize);
@@ -221,7 +221,7 @@ pub(crate) fn parse<R: Read + Seek>(r: &mut R) -> Result<Tiff> {
             let bytes_len =
                 n.checked_mul(size).filter(|b| *b <= len).ok_or_else(|| Error::InvalidData(format!("TIFF: tag {tag} is too large")))?;
             metadata_budget =
-                metadata_budget.checked_sub(bytes_len).ok_or_else(|| Error::InvalidData("TIFF update metadata exceeds 64 MiB".into()))?;
+                metadata_budget.checked_sub(bytes_len).ok_or_else(|| Error::ResourceLimit("TIFF update metadata exceeds 64 MiB".into()))?;
             let bytes = if bytes_len as usize <= inline {
                 field[..bytes_len as usize].to_vec()
             } else {
@@ -672,7 +672,7 @@ mod tests {
         bytes.extend(0u32.to_le_bytes());
         bytes.resize((offset + payload) as usize, 0);
         let error = parse(&mut std::io::Cursor::new(bytes)).unwrap_err();
-        assert!(error.to_string().contains("metadata exceeds 64 MiB"), "{error}");
+        assert!(matches!(&error, crate::Error::ResourceLimit(message) if message.contains("metadata exceeds 64 MiB")), "{error}");
     }
 
     #[test]

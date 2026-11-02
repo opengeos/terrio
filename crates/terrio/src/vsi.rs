@@ -725,7 +725,7 @@ fn remote_read_dir(node: &Node, max_depth: usize) -> Result<Vec<Entry>> {
     let mut pages = 0;
     while let Some((url, rel, level)) = pending.pop() {
         if pages == listing::MAX_PAGES {
-            return Err(Error::InvalidData(format!("HTTP directory listing exceeds {} pages", listing::MAX_PAGES)));
+            return Err(Error::ResourceLimit(format!("HTTP directory listing exceeds {} pages", listing::MAX_PAGES)));
         }
         pages += 1;
         let page = if query.is_empty() { url.clone() } else { format!("{url}?{query}") };
@@ -1009,7 +1009,7 @@ impl TarLimits {
     fn count(&mut self) -> Result<()> {
         self.entries += 1;
         if self.entries > self.limits.max_entries {
-            return Err(Error::Unsupported(format!(
+            return Err(Error::ResourceLimit(format!(
                 "tar: the archive lists more than the {} entries allowed (TERRIO_ZIP_MAX_ENTRIES)",
                 self.limits.max_entries
             )));

@@ -53,7 +53,7 @@ pub(crate) fn decode_image(b: &[u8]) -> Result<Image> {
     }
     if b.starts_with(&[0xff, 0xd8]) {
         let img = crate::jpeg::decode_file(b)
-            .map_err(|e| if crate::jpeg::is_resource_refusal(&e) { Error::ResourceLimit(e) } else { err(&e) })?;
+            .map_err(|e| if crate::jpeg::is_resource_refusal(&e) { Error::ResourceLimit(e.to_string()) } else { err(&e) })?;
         return Ok(Image { w: img.width, h: img.height, channels: img.components, data: img.data, palette: false });
     }
     if b.len() > 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" {
