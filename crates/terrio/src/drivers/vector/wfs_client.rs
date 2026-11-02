@@ -22,6 +22,8 @@ use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Geomet
 const METADATA_CAP: u64 = 16 << 20;
 const PAGE_CAP: u64 = 64 << 20;
 const XML_ELEMENTS: usize = 1_000_000;
+// Element nodes, decoded strings, coordinate parsing and temporary vectors.
+const XML_WORKSPACE_FACTOR: usize = 64;
 
 /// A service summary; unknown counts stay null rather than being reported as zero.
 #[derive(Debug, Clone, Serialize)]
@@ -82,6 +84,7 @@ fn limited(message: impl std::fmt::Display) -> Error {
 #[derive(Debug)]
 struct FeatureType {
     name: String,
+    namespace: Option<String>,
     title: Option<String>,
     srs: Option<String>,
     wgs84: Option<[f64; 4]>,
@@ -134,7 +137,11 @@ fn request_url(base: &str, values: &[(&str, String)]) -> String {
     let mut pairs: Vec<String> = query
         .split('&')
         .filter(|pair| !pair.is_empty())
-        .filter(|pair| !operation_keys.iter().any(|key| pair.split('=').next().is_some_and(|name| name.eq_ignore_ascii_case(key))))
+        .filter(|pair| {
+            let name = crate::vfs::decode_query_component(pair.split('=').next().unwrap_or(""));
+            !operation_keys.iter().any(|key| name.eq_ignore_ascii_case(key))
+                && !values.iter().any(|(key, _)| name.eq_ignore_ascii_case(key))
+        })
         .map(str::to_string)
         .collect();
     pairs.extend(values.iter().map(|(key, value)| format!("{key}={}", encode(value))));
@@ -183,9 +190,9 @@ fn operation_endpoint(root: &Element, operation: &str, source: &str) -> String {
 }
 
 fn reserve_parse(bytes: usize, retained: usize) -> Result<()> {
-    let peak = bytes.checked_mul(64).and_then(|n| n.checked_add(retained));
+    let peak = bytes.checked_mul(XML_WORKSPACE_FACTOR).and_then(|n| n.checked_add(retained));
     crate::dataset::fallible::check_usable(peak, || "WFS: XML/page parsing exceeds usable memory".into()).map_err(limited)?;
-    let needed = bytes.checked_mul(64).ok_or_else(|| limited("page parse estimate overflows"))?;
+    let needed = bytes.checked_mul(XML_WORKSPACE_FACTOR).ok_or_else(|| limited("page parse estimate overflows"))?;
     // Probe virtual-address-space availability fallibly before the XML parser's
     // infallible allocations. The estimate includes the element tree and decoded strings;
     // physical usable memory is checked above. This is a preflight, not a retained buffer.
@@ -196,7 +203,7 @@ fn reserve_parse(bytes: usize, retained: usize) -> Result<()> {
 
 fn parse_xml(bytes: &[u8], retained: usize) -> Result<Element> {
     reserve_parse(bytes.len(), retained)?;
-    let root = xml::parse_limited(&xml::decode(bytes), XML_ELEMENTS)?;
+    let root = xml::parse_strict_limited(&xml::decode(bytes), XML_ELEMENTS)?;
     if matches!(root.name.as_str(), "ExceptionReport" | "ServiceExceptionReport" | "ServiceException") {
         let mut messages = Vec::new();
         root.find_all("ExceptionText", &mut messages);
@@ -271,7 +278,21 @@ impl Service {
                     })
                 })
                 .filter(|b| b.iter().all(|v| v.is_finite()) && b[0] <= b[2] && b[1] <= b[3]);
-            types.push(FeatureType { name, title: item.child_text("Title").map(str::to_string), srs, wgs84: bbox });
+            let namespace = if let Some((prefix, _)) = name.split_once(':') {
+                let node = item.child("Name").unwrap();
+                Some(
+                    node.attr(prefix)
+                        .or_else(|| item.attr(prefix))
+                        .or_else(|| list.attr(prefix))
+                        .or_else(|| root.attr(prefix))
+                        .filter(|uri| !uri.is_empty())
+                        .ok_or_else(|| invalid(format!("feature type {name} has an unbound namespace prefix")))?
+                        .to_string(),
+                )
+            } else {
+                None
+            };
+            types.push(FeatureType { name, namespace, title: item.child_text("Title").map(str::to_string), srs, wgs84: bbox });
         }
         let mut constraints = Vec::new();
         root.find_all("Constraint", &mut constraints);
@@ -346,7 +367,7 @@ impl Budget {
             .checked_add(dense)
             .filter(|n| *n <= self.limit)
             .ok_or_else(|| limited(format!("dense field matrix exceeds WFS_MAX_VECTOR_BYTES={}", self.limit)))?;
-        let peak = page_bytes.checked_mul(64).and_then(|n| n.checked_add(retained));
+        let peak = page_bytes.checked_mul(XML_WORKSPACE_FACTOR).and_then(|n| n.checked_add(retained));
         crate::dataset::fallible::check_usable(peak, || "WFS: dense field matrix exceeds usable memory".into()).map_err(limited)?;
         // GML allocates a dense row even for absent properties. Check that matrix
         // fallibly before entering the decoder, then release the temporary reservation.
@@ -414,11 +435,7 @@ fn layer_bytes(layer: &Layer) -> usize {
 }
 
 fn declared_geometry(schema: &Element, local: &str) -> Option<GeometryType> {
-    let typename = schema.children_named("element").find(|e| e.attr("name") == Some(local))?.attr("type")?.rsplit(':').next()?;
-    let complex = schema.children_named("complexType").find(|e| e.attr("name") == Some(typename))?;
-    let mut fields = Vec::new();
-    complex.find_all("element", &mut fields);
-    fields.into_iter().filter_map(|e| e.attr("type").filter(|kind| gml::is_gml_type(schema, e, kind))).find_map(|kind| {
+    gml::xsd_elements(schema, local).into_iter().filter_map(|(_, kind, geometry)| geometry.then_some(kind)).find_map(|kind| {
         let kind = kind.rsplit(':').next()?;
         Some(match kind {
             "PointPropertyType" => GeometryType::Point,
@@ -448,8 +465,14 @@ fn empty_layer(name: &str, schema: &Element, srs: Option<&str>) -> Layer {
 
 // The general GML reader is deliberately permissive. A service must not silently drop
 // properties or linearize unsupported curves when it claims to return simple features.
-fn validate_simple(feature: &Element, layer: &Layer) -> Result<()> {
-    fn geometry_tree(node: &Element) -> Result<()> {
+fn validate_simple(feature: &Element, layer: &Layer, expected_crs: Option<&SpatialRef>) -> Result<()> {
+    fn geometry_tree(node: &Element, expected_crs: Option<&SpatialRef>) -> Result<()> {
+        if let Some(srs) = node.attr("srsName") {
+            let actual = SpatialRef::parse(srs).map_err(|_| invalid("a geometry declares an unrecognized CRS"))?;
+            if expected_crs.is_some_and(|expected| !expected.same_as(&actual)) {
+                return Err(invalid("a geometry CRS differs from the requested layer CRS"));
+            }
+        }
         if node.attr("href").is_some()
             || node.name == "segments" && node.children.iter().any(|child| child.name != "LineStringSegment")
             || matches!(
@@ -473,7 +496,7 @@ fn validate_simple(feature: &Element, layer: &Layer) -> Result<()> {
             return Err(Error::Unsupported("WFS: linked, curved or composite surface geometries are not supported".into()));
         }
         for child in &node.children {
-            geometry_tree(child)?;
+            geometry_tree(child, expected_crs)?;
         }
         Ok(())
     }
@@ -501,7 +524,10 @@ fn validate_simple(feature: &Element, layer: &Layer) -> Result<()> {
             if geometries > 1 {
                 return Err(Error::Unsupported("WFS: multiple geometry properties are not supported".into()));
             }
-            geometry_tree(&property.children[0])?;
+            geometry_tree(&property.children[0], expected_crs)?;
+            if gml::geometry(&property.children[0], 2).is_none() {
+                return Err(invalid("a geometry property could not be decoded"));
+            }
         }
     }
     Ok(())
@@ -513,6 +539,11 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
     if schema.name != "schema" {
         return Err(invalid("DescribeFeatureType did not return an XML schema"));
     }
+    let namespace = feature.namespace.as_deref().or_else(|| schema.attr("targetNamespace"));
+    if feature.namespace.as_deref().is_some_and(|ns| schema.attr("targetNamespace") != Some(ns)) {
+        return Err(invalid("DescribeFeatureType returned a different feature namespace"));
+    }
+    let expected_crs = feature.srs.as_deref().and_then(|s| SpatialRef::parse(s).ok());
     let mut layer = empty_layer(&feature.name, &schema, feature.srs.as_deref());
     budget.charge(layer_bytes(&layer))?;
     if options.max_features == Some(0) {
@@ -570,7 +601,14 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
                 if matches!(member.name.as_str(), "member" | "featureMember" | "featureMembers") {
                     rows = rows.checked_add(member.children.len()).ok_or_else(|| limited("feature count overflows"))?;
                     for feature in &member.children {
-                        validate_simple(feature, &layer)?;
+                        // Collection/member/feature are the only namespace scopes on this
+                        // known path. Avoid rescanning earlier features for every row.
+                        let key = if feature.prefix.is_empty() { "xmlns" } else { &feature.prefix };
+                        let actual = feature.attr(key).or_else(|| member.attr(key)).or_else(|| root.attr(key)).filter(|s| !s.is_empty());
+                        if actual != namespace {
+                            return Err(invalid("GetFeature returned a different feature namespace"));
+                        }
+                        validate_simple(feature, &layer, expected_crs.as_ref())?;
                     }
                 }
             }

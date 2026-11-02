@@ -57,6 +57,8 @@ fn check_response(body: &'static [u8], extension: &str, expected: &str) {
     assert!(matches!(terrio::info::info_path(&opaque, &Default::default()), Ok(terrio::info::Info::Vector(_))));
     let requests = requests.lock().unwrap();
     assert!(requests.iter().any(|request| request.contains("request=GetFeature&count=1")));
+    // One named document, four streamed GetFeature opens, and one cached opaque
+    // document. The final opaque info reuses that fetch: six is the I/O target.
     assert_eq!(requests.len(), 6, "{requests:?}");
 }
 
@@ -75,7 +77,7 @@ fn large_getfeature_responses_do_not_require_range_support() {
     let mut document: serde_json::Value = serde_json::from_slice(GEOJSON).unwrap();
     document["padding"] = serde_json::Value::String("x".repeat(200_000));
     let (base, requests) = serve(serde_json::to_vec(&document).unwrap());
-    let url = format!("{base}/ows?SERVICE=WFS&REQUEST=GetFeature");
+    let url = format!("{base}/ows?SERVICE=WFS&REQUEST=Get%46eature");
     let ds = terrio::open_vector(&url, &Default::default()).unwrap();
     assert_eq!(ds.layers[0].features.len(), 1);
     assert_eq!(requests.lock().unwrap().len(), 1);
@@ -99,7 +101,7 @@ fn service_responses_obey_the_actual_driver_allow_list() {
     let allowed = std::env::var(CHILD).unwrap();
     for (body, driver) in [(GEOJSON, "GeoJSON"), (GML, "GML")] {
         let (base, requests) = serve(body.to_vec());
-        let result = terrio::open_vector(&format!("{base}/ows?SERVICE=WFS&REQUEST=GetFeature"), &Default::default());
+        let result = terrio::open_vector(&format!("{base}/ows?SERVICE=WFS&REQUEST=Get%46eature"), &Default::default());
         if driver == allowed {
             assert_eq!(result.unwrap().layers[0].features.len(), 1);
         } else {

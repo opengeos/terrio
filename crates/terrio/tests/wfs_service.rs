@@ -47,13 +47,13 @@ fn capabilities(base: &str, version: &str) -> String {
         .map(|name| format!("<FeatureType><Name>t:{name}</Name><Title>{name}</Title><{srs_tag}>{srs}</{srs_tag}></FeatureType>"))
         .collect::<String>();
     format!(
-        r#"<wfs:WFS_Capabilities xmlns:wfs="{ns}" xmlns="{ns}" xmlns:ows="http://www.opengis.net/ows" xmlns:xlink="http://www.w3.org/1999/xlink" version="{version}">{operations}<FeatureTypeList>{types}</FeatureTypeList></wfs:WFS_Capabilities>"#
+        r#"<wfs:WFS_Capabilities xmlns:wfs="{ns}" xmlns="{ns}" xmlns:t="urn:test" xmlns:ows="http://www.opengis.net/ows" xmlns:xlink="http://www.w3.org/1999/xlink" version="{version}">{operations}<FeatureTypeList>{types}</FeatureTypeList></wfs:WFS_Capabilities>"#
     )
 }
 
 fn schema(name: &str) -> String {
     format!(
-        r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:gml="http://www.opengis.net/gml" xmlns:t="urn:test">
+        r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:gml="http://www.opengis.net/gml" xmlns:t="urn:test" targetNamespace="urn:test">
 <xs:complexType name="{name}Type"><xs:complexContent><xs:extension base="gml:AbstractFeatureType"><xs:sequence>
 <xs:element name="geom" type="gml:PointPropertyType"/><xs:element name="name" type="xs:string"/><xs:element name="rank" type="xs:int"/>
 </xs:sequence></xs:extension></xs:complexContent></xs:complexType><xs:element name="{name}" type="t:{name}Type"/></xs:schema>"#
@@ -119,7 +119,27 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                 }
                 caps
             } else if operation.eq_ignore_ascii_case("DescribeFeatureType") {
-                let mut xsd = schema(if target.contains("empty") { "empty" } else { "roads" });
+                let name = if target.contains("empty") { "empty" } else { "roads" };
+                let mut xsd = schema(name);
+                if mode == "inline" {
+                    xsd = xsd
+                        .replace(
+                            &format!(r#"<xs:complexType name="{name}Type">"#),
+                            &format!(r#"<xs:element name="{name}"><xs:complexType>"#),
+                        )
+                        .replace(
+                            &format!(r#"</xs:complexType><xs:element name="{name}" type="t:{name}Type"/>"#),
+                            "</xs:complexType></xs:element>",
+                        );
+                }
+                if mode == "inline" {
+                    xsd = xsd
+                        .replace(
+                            &format!(r#"<xs:element name="{name}"><xs:complexType>"#),
+                            &format!(r#"<xs:element name="{name}" xmlns:g="http://www.opengis.net/gml/3.2"><xs:complexType>"#),
+                        )
+                        .replace("gml:PointPropertyType", "g:PointPropertyType");
+                }
                 if mode == "alias" {
                     xsd = xsd
                         .replace("xmlns:gml=", "xmlns:gml32=")
@@ -156,6 +176,33 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                         )
                     } else {
                         let mut data = page(if target.contains("empty") { "empty" } else { "roads" }, version, offset, count);
+                        if mode == "no-features" {
+                            data = page("empty", version, 0, 0);
+                        }
+                        if mode == "wrong-namespace" {
+                            data = data.replace("urn:test", "urn:other");
+                        }
+                        if mode == "namespace-alias" {
+                            data = data.replace("xmlns:t=", "xmlns:b=\"urn:test\" xmlns:t=").replace("t:roads", "b:roads");
+                        }
+                        if mode == "bad-point" {
+                            data = data.replace("<gml:pos>50 10</gml:pos>", "<gml:pos>invalid coordinates</gml:pos>");
+                        }
+                        if mode == "wrong-crs" {
+                            data = data.replace(
+                                r#"srsName="urn:ogc:def:crs:EPSG::4326"><gml:pos>51 11"#,
+                                r#"srsName="urn:ogc:def:crs:EPSG::3857"><gml:pos>51 11"#,
+                            );
+                        }
+                        if mode == "bad-entity-attribute" {
+                            data = data.replace("roads.1", "a&unknown;b");
+                        }
+                        if mode == "bad-entity" {
+                            data = data.replace("point1", "a&unknown;b");
+                        }
+                        if mode == "good-entity" {
+                            data = data.replace("point1", "a&amp;&#x62;");
+                        }
                         if mode == "complex" {
                             data = data.replace("<t:name>point1</t:name>", "<t:name><t:nested>point1</t:nested></t:name>");
                         }
@@ -190,7 +237,7 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
 
 #[test]
 fn capabilities_info_and_layer_listing_fetch_no_features() {
-    for version in ["1.0.0", "1.1.0", "2.0.0"] {
+    for version in ["1.0.0", "1.1.0", "2.0.0", "2.0.2"] {
         let (source, requests) = serve(version, "normal");
         let info = terrio::info::info_path(&source, &Default::default()).unwrap();
         let value = serde_json::to_value(info).unwrap();
@@ -211,7 +258,7 @@ fn capabilities_info_and_layer_listing_fetch_no_features() {
 
 #[test]
 fn versions_schemas_paging_and_authority_axis_order_are_read() {
-    for version in ["1.0.0", "1.1.0", "2.0.0"] {
+    for version in ["1.0.0", "1.1.0", "2.0.0", "2.0.2"] {
         let (source, requests) = serve(version, "normal");
         let mut options = VectorOpenOptions { layers: vec!["t:roads".into()], ..Default::default() };
         options.wfs.page_size = 2;
@@ -386,4 +433,69 @@ fn incomplete_single_pages_warn_instead_of_silently_truncating() {
     let ds = terrio::open_vector(&source, &options).unwrap();
     assert_eq!(ds.layers[0].features.len(), 2);
     assert!(terrio::warnings::take().iter().any(|w| w.contains("2 of 5") && w.contains("WFS_PAGING=YES")));
+}
+
+#[test]
+fn anonymous_application_schemas_preserve_nonempty_and_empty_layers() {
+    let (source, _) = serve("2.0.0", "inline");
+    let ds = terrio::open_vector(&source, &Default::default()).unwrap();
+    assert_eq!(ds.layers[0].features.len(), 5);
+    assert!(ds.layers[1].features.is_empty());
+    for layer in &ds.layers {
+        assert_eq!(layer.schema.fields().len(), 3);
+        assert_eq!(layer.geom_type, Some(wbvector::GeometryType::Point));
+        assert_eq!(layer.schema.fields()[2].field_type, wbvector::FieldType::Integer);
+    }
+}
+
+#[test]
+fn malformed_geometry_namespace_crs_and_entities_are_terminal_errors() {
+    for mode in ["bad-point", "wrong-namespace", "wrong-crs", "bad-entity", "bad-entity-attribute"] {
+        let (source, requests) = serve("2.0.0", mode);
+        let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+        let error = terrio::open_vector(&source, &options).unwrap_err();
+        assert!(matches!(error, terrio::Error::InvalidData(_)), "{mode}: {error}");
+        assert_eq!(requests.lock().unwrap().len(), 3, "no retry after a rejected first page");
+    }
+}
+
+#[test]
+fn namespace_aliases_and_valid_xml_entities_remain_supported() {
+    for mode in ["namespace-alias", "good-entity"] {
+        let (source, _) = serve("2.0.0", mode);
+        let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+        let ds = terrio::open_vector(&source, &options).unwrap();
+        assert_eq!(ds.layers[0].features.len(), 5);
+        if mode == "good-entity" {
+            assert_eq!(ds.layers[0].features[0].attributes[1], FieldValue::Text("a&b".into()));
+        }
+    }
+}
+
+#[test]
+fn generated_bbox_replaces_source_bbox_and_otherwise_keeps_it() {
+    for replace in [false, true] {
+        let (source, requests) = serve("2.0.0", "normal");
+        let source = format!("{source}&bBoX=0%2C0%2C1%2C1");
+        let options = VectorOpenOptions {
+            layers: vec!["roads".into()],
+            max_features: Some(1),
+            spatial_filter: replace.then_some((9., 49., 12., 52.)),
+            ..Default::default()
+        };
+        terrio::open_vector(&source, &options).unwrap();
+        let seen = requests.lock().unwrap();
+        let request = seen.iter().find(|q| q.contains("REQUEST=GetFeature")).unwrap();
+        assert_eq!(request.to_ascii_uppercase().matches("BBOX=").count(), 1, "{request}");
+        assert!(request.contains(if replace { "BBOX=49%2C9%2C52%2C12%2C" } else { "bBoX=0%2C0%2C1%2C1" }), "{request}");
+    }
+}
+
+#[test]
+fn malformed_recognized_getfeature_does_not_retry_through_gdal() {
+    let (source, requests) = serve("2.0.0", "no-features");
+    let url = format!("{}&SERVICE=WFS&REQUEST=GetFeature", source.strip_prefix("WFS:").unwrap());
+    let error = terrio::open_vector(&url, &Default::default()).unwrap_err();
+    assert!(matches!(error, terrio::Error::InvalidData(_)), "{error}");
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }

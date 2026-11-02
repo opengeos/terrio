@@ -623,7 +623,11 @@ pub(crate) fn open_remote_vector(path: &str, options: &VectorOpenOptions) -> Opt
 fn open_remote_vector_response(url: &str, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
     let loc = vfs::Location::parse(url);
     let remote = loc.remote()?;
-    if crate::stac::may_be_stac(url) || !judged_by_content(&loc.file_name(), true) {
+    if crate::stac::may_be_stac(url)
+        || crate::drivers::vector::wfs::is_feature_request(url)
+        || crate::drivers::vector::featureservice::is_query_url(url)
+        || !judged_by_content(&loc.file_name(), true)
+    {
         return None;
     }
     let (head, _) = match crate::http::head_and_len(&remote, crate::http::FIRST_READ) {
@@ -632,11 +636,12 @@ fn open_remote_vector_response(url: &str, options: &VectorOpenOptions) -> Option
         Err(_) => return None,
     };
     let driver = remote_vector_response_driver(&head)?;
-    Some(
-        crate::formats::check_driver_allowed(driver.name(), url, crate::formats::Kind::Vector)
-            .and_then(|()| crate::http::get_file(&remote, crate::http::Redirects::Any))
-            .and_then(|bytes| read_vector_answer(url, bytes, driver, options)),
-    )
+    let result = crate::formats::check_driver_allowed(driver.name(), url, crate::formats::Kind::Vector)
+        .and_then(|()| crate::http::get_file(&remote, crate::http::Redirects::Any))
+        .and_then(|bytes| read_vector_answer(url, bytes, driver, options));
+    #[cfg(feature = "gdal")]
+    let result = gdal_fallback(url, result, |path| crate::gdal_backend::open_vector(path, options));
+    Some(result)
 }
 
 #[cfg(remote)]
@@ -730,16 +735,11 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
 #[cfg(remote)]
 fn read_vector_answer(url: &str, bytes: Vec<u8>, driver: VectorDriver, options: &VectorOpenOptions) -> Result<VectorDataset> {
     let shown = url.trim().split(['?', '#']).next().unwrap_or(url);
-    let result = (|| {
-        let layers = crate::drivers::vector::read_bytes(bytes, shown, driver, options)?
-            .ok_or_else(|| Error::Unsupported(format!("the {} driver cannot read from memory", driver.name())))?;
-        let mut layers = select_layers(layers, shown, options)?;
-        layers.iter_mut().for_each(|l| options.keep_range(l));
-        Ok(finish_vector(layers, shown, driver))
-    })();
-    #[cfg(feature = "gdal")]
-    let result = gdal_fallback(url, result, |path| crate::gdal_backend::open_vector(path, options));
-    result
+    let layers = crate::drivers::vector::read_bytes(bytes, shown, driver, options)?
+        .ok_or_else(|| Error::Unsupported(format!("the {} driver cannot read from memory", driver.name())))?;
+    let mut layers = select_layers(layers, shown, options)?;
+    layers.iter_mut().for_each(|l| options.keep_range(l));
+    Ok(finish_vector(layers, shown, driver))
 }
 
 /// A feature-service query from its first page's bytes, with the pages after it.

@@ -171,21 +171,11 @@ fn value(v: &str, t: FieldType) -> FieldValue {
 
 /// The fields an application schema declares for a feature type, in order.
 pub(crate) fn xsd_fields(xsd: &Element, feature: &str) -> Vec<(String, FieldType)> {
-    let type_name = xsd
-        .children_named("element")
-        .find(|e| e.attr("name") == Some(feature))
-        .and_then(|e| e.attr("type"))
-        .map(|t| t.rsplit(':').next().unwrap_or(t).to_string())
-        .unwrap_or_else(|| format!("{feature}Type"));
-    let Some(ct) = xsd.children_named("complexType").find(|c| c.attr("name") == Some(&type_name)) else { return Vec::new() };
-    let mut elements = Vec::new();
-    ct.find_all("element", &mut elements);
-    elements
+    xsd_elements(xsd, feature)
         .into_iter()
-        .filter_map(|e| {
-            let name = e.attr("name")?;
-            let base = e.attr("type").or_else(|| e.find("restriction").and_then(|r| r.attr("base"))).unwrap_or("string");
-            if is_gml_type(xsd, e, base) {
+        .filter_map(|(element, base, geometry)| {
+            let name = element.attr("name")?;
+            if geometry {
                 return None;
             }
             let t = match base.rsplit(':').next().unwrap_or(base) {
@@ -202,17 +192,68 @@ pub(crate) fn xsd_fields(xsd: &Element, feature: &str) -> Vec<(String, FieldType
         .collect()
 }
 
-/// Resolve a schema type QName using the declaration's in-scope namespace bindings.
-pub(crate) fn is_gml_type(schema: &Element, declaration: &Element, kind: &str) -> bool {
-    let prefix = kind.split_once(':').map_or("xmlns", |(prefix, _)| prefix);
-    fn binding<'a>(node: &'a Element, target: &Element, prefix: &str, inherited: Option<&'a str>) -> Option<Option<&'a str>> {
-        let current = node.attr(prefix).or(inherited);
-        if std::ptr::eq(node, target) {
-            return Some(current);
-        }
-        node.children.iter().find_map(|child| binding(child, target, prefix, current))
+/// A feature's named or anonymous application-schema type.
+pub(crate) fn xsd_complex_type<'a>(xsd: &'a Element, feature: &str) -> Option<&'a Element> {
+    let declaration = xsd.children_named("element").find(|e| e.attr("name") == Some(feature));
+    if let Some(inline) = declaration.filter(|e| e.attr("type").is_none()).and_then(|e| e.child("complexType")) {
+        return Some(inline);
     }
-    matches!(binding(schema, declaration, prefix, None).flatten(), Some("http://www.opengis.net/gml" | "http://www.opengis.net/gml/3.2"))
+    let fallback = format!("{feature}Type");
+    let name = declaration.and_then(|e| e.attr("type")).map(|s| s.rsplit(':').next().unwrap_or(s)).unwrap_or(&fallback);
+    xsd.children_named("complexType").find(|c| c.attr("name") == Some(name))
+}
+
+/// Declarations and their resolved types, in order, with one depth-scoped traversal.
+/// The boolean distinguishes GML types from scalar application properties.
+pub(crate) fn xsd_elements<'a>(schema: &'a Element, feature: &str) -> Vec<(&'a Element, &'a str, bool)> {
+    fn path_to<'a>(node: &'a Element, target: &Element, path: &mut Vec<&'a Element>) -> bool {
+        path.push(node);
+        if std::ptr::eq(node, target) {
+            return true;
+        }
+        if node.children.iter().any(|child| path_to(child, target, path)) {
+            return true;
+        }
+        path.pop();
+        false
+    }
+    fn is_geometry(kind: &str, path: &[&Element]) -> bool {
+        let key = kind.split_once(':').map_or("xmlns", |(prefix, _)| prefix);
+        matches!(path.iter().rev().find_map(|node| node.attr(key)), Some("http://www.opengis.net/gml" | "http://www.opengis.net/gml/3.2"))
+    }
+    fn restriction<'a>(node: &'a Element, path: &mut Vec<&'a Element>) -> Option<(&'a str, bool)> {
+        path.push(node);
+        let found = if node.name == "restriction" { node.attr("base").map(|base| (base, is_geometry(base, path))) } else { None }
+            .or_else(|| node.children.iter().find_map(|child| restriction(child, path)));
+        path.pop();
+        found
+    }
+    fn collect<'a>(node: &'a Element, path: &mut Vec<&'a Element>, out: &mut Vec<(&'a Element, &'a str, bool)>) {
+        path.push(node);
+        if node.name == "element" {
+            let (base, geometry) = node
+                .attr("type")
+                .map(|base| (base, is_geometry(base, path)))
+                .or_else(|| node.children.iter().find_map(|child| restriction(child, path)))
+                .unwrap_or(("string", false));
+            out.push((node, base, geometry));
+        } else {
+            for child in &node.children {
+                collect(child, path, out);
+            }
+        }
+        path.pop();
+    }
+    let Some(complex) = xsd_complex_type(schema, feature) else { return Vec::new() };
+    let mut path = Vec::new();
+    if !path_to(schema, complex, &mut path) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for child in &complex.children {
+        collect(child, &mut path, &mut out);
+    }
+    out
 }
 
 fn srs_name_of(g: &Element) -> Option<&str> {

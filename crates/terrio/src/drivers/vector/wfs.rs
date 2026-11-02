@@ -6,15 +6,14 @@
 
 use crate::{Error, Result};
 
-/// The raw value of a case-insensitive OGC KVP parameter.
+/// The decoded value of a case-insensitive OGC KVP parameter.
 #[cfg(remote)]
-pub(crate) fn parameter<'a>(url: &'a str, key: &str) -> Option<&'a str> {
-    url.split('#')
-        .next()?
-        .split_once('?')?
-        .1
-        .split('&')
-        .find_map(|pair| pair.split_once('=').filter(|(name, _)| name.eq_ignore_ascii_case(key)).map(|(_, value)| value))
+pub(crate) fn parameter<'a>(url: &'a str, key: &str) -> Option<std::borrow::Cow<'a, str>> {
+    url.split('#').next()?.split_once('?')?.1.split('&').find_map(|pair| {
+        pair.split_once('=')
+            .filter(|(name, _)| crate::vfs::decode_query_component(name).eq_ignore_ascii_case(key))
+            .map(|(_, value)| crate::vfs::decode_query_component(value))
+    })
 }
 
 /// An explicit WFS GetFeature request, rather than a file whose server may use ranges.
@@ -108,3 +107,17 @@ mod client;
 pub use client::{ServiceInfo, ServiceLayerInfo};
 #[cfg(remote)]
 pub(crate) use client::{feature_exception, info, list_layers, open};
+
+#[cfg(all(test, remote))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoded_ogc_parameter_names_and_values_are_decoded_once() {
+        assert!(is_feature_request("https://example.test/ows?SER%56ICE=%57FS&%52EQUEST=Get%46eature"));
+        let url = "https://example.test/ows?SERVICE=%57FS&REQUEST=Get%43apabilities";
+        assert_eq!(service_target(url), Some(url));
+        assert_eq!(parameter("https://example.test/ows?v=%2520", "v").as_deref(), Some("%20"));
+        assert_eq!(parameter("https://example.test/ows?v=a+b", "v").as_deref(), Some("a b"));
+    }
+}

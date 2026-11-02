@@ -335,8 +335,14 @@ def test_lazy_write_rejects_explicit_mask_for_tile_archives(tmp_path, extension)
     assert not output.exists()
 
 
+def test_bounded_palette_xml_keeps_legacy_truncation_and_end_tag_handling():
+    prefix = b'<qgis><rasterrenderer type="paletted"><paletteEntry value="0" color="#010203"/>'
+    for suffix in (b"", b"</other></qgis>"):
+        assert terrio.read_color_table(prefix + suffix, filename="colors.qml")[0] == [1, 2, 3, 255]
+
+
 def test_deep_xml_palette_fails_without_aborting():
-    with pytest.raises(ValueError, match="256 element levels"):
+    with pytest.raises(terrio.ResourceLimitError, match="256 element levels"):
         terrio.read_color_table(b"<a>" * 100_000, filename="colors.qml")
 
 

@@ -622,7 +622,7 @@ schemas. GDAL 3.13.3's partial CityGML reader is informational.
 
 ### WFS
 
-Native builds with HTTP support read WFS 1.0.0, 1.1.0 and 2.0.x simple features without
+Native builds with HTTP support read WFS 1.0.0, 1.1.0, 2.0.0 and 2.0.2 simple features without
 GDAL. Use a `WFS:` prefix before an HTTP(S) endpoint, or open a URL containing
 `SERVICE=WFS` and `REQUEST=GetCapabilities` directly. The capabilities document is
 identified as WFS, rather than GML feature data.
@@ -658,7 +658,11 @@ unpaged read produces a warning when no explicit feature limit was requested.
 Pages are retained in memory, with fallible
 allocation checks. Each feature response is capped at 64 MiB and metadata at
 16 MiB, also respecting `TERRIO_JSON_MAX_SIZE`. These limits bound individual
-responses and estimated retained data, not total process memory. Service errors,
+responses and estimated retained data, not total process memory. XML decoding also
+preflights a workspace estimate of 64 times the response size plus retained data,
+checking usable memory and virtual address space. A 64 MiB feature page therefore
+requires a 4 GiB workspace estimate and may be refused before reaching its byte cap.
+Service errors,
 malformed XML and repeated pages are errors. Spatial filters use the advertised
 CRS and authority axis order; CRS84 keeps longitude first.
 
@@ -668,7 +672,8 @@ curves and composite surface patches are unsupported and reported as errors.
 It has no WebAssembly network interface: fetch a GetFeature response and open its
 bytes as GML or GeoJSON there. An extensionless HTTP GetFeature URL returning
 GeoJSON or GML also opens directly, using the detected response format; it reads
-that response rather than discovering or paging the service. Query strings are
+that response rather than discovering or paging the service, following the
+corresponding file reader's schema inference and parsing rules. Query strings are
 preserved for requests and omitted from dataset names. HTTP diagnostics mask the
 credential parameter names recognized by the common HTTP layer; arbitrary vendor
 query parameters can still appear in transport errors.

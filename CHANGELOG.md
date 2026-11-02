@@ -4,6 +4,8 @@
 
 - Remote GeoJSON and GML responses open by detected content when their URLs have no
   file extension, including WFS GetFeature requests (#494).
+- XML element-count and nesting budget refusals report `ResourceLimitError` in Python,
+  including palette XML reads, consistently with other parser resource limits.
 - Native HTTP builds read WFS 1.0/1.1/2.0 services by `WFS:` endpoint or
   GetCapabilities URL, list layers without downloading features, and read selected
   simple-feature layers with schemas, CRS and configurable paging (#495).

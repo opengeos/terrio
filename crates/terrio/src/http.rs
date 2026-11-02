@@ -3923,6 +3923,7 @@ mod tests {
         assert_eq!(ranges.len(), seen.lock().unwrap().len(), "every request has a range: {ranges:?}");
     }
 
+    #[cfg(feature = "geotiff")]
     #[test]
     fn extensionless_raster_metadata_reuses_the_vector_probe_range() {
         let _serial = cache_test_guard();

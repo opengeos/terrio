@@ -67,16 +67,25 @@ fn local(name: &str) -> String {
     name.rsplit_once(':').map_or(name, |(_, l)| l).to_string()
 }
 
-fn element(e: &BytesStart) -> Element {
-    let attrs = e
-        .attributes()
-        .flatten()
-        .map(|a| (local(a.key.as_ref()), a.normalized_value(XmlVersion::Implicit1_0).map(|v| v.into_owned()).unwrap_or_default()))
-        .collect();
+fn element(e: &BytesStart, strict: bool) -> Result<Element> {
+    let mut attrs = Vec::new();
+    for attribute in e.attributes() {
+        let attribute = match attribute {
+            Ok(attribute) => attribute,
+            Err(error) if strict => return Err(Error::InvalidData(format!("XML attribute: {error}"))),
+            Err(_) => continue,
+        };
+        let value = match attribute.normalized_value(XmlVersion::Implicit1_0) {
+            Ok(value) => value.into_owned(),
+            Err(error) if strict => return Err(Error::InvalidData(format!("XML attribute: {error}"))),
+            Err(_) => String::new(),
+        };
+        attrs.push((local(attribute.key.as_ref()), value));
+    }
     let name = e.name();
     let qname: &str = name.as_ref();
     let prefix = qname.rsplit_once(':').map(|(p, _)| p.to_string()).unwrap_or_default();
-    Element { name: local(qname), prefix, attrs, ..Default::default() }
+    Ok(Element { name: local(qname), prefix, attrs, ..Default::default() })
 }
 
 /// Decodes a document's bytes: UTF-8 (with or without a byte order mark), or Latin-1 when the
@@ -94,8 +103,14 @@ pub fn parse(text: &str) -> Result<Element> {
     parse_with_limits(text, usize::MAX, usize::MAX, false)
 }
 
-/// Parse well-formed XML with a caller-specific element bound and a 256-level nesting bound.
+/// Parse legacy XML with a caller-specific element bound and a 256-level nesting bound.
 pub fn parse_limited(text: &str, max_elements: usize) -> Result<Element> {
+    parse_with_limits(text, max_elements, 256, false)
+}
+
+/// Parse well-formed service XML within the same element and nesting budgets.
+#[cfg(remote)]
+pub fn parse_strict_limited(text: &str, max_elements: usize) -> Result<Element> {
     parse_with_limits(text, max_elements, 256, true)
 }
 
@@ -117,9 +132,9 @@ fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize, strict: 
             return Err(Error::ResourceLimit(format!("XML: nesting exceeds {max_depth} element levels")));
         }
         match event {
-            Event::Start(e) => stack.push(element(&e)),
+            Event::Start(e) => stack.push(element(&e, strict)?),
             Event::Empty(e) => {
-                let el = element(&e);
+                let el = element(&e, strict)?;
                 if let Some(parent) = stack.last_mut() {
                     parent.children.push(el);
                 }
@@ -154,6 +169,9 @@ fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize, strict: 
                         _ => None,
                     },
                 };
+                if strict && c.is_none() {
+                    return Err(Error::InvalidData(format!("XML: unresolved entity reference &{};", &*r)));
+                }
                 if let (Some(c), Some(top)) = (c, stack.last_mut()) {
                     top.text.push(c);
                 }
@@ -173,7 +191,7 @@ fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize, strict: 
         }
     }
     let doc = stack.pop().unwrap_or_default();
-    if strict && doc.children.len() != 1 {
+    if strict && (doc.children.len() != 1 || !doc.text.trim().is_empty()) {
         return Err(Error::InvalidData("XML: expected one root element".into()));
     }
     doc.children.into_iter().next().ok_or_else(|| Error::InvalidData("XML: no root element".into()))
