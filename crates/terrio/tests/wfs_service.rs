@@ -53,7 +53,7 @@ fn capabilities(base: &str, version: &str) -> String {
 
 fn schema(name: &str) -> String {
     format!(
-        r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:gml="http://www.opengis.net/gml" xmlns:t="urn:test" targetNamespace="urn:test">
+        r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:gml="http://www.opengis.net/gml" xmlns:t="urn:test" targetNamespace="urn:test" elementFormDefault="qualified">
 <xs:complexType name="{name}Type"><xs:complexContent><xs:extension base="gml:AbstractFeatureType"><xs:sequence>
 <xs:element name="geom" type="gml:PointPropertyType"/><xs:element name="name" type="xs:string"/><xs:element name="rank" type="xs:int"/>
 </xs:sequence></xs:extension></xs:complexContent></xs:complexType><xs:element name="{name}" type="t:{name}Type"/></xs:schema>"#
@@ -78,7 +78,7 @@ fn page(name: &str, version: &str, offset: usize, count: usize) -> String {
     let matched = if version.starts_with('2') {
         format!(r#" numberMatched="{total}" numberReturned="{}""#, count.min(total.saturating_sub(offset)))
     } else {
-        String::new()
+        format!(r#" numberOfFeatures="{}""#, count.min(total.saturating_sub(offset)))
     };
     format!(
         r#"<wfs:FeatureCollection xmlns:wfs="{ns}" xmlns:gml="http://www.opengis.net/gml" xmlns:t="urn:test"{matched}>{features}</wfs:FeatureCollection>"#
@@ -165,6 +165,35 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                             .replace(&format!(r#"type="foreign:{name}Type""#), &format!(r#"type="{name}Type""#));
                     }
                 }
+                if mode == "named-scalar" {
+                    xsd = xsd.replace("</xs:schema>", r#"<xs:simpleType name="int"><xs:restriction base="xs:string"/></xs:simpleType><xs:simpleType name="Code"><xs:restriction base="t:int"><xs:whiteSpace value="collapse"/></xs:restriction></xs:simpleType></xs:schema>"#)
+                        .replace(r#"name="rank" type="xs:int""#, r#"name="rank" type="t:Code""#);
+                }
+                if mode == "gml-code" {
+                    xsd = xsd.replace(r#"name="rank" type="xs:int""#, r#"name="rank" type="gml:CodeType""#);
+                }
+                if mode == "inherited" {
+                    xsd = xsd.replace(r#"<xs:element name="rank" type="xs:int"/>"#, "")
+                        .replace(r#"base="gml:AbstractFeatureType""#, r#"base="t:Base""#)
+                        .replace("</xs:schema>", r#"<xs:complexType name="Base"><xs:complexContent><xs:extension base="gml:AbstractFeatureType"><xs:sequence><xs:element name="rank" type="xs:int"/></xs:sequence></xs:extension></xs:complexContent></xs:complexType></xs:schema>"#);
+                }
+                if mode == "external-base" {
+                    xsd = xsd.replace(r#"base="gml:AbstractFeatureType""#, r#"xmlns:f="urn:foreign" base="f:Base""#);
+                }
+                if mode == "cyclic-base" {
+                    xsd = xsd.replace(r#"base="gml:AbstractFeatureType""#, &format!(r#"base="t:{name}Type""#));
+                }
+                if mode == "unqualified" {
+                    xsd = xsd.replace(r#"elementFormDefault="qualified""#, r#"elementFormDefault="unqualified""#);
+                }
+                if mode == "form-override" {
+                    xsd = xsd.replace(r#"name="name" type="xs:string""#, r#"name="name" type="xs:string" form="unqualified""#);
+                }
+                if mode == "global-ref" {
+                    xsd = xsd
+                        .replace(r#"<xs:element name="name" type="xs:string"/>"#, r#"<xs:element ref="t:name"/>"#)
+                        .replace("</xs:schema>", r#"<xs:element name="name" type="xs:string"/></xs:schema>"#);
+                }
                 if mode == "dense" {
                     let fields =
                         (0..5000).map(|i| format!(r#"<xs:element name="f{i}" type="xs:string" minOccurs="0"/>"#)).collect::<String>();
@@ -172,7 +201,7 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                 }
                 xsd
             } else if operation.eq_ignore_ascii_case("GetFeature") {
-                if mode == "exception" {
+                if matches!(mode, "exception" | "exception-status") {
                     r#"<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows"><ows:Exception><ows:ExceptionText>Layer unavailable</ows:ExceptionText></ows:Exception></ows:ExceptionReport>"#.into()
                 } else {
                     let offset = if matches!(mode, "repeat" | "repeat-no-ids") {
@@ -195,6 +224,45 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                         )
                     } else {
                         let mut data = page(if target.contains("empty") { "empty" } else { "roads" }, version, offset, count);
+                        if matches!(mode, "named-scalar" | "gml-code") {
+                            data = data.replace("<t:rank>1</t:rank>", "<t:rank>  007  </t:rank>");
+                        }
+                        if mode == "unqualified" {
+                            for property in ["geom", "name", "rank"] {
+                                data = data.replace(&format!("t:{property}"), property);
+                            }
+                        }
+                        if mode == "form-override" {
+                            data = data.replace("t:name", "name");
+                        }
+                        if mode == "foreign-scalar" {
+                            data = data.replace("<t:name>", r#"<t:name xmlns:t="urn:foreign">"#);
+                        }
+                        if mode == "foreign-geometry" {
+                            data = data.replace("<t:geom>", r#"<t:geom xmlns:t="urn:foreign">"#);
+                        }
+                        if mode == "gml-metadata" {
+                            data = data.replace("</t:roads>", "<gml:name>metadata name</gml:name><gml:description>metadata description</gml:description><gml:identifier>external id</gml:identifier><gml:metaDataProperty><t:any><gml:Point srsName=\"EPSG:3857\"><gml:pos>0 0</gml:pos></gml:Point></t:any></gml:metaDataProperty></t:roads>");
+                        }
+                        if mode == "empty-geometry" {
+                            for i in 0..5 {
+                                data = data.replace(&format!(r#"<t:geom><gml:Point srsName="urn:ogc:def:crs:EPSG::4326"><gml:pos>{} {}</gml:pos></gml:Point></t:geom>"#, 50+i, 10+i), "<t:geom/>");
+                            }
+                        }
+                        if matches!(mode, "id-first" | "id-last") {
+                            data = data.replace(
+                                r#"gml:id="roads.1""#,
+                                if mode == "id-first" { r#"id="wrong" gml:id="roads.1""# } else { r#"gml:id="roads.1" id="wrong""# },
+                            );
+                        }
+                        if mode == "id-alias" {
+                            data = data
+                                .replace("xmlns:gml=", "xmlns:alias=\"http://www.opengis.net/gml\" xmlns:gml=")
+                                .replace("gml:id=", "alias:id=");
+                        }
+                        if mode == "foreign-id" {
+                            data = data.replace("gml:id=", "xmlns:f=\"urn:foreign\" f:id=");
+                        }
                         if mode == "mixed-points" && offset == 2 {
                             data = data
                                 .replace("<t:geom>", "<t:geom><gml:MultiPoint><gml:pointMember>")
@@ -265,7 +333,9 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
             } else {
                 "unknown operation".into()
             };
-            let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let status =
+                if mode == "exception-status" && operation.eq_ignore_ascii_case("GetFeature") { "400 Bad Request" } else { "200 OK" };
+            let header = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
             let _ = stream.write_all(header.as_bytes());
             let _ = stream.write_all(body.as_bytes());
         }
@@ -327,6 +397,7 @@ fn selected_ranges_and_empty_layers_keep_schema_and_crs() {
     options.wfs.page_size = 1;
     let ds = terrio::open_vector(&source, &options).unwrap();
     assert_eq!(ds.layers[0].features.len(), 2);
+    assert!(!ds.layers[0].schema.fields()[0].nullable);
     assert_eq!(ds.layers[0].features[0].attributes[2], FieldValue::Integer(2));
     let empty = terrio::open_vector(&source, &VectorOpenOptions { layers: vec!["empty".into()], ..Default::default() }).unwrap();
     assert!(empty.layers[0].features.is_empty());
@@ -448,6 +519,7 @@ fn schema_namespace_aliases_preserve_fields_and_empty_geometry_types() {
     for layer in &ds.layers {
         assert_eq!(layer.schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["gml_id", "name", "rank"]);
         assert_eq!(layer.geom_type, Some(wbvector::GeometryType::Point));
+        assert!(!layer.schema.fields()[0].nullable);
     }
     assert_eq!(ds.layers[1].features.len(), 0);
 }
@@ -482,6 +554,7 @@ fn anonymous_application_schemas_preserve_nonempty_and_empty_layers() {
     for layer in &ds.layers {
         assert_eq!(layer.schema.fields().len(), 3);
         assert_eq!(layer.geom_type, Some(wbvector::GeometryType::Point));
+        assert!(!layer.schema.fields()[0].nullable);
         assert_eq!(layer.schema.fields()[2].field_type, wbvector::FieldType::Integer);
     }
 }
@@ -593,4 +666,86 @@ fn ordinary_attributes_cannot_shadow_namespace_declarations() {
     let (source, _) = serve("2.0.0", "shadow-ns");
     let error = terrio::open_vector(&source, &options).unwrap_err();
     assert!(error.to_string().contains("feature namespace"), "{error}");
+}
+
+#[test]
+fn schema_scalar_types_and_inheritance_preserve_values() {
+    for mode in ["named-scalar", "gml-code", "inherited", "unqualified", "form-override", "global-ref", "gml-metadata"] {
+        let (source, _) = serve("2.0.0", mode);
+        let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+        let ds = terrio::open_vector(&source, &options).unwrap_or_else(|error| panic!("{mode}: {error}"));
+        let layer = &ds.layers[0];
+        let rank = layer.schema.field_index("rank").unwrap();
+        let expected = match mode {
+            "named-scalar" => FieldValue::Text("007".into()),
+            "gml-code" => FieldValue::Text("  007  ".into()),
+            _ => FieldValue::Integer(1),
+        };
+        assert_eq!(layer.features[0].attributes[rank], expected, "{mode}");
+        let name = layer.schema.field_index("name").unwrap();
+        assert_eq!(layer.features[0].attributes[name], FieldValue::Text("point1".into()), "{mode}");
+        assert_eq!(layer.schema.fields().len(), 3, "{mode}");
+        assert!(matches!(layer.features[0].geometry, Some(Geometry::Point(_))), "{mode}");
+    }
+}
+
+#[test]
+fn unsupported_bases_cycles_and_foreign_properties_are_refused() {
+    for mode in ["external-base", "cyclic-base", "foreign-scalar", "foreign-geometry"] {
+        let (source, _) = serve("2.0.0", mode);
+        let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+        let error = terrio::open_vector(&source, &options).unwrap_err();
+        assert!(matches!(error, terrio::Error::Unsupported(_) | terrio::Error::InvalidData(_)), "{mode}: {error}");
+    }
+}
+
+#[test]
+fn declared_empty_geometry_and_source_id_namespaces_are_preserved() {
+    for mode in ["empty-geometry", "id-first", "id-last", "id-alias", "foreign-id"] {
+        let (source, _) = serve("2.0.0", mode);
+        let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+        let ds = terrio::open_vector(&source, &options).unwrap_or_else(|error| panic!("{mode}: {error}"));
+        let feature = &ds.layers[0].features[0];
+        assert_eq!(
+            feature.attributes[0],
+            if mode == "foreign-id" { FieldValue::Null } else { FieldValue::Text("roads.1".into()) },
+            "{mode}"
+        );
+        assert_eq!(feature.geometry.is_none(), mode == "empty-geometry", "{mode}");
+    }
+}
+
+#[test]
+fn legacy_bbox_has_four_coordinates() {
+    let (source, requests) = serve("1.0.0", "normal");
+    let options = VectorOpenOptions { layers: vec!["roads".into()], spatial_filter: Some((9., 49., 12., 52.)), ..Default::default() };
+    terrio::open_vector(&source, &options).unwrap();
+    let requests = requests.lock().unwrap();
+    let request = requests.iter().find(|request| request.contains("REQUEST=GetFeature")).unwrap();
+    assert_eq!(parameter(request, "BBOX"), Some("9%2C49%2C12%2C52"));
+}
+
+#[test]
+fn http_error_status_retains_service_exception_without_retry() {
+    for direct in [false, true] {
+        let (source, requests) = serve("2.0.0", "exception-status");
+        let source = if direct { format!("{}&SERVICE=WFS&REQUEST=GetFeature", source.strip_prefix("WFS:").unwrap()) } else { source };
+        let options = VectorOpenOptions { layers: if direct { vec![] } else { vec!["roads".into()] }, ..Default::default() };
+        let error = terrio::open_vector(&source, &options).unwrap_err();
+        assert!(error.to_string().contains("Layer unavailable"), "{error}");
+        assert_eq!(requests.lock().unwrap().len(), if direct { 1 } else { 3 });
+    }
+}
+
+#[test]
+fn legacy_returned_count_is_not_a_matching_total() {
+    let (source, requests) = serve("1.1.0", "normal");
+    let mut options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+    options.wfs.page_size = 2;
+    options.wfs.paging = Some(true);
+    let dataset = terrio::open_vector(&source, &options).unwrap();
+    assert_eq!(dataset.layers[0].features.len(), 5);
+    let requests = requests.lock().unwrap();
+    let features: Vec<_> = requests.iter().filter(|request| request.contains("REQUEST=GetFeature")).collect();
+    assert_eq!(features.len(), 4, "fetches the final empty page with no advertised total");
 }

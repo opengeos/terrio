@@ -413,6 +413,7 @@ struct Client {
     /// keys) is an answer rather than an error.
     missing_ok: bool,
     refused_ok: bool,
+    service_errors: bool,
     /// The most bytes a response to a request without a range may hold (see
     /// [`Client::fetch_range`]); `None`: as many as it holds.
     body_cap: Option<u64>,
@@ -512,6 +513,7 @@ impl Client {
             s3,
             missing_ok: false,
             refused_ok: false,
+            service_errors: false,
             body_cap: None,
             azure,
             config,
@@ -727,6 +729,7 @@ impl Client {
             }
             match status {
                 200 | 206 | 416 => return Ok(response),
+                400..=599 if self.service_errors => return Ok(response),
                 404 if self.missing_ok => return Ok(response),
                 // S3 (and GCS) answer anonymous requests for missing keys with 403; a signed
                 // request's 403 is a denied one (expired or insufficient credentials).
@@ -1215,10 +1218,23 @@ impl io::Write for CountingWriter<'_> {
 
 /// Run one sequential archive pass against a streamed response, without range reads.
 pub(crate) fn with_reader<T>(remote: &Remote, read: impl FnOnce(&mut dyn Read) -> Result<T>) -> Result<T> {
+    with_reader_status(remote, false, |_, reader| read(reader))
+}
+
+/// Streams a protocol response, optionally returning HTTP error bodies so a service
+/// can decode its structured exception. The caller must cap all body reads and
+/// treat a non-success status as an error even when its body is not recognized.
+pub(crate) fn with_reader_status<T>(
+    remote: &Remote,
+    service_errors: bool,
+    read: impl FnOnce(u16, &mut dyn Read) -> Result<T>,
+) -> Result<T> {
     let mut client = Client::new(remote, HttpOptions::from_env());
+    client.service_errors = service_errors;
     let response = client.send_range(None)?;
+    let status = response.status().as_u16();
     let mut reader = MeasuredReader { inner: response.into_body().into_reader(), bytes: 0 };
-    let result = read(&mut reader);
+    let result = read(status, &mut reader);
     record_fetch(&client.url, &client.stats_name(), reader.bytes);
     if client.options.log {
         eprintln!("terrio:   received {} bytes", reader.bytes);

@@ -651,7 +651,8 @@ same options as CLI/MCP `--oo`:
 | `WFS_MAX_VECTOR_BYTES` | 1073741824 | Positive retained-data estimate across selected layers, including dense attribute cells. |
 
 WFS 1 services can cap an unpaged response; enable paging only if the server
-supports it. With paging disabled explicitly, the single response is limited to
+supports it. WFS 1 `numberOfFeatures` describes the returned page, so it is not
+used as a total matching count. With paging disabled explicitly, the single response is limited to
 `WFS_PAGE_SIZE` returned features unless a feature limit is supplied. Skip is
 included in the requested count. An advertised matching count larger than an
 unpaged read produces a warning when no explicit feature limit was requested.
@@ -667,9 +668,14 @@ also requires that commit capacity. Service errors,
 malformed XML and repeated pages are errors. Spatial filters use the advertised
 CRS and authority axis order; CRS84 keeps longitude first.
 
-This driver reads inline GML 2/3/3.2 simple features. Imported application type
-definitions and mixed geometry CRS/axis orders are rejected. Transactions, complex or
-repeated properties, linked geometries, multiple geometry columns, nonlinear
+This driver reads inline GML 2/3/3.2 simple features. Local scalar restrictions
+and feature-type extensions are resolved with a maximum derivation depth of 256.
+Property namespaces follow schema qualification and element references. Standard
+GML base metadata (`name`, `description`, `identifier`, `metaDataProperty` and
+`boundedBy`) is omitted; `gml:id` is retained as `gml_id`, and application fields
+with those local names remain fields. Imported application type
+definitions, list/union property types and mixed geometry CRS/axis orders are
+rejected. Transactions, complex or repeated properties, linked geometries, multiple geometry columns, nonlinear
 curves and composite surface patches are unsupported and reported as errors.
 It has no WebAssembly network interface: fetch a GetFeature response and open its
 bytes as GML or GeoJSON there. An extensionless HTTP GetFeature URL returning

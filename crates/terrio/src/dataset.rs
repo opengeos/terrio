@@ -670,11 +670,23 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
         return None;
     }
     let mut recognized = named;
-    let answer = crate::http::with_reader(&crate::http::Remote::Url(url.to_string()), |reader| {
+    let answer = crate::http::with_reader_status(&crate::http::Remote::Url(url.to_string()), wfs, |status, reader| {
         let cap = crate::http::json_max_size();
         let mut bytes = Vec::new();
         let head_bytes = if wfs { crate::http::FIRST_READ } else { esrijson::HEAD_BYTES as u64 };
         (&mut *reader).take(head_bytes).read_to_end(&mut bytes)?;
+        if wfs && !(200..300).contains(&status) {
+            recognized = Some(VectorDriver::WFS);
+            (&mut *reader).take(cap.saturating_sub(bytes.len() as u64).saturating_add(1)).read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > cap {
+                return Err(crate::http::over_cap(url, cap));
+            }
+            return Err(if crate::drivers::vector::wfs::is_exception(&bytes) {
+                crate::drivers::vector::wfs::feature_exception(&bytes)
+            } else {
+                Error::Http(format!("{}: status {status}", url.split(['?', '#']).next().unwrap_or(url)))
+            });
+        }
         // Asked for the protocol buffer, a service answers a query it refuses with nothing, or with
         // its error in JSON, and one for a count, ids or an extent with that answer, which the reader
         // refuses by name: all of them this driver's to report.
