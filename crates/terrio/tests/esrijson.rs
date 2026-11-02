@@ -164,6 +164,13 @@ fn a_feature_without_an_object_id_does_not_take_another_s_id() {
 fn fields_times_features_cannot_exceed_what_the_document_justifies() {
     let fields: Vec<String> = (0..20_000).map(|i| format!(r#"{{"name":"F{i}","type":"esriFieldTypeString"}}"#)).collect();
     let doc = format!(r#"{{"fields":[{}],"features":[{}]}}"#, fields.join(","), vec!["{}"; 1_000_000].join(","));
+    // Refused by every way in, and not retried with GDAL in builds with its backend: GDAL would
+    // build these cells, and exhaust the memory of the machine.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("q.json");
+    std::fs::write(&path, &doc).unwrap();
+    let e = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap_err().to_string();
+    assert!(e.contains("features of 20000 fields"), "{e}");
     let e = terrio::memory::open_vector_bytes(doc.into_bytes(), "q.json", &Default::default()).unwrap_err().to_string();
     assert!(e.contains("features of 20000 fields"), "{e}");
 }
