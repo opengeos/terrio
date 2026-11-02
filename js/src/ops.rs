@@ -76,12 +76,15 @@ pub(crate) fn input_rasters(v: &JsValue) -> Result<Vec<RasterDataset>, JsError> 
 pub(crate) fn input_layers(v: &JsValue) -> Result<Vec<Layer>, JsError> {
     if let Some(inner) = Dataset::lookup(v) {
         return match &*inner.borrow() {
-            Inner::Vector(layers, _) => Ok(layers.clone()),
+            Inner::Vector(layers, _) => match Dataset::lookup_style_table(v) {
+                Some(table) => Ok(crate::resolve_styles(layers.clone(), &table)),
+                None => Ok(layers.clone()),
+            },
             Inner::Raster(_) => Err(invalid("expected a vector dataset, got a raster")),
         };
     }
     if let Some((bytes, name)) = file_bytes(v) {
-        return terrio::memory::open_vector_bytes(bytes, &name, &Default::default()).map(|d| d.layers).map_err(js_err);
+        return terrio::memory::open_vector_bytes(bytes, &name, &Default::default()).map(|d| d.into_resolved_layers()).map_err(js_err);
     }
     if v.is_object() || v.is_string() {
         let ds = crate::from_geojson(v.clone(), None, None)?;
@@ -265,7 +268,7 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     }
     let cutline = match &taken[0] {
         Some(c) => {
-            let ds = terrio::VectorDataset { layers: input_layers(c)?, driver: VectorDriver::GeoJSON };
+            let ds = terrio::VectorDataset::new(input_layers(c)?, VectorDriver::GeoJSON);
             Some(Cutline::from_vector(&ds).map_err(js_err)?)
         }
         None => None,

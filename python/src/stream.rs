@@ -139,7 +139,7 @@ impl PyFeatureStream {
         self.started = true;
         let n = self.batch_size;
         let chunk = py.detach_result(|| reader.read_chunk(n)).py()?;
-        Ok(chunk.map(|inner| PyLayer { inner }))
+        Ok(chunk.map(PyLayer::from))
     }
 
     /// Reads the remaining features into a layer.
@@ -149,7 +149,7 @@ impl PyFeatureStream {
     fn read_all(&mut self, py: Python<'_>) -> PyResult<PyLayer> {
         let reader = self.take()?;
         self.started = true;
-        Ok(PyLayer { inner: py.detach_result(|| reader.read_all()).py()? })
+        Ok(PyLayer::from(py.detach_result(|| reader.read_all()).py()?))
     }
 
     fn __repr__(&self) -> String {

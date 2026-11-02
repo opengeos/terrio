@@ -424,6 +424,7 @@ class Layer:
         driver: str | None = None,
         *,
         kmz_resources: Mapping[str, bytes] | None = None,
+        style_table: Sequence[tuple[str, str]] | None = None,
         preserve_declared_geometry_type: bool = False,
         cityjson_version: Literal["1.1", "2.0"] | None = None,
         citygml_version: Literal["2.0", "3.0"] | None = None,
@@ -435,6 +436,7 @@ class Layer:
         driver: str | None = None,
         *,
         kmz_resources: Mapping[str, bytes] | None = None,
+        style_table: Sequence[tuple[str, str]] | None = None,
         preserve_declared_geometry_type: bool = False,
         cityjson_version: Literal["1.1", "2.0"] | None = None,
         citygml_version: Literal["2.0", "3.0"] | None = None,
@@ -451,6 +453,8 @@ class VectorDataset:
     def layer_names(self) -> list[str]: ...
     @property
     def driver(self) -> str: ...
+    @property
+    def style_table(self) -> list[tuple[str, str]]: ...
     def __len__(self) -> int: ...
     def __getitem__(self, key: int | str, /) -> Layer: ...
     def __iter__(self) -> Iterator[Layer]: ...

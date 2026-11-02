@@ -1028,11 +1028,14 @@ fn osm_xml_like_pbf() {
 fn kml_styles() {
     let Some(v) = vector("countries.kml") else { return };
     let l = &v.layers[0];
-    // GDAL's style string for <LineStyle><color>ff0000ff</color>...<fill>0</fill>.
-    assert_eq!(value(l, 0, "OGR_STYLE"), &terrio::FieldValue::Text("PEN(c:#FF0000FF)".into()));
+    // <LineStyle><color>ff0000ff</color>...<fill>0</fill>: GDAL's PEN(c:#FF0000FF) drops the flag.
+    assert_eq!(value(l, 0, "OGR_STYLE"), &terrio::FieldValue::Text(r#"PEN(c:#FF0000FF);BRUSH(id:"ogr-brush-1")"#.into()));
     let back = round_trip(&v.layers, "countries.kml");
     assert_eq!(value(&back.layers[0], 0, "OGR_STYLE"), value(l, 0, "OGR_STYLE"));
     let samples = vector("kml_samples.kml").unwrap();
     let paths = samples.layers.iter().find(|l| l.name == "Paths").unwrap();
-    assert_eq!(value(paths, 5, "OGR_STYLE"), &terrio::FieldValue::Text("PEN(c:#FF0000FF);BRUSH(fc:#0000FFFF)".into()));
+    // As GDAL 3.13.3 gives it: the reference, with the definition in the style table.
+    assert_eq!(value(paths, 5, "OGR_STYLE"), &terrio::FieldValue::Text("@redLineBluePoly".into()));
+    let definition = samples.style_table.iter().find(|(id, _)| id == "redLineBluePoly").map(|(_, style)| style.as_str());
+    assert_eq!(definition, Some("PEN(c:#FF0000FF);BRUSH(fc:#0000FFFF)"));
 }

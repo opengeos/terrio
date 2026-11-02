@@ -668,9 +668,17 @@ fn convert(
                 terrio::write_raster_dataset(&r, dst, &options)
             }
             Dataset::Vector(v) => {
-                let options = vector_write
+                let mut options = vector_write
                     .ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown vector format '{}'", format.unwrap_or_default())))?;
-                let layers = terrio::ops::vector_filter::translate(&v.layers, &vector_options)?;
+                // A KML or KMZ output holds the shared styles; elsewhere each feature gets its style.
+                let output = options.driver.or_else(|| VectorDriver::for_extension(dst));
+                let source = if output.is_some_and(|d| d.holds_style_table()) {
+                    options.style_table = v.style_table;
+                    v.layers
+                } else {
+                    v.into_resolved_layers()
+                };
+                let layers = terrio::ops::vector_filter::translate_owned(source, &vector_options)?;
                 terrio::ops::vector_filter::write_vector_with_mode(&layers, dst, &options, mode)
             }
         }
@@ -682,7 +690,7 @@ pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Optio
     match src.extract::<String>() {
         Ok(path) => {
             let options = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
-            Ok(py.detach_result(|| terrio::open_vector(&path, &options)).py()?.layers)
+            Ok(py.detach_result(|| terrio::open_vector(&path, &options)).py()?.into_resolved_layers())
         }
         Err(_) => {
             let all = layers_from_object(src, None, None)?;
@@ -708,7 +716,7 @@ pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Optio
 fn sql(py: Python<'_>, src: &Bound<'_, PyAny>, query: &str, layers: Option<Vec<String>>) -> PyResult<PyLayer> {
     let inputs = input_layers(py, src, layers)?;
     let inner = py.detach_result(|| terrio::ops::sql::query(&inputs, query)).py()?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// A raster path as UTF-8, accepting Python strings and os.PathLike objects.
@@ -913,7 +921,7 @@ fn polygonize(
             Ok(layer)
         })
         .py()?;
-    Ok(PyLayer { inner: layer })
+    Ok(PyLayer::from(layer))
 }
 
 /// Transforms coordinates from one CRS to another.
@@ -1304,7 +1312,7 @@ fn warp(
         None => None,
         Some(c) => {
             let layers = input_layers(py, c, None)?;
-            let ds = terrio::VectorDataset { layers, driver: VectorDriver::GeoJSON };
+            let ds = terrio::VectorDataset::new(layers, VectorDriver::GeoJSON);
             Some(Cutline::from_vector(&ds).py()?)
         }
     };

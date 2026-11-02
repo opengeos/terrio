@@ -170,7 +170,7 @@ impl PyDatasetIndex {
     /// The polygon layer, suitable for ordinary vector operations.
     #[getter]
     fn layer(&self) -> PyLayer {
-        PyLayer { inner: self.inner.layer.clone() }
+        PyLayer::from(self.inner.layer.clone())
     }
     /// Driver metadata retained when writing GeoPackage/FlatGeobuf.
     #[getter]

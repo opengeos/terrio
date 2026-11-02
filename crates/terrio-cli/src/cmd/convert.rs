@@ -382,7 +382,12 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
             terrio::write_raster_dataset(&r, &a.output, &opts)
         }
         Dataset::Vector(v) => {
-            let layers = terrio::ops::vector_filter::translate_owned(v.layers, &a.vector.to_options(t_srs)?)?;
+            // A KML or KMZ output holds the shared styles; elsewhere each feature gets its style.
+            let kml_output = a.format.as_deref().map_or_else(|| VectorDriver::for_extension(&a.output), VectorDriver::from_name);
+            let kml_output = kml_output.is_some_and(|d| d.holds_style_table());
+            let style_table = if kml_output { v.style_table.clone() } else { Vec::new() };
+            let source = if kml_output { v.layers } else { v.into_resolved_layers() };
+            let layers = terrio::ops::vector_filter::translate_owned(source, &a.vector.to_options(t_srs)?)?;
             #[cfg(feature = "gdal")]
             {
                 let gdal_driver = match a.format.as_deref() {
@@ -424,6 +429,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 cityjson_version: a.cityjson_version.as_deref().map(str::parse).transpose()?,
                 citygml_version: a.citygml_version.as_deref().map(str::parse).transpose()?,
                 citygml_lod0_surface: a.citygml_lod0_surface.as_deref().map(str::parse).transpose()?,
+                style_table,
                 ..Default::default()
             };
             options.tiles.min_zoom = a.minzoom;

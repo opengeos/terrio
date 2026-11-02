@@ -255,7 +255,7 @@ fn lineref_create(
     };
     let inner = crate::with_warnings(py, || terrio::ops::lineref::create_reference(&lines, &points, &options))?;
     write_layer(py, &inner, dst, format)?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// The position of a point on linear reference parts, like `terrio lineref get-pos` (GDAL's
@@ -324,5 +324,5 @@ fn lineref_subline(
         terrio::ops::lineref::subline(parts, begin, end, &layer_name.unwrap_or(stem)).py()
     })?;
     write_layer(py, &inner, dst, format)?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }

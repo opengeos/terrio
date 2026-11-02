@@ -276,7 +276,35 @@ enum Inner {
     Vector(Vec<Layer>, VectorDriver),
 }
 
+/// A layer of a dataset, or a copy with its style references resolved.
+enum ResolvedLayer<'a> {
+    Borrowed(std::cell::Ref<'a, Layer>),
+    Owned(Layer),
+}
+
+impl std::ops::Deref for ResolvedLayer<'_> {
+    type Target = Layer;
+
+    fn deref(&self) -> &Layer {
+        match self {
+            Self::Borrowed(l) => l,
+            Self::Owned(l) => l,
+        }
+    }
+}
+
+/// A dataset's shared styles: each id with its OGR style string.
+pub(crate) type StyleTable = Rc<Vec<(String, String)>>;
+
+/// Layers with each `@id` style reference replaced by its definition in a style table.
+pub(crate) fn resolve_styles(layers: Vec<Layer>, table: &[(String, String)]) -> Vec<Layer> {
+    terrio::VectorDataset { layers, driver: VectorDriver::GeoJSON, style_table: table.to_vec() }.into_resolved_layers()
+}
+
 thread_local! {
+    /// The style tables of the datasets alive that have one, by handle: operations given datasets
+    /// as JavaScript values resolve the styles of those layers with them.
+    static STYLE_TABLES: RefCell<HashMap<u32, StyleTable>> = RefCell::default();
     /// The datasets alive, by handle: operations given datasets as JavaScript values find them
     /// here, without taking them from JavaScript.
     static DATASETS: RefCell<HashMap<u32, Weak<RefCell<Inner>>>> = RefCell::new(HashMap::new());
@@ -288,11 +316,14 @@ thread_local! {
 pub struct Dataset {
     handle: u32,
     inner: Rc<RefCell<Inner>>,
+    /// The shared styles of a KML or KMZ document, by id.
+    style_table: StyleTable,
 }
 
 impl Drop for Dataset {
     fn drop(&mut self) {
         DATASETS.with(|d| d.borrow_mut().remove(&self.handle));
+        STYLE_TABLES.with(|t| t.borrow_mut().remove(&self.handle));
     }
 }
 
@@ -305,7 +336,7 @@ impl Dataset {
             h
         });
         DATASETS.with(|d| d.borrow_mut().insert(handle, Rc::downgrade(&inner)));
-        Self { handle, inner }
+        Self { handle, inner, style_table: Rc::default() }
     }
 
     /// A raster dataset in memory.
@@ -321,6 +352,34 @@ impl Dataset {
     /// A vector dataset.
     pub(crate) fn from_layers(layers: Vec<Layer>, driver: VectorDriver) -> Self {
         Self::new(Inner::Vector(layers, driver))
+    }
+
+    /// A vector dataset as a driver read it, with its style table.
+    pub(crate) fn from_vector(v: terrio::VectorDataset) -> Self {
+        let mut ds = Self::from_layers(v.layers, v.driver);
+        if !v.style_table.is_empty() {
+            let table = Rc::new(v.style_table);
+            STYLE_TABLES.with(|t| t.borrow_mut().insert(ds.handle, table.clone()));
+            ds.style_table = table;
+        }
+        ds
+    }
+
+    /// The style table of the dataset a JavaScript value is, when it has one.
+    pub(crate) fn lookup_style_table(value: &JsValue) -> Option<StyleTable> {
+        let handle = js_sys::Reflect::get(value, &JsValue::from_str("__handle")).ok()?.as_f64()? as u32;
+        STYLE_TABLES.with(|t| t.borrow().get(&handle).cloned())
+    }
+
+    /// One layer with its style references replaced by their definitions: borrowed when the
+    /// dataset has no style table.
+    fn resolved_layer(&self, layer: &JsValue) -> Result<ResolvedLayer<'_>, JsError> {
+        let l = self.layer(layer)?;
+        if self.style_table.is_empty() {
+            return Ok(ResolvedLayer::Borrowed(l));
+        }
+        let mut resolved = resolve_styles(vec![l.clone()], &self.style_table);
+        resolved.pop().map(ResolvedLayer::Owned).ok_or_else(|| JsError::new("no layer"))
     }
 
     /// The dataset a JavaScript value is, when it is one.
@@ -377,7 +436,7 @@ pub fn open(bytes: Vec<u8>, filename: &str) -> Result<Dataset, JsError> {
     }
     Ok(match terrio::memory::open_bytes(bytes, filename).map_err(js_err)? {
         terrio::Dataset::Raster(r) => Dataset::from_raster(r),
-        terrio::Dataset::Vector(v) => Dataset::from_layers(v.layers, v.driver),
+        terrio::Dataset::Vector(v) => Dataset::from_vector(v),
     })
 }
 
@@ -420,7 +479,7 @@ pub fn open_vector(bytes: Vec<u8>, filename: &str, options: JsValue) -> Result<D
         }
     }
     let v = terrio::memory::open_vector_bytes(bytes, filename, &open).map_err(js_err)?;
-    Ok(Dataset::from_layers(v.layers, v.driver))
+    Ok(Dataset::from_vector(v))
 }
 
 /// Opens a Zarr store (v2 or v3, GeoZarr conventions included) from its files: a `Map` or an
@@ -525,6 +584,19 @@ pub fn from_arrow_ipc(bytes: Vec<u8>, name: Option<String>) -> Result<Dataset, J
 
 #[wasm_bindgen]
 impl Dataset {
+    /// The shared styles of a KML or KMZ document, `{ id: "PEN(...)" }`. Features
+    /// using one have `@id` in their `OGR_STYLE` field. Empty for other formats. `toBytes` writes
+    /// them to KML and KMZ; for other formats it gives each feature its style.
+    #[wasm_bindgen(getter, js_name = styleTable)]
+    pub fn style_table(&self) -> js_sys::Object {
+        // `fromEntries` makes own properties, whatever the id (`__proto__` included).
+        let entries = js_sys::Array::new();
+        for (id, style) in self.style_table.iter() {
+            entries.push(&js_sys::Array::of2(&JsValue::from_str(id), &JsValue::from_str(style)));
+        }
+        js_sys::Object::from_entries(&entries).unwrap_or_else(|_| js_sys::Object::new())
+    }
+
     /// `"raster"` or `"vector"`.
     #[wasm_bindgen(getter)]
     pub fn kind(&self) -> String {
@@ -565,7 +637,7 @@ impl Dataset {
                 to_js(&terrio::info::Info::Raster(Box::new(info)))
             }
             Inner::Vector(layers, driver) => {
-                let ds = terrio::Dataset::Vector(terrio::VectorDataset { layers: layers.clone(), driver: *driver });
+                let ds = terrio::Dataset::Vector(terrio::VectorDataset::new(layers.clone(), *driver));
                 to_js(&terrio::info::info(&ds, &options))
             }
         }
@@ -669,7 +741,7 @@ impl Dataset {
     /// object, in the layer's CRS.
     #[wasm_bindgen(js_name = toGeoJSON)]
     pub fn to_geojson(&self, layer: JsValue) -> Result<JsValue, JsError> {
-        let l = self.layer(&layer)?;
+        let l = self.resolved_layer(&layer)?;
         js_sys::JSON::parse(&wbvector::geojson::to_string(&l)).map_err(|_| JsError::new("invalid GeoJSON"))
     }
 
@@ -681,7 +753,7 @@ impl Dataset {
     /// encodings) and `coordinates` (`"separated"` or `"interleaved"`).
     #[wasm_bindgen(js_name = toArrowIPC)]
     pub fn to_arrow_ipc(&self, layer: JsValue, options: JsValue) -> Result<Vec<u8>, JsError> {
-        let l = self.layer(&layer)?;
+        let l = self.resolved_layer(&layer)?;
         #[cfg(not(feature = "parquet"))]
         {
             let _ = (l, options);
@@ -837,6 +909,14 @@ impl Dataset {
                 options.citygml_version = o.citygml_version.as_deref().map(str::parse).transpose().map_err(js_err)?;
                 options.citygml_lod0_surface = o.citygml_lod0_surface.as_deref().map(str::parse).transpose().map_err(js_err)?;
                 options.kmz.resources = resources;
+                // A KML or KMZ output holds the shared styles; elsewhere each feature gets its style.
+                let output = options.driver.or_else(|| VectorDriver::for_extension(filename));
+                let out = if output.is_some_and(|d| d.holds_style_table()) {
+                    options.style_table = self.style_table.as_ref().clone();
+                    out
+                } else {
+                    resolve_styles(out, &self.style_table)
+                };
                 terrio::memory::write_vector_bytes(&out, filename, &options).map_err(js_err)
             }
         }
