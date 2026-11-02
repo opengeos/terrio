@@ -23,8 +23,8 @@ fn invalid(message: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("ESRIPBF: {message}"))
 }
 
-/// How much of a file [`is_esripbf`] needs: the version (at most 32 bytes), and the start of the
-/// feature result. Format identification reads more.
+/// The head the tests give [`is_esripbf`]: room for a version of at most 32 bytes and the start of
+/// the feature result. Format identification passes more.
 #[cfg(test)]
 const HEAD_BYTES: usize = 64;
 
@@ -115,9 +115,9 @@ pub(crate) fn is_query_answer(bytes: &[u8]) -> bool {
     is_esripbf(bytes) || answer_kind(bytes).is_ok_and(|kind| matches!(kind, Some(2..=4)))
 }
 
-/// The field number of the result an answer starts with, after its optional version.
-#[cfg_attr(not(remote), allow(dead_code))]
-fn answer_kind(bytes: &[u8]) -> Result<Option<u64>> {
+/// A reader at an answer's query result, past its optional version: `None` when the bytes start
+/// otherwise. The query result's length is left to read.
+fn at_query_result(bytes: &[u8]) -> Result<Option<Reader<'_>>> {
     let mut r = Reader::new(bytes);
     let mut key = r.key()?;
     if key == (1, 2) {
@@ -127,9 +127,13 @@ fn answer_kind(bytes: &[u8]) -> Result<Option<u64>> {
         }
         key = r.key()?;
     }
-    if key != (2, 2) {
-        return Ok(None);
-    }
+    Ok((key == (2, 2)).then_some(r))
+}
+
+/// The field number of the result an answer starts with, after its optional version.
+#[cfg_attr(not(remote), allow(dead_code))]
+fn answer_kind(bytes: &[u8]) -> Result<Option<u64>> {
+    let Some(mut r) = at_query_result(bytes)? else { return Ok(None) };
     r.varint()?;
     Ok(match r.key()? {
         (kind, 2) => Some(kind),
@@ -138,18 +142,7 @@ fn answer_kind(bytes: &[u8]) -> Result<Option<u64>> {
 }
 
 fn signs(bytes: &[u8]) -> Result<bool> {
-    let mut r = Reader::new(bytes);
-    let mut key = r.key()?;
-    if key == (1, 2) {
-        let version = r.message()?;
-        if version.len() > 32 || !version.iter().all(u8::is_ascii_graphic) {
-            return Ok(false);
-        }
-        key = r.key()?;
-    }
-    if key != (2, 2) {
-        return Ok(false);
-    }
+    let Some(mut r) = at_query_result(bytes)? else { return Ok(false) };
     // These lengths may pass the bytes given.
     let query = r.varint()?;
     if r.key()? != (1, 2) {
@@ -298,9 +291,15 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     if bytes.is_empty() {
         return Err(invalid("the answer is empty, as a service's is to a query it refuses: f=json shows why"));
     }
-    // A service may answer in JSON whatever was asked for, as an error.
+    // A service may answer in JSON whatever was asked for, as an error: read as JSON, reported as
+    // this driver's.
     if bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes).trim_ascii_start().first() == Some(&b'{') {
-        return super::esrijson::page(bytes, name);
+        let relabel = |m: String| m.strip_prefix("ESRIJSON: ").map_or_else(|| m.clone(), |rest| format!("ESRIPBF: {rest}"));
+        return super::esrijson::page(bytes, name).map_err(|e| match e {
+            Error::InvalidData(m) => Error::InvalidData(relabel(m)),
+            Error::InvalidArgument(m) => Error::InvalidArgument(relabel(m)),
+            e => e,
+        });
     }
     super::geojson::reserve_parse_memory(bytes.len(), "ESRIPBF")?;
     let result = feature_result(bytes)?;
@@ -769,6 +768,18 @@ mod tests {
     }
 
     #[test]
+    fn a_z_of_0_is_the_z_translate() {
+        // Unlike M, no answer seen gives 0 for a vertex without Z: it stays the translate's value.
+        let scale = message(2, &[double(1, 1.0), double(2, 1.0), double(4, 0.0001)].concat());
+        let translate = message(3, &double(4, -100_000.0));
+        let t = message(12, &[scale, translate].concat());
+        let bytes = answer(&[number(7, MULTIPOINT), number(10, 1), t, message(15, &geometry(&[1], &[1, 1, 0]))]);
+        let l = parse(&bytes, "x").unwrap();
+        let Some(Geometry::MultiPoint(p)) = &l.features[0].geometry else { panic!("not a multi point") };
+        assert_eq!(p[0].z, Some(-100_000.0));
+    }
+
+    #[test]
     fn a_point_layer_may_leave_its_type_out() {
         let bytes = answer(&[quantized(0), message(15, &geometry(&[], &[1, 2]))]);
         let l = parse(&bytes, "x").unwrap();
@@ -884,7 +895,8 @@ mod tests {
         assert!(parse(&[], "x").unwrap_err().to_string().contains("empty"));
         assert!(parse(&message(1, b"2.0"), "x").unwrap_err().to_string().contains("no feature result"));
         let json = b"\xEF\xBB\xBF \n{\"error\":{\"code\":400,\"message\":\"Invalid query\"}}";
-        assert!(parse(json, "x").unwrap_err().to_string().contains("Invalid query"));
+        let e = parse(json, "x").unwrap_err().to_string();
+        assert!(e.contains("Invalid query") && e.starts_with("ESRIPBF: "), "{e}");
     }
 
     #[test]

@@ -881,12 +881,23 @@ fn esripbf_pages_match_the_services_own_json() {
         assert_eq!((p.crs_epsg(), p.geom_type), (j.crs_epsg(), j.geom_type), "{page}");
         let names = |l: &wbvector::Layer| l.schema.fields().iter().map(|f| f.name.clone()).collect::<Vec<_>>();
         assert_eq!(names(p), names(j), "{page}");
+        // The Z and M pages compare something: Z along their lines, and M given and left out.
+        let every = || p.features.iter().flat_map(|f| vertices(&f.geometry));
+        if page.starts_with('z') {
+            assert!(every().any(|c| c.z.is_some()), "{page}: no Z");
+        }
+        if page == "mlines" {
+            assert!(every().any(|c| c.m.is_some()) && every().any(|c| c.m.is_none()), "{page}: no M, or no vertex without one");
+        }
+        if page == "zmlines" {
+            assert!(every().any(|c| c.m.is_none()), "{page}: no vertex without M");
+        }
         for (i, (a, b)) in p.features.iter().zip(&j.features).enumerate() {
             assert_eq!(a.fid, b.fid, "{page}, feature {i}");
             let (va, vb) = (vertices(&a.geometry), vertices(&b.geometry));
             assert_eq!(va.len(), vb.len(), "{page}, feature {i}");
             for (x, y) in va.iter().zip(&vb) {
-                // Quantized to 1e-9 degrees: within 1e-7 of what JSON prints.
+                // Quantized finer than JSON prints: within 1e-7 of it, in degrees or the layer's units.
                 assert!((x.x - y.x).abs() < 1e-7 && (x.y - y.y).abs() < 1e-7, "{page}, feature {i}: {x:?} and {y:?}");
                 assert!(near(x.z, y.z) && near(x.m, y.m), "{page}, feature {i}: {x:?} and {y:?}");
             }

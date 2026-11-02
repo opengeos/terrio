@@ -783,7 +783,8 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     // query result) use a bounded root probe, as does `.pbf`, which a query's protocol buffer shares
     // with OpenStreetMap.
     #[cfg(not(target_family = "wasm"))]
-    let pbf = VectorDriver::for_extension(path) == Some(VectorDriver::OSM) && ext == "pbf";
+    let pbf =
+        VectorDriver::for_extension(path) == Some(VectorDriver::OSM) && ext == "pbf" && !path.to_ascii_lowercase().ends_with(".osm.pbf");
     #[cfg(not(target_family = "wasm"))]
     if (VectorDriver::for_extension(path).is_none() || pbf) && RasterDriver::for_extension(path).is_none() && !Path::new(path).is_dir() {
         let driver = crate::inspection::identify(path, false).ok().flatten().and_then(|identified| match identified.driver.as_str() {
@@ -798,6 +799,11 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         });
         if let Some(driver) = driver {
             return read_vector_local(path, driver, options).map(Dataset::Vector);
+        }
+        // Its name also names this driver, which an allow-list may have let it through for: the
+        // driver that reads it is the one to judge.
+        if pbf {
+            crate::formats::check_driver_allowed(VectorDriver::OSM.name(), path, crate::formats::Kind::Vector)?;
         }
     }
     if let Some(driver) = VectorDriver::for_extension(path) {

@@ -678,7 +678,10 @@ terrio convert "https://example.org/arcgis/rest/services/A/FeatureServer/0/query
 
 A URL is read as a query when it has `f=pbf` and answers one, and paging works as above, with the
 same `TERRIO_JSON_MAX_SIZE` cap on each page. A `.pbf` file, or one whose extension no driver
-claims, is recognized by its content; `.pbf` names OpenStreetMap otherwise, and `.osm.pbf` always.
+claims, is recognized by its content; `.pbf` names OpenStreetMap otherwise, and `.osm.pbf` always
+names and opens OpenStreetMap. X and Y are differences from the previous vertex; Z and M are each
+vertex's own, and an M of 0 is none, as the same answer in JSON gives it (a Z of 0 is the layer's
+lowest Z, as no answer seen leaves Z out that way).
 `ESRIPBF:` before a URL or a path names the driver. A service answers a query it refuses with
 nothing: that is an error, and `f=json` shows the reason. An answer with a count, ids or an extent
 is refused, as are curve and shape-buffer geometries and a point with more than one vertex. The

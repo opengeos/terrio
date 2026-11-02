@@ -27,4 +27,15 @@ fn an_allow_list_of_esripbf_opens_it_and_not_openstreetmap() {
         let e = terrio::open_vector(path.to_str().unwrap(), &options).unwrap_err().to_string();
         assert!(e.contains("not allowed"), "{name}: {e}");
     }
+
+    // OpenStreetMap data without its header block, which no content check names: the OpenStreetMap
+    // reader would read it, so the list judges that reader.
+    let block = [0x0a, 0x00]; // A primitive block with an empty string table.
+    let blob = [&[0x0a, block.len() as u8][..], &block].concat(); // Its raw data.
+    let header = [&[0x0a, 7][..], b"OSMData", &[0x18, blob.len() as u8]].concat();
+    let data = [&(header.len() as u32).to_be_bytes()[..], &header, &blob].concat();
+    let path = dir.path().join("c.pbf");
+    std::fs::write(&path, &data).unwrap();
+    let e = terrio::open_vector(path.to_str().unwrap(), &options).unwrap_err().to_string();
+    assert!(e.contains("not allowed"), "{e}");
 }
