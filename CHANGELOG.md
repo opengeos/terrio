@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Resource and allocation refusals are terminal across native and optional GDAL reads. Python
+  reports them as `ResourceLimitError` (a `MemoryError`), replacing `InvalidArgumentError`
+  for GRIB/ESRIJSON limits, `TerrioError` for decoded-byte limits, and `TerrioIOError` for
+  I/O allocation failures. The audited native parser, expansion, chunk,
+  archive, listing and metadata budgets also replace prior `InvalidDataError`/`UnsupportedError`
+  refusals with the resource class. Update exception handlers accordingly.
+  GDAL vector reads, including fallback
+  reads, now have a default 1 GiB retained-data estimate; previously successful large reads can
+  require raising `TERRIO_GDAL_MAX_VECTOR_BYTES` to a positive byte count (#485).
+
 ### Projections
 
 - `+proj=omerc` with two points (`+lat_1`/`+lon_1`, `+lat_2`/`+lon_2`) and no

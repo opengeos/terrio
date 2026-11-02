@@ -532,6 +532,7 @@ fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
     let named = |m: String| if m.contains(local) { m.replace(local, shown) } else { format!("'{shown}': {m}") };
     match e {
         Error::Unsupported(m) => Error::Unsupported(named(m)),
+        Error::ResourceLimit(m) => Error::ResourceLimit(named(m)),
         Error::InvalidData(m) => Error::InvalidData(named(m)),
         Error::InvalidArgument(m) => Error::InvalidArgument(named(m)),
         Error::Raster(e) => Error::InvalidData(named(e.to_string())),
@@ -708,13 +709,14 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
 }
 
 /// When terrio's own drivers could not open `path`, tries GDAL; if GDAL cannot either, terrio's
-/// error is kept. Missing local files and invalid arguments are not retried, nor are network
-/// errors.
+/// error is kept, except for GDAL's resource refusals. Missing local files and invalid arguments
+/// are not retried, nor are network errors or resource-limit refusals.
 #[cfg(feature = "gdal")]
 pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
+        e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => path.contains(':') || path.starts_with("/vsi"),
         _ => true,
@@ -722,7 +724,42 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     if !retry {
         return Err(e);
     }
-    gdal(path).map_err(|_| e)
+    gdal(path).map_err(|gdal_error| if gdal_error.is_resource_refusal() { gdal_error } else { e })
+}
+
+#[cfg(all(test, feature = "gdal"))]
+mod fallback_limits {
+    use super::*;
+
+    #[test]
+    fn resource_refusals_are_not_retried() {
+        for error in
+            [Error::DecodedLimitExceeded { resource: "VSI file", limit: 8 }, Error::ResourceLimit("document cells exceed budget".into())]
+        {
+            let result: Result<()> = gdal_fallback("input.tif", Err(error), |_| panic!("limit refusal retried through GDAL"));
+            assert!(matches!(result, Err(Error::DecodedLimitExceeded { .. } | Error::ResourceLimit(_))));
+        }
+    }
+    #[test]
+    fn allocation_refusals_are_not_retried() {
+        let allocation = fallible::filled(usize::MAX, 0u8, "a raster buffer").unwrap_err();
+        assert_eq!(allocation.kind(), std::io::ErrorKind::OutOfMemory);
+        let result: Result<()> = gdal_fallback("input.tif", Err(allocation.into()), |_| panic!("allocation refusal retried through GDAL"));
+        assert!(matches!(result, Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::OutOfMemory));
+    }
+
+    #[test]
+    fn gdal_resource_refusal_is_not_hidden_by_the_native_error() {
+        let native = || Error::Unsupported("no native driver".into());
+        let result: Result<()> = gdal_fallback("input", Err(native()), |_| Err(Error::ResourceLimit("GDAL budget".into())));
+        assert!(matches!(result, Err(Error::ResourceLimit(_))));
+        let result: Result<()> = gdal_fallback("input", Err(native()), |_| Ok(()));
+        assert!(result.is_ok());
+        let result: Result<()> = gdal_fallback("input", Err(native()), |_| Err(Error::InvalidData("GDAL parse error".into())));
+        assert!(matches!(result, Err(Error::Unsupported(_))));
+        let result: Result<()> = gdal_fallback("input", Err(native()), |_| Err(Error::InvalidArgument("no layer named missing".into())));
+        assert!(matches!(result, Err(Error::Unsupported(_))));
+    }
 }
 
 /// Whether a path names a PMTiles or MBTiles archive (not inside a zip archive).
@@ -789,6 +826,9 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     }
     // Unknown extension: let the drivers sniff the content.
     let raster = read_raster_local(path);
+    if raster.as_ref().is_err_and(Error::is_resource_refusal) {
+        return raster.map(Dataset::Raster);
+    }
     // GDAL recognizes formats more reliably than the vector library's guess (which reads any
     // SQLite database as a GeoPackage).
     #[cfg(feature = "gdal")]
@@ -1656,6 +1696,37 @@ pub(crate) mod fallible {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resource_errors_name_the_remote_source_without_cached_paths_or_queries() {
+        let local = "/private/cache/input.hdf";
+        let error = super::naming_dataset(
+            crate::Error::ResourceLimit(format!("budget exceeded at {local}")),
+            "https://example.com/input.hdf?signature=secret",
+            local,
+        );
+        assert!(matches!(&error, crate::Error::ResourceLimit(_)));
+        assert_eq!(error.to_string(), "budget exceeded at https://example.com/input.hdf");
+    }
+
+    #[cfg(feature = "grib")]
+    #[test]
+    fn extensionless_raster_resource_refusals_are_terminal() {
+        if std::env::var("TERRIO_GRIB_MAX_POINTS").as_deref() != Ok("1") {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "dataset::tests::extensionless_raster_resource_refusals_are_terminal"])
+                .env("TERRIO_GRIB_MAX_POINTS", "1")
+                .output()
+                .unwrap();
+            assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stdout));
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input");
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/grib/temperature.grib2"), &path).unwrap();
+        let result = crate::open(path.to_str().unwrap());
+        assert!(matches!(result, Err(crate::Error::ResourceLimit(_))), "{result:?}");
+    }
+
     /// The memory a process can use counts its cgroup's limit and those of the groups above it
     /// (version 2's `memory.max`, version 1's `memory.limit_in_bytes`), as GDAL's
     /// `CPLGetPhysicalRAM` does: in a 2 GiB cgroup on a machine of 32 GiB without an address-space

@@ -179,7 +179,7 @@ pub(super) fn reserve_parse_memory(len: usize, format: &str) -> Result<()> {
     let need = len.saturating_mul(PARSE_MEMORY_PER_BYTE);
     let mut probe: Vec<u8> = Vec::new();
     probe.try_reserve_exact(need).map_err(|_| {
-        Error::InvalidData(format!("{format}: parsing {len} bytes needs about {need} bytes of memory, more than is available"))
+        Error::ResourceLimit(format!("{format}: parsing {len} bytes needs about {need} bytes of memory, more than is available"))
     })
 }
 
@@ -1497,7 +1497,7 @@ mod tests {
     #[test]
     fn a_document_too_large_for_memory_is_an_error() {
         // The address space for parsing is reserved first: an input whose parse cannot fit fails.
-        assert!(reserve_parse_memory(usize::MAX / 4, "GeoJSON").is_err());
+        assert!(matches!(reserve_parse_memory(usize::MAX / 4, "GeoJSON"), Err(Error::ResourceLimit(_))));
         assert!(reserve_parse_memory(1 << 20, "GeoJSON").is_ok());
     }
 

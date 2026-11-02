@@ -110,7 +110,10 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
 /// Reads a JPEG file with its world file, decoded as GDAL's JPEG driver decodes it (libjpeg's
 /// output, see [`crate::jpeg`]).
 pub(crate) fn read_jpeg(path: &Path) -> Result<RasterDataset> {
-    let img = crate::jpeg::decode_file(&std::fs::read(path)?).map_err(|e| Error::InvalidData(format!("{}: {e}", path.display())))?;
+    let img = crate::jpeg::decode_file(&std::fs::read(path)?).map_err(|e| {
+        let message = format!("{}: {e}", path.display());
+        if crate::jpeg::is_resource_refusal(&e) { Error::ResourceLimit(message) } else { Error::InvalidData(message) }
+    })?;
     let (cols, rows, bands) = (img.width, img.height, img.components);
     let n = cols * rows;
     let mut data = fallible::filled(fallible::len(&[n, bands], "the JPEG raster")?, 0u8, "the JPEG raster")?;

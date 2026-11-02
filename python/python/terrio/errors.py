@@ -34,6 +34,10 @@ class InvalidDataError(TerrioError, ValueError):
     """A dataset was found but its contents are not valid."""
 
 
+class ResourceLimitError(TerrioError, MemoryError):
+    """Reading a dataset exceeds a resource budget or available allocation capacity."""
+
+
 class InternalError(TerrioError):
     """A bug in terrio that this input reached: a Rust panic, caught before it reached Python.
 
@@ -49,6 +53,7 @@ __all__ = [
     "InvalidArgumentError",
     "InvalidDataError",
     "NotFoundError",
+    "ResourceLimitError",
     "TerrioError",
     "TerrioIOError",
     "UnsupportedError",

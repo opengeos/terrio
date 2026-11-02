@@ -1546,7 +1546,8 @@ enum Reopened {
 
 fn tiff_err(e: tiff::TiffError) -> Error {
     match e {
-        tiff::TiffError::LimitsExceeded => Error::InvalidData("TIFF: decoding limits exceeded (see TiffReadLimits)".into()),
+        tiff::TiffError::LimitsExceeded => Error::ResourceLimit("TIFF: decoding limits exceeded (see TiffReadLimits)".into()),
+        tiff::TiffError::IoError(e) if e.kind() == std::io::ErrorKind::OutOfMemory => Error::Io(e),
         e => Error::InvalidData(format!("TIFF: {e}")),
     }
 }

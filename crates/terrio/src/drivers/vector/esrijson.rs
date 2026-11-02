@@ -117,9 +117,8 @@ pub(crate) fn page(bytes: &[u8], name: &str) -> Result<featureservice::Page> {
     // than its size.
     let cells = features.len().saturating_mul(fields.len()).saturating_mul(std::mem::size_of::<FieldValue>());
     if cells > MAX_SPARSE_CELL_BYTES.max(bytes.len().saturating_mul(super::geojson::PARSE_MEMORY_PER_BYTE)) {
-        // An argument error rather than InvalidData: the GDAL fallback retries InvalidData, and GDAL
-        // would build these cells.
-        return Err(Error::InvalidArgument(format!(
+        // Terminal: GDAL would build the cells that the native reader refused.
+        return Err(Error::ResourceLimit(format!(
             "ESRIJSON: {} features of {} fields need about {cells} bytes of memory, too many for a document of {} bytes",
             features.len(),
             fields.len(),

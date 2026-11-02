@@ -305,10 +305,10 @@ impl HecRasHdf {
     }
 
     /// Refuses when the root attributes' stored values are larger than `metadata_max_bytes`,
-    /// before the engine decodes any of them (`Unsupported`, as the engine's byte budgets are).
+    /// before the engine decodes any of them (a terminal resource refusal).
     pub(crate) fn root_attributes_within(&self, metadata_max_bytes: usize) -> crate::Result<()> {
         if self.root_attribute_bytes > metadata_max_bytes {
-            return Err(crate::Error::Unsupported(format!(
+            return Err(crate::Error::ResourceLimit(format!(
                 "HEC-RAS unsupported(resource_limit): '{}': the root attributes store {} bytes, above the metadata budget of {metadata_max_bytes} bytes",
                 self.path.display(),
                 self.root_attribute_bytes

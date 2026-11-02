@@ -138,6 +138,6 @@ def test_root_attributes_keep_to_the_metadata_budget():
     budget = {"METADATA_MAX_BYTES": "4096", "MAX_BYTES": "4096"}
     for name in ("large_projection.h5", "large_root_attribute.h5"):
         path = str(DATA / name)
-        with pytest.raises(terrio.UnsupportedError, match="root attributes"):
+        with pytest.raises(terrio.ResourceLimitError, match="root attributes"):
             terrio.open_vector(path, options=budget)
         assert terrio.open_vector(path).driver == "HECRAS"

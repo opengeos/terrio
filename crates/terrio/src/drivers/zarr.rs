@@ -49,6 +49,10 @@ fn bad(msg: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("Zarr: {msg}"))
 }
 
+fn limited(message: impl std::fmt::Display) -> Error {
+    Error::ResourceLimit(format!("Zarr: {message}"))
+}
+
 /// Whether a directory is a Zarr store (or array).
 pub(crate) fn is_zarr(path: &Path) -> bool {
     memfs::is_dir(path) && [".zgroup", ".zarray", "zarr.json"].iter().any(|f| memfs::is_file(&path.join(f)))
@@ -180,7 +184,7 @@ const CODEC_SLACK: usize = 64;
 
 /// "Too large chunks", GDAL's error for chunk dimensions whose product overflows.
 fn too_large() -> Error {
-    bad("Too large chunks")
+    limited("Too large chunks")
 }
 
 /// The number of elements of a chunk (or region) of shape `shape`.
@@ -259,9 +263,9 @@ impl Pipeline {
             None => self.stored,
         };
         let elements = bytes_of(element_count(shape)?, stored.unwrap_or(Stored::Type(t)).size())?;
-        let bytes = if self.fortran { elements.checked_mul(2).ok_or_else(|| bad("Too large chunk size"))? } else { elements };
+        let bytes = if self.fortran { elements.checked_mul(2).ok_or_else(|| limited("Too large chunk size"))? } else { elements };
         if bytes > MAX_CHUNK_BYTES && !allow_big {
-            return Err(bad(format!(
+            return Err(limited(format!(
                 "tile allocation would require {bytes} bytes. By default the driver limits to 1 GB. To allow that memory \
                  allocation, set the TERRIO_ZARR_ALLOW_BIG_TILE_SIZE (or ZARR_ALLOW_BIG_TILE_SIZE) configuration option to YES."
             )));
@@ -899,7 +903,7 @@ fn chunk_buffer(p: &Pipeline, raw: Vec<u8>, cshape: &[usize], t: DataType, fill:
         // Refused before it is reserved: where the system overcommits memory, a reservation the
         // process cannot hold succeeds, and the process is killed as the decoder writes it.
         let bytes = p.decoding_bytes(cshape, t)?;
-        crate::dataset::fallible::check_usable(Some(bytes), || "cannot allocate a Zarr chunk's decoded bytes".into()).map_err(bad)?;
+        crate::dataset::fallible::check_usable(Some(bytes), || "cannot allocate a Zarr chunk's decoded bytes".into()).map_err(limited)?;
     }
     let mut data = raw;
     for (c, most) in p.codecs.iter().zip(p.output_bounds(cshape, t)?) {
@@ -1105,7 +1109,7 @@ fn decode_chunk(
     let fill = a.fill_bytes();
     let origin: Vec<usize> = idx.iter().zip(&a.chunks).map(|(i, c)| i * c).collect();
     let key = a.chunk_key(idx);
-    let err = |e: Error| bad(format!("chunk {}/{key}: {e}", a.node.display()));
+    let err = |e: Error| if e.is_resource_refusal() { e } else { bad(format!("chunk {}/{key}: {e}", a.node.display())) };
     let Some(shard) = p.shard.as_ref().filter(|_| p.codecs.is_empty()) else {
         let Some(raw) = a.node.get(&key, Range::Whole).map_err(err)? else { return Ok(()) };
         let buf = chunk_buffer(p, raw, &a.chunks, a.data_type, &fill, allow_big).map_err(err)?;
@@ -1171,7 +1175,7 @@ fn read_region(a: &Array, start: &[usize], shape: &[usize]) -> Result<Vec<u8>> {
     // A region the process cannot hold is refused before a chunk is listed or a byte allocated:
     // its size comes from the metadata.
     let bytes = shape.iter().try_fold(1usize, |n, &d| n.checked_mul(d)).and_then(|n| n.checked_mul(size));
-    let n = crate::dataset::fallible::check_usable(bytes, || format!("a region of shape {shape:?} is too large")).map_err(bad)? / size;
+    let n = crate::dataset::fallible::check_usable(bytes, || format!("a region of shape {shape:?} is too large")).map_err(limited)? / size;
     let allow_big = check_chunks(a)?;
     if n == 0 {
         return Ok(Vec::new());
@@ -1229,7 +1233,8 @@ fn read_points(a: &Array, sel: &[Vec<usize>]) -> Result<Vec<u8>> {
     let size = a.data_type.size_bytes();
     let shape: Vec<usize> = sel.iter().map(Vec::len).collect();
     let bytes = shape.iter().try_fold(1usize, |n, &d| n.checked_mul(d)).and_then(|n| n.checked_mul(size));
-    let n = crate::dataset::fallible::check_usable(bytes, || format!("a selection of shape {shape:?} is too large")).map_err(bad)? / size;
+    let n =
+        crate::dataset::fallible::check_usable(bytes, || format!("a selection of shape {shape:?} is too large")).map_err(limited)? / size;
     let allow_big = check_chunks(a)?;
     if n == 0 {
         return Ok(Vec::new());
@@ -1532,7 +1537,7 @@ impl Level {
         crate::dataset::fallible::check_usable(bytes, || {
             format!("a window of {}x{} pixels in {} band(s) is too large", w.width, w.height, bands.len())
         })
-        .map_err(bad)?;
+        .map_err(limited)?;
         let Some(&last) = self.bds.last() else { return self.read_group(w, bands) };
         let step = self.array.chunks[last].max(1);
         let mut unique: Vec<usize> = bands.to_vec();
@@ -1670,7 +1675,7 @@ impl Level {
         let bytes = crate::dataset::fallible::check_usable(len.and_then(|n| n.checked_mul(size)), || {
             format!("a window of {nc}x{nr} pixels in {} band(s) is too large", bands.len())
         })
-        .map_err(bad)?;
+        .map_err(limited)?;
         // The bands' indices along the band dimensions, all read at once, so that a chunk holding
         // several bands is decoded once; rows stored south first are their stored rows.
         let indices: Vec<Vec<usize>> = bands.iter().map(|&b| self.band_index(b.max(1))).collect();

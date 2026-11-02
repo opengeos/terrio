@@ -95,18 +95,21 @@ fn read_hdf(hdf: &HecRasHdf, path: &str, options: &VectorOpenOptions) -> Result<
         )));
     }
     let mut layers = Vec::with_capacity(available.len());
+    let mut resource_refused = false;
     for name in &available {
         let r = request_of(name).ok_or_else(|| Error::InvalidData(format!("HECRAS: no request for listed layer {name}")))?;
         match r.read(hdf, name) {
             Ok(layer) => layers.push(layer),
-            Err(e @ (Error::Unsupported(_) | Error::InvalidArgument(_))) if !r.targeted => {
+            Err(e @ (Error::Unsupported(_) | Error::InvalidArgument(_) | Error::ResourceLimit(_))) if !r.targeted => {
+                resource_refused |= matches!(&e, Error::ResourceLimit(_));
                 crate::warnings::warn(format!("HECRAS: layer {name} left out: {e} (name it with a layer option to see it fail)"))
             }
             Err(e) => return Err(e),
         }
     }
     if layers.is_empty() {
-        return Err(Error::Unsupported(format!("'{path}': the engine refused every HEC-RAS layer (see the warnings)")));
+        let message = format!("'{path}': the engine refused every HEC-RAS layer (see the warnings)");
+        return Err(if resource_refused { Error::ResourceLimit(message) } else { Error::Unsupported(message) });
     }
     Ok(layers)
 }

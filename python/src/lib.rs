@@ -42,6 +42,7 @@ pub(crate) fn to_py(e: terrio::Error) -> PyErr {
     let class = match &e {
         terrio::Error::Io(io) if io.get_ref().is_some_and(|inner| inner.is::<Panicked>()) => "InternalError",
         terrio::Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => "NotFoundError",
+        e if e.is_resource_refusal() => "ResourceLimitError",
         terrio::Error::Io(_) | terrio::Error::Http(_) => "TerrioIOError",
         terrio::Error::Crs(_) => "CRSError",
         terrio::Error::InvalidArgument(_) => "InvalidArgumentError",
