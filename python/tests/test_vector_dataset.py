@@ -225,3 +225,54 @@ def test_collision_errors_are_clear():
         terrio.concat([a, b], mode="single", source_layer_field_name="name")
     with pytest.raises(terrio.InvalidArgumentError, match="duplicate layer name"):
         terrio.rename_layer([a, b], input_layer="a", output_layer="b")
+
+
+STYLED_KML = b"""<kml><Document>
+  <Style id="base"><LineStyle><color>ff0000ff</color><width>2</width></LineStyle></Style>
+  <Placemark><name>shared</name><styleUrl>#base</styleUrl><Point><coordinates>30,-2</coordinates></Point></Placemark>
+</Document></kml>"""
+BASE_STYLE = "PEN(c:#FF0000FF,w:2.000000px)"
+
+
+def ogr_style(dataset):
+    return dataset[0].to_geojson()["features"][0]["properties"]["OGR_STYLE"]
+
+
+def test_kml_style_table_is_read_and_written(tmp_path):
+    source = tmp_path / "a.kml"
+    source.write_bytes(STYLED_KML)
+    dataset = terrio.open_vector(str(source))
+    assert dataset.style_table == [("base", BASE_STYLE)]
+    assert dataset[0].columns()["OGR_STYLE"] == ["@base"]
+    assert ogr_style(dataset) == BASE_STYLE
+
+    # The dataset writes its own table to KML and KMZ.
+    for name in ("out.kml", "out.kmz"):
+        dataset.write(str(tmp_path / name))
+        back = terrio.open_vector(str(tmp_path / name))
+        assert back.style_table == [("base", BASE_STYLE)]
+        assert back[0].columns()["OGR_STYLE"] == ["@base"]
+
+    # A layer writes the table of its dataset, or the one given.
+    assert b'<Style id="base">' in dataset[0].to_bytes("out.kml")
+    other = dataset[0].to_bytes("out.kml", style_table=[("base", "PEN(c:#00FF00FF)")])
+    assert b"<color>ff00ff00</color>" in other
+    assert b"PEN(c:#FF0000FF" in dataset[0].to_bytes("out.geojson")
+    assert b"PEN(c:#FF0000FF" in dataset[0].to_bytes("out.geojson", style_table=[])
+    with pytest.raises(terrio.InvalidArgumentError, match="style_table"):
+        dataset[0].to_bytes("out.geojson", style_table=dataset.style_table)
+
+    # Other formats have no table to refer to: each feature gets its style.
+    dataset.write(str(tmp_path / "out.geojson"))
+    assert ogr_style(terrio.open_vector(str(tmp_path / "out.geojson"))) == BASE_STYLE
+
+
+def test_kml_styles_resolve_when_a_path_is_converted(tmp_path):
+    source = tmp_path / "a.kml"
+    source.write_bytes(STYLED_KML)
+    terrio.convert(str(source), str(tmp_path / "c.kml"))
+    converted = (tmp_path / "c.kml").read_bytes()
+    assert b'<Style id="base">' in converted
+    assert b"<styleUrl>#base</styleUrl>" in converted
+    terrio.convert(str(source), str(tmp_path / "c.geojson"))
+    assert ogr_style(terrio.open_vector(str(tmp_path / "c.geojson"))) == BASE_STYLE

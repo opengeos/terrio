@@ -456,6 +456,14 @@ pub(crate) mod codec {
         let driver = vector_driver(&bytes, name).ok_or_else(|| Error::Unsupported(format!("'{name}': format not recognized")))?;
         // The content may have chosen the driver from past the bytes the allow-list judged.
         crate::formats::check_driver_allowed(driver.name(), name, Kind::Vector)?;
+        if matches!(driver, VectorDriver::KML | VectorDriver::KMZ) {
+            let (layers, style_table) = crate::drivers::vector::read_kml_bytes(bytes, name, driver)?;
+            let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, name, driver)).collect();
+            return finish_vector(layers, driver, options).map(|d| match d {
+                Dataset::Vector(v) => Dataset::Vector(VectorDataset { style_table, ..v }),
+                raster => raster,
+            });
+        }
         let Some(layers) = crate::drivers::vector::read_bytes(bytes, name, driver, options)? else {
             return Err(Error::Unsupported(format!(
                 "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoPackage, JPEG 2000, GRIB, netCDF, \
@@ -584,7 +592,7 @@ pub(crate) mod codec {
         if layers.is_empty() {
             return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
         }
-        Ok(Dataset::Vector(VectorDataset { layers, driver }))
+        Ok(Dataset::Vector(VectorDataset::new(layers, driver)))
     }
 
     /// Writes a raster to bytes with the in-memory codecs.
@@ -726,6 +734,33 @@ mod tests {
         let bytes = codec::write_raster(&ds, RasterDriver::GTiff, &RasterWriteOptions::default(), "raster").unwrap();
         let back = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap().header();
         assert_eq!(back.band_color_interp(1), "Undefined");
+    }
+
+    #[test]
+    fn a_kml_style_table_travels_from_opening_to_writing() {
+        let kml = r##"<kml><Document>
+            <Style id="base"><LineStyle><color>ff0000ff</color><width>2</width></LineStyle></Style>
+            <Placemark><styleUrl>#base</styleUrl><Point><coordinates>30,-2</coordinates></Point></Placemark>
+            </Document></kml>"##;
+        let style = "PEN(c:#FF0000FF,w:2.000000px)";
+        let field = |v: &VectorDataset| {
+            let l = &v.layers[0];
+            l.features[0].attributes[l.schema.field_index("OGR_STYLE").unwrap()].clone()
+        };
+        let ds = open_vector_bytes(kml.as_bytes().to_vec(), "a.kml", &Default::default()).unwrap();
+        assert_eq!(ds.style_table, [("base".to_string(), style.to_string())]);
+        assert_eq!(field(&ds), wbvector::FieldValue::Text("@base".into()));
+        let options = VectorWriteOptions { style_table: ds.style_table.clone(), ..Default::default() };
+        for name in ["o.kml", "o.kmz"] {
+            let back = open_vector_bytes(write_vector_bytes(&ds.layers, name, &options).unwrap(), name, &Default::default()).unwrap();
+            assert_eq!(back.style_table, ds.style_table, "{name}");
+            assert_eq!(field(&back), field(&ds), "{name}");
+        }
+        // No other format holds a style table: refused, not dropped, and the references resolve.
+        assert!(matches!(write_vector_bytes(&ds.layers, "o.geojson", &options), Err(Error::InvalidArgument(_))));
+        let mut resolved = ds.clone();
+        resolved.resolve_styles();
+        assert_eq!(field(&resolved), wbvector::FieldValue::Text(style.into()));
     }
 
     #[test]

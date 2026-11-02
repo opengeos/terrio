@@ -27,11 +27,16 @@ fn source(v: &JsValue) -> Result<(Vec<terrio::Layer>, Option<VectorDriver>), JsE
     if let Some(inner) = Dataset::lookup(v)
         && let Inner::Vector(layers, driver) = &*inner.borrow()
     {
-        return Ok((layers.clone(), Some(*driver)));
+        let layers = match Dataset::lookup_style_table(v) {
+            Some(table) => crate::resolve_styles(layers.clone(), &table),
+            None => layers.clone(),
+        };
+        return Ok((layers, Some(*driver)));
     }
     if let Some((bytes, name)) = file_bytes(v) {
         let ds = terrio::memory::open_vector_bytes(bytes, &name, &Default::default()).map_err(js_err)?;
-        return Ok((ds.layers, Some(ds.driver)));
+        let driver = ds.driver;
+        return Ok((ds.into_resolved_layers(), Some(driver)));
     }
     Ok((input_layers(v)?, None))
 }

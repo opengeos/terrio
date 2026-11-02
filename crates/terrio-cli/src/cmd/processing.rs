@@ -20,7 +20,7 @@ impl VectorInput {
         Ok(super::quiet(|| {
             terrio::open_vector(&self.input, &terrio::VectorOpenOptions { layers: self.layers.clone(), ..Default::default() })
         })?
-        .layers)
+        .into_resolved_layers())
     }
 }
 

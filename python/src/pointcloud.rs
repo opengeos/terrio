@@ -1846,8 +1846,8 @@ impl PyPointCloud {
         d.set_item("estimated_edge", r.height())?;
         d.set_item("threshold", r.threshold)?;
         d.set_item("origin", (r.origin[0], r.origin[1]))?;
-        d.set_item("boundary_layer", crate::vector::PyLayer { inner: boundary_layer })?;
-        d.set_item("hexagons", crate::vector::PyLayer { inner: r.density_layer(None) })?;
+        d.set_item("boundary_layer", crate::vector::PyLayer::from(boundary_layer))?;
+        d.set_item("hexagons", crate::vector::PyLayer::from(r.density_layer(None)))?;
         Ok(d)
     }
 
@@ -1862,7 +1862,7 @@ impl PyPointCloud {
     #[pyo3(signature = (dimensions=None, name=None))]
     fn to_layer(&self, dimensions: Option<Vec<String>>, name: Option<String>) -> PyResult<crate::vector::PyLayer> {
         let options = pointcloud::vector::ToLayerOptions { name, dimensions: dimensions.unwrap_or_default(), two_d: false };
-        Ok(crate::vector::PyLayer { inner: pointcloud::vector::to_layer(&self.inner, &options).py()? })
+        Ok(crate::vector::PyLayer::from(pointcloud::vector::to_layer(&self.inner, &options).py()?))
     }
 
     fn __repr__(&self) -> String {

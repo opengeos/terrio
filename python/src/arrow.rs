@@ -234,5 +234,5 @@ pub(crate) fn layer_stream<'py>(py: Python<'py>, layer: &terrio::Layer) -> PyRes
 #[pyfunction]
 #[pyo3(signature = (data, name=None, crs=None))]
 pub(crate) fn from_arrow(data: &Bound<'_, PyAny>, name: Option<&str>, crs: Option<&str>) -> PyResult<PyLayer> {
-    Ok(PyLayer { inner: layer_from_object(data, name, crs)? })
+    Ok(PyLayer::from(layer_from_object(data, name, crs)?))
 }

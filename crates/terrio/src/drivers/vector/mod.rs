@@ -138,14 +138,20 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
         VectorDriver::Shapefile => shapefile::write(layer, path)?,
         VectorDriver::GML => gml::write(layer, path)?,
         VectorDriver::GPX => gpx::write(layer, path)?,
-        VectorDriver::KML => kml::write(std::slice::from_ref(layer), path)?,
-        VectorDriver::KMZ => kml::write_kmz(std::slice::from_ref(layer), path, &options.kmz)?,
+        VectorDriver::KML => kml::write_styled(std::slice::from_ref(layer), &options.style_table, path)?,
+        VectorDriver::KMZ => kml::write_kmz_styled(std::slice::from_ref(layer), &options.style_table, path, &options.kmz)?,
         VectorDriver::TopoJSON => topojson::write(layer, path)?,
         VectorDriver::MapInfo if crate::formats::extension(path).as_deref() == Some("tab") => tab::write(layer, path)?,
         VectorDriver::MapInfo => mapinfo::write(layer, path)?,
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+/// The layers of a KML or KMZ dataset in memory with its style table.
+pub(crate) fn read_kml_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver) -> Result<kml::Styled> {
+    let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
+    if driver == VectorDriver::KMZ { kml::parse_kmz_styled(bytes, stem) } else { kml::parse_styled(&xml::decode(&bytes), stem) }
 }
 
 /// Reads a dataset held in memory with terrio's own driver for the format. `name` is the file
@@ -249,8 +255,8 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
         #[cfg(feature = "cad")]
         VectorDriver::DXF | VectorDriver::DWG => cad::to_bytes(layers, driver)?,
         VectorDriver::GPX => gpx::layers_to_string(layers)?.into_bytes(),
-        VectorDriver::KML => kml::to_string(layers)?.into_bytes(),
-        VectorDriver::KMZ => kml::kmz_bytes(layers, &options.kmz)?,
+        VectorDriver::KML => kml::to_string_styled(layers, &options.style_table)?.into_bytes(),
+        VectorDriver::KMZ => kml::kmz_bytes_styled(layers, &options.style_table, &options.kmz)?,
         VectorDriver::TopoJSON => topojson::to_string(layers)?.into_bytes(),
         VectorDriver::CityJSON => cityjson_write::to_bytes(layers, options.cityjson_version.unwrap_or_default())?,
         VectorDriver::CityGML => {

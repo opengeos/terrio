@@ -27,7 +27,8 @@ pub fn select_layers(layers: Vec<Layer>, names: &[String]) -> Result<Vec<Layer>>
 /// Opens selected operation inputs and rejects every missing requested layer name.
 /// Keeps the file-stem alias supported by single-layer file drivers.
 pub fn open_layers(path: &str, options: &crate::VectorOpenOptions) -> Result<Vec<Layer>> {
-    let ds = crate::open_vector(path, options)?;
+    let mut ds = crate::open_vector(path, options)?;
+    ds.resolve_styles();
     let alias = if ds.layers.len() == 1 && ds.driver != crate::formats::VectorDriver::GPKG {
         std::path::Path::new(path).file_stem().and_then(|stem| stem.to_str())
     } else {
@@ -689,7 +690,8 @@ pub fn write_vector_with_mode(layers: &[Layer], path: &str, options: &VectorWrit
     if matches!(driver, Some(crate::formats::VectorDriver::MBTiles | crate::formats::VectorDriver::PMTiles)) {
         return crate::tiles::update_vector(path, layers, &options.tiles, mode == WriteMode::Overwrite);
     }
-    let existing = crate::open_vector(path, &Default::default())?;
+    let mut existing = crate::open_vector(path, &Default::default())?;
+    existing.resolve_styles();
     // Use the detected content driver too: `.json` can contain a CityJSON model,
     // even when its root type occurs after the bounded identification prefix.
     // Reuse this normal update read, without opening or reading the file again.

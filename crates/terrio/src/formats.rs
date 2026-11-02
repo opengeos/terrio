@@ -372,6 +372,11 @@ impl RasterDriver {
 }
 
 impl VectorDriver {
+    /// Whether the format holds shared styles: `VectorWriteOptions::style_table` writes them.
+    pub fn holds_style_table(self) -> bool {
+        matches!(self, Self::KML | Self::KMZ)
+    }
+
     /// Every vector driver.
     pub const ALL: &[VectorDriver] = &[
         Self::GeoJSON,

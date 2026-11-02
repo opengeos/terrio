@@ -32,7 +32,8 @@ fn pyogrio_read<'py>(
     // The range is read by the driver: the Shapefile driver decodes only those records.
     let options = VectorOpenOptions { skip_features, max_features, ..Default::default() };
     let (ds, declared) = terrio::vector::with_declared_geometry_types(|| crate::with_warnings(py, || terrio::open_vector(path, &options)));
-    let ds = ds?;
+    let mut ds = ds?;
+    ds.resolve_styles();
     // One layer read by a GeoJSON driver: the type it declares; else the reader infers one.
     let geometry_type = match (ds.driver, declared.as_slice()) {
         (VectorDriver::GeoJSON | VectorDriver::GeoJSONSeq, [declared]) => Some(declared.clone()),

@@ -46,7 +46,7 @@ pub(crate) fn one_layer(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<St
 fn run(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>, op: GeometryOp) -> PyResult<PyLayer> {
     let input = one_layer(py, src, layer)?;
     let inner = py.detach_result(|| vector_geom::apply(&input, &op)).py()?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// Simplifies geometries, preserving their topology, as `gdal vector simplify` (GEOS's
@@ -207,7 +207,7 @@ fn combine(
     };
     let input = one_layer(py, src, layer)?;
     let inner = py.detach_result(|| vector_geom::combine(&input, &options)).py()?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// Sorts features by the position of their geometries, as `gdal vector sort`.
@@ -225,7 +225,7 @@ fn sort(py: Python<'_>, src: &Bound<'_, PyAny>, method: &str, layer: Option<Stri
     let method = SortMethod::parse(method).py()?;
     let input = one_layer(py, src, layer)?;
     let inner = py.detach_value(|| vector_geom::sort(&input, method))?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// Clips vector features to a bbox, polygon geometry, or vector/raster template.
@@ -318,7 +318,7 @@ fn clip_vector(
     } else {
         one_layer(py, src, layer)?
     };
-    Ok(PyLayer { inner: py.detach_result(|| terrio::ops::vector_clip::clip(&input, &region)).py()? })
+    Ok(PyLayer::from(py.detach_result(|| terrio::ops::vector_clip::clip(&input, &region)).py()?))
 }
 
 fn clip_inline_geojson(value: &Bound<'_, PyAny>) -> Option<PyResult<Vec<Layer>>> {
@@ -368,7 +368,7 @@ fn check_coverage(
     let input = one_layer(py, src, layer)?;
     let options = terrio::ops::coverage::CoverageCheckOptions { maximum_gap_width, include_valid };
     let inner = py.detach_result(|| terrio::ops::coverage::check_coverage(&input, &options)).py()?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// Simplify shared polygon coverage boundaries without creating gaps or overlaps.
@@ -399,12 +399,12 @@ fn simplify_coverage(
         }
         let input = input_layers(py, src, None)?;
         let layers = py.detach_result(|| terrio::ops::coverage_simplify::simplify_coverage_layers(&input, &options, Some(&active))).py()?;
-        let dataset = terrio::VectorDataset { layers, driver: terrio::formats::VectorDriver::GeoJSON };
+        let dataset = terrio::VectorDataset::new(layers, terrio::formats::VectorDriver::GeoJSON);
         return Ok(Py::new(py, PyVectorDataset::new(py, dataset)?)?.into_any());
     }
     let input = one_layer(py, src, layer)?;
     let inner = py.detach_result(|| terrio::ops::coverage_simplify::simplify_coverage(&input, &options)).py()?;
-    Ok(Py::new(py, PyLayer { inner })?.into_any())
+    Ok(Py::new(py, PyLayer::from(inner))?.into_any())
 }
 
 /// Planar XY layer algebra. All seven operations accept polygon, line, point and
@@ -430,7 +430,7 @@ fn layer_algebra(
     let b = one_layer(py, method, method_layer)?;
     let options = terrio::ops::layer_algebra::LayerAlgebraOptions { keep_lower_dimension_geometries, input_prefix, method_prefix };
     let inner = py.detach_result(|| terrio::ops::layer_algebra::layer_algebra(&a, &b, op, &options)).py()?;
-    Ok(PyLayer { inner })
+    Ok(PyLayer::from(inner))
 }
 
 /// Snap and node polygon coverage boundaries, assigning overlaps and filling enclosed narrow gaps.
@@ -461,10 +461,10 @@ fn clean_coverage(
         }
         let input = input_layers(py, src, None)?;
         let layers = py.detach_result(|| terrio::ops::coverage_clean::clean_coverage_layers(&input, Some(&active), &options)).py()?;
-        let dataset = terrio::VectorDataset { layers, driver: terrio::formats::VectorDriver::GeoJSON };
+        let dataset = terrio::VectorDataset::new(layers, terrio::formats::VectorDriver::GeoJSON);
         return Ok(Py::new(py, PyVectorDataset::new(py, dataset)?)?.into_any());
     }
     let input = one_layer(py, src, layer)?;
     let inner = py.detach_result(|| terrio::ops::coverage_clean::clean_coverage(&input, &options)).py()?;
-    Ok(Py::new(py, PyLayer { inner })?.into_any())
+    Ok(Py::new(py, PyLayer::from(inner))?.into_any())
 }
