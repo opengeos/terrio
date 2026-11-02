@@ -1062,5 +1062,9 @@ mod tests {
         let (layers, _) = parse_kmz_styled(archive(&files), "a").unwrap();
         let resolved = (0..layers[0].features.len()).filter(|&i| style(&layers[0], i).starts_with("PEN")).count();
         assert_eq!(resolved, MAX_STYLE_DOCUMENTS);
+        for i in 0..layers[0].features.len() {
+            let value = style(&layers[0], i);
+            assert!(value.starts_with("PEN") || (value.starts_with('s') && value.ends_with(".kml#p")), "{value}");
+        }
     }
 }

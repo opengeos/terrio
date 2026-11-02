@@ -562,7 +562,7 @@ pub fn from_arrow_ipc(bytes: Vec<u8>, name: Option<String>) -> Result<Dataset, J
 
 #[wasm_bindgen]
 impl Dataset {
-    /// The shared styles of a KML or KMZ document, `{ id: "PEN(...)" }`, in document order. Features
+    /// The shared styles of a KML or KMZ document, `{ id: "PEN(...)" }`. Features
     /// using one have `@id` in their `OGR_STYLE` field. Empty for other formats. `toBytes` writes
     /// them to KML and KMZ; for other formats it gives each feature its style.
     #[wasm_bindgen(getter, js_name = styleTable)]

@@ -200,6 +200,7 @@ impl PyLayer {
     ///
     /// Returns:
     ///     dict: The FeatureCollection.
+    /// A layer does not hold its dataset's KML style table: `OGR_STYLE` may be a raw `@id`.
     fn to_geojson<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let text = wbvector::geojson::to_string(&self.inner);
         py.import("json")?.call_method1("loads", (text,))

@@ -218,6 +218,8 @@ impl<'a> Styles<'a> {
             if stack.is_empty() {
                 return Some(if self.member.is_empty() { format!("@{id}") } else { url.to_string() });
             }
+            // A style with nothing OGR can hold (a BalloonStyle alone) has no table entry to name.
+            merged(&stack)?;
             if !self.shadowed.contains(id) {
                 return Some(format!("@{id}"));
             }
@@ -577,6 +579,8 @@ mod tests {
             <Placemark><styleUrl>#missing</styleUrl><Style><LineStyle><width>4</width></LineStyle></Style></Placemark>
             <Placemark><styleUrl>http://x/s.kml#a</styleUrl></Placemark>
             <Placemark/>
+            <Style id="balloon"><BalloonStyle><text>t</text></BalloonStyle></Style>
+            <Placemark><styleUrl>#balloon</styleUrl></Placemark>
             </Document></kml>"##,
         );
         let get = |i: usize| got[i].as_deref();
@@ -591,6 +595,8 @@ mod tests {
         assert_eq!(get(6), Some("PEN(w:4.000000px)"));
         assert_eq!(get(7), Some("http://x/s.kml#a"));
         assert_eq!(get(8), None);
+        // Nothing an OGR style holds, so no table entry, and no reference to one.
+        assert_eq!(get(9), None);
     }
 
     #[test]
