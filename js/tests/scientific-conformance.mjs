@@ -36,6 +36,7 @@ export function conformance(terrio, bytes, memory) {
     ]) {
       const h = own(ds.array(name)); const result = h.read();
       check(result instanceof Type, `native ${name}`); equal([...result], values, name);
+      release(h);
     }
     rejects(() => ds.array("missing"), "missing variable");
     rejects(() => a.isel("missing", 0), "missing dimension");
@@ -45,7 +46,7 @@ export function conformance(terrio, bytes, memory) {
     const slab = own(a.isel("time", 1));
     const stride = own(slab.slice("x", 0, 2, 2));
     const child = own(stride.transpose(["x", "y"]));
-    release(stride); release(slab); release(a); release(ds);
+    release(time); release(stride); release(slab); release(a); release(ds);
     equal([...child.read()], [4, 8, 12, 6, 10, 14], "Arc-retained child after ancestors disposed");
     let growth = false;
     if (memory) {
