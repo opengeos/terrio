@@ -28,7 +28,9 @@ fn unsupported(entity: &EntityType) -> Error {
 
 const MAX_CAD_WORK: usize = 1_000_000;
 
-pub(crate) fn parse(bytes: Vec<u8>, driver: VectorDriver) -> Result<Layer> {
+pub(crate) fn parse(bytes: Vec<u8>, driver: VectorDriver, options: &crate::VectorOpenOptions) -> Result<Layer> {
+    #[cfg(not(feature = "gdal"))]
+    let _ = options;
     // Shared rather than copied: the GDAL branch below needs the bytes only for a rare drawing.
     #[cfg(feature = "gdal")]
     let bytes = std::sync::Arc::new(bytes);
@@ -47,11 +49,13 @@ pub(crate) fn parse(bytes: Vec<u8>, driver: VectorDriver) -> Result<Layer> {
         return Ok(layer);
     }
     // GDAL may represent what was left out. Refusing here sends the caller to its fallback, which
-    // reads the drawing again; a drawing GDAL cannot open keeps the entities read natively.
+    // reads the drawing again with these options; a drawing GDAL cannot open with them keeps the
+    // entities read natively. Rare enough that the second read, and in these builds the input held
+    // through the expansion, are accepted to keep one path through the fallback.
     #[cfg(feature = "gdal")]
     {
         let name = if driver == VectorDriver::DWG { "drawing.dwg" } else { "drawing.dxf" };
-        if crate::gdal_backend::open_vector_bytes(std::sync::Arc::unwrap_or_clone(bytes), name, &Default::default()).is_ok() {
+        if crate::gdal_backend::open_vector_bytes(std::sync::Arc::unwrap_or_clone(bytes), name, options).is_ok() {
             return Err(Error::Unsupported(format!("CAD: {}", skipped_summary(&skipped))));
         }
     }
@@ -199,11 +203,8 @@ fn expand_entity(
         let mut kept = Vec::with_capacity(handles.len());
         for handle in &handles {
             let member = doc.get_entity(*handle).ok_or_else(|| Error::InvalidData(format!("CAD: missing block member {handle}")))?;
-            match member_clone_work(doc, member) {
-                Ok(work) => {
-                    budget.spend(work)?;
-                    kept.push(*handle);
-                }
+            match member_clone_work(doc, member, budget) {
+                Ok(()) => kept.push(*handle),
                 // Left out of the expansion below, which must not decompose it.
                 Err(Error::Unsupported(_)) => budget.skip(member),
                 Err(error) => return Err(error),
@@ -262,20 +263,21 @@ fn set_block_members(doc: &mut CadDocument, block: &str, handles: Vec<Handle>) {
     }
 }
 
-/// The work of cloning a block member, including the child block of a nested INSERT, which a shear
-/// fallback can clone: an unsupported entity there refuses the nested INSERT as a whole.
-fn member_clone_work(doc: &CadDocument, member: &EntityType) -> Result<usize> {
-    let mut work = clone_extra_work(member)?;
+/// Spends the work of cloning a block member, including the child block of a nested INSERT, which
+/// a shear fallback can clone: an unsupported entity there refuses the nested INSERT as a whole.
+/// The child is charged before its scan, so that a refused one still costs what it took to find.
+fn member_clone_work(doc: &CadDocument, member: &EntityType, budget: &mut WorkBudget) -> Result<()> {
+    budget.spend(clone_extra_work(member)?)?;
     if let EntityType::Insert(nested) = member
         && let Some(child) = doc.block_records.get(&nested.block_name)
     {
-        work += child.entity_handles.len();
+        budget.spend(child.entity_handles.len())?;
         for handle in &child.entity_handles {
             let entity = doc.get_entity(*handle).ok_or_else(|| Error::InvalidData(format!("CAD: missing block member {handle}")))?;
-            work += clone_extra_work(entity)?;
+            budget.spend(clone_extra_work(entity)?)?;
         }
     }
-    Ok(work)
+    Ok(())
 }
 
 fn clone_extra_work(entity: &EntityType) -> Result<usize> {
@@ -285,7 +287,7 @@ fn clone_extra_work(entity: &EntityType) -> Result<usize> {
         EntityType::Polyline2D(p) => p.vertices.len(),
         EntityType::Insert(i) => i.attributes.len(),
         EntityType::PolyfaceMesh(m) => m.vertices.len() + m.faces.len(),
-        EntityType::Mesh(m) => m.vertices.len() + m.faces.len(),
+        EntityType::Mesh(m) => m.vertices.len() + m.faces.iter().map(|face| 1 + face.vertices.len()).sum::<usize>(),
         // Avoid an upstream modeler decomposition outside our supported scope.
         EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) => return Err(unsupported(entity)),
         _ => 0,
@@ -800,7 +802,10 @@ mod tests {
             attributes: Vec::new(),
         });
         for driver in [VectorDriver::DXF, VectorDriver::DWG] {
-            assert_eq!(parse(to_bytes(std::slice::from_ref(&layer), driver).unwrap(), driver).unwrap().features.len(), 1);
+            assert_eq!(
+                parse(to_bytes(std::slice::from_ref(&layer), driver).unwrap(), driver, &Default::default()).unwrap().features.len(),
+                1
+            );
         }
     }
 
@@ -816,7 +821,7 @@ mod tests {
                 (DxfWriter::new(&doc).write_to_vec().unwrap(), VectorDriver::DXF),
                 (DwgWriter::write_to_vec(&doc).unwrap(), VectorDriver::DWG),
             ] {
-                let layer = parse(bytes, driver).unwrap();
+                let layer = parse(bytes, driver, &Default::default()).unwrap();
                 assert_eq!(layer.features[0].geometry, Some(Geometry::Point(Coord::xyz(3.0, 7.0, 12.0))));
             }
         }
@@ -986,6 +991,27 @@ mod tests {
         let (layer, skipped) = layer_from_document(doc, 64).unwrap();
         assert!(layer.features.is_empty());
         assert_eq!(skipped.keys().map(String::as_str).collect::<Vec<_>>(), ["CIRCLE"]);
+    }
+
+    #[test]
+    fn refused_child_blocks_are_charged_for_their_scan() {
+        let mut doc = CadDocument::new();
+        let mut members: Vec<_> = (0..50).map(|_| EntityType::Point(Point::at(Vector3::ZERO))).collect();
+        members.push(EntityType::Solid3D(Default::default()));
+        add_block(&mut doc, "child", members);
+        let references = (0..50).map(|_| EntityType::Insert(acadrust::entities::Insert::new("child", Vector3::ZERO))).collect();
+        add_block(&mut doc, "parent", references);
+        doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("parent", Vector3::ZERO))).unwrap();
+        // Enough for the references alone, not for scanning the child behind each one.
+        assert!(matches!(layer_from_document(doc, 500), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn mesh_face_corners_are_charged_when_cloned() {
+        let mut mesh = acadrust::entities::Mesh::new();
+        mesh.vertices = vec![Vector3::ZERO];
+        mesh.faces = vec![acadrust::entities::MeshFace::new(vec![0; 100])];
+        assert_eq!(clone_extra_work(&EntityType::Mesh(mesh)).unwrap(), 102);
     }
 
     #[test]
@@ -1163,7 +1189,7 @@ mod tests {
                 (DxfWriter::new(&doc).write_to_vec().unwrap(), VectorDriver::DXF),
                 (DwgWriter::write_to_vec(&doc).unwrap(), VectorDriver::DWG),
             ] {
-                let layer = parse(bytes, driver).unwrap();
+                let layer = parse(bytes, driver, &Default::default()).unwrap();
                 let Geometry::Polygon { exterior, .. } = layer.features[0].geometry.as_ref().unwrap() else { panic!("expected polygon") };
                 let expected = PI / 2.0;
                 assert!((exterior.signed_area().abs() - expected).abs() < 0.002);

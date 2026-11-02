@@ -85,7 +85,7 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
             None => vec![flatgeobuf::read(path)?],
         },
         #[cfg(feature = "cad")]
-        VectorDriver::DXF | VectorDriver::DWG => vec![cad::parse(std::fs::read(path)?, driver)?],
+        VectorDriver::DXF | VectorDriver::DWG => vec![cad::parse(std::fs::read(path)?, driver, options)?],
         VectorDriver::GeoJSON => vec![geojson::read(path)?],
         VectorDriver::CityJSON => cityjson::parse(&std::fs::read(path)?)?,
         VectorDriver::CityGML => citygml::parse(&citygml::read_path_bytes(path, false)?)?,
@@ -158,7 +158,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
         #[cfg(feature = "flatgeobuf")]
         VectorDriver::FlatGeobuf => vec![flatgeobuf::parse(&bytes)?],
         #[cfg(feature = "cad")]
-        VectorDriver::DXF | VectorDriver::DWG => vec![cad::parse(bytes, driver)?],
+        VectorDriver::DXF | VectorDriver::DWG => vec![cad::parse(bytes, driver, options)?],
         VectorDriver::GeoJSON => vec![geojson::parse(&bytes, stem)?],
         VectorDriver::CityJSON => cityjson::parse(&bytes)?,
         VectorDriver::CityGML => citygml::parse(&bytes)?,

@@ -819,11 +819,10 @@ Closed polylines remain lines. Curves are linearized at a maximum four-degree st
 can differ from GDAL's. Hatch rings are organized by containment into polygons with holes. Edge boundaries must be
 listed in connected sequence; individual edges and the first edge may be reversed, but arbitrary
 edge reordering is unsupported. Endpoint joins use an absolute tolerance of 1e-7 drawing units.
-Unsupported entities (including splines, dimensions, ACIS solids and mesh entities), unsupported
-hatch boundaries, fitted polylines and extruded/thick geometry produce an error identifying the
-unsupported data rather than silently discarding it. The optional GDAL backend can read entities
-outside the native subset through its existing fallback; there is no skip-and-discard mode. Text is returned as raw CAD text; font styles
-and MTEXT formatting are not interpreted. Styling, external references and CAD object dictionaries
+Unsupported entities (including splines, dimensions, ACIS solids and polygon meshes), hatches with
+unsupported boundaries, fitted polylines and extruded/thick geometry are left out with the warning
+above, as are meshes with no face of three distinct corners. Text is returned as raw CAD text; font
+styles and MTEXT formatting are not interpreted. Styling, external references and CAD object dictionaries
 are outside Terrio's vector model.
 
 On export, points become POINT (or TEXT when the `Text` attribute is nonempty), lines become LINE
