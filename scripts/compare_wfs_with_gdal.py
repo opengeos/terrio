@@ -226,7 +226,7 @@ def main():
                         and all(
                             layer["feature_count"] is None for layer in info["layers"]
                         ),
-                        "comparison failed",
+                        "capability summary must be metadata-only with unknown feature counts",
                     )
                     record(
                         name + " catalog",

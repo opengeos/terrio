@@ -638,7 +638,9 @@ A service summary and `list_layers` fetch capabilities only. JSON summaries have
 layer is read. Selecting a layer for CLI `info` reads its schema and features to
 report actual counts. Reads use `DescribeFeatureType` and `GetFeature`, preserving
 the source namespace-qualified names, declared fields, source `gml_id` and default
-CRS. Numeric feature IDs follow the returned row order. Empty layers retain their
+CRS. Numeric feature IDs are zero-based offsets in the query's response order;
+skipping features retains their original offsets in both paging modes. Source
+`gml_id` values provide the service's identifiers. Empty layers retain their
 schema and CRS. A read without a layer selection reads all advertised layers.
 
 `VectorOpenOptions.wfs` in Rust and the `options` mapping in Python accept the

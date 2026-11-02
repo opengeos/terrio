@@ -436,6 +436,7 @@ fn selected_ranges_and_empty_layers_keep_schema_and_crs() {
     assert_eq!(ds.layers[0].features.len(), 2);
     assert!(!ds.layers[0].schema.fields()[0].nullable);
     assert_eq!(ds.layers[0].features[0].attributes[2], FieldValue::Integer(2));
+    assert_eq!(ds.layers[0].features.iter().map(|feature| feature.fid).collect::<Vec<_>>(), [1, 2]);
     let empty = terrio::open_vector(&source, &VectorOpenOptions { layers: vec!["empty".into()], ..Default::default() }).unwrap();
     assert!(empty.layers[0].features.is_empty());
     assert_eq!(empty.layers[0].schema.fields().len(), 3);
@@ -471,6 +472,7 @@ fn disabled_paging_ranges_include_skipped_features() {
     let ds = terrio::open_vector(&source, &options).unwrap();
     assert_eq!(ds.layers[0].features.len(), 2);
     assert_eq!(ds.layers[0].features[0].attributes[2], FieldValue::Integer(3));
+    assert_eq!(ds.layers[0].features.iter().map(|feature| feature.fid).collect::<Vec<_>>(), [2, 3]);
 }
 
 #[test]
