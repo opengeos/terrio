@@ -2215,7 +2215,11 @@ impl Proj for EqEarth {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Hotine Oblique Mercator (variants A and B).
+// Hotine Oblique Mercator (variants A and B, and the two-point form).
+
+/// PROJ omerc.cpp's tolerance on the two points' latitudes.
+/// Checked against GDAL 3.12.2 / PROJ 9.8.1 and GDAL 3.13.3 / PROJ 9.9.0.
+const OMERC_TOL: f64 = 1e-7;
 
 #[derive(Debug)]
 struct Omerc {
@@ -2246,9 +2250,37 @@ impl Omerc {
         let no_off = p.has("no_uoff") || p.has("no_off");
         let (e, es, one_es) = (s.ell.e, s.ell.es, s.ell.one_es);
         let phi0 = s.phi0;
-        if alpha.is_none() && gamma.is_none() {
-            return Err(err("omerc: two-point form is not supported"));
-        }
+        // Without an azimuth or a rectified grid angle, the centre line runs through two points
+        // (`lon_1`/`lat_1`, `lon_2`/`lat_2`), as in PROJ 9.8.1's omerc.cpp, with its checks. A
+        // point left out is 0, as PROJ reads it; one that isn't a number is refused.
+        let points = if alpha.is_none() && gamma.is_none() {
+            if p.has("alpha") || p.has("gamma") {
+                return Err(err("omerc: invalid alpha or gamma"));
+            }
+            let angle = |key| {
+                let value = if p.has(key) { p.angle(key) } else { Some(0.0) };
+                value.filter(|v| v.is_finite()).ok_or_else(|| err("omerc: invalid two-point parameters"))
+            };
+            let (lam1, phi1, lam2, phi2) = (angle("lon_1")?, angle("lat_1")?, angle("lon_2")?, angle("lat_2")?);
+            if phi1.abs() > HALFPI - OMERC_TOL {
+                return Err(err("omerc: |lat_1| should be < 90°"));
+            }
+            if phi2.abs() > HALFPI - OMERC_TOL {
+                return Err(err("omerc: |lat_2| should be < 90°"));
+            }
+            if (phi1 - phi2).abs() <= OMERC_TOL {
+                return Err(err("omerc: lat_1 should be different from lat_2"));
+            }
+            if phi1.abs() <= OMERC_TOL {
+                return Err(err("omerc: lat_1 should be different from 0"));
+            }
+            if (phi0.abs() - HALFPI).abs() <= OMERC_TOL {
+                return Err(err("omerc: |lat_0| should be < 90°"));
+            }
+            Some((lam1, phi1, lam2, phi2))
+        } else {
+            None
+        };
         let com = one_es.sqrt();
         let (b, a, d, mut f, e_);
         if phi0.abs() > 1e-10 {
@@ -2276,15 +2308,44 @@ impl Omerc {
             f = 1.0;
             e_ = 1.0;
         }
-        let (gamma0, alpha_c, gamma) = match (alpha, gamma) {
-            (Some(alpha_c), g) => {
+        let (gamma0, alpha_c, gamma) = match (alpha, gamma, points) {
+            (Some(alpha_c), g, _) => {
                 let gamma0 = aasin(alpha_c.sin() / d);
+                s.lam0 = lamc - aasin(0.5 * (f - 1.0 / f) * gamma0.tan()) / b;
                 (gamma0, alpha_c, g.unwrap_or(alpha_c))
             }
-            (None, Some(g)) => (g, aasin(d * g.sin()), g),
-            (None, None) => unreachable!(),
+            (None, Some(g), _) => {
+                s.lam0 = lamc - aasin(0.5 * (f - 1.0 / f) * g.tan()) / b;
+                (g, aasin(d * g.sin()), g)
+            }
+            (None, None, Some((lam1, phi1, mut lam2, phi2))) => {
+                // The central meridian and the line's azimuth on the aposphere, from the two
+                // points; `lon_0` is ignored, as in PROJ.
+                let h = tsfn(phi1, phi1.sin(), e).powf(b);
+                let l = tsfn(phi2, phi2.sin(), e).powf(b);
+                let pp = (l - h) / (l + h);
+                if pp == 0.0 {
+                    return Err(err("omerc: invalid value for eccentricity"));
+                }
+                let j = (e_ * e_ - l * h) / (e_ * e_ + l * h);
+                let con = lam1 - lam2;
+                if con < -PI {
+                    lam2 -= 2.0 * PI;
+                } else if con > PI {
+                    lam2 += 2.0 * PI;
+                }
+                s.lam0 = adjlon(0.5 * (lam1 + lam2) - (j * (0.5 * b * (lam1 - lam2)).tan() / pp).atan() / b);
+                let ff = e_ / h;
+                let denom = ff - 1.0 / ff;
+                if denom == 0.0 {
+                    return Err(err("omerc: invalid value for eccentricity"));
+                }
+                let gamma0 = (2.0 * (b * adjlon(lam1 - s.lam0)).sin() / denom).atan();
+                let alpha_c = aasin(d * gamma0.sin());
+                (gamma0, alpha_c, alpha_c)
+            }
+            (None, None, None) => unreachable!(),
         };
-        s.lam0 = lamc - aasin(0.5 * (f - 1.0 / f) * gamma0.tan()) / b;
         let singam = gamma0.sin();
         let cosgam = gamma0.cos();
         let sinrot = gamma.sin();
@@ -2292,7 +2353,8 @@ impl Omerc {
         let rb = 1.0 / b;
         let arb = a * rb;
         let bra = 1.0 / arb;
-        let u_0 = if no_off {
+        // PROJ reads `no_off` only with an azimuth or a rectified grid angle.
+        let u_0 = if no_off && points.is_none() {
             0.0
         } else {
             let u = (arb * ((d * d - 1.0).sqrt() / alpha_c.cos()).atan()).abs();
