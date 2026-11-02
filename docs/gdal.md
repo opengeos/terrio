@@ -96,8 +96,10 @@ With the feature enabled:
 - `terrio::open`, `open_raster`, `open_vector` and `list_layers` (and every command) fall back to
   GDAL when terrio's own drivers cannot open a path. terrio's drivers keep priority for the
   formats they know; when GDAL cannot open a file either, terrio's error is reported.
-  Resource-limit refusals, including decoded-byte limits and allocation refusals, are
-  terminal and never retried through GDAL. GDAL's own resource refusals are reported as such.
+  Errors classified as resource refusals (`ResourceLimit`, `DecodedLimitExceeded`, or I/O
+  `OutOfMemory`) are terminal and never retried through GDAL. This includes Terrio's native
+  parser, expansion, chunk and allocation budgets. Generic parser/data errors remain eligible
+  for fallback. GDAL's own resource refusals are reported as such.
 - A `GDAL:` prefix forces GDAL, even for formats terrio reads itself: `terrio info GDAL:dem.tif`,
   or `--driver gdal` on `terrio info` and `terrio convert`.
 - GDAL's dataset names work as they are: `HDF4_SDS:UNKNOWN:"file.hdf":0`, and with a `GDAL:`
@@ -166,8 +168,10 @@ are unaffected by this GDAL-only setting.
 
 The budget counts feature structs, every attribute cell (including missing/null values),
 schema structs, layer/field names and retained CRS WKT, text/blob payloads and eight times the larger of
-the original and linearized geometry WKB sizes as an estimate of nested Rust storage. Cheap GDAL feature counts allow oversized
-sparse layers to be refused before the first feature is read; other layers are checked
+the original and linearized geometry WKB sizes as an estimate of nested Rust storage. The factor is deliberately conservative: a Rust coordinate retains optional Z/M storage even
+for XY data, with additional vector capacity and nested containers. GDAL counts are queried only
+when the layer advertises fast feature counting, allowing oversized sparse layers to be refused
+before the first feature is read; other layers are checked
 incrementally before each dense attribute allocation. Layer selection and spatial filters
 apply before counting. This is an estimate of retained data, not a process-memory limit:
 allocator capacity/overhead, GDAL's parser and caches, individual field conversions and

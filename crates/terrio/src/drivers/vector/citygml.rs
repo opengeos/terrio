@@ -76,6 +76,10 @@ fn invalid(message: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("CityGML: {message}"))
 }
 
+fn limited(message: impl std::fmt::Display) -> Error {
+    Error::ResourceLimit(format!("CityGML: {message}"))
+}
+
 #[derive(Default, Debug)]
 struct Node {
     name: String,
@@ -114,13 +118,13 @@ fn namespace(value: ResolveResult<'_>) -> Result<String> {
 fn tree_charge(used: &mut usize, cost: usize, limit: usize) -> Result<()> {
     *used = used.saturating_add(cost.saturating_mul(2));
     if *used > limit {
-        return Err(invalid("estimated XML tree payload exceeds its allocation limit"));
+        return Err(limited("estimated XML tree payload exceeds its allocation limit"));
     }
     Ok(())
 }
 fn tree_text(node: &mut Node, text: &str, used: &mut usize, limit: usize) -> Result<()> {
     tree_charge(used, text.len(), limit)?;
-    node.text.try_reserve(text.len()).map_err(invalid)?;
+    node.text.try_reserve(text.len()).map_err(limited)?;
     node.text.push_str(text);
     Ok(())
 }
@@ -140,7 +144,7 @@ fn xml_with_limit(bytes: &[u8], tree_limit: usize) -> Result<Node> {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 count += 1;
                 if count > 5_000_000 || stack.len() > MAX_NESTING {
-                    return Err(invalid("XML element or nesting limit exceeded"));
+                    return Err(limited("XML element or nesting limit exceeded"));
                 }
                 tree_charge(&mut tree_bytes, std::mem::size_of::<Node>() + e.local_name().as_ref().len() + ns.len(), tree_limit)?;
                 let mut node = Node { name: e.local_name().as_ref().to_string(), ns, ..Default::default() };
@@ -157,14 +161,14 @@ fn xml_with_limit(bytes: &[u8], tree_limit: usize) -> Result<Node> {
                         std::mem::size_of::<(String, String, String)>() + ns.len() + name.as_ref().len() + value.len(),
                         tree_limit,
                     )?;
-                    node.attrs.try_reserve(1).map_err(invalid)?;
+                    node.attrs.try_reserve(1).map_err(limited)?;
                     node.attrs.push((ns, name.as_ref().to_string(), value.into_owned()));
                 }
                 if matches!(event, Event::Empty(_)) {
-                    stack.last_mut().unwrap().children.try_reserve(1).map_err(invalid)?;
+                    stack.last_mut().unwrap().children.try_reserve(1).map_err(limited)?;
                     stack.last_mut().unwrap().children.push(node);
                 } else {
-                    stack.try_reserve(1).map_err(invalid)?;
+                    stack.try_reserve(1).map_err(limited)?;
                     stack.push(node);
                 }
             }
@@ -173,7 +177,7 @@ fn xml_with_limit(bytes: &[u8], tree_limit: usize) -> Result<Node> {
                     return Err(invalid("unmatched XML end tag"));
                 }
                 let node = stack.pop().unwrap();
-                stack.last_mut().unwrap().children.try_reserve(1).map_err(invalid)?;
+                stack.last_mut().unwrap().children.try_reserve(1).map_err(limited)?;
                 stack.last_mut().unwrap().children.push(node);
             }
             Event::Text(t) => tree_text(stack.last_mut().unwrap(), &t.xml10_content(), &mut tree_bytes, tree_limit)?,
@@ -239,7 +243,7 @@ fn preflight_coordinates(node: &Node, inherited: usize, remaining: usize) -> Res
     };
     let bytes = count.saturating_mul(std::mem::size_of::<Coord>());
     if bytes > remaining {
-        return Err(invalid("coordinate expansion exceeds the remaining flat feature payload limit"));
+        return Err(limited("coordinate expansion exceeds the remaining flat feature payload limit"));
     }
     Ok(bytes)
 }
@@ -263,7 +267,7 @@ fn coordinates(node: &Node, inherited: usize) -> Result<Vec<Coord>> {
             return Err(invalid("posList count does not match coordinates"));
         }
         let mut out = Vec::new();
-        out.try_reserve_exact(count / dim).map_err(invalid)?;
+        out.try_reserve_exact(count / dim).map_err(limited)?;
         let mut values = node.text.split_whitespace();
         for _ in 0..count / dim {
             let mut p = [0.0; 3];
@@ -297,7 +301,7 @@ fn coordinates(node: &Node, inherited: usize) -> Result<Vec<Coord>> {
             if values.next().is_some() {
                 return Err(invalid("invalid coordinate tuple"));
             }
-            out.try_reserve(1).map_err(invalid)?;
+            out.try_reserve(1).map_err(limited)?;
             out.push(Coord { x: p[0], y: p[1], z: (dim == 3).then_some(p[2]), m: None });
         }
         return Ok(out);
@@ -308,7 +312,7 @@ fn coordinates(node: &Node, inherited: usize) -> Result<Vec<Coord>> {
     let mut out = Vec::new();
     for child in &node.children {
         let points = coordinates(child, dim)?;
-        out.try_reserve(points.len()).map_err(invalid)?;
+        out.try_reserve(points.len()).map_err(limited)?;
         out.extend(points);
     }
     Ok(out)
@@ -1019,7 +1023,7 @@ impl<'a> Reader<'a> {
         if context.expanded {
             self.coordinate_bytes = self.coordinate_bytes.saturating_add(coordinate_text_bytes(node));
             if self.coordinate_bytes > self.max_coordinate_bytes {
-                return Err(invalid("XLink coordinate parsing exceeds the reference coordinate-byte limit"));
+                return Err(limited("XLink coordinate parsing exceeds the reference coordinate-byte limit"));
             }
         }
         let resolved = self.coordinate_context(node, context)?;
@@ -1062,11 +1066,11 @@ impl<'a> Reader<'a> {
         if context.expanded {
             self.visits += 1;
             if self.visits > self.max_reference_visits {
-                return Err(invalid("XLink expansion exceeds the reference node-visit limit"));
+                return Err(limited("XLink expansion exceeds the reference node-visit limit"));
             }
         }
         if depth > MAX_NESTING {
-            return Err(invalid("city-object or geometry nesting limit exceeded"));
+            return Err(limited("city-object or geometry nesting limit exceeded"));
         }
         if ignored_content(node) {
             return Ok(());
@@ -1213,7 +1217,7 @@ impl<'a> Reader<'a> {
 
     fn object(&mut self, node: &'a Node, parent: Option<&FieldValue>, mut context: Context<'a>, depth: usize) -> Result<()> {
         if depth > MAX_NESTING {
-            return Err(invalid("city-object or geometry nesting limit exceeded"));
+            return Err(limited("city-object or geometry nesting limit exceeded"));
         }
         context.dim = dimension(node, context.dim)?;
         let envelope = node.child("boundedBy").and_then(|n| n.child("Envelope"));
@@ -1318,13 +1322,13 @@ pub(crate) fn read_path_bytes(path: &str, shared_xml: bool) -> Result<Vec<u8>> {
                 return Ok(bytes);
             }
         }
-        return Err(invalid("local input exceeds the 256 MiB XML limit"));
+        return Err(limited("local input exceeds the 256 MiB XML limit"));
     }
     let mut bytes = Vec::new();
-    bytes.try_reserve_exact(size as usize).map_err(invalid)?;
+    bytes.try_reserve_exact(size as usize).map_err(limited)?;
     file.take(MAX_INPUT_BYTES as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > MAX_INPUT_BYTES {
-        return Err(invalid("local input grew beyond the 256 MiB XML limit"));
+        return Err(limited("local input grew beyond the 256 MiB XML limit"));
     }
     Ok(bytes)
 }
@@ -1336,7 +1340,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
 
 fn parse_with_limits(bytes: &[u8], input_limit: usize, max_reference_visits: usize, max_coordinate_bytes: usize) -> Result<Vec<Layer>> {
     if bytes.len() > input_limit {
-        return Err(invalid(format!("input exceeds the {input_limit} byte XML limit")));
+        return Err(limited(format!("input exceeds the {input_limit} byte XML limit")));
     }
     super::geojson::reserve_parse_memory(bytes.len(), "CityGML")?;
     let root = xml(bytes)?;
@@ -1679,7 +1683,9 @@ mod tests {
     #[test]
     fn xml_tree_storage_is_limited_before_many_empty_nodes_are_allocated() {
         let text = model("3.0", &"<b:note/>".repeat(1000), "EPSG:32632");
-        assert!(super::xml_with_limit(text.as_bytes(), 16 * 1024).unwrap_err().to_string().contains("XML tree payload"));
+        assert!(
+            matches!(super::xml_with_limit(text.as_bytes(), 16 * 1024), Err(crate::Error::ResourceLimit(m)) if m.contains("XML tree payload"))
+        );
         super::xml(text.as_bytes()).unwrap();
     }
 

@@ -85,21 +85,11 @@ def test_sparse_esrijson_resource_limit_from_path_and_bytes(tmp_path):
         terrio.open_bytes(payload, filename="sparse.json")
 
 
-def test_vsi_allocation_refusal_is_a_memory_error(tmp_path):
-    import struct
-    import zipfile
-
+def test_jpeg_allocation_refusal_is_a_memory_error(tmp_path):
     from test_hardening import assert_raises_allocation_error, read_limited
 
-    path = tmp_path / "member.zip"
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("big.bin", b"\0" * 64)
-    data = bytearray(path.read_bytes())
-    for signature, at in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
-        offset = data.index(signature) + at
-        data[offset : offset + 4] = struct.pack("<I", 0xFFFF_FFFE)
-    path.write_bytes(data)
-    env = dict(os.environ, TERRIO_ZIP_MAX_RATIO=str(1 << 40), TERRIO_ZIP_MAX_SIZE=str(1 << 40))
-    result = read_limited("vsi_read", f"/vsizip/{path}/big.bin", env=env)
+    path = tmp_path / "big.jpg"
+    path.write_bytes(bytes.fromhex("FFD8 FFC0 000B 08 8000 FFFF 01 01 11 00 FFD9"))
+    result = read_limited("eager", path)
     assert_raises_allocation_error(result)
     assert result.stdout.startswith("RAISED ResourceLimitError:"), result.stdout

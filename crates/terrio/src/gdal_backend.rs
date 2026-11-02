@@ -46,7 +46,7 @@ use crate::formats::{RasterDriver, VectorDriver};
 use crate::vfs::Location;
 use crate::{Dataset, Error, RasterDataset, Result};
 use gdal::raster::GdalDataType;
-use gdal::vector::{FieldValue as GdalValue, LayerAccess, OGRFieldType, OGRwkbGeometryType};
+use gdal::vector::{FieldValue as GdalValue, LayerAccess, LayerCaps, OGRFieldType, OGRwkbGeometryType};
 use gdal::{Dataset as GdalDataset, DatasetOptions, DriverManager, GdalOpenFlags, Metadata};
 use wbraster::raster::RasterData;
 use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
@@ -1074,7 +1074,9 @@ fn layer_from(layer: &mut gdal::vector::Layer, name: &str, budget: &mut VectorBu
     budget.charge(std::mem::size_of::<Layer>())?;
     budget.charge(field_count.saturating_mul(std::mem::size_of::<FieldDef>() + std::mem::size_of::<OGRFieldType::Type>()))?;
     // Check cheap counts before reading even the first feature of a huge sparse layer.
-    if let Some(count) = layer.try_feature_count() {
+    if layer.has_capability(LayerCaps::OLCFastFeatureCount)
+        && let Some(count) = layer.try_feature_count()
+    {
         let per_feature = std::mem::size_of::<Feature>().saturating_add(field_count.saturating_mul(std::mem::size_of::<FieldValue>()));
         let bytes = usize::try_from(count).ok().and_then(|n| n.checked_mul(per_feature));
         if bytes.is_none_or(|n| n > budget.remaining) {
@@ -1160,6 +1162,11 @@ fn geometry_type(t: OGRwkbGeometryType::Type) -> Option<GeometryType> {
     })
 }
 
+// Coord stores XY and optional Z/M (48 bytes on our 64-bit targets, versus 16 bytes per XY
+// WKB vertex). Allowing for vector spare capacity and nested containers, eight is a deliberately
+// conservative storage estimate, not exact heap accounting or a process-memory bound.
+const WKB_STORAGE_FACTOR: usize = 8;
+
 /// A GDAL geometry as a terrio one, through WKB; curves are linearized as GDAL does by default.
 fn geometry_from(g: &gdal::vector::Geometry, budget: &mut VectorBudget) -> Result<Option<Geometry>> {
     if g.is_empty() {
@@ -1168,7 +1175,7 @@ fn geometry_from(g: &gdal::vector::Geometry, budget: &mut VectorBudget) -> Resul
     // SAFETY: a read-only size query on the valid borrowed geometry of this feature.
     // gdal's safe API exposes WKB export, which allocates before returning its size.
     let original_size = usize::try_from(unsafe { gdal_sys::OGR_G_WkbSize(g.c_geometry()) }).unwrap_or(usize::MAX);
-    budget.charge(original_size.saturating_mul(8))?;
+    budget.charge(original_size.saturating_mul(WKB_STORAGE_FACTOR))?;
     if let Ok(wkb) = g.wkb()
         && let Ok(geometry) = Geometry::from_wkb(&wkb)
     {
@@ -1184,7 +1191,7 @@ fn geometry_from(g: &gdal::vector::Geometry, budget: &mut VectorBudget) -> Resul
         let size = usize::try_from(gdal_sys::OGR_G_WkbSize(linear)).unwrap_or(usize::MAX);
         // Curves may expand by orders of magnitude. Charge the retained linear result,
         // not just the compact source, before exporting or decoding its WKB.
-        if let Err(error) = budget.charge(size.saturating_sub(original_size).saturating_mul(8)) {
+        if let Err(error) = budget.charge(size.saturating_sub(original_size).saturating_mul(WKB_STORAGE_FACTOR)) {
             gdal_sys::OGR_G_DestroyGeometry(linear);
             return Err(error);
         }

@@ -714,8 +714,8 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
 pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };
     let retry = match &e {
-        Error::InvalidArgument(_) | Error::Http(_) | Error::ResourceLimit(_) | Error::DecodedLimitExceeded { .. } => false,
-        Error::Io(io) if io.kind() == std::io::ErrorKind::OutOfMemory => false,
+        Error::InvalidArgument(_) | Error::Http(_) => false,
+        e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => path.contains(':') || path.starts_with("/vsi"),
         _ => true,
@@ -723,11 +723,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     if !retry {
         return Err(e);
     }
-    gdal(path).map_err(|gdal_error| match gdal_error {
-        Error::ResourceLimit(_) | Error::DecodedLimitExceeded { .. } => gdal_error,
-        Error::Io(ref io) if io.kind() == std::io::ErrorKind::OutOfMemory => gdal_error,
-        _ => e,
-    })
+    gdal(path).map_err(|gdal_error| if gdal_error.is_resource_refusal() { gdal_error } else { e })
 }
 
 #[cfg(all(test, feature = "gdal"))]

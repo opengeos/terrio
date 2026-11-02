@@ -905,7 +905,9 @@ fn zip_index(archive: &Node, reader: &mut dyn ReadSeek) -> Result<std::rc::Rc<Zi
     }
     let entries = zipdir::central_directory_within(reader, &crate::vfs::ZipLimits::from_config())?;
     let mut by_name = std::collections::HashMap::new();
-    by_name.try_reserve(entries.len()).map_err(|_| Error::InvalidData("zip: cannot allocate the index of the archive's entries".into()))?;
+    by_name
+        .try_reserve(entries.len())
+        .map_err(|_| Error::ResourceLimit("zip: cannot allocate the index of the archive's entries".into()))?;
     for (i, entry) in entries.iter().enumerate().filter(|(_, e)| !e.is_dir()) {
         by_name.entry(clean_member(&entry.name)).or_insert(i);
     }

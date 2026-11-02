@@ -56,6 +56,11 @@ type Result<T> = std::result::Result<T, String>;
 /// with another decoder.
 const ALLOCATION_FAILED: &str = "cannot allocate";
 
+/// Resource diagnostics produced by this decoder, preserved by its format wrappers.
+pub(crate) fn is_resource_refusal(error: &str) -> bool {
+    error.starts_with(ALLOCATION_FAILED) || error.starts_with("JPEG image too large")
+}
+
 /// A zeroed buffer of the product of `dims` bytes, allocated fallibly: the sizes come from the
 /// frame header.
 fn zeroed(dims: &[usize], what: &str) -> Result<Vec<u8>> {
@@ -421,7 +426,7 @@ pub(crate) fn decode(data: &[u8], color: Color) -> Result<Image> {
 /// with this decoder, or `jpeg-decoder` for the streams it does not read (progressive ones).
 pub(crate) fn decode_file(b: &[u8]) -> std::result::Result<Image, String> {
     decode(b, Color::Auto).or_else(|e| {
-        if e.starts_with(ALLOCATION_FAILED) {
+        if is_resource_refusal(&e) {
             return Err(e);
         }
         let mut d = jpeg_decoder::Decoder::new(std::io::Cursor::new(b));

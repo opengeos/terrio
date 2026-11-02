@@ -213,7 +213,7 @@ fn read_directory(r: &mut dyn ReadSeek, limits: Option<&crate::vfs::ZipLimits>, 
             return Err(invalid("truncated central directory"));
         }
         let mut fields = Vec::new();
-        fields.try_reserve_exact(size).map_err(|_| invalid("cannot allocate a central directory record"))?;
+        fields.try_reserve_exact(size).map_err(|_| Error::ResourceLimit("zip: cannot allocate a central directory record".into()))?;
         fields.resize(size, 0);
         cd.read_exact(&mut fields)?;
         remaining -= size as u64;
@@ -239,7 +239,7 @@ fn read_directory(r: &mut dyn ReadSeek, limits: Option<&crate::vfs::ZipLimits>, 
         if details {
             raw.extend_from_slice(&fields);
         }
-        out.try_reserve(1).map_err(|_| invalid("cannot allocate central directory entries"))?;
+        out.try_reserve(1).map_err(|_| Error::ResourceLimit("zip: cannot allocate central directory entries".into()))?;
         out.push(CdEntry {
             name,
             flags,

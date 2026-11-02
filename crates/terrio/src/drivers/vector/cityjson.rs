@@ -345,7 +345,7 @@ mod tests {
                 "semantics":{"surfaces":vec![serde_json::json!({"type":"WallSurface"});faces],"values":(0..faces).collect::<Vec<_>>()}}]}}});
         let bytes = serde_json::to_vec(&doc).unwrap();
         assert_eq!(super::parse_with_limit(&bytes, 1024 * 1024).unwrap()[0].features.len(), faces);
-        assert!(super::parse_with_limit(&bytes, 64 * 1024).unwrap_err().to_string().contains("expansion limit"));
+        assert!(matches!(super::parse_with_limit(&bytes, 64 * 1024), Err(crate::Error::ResourceLimit(m)) if m.contains("expansion limit")));
     }
 
     #[test]

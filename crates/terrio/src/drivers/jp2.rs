@@ -1196,6 +1196,7 @@ pub(crate) fn open_lazy_bytes(bytes: Vec<u8>) -> Result<crate::LazyRaster> {
 
 fn open_lazy_source(source: StreamSource, path: Option<&str>) -> Result<crate::LazyRaster> {
     let (reader, mut ds) = Jp2Window::open(source).map_err(|e| match path {
+        _ if e.is_resource_refusal() => e,
         Some(p) => Error::InvalidData(format!("{p}: {e}")),
         None => e,
     })?;
@@ -1207,7 +1208,8 @@ fn open_lazy_source(source: StreamSource, path: Option<&str>) -> Result<crate::L
 
 /// Reads a JPEG 2000 file, its tiles decoded in parallel.
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
-    read_source(StreamSource::File(path.to_path_buf())).map_err(|e| Error::InvalidData(format!("{}: {e}", path.display())))
+    read_source(StreamSource::File(path.to_path_buf()))
+        .map_err(|e| if e.is_resource_refusal() { e } else { Error::InvalidData(format!("{}: {e}", path.display())) })
 }
 
 /// The width, height and band count of a JP2 file or J2K codestream held in memory, from its

@@ -234,20 +234,20 @@ fn byte_budgets_bound_every_layer_and_the_listing() {
     for layer in ["mesh_cells", "mesh_face_points", "cross_sections", "bc_lines", "reference_lines", "reference_points", "river_junctions"]
     {
         let e = terrio::open_vector(&path, &options(&tiny, &[layer])).unwrap_err();
-        assert!(matches!(e, terrio::Error::Unsupported(_)), "{layer}: {e}");
+        assert!(matches!(e, terrio::Error::ResourceLimit(_)), "{layer}: {e}");
     }
     // Either limit alone bounds the family datasets (attribute tables and coordinates); the
     // metadata limit bounds the root attributes first.
     for limit in ["MAX_BYTES", "METADATA_MAX_BYTES"] {
         let e = terrio::open_vector(&path, &options(&[(limit, "1")], &["cross_sections"])).unwrap_err();
-        assert!(matches!(e, terrio::Error::Unsupported(_)), "{limit}: {e}");
+        assert!(matches!(e, terrio::Error::ResourceLimit(_)), "{limit}: {e}");
     }
     // Listing reads within the budget too, and lists what it cannot read, so a default open
     // refuses every layer rather than reading any above the budget.
     let _ = terrio::warnings::take();
     let r = terrio::open_vector(&path, &options(&tiny, &[]));
     let warnings = terrio::warnings::take();
-    assert!(matches!(r, Err(terrio::Error::Unsupported(ref m)) if m.contains("refused every")), "{r:?}");
+    assert!(matches!(r, Err(terrio::Error::ResourceLimit(ref m)) if m.contains("refused every")), "{r:?}");
     assert_eq!(warnings.len(), 9, "{warnings:?}");
     // A budget that holds the data reads it.
     let ok = options(&[("MAX_BYTES", "1048576"), ("METADATA_MAX_BYTES", "1048576")], &[]);
@@ -263,7 +263,7 @@ fn root_attributes_keep_to_the_metadata_budget() {
         let path = data(file);
         let refused = |r: terrio::Result<terrio::VectorDataset>| {
             let e = r.err().unwrap_or_else(|| panic!("{file}: read within a 4 KiB metadata budget"));
-            assert!(matches!(&e, terrio::Error::Unsupported(m) if m.contains("root attributes")), "{file}: {e}");
+            assert!(matches!(&e, terrio::Error::ResourceLimit(m) if m.contains("root attributes")), "{file}: {e}");
         };
         // From a file and from memory, with or without layers named.
         refused(terrio::open_vector(&path, &options(&budget, &[])));

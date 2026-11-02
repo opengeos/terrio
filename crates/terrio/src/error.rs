@@ -48,6 +48,13 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether this error refuses a resource budget or allocation. Such errors are terminal:
+    /// the optional GDAL fallback must neither retry them nor hide them behind another error.
+    pub fn is_resource_refusal(&self) -> bool {
+        matches!(self, Self::ResourceLimit(_) | Self::DecodedLimitExceeded { .. })
+            || matches!(self, Self::Io(error) if error.kind() == std::io::ErrorKind::OutOfMemory)
+    }
+
     /// The error of a driver this build leaves out: terrio was built without `feature`.
     #[allow(dead_code)]
     pub(crate) fn disabled(feature: &str) -> Error {

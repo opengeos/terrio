@@ -13,16 +13,17 @@ use ras_commander_fast_hdf::{Capability, Error as EngineError, ErrorKind, Report
 /// |---|---|
 /// | `file_not_found` | [`crate::Error::Io`] (`NotFound`) |
 /// | `io`, `internal` | [`crate::Error::Io`] |
-/// | `unsupported`, or `invalid_request` with code `resource_limit` | [`crate::Error::Unsupported`] |
+/// | any kind with code `resource_limit` | [`crate::Error::ResourceLimit`] |
+/// | `unsupported` | [`crate::Error::Unsupported`] |
 /// | `invalid_request`, `not_found` | [`crate::Error::InvalidArgument`] |
 /// | `corrupt`, `structural_topology`, `invalid_geometry`, others | [`crate::Error::InvalidData`] |
 pub fn from_engine(e: EngineError) -> crate::Error {
     let text = describe(e.kind.as_str(), e.code, &e.message, e.path.as_deref(), e.subject.as_deref());
     match e.kind {
+        _ if e.code == Some(UnsupportedCode::ResourceLimit) => crate::Error::ResourceLimit(text),
         ErrorKind::FileNotFound => crate::Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, text)),
         ErrorKind::Io | ErrorKind::Internal => crate::Error::Io(std::io::Error::other(text)),
         ErrorKind::Unsupported => crate::Error::Unsupported(text),
-        ErrorKind::InvalidRequest if e.code == Some(UnsupportedCode::ResourceLimit) => crate::Error::Unsupported(text),
         ErrorKind::InvalidRequest | ErrorKind::NotFound => crate::Error::InvalidArgument(text),
         _ => crate::Error::InvalidData(text),
     }
@@ -35,6 +36,7 @@ pub fn require(capability: &Capability, what: &str) -> crate::Result<()> {
     let text = |reason: &str| describe(capability.as_str(), capability_code(capability), &format!("{what}: {reason}"), None, None);
     match capability {
         Capability::Supported => Ok(()),
+        Capability::Unsupported { code: UnsupportedCode::ResourceLimit, reason } => Err(crate::Error::ResourceLimit(text(reason))),
         Capability::Unavailable { reason } => Err(crate::Error::InvalidArgument(text(reason))),
         Capability::Corrupt { reason } => Err(crate::Error::InvalidData(text(reason))),
         // Unsupported, Delegated and any later status: refuse.
@@ -87,7 +89,7 @@ mod tests {
         let e = from_engine(EngineError::unsupported(UnsupportedCode::Encoding, "vlen text"));
         assert!(matches!(&e, crate::Error::Unsupported(m) if m == "HEC-RAS unsupported(encoding): vlen text"), "{e}");
         let e = from_engine(EngineError::new(ErrorKind::InvalidRequest, "too big").with_code(UnsupportedCode::ResourceLimit));
-        assert!(matches!(&e, crate::Error::Unsupported(m) if m.starts_with("HEC-RAS invalid_request(resource_limit)")), "{e}");
+        assert!(matches!(&e, crate::Error::ResourceLimit(m) if m.starts_with("HEC-RAS invalid_request(resource_limit)")), "{e}");
         let e = from_engine(EngineError::new(ErrorKind::NotFound, "no mesh"));
         assert!(matches!(e, crate::Error::InvalidArgument(_)));
         for kind in [ErrorKind::Corrupt, ErrorKind::StructuralTopology, ErrorKind::InvalidGeometry] {
@@ -100,6 +102,10 @@ mod tests {
     #[test]
     fn refusals_are_errors_never_success() {
         assert!(require(&Capability::Supported, "x").is_ok());
+        assert!(matches!(
+            require(&Capability::unsupported(UnsupportedCode::ResourceLimit, "budget"), "x"),
+            Err(crate::Error::ResourceLimit(_))
+        ));
         assert!(matches!(require(&Capability::unavailable("absent"), "x"), Err(crate::Error::InvalidArgument(_))));
         assert!(matches!(require(&Capability::corrupt("bad"), "x"), Err(crate::Error::InvalidData(_))));
         let e = require(&Capability::unsupported(UnsupportedCode::IdentityLayout, "no Location"), "Maximum Water Surface").unwrap_err();

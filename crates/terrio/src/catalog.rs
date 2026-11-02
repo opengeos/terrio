@@ -204,6 +204,10 @@ pub struct RasterCatalog {
 fn bad(message: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("GTI: {message}"))
 }
+
+fn limited(message: impl std::fmt::Display) -> Error {
+    Error::ResourceLimit(format!("GTI: {message}"))
+}
 fn extent(layer: &Layer) -> Option<(f64, f64, f64, f64)> {
     let b = layer.extent.clone().or_else(|| {
         layer.features.iter().filter_map(|f| f.geometry.as_ref()?.bbox()).reduce(|a, b| wbvector::BBox {
@@ -717,7 +721,7 @@ impl RasterCatalog {
         }
         let mut data = RasterData::new_filled(self.header.raster.data_type, 0, 0.0);
         crate::pixel::with_data!(&mut data, v => {
-            v.try_reserve_exact(elements).map_err(|_| bad("cannot allocate catalog output"))?;
+            v.try_reserve_exact(elements).map_err(|_| limited("cannot allocate catalog output"))?;
             v.resize(elements, 0 as _);
         });
         crate::pixel::with_data!(&mut data, v => {
@@ -1096,7 +1100,7 @@ mod metadata_tests {
 /// Allocate fallibly so capacity overflow and allocation failure are reported.
 fn filled_buffer<T: Clone>(count: usize, value: T) -> Result<Vec<T>> {
     let mut buffer = Vec::new();
-    buffer.try_reserve_exact(count).map_err(|_| bad("cannot allocate catalog window buffer"))?;
+    buffer.try_reserve_exact(count).map_err(|_| limited("cannot allocate catalog window buffer"))?;
     buffer.resize(count, value);
     Ok(buffer)
 }
@@ -1105,7 +1109,7 @@ fn filled_buffer<T: Clone>(count: usize, value: T) -> Result<Vec<T>> {
 mod allocation_tests {
     #[test]
     fn oversized_window_buffer_returns_error() {
-        assert!(super::filled_buffer(usize::MAX, 0.0f64).is_err());
+        assert!(matches!(super::filled_buffer(usize::MAX, 0.0f64), Err(crate::Error::ResourceLimit(_))));
     }
 }
 
