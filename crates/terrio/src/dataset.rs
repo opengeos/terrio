@@ -715,6 +715,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     let Err(e) = result else { return result };
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) | Error::ResourceLimit(_) | Error::DecodedLimitExceeded { .. } => false,
+        Error::Io(io) if io.kind() == std::io::ErrorKind::OutOfMemory => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => path.contains(':') || path.starts_with("/vsi"),
         _ => true,
@@ -724,6 +725,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     }
     gdal(path).map_err(|gdal_error| match gdal_error {
         Error::ResourceLimit(_) | Error::DecodedLimitExceeded { .. } => gdal_error,
+        Error::Io(ref io) if io.kind() == std::io::ErrorKind::OutOfMemory => gdal_error,
         _ => e,
     })
 }
@@ -741,6 +743,14 @@ mod fallback_limits {
             assert!(matches!(result, Err(Error::DecodedLimitExceeded { .. } | Error::ResourceLimit(_))));
         }
     }
+    #[test]
+    fn allocation_refusals_are_not_retried() {
+        let allocation = fallible::filled(usize::MAX, 0u8, "a raster buffer").unwrap_err();
+        assert_eq!(allocation.kind(), std::io::ErrorKind::OutOfMemory);
+        let result: Result<()> = gdal_fallback("input.tif", Err(allocation.into()), |_| panic!("allocation refusal retried through GDAL"));
+        assert!(matches!(result, Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::OutOfMemory));
+    }
+
     #[test]
     fn gdal_resource_refusal_is_not_hidden_by_the_native_error() {
         let native = || Error::Unsupported("no native driver".into());

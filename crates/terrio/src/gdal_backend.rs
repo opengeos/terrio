@@ -1066,6 +1066,7 @@ impl VectorBudget {
 }
 
 fn layer_from(layer: &mut gdal::vector::Layer, name: &str, budget: &mut VectorBudget) -> Result<Layer> {
+    budget.charge(name.len())?;
     let mut out = Layer::new(name);
     let defn = layer.defn();
     out.geom_type = geometry_type(defn.geometry_type());
@@ -1109,7 +1110,12 @@ fn layer_from(layer: &mut gdal::vector::Layer, name: &str, budget: &mut VectorBu
     {
         match crs.epsg {
             Some(code) => out.set_crs_epsg(Some(code)),
-            None => out.set_crs_wkt(crs.wkt),
+            None => {
+                if let Some(wkt) = &crs.wkt {
+                    budget.charge(wkt.len())?;
+                }
+                out.set_crs_wkt(crs.wkt);
+            }
         }
     }
     for (i, feature) in layer.features().enumerate() {
@@ -1276,6 +1282,52 @@ mod limits_tests {
         let mut budget = VectorBudget { remaining: 20000, limit: 20000 };
         let out = layer_from(&mut layer, "curves", &mut budget).unwrap();
         assert!(out.features[0].geometry.as_ref().unwrap().all_coords().len() > 80);
+    }
+
+    /// Retained metadata is included in the estimate, with GDAL 3.13.3.
+    #[test]
+    fn vector_names_and_custom_crs_obey_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let driver = gdal::DriverManager::get_driver_by_name("GPKG").unwrap();
+        let mut ds = driver.create_vector_only(dir.path().join("metadata.gpkg")).unwrap();
+        {
+            let mut layer = ds.create_layer(Default::default()).unwrap();
+            let mut budget = VectorBudget { remaining: 1000, limit: 1000 };
+            assert!(matches!(layer_from(&mut layer, &"n".repeat(2048), &mut budget), Err(Error::ResourceLimit(_))));
+        }
+        let wkt = format!("LOCAL_CS[\"{}\",UNIT[\"metre\",1]]", "custom".repeat(1024));
+        let srs = gdal::spatial_ref::SpatialRef::from_wkt(&wkt).unwrap();
+        let mut layer = ds.create_layer(gdal::vector::LayerOptions { name: "custom", srs: Some(&srs), ..Default::default() }).unwrap();
+        let mut budget = VectorBudget { remaining: 1000, limit: 1000 };
+        assert!(matches!(layer_from(&mut layer, "custom", &mut budget), Err(Error::ResourceLimit(_))));
+        let mut budget = VectorBudget { remaining: 20_000, limit: 20_000 };
+        assert!(layer_from(&mut layer, "custom", &mut budget).is_ok());
+        assert!(budget.remaining < 14_000);
+    }
+
+    /// GDAL 3.13.3's count must respect a GeoPackage filter before the budget preflight.
+    #[test]
+    fn filtered_geopackage_counts_only_retained_features() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("points.gpkg");
+        {
+            let driver = gdal::DriverManager::get_driver_by_name("GPKG").unwrap();
+            let mut ds = driver.create_vector_only(&path).unwrap();
+            let mut layer = ds
+                .create_layer(gdal::vector::LayerOptions { name: "points", ty: OGRwkbGeometryType::wkbPoint, ..Default::default() })
+                .unwrap();
+            for x in 0..100 {
+                layer.create_feature(gdal::vector::Geometry::from_wkt(&format!("POINT ({x} 0)")).unwrap()).unwrap();
+            }
+        }
+        let ds = gdal_open(path.to_str().unwrap(), GdalOpenFlags::GDAL_OF_VECTOR).unwrap();
+        let mut layer = ds.layer(0).unwrap();
+        layer.set_spatial_filter_rect(1.5, -1.0, 2.5, 1.0);
+        let mut budget = VectorBudget { remaining: 1000, limit: 1000 };
+        assert_eq!(layer_from(&mut layer, "points", &mut budget).unwrap().len(), 1);
+        layer.clear_spatial_filter();
+        let mut budget = VectorBudget { remaining: 1000, limit: 1000 };
+        assert!(matches!(layer_from(&mut layer, "points", &mut budget), Err(Error::ResourceLimit(_))));
     }
 
     #[test]

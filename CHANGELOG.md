@@ -2,6 +2,10 @@
 
 ## 0.6.1 (2026-11-01)
 
+- Resource and allocation refusals are terminal across native and optional GDAL reads. Python
+  reports them as `ResourceLimitError` (a `MemoryError`). GDAL vector reads, including fallback
+  reads, now have a default 1 GiB retained-data estimate; previously successful large reads can
+  require raising `TERRIO_GDAL_MAX_VECTOR_BYTES` to a positive byte count (#485).
 - CityJSON 1.1 and 2.0 and CityGML 2.0 and 3.0 are read and written as flat XYZ features through
   Rust, the CLI and MCP, Python and JavaScript. They do not keep lossless city-model topology,
   textures or materials (#464, #470, #473, #480).

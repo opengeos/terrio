@@ -165,7 +165,7 @@ budget for a trusted dataset that needs more retained data. Native driver reads
 are unaffected by this GDAL-only setting.
 
 The budget counts feature structs, every attribute cell (including missing/null values),
-schema structs and field names, text/blob payloads and eight times the larger of
+schema structs, layer/field names and retained CRS WKT, text/blob payloads and eight times the larger of
 the original and linearized geometry WKB sizes as an estimate of nested Rust storage. Cheap GDAL feature counts allow oversized
 sparse layers to be refused before the first feature is read; other layers are checked
 incrementally before each dense attribute allocation. Layer selection and spatial filters
