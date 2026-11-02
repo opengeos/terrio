@@ -637,7 +637,9 @@ WebAssembly (the `terrio-js` npm package):
       Common linework, curves, text, faces, polygon hatches and inserted blocks are supported;
       output includes horizontal polygon holes. Drawing coordinates have no inferred CRS.
       See [supported entities and limits](https://terrio.dev/formats/#cad-drawings-dwg-and-dxf).
-- [ ] Additional CAD entities (splines, dimensions, meshes, ACIS solids) and acadrust's optional
+- [x] Polyface and MESH entities as 3D multipolygons; entities outside the native subset are
+      skipped with a warning rather than failing the drawing (#501).
+- [ ] Additional CAD entities (splines, dimensions, polygon meshes, ACIS solids) and acadrust's optional
       STL, COLLADA, OBJ, glTF/GLB and FBX importers.
 
 ## Standalone CRS crate (#268)

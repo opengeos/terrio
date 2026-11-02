@@ -2,7 +2,7 @@
 //! Terrio's public file/byte APIs. External GDAL comparisons live in scripts/.
 #![cfg(feature = "cad")]
 
-use acadrust::entities::{Circle, EntityType, Insert, Line, LwPolyline, LwVertex, Point, Text};
+use acadrust::entities::{Circle, EntityType, Insert, Line, LwPolyline, LwVertex, Point, PolyfaceMesh, Text};
 use acadrust::tables::BlockRecord;
 use acadrust::types::{Vector2, Vector3};
 use acadrust::{CadDocument, DwgWriter, DxfWriter};
@@ -204,7 +204,7 @@ fn cad_hatch_external_shells_and_tilted_holes() {
     }
 }
 
-/// The public reader can use GDAL for entities the native adapter rejects.
+/// The public reader can use GDAL for entities the native adapter leaves out.
 #[test]
 fn cad_unsupported_spline_uses_available_backend() {
     let mut doc = CadDocument::new();
@@ -214,8 +214,9 @@ fn cad_unsupported_spline_uses_available_backend() {
     let result = open_vector_bytes(DxfWriter::new(&doc).write_to_vec().unwrap(), "spline.dxf", &Default::default());
     #[cfg(not(feature = "gdal"))]
     {
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("unsupported SPLINE"), "{err}");
+        assert!(result.unwrap().layers[0].features.is_empty());
+        let warnings = terrio::warnings::take();
+        assert!(warnings.iter().any(|w| w.contains("1 SPLINE") && w.contains("left out")), "{warnings:?}");
     }
     #[cfg(feature = "gdal")]
     {
@@ -226,6 +227,28 @@ fn cad_unsupported_spline_uses_available_backend() {
         assert!(cs.len() > 2);
         assert_eq!(cs.first().map(|c| (c.x, c.y)), Some((0.0, 0.0)));
         assert_eq!(cs.last().map(|c| (c.x, c.y)), Some((2.0, 0.0)));
+    }
+}
+
+/// Polyface meshes are what AutoCAD's POLYLINE holds for many 3D drawings.
+#[test]
+fn cad_polyface_meshes_read_as_3d_multipolygons_through_gpkg() {
+    let mut mesh = PolyfaceMesh::new();
+    for (x, y, z) in [(0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (2.0, 2.0, 3.0), (0.0, 2.0, 3.0)] {
+        mesh.add_vertex_xyz(x, y, z);
+    }
+    mesh.add_quad(1, 2, 3, 4);
+    let mut doc = CadDocument::new();
+    doc.add_entity(EntityType::PolyfaceMesh(mesh)).unwrap();
+    for (bytes, ext) in [(DxfWriter::new(&doc).write_to_vec().unwrap(), "dxf"), (DwgWriter::write_to_vec(&doc).unwrap(), "dwg")] {
+        let ds = read(bytes, ext);
+        assert_eq!(ds.driver, if ext == "dwg" { VectorDriver::DWG } else { VectorDriver::DXF });
+        let Some(Geometry::MultiPolygon(polygons)) = &ds.layers[0].features[0].geometry else {
+            panic!("{ext}: {:?}", ds.layers[0].features[0].geometry)
+        };
+        assert_eq!(polygons.len(), 1);
+        assert_eq!(polygons[0].0.0[2], Coord::xyz(2.0, 2.0, 3.0));
+        assert_eq!(property(&ds.layers[0], 0, "EntityType"), &FieldValue::Text("POLYLINE".into()));
     }
 }
 
