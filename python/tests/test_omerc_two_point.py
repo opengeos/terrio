@@ -43,6 +43,12 @@ def test_omerc_two_point_oracle(case):
         if expected is None:
             with pytest.raises(terrio.CRSError):
                 terrio.transform_points([point[0]], [point[1]], case["target"], case["source"])
+        else:
+            lon, lat = terrio.transform_points(
+                [point[0]], [point[1]], case["target"], case["source"]
+            )
+            dlon = ((lon[0] - expected[0] + 180) % 360 - 180) * np.cos(np.deg2rad(expected[1]))
+            assert abs(dlon) <= 1e-8 and abs(lat[0] - expected[1]) <= 1e-8
 
 
 @pytest.mark.parametrize("case", REFERENCE["invalid"], ids=lambda case: case["definition"])

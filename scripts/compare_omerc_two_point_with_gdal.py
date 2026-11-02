@@ -138,7 +138,7 @@ def main():
             pass
         refused = subprocess.run(
             [args.terrio, "crs", "+proj=longlat +datum=WGS84", "--to", definition],
-            input="0 0\n",
+            input="",
             text=True,
             capture_output=True,
             env=dict(os.environ, TERRIO_NETWORK="OFF"),

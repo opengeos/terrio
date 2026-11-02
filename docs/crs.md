@@ -791,7 +791,7 @@ formulas are PROJ 9.8.1's (`omerc.cpp`), on a sphere or an ellipsoid, with
 `+lat_0`, `+k`, `+units`, `+x_0` and `+y_0`. PROJ's checks apply: neither point
 at a pole, different latitudes, a first point off the equator and `+lat_0` off a
 pole. A point left out is 0, as PROJ reads it; a value that isn't a number is
-refused, where PROJ would read it as 0.
+refused by Terrio.
 
 GDAL's WKT1 `Hotine_Oblique_Mercator_Two_Point_Natural_Origin`, with GDAL's
 (`latitude_of_point_1`) or ESRI's (`Latitude_Of_1st_Point`) parameter names, and

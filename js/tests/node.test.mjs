@@ -3562,6 +3562,10 @@ test("two-point oblique Mercator matches PROJ", () => {
     }
     for (const [point, expected] of c.inverse_samples) if (expected === null) {
       assert.throws(() => terrio.transformPoints([point[0]], [point[1]], c.target, c.source));
+    } else {
+      const [lon, lat] = terrio.transformPoints([point[0]], [point[1]], c.target, c.source);
+      const dlon = ((lon[0] - expected[0] + 540) % 360 - 180) * Math.cos(expected[1] * Math.PI / 180);
+      assert.ok(Math.abs(dlon) <= 1e-8 && Math.abs(lat[0] - expected[1]) <= 1e-8, `${c.name} inverse domain`);
     }
   }
   for (const {definition} of reference.invalid) {

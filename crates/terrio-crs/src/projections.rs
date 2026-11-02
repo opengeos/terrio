@@ -2218,6 +2218,7 @@ impl Proj for EqEarth {
 // Hotine Oblique Mercator (variants A and B, and the two-point form).
 
 /// PROJ omerc.cpp's tolerance on the two points' latitudes.
+/// Checked against GDAL 3.12.2 / PROJ 9.8.1 and GDAL 3.13.3 / PROJ 9.9.0.
 const OMERC_TOL: f64 = 1e-7;
 
 #[derive(Debug)]
