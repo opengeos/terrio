@@ -41,7 +41,7 @@ pub(crate) struct Scalar {
 }
 impl Scalar {
     pub fn inferred(field_type: FieldType) -> Self {
-        Self { field_type, whitespace: Whitespace::Collapse }
+        Self { field_type, whitespace: if field_type == FieldType::Text { Whitespace::Preserve } else { Whitespace::Collapse } }
     }
     pub fn normalize<'a>(&self, value: &'a str) -> Cow<'a, str> {
         match self.whitespace {

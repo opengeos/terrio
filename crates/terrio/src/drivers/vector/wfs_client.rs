@@ -315,7 +315,13 @@ impl Service {
                         .to_string(),
                 )
             } else {
-                None
+                item.child("Name")
+                    .and_then(|node| node.namespace(""))
+                    .or_else(|| item.namespace(""))
+                    .or_else(|| list.namespace(""))
+                    .or_else(|| root.namespace(""))
+                    .filter(|uri| !uri.is_empty() && !matches!(*uri, "http://www.opengis.net/wfs" | "http://www.opengis.net/wfs/2.0"))
+                    .map(str::to_string)
             };
             types.push(FeatureType { name, namespace, title: item.child_text("Title").map(str::to_string), srs, wgs84: bbox });
         }

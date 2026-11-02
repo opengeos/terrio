@@ -108,6 +108,14 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
             let operation = parameter(&target, "REQUEST").unwrap_or("");
             let body = if operation.eq_ignore_ascii_case("GetCapabilities") {
                 let mut caps = capabilities(&endpoint, version);
+                if mode.starts_with("feature-default-") {
+                    let namespace = match mode {
+                        "feature-default-local" => "urn:test",
+                        "feature-default-foreign" => "urn:foreign",
+                        _ => "http://www.opengis.net/wfs/2.0",
+                    };
+                    caps = caps.replace("<Name>t:roads</Name>", &format!(r#"<wfs:Name xmlns="{namespace}">roads</wfs:Name>"#));
+                }
                 if mode.starts_with("no-default") {
                     caps = caps.replace("<DefaultCRS>urn:ogc:def:crs:EPSG::4326</DefaultCRS>", "");
                 }
@@ -639,6 +647,7 @@ fn undeclared_default_crs_uses_the_first_geometry_and_refuses_later_mismatches()
     let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
     let ds = terrio::open_vector(&source, &options).unwrap();
     assert_eq!(ds.layers[0].crs_epsg(), Some(4326));
+    assert!(matches!(&ds.layers[0].features[0].geometry, Some(Geometry::Point(point)) if point.x == 10. && point.y == 50.));
     for page_size in [1, 1000] {
         let (source, _) = serve("2.0.0", "no-default-mixed");
         let mut options = options.clone();
@@ -748,4 +757,20 @@ fn legacy_returned_count_is_not_a_matching_total() {
     let requests = requests.lock().unwrap();
     let features: Vec<_> = requests.iter().filter(|request| request.contains("REQUEST=GetFeature")).collect();
     assert_eq!(features.len(), 4, "fetches the final empty page with no advertised total");
+}
+
+#[test]
+fn unprefixed_feature_names_honor_application_default_namespace() {
+    for mode in ["feature-default-local", "feature-default-foreign", "feature-default-wfs"] {
+        let (source, requests) = serve("2.0.0", mode);
+        let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+        let result = terrio::open_vector(&source, &options);
+        if mode == "feature-default-foreign" {
+            let error = result.unwrap_err();
+            assert!(error.to_string().contains("different feature namespace"), "{error}");
+            assert_eq!(requests.lock().unwrap().len(), 2, "refuse the schema mismatch before fetching features");
+        } else {
+            assert_eq!(result.unwrap().layers[0].features.len(), 5, "{mode}");
+        }
+    }
 }

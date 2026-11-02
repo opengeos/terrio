@@ -358,7 +358,11 @@ pub(crate) fn decode_query_component(s: &str) -> std::borrow::Cow<'_, str> {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        let hex = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        let hex = b
+            .get(i + 1..i + 3)
+            .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
         match (b[i], hex) {
             (b'+', _) => out.push(b' '),
             (b'%', Some(v)) => {
@@ -867,6 +871,12 @@ impl Seek for RemoteArchive {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn query_component_escapes_require_two_hex_digits() {
+        assert_eq!(super::decode_query_component("%+1-%G0-%1-%"), "% 1-%G0-%1-%");
+        assert_eq!(super::decode_query_component("%2b%20%41"), "+ A");
+    }
+
     use super::*;
 
     /// The URL an `az://` path resolves to under the options GDAL 3.12.1 reads

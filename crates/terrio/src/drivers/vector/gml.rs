@@ -141,20 +141,21 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
         // Local GML has historically inferred fields when its companion schema
         // depends on unavailable imports. A WFS read supplies a strict compiled model.
         let owned = match xsd.map(|schema| ApplicationSchema::compile(schema, &name)).transpose() {
-            Err(Error::Unsupported(_)) => None,
-            result => result?,
+            Err(error @ Error::ResourceLimit(_)) => return Err(error),
+            Err(_) => None,
+            Ok(model) => model,
         };
         let model = compiled.or(owned.as_ref());
         let mut raws = Vec::new();
         for feature in features {
-            if let Some(model) = model
+            if let Some(model) = compiled
                 && feature.namespace(feature.element, &feature.element.prefix) != model.namespace
             {
                 return Err(Error::InvalidData("GML: feature namespace differs from application schema".into()));
             }
             let mut raw = Raw { id: feature.id(), geometry: None, values: Vec::new() };
             for property in &feature.element.children {
-                if let Some(model) = model {
+                if let Some(model) = compiled {
                     match feature.property_kind(property, model)? {
                         PropertyKind::Metadata => continue,
                         PropertyKind::Scalar(_) => {
@@ -183,7 +184,7 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
         layer.add_field(FieldDef::new("gml_id", FieldType::Text).not_null());
         let mut fields: Vec<(String, Scalar)> =
             model.map(|model| model.scalars().map(|(name, scalar)| (name.into(), scalar)).collect()).unwrap_or_default();
-        if model.is_none() {
+        if compiled.is_none() && fields.is_empty() {
             let mut names = Vec::new();
             for raw in &raws {
                 for (name, _) in &raw.values {
@@ -676,6 +677,30 @@ mod tests {
         assert_eq!(layers[0].features.len(), 1);
         assert_eq!(layers[0].features[0].geometry, Some(Geometry::point(1., 2.)));
         assert_eq!(layers[0].features[0].attributes[1], FieldValue::Integer(7));
+    }
+
+    #[test]
+    fn inferred_text_keeps_internal_whitespace() {
+        let root = xml::parse(
+            "<FeatureCollection><featureMember><road><name>  Main   Street\nNorth  </name></road></featureMember></FeatureCollection>",
+        )
+        .unwrap();
+        let layer = &parse(&root, None).unwrap()[0];
+        assert_eq!(layer.features[0].attributes[1], FieldValue::Text("Main   Street\nNorth".into()));
+    }
+
+    #[test]
+    fn partial_companion_schemas_keep_permissive_file_reads() {
+        let root = xml::parse(r#"<FeatureCollection xmlns:t="urn:other" xmlns:gml="http://www.opengis.net/gml"><featureMember><t:road><gml:boundedBy/><t:rank>7</t:rank><t:extra>ignored</t:extra><t:geom><gml:Point><gml:pos>1 2</gml:pos></gml:Point></t:geom></t:road></featureMember></FeatureCollection>"#).unwrap();
+        let schema = xml::parse(r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:t="urn:test" targetNamespace="urn:test"><xs:element name="road" type="t:RoadType"/><xs:complexType name="RoadType"><xs:sequence><xs:element name="rank" type="xs:int"/></xs:sequence></xs:complexType></xs:schema>"#).unwrap();
+        let layer = &parse(&root, Some(&schema)).unwrap()[0];
+        assert_eq!(layer.schema.fields().len(), 2);
+        assert_eq!(layer.features[0].attributes[1], FieldValue::Integer(7));
+        assert_eq!(layer.features[0].geometry, Some(Geometry::point(1., 2.)));
+        let mut duplicate = schema.clone();
+        duplicate.children.push(schema.children[0].clone());
+        let layers = parse(&root, Some(&duplicate)).unwrap();
+        assert!(layers[0].schema.field_index("extra").is_some(), "bad companion schemas fall back to inference");
     }
 
     #[test]
