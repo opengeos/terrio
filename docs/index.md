@@ -42,8 +42,23 @@ terrio rasterize counties.gpkg counties.tif -a FIPS --tr 0.01 0.01
   transformed the way GDAL does. See [Coordinate Systems](crs.md).
 - **Every interface**: the [command line](cli.md), a [Rust library](rust.md), a
   [Python package](python.md) with NumPy arrays, an [npm package](javascript.md) compiled to
-  WebAssembly, and an [MCP server](mcp.md) for AI agents. Try it in the
-  [playground](playground.md) or the [notebooks](notebooks.md), with nothing to install.
+  WebAssembly, an [MCP server](mcp.md) for AI agents, and a [browser UI](#browser-ui) for the
+  commands. Try it in the [playground](playground.md) or the [notebooks](notebooks.md), with
+  nothing to install.
+
+## Browser UI
+
+`terrio ui` serves every command as a form in your browser, from your own computer:
+
+```sh
+terrio ui
+```
+
+![The terrio ui page: a searchable list of commands beside the form for terrio info, with the equivalent command line and the output of a run on a remote GeoTIFF](assets/terrio-ui.webp)
+
+Pick files with the built-in file browser or enter a URL, run or cancel the command, read its
+output, and copy the equivalent command line into a script. See [`ui`](cli.md#ui) for the options,
+the security model and the limits.
 
 ## How terrio relates to GDAL
 

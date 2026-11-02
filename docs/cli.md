@@ -3511,6 +3511,8 @@ terrio ui                 # opens your browser
 terrio ui --port 8080 --no-open
 ```
 
+![The terrio ui page: a searchable list of commands beside the form for terrio info, with the equivalent command line and the output of a run on a remote GeoTIFF](assets/terrio-ui.webp)
+
 Serves a page with a form for every command, generated from the
 [command catalog](#machine-readable-command-catalog), so it always matches this binary. Pick files
 with the built-in file browser, which lists the disk of the computer running terrio; the page shows
