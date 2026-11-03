@@ -100,19 +100,28 @@ pub fn run(a: Args) -> terrio::Result<()> {
     };
     // GeoTIFFs, Zarr stores and other rasters read by window are read for the output alone: the
     // tiles or chunks its window touches, of its bands, from the overview it is read from. Rasters
-    // the lazy reader refuses (named `gdal:`, or of a format only GDAL reads) are read whole, as
-    // `open` reads them, at full resolution.
-    let out = match super::quiet(|| terrio::open_raster_lazy(&a.input)) {
-        Ok(mut src) => translate_lazy(&mut src, &o, overview)?,
-        Err(_) => {
-            let ds = open(&a.input)?;
+    // named `gdal:`, and those the lazy reader cannot decode (GDAL may), are read whole, as `open`
+    // reads them, at full resolution; other errors (a missing file, a network failure) are kept.
+    let gdal_named = a.input.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("gdal:"));
+    let lazy = if gdal_named {
+        None
+    } else {
+        match super::quiet(|| terrio::open_raster_lazy(&a.input)) {
+            Ok(src) => Some(src),
+            Err(terrio::Error::Unsupported(_)) => None,
+            Err(e) => return Err(e),
+        }
+    };
+    let out = match lazy {
+        Some(mut src) => translate_lazy(&mut src, &o, overview)?,
+        None => {
             if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
                 return Err(terrio::Error::Unsupported(format!(
                     "--overview {} needs a raster read by window; {} is read whole",
                     a.overview, a.input
                 )));
             }
-            translate(&ds, &o)?
+            translate(&open(&a.input)?, &o)?
         }
     };
     a.out.write(&out, &a.output)

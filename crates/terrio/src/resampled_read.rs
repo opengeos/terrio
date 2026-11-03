@@ -649,7 +649,8 @@ impl LazyRaster {
             match kinds[k] {
                 MaskKind::AllValid => out.resize(out.len() + n, 255),
                 MaskKind::Nodata => {
-                    let nd = self.band_nodata(b).expect("a band with a nodata mask has a nodata value");
+                    let nd =
+                        self.band_nodata(b).ok_or_else(|| Error::InvalidData(format!("band {b} has a nodata mask but no nodata value")))?;
                     let (data, j) = nodata(k).ok_or_else(|| Error::InvalidData("the pixels of a nodata mask were not read".into()))?;
                     out.extend(nodata_mask(data, j, n, nd).unwrap_or_else(|| vec![255; n]));
                 }

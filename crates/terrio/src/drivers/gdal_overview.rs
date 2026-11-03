@@ -30,8 +30,13 @@
 //     gcore/gdalrescaledalphaband.cpp
 //     gcore/gdal_cpp_functions.h
 //     gcore/gdalsse_priv.h
+//   GDAL v3.13.3, for resampled reads (`ResampledRead`) and mode nodata:
+//     gcore/overview.cpp (GDALResampleConvolutionHorizontalWithMask: NaN values carry no weight)
+//     gcore/rasterio.cpp (GDALRasterBand::RasterIOResampled: the NBITS clamp)
+//     gcore/gdal_misc.cpp (GDALIsValueInRange)
 
-//! Overviews computed as GDAL 3.12.1 computes them, pixel for pixel.
+//! Overviews computed as GDAL 3.12.1 computes them, pixel for pixel. Resampled window reads
+//! ([`ResampledRead`]) follow GDAL 3.13.3's `RasterIOResampled` with the same kernels.
 //!
 //! GDAL's COG driver (`frmts/gtiff/cogdriver.cpp`, `GDALCOGCreator::Create`) halves the image
 //! until it fits in a tile and has `GTIFFBuildOverviewsEx` (`frmts/gtiff/gt_overview.cpp`) build
