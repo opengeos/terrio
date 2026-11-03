@@ -50,6 +50,20 @@ fn writes_a_png_with_transparent_nodata_and_refuses_bad_outputs() {
 }
 
 #[test]
+fn overwrite_replaces_the_file_and_leaves_nothing_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    grid(root);
+    std::fs::write(root.join("grid.png"), b"old").unwrap();
+    let made = run(root, &["preview", "grid.asc", "-o", "grid.png", "--overwrite", "--width", "8"]);
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    assert_eq!(decode(&std::fs::read(root.join("grid.png")).unwrap()).0, 8);
+    let mut names: Vec<_> = std::fs::read_dir(root).unwrap().map(|e| e.unwrap().file_name()).collect();
+    names.sort();
+    assert_eq!(names, ["grid.asc", "grid.png"]);
+}
+
+#[test]
 fn sends_png_bytes_or_terminal_drawing_to_standard_output() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

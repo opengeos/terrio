@@ -141,7 +141,7 @@ function paint() {
 }
 function zoomAt(factor, screenX, screenY) {
   if (!info) return;
-  const next = Math.min(Math.max(scale * factor, Math.min(innerWidth / info.width, innerHeight / info.height) / 2), 32);
+  const next = Math.min(Math.max(scale * factor, Math.min(innerWidth / info.width, innerHeight / info.height, 8) / 2), 32);
   const dx = screenX - innerWidth / 2, dy = screenY - innerHeight / 2;
   centerX += dx / scale - dx / next;
   centerY += dy / scale - dy / next;
@@ -182,7 +182,9 @@ for (const name of ["pointerup", "pointercancel"]) {
 }
 canvas.addEventListener("wheel", (event) => {
   event.preventDefault();
-  zoomAt(Math.exp(-event.deltaY * (event.deltaMode === 1 ? 0.05 : 0.0015)), event.clientX, event.clientY);
+  // Deltas in lines or pages are made pixels first.
+  const pixels = event.deltaY * (event.deltaMode === 1 ? 33 : event.deltaMode === 2 ? innerHeight : 1);
+  zoomAt(Math.exp(-pixels * 0.0015), event.clientX, event.clientY);
 }, { passive: false });
 canvas.addEventListener("keydown", (event) => {
   const step = 80 / scale;
@@ -197,9 +199,10 @@ canvas.addEventListener("keydown", (event) => {
   else return;
   event.preventDefault();
 });
-byId("in").addEventListener("click", () => zoomAt(1.5, innerWidth / 2, innerHeight / 2));
-byId("out").addEventListener("click", () => zoomAt(1 / 1.5, innerWidth / 2, innerHeight / 2));
-byId("fit").addEventListener("click", fit);
+// Each button gives the keyboard back to the map, which pans and zooms with the keys.
+byId("in").addEventListener("click", () => { zoomAt(1.5, innerWidth / 2, innerHeight / 2); canvas.focus(); });
+byId("out").addEventListener("click", () => { zoomAt(1 / 1.5, innerWidth / 2, innerHeight / 2); canvas.focus(); });
+byId("fit").addEventListener("click", () => { fit(); canvas.focus(); });
 addEventListener("resize", resize);
 
 (async () => {

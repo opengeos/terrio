@@ -125,25 +125,36 @@ pub fn run(mut args: Args) -> Result<()> {
     match (args.output.as_deref(), display) {
         (Some("-"), _) => write_stdout(&image.to_png()?),
         (Some(path), _) => {
-            // Encoded first, so that a failure to encode leaves no file behind, and a failed write
-            // removes the file. Without --overwrite, a file that appeared since the check is not
-            // replaced either.
+            // Encoded first, so that a failure to encode leaves no file behind.
             let png = image.to_png()?;
-            let mut file = if args.overwrite {
-                std::fs::File::create(path)?
-            } else {
-                std::fs::OpenOptions::new().write(true).create_new(true).open(path)?
-            };
-            let written = file.write_all(&png);
-            if written.is_err() {
-                drop(file);
-                let _ = std::fs::remove_file(path);
-            }
-            written.map_err(Error::from)
+            if args.overwrite { replace(path, &png) } else { create(path, &png) }
         }
         (None, Some(display)) => write_stdout(&encode(&image, display)?),
         (None, None) => unreachable!("no output means a display"),
     }
+}
+
+/// Writes a new file, refusing one that appeared since the check. A failed write removes it.
+fn create(path: &str, png: &[u8]) -> Result<()> {
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    let written = file.write_all(png);
+    if written.is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+    written.map_err(Error::from)
+}
+
+/// Writes beside `path` and renames over it, so a failed write leaves any earlier file as it was.
+fn replace(path: &str, png: &[u8]) -> Result<()> {
+    let target = std::path::Path::new(path);
+    let name = target.file_name().ok_or_else(|| Error::InvalidArgument(format!("{path}: not a file name")))?;
+    let temporary = target.with_file_name(format!(".{}.{}.tmp", name.to_string_lossy(), std::process::id()));
+    create(&temporary.to_string_lossy(), png)?;
+    std::fs::rename(&temporary, target).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })?;
+    Ok(())
 }
 
 fn write_stdout(bytes: &[u8]) -> Result<()> {

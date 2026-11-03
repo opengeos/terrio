@@ -446,8 +446,9 @@ fn tile(query: &str, session: &Session) -> Result<Vec<u8>, Reply> {
     };
     let image = lock(&renderer).region(window, tw, th);
     image.and_then(|image| image.to_png()).map_err(|e| match e {
-        // A tile the page asked for wrongly; anything else, a read failing, is the server's.
-        terrio::Error::InvalidArgument(_) => failure(400, &e.to_string()),
+        // A tile the page asked for wrongly, or a raster that needs overviews to be drawn; anything
+        // else, a read failing, is the server's.
+        terrio::Error::InvalidArgument(_) | terrio::Error::Unsupported(_) => failure(400, &e.to_string()),
         _ => failure(500, &e.to_string()),
     })
 }

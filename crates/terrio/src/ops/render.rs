@@ -277,6 +277,9 @@ struct Plan {
 
 fn plan(source: &LazyRaster, options: &RenderOptions) -> Result<Plan> {
     options.stretch.check()?;
+    if source.width() == 0 || source.height() == 0 {
+        return Err(Error::InvalidArgument("the raster has no pixels".into()));
+    }
     let count = source.band_count();
     if count == 0 {
         return Err(Error::InvalidArgument("the raster has no bands".into()));
@@ -442,8 +445,9 @@ fn percentiles(band: &[f64], low: f64, high: f64) -> (f64, f64) {
     if valid.is_empty() {
         return (0.0, 1.0);
     }
-    valid.sort_unstable_by(f64::total_cmp);
-    let at = |p: f64| valid[((valid.len() - 1) as f64 * p / 100.0).round() as usize];
+    // Selection rather than a full sort: each rank costs one pass over the values.
+    let last = valid.len() - 1;
+    let mut at = |p: f64| *valid.select_nth_unstable_by((last as f64 * p / 100.0).round() as usize, f64::total_cmp).1;
     (at(low), at(high))
 }
 
@@ -994,6 +998,14 @@ mod tests {
         let options = RenderOptions { attribute: Some("height".into()), stretch: Stretch::MinMax, ..Default::default() };
         let renderer = Renderer::vector(vec![layer], &options).unwrap();
         assert_eq!(renderer.ranges, vec![(0.0, 10.0)]);
+    }
+
+    #[test]
+    fn percentiles_are_nearest_ranks_of_the_finite_values() {
+        let band: Vec<f64> = (0..101).rev().map(f64::from).chain([f64::NAN]).collect();
+        assert_eq!(percentiles(&band, 2.0, 98.0), (2.0, 98.0));
+        assert_eq!(percentiles(&band, 0.0, 100.0), (0.0, 100.0));
+        assert_eq!(percentiles(&[f64::NAN], 2.0, 98.0), (0.0, 1.0));
     }
 
     #[test]
