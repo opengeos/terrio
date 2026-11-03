@@ -124,6 +124,7 @@ pub struct Collection {
     schema: Option<String>,
     crs_uri: String,
     swap: bool,
+    crs_error: Option<String>,
 }
 
 /// One bounded GET request. Call [`Reader::accept_response`] once its body arrives.
@@ -371,7 +372,10 @@ impl Reader {
         let base = if listing { append_path(source, &encode(id)) } else { source.into() };
         let items = link(value, "items", true).map(|href| self.follow(source, href)).unwrap_or_else(|| append_path(&base, "items"));
         let schema = if self.options.oapif.ignore_schema { None } else { schema_link(value).map(|href| self.follow(source, href)) };
-        let (crs_uri, crs, swap) = select_crs(value, &self.options.oapif)?;
+        let (crs_uri, crs, swap, crs_error) = match select_crs(value, &self.options.oapif) {
+            Ok((uri, crs, swap)) => (uri, crs, swap, None),
+            Err(error) => (String::new(), SpatialRef::default(), false, Some(error.to_string())),
+        };
         let bbox = value.pointer("/extent/spatial/bbox/0").and_then(Value::as_array);
         let extent_crs = value.pointer("/extent/spatial/crs").and_then(Value::as_str).unwrap_or(CRS84);
         let wgs84_extent = if is_crs84(extent_crs) {
@@ -397,6 +401,7 @@ impl Reader {
             schema,
             crs_uri,
             swap,
+            crs_error,
         });
         Ok(())
     }
@@ -404,6 +409,9 @@ impl Reader {
         if self.index == self.collections.len() {
             self.phase = Phase::Done;
             return Ok(());
+        }
+        if let Some(error) = &self.collections[self.index].crs_error {
+            return Err(Error::InvalidData(error.clone()));
         }
         self.features.clear();
         self.ids.clear();
@@ -529,8 +537,8 @@ impl Reader {
                 name.insert(0, '_');
             }
             for feature in &mut self.features {
-                if let Some(id) = feature.as_object_mut().and_then(|f| f.remove("id")) {
-                    let text = if mixed_ids { id.to_string() } else { id.as_str().map(str::to_owned).unwrap_or_else(|| id.to_string()) };
+                if let Some(id) = feature.as_object_mut().and_then(|f| f.remove("id")).filter(|id| !id.is_null()) {
+                    let text = id.to_string();
                     let properties = feature.as_object_mut().unwrap().entry("properties").or_insert_with(|| json!({}));
                     if !properties.is_object() {
                         *properties = json!({});
@@ -736,8 +744,18 @@ fn schema_fields(root: &Value) -> Result<Vec<FieldDef>> {
     let document = root;
     let root = resolve_ref(document, root, 0)?;
     let Some(properties) = root.get("properties").and_then(Value::as_object) else { return Ok(Vec::new()) };
-    let properties = if let Some(feature_properties) = properties.get("properties") {
-        resolve_ref(document, feature_properties, 0)?.get("properties").and_then(Value::as_object).unwrap_or(properties)
+    let feature_type = properties.get("type").map(|v| resolve_ref(document, v, 0)).transpose()?;
+    let is_feature = properties.contains_key("geometry")
+        && properties.contains_key("properties")
+        && feature_type.is_some_and(|v| {
+            v.get("const").and_then(Value::as_str) == Some("Feature")
+                || v.get("enum").and_then(Value::as_array).is_some_and(|types| types.iter().any(|t| t.as_str() == Some("Feature")))
+        });
+    let properties = if is_feature {
+        let Some(feature_properties) = properties.get("properties") else { return Ok(Vec::new()) };
+        let nested = resolve_ref(document, feature_properties, 0)?;
+        let Some(properties) = nested.get("properties").and_then(Value::as_object) else { return Ok(Vec::new()) };
+        properties
     } else {
         properties
     };
@@ -892,7 +910,7 @@ mod tests {
         accept(
             &mut r,
             json!({"$defs":{"props":{"type":"object","properties":{"v":{"type":["number","null"]},"missing":{"type":"integer"}}}},
-            "type":"object","properties":{"properties":{"$ref":"#/$defs/props"}}}),
+            "type":"object","properties":{"type":{"const":"Feature"},"geometry":{"type":["object","null"]},"properties":{"$ref":"#/$defs/props"}}}),
         );
         accept(&mut r, page(vec![feature(json!(7), json!({"v":1}))], None));
         let layer = r.finish().unwrap().layers.remove(0);
@@ -909,7 +927,7 @@ mod tests {
             let layer = r.finish().unwrap().layers.remove(0);
             let f = &layer.features[0];
             assert_eq!(f.get(&layer.schema, "id").unwrap(), &FieldValue::Integer(42));
-            let expected = id.as_str().map(str::to_owned).unwrap_or_else(|| id.to_string());
+            let expected = id.to_string();
             assert_eq!(f.get(&layer.schema, "_oapif_id").unwrap(), &FieldValue::Text(expected));
             let FieldValue::Text(text) = f.get(&layer.schema, "links").unwrap() else { panic!() };
             assert_eq!(serde_json::from_str::<Value>(text).unwrap(), json!([{"href":"a","other":true}]));
@@ -931,6 +949,44 @@ mod tests {
         accept(&mut r, page(vec![feature(json!(1), json!({"when":""}))], None));
         let l = r.finish().unwrap().layers.remove(0);
         assert_eq!(l.features[0].get(&l.schema, "when").unwrap(), &FieldValue::Text(String::new()));
+    }
+    #[test]
+    fn catalog_metadata_and_selected_reads_ignore_other_collection_crs_errors() {
+        let mut bad = collection("bad");
+        bad["storageCrs"] = json!("EPSG:999999999");
+        let catalog = json!({"collections":[bad,collection("good")]});
+        let mut metadata = Reader::metadata("https://example.test/collections", &Default::default()).unwrap();
+        accept(&mut metadata, catalog.clone());
+        assert_eq!(metadata.collections().len(), 2);
+        assert!(metadata.collections()[0].crs.is_unknown());
+        assert!(metadata.next_request().is_none());
+        let mut o = VectorOpenOptions { layers: vec!["good".into()], ..Default::default() };
+        let mut r = Reader::new("https://example.test/collections", &o).unwrap();
+        accept(&mut r, catalog.clone());
+        assert!(r.next_request().unwrap().url.contains("/good/items"));
+        accept(&mut r, page(vec![feature(json!(1), json!({}))], None));
+        assert_eq!(r.finish().unwrap().layers[0].name, "good");
+        o.layers = vec!["bad".into()];
+        let mut r = Reader::new("https://example.test/collections", &o).unwrap();
+        assert!(r.accept_response(&serde_json::to_vec(&catalog).unwrap()).unwrap_err().to_string().contains("unsupported CRS"));
+    }
+    #[test]
+    fn synthetic_ids_preserve_nulls_and_flat_schemas_keep_nested_properties() {
+        let mut r = at_items(&Default::default());
+        r.fields = schema_fields(&json!({"properties":{
+            "properties":{"type":"object","properties":{"nested":{"type":"integer"}}},
+            "sibling":{"type":"number"},"missing":{"type":"integer"}
+        }}))
+        .unwrap();
+        accept(
+            &mut r,
+            page(vec![feature(json!(-7), json!({"properties":{"nested":1},"sibling":2})), feature(Value::Null, json!({}))], None),
+        );
+        let l = r.finish().unwrap().layers.remove(0);
+        assert_eq!(l.features[1].get(&l.schema, "_oapif_id").unwrap(), &FieldValue::Null);
+        assert_eq!(l.features[0].get(&l.schema, "sibling").unwrap(), &FieldValue::Float(2.));
+        assert!(l.schema.field_index("nested").is_none());
+        assert_eq!(l.schema.fields().iter().find(|f| f.name == "missing").unwrap().field_type, FieldType::Integer);
     }
     #[test]
     fn axis_names_with_unicode_commas_and_escaped_quotes_are_safe() {

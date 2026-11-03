@@ -3624,7 +3624,7 @@ CQL/filter languages, transactions and streaming feature iteration are outside
 this reader's scope. Pages are accumulated within the allocation budget.
 
 Signed numeric source IDs, or string IDs that conflict with a source `id`
-property, are preserved in `_oapif_id` text (with an extra leading underscore
+property, are preserved as serialized JSON in `_oapif_id` text (with an extra leading underscore
 if that field already exists); generated unsigned FIDs then follow row order.
 
 Non-null values incompatible with an advertised scalar type fail explicitly,
@@ -3638,3 +3638,9 @@ value equals the default.
 the complete prefixed service URL. Mixed numeric/string source IDs are preserved
 as serialized JSON in `_oapif_id` text, retaining the distinction between `1`
 and `"1"`.
+
+Metadata discovery retains collections whose CRS cannot be read, reporting their
+CRS as unknown. A CRS error is returned when that collection is selected for
+feature reading. Synthetic `_oapif_id` values always contain serialized JSON;
+null or absent identifiers remain null. A schema's nested `properties` map is
+unwrapped only when its `type` field explicitly identifies a GeoJSON Feature.
