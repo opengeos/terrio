@@ -39,6 +39,8 @@ pub(super) struct SheetSource {
     pub(super) link_ids: Vec<String>,
     /// The sheet's properties as read, for what the model does not hold of them.
     pub(super) read_sheet_pr: Option<String>,
+    /// Whether the sheet's view read was selected, for a view the model writes again.
+    pub(super) selected: bool,
 }
 
 impl SheetSource {
@@ -1205,6 +1207,11 @@ impl Workbook {
                 let order: Vec<String> = children.iter().map(|(n, _)| n.clone()).filter(|n| n != "dimension").collect();
                 let mut sections = sections_of(children);
                 let data = sections.remove("sheetData");
+                let selected_view = sections
+                    .get("sheetViews")
+                    .and_then(|r| r.first())
+                    .and_then(|raw| first_attribute(raw, "sheetView", "tabSelected"))
+                    .is_some_and(|v| v == "1" || v == "true");
                 // Dropped: it is optional, and an edit could leave the range it states wrong.
                 sections.remove("dimension");
                 let mut sheet = Worksheet::new(name);
@@ -1225,12 +1232,14 @@ impl Workbook {
                     order,
                     link_ids: Vec::new(),
                     read_sheet_pr: None,
+                    selected: false,
                 };
                 for xml in data.iter().flatten() {
                     read_sheet_data(xml, &part, &mut sheet, &mut source, &parts, &mut budget)?;
                 }
                 read_settings(&mut sheet, &mut source, &part, &formats, &mut budget)?;
                 source.read_sheet_pr = source.sections.get("sheetPr").and_then(|r| r.first()).cloned();
+                source.selected = selected_view;
                 let sheet_base = part.rsplit_once('/').map_or(String::new(), |(d, _)| format!("{d}/"));
                 for r in source.relationships.iter().filter(|r| r.kind.ends_with("/comments")) {
                     let comments_part = resolve_target(&sheet_base, &r.target);
@@ -2178,6 +2187,14 @@ mod tests {
         let broken = |b: String| b.replace("</cp:coreProperties>", "");
         let workbook = Workbook::open_bytes(&with_parts(&[("docProps/core.xml", &broken)])).unwrap();
         assert!(matches!(workbook.to_bytes(), Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn an_edited_view_of_the_selected_sheet_stays_selected() {
+        let mut workbook = Workbook::open_bytes(&foreign_workbook()).unwrap();
+        workbook.sheet_mut("Data").unwrap().set_zoom(120).unwrap();
+        let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(sheet.contains("tabSelected=\"1\""), "{sheet}");
     }
 
     #[test]

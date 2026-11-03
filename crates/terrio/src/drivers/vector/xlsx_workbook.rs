@@ -1625,7 +1625,9 @@ fn section_xml(sheet: &Worksheet, name: &str, context: &mut SheetContext<'_>, ou
             if let Some(zoom) = sheet.zoom {
                 let _ = write!(out, " zoomScale=\"{zoom}\" zoomScaleNormal=\"{zoom}\"");
             }
-            if context.selected == Some(true) {
+            // Without a new workbook view, the sheet stays selected as it was read.
+            let read = sheet.source.as_ref().is_some_and(|s| s.selected);
+            if context.selected.unwrap_or(read) {
                 out.push_str(" tabSelected=\"1\"");
             }
             out.push_str(" workbookViewId=\"0\">");
