@@ -1012,6 +1012,9 @@ impl Workbook {
             return Err(invalid(format!("'{name}' is not a name to define")));
         }
         self.defined_names.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+        if let Some(source) = &mut self.source {
+            source.other_names.retain(|(n, _, _)| !n.eq_ignore_ascii_case(name));
+        }
         self.defined_names.push((name.to_string(), reference.to_string()));
         Ok(())
     }
@@ -1457,18 +1460,44 @@ struct SheetContext<'a> {
     drawing: Option<String>,
 }
 
+/// The elements to write: those read, in their order, with the schema's others where it puts them.
+/// Elements the schema does not name, such as `mc:AlternateContent`, keep their places.
+fn ordered(read: &[String], schema: &[&str]) -> Vec<String> {
+    let place = |name: &str| schema.iter().position(|s| *s == name);
+    let mut out: Vec<String> = Vec::new();
+    for name in read {
+        if out.last() != Some(name) {
+            out.push(name.clone());
+        }
+    }
+    for (i, name) in schema.iter().enumerate() {
+        if out.iter().any(|n| n == name) {
+            continue;
+        }
+        let at = out.iter().position(|n| place(n).is_some_and(|p| p > i)).unwrap_or(out.len());
+        out.insert(at, name.to_string());
+    }
+    out
+}
+
+/// An id no relationship of a part has.
+fn fresh_id(relationships: &[Relationship], prefix: &str) -> String {
+    (1..).map(|n| format!("{prefix}{n}")).find(|id| !relationships.iter().any(|r| r.id == *id)).expect("an unused id")
+}
+
 fn sheet_xml(sheet: &Worksheet, context: &mut SheetContext<'_>) -> String {
     let root = sheet.source.as_ref().map_or_else(|| format!("<worksheet xmlns=\"{MAIN_NS}\" xmlns:r=\"{OD_RELS}\">"), |s| s.root.clone());
     let mut out = format!("{XML_HEADER}{root}\n");
-    for name in SHEET_ORDER {
-        match sheet.source.as_ref().and_then(|s| s.sections.get(name)) {
+    let read = sheet.source.as_ref().map_or(&[][..], |s| &s.order);
+    for name in ordered(read, &SHEET_ORDER) {
+        match sheet.source.as_ref().and_then(|s| s.sections.get(&name)) {
             Some(raw) => {
                 for element in raw {
                     out.push_str(element);
                     out.push('\n');
                 }
             }
-            None => section_xml(sheet, name, context, &mut out),
+            None => section_xml(sheet, &name, context, &mut out),
         }
     }
     out.push_str("</worksheet>\n");
@@ -1533,9 +1562,17 @@ fn section_xml(sheet: &Worksheet, name: &str, context: &mut SheetContext<'_>, ou
         }
         "cols" if !sheet.columns.is_empty() => {
             out.push_str("<cols>");
+            // Neighbouring columns of the same settings share a range.
+            let mut ranges: Vec<(u32, u32, &Dimension)> = Vec::new();
             for (&column, d) in &sheet.columns {
+                match ranges.last_mut() {
+                    Some((_, last, previous)) if *last + 1 == column && *previous == d => *last = column,
+                    _ => ranges.push((column, column, d)),
+                }
+            }
+            for (first, last, d) in ranges {
                 // A `col` needs a width; 8.43 is the sheet's default.
-                let _ = write!(out, "<col min=\"{column}\" max=\"{column}\" width=\"{}\"", d.size.unwrap_or(8.43));
+                let _ = write!(out, "<col min=\"{first}\" max=\"{last}\" width=\"{}\"", d.size.unwrap_or(8.43));
                 if d.size.is_some() {
                     out.push_str(" customWidth=\"1\"");
                 }
@@ -1590,8 +1627,8 @@ fn section_xml(sheet: &Worksheet, name: &str, context: &mut SheetContext<'_>, ou
             }
             out.push_str("<hyperlinks>");
             out.push_str(&others.concat());
-            for (i, link) in sheet.hyperlinks.iter().enumerate() {
-                let id = format!("rIdLink{}", i + 1);
+            for link in &sheet.hyperlinks {
+                let id = fresh_id(&context.relationships, "rIdLink");
                 let _ = write!(out, "<hyperlink ref=\"{}\" r:id=\"{id}\"/>", cell_name(link.cell.0, link.cell.1));
                 context.relationships.push(Relationship {
                     id,
@@ -1769,13 +1806,34 @@ const STYLES_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreads
 const STRINGS_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml";
 const MAIN_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
 const VML_TYPE: &str = "application/vnd.openxmlformats-officedocument.vmlDrawing";
-/// The workbook's elements around its sheets and names, in the order the schema requires.
-const WORKBOOK_BEFORE_SHEETS: [&str; 5] = ["fileVersion", "fileSharing", "workbookPr", "workbookProtection", "bookViews"];
-const WORKBOOK_AFTER_SHEETS: [&str; 3] = ["functionGroups", "externalReferences", "definedNames"];
+/// The workbook's elements, in the order the schema requires.
+const WORKBOOK_ORDER: [&str; 19] = [
+    "fileVersion",
+    "fileSharing",
+    "workbookPr",
+    "workbookProtection",
+    "bookViews",
+    "sheets",
+    "functionGroups",
+    "externalReferences",
+    "definedNames",
+    "calcPr",
+    "oleSize",
+    "customWorkbookViews",
+    "pivotCaches",
+    "smartTagPr",
+    "smartTagTypes",
+    "webPublishing",
+    "fileRecoveryPr",
+    "webPublishObjects",
+    "extLst",
+];
 
 fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
     let source = workbook.source.as_deref();
-    let mut parts: BTreeMap<String, Vec<u8>> = source.map(|s| s.parts.clone()).unwrap_or_default();
+    // The parts read are written from where they are; these replace or drop some.
+    let mut parts: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut dropped: std::collections::HashSet<String> = std::collections::HashSet::new();
     let workbook_part = source.map_or_else(|| "xl/workbook.xml".to_string(), |s| s.workbook_part.clone());
     let base = workbook_part.rsplit_once('/').map_or(String::new(), |(d, _)| format!("{d}/"));
     let mut defaults: Vec<(String, String)> = source.map(|s| s.defaults.clone()).unwrap_or_else(|| {
@@ -1788,7 +1846,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
     let mut overrides: BTreeMap<String, String> = source.map(|s| s.overrides.iter().cloned().collect()).unwrap_or_default();
     let mut styles = source.map_or_else(StyleTable::new, |s| s.style_table());
     let mut strings = source.map_or_else(SharedStrings::default, |s| s.shared_strings());
-    let mut used: std::collections::HashSet<String> = parts.keys().cloned().collect();
+    let mut used: std::collections::HashSet<String> = source.iter().flat_map(|s| s.parts.keys().cloned()).collect();
     used.extend(workbook.sheets.iter().filter_map(|s| s.source.as_ref().map(|x| x.part.clone())));
 
     let mut relationships: Vec<Relationship> = source.map(|s| s.workbook_relationships.clone()).unwrap_or_default();
@@ -1812,7 +1870,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
             Some(s) => (s.part.clone(), s.rel_id.clone(), s.sheet_id.clone()),
             None => {
                 let part = free_part(&mut used, "xl/worksheets/sheet", number, "xml");
-                let id = format!("rIdSheet{number}");
+                let id = fresh_id(&relationships, "rIdSheet");
                 let target = part.strip_prefix(&base).map_or_else(|| format!("/{part}"), str::to_string);
                 relationships.push(Relationship { id: id.clone(), kind: format!("{OD_RELS}/worksheet"), target, external: false });
                 overrides.insert(format!("/{part}"), WORKSHEET_TYPE.to_string());
@@ -1859,12 +1917,16 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         let hyperlinks_kept = sheet.source.as_ref().is_some_and(|s| s.sections.contains_key("hyperlinks"));
         let mut sheet_relationships: Vec<Relationship> = sheet.source.as_ref().map(|s| s.relationships.clone()).unwrap_or_default();
         let sheet_base = part.rsplit_once('/').map_or(String::new(), |(d, _)| format!("{d}/"));
+        // What elements kept as read still refer to stays, such as a header's drawing.
+        let referenced = sheet.source.as_ref().map(|s| s.referenced_ids()).unwrap_or_default();
+        let link_ids = sheet.source.as_ref().map_or(&[][..], |s| &s.link_ids);
         sheet_relationships.retain(|r| {
-            let drop = (r.kind.ends_with("/hyperlink") && !hyperlinks_kept)
-                || (sheet.comments_edited && (r.kind.ends_with("/comments") || r.kind.ends_with("/vmlDrawing")));
+            let drop = !referenced.contains(&r.id)
+                && ((r.kind.ends_with("/hyperlink") && !hyperlinks_kept && link_ids.contains(&r.id))
+                    || (sheet.comments_edited && (r.kind.ends_with("/comments") || r.kind.ends_with("/vmlDrawing"))));
             if drop && !r.external {
                 let target = open::resolve(&sheet_base, &r.target);
-                parts.remove(&target);
+                dropped.insert(target.clone());
                 overrides.remove(&format!("/{target}"));
             }
             !drop
@@ -1873,14 +1935,16 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         if sheet.comments_edited && !sheet.comments.is_empty() {
             let comments = free_part(&mut used, "xl/comments", number, "xml");
             let vml = free_part(&mut used, "xl/drawings/vmlDrawing", number, "vml");
+            let notes = fresh_id(&sheet_relationships, "rIdNotes");
             sheet_relationships.push(Relationship {
-                id: "rIdNotes".into(),
+                id: notes,
                 kind: format!("{OD_RELS}/comments"),
                 target: format!("/{comments}"),
                 external: false,
             });
+            let shapes = fresh_id(&sheet_relationships, "rIdNoteShapes");
             sheet_relationships.push(Relationship {
-                id: "rIdNoteShapes".into(),
+                id: shapes.clone(),
                 kind: format!("{OD_RELS}/vmlDrawing"),
                 target: format!("/{vml}"),
                 external: false,
@@ -1891,7 +1955,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
             }
             parts.insert(comments, comments_xml(sheet).into_bytes());
             parts.insert(vml, comments_vml(sheet, number).into_bytes());
-            drawing = Some("rIdNoteShapes".to_string());
+            drawing = Some(shapes);
         }
         let mut context = SheetContext {
             styles: &mut styles,
@@ -1910,62 +1974,42 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
     if styles.xfs.len() > MAX_CELL_FORMATS {
         return Err(invalid(format!("the workbook has {} cell formats, past Excel's {MAX_CELL_FORMATS}", styles.xfs.len())));
     }
-    for (name, reference) in source.iter().flat_map(|s| s.other_names.iter()) {
-        names.push_str(&format!("{name}{}</definedName>\n", xml_text(reference)));
+    for (_, start, reference) in source.iter().flat_map(|s| s.other_names.iter()) {
+        names.push_str(&format!("{start}{}</definedName>\n", xml_text(reference)));
     }
     for (name, reference) in &workbook.defined_names {
         let _ = writeln!(names, "<definedName name=\"{}\">{}</definedName>", xml_text(name), xml_text(reference));
     }
-    let names = if names.is_empty() { names } else { format!("<definedNames>\n{names}</definedNames>\n") };
-
-    // The workbook part, with what was read around the model's sheets and names.
+    // The workbook part: what was read, in its order, with the model's sheets, names and views.
     let other = |name: &str| source.and_then(|s| s.workbook_sections.get(name)).map(|raw| raw.concat());
     let mut book = format!(
         "{XML_HEADER}{}\n",
         source.map_or_else(|| format!("<workbook xmlns=\"{MAIN_NS}\" xmlns:r=\"{OD_RELS}\">"), |s| s.workbook_root.clone())
     );
     let first_visible = workbook.sheets.iter().position(|s| !s.hidden).unwrap_or(0);
-    let view = format!("<bookViews><workbookView activeTab=\"{first_visible}\"/></bookViews>\n");
-    for name in WORKBOOK_BEFORE_SHEETS {
-        match (name, other(name)) {
-            ("bookViews", raw) if workbook.sheets_changed || raw.is_none() => book.push_str(&view),
-            (_, Some(raw)) => {
-                book.push_str(&raw);
-                book.push('\n');
-            }
-            _ => {}
-        }
-    }
-    let _ = write!(book, "<sheets>\n{sheets_xml}</sheets>\n");
-    for name in WORKBOOK_AFTER_SHEETS {
-        if name == "definedNames" {
-            book.push_str(&names);
-        } else if let Some(raw) = other(name) {
-            book.push_str(&raw);
-            book.push('\n');
-        }
-    }
+    let view = format!("<bookViews><workbookView activeTab=\"{first_visible}\"/></bookViews>");
+    // A view read stays while its active sheet is still there and shown.
+    let view_fits = |raw: &str| {
+        let active = open::first_attribute(raw, "workbookView", "activeTab").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+        !workbook.sheets_changed && workbook.sheets.get(active).is_some_and(|s| !s.hidden)
+    };
     let edited = workbook.sheets.iter().any(|s| s.edited);
-    if source.is_some() {
-        // Cached values may be out of date after an edit: Excel computes them again on opening.
-        let calc = other("calcPr");
-        match calc {
-            Some(raw) if edited && !raw.contains("fullCalcOnLoad") => {
-                book.push_str(&raw.replacen("<calcPr", "<calcPr fullCalcOnLoad=\"1\"", 1))
-            }
-            Some(raw) => book.push_str(&raw),
-            None if edited => book.push_str("<calcPr fullCalcOnLoad=\"1\"/>"),
-            None => {}
-        }
-        book.push('\n');
-        for (name, raw) in source.iter().flat_map(|s| s.workbook_sections.iter()) {
-            let modelled = WORKBOOK_BEFORE_SHEETS.contains(&name.as_str())
-                || WORKBOOK_AFTER_SHEETS.contains(&name.as_str())
-                || matches!(name.as_str(), "sheets" | "calcPr");
-            if !modelled {
-                book.push_str(&raw.concat());
-                book.push('\n');
-            }
+    let read = source.map_or(&[][..], |s| &s.workbook_order);
+    for name in ordered(read, &WORKBOOK_ORDER) {
+        let element = match name.as_str() {
+            "bookViews" => Some(other("bookViews").filter(|raw| view_fits(raw)).unwrap_or_else(|| view.clone())),
+            "sheets" => Some(format!("<sheets>\n{sheets_xml}</sheets>")),
+            "definedNames" => (!names.is_empty()).then(|| format!("<definedNames>\n{names}</definedNames>")),
+            // Cached values may be out of date after an edit: Excel computes them again on opening.
+            "calcPr" if source.is_some() && edited => Some(
+                other("calcPr")
+                    .map_or_else(|| "<calcPr fullCalcOnLoad=\"1\"/>".to_string(), |raw| open::with_attribute(&raw, "fullCalcOnLoad", "1")),
+            ),
+            _ => other(&name),
+        };
+        if let Some(element) = element {
+            book.push_str(&element);
+            book.push('\n');
         }
     }
     book.push_str("</workbook>\n");
@@ -2013,6 +2057,18 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
     let core = open::core_properties(source, &core_root, &properties);
     let core_part = source.and_then(|s| s.core_part.clone()).unwrap_or_else(|| "docProps/core.xml".to_string());
     overrides.entry(format!("/{core_part}")).or_insert_with(|| "application/vnd.openxmlformats-package.core-properties+xml".to_string());
+    // A package read without a properties relationship gets one for the part written.
+    if let Some(rels) = source.and_then(|s| s.parts.get("_rels/.rels")).map(|b| String::from_utf8_lossy(b).into_owned())
+        && !rels.contains("/core-properties")
+        && let Some(end) = rels.rfind("</")
+    {
+        let relationship = format!(
+            "<Relationship Id=\"rIdModelCore\" Type=\"{PACKAGE}/relationships/metadata/core-properties\" Target=\"{}\"/>",
+            xml_text(&core_part)
+        );
+        parts.insert("_rels/.rels".to_string(), format!("{}{relationship}{}", &rels[..end], &rels[end..]).into_bytes());
+    }
+    let package_rels_read = source.is_some_and(|s| s.parts.contains_key("_rels/.rels"));
     parts.entry("_rels/.rels".to_string()).or_insert_with(|| {
         format!(
             "{XML_HEADER}<Relationships xmlns=\"{PACKAGE}/relationships\">\n\
@@ -2023,6 +2079,9 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         )
         .into_bytes()
     });
+    if package_rels_read && !parts.contains_key("_rels/.rels") {
+        unreachable!("a package's relationships are written");
+    }
     if source.is_none() {
         overrides
             .insert("/docProps/app.xml".to_string(), "application/vnd.openxmlformats-officedocument.extended-properties+xml".to_string());
@@ -2040,16 +2099,22 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
     }
     content_types.push_str("</Types>\n");
 
-    let mut all: Vec<(String, Vec<u8>)> = vec![
-        ("[Content_Types].xml".into(), content_types.into_bytes()),
-        (workbook_part.clone(), book.into_bytes()),
-        (rels_part(&workbook_part), relationships_xml(&relationships).into_bytes()),
-        (styles_part, styles.to_xml().into_bytes()),
-        (strings_part, strings.to_xml().into_bytes()),
-        (core_part, core.into_bytes()),
+    let mut all: Vec<(String, std::borrow::Cow<'_, [u8]>)> = vec![
+        ("[Content_Types].xml".into(), content_types.into_bytes().into()),
+        (workbook_part.clone(), book.into_bytes().into()),
+        (rels_part(&workbook_part), relationships_xml(&relationships).into_bytes().into()),
+        (styles_part, styles.to_xml().into_bytes().into()),
+        (strings_part, strings.to_xml().into_bytes().into()),
+        (core_part, core.into_bytes().into()),
     ];
-    all.extend(parts);
-    all.extend(sheet_parts.into_iter().map(|(name, xml)| (name, xml.into_bytes())));
+    let read_parts = source.iter().flat_map(|s| s.parts.iter());
+    all.extend(
+        read_parts
+            .filter(|(name, _)| !dropped.contains(*name) && !parts.contains_key(*name))
+            .map(|(n, b)| (n.clone(), b.as_slice().into())),
+    );
+    all.extend(parts.into_iter().map(|(name, bytes)| (name, bytes.into())));
+    all.extend(sheet_parts.into_iter().map(|(name, xml)| (name, xml.into_bytes().into())));
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     // A fixed time: the same workbook makes the same bytes.
     let member = zip::write::SimpleFileOptions::default()
@@ -2057,7 +2122,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         .last_modified_time(zip::DateTime::default());
     for (name, bytes) in &all {
         zip.start_file(name.as_str(), member)?;
-        zip.write_all(bytes)?;
+        zip.write_all(bytes.as_ref())?;
     }
     Ok(zip.finish()?.into_inner())
 }

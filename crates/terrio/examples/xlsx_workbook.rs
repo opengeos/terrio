@@ -13,7 +13,9 @@ fn main() -> terrio::Result<()> {
         let input = std::env::args().nth(2).expect("an input path");
         let output = std::env::args().nth(3).expect("an output path");
         let mut workbook = Workbook::open(&input)?;
-        let first = workbook.sheet_names()[0].to_string();
+        let Some(first) = workbook.sheet_names().first().map(|s| s.to_string()) else {
+            return Err(terrio::Error::InvalidArgument("the workbook has no sheet to edit".into()));
+        };
         workbook.sheet_mut(&first)?.write("A2", "edited", &Format::new().bold())?;
         return workbook.save(&output);
     }

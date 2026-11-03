@@ -33,6 +33,53 @@ pub(super) struct SheetSource {
     /// Validations other than lists, and links inside the workbook, which the model does not hold.
     pub(super) other_validations: Vec<String>,
     pub(super) other_hyperlinks: Vec<String>,
+    /// The elements' names, in the order they were read.
+    pub(super) order: Vec<String>,
+    /// The relationships of the links the model holds.
+    pub(super) link_ids: Vec<String>,
+}
+
+impl SheetSource {
+    /// The relationship ids that elements kept as read refer to.
+    pub(super) fn referenced_ids(&self) -> std::collections::HashSet<String> {
+        let mut ids = std::collections::HashSet::new();
+        for raw in self.sections.values().flatten() {
+            let mut rest = raw.as_str();
+            while let Some(i) = rest.find("r:id=") {
+                rest = &rest[i + 5..];
+                let quote = rest.chars().next().unwrap_or('"');
+                if let Some(end) = rest[1..].find(quote) {
+                    ids.insert(rest[1..=end].to_string());
+                }
+            }
+        }
+        ids
+    }
+}
+
+/// The value of an attribute of the first element of a name in some XML.
+pub(super) fn first_attribute(xml: &str, element: &str, name: &str) -> Option<String> {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    loop {
+        match reader.read_event().ok()? {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == element => return attribute(&e, name),
+            Event::Eof => return None,
+            _ => {}
+        }
+    }
+}
+
+/// An empty element written again with an attribute set, whatever its value was.
+pub(super) fn with_attribute(xml: &str, name: &str, value: &str) -> String {
+    let Some(e) = first_start(xml) else { return xml.to_string() };
+    let mut out = format!("<{}", e.name().as_ref());
+    for attr in e.attributes().flatten() {
+        if attr.key.as_ref() != name {
+            out.push_str(&format!(" {}=\"{}\"", attr.key.as_ref(), attr.value));
+        }
+    }
+    out.push_str(&format!(" {name}=\"{value}\"/>"));
+    out
 }
 
 /// What was read of a stylesheet.
@@ -58,10 +105,11 @@ pub(super) struct PackageSource {
     pub(super) workbook_part: String,
     pub(super) workbook_root: String,
     pub(super) workbook_sections: BTreeMap<String, Vec<String>>,
+    pub(super) workbook_order: Vec<String>,
     pub(super) workbook_relationships: Vec<Relationship>,
     pub(super) sheet_parts: Vec<String>,
-    /// Workbook-scoped names read: the start tag with its attributes, and the reference.
-    pub(super) other_names: Vec<(String, String)>,
+    /// Workbook-scoped names read: the name, the start tag with its attributes, and the reference.
+    pub(super) other_names: Vec<(String, String, String)>,
     pub(super) core_part: Option<String>,
     core: Option<String>,
     styles: Option<StyleSource>,
@@ -686,7 +734,7 @@ fn read_sheet_data(
 }
 
 /// Reads the settings the model holds from a sheet's other elements.
-fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, budget: &mut usize) -> Result<()> {
+fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, formats: &[Format], budget: &mut usize) -> Result<()> {
     let sections = source.sections.clone();
     let each = |name: &str, f: &mut dyn FnMut(&BytesStart<'_>, &str)| -> Result<()> {
         for raw in sections.get(name).into_iter().flatten() {
@@ -718,22 +766,30 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, bu
         }
         _ => {}
     })?;
+    let mut over_budget = None;
     each("cols", &mut |e, _| {
-        if e.local_name().as_ref() != "col" {
+        if e.local_name().as_ref() != "col" || over_budget.is_some() {
             return;
         }
         let bound = |name: &str| attribute(e, name).and_then(|v| v.parse::<u32>().ok());
         let (Some(min), Some(max)) = (bound("min"), bound("max")) else { return };
-        let width = attribute(e, "customWidth")
-            .is_some_and(|v| v == "1" || v == "true")
-            .then(|| attribute(e, "width").and_then(|v| v.parse().ok()))
-            .flatten();
+        let max = max.min(super::MAX_COLUMNS as u32);
+        // Each column of a range is held: the work is charged before it is done.
+        if let Err(e) = take_cells(budget, max.saturating_sub(min) as usize + 1) {
+            over_budget = Some(e);
+            return;
+        }
+        let width = attribute(e, "width").and_then(|v| v.parse().ok());
         let hidden = attribute(e, "hidden").is_some_and(|v| v == "1" || v == "true");
         let outline = attribute(e, "outlineLevel").and_then(|v| v.parse().ok()).unwrap_or(0);
-        for column in min..=max.min(super::MAX_COLUMNS as u32) {
-            sheet.columns.insert(column, Dimension { size: width, hidden, outline, format: None });
+        let format = attribute(e, "style").and_then(|v| v.parse::<usize>().ok()).and_then(|s| formats.get(s)).cloned();
+        for column in min..=max {
+            sheet.columns.insert(column, Dimension { size: width, hidden, outline, format: format.clone() });
         }
     })?;
+    if let Some(e) = over_budget {
+        return Err(e);
+    }
     each("autoFilter", &mut |e, _| {
         if e.local_name().as_ref() == "autoFilter" {
             sheet.autofilter = attribute(e, "ref").and_then(|r| Range::parse(&r).ok());
@@ -746,7 +802,7 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, bu
             sheet.merges.push(range);
         }
     })?;
-    take_cells(budget, sheet.merges.len() + sheet.columns.len())?;
+    take_cells(budget, sheet.merges.len())?;
     each("pageMargins", &mut |e, _| {
         let side = |name: &str| attribute(e, name).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
         sheet.print.margins = Some([side("left"), side("right"), side("top"), side("bottom"), side("header"), side("footer")]);
@@ -796,10 +852,13 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, bu
                 let id = attribute(&e, "id")?;
                 let cell = parse_cell(attribute(&e, "ref")?.split(':').next()?).ok()?;
                 let url = source.relationships.iter().find(|r| r.id == id && r.external)?.target.clone();
-                Some(Hyperlink { cell, url })
+                Some((Hyperlink { cell, url }, id))
             });
             match link {
-                Some(link) => sheet.hyperlinks.push(link),
+                Some((link, id)) => {
+                    sheet.hyperlinks.push(link);
+                    source.link_ids.push(id);
+                }
                 None => source.other_hyperlinks.push(xml),
             }
         }
@@ -866,6 +925,7 @@ impl Workbook {
         let workbook_relationships = text(&all, &book_rels_part).map(|t| rels_of(&t, &book_rels_part)).transpose()?.unwrap_or_default();
         let (root, children) = split_children(&book, &workbook_part)?;
         plain_root(&root, "workbook", &workbook_part)?;
+        let workbook_order: Vec<String> = children.iter().map(|(n, _)| n.clone()).collect();
         let workbook_sections = sections_of(children);
         let date1904 = workbook_sections
             .get("workbookPr")
@@ -933,7 +993,7 @@ impl Workbook {
                     )),
                     None => {
                         let start = xml.find('>').map_or(xml.clone(), |i| xml[..=i].replace("/>", ">"));
-                        other_names.push((start, reference));
+                        other_names.push((name, start, reference));
                     }
                 }
             }
@@ -961,6 +1021,7 @@ impl Workbook {
                 let relationships = text(&all, &rels_name).map(|t| rels_of(&t, &rels_name)).transpose()?.unwrap_or_default();
                 let (root, children) = split_children(&sheet_text, &part)?;
                 plain_root(&root, "worksheet", &part)?;
+                let order: Vec<String> = children.iter().map(|(n, _)| n.clone()).filter(|n| n != "dimension").collect();
                 let mut sections = sections_of(children);
                 let data = sections.remove("sheetData");
                 // Written again from what the sheet holds.
@@ -980,11 +1041,13 @@ impl Workbook {
                     names: local_names.remove(&index).unwrap_or_default(),
                     other_validations: Vec::new(),
                     other_hyperlinks: Vec::new(),
+                    order,
+                    link_ids: Vec::new(),
                 };
                 for xml in data.iter().flatten() {
                     read_sheet_data(xml, &part, &mut sheet, &mut source, &parts, &mut budget)?;
                 }
-                read_settings(&mut sheet, &mut source, &part, &mut budget)?;
+                read_settings(&mut sheet, &mut source, &part, &formats, &mut budget)?;
                 let sheet_base = part.rsplit_once('/').map_or(String::new(), |(d, _)| format!("{d}/"));
                 for r in source.relationships.iter().filter(|r| r.kind.ends_with("/comments")) {
                     let comments_part = resolve_target(&sheet_base, &r.target);
@@ -1041,6 +1104,7 @@ impl Workbook {
             workbook_part,
             workbook_root: with_namespace(root.start, "r", super::OD_RELS),
             workbook_sections,
+            workbook_order,
             workbook_relationships,
             sheet_parts,
             other_names,
@@ -1066,7 +1130,10 @@ impl Workbook {
         use wbvector::FieldValue;
         let extra = super::super::xlsx::geometry_header(layer, options)?;
         let names: Vec<&str> = extra.iter().copied().chain(layer.schema.fields().iter().map(|f| f.name.as_str())).collect();
-        let sheet = self.add_sheet(&layer.name)?;
+        self.check_new_name(&layer.name)?;
+        // Built whole before it joins the workbook, so that a refusal leaves no part of it.
+        let mut built = Worksheet::new(layer.name.clone());
+        let sheet = &mut built;
         let plain = Format::new();
         for (i, name) in names.iter().enumerate() {
             sheet.write_at(1, i as u32 + 1, *name, &plain)?;
@@ -1088,7 +1155,8 @@ impl Workbook {
                 sheet.write_at(row as u32 + 2, column as u32 + 1, value, &plain)?;
             }
         }
-        Ok(sheet)
+        self.sheets.push(built);
+        Ok(self.sheets.last_mut().expect("a sheet was just added"))
     }
 }
 
@@ -1243,7 +1311,7 @@ mod tests {
         );
         let strings = text_part(&bytes, "xl/sharedStrings.xml");
         assert!(strings.contains("rich</t>") && strings.contains("<si><t>edited</t></si>"));
-        assert!(text_part(&bytes, "xl/workbook.xml").contains("<calcPr fullCalcOnLoad=\"1\" calcId=\"191029\"/>"));
+        assert!(text_part(&bytes, "xl/workbook.xml").contains("<calcPr calcId=\"191029\" fullCalcOnLoad=\"1\"/>"));
         let reopened = Workbook::open_bytes(&bytes).unwrap();
         let s = reopened.sheet("Data").unwrap();
         assert_eq!(s.value("B3").unwrap(), Some(&CellValue::Text("edited".into())));
@@ -1265,7 +1333,7 @@ mod tests {
         assert!(sheet.contains("<col min=\"1\" max=\"1\" width=\"33\"") && sheet.contains("<col min=\"2\" max=\"2\" width=\"20\""));
         assert!(sheet.contains("type=\"whole\"") && sheet.contains("&quot;a,b&quot;") && sheet.contains("&quot;c&quot;"), "{sheet}");
         assert!(sheet.contains("location=\"Other!A1\"") && sheet.contains("<hyperlink ref=\"A1\" r:id=\"rIdLink1\"/>"));
-        assert!(sheet.contains("<drawing r:id=\"rId1\"/>") && sheet.contains("<legacyDrawing r:id=\"rIdNoteShapes\"/>"));
+        assert!(sheet.contains("<drawing r:id=\"rId1\"/>") && sheet.contains("<legacyDrawing r:id=\"rIdNoteShapes1\"/>"));
         let rels = text_part(&bytes, "xl/worksheets/_rels/sheet1.xml.rels");
         assert!(rels.contains("drawing1.xml") && rels.contains("https://example.org/") && !rels.contains("Id=\"rId3\""));
         // The notes are written anew, under the next free name.
@@ -1323,6 +1391,145 @@ mod tests {
             text_part(&bytes, "xl/workbook.xml").contains("<workbook xmlns=") && text_part(&bytes, "xl/workbook.xml").contains("xmlns:r=")
         );
         assert!(text_part(&bytes, "xl/worksheets/sheet1.xml").contains("xmlns:r="));
+    }
+
+    #[test]
+    fn unlisted_elements_and_the_workbooks_order_are_kept() {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(foreign_workbook())).unwrap();
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..zip.len() {
+            let mut file = zip.by_index(i).unwrap();
+            let name = file.name().unwrap().to_string();
+            let mut body = String::new();
+            file.read_to_string(&mut body).unwrap();
+            let body = match name.as_str() {
+                "xl/worksheets/sheet1.xml" => {
+                    body.replace("<drawing ", "<mc:AlternateContent xmlns:mc=\"urn:mc\"><mc:Choice/></mc:AlternateContent><drawing ")
+                }
+                "xl/workbook.xml" => body.replace(
+                    "<calcPr calcId=\"191029\"/>",
+                    "<calcPr calcId=\"191029\" fullCalcOnLoad=\"0\"/><oleSize ref=\"A1\"/><pivotCaches/><fileRecoveryPr/><extLst/>",
+                ),
+                _ => body,
+            };
+            out.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+            out.write_all(body.as_bytes()).unwrap();
+        }
+        let mut workbook = Workbook::open_bytes(&out.finish().unwrap().into_inner()).unwrap();
+        workbook.sheet_mut("Data").unwrap().write("C9", 1.0, &Format::new()).unwrap();
+        workbook.define_name("rate", "Data!$C$9").unwrap();
+        let bytes = workbook.to_bytes().unwrap();
+        let sheet = text_part(&bytes, "xl/worksheets/sheet1.xml");
+        assert!(sheet.find("<mc:AlternateContent").unwrap() < sheet.find("<drawing ").unwrap());
+        let book = text_part(&bytes, "xl/workbook.xml");
+        let at = |s: &str| book.find(s).unwrap_or_else(|| panic!("{s}: {book}"));
+        assert!(
+            at("<calcPr") < at("<oleSize")
+                && at("<oleSize") < at("<pivotCaches")
+                && at("<pivotCaches") < at("<fileRecoveryPr")
+                && at("<fileRecoveryPr") < at("<extLst")
+        );
+        assert!(book.contains("fullCalcOnLoad=\"1\"") && !book.contains("fullCalcOnLoad=\"0\""));
+        assert_eq!(book.matches("name=\"rate\"").count(), 1);
+    }
+
+    #[test]
+    fn new_relationships_take_ids_not_in_use() {
+        let mut workbook = Workbook::open_bytes(&foreign_workbook()).unwrap();
+        let s = workbook.sheet_mut("Data").unwrap();
+        s.source.as_mut().unwrap().relationships.push(Relationship {
+            id: "rIdLink1".into(),
+            kind: "x/drawing".into(),
+            target: "d.xml".into(),
+            external: false,
+        });
+        s.source.as_mut().unwrap().relationships.push(Relationship {
+            id: "rIdNoteShapes1".into(),
+            kind: "x/other".into(),
+            target: "o.xml".into(),
+            external: false,
+        });
+        s.hyperlink("C1", "https://example.net/").unwrap();
+        s.comment("C1", "c", "me").unwrap();
+        workbook.add_sheet("Fresh").unwrap();
+        let bytes = workbook.to_bytes().unwrap();
+        for rels in ["xl/worksheets/_rels/sheet1.xml.rels", "xl/_rels/workbook.xml.rels"] {
+            let text = text_part(&bytes, rels);
+            let mut ids: Vec<&str> = text.split("Id=\"").skip(1).map(|r| &r[..r.find('"').unwrap()]).collect();
+            let all = ids.len();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), all, "{text}");
+        }
+    }
+
+    #[test]
+    fn columns_keep_their_width_and_style_when_another_changes() {
+        let mut workbook = Workbook::open_bytes(&foreign_workbook()).unwrap();
+        let s = workbook.sheet_mut("Data").unwrap();
+        s.columns.get_mut(&2).unwrap().format = Some(Format::new().bold());
+        s.set_column_width("E", 12.0).unwrap();
+        let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(
+            sheet.contains("<col min=\"1\" max=\"1\" width=\"20\" customWidth=\"1\"/>")
+                && sheet.contains("<col min=\"5\" max=\"5\" width=\"12\""),
+            "{sheet}"
+        );
+        let mut book = Workbook::new();
+        let s = book.add_sheet("s").unwrap();
+        for c in ["A", "B", "C"] {
+            s.set_column_width(c, 9.0).unwrap();
+        }
+        assert!(text_part(&book.to_bytes().unwrap(), "xl/worksheets/sheet1.xml").contains("<col min=\"1\" max=\"3\" width=\"9\""));
+    }
+
+    #[test]
+    fn a_hidden_active_sheet_gets_a_new_view() {
+        let mut workbook = Workbook::open_bytes(&foreign_workbook()).unwrap();
+        workbook.sheet_mut("Other").unwrap().set_hidden(false);
+        workbook.sheet_mut("Data").unwrap().set_hidden(true);
+        let book = text_part(&workbook.to_bytes().unwrap(), "xl/workbook.xml");
+        assert!(book.contains("activeTab=\"1\""), "{book}");
+        let mut workbook = Workbook::open_bytes(&foreign_workbook()).unwrap();
+        workbook.sheet_mut("Other").unwrap().set_hidden(true);
+        // The read view's active sheet, the second, is now hidden.
+        assert!(text_part(&workbook.to_bytes().unwrap(), "xl/workbook.xml").contains("activeTab=\"0\""));
+    }
+
+    #[test]
+    fn a_package_without_a_properties_relationship_gets_one() {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(foreign_workbook())).unwrap();
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..zip.len() {
+            let mut file = zip.by_index(i).unwrap();
+            let name = file.name().unwrap().to_string();
+            if name == "docProps/core.xml" {
+                continue;
+            }
+            let mut body = String::new();
+            file.read_to_string(&mut body).unwrap();
+            if name == "_rels/.rels" {
+                let i = body.find("<Relationship Id=\"rId2\"").unwrap();
+                body = format!("{}</Relationships>", &body[..i]);
+            }
+            out.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+            out.write_all(body.as_bytes()).unwrap();
+        }
+        let mut workbook = Workbook::open_bytes(&out.finish().unwrap().into_inner()).unwrap();
+        workbook.set_title("T");
+        let bytes = workbook.to_bytes().unwrap();
+        assert!(text_part(&bytes, "_rels/.rels").contains("core-properties\" Target=\"docProps/core.xml\""));
+        assert!(text_part(&bytes, "docProps/core.xml").contains("<dc:title>T</dc:title>"));
+    }
+
+    #[test]
+    fn a_refused_layer_leaves_no_sheet() {
+        let mut layer = wbvector::Layer::new("bad");
+        layer.add_field(wbvector::FieldDef::new("t", wbvector::FieldType::Text));
+        layer.features.push(wbvector::Feature { fid: 0, geometry: None, attributes: vec![wbvector::FieldValue::Text("x".repeat(40_000))] });
+        let mut workbook = Workbook::new();
+        assert!(workbook.add_layer(&layer, &Default::default()).is_err());
+        assert!(workbook.sheet_names().is_empty());
     }
 
     #[test]
