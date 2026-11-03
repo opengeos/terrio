@@ -30,8 +30,13 @@
 //     gcore/gdalrescaledalphaband.cpp
 //     gcore/gdal_cpp_functions.h
 //     gcore/gdalsse_priv.h
+//   GDAL v3.13.3, for resampled reads (`ResampledRead`) and mode nodata:
+//     gcore/overview.cpp (GDALResampleConvolutionHorizontalWithMask: NaN values carry no weight)
+//     gcore/rasterio.cpp (GDALRasterBand::RasterIOResampled: the NBITS clamp)
+//     gcore/gdal_misc.cpp (GDALIsValueInRange)
 
-//! Overviews computed as GDAL 3.12.1 computes them, pixel for pixel.
+//! Overviews computed as GDAL 3.12.1 computes them, pixel for pixel. Resampled window reads
+//! ([`ResampledRead`]) follow GDAL 3.13.3's `RasterIOResampled` with the same kernels.
 //!
 //! GDAL's COG driver (`frmts/gtiff/cogdriver.cpp`, `GDALCOGCreator::Create`) halves the image
 //! until it fits in a tile and has `GTIFFBuildOverviewsEx` (`frmts/gtiff/gt_overview.cpp`) build
@@ -535,8 +540,9 @@ impl Sample for f32 {
             real_equal!(self, n, f32)
         }
     }
+    /// `GDALIsValueInRange<float>`: infinities and finite values of the type, not NaN.
     fn mode_nodata(nd: Option<f64>) -> Self {
-        nd.filter(|n| Self::nodata_in_range(*n)).map_or(0.0, |n| n as f32)
+        nd.filter(|n| n.is_infinite() || (*n >= f32::MIN as f64 && *n <= f32::MAX as f64)).map_or(0.0, |n| n as f32)
     }
     fn same(self, other: Self) -> bool {
         self == other || (self.is_nan() && other.is_nan())
@@ -556,8 +562,9 @@ impl Sample for f64 {
     fn is_nodata(self, nd: f64) -> bool {
         if nd.is_nan() { self.is_nan() } else { real_equal!(self, nd, f64) }
     }
+    /// `GDALIsValueInRange<double>`: any value but NaN.
     fn mode_nodata(nd: Option<f64>) -> Self {
-        nd.unwrap_or(0.0)
+        nd.filter(|n| !n.is_nan()).unwrap_or(0.0)
     }
     fn same(self, other: Self) -> bool {
         self == other || (self.is_nan() && other.is_nan())
@@ -587,6 +594,12 @@ struct Args<'a> {
     nodata: Option<f64>,
     /// The overview's data type (`eOvrDataType`).
     dt: DataType,
+    /// The largest value of the overview's `NBITS`-bit samples, which cubic, cubic spline and
+    /// Lanczos results are clamped to (`fMaxVal` of `GDALResampleChunk_ConvolutionInternal`).
+    max: Option<f64>,
+    /// Whether NaN values of a masked floating-point chunk carry no weight, as in GDAL 3.13's
+    /// `RasterIOResampled` (GDAL 3.12, whose overviews terrio's follow, sums them as NaN).
+    nan_aware: bool,
     /// The overview's size (`nOvrXSize`, `nOvrYSize`): the buffer's, past its virtual offset, in
     /// `RasterIOResampled`.
     ovr: (i64, i64),
@@ -814,7 +827,7 @@ fn h_generic<T: ConvSrc>(p: &[T], w: &[f64], n: usize) -> f64 {
 
 /// `GDALResampleConvolutionHorizontalWithMask`: SSE2 for `GByte` and `GUInt16`, else generic.
 #[inline]
-fn h_masked<T: ConvSrc>(p: &[T], m: &[u8], w: &[f64], n: usize) -> (f64, f64) {
+fn h_masked<T: ConvSrc>(p: &[T], m: &[u8], w: &[f64], n: usize, nan: bool) -> (f64, f64) {
     let mut i = 0;
     if T::SSE {
         let (mut a, mut aw) = ([0.0f64; 4], [0.0f64; 4]);
@@ -835,23 +848,35 @@ fn h_masked<T: ConvSrc>(p: &[T], m: &[u8], w: &[f64], n: usize) -> (f64, f64) {
         }
         (v, ws)
     } else {
+        // With `nan`, as GDAL 3.13 (`GDALResampleConvolutionHorizontalWithMask<T, true>`): a NaN
+        // value carries no weight, rather than making the sum NaN.
+        let add = |x: f64, wk: &mut f64, v: &mut f64| {
+            if nan && x.is_nan() {
+                *wk = 0.0;
+            } else {
+                *v += x * *wk;
+            }
+        };
         let (mut v, mut ws) = (0.0, 0.0);
         while i + 3 < n {
-            let w0 = w[i] * m[i] as f64;
-            let w1 = w[i + 1] * m[i + 1] as f64;
-            let w2 = w[i + 2] * m[i + 2] as f64;
-            let w3 = w[i + 3] * m[i + 3] as f64;
-            v += p[i].d() * w0;
-            v += p[i + 1].d() * w1;
-            v += p[i + 2].d() * w2;
-            v += p[i + 3].d() * w3;
+            let mut w0 = w[i] * m[i] as f64;
+            let mut w1 = w[i + 1] * m[i + 1] as f64;
+            let mut w2 = w[i + 2] * m[i + 2] as f64;
+            let mut w3 = w[i + 3] * m[i + 3] as f64;
+            add(p[i].d(), &mut w0, &mut v);
+            add(p[i + 1].d(), &mut w1, &mut v);
+            add(p[i + 2].d(), &mut w2, &mut v);
+            add(p[i + 3].d(), &mut w3, &mut v);
             ws += w0 + w1 + w2 + w3;
             i += 4;
         }
         while i < n {
             let wk = w[i] * m[i] as f64;
-            v += p[i].d() * wk;
-            ws += wk;
+            let x = p[i].d();
+            if !(nan && x.is_nan()) {
+                v += x * wk;
+                ws += wk;
+            }
             i += 1;
         }
         (v, ws)
@@ -935,6 +960,8 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
     let y_sw = if y_scale >= 1.0 { 1.0 } else { y_scale };
     let y_rad = radius / y_sw;
     let (xn, ny) = (a.cxn as usize, a.cyn as usize);
+    // GDAL 3.13 skips NaN values of a masked floating-point chunk holding any.
+    let nan = a.nan_aware && T::FLOAT && a.mask.is_some() && chunk.iter().any(|v| v.d().is_nan());
     let mut hf = vec![0.0f64; ny * dst_w];
     let mut hm = if a.mask.is_some() { vec![0u8; ny * dst_w] } else { Vec::new() };
     let mut w = vec![0.0f64; (4.0 + 2.0 * x_rad.max(y_rad)) as usize + 8];
@@ -1022,7 +1049,7 @@ fn convolution<T: ConvSrc>(method: Method, a: &Args, chunk: &[T]) -> Vec<f64> {
                         *valid = 0;
                         continue;
                     }
-                    let (v, ws) = h_masked(&row[off..], m, &weights[col * taps..][..taps], n);
+                    let (v, ws) = h_masked(&row[off..], m, &weights[col * taps..][..taps], n, nan);
                     if ws > 0.0 {
                         *o = v / ws;
                         *valid = 1;
@@ -1658,12 +1685,18 @@ fn resample_block<T: Sample>(method: Method, a: &Args, win: &Vec<T>) -> Vec<T> {
         // A `double` buffer, converted to the overview's type by `GDALCopyWords`.
         return gauss(a, &as_work(win, |v| v.to_f64())).into_iter().map(|v| T::from_work(v, false)).collect();
     }
-    let vals = match wt {
+    let mut vals = match wt {
         Work::U8 => run(method, a, &as_work(win, |v| v.to_f64() as u8)),
         Work::U16 => run(method, a, &as_work(win, |v| v.to_f64() as u16)),
         Work::F32 => run(method, a, &as_work(win, |v| v.to_f64() as f32)),
         Work::F64 => run(method, a, &as_work(win, |v| v.to_f64())),
     };
+    // Kernels that overshoot (bilinear does not) are kept within the samples' bits.
+    if let Some(max) = a.max
+        && matches!(method, Method::Cubic | Method::CubicSpline | Method::Lanczos)
+    {
+        vals.iter_mut().filter(|v| **v > max).for_each(|v| *v = max);
+    }
     let single = wt != Work::F64;
     vals.into_iter().map(|v| T::from_work(v, single)).collect()
 }
@@ -1820,6 +1853,8 @@ fn block_row_t<T: Sample>(
             mask: mask.as_deref(),
             nodata,
             dt: T::DT,
+            max: None,
+            nan_aware: false,
             ovr: (plan.dst.0 as i64, plan.dst.1 as i64),
         };
         resample_block(plan.method, &args, &win)
@@ -1885,6 +1920,11 @@ pub(crate) struct ResampledRead {
     /// Through `GDALDataset::RasterIOResampled`: one overview factor for both axes, no nodata
     /// replacement, and fully masked blocks filled with 0.
     pub(crate) dataset: bool,
+    /// The largest value of the band's `NBITS`-bit samples (see [`nbits_max`]), which cubic,
+    /// cubic spline and Lanczos results are clamped to.
+    pub(crate) max: Option<f64>,
+    /// Whether NaN values of a masked floating-point chunk carry no weight, as in GDAL 3.13.
+    pub(crate) nan_aware: bool,
 }
 
 /// One block of a resampled read: its buffer pixels and the source window read for it.
@@ -1996,6 +2036,19 @@ impl ResampledRead {
         (x0 as usize, y0 as usize, (x1 - x0) as usize, (y1 - y0) as usize)
     }
 
+    /// The rows of the buffer in the blocks the read resamples them in, top to bottom, each with
+    /// the source rows its blocks read: `(rows, (y, height))`, `y` in the level's pixels.
+    pub(crate) fn row_blocks(&self) -> Vec<(std::ops::Range<usize>, (usize, usize))> {
+        let mut out: Vec<(std::ops::Range<usize>, (usize, usize))> = Vec::new();
+        // The blocks of a row of blocks are consecutive and read the same source rows.
+        for b in &self.geometry().blocks {
+            if out.last().is_none_or(|(rows, _)| rows.start != b.dy0) {
+                out.push((b.dy0..b.dy0 + b.dyn_, (b.qy0 as usize, b.qyn as usize)));
+            }
+        }
+        out
+    }
+
     /// Resamples `bands` bands of the source `region` (see [`ResampledRead::region`]; band after
     /// band) into the buffer, band after band. A band's mask (0 for invalid pixels, or alpha
     /// values; `None` when all its pixels are valid) has the region's size.
@@ -2007,7 +2060,22 @@ impl ResampledRead {
         masks: &[Option<Vec<u8>>],
         nodata: Option<f64>,
     ) -> RasterData {
-        crate::pixel::map_data!(src, v => self.read_t(v, region, bands, masks, nodata))
+        self.read_rows(src, region, bands, masks, nodata, 0..self.buf.1)
+    }
+
+    /// Resamples the buffer's rows `rows`, whole blocks of rows of [`ResampledRead::row_blocks`],
+    /// as [`ResampledRead::read`] does from a source `region` holding the source rows they read:
+    /// those rows of the buffer, band after band.
+    pub(crate) fn read_rows(
+        &self,
+        src: &RasterData,
+        region: (usize, usize, usize, usize),
+        bands: usize,
+        masks: &[Option<Vec<u8>>],
+        nodata: Option<f64>,
+        rows: std::ops::Range<usize>,
+    ) -> RasterData {
+        crate::pixel::map_data!(src, v => self.read_t(v, region, bands, masks, nodata, rows.clone()))
     }
 
     fn read_t<T: Sample>(
@@ -2017,6 +2085,7 @@ impl ResampledRead {
         bands: usize,
         masks: &[Option<Vec<u8>>],
         nodata: Option<f64>,
+        rows: std::ops::Range<usize>,
     ) -> Vec<T> {
         let g = self.geometry();
         let (bw, bh) = self.buf;
@@ -2024,7 +2093,8 @@ impl ResampledRead {
         let nodata = if self.dataset { None } else { nodata };
         // A fully masked block: the nodata value (0 without), as `GDALCopyWords` converts it.
         let fill = if self.dataset { T::default() } else { T::from_work(nodata.unwrap_or(0.0), false) };
-        let jobs: Vec<(usize, ReadBlock)> = (0..bands).flat_map(|b| g.blocks.iter().map(move |k| (b, *k))).collect();
+        let blocks: Vec<ReadBlock> = g.blocks.iter().filter(|k| rows.contains(&k.dy0)).copied().collect();
+        let jobs: Vec<(usize, ReadBlock)> = (0..bands).flat_map(|b| blocks.iter().map(move |k| (b, *k))).collect();
         let parts = crate::par::map_range(jobs.len(), |j| {
             let (b, k) = jobs[j];
             let band = &src[b * rw * rh..(b + 1) * rw * rh];
@@ -2066,18 +2136,34 @@ impl ResampledRead {
                 mask: mask.as_deref(),
                 nodata,
                 dt: T::DT,
+                max: self.max,
+                nan_aware: self.nan_aware,
                 ovr: (g.vx.unwrap_or(0) + bw as i64, g.vy.unwrap_or(0) + bh as i64),
             };
             resample_block(self.method, &args, &win)
         });
-        let mut out = vec![T::default(); bands * bw * bh];
+        let n = rows.len();
+        let mut out = vec![T::default(); bands * bw * n];
         for ((b, k), part) in jobs.iter().zip(parts) {
             for r in 0..k.dyn_ {
-                out[b * bw * bh + (k.dy0 + r) * bw + k.dx0..][..k.dxn].copy_from_slice(&part[r * k.dxn..][..k.dxn]);
+                out[b * bw * n + (k.dy0 - rows.start + r) * bw + k.dx0..][..k.dxn].copy_from_slice(&part[r * k.dxn..][..k.dxn]);
             }
         }
         out
     }
+}
+
+/// The largest value of samples of `bits` bits of an unsigned type (GDAL's `NBITS`), when they
+/// are fewer than the type's: what `GDALResampleChunk_ConvolutionInternal` clamps the results of
+/// kernels other than bilinear to.
+pub(crate) fn nbits_max(bits: u32, t: DataType) -> Option<f64> {
+    let type_bits = match t {
+        DataType::U8 => 8,
+        DataType::U16 => 16,
+        DataType::U32 => 32,
+        _ => return None,
+    };
+    (bits > 0 && bits < type_bits).then(|| ((1u64 << bits) - 1) as f64)
 }
 
 /// The mask GDAL's `GDALNoDataMaskBand` gives values: 0 where they are the nodata value, else

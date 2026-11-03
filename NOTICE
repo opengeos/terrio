@@ -86,6 +86,7 @@ Terrio files derived from GDAL source files (each file's header names them):
   crates/terrio/src/ops/xyz.rs
   crates/terrio/src/pointcloud/filters/overlay.rs
   crates/terrio/src/pointcloud/grid.rs
+  crates/terrio/src/resampled_read.rs
   crates/terrio/src/stac.rs
   crates/terrio/src/stacta.rs
   crates/terrio/src/tiles/pyramid.rs

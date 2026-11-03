@@ -7,6 +7,7 @@
 // Derived from (translated to Rust and modified):
 //   GDAL v3.13.3:
 //     apps/gdal_translate_lib.cpp
+//     frmts/vrt/vrtsources.cpp (VRTSimpleSource::GetSrcDstWindow)
 
 //! Subsetting, resizing, rescaling and type conversion: an equivalent of `gdal_translate`.
 //!
@@ -16,10 +17,11 @@
 //! type with GDAL's rounding and clamping.
 
 use super::Ct as Transformer;
+use super::overview::OverviewSelection;
 use super::vrt::SourceRead;
 use super::{Grid, Resampling, convert_value, type_range};
 use crate::crs::SpatialRef;
-use crate::{Error, RasterDataset, Result};
+use crate::{Error, LazyRaster, RasterDataset, ResampledReadOptions, Result};
 use wbraster::DataType;
 use wbraster::raster::RasterData;
 
@@ -88,9 +90,19 @@ pub struct TranslateOptions {
     pub assign_ullr: Option<(f64, f64, f64, f64)>,
 }
 
-/// Copies a window of a raster to a new one, optionally resized, rescaled, retyped and with new
-/// georeferencing, as `gdal_translate` does.
-pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDataset> {
+/// The geometry of a translation: the source window, the output size and geotransform, and the
+/// source and destination rectangles once the window is clamped to the raster
+/// (`FixSrcDstWindow`), `None` when it does not intersect it.
+#[derive(Debug, Clone, Copy)]
+struct Geometry {
+    win: (f64, f64, f64, f64),
+    size: (usize, usize),
+    gt: [f64; 6],
+    rects: Option<([f64; 4], [f64; 4])>,
+}
+
+/// The geometry `gdal_translate` gives a translation of `ds` (whose pixels it does not read).
+fn geometry(ds: &RasterDataset, o: &TranslateOptions) -> Result<Geometry> {
     let r = &ds.raster;
     let (w, h) = (r.cols as f64, r.rows as f64);
     let src_gt = ds.geo_transform();
@@ -167,22 +179,33 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
         g
     };
 
-    let bands: Vec<usize> = if o.bands.is_empty() { (1..=r.bands).collect() } else { o.bands.clone() };
-    if let Some(b) = bands.iter().find(|b| **b == 0 || **b > r.bands) {
-        return Err(Error::InvalidArgument(format!("band {b} does not exist (the raster has {})", r.bands)));
-    }
-    let out_type = o.output_type.unwrap_or(r.data_type);
-    let out_nodata: Vec<Option<f64>> = bands.iter().map(|b| o.assign_nodata.unwrap_or_else(|| ds.band_nodata(*b))).collect();
-
     // The destination window, after clamping the source window to the raster (FixSrcDstWindow).
     let (mut s, mut d) = ([win.0, win.1, win.2, win.3], [0.0, 0.0, ow as f64, oh as f64]);
     if o.resolution.is_some() && !nearest {
         d[2] = win.2 * src_gt[1] / gt[1];
         d[3] = win.3 * (src_gt[5] / gt[5]).abs();
     }
-    if !fix_windows(&mut s, &mut d, w, h) {
-        return Err(Error::InvalidArgument("the source window does not intersect the raster".into()));
+    let rects = fix_windows(&mut s, &mut d, w, h).then_some((s, d));
+    Ok(Geometry { win, size: (ow, oh), gt, rects })
+}
+
+/// Copies a window of a raster to a new one, optionally resized, rescaled, retyped and with new
+/// georeferencing, as `gdal_translate` does.
+pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDataset> {
+    let r = &ds.raster;
+    let (w, h) = (r.cols as f64, r.rows as f64);
+    let nearest = o.resampling.is_none_or(|m| m == Resampling::Nearest);
+    let Geometry { win, size: (ow, oh), gt, rects } = geometry(ds, o)?;
+
+    let bands: Vec<usize> = if o.bands.is_empty() { (1..=r.bands).collect() } else { o.bands.clone() };
+    if let Some(b) = bands.iter().find(|b| **b == 0 || **b > r.bands) {
+        return Err(Error::InvalidArgument(format!("band {b} does not exist (the raster has {})", r.bands)));
     }
+    let out_type = o.output_type.unwrap_or(r.data_type);
+    let out_nodata: Vec<Option<f64>> = bands.iter().map(|b| o.assign_nodata.unwrap_or_else(|| ds.band_nodata(*b))).collect();
+    let Some((s, d)) = rects else {
+        return Err(Error::InvalidArgument("the source window does not intersect the raster".into()));
+    };
 
     let complex = o.scale.is_some() || o.exponent.is_some();
     let n = ow * oh;
@@ -281,6 +304,187 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
     res.band_nodata = out_nodata;
     res.driver = ds.driver;
     Ok(res)
+}
+
+/// [`translate`] of a raster read on demand, as `gdal_translate` reads it: the window into the
+/// output's size, from the stored resolution `overview` selects as `-ovr` does
+/// ([`LazyRaster::read_resampled`]: by default the overview `RasterIO` chooses; `AUTO-n`, `NONE`
+/// or a level, that level alone), reading only what the output needs. Bands are read through
+/// the dataset when they are its first ones in order, as `gdal_translate`'s virtual dataset
+/// reads them, else band by band.
+///
+/// Rescaling, an output type other than the source's with resampling other than nearest
+/// neighbour (which GDAL resamples in the output type), a window past the raster's edges, a
+/// destination window of a fraction of a pixel (`-tr` with resampling other than nearest
+/// neighbour) and a raster in memory are translated as [`translate`] translates them, from the
+/// window's level read whole.
+///
+/// # Errors
+///
+/// As [`translate`].
+pub fn translate_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelection) -> Result<RasterDataset> {
+    let header = src.header();
+    let full = geometry(&header, o)?;
+    let count = header.raster.bands;
+    let bands: Vec<usize> = if o.bands.is_empty() { (1..=count).collect() } else { o.bands.clone() };
+    if let Some(b) = bands.iter().find(|b| **b == 0 || **b > count) {
+        return Err(Error::InvalidArgument(format!("band {b} does not exist (the raster has {count})")));
+    }
+    let overviews = src.overviews();
+    let fixed = crate::resampled_read::fixed_level(overview, &overviews, full.size.0);
+    let (selection, level) = match fixed {
+        Some(Some(i)) => (OverviewSelection::Level(i), Some(i)),
+        Some(None) => (OverviewSelection::None, None),
+        None => (OverviewSelection::Auto, None),
+    };
+    // A level read alone (`-ovr`): the window scaled to it, the output's geotransform from its
+    // own, and, without an output size, the output at its resolution.
+    let (level_header, level_options) = match level {
+        Some(i) => {
+            let (lw, lh) = overviews[i];
+            let (w, h) = (header.raster.cols as f64, header.raster.rows as f64);
+            let (rx, ry) = (w / lw as f64, h / lh as f64);
+            let mut lh_ds = header.clone();
+            (lh_ds.raster.cols, lh_ds.raster.rows) = (lw, lh);
+            lh_ds.set_geo_transform(src.level_geo_transform(Some(i))?);
+            for g in &mut lh_ds.gcps {
+                (g.pixel, g.line) = (g.pixel * lw as f64 / w, g.line * lh as f64 / h);
+            }
+            let (ow, oh) = if o.out_size.is_some() || o.resolution.is_some() {
+                full.size
+            } else {
+                let at = |n: usize, r: f64| ((n as f64 / r - 0.001).ceil() as usize).max(1);
+                (at(full.size.0, rx), at(full.size.1, ry))
+            };
+            let (x, y, xs, ys) = full.win;
+            let lo = TranslateOptions {
+                src_win: Some((x / rx, y / ry, xs / rx, ys / ry)),
+                proj_win: None,
+                proj_win_srs: None,
+                out_size: Some((Size::Pixels(ow), Size::Pixels(oh))),
+                ..o.clone()
+            };
+            (lh_ds, lo)
+        }
+        None => (header, o.clone()),
+    };
+    let resampling = o.resampling.unwrap_or_default();
+    let nearest = resampling == Resampling::Nearest;
+    let geom = match level {
+        Some(_) => {
+            // The output's size, set above; `-tr` sets the output's resolution.
+            let mut g = geometry(&level_header, &TranslateOptions { resolution: None, ..level_options.clone() })?;
+            if let Some((xr, yr)) = o.resolution {
+                g.gt[1] = xr;
+                g.gt[5] = if g.gt[5] > 0.0 { yr } else { -yr };
+                if !nearest && let Some((_, d)) = &mut g.rects {
+                    // With resampling, GDAL maps the window to the output at the resolution.
+                    let src_gt = level_header.geo_transform();
+                    d[2] = g.win.2 * src_gt[1] / xr;
+                    d[3] = g.win.3 * (src_gt[5] / g.gt[5]).abs();
+                }
+            }
+            g
+        }
+        None => full,
+    };
+    let (ow, oh) = geom.size;
+    let (x, y, xs, ys) = geom.win;
+    // The window within the raster, mapped onto the whole output (or, with `-tr` and resampling,
+    // most of its last row or column): the window of the output requested from the source, as
+    // `gdal_translate`'s VRT source requests it (`VRTSimpleSource::GetSrcDstWindow`), possibly
+    // past the raster's edge by less than an output pixel.
+    // `s` and `d` are the window and its destination clamped to the raster (`fix_windows`): a
+    // window past the raster's edge maps onto part of the output. A level read alone (`-ovr`,
+    // including `NONE`) scales and clamps its request to the level again (`fixed_request`), so a
+    // window past its edge is translated from the level read whole.
+    let request = geom.rects.and_then(|(s, d)| {
+        if fixed.is_some() && s != [x, y, xs, ys] {
+            return None;
+        }
+        if d == [0.0, 0.0, ow as f64, oh as f64] {
+            return Some((s[0], s[1], s[2], s[3]));
+        }
+        // The output's pixels the destination reaches into, as GDAL counts them (to within
+        // 0.001): all of them, the window then requested past its end in proportion.
+        let reaches = |end: f64, n: usize| (end - 1e-3).ceil() >= n as f64;
+        let covers = d[0] <= 0.0 && d[1] <= 0.0 && reaches(d[0] + d[2], ow) && reaches(d[1] + d[3], oh);
+        let (rx, ry) = (s[2] / d[2], s[3] / d[3]);
+        covers.then(|| (s[0] - d[0] * rx, s[1] - d[1] * ry, ow as f64 * rx, oh as f64 * ry))
+    });
+    let source_type = src.data_type();
+    let lazy = src.is_lazy()
+        && request.is_some()
+        && o.scale.is_none()
+        && o.exponent.is_none()
+        && (nearest || o.output_type.is_none_or(|t| t == source_type))
+        && (nearest || !src.is_complex())
+        && matches!(
+            resampling,
+            Resampling::Nearest
+                | Resampling::Bilinear
+                | Resampling::Cubic
+                | Resampling::CubicSpline
+                | Resampling::Lanczos
+                | Resampling::Average
+                | Resampling::Rms
+                | Resampling::Mode
+        );
+    if !lazy {
+        return match level {
+            Some(i) => {
+                let (lw, lh) = overviews[i];
+                let ds = src.read_window(crate::Window::full(lw, lh), &crate::WindowOptions { bands: Vec::new(), overview: Some(i) })?;
+                translate(&ds, &level_options)
+            }
+            None => match src.dataset() {
+                Some(ds) => translate(ds, o),
+                None => translate(&src.read()?, o),
+            },
+        };
+    }
+    // The request in full-resolution pixels, which `read_resampled` scales to a level read
+    // alone as `gdal_translate -ovr` does, rounding it there as the VRT source does.
+    let window = request.map(|r| match level {
+        Some(_) if r == geom.win => full.win,
+        Some(i) => {
+            let (lw, lh) = overviews[i];
+            let (sx, sy) = (src.width() as f64 / lw as f64, src.height() as f64 / lh as f64);
+            (r.0 * sx, r.1 * sy, r.2 * sx, r.3 * sy)
+        }
+        None => (round_if_close(r.0), round_if_close(r.1), round_if_close(r.2), round_if_close(r.3)),
+    });
+    let read = ResampledReadOptions { bands: bands.clone(), window, size: geom.size, resampling, overview: selection };
+    // gdal_translate's virtual dataset reads its bands together when they are the source's
+    // first ones in order (`VRTDataset::CheckCompatibleForDatasetIO`).
+    let together = bands.iter().enumerate().all(|(i, &b)| b == i + 1);
+    let mut resized = if together { src.read_resampled(&read)? } else { src.read_resampled_by_band(&read)? };
+    resized.set_geo_transform(geom.gt);
+    resized.gcps = level_header
+        .gcps
+        .iter()
+        .cloned()
+        .map(|mut g| {
+            g.pixel = (g.pixel - x) * ow as f64 / xs;
+            g.line = (g.line - y) * oh as f64 / ys;
+            g
+        })
+        .collect();
+    let values = TranslateOptions {
+        output_type: o.output_type,
+        assign_nodata: o.assign_nodata,
+        assign_srs: o.assign_srs.clone(),
+        assign_ullr: o.assign_ullr,
+        ..Default::default()
+    };
+    translate(&resized, &values)
+}
+
+/// A value within 0.001 of a whole number, rounded to it, as `gdal_translate`'s VRT source rounds
+/// its request (`RoundIfCloseToInt`).
+pub(crate) fn round_if_close(v: f64) -> f64 {
+    let closest = (v + 0.5).floor();
+    if (v - closest).abs() < 1e-3 { closest } else { v }
 }
 
 /// The smallest and largest valid values.

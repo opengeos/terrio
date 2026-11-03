@@ -39,7 +39,9 @@
 //! [`LazyRaster::read_window`] decodes only the tiles it needs, fetched with HTTP range requests.
 //! [`LazyRaster::read_window_f32`] reads a window as `f32` values instead, NaN where GDAL's mask
 //! band marks pixels invalid (their nodata value, or the raster's mask), scales and offsets
-//! applied on request ([`FloatReadOptions`]).
+//! applied on request ([`FloatReadOptions`]). [`LazyRaster::read_resampled`] reads a window into
+//! an output of another size as GDAL's `RasterIO` does, from the overview it would choose
+//! ([`ResampledReadOptions`]).
 //!
 //! ```no_run
 //! let mut cog = terrio::open_raster_lazy("https://example.com/cog.tif")?;
@@ -237,6 +239,7 @@ mod pixel;
 #[cfg(feature = "pointcloud")]
 #[cfg_attr(docsrs, doc(cfg(feature = "pointcloud")))]
 pub mod pointcloud;
+mod resampled_read;
 #[cfg(remote)]
 #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
 pub mod s3;
@@ -296,6 +299,7 @@ pub use float_read::FloatReadOptions;
 #[cfg(feature = "ndarray")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ndarray")))]
 pub use ndarray;
+pub use resampled_read::ResampledReadOptions;
 // Raster pixels as `ndarray` arrays, without copying them.
 #[cfg(feature = "ndarray")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ndarray")))]
