@@ -99,6 +99,8 @@ DIFFERS = "differs"
 # A case whose reference values could not be computed (no coordinates to compare), reported apart.
 NOT_COMPARED = "not compared"
 
+GDAL_FREE_SUITES = frozenset(("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"))
+
 
 @dataclasses.dataclass
 class Case:
@@ -3450,7 +3452,7 @@ def main():
 
     def go(name):
         start = datetime.datetime.now()
-        if gdal_missing and name not in ("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"):
+        if gdal_missing and name not in GDAL_FREE_SUITES:
             fn = SUITES[name]
             s = Suite(name, name, "", fn.__doc__ or "")
             s.skipped = "needs the Python modules " + ", ".join(gdal_missing)

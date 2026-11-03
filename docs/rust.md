@@ -708,6 +708,7 @@ with additional cell/model memory accounting. These are safety limits rather
 than recommended workbook sizes.
 
 `layer(sheet, &XlsxOptions)` projects a sheet into Terrio's vector model;
-`add_layer` imports a vector layer with the same table options used by the CLI
-and language bindings. The layer projection currently serializes and rereads the
+`add_layer` imports a vector layer’s fields and features, applying only the
+`GEOMETRY` option. Layout options are ignored; arrange the returned sheet with
+its methods. The layer projection currently serializes and rereads the
 workbook, so it has additional memory and processing costs.

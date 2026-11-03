@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- XLSX workbook byte input now enforces the same compressed-size limit as path input.
+- `Workbook::open_bytes` now enforces the same compressed-size limit as `Workbook::open`.
   Workbook authoring and editing are checked against openpyxl in CI, including retained
   chart, drawing, table and theme parts (#405).
 

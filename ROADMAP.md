@@ -255,8 +255,9 @@ Command-group progress:
 - [x] Vector: Shapefile (with `.prj`, `.cpg` and zipped), FlatGeobuf (with its spatial index),
       GeoParquet 1.1 (with bounding-box filtering), CSV with point or WKT columns, XLSX as GDAL's
       driver reads and writes it.
-- [x] XLSX layer layout options across Rust, CLI/MCP, Python and JavaScript/WASM,
-      and a Rust workbook model beyond GDAL
+- [ ] XLSX layer layout options across Rust, CLI/MCP, Python and JavaScript/WASM,
+      and a Rust workbook model beyond GDAL; `Workbook::add_layer` still needs
+      to apply layout options
       ([#405](https://github.com/opengeos/terrio/issues/405)).
 - [x] Attribute and spatial filters pushed down to the drivers that support them.
 - [x] `terrio convert` between any two supported formats.

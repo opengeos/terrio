@@ -22,7 +22,7 @@ def main():
     Returns:
         The process exit code.
     """
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("workbook")
     parser.add_argument("--json", type=Path, help="Write the comparison cases as JSON")
     args = parser.parse_args()
