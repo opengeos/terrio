@@ -327,18 +327,37 @@ fn sample_sources(a: &SampleArgs) -> Result<(Vec<terrio::RasterDataset>, Vec<Str
 pub struct ZonalArgs {
     #[command(flatten)]
     sources: SampleArgs,
-    /// Statistics, comma-separated: count,min,max,mean,sum,stddev,median. Uses population standard deviation.
+    /// Statistics, comma-separated: count,min,max,mean,sum,stddev,median,
+    /// weighted_mean,weighted_sum,weighted_stddev. Uses population standard deviation.
     #[arg(long, value_delimiter = ',', default_value = "count,min,max,mean,sum,stddev")]
     stats: Vec<String>,
     /// Include every pixel touched by each polygon, instead of pixels whose centres are inside.
     #[arg(long)]
     all_touched: bool,
+    /// Weight pixels by the polygon/cell intersection fraction. Incompatible with --all-touched.
+    #[arg(long, conflicts_with = "all_touched")]
+    fractional: bool,
+    /// Weighting raster, aligned to every input grid (for weighted_mean, weighted_sum, weighted_stddev).
+    #[arg(long)]
+    weights: Option<String>,
+    /// Weighting band, numbered from 1.
+    #[arg(long, default_value_t = 1)]
+    weight_band: usize,
 }
 
 pub fn zonal(a: ZonalArgs) -> Result<()> {
-    use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions, zonal_stats};
+    use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions, ZonalWeight, zonal_stats};
+    let stats: Vec<_> = a.stats.iter().map(|s| Statistic::parse(s)).collect::<Result<_>>()?;
+    let weights = a
+        .weights
+        .as_deref()
+        .filter(|_| stats.iter().any(|s| s.uses_weights()))
+        .map(|p| super::quiet(|| terrio::open_raster(p)))
+        .transpose()?;
     let options = ZonalOptions {
-        stats: a.stats.iter().map(|s| Statistic::parse(s)).collect::<Result<_>>()?,
+        fractional: a.fractional,
+        weights: weights.map(|raster| ZonalWeight { raster: std::sync::Arc::new(raster), band: a.weight_band }),
+        stats,
         all_touched: a.all_touched,
         dst_srs: a.sources.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose()?,
         decimal_places: a.sources.decimal_places,

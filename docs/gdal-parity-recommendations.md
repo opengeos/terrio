@@ -183,8 +183,10 @@ viewshed and pansharpening can ship independently. Schedule indexed catalogs and
 the multidimensional model according to demand for continental mosaics and
 scientific data cubes, respectively.
 
-Other worthwhile follow-ups are weighted/fractional zonal statistics, OGC API
-Features access and overview refresh tooling. Avoid prioritizing proprietary
+Weighted/fractional zonal statistics now extend the existing zonal operation, with
+aligned weighting rasters and exactextract-style coverage fractions (see the CLI
+for the supported statistics and numeric allowances). Other worthwhile follow-ups
+are OGC API Features access and overview refresh tooling. Avoid prioritizing proprietary
 drivers and core database connections: the current roadmap explicitly excludes
 them and provides an optional GDAL backend for the long tail.
 

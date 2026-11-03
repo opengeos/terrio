@@ -287,8 +287,13 @@ raster path entries are materialized separately; paths are not cached. Each poly
 transformed into each raster's CRS before center/all-touched membership is evaluated.
 Nodata and nonfinite values are excluded; empty zones have count zero and null other
 statistics. `t_srs` reprojects output geometry; `decimal_places` (0–15) rounds only
-newly computed floating statistics. Counts and source attributes are unchanged.
-Weighted/fractional statistics are not implemented.
+newly computed floating statistics. Integer counts and source attributes are unchanged.
+Use `fractional=True` for polygon/cell coverage fractions, with Real counts and
+coverage-weighted mean/sum/stddev/median. Supply `weights=` and `weight_band=1`,
+then select `weighted_mean`, `weighted_sum` or `weighted_stddev` in `stats` for a
+second weighting raster. It must match every value raster's grid and CRS.
+See [fractional zonal statistics](https://terrio.dev/cli/#fractional-coverage-and-weighting-rasters)
+for formulas, nodata/zero-weight behavior and limits.
 
 The shared engine's geometry, CRS, precision and eager-memory limits apply.
 

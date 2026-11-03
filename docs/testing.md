@@ -2211,3 +2211,54 @@ Per-observer elevation/visibility buffers are reused and only the final dataset
 is built. Work remains proportional to observers × pixels; for example, a
 10,000 × 10,000 raster at spacing 10 needs a million observer sweeps. There is
 no arbitrary work cutoff; crop or increase spacing for expensive workloads.
+
+### Fractional and weighted zonal statistics
+
+```sh
+python scripts/conformance.py ../terrio-data --only fractional-zonal --strict
+```
+
+Requires current Python bindings, GDAL 3.13.3, exactextract 0.3.0, NumPy and Shapely;
+Node/WASM is included when `js/pkg-node/terrio.js` is built. Six real-data cases
+(USGS DEM and NLCD, each with coverage-only, positive weights and missing weights)
+run through CLI, Python and optional Node/WASM. Zones include fractional edges,
+holes, overlaps and multipolygons. GDAL and exactextract must first agree within
+relative 2e-7 or absolute 1e-7; native results use the same allowance. Reference
+coverage is Float32, while native overlay areas are binary64. Source geometry,
+attributes, feature IDs, CRS, Real output types and null weighted statistics are
+checked separately and exactly. These are numeric comparisons within tolerance,
+not pixel-identical claims.
+
+Median uses exactextract on the same stored samples promoted to Float64, so its
+integer/Float32 quantile cast does not truncate the fractional result. GDAL 3.13.3
+advertises median but rejects it. Native empty zones keep null sums, while the
+references return zero sums; dedicated native regressions retain that documented
+policy. Weight rasters currently require identical grids and CRSs. The eager
+operation retains its existing full-raster materialization; fractional masks are
+cropped per zone and shared across bands, and binary membership masks retain their
+original Byte storage.
+
+A local optimized run passed all 18 comparisons within the stated tolerance. Maximum
+absolute errors were 0.00447 for coverage-only USGS statistics and 12.12 for sums
+weighted by the raw elevation-derived weights (sums about 1.16e10); NLCD maxima
+were 3.99e-5 and 0.00107, respectively.
+
+The weighted median port is attributed in its SPDX header and both NOTICE files;
+`reuse lint` checks the complete repository against REUSE 3.3.
+
+The boundary fast path uses an R-tree of polygon edges and row scanline parity;
+only boundary candidate cells require polygon overlay. It agrees with independent
+per-cell overlays on interior, exterior, partial-cell and raster-surrounding shapes.
+A local optimized 966 × 731 real NLCD run (706,146 pixels, count/mean/sum/stddev/median,
+one fractional zone) took median 1.03 s before and 0.119 s afterward over three runs.
+Peak RSS was 67.4–69.6 MiB before and 69.6–70.1 MiB afterward. Against exactextract
+on the same samples promoted to Float64, the largest relative statistic error was
+2.74e-10; maximum absolute sum error was 0.00761. These are local measurements,
+not portable performance thresholds. Fractional masks retain binary64 coverage
+(8 bytes/cell); existing binary membership masks remain Byte.
+
+For a complete 966×731 NLCD window and count-only requests, three fresh-process
+runs measured binary median 0.06796 s / peak RSS 44.2–44.7 MiB, and fractional
+median 0.08048 s / peak RSS 49.6–50.6 MiB. Both counts matched the source's valid
+pixel count. The masks themselves use 706,146 and 5,649,168 bytes respectively;
+the process measurements include decoding and runtime overhead.

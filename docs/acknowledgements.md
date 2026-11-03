@@ -3,7 +3,9 @@
 terrio stands on the work of many projects and their authors. Thank you to all of them.
 
 terrio is released under the MIT License, except its point cloud eigensolver
-(`pointcloud/filters/selfadjoint.rs`), a port of Eigen under MPL-2.0, but much of it is ported or adapted from these
+(`pointcloud/filters/selfadjoint.rs`), a port of Eigen under MPL-2.0, and its
+coverage-weighted median (`ops/zonal_weighted_median.rs`), adapted from exactextract
+under Apache-2.0. Much of it is ported or adapted from these
 projects, and the copyright in that code and data remains with their authors: Frank Warmerdam,
 Even Rouault and the GDAL contributors; Gerald Evenden, Frank Warmerdam, Even Rouault and the PROJ
 contributors; Hobu, Inc. and the PDAL contributors; and the authors of the other projects below.
@@ -184,6 +186,12 @@ TPVW corner removal and ring rebuilding from commit
 `3460207216f3091cd7f72d48d6ddd1b561b2b8fd`, using the Eclipse Distribution License
 1.0 (BSD-3-Clause). Its source header, NOTICE entries and JTS provenance document
 retain exact source paths and copyright notices.
+
+## exactextract
+
+Coverage-weighted medians adapt the interpolated weighted quantiles of
+[exactextract](https://github.com/isciences/exactextract) (ISciences, Apache-2.0).
+Polygon coverage fractions use Terrio's existing pure-Rust geo topology engine.
 
 ## Notices and licenses
 

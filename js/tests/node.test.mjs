@@ -3619,6 +3619,22 @@ test("a KML style table is read and written back", () => {
   assert.equal(Object.getOwnPropertyDescriptor(terrio.open(new TextEncoder().encode(odd), "a.kml").styleTable, "__proto__").value, style);
 });
 
+test("fractional zonalStats combines coverage and a weighting raster", () => {
+  const values = terrio.rasterFromArray(new Float64Array([10, 30]), 2, 1, [0, 1, 0, 1, 0, -1], "EPSG:4326");
+  const weights = terrio.rasterFromArray(new Float64Array([2, 4]), 2, 1, [0, 1, 0, 1, 0, -1], "EPSG:4326");
+  const zones = {type: "Polygon", coordinates: [[[0.5, 0], [2, 0], [2, 1], [0.5, 1], [0.5, 0]]]};
+  const stats = ["count", "sum", "median", "weighted_mean", "weighted_sum", "weighted_stddev"];
+  for (const source of [weights, weights.toBytes("weights.tif")]) {
+    const result = terrio.zonalStats(zones, values, {fractional: true, weights: source, stats}).toGeoJSON().features[0].properties;
+    const expected = [1.5, 35, 20, 26, 130, 8];
+    stats.forEach((name, i) => assert.ok(Math.abs(result[`raster1_b1_${name}`] - expected[i]) < 1e-10));
+  }
+  // The existing binary rasterizer excludes the centre on this polygon's left boundary.
+  assert.equal(terrio.zonalStats(zones, values, {stats: ["count"], weights: new Uint8Array([0])}).toGeoJSON().features[0].properties.raster1_b1_count, 1);
+  assert.throws(() => terrio.zonalStats(zones, values, {fractional: true, allTouched: true}), /mutually exclusive/);
+  assert.throws(() => terrio.zonalStats(zones, values, {stats: ["weighted_mean"]}), /require a weighting raster/);
+});
+
 test("render draws rasters and vector layers as RGBA and PNG", () => {
   const grid = new TextEncoder().encode("ncols 4\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\nNODATA_value -9\n1 2 3 4\n5 6 7 -9\n");
   const raster = terrio.open(grid, "grid.asc");

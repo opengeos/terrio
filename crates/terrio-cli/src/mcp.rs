@@ -252,11 +252,14 @@ fn tempfile_directory() -> std::io::Result<std::path::PathBuf> {
     getrandom::fill(&mut secret).map_err(|e| std::io::Error::other(e.to_string()))?;
     let name: String = secret.iter().map(|b| format!("{b:02x}")).collect();
     let path = std::env::temp_dir().join(format!("terrio-preview-{name}"));
-    #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(&path)?;
+    {
+        let mut builder = std::fs::DirBuilder::new();
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&path)?;
+    }
+    #[cfg(not(unix))]
+    std::fs::DirBuilder::new().create(&path)?;
     Ok(path)
 }
 

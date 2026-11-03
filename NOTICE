@@ -1499,6 +1499,21 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 -------------------------------------------------------------------------------
+exactextract weighted quantiles
+------------------------------
+
+The coverage-weighted median in crates/terrio/src/ops/zonal_weighted_median.rs
+adapts WeightedQuantiles::prepare and ::quantile from exactextract's
+src/weighted_quantiles.cpp, revision 76a48f00a497a76c77a821a28705026ec051191a:
+https://github.com/isciences/exactextract
+
+  Copyright (c) 2019-2020 ISciences, LLC.
+  All rights reserved.
+
+Terrio combines equal values into a histogram and computes only its median;
+polygon/cell intersections use the existing Rust geo engine.
+Licensed under the Apache License, Version 2.0, reproduced below.
+
 Apache License, Version 2.0
 -------------------------------------------------------------------------------
 

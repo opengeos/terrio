@@ -119,7 +119,7 @@ fn make_valid(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> 
 /// Summarize raster bands for polygon zones. All input raster pixels are materialized.
 /// Prefix defaults are raster1, raster2, etc.; fields are PREFIX_bN_STATISTIC.
 #[pyfunction]
-#[pyo3(signature=(zones, rasters, *, bands=None, prefixes=None, stats=None, all_touched=false, t_srs=None, decimal_places=None, layer=None))]
+#[pyo3(signature=(zones, rasters, *, bands=None, prefixes=None, stats=None, all_touched=false, t_srs=None, decimal_places=None, layer=None, fractional=false, weights=None, weight_band=1))]
 #[allow(clippy::too_many_arguments)]
 fn zonal_stats(
     py: Python<'_>,
@@ -132,17 +132,24 @@ fn zonal_stats(
     t_srs: Option<String>,
     decimal_places: Option<u8>,
     layer: Option<String>,
+    fractional: bool,
+    weights: Option<&Bound<'_, PyAny>>,
+    weight_band: usize,
 ) -> PyResult<PyLayer> {
-    use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions};
+    use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions, ZonalWeight};
     if prefixes.as_ref().is_some_and(|p| p.iter().any(|p| p.trim().is_empty())) {
         return Err(pyo3::exceptions::PyValueError::new_err("raster field prefixes cannot be empty"));
     }
+    let stats = stats
+        .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
+        .transpose()
+        .py()?
+        .unwrap_or_else(|| ZonalOptions::default().stats);
+    let weights = weights.filter(|_| stats.iter().any(|s| s.uses_weights())).map(|src| crate::ops::input_raster(py, src)).transpose()?;
     let options = ZonalOptions {
-        stats: stats
-            .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
-            .transpose()
-            .py()?
-            .unwrap_or_else(|| ZonalOptions::default().stats),
+        fractional,
+        weights: weights.map(|raster| ZonalWeight { raster: std::sync::Arc::new(raster), band: weight_band }),
+        stats,
         all_touched,
         dst_srs: t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().py()?,
         decimal_places,

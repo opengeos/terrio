@@ -969,6 +969,46 @@ def suite_cumulative_viewshed(ctx):
     return suite
 
 
+
+def suite_fractional_zonal(ctx):
+    """Fractional coverage and weight rasters against GDAL and exactextract."""
+    suite = Suite("fractional-zonal", "Fractional and weighted zonal statistics", "GDAL 3.13.3 and exactextract 0.3.0",
+                  "Real USGS DEM and NLCD pixels with partial boundaries, holes and multipolygons. "
+                  "Count/min/max/mean/sum/population standard deviation and weighted mean/sum/standard deviation "
+                  "against GDAL and exactextract; median against exactextract on the same stored samples promoted to Float64 (it otherwise casts quantiles to the source type); GDAL 3.13.3 advertises but rejects median. "
+                  "Numeric relative tolerance 2e-7 or absolute 1e-7 (reference coverage uses Float32); "
+                  "nulls, Real schema, source geometry, attributes and CRS exact. "
+                  "Inputs and weights use identical affine grids. Native empty zones retain null sums rather than the references' zero sums.")
+    missing = missing_modules("terrio", "osgeo", "numpy", "shapely", "exactextract")
+    if missing:
+        suite.skipped = "needs current Python bindings and " + ", ".join(missing)
+        return suite
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13 for fractional zonal-stats"
+        return suite
+    args = [sys.executable, str(SCRIPTS / "compare_fractional_zonal_with_gdal.py"), ctx.data,
+            "--terrio", ctx.terrio, "--json"]
+    package = ROOT / "js/pkg-node/terrio.js"
+    node = node_exports_available(package, ["zonalStats"])
+    if node:
+        args += ["--node-package", str(package)]
+    code, out, err = run(args)
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        status = {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS)
+        suite.cases.append(Case("fractional zonal", result["name"], status, result["detail"]))
+    if len(results) != (18 if node else 12) or code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out) or "incomplete fractional zonal comparisons"
+    if not node:
+        suite.cases.append(Case("fractional zonal", "Node/WASM", NOT_COMPARED, "build js/pkg-node and install Node"))
+    return suite
+
+
 def suite_dem_calc(ctx):
     """Terrain, viewshed, algebra, proximity and sieve against GDAL tools."""
     return suite_json_ops(
@@ -3044,6 +3084,7 @@ SUITES = OrderedDict(
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("cumulative-viewshed", suite_cumulative_viewshed),
+        ("fractional-zonal", suite_fractional_zonal),
         ("gpkg-repack", suite_gpkg_repack),
         ("gpkg-validate", suite_gpkg_validate),
         ("pansharpen", suite_pansharpen),
