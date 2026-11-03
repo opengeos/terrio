@@ -1940,7 +1940,8 @@ pub(crate) mod fallible {
 mod tests {
     #[test]
     fn a_misspelled_layer_name_beside_a_valid_one_is_refused() {
-        let options = |names: &[&str]| crate::VectorOpenOptions { layers: names.iter().map(|n| n.to_string()).collect(), ..Default::default() };
+        let options =
+            |names: &[&str]| crate::VectorOpenOptions { layers: names.iter().map(|n| n.to_string()).collect(), ..Default::default() };
         let layers = || vec![crate::Layer::new("roads"), crate::Layer::new("rivers")];
         let kept = super::select_layers(layers(), "/data/map.kml", &options(&["rivers"])).unwrap();
         assert_eq!(kept.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["rivers"]);
