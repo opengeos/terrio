@@ -3655,3 +3655,6 @@ the normal user-input parser.
 OAPIF items URLs honor `offset` and use URL `crs` as an explicit CRS selector;
 combining URL `crs` with `CRS`/`PREFERRED_CRS` options is rejected. Paging preserves
 active bbox/datetime/CRS selectors when next links omit them.
+
+OAPIF metadata extents that cross the antimeridian are reported as unknown.
+A zero-feature range returns empty layers without schema or item requests.

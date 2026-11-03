@@ -43,8 +43,12 @@ def profiles():
         ("BAG geographic authority axes", BUILDINGS, ["CRS=EPSG:4258"], None),
     ]
     source, layer = open_reference(LAKES, [])
-    first = layer.GetNextFeature()
-    geometry = first.GetGeometryRef()
+    for first in layer:
+        geometry = first.GetGeometryRef()
+        if geometry is not None and not geometry.IsEmpty():
+            break
+    else:
+        raise RuntimeError("no lake feature has a nonempty geometry")
     while geometry.GetGeometryCount():
         geometry = geometry.GetGeometryRef(0)
     x, y, *_ = geometry.GetPoint(0)

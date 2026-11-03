@@ -235,7 +235,10 @@ impl Reader {
         let (path, query) = split_url(url);
         let first = if path.trim_end_matches('/').ends_with("/items") {
             let parent = path.trim_end_matches('/').trim_end_matches("/items");
-            format!("{parent}{}", query.map(|q| format!("?{q}")).unwrap_or_default())
+            without_query(
+                &format!("{parent}{}", query.map(|q| format!("?{q}")).unwrap_or_default()),
+                &["limit", "offset", "bbox", "datetime", "crs", "bbox-crs"],
+            )
         } else {
             url.into()
         };
@@ -433,6 +436,16 @@ impl Reader {
         Ok(())
     }
     fn begin_collection(&mut self) -> Result<()> {
+        // A zero-feature catalog does not need schemas or items. Iterate rather than
+        // recursively entering the next collection for every empty layer.
+        while self.options.max_features == Some(0) && self.index < self.collections.len() {
+            if let Some(error) = &self.collections[self.index].crs_error {
+                return Err(Error::InvalidData(error.clone()));
+            }
+            self.features.clear();
+            self.fields.clear();
+            self.end_collection()?;
+        }
         if self.index == self.collections.len() {
             self.phase = Phase::Done;
             return Ok(());
@@ -475,9 +488,7 @@ impl Reader {
         if let Some((a, b, d, e)) = self.options.spatial_filter {
             let bounds = if c.swap { [b, a, e, d] } else { [a, b, d, e] };
             url = query_value(&url, "bbox", &bounds.iter().map(f64::to_string).collect::<Vec<_>>().join(","));
-            if !is_crs84(&c.crs_uri) {
-                url = query_value(&url, "bbox-crs", &c.crs_uri);
-            }
+            url = if is_crs84(&c.crs_uri) { without_query(&url, &["bbox-crs"]) } else { query_value(&url, "bbox-crs", &c.crs_uri) };
         }
         self.schedule(url, Phase::Items)
     }
@@ -498,6 +509,18 @@ impl Reader {
             }
             next
         });
+        if let Some(query) = next.as_deref().and_then(|url| split_url(url).1) {
+            for pair in query.split('&') {
+                let Some((key, val)) = pair.split_once('=') else { continue };
+                if crate::vfs::decode_query_component(key).eq_ignore_ascii_case("crs") {
+                    let asked = crate::vfs::decode_query_component(val);
+                    let c = &self.collections[self.index];
+                    if is_crs84(&asked) != is_crs84(&c.crs_uri) || !SpatialRef::parse_literal(&asked).is_ok_and(|crs| crs.same_as(&c.crs)) {
+                        return Err(invalid("next page changes the collection CRS"));
+                    }
+                }
+            }
+        }
         let matched = value.get("numberMatched").and_then(Value::as_u64);
         let returned = value.get("numberReturned").and_then(Value::as_u64);
         let page =
@@ -600,7 +623,7 @@ impl Reader {
         self.retained_cells = self.retained_cells.saturating_add(layer.features.len().saturating_mul(layer.schema.fields().len()));
         self.layers.push(layer);
         self.index += 1;
-        self.begin_collection()
+        if self.options.max_features == Some(0) { Ok(()) } else { self.begin_collection() }
     }
 }
 
@@ -656,6 +679,18 @@ fn has_query(url: &str, name: &str) -> bool {
     split_url(url).1.is_some_and(|q| {
         q.split('&').any(|p| crate::vfs::decode_query_component(p.split('=').next().unwrap_or("")).eq_ignore_ascii_case(name))
     })
+}
+fn without_query(url: &str, names: &[&str]) -> String {
+    let (path, query) = split_url(url);
+    let pairs: Vec<&str> = query
+        .unwrap_or("")
+        .split('&')
+        .filter(|pair| {
+            let key = crate::vfs::decode_query_component(pair.split('=').next().unwrap_or(""));
+            !pair.is_empty() && !names.iter().any(|name| key.eq_ignore_ascii_case(name))
+        })
+        .collect();
+    if pairs.is_empty() { path.into() } else { format!("{path}?{}", pairs.join("&")) }
 }
 fn query_value(url: &str, name: &str, value: &str) -> String {
     let (path, query) = split_url(url);
@@ -785,10 +820,8 @@ fn schema_fields(root: &Value) -> Result<Vec<FieldDef>> {
                 || v.get("enum").and_then(Value::as_array).is_some_and(|types| types.iter().any(|t| t.as_str() == Some("Feature")))
         });
     let properties = if is_feature {
-        let Some(feature_properties) = properties.get("properties") else { return Ok(Vec::new()) };
-        let nested = resolve_ref(document, feature_properties, 0)?;
-        let Some(properties) = nested.get("properties").and_then(Value::as_object) else { return Ok(Vec::new()) };
-        properties
+        let nested = resolve_ref(document, &properties["properties"], 0)?;
+        nested.get("properties").and_then(Value::as_object).unwrap_or(properties)
     } else {
         properties
     };
@@ -931,6 +964,7 @@ mod tests {
         let mut r =
             Reader::new("https://example.test/collections/a/items?offset=1&crs=EPSG:4326&bbox=1,2,3,4&datetime=2020", &Default::default())
                 .unwrap();
+        assert_eq!(r.next_request().unwrap().url, "https://example.test/collections/a");
         let mut c = collection("a");
         c["crs"] = json!([CRS84, "http://www.opengis.net/def/crs/EPSG/0/4326"]);
         accept(&mut r, c);
@@ -957,6 +991,34 @@ mod tests {
         r.schedule("https://example.test/new".into(), Phase::Items).unwrap();
         assert_eq!(r.next_request().unwrap().byte_limit, 1);
         assert!(r.accept_response(b"{}").is_err());
+    }
+    #[test]
+    fn replacement_bbox_discards_stale_bbox_crs_and_next_links_cannot_change_crs() {
+        let o = VectorOpenOptions { spatial_filter: Some((1., 2., 3., 4.)), ..Default::default() };
+        let mut r = Reader::new("https://example.test/collections/a/items?bbox=0,0,9,9&bbox-crs=EPSG:3857&key=caller", &o).unwrap();
+        assert_eq!(r.next_request().unwrap().url, "https://example.test/collections/a?key=caller");
+        accept(&mut r, collection("a"));
+        let url = &r.next_request().unwrap().url;
+        assert!(url.contains("bbox=1%2C2%2C3%2C4"));
+        assert!(!has_query(url, "bbox-crs"));
+        let p = page(vec![feature(json!(1), json!({}))], Some("?offset=1&crs=EPSG:4326"));
+        let err = r.accept_response(&serde_json::to_vec(&p).unwrap()).unwrap_err();
+        assert!(err.to_string().contains("changes the collection CRS"));
+    }
+    #[test]
+    fn zero_feature_catalogs_iterate_without_schema_or_item_requests() {
+        let o = VectorOpenOptions { max_features: Some(0), ..Default::default() };
+        let mut r = Reader::new("https://example.test/collections", &o).unwrap();
+        let collections: Vec<_> = (0..10000)
+            .map(|i| {
+                json!({"id":format!("c{i}"), "links":[
+            {"rel":"describedby","type":"application/schema+json","href":"/schema"}]})
+            })
+            .collect();
+        accept(&mut r, json!({"collections":collections}));
+        assert_eq!(r.requests, 1);
+        assert!(r.next_request().is_none());
+        assert_eq!(r.finish().unwrap().layers.len(), 10000);
     }
     #[test]
     fn landing_discovery_pagination_and_field_union_preserve_identity() {
@@ -1025,6 +1087,12 @@ mod tests {
         assert_eq!(l.features[0].get(&l.schema, "optional").unwrap(), &FieldValue::Integer(42));
         assert_eq!(l.features[0].get(&l.schema, "unknown").unwrap(), &FieldValue::Float(2.5));
         assert_eq!(l.features[0].get(&l.schema, "typed").unwrap(), &FieldValue::Text("yes".into()));
+        let flat = schema_fields(&json!({"properties":{
+            "type":{"const":"Feature"},"geometry":{"type":"object"},
+            "properties":{"type":"string"},"sibling":{"type":"number"}
+        }}))
+        .unwrap();
+        assert!(flat.iter().any(|f| f.name == "sibling" && f.field_type == FieldType::Float));
         let scalar = schema_fields(&json!({"properties":{"properties":{"type":"string"}}})).unwrap();
         assert_eq!(scalar.len(), 1);
         assert_eq!(scalar[0].name, "properties");
