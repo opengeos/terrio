@@ -372,6 +372,8 @@ struct Cell {
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Dimension {
     size: Option<f64>,
+    /// Whether the column's width was set, rather than following the sheet's default.
+    custom: bool,
     hidden: bool,
     outline: u8,
     format: Option<Format>,
@@ -484,7 +486,7 @@ impl Worksheet {
         let master = self.cells.get(&(row, column)).and_then(|c| c.raw.as_deref()).is_some_and(open::holds_shared_master);
         if master {
             return Err(invalid(format!(
-                "cell {} holds the formula other cells share; write those cells first, or edit the workbook in a spreadsheet program",
+                "cell {} holds the formula other cells share, which cannot be replaced here: edit it in a spreadsheet program",
                 cell_name(row, column)
             )));
         }
@@ -646,7 +648,8 @@ impl Worksheet {
         if !(0.0..=255.0).contains(&width) {
             return Err(invalid(format!("a column width of {width} is not from 0 to 255")));
         }
-        self.column_entry(column)?.size = Some(width);
+        let entry = self.column_entry(column)?;
+        (entry.size, entry.custom) = (Some(width), true);
         Ok(())
     }
     /// Hides or shows a column.
@@ -1515,7 +1518,13 @@ fn ordered(read: &[String], schema: &[&str]) -> Vec<String> {
 
 /// An id no relationship of a part has.
 fn fresh_id(relationships: &[Relationship], prefix: &str) -> String {
-    (1..).map(|n| format!("{prefix}{n}")).find(|id| !relationships.iter().any(|r| r.id == *id)).expect("an unused id")
+    fresh_ids(relationships, prefix, 1).remove(0)
+}
+
+/// Ids no relationship of a part has, as many as asked, found in one pass over the part's ids.
+fn fresh_ids(relationships: &[Relationship], prefix: &str, count: usize) -> Vec<String> {
+    let taken: std::collections::HashSet<&str> = relationships.iter().map(|r| r.id.as_str()).collect();
+    (1..).map(|n| format!("{prefix}{n}")).filter(|id| !taken.contains(id.as_str())).take(count).collect()
 }
 
 fn sheet_xml(sheet: &Worksheet, context: &mut SheetContext<'_>) -> String {
@@ -1620,7 +1629,7 @@ fn section_xml(sheet: &Worksheet, name: &str, context: &mut SheetContext<'_>, ou
             for (first, last, d) in ranges {
                 // A `col` needs a width; 8.43 is the sheet's default.
                 let _ = write!(out, "<col min=\"{first}\" max=\"{last}\" width=\"{}\"", d.size.unwrap_or(8.43));
-                if d.size.is_some() {
+                if d.custom {
                     out.push_str(" customWidth=\"1\"");
                 }
                 if let Some(format) = &d.format {
@@ -1674,8 +1683,8 @@ fn section_xml(sheet: &Worksheet, name: &str, context: &mut SheetContext<'_>, ou
             }
             out.push_str("<hyperlinks>");
             out.push_str(&others.concat());
-            for link in &sheet.hyperlinks {
-                let id = fresh_id(&context.relationships, "rIdLink");
+            let ids = fresh_ids(&context.relationships, "rIdLink", sheet.hyperlinks.len());
+            for (link, id) in sheet.hyperlinks.iter().zip(ids) {
                 let _ = write!(out, "<hyperlink ref=\"{}\" r:id=\"{id}\"/>", cell_name(link.cell.0, link.cell.1));
                 context.relationships.push(Relationship {
                     id,

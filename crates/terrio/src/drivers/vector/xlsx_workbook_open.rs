@@ -692,7 +692,7 @@ fn read_sheet_data(
                 let outline = attribute(&e, "outlineLevel").and_then(|v| v.parse().ok()).unwrap_or(0);
                 let style = attribute(&e, "s").and_then(|v| v.parse::<usize>().ok()).and_then(|s| parts.formats.get(s));
                 if number("ht").is_some() || hidden || outline > 0 || style.is_some() {
-                    sheet.rows.insert(row, Dimension { size: number("ht"), hidden, outline, format: style.cloned() });
+                    sheet.rows.insert(row, Dimension { size: number("ht"), custom: false, hidden, outline, format: style.cloned() });
                 }
             }
             event @ (Event::Start(_) | Event::Empty(_)) => {
@@ -835,11 +835,12 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
             return;
         }
         let width = attribute(e, "width").and_then(|v| v.parse().ok());
+        let custom = attribute(e, "customWidth").is_some_and(|v| v == "1" || v == "true");
         let hidden = attribute(e, "hidden").is_some_and(|v| v == "1" || v == "true");
         let outline = attribute(e, "outlineLevel").and_then(|v| v.parse().ok()).unwrap_or(0);
         let format = attribute(e, "style").and_then(|v| v.parse::<usize>().ok()).and_then(|s| formats.get(s)).cloned();
         for column in min..=max {
-            sheet.columns.insert(column, Dimension { size: width, hidden, outline, format: format.clone() });
+            sheet.columns.insert(column, Dimension { size: width, custom, hidden, outline, format: format.clone() });
         }
     })?;
     if let Some(e) = over_budget {
@@ -949,6 +950,11 @@ fn read_comments(text: &str, part: &str) -> Result<Vec<Comment>> {
 impl Workbook {
     /// Opens a workbook file to edit.
     pub fn open(path: &str) -> Result<Self> {
+        // Refused before it is read, as the limit is on what it holds in memory.
+        let size = std::fs::metadata(path)?.len();
+        if size > MAX_SHEET_BYTES {
+            return Err(Error::ResourceLimit(format!("XLSX: '{path}' is larger than {MAX_SHEET_BYTES} bytes")));
+        }
         Self::open_bytes(&std::fs::read(path)?)
     }
 
@@ -1545,6 +1551,17 @@ mod tests {
                 && sheet.contains("<col min=\"5\" max=\"5\" width=\"12\""),
             "{sheet}"
         );
+        // A width read without customWidth keeps following the default.
+        let plain =
+            |b: String| b.replace("<col min=\"1\" max=\"2\" width=\"20\" customWidth=\"1\"/>", "<col min=\"1\" max=\"2\" width=\"20\"/>");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &plain)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().set_column_width("E", 12.0).unwrap();
+        let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(sheet.contains("<col min=\"1\" max=\"2\" width=\"20\"/>"), "{sheet}");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.xlsx");
+        std::fs::File::create(&path).unwrap().set_len(MAX_SHEET_BYTES + 1).unwrap();
+        assert!(matches!(Workbook::open(path.to_str().unwrap()), Err(Error::ResourceLimit(_))));
         let mut book = Workbook::new();
         let s = book.add_sheet("s").unwrap();
         for c in ["A", "B", "C"] {
