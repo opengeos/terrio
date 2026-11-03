@@ -458,7 +458,7 @@ def classify_raster(r):
     return DIFFERS, detail
 
 
-def suite_json_ops(ctx, key, script, title, reference, criteria, group_words):
+def suite_json_ops(ctx, key, script, title, reference, criteria, group_words, extra=()):
     """A suite of raster operations from a comparison script's JSON output.
 
     Args:
@@ -469,12 +469,13 @@ def suite_json_ops(ctx, key, script, title, reference, criteria, group_words):
         reference: What terrio is compared with.
         criteria: How cases are judged.
         group_words: How many words of a case's name name its operation.
+        extra: Optional arguments passed to the comparison script.
 
     Returns:
         The suite.
     """
     s = Suite(key, title, reference, criteria)
-    _code, out, err = run([sys.executable, str(SCRIPTS / script), ctx.data, "--terrio", ctx.terrio, "--json"])
+    _code, out, err = run([sys.executable, str(SCRIPTS / script), ctx.data, "--terrio", ctx.terrio, "--json", *extra])
     try:
         results = json.loads(out)
     except json.JSONDecodeError:
@@ -936,6 +937,39 @@ def suite_geolocation(ctx):
     )
 
 
+def suite_cumulative_viewshed(ctx):
+    """GDAL 3.13.3 cumulative visibility through CLI, Python and optional Node/WASM."""
+    suite = Suite("cumulative-viewshed", "Cumulative viewshed", "GDAL 3.13.3 gdal_viewshed -om ACCUM",
+                  "Real USGS DEM: every Byte pixel, mask, nodata, type, dimensions and CRS exact; "
+                  "geotransform within 1e-8 pixels. Observer spacing, a single observer, target height "
+                  "and GDAL's ignored curvature. Sequential execution; complete input extent.")
+    missing = missing_modules("terrio", "osgeo", "numpy")
+    if missing:
+        suite.skipped = "needs current Python bindings, GDAL and NumPy: " + ", ".join(missing)
+        return suite
+    args = [sys.executable, str(SCRIPTS / "compare_dem_calc_with_gdal.py"), ctx.data,
+            "--terrio", ctx.terrio, "--only", "viewshed cumulative", "--bindings", "--json"]
+    package = ROOT / "js/pkg-node/terrio.js"
+    node = package.is_file() and shutil.which("node") is not None
+    if node:
+        args += ["--node-package", str(package)]
+    code, out, err = run(args)
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        status, detail = classify_raster(result)
+        suite.cases.append(Case("cumulative", result["name"], status, detail))
+    if code or len(results) != (15 if node else 10):
+        suite.error = tail(err) or "incomplete cumulative comparison results"
+    if not node:
+        suite.cases.append(Case("cumulative", "Node/WASM", NOT_COMPARED, "build js/pkg-node and install Node"))
+    return suite
+
+
+
 def suite_fractional_zonal(ctx):
     """Fractional coverage and weight rasters against GDAL and exactextract."""
     suite = Suite("fractional-zonal", "Fractional and weighted zonal statistics", "GDAL 3.13.3 and exactextract 0.3.0",
@@ -987,8 +1021,10 @@ def suite_dem_calc(ctx):
         "geotransform must match, then pixels are compared. Within tolerance: every pixel within "
         "the case's tolerance (float32 rounding of NumPy's SIMD functions, for example). "
         "Viewshed outside-observer/radius cases independently verify the radius mask, then "
-        "compare in-radius pixels, avoiding GDAL's nondeterministic out-of-range boundary race.",
+        "compare in-radius pixels, avoiding GDAL's nondeterministic out-of-range boundary race. "
+        "Cumulative viewshed is tested by its dedicated suite.",
         2,
+        extra=("--skip-cumulative",),
     )
 
 
@@ -3047,6 +3083,7 @@ SUITES = OrderedDict(
         ("indexes", suite_indexes),
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
+        ("cumulative-viewshed", suite_cumulative_viewshed),
         ("fractional-zonal", suite_fractional_zonal),
         ("gpkg-repack", suite_gpkg_repack),
         ("gpkg-validate", suite_gpkg_validate),

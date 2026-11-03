@@ -124,7 +124,8 @@ heights, maximum distance, curvature/refraction and projected-unit handling.
 CLI/MCP, Python and JavaScript expose the operation. Real projected DEM comparisons
 are registered in conformance; numeric input nodata is treated as elevation, as in
 GDAL, and nonfinite elevations must be filled or cropped first. Cumulative
-visibility remains outside this subset.
+visibility is available with `--om ACCUM --os N`, matching GDAL 3.13.3 normalization
+and its disabled curvature in cumulative mode.
 [GDAL viewshed](https://gdal.org/en/stable/programs/gdal_viewshed.html).
 
 Acceptance: compare with GDAL on projected DEMs, hills/ridges, maximum distances
@@ -196,3 +197,7 @@ conformance suite, and JavaScript tests of the WebAssembly build. The separate
 `terrio.rio` compatibility CLI still rejects `fillnodata`; the new operation is
 available through `terrio.fill_nodata` and `terrio fill-nodata`. Effort, demand and
 performance benefits for the remaining recommendations are estimates.
+
+Cumulative viewshed uses optional observer coordinates in the CLI. Python and
+JavaScript retain the existing required positional coordinates; pass `0, 0`
+for `ACCUM`, which ignores them.
