@@ -70,6 +70,7 @@ def prepare(data, work, name):
     layer.CreateField(ogr.FieldDefn("label", ogr.OFTString))
     shapes = [
         box(.2, .3, w - .2, h - .4),
+        box(w + 1, h + 1, w + 2, h + 2),  # explicit empty-zone policy regression
         Polygon([(.5, .3), (w - 7.6, 2.2), (10.2, h - .1)]),
         Polygon(box(5.2, 4.4, w - 7.7, h - 5.3).exterior.coords,
                 [box(15.1, 13.1, w - 17.6, h - 13.8).exterior.coords]),
@@ -153,6 +154,7 @@ def compare(path, zones, expected_rows, stats):
         if field.GetType() != ogr.OFTReal:
             raise AssertionError(f"fractional {stat} field is not Real")
     maximum = 0.
+    normalized_empty_sums = False
     for got, src, ref in zip(actual, source, expected_rows, strict=True):
         if got.GetFID() != src.GetFID():
             raise AssertionError("source feature IDs changed")
@@ -164,8 +166,11 @@ def compare(path, zones, expected_rows, stats):
             value = got[f"v_b1_{stat}"]
             if missing(ref[stat]) and value is not None:
                 raise AssertionError("nonfinite reference statistics must be exposed as null")
+            if stat in ("sum", "weighted_sum") and ref["count"] == 0 and value is None and ref[stat] == 0:
+                normalized_empty_sums = True  # native null versus reference zero is documented
+                continue
             maximum = max(maximum, check_number(value, ref[stat], stat))
-    return maximum
+    return maximum, normalized_empty_sums
 
 
 def main():
@@ -210,8 +215,8 @@ const out = t.zonalStats({bytes:fs.readFileSync(process.argv[2]),filename:'zones
 fs.writeFileSync(process.argv[4], out.toBytes('result.gpkg'));
 """, args.node_package.resolve(), zones, value, output,
                                  json.dumps(dict(prefixes=["v"], stats=stats, fractional=True)), str(weight) if weight else ""])
-                        maximum = compare(output, zones, reference, stats)
-                        results.append(dict(name=f"{label} {api}", status="tolerance" if maximum else "identical", detail=f"max absolute statistic error {maximum:.9g}; relative {RTOL}, absolute {ATOL}; exact source geometry/attributes/CRS and Real fields"))
+                        maximum, empty_sums = compare(output, zones, reference, stats)
+                        results.append(dict(name=f"{label} {api}", status="tolerance" if maximum or empty_sums else "identical", detail=("documented empty-zone sums: native null versus reference zero; " if empty_sums else "") + f"max absolute statistic error {maximum:.9g}; relative {RTOL}, absolute {ATOL}; exact source geometry/attributes/CRS and Real fields"))
                     except Exception as error:
                         results.append(dict(name=f"{label} {api}", status="differs", detail=str(error)))
     print(json.dumps(results, indent=2) if args.json else "\n".join(str(r) for r in results))
