@@ -5,7 +5,7 @@ such as Claude Code, Claude Desktop, Cursor or VS Code's Copilot can run terrio'
 data. Ask it to "summarize this GeoTIFF", "convert these shapefiles to GeoPackage in EPSG:3857" or
 "make a hillshade of dem.tif" and it calls the matching command.
 
-Each [command](cli.md) except `mcp` and `ui` is a tool, from `info`, `convert` and `warp` to `vsi`,
+Each [command](cli.md) except `mcp`, `ui` and `view` is a tool, from `info`, `convert` and `warp` to `vsi`,
 `pipeline` and `mdread`. A tool
 takes the command line after the command name as a list of arguments, and its description is the
 command's `--help`, so the agent sees every option. The server speaks over standard input and

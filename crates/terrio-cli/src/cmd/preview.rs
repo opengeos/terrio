@@ -106,7 +106,9 @@ fn open(input: &str, style: &Style) -> Result<Source> {
             let open = terrio::VectorOpenOptions { layers: style.layer.clone(), ..Default::default() };
             match super::quiet(|| terrio::open_vector(input, &open)) {
                 Ok(vector) => Ok(Source::Vector(vector.layers)),
-                Err(_) => Err(raster_error),
+                Err(vector_error) => Err(Error::InvalidArgument(format!(
+                    "{input}: neither a raster nor a vector dataset (as a raster: {raster_error}; as a vector dataset: {vector_error})"
+                ))),
             }
         }
     }
@@ -137,7 +139,7 @@ pub fn run(mut args: Args) -> Result<()> {
     let options = RenderOptions { width: args.width, height: args.height, max_size: args.max_size, ..args.style.options()? };
     let image = match open(&args.input, &args.style)? {
         Source::Raster(mut raster) => render::render_raster(&mut raster, &options)?,
-        Source::Vector(layers) => render::render_vector(&layers, &options)?,
+        Source::Vector(layers) => render::render_vector(layers, &options)?,
     };
     match (args.output.as_deref(), display) {
         (Some("-"), _) => write_stdout(&image.to_png()?),

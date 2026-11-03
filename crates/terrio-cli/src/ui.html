@@ -258,15 +258,25 @@ function show(command) {
     form.querySelector(".bar").insertBefore(openMap, status);
     openMap.addEventListener("click", async () => {
       if (!form.reportValidity()) return;
+      // The tab is opened now, while the click still allows it, and pointed at the map once the
+      // dataset is open: browsers refuse pop-ups opened later.
+      const tab = window.open("", "_blank");
+      if (!tab) {
+        status.className = "status bad";
+        status.textContent = "The browser blocked the new tab: allow pop-ups for this page.";
+        return;
+      }
+      tab.opener = null;
       status.className = "status";
       status.textContent = "Opening…";
       try {
         const response = await fetch("/api/view", { method: "POST", headers, body: JSON.stringify({ args: commandLine(command, fields) }) });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || response.statusText);
+        tab.location.href = `/map#token=${encodeURIComponent(token)}`;
         status.textContent = "Opened in a new tab.";
-        window.open(`/map#token=${encodeURIComponent(token)}`, "_blank", "noopener");
       } catch (error) {
+        tab.close();
         status.className = "status bad";
         status.textContent = `Error: ${error.message}`;
       }

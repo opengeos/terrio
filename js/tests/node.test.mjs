@@ -3622,6 +3622,7 @@ test("render draws rasters and vector layers as RGBA and PNG", () => {
   assert.deepEqual([...png.slice(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
   assert.throws(() => terrio.render(raster, { colormap: "nope" }), /colormap/);
   assert.throws(() => terrio.render(raster, { unknown: 1 }), /unknown/);
+  assert.throws(() => terrio.render(raster, { attribute: "v" }), /vector datasets/);
 
   const squares = terrio.fromGeoJSON(SQUARES, "squares");
   const drawn = terrio.render(squares, { maxSize: 40 });

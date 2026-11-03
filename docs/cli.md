@@ -3561,8 +3561,10 @@ preview of a large remote COG therefore transfers a small part of it: 400 pixels
 1024 pixels read its 1806 x 1806 overview, 10.1 MB.
 
 Pixels are drawn in the raster's own grid, without reprojecting or applying a rotation in its
-geotransform. Shrinking averages the valid pixels under each output pixel (paletted rasters take
-the nearest one). Nodata, masked pixels and an alpha band of 0 are transparent. Vector layers are
+geotransform. Shrinking averages the valid pixels under each output pixel, weighted by alpha when
+there is an alpha band (paletted rasters take the nearest one); a level read row by row takes the
+nearest pixel instead. Images have at most 16,777,216 pixels (4096 x 4096), and up to 16,384 on a
+side. Nodata, masked pixels and an alpha band of 0 are transparent. Vector layers are
 burned with `rasterize` (every pixel a feature touches), north up, in one color or by a numeric
 field's values; points are drawn three pixels wide.
 
@@ -3581,7 +3583,7 @@ Option | Description
 `-c`, `--colormap` | `gray`, `viridis`, `magma`, `inferno`, `plasma`, `terrain`, `rdbu` or `rdylgn`; `_r` reverses
 `-s`, `--stretch` | `auto`, `minmax`, `pLOW,pHIGH` (percentiles) or `LOW,HIGH` (values)
 `-l`, `--layer` | Vector: draw this layer (repeatable); by default all, which must share a CRS
-`-a`, `--attribute` | Vector: color features by this numeric field (viridis unless `-c`)
+`-a`, `--attribute` | Vector: color features by this numeric field (viridis unless `-c`); the stretch is measured on the features' values
 `--display` | `auto`, `kitty`, `iterm`, `sixel` or `blocks`
 
 In the terminal, `auto` picks Kitty's graphics protocol in Kitty and Ghostty, iTerm2 inline images
@@ -3616,7 +3618,9 @@ pointer.
 The map shows the data alone, in the raster's own grid (a vector dataset's CRS, north up), with no
 basemap, so it works offline and for any CRS. The page and its script are built into terrio; it
 loads nothing from elsewhere. As with [`terrio ui`](#ui), the server listens on the loopback
-interface only and every tile request needs the session's random token. It takes the `preview`
+interface only and every tile request needs the session's random token; unlike it, it serves the
+map alone, not the forms that run commands. Tiles are drawn one at a time, since they share one
+reader of the dataset. It takes the `preview`
 options `--bands`, `--colormap`, `--stretch`, `--layer` and `--attribute`, plus:
 
 Option | Description
@@ -3633,7 +3637,7 @@ port (`ssh -L 8080:127.0.0.1:8080 host`, then `terrio ui --port 8080 --no-open` 
 
 As with [MCP tools](#mcp), a run returns up to 100,000 bytes of output when the command ends, a
 non-zero status for a query's result (`compare`, `pixel-info`) is not a failure, and `@FILE` lists
-are refused: enter the paths one per line instead. The page has no map or preview; for that use the
+are refused: enter the paths one per line instead. To try terrio without installing it, see the
 [Playground](playground.md).
 
 ## Machine-readable command catalog

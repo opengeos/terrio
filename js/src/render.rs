@@ -53,6 +53,9 @@ fn image(src: &JsValue, options: &JsValue) -> Result<Image, JsError> {
     if let Some(inner) = Dataset::lookup(src) {
         let raster = matches!(&*inner.borrow(), Inner::Raster(_));
         if raster {
+            if render_options.attribute.is_some() || !args.layers.is_empty() {
+                return Err(invalid("attribute and layers are for vector datasets"));
+            }
             let mut inner = inner.try_borrow_mut().map_err(|e| invalid(e.to_string()))?;
             if let Inner::Raster(source) = &mut *inner {
                 return draw::render_raster(source, &render_options).map_err(js_err);
@@ -65,7 +68,7 @@ fn image(src: &JsValue, options: &JsValue) -> Result<Image, JsError> {
     {
         return draw::render_raster(&mut source, &render_options).map_err(js_err);
     }
-    draw::render_vector(&only(input_layers(src)?), &render_options).map_err(js_err)
+    draw::render_vector(only(input_layers(src)?), &render_options).map_err(js_err)
 }
 
 /// Draws a raster or vector dataset as RGBA pixels: {width, height, data}, data a

@@ -1268,8 +1268,9 @@ class DatasetReader(DatasetBase):
         """The dataset as a PNG of up to 512 pixels a side, which notebooks display.
 
         Returns:
-            bytes | None: The PNG, or None when the dataset is closed or cannot be drawn, so that
-                the notebook falls back to the text form.
+            bytes | None: The PNG, or None when the dataset is closed, cannot be drawn, or was
+                opened at an overview level (`overview_level`), so that the notebook falls back
+                to the text form.
         """
         raster = getattr(self, "_raster", None)
         if self.closed or not isinstance(raster, _terrio.Raster):

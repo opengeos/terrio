@@ -63,25 +63,32 @@ fn render(
     };
     let vector_only = options.attribute.is_some() || layers.is_some();
     let png = if let Ok(raster) = src.cast::<PyRaster>() {
+        if vector_only {
+            return Err(crate::invalid("attribute and layers are for vector datasets"));
+        }
         let mut raster = raster.try_borrow_mut().map_err(|e| crate::invalid(e.to_string()))?;
         let inner = &mut raster.inner;
         crate::with_warnings(py, || draw::render_raster(inner, &options)?.to_png())?
     } else if let Ok(path) = src.extract::<std::path::PathBuf>() {
         let path = path.into_os_string().into_string().map_err(|_| crate::invalid("paths must be UTF-8"))?;
         crate::with_warnings(py, || {
-            let raster = if vector_only { None } else { terrio::open_raster_lazy(&path).ok() };
+            let raster = if vector_only { None } else { Some(terrio::open_raster_lazy(&path)) };
             match raster {
-                Some(mut raster) => draw::render_raster(&mut raster, &options)?.to_png(),
-                None => {
+                Some(Ok(mut raster)) => draw::render_raster(&mut raster, &options)?.to_png(),
+                _ => {
+                    let raster_error = raster.and_then(|r| r.err()).map(|e| e.to_string());
                     let open = terrio::VectorOpenOptions { layers: layers.clone().unwrap_or_default(), ..Default::default() };
                     let vector = terrio::open_vector(&path, &open).map_err(|e| {
                         if vector_only {
                             e
                         } else {
-                            terrio::Error::InvalidArgument(format!("{path}: neither a raster nor a vector dataset: {e}"))
+                            let raster_error = raster_error.clone().unwrap_or_default();
+                            terrio::Error::InvalidArgument(format!(
+                                "{path}: neither a raster nor a vector dataset (as a raster: {raster_error}; as a vector dataset: {e})"
+                            ))
                         }
                     })?;
-                    draw::render_vector(&vector.into_resolved_layers(), &options)?.to_png()
+                    draw::render_vector(vector.into_resolved_layers(), &options)?.to_png()
                 }
             }
         })?
@@ -90,7 +97,7 @@ fn render(
         if let Some(names) = layers {
             all.retain(|l| names.contains(&l.name));
         }
-        py.detach_result(|| draw::render_vector(&all, &options)?.to_png()).py()?
+        py.detach_result(|| draw::render_vector(all, &options)?.to_png()).py()?
     };
     Ok(PyBytes::new(py, &png).unbind())
 }

@@ -68,9 +68,14 @@ function tileAt(level, col, row) {
   }
   return tile || null;
 }
+// A tile that failed is not asked for again until this long has passed and the view moves, so a
+// lasting error (another dataset opened, the server stopped) does not become a stream of requests.
+const RETRY_AFTER = 5000;
 function load(level, col, row) {
   const key = `${level}/${col}/${row}`;
-  if (tiles.has(key) || loading >= MAX_LOADING) return;
+  const known = tiles.get(key);
+  if (known && !(known.failedAt && performance.now() - known.failedAt > RETRY_AFTER)) return;
+  if (loading >= MAX_LOADING) return;
   const size = TILE * 2 ** level, x = col * size, y = row * size;
   const w = Math.min(size, info.width - x), h = Math.min(size, info.height - y);
   const query = new URLSearchParams({ g: info.generation, x, y, w, h, tw: Math.max(1, Math.round(w / 2 ** level)), th: Math.max(1, Math.round(h / 2 ** level)) });
@@ -82,9 +87,11 @@ function load(level, col, row) {
       if (!response.ok) throw new Error((await response.json()).error || response.statusText);
       tile.image = await createImageBitmap(await response.blob());
       failure = "";
+      // Only a tile that arrived calls for a redraw: one that failed waits for the view to move.
+      draw();
     })
     .catch((error) => {
-      tiles.delete(key);
+      tile.failedAt = performance.now();
       failure = `Could not draw this part: ${error.message}`;
     })
     .finally(() => {
@@ -92,12 +99,11 @@ function load(level, col, row) {
       setStatus();
       for (const [old, entry] of tiles) {
         if (tiles.size <= MAX_CACHED) break;
-        if (entry.image) {
-          entry.image.close();
+        if (entry.image || entry.failedAt) {
+          if (entry.image) entry.image.close();
           tiles.delete(old);
         }
       }
-      draw();
     });
 }
 let queued = false;

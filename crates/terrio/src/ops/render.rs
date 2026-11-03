@@ -27,8 +27,11 @@ use wbvector::{Geometry, Layer};
 pub const DEFAULT_MAX_SIZE: usize = 1024;
 /// The longest side an image may have.
 pub const MAX_IMAGE_SIZE: usize = 16384;
-/// The most pixels of a level read at once, per band. Larger reads sample rows instead.
-const MAX_DIRECT_PIXELS: usize = 1 << 24;
+/// The most pixels of a level read at once, per band: 32 MiB of `f64` values a band. Larger
+/// levels are read one sampled row at a time instead.
+const MAX_DIRECT_PIXELS: usize = 1 << 22;
+/// The most pixels an image may have: 4096 x 4096. The values behind it take 8 bytes a band.
+pub const MAX_IMAGE_PIXELS: usize = 1 << 24;
 /// The longest side of the sample a [`Renderer`] measures its stretch on.
 const STYLE_SAMPLE_SIZE: usize = 512;
 /// The longest side of a vector dataset's virtual grid in a [`Renderer`].
@@ -75,7 +78,13 @@ impl Stretch {
         Ok(stretch)
     }
 
-    fn check(self) -> Result<()> {
+    /// Refuses a range whose low end is not below its high end, or percentiles outside 0 to 100,
+    /// which [`Self::parse`] refuses too.
+    ///
+    /// # Errors
+    ///
+    /// When the stretch is one of these.
+    pub fn check(self) -> Result<()> {
         let fine = match self {
             Self::Auto | Self::MinMax => true,
             Self::Percentile(l, h) => (0.0..=100.0).contains(&l) && (0.0..=100.0).contains(&h) && l < h,
@@ -226,13 +235,18 @@ fn output_size(source: (usize, usize), options: &RenderOptions) -> Result<(usize
             (scaled(sw * scale), scaled(sh * scale))
         }
     };
-    if size.0 == 0 || size.1 == 0 || size.0 > MAX_IMAGE_SIZE || size.1 > MAX_IMAGE_SIZE {
+    check_size(size.0, size.1)?;
+    Ok(size)
+}
+
+/// Refuses an image with a side of 0 or over [`MAX_IMAGE_SIZE`], or more than [`MAX_IMAGE_PIXELS`].
+fn check_size(width: usize, height: usize) -> Result<()> {
+    if width == 0 || height == 0 || width > MAX_IMAGE_SIZE || height > MAX_IMAGE_SIZE || width * height > MAX_IMAGE_PIXELS {
         return Err(Error::InvalidArgument(format!(
-            "the image size must be from 1 to {MAX_IMAGE_SIZE} pixels on each side, not {}x{}",
-            size.0, size.1
+            "the image must be 1 to {MAX_IMAGE_SIZE} pixels a side and at most {MAX_IMAGE_PIXELS} pixels in all, not {width}x{height}"
         )));
     }
-    Ok(size)
+    Ok(())
 }
 
 /// How a raster's values become colors.
@@ -261,6 +275,7 @@ struct Plan {
 }
 
 fn plan(source: &LazyRaster, options: &RenderOptions) -> Result<Plan> {
+    options.stretch.check()?;
     let count = source.band_count();
     if count == 0 {
         return Err(Error::InvalidArgument("the raster has no bands".into()));
@@ -322,9 +337,9 @@ fn choose_overview(source: &LazyRaster, window: Window, tw: usize, th: usize) ->
 
 /// The values of `bands` for `window` at `tw` by `th` pixels, band after band, NaN where invalid.
 ///
-/// When `nearest` is unset, shrinking averages the valid values read. Color bands (those before
-/// `plan.colors`) are invalid where an alpha band read after them is 0, so that the color under a
-/// transparent pixel does not bleed into its neighbours.
+/// Shrinking averages the valid values read, but for palettes, which take the nearest pixel. With
+/// an alpha band, read after the color bands, colors are averaged weighted by alpha, so that the
+/// color under a transparent or faint pixel does not bleed into its neighbours.
 fn read_region(source: &mut LazyRaster, plan: &Plan, window: Window, tw: usize, th: usize) -> Result<Vec<f64>> {
     let nearest = matches!(plan.mode, Mode::Palette(_));
     let overview = choose_overview(source, window, tw, th);
@@ -344,7 +359,7 @@ fn read_region(source: &mut LazyRaster, plan: &Plan, window: Window, tw: usize, 
     let options = FloatReadOptions { bands: plan.bands.clone(), overview, unscale: false };
     let centre = |i: usize, from: usize, to: usize| ((i as u128 * 2 + 1) * from as u128 / (to as u128 * 2)) as usize;
     let mut out = vec![f64::NAN; count * tw * th];
-    if sw.saturating_mul(sh) > MAX_DIRECT_PIXELS && sh > th {
+    if sw.saturating_mul(sh) > MAX_DIRECT_PIXELS {
         // Too large to hold: the rows the output's rows land on, and their nearest columns.
         if sw > MAX_DIRECT_PIXELS {
             return Err(Error::Unsupported(format!("cannot draw a raster {sw} pixels wide without overviews; build overviews first")));
@@ -362,8 +377,11 @@ fn read_region(source: &mut LazyRaster, plan: &Plan, window: Window, tw: usize, 
     }
     let mut values = source.read_window_f64(Window::new(x0, y0, sw, sh), &options)?;
     mask_by_alpha(&mut values, plan, sw * sh);
+    let alpha = (count > plan.colors).then(|| &values[plan.colors * sw * sh..(plan.colors + 1) * sw * sh]);
     for b in 0..count {
         let band = &values[b * sw * sh..(b + 1) * sw * sh];
+        // Color bands are weighted by alpha; the alpha band and alpha-less rasters evenly.
+        let weights = alpha.filter(|_| b < plan.colors);
         let target = &mut out[b * tw * th..(b + 1) * tw * th];
         for row in 0..th {
             for col in 0..tw {
@@ -372,16 +390,18 @@ fn read_region(source: &mut LazyRaster, plan: &Plan, window: Window, tw: usize, 
                 } else {
                     let (r0, r1) = (row * sh / th, ((row + 1) * sh).div_ceil(th).min(sh));
                     let (c0, c1) = (col * sw / tw, ((col + 1) * sw).div_ceil(tw).min(sw));
-                    let (mut sum, mut n) = (0.0, 0u32);
+                    let (mut sum, mut total) = (0.0, 0.0);
                     for r in r0..r1 {
-                        for &v in &band[r * sw + c0..r * sw + c1] {
-                            if !v.is_nan() {
-                                sum += v;
-                                n += 1;
+                        for c in c0..c1 {
+                            let v = band[r * sw + c];
+                            let weight = weights.map_or(1.0, |a| if a[r * sw + c].is_nan() { 0.0 } else { a[r * sw + c] });
+                            if !v.is_nan() && weight > 0.0 {
+                                sum += v * weight;
+                                total += weight;
                             }
                         }
                     }
-                    if n == 0 { f64::NAN } else { sum / f64::from(n) }
+                    if total == 0.0 { f64::NAN } else { sum / total }
                 };
             }
         }
@@ -565,8 +585,21 @@ fn burn(layers: &[Layer], attribute: Option<&str>, extent: [f64; 4], width: usiz
 /// # Errors
 ///
 /// When the layers have nothing to draw or different CRSs, or the attribute is not a field.
-pub fn render_vector(layers: &[Layer], options: &RenderOptions) -> Result<Image> {
-    Renderer::vector(layers.to_vec(), options)?.image(options)
+pub fn render_vector(layers: Vec<Layer>, options: &RenderOptions) -> Result<Image> {
+    Renderer::vector(layers, options)?.image(options)
+}
+
+/// The numeric values of `field` across the layers' features.
+fn attribute_values(layers: &[Layer], field: &str) -> Result<Vec<f64>> {
+    let mut values = Vec::new();
+    for layer in layers {
+        let index = layer
+            .schema
+            .field_index(field)
+            .ok_or_else(|| Error::InvalidArgument(format!("layer '{}' has no field '{field}'", layer.name)))?;
+        values.extend(layer.features.iter().filter_map(|f| f.attributes.get(index).and_then(|v| v.as_f64())));
+    }
+    Ok(values)
 }
 
 /// A dataset drawn repeatedly, part by part, with the same colors: what a map view draws from.
@@ -611,6 +644,7 @@ impl Renderer {
     ///
     /// When the layers have nothing to draw or different CRSs, or the attribute is not a field.
     pub fn vector(layers: Vec<Layer>, options: &RenderOptions) -> Result<Self> {
+        options.stretch.check()?;
         if options.colormap.is_some() && options.attribute.is_none() {
             return Err(Error::InvalidArgument("a colormap colors vector features by an attribute: give one".into()));
         }
@@ -622,11 +656,10 @@ impl Renderer {
         let (mode, ranges) = match &options.attribute {
             None => (Mode::Solid(FEATURE_COLOR), vec![(0.0, 1.0)]),
             Some(field) => {
-                let sample = RenderOptions { width: None, height: None, max_size: STYLE_SAMPLE_SIZE, ..options.clone() };
-                let (sw, sh) = output_size(size, &sample)?;
-                let values = burn(&layers, Some(field), extent, sw, sh, false)?;
+                // Measured on the features' values, each feature once, whatever area it covers.
+                let values = attribute_values(&layers, field)?;
                 let colormap = options.colormap.map_or_else(|| Colormap::parse("viridis"), Ok)?;
-                (Mode::Mapped(colormap.table()), stretch_ranges(&values, 1, sw * sh, options.stretch, false))
+                (Mode::Mapped(colormap.table()), stretch_ranges(&values, 1, values.len(), options.stretch, false))
             }
         };
         let plan = Plan { bands: vec![1], colors: 1, alpha_max: 255.0, mode };
@@ -668,9 +701,10 @@ impl Renderer {
     pub fn region(&mut self, window: Window, width: usize, height: usize) -> Result<Image> {
         let (full_w, full_h) = self.size();
         window.check(full_w, full_h)?;
-        if window.width == 0 || window.height == 0 || width == 0 || height == 0 || width > MAX_IMAGE_SIZE || height > MAX_IMAGE_SIZE {
-            return Err(Error::InvalidArgument("the window and the image need a size within bounds".into()));
+        if window.width == 0 || window.height == 0 {
+            return Err(Error::InvalidArgument("the window needs a width and a height".into()));
         }
+        check_size(width, height)?;
         let values = match &mut self.inner {
             Inner::Raster(source) => read_region(source, &self.plan, window, width, height)?,
             Inner::Vector { layers, attribute, extent, grow_points, size } => {
@@ -681,7 +715,16 @@ impl Renderer {
                     extent[0] + (window.x + window.width) as f64 * ux,
                     extent[3] - window.y as f64 * uy,
                 ];
-                burn(layers, attribute.as_deref(), part, width, height, *grow_points)?
+                if *grow_points {
+                    // Burned one output pixel wider on each side, so that a point next to the
+                    // edge still widens into this region, then cropped.
+                    let (px, py) = ((part[2] - part[0]) / width as f64, (part[3] - part[1]) / height as f64);
+                    let padded = [part[0] - px, part[1] - py, part[2] + px, part[3] + py];
+                    let wide = burn(layers, attribute.as_deref(), padded, width + 2, height + 2, true)?;
+                    (0..height).flat_map(|r| wide[(r + 1) * (width + 2) + 1..(r + 1) * (width + 2) + 1 + width].iter().copied()).collect()
+                } else {
+                    burn(layers, attribute.as_deref(), part, width, height, false)?
+                }
             }
         };
         Ok(shade(&values, &self.plan, &self.ranges, width, height))
@@ -780,6 +823,46 @@ mod tests {
     }
 
     #[test]
+    fn shrinking_weights_colors_by_alpha() {
+        let config = RasterConfig { cols: 2, rows: 1, bands: 4, data_type: DataType::U8, nodata: -1.0, ..Default::default() };
+        // A faint red pixel beside an opaque blue one.
+        let data = wbraster::raster::RasterData::U8(vec![255, 0, 0, 0, 0, 255, 10, 255]);
+        let mut dataset = crate::RasterDataset::new(crate::pixel::raster_from_data(config, data).unwrap(), false);
+        dataset.band_metadata = ["Red", "Green", "Blue", "Alpha"]
+            .iter()
+            .map(|c| crate::BandMetadata { color_interp: Some((*c).to_string()), ..Default::default() })
+            .collect();
+        let image = render_raster(&mut LazyRaster::from(dataset), &RenderOptions { width: Some(1), ..Default::default() }).unwrap();
+        let p = pixel(&image, 0, 0);
+        assert!(p[0] < 15 && p[2] > 240, "{p:?}");
+        assert_eq!(p[3], 133);
+    }
+
+    #[test]
+    fn invalid_stretches_and_oversized_images_are_refused() {
+        let mut source = raster(2, 1, 1, -1.0, vec![0.0, 1.0]);
+        for stretch in [Stretch::Range(5.0, 1.0), Stretch::Percentile(2.0, 120.0)] {
+            assert!(render_raster(&mut source, &RenderOptions { stretch, ..Default::default() }).is_err());
+        }
+        let huge = RenderOptions { width: Some(16384), height: Some(16384), ..Default::default() };
+        assert!(render_raster(&mut source, &huge).is_err());
+    }
+
+    #[test]
+    fn points_at_a_region_edge_widen_into_it() {
+        let mut layer = Layer::new("points");
+        layer.push(Feature::with_geometry(0, Geometry::point(0.0, 0.0), 0));
+        layer.push(Feature::with_geometry(1, Geometry::point(100.0, 100.0), 0));
+        let mut renderer = Renderer::vector(vec![layer], &RenderOptions::default()).unwrap();
+        let (_, height) = renderer.size();
+        let whole = renderer.region(Window::new(0, height - 10, 10, 10), 10, 10).unwrap();
+        assert_eq!(pixel(&whole, 0, 9)[3], 255);
+        // The point is in column 0; the region from column 1 leaves it out but shows its symbol.
+        let right = renderer.region(Window::new(1, height - 10, 10, 10), 10, 10).unwrap();
+        assert_eq!(pixel(&right, 0, 9)[3], 255);
+    }
+
+    #[test]
     fn rows_are_sampled_when_a_level_is_too_large_to_hold() {
         // 5000 x 5000 > the direct budget, with no overviews: only sampled rows are read.
         let (cols, rows) = (5000, 5000);
@@ -820,7 +903,7 @@ mod tests {
     fn vector_layers_draw_in_their_aspect_with_a_transparent_background() {
         let mut layer = square_layer();
         layer.features[0].geometry = Some(Geometry::polygon(ring(&[(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 0.0)]), vec![]));
-        let image = render_vector(&[layer], &RenderOptions { max_size: 64, ..Default::default() }).unwrap();
+        let image = render_vector(vec![layer], &RenderOptions { max_size: 64, ..Default::default() }).unwrap();
         assert_eq!((image.width, image.height), (64, 32));
         assert_eq!(pixel(&image, 60, 5)[..3], FEATURE_COLOR);
         assert_eq!(pixel(&image, 2, 2)[3], 0);
@@ -830,10 +913,12 @@ mod tests {
     fn vector_attributes_are_colored_and_colormaps_need_one() {
         let options =
             RenderOptions { max_size: 16, attribute: Some("height".into()), stretch: Stretch::Range(0.0, 7.0), ..Default::default() };
-        let image = render_vector(&[square_layer()], &options).unwrap();
+        let image = render_vector(vec![square_layer()], &options).unwrap();
+        let missing = RenderOptions { attribute: Some("nope".into()), ..Default::default() };
+        assert!(render_vector(vec![square_layer()], &missing).is_err());
         assert_eq!(pixel(&image, 8, 4)[..3], [0xfd, 0xe7, 0x25]);
         let no_field = RenderOptions { colormap: Some(Colormap::parse("gray").unwrap()), ..Default::default() };
-        assert!(render_vector(&[square_layer()], &no_field).is_err());
+        assert!(render_vector(vec![square_layer()], &no_field).is_err());
     }
 
     #[test]
@@ -841,9 +926,9 @@ mod tests {
         let mut layer = Layer::new("points");
         layer.push(Feature::with_geometry(0, Geometry::point(0.0, 0.0), 0));
         layer.push(Feature::with_geometry(1, Geometry::point(10.0, 10.0), 0));
-        let image = render_vector(&[layer], &RenderOptions { max_size: 20, ..Default::default() }).unwrap();
+        let image = render_vector(vec![layer], &RenderOptions { max_size: 20, ..Default::default() }).unwrap();
         let opaque = image.rgba.as_chunks::<4>().0.iter().filter(|p| p[3] == 255).count();
         assert!(opaque >= 6, "{opaque}");
-        assert!(render_vector(&[Layer::new("empty")], &RenderOptions::default()).is_err());
+        assert!(render_vector(vec![Layer::new("empty")], &RenderOptions::default()).is_err());
     }
 }

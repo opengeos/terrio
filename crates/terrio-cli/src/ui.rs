@@ -73,6 +73,8 @@ struct Session {
     security_policy: String,
     /// What the map draws, if anything has been opened.
     view: Mutex<Option<View>>,
+    /// `terrio view`: serve the map alone, not the forms that run commands.
+    map_only: bool,
 }
 
 /// The dataset on the map.
@@ -81,7 +83,9 @@ struct View {
     name: String,
     /// Which opening this is, so that a map page still showing an earlier dataset is told.
     generation: u64,
-    renderer: Renderer,
+    /// Its own lock, so that a tile being drawn does not hold up the session's other requests.
+    /// Tiles are still drawn one at a time: the reader is not shared between threads.
+    renderer: Arc<Mutex<Renderer>>,
 }
 
 /// Arguments of `terrio view`.
@@ -103,8 +107,9 @@ pub struct ViewArgs {
 pub fn view(args: ViewArgs) -> terrio::Result<()> {
     let renderer = crate::cmd::preview::renderer(&args.input, &args.style)?;
     let listener = TcpListener::bind(("127.0.0.1", args.port))?;
-    let session = session(Vec::new(), listener.local_addr()?.port())?;
-    *lock(&session.view) = Some(View { name: args.input, generation: 1, renderer });
+    let mut session = session(Vec::new(), listener.local_addr()?.port())?;
+    session.map_only = true;
+    *lock(&session.view) = Some(View { name: args.input, generation: 1, renderer: Arc::new(Mutex::new(renderer)) });
     let url = format!("http://127.0.0.1:{}/map#token={}", session.port, session.token);
     let mut out = std::io::stdout();
     let _ = writeln!(out, "terrio view: {url}\nPress Ctrl-C to stop.");
@@ -147,7 +152,7 @@ fn session(terrio: Vec<OsString>, port: u16) -> std::io::Result<Session> {
         "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     );
     let catalog = crate::usage::requested(&["terrio".into(), "--json-usage".into()]).expect("the root catalog").to_string();
-    Ok(Session { terrio, token, port, catalog, page, map_page, security_policy, view: Mutex::new(None) })
+    Ok(Session { terrio, token, port, catalog, page, map_page, security_policy, view: Mutex::new(None), map_only: false })
 }
 
 /// 128 random bits, in hexadecimal.
@@ -296,6 +301,7 @@ fn connection(mut stream: TcpStream, session: &Session) {
     let _ = stream.set_write_timeout(Some(REQUEST_TIMEOUT));
     let request = read_request(&mut UntilDeadline { stream: &stream, deadline: Instant::now() + REQUEST_TIMEOUT });
     let reply = match request {
+        Ok(request) if session.map_only && !map_route(&request) => failure(404, "not found: terrio view serves the map alone"),
         Ok(request) => match check(&request, session) {
             Ok(()) if request.method == "POST" && request.path == "/api/run" => match parse_run(&request) {
                 Ok((name, args)) => match run_until_client_leaves(&stream, session, &name, args) {
@@ -317,6 +323,12 @@ fn connection(mut stream: TcpStream, session: &Session) {
         Err(message) => failure(400, &message),
     };
     respond(&mut stream, reply, &session.security_policy);
+}
+
+/// Whether a request is one `terrio view` answers: the map page, the dataset's description and
+/// its tiles. Opening another dataset and running commands are for `terrio ui`.
+fn map_route(request: &Request) -> bool {
+    request.method == "GET" && matches!(request.path.as_str(), "/map" | "/api/view" | "/api/tile")
 }
 
 /// A reply's status, content type and body.
@@ -375,14 +387,15 @@ fn view_info(session: &Session) -> Reply {
     match &*lock(&session.view) {
         None => failure(404, "no dataset is open: run preview from a form and choose Open map"),
         Some(view) => {
-            let (width, height) = view.renderer.size();
+            let renderer = lock(&view.renderer);
+            let (width, height) = renderer.size();
             let body = json!({
                 "name": view.name,
                 "generation": view.generation,
                 "width": width,
                 "height": height,
-                "kind": view.renderer.kind(),
-                "geoTransform": view.renderer.geo_transform(),
+                "kind": renderer.kind(),
+                "geoTransform": renderer.geo_transform(),
             });
             (200, "application/json", body.to_string())
         }
@@ -403,7 +416,7 @@ fn open_view(body: &[u8], session: &Session) -> Result<(), String> {
     let renderer = crate::cmd::preview::renderer(&parsed.input, &parsed.style).map_err(|e| e.to_string())?;
     let mut view = lock(&session.view);
     let generation = view.as_ref().map_or(1, |v| v.generation + 1);
-    *view = Some(View { name: parsed.input, generation, renderer });
+    *view = Some(View { name: parsed.input, generation, renderer: Arc::new(Mutex::new(renderer)) });
     Ok(())
 }
 
@@ -424,12 +437,13 @@ fn tile(query: &str, session: &Session) -> Result<Vec<u8>, Reply> {
         return Err(failure(400, "the tile is too large"));
     }
     let generation = number("g")?;
-    let mut view = lock(&session.view);
-    let view = view
-        .as_mut()
+    let renderer = lock(&session.view)
+        .as_ref()
         .filter(|v| v.generation == generation)
+        .map(|v| v.renderer.clone())
         .ok_or_else(|| failure(409, "another dataset has been opened: reload this page"))?;
-    view.renderer.region(window, tw, th).and_then(|image| image.to_png()).map_err(|e| failure(400, &e.to_string()))
+    let image = lock(&renderer).region(window, tw, th);
+    image.and_then(|image| image.to_png()).map_err(|e| failure(400, &e.to_string()))
 }
 
 /// A run's command and arguments: `{"name": …, "arguments": {"args": […]}}`, as an MCP tool call.
@@ -560,6 +574,7 @@ mod tests {
             map_page: String::new(),
             security_policy: String::new(),
             view: Mutex::new(None),
+            map_only: false,
         }
     }
 
@@ -651,6 +666,23 @@ mod tests {
         std::fs::write(dir.path().join("two\nlines.tif"), b"").unwrap();
         let body = json!({"path": dir.path().to_str().unwrap()}).to_string();
         assert_eq!(list_directory(body.as_bytes()).unwrap()["entries"], json!([]));
+    }
+
+    #[test]
+    fn terrio_view_serves_the_map_alone() {
+        for (method, path, answered) in [
+            ("GET", "/map", true),
+            ("GET", "/api/view", true),
+            ("GET", "/api/tile", true),
+            ("GET", "/", false),
+            ("GET", "/api/catalog", false),
+            ("POST", "/api/run", false),
+            ("POST", "/api/view", false),
+            ("POST", "/api/list", false),
+        ] {
+            let request = Request { method: method.into(), path: path.into(), query: String::new(), headers: vec![], body: vec![] };
+            assert_eq!(map_route(&request), answered, "{method} {path}");
+        }
     }
 
     #[test]

@@ -954,7 +954,7 @@ def convert(
 # Operations.
 
 def render(
-    src: _RasterSource | _VectorSource,
+    src: _RasterSource | _VectorSource | os.PathLike[str],
     *,
     width: int | None = None,
     height: int | None = None,
