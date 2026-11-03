@@ -223,7 +223,8 @@ fn call_preview(terrio: &[OsString], mut args: Vec<OsString>, cancel: &AtomicBoo
                 Err(e) => return failed(format!("could not make a temporary directory: {e}")),
             };
             let path = directory.join("preview.png");
-            args.extend([OsString::from("-o"), path.clone().into_os_string()]);
+            // At the front, so that a caller's `--` does not turn them into positionals.
+            args.splice(0..0, [OsString::from("-o"), path.clone().into_os_string()]);
             (path, Some(directory))
         }
     };

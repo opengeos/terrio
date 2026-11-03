@@ -68,7 +68,7 @@ function tileAt(level, col, row) {
   }
   return tile || null;
 }
-// A tile that failed is not asked for again until this long has passed and the view moves, so a
+// A tile that failed is not asked for again for this long, so a
 // lasting error (another dataset opened, the server stopped) does not become a stream of requests.
 const RETRY_AFTER = 5000;
 function load(level, col, row) {

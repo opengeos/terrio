@@ -125,15 +125,21 @@ pub fn run(mut args: Args) -> Result<()> {
     match (args.output.as_deref(), display) {
         (Some("-"), _) => write_stdout(&image.to_png()?),
         (Some(path), _) => {
-            // Encoded first, so that a failure leaves no file behind. Without --overwrite, a file
-            // that appeared since the check is not replaced either.
+            // Encoded first, so that a failure to encode leaves no file behind, and a failed write
+            // removes the file. Without --overwrite, a file that appeared since the check is not
+            // replaced either.
             let png = image.to_png()?;
             let mut file = if args.overwrite {
                 std::fs::File::create(path)?
             } else {
                 std::fs::OpenOptions::new().write(true).create_new(true).open(path)?
             };
-            file.write_all(&png).map_err(Error::from)
+            let written = file.write_all(&png);
+            if written.is_err() {
+                drop(file);
+                let _ = std::fs::remove_file(path);
+            }
+            written.map_err(Error::from)
         }
         (None, Some(display)) => write_stdout(&encode(&image, display)?),
         (None, None) => unreachable!("no output means a display"),

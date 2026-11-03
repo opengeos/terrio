@@ -720,8 +720,11 @@ fn attribute_values(layers: &[Layer], field: &str) -> Result<Vec<f64>> {
             .field_index(field)
             .ok_or_else(|| Error::InvalidArgument(format!("layer '{}' has no field '{field}'", layer.name)))?;
         // As `rasterize` burns them: numbers as they are, text parsed, and nulls and the rest as
-        // 0. Features without a geometry, or with an empty one, are not drawn and do not count.
-        let drawn = layer.features.iter().filter(|f| f.geometry.as_ref().is_some_and(|g| !g.is_empty()));
+        // 0. Features without a geometry, or with no finite coordinate, are not drawn and do not
+        // count.
+        let drawn = layer.features.iter().filter(|f| {
+            f.geometry.as_ref().and_then(Geometry::bbox).is_some_and(|b| [b.min_x, b.min_y, b.max_x, b.max_y].iter().all(|v| v.is_finite()))
+        });
         values.extend(drawn.map(|f| crate::ops::rasterize::attribute_value(f, index)));
     }
     Ok(values)
@@ -991,6 +994,17 @@ mod tests {
         let options = RenderOptions { attribute: Some("height".into()), stretch: Stretch::MinMax, ..Default::default() };
         let renderer = Renderer::vector(vec![layer], &options).unwrap();
         assert_eq!(renderer.ranges, vec![(0.0, 10.0)]);
+    }
+
+    #[test]
+    fn features_with_no_finite_coordinate_do_not_widen_the_attribute_range() {
+        let mut layer = square_layer();
+        let mut lost = Feature::with_geometry(1, Geometry::point(f64::NAN, f64::NAN), 1);
+        lost.attributes[0] = FieldValue::Float(1000.0);
+        layer.push(lost);
+        let values = attribute_values(&[layer], "height").unwrap();
+        assert_eq!(values.len(), 1);
+        assert!(values[0] < 1000.0);
     }
 
     #[test]
