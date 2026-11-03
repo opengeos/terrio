@@ -124,7 +124,8 @@ def compare(path, schema, crs, expected):
         normalized_schema["verblijfsobject.href"] = "StringList"
         differences.append("href array preserved as JSON text versus GDAL StringList")
     if "verblijfsobject" in got_schema and "verblijfsobject" not in schema:
-        assert got_schema["verblijfsobject"] == "text"
+        if got_schema["verblijfsobject"] != "text":
+            raise AssertionError("advertised absent verblijfsobject must be a text field")
         del normalized_schema["verblijfsobject"]
         differences.append("advertised absent verblijfsobject retained as checked all-null field")
     if got_schema.get("documentdatum") == "text" and schema.get("documentdatum") == "date":
@@ -147,13 +148,15 @@ def compare(path, schema, crs, expected):
             name, kind = field.GetName(), field_kind(field)
             a = value(got, i, kind)
             if name == "verblijfsobject" and name not in schema:
-                assert a is None, "advertised absent field must remain null"
+                if a is not None:
+                    raise AssertionError("advertised absent field must remain null")
                 continue
             b = ref["properties"][name]
             if name == "verblijfsobject.href" and kind == "text" and schema[name] == "StringList":
                 a = json.loads(a) if a is not None else None
             if name == "documentdatum" and kind == "text" and schema[name] == "date" and b is not None:
-                assert b[3:] == (0, 0, 0.0, 0), "reference date has unexpected time/zone"
+                if b[3:] != (0, 0, 0.0, 0):
+                    raise AssertionError("reference date has unexpected time/zone")
                 b = f"{b[0]:04d}-{b[1]:02d}-{b[2]:02d}"
             if kind == "float" and a is not None and b is not None:
                 if not math.isclose(a, b, rel_tol=NUMERIC_REL, abs_tol=NUMERIC_ABS):

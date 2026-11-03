@@ -303,7 +303,7 @@ impl Reader {
     fn check_memory(&self, cells: usize) -> Result<()> {
         let estimate = self.bytes.saturating_mul(JSON_MEMORY_FACTOR).saturating_add(self.cell_bytes(cells));
         if estimate > self.options.oapif.max_vector_bytes {
-            return Err(limited("JSON workspace exceeds OAPIF_MAX_VECTOR_BYTES"));
+            return Err(limited("cumulative response and typed-cell work budget exceeds OAPIF_MAX_VECTOR_BYTES"));
         }
         Ok(())
     }
@@ -324,7 +324,7 @@ impl Reader {
         let remaining = self.options.oapif.max_vector_bytes.saturating_sub(self.cell_bytes(0)) / JSON_MEMORY_FACTOR;
         let remaining = remaining.saturating_sub(self.bytes);
         if remaining == 0 {
-            return Err(limited("JSON workspace exceeds OAPIF_MAX_VECTOR_BYTES"));
+            return Err(limited("cumulative response and typed-cell work budget exceeds OAPIF_MAX_VECTOR_BYTES"));
         }
         self.phase = phase;
         self.request = Some(Request {
@@ -512,18 +512,6 @@ impl Reader {
             }
             next
         });
-        if let Some(query) = next.as_deref().and_then(|url| split_url(url).1) {
-            for pair in query.split('&') {
-                let Some((key, val)) = pair.split_once('=') else { continue };
-                if crate::vfs::decode_query_component(key).eq_ignore_ascii_case("crs") {
-                    let asked = crate::vfs::decode_query_component(val);
-                    let c = &self.collections[self.index];
-                    if is_crs84(&asked) != is_crs84(&c.crs_uri) || !SpatialRef::parse_literal(&asked).is_ok_and(|crs| crs.same_as(&c.crs)) {
-                        return Err(invalid("next page changes the collection CRS"));
-                    }
-                }
-            }
-        }
         let matched = value.get("numberMatched").and_then(Value::as_u64);
         let returned = value.get("numberReturned").and_then(Value::as_u64);
         let page =
@@ -550,6 +538,46 @@ impl Reader {
             return self.end_collection();
         }
         if let Some(next) = next {
+            if let Some(query) = split_url(&next).1 {
+                for pair in query.split('&') {
+                    let Some((key, val)) = pair.split_once('=') else { continue };
+                    if crate::vfs::decode_query_component(key).eq_ignore_ascii_case("crs") {
+                        let asked = crate::vfs::decode_query_component(val);
+                        let c = &self.collections[self.index];
+                        if is_crs84(&asked) != is_crs84(&c.crs_uri)
+                            || !SpatialRef::parse_literal(&asked).is_ok_and(|crs| crs.same_as(&c.crs))
+                        {
+                            return Err(invalid("next page changes the collection CRS"));
+                        }
+                    }
+                }
+            }
+
+            for key in ["datetime", "bbox", "bbox-crs"] {
+                let wanted =
+                    query_parameter(source, key).or_else(|| (key == "bbox-crs" && has_query(source, "bbox")).then(|| CRS84.to_owned()));
+                if let Some(wanted) = wanted {
+                    let actual = query_parameter(&next, key).or_else(|| (key == "bbox-crs").then(|| CRS84.to_owned()));
+                    let same = actual.is_some_and(|actual| match key {
+                        "bbox" => {
+                            let parse = |text: &str| text.split(',').map(str::parse::<f64>).collect::<std::result::Result<Vec<_>, _>>();
+                            match (parse(&wanted), parse(&actual)) {
+                                (Ok(a), Ok(b)) => a == b && a.iter().all(|v| v.is_finite()),
+                                _ => false,
+                            }
+                        }
+                        "bbox-crs" => {
+                            is_crs84(&wanted) == is_crs84(&actual)
+                                && SpatialRef::parse_literal(&wanted)
+                                    .is_ok_and(|a| SpatialRef::parse_literal(&actual).is_ok_and(|b| a.same_as(&b)))
+                        }
+                        _ => actual == wanted,
+                    });
+                    if !same {
+                        return Err(invalid(format!("next page changes the requested {key}")));
+                    }
+                }
+            }
             return self.schedule(next, Phase::Items);
         }
         if matched.is_some_and(|n| n > self.features.len().saturating_add(self.initial_offset) as u64) {
@@ -677,6 +705,12 @@ fn encode(value: &str) -> String {
 fn has_query(url: &str, name: &str) -> bool {
     split_url(url).1.is_some_and(|q| {
         q.split('&').any(|p| crate::vfs::decode_query_component(p.split('=').next().unwrap_or("")).eq_ignore_ascii_case(name))
+    })
+}
+fn query_parameter(url: &str, name: &str) -> Option<String> {
+    split_url(url).1?.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        crate::vfs::decode_query_component(key).eq_ignore_ascii_case(name).then(|| crate::vfs::decode_query_component(value).into_owned())
     })
 }
 fn without_query(url: &str, names: &[&str]) -> String {
@@ -870,6 +904,11 @@ fn apply_schema(layer: &mut Layer, declared: &[FieldDef]) -> Result<()> {
                     match (&*value, field.field_type) {
                         (FieldValue::Null, _) => {}
                         (FieldValue::Integer(v), FieldType::Float) => *value = FieldValue::Float(*v as f64),
+                        (FieldValue::Float(v), FieldType::Integer)
+                            if v.fract() == 0.0 && (i64::MIN as f64..-(i64::MIN as f64)).contains(v) =>
+                        {
+                            *value = FieldValue::Integer(*v as i64);
+                        }
                         (FieldValue::Date(v) | FieldValue::DateTime(v), FieldType::Text) => *value = FieldValue::Text(v.clone()),
                         _ => return Err(invalid("feature property disagrees with its advertised JSON schema")),
                     }
@@ -1154,6 +1193,35 @@ mod tests {
         o.layers = vec!["bad".into()];
         let mut r = Reader::new("https://example.test/collections", &o).unwrap();
         assert!(r.accept_response(&serde_json::to_vec(&catalog).unwrap()).unwrap_err().to_string().contains("unsupported CRS"));
+    }
+    #[test]
+    fn whole_float_schema_integers_are_checked_for_integrality_and_range() {
+        for value in [2.0, i64::MIN as f64] {
+            let mut r = at_items(&Default::default());
+            r.fields = vec![FieldDef::new("v", FieldType::Integer)];
+            accept(&mut r, page(vec![feature(json!(1), json!({"v":value}))], None));
+            let l = r.finish().unwrap().layers.remove(0);
+            assert_eq!(l.features[0].get(&l.schema, "v").unwrap(), &FieldValue::Integer(value as i64));
+        }
+        for value in [2.5, -(i64::MIN as f64)] {
+            let mut r = at_items(&Default::default());
+            r.fields = vec![FieldDef::new("v", FieldType::Integer)];
+            assert!(r.accept_response(&serde_json::to_vec(&page(vec![feature(json!(1), json!({"v":value}))], None)).unwrap()).is_err());
+        }
+    }
+    #[test]
+    fn next_links_keep_requested_filters_and_accept_equivalent_bbox_numbers() {
+        let mut o = VectorOpenOptions { spatial_filter: Some((1., 2., 3., 4.)), ..Default::default() };
+        o.oapif.datetime = Some("2020".into());
+        for changed in ["bbox=0,2,3,4", "datetime=2021", "bbox-crs=EPSG:3857"] {
+            let mut r = at_items(&o);
+            let p = page(vec![feature(json!(1), json!({}))], Some(&format!("?offset=1&{changed}")));
+            assert!(r.accept_response(&serde_json::to_vec(&p).unwrap()).unwrap_err().to_string().contains("next page changes"));
+        }
+        let mut r = at_items(&o);
+        accept(&mut r, page(vec![feature(json!(1), json!({}))], Some("?offset=1&bbox=1.0,2.0,3.0,4.0&datetime=2020")));
+        accept(&mut r, page(vec![feature(json!(2), json!({}))], None));
+        assert_eq!(r.finish().unwrap().layers[0].features.len(), 2);
     }
     #[test]
     fn source_id_fields_survive_null_ids_and_schema_only_collisions() {
