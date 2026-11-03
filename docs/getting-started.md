@@ -2,8 +2,8 @@
 
 This walk-through uses public data: Natural Earth countries, a USGS 3DEP elevation tile and the
 Autzen lidar survey. [Install the `terrio` command](installation.md) first, or use `uvx terrio` in
-its place with [uv](https://docs.astral.sh/uv/). Run the steps in order, in an empty directory: later steps use
-the files earlier ones write.
+its place with [uv](https://docs.astral.sh/uv/). Run the steps in order, in an empty directory:
+later steps use the files earlier ones write.
 
 ## Look at a dataset
 
