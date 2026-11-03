@@ -335,6 +335,8 @@ def server(tmp_path):
             a, _, b = self.headers["Range"][6:].partition("-")
             start, end = int(a), min(int(b), len(data) - 1)
             body = data[start : end + 1]
+            # Record before replying: the client can finish and read `sent` once the body arrives.
+            sent.append(len(body))
             self.send_response(206)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
