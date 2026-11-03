@@ -436,6 +436,11 @@ const simple = simplify(counties, 0.01);
 const sorted = sort(simple, { method: "hilbert" });
 ```
 
+`zonalStats` accepts `fractional: true`, `weights` as a dataset/upload, and optional
+`weightBand` (default 1). Select `weighted_mean`, `weighted_sum` or `weighted_stddev`
+in `stats` for a second aligned weighting raster; see the
+[formulas and limits](cli.md#fractional-coverage-and-weighting-rasters).
+
 ## Native multidimensional arrays
 
 See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,

@@ -143,16 +143,27 @@ struct ZonalOptions {
     prefixes: Option<Vec<String>>,
     stats: Option<Vec<String>>,
     all_touched: bool,
+    fractional: bool,
+    weight_band: usize,
     t_srs: Option<String>,
     decimal_places: Option<u8>,
 }
 impl Default for ZonalOptions {
     fn default() -> Self {
-        Self { bands: vec![1], prefixes: None, stats: None, all_touched: false, t_srs: None, decimal_places: None }
+        Self {
+            bands: vec![1],
+            prefixes: None,
+            stats: None,
+            all_touched: false,
+            fractional: false,
+            weight_band: 1,
+            t_srs: None,
+            decimal_places: None,
+        }
     }
 }
 /// Statistics for each polygon and raster band. Source pixels are materialized.
-/// Options: bands, prefixes, stats, allTouched, tSrs, decimalPlaces.
+/// Options: bands, prefixes, stats, allTouched, fractional, weights, weightBand, tSrs, decimalPlaces.
 /// Default prefixes raster1, raster2, etc. produce PREFIX_bN_STATISTIC fields.
 #[wasm_bindgen(js_name=zonalStats)]
 pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Result<Dataset, JsError> {
@@ -163,17 +174,22 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
             return Err(JsError::new("decimalPlaces must be a finite integer"));
         }
     }
-    let a: ZonalOptions = parse_options(&options)?;
+    let (rest, values) = split_options(&options, &["weights"])?;
+    let a: ZonalOptions = parse_options(&rest)?;
     if a.prefixes.as_ref().is_some_and(|p| p.iter().any(|p| p.trim().is_empty())) {
         return Err(JsError::new("raster field prefixes cannot be empty"));
     }
+    let stats = a
+        .stats
+        .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
+        .transpose()
+        .map_err(js_err)?
+        .unwrap_or_else(|| terrio::ops::zonal::ZonalOptions::default().stats);
+    let weights = values[0].as_ref().filter(|_| stats.iter().any(|s| s.uses_weights())).map(input_raster).transpose()?;
     let options = terrio::ops::zonal::ZonalOptions {
-        stats: a
-            .stats
-            .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
-            .transpose()
-            .map_err(js_err)?
-            .unwrap_or_else(|| terrio::ops::zonal::ZonalOptions::default().stats),
+        fractional: a.fractional,
+        weights: weights.map(|raster| terrio::ops::zonal::ZonalWeight { raster: std::sync::Arc::new(raster), band: a.weight_band }),
+        stats,
         all_touched: a.all_touched,
         dst_srs: a.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?,
         decimal_places: a.decimal_places,
