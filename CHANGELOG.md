@@ -1,7 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-11-03)
 
+- Visualization: `terrio::ops::render` draws a raster or vector dataset as 8-bit RGBA, reading a
+  raster from the coarsest overview that covers the output, with stretches, eight colormaps,
+  palettes and transparency for nodata, masks and alpha. `terrio preview` writes a PNG or draws in
+  the terminal (Kitty, iTerm2, sixels or half blocks), the MCP `preview` tool returns the image,
+  and `terrio view` serves a local pan-and-zoom map. Python and JavaScript expose the same
+  rendering (#513).
+- `viewshed --om ACCUM --os N` sums visibility from a regular grid of observers and normalizes it
+  to Byte as GDAL 3.13 does, through Rust, CLI/MCP, Python and JavaScript/WASM (#288).
+- SQL: attribute `GROUP BY` with per-group aggregates, ordering and limits, and the spatial
+  functions `ST_Area`, `ST_Length`, `ST_Intersects`, `ST_Buffer`, `ST_Transform` and
+  `ST_Centroid` (#288).
+- KML and KMZ keep shared style ids in a style table (`style_table` in Rust and Python,
+  `styleTable` in JavaScript), as GDAL's LIBKML driver does, and write it back; `fill` and
+  `outline` flags and inline styles merged over shared ones follow KML (#393).
+- CAD drawings read polyface meshes and MESH entities as 3D multipolygons, and leave out
+  entities they do not support with a warning instead of failing the drawing (#501).
+- A dataset with a single named layer accepts its file stem as the layer name too, through native
+  readers, in-memory codecs and the GDAL backend, with one diagnostic for a missing layer (#529).
+- The WebAssembly package can be built with a selection of scientific formats, such as NetCDF and
+  HDF5, as a single module.
 - `Workbook::open_bytes` now enforces the same compressed-size limit as `Workbook::open`.
   Workbook authoring and editing are checked against openpyxl in CI, including retained
   chart, drawing, table and theme parts (#405).

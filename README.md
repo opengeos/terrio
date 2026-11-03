@@ -186,7 +186,7 @@ and vector formats, the CRS engine and the operations are always built. A COG wr
 needs only:
 
 ```toml
-terrio = { version = "0.6", default-features = false, features = ["geotiff"] }
+terrio = { version = "0.7", default-features = false, features = ["geotiff"] }
 ```
 
 See [the features](https://terrio.dev/rust/#features) for what each one adds.
