@@ -27,6 +27,14 @@ def test_layer_alias_and_selection_errors(tmp_path):
         assert ds[0].name == "roads"
         assert terrio.render(path, layers=names).startswith(b"\x89PNG")
     dataset = terrio.open_vector(str(path))
+    # Materialized datasets carry actual layer names, without a filename alias.
+    assert terrio.render(dataset, layers=["roads"]).startswith(b"\x89PNG")
+    with pytest.raises(ValueError) as error:
+        terrio.render(dataset, layers=["map"])
+    assert str(error.value) == "no layer named map (layers: roads)"
+    with pytest.raises(ValueError) as error:
+        terrio.vector_grid(dataset, layers=["map"])
+    assert str(error.value) == "no layer named map (layers: roads)"
     for source in (str(path), dataset):
         with pytest.raises(ValueError) as error:
             terrio.render(source, layers=["roads", "missing"])

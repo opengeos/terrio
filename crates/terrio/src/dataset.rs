@@ -1221,7 +1221,7 @@ pub(crate) fn select_layers(layers: Vec<Layer>, path: &str, options: &VectorOpen
 pub(crate) fn layer_selection(requested: &[String], available: &[&str], path: Option<&str>, ignore_case: bool) -> Result<Vec<bool>> {
     let stem = path.and_then(|p| Path::new(p).file_stem()).and_then(|s| s.to_str()).filter(|s| !s.is_empty());
     let matches = |layer: &str, name: &str| {
-        layer == name || ignore_case && layer.eq_ignore_ascii_case(name) || available.len() == 1 && stem == Some(name)
+        layer == name || (ignore_case && layer.eq_ignore_ascii_case(name)) || (available.len() == 1 && stem == Some(name))
     };
     if let Some(missing) = requested.iter().find(|n| !available.iter().any(|l| matches(l, n))) {
         return Err(Error::InvalidArgument(format!("no layer named {missing} (layers: {})", available.join(", "))));

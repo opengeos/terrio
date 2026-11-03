@@ -3731,6 +3731,11 @@ test("single named layer accepts the file stem across readers and operations", (
     features: [{ type: "Feature", properties: {v: 7}, geometry: {type: "Point", coordinates: [1, 2]} }],
   }));
   const file = {bytes, filename: "map.geojson"};
+  const materialized = terrio.openVector(bytes, file.filename, {});
+  assert.ok(terrio.render(materialized, {layers: ["roads"]}).data.length > 0);
+  assert.throws(() => terrio.render(materialized, {layers: ["map"]}), /no layer named map \(layers: roads\)/);
+  assert.throws(() => terrio.vectorGrid(materialized, {layers: ["map"]}), /no layer named map \(layers: roads\)/);
+  materialized.free();
   for (const layers of [[], ["map"], ["roads"], ["roads", "map", "map"]]) {
     const ds = terrio.openVector(bytes, file.filename, {layers});
     assert.deepEqual(ds.layerNames(), ["roads"]);

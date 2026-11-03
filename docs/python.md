@@ -101,6 +101,26 @@ journal, so appending to a large GeoPackage costs about as much as the features 
 process stopped in the middle leaves the file as it was (SQLite, GDAL and terrio play the journal
 back).
 
+### Layer selection
+
+An empty `layers` request keeps all layers. Duplicate requests do not duplicate
+output, and source order is retained. Every requested name must match; readers,
+rendering and filtering report `no layer named NAME (layers: AVAILABLE)` for a
+missing name. A file with exactly one layer also accepts the filename without its
+extension, without renaming the layer. This alias is a Terrio extension to GDAL
+3.13.3's layer-name lookup. Native GeoPackage table names remain case-insensitive.
+
+The filename alias is available while opening a path. A `VectorDataset` or `Layer`
+does not retain its source filename: use its actual layer names in subsequent
+operations. For a file `map.geojson` containing one layer named `roads`:
+
+```python
+ds = terrio.open_vector("map.geojson", layers=["map"])  # selects roads
+terrio.render("map.geojson", layers=["map"])           # filename alias works
+terrio.render(ds, layers=["roads"])                   # actual name on a dataset
+# terrio.render(ds, layers=["map"]) raises: no layer named map (layers: roads)
+```
+
 ### Streams
 
 Layers larger than memory are read a chunk of features at a time with `terrio.open_stream`
@@ -476,7 +496,8 @@ stretch="auto", layers=None, attribute=None)` returns a PNG of a raster or vecto
 accepts a path (a raster, or else a vector dataset), a `Raster`, or vector layers (`VectorDataset`,
 `Layer`, a list of layers, or GeoJSON as a mapping or as text). A raster is read from its coarsest overview that still has
 the pixels needed, so a remote COG transfers a small part of itself. The options are those of
-[`terrio preview`](cli.md#preview).
+[`terrio preview`](cli.md#preview). See [Layer selection](#layer-selection) for
+filename aliases and selecting layers from materialized datasets.
 
 ```python
 png = terrio.render("https://example.com/dem.tif", colormap="terrain", max_size=512)

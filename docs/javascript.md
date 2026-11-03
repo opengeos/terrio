@@ -209,6 +209,8 @@ and transparency policies.
 (`Uint8Array` or `{bytes, filename}`) or GeoJSON. Options: `width`, `height`, `maxSize` (1024),
 `bands`, `colormap`, `stretch`, `layers` and `attribute`, as in [`terrio preview`](cli.md#preview).
 Rasters are read from the coarsest overview that still has the pixels needed.
+See [Layer selection](#layer-selection) for filename aliases and selecting layers
+from materialized datasets.
 
 ```js
 const { width, height, data } = render(dataset, { colormap: "terrain", maxSize: 512 });
@@ -387,6 +389,28 @@ parts' relative paths and bytes, and `createVector` the bytes of the dataset, ra
 writing files. `exportSchema` describes the layers read (GeoPackage column declarations are
 read only from files, by the command line, Python and Rust). See
 [Vector datasets](cli.md#vector-datasets) for the options and GDAL's rules.
+
+### Layer selection
+
+An empty `layers` request keeps all layers. Duplicate requests do not duplicate
+output, and source order is retained. Every requested name must match; readers,
+rendering and filtering report `no layer named NAME (layers: AVAILABLE)` for a
+missing name. A file with exactly one layer also accepts the filename without its
+extension, without renaming the layer. This alias is a Terrio extension to GDAL
+3.13.3's layer-name lookup. Native GeoPackage table names remain case-insensitive.
+
+`openVector(bytes, filename, {layers})` and operations receiving `{bytes, filename}`
+can use the filename alias. A materialized `Dataset` does not retain its source
+filename, so subsequent operations use its actual layer names. For bytes from
+`map.geojson` containing one layer named `roads`:
+
+```js
+const ds = terrio.openVector(bytes, "map.geojson", { layers: ["map"] });
+terrio.render({ bytes, filename: "map.geojson" }, { layers: ["map"] });
+terrio.render(ds, { layers: ["roads"] });
+// terrio.render(ds, { layers: ["map"] }) throws: no layer named map (layers: roads)
+ds.free();
+```
 
 ### Renaming and updating vector datasets
 
