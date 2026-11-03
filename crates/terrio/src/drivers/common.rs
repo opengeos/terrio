@@ -845,7 +845,8 @@ pub(crate) fn xml_unescape(s: &str) -> String {
     s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
-/// Escapes `&`, `<`, `>` and `"` for XML text and attribute values; `'` is kept.
+/// Escapes `&`, `<`, `>` and `"` for XML text and attribute values; `'` is kept, as GDAL's
+/// metadata writers keep it. [`crate::drivers::vector::xml::escape`] also escapes `'`.
 pub(crate) fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }

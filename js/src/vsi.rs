@@ -4,8 +4,7 @@
 //! WebAssembly has no local file system and no signed requests: local paths fail, and writes to
 //! object stores are not available (`listUrl` lists public buckets and SAS-token URLs).
 
-use crate::remote::js_error;
-use crate::{js_err, parse_options, to_js};
+use crate::{js_err, js_error, parse_options, to_js};
 use serde::Deserialize;
 use terrio::vsi::{self, CopyOptions, ListOptions, RemoteLister, SyncOptions};
 use wasm_bindgen::prelude::*;

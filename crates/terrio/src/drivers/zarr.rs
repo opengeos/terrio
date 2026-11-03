@@ -3174,4 +3174,25 @@ mod tests {
             assert_eq!(v3(format).unwrap_err().to_string(), "Zarr: Unhandled zarr_format value", "{format}");
         }
     }
+
+    #[test]
+    fn zarr_v3_and_stac_data_type_names() {
+        // Persisted in Zarr v3 `data_type` and STAC `data_type`: wbraster's names must stay these.
+        use DataType::*;
+        let names = [
+            (U8, "uint8"),
+            (I8, "int8"),
+            (U16, "uint16"),
+            (I16, "int16"),
+            (U32, "uint32"),
+            (I32, "int32"),
+            (U64, "uint64"),
+            (I64, "int64"),
+            (F32, "float32"),
+            (F64, "float64"),
+        ];
+        for (t, name) in names {
+            assert_eq!(t.as_str(), name);
+        }
+    }
 }

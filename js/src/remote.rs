@@ -6,7 +6,7 @@
 //! ([`terrio::sparse::SparseFile`]); when it needs blocks not fetched yet, they are fetched (in
 //! parallel requests, nearby ranges merged) and the read runs again, until it has all it needs.
 
-use crate::{Dataset, crs_string, js_err, parse_options, to_js, typed_array};
+use crate::{Dataset, crs_string, js_err, js_error, parse_options, to_js, typed_array};
 use serde::Deserialize;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -79,12 +79,6 @@ fn call(obj: &JsValue, method: &str, args: &[JsValue]) -> Result<JsValue, JsErro
         a.push(x);
     }
     f.apply(obj, &a).map_err(js_error)
-}
-
-/// A JavaScript exception as an error.
-pub(crate) fn js_error(e: JsValue) -> JsError {
-    let msg = e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).or_else(|| e.as_string()).unwrap_or_else(|| format!("{e:?}"));
-    JsError::new(&msg)
 }
 
 impl Fetcher {

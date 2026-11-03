@@ -72,10 +72,7 @@ pub fn open(path: &str) -> terrio::Result<RasterDataset> {
     super::quiet(|| terrio::open_raster(path))
 }
 
-/// Parses an optional CRS argument.
-pub fn srs(s: &Option<String>) -> terrio::Result<Option<terrio::crs::SpatialRef>> {
-    s.as_deref().map(terrio::crs::SpatialRef::parse).transpose()
-}
+pub use super::srs;
 
 /// Parses a bounding box `xmin,ymin,xmax,ymax`, as GDAL's `--bbox` takes it.
 pub fn parse_bbox(s: &str) -> terrio::Result<[f64; 4]> {

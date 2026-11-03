@@ -14,7 +14,7 @@
 //! `make-point`, `create` and `export-schema`).
 
 use super::processing::{VectorInput, VectorOutput};
-use super::rasterout::srs;
+use super::srs;
 use terrio::formats::VectorDriver;
 use terrio::ops::concat::{ConcatMode, ConcatOptions, ConcatSource, FieldStrategy};
 use terrio::ops::partition::{PartitionOptions, PartitionScheme, PartitionWriteMode};

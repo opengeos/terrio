@@ -43,7 +43,7 @@ const SECTOR: usize = 512;
 const PENDING_BYTE: i64 = 0x4000_0000;
 
 fn bad(msg: impl std::fmt::Display) -> Error {
-    Error::InvalidData(format!("SQLite: {msg}"))
+    super::sqlite::bad(&msg.to_string())
 }
 
 /// Why a database cannot be changed in place (it is left untouched).

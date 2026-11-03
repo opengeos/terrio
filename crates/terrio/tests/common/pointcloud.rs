@@ -6,12 +6,12 @@
 use terrio::crs::SpatialRef;
 use terrio::pointcloud::{self, Dimension, PointCloud, Values};
 
-/// The path of `name` in `TERRIO_TEST_DATA/pointcloud`, or `None` when the variable is unset so
-/// that real-data tests pass without checking anything. Panics when the file is missing.
+#[path = "test_data.rs"]
+mod test_data;
+
+/// The path of `name` in `TERRIO_TEST_DATA/pointcloud` (see [`test_data::data`]).
 pub fn data(name: &str) -> Option<String> {
-    let p = std::path::PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?).join("pointcloud").join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
+    test_data::data(&format!("pointcloud/{name}"))
 }
 
 /// A deterministic pseudo-random sequence in [0, 1).

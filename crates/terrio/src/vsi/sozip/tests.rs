@@ -875,10 +875,24 @@ fn native_member_reopens_reject_replaced_or_modified_archives() {
     assert_eq!(back, b"original");
     let reader = open_member(&location, "data").unwrap().unwrap();
     let reopen = reader.reopen().unwrap();
-    // An in-place rewrite of the same size and mtime is seen by its ctime, which kernels with
-    // coarse timestamps (one clock tick, up to 10 ms) leave unchanged within a tick.
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    fs::write(&path, original).unwrap();
-    fs::File::open(&path).unwrap().set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    // An in-place rewrite of the same size and mtime is seen by its ctime only, which stays the
+    // same within one tick of a kernel's coarse timestamp clock (see `native.rs`): rewrite until
+    // the ctime moves, whatever the filesystem's granularity.
+    let ctime = |p: &std::path::Path| {
+        use std::os::unix::fs::MetadataExt;
+        let m = fs::metadata(p).unwrap();
+        (m.ctime(), m.ctime_nsec())
+    };
+    let before = ctime(&path);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        fs::write(&path, &original).unwrap();
+        fs::File::open(&path).unwrap().set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+        if ctime(&path) != before {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the ctime did not change");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     assert!(reopen.open().is_err());
 }

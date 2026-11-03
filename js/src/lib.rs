@@ -91,6 +91,13 @@ const FEATURES: &[(&str, bool)] = &[
     ("zarr", cfg!(feature = "zarr")),
 ];
 
+/// A JavaScript exception as an error.
+pub(crate) fn js_error(e: JsValue) -> JsError {
+    use wasm_bindgen::JsCast;
+    let msg = e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).or_else(|| e.as_string()).unwrap_or_else(|| format!("{e:?}"));
+    JsError::new(&msg)
+}
+
 /// Converts a terrio error into a JavaScript `Error`. Formats this build leaves out say which
 /// module has them.
 fn js_err(e: terrio::Error) -> JsError {
