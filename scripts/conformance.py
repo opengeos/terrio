@@ -26,7 +26,7 @@ Suites:
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
     raster-query      compare, pixel-info and xyz vs gdal raster compare, gdal raster pixel-info,
                       gdallocationinfo and gdal2xyz.py (compare_raster_query_with_gdal.py)
-    sql-depth         grouped and spatial SQL vs GDAL SQLite on Natural Earth
+    grouped-spatial-sql         grouped and spatial SQL vs GDAL SQLite on Natural Earth
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
     analysis-output   zonal/point-sampling output reprojection and decimal rounding
     footprint         raster footprints, source/custom fields and singleparts vs GDAL
@@ -1449,24 +1449,25 @@ def suite_focal(ctx):
     )
 
 
-def suite_sql_depth(ctx):
+def suite_grouped_spatial_sql(ctx):
     """Grouped and spatial SQL on Natural Earth against GDAL SQLite."""
-    suite = Suite("sql-depth", "Grouped and spatial SQL", "GDAL 3.13.3 SQLite",
+    suite = Suite("grouped-spatial-sql", "Grouped and spatial SQL", "GDAL 3.13.3 SQLite",
                   "CLI/MCP, convert, Python and optional Node/WASM queries. Counts, nulls, text, "
                   "logical schemas and CRS are exact; numeric values allow relative/absolute 1e-10, "
                   "constructed point coordinates absolute 1e-7 CRS units, buffer symmetric-difference "
                   "area relative 1e-7 and envelopes absolute 1e-7 source units. Original geometry WKB is exact. "
-                  "Two explicit static-type policies cover empty groups and all-null spatial scalar expressions.")
+                  "Two explicit static-type policies cover empty groups and all-null spatial scalar expressions; "
+                  "unordered GROUP BY compares complete rows without requiring row order.")
     if missing_modules("osgeo", "terrio"):
         suite.skipped = "needs GDAL with SQLite/SpatiaLite and current Python bindings"
         return suite
     if not (Path(ctx.data) / "countries.geojson").is_file():
         suite.skipped = "needs Natural Earth countries (scripts/fetch_test_data.sh)"
         return suite
-    code, out, err = run([sys.executable, str(SCRIPTS / "compare_sql_depth_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_grouped_spatial_sql_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
     try:
         for row in json.loads(out):
-            suite.cases.append(Case("sql-depth", row["name"], row["status"], row["detail"]))
+            suite.cases.append(Case("grouped-spatial-sql", row["name"], row["status"], row["detail"]))
     except (ValueError, KeyError, TypeError) as error:
         suite.error = f"{error}: {tail(err or out)}"
         return suite
@@ -3028,7 +3029,7 @@ SUITES = OrderedDict(
         ("dataset-check", suite_dataset_check),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
-        ("sql-depth", suite_sql_depth),
+        ("grouped-spatial-sql", suite_grouped_spatial_sql),
         ("multidim", suite_multidim),
         ("mdmosaic", suite_mdmosaic),
         ("topology", suite_topology),

@@ -11,7 +11,7 @@ pub(super) fn execute(layer: &Layer, s: &Select, limit: Option<usize>) -> Result
     if keys.iter().any(|e| !matches!(e, Expr::Index(_) | Expr::Fid)) {
         return Err(syntax("GROUP BY requires attribute fields".into()));
     }
-    let filter = s.filter.as_ref().map(|e| bound(&e.0, &layer.schema, s)).transpose()?;
+    let filter = s.filter.as_ref().map(|e| scalar(bound(&e.0, &layer.schema, s)?)).transpose()?;
     let mut out = Layer::new(layer.name.clone());
     let mut plans = Vec::new();
     // Each output is a group key or an independent aggregate accumulator.

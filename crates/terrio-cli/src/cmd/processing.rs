@@ -360,7 +360,7 @@ pub struct SqlArgs {
     input: VectorInput,
     #[command(flatten)]
     output: VectorOutput,
-    /// Read-only OGR SQL subset: expressions, DISTINCT, summaries and attribute LEFT JOIN.
+    /// Read-only SQL subset: expressions, DISTINCT, grouped summaries, attribute LEFT JOIN and spatial functions.
     #[arg(short = 'q', long = "query", alias = "sql")]
     query: String,
 }

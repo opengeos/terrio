@@ -247,7 +247,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
     if !s.group_by.is_empty() {
         return super::grouped::execute(layer, s, copy_limit);
     }
-    let filter = s.filter.as_ref().map(|e| bound(&e.0, &layer.schema, s)).transpose()?;
+    let filter = s.filter.as_ref().map(|e| scalar(bound(&e.0, &layer.schema, s)?)).transpose()?;
     let mut schema = layer.schema.clone();
     let mut joins = Vec::new();
     let mut qualifiers = vec![s.alias.as_deref().unwrap_or(&s.from).to_ascii_lowercase()];
@@ -339,7 +339,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
                     if geometry_expr.is_some() || summary || s.distinct || s.items.iter().any(|i| matches!(i, Item::Star(_))) {
                         return Err(syntax("only one geometry column is supported, outside summaries and DISTINCT".into()));
                     }
-                    if let Some(epsg) = super::spatial::output_epsg(&e_bound, s.source_epsg) {
+                    if let Some(epsg) = super::spatial::output_epsg(&e_bound, None) {
                         crate::crs::SpatialRef::from_epsg(epsg)?.apply_to_layer(&mut out);
                     }
                     out.geom_type = super::spatial::output_type(&e_bound, layer.geom_type);
@@ -370,7 +370,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
         .order_by
         .as_ref()
         .map(|(name, desc)| {
-            let e = bound(&Expr::Field(name.clone()), &layer.schema, s)?;
+            let e = scalar(bound(&Expr::Field(name.clone()), &layer.schema, s)?)?;
             if s.distinct
                 && !matches!(&s.items[0],Item::Column(Expr::Field(n),_) if primary_name(n,s).eq_ignore_ascii_case(primary_name(name,s)))
             {

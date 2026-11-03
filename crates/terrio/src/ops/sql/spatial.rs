@@ -2,6 +2,7 @@
 use super::*;
 use crate::{Geometry, GeometryType};
 use geo::{Area, Centroid, Intersects};
+use std::borrow::Cow;
 
 pub(super) fn validate_arity(name: &str, n: usize) -> Result<()> {
     let expected = match name {
@@ -27,6 +28,9 @@ pub(super) fn validate(name: &str, args: &[Expr]) -> Result<()> {
     if name == "ST_INTERSECTS" && !is_geometry(&args[1]) && !matches!(args[1], Expr::Literal(Value::Null)) {
         return Err(syntax("ST_Intersects requires two geometries".into()));
     }
+    if name == "ST_BUFFER" {
+        scalar(args[1].clone())?;
+    }
     Ok(())
 }
 
@@ -51,26 +55,36 @@ pub(super) fn output_type(e: &Expr, source: Option<GeometryType>) -> Option<Geom
     }
 }
 
+fn geometry<'a>(e: &Expr, f: &'a Feature) -> Option<Cow<'a, Geometry>> {
+    if matches!(e, Expr::Geometry) {
+        return f.geometry.as_ref().map(Cow::Borrowed);
+    }
+    match eval(e, f) {
+        Value::Geometry(g) => Some(Cow::Owned(*g)),
+        _ => None,
+    }
+}
+
 pub(super) fn evaluate(name: &str, args: &[Expr], f: &Feature) -> Value {
-    let Value::Geometry(g) = eval(&args[0], f) else {
+    let Some(g) = geometry(&args[0], f) else {
         // SpatiaLite predicates use -1 for an unknown geometry.
         return if name == "ST_INTERSECTS" { Value::Int(-1) } else { Value::Null };
     };
-    let shape = super::super::topology::to_geo(&g);
     match name {
-        "ST_AREA" => Value::Float(shape.unsigned_area()),
+        "ST_AREA" => Value::Float(super::super::topology::to_geo(&g).unsigned_area()),
         "ST_LENGTH" => Value::Float(length(&g)),
-        "ST_CENTROID" => {
-            shape.centroid().map(|p| Value::Geometry(Box::new(Geometry::Point(wbvector::Coord::xy(p.x(), p.y()))))).unwrap_or(Value::Null)
-        }
-        "ST_INTERSECTS" => match eval(&args[1], f) {
-            Value::Geometry(b) => Value::Int(shape.intersects(&super::super::topology::to_geo(&b)) as i64),
+        "ST_CENTROID" => super::super::topology::to_geo(&g)
+            .centroid()
+            .map(|p| Value::Geometry(Box::new(Geometry::Point(wbvector::Coord::xy(p.x(), p.y())))))
+            .unwrap_or(Value::Null),
+        "ST_INTERSECTS" => match geometry(&args[1], f) {
+            Some(b) => Value::Int(super::super::topology::to_geo(&g).intersects(&super::super::topology::to_geo(&b)) as i64),
             _ => Value::Int(-1),
         },
         "ST_BUFFER" => {
             let Some(distance) = eval(&args[1], f).as_f64().filter(|d| d.is_finite()) else { return Value::Null };
             let mut l = Layer::new("geometry");
-            l.features.push(Feature { fid: f.fid, geometry: Some(*g), attributes: Vec::new() });
+            l.features.push(Feature { fid: f.fid, geometry: Some(g.into_owned()), attributes: Vec::new() });
             super::super::topology::buffer(&l, &super::super::topology::BufferOptions { distance, quadrant_segments: 30 })
                 .ok()
                 .and_then(|mut l| l.features.pop()?.geometry)

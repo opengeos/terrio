@@ -25,6 +25,8 @@ CASES = {
     "grouped aggregates": "SELECT CONTINENT, COUNT(*) AS n, COUNT(POP_EST) AS valid, SUM(POP_EST) AS total, AVG(POP_EST) AS mean, MIN(POP_EST) AS smallest, MAX(POP_EST) AS largest FROM countries GROUP BY CONTINENT ORDER BY CONTINENT",
     "multiple keys and distinct counts": "SELECT CONTINENT, NAME, COUNT(DISTINCT POP_EST) AS n FROM countries GROUP BY CONTINENT,NAME ORDER BY NAME LIMIT 12",
     "filtered groups and aggregate ordering": "SELECT CONTINENT AS continent, SUM(POP_EST) AS total FROM countries WHERE POP_EST>10000000 GROUP BY CONTINENT ORDER BY total DESC LIMIT 3",
+    "unordered groups": "SELECT CONTINENT, COUNT(*) AS n FROM countries GROUP BY CONTINENT",
+    "null predicate truthiness": "SELECT ADMIN,geometry FROM countries WHERE ST_Intersects(geometry,NULL) ORDER BY ADMIN LIMIT 3",
     "empty groups": "SELECT CONTINENT, COUNT(*) AS n FROM countries WHERE POP_EST<0 GROUP BY CONTINENT",
     "area length and intersects": "SELECT ADMIN,geometry, ST_Area(geometry) AS area, ST_Length(geometry) AS length, ST_Intersects(geometry,geometry) AS intersects FROM countries ORDER BY ADMIN LIMIT 12",
     "centroid": "SELECT ADMIN,ST_Centroid(geometry) AS geometry FROM countries ORDER BY ADMIN LIMIT 12",
@@ -61,7 +63,7 @@ def snapshot(layer):
     return fields, crs.Clone() if crs else None, rows
 
 
-def compare(expected, actual, buffer=False, schema_policy=None):
+def compare(expected, actual, buffer=False, schema_policy=None, unordered=False):
     ef, ec, er = expected
     af, ac, ar = actual
     policy_applied = False
@@ -91,6 +93,11 @@ def compare(expected, actual, buffer=False, schema_policy=None):
         raise AssertionError("CRS differs")
     if len(er) != len(ar):
         raise AssertionError(f"row counts differ: {len(ar)} vs {len(er)}")
+    if unordered:
+        # SQL does not promise GROUP BY row order without ORDER BY. All values,
+        # counts and duplicate rows still participate in the comparison.
+        er = sorted(er, key=lambda row: json.dumps(row[0], ensure_ascii=False))
+        ar = sorted(ar, key=lambda row: json.dumps(row[0], ensure_ascii=False))
     approximate = policy_applied
     for (ev, eg), (av, ag) in zip(er, ar):
         for e, a in zip(ev, av):
@@ -133,14 +140,16 @@ def main():
     import terrio
 
     rows = []
-    with tempfile.TemporaryDirectory(prefix="terrio-sql-depth-") as directory:
+    with tempfile.TemporaryDirectory(prefix="terrio-grouped-spatial-sql-") as directory:
         work = Path(directory)
         source = work / "countries.geojson"
         gdal.VectorTranslate(
             str(source), str(args.data / "countries.geojson"), layerName="countries"
         )
         surfaces = ["sql", "convert", "python"]
-        package = args.node_package or Path(os.environ.get("TERRIO_JS_PKG", "js/pkg-node/terrio.js"))
+        package = args.node_package or Path(
+            os.environ.get("TERRIO_JS_PKG", "js/pkg-node/terrio.js")
+        )
         if args.node_package and not package.is_file():
             parser.error(f"requested Node package is missing: {package}")
         if package.is_file() and shutil.which("node"):
@@ -188,6 +197,7 @@ def main():
                         snapshot(actual_ds.GetLayer(0)),
                         buffer=name == "nested buffer",
                         schema_policy=name,
+                        unordered=name == "unordered groups",
                     )
                     actual_ds = None
                     rows.append(
@@ -200,7 +210,7 @@ def main():
                                 "; intentional schema policy: statically typed empty/all-null expressions vs SQLite String inference"
                                 if name in ("empty groups", "null spatial values")
                                 else ""
-                            ),
+                            ) + ("; unordered GROUP BY row order excluded; complete rows compared" if name == "unordered groups" else ""),
                         )
                     )
                 except Exception as error:

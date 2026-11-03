@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from compare_sql_depth_with_gdal import compare
+from compare_grouped_spatial_sql_with_gdal import compare
 from osgeo import ogr
 
 
@@ -47,8 +47,24 @@ def test_buffer_overlap_is_not_sufficient_for_equivalence():
         compare(([], None, [([], a)]), ([], None, [([], b)]), buffer=True)
 
 
-def test_original_polygons_must_match_wkb():
+def test_non_point_geometry_differences_are_rejected():
     a = ogr.CreateGeometryFromWkt("POLYGON ((0 0,1 0,1 1,0 1,0 0))")
-    b = ogr.CreateGeometryFromWkt("POLYGON ((0 0,2 0,2 1,0 1,0 0))")
-    with pytest.raises(AssertionError, match="geometry"):
+    b = ogr.CreateGeometryFromWkt("POLYGON ((0 0,0 1,1 1,1 0,0 0))")
+    assert a.SymmetricDifference(b).IsEmpty()
+    assert a.ExportToWkb() != b.ExportToWkb()
+    assert compare(([], None, [([], a)]), ([], None, [([], a.Clone())])) == "identical"
+    with pytest.raises(AssertionError, match="constructed geometry exceeds 1e-7"):
         compare(([], None, [([], a)]), ([], None, [([], b)]))
+
+
+def test_unordered_comparison_preserves_group_values_and_multiplicity():
+    fields = [("key", "String"), ("n", "Integer")]
+    expected = (fields, None, [(["A", 1], None), (["B", 2], None)])
+    actual = (fields, None, [(["B", 2], None), (["A", 1], None)])
+    assert compare(expected, actual, unordered=True) == "identical"
+    with pytest.raises(AssertionError, match="attribute differs"):
+        compare(expected, actual)
+    with pytest.raises(AssertionError, match="attribute differs"):
+        compare(expected, (fields, None, [(["B", 3], None), (["A", 1], None)]), unordered=True)
+    with pytest.raises(AssertionError, match="row counts"):
+        compare(expected, (fields, None, [(["A", 1], None)]), unordered=True)

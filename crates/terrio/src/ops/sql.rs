@@ -236,7 +236,7 @@ impl Expression {
     /// Binds field names to a layer's schema, matching them case-insensitively. Fails when a field
     /// does not exist.
     pub fn bind(&self, schema: &Schema) -> Result<BoundExpression> {
-        Ok(BoundExpression(bind(&self.0, schema)?))
+        Ok(BoundExpression(scalar(bind(&self.0, schema)?)?))
     }
 }
 
@@ -371,8 +371,17 @@ pub(crate) fn field_index(schema: &Schema, name: &str) -> Option<usize> {
     schema.field_index(name).or_else(|| schema.fields().iter().position(|f| f.name.eq_ignore_ascii_case(name)))
 }
 
+// Geometry is a distinct SQL value, never an implicit scalar or truth value.
+fn scalar(e: Expr) -> Result<Expr> {
+    if spatial::is_geometry(&e) {
+        return Err(syntax("geometry values require a spatial function, geometry projection or IS NULL test".into()));
+    }
+    Ok(e)
+}
+
 fn bind(e: &Expr, schema: &Schema) -> Result<Expr> {
     let b = |x: &Expr| bind(x, schema).map(Box::new);
+    let sb = |x: &Expr| scalar(bind(x, schema)?).map(Box::new);
     Ok(match e {
         Expr::Field(name) => match field_index(schema, name) {
             Some(i) => Expr::Index(i),
@@ -391,16 +400,16 @@ fn bind(e: &Expr, schema: &Schema) -> Result<Expr> {
             }
         }
         Expr::Transform(e, t) => Expr::Transform(b(e)?, t.clone()),
-        Expr::Not(a) => Expr::Not(b(a)?),
-        Expr::Neg(a) => Expr::Neg(b(a)?),
-        Expr::Binary(op, x, y) => Expr::Binary(*op, b(x)?, b(y)?),
+        Expr::Not(a) => Expr::Not(sb(a)?),
+        Expr::Neg(a) => Expr::Neg(sb(a)?),
+        Expr::Binary(op, x, y) => Expr::Binary(*op, sb(x)?, sb(y)?),
         Expr::Like { expr, pattern, escape, negated, insensitive } => {
-            Expr::Like { expr: b(expr)?, pattern: b(pattern)?, escape: *escape, negated: *negated, insensitive: *insensitive }
+            Expr::Like { expr: sb(expr)?, pattern: sb(pattern)?, escape: *escape, negated: *negated, insensitive: *insensitive }
         }
         Expr::In { expr, list, negated } => {
-            Expr::In { expr: b(expr)?, list: list.iter().map(|x| bind(x, schema)).collect::<Result<_>>()?, negated: *negated }
+            Expr::In { expr: sb(expr)?, list: list.iter().map(|x| scalar(bind(x, schema)?)).collect::<Result<_>>()?, negated: *negated }
         }
-        Expr::Between { expr, low, high, negated } => Expr::Between { expr: b(expr)?, low: b(low)?, high: b(high)?, negated: *negated },
+        Expr::Between { expr, low, high, negated } => Expr::Between { expr: sb(expr)?, low: sb(low)?, high: sb(high)?, negated: *negated },
         Expr::IsNull { expr, negated } => Expr::IsNull { expr: b(expr)?, negated: *negated },
     })
 }

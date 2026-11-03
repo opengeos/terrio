@@ -106,7 +106,10 @@ single-field DISTINCT, COUNT/SUM/AVG/MIN/MAX summaries and same-dataset attribut
 Duplicate join keys use OGR's first matching secondary row; null keys and unmatched
 rows retain the primary feature with null joined fields. Rust, CLI/MCP, Python
 and JavaScript share the subset. Queries retain primary geometry except DISTINCT
-and summaries. GROUP BY and spatial SQL remain separate extensions.
+and summaries. The grouped/spatial extension now supports attribute GROUP BY,
+selected output ordering and the six planar/EPSG spatial functions documented in
+the [SQL guide](sql.md), with GDAL SQLite conformance comparisons. Explicit
+geometry expressions replace the primary geometry; GROUP BY discards it.
 [GDAL OGR SQL](https://gdal.org/en/stable/user/ogr_sql_dialect.html).
 
 Acceptance: compare values, nulls, field types and geometry retention with OGR SQL,

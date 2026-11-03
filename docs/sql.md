@@ -78,8 +78,11 @@ form one group. Filtering happens before grouping. Each group has independent
 `COUNT(DISTINCT field)` state. Empty grouped input produces no rows; ungrouped
 summaries still produce one row. Grouped results discard geometry and CRS.
 One selected output column or alias may supply `ORDER BY`; `LIMIT` applies after
-ordering. Grouping does not support joins, SELECT DISTINCT, computed grouping
-keys, HAVING or aggregate expressions. It stores keys and accumulators per group,
+ordering. Without `ORDER BY`, Terrio emits groups in first-encountered source
+order. SQLite may produce a different group order; use `ORDER BY` for a portable
+ordering. The unordered conformance case compares the complete rows without
+requiring matching row order. Grouping does not support joins, SELECT DISTINCT,
+computed grouping keys, HAVING or aggregate expressions. It stores keys and accumulators per group,
 without copying the source features.
 
 The special `geometry` field denotes the primary geometry when there is no
@@ -95,6 +98,8 @@ nest and may appear in SELECT expressions and WHERE predicates:
 | `ST_Centroid(geometry)` | Planar centroid of the highest-dimensional components, returned as an XY point. |
 | `ST_Transform(geometry, epsg)` | Constant positive target EPSG code and an EPSG-identified source CRS. Uses the shared CRS engine; nested transforms use the intermediate CRS. Geocentric transforms use XYZ; ordinary horizontal transforms retain source Z/M. |
 
+Because -1 is truthy in SQL, a bare `WHERE ST_Intersects(geometry, NULL)`
+selects rows. Use `WHERE ST_Intersects(a, b) = 1` to require a known intersection.
 Except for the predicate's -1 convention, null geometry propagates as null.
 Coordinate transformation failures return null for that geometry. Unsupported functions,
 invalid argument counts, non-geometry arguments and unsupported transform CRS codes
@@ -104,8 +109,10 @@ aggregates or spatial indexes are provided by this subset.
 
 An explicit geometry expression replaces the result's primary geometry; only one
 is supported, so combining it with a wildcard or another geometry selection is
-an error. Geometry aliases do not create attribute fields. Scalar-only projections
-retain the primary geometry, following Terrio's existing SQL behavior; select
+an error. Geometry values are rejected as scalar operands, sort keys and bare
+predicates; `IS NULL` tests remain supported. Geometry aliases do not create
+attribute fields. Projections without a transform preserve the original CRS
+metadata. Scalar-only projections retain the primary geometry, following Terrio's existing SQL behavior; select
 geometry explicitly when comparing with SQLite projections. Geometry result types
 are known independently of the first row, whereas GDAL SQLite can infer a scalar
 column when its first geometry value is null. Terrio also retains static numeric
@@ -130,7 +137,7 @@ It compares values, nulls, field names and logical types, complete geometry WKB 
 retention, with duplicate, unmatched and null join keys. Integer widths normalize to the
 shared `Integer` model. These cases are included in the conformance workflow's vector suite.
 
-`scripts/compare_sql_depth_with_gdal.py` (conformance suite `sql-depth`) checks
+`scripts/compare_grouped_spatial_sql_with_gdal.py` (conformance suite `grouped-spatial-sql`) checks
 grouped and spatial queries on Natural Earth through standalone CLI/MCP,
 `convert --sql`, Python and an optional current Node/WASM package. Counts, nulls,
 text, logical schemas and CRS are exact. Floating values allow relative/absolute
