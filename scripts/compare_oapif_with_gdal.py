@@ -107,16 +107,17 @@ def compare(path, schema, crs, expected):
     actual = ogr.Open(str(path))
     layer = actual.GetLayer(0)
     got_schema = {field.GetName(): field_kind(field) for field in layer.schema}
-    # Preserve nested JSON rather than GDAL's flattening, and honor an advertised
-    # string instead of promoting a date-looking value without a schema format.
+    # The service returns a flattened href array although its JSON schema advertises
+    # an absent nested object. Check both the array and the extra all-null schema field.
     normalized_schema = dict(got_schema)
     differences = []
-    if "verblijfsobject" in got_schema and "verblijfsobject.href" in schema:
-        assert got_schema["verblijfsobject"] == "text"
-        assert schema["verblijfsobject.href"] == "StringList"
-        del normalized_schema["verblijfsobject"]
+    if got_schema.get("verblijfsobject.href") == "text" and schema.get("verblijfsobject.href") == "StringList":
         normalized_schema["verblijfsobject.href"] = "StringList"
-        differences.append("verblijfsobject preserved as JSON text versus GDAL href StringList")
+        differences.append("href array preserved as JSON text versus GDAL StringList")
+    if "verblijfsobject" in got_schema and "verblijfsobject" not in schema:
+        assert got_schema["verblijfsobject"] == "text"
+        del normalized_schema["verblijfsobject"]
+        differences.append("advertised absent verblijfsobject retained as checked all-null field")
     if got_schema.get("documentdatum") == "text" and schema.get("documentdatum") == "date":
         normalized_schema["documentdatum"] = "date"
         differences.append("documentdatum honors advertised string versus GDAL inferred Date")
@@ -132,15 +133,12 @@ def compare(path, schema, crs, expected):
         for i, field in enumerate(layer.schema):
             name, kind = field.GetName(), field_kind(field)
             a = value(got, i, kind)
-            if name == "verblijfsobject" and "verblijfsobject.href" in schema:
-                nested = json.loads(a) if a is not None else None
-                if nested is not None:
-                    assert isinstance(nested, list)
-                    assert all(isinstance(item, dict) and set(item) == {"href"} for item in nested), "nested properties must all be checked"
-                    a = [item["href"] for item in nested]
-                b = ref["properties"]["verblijfsobject.href"]
-            else:
-                b = ref["properties"][name]
+            if name == "verblijfsobject" and name not in schema:
+                assert a is None, "advertised absent field must remain null"
+                continue
+            b = ref["properties"][name]
+            if name == "verblijfsobject.href" and kind == "text" and schema[name] == "StringList":
+                a = json.loads(a) if a is not None else None
             if name == "documentdatum" and kind == "text" and schema[name] == "date" and b is not None:
                 assert b[3:] == (0, 0, 0.0, 0), "reference date has unexpected time/zone"
                 b = f"{b[0]:04d}-{b[1]:02d}-{b[2]:02d}"

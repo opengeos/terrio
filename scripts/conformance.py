@@ -2986,14 +2986,18 @@ def suite_oapif(ctx):
                   "Live pygeoapi lakes and PDOK BAG buildings; paging, schema, bbox, storage CRS and authority axes. "
                   "Every attribute and geometry coordinate checked, coordinates within 1e-8 source units. "
                   "Advertised string dates and nested JSON remain lossless native representations; "
-                  "GDAL inferred dates and flattened href lists are explicitly normalized and reported. "
+                  "GDAL inferred dates and href StringLists are explicitly normalized and reported; advertised absent fields checked null. "
                   "Source IDs checked as attributes where present; generated output FIDs excluded.")
     if missing_modules("osgeo", "terrio"):
         suite.skipped = "needs GDAL and current Python bindings"
         return suite
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13 for the reference comparisons"
+        return suite
     command = [sys.executable, str(SCRIPTS / "compare_oapif_with_gdal.py"), "--terrio", ctx.terrio, "--json"]
     package = ROOT / "js/pkg-node/terrio.js"
-    node = package.is_file() and shutil.which("node") is not None
+    node = node_exports_available(package, ["openOapif"])
     if node:
         command += ["--node-package", str(package)]
     if ctx.remote:
@@ -3002,7 +3006,8 @@ def suite_oapif(ctx):
     try:
         rows = json.loads(out)
         for row in rows:
-            suite.cases.append(Case("oapif", row["name"], row["status"], row["detail"]))
+            status = {"identical": IDENTICAL, "tolerance": TOLERANCE, "not compared": NOT_COMPARED}.get(row["status"], DIFFERS)
+            suite.cases.append(Case("oapif", row["name"], status, row["detail"]))
         if ctx.remote and len(rows) != (15 if node else 10):
             suite.cases.append(Case("oapif", "complete public comparisons", NOT_COMPARED, "one or more public reference services unavailable"))
     except (ValueError, KeyError, TypeError) as error:

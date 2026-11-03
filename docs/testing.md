@@ -2195,10 +2195,11 @@ geometry types, vertices and equivalent CRS are checked. Coordinates allow
 1e-8 source units; real attributes allow relative 1e-12 or absolute 1e-10.
 Generated output FIDs are excluded because format conversion renumbers them.
 
-Physical schema differences are explicit: native nested `verblijfsobject` JSON
-is checked against GDAL's flattened `verblijfsobject.href` list, asserting that
-every nested key is checked. Native `documentdatum` follows the advertised
-string type, compared with GDAL's inferred Date as ISO text. These are reported
+Physical schema differences are explicit: the service returns a flattened
+`verblijfsobject.href` array, preserved natively as JSON text and checked against
+GDAL's StringList. The service schema's absent `verblijfsobject` field is retained
+natively and checked to be null in every row. Native `documentdatum` follows the
+advertised string type, compared with GDAL's inferred Date as ISO text. These are reported
 as normalized agreement, not identical schemas. No source fields are dropped.
 Unavailable public services are reported as not compared.
 
