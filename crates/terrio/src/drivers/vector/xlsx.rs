@@ -43,16 +43,16 @@ pub(super) const MAX_COLUMNS: usize = 16_384;
 pub(super) const MAX_CELL_TEXT_UTF16: usize = 32_767;
 const MAX_SHEET_NAME: usize = 31;
 /// The most relationships or sheets a workbook part may declare: they hold memory before any cell.
-const MAX_WORKBOOK_ENTRIES: usize = 65_536;
+pub(super) const MAX_WORKBOOK_ENTRIES: usize = 65_536;
 /// GDAL's limits on the empty rows a gap between two rows makes.
 const MAX_ROW_GAP: usize = 10_000;
 const MAX_GAP_CELLS: usize = 100_000;
 /// The most a workbook's part may expand to, and the most cells (blank ones in the table included)
 /// a workbook may hold: an untrusted file is refused rather than exhausting memory.
-const MAX_PART_BYTES: u64 = 2 << 30;
+pub(super) const MAX_PART_BYTES: u64 = 2 << 30;
 /// The most a workbook's sheets may expand to together.
-const MAX_SHEET_BYTES: u64 = 4 * MAX_PART_BYTES;
-const MAX_CELLS: usize = 100_000_000;
+pub(super) const MAX_SHEET_BYTES: u64 = 4 * MAX_PART_BYTES;
+pub(super) const MAX_CELLS: usize = 100_000_000;
 /// What a row costs against that limit, for the row entry and feature it holds even without a cell.
 const ROW_CELLS: usize = 4;
 /// The bytes of a cell's text that cost as much as another cell.
@@ -68,7 +68,7 @@ const MAX_SERIAL: f64 = 3_650_000.0;
 
 /// What a cell holds, as GDAL's driver classifies it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CellKind {
+pub(super) enum CellKind {
     /// A column skipped by a cell reference: no cell at all.
     Gap,
     Text,
@@ -372,7 +372,7 @@ impl<'a> SheetTable<'a> {
 
 /// The year-to-second parts of a serial date: its day since 1970, and its milliseconds in the day.
 /// `None` for numbers that are no dates.
-fn serial_parts(value: &str, date1904: bool) -> Option<(i64, i64)> {
+pub(super) fn serial_parts(value: &str, date1904: bool) -> Option<(i64, i64)> {
     let serial: f64 = value.trim().parse().ok()?;
     if !serial.is_finite() || serial.abs() >= MAX_SERIAL {
         return None;
@@ -534,7 +534,7 @@ fn table_layer(mut table: SheetTable<'_>, name: &str, date1904: bool, table_budg
     Ok(layer)
 }
 
-fn take_cells(budget: &mut usize, cells: usize) -> Result<()> {
+pub(super) fn take_cells(budget: &mut usize, cells: usize) -> Result<()> {
     *budget =
         budget.checked_sub(cells).ok_or_else(|| Error::ResourceLimit(format!("XLSX: the workbook holds more than {MAX_CELLS} cells")))?;
     Ok(())
@@ -563,7 +563,7 @@ fn merged_ranges(text: &str, part: &str, budget: &mut usize) -> Result<Vec<(usiz
 }
 
 /// A workbook part as text, refused when it would expand past the limit.
-fn read_part<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Result<Option<String>> {
+pub(super) fn read_part<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Result<Option<String>> {
     let mut file = match zip.by_name(name) {
         Ok(file) => file,
         Err(zip::result::ZipError::FileNotFound) => return Ok(None),
@@ -593,19 +593,19 @@ fn read_part<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, name: &str) 
     }))
 }
 
-fn attribute(e: &BytesStart<'_>, local_name: &str) -> Option<String> {
+pub(super) fn attribute(e: &BytesStart<'_>, local_name: &str) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.local_name().as_ref() == local_name)
         .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok().map(|v| v.into_owned()))
 }
 
-fn xml_error(part: &str, e: impl std::fmt::Display) -> Error {
+pub(super) fn xml_error(part: &str, e: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("XLSX: cannot parse '{part}': {e}"))
 }
 
 /// The text of a `&name;` or `&#n;` reference.
-fn reference_text(r: &quick_xml::events::BytesRef<'_>) -> Option<char> {
+pub(super) fn reference_text(r: &quick_xml::events::BytesRef<'_>) -> Option<char> {
     r.resolve_char_ref().ok().flatten().or(match &**r {
         "amp" => Some('&'),
         "lt" => Some('<'),
@@ -622,7 +622,7 @@ fn directory(part: &str) -> &str {
 }
 
 /// A relationship's target as a part name, from the directory of the part it belongs to.
-fn resolve_target(base: &str, target: &str) -> String {
+pub(super) fn resolve_target(base: &str, target: &str) -> String {
     let path = if let Some(absolute) = target.strip_prefix('/') {
         absolute.trim_start_matches('/').to_string()
     } else {
@@ -723,7 +723,7 @@ fn workbook_sheets<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Res
     }
 }
 
-fn shared_strings(text: &str, budget: &mut usize) -> Result<Vec<String>> {
+pub(super) fn shared_strings(text: &str, budget: &mut usize) -> Result<Vec<String>> {
     let part = "sharedStrings.xml";
     let mut reader = quick_xml::Reader::from_str(text);
     let mut strings = Vec::new();
@@ -775,7 +775,7 @@ fn unquoted_format(code: &str) -> String {
 }
 
 /// The kind of value each cell style holds: from its number format, as GDAL's driver tells it.
-fn style_kinds(text: &str) -> Result<Vec<CellKind>> {
+pub(super) fn style_kinds(text: &str) -> Result<Vec<CellKind>> {
     let part = "styles.xml";
     let mut reader = quick_xml::Reader::from_str(text);
     let mut formats: HashMap<i32, CellKind> = HashMap::new();
@@ -1311,7 +1311,7 @@ fn value_cell(out: &mut String, reference: &str, value: &FieldValue, styles: &Ce
 }
 
 /// The columns written before a layer's fields for its geometries.
-fn geometry_header(layer: &Layer, options: &XlsxOptions) -> Result<Vec<&'static str>> {
+pub(super) fn geometry_header(layer: &Layer, options: &XlsxOptions) -> Result<Vec<&'static str>> {
     let geometries = || layer.features.iter().filter_map(|f| f.geometry.as_ref());
     Ok(match options.geometry {
         CsvGeometry::None => vec![],
@@ -1326,7 +1326,7 @@ fn geometry_header(layer: &Layer, options: &XlsxOptions) -> Result<Vec<&'static 
     })
 }
 
-fn geometry_values(feature: &Feature, header: &[&str]) -> Vec<FieldValue> {
+pub(super) fn geometry_values(feature: &Feature, header: &[&str]) -> Vec<FieldValue> {
     match (header, &feature.geometry) {
         ([], _) => vec![],
         (["WKT"], Some(g)) => vec![FieldValue::Text(wkt::format(g))],

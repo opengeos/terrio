@@ -6,6 +6,10 @@
 //! Rows and columns count from 1, as the sheet shows them, and cells are addressed as `B3`. Formulas
 //! are never evaluated: a formula is written with its text and the cached value it is given.
 //!
+//! [`Workbook::open`] reads a workbook to edit. What the model does not hold is kept: parts such as
+//! charts and macros, a sheet's other elements, and the cells and settings left unedited, as they
+//! were written.
+//!
 //! ```
 //! use terrio::xlsx::{Align, CellValue, Format, Workbook};
 //!
@@ -24,8 +28,13 @@
 //! ```
 
 use super::datetime;
+#[path = "xlsx_workbook_open.rs"]
+mod open;
+
+use open::{PackageSource, SheetSource};
+
 use super::xlsx::{
-    MAIN_NS, MAX_CELL_TEXT_UTF16, MAX_COLUMNS, MAX_ROWS, OD_RELS, PACKAGE, StringTable, XML_HEADER, column_letters, excel_serial_days,
+    MAIN_NS, MAX_CELL_TEXT_UTF16, MAX_COLUMNS, MAX_ROWS, OD_RELS, PACKAGE, XML_HEADER, column_letters, excel_serial_days,
     wall_clock_millis, xml_legal, xml_text,
 };
 use super::xlsx_options::real_date;
@@ -355,6 +364,8 @@ impl Format {
 struct Cell {
     value: CellValue,
     format: Format,
+    /// The cell as it was read, written back while it is not edited.
+    raw: Option<String>,
 }
 
 /// A column's or row's settings.
@@ -426,6 +437,13 @@ pub struct Worksheet {
     hyperlinks: Vec<Hyperlink>,
     comments: Vec<Comment>,
     print: PrintSetup,
+    /// What was read that the model does not hold, or holds only in part.
+    source: Option<SheetSource>,
+    /// Whether the comments changed since they were read.
+    comments_edited: bool,
+    /// Whether a cell changed since it was read.
+    edited: bool,
+    very_hidden: bool,
 }
 
 impl Worksheet {
@@ -446,7 +464,68 @@ impl Worksheet {
             hyperlinks: Vec::new(),
             comments: Vec::new(),
             print: PrintSetup::default(),
+            source: None,
+            comments_edited: false,
+            edited: false,
+            very_hidden: false,
         }
+    }
+
+    /// Forgets an element as it was read, for the model to write it.
+    fn touch(&mut self, section: &str) {
+        if let Some(source) = &mut self.source {
+            source.sections.remove(section);
+        }
+    }
+
+    /// Forgets a sheet-scoped name as it was read, for the model's value to replace it.
+    fn touch_name(&mut self, name: &str) {
+        if let Some(source) = &mut self.source {
+            source.names.retain(|(n, _, _)| n != name);
+        }
+    }
+
+    /// The format of a cell, if it has one. Colors and fonts that a workbook names through a theme
+    /// are not read into it, and stay in the file while the cell is not rewritten.
+    pub fn format(&self, cell: &str) -> Result<Option<&Format>> {
+        Ok(self.cells.get(&parse_cell(cell)?).map(|c| &c.format))
+    }
+
+    /// A column's width, if set.
+    pub fn column_width(&self, column: &str) -> Result<Option<f64>> {
+        Ok(self.columns.get(&parse_column(column)?).and_then(|d| d.size))
+    }
+
+    /// A row's height, if set.
+    pub fn row_height(&self, row: u32) -> Option<f64> {
+        self.rows.get(&row).and_then(|d| d.size)
+    }
+
+    /// The frozen rows and columns, if any.
+    pub fn frozen_panes(&self) -> Option<(u32, u32)> {
+        self.frozen
+    }
+
+    /// The range with filter buttons, if any.
+    pub fn autofilter_range(&self) -> Option<String> {
+        self.autofilter.as_ref().map(Range::text)
+    }
+
+    /// The address a cell links to, if any.
+    pub fn hyperlink_of(&self, cell: &str) -> Result<Option<&str>> {
+        let cell = parse_cell(cell)?;
+        Ok(self.hyperlinks.iter().find(|h| h.cell == cell).map(|h| h.url.as_str()))
+    }
+
+    /// A cell's comment and its author, if any.
+    pub fn comment_of(&self, cell: &str) -> Result<Option<(&str, &str)>> {
+        let cell = parse_cell(cell)?;
+        Ok(self.comments.iter().find(|c| c.cell == cell).map(|c| (c.text.as_str(), c.author.as_str())))
+    }
+
+    /// Whether the sheet's tab is hidden.
+    pub fn is_hidden(&self) -> bool {
+        self.hidden
     }
 
     /// The sheet's name.
@@ -468,7 +547,8 @@ impl Worksheet {
         let value = value.into();
         check_value(&value, row, column)?;
         check_format(format)?;
-        self.cells.insert((row, column), Cell { value, format: format.clone() });
+        self.cells.insert((row, column), Cell { value, format: format.clone(), raw: None });
+        self.edited = true;
         Ok(())
     }
 
@@ -487,6 +567,7 @@ impl Worksheet {
             return Err(invalid(format!("merged range {} overlaps {}", range.text(), other.text())));
         }
         self.merges.push(range);
+        self.touch("mergeCells");
         Ok(())
     }
 
@@ -505,7 +586,7 @@ impl Worksheet {
         self.merge(range)?;
         for row in parsed.first_row..=parsed.last_row {
             for column in parsed.first_column..=parsed.last_column {
-                self.cells.insert((row, column), Cell { value: CellValue::Blank, format: format.clone() });
+                self.cells.insert((row, column), Cell { value: CellValue::Blank, format: format.clone(), raw: None });
             }
         }
         self.write_at(parsed.first_row, parsed.first_column, value, format)
@@ -516,6 +597,7 @@ impl Worksheet {
         let range = Range::parse(range)?;
         let before = self.merges.len();
         self.merges.retain(|m| *m != range);
+        self.touch("mergeCells");
         Ok(self.merges.len() != before)
     }
 
@@ -525,12 +607,17 @@ impl Worksheet {
     }
 
     fn column_entry(&mut self, column: &str) -> Result<&mut Dimension> {
-        Ok(self.columns.entry(parse_column(column)?).or_default())
+        let column = parse_column(column)?;
+        self.touch("cols");
+        Ok(self.columns.entry(column).or_default())
     }
 
     fn row_entry(&mut self, row: u32) -> Result<&mut Dimension> {
         if row == 0 || row as usize > MAX_ROWS {
             return Err(invalid(format!("row {row} is outside a sheet")));
+        }
+        if let Some(source) = &mut self.source {
+            source.row_attributes.remove(&row);
         }
         Ok(self.rows.entry(row).or_default())
     }
@@ -593,10 +680,12 @@ impl Worksheet {
     /// Hides or shows the sheet's tab.
     pub fn set_hidden(&mut self, hidden: bool) {
         self.hidden = hidden;
+        self.very_hidden = false;
     }
     /// The tab's color, as `0xRRGGBB`.
     pub fn set_tab_color(&mut self, rgb: u32) {
         self.tab_color = Some(rgb & 0xFF_FFFF);
+        self.touch("sheetPr");
     }
     /// Keeps this many rows and columns in view when scrolling. `freeze_panes(4, 1)` keeps rows 1-4
     /// and column A. Zeros for both remove the freeze.
@@ -605,6 +694,7 @@ impl Worksheet {
             return Err(invalid(format!("cannot freeze {rows} rows and {columns} columns")));
         }
         self.frozen = (rows > 0 || columns > 0).then_some((rows, columns));
+        self.touch("sheetViews");
         Ok(())
     }
     /// The view's zoom, from 10 to 400 percent.
@@ -613,15 +703,19 @@ impl Worksheet {
             return Err(invalid(format!("a zoom of {percent} is not from 10 to 400")));
         }
         self.zoom = Some(percent);
+        self.touch("sheetViews");
         Ok(())
     }
     /// Shows or hides the gridlines.
     pub fn set_show_gridlines(&mut self, show: bool) {
         self.show_gridlines = show;
+        self.touch("sheetViews");
     }
     /// Adds filter buttons to the top row of a range.
     pub fn autofilter(&mut self, range: &str) -> Result<()> {
         self.autofilter = Some(Range::parse(range)?);
+        self.touch("autoFilter");
+        self.touch_name("_xlnm._FilterDatabase");
         Ok(())
     }
     /// Limits a range's cells to a list of values.
@@ -635,6 +729,7 @@ impl Worksheet {
             return Err(invalid("a list validation's items are more than 255 characters together".into()));
         }
         self.validations.push(Validation { range: Range::parse(range)?, items });
+        self.touch("dataValidations");
         Ok(())
     }
     /// Links a cell to an `http`, `https`, `mailto` or `ftp` address.
@@ -649,6 +744,7 @@ impl Worksheet {
         }
         self.hyperlinks.retain(|h| h.cell != cell);
         self.hyperlinks.push(Hyperlink { cell, url: url.to_string() });
+        self.touch("hyperlinks");
         Ok(())
     }
     /// Attaches a comment to a cell.
@@ -665,16 +761,20 @@ impl Worksheet {
         }
         self.comments.retain(|c| c.cell != cell);
         self.comments.push(Comment { cell, text: text.to_string(), author: author.to_string() });
+        self.comments_edited = true;
+        self.touch("legacyDrawing");
         Ok(())
     }
 
     /// The page's orientation.
     pub fn print_orientation(&mut self, orientation: Orientation) {
         self.print.orientation = Some(orientation);
+        self.touch("pageSetup");
     }
     /// The paper's size, by its SpreadsheetML code: 1 is Letter, 9 is A4.
     pub fn print_paper_size(&mut self, code: u16) {
         self.print.paper_size = Some(code);
+        self.touch("pageSetup");
     }
     /// The page's margins in inches: left, right, top, bottom, header, footer.
     pub fn print_margins(&mut self, left: f64, right: f64, top: f64, bottom: f64, header: f64, footer: f64) -> Result<()> {
@@ -683,11 +783,14 @@ impl Worksheet {
             return Err(invalid("page margins must not be negative".into()));
         }
         self.print.margins = Some(margins);
+        self.touch("pageMargins");
         Ok(())
     }
     /// Fits the print to pages across and down; 0 leaves that direction free.
     pub fn print_fit_to(&mut self, width: u16, height: u16) {
         self.print.fit_to = Some((width, height));
+        self.touch("pageSetup");
+        self.touch("sheetPr");
     }
     /// Fits the print to a number of pages across.
     pub fn print_fit_to_width(&mut self, pages: u16) {
@@ -696,6 +799,7 @@ impl Worksheet {
     /// The range to print.
     pub fn print_area(&mut self, range: &str) -> Result<()> {
         self.print.area = Some(Range::parse(range)?);
+        self.touch_name("_xlnm.Print_Area");
         Ok(())
     }
     /// Rows to repeat at the top of each page, from 1.
@@ -704,16 +808,19 @@ impl Worksheet {
             return Err(invalid(format!("rows {first} to {last} are not title rows")));
         }
         self.print.title_rows = Some((first, last));
+        self.touch_name("_xlnm.Print_Titles");
         Ok(())
     }
     /// The page header, in SpreadsheetML's codes such as `&CTitle`.
     pub fn print_header(&mut self, text: &str) -> Result<()> {
         self.print.header = Some(header_footer(text)?);
+        self.touch("headerFooter");
         Ok(())
     }
     /// The page footer, in SpreadsheetML's codes such as `&RPage &P`.
     pub fn print_footer(&mut self, text: &str) -> Result<()> {
         self.print.footer = Some(header_footer(text)?);
+        self.touch("headerFooter");
         Ok(())
     }
 }
@@ -790,6 +897,14 @@ pub struct Workbook {
     title: Option<String>,
     author: Option<String>,
     defined_names: Vec<(String, String)>,
+    /// Whether dates count from 1904.
+    date1904: bool,
+    /// What was read that the model does not hold.
+    source: Option<Box<PackageSource>>,
+    /// Whether sheets were removed or moved, which a saved active tab may no longer fit.
+    sheets_changed: bool,
+    /// The properties set since they were read.
+    properties_edited: bool,
 }
 
 impl Workbook {
@@ -844,6 +959,7 @@ impl Workbook {
         }
         let sheet = self.sheets.remove(from);
         self.sheets.insert(index, sheet);
+        self.sheets_changed = true;
         Ok(())
     }
 
@@ -853,6 +969,7 @@ impl Workbook {
         let wanted = name.to_lowercase();
         let before = self.sheets.len();
         self.sheets.retain(|s| s.name.to_lowercase() != wanted);
+        self.sheets_changed = true;
         self.sheets.len() != before
     }
 
@@ -872,15 +989,18 @@ impl Workbook {
             return Err(invalid(format!("creation time '{time}' is not an ISO 8601 date-time")));
         }
         self.creation_time = Some(time.to_string());
+        self.properties_edited = true;
         Ok(())
     }
     /// The document's title.
     pub fn set_title(&mut self, title: &str) {
         self.title = Some(title.to_string());
+        self.properties_edited = true;
     }
     /// The document's author.
     pub fn set_author(&mut self, author: &str) {
         self.author = Some(author.to_string());
+        self.properties_edited = true;
     }
     /// Defines a name for a reference such as `'Sheet 1'!$A$1:$B$2`.
     pub fn define_name(&mut self, name: &str, reference: &str) -> Result<()> {
@@ -950,6 +1070,10 @@ struct StyleTable {
     num_formats: Vec<String>,
     xfs: Vec<String>,
     by_format: HashMap<Format, usize>,
+    /// The first number format id to use, past those read.
+    first_num_format: usize,
+    /// The stylesheet read: its root element and its other elements.
+    source: Option<open::StyleSource>,
     /// Where each item of the lists is.
     seen: HashMap<(&'static str, String), usize>,
 }
@@ -982,7 +1106,17 @@ impl StyleTable {
         for (kind, list) in [("fonts", &fonts), ("fills", &fills), ("borders", &borders), ("xfs", &xfs)] {
             seen.extend(list.iter().enumerate().map(|(i, item)| ((kind, item.clone()), i)));
         }
-        Self { fonts, fills, borders, num_formats: Vec::new(), xfs, by_format: HashMap::from([(Format::default(), 0)]), seen }
+        Self {
+            fonts,
+            fills,
+            borders,
+            num_formats: Vec::new(),
+            xfs,
+            by_format: HashMap::from([(Format::default(), 0)]),
+            first_num_format: 164,
+            source: None,
+            seen,
+        }
     }
 
     /// The index of a format's cell style, adding it if new.
@@ -999,8 +1133,10 @@ impl StyleTable {
             index_of(&mut self.seen, "fills", &mut self.fills, xml)
         });
         let border = self.border_id(format);
-        let num_format =
-            format.num_format.as_ref().map_or(0, |code| 164 + index_of(&mut self.seen, "num_formats", &mut self.num_formats, code.clone()));
+        let num_format = format
+            .num_format
+            .as_ref()
+            .map_or(0, |code| self.first_num_format + index_of(&mut self.seen, "num_formats", &mut self.num_formats, code.clone()));
         let mut xf = format!("<xf numFmtId=\"{num_format}\" fontId=\"{font}\" fillId=\"{fill}\" borderId=\"{border}\" xfId=\"0\"");
         for (used, attribute) in
             [(num_format != 0, "applyNumberFormat"), (font != 0, "applyFont"), (fill != 0, "applyFill"), (border != 0, "applyBorder")]
@@ -1088,20 +1224,35 @@ impl StyleTable {
     }
 
     fn to_xml(&self) -> String {
-        let mut out = format!("{XML_HEADER}<styleSheet xmlns=\"{MAIN_NS}\">\n");
-        if !self.num_formats.is_empty() {
-            let _ = write!(out, "<numFmts count=\"{}\">", self.num_formats.len());
-            for (i, code) in self.num_formats.iter().enumerate() {
-                let _ = write!(out, "<numFmt numFmtId=\"{}\" formatCode=\"{}\"/>", 164 + i, xml_text(code));
-            }
-            out.push_str("</numFmts>\n");
+        let (root, close) = self.source.as_ref().map_or_else(
+            || (format!("<styleSheet xmlns=\"{MAIN_NS}\">"), "</styleSheet>".to_string()),
+            |s| (s.root.clone(), "</styleSheet>".to_string()),
+        );
+        let mut out = format!("{XML_HEADER}{root}\n");
+        let new_formats = self
+            .num_formats
+            .iter()
+            .enumerate()
+            .map(|(i, code)| format!("<numFmt numFmtId=\"{}\" formatCode=\"{}\"/>", self.first_num_format + i, xml_text(code)));
+        let formats: Vec<String> = self.source.iter().flat_map(|s| s.num_formats.iter().cloned()).chain(new_formats).collect();
+        if !formats.is_empty() {
+            let _ = writeln!(out, "<numFmts count=\"{}\">{}</numFmts>", formats.len(), formats.concat());
         }
         let _ = writeln!(out, "<fonts count=\"{}\">{}</fonts>", self.fonts.len(), self.fonts.concat());
         let _ = writeln!(out, "<fills count=\"{}\">{}</fills>", self.fills.len(), self.fills.concat());
         let _ = writeln!(out, "<borders count=\"{}\">{}</borders>", self.borders.len(), self.borders.concat());
-        out.push_str("<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>\n");
+        let other = |name: &str| self.source.as_ref().and_then(|s| s.sections.get(name)).map(|raw| raw.concat());
+        out.push_str(&other("cellStyleXfs").unwrap_or_else(|| {
+            "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>\n".to_string()
+        }));
         let _ = writeln!(out, "<cellXfs count=\"{}\">{}</cellXfs>", self.xfs.len(), self.xfs.concat());
-        out.push_str("<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>\n</styleSheet>\n");
+        out.push_str(&other("cellStyles").unwrap_or_else(|| {
+            "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>\n".to_string()
+        }));
+        for name in ["dxfs", "tableStyles", "colors", "extLst"] {
+            out.push_str(&other(name).unwrap_or_default());
+        }
+        let _ = writeln!(out, "{close}");
         out
     }
 }
@@ -1141,26 +1292,27 @@ fn alignment_xml(f: &Format) -> String {
 }
 
 /// A date or date-time cell's serial number.
-fn serial(value: &CellValue) -> Option<f64> {
+fn serial(value: &CellValue, date1904: bool) -> Option<f64> {
+    let offset = if date1904 { 1462.0 } else { 0.0 };
     match value {
-        CellValue::Date(s) => excel_serial_days(i64::from(datetime::parse_date(s)?)).map(|d| d as f64),
+        CellValue::Date(s) => excel_serial_days(i64::from(datetime::parse_date(s)?)).map(|d| d as f64 - offset),
         CellValue::DateTime(s) => {
             let ms = wall_clock_millis(s)?;
             let days = excel_serial_days(ms.div_euclid(86_400_000))?;
-            Some(days as f64 + ms.rem_euclid(86_400_000) as f64 / 86_400_000.0)
+            Some(days as f64 + ms.rem_euclid(86_400_000) as f64 / 86_400_000.0 - offset)
         }
         _ => None,
     }
 }
 
 /// The attributes and body of a value's cell.
-fn value_xml(value: &CellValue, strings: &mut StringTable) -> (&'static str, String) {
+fn value_xml(value: &CellValue, date1904: bool, strings: &mut SharedStrings) -> (&'static str, String) {
     match value {
         CellValue::Blank => ("", String::new()),
         CellValue::Text(s) => (" t=\"s\"", format!("<v>{}</v>", strings.index(s))),
         CellValue::Number(v) => ("", format!("<v>{v}</v>")),
         CellValue::Boolean(b) => (" t=\"b\"", format!("<v>{}</v>", u8::from(*b))),
-        CellValue::Date(_) | CellValue::DateTime(_) => ("", format!("<v>{}</v>", serial(value).unwrap_or_default())),
+        CellValue::Date(_) | CellValue::DateTime(_) => ("", format!("<v>{}</v>", serial(value, date1904).unwrap_or_default())),
         CellValue::Error(e) => (" t=\"e\"", format!("<v>{}</v>", xml_text(e))),
         CellValue::Formula { formula, cached } => {
             let f = format!("<f>{}</f>", xml_text(formula_body(formula)));
@@ -1172,7 +1324,7 @@ fn value_xml(value: &CellValue, strings: &mut StringTable) -> (&'static str, Str
                 Some(number) => {
                     let v = match number {
                         CellValue::Number(v) => *v,
-                        other => serial(other).unwrap_or_default(),
+                        other => serial(other, date1904).unwrap_or_default(),
                     };
                     ("", format!("{f}<v>{v}</v>"))
                 }
@@ -1198,106 +1350,327 @@ fn effective_format(cell: &Cell) -> std::borrow::Cow<'_, Format> {
     }
 }
 
-/// A sheet's parts besides its XML, which refers to them.
-struct SheetRelations {
-    /// Relationship type (after `OD_RELS/`), target, and whether it is outside the package.
-    relationships: Vec<(&'static str, String, bool)>,
+/// The shared strings being written: those read, as they were, then new plain ones.
+#[derive(Default)]
+struct SharedStrings {
+    items: Vec<String>,
+    plain: HashMap<String, usize>,
+    count: usize,
 }
 
-fn sheet_xml(sheet: &Worksheet, number: usize, styles: &mut StyleTable, strings: &mut StringTable) -> (String, SheetRelations) {
-    let mut out = format!("{XML_HEADER}<worksheet xmlns=\"{MAIN_NS}\" xmlns:r=\"{OD_RELS}\">\n");
-    let mut relations = SheetRelations { relationships: Vec::new() };
-    let fit = sheet.print.fit_to.is_some();
-    if sheet.tab_color.is_some() || fit {
-        out.push_str("<sheetPr>");
-        if let Some(color) = sheet.tab_color {
-            let _ = write!(out, "<tabColor rgb=\"{}\"/>", rgb(color));
+impl SharedStrings {
+    fn index(&mut self, text: &str) -> usize {
+        self.count += 1;
+        if let Some(&i) = self.plain.get(text) {
+            return i;
         }
-        if fit {
-            out.push_str("<pageSetUpPr fitToPage=\"1\"/>");
-        }
-        out.push_str("</sheetPr>\n");
+        let space = if text.trim() != text { " xml:space=\"preserve\"" } else { "" };
+        self.items.push(format!("<si><t{space}>{}</t></si>", xml_text(text)));
+        self.plain.insert(text.to_string(), self.items.len() - 1);
+        self.items.len() - 1
     }
-    if sheet.frozen.is_some() || sheet.zoom.is_some() || !sheet.show_gridlines {
-        out.push_str("<sheetViews><sheetView");
-        if !sheet.show_gridlines {
-            out.push_str(" showGridLines=\"0\"");
-        }
-        if let Some(zoom) = sheet.zoom {
-            let _ = write!(out, " zoomScale=\"{zoom}\" zoomScaleNormal=\"{zoom}\"");
-        }
-        out.push_str(" workbookViewId=\"0\">");
-        if let Some((rows, columns)) = sheet.frozen {
-            let pane = match (rows > 0, columns > 0) {
-                (true, true) => "bottomRight",
-                (true, false) => "bottomLeft",
-                _ => "topRight",
-            };
-            out.push_str("<pane");
-            if columns > 0 {
-                let _ = write!(out, " xSplit=\"{columns}\"");
-            }
-            if rows > 0 {
-                let _ = write!(out, " ySplit=\"{rows}\"");
-            }
-            let _ = write!(
-                out,
-                " topLeftCell=\"{}\" activePane=\"{pane}\" state=\"frozen\"/><selection pane=\"{pane}\"/>",
-                cell_name(rows + 1, columns + 1)
-            );
-        }
-        out.push_str("</sheetView></sheetViews>\n");
+
+    fn to_xml(&self) -> String {
+        format!(
+            "{XML_HEADER}<sst xmlns=\"{MAIN_NS}\" count=\"{}\" uniqueCount=\"{}\">{}</sst>\n",
+            self.count.max(self.items.len()),
+            self.items.len(),
+            self.items.concat()
+        )
     }
-    let outline_rows = sheet.rows.values().map(|d| d.outline).max().unwrap_or(0);
-    let outline_columns = sheet.columns.values().map(|d| d.outline).max().unwrap_or(0);
-    out.push_str("<sheetFormatPr defaultRowHeight=\"15\"");
-    if outline_rows > 0 {
-        let _ = write!(out, " outlineLevelRow=\"{outline_rows}\"");
+}
+
+/// A relationship of a part.
+#[derive(Debug, Clone)]
+struct Relationship {
+    id: String,
+    kind: String,
+    target: String,
+    external: bool,
+}
+
+fn relationships_xml(relationships: &[Relationship]) -> String {
+    let mut out = format!("{XML_HEADER}<Relationships xmlns=\"{PACKAGE}/relationships\">\n");
+    for r in relationships {
+        let mode = if r.external { " TargetMode=\"External\"" } else { "" };
+        let _ = writeln!(
+            out,
+            "<Relationship Id=\"{}\" Type=\"{}\" Target=\"{}\"{mode}/>",
+            xml_text(&r.id),
+            xml_text(&r.kind),
+            xml_text(&r.target)
+        );
     }
-    if outline_columns > 0 {
-        let _ = write!(out, " outlineLevelCol=\"{outline_columns}\"");
-    }
-    out.push_str("/>\n");
-    if !sheet.columns.is_empty() {
-        out.push_str("<cols>");
-        for (&column, d) in &sheet.columns {
-            // A `col` needs a width; 8.43 is the sheet's default.
-            let _ = write!(out, "<col min=\"{column}\" max=\"{column}\" width=\"{}\"", d.size.unwrap_or(8.43));
-            if d.size.is_some() {
-                out.push_str(" customWidth=\"1\"");
+    out.push_str("</Relationships>\n");
+    out
+}
+
+/// The worksheet's elements, in the order the schema requires.
+const SHEET_ORDER: [&str; 38] = [
+    "sheetPr",
+    "sheetViews",
+    "sheetFormatPr",
+    "cols",
+    "sheetData",
+    "sheetCalcPr",
+    "sheetProtection",
+    "protectedRanges",
+    "scenarios",
+    "autoFilter",
+    "sortState",
+    "dataConsolidate",
+    "customSheetViews",
+    "mergeCells",
+    "phoneticPr",
+    "conditionalFormatting",
+    "dataValidations",
+    "hyperlinks",
+    "printOptions",
+    "pageMargins",
+    "pageSetup",
+    "headerFooter",
+    "rowBreaks",
+    "colBreaks",
+    "customProperties",
+    "cellWatches",
+    "ignoredErrors",
+    "smartTags",
+    "drawing",
+    "legacyDrawing",
+    "legacyDrawingHF",
+    "drawingHF",
+    "picture",
+    "oleObjects",
+    "controls",
+    "webPublishItems",
+    "tableParts",
+    "extLst",
+];
+
+/// What writing a sheet needs besides the sheet.
+struct SheetContext<'a> {
+    styles: &'a mut StyleTable,
+    strings: &'a mut SharedStrings,
+    date1904: bool,
+    relationships: Vec<Relationship>,
+    /// The relationship id of the comments' drawing, when they are written.
+    drawing: Option<String>,
+}
+
+fn sheet_xml(sheet: &Worksheet, context: &mut SheetContext<'_>) -> String {
+    let root = sheet.source.as_ref().map_or_else(|| format!("<worksheet xmlns=\"{MAIN_NS}\" xmlns:r=\"{OD_RELS}\">"), |s| s.root.clone());
+    let mut out = format!("{XML_HEADER}{root}\n");
+    for name in SHEET_ORDER {
+        match sheet.source.as_ref().and_then(|s| s.sections.get(name)) {
+            Some(raw) => {
+                for element in raw {
+                    out.push_str(element);
+                    out.push('\n');
+                }
             }
-            if let Some(format) = &d.format {
-                let _ = write!(out, " style=\"{}\"", styles.index(format));
-            }
-            if d.hidden {
-                out.push_str(" hidden=\"1\"");
-            }
-            if d.outline > 0 {
-                let _ = write!(out, " outlineLevel=\"{}\"", d.outline);
-            }
-            out.push_str("/>");
+            None => section_xml(sheet, name, context, &mut out),
         }
-        out.push_str("</cols>\n");
     }
+    out.push_str("</worksheet>\n");
+    out
+}
+
+/// Writes an element from the model, if it holds anything for it.
+fn section_xml(sheet: &Worksheet, name: &str, context: &mut SheetContext<'_>, out: &mut String) {
+    let p = &sheet.print;
+    match name {
+        "sheetPr" if sheet.tab_color.is_some() || p.fit_to.is_some() => {
+            out.push_str("<sheetPr>");
+            if let Some(color) = sheet.tab_color {
+                let _ = write!(out, "<tabColor rgb=\"{}\"/>", rgb(color));
+            }
+            if p.fit_to.is_some() {
+                out.push_str("<pageSetUpPr fitToPage=\"1\"/>");
+            }
+            out.push_str("</sheetPr>\n");
+        }
+        "sheetViews" if sheet.frozen.is_some() || sheet.zoom.is_some() || !sheet.show_gridlines => {
+            out.push_str("<sheetViews><sheetView");
+            if !sheet.show_gridlines {
+                out.push_str(" showGridLines=\"0\"");
+            }
+            if let Some(zoom) = sheet.zoom {
+                let _ = write!(out, " zoomScale=\"{zoom}\" zoomScaleNormal=\"{zoom}\"");
+            }
+            out.push_str(" workbookViewId=\"0\">");
+            if let Some((rows, columns)) = sheet.frozen {
+                let pane = match (rows > 0, columns > 0) {
+                    (true, true) => "bottomRight",
+                    (true, false) => "bottomLeft",
+                    _ => "topRight",
+                };
+                out.push_str("<pane");
+                if columns > 0 {
+                    let _ = write!(out, " xSplit=\"{columns}\"");
+                }
+                if rows > 0 {
+                    let _ = write!(out, " ySplit=\"{rows}\"");
+                }
+                let _ = write!(
+                    out,
+                    " topLeftCell=\"{}\" activePane=\"{pane}\" state=\"frozen\"/><selection pane=\"{pane}\"/>",
+                    cell_name(rows + 1, columns + 1)
+                );
+            }
+            out.push_str("</sheetView></sheetViews>\n");
+        }
+        "sheetFormatPr" => {
+            let outline_rows = sheet.rows.values().map(|d| d.outline).max().unwrap_or(0);
+            let outline_columns = sheet.columns.values().map(|d| d.outline).max().unwrap_or(0);
+            out.push_str("<sheetFormatPr defaultRowHeight=\"15\"");
+            if outline_rows > 0 {
+                let _ = write!(out, " outlineLevelRow=\"{outline_rows}\"");
+            }
+            if outline_columns > 0 {
+                let _ = write!(out, " outlineLevelCol=\"{outline_columns}\"");
+            }
+            out.push_str("/>\n");
+        }
+        "cols" if !sheet.columns.is_empty() => {
+            out.push_str("<cols>");
+            for (&column, d) in &sheet.columns {
+                // A `col` needs a width; 8.43 is the sheet's default.
+                let _ = write!(out, "<col min=\"{column}\" max=\"{column}\" width=\"{}\"", d.size.unwrap_or(8.43));
+                if d.size.is_some() {
+                    out.push_str(" customWidth=\"1\"");
+                }
+                if let Some(format) = &d.format {
+                    let _ = write!(out, " style=\"{}\"", context.styles.index(format));
+                }
+                if d.hidden {
+                    out.push_str(" hidden=\"1\"");
+                }
+                if d.outline > 0 {
+                    let _ = write!(out, " outlineLevel=\"{}\"", d.outline);
+                }
+                out.push_str("/>");
+            }
+            out.push_str("</cols>\n");
+        }
+        "sheetData" => sheet_data_xml(sheet, context, out),
+        "autoFilter" => {
+            if let Some(range) = &sheet.autofilter {
+                let _ = writeln!(out, "<autoFilter ref=\"{}\"/>", range.text());
+            }
+        }
+        "mergeCells" if !sheet.merges.is_empty() => {
+            let _ = write!(out, "<mergeCells count=\"{}\">", sheet.merges.len());
+            for merge in &sheet.merges {
+                let _ = write!(out, "<mergeCell ref=\"{}\"/>", merge.text());
+            }
+            out.push_str("</mergeCells>\n");
+        }
+        "dataValidations" => {
+            let others = sheet.source.as_ref().map_or(&[][..], |s| &s.other_validations);
+            if sheet.validations.is_empty() && others.is_empty() {
+                return;
+            }
+            let _ = write!(out, "<dataValidations count=\"{}\">", sheet.validations.len() + others.len());
+            out.push_str(&others.concat());
+            for v in &sheet.validations {
+                let list = v.items.join(",").replace('"', "\"\"");
+                let _ = write!(
+                    out,
+                    "<dataValidation type=\"list\" allowBlank=\"1\" showErrorMessage=\"1\" sqref=\"{}\"><formula1>{}</formula1></dataValidation>",
+                    v.range.text(),
+                    xml_text(&format!("\"{list}\""))
+                );
+            }
+            out.push_str("</dataValidations>\n");
+        }
+        "hyperlinks" => {
+            let others = sheet.source.as_ref().map_or(&[][..], |s| &s.other_hyperlinks);
+            if sheet.hyperlinks.is_empty() && others.is_empty() {
+                return;
+            }
+            out.push_str("<hyperlinks>");
+            out.push_str(&others.concat());
+            for (i, link) in sheet.hyperlinks.iter().enumerate() {
+                let id = format!("rIdLink{}", i + 1);
+                let _ = write!(out, "<hyperlink ref=\"{}\" r:id=\"{id}\"/>", cell_name(link.cell.0, link.cell.1));
+                context.relationships.push(Relationship {
+                    id,
+                    kind: format!("{OD_RELS}/hyperlink"),
+                    target: link.url.clone(),
+                    external: true,
+                });
+            }
+            out.push_str("</hyperlinks>\n");
+        }
+        "pageMargins" => {
+            if let Some([left, right, top, bottom, header, footer]) = p.margins {
+                let _ = writeln!(
+                    out,
+                    "<pageMargins left=\"{left}\" right=\"{right}\" top=\"{top}\" bottom=\"{bottom}\" header=\"{header}\" footer=\"{footer}\"/>"
+                );
+            }
+        }
+        "pageSetup" if p.orientation.is_some() || p.paper_size.is_some() || p.fit_to.is_some() => {
+            out.push_str("<pageSetup");
+            if let Some(code) = p.paper_size {
+                let _ = write!(out, " paperSize=\"{code}\"");
+            }
+            if let Some((width, height)) = p.fit_to {
+                let _ = write!(out, " fitToWidth=\"{width}\" fitToHeight=\"{height}\"");
+            }
+            if let Some(orientation) = p.orientation {
+                let _ = write!(out, " orientation=\"{}\"", if orientation == Orientation::Landscape { "landscape" } else { "portrait" });
+            }
+            out.push_str("/>\n");
+        }
+        "headerFooter" if p.header.is_some() || p.footer.is_some() => {
+            out.push_str("<headerFooter>");
+            if let Some(header) = &p.header {
+                let _ = write!(out, "<oddHeader>{}</oddHeader>", xml_text(header));
+            }
+            if let Some(footer) = &p.footer {
+                let _ = write!(out, "<oddFooter>{}</oddFooter>", xml_text(footer));
+            }
+            out.push_str("</headerFooter>\n");
+        }
+        "legacyDrawing" => {
+            if let Some(id) = &context.drawing {
+                let _ = writeln!(out, "<legacyDrawing r:id=\"{id}\"/>");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sheet_data_xml(sheet: &Worksheet, context: &mut SheetContext<'_>, out: &mut String) {
     out.push_str("<sheetData>\n");
+    let kept = sheet.source.as_ref().map(|s| &s.row_attributes);
     let mut rows: Vec<u32> = sheet.rows.keys().copied().chain(sheet.cells.keys().map(|&(row, _)| row)).collect();
+    if let Some(kept) = kept {
+        rows.extend(kept.keys().copied());
+    }
     rows.sort_unstable();
     rows.dedup();
     let mut cells = sheet.cells.iter().peekable();
     for row in rows {
         let _ = write!(out, "<row r=\"{row}\"");
-        if let Some(d) = sheet.rows.get(&row) {
-            if let Some(height) = d.size {
-                let _ = write!(out, " ht=\"{height}\" customHeight=\"1\"");
-            }
-            if let Some(format) = &d.format {
-                let _ = write!(out, " s=\"{}\" customFormat=\"1\"", styles.index(format));
-            }
-            if d.hidden {
-                out.push_str(" hidden=\"1\"");
-            }
-            if d.outline > 0 {
-                let _ = write!(out, " outlineLevel=\"{}\"", d.outline);
+        match kept.and_then(|k| k.get(&row)) {
+            Some(attributes) => out.push_str(attributes),
+            None => {
+                if let Some(d) = sheet.rows.get(&row) {
+                    if let Some(height) = d.size {
+                        let _ = write!(out, " ht=\"{height}\" customHeight=\"1\"");
+                    }
+                    if let Some(format) = &d.format {
+                        let _ = write!(out, " s=\"{}\" customFormat=\"1\"", context.styles.index(format));
+                    }
+                    if d.hidden {
+                        out.push_str(" hidden=\"1\"");
+                    }
+                    if d.outline > 0 {
+                        let _ = write!(out, " outlineLevel=\"{}\"", d.outline);
+                    }
+                }
             }
         }
         out.push('>');
@@ -1306,9 +1679,13 @@ fn sheet_xml(sheet: &Worksheet, number: usize, styles: &mut StyleTable, strings:
                 break;
             }
             cells.next();
-            let style = styles.index(&effective_format(cell));
+            if let Some(raw) = &cell.raw {
+                out.push_str(raw);
+                continue;
+            }
+            let style = context.styles.index(&effective_format(cell));
             let style = if style == 0 { String::new() } else { format!(" s=\"{style}\"") };
-            let (attributes, body) = value_xml(&cell.value, strings);
+            let (attributes, body) = value_xml(&cell.value, context.date1904, context.strings);
             let name = cell_name(row, column);
             if body.is_empty() {
                 let _ = write!(out, "<c r=\"{name}\"{style}{attributes}/>");
@@ -1319,75 +1696,6 @@ fn sheet_xml(sheet: &Worksheet, number: usize, styles: &mut StyleTable, strings:
         out.push_str("</row>\n");
     }
     out.push_str("</sheetData>\n");
-    if let Some(range) = &sheet.autofilter {
-        let _ = writeln!(out, "<autoFilter ref=\"{}\"/>", range.text());
-    }
-    if !sheet.merges.is_empty() {
-        let _ = write!(out, "<mergeCells count=\"{}\">", sheet.merges.len());
-        for merge in &sheet.merges {
-            let _ = write!(out, "<mergeCell ref=\"{}\"/>", merge.text());
-        }
-        out.push_str("</mergeCells>\n");
-    }
-    if !sheet.validations.is_empty() {
-        let _ = write!(out, "<dataValidations count=\"{}\">", sheet.validations.len());
-        for v in &sheet.validations {
-            let list = v.items.join(",").replace('"', "\"\"");
-            let _ = write!(
-                out,
-                "<dataValidation type=\"list\" allowBlank=\"1\" showErrorMessage=\"1\" sqref=\"{}\"><formula1>{}</formula1></dataValidation>",
-                v.range.text(),
-                xml_text(&format!("\"{list}\""))
-            );
-        }
-        out.push_str("</dataValidations>\n");
-    }
-    if !sheet.hyperlinks.is_empty() {
-        out.push_str("<hyperlinks>");
-        for link in &sheet.hyperlinks {
-            relations.relationships.push(("hyperlink", link.url.clone(), true));
-            let _ =
-                write!(out, "<hyperlink ref=\"{}\" r:id=\"rId{}\"/>", cell_name(link.cell.0, link.cell.1), relations.relationships.len());
-        }
-        out.push_str("</hyperlinks>\n");
-    }
-    let p = &sheet.print;
-    if let Some([left, right, top, bottom, header, footer]) = p.margins {
-        let _ = writeln!(
-            out,
-            "<pageMargins left=\"{left}\" right=\"{right}\" top=\"{top}\" bottom=\"{bottom}\" header=\"{header}\" footer=\"{footer}\"/>"
-        );
-    }
-    if p.orientation.is_some() || p.paper_size.is_some() || p.fit_to.is_some() {
-        out.push_str("<pageSetup");
-        if let Some(code) = p.paper_size {
-            let _ = write!(out, " paperSize=\"{code}\"");
-        }
-        if let Some((width, height)) = p.fit_to {
-            let _ = write!(out, " fitToWidth=\"{width}\" fitToHeight=\"{height}\"");
-        }
-        if let Some(orientation) = p.orientation {
-            let _ = write!(out, " orientation=\"{}\"", if orientation == Orientation::Landscape { "landscape" } else { "portrait" });
-        }
-        out.push_str("/>\n");
-    }
-    if p.header.is_some() || p.footer.is_some() {
-        out.push_str("<headerFooter>");
-        if let Some(header) = &p.header {
-            let _ = write!(out, "<oddHeader>{}</oddHeader>", xml_text(header));
-        }
-        if let Some(footer) = &p.footer {
-            let _ = write!(out, "<oddFooter>{}</oddFooter>", xml_text(footer));
-        }
-        out.push_str("</headerFooter>\n");
-    }
-    if !sheet.comments.is_empty() {
-        relations.relationships.push(("comments", format!("../comments{number}.xml"), false));
-        relations.relationships.push(("vmlDrawing", format!("../drawings/vmlDrawing{number}.vml"), false));
-        let _ = writeln!(out, "<legacyDrawing r:id=\"rId{}\"/>", relations.relationships.len());
-    }
-    out.push_str("</worksheet>\n");
-    (out, relations)
 }
 
 /// The comments part of a sheet.
@@ -1437,132 +1745,319 @@ fn comments_vml(sheet: &Worksheet, number: usize) -> String {
     out
 }
 
+/// A part's name not yet in use, numbered from `number`.
+fn free_part(used: &mut std::collections::HashSet<String>, stem: &str, number: usize, extension: &str) -> String {
+    let mut n = number;
+    loop {
+        let name = format!("{stem}{n}.{extension}");
+        if used.insert(name.clone()) {
+            return name;
+        }
+        n += 1;
+    }
+}
+
+/// The relationships file of a part.
+fn rels_part(part: &str) -> String {
+    let (directory, file) = part.rsplit_once('/').unwrap_or(("", part));
+    if directory.is_empty() { format!("_rels/{file}.rels") } else { format!("{directory}/_rels/{file}.rels") }
+}
+
+const WORKSHEET_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
+const COMMENTS_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml";
+const STYLES_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml";
+const STRINGS_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml";
+const MAIN_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
+const VML_TYPE: &str = "application/vnd.openxmlformats-officedocument.vmlDrawing";
+/// The workbook's elements around its sheets and names, in the order the schema requires.
+const WORKBOOK_BEFORE_SHEETS: [&str; 5] = ["fileVersion", "fileSharing", "workbookPr", "workbookProtection", "bookViews"];
+const WORKBOOK_AFTER_SHEETS: [&str; 3] = ["functionGroups", "externalReferences", "definedNames"];
+
 fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
-    let mut content_types = format!(
-        "{XML_HEADER}<Types xmlns=\"{PACKAGE}/content-types\">\n\
-         <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\n\
-         <Default Extension=\"xml\" ContentType=\"application/xml\"/>\n\
-         <Default Extension=\"vml\" ContentType=\"application/vnd.openxmlformats-officedocument.vmlDrawing\"/>\n\
-         <Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>\n\
-         <Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>\n\
-         <Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>\n\
-         <Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>\n\
-         <Override PartName=\"/xl/sharedStrings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml\"/>\n"
-    );
+    let source = workbook.source.as_deref();
+    let mut parts: BTreeMap<String, Vec<u8>> = source.map(|s| s.parts.clone()).unwrap_or_default();
+    let workbook_part = source.map_or_else(|| "xl/workbook.xml".to_string(), |s| s.workbook_part.clone());
+    let base = workbook_part.rsplit_once('/').map_or(String::new(), |(d, _)| format!("{d}/"));
+    let mut defaults: Vec<(String, String)> = source.map(|s| s.defaults.clone()).unwrap_or_else(|| {
+        vec![
+            ("rels".into(), "application/vnd.openxmlformats-package.relationships+xml".into()),
+            ("xml".into(), "application/xml".into()),
+            ("vml".into(), VML_TYPE.into()),
+        ]
+    });
+    let mut overrides: BTreeMap<String, String> = source.map(|s| s.overrides.iter().cloned().collect()).unwrap_or_default();
+    let mut styles = source.map_or_else(StyleTable::new, |s| s.style_table());
+    let mut strings = source.map_or_else(SharedStrings::default, |s| s.shared_strings());
+    let mut used: std::collections::HashSet<String> = parts.keys().cloned().collect();
+    used.extend(workbook.sheets.iter().filter_map(|s| s.source.as_ref().map(|x| x.part.clone())));
+
+    let mut relationships: Vec<Relationship> = source.map(|s| s.workbook_relationships.clone()).unwrap_or_default();
     let mut sheets_xml = String::new();
     let mut names = String::new();
-    let mut rels = format!(
-        "{XML_HEADER}<Relationships xmlns=\"{PACKAGE}/relationships\">\n\
-         <Relationship Id=\"rId1\" Type=\"{OD_RELS}/styles\" Target=\"styles.xml\"/>\n\
-         <Relationship Id=\"rId2\" Type=\"{OD_RELS}/sharedStrings\" Target=\"sharedStrings.xml\"/>\n"
-    );
-    let mut styles = StyleTable::new();
-    let mut strings = StringTable::default();
-    let mut parts: Vec<(String, String)> = Vec::new();
+    // The sheets read that are gone take what only they referred to.
+    let kept_sheets: std::collections::HashSet<&str> =
+        workbook.sheets.iter().filter_map(|s| s.source.as_ref().map(|x| x.part.as_str())).collect();
+    if let Some(source) = source {
+        for gone in source.sheet_parts.iter().filter(|p| !kept_sheets.contains(p.as_str())) {
+            overrides.remove(&format!("/{gone}"));
+            relationships.retain(|r| open::resolve(&base, &r.target) != *gone);
+        }
+    }
+    let mut next_sheet_id =
+        workbook.sheets.iter().filter_map(|s| s.source.as_ref().and_then(|x| x.sheet_id.parse::<u32>().ok())).max().unwrap_or(0) + 1;
+    let mut sheet_parts: Vec<(String, String)> = Vec::new();
     for (i, sheet) in workbook.sheets.iter().enumerate() {
         let number = i + 1;
-        let _ = writeln!(
-            content_types,
-            "<Override PartName=\"/xl/worksheets/sheet{number}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
-        );
-        let state = if sheet.hidden { " state=\"hidden\"" } else { "" };
-        let _ = writeln!(sheets_xml, "<sheet name=\"{}\" sheetId=\"{number}\"{state} r:id=\"rId{}\"/>", xml_text(&sheet.name), i + 3);
-        let _ = writeln!(rels, "<Relationship Id=\"rId{}\" Type=\"{OD_RELS}/worksheet\" Target=\"worksheets/sheet{number}.xml\"/>", i + 3);
-        let quoted = format!("'{}'", sheet.name.replace('\'', "''"));
-        let mut name = |defined: &str, hidden: bool, reference: String| {
-            let hidden = if hidden { " hidden=\"1\"" } else { "" };
-            let _ = writeln!(names, "<definedName name=\"{defined}\" localSheetId=\"{i}\"{hidden}>{}</definedName>", xml_text(&reference));
-        };
-        if let Some(range) = &sheet.autofilter {
-            name("_xlnm._FilterDatabase", true, format!("{quoted}!{}", range.absolute()));
-        }
-        if let Some(range) = &sheet.print.area {
-            name("_xlnm.Print_Area", false, format!("{quoted}!{}", range.absolute()));
-        }
-        if let Some((first, last)) = sheet.print.title_rows {
-            name("_xlnm.Print_Titles", false, format!("{quoted}!${first}:${last}"));
-        }
-        let (xml, relations) = sheet_xml(sheet, number, &mut styles, &mut strings);
-        parts.push((format!("xl/worksheets/sheet{number}.xml"), xml));
-        if !relations.relationships.is_empty() {
-            let mut sheet_rels = format!("{XML_HEADER}<Relationships xmlns=\"{PACKAGE}/relationships\">\n");
-            for (j, (kind, target, external)) in relations.relationships.iter().enumerate() {
-                let mode = if *external { " TargetMode=\"External\"" } else { "" };
-                let _ = writeln!(
-                    sheet_rels,
-                    "<Relationship Id=\"rId{}\" Type=\"{OD_RELS}/{kind}\" Target=\"{}\"{mode}/>",
-                    j + 1,
-                    xml_text(target)
-                );
+        let (part, id, sheet_id) = match &sheet.source {
+            Some(s) => (s.part.clone(), s.rel_id.clone(), s.sheet_id.clone()),
+            None => {
+                let part = free_part(&mut used, "xl/worksheets/sheet", number, "xml");
+                let id = format!("rIdSheet{number}");
+                let target = part.strip_prefix(&base).map_or_else(|| format!("/{part}"), str::to_string);
+                relationships.push(Relationship { id: id.clone(), kind: format!("{OD_RELS}/worksheet"), target, external: false });
+                overrides.insert(format!("/{part}"), WORKSHEET_TYPE.to_string());
+                next_sheet_id += 1;
+                (part, id, (next_sheet_id - 1).to_string())
             }
-            sheet_rels.push_str("</Relationships>\n");
-            parts.push((format!("xl/worksheets/_rels/sheet{number}.xml.rels"), sheet_rels));
-        }
-        if !sheet.comments.is_empty() {
+        };
+        let state = if sheet.very_hidden {
+            " state=\"veryHidden\""
+        } else if sheet.hidden {
+            " state=\"hidden\""
+        } else {
+            ""
+        };
+        let _ =
+            writeln!(sheets_xml, "<sheet name=\"{}\" sheetId=\"{sheet_id}\"{state} r:id=\"{}\"/>", xml_text(&sheet.name), xml_text(&id));
+        let quoted = format!("'{}'", sheet.name.replace('\'', "''"));
+        let mut name = |defined: &str, hidden: bool, reference: &str| {
+            let hidden = if hidden { " hidden=\"1\"" } else { "" };
             let _ = writeln!(
-                content_types,
-                "<Override PartName=\"/xl/comments{number}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\"/>"
+                names,
+                "<definedName name=\"{}\" localSheetId=\"{i}\"{hidden}>{}</definedName>",
+                xml_text(defined),
+                xml_text(reference)
             );
-            parts.push((format!("xl/comments{number}.xml"), comments_xml(sheet)));
-            parts.push((format!("xl/drawings/vmlDrawing{number}.vml"), comments_vml(sheet, number)));
+        };
+        if let Some(s) = &sheet.source {
+            for (defined, hidden, reference) in &s.names {
+                name(defined, *hidden, reference);
+            }
         }
+        let read_name = |wanted: &str| sheet.source.as_ref().is_some_and(|s| s.names.iter().any(|(n, _, _)| n == wanted));
+        if let Some(range) = sheet.autofilter.as_ref().filter(|_| !read_name("_xlnm._FilterDatabase")) {
+            name("_xlnm._FilterDatabase", true, &format!("{quoted}!{}", range.absolute()));
+        }
+        if let Some(range) = sheet.print.area.as_ref().filter(|_| !read_name("_xlnm.Print_Area")) {
+            name("_xlnm.Print_Area", false, &format!("{quoted}!{}", range.absolute()));
+        }
+        if let Some((first, last)) = sheet.print.title_rows.filter(|_| !read_name("_xlnm.Print_Titles")) {
+            name("_xlnm.Print_Titles", false, &format!("{quoted}!${first}:${last}"));
+        }
+
+        // The relationships read stay, but for those the model writes again.
+        let hyperlinks_kept = sheet.source.as_ref().is_some_and(|s| s.sections.contains_key("hyperlinks"));
+        let mut sheet_relationships: Vec<Relationship> = sheet.source.as_ref().map(|s| s.relationships.clone()).unwrap_or_default();
+        let sheet_base = part.rsplit_once('/').map_or(String::new(), |(d, _)| format!("{d}/"));
+        sheet_relationships.retain(|r| {
+            let drop = (r.kind.ends_with("/hyperlink") && !hyperlinks_kept)
+                || (sheet.comments_edited && (r.kind.ends_with("/comments") || r.kind.ends_with("/vmlDrawing")));
+            if drop && !r.external {
+                let target = open::resolve(&sheet_base, &r.target);
+                parts.remove(&target);
+                overrides.remove(&format!("/{target}"));
+            }
+            !drop
+        });
+        let mut drawing = None;
+        if sheet.comments_edited && !sheet.comments.is_empty() {
+            let comments = free_part(&mut used, "xl/comments", number, "xml");
+            let vml = free_part(&mut used, "xl/drawings/vmlDrawing", number, "vml");
+            sheet_relationships.push(Relationship {
+                id: "rIdNotes".into(),
+                kind: format!("{OD_RELS}/comments"),
+                target: format!("/{comments}"),
+                external: false,
+            });
+            sheet_relationships.push(Relationship {
+                id: "rIdNoteShapes".into(),
+                kind: format!("{OD_RELS}/vmlDrawing"),
+                target: format!("/{vml}"),
+                external: false,
+            });
+            overrides.insert(format!("/{comments}"), COMMENTS_TYPE.to_string());
+            if !defaults.iter().any(|(e, _)| e.eq_ignore_ascii_case("vml")) {
+                defaults.push(("vml".into(), VML_TYPE.into()));
+            }
+            parts.insert(comments, comments_xml(sheet).into_bytes());
+            parts.insert(vml, comments_vml(sheet, number).into_bytes());
+            drawing = Some("rIdNoteShapes".to_string());
+        }
+        let mut context = SheetContext {
+            styles: &mut styles,
+            strings: &mut strings,
+            date1904: workbook.date1904,
+            relationships: sheet_relationships,
+            drawing,
+        };
+        let xml = sheet_xml(sheet, &mut context);
+        let sheet_relationships = context.relationships;
+        if !sheet_relationships.is_empty() {
+            sheet_parts.push((rels_part(&part), relationships_xml(&sheet_relationships)));
+        }
+        sheet_parts.push((part, xml));
     }
     if styles.xfs.len() > MAX_CELL_FORMATS {
         return Err(invalid(format!("the workbook has {} cell formats, past Excel's {MAX_CELL_FORMATS}", styles.xfs.len())));
     }
+    for (name, reference) in source.iter().flat_map(|s| s.other_names.iter()) {
+        names.push_str(&format!("{name}{}</definedName>\n", xml_text(reference)));
+    }
     for (name, reference) in &workbook.defined_names {
         let _ = writeln!(names, "<definedName name=\"{}\">{}</definedName>", xml_text(name), xml_text(reference));
     }
-    content_types.push_str("</Types>\n");
-    rels.push_str("</Relationships>\n");
     let names = if names.is_empty() { names } else { format!("<definedNames>\n{names}</definedNames>\n") };
+
+    // The workbook part, with what was read around the model's sheets and names.
+    let other = |name: &str| source.and_then(|s| s.workbook_sections.get(name)).map(|raw| raw.concat());
+    let mut book = format!(
+        "{XML_HEADER}{}\n",
+        source.map_or_else(|| format!("<workbook xmlns=\"{MAIN_NS}\" xmlns:r=\"{OD_RELS}\">"), |s| s.workbook_root.clone())
+    );
     let first_visible = workbook.sheets.iter().position(|s| !s.hidden).unwrap_or(0);
-    let book = format!(
-        "{XML_HEADER}<workbook xmlns=\"{MAIN_NS}\" xmlns:r=\"{OD_RELS}\">\n<bookViews><workbookView activeTab=\"{first_visible}\"/></bookViews>\n<sheets>\n{sheets_xml}</sheets>\n{names}</workbook>\n"
-    );
-    let package_rels = format!(
-        "{XML_HEADER}<Relationships xmlns=\"{PACKAGE}/relationships\">\n\
-         <Relationship Id=\"rId1\" Type=\"{OD_RELS}/officeDocument\" Target=\"xl/workbook.xml\"/>\n\
-         <Relationship Id=\"rId2\" Type=\"{PACKAGE}/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>\n\
-         <Relationship Id=\"rId3\" Type=\"{OD_RELS}/extended-properties\" Target=\"docProps/app.xml\"/>\n\
-         </Relationships>\n"
-    );
-    let mut properties = String::new();
-    if let Some(title) = &workbook.title {
-        let _ = writeln!(properties, "<dc:title>{}</dc:title>", xml_text(title));
+    let view = format!("<bookViews><workbookView activeTab=\"{first_visible}\"/></bookViews>\n");
+    for name in WORKBOOK_BEFORE_SHEETS {
+        match (name, other(name)) {
+            ("bookViews", raw) if workbook.sheets_changed || raw.is_none() => book.push_str(&view),
+            (_, Some(raw)) => {
+                book.push_str(&raw);
+                book.push('\n');
+            }
+            _ => {}
+        }
     }
-    if let Some(author) = &workbook.author {
-        let _ = writeln!(properties, "<dc:creator>{}</dc:creator>", xml_text(author));
+    let _ = write!(book, "<sheets>\n{sheets_xml}</sheets>\n");
+    for name in WORKBOOK_AFTER_SHEETS {
+        if name == "definedNames" {
+            book.push_str(&names);
+        } else if let Some(raw) = other(name) {
+            book.push_str(&raw);
+            book.push('\n');
+        }
     }
-    if let Some(time) = &workbook.creation_time {
-        let _ = writeln!(properties, "<dcterms:created xsi:type=\"dcterms:W3CDTF\">{}</dcterms:created>", xml_text(time));
+    let edited = workbook.sheets.iter().any(|s| s.edited);
+    if source.is_some() {
+        // Cached values may be out of date after an edit: Excel computes them again on opening.
+        let calc = other("calcPr");
+        match calc {
+            Some(raw) if edited && !raw.contains("fullCalcOnLoad") => {
+                book.push_str(&raw.replacen("<calcPr", "<calcPr fullCalcOnLoad=\"1\"", 1))
+            }
+            Some(raw) => book.push_str(&raw),
+            None if edited => book.push_str("<calcPr fullCalcOnLoad=\"1\"/>"),
+            None => {}
+        }
+        book.push('\n');
+        for (name, raw) in source.iter().flat_map(|s| s.workbook_sections.iter()) {
+            let modelled = WORKBOOK_BEFORE_SHEETS.contains(&name.as_str())
+                || WORKBOOK_AFTER_SHEETS.contains(&name.as_str())
+                || matches!(name.as_str(), "sheets" | "calcPr");
+            if !modelled {
+                book.push_str(&raw.concat());
+                book.push('\n');
+            }
+        }
     }
-    let core = format!(
-        "{XML_HEADER}<cp:coreProperties xmlns:cp=\"{PACKAGE}/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
-         xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n{properties}</cp:coreProperties>\n"
+    book.push_str("</workbook>\n");
+
+    // The styles and strings parts, where they were read or by default.
+    let mut ensure = |kind: &str, default_name: &str, content_type: &str, relationships: &mut Vec<Relationship>| -> String {
+        let suffix = format!("/{kind}");
+        if let Some(r) = relationships.iter().find(|r| r.kind.ends_with(&suffix)) {
+            let part = open::resolve(&base, &r.target);
+            overrides.entry(format!("/{part}")).or_insert_with(|| content_type.to_string());
+            return part;
+        }
+        let part = format!("{base}{default_name}");
+        relationships.insert(
+            0,
+            Relationship {
+                id: format!("rIdModel{kind}"),
+                kind: format!("{OD_RELS}/{kind}"),
+                target: default_name.to_string(),
+                external: false,
+            },
+        );
+        overrides.insert(format!("/{part}"), content_type.to_string());
+        part
+    };
+    let styles_part = ensure("styles", "styles.xml", STYLES_TYPE, &mut relationships);
+    let strings_part = ensure("sharedStrings", "sharedStrings.xml", STRINGS_TYPE, &mut relationships);
+    overrides.entry(format!("/{workbook_part}")).or_insert_with(|| MAIN_TYPE.to_string());
+
+    // A new workbook's properties, or those read with what was set.
+    let mut properties = Vec::new();
+    if let Some(title) = workbook.title.as_ref().filter(|_| workbook.properties_edited || source.is_none()) {
+        properties.push(("title", format!("<dc:title>{}</dc:title>", xml_text(title))));
+    }
+    if let Some(author) = workbook.author.as_ref().filter(|_| workbook.properties_edited || source.is_none()) {
+        properties.push(("creator", format!("<dc:creator>{}</dc:creator>", xml_text(author))));
+    }
+    if let Some(time) = workbook.creation_time.as_ref().filter(|_| workbook.properties_edited || source.is_none()) {
+        properties.push(("created", format!("<dcterms:created xsi:type=\"dcterms:W3CDTF\">{}</dcterms:created>", xml_text(time))));
+    }
+    let core_root = format!(
+        "<cp:coreProperties xmlns:cp=\"{PACKAGE}/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+         xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
     );
-    let app = format!(
-        "{XML_HEADER}<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\">\n<Application>terrio</Application>\n</Properties>\n"
-    );
-    let mut all: Vec<(String, String)> = vec![
-        ("[Content_Types].xml".into(), content_types),
-        ("_rels/.rels".into(), package_rels),
-        ("docProps/app.xml".into(), app),
-        ("docProps/core.xml".into(), core),
-        ("xl/workbook.xml".into(), book),
-        ("xl/_rels/workbook.xml.rels".into(), rels),
-        ("xl/styles.xml".into(), styles.to_xml()),
-        ("xl/sharedStrings.xml".into(), strings.to_xml()),
+    let core = open::core_properties(source, &core_root, &properties);
+    let core_part = source.and_then(|s| s.core_part.clone()).unwrap_or_else(|| "docProps/core.xml".to_string());
+    overrides.entry(format!("/{core_part}")).or_insert_with(|| "application/vnd.openxmlformats-package.core-properties+xml".to_string());
+    parts.entry("_rels/.rels".to_string()).or_insert_with(|| {
+        format!(
+            "{XML_HEADER}<Relationships xmlns=\"{PACKAGE}/relationships\">\n\
+             <Relationship Id=\"rId1\" Type=\"{OD_RELS}/officeDocument\" Target=\"xl/workbook.xml\"/>\n\
+             <Relationship Id=\"rId2\" Type=\"{PACKAGE}/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>\n\
+             <Relationship Id=\"rId3\" Type=\"{OD_RELS}/extended-properties\" Target=\"docProps/app.xml\"/>\n\
+             </Relationships>\n"
+        )
+        .into_bytes()
+    });
+    if source.is_none() {
+        overrides
+            .insert("/docProps/app.xml".to_string(), "application/vnd.openxmlformats-officedocument.extended-properties+xml".to_string());
+        parts.insert(
+            "docProps/app.xml".to_string(),
+            format!("{XML_HEADER}<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\">\n<Application>terrio</Application>\n</Properties>\n").into_bytes(),
+        );
+    }
+    let mut content_types = format!("{XML_HEADER}<Types xmlns=\"{PACKAGE}/content-types\">\n");
+    for (extension, content_type) in &defaults {
+        let _ = writeln!(content_types, "<Default Extension=\"{}\" ContentType=\"{}\"/>", xml_text(extension), xml_text(content_type));
+    }
+    for (name, content_type) in &overrides {
+        let _ = writeln!(content_types, "<Override PartName=\"{}\" ContentType=\"{}\"/>", xml_text(name), xml_text(content_type));
+    }
+    content_types.push_str("</Types>\n");
+
+    let mut all: Vec<(String, Vec<u8>)> = vec![
+        ("[Content_Types].xml".into(), content_types.into_bytes()),
+        (workbook_part.clone(), book.into_bytes()),
+        (rels_part(&workbook_part), relationships_xml(&relationships).into_bytes()),
+        (styles_part, styles.to_xml().into_bytes()),
+        (strings_part, strings.to_xml().into_bytes()),
+        (core_part, core.into_bytes()),
     ];
     all.extend(parts);
+    all.extend(sheet_parts.into_iter().map(|(name, xml)| (name, xml.into_bytes())));
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     // A fixed time: the same workbook makes the same bytes.
     let member = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .last_modified_time(zip::DateTime::default());
-    for (name, xml) in &all {
+    for (name, bytes) in &all {
         zip.start_file(name.as_str(), member)?;
-        zip.write_all(xml.as_bytes())?;
+        zip.write_all(bytes)?;
     }
     Ok(zip.finish()?.into_inner())
 }

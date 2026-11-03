@@ -2,12 +2,21 @@
 // SPDX-License-Identifier: MIT
 //! Writes a report workbook with `terrio::xlsx`, for `scripts/compare_xlsx_workbook_with_openpyxl.py`.
 //!
-//! Usage: `cargo run -p terrio --example xlsx_workbook -- OUTPUT.xlsx`
+//! Usage: `cargo run -p terrio --example xlsx_workbook -- OUTPUT.xlsx`, or `-- edit INPUT.xlsx OUTPUT.xlsx`
+//! to change one cell of a workbook, for `scripts/compare_xlsx_edit_with_openpyxl.py`.
 
 use terrio::xlsx::{Align, BorderStyle, CellValue, Format, Orientation, VerticalAlign, Workbook};
 
 fn main() -> terrio::Result<()> {
     let path = std::env::args().nth(1).expect("an output path");
+    if path == "edit" {
+        let input = std::env::args().nth(2).expect("an input path");
+        let output = std::env::args().nth(3).expect("an output path");
+        let mut workbook = Workbook::open(&input)?;
+        let first = workbook.sheet_names()[0].to_string();
+        workbook.sheet_mut(&first)?.write("A2", "edited", &Format::new().bold())?;
+        return workbook.save(&output);
+    }
     let mut workbook = Workbook::new();
     workbook.set_creation_time("2024-01-02T03:04:05Z")?;
     workbook.set_title("Report");

@@ -227,7 +227,7 @@ Command-group progress:
 - [x] Vector: Shapefile (with `.prj`, `.cpg` and zipped), FlatGeobuf (with its spatial index),
       GeoParquet 1.1 (with bounding-box filtering), CSV with point or WKT columns, XLSX as GDAL's
       driver reads and writes it.
-- [ ] XLSX layout options and a workbook model beyond GDAL
+- [x] XLSX layout options and a workbook model beyond GDAL
       ([#405](https://github.com/opengeos/terrio/issues/405)).
 - [x] Attribute and spatial filters pushed down to the drivers that support them.
 - [x] `terrio convert` between any two supported formats.
