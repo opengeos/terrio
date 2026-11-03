@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `LazyRaster::read_resampled` reads a window of some bands into an output of another size as
+  GDAL's `RasterIO` reads it (`gdal_translate -outsize`, rasterio's `out_shape` reads): from the
+  overview GDAL chooses, or the level `gdal_translate -ovr` names, by nearest neighbour or with
+  the kernels of `RasterIOResampled`, pixels weighted by the level's mask band, nodata values or
+  alpha band. `read_resampled_masks` reads their mask bands the same way (#429).
+- `terrio translate --outsize/--tr` reads a raster read by window from its overviews, as
+  `gdal_translate` does, rather than reading it whole at full resolution: a 512 x 512 output of a
+  16384 x 16384 COG reads its 512 x 512 overview. `--overview` (`--ovr`) chooses the level as
+  `gdal_translate -ovr` does (#429).
+- Mode overviews and resampled reads of a raster whose nodata value is NaN fill a footprint
+  without a valid pixel with 0, as GDAL does (`GDALIsValueInRange`), rather than NaN.
+
 - `terrio::xlsx::Workbook` writes workbooks laid out for people: sheets, typed cells at their
   positions, merged ranges, column and row settings, cell formats, frozen panes, filters, list
   validations, defined names, hyperlinks, comments, print setup and document properties (#405).

@@ -54,6 +54,7 @@ terrio's commands map onto GDAL's utilities, with GDAL's option names in kebab c
 | `-srcwin`, `-projwin`, `-projwin_srs` | `--srcwin`, `--projwin`, `--projwin-srs` |
 | `-ot`, `-scale`, `-exponent`, `-outsize`, `-a_nodata`, `-a_ullr` | `--ot`, `--scale`, `--exponent`, `--outsize`, `--a-nodata`, `--a-ullr` |
 | `-tr`, `-te`, `-te_srs`, `-ts`, `-tap`, `-r` | `--tr`, `--te`, `--te-srs`, `--ts`, `--tap`, `-r` |
+| `-ovr` (`gdal_translate`, `gdalwarp`) | `--overview` (or `--ovr`) |
 | `-srcnodata`, `-dstnodata`, `-cutline`, `-crop_to_cutline`, `-et` | `--srcnodata`, `--dstnodata`, `--cutline`, `--crop-to-cutline`, `--et` |
 | `-where`, `-spat`, `-spat_srs`, `-select`, `-limit`, `-sql` | `--where`, `--spat`, `--spat-srs`, `--select`, `--limit`, `--sql` |
 | `-nln`, `-nlt`, `-explodecollections`, `-append`, `-overwrite` | `--nln`, `--nlt`, `--explodecollections`, `--append`, `--overwrite` |
@@ -77,8 +78,12 @@ their outputs locally; [`terrio vsi`](cli.md#vsi) copies files to S3 or Azure.
   (PMTiles, MBTiles), local raw-layout rasters and remote SRTM tiles are read by window, Zarr by
   chunk, GRIB by band, and large vector layers and point clouds as streams. See
   [Formats](formats.md).
-- Downsampling with `translate` reads full resolution, where GDAL may use overviews. `warp` chooses
-  an overview as GDAL does (`--overview AUTO`, the default).
+- `translate` and `warp` read a downsampled output from an overview as GDAL does (`--overview
+  AUTO`, the default). `translate` reads full resolution to rescale, and for an output type other
+  than the source's with resampling other than nearest neighbour. `gdal_translate` reads its
+  output in swaths of rows (and blocks, for bands other than the first ones in order), each on its
+  own: at their edges, its average, RMS and mode outputs can come from the next source pixel,
+  where `terrio translate` reads the output at once, as rasterio does.
 - `warp` and `terrio.rio` handle rotated geotransforms. `translate` refuses them.
 - GeoTIFFs are written with terrio's own writer; COGs pass GDAL's COG validator.
 - Only the drivers listed in [Formats](formats.md) exist, unless terrio is built with the

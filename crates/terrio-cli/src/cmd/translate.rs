@@ -5,8 +5,9 @@
 
 //! `terrio translate`.
 
-use super::rasterout::{OutputArgs, open, srs};
-use terrio::ops::translate::{Scale, Size, TranslateOptions, translate};
+use super::rasterout::{OutputArgs, srs};
+use terrio::ops::overview::OverviewSelection;
+use terrio::ops::translate::{Scale, Size, TranslateOptions, translate_lazy};
 use terrio::ops::{Resampling, parse_data_type};
 
 #[derive(clap::Args)]
@@ -39,6 +40,10 @@ pub struct Args {
     /// Resampling when resizing: near, bilinear, cubic, cubicspline, lanczos, average, rms, mode.
     #[arg(short = 'r', long = "resampling")]
     resampling: Option<String>,
+    /// Source overview, as gdal_translate -ovr: AUTO (the one GDAL's RasterIO chooses for the
+    /// output size), AUTO-n, NONE, or a level numbered from 0, read alone.
+    #[arg(long, alias = "ovr", default_value = "AUTO")]
+    overview: String,
     /// Rescale values: `--scale` (band min/max to the type's range), `--scale SRC_MIN SRC_MAX`, or
     /// `--scale SRC_MIN SRC_MAX DST_MIN DST_MAX`.
     #[arg(long, num_args = 0..=4, allow_negative_numbers = true)]
@@ -59,31 +64,10 @@ pub struct Args {
     out: OutputArgs,
 }
 
-pub fn run(mut a: Args) -> terrio::Result<()> {
-    // A window inside a GeoTIFF or a Zarr store, or some of its bands, is read alone: only the
-    // tiles or chunks it touches (of the bands asked for) are read.
-    let mut src_win = a.srcwin.as_ref().map(|v| (v[0], v[1], v[2], v[3]));
-    let whole_window = |v: &(f64, f64, f64, f64)| {
-        let (x, y, w, h) = *v;
-        x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0 && [x, y, w, h].iter().all(|v| v.fract() == 0.0)
-    };
-    let ds = if src_win.as_ref().map_or(!a.bands.is_empty(), whole_window) {
-        let mut lazy = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
-        let window = match src_win {
-            Some((x, y, w, h)) => terrio::Window::new(x as usize, y as usize, w as usize, h as usize),
-            None => terrio::Window::full(lazy.width(), lazy.height()),
-        };
-        if lazy.is_lazy() && window.fits(lazy.width(), lazy.height()) {
-            src_win = None;
-            let bands_valid = a.bands.iter().all(|b| (1..=lazy.band_count()).contains(b));
-            let bands = if bands_valid { std::mem::take(&mut a.bands) } else { Vec::new() };
-            lazy.read_window(window, &terrio::WindowOptions { bands, overview: None })?
-        } else {
-            open(&a.input)?
-        }
-    } else {
-        open(&a.input)?
-    };
+pub fn run(a: Args) -> terrio::Result<()> {
+    // GeoTIFFs, Zarr stores and other rasters read by window are read for the output alone: the
+    // tiles or chunks its window touches, of its bands, from the overview it is read from.
+    let mut src = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
     let four = |v: &Option<Vec<f64>>| v.as_ref().map(|v| (v[0], v[1], v[2], v[3]));
     let scale = match a.scale.as_deref() {
         None => None,
@@ -104,7 +88,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     let o = TranslateOptions {
         bands: a.bands,
         output_type: a.ot.as_deref().map(parse_data_type).transpose()?,
-        src_win,
+        src_win: four(&a.srcwin),
         proj_win: four(&a.projwin),
         proj_win_srs: srs(&a.projwin_srs)?,
         out_size,
@@ -116,6 +100,6 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
         assign_srs: srs(&a.a_srs)?,
         assign_ullr: four(&a.a_ullr),
     };
-    let out = translate(&ds, &o)?;
+    let out = translate_lazy(&mut src, &o, OverviewSelection::parse(&a.overview)?)?;
     a.out.write(&out, &a.output)
 }
