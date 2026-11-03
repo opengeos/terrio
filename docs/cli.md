@@ -3601,7 +3601,7 @@ Option | Description
 `--max-size` | Longest side when no size is given (1024); images are not enlarged to reach it
 `-b`, `--bands` | One band, or three as red,green,blue
 `-c`, `--colormap` | `gray`, `viridis`, `magma`, `inferno`, `plasma`, `terrain`, `rdbu` or `rdylgn`; `_r` reverses
-`-s`, `--stretch` | `auto`, `minmax`, `pLOW,pHIGH` (percentiles) or `LOW,HIGH` (values)
+`-s`, `--stretch` | `auto`, `minmax`, `pLOW,pHIGH` (percentiles) or `LOW,HIGH` (values as stored, before a band's scale and offset)
 `-l`, `--layer` | Vector: draw this layer (repeatable); by default all, which must share a CRS
 `-a`, `--attribute` | Vector: color features by this numeric field (viridis unless `-c`); the stretch is measured on the features' values
 `--display` | `auto`, `kitty`, `iterm`, `sixel` or `blocks`

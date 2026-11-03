@@ -199,7 +199,7 @@ pub(crate) fn call_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, ca
     call_command(terrio, name, args, cancel)
 }
 
-/// The largest image a tool result carries, in bytes before encoding.
+/// The largest PNG a tool result attaches, in bytes; its base64 form is about a third larger.
 const MAX_IMAGE: u64 = 8 << 20;
 
 /// Runs `terrio preview`, adding the PNG to its result as image content, so that a client can see

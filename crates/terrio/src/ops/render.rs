@@ -50,7 +50,7 @@ pub enum Stretch {
     MinMax,
     /// Between two percentiles of the valid values, from 0 to 100.
     Percentile(f64, f64),
-    /// Between two values.
+    /// Between two values, as stored: before any band scale and offset.
     Range(f64, f64),
 }
 
