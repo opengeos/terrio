@@ -14,7 +14,7 @@
 //! no overview fit to read whole, one sampled row at a time, so a preview of a large remote file
 //! transfers a small part of it. Pixels are drawn in the raster's own grid, without reprojecting
 //! or applying a rotation in its geotransform. Vector layers are burned with
-//! [`rasterize`](crate::ops::rasterize::rasterize), and are drawn with north up.
+//! [`rasterize`], and are drawn with north up.
 //!
 //! The colormap stops are sampled from matplotlib's viridis, magma, inferno and plasma (CC0) and
 //! ColorBrewer's RdBu and RdYlGn (Apache-2.0). See `NOTICE`.
