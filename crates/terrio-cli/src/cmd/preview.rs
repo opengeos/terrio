@@ -181,18 +181,21 @@ pub fn choose_display(requested: &str, env: &dyn Fn(&str) -> Option<String>) -> 
     }
 }
 
-/// The terminal's width in cells; `COLUMNS` or 80 when it cannot be told.
+/// The terminal's width in cells: `COLUMNS`, else what `stty size` reports for the controlling
+/// terminal, else 80. (`stty` rather than the `TIOCGWINSZ` ioctl, which needs `unsafe`.)
 fn terminal_columns() -> usize {
-    #[cfg(unix)]
-    {
-        // SAFETY: TIOCGWINSZ only writes a `winsize` to the pointer, which outlives the call.
-        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-        let got = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, std::ptr::addr_of_mut!(size)) } == 0;
-        if got && size.ws_col > 0 {
-            return usize::from(size.ws_col);
-        }
+    let positive = |text: &str| text.trim().parse::<usize>().ok().filter(|v| *v > 0);
+    if let Some(columns) = std::env::var("COLUMNS").ok().as_deref().and_then(positive) {
+        return columns;
     }
-    std::env::var("COLUMNS").ok().and_then(|v| v.parse().ok()).filter(|v| *v > 0).unwrap_or(80)
+    #[cfg(unix)]
+    if let Ok(tty) = std::fs::File::open("/dev/tty")
+        && let Ok(output) = std::process::Command::new("stty").arg("size").stdin(tty).stderr(std::process::Stdio::null()).output()
+        && let Some(columns) = String::from_utf8_lossy(&output.stdout).split_whitespace().nth(1).and_then(positive)
+    {
+        return columns;
+    }
+    80
 }
 
 /// The bytes that draw `image` in a terminal.
