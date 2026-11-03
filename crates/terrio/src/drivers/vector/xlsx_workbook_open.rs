@@ -28,8 +28,8 @@ pub(super) struct SheetSource {
     pub(super) sections: BTreeMap<String, Vec<String>>,
     pub(super) row_attributes: BTreeMap<u32, String>,
     pub(super) relationships: Vec<Relationship>,
-    /// The sheet-scoped defined names: name, hidden, reference.
-    pub(super) names: Vec<(String, bool, String)>,
+    /// The sheet-scoped defined names: the name, the start tag with its attributes, and the reference.
+    pub(super) names: Vec<(String, String, String)>,
     /// Validations other than lists, and links inside the workbook, which the model does not hold.
     pub(super) other_validations: Vec<String>,
     pub(super) other_hyperlinks: Vec<String>,
@@ -99,7 +99,10 @@ pub(super) fn sheet_properties(xml: &str) -> (String, Vec<(String, String)>) {
 
 /// A sheet's views read, with the first one selected or not, and the others not.
 pub(super) fn with_selection(views: &str, selected: bool) -> String {
-    let mut out = views.replace(" tabSelected=\"1\"", "").replace(" tabSelected=\"true\"", "");
+    let mut out = views.to_string();
+    for value in ["\"1\"", "\"true\"", "'1'", "'true'"] {
+        out = out.replace(&format!(" tabSelected={value}"), "");
+    }
     if selected && let Some(i) = out.find("<sheetView ").or_else(|| out.find("<sheetView>")) {
         out.insert_str(i + "<sheetView".len(), " tabSelected=\"1\"");
     }
@@ -118,6 +121,15 @@ pub(super) fn holds_shared_master(cell: &str) -> bool {
             _ => {}
         }
     }
+}
+
+/// Attributes as the model keeps them, `name="value"` each after a space, without one of them.
+pub(super) fn without_attribute(attributes: &str, name: &str) -> String {
+    let key = format!(" {name}=\"");
+    let Some(i) = attributes.find(&key) else { return attributes.to_string() };
+    let rest = &attributes[i + key.len()..];
+    let end = rest.find('"').map_or(attributes.len(), |j| i + key.len() + j + 1);
+    format!("{}{}", &attributes[..i], &attributes[end..])
 }
 
 /// An empty element written again with an attribute set, whatever its value was.
@@ -161,6 +173,8 @@ pub(super) struct PackageSource {
     pub(super) workbook_order: Vec<String>,
     pub(super) workbook_relationships: Vec<Relationship>,
     pub(super) sheet_parts: Vec<String>,
+    /// The relationships of each sheet read, for what a sheet removed takes with it.
+    pub(super) sheet_relationships: BTreeMap<String, Vec<Relationship>>,
     /// Workbook-scoped names read: the name, the start tag with its attributes, and the reference.
     pub(super) other_names: Vec<(String, String, String)>,
     pub(super) core_part: Option<String>,
@@ -292,6 +306,10 @@ fn split_children(text: &str, part: &str) -> Result<(Root, Vec<(String, String)>
             }
             Event::Eof => {
                 let root = root.ok_or_else(|| Error::InvalidData(format!("XLSX: '{part}' holds no element")))?;
+                // A part cut short would lose what follows without saying so.
+                if depth > 0 {
+                    return Err(Error::InvalidData(format!("XLSX: '{part}' ends before its elements close")));
+                }
                 return Ok((root, children));
             }
             _ => {}
@@ -307,6 +325,19 @@ fn with_namespace(start: String, prefix: &str, uri: &str) -> String {
     }
     let end = start.rfind('>').unwrap_or(start.len());
     format!("{} xmlns:{prefix}=\"{uri}\"{}", start[..end].trim_end(), &start[end..])
+}
+
+/// Refuses a root that binds the prefix `r` to another namespace: the model writes the references
+/// to relationships it makes under that prefix.
+fn relationships_prefix(root: &Root, part: &str) -> Result<()> {
+    let bound =
+        first_start(&root.start).and_then(|e| e.attributes().flatten().find(|a| a.key.as_ref() == "xmlns:r").map(|a| a.value.to_string()));
+    match bound {
+        Some(uri) if uri != super::OD_RELS => {
+            Err(Error::Unsupported(format!("XLSX: cannot edit '{part}', whose prefix 'r' names '{uri}', not relationships")))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Refuses a root that names its namespace by a prefix: the model writes elements without one.
@@ -325,15 +356,18 @@ fn sections_of(children: Vec<(String, String)>) -> BTreeMap<String, Vec<String>>
     sections
 }
 
-/// The text inside an element, its references resolved.
+/// The text inside an element, its references resolved, without phonetic guides (`rPh`).
 fn element_text(xml: &str) -> String {
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut out = String::new();
+    let mut phonetic = 0usize;
     while let Ok(event) = reader.read_event() {
         match event {
-            Event::Text(t) => out.push_str(&t.xml10_content()),
-            Event::CData(t) => out.push_str(&t.xml10_content()),
-            Event::GeneralRef(r) => out.extend(reference_text(&r)),
+            Event::Start(e) if e.local_name().as_ref() == "rPh" => phonetic += 1,
+            Event::End(e) if e.local_name().as_ref() == "rPh" => phonetic = phonetic.saturating_sub(1),
+            Event::Text(t) if phonetic == 0 => out.push_str(&t.xml10_content()),
+            Event::CData(t) if phonetic == 0 => out.push_str(&t.xml10_content()),
+            Event::GeneralRef(r) if phonetic == 0 => out.extend(reference_text(&r)),
             Event::Eof => break,
             _ => {}
         }
@@ -373,7 +407,33 @@ fn read_bytes<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, index: usize, total:
     Ok((name, bytes))
 }
 
-fn rels_of(text: &str, part: &str) -> Result<Vec<Relationship>> {
+/// The parts a relationships part read refers to, by name. One that cannot be read refers to none.
+pub(super) fn relationship_targets(rels: &str, bytes: &[u8]) -> Vec<String> {
+    let base = rels.rsplit_once("_rels/").map_or("", |(directory, _)| directory);
+    rels_of(&decode(bytes), rels)
+        .map(|list| list.into_iter().filter(|r| !r.external).map(|r| resolve_target(base, &r.target)).collect())
+        .unwrap_or_default()
+}
+
+/// The largest number a VML drawing read gives its shapes' blocks (`o:idmap`).
+pub(super) fn largest_idmap(bytes: &[u8]) -> Option<usize> {
+    let text = decode(bytes);
+    let mut reader = quick_xml::Reader::from_str(&text);
+    let mut largest = None;
+    while let Ok(event) = reader.read_event() {
+        match event {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "idmap" => {
+                let data = attribute(&e, "data").unwrap_or_default();
+                largest = data.split(',').filter_map(|n| n.trim().parse::<usize>().ok()).chain(largest).max();
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    largest
+}
+
+pub(super) fn rels_of(text: &str, part: &str) -> Result<Vec<Relationship>> {
     let mut reader = quick_xml::Reader::from_str(text);
     let mut out = Vec::new();
     loop {
@@ -1027,6 +1087,7 @@ impl Workbook {
         let workbook_relationships = text(&all, &book_rels_part).map(|t| rels_of(&t, &book_rels_part)).transpose()?.unwrap_or_default();
         let (root, children) = split_children(&book, &workbook_part)?;
         plain_root(&root, "workbook", &workbook_part)?;
+        relationships_prefix(&root, &workbook_part)?;
         let workbook_order: Vec<String> = children.iter().map(|(n, _)| n.clone()).collect();
         let workbook_sections = sections_of(children);
         let date1904 = workbook_sections
@@ -1088,23 +1149,17 @@ impl Workbook {
         let parts = ReadParts { strings: &strings, formats: &formats, kinds: &kinds, date1904 };
 
         // The defined names, those of a sheet going with it.
-        let mut local_names: HashMap<usize, Vec<(String, bool, String)>> = HashMap::new();
+        let mut local_names: HashMap<usize, Vec<(String, String, String)>> = HashMap::new();
         let mut other_names = Vec::new();
         for raw in workbook_sections.get("definedNames").into_iter().flatten() {
             for (_, xml) in split_children(raw, &workbook_part)?.1 {
                 let Some(e) = first_start(&xml) else { continue };
                 let name = attribute(&e, "name").unwrap_or_default();
                 let reference = element_text(&xml);
+                let start = xml.find('>').map_or(xml.clone(), |i| xml[..=i].replace("/>", ">"));
                 match attribute(&e, "localSheetId").and_then(|v| v.parse::<usize>().ok()) {
-                    Some(sheet) => local_names.entry(sheet).or_default().push((
-                        name,
-                        attribute(&e, "hidden").is_some_and(|v| v == "1" || v == "true"),
-                        reference,
-                    )),
-                    None => {
-                        let start = xml.find('>').map_or(xml.clone(), |i| xml[..=i].replace("/>", ">"));
-                        other_names.push((name, start, reference));
-                    }
+                    Some(sheet) => local_names.entry(sheet).or_default().push((name, start, reference)),
+                    None => other_names.push((name, start, reference)),
                 }
             }
         }
@@ -1116,6 +1171,7 @@ impl Workbook {
         // Excel builds the calculation chain again, and an edit could leave it wrong.
         modelled.extend(find("/calcChain"));
         let mut sheet_parts = Vec::new();
+        let mut sheet_relationships = BTreeMap::new();
         let mut index = 0usize;
         let by_id: HashMap<&str, &Relationship> = workbook_relationships.iter().map(|r| (r.id.as_str(), r)).collect();
         let mut seen_parts = std::collections::HashSet::new();
@@ -1135,13 +1191,16 @@ impl Workbook {
                 }
                 let sheet_text = text(&all, &part).ok_or_else(|| Error::InvalidData(format!("XLSX: the workbook lacks part '{part}'")))?;
                 let rels_name = super::rels_part(&part);
-                let relationships = text(&all, &rels_name).map(|t| rels_of(&t, &rels_name)).transpose()?.unwrap_or_default();
+                let relationships: Vec<Relationship> =
+                    text(&all, &rels_name).map(|t| rels_of(&t, &rels_name)).transpose()?.unwrap_or_default();
+                sheet_relationships.insert(part.clone(), relationships.clone());
                 let (root, children) = split_children(&sheet_text, &part)?;
                 plain_root(&root, "worksheet", &part)?;
+                relationships_prefix(&root, &part)?;
                 let order: Vec<String> = children.iter().map(|(n, _)| n.clone()).filter(|n| n != "dimension").collect();
                 let mut sections = sections_of(children);
                 let data = sections.remove("sheetData");
-                // Written again from what the sheet holds.
+                // Dropped: it is optional, and an edit could leave the range it states wrong.
                 sections.remove("dimension");
                 let mut sheet = Worksheet::new(name);
                 let state = attribute(&e, "state");
@@ -1225,6 +1284,7 @@ impl Workbook {
             workbook_order,
             workbook_relationships,
             sheet_parts,
+            sheet_relationships,
             other_names,
             core_part,
             core,
@@ -1250,6 +1310,9 @@ impl Workbook {
     pub fn add_layer(&mut self, layer: &wbvector::Layer, options: &crate::XlsxOptions) -> Result<&mut Worksheet> {
         use wbvector::FieldValue;
         let extra = super::super::xlsx::geometry_header(layer, options)?;
+        if let Some(name) = extra.iter().find(|name| layer.schema.field_index(name).is_some()) {
+            return Err(invalid(format!("'{}' has a field named as the geometry column {name}", layer.name)));
+        }
         let names: Vec<&str> = extra.iter().copied().chain(layer.schema.fields().iter().map(|f| f.name.as_str())).collect();
         self.check_new_name(&layer.name)?;
         // Built whole before it joins the workbook, so that a refusal leaves no part of it.
@@ -1264,7 +1327,7 @@ impl Workbook {
             for (column, value) in geometry.iter().chain(feature.attributes.iter()).enumerate() {
                 let value = match value {
                     FieldValue::Null => continue,
-                    FieldValue::Integer(v) => CellValue::Number(*v as f64),
+                    FieldValue::Integer(v) => CellValue::Integer(*v),
                     FieldValue::Float(v) if v.is_finite() => CellValue::Number(*v),
                     FieldValue::Float(_) => continue,
                     FieldValue::Boolean(v) => CellValue::Boolean(*v),
@@ -1990,6 +2053,114 @@ mod tests {
         assert_eq!(s.print.footer.as_deref(), Some("&Pf"));
         assert_eq!(s.validations[0].items, ["x", "y"]);
         assert!(!again.to_bytes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cut_short_or_foreign_prefixed_parts_are_refused() {
+        let cut = |b: String| b[..b.find("<mergeCells").unwrap()].to_string();
+        assert!(matches!(Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &cut)])), Err(Error::InvalidData(_))));
+        let foreign = |b: String| {
+            b.replacen("xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"", "xmlns:r=\"urn:other\"", 1)
+        };
+        assert!(matches!(Workbook::open_bytes(&with_parts(&[("xl/workbook.xml", &foreign)])), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn removed_sheets_take_only_what_nothing_else_refers_to() {
+        // The other sheet refers to the same comments part as the first.
+        let shared = |_: String| {
+            "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"../comments1.xml\"/></Relationships>".to_string()
+        };
+        let drawing_rels = |_: String| {
+            "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image1.png\"/></Relationships>".to_string()
+        };
+        let mut bytes = with_parts(&[]);
+        {
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.clone())).unwrap();
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i).unwrap();
+                let name = file.name().unwrap().to_string();
+                let mut body = Vec::new();
+                file.read_to_end(&mut body).unwrap();
+                zip.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+                zip.write_all(&body).unwrap();
+            }
+            for (name, body) in [
+                ("xl/worksheets/_rels/sheet2.xml.rels", shared(String::new())),
+                ("xl/drawings/_rels/drawing1.xml.rels", drawing_rels(String::new())),
+                ("xl/media/image1.png", "png".to_string()),
+            ] {
+                zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+                zip.write_all(body.as_bytes()).unwrap();
+            }
+            bytes = zip.finish().unwrap().into_inner();
+        }
+        let mut workbook = Workbook::open_bytes(&bytes).unwrap();
+        assert!(workbook.remove_sheet("Data"));
+        workbook.add_sheet("Shown").unwrap();
+        let out = workbook.to_bytes().unwrap();
+        for gone in ["xl/drawings/drawing1.xml", "xl/drawings/_rels/drawing1.xml.rels", "xl/media/image1.png", "xl/printerSettings/p.bin"] {
+            assert!(part(&out, gone).is_none(), "{gone}");
+        }
+        assert!(part(&out, "xl/comments1.xml").is_some());
+        // Comments written again on one sheet leave the part another still refers to.
+        let mut workbook = Workbook::open_bytes(&bytes).unwrap();
+        workbook.sheet_mut("Data").unwrap().comment("C1", "new", "me").unwrap();
+        assert!(part(&workbook.to_bytes().unwrap(), "xl/comments1.xml").is_some());
+    }
+
+    #[test]
+    fn names_comments_and_counts_keep_what_was_read() {
+        let names = |b: String| {
+            b.replace(
+                "<definedName name=\"_xlnm.Print_Area\" localSheetId=\"0\">",
+                "<definedName name=\"_xlnm.Print_Area\" localSheetId=\"0\" comment=\"area\">",
+            )
+        };
+        let phonetic = |b: String| b.replace("<t>note</t></r>", "<t>note</t></r><rPh sb=\"0\" eb=\"1\"><t>NO</t></rPh>");
+        let selected = |b: String| b.replace("tabSelected=\"1\"", "tabSelected='1'");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[
+            ("xl/workbook.xml", &names),
+            ("xl/comments1.xml", &phonetic),
+            ("xl/worksheets/sheet1.xml", &selected),
+        ]))
+        .unwrap();
+        assert_eq!(workbook.sheet("Data").unwrap().comment_of("B1").unwrap(), Some(("note", "me")));
+        workbook.move_sheet("Other", 0).unwrap();
+        workbook.sheet_mut("Data").unwrap().write("C1", "plain", &Format::new()).unwrap();
+        let bytes = workbook.to_bytes().unwrap();
+        let book = text_part(&bytes, "xl/workbook.xml");
+        assert!(book.contains("<definedName name=\"_xlnm.Print_Area\" comment=\"area\" localSheetId=\"1\">"), "{book}");
+        let sheet = text_part(&bytes, "xl/worksheets/sheet1.xml");
+        assert_eq!(sheet.matches("tabSelected").count(), 1, "{sheet}");
+        assert!(!sheet.contains("spans="), "{sheet}");
+        // A1, B1 and the new C1 refer to strings.
+        assert!(text_part(&bytes, "xl/sharedStrings.xml").contains("count=\"3\""));
+    }
+
+    #[test]
+    fn layers_keep_integers_and_refuse_geometry_names() {
+        let mut layer = wbvector::Layer::new("big");
+        layer.add_field(wbvector::FieldDef::new("n", wbvector::FieldType::Integer));
+        layer.features.push(wbvector::Feature {
+            fid: 0,
+            geometry: None,
+            attributes: vec![wbvector::FieldValue::Integer(9_007_199_254_740_993)],
+        });
+        let mut workbook = Workbook::new();
+        workbook.add_layer(&layer, &Default::default()).unwrap();
+        assert!(text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml").contains("<v>9007199254740993</v>"));
+        let mut points = wbvector::Layer::new("points");
+        points.add_field(wbvector::FieldDef::new("X", wbvector::FieldType::Float));
+        points.features.push(wbvector::Feature {
+            fid: 0,
+            geometry: Some(wbvector::Geometry::Point(wbvector::Coord { x: 1.0, y: 2.0, z: None, m: None })),
+            attributes: vec![wbvector::FieldValue::Float(1.0)],
+        });
+        let options = crate::XlsxOptions { geometry: crate::CsvGeometry::AsXy, ..Default::default() };
+        assert!(matches!(workbook.add_layer(&points, &options), Err(Error::InvalidArgument(_))));
+        assert_eq!(workbook.sheet_names(), ["big"]);
     }
 
     #[test]

@@ -62,7 +62,7 @@ def main():
         subprocess.run([sys.argv[1], "edit", str(before), str(after)], check=True)
         with zipfile.ZipFile(before) as a, zipfile.ZipFile(after) as b:
             kept = [n for n in a.namelist() if "chart" in n or "drawing" in n or "table" in n or "theme" in n]
-            parts = {n: a.read(n) == b.read(n) for n in kept}
+            parts = {n: n in b.namelist() and a.read(n) == b.read(n) for n in kept}
         book = openpyxl.load_workbook(after)
         sheet = book["Data"]
         checks = [

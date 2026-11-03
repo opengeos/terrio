@@ -153,6 +153,9 @@ pub enum CellValue {
     Text(String),
     /// A number.
     Number(f64),
+    /// An integer, written exactly. A spreadsheet program holds numbers as doubles, so it rounds
+    /// one past 2^53 when it reads it.
+    Integer(i64),
     /// A boolean.
     Boolean(bool),
     /// A date as `YYYY-MM-DD`. It needs a date number format to show as one, which it gets by default.
@@ -195,6 +198,11 @@ impl From<f64> for CellValue {
 impl From<i32> for CellValue {
     fn from(v: i32) -> Self {
         Self::Number(f64::from(v))
+    }
+}
+impl From<i64> for CellValue {
+    fn from(v: i64) -> Self {
+        Self::Integer(v)
     }
 }
 impl From<bool> for CellValue {
@@ -1359,6 +1367,7 @@ fn value_xml(value: &CellValue, date1904: bool, strings: &mut SharedStrings) -> 
         CellValue::Blank => ("", String::new()),
         CellValue::Text(s) => (" t=\"s\"", format!("<v>{}</v>", strings.index(s))),
         CellValue::Number(v) => ("", format!("<v>{v}</v>")),
+        CellValue::Integer(v) => ("", format!("<v>{v}</v>")),
         CellValue::Boolean(b) => (" t=\"b\"", format!("<v>{}</v>", u8::from(*b))),
         CellValue::Date(_) | CellValue::DateTime(_) => ("", format!("<v>{}</v>", serial(value, date1904).unwrap_or_default())),
         CellValue::Error(e) => (" t=\"e\"", format!("<v>{}</v>", xml_text(e))),
@@ -1369,6 +1378,7 @@ fn value_xml(value: &CellValue, date1904: bool, strings: &mut SharedStrings) -> 
                 Some(CellValue::Text(s)) => (" t=\"str\"", format!("{f}<v>{}</v>", xml_text(s))),
                 Some(CellValue::Boolean(b)) => (" t=\"b\"", format!("{f}<v>{}</v>", u8::from(*b))),
                 Some(CellValue::Error(e)) => (" t=\"e\"", format!("{f}<v>{}</v>", xml_text(e))),
+                Some(CellValue::Integer(v)) => ("", format!("{f}<v>{v}</v>")),
                 Some(number) => {
                     let v = match number {
                         CellValue::Number(v) => *v,
@@ -1534,6 +1544,11 @@ fn ordered(read: &[String], schema: &[&str]) -> Vec<String> {
         out.insert(at, name.to_string());
     }
     out
+}
+
+/// The id wanted, or another if a relationship of the part has it.
+fn unused_id(relationships: &[Relationship], wanted: &str) -> String {
+    if relationships.iter().any(|r| r.id == wanted) { fresh_id(relationships, wanted) } else { wanted.to_string() }
 }
 
 /// An id no relationship of a part has.
@@ -1781,6 +1796,8 @@ fn sheet_data_xml(sheet: &Worksheet, context: &mut SheetContext<'_>, out: &mut S
     for row in rows {
         let _ = write!(out, "<row r=\"{row}\"");
         match kept.and_then(|k| k.get(&row)) {
+            // The columns a row spans are a hint that an edit can leave wrong.
+            Some(attributes) if sheet.edited => out.push_str(&open::without_attribute(attributes, "spans")),
             Some(attributes) => out.push_str(attributes),
             None => {
                 if let Some(d) = sheet.rows.get(&row) {
@@ -1811,6 +1828,10 @@ fn sheet_data_xml(sheet: &Worksheet, context: &mut SheetContext<'_>, out: &mut S
             }
             cells.next();
             if let Some(raw) = &cell.raw {
+                // A cell kept that refers to a shared string counts among the references.
+                if matches!(cell.value, CellValue::Text(_)) && open::first_attribute(raw, "c", "t").as_deref() == Some("s") {
+                    context.strings.count += 1;
+                }
                 out.push_str(raw);
                 continue;
             }
@@ -1944,6 +1965,17 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
     used.extend(workbook.sheets.iter().filter_map(|s| s.source.as_ref().map(|x| x.part.clone())));
 
     let mut relationships: Vec<Relationship> = source.map(|s| s.workbook_relationships.clone()).unwrap_or_default();
+    // Notes drawn again number their shapes past those of the drawings read.
+    let idmap_base = source
+        .iter()
+        .flat_map(|s| s.parts.iter())
+        .filter(|(n, _)| n.ends_with(".vml"))
+        .filter_map(|(_, b)| open::largest_idmap(b))
+        .max()
+        .unwrap_or(0);
+    // Parts that what is written no longer refers to, dropped below unless something still does.
+    let mut unwanted: Vec<String> = Vec::new();
+    let mut live: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut sheets_xml = String::new();
     let mut names = String::new();
     // The sheets read that are gone take what only they referred to.
@@ -1955,6 +1987,9 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
             dropped.insert(gone.clone());
             dropped.insert(rels_part(gone));
             overrides.remove(&format!("/{gone}"));
+            let gone_base = gone.rsplit_once('/').map_or(String::new(), |(d, _)| format!("{d}/"));
+            let read = source.sheet_relationships.get(gone).into_iter().flatten();
+            unwanted.extend(read.filter(|r| !r.external).map(|r| open::resolve(&gone_base, &r.target)));
             relationships.retain(|r| open::resolve(&base, &r.target) != *gone);
         }
     }
@@ -2006,6 +2041,11 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
             xml_text(&id)
         );
         let quoted = format!("'{}'", sheet.name.replace('\'', "''"));
+        // Names read keep what they were read with, with the sheet's place now.
+        let local = i.to_string();
+        for (_, start, reference) in sheet.source.iter().flat_map(|s| s.names.iter()) {
+            let _ = writeln!(names, "{}{}</definedName>", open::start_with(start, &[("localSheetId", &local)]), xml_text(reference));
+        }
         let mut name = |defined: &str, hidden: bool, reference: &str| {
             let hidden = if hidden { " hidden=\"1\"" } else { "" };
             let _ = writeln!(
@@ -2015,11 +2055,6 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
                 xml_text(reference)
             );
         };
-        if let Some(s) = &sheet.source {
-            for (defined, hidden, reference) in &s.names {
-                name(defined, *hidden, reference);
-            }
-        }
         let read_name = |wanted: &str| sheet.source.as_ref().is_some_and(|s| s.names.iter().any(|(n, _, _)| n == wanted));
         if let Some(range) = sheet.autofilter.as_ref().filter(|_| !read_name("_xlnm._FilterDatabase")) {
             name("_xlnm._FilterDatabase", true, &format!("{quoted}!{}", range.absolute()));
@@ -2044,9 +2079,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
                     || (sheet.comments_edited
                         && (r.kind.ends_with("/comments") || r.kind.ends_with("/vmlDrawing") || r.kind.ends_with("/threadedComment"))));
             if drop && !r.external {
-                let target = open::resolve(&sheet_base, &r.target);
-                dropped.insert(target.clone());
-                overrides.remove(&format!("/{target}"));
+                unwanted.push(open::resolve(&sheet_base, &r.target));
             }
             !drop
         });
@@ -2073,7 +2106,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
                 defaults.push(("vml".into(), VML_TYPE.into()));
             }
             parts.insert(comments, comments_xml(sheet).into_bytes());
-            parts.insert(vml, comments_vml(sheet, number).into_bytes());
+            parts.insert(vml, comments_vml(sheet, idmap_base + number).into_bytes());
             drawing = Some(shapes);
         }
         let mut context = SheetContext {
@@ -2086,6 +2119,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         };
         let xml = sheet_xml(sheet, &mut context);
         let sheet_relationships = context.relationships;
+        live.extend(sheet_relationships.iter().filter(|r| !r.external).map(|r| open::resolve(&sheet_base, &r.target)));
         if !sheet_relationships.is_empty() {
             sheet_parts.push((rels_part(&part), relationships_xml(&sheet_relationships)));
         }
@@ -2135,7 +2169,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         relationships.insert(
             0,
             Relationship {
-                id: format!("rIdModel{kind}"),
+                id: unused_id(relationships, &format!("rIdModel{kind}")),
                 kind: format!("{OD_RELS}/{kind}"),
                 target: default_name.to_string(),
                 external: false,
@@ -2147,6 +2181,37 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
     let styles_part = ensure("styles", "styles.xml", STYLES_TYPE, &mut relationships);
     let strings_part = ensure("sharedStrings", "sharedStrings.xml", STRINGS_TYPE, &mut relationships);
     overrides.entry(format!("/{workbook_part}")).or_insert_with(|| MAIN_TYPE.to_string());
+    live.extend(relationships.iter().filter(|r| !r.external).map(|r| open::resolve(&base, &r.target)));
+    // A part goes when nothing kept refers to it, and takes along what only it referred to.
+    let read_rels: Vec<(&str, Vec<String>)> = source
+        .iter()
+        .flat_map(|s| s.parts.iter())
+        .filter(|(n, _)| n.ends_with(".rels"))
+        .map(|(n, b)| (n.as_str(), open::relationship_targets(n, b)))
+        .collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut referred = live.clone();
+        referred.extend(read_rels.iter().filter(|(n, _)| !dropped.contains(*n)).flat_map(|(_, t)| t.iter().cloned()));
+        let mut still = Vec::new();
+        for part in std::mem::take(&mut unwanted) {
+            if dropped.contains(&part) {
+                continue;
+            }
+            if referred.contains(&part) {
+                still.push(part);
+                continue;
+            }
+            changed = true;
+            overrides.remove(&format!("/{part}"));
+            let rels = rels_part(&part);
+            still.extend(read_rels.iter().filter(|(n, _)| *n == rels).flat_map(|(_, t)| t.iter().cloned()));
+            dropped.insert(rels);
+            dropped.insert(part);
+        }
+        unwanted = still;
+    }
 
     // A new workbook's properties, or those read with what was set.
     let mut properties = Vec::new();
@@ -2168,11 +2233,13 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
     overrides.entry(format!("/{core_part}")).or_insert_with(|| "application/vnd.openxmlformats-package.core-properties+xml".to_string());
     // A package read without a properties relationship gets one for the part written.
     if let Some(rels) = source.and_then(|s| s.parts.get("_rels/.rels")).map(|b| String::from_utf8_lossy(b).into_owned())
-        && !rels.contains("/core-properties")
+        && let read = open::rels_of(&rels, "_rels/.rels")?
+        && !read.iter().any(|r| r.kind.ends_with("/core-properties"))
         && let Some(end) = rels.rfind("</")
     {
         let relationship = format!(
-            "<Relationship Id=\"rIdModelCore\" Type=\"{PACKAGE}/relationships/metadata/core-properties\" Target=\"{}\"/>",
+            "<Relationship Id=\"{}\" Type=\"{PACKAGE}/relationships/metadata/core-properties\" Target=\"{}\"/>",
+            xml_text(&unused_id(&read, "rIdModelCore")),
             xml_text(&core_part)
         );
         parts.insert("_rels/.rels".to_string(), format!("{}{relationship}{}", &rels[..end], &rels[end..]).into_bytes());
