@@ -38,6 +38,8 @@ terrio rasterize counties.gpkg counties.tif -a FIPS --tr 0.01 0.01
   window. See [Remote Data](remote-data.md).
 - **GDAL-style operations**: `translate`, `warp` (14 resampling methods), `mosaic` and VRTs,
   `rasterize`, `polygonize`, `dem`, `calc`, `contour`, overviews, and `convert` with OGR SQL filters. See [Command Line](cli.md).
+- **Vector operations**: buffers, overlays, dissolves, hulls, simplification, validity repair,
+  polygon coverages, zonal statistics and [OGR SQL](sql.md). See [Command Line](cli.md).
 - **Coordinate reference systems**: EPSG codes, WKT, PROJ strings and `.prj` files, identified and
   transformed the way GDAL does. See [Coordinate Systems](crs.md).
 - **Every interface**: the [command line](cli.md), a [Rust library](rust.md), a
@@ -59,6 +61,18 @@ terrio ui
 Pick files with the built-in file browser or enter a URL, run or cancel the command, read its
 output, and copy the equivalent command line into a script. See [`ui`](cli.md#ui) for the options,
 the security model and the limits.
+
+## Where to go next
+
+| You want to | Read |
+|---|---|
+| Decide whether terrio fits | [Why terrio?](why-terrio.md) |
+| Install it and run your first commands | [Installation](installation.md), [Getting Started](getting-started.md) |
+| Replace GDAL or rasterio in existing code | [Coming from GDAL](gdal.md), [Coming from rasterio](rasterio.md) |
+| Look up a format's support | [Formats](formats.md) |
+| Look up a command or an API | [Command Line](cli.md), [Rust](rust.md), [Python](python.md), [JavaScript](javascript.md) |
+| See how results compare with GDAL | [Conformance](conformance.md), [Benchmarks](benchmarks.md) |
+| Fix or add something | [Contributing](contributing.md) |
 
 ## How terrio relates to GDAL
 
