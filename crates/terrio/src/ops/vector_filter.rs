@@ -16,36 +16,16 @@ use wbvector::{Coord, Feature, FieldValue, Geometry, GeometryType, Layer, Ring};
 /// Select named layers without silently dropping requests for missing names.
 /// Retains source order and moves the layers instead of cloning their features.
 pub fn select_layers(layers: Vec<Layer>, names: &[String]) -> Result<Vec<Layer>> {
-    for name in names {
-        if !layers.iter().any(|layer| layer.name == *name) {
-            return Err(Error::InvalidArgument(format!("no layer named '{name}'")));
-        }
-    }
-    Ok(layers.into_iter().filter(|layer| names.contains(&layer.name)).collect())
+    let available: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
+    let selected = crate::dataset::layer_selection(names, &available, None, false)?;
+    Ok(layers.into_iter().zip(selected).filter_map(|(layer, keep)| keep.then_some(layer)).collect())
 }
 
-/// Opens selected operation inputs and rejects every missing requested layer name.
-/// Keeps the file-stem alias supported by single-layer file drivers.
+/// Opens selected operation inputs and resolves their styles. Readers validate against the
+/// complete source inventory, including the file-stem alias for a single layer.
 pub fn open_layers(path: &str, options: &crate::VectorOpenOptions) -> Result<Vec<Layer>> {
     let mut ds = crate::open_vector(path, options)?;
     ds.resolve_styles();
-    let alias = if ds.layers.len() == 1 && ds.driver != crate::formats::VectorDriver::GPKG {
-        std::path::Path::new(path).file_stem().and_then(|stem| stem.to_str())
-    } else {
-        None
-    };
-    for name in &options.layers {
-        if !ds.layers.iter().any(|layer| {
-            if ds.driver == crate::formats::VectorDriver::GPKG { layer.name.eq_ignore_ascii_case(name) } else { layer.name == *name }
-        }) {
-            // A selected subset is not proof that the source has only one layer.
-            // Inspect all names only when validating an otherwise missing stem alias.
-            if alias == Some(name.as_str()) && crate::list_layers(path)?.len() == 1 {
-                continue;
-            }
-            return Err(Error::InvalidArgument(format!("no layer named '{name}'")));
-        }
-    }
     Ok(ds.layers)
 }
 

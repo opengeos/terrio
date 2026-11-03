@@ -3724,3 +3724,48 @@ test("render draws rasters and vector layers as RGBA and PNG", () => {
   assert.ok(Math.max(drawn.width, drawn.height) === 40);
   assert.ok(drawn.data.some((value, i) => i % 4 === 3 && value === 255));
 });
+
+test("single named layer accepts the file stem across readers and operations", () => {
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    type: "FeatureCollection", name: "roads",
+    features: [{ type: "Feature", properties: {v: 7}, geometry: {type: "Point", coordinates: [1, 2]} }],
+  }));
+  const file = {bytes, filename: "map.geojson"};
+  const materialized = terrio.openVector(bytes, file.filename, {});
+  assert.ok(terrio.render(materialized, {layers: ["roads"]}).data.length > 0);
+  assert.throws(() => terrio.render(materialized, {layers: ["map"]}), /no layer named map \(layers: roads\)/);
+  assert.throws(() => terrio.vectorGrid(materialized, {layers: ["map"]}), /no layer named map \(layers: roads\)/);
+  materialized.free();
+  for (const layers of [[], ["map"], ["roads"], ["roads", "map", "map"]]) {
+    const ds = terrio.openVector(bytes, file.filename, {layers});
+    assert.deepEqual(ds.layerNames(), ["roads"]);
+    assert.equal(ds.toGeoJSON().features.length, 1);
+    ds.free();
+    assert.ok(terrio.render(file, {layers}).data.length > 0);
+    const grid = terrio.vectorGrid(file, {layers, algorithm: "nearest", zfield: "v", extent: [0, 0, 3, 3], size: [1, 1]});
+    grid.free();
+    const burned = terrio.rasterize(file, {layers, burn: 1, ts: [1, 1], te: [0, 0, 3, 3]});
+    burned.free();
+    const clipped = terrio.clipVector(file, {layers, bbox: [0, 0, 3, 3]});
+    assert.deepEqual(clipped.layerNames(), ["roads"]);
+    clipped.free();
+  }
+  for (const call of [
+    () => terrio.openVector(bytes, file.filename, {layers: ["map", "missing"]}),
+    () => terrio.render(file, {layers: ["roads", "missing"]}),
+    () => terrio.vectorGrid(file, {layers: ["roads", "missing"]}),
+  ]) assert.throws(call, /no layer named missing \(layers: roads\)/);
+});
+
+
+test("ZIP layer selection uses the member name rather than the archive name", () => {
+  const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{
+    type: "Feature", properties: {}, geometry: {type: "Point", coordinates: [1, 2]},
+  }]});
+  const bytes = source.toBytes("member.shp.zip");
+  const selected = terrio.openVector(bytes, "archive.zip", {layers: ["member"]});
+  assert.deepEqual(selected.layerNames(), ["member"]);
+  assert.throws(() => terrio.openVector(bytes, "archive.zip", {layers: ["archive"]}), /no layer named archive \(layers: member\)/);
+  selected.free();
+  source.free();
+});

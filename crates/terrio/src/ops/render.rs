@@ -746,15 +746,8 @@ pub fn render_vector(layers: Vec<Layer>, options: &RenderOptions) -> Result<Imag
 /// # Errors
 ///
 /// When a name matches no layer.
-pub fn select_layers(mut layers: Vec<Layer>, names: &[String]) -> Result<Vec<Layer>> {
-    if names.is_empty() {
-        return Ok(layers);
-    }
-    if let Some(missing) = names.iter().find(|n| !layers.iter().any(|l| &l.name == *n)) {
-        return Err(Error::InvalidArgument(format!("no layer '{missing}'")));
-    }
-    layers.retain(|l| names.contains(&l.name));
-    Ok(layers)
+pub fn select_layers(layers: Vec<Layer>, names: &[String]) -> Result<Vec<Layer>> {
+    super::vector_filter::select_layers(layers, names)
 }
 
 /// A dataset opened for drawing.
@@ -780,6 +773,7 @@ pub fn open_source(path: &str, layers: &[String], vector_options: bool) -> Resul
             let open = crate::VectorOpenOptions { layers: layers.to_vec(), ..Default::default() };
             match crate::open_vector(path, &open) {
                 Ok(vector) => Ok(Source::Vector(vector.into_resolved_layers())),
+                Err(Error::InvalidArgument(message)) if message.starts_with("no layer named ") => Err(Error::InvalidArgument(message)),
                 Err(vector_error) => Err(Error::InvalidArgument(format!(
                     "{path}: neither a raster nor a vector dataset (as a raster: {raster_error}; as a vector dataset: {vector_error})"
                 ))),
@@ -1181,6 +1175,19 @@ mod tests {
         assert_eq!(select_layers(layers.clone(), &[]).unwrap().len(), 2);
         assert_eq!(select_layers(layers.clone(), &["b".into()]).unwrap()[0].name, "b");
         assert!(select_layers(layers, &["c".into()]).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "remote")]
+    fn other_vector_argument_errors_keep_both_source_diagnostics() {
+        let error = match open_source("OAPIF:not-a-url", &[], false) {
+            Err(error) => error,
+            Ok(_) => panic!("an invalid service URL was accepted"),
+        };
+        let message = error.to_string();
+        assert!(message.contains("neither a raster nor a vector dataset"), "{message}");
+        assert!(message.contains("as a raster:"), "{message}");
+        assert!(message.contains("as a vector dataset: OAPIF requires an HTTP(S) service URL"), "{message}");
     }
 
     #[test]

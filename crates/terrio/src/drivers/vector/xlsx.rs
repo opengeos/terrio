@@ -1003,12 +1003,17 @@ fn read_sheet(text: &str, part: &str, shared: &SharedParts, table: &mut SheetTab
 
 /// Reads a workbook from a file.
 pub fn read(path: &str, only: &[String], options: &XlsxOptions) -> Result<Vec<Layer>> {
-    parse(std::fs::read(path)?, only, options)
+    parse_named(std::fs::read(path)?, only, options, Some(path))
 }
 
 /// Parses a workbook held in memory: a layer per worksheet in workbook order, or only the sheets
 /// `only` names when it is not empty.
 pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<Vec<Layer>> {
+    parse_named(bytes, only, options, None)
+}
+
+/// Parses selected sheets while retaining the source filename for its single-sheet alias.
+pub(crate) fn parse_named(bytes: Vec<u8>, only: &[String], options: &XlsxOptions, path: Option<&str>) -> Result<Vec<Layer>> {
     if options.first_row == 0 {
         return Err(Error::InvalidArgument("XLSX: the first row to read counts from 1".into()));
     }
@@ -1017,6 +1022,8 @@ pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<V
     }
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
     let WorkbookParts { sheets, date1904, strings: strings_part, styles: styles_part } = workbook_sheets(&mut zip)?;
+    let names: Vec<&str> = sheets.iter().map(|(name, _)| name.as_str()).collect();
+    let selected = crate::dataset::layer_selection(only, &names, path, false)?;
     let (mut budget, mut table_budget) = (MAX_CELLS, MAX_CELLS);
     let mut strings = Vec::new();
     for name in strings_part.iter().map(String::as_str).chain(["xl/sharedStrings.xml", "xl/SharedStrings.xml"]) {
@@ -1034,11 +1041,9 @@ pub fn parse(bytes: Vec<u8>, only: &[String], options: &XlsxOptions) -> Result<V
     }
     let shared = SharedParts { strings, styles };
     let mut layers = Vec::with_capacity(sheets.len());
-    // Naming no sheet here leaves the caller to report the names there are.
-    let filter = sheets.iter().any(|(name, _)| only.contains(name));
     let mut sheet_bytes = 0u64;
-    for (name, part) in sheets {
-        if filter && !only.contains(&name) {
+    for ((name, part), keep) in sheets.into_iter().zip(selected) {
+        if !keep {
             continue;
         }
         let mut table = SheetTable::new(options);

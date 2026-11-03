@@ -96,6 +96,15 @@ pub(crate) fn input_layers(v: &JsValue) -> Result<Vec<Layer>, JsError> {
     Err(invalid("expected vector data: a Dataset, a Uint8Array, { bytes, filename } or GeoJSON"))
 }
 
+/// Select file layers while their source name and complete inventory are still available.
+pub(crate) fn selected_input_layers(v: &JsValue, names: &[String]) -> Result<Vec<Layer>, JsError> {
+    if let Some((bytes, name)) = file_bytes(v) {
+        let options = terrio::VectorOpenOptions { layers: names.to_vec(), ..Default::default() };
+        return terrio::memory::open_vector_bytes(bytes, &name, &options).map(|d| d.into_resolved_layers()).map_err(js_err);
+    }
+    terrio::ops::vector_filter::select_layers(input_layers(v)?, names).map_err(js_err)
+}
+
 /// Takes the options that are JavaScript values (datasets) out of an options object, returning
 /// them and a copy of the object without them, for the others to be parsed.
 pub(crate) fn split_options(options: &JsValue, keys: &[&str]) -> Result<(JsValue, Vec<Option<JsValue>>), JsError> {
@@ -498,12 +507,8 @@ pub fn rasterize(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     if burn_values.is_empty() && a.attribute.is_none() {
         return Err(invalid("give burn or attribute"));
     }
-    let all = input_layers(&src)?;
     let named = a.layers.is_some();
-    let all: Vec<Layer> = match &a.layers {
-        Some(names) => terrio::ops::vector_filter::select_layers(all, names).map_err(js_err)?,
-        None => all,
-    };
+    let all = selected_input_layers(&src, a.layers.as_deref().unwrap_or_default())?;
     let to_burn = match &a.sql {
         Some(sql) => {
             let o = VectorTranslateOptions { sql: Some(sql.clone()), ..Default::default() };

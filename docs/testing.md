@@ -2381,3 +2381,19 @@ python scripts/conformance.py ../terrio-data --only xlsx,xlsx-layout,xlsx-workbo
 The `xlsx` suite uses GDAL as the reference; `xlsx-layout` and `xlsx-workbook`
 use openpyxl. Default CI runs `xlsx-workbook` with the debug example, while the
 extended conformance job uses the release example.
+
+## Vector layer selection
+
+Rust regressions exercise native paths, spilled bytes, the codecs used by WASM,
+and the optional GDAL backend. Python and Node regressions cover readers and
+operations, including file bytes passed directly to JavaScript operations:
+
+```sh
+cargo test -p terrio --lib layer_selection
+cargo test -p terrio --test layer_selection
+cargo test -p terrio --lib zip_layer_selection
+cargo test -p terrio --lib named_layer
+cargo test -p terrio --features gdal --test gdal_backend
+pytest python/tests/test_layer_selection.py
+node --test --test-name-pattern='single named layer' js/tests/node.test.mjs
+```
