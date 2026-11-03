@@ -105,7 +105,7 @@ fn open(input: &str, style: &Style) -> Result<Source> {
         Err(raster_error) => {
             let open = terrio::VectorOpenOptions { layers: style.layer.clone(), ..Default::default() };
             match super::quiet(|| terrio::open_vector(input, &open)) {
-                Ok(vector) => Ok(Source::Vector(vector.layers)),
+                Ok(vector) => Ok(Source::Vector(vector.into_resolved_layers())),
                 Err(vector_error) => Err(Error::InvalidArgument(format!(
                     "{input}: neither a raster nor a vector dataset (as a raster: {raster_error}; as a vector dataset: {vector_error})"
                 ))),

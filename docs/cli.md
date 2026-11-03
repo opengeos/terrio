@@ -3547,6 +3547,18 @@ Option | Description
 The `preview` form shows the image it draws below the command's output, and its **Open map**
 button opens the dataset in a [map](#view) in a new tab, with the form's options.
 
+The server runs commands with your permissions, including those that overwrite or delete files, so
+it listens on the loopback interface only and each API request must carry a random token, which is
+part of the printed address: treat the address as a password. The token is briefly on the command
+line of the process that opens the browser, where other users of a shared computer could read it;
+use `--no-open` there and paste the address yourself. To use it on another computer, forward the
+port (`ssh -L 8080:127.0.0.1:8080 host`, then `terrio ui --port 8080 --no-open` on the host).
+
+As with [MCP tools](#mcp), a run returns up to 100,000 bytes of output when the command ends, a
+non-zero status for a query's result (`compare`, `pixel-info`) is not a failure, and `@FILE` lists
+are refused: enter the paths one per line instead. To try terrio without installing it, see the
+[Playground](playground.md).
+
 ## preview
 
 ```sh
@@ -3631,18 +3643,6 @@ Option | Description
 --- | ---
 `--port` | Port on 127.0.0.1; by default a free one
 `--no-open` | Print the address without opening a browser
-
-The server runs commands with your permissions, including those that overwrite or delete files, so
-it listens on the loopback interface only and each API request must carry a random token, which is
-part of the printed address: treat the address as a password. The token is briefly on the command
-line of the process that opens the browser, where other users of a shared computer could read it;
-use `--no-open` there and paste the address yourself. To use it on another computer, forward the
-port (`ssh -L 8080:127.0.0.1:8080 host`, then `terrio ui --port 8080 --no-open` on the host).
-
-As with [MCP tools](#mcp), a run returns up to 100,000 bytes of output when the command ends, a
-non-zero status for a query's result (`compare`, `pixel-info`) is not a failure, and `@FILE` lists
-are refused: enter the paths one per line instead. To try terrio without installing it, see the
-[Playground](playground.md).
 
 ## Machine-readable command catalog
 

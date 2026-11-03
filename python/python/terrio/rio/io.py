@@ -22,8 +22,8 @@ of blocks) and write the file when closed.
 from __future__ import annotations
 
 import contextlib
-import logging
 import ctypes
+import logging
 import math
 import os
 import shutil

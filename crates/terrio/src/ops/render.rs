@@ -535,16 +535,78 @@ fn vector_extent(layers: &[Layer]) -> Result<[f64; 4]> {
     Ok([x0 - margin, y0 - margin, x1 + margin, y1 + margin])
 }
 
-fn only_points(layers: &[Layer]) -> bool {
-    layers
-        .iter()
-        .flat_map(|l| &l.features)
-        .filter_map(|f| f.geometry.as_ref())
-        .all(|g| matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_)))
+/// Vector features, split into points (drawn three pixels wide, since one pixel is hard to see)
+/// and other shapes, with each feature's bounding box `[min_x, min_y, max_x, max_y]`, so that a
+/// region rasterizes only the features that touch it.
+struct Features {
+    shapes: Vec<Layer>,
+    points: Vec<Layer>,
+    shape_boxes: Vec<Vec<Option<[f64; 4]>>>,
+    point_boxes: Vec<Vec<Option<[f64; 4]>>>,
 }
 
-/// Burns `layers` over `extent`: the attribute's values, or 1 where a feature is; NaN elsewhere.
-fn burn(layers: &[Layer], attribute: Option<&str>, extent: [f64; 4], width: usize, height: usize, grow_points: bool) -> Result<Vec<f64>> {
+impl Features {
+    fn split(layers: Vec<Layer>) -> Self {
+        let (mut shapes, mut points) = (Vec::new(), Vec::new());
+        for mut layer in layers {
+            let features = std::mem::take(&mut layer.features);
+            let (mut shape_layer, mut point_layer) = (layer.clone(), layer);
+            for feature in features {
+                let is_point = matches!(feature.geometry, Some(Geometry::Point(_) | Geometry::MultiPoint(_)));
+                if is_point { point_layer.features.push(feature) } else { shape_layer.features.push(feature) }
+            }
+            shapes.push(shape_layer);
+            points.push(point_layer);
+        }
+        let boxes = |layers: &[Layer]| -> Vec<Vec<Option<[f64; 4]>>> {
+            layers
+                .iter()
+                .map(|l| {
+                    l.features
+                        .iter()
+                        .map(|f| f.geometry.as_ref().and_then(Geometry::bbox).map(|b| [b.min_x, b.min_y, b.max_x, b.max_y]))
+                        .collect()
+                })
+                .collect()
+        };
+        let (shape_boxes, point_boxes) = (boxes(&shapes), boxes(&points));
+        Self { shapes, points, shape_boxes, point_boxes }
+    }
+}
+
+/// The features of `layers` whose box touches `extent`, borrowed when that is all of them.
+fn touching<'a>(layers: &'a [Layer], boxes: &[Vec<Option<[f64; 4]>>], extent: [f64; 4]) -> std::borrow::Cow<'a, [Layer]> {
+    let touches =
+        |b: &Option<[f64; 4]>| b.is_some_and(|b| b[0] <= extent[2] && b[2] >= extent[0] && b[1] <= extent[3] && b[3] >= extent[1]);
+    if boxes.iter().flatten().all(touches) {
+        return std::borrow::Cow::Borrowed(layers);
+    }
+    let subset = layers
+        .iter()
+        .zip(boxes)
+        .map(|(layer, boxes)| {
+            let features = layer.features.iter().zip(boxes).filter(|(_, b)| touches(b)).map(|(f, _)| f.clone()).collect();
+            Layer { features, ..empty_like(layer) }
+        })
+        .collect();
+    std::borrow::Cow::Owned(subset)
+}
+
+/// `layer`'s name, schema and CRS, without its features.
+fn empty_like(layer: &Layer) -> Layer {
+    let mut empty = Layer::new(layer.name.clone());
+    empty.geom_type = layer.geom_type;
+    empty.crs = layer.crs.clone();
+    empty.schema = layer.schema.clone();
+    empty
+}
+
+/// Burns `layers` over `extent`: the attribute's values, or 1 where a feature is; NaN elsewhere,
+/// and everywhere when there is no feature to burn.
+fn burn(layers: &[Layer], attribute: Option<&str>, extent: [f64; 4], width: usize, height: usize) -> Result<Vec<f64>> {
+    if layers.iter().all(|l| l.features.is_empty()) {
+        return Ok(vec![f64::NAN; width * height]);
+    }
     let options = RasterizeOptions {
         burn_values: if attribute.is_some() { Vec::new() } else { vec![1.0] },
         attribute: attribute.map(str::to_string),
@@ -557,27 +619,39 @@ fn burn(layers: &[Layer], attribute: Option<&str>, extent: [f64; 4], width: usiz
         ..Default::default()
     };
     let raster = rasterize(layers, &options)?;
-    let values = raster.read_window_f64(Window::full(width, height), &FloatReadOptions::default())?;
-    if !grow_points {
-        return Ok(values);
+    raster.read_window_f64(Window::full(width, height), &FloatReadOptions::default())
+}
+
+/// Draws `features` over `extent` at `width` by `height` pixels: the shapes, then the points on
+/// top, three pixels wide. Points are burned one pixel beyond each side, so that a point just
+/// outside the extent still widens into it, as at the seams between map tiles.
+fn draw_features(features: &Features, attribute: Option<&str>, extent: [f64; 4], width: usize, height: usize) -> Result<Vec<f64>> {
+    let shapes = touching(&features.shapes, &features.shape_boxes, extent);
+    let mut out = burn(&shapes, attribute, extent, width, height)?;
+    let (px, py) = ((extent[2] - extent[0]) / width as f64, (extent[3] - extent[1]) / height as f64);
+    let padded = [extent[0] - px, extent[1] - py, extent[2] + px, extent[3] + py];
+    let points = touching(&features.points, &features.point_boxes, padded);
+    if points.iter().all(|l| l.features.is_empty()) {
+        return Ok(out);
     }
-    // A single pixel is hard to see, so points are drawn three pixels wide.
-    let mut grown = values.clone();
-    for row in 0..height {
-        for col in 0..width {
-            let v = values[row * width + col];
-            if !v.is_nan() {
-                for r in row.saturating_sub(1)..(row + 2).min(height) {
-                    for c in col.saturating_sub(1)..(col + 2).min(width) {
-                        if grown[r * width + c].is_nan() {
-                            grown[r * width + c] = v;
-                        }
-                    }
+    let (pw, ph) = (width + 2, height + 2);
+    let burned = burn(&points, attribute, padded, pw, ph)?;
+    for row in 0..ph {
+        for col in 0..pw {
+            let v = burned[row * pw + col];
+            if v.is_nan() {
+                continue;
+            }
+            // Padded (row, col) is output (row - 1, col - 1); its 3 x 3 block is output rows
+            // row - 2 to row and columns col - 2 to col.
+            for r in row.saturating_sub(2)..row.min(height - 1) + 1 {
+                for c in col.saturating_sub(2)..col.min(width - 1) + 1 {
+                    out[r * width + c] = v;
                 }
             }
         }
     }
-    Ok(grown)
+    Ok(out)
 }
 
 /// Draws vector layers, with north up.
@@ -629,7 +703,7 @@ pub struct Renderer {
 
 enum Inner {
     Raster(LazyRaster),
-    Vector { layers: Vec<Layer>, attribute: Option<String>, extent: [f64; 4], size: (usize, usize), grow_points: bool },
+    Vector { features: Features, attribute: Option<String>, extent: [f64; 4], size: (usize, usize) },
 }
 
 impl std::fmt::Debug for Renderer {
@@ -670,7 +744,6 @@ impl Renderer {
         let (w, h) = (extent[2] - extent[0], extent[3] - extent[1]);
         let scale = VECTOR_GRID_SIZE as f64 / w.max(h);
         let size = (((w * scale).round() as usize).max(1), ((h * scale).round() as usize).max(1));
-        let grow_points = only_points(&layers);
         let (mode, ranges) = match &options.attribute {
             None => (Mode::Solid(FEATURE_COLOR), vec![(0.0, 1.0)]),
             Some(field) => {
@@ -681,7 +754,8 @@ impl Renderer {
             }
         };
         let plan = Plan { bands: vec![1], colors: 1, alpha_max: 255.0, mode };
-        Ok(Self { inner: Inner::Vector { layers, attribute: options.attribute.clone(), extent, size, grow_points }, plan, ranges })
+        let features = Features::split(layers);
+        Ok(Self { inner: Inner::Vector { features, attribute: options.attribute.clone(), extent, size }, plan, ranges })
     }
 
     /// The size of the whole dataset in this renderer's pixels, which [`Self::region`] takes
@@ -725,7 +799,7 @@ impl Renderer {
         check_size(width, height)?;
         let values = match &mut self.inner {
             Inner::Raster(source) => read_region(source, &self.plan, window, width, height)?,
-            Inner::Vector { layers, attribute, extent, grow_points, size } => {
+            Inner::Vector { features, attribute, extent, size } => {
                 let (ux, uy) = ((extent[2] - extent[0]) / size.0 as f64, (extent[3] - extent[1]) / size.1 as f64);
                 let part = [
                     extent[0] + window.x as f64 * ux,
@@ -733,16 +807,7 @@ impl Renderer {
                     extent[0] + (window.x + window.width) as f64 * ux,
                     extent[3] - window.y as f64 * uy,
                 ];
-                if *grow_points {
-                    // Burned one output pixel wider on each side, so that a point next to the
-                    // edge still widens into this region, then cropped.
-                    let (px, py) = ((part[2] - part[0]) / width as f64, (part[3] - part[1]) / height as f64);
-                    let padded = [part[0] - px, part[1] - py, part[2] + px, part[3] + py];
-                    let wide = burn(layers, attribute.as_deref(), padded, width + 2, height + 2, true)?;
-                    (0..height).flat_map(|r| wide[(r + 1) * (width + 2) + 1..(r + 1) * (width + 2) + 1 + width].iter().copied()).collect()
-                } else {
-                    burn(layers, attribute.as_deref(), part, width, height, false)?
-                }
+                draw_features(features, attribute.as_deref(), part, width, height)?
             }
         };
         Ok(shade(&values, &self.plan, &self.ranges, width, height))
@@ -886,6 +951,17 @@ mod tests {
         assert_eq!(select_layers(layers.clone(), &[]).unwrap().len(), 2);
         assert_eq!(select_layers(layers.clone(), &["b".into()]).unwrap()[0].name, "b");
         assert!(select_layers(layers, &["c".into()]).is_err());
+    }
+
+    #[test]
+    fn points_beside_shapes_are_widened_and_drawn_on_top() {
+        let mut layer = square_layer();
+        layer.push(Feature::with_geometry(1, Geometry::point(5.0, 5.0), 1));
+        layer.push(Feature::with_geometry(2, Geometry::point(10.0, 10.0), 1));
+        let image = render_vector(vec![layer], &RenderOptions { max_size: 100, ..Default::default() }).unwrap();
+        // The middle point, away from the square, is 3 x 3 pixels.
+        let opaque = (40..60).flat_map(|r| (40..60).map(move |c| (c, r))).filter(|&(c, r)| pixel(&image, c, r)[3] == 255).count();
+        assert_eq!(opaque, 9);
     }
 
     #[test]
