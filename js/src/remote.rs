@@ -722,3 +722,140 @@ impl RemoteDataset {
         })
     }
 }
+
+/// OGC API Features request options (the shared Rust reader performs discovery and paging).
+#[derive(Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+struct OapifOptions {
+    layers: Vec<String>,
+    bbox: Option<[f64; 4]>,
+    page_size: usize,
+    max_features: Option<usize>,
+    skip_features: usize,
+    datetime: Option<String>,
+    crs: Option<String>,
+    preferred_crs: Option<String>,
+    server_feature_axis_order: Option<String>,
+    ignore_schema: bool,
+    max_vector_bytes: usize,
+    max_pages: usize,
+}
+impl Default for OapifOptions {
+    fn default() -> Self {
+        let o = terrio::OapifOpenOptions::default();
+        Self {
+            layers: Vec::new(),
+            bbox: None,
+            page_size: o.page_size,
+            max_features: None,
+            skip_features: 0,
+            datetime: None,
+            crs: None,
+            preferred_crs: None,
+            server_feature_axis_order: None,
+            ignore_schema: false,
+            max_vector_bytes: o.max_vector_bytes,
+            max_pages: o.max_pages,
+        }
+    }
+}
+
+/// Reads OGC API Features over fetch, following the shared Rust reader's bounded requests.
+/// Options: layers, bbox, pageSize, maxFeatures, skipFeatures, datetime, crs,
+/// preferredCrs, serverFeatureAxisOrder, ignoreSchema, maxVectorBytes, maxPages,
+/// and optional fetch/headers. Requires CORS in browsers; fetch redirects are refused.
+#[wasm_bindgen(js_name = openOapif)]
+pub async fn open_oapif(url: &str, options: JsValue) -> Result<Dataset, JsError> {
+    let (rest, custom) = crate::ops::split_options(&options, &["fetch", "headers"])?;
+    let a: OapifOptions = parse_options(&rest)?;
+    let mut o = terrio::VectorOpenOptions {
+        layers: a.layers,
+        spatial_filter: a.bbox.map(|b| (b[0], b[1], b[2], b[3])),
+        skip_features: a.skip_features,
+        max_features: a.max_features,
+        ..Default::default()
+    };
+    o.oapif.page_size = a.page_size;
+    o.oapif.datetime = a.datetime;
+    o.oapif.crs = a.crs;
+    o.oapif.preferred_crs = a.preferred_crs;
+    o.oapif.ignore_schema = a.ignore_schema;
+    o.oapif.max_vector_bytes = a.max_vector_bytes;
+    o.oapif.max_pages = a.max_pages;
+    if let Some(order) = a.server_feature_axis_order {
+        o.oapif.set("SERVER_FEATURE_AXIS_ORDER", &order).map_err(js_err)?;
+    }
+    let mut reader = terrio::oapif::Reader::new(url, &o).map_err(js_err)?;
+    let fetch: js_sys::Function = custom[0]
+        .clone()
+        .unwrap_or_else(|| get(&js_sys::global(), "fetch"))
+        .dyn_into()
+        .map_err(|_| JsError::new("OAPIF requires fetch"))?;
+    let supplied = custom[1].clone().unwrap_or(JsValue::UNDEFINED);
+    while let Some(request) = reader.next_request().cloned() {
+        let headers = js_sys::Object::new();
+        if supplied.is_object() {
+            let iterable = js_sys::Reflect::has(&supplied, &js_sys::Symbol::iterator()).unwrap_or(false);
+            let given =
+                if iterable { js_sys::Object::from_entries(&supplied).map_err(js_error)? } else { js_sys::Object::from(supplied.clone()) };
+            js_sys::Object::assign(&headers, &given);
+        }
+        js_sys::Reflect::set(&headers, &"Accept".into(), &request.accept.into()).map_err(js_error)?;
+        let init = js_sys::Object::new();
+        js_sys::Reflect::set(&init, &"headers".into(), &headers).map_err(js_error)?;
+        // Browser fetch can conceal redirect destinations. Do not forward caller headers
+        // through redirects; callers can open the canonical service URL explicitly.
+        js_sys::Reflect::set(&init, &"redirect".into(), &"error".into()).map_err(js_error)?;
+        let promise = fetch
+            .call2(&JsValue::UNDEFINED, &request.url.into(), &init)
+            .map_err(js_error)?
+            .dyn_into::<js_sys::Promise>()
+            .map_err(|_| JsError::new("fetch did not return a promise"))?;
+        let response = JsFuture::from(promise).await.map_err(js_error)?;
+        let status = get(&response, "status").as_f64().unwrap_or(0.) as u16;
+        if !(200..300).contains(&status) {
+            oapif_cancel(&get(&response, "body"));
+            return Err(JsError::new(&format!("OAPIF HTTP status {status}")));
+        }
+        let body = oapif_body(&response, request.byte_limit).await?;
+        reader.accept_response(&body).map_err(js_err)?;
+    }
+    let result = reader.finish().map_err(js_err)?;
+    Ok(Dataset::from_layers(result.layers, terrio::formats::VectorDriver::OAPIF))
+}
+
+async fn oapif_body(response: &JsValue, limit: usize) -> Result<Vec<u8>, JsError> {
+    let stream = get(response, "body");
+    if stream.is_null() || stream.is_undefined() {
+        return Ok(Vec::new());
+    }
+    let reader = call(&stream, "getReader", &[])?;
+    let mut data = Vec::new();
+    loop {
+        let promise = call(&reader, "read", &[])?.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("invalid fetch body reader"))?;
+        let chunk = JsFuture::from(promise).await.map_err(js_error)?;
+        if get(&chunk, "done").as_bool().unwrap_or(false) {
+            break;
+        }
+        let bytes = js_sys::Uint8Array::new(&get(&chunk, "value"));
+        let size = bytes.length() as usize;
+        if size > limit.saturating_sub(data.len()) {
+            oapif_cancel(&reader);
+            return Err(JsError::new("OAPIF response exceeds its byte budget"));
+        }
+        data.try_reserve(size).map_err(|_| JsError::new("cannot allocate OAPIF response"))?;
+        let start = data.len();
+        data.resize(start + size, 0);
+        bytes.copy_to(&mut data[start..]);
+    }
+    Ok(data)
+}
+
+// Cancellation of a tee branch may wait for an unread sibling. Do not delay errors.
+fn oapif_cancel(body: &JsValue) {
+    if let Ok(promise) = call(body, "cancel", &[]).and_then(|p| p.dyn_into::<js_sys::Promise>().map_err(js_error)) {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = JsFuture::from(promise).await;
+        });
+    }
+}

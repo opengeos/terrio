@@ -29,6 +29,7 @@ mod pointcloud;
 mod query;
 mod raster_tile;
 mod remote;
+mod render;
 mod rpftoc;
 #[cfg(feature = "threads")]
 mod threads;

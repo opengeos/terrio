@@ -10,7 +10,7 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 
 ## Overview
 
-- Apache License 2.0 (263)
+- Apache License 2.0 (266)
 - MIT License (72)
 - ISC License (20)
 - BSD 3-Clause "New" or "Revised" License (14)
@@ -6580,6 +6580,9 @@ limitations under the License.
 
 Used by:
 
+- terrio (terrio's own crate)
+- terrio-js (terrio's own crate)
+- terrio-py (terrio's own crate)
 - [allocator-api2 0.2.21](https://github.com/zakarumych/allocator-api2)
 - [android_system_properties 0.1.6](https://github.com/nical/android_system_properties)
 - [anyhow 1.0.104](https://github.com/dtolnay/anyhow)

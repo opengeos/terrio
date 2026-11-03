@@ -343,7 +343,11 @@ nodata override and optional Z coordinates), returning a line layer with IDs and
 (statistics, pixel inclusion, optional `dst_srs` and `decimal_places`); the result retains the
 source features and adds statistic fields. Output reprojection occurs after analysis, and
 rounding (0–15 decimal places, ties away from zero after binary64 scaling) leaves source
-attributes and counts intact. Zonal statistics reuse a cropped membership mask across
+attributes and integer counts intact. `ZonalOptions::fractional` enables coverage fractions;
+`ZonalOptions::weights` accepts a `ZonalWeight` with a shared `Arc<RasterDataset>` and band for weighted statistics.
+Weight grids must match every value raster. Fractional counts are Real and are rounded
+when requested. See [the formulas and scope](cli.md#fractional-coverage-and-weighting-rasters).
+Zonal statistics reuse a cropped membership mask across
 bands of the same raster.
 `ops::sql::query` runs the [documented SQL subset](sql.md), including computed columns,
 DISTINCT, grouped summaries, attribute joins and the documented spatial functions,
@@ -707,3 +711,13 @@ static ALLOCATOR: terrio::NullSafeAllocator = terrio::NullSafeAllocator;
 
 API documentation: [docs.rs/terrio](https://docs.rs/terrio), or `cargo doc -p terrio --open` in
 the repository.
+
+## OGC API Features
+
+`open_vector("OAPIF:https://service/collections", &options)` supports read-only
+OGC API Features with `VectorOpenOptions::oapif` (`OapifOpenOptions`).
+Collection selection, spatial_filter and max_features/skip_features are shared
+with other vector sources. The portable `oapif::Reader` exposes bounded
+`next_request` / `accept_response` steps; native HTTP and JavaScript fetch use
+the same state machine. GDAL 3.13.3 is the behavior reference. See the CLI
+section for scope, CRS/axis handling, schema inference and allocation limits.

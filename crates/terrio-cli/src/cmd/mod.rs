@@ -35,6 +35,7 @@ pub mod pixel;
 pub mod pixel_info;
 pub mod points;
 pub mod polygonize;
+pub mod preview;
 pub mod processing;
 pub mod proximity;
 pub mod raster_retile;

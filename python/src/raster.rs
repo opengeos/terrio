@@ -652,6 +652,15 @@ impl PyRaster {
         }
     }
 
+    /// The raster as a PNG of up to 512 pixels a side, which notebooks display; `None` when it
+    /// cannot be drawn (complex bands, say), so that the notebook falls back to the text form.
+    fn _repr_png_(&mut self, py: Python<'_>) -> Option<Py<pyo3::types::PyBytes>> {
+        let options = terrio::ops::render::RenderOptions { max_size: crate::render::NOTEBOOK_SIZE, ..Default::default() };
+        let inner = &mut self.inner;
+        let png = py.detach_result(|| terrio::ops::render::render_raster(inner, &options)?.to_png()).ok()?;
+        Some(pyo3::types::PyBytes::new(py, &png).unbind())
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "<terrio.Raster {}x{}x{} {} crs={} driver={}{}>",

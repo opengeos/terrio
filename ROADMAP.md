@@ -37,7 +37,13 @@ appearance require a separate future design.
 
 - [x] `terrio ui`: forms generated from the command catalog, served on the loopback
       interface with a session token, with a file browser, the equivalent command line
-      and cancellation. No map or preview; output arrives when a command ends.
+      and cancellation; output arrives when a command ends.
+- [x] Data visualization ([#513](https://github.com/opengeos/terrio/issues/513)): a shared
+      render operation (overview-aware, nodata transparent, stretches, colormaps, palettes,
+      vector layers), `terrio preview` (PNG, PNG bytes, Kitty/iTerm2/sixel/half-block terminal
+      output), PNG image content in MCP results, `terrio.render`/`render`/`renderPng` bindings,
+      notebook `_repr_png_`, and `terrio view` plus an Open map button in `terrio ui`: a
+      pan-and-zoom map in the data's own grid, without a basemap.
 
 ## Machine-readable CLI metadata (#386)
 
@@ -117,6 +123,11 @@ scope in existing commands separately from new command coverage.
       [#507](https://github.com/opengeos/terrio/pull/507), with 56 GDAL 3.13.3
       comparisons and explicit numerical/schema policies.
 - [ ] Cumulative viewshed, weighted/fractional zonal statistics and OGC API Features reading.
+      Implementations are tracked in [#514](https://github.com/opengeos/terrio/pull/514),
+      [#516](https://github.com/opengeos/terrio/pull/516) and
+      [#522](https://github.com/opengeos/terrio/pull/522), respectively. This item awaits
+      completion of all three merges; supported scope and validation are in the CLI
+      and testing documentation.
 
 ## Additional GDAL command coverage
 

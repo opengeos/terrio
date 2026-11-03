@@ -98,6 +98,12 @@ impl VectorArgs {
         self.to_options(None).ok()?.read_filter(input)
     }
 
+    /// Bound OAPIF reads only when no earlier row filter can change the requested limit.
+    pub fn source_limit(&self, input: &str) -> Option<usize> {
+        let service = input.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("OAPIF:"));
+        if service && self.where_clause.is_none() && self.sql.is_none() && self.spat.is_none() { self.limit } else { None }
+    }
+
     /// The library options, with `t_srs` as the reprojection target.
     pub fn to_options(&self, t_srs: Option<SpatialRef>) -> terrio::Result<VectorTranslateOptions> {
         let srs = |s: &Option<String>| s.as_deref().map(SpatialRef::parse).transpose();

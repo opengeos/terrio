@@ -388,6 +388,12 @@ impl SpatialRef {
         Self::parse_definition(s, true)
     }
 
+    /// Parses a literal authority reference, WKT, PROJ or PROJJSON definition without
+    /// interpreting the input as a local filename. Use this for external metadata.
+    pub fn parse_literal(s: &str) -> Result<Self> {
+        Self::parse_definition(s, false)
+    }
+
     /// [`Self::parse`], reading a file only when `files` (not for a file's own text).
     #[cfg_attr(target_family = "wasm", allow(unused_variables))]
     fn parse_definition(s: &str, files: bool) -> Result<Self> {

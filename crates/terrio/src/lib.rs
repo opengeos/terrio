@@ -359,3 +359,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The thread pool of WebAssembly builds with threads: see [`par::set_thread_pool`].
 #[cfg(all(threads, target_family = "wasm"))]
 pub use par::set_thread_pool;
+
+/// Portable OGC API Features reader and native open options.
+pub use drivers::vector::oapif;
+pub use drivers::vector::oapif::OapifOpenOptions;

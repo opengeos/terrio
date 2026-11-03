@@ -5,7 +5,7 @@ such as Claude Code, Claude Desktop, Cursor or VS Code's Copilot can run terrio'
 data. Ask it to "summarize this GeoTIFF", "convert these shapefiles to GeoPackage in EPSG:3857" or
 "make a hillshade of dem.tif" and it calls the matching command.
 
-Each [command](cli.md) except `mcp` and `ui` is a tool, from `info`, `convert` and `warp` to `vsi`,
+Each [command](cli.md) except `mcp`, `ui` and `view` is a tool, from `info`, `convert` and `warp` to `vsi`,
 `pipeline` and `mdread`. A tool
 takes the command line after the command name as a list of arguments, and its description is the
 command's `--help`, so the agent sees every option. The server speaks over standard input and
@@ -56,6 +56,9 @@ HEC-RAS geometry and plan HDF files (the `hecras` feature, part of the default b
 other vector data: `info` lists their layers, and `info` and `convert` take the HECRAS open options
 (`--oo "CELL_SUMMARIES=Maximum Water Surface"`, see [HEC-RAS](hecras.md)), so an agent can "export
 the maximum water surface of each 2D cell of this plan to GeoPackage".
+
+`preview` returns the PNG it draws as image content, which the agent can look at: "show me this
+DEM with the terrain colormap" works without a file. See [preview](cli.md#preview).
 
 ## Permissions and safety
 

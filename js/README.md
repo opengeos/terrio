@@ -327,8 +327,11 @@ reprojection and 0–15 decimal rounding. Default prefixes are `raster1`, `raste
 producing `PREFIX_bN_STATISTIC`; the CLI instead defaults to each input path stem. Set
 explicit prefixes for identical field names. Explicit prefixes must be nonblank, one per
 raster. Field-name collisions, including repeated prefixes/bands or existing zone
-fields, receive `_2`, `_3`, etc. suffixes from the shared engine. Weighted/fractional
-statistics are unsupported.
+fields, receive `_2`, `_3`, etc. suffixes from the shared engine. For fractional coverage, set `fractional: true`; for weighted statistics, pass a
+weighting dataset/upload in `weights`, optional `weightBand` (default 1), and select
+`weighted_mean`, `weighted_sum` or `weighted_stddev` in `stats`. The weighting raster
+must match every value grid and CRS. Coverage count is Real; source geometry and
+attributes are retained. See the [CLI scope and formulas](https://terrio.dev/cli/#fractional-coverage-and-weighting-rasters).
 
 `singlepart` recursively splits collections/multipart geometry, preserving
 attributes, Z/M and CRS, and assigns sequential IDs from one per layer. Null and

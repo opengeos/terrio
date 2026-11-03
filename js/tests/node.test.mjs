@@ -964,6 +964,74 @@ test("a raster of 2 GB, written and read back (memory64)", {
 
 // ─── Remote files ───────────────────────────────────────────────────────────────────────────────
 
+test("openOapif cancellation does not wait for an unread tee sibling", async () => {
+  for (const status of [503, 200]) {
+    let cancelled = 0;
+    const fetch = async () => ({
+      status,
+      body: {
+        cancel() { cancelled++; return new Promise(() => {}); },
+        getReader() { return {
+          read: async () => ({ done: false, value: new Uint8Array(1024) }),
+          cancel() { cancelled++; return new Promise(() => {}); },
+        }; },
+      },
+    });
+    let timer;
+    try {
+      await assert.rejects(Promise.race([
+        terrio.openOapif("https://example.test/collections", { fetch, maxVectorBytes: 64 }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("cancel hung")), 1000); }),
+      ]), status === 503 ? /HTTP status 503/ : /byte budget/);
+      assert.equal(cancelled, 1);
+    } finally { clearTimeout(timer); }
+  }
+});
+
+test("openOapif follows real HTTP pages and preserves schema and range", async () => {
+  const { createServer } = await import("node:http");
+  const requests = [];
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://localhost");
+    requests.push({ path: req.url, header: req.headers["x-test"] });
+    let value;
+    if (url.pathname === "/collections") {
+      value = { collections: [{ id: "places", links: [
+        { rel: "items", href: "/collections/places/items", type: "application/geo+json" },
+        { rel: "describedby", href: "/schema", type: "application/schema+json" },
+      ] }] };
+    } else if (url.pathname === "/schema") {
+      value = { type: "object", properties: { name: { type: "string" }, missing: { type: "integer" } } };
+    } else {
+      const start = Number(url.searchParams.get("offset") ?? 0);
+      const end = Math.min(start + Number(url.searchParams.get("limit") ?? 2), 5);
+      value = { type: "FeatureCollection", numberMatched: 5,
+        features: Array.from({ length: end - start }, (_, n) => ({ type: "Feature", id: n + start,
+          properties: { name: `p${n + start}` }, geometry: { type: "Point", coordinates: [10 + n + start, 20 + n + start, 3] } })),
+        links: end < 5 ? [{ rel: "next", href: `?offset=${end}&limit=2` }] : [],
+      };
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(value));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await terrio.openOapif(`http://127.0.0.1:${server.address().port}/collections`, {
+      pageSize: 2, skipFeatures: 1, maxFeatures: 3, headers: { "X-Test": "present" },
+    });
+    const geojson = result.toGeoJSON();
+    assert.deepEqual(geojson.features.map(f => f.properties.name), ["p1", "p2", "p3"]);
+    assert.deepEqual(geojson.features[0].properties, { name: "p1", missing: null });
+    assert.deepEqual(geojson.features[0].geometry.coordinates, [11, 21, 3]);
+    assert.equal(requests.length, 4);
+    assert.ok(requests.every(r => r.header === "present"));
+    result.free();
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 /// Serves a directory over HTTP with range requests, counting the bytes sent.
 async function serve(dir) {
   const { createServer } = await import("node:http");
@@ -3617,4 +3685,42 @@ test("a KML style table is read and written back", () => {
   // An id any object inherits a setter for is an entry like the others.
   const odd = kml.replaceAll("base", "__proto__");
   assert.equal(Object.getOwnPropertyDescriptor(terrio.open(new TextEncoder().encode(odd), "a.kml").styleTable, "__proto__").value, style);
+});
+
+test("fractional zonalStats combines coverage and a weighting raster", () => {
+  const values = terrio.rasterFromArray(new Float64Array([10, 30]), 2, 1, [0, 1, 0, 1, 0, -1], "EPSG:4326");
+  const weights = terrio.rasterFromArray(new Float64Array([2, 4]), 2, 1, [0, 1, 0, 1, 0, -1], "EPSG:4326");
+  const zones = {type: "Polygon", coordinates: [[[0.5, 0], [2, 0], [2, 1], [0.5, 1], [0.5, 0]]]};
+  const stats = ["count", "sum", "median", "weighted_mean", "weighted_sum", "weighted_stddev"];
+  for (const source of [weights, weights.toBytes("weights.tif")]) {
+    const result = terrio.zonalStats(zones, values, {fractional: true, weights: source, stats}).toGeoJSON().features[0].properties;
+    const expected = [1.5, 35, 20, 26, 130, 8];
+    stats.forEach((name, i) => assert.ok(Math.abs(result[`raster1_b1_${name}`] - expected[i]) < 1e-10));
+  }
+  // The existing binary rasterizer excludes the centre on this polygon's left boundary.
+  assert.equal(terrio.zonalStats(zones, values, {stats: ["count"], weights: new Uint8Array([0])}).toGeoJSON().features[0].properties.raster1_b1_count, 1);
+  assert.throws(() => terrio.zonalStats(zones, values, {fractional: true, allTouched: true}), /mutually exclusive/);
+  assert.throws(() => terrio.zonalStats(zones, values, {stats: ["weighted_mean"]}), /require a weighting raster/);
+});
+
+test("render draws rasters and vector layers as RGBA and PNG", () => {
+  const grid = new TextEncoder().encode("ncols 4\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\nNODATA_value -9\n1 2 3 4\n5 6 7 -9\n");
+  const raster = terrio.open(grid, "grid.asc");
+  const image = terrio.render(raster, { colormap: "viridis", stretch: "minmax" });
+  assert.equal(image.width, 4);
+  assert.equal(image.height, 2);
+  assert.ok(image.data instanceof Uint8ClampedArray);
+  assert.deepEqual([...image.data.slice(0, 4)], [0x44, 0x01, 0x54, 255]);
+  assert.equal(image.data[7 * 4 + 3], 0);
+  assert.equal(terrio.render({ bytes: grid, filename: "grid.asc" }, { width: 8 }).width, 8);
+  const png = terrio.renderPng(raster, { maxSize: 2 });
+  assert.deepEqual([...png.slice(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+  assert.throws(() => terrio.render(raster, { colormap: "nope" }), /colormap/);
+  assert.throws(() => terrio.render(raster, { unknown: 1 }), /unknown/);
+  assert.throws(() => terrio.render(raster, { attribute: "v" }), /vector datasets/);
+
+  const squares = terrio.fromGeoJSON(SQUARES, "squares");
+  const drawn = terrio.render(squares, { maxSize: 40 });
+  assert.ok(Math.max(drawn.width, drawn.height) === 40);
+  assert.ok(drawn.data.some((value, i) => i % 4 === 3 && value === 255));
 });

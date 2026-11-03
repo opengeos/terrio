@@ -134,7 +134,8 @@ impl VectorTranslateOptions {
     /// features by their geometries.
     pub fn read_filter(&self, input: &str) -> Option<(f64, f64, f64, f64)> {
         use crate::formats::VectorDriver;
-        let indexed = matches!(VectorDriver::for_extension(input), Some(VectorDriver::Parquet | VectorDriver::GPKG));
+        let indexed = matches!(VectorDriver::for_extension(input), Some(VectorDriver::Parquet | VectorDriver::GPKG))
+            || crate::drivers::vector::oapif::service_target(input).is_some();
         let plain = self.spatial_filter_srs.is_none() && self.src_srs.is_none() && self.sql.is_none();
         self.spatial_filter.filter(|_| indexed && plain)
     }

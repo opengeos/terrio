@@ -162,6 +162,11 @@ impl SpatialRef {
         initialize();
         terrio_crs::SpatialRef::parse(s).map(Into::into).map_err(Into::into)
     }
+    /// Parses a literal CRS definition without opening local files named by external metadata.
+    pub fn parse_literal(s: &str) -> Result<Self> {
+        initialize();
+        terrio_crs::SpatialRef::parse_literal(s).map(Into::into).map_err(Into::into)
+    }
     /// Identify a CRS from a WKT definition.
     pub fn from_wkt(wkt: &str) -> Self {
         initialize();

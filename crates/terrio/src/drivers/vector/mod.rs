@@ -37,6 +37,7 @@ pub mod hecras_options;
 pub mod kml;
 pub mod kml_style;
 pub mod mapinfo;
+pub mod oapif;
 #[cfg(feature = "osm")]
 pub mod osm;
 pub(crate) mod profile;
@@ -97,6 +98,9 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
         VectorDriver::CityGML => citygml::parse(&citygml::read_path_bytes(path, false)?)?,
         VectorDriver::ESRIJSON => vec![esrijson::read(path)?],
         VectorDriver::ESRIPBF => vec![esripbf::read(path)?],
+        VectorDriver::OAPIF => {
+            return Err(crate::Error::InvalidArgument("OAPIF metadata describes a service; open its endpoint with OAPIF:".into()));
+        }
         VectorDriver::WFS => {
             return Err(crate::Error::InvalidArgument("WFS access requires a service URL, not a local feature file".into()));
         }
@@ -165,6 +169,7 @@ pub(crate) fn read_kml_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver) -
 /// from memory itself. Formats made of several files are read from their main file alone (a
 /// shapefile without attributes or CRS): see [`read_parts`].
 pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Option<Vec<Layer>>> {
+    options.oapif.validate_source(name)?;
     crate::formats::check_driver_allowed(driver.name(), name, crate::formats::Kind::Vector)?;
     driver.ensure_built()?;
     if matches!(driver, VectorDriver::Shapefile | VectorDriver::MapInfo) {

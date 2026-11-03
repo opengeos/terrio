@@ -201,6 +201,20 @@ metadata-based rendering options. `rasterTiles(src, options, callback)` sends ea
 See the [CLI tiling reference](cli.md#separate-file-raster-tiles) for supported output
 and transparency policies.
 
+### Pictures of data
+
+`render(source, options)` draws a raster or vector dataset as `{width, height, data}`, `data` a
+`Uint8ClampedArray` of RGBA pixels for `new ImageData(data, width, height)`, and
+`renderPng(source, options)` returns PNG bytes. Sources are Datasets, uploaded bytes
+(`Uint8Array` or `{bytes, filename}`) or GeoJSON. Options: `width`, `height`, `maxSize` (1024),
+`bands`, `colormap`, `stretch`, `layers` and `attribute`, as in [`terrio preview`](cli.md#preview).
+Rasters are read from the coarsest overview that still has the pixels needed.
+
+```js
+const { width, height, data } = render(dataset, { colormap: "terrain", maxSize: 512 });
+canvas.getContext("2d").putImageData(new ImageData(data, width, height), 0, 0);
+```
+
 ### Indexed color conversion
 
 `rgbToPalette(source, {colorCount: 256, bitDepth: 5, dither: true, colorMap,
@@ -422,6 +436,11 @@ const simple = simplify(counties, 0.01);
 const sorted = sort(simple, { method: "hilbert" });
 ```
 
+`zonalStats` accepts `fractional: true`, `weights` as a dataset/upload, and optional
+`weightBand` (default 1). Select `weighted_mean`, `weighted_sum` or `weighted_stddev`
+in `stats` for a second aligned weighting raster; see the
+[formulas and limits](cli.md#fractional-coverage-and-weighting-rasters).
+
 ## Native multidimensional arrays
 
 See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
@@ -568,3 +587,36 @@ node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real
 
 To build one module with only the scientific formats, see
 [Scientific WASM builds](scientific-wasm-build.md).
+
+## OGC API Features
+
+`await openOapif(url, options)` drives the shared Rust paging/schema reader over
+`fetch` and returns a vector Dataset:
+
+```javascript
+const lakes = await terrio.openOapif(
+  "https://demo.pygeoapi.io/master/collections/lakes",
+  { pageSize: 3, maxFeatures: 4 },
+);
+const geojson = lakes.toGeoJSON();
+lakes.free();
+```
+
+Options are `layers`, `bbox`, `pageSize`, `maxFeatures`, `skipFeatures`,
+`datetime`, `crs`, `preferredCrs`, `serverFeatureAxisOrder`, `ignoreSchema`,
+`maxVectorBytes` and `maxPages`. Optional `headers` and `fetch` support an
+authenticated same-origin service. `Accept` is reserved for the reader's
+JSON/GeoJSON content negotiation; omit it from caller-supplied headers. Other
+headers, including authentication headers, are forwarded. Browsers require
+server CORS permission.
+Fetch redirects are refused because browsers can conceal redirect destinations;
+open the canonical service URL. Response streams are bounded before allocation,
+and links must stay on the original origin. Native CLI/Python follow
+same-origin redirects. Native reads also retry HTTP 429, 500, 502, 503 and 504
+responses with backoff; `openOapif` does not retry, so a transient error status
+fails the read. Supply a retrying `fetch` when a service is unreliable. See the
+CLI section for shared schema and CRS rules.
+
+Signed numeric source IDs, or string IDs that conflict with a source `id`
+property, are preserved in `_oapif_id` text (with an extra leading underscore
+if that field already exists); generated unsigned FIDs then follow row order.

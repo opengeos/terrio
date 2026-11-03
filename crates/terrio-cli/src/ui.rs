@@ -11,6 +11,7 @@
 //! and the `Host` and `Origin` headers must name this server, which stops DNS rebinding. The token
 //! travels in the URL's fragment, which browsers do not send to servers or in `Referer` headers.
 
+use crate::cmd::preview::Style;
 use crate::mcp;
 use serde_json::{Value, json};
 use std::ffi::OsString;
@@ -18,12 +19,18 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{MAIN_SEPARATOR_STR, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
+use terrio::Window;
+use terrio::ops::render::Renderer;
 
 /// The page: one file with no external resources, so that it works offline.
 const PAGE: &str = include_str!("ui.html");
+/// The map, one file likewise.
+const MAP_PAGE: &str = include_str!("map.html");
+/// The longest side of a map tile, in pixels.
+const MAX_TILE: usize = 1024;
 /// The longest request head accepted, in bytes.
 const MAX_HEAD: usize = 64 << 10;
 /// The longest request body accepted, in bytes.
@@ -60,8 +67,63 @@ struct Session {
     catalog: String,
     /// The page, whose script carries this session's nonce.
     page: String,
+    /// The map page, whose script carries the same nonce.
+    map_page: String,
     /// The `Content-Security-Policy` header, which allows only that script.
     security_policy: String,
+    /// What the map draws, if anything has been opened.
+    view: Mutex<Option<View>>,
+    /// `terrio view`: serve the map alone, not the forms that run commands.
+    map_only: bool,
+}
+
+/// The dataset on the map.
+struct View {
+    /// Its name, as given.
+    name: String,
+    /// Which opening this is, so that a map page still showing an earlier dataset is told.
+    generation: u64,
+    /// Its own lock, so that a tile being drawn does not hold up the session's other requests.
+    /// Tiles are still drawn one at a time: the reader is not shared between threads.
+    renderer: Arc<Mutex<Renderer>>,
+}
+
+/// Arguments of `terrio view`.
+#[derive(clap::Args)]
+pub struct ViewArgs {
+    /// Input raster or vector dataset (local, remote or archive member).
+    input: String,
+    #[command(flatten)]
+    style: Style,
+    /// The port to listen on, on 127.0.0.1. 0 picks a free one.
+    #[arg(long, default_value_t = 0)]
+    port: u16,
+    /// Print the address without opening a browser.
+    #[arg(long)]
+    no_open: bool,
+}
+
+/// Serves a map of a dataset until the process is stopped.
+pub fn view(args: ViewArgs) -> terrio::Result<()> {
+    let renderer = crate::cmd::preview::renderer(&args.input, &args.style)?;
+    let listener = TcpListener::bind(("127.0.0.1", args.port))?;
+    let mut session = session(Vec::new(), listener.local_addr()?.port())?;
+    session.map_only = true;
+    *lock(&session.view) = Some(View { name: args.input, generation: 1, renderer: Arc::new(Mutex::new(renderer)) });
+    let url = format!("http://127.0.0.1:{}/map#token={}", session.port, session.token);
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "terrio view: {url}\nPress Ctrl-C to stop.");
+    let _ = out.flush();
+    if !args.no_open {
+        open_browser(&url);
+    }
+    accept(&listener, &Arc::new(session));
+    Ok(())
+}
+
+/// The value behind a mutex, also after a panic on another connection's thread.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Serves the page until the process is stopped.
@@ -83,12 +145,14 @@ pub fn serve(args: Args, terrio: Vec<OsString>) -> std::io::Result<()> {
 fn session(terrio: Vec<OsString>, port: u16) -> std::io::Result<Session> {
     let token = random_hex()?;
     let nonce = random_hex()?;
-    let page = PAGE.replacen("<script>", &format!("<script nonce=\"{nonce}\">"), 1);
+    let script = format!("<script nonce=\"{nonce}\">");
+    let page = PAGE.replacen("<script>", &script, 1);
+    let map_page = MAP_PAGE.replacen("<script>", &script, 1);
     let security_policy = format!(
-        "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     );
     let catalog = crate::usage::requested(&["terrio".into(), "--json-usage".into()]).expect("the root catalog").to_string();
-    Ok(Session { terrio, token, port, catalog, page, security_policy })
+    Ok(Session { terrio, token, port, catalog, page, map_page, security_policy, view: Mutex::new(None), map_only: false })
 }
 
 /// 128 random bits, in hexadecimal.
@@ -154,6 +218,8 @@ fn open_browser(url: &str) {
 struct Request {
     method: String,
     path: String,
+    /// What follows `?` in the request target, if anything.
+    query: String,
     /// Header names in lower case, with their values.
     headers: Vec<(String, String)>,
     body: Vec<u8>,
@@ -189,7 +255,8 @@ fn read_request(stream: &mut impl Read) -> Result<Request, String> {
     let mut lines = head.split("\r\n");
     let mut start = lines.next().unwrap_or_default().split(' ');
     let (method, target) = (start.next().unwrap_or_default().to_string(), start.next().ok_or("malformed request line")?);
-    let path = target.split('?').next().unwrap_or_default().to_string();
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let (path, query) = (path.to_string(), query.to_string());
     let headers: Vec<(String, String)> =
         lines.filter_map(|l| l.split_once(':')).map(|(n, v)| (n.trim().to_ascii_lowercase(), v.trim().to_string())).collect();
     let length = headers.iter().find(|(n, _)| n == "content-length").map_or(Ok(0), |(_, v)| v.parse::<usize>());
@@ -207,7 +274,7 @@ fn read_request(stream: &mut impl Read) -> Result<Request, String> {
         }
     }
     body.truncate(length);
-    Ok(Request { method, path, headers, body })
+    Ok(Request { method, path, query, headers, body })
 }
 
 /// Reads a socket until a deadline shared by all its reads, so that a client sending a byte now
@@ -234,6 +301,7 @@ fn connection(mut stream: TcpStream, session: &Session) {
     let _ = stream.set_write_timeout(Some(REQUEST_TIMEOUT));
     let request = read_request(&mut UntilDeadline { stream: &stream, deadline: Instant::now() + REQUEST_TIMEOUT });
     let reply = match request {
+        Ok(request) if session.map_only && !map_route(&request) => failure(404, "not found: terrio view serves the map alone"),
         Ok(request) => match check(&request, session) {
             Ok(()) if request.method == "POST" && request.path == "/api/run" => match parse_run(&request) {
                 Ok((name, args)) => match run_until_client_leaves(&stream, session, &name, args) {
@@ -242,12 +310,25 @@ fn connection(mut stream: TcpStream, session: &Session) {
                 },
                 Err(message) => failure(400, &message),
             },
+            Ok(()) if request.path == "/api/tile" && request.method == "GET" => match tile(&request.query, session) {
+                Ok(png) => {
+                    respond_bytes(&mut stream, (200, "image/png"), &png, &session.security_policy);
+                    return;
+                }
+                Err(reply) => reply,
+            },
             Ok(()) => route(&request, session),
             Err(reply) => reply,
         },
         Err(message) => failure(400, &message),
     };
     respond(&mut stream, reply, &session.security_policy);
+}
+
+/// Whether a request is one `terrio view` answers: the map page, the dataset's description and
+/// its tiles. Opening another dataset and running commands are for `terrio ui`.
+fn map_route(request: &Request) -> bool {
+    request.method == "GET" && matches!(request.path.as_str(), "/map" | "/api/view" | "/api/tile")
 }
 
 /// A reply's status, content type and body.
@@ -286,12 +367,96 @@ fn route(request: &Request, session: &Session) -> Reply {
             let catalog = format!("{{\"cwd\":{},\"separator\":{},\"catalog\":{}}}", json!(cwd), json!(MAIN_SEPARATOR_STR), session.catalog);
             (200, "application/json", catalog)
         }
+        ("GET", "/map") => (200, "text/html; charset=utf-8", session.map_page.clone()),
+        ("GET", "/api/view") => view_info(session),
+        ("POST", "/api/view") => match open_view(&request.body, session) {
+            Ok(()) => view_info(session),
+            Err(reply) => reply,
+        },
         ("POST", "/api/list") => match list_directory(&request.body) {
             Ok(listing) => (200, "application/json", listing.to_string()),
             Err(message) => failure(400, &message),
         },
-        (_, "/" | "/api/catalog" | "/api/list" | "/api/run") => failure(405, "method not allowed"),
+        (_, "/" | "/map" | "/api/catalog" | "/api/list" | "/api/run" | "/api/view") => failure(405, "method not allowed"),
         _ => failure(404, "not found"),
+    }
+}
+
+/// What the map page needs to know of the dataset on the map.
+fn view_info(session: &Session) -> Reply {
+    // The session's lock is let go before the renderer's, which a tile being drawn may hold.
+    let opened = lock(&session.view).as_ref().map(|v| (v.name.clone(), v.generation, v.renderer.clone()));
+    match opened {
+        None => failure(404, "no dataset is open: run preview from a form and choose Open map"),
+        Some((name, generation, renderer)) => {
+            let renderer = lock(&renderer);
+            let (width, height) = renderer.size();
+            let body = json!({
+                "name": name,
+                "generation": generation,
+                "width": width,
+                "height": height,
+                "kind": renderer.kind(),
+                "geoTransform": renderer.geo_transform(),
+            });
+            (200, "application/json", body.to_string())
+        }
+    }
+}
+
+/// Opens the dataset named by a `preview` command line (`{"args": […]}`) for the map, replacing any.
+fn open_view(body: &[u8], session: &Session) -> Result<(), Reply> {
+    use clap::{Args as _, FromArgMatches as _};
+    let bad = |message: String| failure(400, &message);
+    let params: Value = serde_json::from_slice(body).map_err(|e| bad(e.to_string()))?;
+    let args: Vec<String> = params
+        .get("args")
+        .and_then(|a| serde_json::from_value(a.clone()).ok())
+        .ok_or_else(|| bad("args must be an array of strings".into()))?;
+    let matches = crate::cmd::preview::Args::augment_args(clap::Command::new("preview"))
+        .no_binary_name(true)
+        .try_get_matches_from(&args)
+        .map_err(|e| bad(e.to_string()))?;
+    let parsed = crate::cmd::preview::Args::from_arg_matches(&matches).map_err(|e| bad(e.to_string()))?;
+    let renderer = crate::cmd::preview::renderer(&parsed.input, &parsed.style).map_err(|e| render_failure(&e))?;
+    let mut view = lock(&session.view);
+    let generation = view.as_ref().map_or(1, |v| v.generation + 1);
+    *view = Some(View { name: parsed.input, generation, renderer: Arc::new(Mutex::new(renderer)) });
+    Ok(())
+}
+
+/// A map tile: the PNG of the query's source window `x,y,w,h` at `tw` by `th` pixels, of the
+/// opening `g`.
+fn tile(query: &str, session: &Session) -> Result<Vec<u8>, Reply> {
+    let number = |name: &str| -> Result<u64, Reply> {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix(name).and_then(|rest| rest.strip_prefix('=')))
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| failure(400, &format!("the tile query needs a number {name}")))
+    };
+    let size = |value: u64| usize::try_from(value).map_err(|_| failure(400, "the tile query's numbers are too large"));
+    let window = Window::new(size(number("x")?)?, size(number("y")?)?, size(number("w")?)?, size(number("h")?)?);
+    let (tw, th) = (size(number("tw")?)?, size(number("th")?)?);
+    if tw > MAX_TILE || th > MAX_TILE {
+        return Err(failure(400, "the tile is too large"));
+    }
+    let generation = number("g")?;
+    let renderer = match &*lock(&session.view) {
+        None => return Err(failure(404, "no dataset is open")),
+        Some(view) if view.generation != generation => return Err(failure(409, "another dataset has been opened: reload this page")),
+        Some(view) => view.renderer.clone(),
+    };
+    let image = lock(&renderer).region(window, tw, th);
+    image.and_then(|image| image.to_png()).map_err(|e| render_failure(&e))
+}
+
+/// A request asked for wrongly, or a raster that needs overviews to be drawn, is the page's
+/// error; anything else, a read failing, is the server's.
+fn render_failure(e: &terrio::Error) -> Reply {
+    match e {
+        terrio::Error::InvalidArgument(_) | terrio::Error::Unsupported(_) => failure(400, &e.to_string()),
+        _ => failure(500, &e.to_string()),
     }
 }
 
@@ -358,19 +523,25 @@ fn display(path: &Path) -> String {
 }
 
 fn respond(stream: &mut TcpStream, (status, content_type, body): Reply, security_policy: &str) {
+    respond_bytes(stream, (status, content_type), body.as_bytes(), security_policy);
+}
+
+fn respond_bytes(stream: &mut TcpStream, (status, content_type): (u16, &str), body: &[u8], security_policy: &str) {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
+        500 => "Internal Server Error",
         _ => "Error",
     };
     let head = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Security-Policy: {security_policy}\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\n\r\n",
         body.len()
     );
-    let _ = stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(body.as_bytes()));
+    let _ = stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(body));
     let _ = stream.shutdown(Shutdown::Write);
 }
 
@@ -402,6 +573,7 @@ mod tests {
         Request {
             method: method.into(),
             path: path.into(),
+            query: String::new(),
             headers: vec![("host".into(), format!("127.0.0.1:{}", session.port)), ("x-terrio-token".into(), session.token.clone())],
             body: body.as_bytes().to_vec(),
         }
@@ -414,7 +586,10 @@ mod tests {
             port: 8000,
             catalog: "{}".into(),
             page: String::new(),
+            map_page: String::new(),
             security_policy: String::new(),
+            view: Mutex::new(None),
+            map_only: false,
         }
     }
 
@@ -509,6 +684,56 @@ mod tests {
     }
 
     #[test]
+    fn terrio_view_serves_the_map_alone() {
+        for (method, path, answered) in [
+            ("GET", "/map", true),
+            ("GET", "/api/view", true),
+            ("GET", "/api/tile", true),
+            ("GET", "/", false),
+            ("GET", "/api/catalog", false),
+            ("POST", "/api/run", false),
+            ("POST", "/api/view", false),
+            ("POST", "/api/list", false),
+        ] {
+            let request = Request { method: method.into(), path: path.into(), query: String::new(), headers: vec![], body: vec![] };
+            assert_eq!(map_route(&request), answered, "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn keeps_the_query_apart_from_the_path() {
+        let request = read_request(&mut "GET /api/tile?g=1&x=2 HTTP/1.1\r\nHost: h\r\n\r\n".as_bytes()).unwrap();
+        assert_eq!((request.path.as_str(), request.query.as_str()), ("/api/tile", "g=1&x=2"));
+    }
+
+    #[test]
+    fn the_map_draws_tiles_of_the_open_dataset_only() {
+        let s = test_session();
+        assert_eq!(route(&request(&s, "GET", "/api/view", ""), &s).0, 404);
+        assert!(tile("g=1&x=0&y=0&w=2&h=2&tw=2&th=2", &s).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grid.asc");
+        std::fs::write(&path, "ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 4\n").unwrap();
+        let body = json!({"args": [path.to_str().unwrap(), "-c", "viridis"]}).to_string();
+        let opened = route(&request(&s, "POST", "/api/view", &body), &s);
+        assert_eq!(opened.0, 200, "{}", opened.2);
+        let info: Value = serde_json::from_str(&opened.2).unwrap();
+        assert_eq!((info["width"].as_u64(), info["height"].as_u64(), info["generation"].as_u64()), (Some(2), Some(2), Some(1)));
+        let png = tile("g=1&x=0&y=0&w=2&h=2&tw=2&th=2", &s).unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+        for (query, status) in [
+            ("g=2&x=0&y=0&w=2&h=2&tw=2&th=2", 409),
+            ("g=1&x=1&y=1&w=2&h=2&tw=2&th=2", 400),
+            ("g=1&x=0&y=0&w=2&h=2&tw=9999&th=2", 400),
+            ("g=1&x=0", 400),
+        ] {
+            assert_eq!(tile(query, &s).unwrap_err().0, status, "{query}");
+        }
+        let refused = json!({"args": [path.to_str().unwrap(), "-c", "nope"]}).to_string();
+        assert_eq!(route(&request(&s, "POST", "/api/view", &refused), &s).0, 400);
+    }
+
+    #[test]
     fn the_only_script_allowed_is_the_pages() {
         let s = std::thread::scope(|scope| {
             std::thread::Builder::new()
@@ -521,6 +746,8 @@ mod tests {
         let nonce = s.security_policy.split("'nonce-").nth(1).unwrap().split('\'').next().unwrap();
         assert!(s.page.contains(&format!("<script nonce=\"{nonce}\">")));
         assert_eq!(s.page.matches("<script").count(), 1);
+        assert!(s.map_page.contains(&format!("<script nonce=\"{nonce}\">")));
+        assert_eq!(s.map_page.matches("<script").count(), 1);
         assert!(!s.security_policy.contains("script-src 'unsafe-inline'") && nonce != s.token);
     }
 

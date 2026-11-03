@@ -469,6 +469,25 @@ blocks need not be checked once the file is already invalid.
 The GDAL profile limits total parsed GDAL metadata to 4 MiB per file and XML nesting
 to 128 levels. The default rio-cogeo profile ignores this metadata tag.
 
+### Pictures of data
+
+`terrio.render(src, *, width=None, height=None, max_size=1024, bands=None, colormap=None,
+stretch="auto", layers=None, attribute=None)` returns a PNG of a raster or vector dataset. `src`
+accepts a path (a raster, or else a vector dataset), a `Raster`, or vector layers (`VectorDataset`,
+`Layer`, a list of layers, or GeoJSON as a mapping or as text). A raster is read from its coarsest overview that still has
+the pixels needed, so a remote COG transfers a small part of itself. The options are those of
+[`terrio preview`](cli.md#preview).
+
+```python
+png = terrio.render("https://example.com/dem.tif", colormap="terrain", max_size=512)
+open("dem.png", "wb").write(png)
+terrio.render("countries.gpkg", attribute="POP_EST", colormap="viridis")
+```
+
+In Jupyter, a `Raster` and a `terrio.rio` dataset display as a picture of up to 512 pixels a side
+(their `_repr_png_`), without matplotlib; a closed dataset, or one that cannot be drawn, falls back
+to its text form.
+
 ### Indexed color conversion
 
 `terrio.rgb_to_palette(src, dst=None, *, color_count=256, bit_depth=5,
@@ -515,6 +534,11 @@ supported transformers, built-in functions, kernels and masks.
 `raster_index`, `vector_index` and `rpftoc_create` follow the matching
 [commands](cli.md); see `help(terrio.contour)` for each one's arguments. `list_layers(path)` and
 `write_raster(raster, path, ...)` are the plain I/O helpers.
+
+For coverage-weighted zonal statistics, use `fractional=True`. A second aligned raster
+can be supplied as `weights=...`, with `weight_band=1`, then select `weighted_mean`,
+`weighted_sum` or `weighted_stddev` in `stats`. See the
+[formulas and limits](cli.md#fractional-coverage-and-weighting-rasters).
 
 ## Native multidimensional arrays
 
@@ -701,3 +725,20 @@ uv venv && uv pip install maturin numpy pytest
 uv run maturin develop --release
 uv run pytest
 ```
+
+## OGC API Features
+
+`open_vector` reads explicit `OAPIF:` URLs through the shared Rust reader:
+
+```python
+places = terrio.open_vector(
+    "OAPIF:https://demo.pygeoapi.io/master/collections/lakes",
+    options={"PAGE_SIZE": "3", "OAPIF_MAX_FEATURES": "4"},
+)
+places.layers[0].write("lakes.gpkg")
+```
+
+Use `layers` and `bbox` for collection and spatial selection. The GDAL-style
+open options, CRS/axis rules, schema handling and bounded eager paging are
+described in the CLI OGC API Features section. `OAPIF_SKIP_FEATURES` and
+`OAPIF_MAX_FEATURES` apply a per-collection range.

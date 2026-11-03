@@ -725,3 +725,129 @@ fn two_point_oblique_mercator_coordinates_and_refusal_through_mcp() {
     assert!((values[1] - -5279802.3632845115).abs() < 0.001);
     assert_eq!(replies[&2]["result"]["isError"], true);
 }
+
+#[cfg(not(target_family = "wasm"))]
+#[path = "../../terrio/tests/common/oapif.rs"]
+mod oapif_fixture;
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn oapif_conversion_through_mcp_bounds_plain_limits_and_keeps_filter_order() {
+    if !terrio::formats::VectorDriver::OAPIF.info().read {
+        return;
+    }
+    let server = oapif_fixture::Server::new();
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("limited.gpkg");
+    let filtered = dir.path().join("filtered.gpkg");
+    let url = format!("OAPIF:{}/alias", server.url);
+    let replies = session(&[
+        call(1, "convert", &[&url, plain.to_str().unwrap(), "--oo", "PAGE_SIZE=2", "--limit", "3"]),
+        call(2, "convert", &[&url, filtered.to_str().unwrap(), "--oo", "PAGE_SIZE=2", "--where", "value > 4", "--limit", "1"]),
+    ]);
+    for id in [1, 2] {
+        assert_eq!(replies[&id]["result"]["isError"], false, "{}", replies[&id]);
+    }
+    let a = terrio::open_vector(plain.to_str().unwrap(), &Default::default()).unwrap();
+    assert_eq!(a.layers[0].len(), 3);
+    for (i, expected) in [0.5, 1.5, 2.5].into_iter().enumerate() {
+        assert_eq!(a.layers[0].features[i].get(&a.layers[0].schema, "value").unwrap(), &terrio::FieldValue::Float(expected));
+    }
+    let b = terrio::open_vector(filtered.to_str().unwrap(), &Default::default()).unwrap();
+    assert_eq!(b.layers[0].len(), 1);
+    assert_eq!(b.layers[0].features[0].get(&b.layers[0].schema, "value").unwrap(), &terrio::FieldValue::Float(4.5));
+    // Plain limit needs two item pages; filtering must inspect all three pages.
+    assert_eq!(server.requests.lock().unwrap().iter().filter(|(u, _)| u.contains("/items")).count(), 5);
+}
+
+#[test]
+fn oapif_open_options_are_rejected_on_other_vector_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.geojson");
+    let output = dir.path().join("out.gpkg");
+    std::fs::write(&input, r#"{"type":"FeatureCollection","features":[]}"#).unwrap();
+    for option in ["CRS=EPSG:3857", "PAGE_SIZE=1000", "OAPIF_MAX_FEATURES=0", "OAPIF_SKIP_FEATURES=0"] {
+        let replies = session(&[call(1, "convert", &[input.to_str().unwrap(), output.to_str().unwrap(), "--oo", option])]);
+        assert_eq!(replies[&1]["result"]["isError"], true, "{}", replies[&1]);
+        assert!(replies[&1]["result"]["content"][0]["text"].as_str().unwrap().contains("OAPIF"));
+        assert!(!output.exists());
+    }
+}
+
+#[test]
+fn zonal_tool_computes_fractional_weighted_statistics() {
+    let dir = tempfile::tempdir().unwrap();
+    let zones = dir.path().join("zones.geojson");
+    let input = dir.path().join("values.tif");
+    let weights = dir.path().join("weights.tif");
+    let output = dir.path().join("statistics.geojson");
+    std::fs::write(&zones, r#"{"type":"Polygon","coordinates":[[[0.5,0],[2,0],[2,1],[0.5,1],[0.5,0]]]}"#).unwrap();
+    for (path, data) in [(&input, vec![10., 30.]), (&weights, vec![2., 4.])] {
+        let cfg = terrio::RasterConfig { cols: 2, rows: 1, cell_size: 1., data_type: terrio::DataType::F64, ..Default::default() };
+        let mut ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, data).unwrap(), false);
+        ds.raster.crs.epsg = Some(4326);
+        ds.set_geo_transform([0., 1., 0., 1., 0., -1.]);
+        terrio::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+    }
+    let replies = session(&[call(
+        1,
+        "zonal-stats",
+        &[
+            zones.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "--raster",
+            input.to_str().unwrap(),
+            "--weights",
+            weights.to_str().unwrap(),
+            "--fractional",
+            "--prefix",
+            "v",
+            "--stats",
+            "count,weighted_mean,weighted_sum",
+        ],
+    )]);
+    assert_eq!(replies[&1]["result"]["isError"], false, "{}", replies[&1]);
+    let value: Value = serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+    assert_eq!(value["features"][0]["properties"]["v_b1_count"], 1.5);
+    assert_eq!(value["features"][0]["properties"]["v_b1_weighted_mean"], 26.);
+    assert_eq!(value["features"][0]["properties"]["v_b1_weighted_sum"], 130.);
+    let unused = dir.path().join("unweighted.geojson");
+    let missing = dir.path().join("missing.tif");
+    let replies = session(&[call(
+        1,
+        "zonal-stats",
+        &[
+            zones.to_str().unwrap(),
+            unused.to_str().unwrap(),
+            "--raster",
+            input.to_str().unwrap(),
+            "--weights",
+            missing.to_str().unwrap(),
+            "--stats",
+            "count",
+        ],
+    )]);
+    assert_eq!(replies[&1]["result"]["isError"], false, "{}", replies[&1]);
+}
+
+#[test]
+fn preview_returns_the_image_it_draws() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("grid.asc");
+    std::fs::write(&input, "ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 4\n").unwrap();
+    let named = dir.path().join("named.png");
+    let replies = session(&[
+        call(1, "preview", &[input.to_str().unwrap()]),
+        call(2, "preview", &[input.to_str().unwrap(), "-o", named.to_str().unwrap()]),
+        call(3, "preview", &[input.to_str().unwrap(), "-o", "-"]),
+    ]);
+    for id in [1, 2] {
+        let result = &replies[&id]["result"];
+        assert_eq!(result["isError"], false, "{result}");
+        let image = result["content"].as_array().unwrap().iter().find(|c| c["type"] == "image").expect("an image");
+        assert_eq!(image["mimeType"], "image/png");
+        assert!(image["data"].as_str().unwrap().starts_with("iVBORw0KGgo"));
+    }
+    assert!(named.exists());
+    assert_eq!(replies[&3]["result"]["isError"], true);
+}

@@ -1360,6 +1360,17 @@ pub(crate) fn get_with_headers_capped(url: &str, headers: &[(String, String)], c
     request("GET", url, None, headers, cap, redirects)
 }
 
+/// A bounded response body and the effective URL after same-origin redirects.
+pub(crate) struct JsonResponse {
+    pub body: Vec<u8>,
+    pub url: String,
+}
+
+/// A bounded JSON response and its effective same-origin URL, for relative service links.
+pub(crate) fn get_json_response(url: &str, accept: &str, cap: u64) -> Result<JsonResponse> {
+    request_response("GET", url, None, &[("Accept".into(), accept.into())], cap.min(json_max_size()), Redirects::SameOrigin)
+}
+
 /// Sends a `GET` or a `POST` (of a JSON `body`) with extra `headers`, and returns the response's
 /// body: redirects followed as `redirects` allows (for a `POST`, only those keeping the method,
 /// 307 and 308), each checked before anything is sent to where it leads, the extra headers
@@ -1367,6 +1378,17 @@ pub(crate) fn get_with_headers_capped(url: &str, headers: &[(String, String)], c
 /// statuses (429, 500, 502, 503, 504) retried. A body over `cap` bytes is an error, read no
 /// further than the cap.
 fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, String)], cap: u64, policy: Redirects) -> Result<Vec<u8>> {
+    request_response(method, url, body, headers, cap, policy).map(|response| response.body)
+}
+
+fn request_response(
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+    headers: &[(String, String)],
+    cap: u64,
+    policy: Redirects,
+) -> Result<JsonResponse> {
     let options = HttpOptions::from_env();
     let agent = agent(&options);
     let first_origin = crate::vfs::url_origin(url);
@@ -1379,18 +1401,21 @@ fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, Str
     };
     loop {
         let extra: &[(String, String)] = if crate::vfs::url_origin(&url) == first_origin { headers } else { &[] };
+        let accept = extra
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("accept"))
+            .map_or("application/geo+json, application/json", |(_, value)| value.as_str());
         let result = match body {
             Some(body) => {
-                let mut req =
-                    agent.post(&url).header("Content-Type", "application/json").header("Accept", "application/geo+json, application/json");
-                for (k, v) in extra {
+                let mut req = agent.post(&url).header("Content-Type", "application/json").header("Accept", accept);
+                for (k, v) in extra.iter().filter(|(key, _)| !key.eq_ignore_ascii_case("accept")) {
                     req = req.header(k, v);
                 }
                 req.send(body)
             }
             None => {
-                let mut req = agent.get(&url).header("Accept", "application/geo+json, application/json");
-                for (k, v) in extra {
+                let mut req = agent.get(&url).header("Accept", accept);
+                for (k, v) in extra.iter().filter(|(key, _)| !key.eq_ignore_ascii_case("accept")) {
                     req = req.header(k, v);
                 }
                 req.call()
@@ -1465,7 +1490,7 @@ fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, Str
             let text = String::from_utf8_lossy(&data[..data.len().min(300)]).into_owned();
             return Err(Error::Http(format!("{}: status {status}: {}", redact(&url), text.trim())));
         }
-        return Ok(data);
+        return Ok(JsonResponse { body: data, url });
     }
 }
 

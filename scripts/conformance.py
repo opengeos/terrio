@@ -985,6 +985,46 @@ def suite_cumulative_viewshed(ctx):
     return suite
 
 
+
+def suite_fractional_zonal(ctx):
+    """Fractional coverage and weight rasters against GDAL and exactextract."""
+    suite = Suite("fractional-zonal", "Fractional and weighted zonal statistics", "GDAL 3.13.3 and exactextract 0.3.0",
+                  "Real USGS DEM and NLCD pixels with partial boundaries, holes and multipolygons. "
+                  "Count/min/max/mean/sum/population standard deviation and weighted mean/sum/standard deviation "
+                  "against GDAL and exactextract; median against exactextract on the same stored samples promoted to Float64 (it otherwise casts quantiles to the source type); GDAL 3.13.3 advertises but rejects median. "
+                  "Numeric relative tolerance 2e-7 or absolute 1e-7 (reference coverage uses Float32); "
+                  "nulls, Real schema, source geometry, attributes and CRS exact. "
+                  "Inputs and weights use identical affine grids. Native empty zones retain null sums rather than the references' zero sums.")
+    missing = missing_modules("terrio", "osgeo", "numpy", "shapely", "exactextract")
+    if missing:
+        suite.skipped = "needs current Python bindings and " + ", ".join(missing)
+        return suite
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13 for fractional zonal-stats"
+        return suite
+    args = [sys.executable, str(SCRIPTS / "compare_fractional_zonal_with_gdal.py"), ctx.data,
+            "--terrio", ctx.terrio, "--json"]
+    package = ROOT / "js/pkg-node/terrio.js"
+    node = node_exports_available(package, ["zonalStats"])
+    if node:
+        args += ["--node-package", str(package)]
+    code, out, err = run(args)
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        status = {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS)
+        suite.cases.append(Case("fractional zonal", result["name"], status, result["detail"]))
+    if len(results) != (18 if node else 12) or code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out) or "incomplete fractional zonal comparisons"
+    if not node:
+        suite.cases.append(Case("fractional zonal", "Node/WASM", NOT_COMPARED, "build js/pkg-node and install Node"))
+    return suite
+
+
 def suite_dem_calc(ctx):
     """Terrain, viewshed, algebra, proximity and sieve against GDAL tools."""
     return suite_json_ops(
@@ -2390,7 +2430,7 @@ def node_exports_available(module, names):
     try:
         result = subprocess.run([
             "node", "-e",
-            "const t=require(process.argv[1]);process.exit(process.argv.slice(2).every(n=>typeof t[n]==='function')?0:1)",
+            "const t=require(process.argv[1]);process.exit(process.argv.slice(2).every(n=>typeof t[n]==='function'&&(n!=='openOapif'||typeof fetch==='function'))?0:1)",
             str(module.resolve()), *names,
         ], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
@@ -2406,6 +2446,20 @@ def node_cityjson_writer_available(module):
 const doc={type:'CityJSON',version:'2.0',transform:{scale:[1,1,1],translate:[0,0,0]},CityObjects:{probe:{type:'Building'}},vertices:[]};
 const d=t.open(new TextEncoder().encode(JSON.stringify(doc)),'probe.city.json');
 try {const out=JSON.parse(new TextDecoder().decode(d.toBytes('probe.city.json',{cityjsonVersion:'1.1'})));process.exitCode=out.version==='1.1'?0:1;}finally{d.free();}"""
+    try:
+        result = subprocess.run(["node", "-e", code, str(module.resolve())], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def node_gpkg_writer_available(module):
+    """Probe GeoPackage output, which needs the sqlite feature, not just the export list."""
+    if not node_exports_available(module, ["open"]):
+        return False
+    code = """const t=require(process.argv[1]);
+const d=t.open(new TextEncoder().encode('{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}]}'),'probe.geojson');
+try{process.exitCode=d.toBytes('probe.gpkg').length>0?0:1;}finally{d.free();}"""
     try:
         result = subprocess.run(["node", "-e", code, str(module.resolve())], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
@@ -3031,6 +3085,45 @@ def suite_wfs(ctx):
     return suite
 
 
+def suite_oapif(ctx):
+    """Public OGC API Features pages through every supported surface."""
+    suite = Suite("oapif", "OGC API Features", "GDAL 3.13.3 OAPIF",
+                  "Live pygeoapi lakes and PDOK BAG buildings; paging, schema, bbox, storage CRS and authority axes. "
+                  "Every attribute and geometry coordinate checked, coordinates within 1e-8 source units. "
+                  "Advertised string dates and nested JSON remain lossless native representations; "
+                  "GDAL inferred dates and href StringLists are explicitly normalized and reported; advertised absent fields checked null. "
+                  "Source IDs checked as attributes where present; generated output FIDs excluded.")
+    if missing_modules("osgeo", "terrio"):
+        suite.skipped = "needs GDAL and current Python bindings"
+        return suite
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13 for the reference comparisons"
+        return suite
+    command = [sys.executable, str(SCRIPTS / "compare_oapif_with_gdal.py"), "--terrio", ctx.terrio, "--json"]
+    package = ROOT / "js/pkg-node/terrio.js"
+    node = node_exports_available(package, ["openOapif"]) and node_gpkg_writer_available(package)
+    if node:
+        command += ["--node-package", str(package)]
+    if ctx.remote:
+        command.append("--remote")
+    code, out, err = run(command)
+    try:
+        rows = json.loads(out)
+        for row in rows:
+            status = {"identical": IDENTICAL, "tolerance": TOLERANCE, "not compared": NOT_COMPARED}.get(row["status"], DIFFERS)
+            suite.cases.append(Case("oapif", row["name"], status, row["detail"]))
+        if ctx.remote and len(rows) != (15 if node else 10):
+            suite.cases.append(Case("oapif", "complete public comparisons", NOT_COMPARED, "one or more public reference services unavailable"))
+    except (ValueError, KeyError, TypeError) as error:
+        suite.error = f"{error}: {tail(err or out)}"
+    if code and not suite.error and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or "OAPIF comparison failed")
+    if not node:
+        suite.cases.append(Case("oapif", "Node/WASM", NOT_COMPARED, "build js/pkg-node and install Node"))
+    return suite
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -3061,6 +3154,7 @@ SUITES = OrderedDict(
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("cumulative-viewshed", suite_cumulative_viewshed),
+        ("fractional-zonal", suite_fractional_zonal),
         ("gpkg-repack", suite_gpkg_repack),
         ("gpkg-validate", suite_gpkg_validate),
         ("pansharpen", suite_pansharpen),
@@ -3106,6 +3200,7 @@ SUITES = OrderedDict(
         ("gpkg", suite_gpkg),
         ("streams", suite_streams),
         ("wfs", suite_wfs),
+        ("oapif", suite_oapif),
         ("tiles", suite_tiles),
         ("grib", suite_grib),
         ("pointclouds", suite_pointclouds),
