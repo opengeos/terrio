@@ -163,7 +163,7 @@ impl Default for ZonalOptions {
     }
 }
 /// Statistics for each polygon and raster band. Source pixels are materialized.
-/// Options: bands, prefixes, stats, allTouched, tSrs, decimalPlaces.
+/// Options: bands, prefixes, stats, allTouched, fractional, weights, weightBand, tSrs, decimalPlaces.
 /// Default prefixes raster1, raster2, etc. produce PREFIX_bN_STATISTIC fields.
 #[wasm_bindgen(js_name=zonalStats)]
 pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Result<Dataset, JsError> {

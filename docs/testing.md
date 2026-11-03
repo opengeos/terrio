@@ -2225,3 +2225,9 @@ on the same samples promoted to Float64, the largest relative statistic error wa
 2.74e-10; maximum absolute sum error was 0.00761. These are local measurements,
 not portable performance thresholds. Fractional masks retain binary64 coverage
 (8 bytes/cell); existing binary membership masks remain Byte.
+
+For a complete 966×731 NLCD window and count-only requests, three fresh-process
+runs measured binary median 0.06796 s / peak RSS 44.2–44.7 MiB, and fractional
+median 0.08048 s / peak RSS 49.6–50.6 MiB. Both counts matched the source's valid
+pixel count. The masks themselves use 706,146 and 5,649,168 bytes respectively;
+the process measurements include decoding and runtime overhead.

@@ -6,7 +6,9 @@
   fixing multi-band inputs whose nodata differs from band 1. Fractional coverage and
   aligned weighting rasters are available across Rust, CLI/MCP, Python and Node/WASM (#288).
   `ZonalOptions` remains a concrete type without a lifetime parameter; new weights use
-  shared `Arc<RasterDataset>` ownership.
+  shared `Arc<RasterDataset>` ownership. Rust callers with exhaustive struct literals
+  or `Statistic` matches must account for the new fields and weighted variants;
+  struct updates using `..Default::default()` retain the defaults.
 
 - `terrio::xlsx::Workbook` writes workbooks laid out for people: sheets, typed cells at their
   positions, merged ranges, column and row settings, cell formats, frozen panes, filters, list

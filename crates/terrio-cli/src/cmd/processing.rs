@@ -327,7 +327,8 @@ fn sample_sources(a: &SampleArgs) -> Result<(Vec<terrio::RasterDataset>, Vec<Str
 pub struct ZonalArgs {
     #[command(flatten)]
     sources: SampleArgs,
-    /// Statistics, comma-separated: count,min,max,mean,sum,stddev,median. Uses population standard deviation.
+    /// Statistics, comma-separated: count,min,max,mean,sum,stddev,median,
+    /// weighted_mean,weighted_sum,weighted_stddev. Uses population standard deviation.
     #[arg(long, value_delimiter = ',', default_value = "count,min,max,mean,sum,stddev")]
     stats: Vec<String>,
     /// Include every pixel touched by each polygon, instead of pixels whose centres are inside.

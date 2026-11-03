@@ -14,7 +14,8 @@ use std::sync::Arc;
 /// A statistic for [`zonal_stats`]. Standard deviation is the population standard deviation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Statistic {
-    /// Number of finite, non-nodata pixels. Zero when none contribute.
+    /// Number of finite, non-nodata pixels; fractional mode sums their coverage fractions as a Real.
+    /// Zero when no valid pixels contribute.
     Count,
     /// Minimum pixel value.
     Min,
@@ -26,7 +27,8 @@ pub enum Statistic {
     Sum,
     /// Population standard deviation.
     StdDev,
-    /// Median; the mean of the two middle values for an even count.
+    /// Median; the mean of the two middle values for an even binary count.
+    /// Fractional mode uses exactextract's interpolated coverage-weighted median.
     Median,
     /// Mean weighted by coverage and a second raster.
     WeightedMean,
@@ -420,6 +422,7 @@ impl Summary {
         self.weight += weight;
         self.sum += value * weight;
         let delta = value - self.mean;
+        // Preserve the existing unweighted delta/count arithmetic when each pixel has weight one.
         self.mean += if weight == 1.0 { delta / self.weight } else { (weight / self.weight) * delta };
         self.m2 += weight * (delta * (value - self.mean));
         self.min = self.min.min(value);
