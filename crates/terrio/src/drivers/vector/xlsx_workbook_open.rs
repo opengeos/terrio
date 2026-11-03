@@ -720,7 +720,10 @@ fn cell_value(
         _ => match value {
             None => CellValue::Blank,
             Some(v) => {
-                dated(&v, style, parts.date1904).unwrap_or_else(|| v.trim().parse().map_or(CellValue::Text(v.clone()), CellValue::Number))
+                dated(&v, style, parts.date1904).unwrap_or_else(|| {
+                    // `NaN` or `inf` is no number a sheet can hold: kept as text, not written as one.
+                    v.trim().parse::<f64>().ok().filter(|n| n.is_finite()).map_or_else(|| CellValue::Text(v.clone()), CellValue::Number)
+                })
             }
         },
     };
@@ -2215,6 +2218,13 @@ mod tests {
         let mut workbook = Workbook::open_bytes(&zip.finish().unwrap().into_inner()).unwrap();
         workbook.sheet_mut("Data").unwrap().comment("C1", "new", "me").unwrap();
         assert!(matches!(workbook.to_bytes(), Err(Error::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn numbers_that_are_not_finite_read_as_text() {
+        let odd = |b: String| b.replace("<c r=\"A2\" s=\"2\"><v>45293</v></c>", "<c><v>inf</v></c>");
+        let workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &odd)])).unwrap();
+        assert_eq!(workbook.sheet("Data").unwrap().value("A2").unwrap(), Some(&CellValue::Text("inf".into())));
     }
 
     #[test]
