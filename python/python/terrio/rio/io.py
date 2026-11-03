@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import logging
 import math
 import os
 import shutil
@@ -1263,6 +1264,24 @@ class DatasetReader(DatasetBase):
         if level is not None:
             raster = _OverviewRaster.open(raster, level, self.name)
         self._load(raster)
+
+    def _repr_png_(self) -> bytes | None:
+        """The dataset as a PNG of up to 512 pixels a side, which notebooks display.
+
+        Returns:
+            bytes | None: The PNG, or None when the dataset is closed, cannot be drawn, or was
+                opened at an overview level (`overview_level`), so that the notebook falls back
+                to the text form.
+        """
+        raster = getattr(self, "_raster", None)
+        if self.closed or not isinstance(raster, _terrio.Raster):
+            return None
+        try:
+            return _terrio.render(raster, max_size=512)
+        except Exception:
+            # A notebook shows the text form instead; the reason is kept for whoever looks.
+            logging.getLogger(__name__).debug("cannot draw %s", self.name, exc_info=True)
+            return None
 
     def _load(self, raster: Any) -> None:
         """Takes the dataset's properties from a terrio raster.

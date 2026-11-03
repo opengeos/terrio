@@ -198,3 +198,11 @@ the npm package and the command-line archives.
 
 The full list of dependencies is in `Cargo.toml` and `Cargo.lock`. If your work is missing here,
 please [open an issue](https://github.com/opengeos/terrio/issues).
+
+## Colormaps
+
+`terrio preview`, `terrio view` and the `render` functions color data with stops sampled from
+[matplotlib](https://matplotlib.org)'s viridis, magma, inferno and plasma, designed by Nathaniel J.
+Smith, Stéfan van der Walt and Eric Firing (CC0), and [ColorBrewer](https://colorbrewer2.org)'s
+RdBu and RdYlGn by Cynthia Brewer, Mark Harrower and The Pennsylvania State University
+(Apache-2.0).

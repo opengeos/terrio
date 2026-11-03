@@ -193,6 +193,74 @@ pub(crate) fn tool_call(params: &Value) -> Result<(String, Vec<OsString>), RpcEr
 /// Runs `terrio <name> <args>`: the tool's result, or `None` when `cancel` was set and the command
 /// killed. A failing command is a result the model reads (`isError`), not a protocol error.
 pub(crate) fn call_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool) -> Option<Value> {
+    if name == "preview" {
+        return call_preview(terrio, args, cancel);
+    }
+    call_command(terrio, name, args, cancel)
+}
+
+/// The largest PNG a tool result attaches, in bytes; its base64 form is about a third larger.
+const MAX_IMAGE: u64 = 8 << 20;
+
+/// Runs `terrio preview`, adding the PNG to its result as image content, so that a client can see
+/// it. Without `-o` it is written to a private temporary directory and removed afterwards.
+fn call_preview(terrio: &[OsString], mut args: Vec<OsString>, cancel: &AtomicBool) -> Option<Value> {
+    use clap::Args as _;
+    let parsed = crate::cmd::preview::Args::augment_args(clap::Command::new("preview")).no_binary_name(true).try_get_matches_from(&args);
+    let Ok(matches) = parsed else {
+        // Let the command word the usage error.
+        return call_command(terrio, "preview", args, cancel);
+    };
+    let failed = |text: String| Some(json!({"content": [{"type": "text", "text": text}], "isError": true}));
+    let (path, temporary) = match matches.get_one::<String>("output") {
+        Some(output) if output == "-" => {
+            return failed("preview cannot send PNG bytes as tool text: give -o FILE, or leave -o out to get the image".into());
+        }
+        Some(output) => (std::path::PathBuf::from(output), None),
+        None => {
+            let directory = match tempfile_directory() {
+                Ok(directory) => directory,
+                Err(e) => return failed(format!("could not make a temporary directory: {e}")),
+            };
+            let path = directory.join("preview.png");
+            // At the front, so that a caller's `--` does not turn them into positionals.
+            args.splice(0..0, [OsString::from("-o"), path.clone().into_os_string()]);
+            (path, Some(directory))
+        }
+    };
+    let mut result = call_command(terrio, "preview", args, cancel);
+    if let Some(result) = result.as_mut().filter(|r| r["isError"] == false) {
+        let image = std::fs::metadata(&path).ok().filter(|m| m.len() <= MAX_IMAGE).and_then(|_| std::fs::read(&path).ok());
+        let content = result["content"].as_array_mut().expect("tool results have content");
+        match image {
+            Some(png) => {
+                let data = crate::cmd::preview::base64(&png);
+                content.push(json!({"type": "image", "data": data, "mimeType": "image/png"}));
+            }
+            None => content.push(json!({"type": "text", "text": format!("The image is over {} MiB or unreadable, so it is not attached: ask for a smaller one.", MAX_IMAGE >> 20)})),
+        }
+    }
+    if let Some(directory) = temporary {
+        let _ = std::fs::remove_dir_all(directory);
+    }
+    result
+}
+
+/// A new directory only this user can reach.
+fn tempfile_directory() -> std::io::Result<std::path::PathBuf> {
+    let mut secret = [0u8; 16];
+    getrandom::fill(&mut secret).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let name: String = secret.iter().map(|b| format!("{b:02x}")).collect();
+    let path = std::env::temp_dir().join(format!("terrio-preview-{name}"));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&path)?;
+    Ok(path)
+}
+
+/// Runs a command as a tool: its text result, or `None` when it was cancelled.
+fn call_command(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool) -> Option<Value> {
     let (text, failed) = match run(terrio, name, args, cancel) {
         Ok(None) => return None,
         Ok(Some((status, stdout, stderr))) => {
