@@ -161,6 +161,7 @@ pub struct Reader {
     bytes: usize,
     metadata_only: bool,
     collections: Vec<Collection>,
+    collection_ids: HashSet<String>,
     index: usize,
     features: Vec<Value>,
     ids: HashSet<String>,
@@ -224,6 +225,7 @@ impl Reader {
             bytes: 0,
             metadata_only,
             collections: Vec::new(),
+            collection_ids: HashSet::new(),
             index: 0,
             features: Vec::new(),
             ids: HashSet::new(),
@@ -372,12 +374,13 @@ impl Reader {
             return Err(invalid("response has no OGC API collection metadata"));
         }
         for wanted in &self.options.layers {
-            if !self.collections.iter().any(|c| c.id == *wanted) {
+            if !self.collection_ids.contains(wanted) {
                 return Err(invalid(format!("collection '{wanted}' was not advertised")));
             }
         }
         if !self.options.layers.is_empty() {
-            self.collections.retain(|c| self.options.layers.contains(&c.id));
+            let wanted: HashSet<&str> = self.options.layers.iter().map(String::as_str).collect();
+            self.collections.retain(|c| wanted.contains(c.id.as_str()));
         }
         if self.metadata_only {
             self.phase = Phase::Done;
@@ -391,7 +394,7 @@ impl Reader {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| invalid("collection has no nonempty string id"))?;
-        if self.collections.iter().any(|c| c.id == id) {
+        if !self.collection_ids.insert(id.into()) {
             return Err(invalid("collection listing repeats an identifier"));
         }
         if matches!(id, "." | "..") {
@@ -528,9 +531,6 @@ impl Reader {
         if returned.is_some_and(|n| n != page.len() as u64) {
             return Err(invalid("numberReturned differs from the page feature count"));
         }
-        if next.is_some() && page.is_empty() {
-            return Err(invalid("empty feature page advertises another page"));
-        }
         for feature in page.iter() {
             if feature.get("type").and_then(Value::as_str) != Some("Feature") {
                 return Err(invalid("items array contains a non-Feature value"));
@@ -580,13 +580,12 @@ impl Reader {
         // The core model has unsigned FIDs, and its GeoJSON decoder uses a leading
         // id property for string IDs. Preserve signed IDs and conflicting properties
         // separately instead of silently losing either identifier or property data.
-        let mixed_ids = self.features.iter().any(|f| f["id"].is_string()) && self.features.iter().any(|f| f["id"].is_number());
-        let separate_ids = mixed_ids
-            || self.features.iter().any(|f| {
-                let id = &f["id"];
-                id.as_i64().is_some_and(|n| n < 0)
-                    || (id.is_string() && f.get("properties").and_then(|p| p.get("id")).is_some_and(|property| property != id))
-            });
+        let string_ids = self.features.iter().any(|f| f["id"].is_string());
+        let mixed_ids = string_ids && self.features.iter().any(|f| f["id"].is_number());
+        // Any source/schema id field must stay distinct from the decoder's synthetic
+        // string-id column, including rows with null or absent top-level identifiers.
+        let separate_ids =
+            mixed_ids || (string_ids && fields.contains("id")) || self.features.iter().any(|f| f["id"].as_i64().is_some_and(|n| n < 0));
         if separate_ids {
             let mut name = "_oapif_id".to_owned();
             while fields.contains(name.as_str()) {
@@ -1155,6 +1154,27 @@ mod tests {
         assert!(r.accept_response(&serde_json::to_vec(&catalog).unwrap()).unwrap_err().to_string().contains("unsupported CRS"));
     }
     #[test]
+    fn source_id_fields_survive_null_ids_and_schema_only_collisions() {
+        for absent in [false, true] {
+            let mut r = at_items(&Default::default());
+            let mut missing = feature(Value::Null, json!({"id":"source-property"}));
+            if absent {
+                missing.as_object_mut().unwrap().remove("id");
+            }
+            accept(&mut r, page(vec![feature(json!("source-key"), json!({})), missing], None));
+            let l = r.finish().unwrap().layers.remove(0);
+            assert_eq!(l.features[1].get(&l.schema, "id").unwrap(), &FieldValue::Text("source-property".into()));
+            assert_eq!(l.features[1].get(&l.schema, "_oapif_id").unwrap(), &FieldValue::Null);
+            assert_eq!(l.features[0].get(&l.schema, "_oapif_id").unwrap(), &FieldValue::Text(json!("source-key").to_string()));
+        }
+        let mut r = at_items(&Default::default());
+        r.fields = vec![FieldDef::new("id", FieldType::Integer)];
+        accept(&mut r, page(vec![feature(json!("source-key"), json!({}))], None));
+        let l = r.finish().unwrap().layers.remove(0);
+        assert_eq!(l.features[0].get(&l.schema, "id").unwrap(), &FieldValue::Null);
+        assert_eq!(l.schema.fields().iter().find(|f| f.name == "id").unwrap().field_type, FieldType::Integer);
+    }
+    #[test]
     fn synthetic_ids_preserve_nulls_and_flat_schemas_keep_nested_properties() {
         let mut r = at_items(&Default::default());
         r.fields = schema_fields(&json!({"properties":{
@@ -1236,7 +1256,10 @@ mod tests {
         accept(&mut r, page(vec![feature(json!(1), json!({}))], Some("?offset=1")));
         assert!(r.accept_response(&serde_json::to_vec(&page(vec![feature(json!(1), json!({"changed":true}))], None)).unwrap()).is_err());
         let mut r = at_items(&Default::default());
-        assert!(r.accept_response(&serde_json::to_vec(&page(vec![], Some("?offset=1"))).unwrap()).is_err());
+        accept(&mut r, page(vec![], Some("?offset=1")));
+        assert!(r.next_request().unwrap().url.contains("offset=1"));
+        accept(&mut r, page(vec![feature(json!(1), json!({}))], None));
+        assert_eq!(r.finish().unwrap().layers[0].features.len(), 1);
         let mut r = at_items(&Default::default());
         assert!(
             r.accept_response(&serde_json::to_vec(&page(vec![feature(json!(1), json!({}))], Some("https://other.test/items"))).unwrap())

@@ -3658,3 +3658,7 @@ active bbox/datetime/CRS selectors when next links omit them.
 
 OAPIF metadata extents that cross the antimeridian are reported as unknown.
 A zero-feature range returns empty layers without schema or item requests.
+
+When string feature identifiers coexist with a source or schema `id` field,
+the identifiers use `_oapif_id` so source `id` values and nulls remain intact.
+Empty pages with advancing next links are followed within the same page budget.
