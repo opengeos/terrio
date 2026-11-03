@@ -1636,6 +1636,18 @@ mod tests {
     }
 
     #[test]
+    fn outline_levels_follow_their_rows_and_keep_the_rest() {
+        let add = |b: String| b.replace("<cols>", "<sheetFormatPr baseColWidth=\"10\" defaultRowHeight=\"16\"/><cols>");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &add)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().set_row_outline(3, 2).unwrap();
+        let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(
+            sheet.contains("<sheetFormatPr baseColWidth=\"10\" defaultRowHeight=\"16\" outlineLevelRow=\"2\" outlineLevelCol=\"0\"/>"),
+            "{sheet}"
+        );
+    }
+
+    #[test]
     fn the_packages_own_relationships_are_kept() {
         let custom = "<Relationship Id=\"rId9\" Type=\"urn:custom-properties\" Target=\"docProps/custom.xml\"/>";
         let add = |b: String| b.replace("</Relationships>", &format!("{custom}</Relationships>"));

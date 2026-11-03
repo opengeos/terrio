@@ -446,6 +446,8 @@ pub struct Worksheet {
     /// Whether a cell changed since it was read.
     edited: bool,
     very_hidden: bool,
+    /// Whether an outline level changed since the sheet was read.
+    outlines_edited: bool,
 }
 
 impl Worksheet {
@@ -470,6 +472,7 @@ impl Worksheet {
             comments_edited: false,
             edited: false,
             very_hidden: false,
+            outlines_edited: false,
         }
     }
 
@@ -663,6 +666,7 @@ impl Worksheet {
             return Err(invalid(format!("an outline level of {level} is above 7")));
         }
         self.column_entry(column)?.outline = level;
+        self.outlines_edited = true;
         Ok(())
     }
     /// The format of a column's empty cells.
@@ -690,6 +694,7 @@ impl Worksheet {
             return Err(invalid(format!("an outline level of {level} is above 7")));
         }
         self.row_entry(row)?.outline = level;
+        self.outlines_edited = true;
         Ok(())
     }
     /// The format of a row's empty cells.
@@ -1537,6 +1542,13 @@ fn sheet_xml(sheet: &Worksheet, context: &mut SheetContext<'_>) -> String {
                 for element in raw {
                     match context.selected.filter(|_| name == "sheetViews") {
                         Some(selected) => out.push_str(&open::with_selection(element, selected)),
+                        // The sheet's outline levels follow its rows and columns, keeping the rest read.
+                        None if name == "sheetFormatPr" && sheet.outlines_edited => {
+                            let rows = sheet.rows.values().map(|d| d.outline).max().unwrap_or(0).to_string();
+                            let columns = sheet.columns.values().map(|d| d.outline).max().unwrap_or(0).to_string();
+                            let start = open::start_with(element, &[("outlineLevelRow", &rows), ("outlineLevelCol", &columns)]);
+                            out.push_str(&format!("{}/>", start.trim_end_matches('>')));
+                        }
                         None => out.push_str(element),
                     }
                     out.push('\n');
