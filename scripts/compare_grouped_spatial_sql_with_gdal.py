@@ -29,6 +29,7 @@ CASES = {
     "null predicate truthiness": "SELECT ADMIN,geometry FROM countries WHERE ST_Intersects(geometry,NULL) ORDER BY ADMIN LIMIT 3",
     "qualified grouped ordering": "SELECT CONTINENT,COUNT(*) AS n FROM countries c GROUP BY c.CONTINENT ORDER BY c.CONTINENT",
     "joined buffer distance": "SELECT c.ADMIN AS country,ST_Buffer(ST_Centroid(c.geometry),n.POP_EST/1000000000.0) AS geometry FROM countries c LEFT JOIN countries n ON c.ADMIN=n.ADMIN ORDER BY c.ADMIN LIMIT 4",
+    "duplicate aliases rejected": "SELECT CONTINENT AS n,COUNT(*) AS n FROM countries GROUP BY CONTINENT",
     "empty groups": "SELECT CONTINENT, COUNT(*) AS n FROM countries WHERE POP_EST<0 GROUP BY CONTINENT",
     "area length and intersects": "SELECT ADMIN,geometry, ST_Area(geometry) AS area, ST_Length(geometry) AS length, ST_Intersects(geometry,geometry) AS intersects FROM countries ORDER BY ADMIN LIMIT 12",
     "centroid": "SELECT ADMIN,ST_Centroid(geometry) AS geometry FROM countries ORDER BY ADMIN LIMIT 12",
@@ -193,6 +194,8 @@ def main():
                                 output,
                             ]
                         )
+                    if name == "duplicate aliases rejected":
+                        raise AssertionError("ambiguous SQL was accepted")
                     actual_ds = ogr.Open(str(output))
                     status = compare(
                         expected,
@@ -221,9 +224,22 @@ def main():
                         )
                     )
                 except Exception as error:
-                    rows.append(
-                        dict(name=f"{surface}: {name}", status="differs", detail=str(error))
-                    )
+                    if name == "duplicate aliases rejected" and "duplicate output field" in str(
+                        error
+                    ):
+                        rows.append(
+                            dict(
+                                name=f"{surface}: {name}",
+                                status="expected rejection",
+                                detail="GDAL "
+                                + gdal.VersionInfo("RELEASE_NAME")
+                                + " accepts duplicate aliases; Terrio deliberately rejects them before schema insertion",
+                            )
+                        )
+                    else:
+                        rows.append(
+                            dict(name=f"{surface}: {name}", status="differs", detail=str(error))
+                        )
     print(
         json.dumps(rows, indent=2)
         if args.json

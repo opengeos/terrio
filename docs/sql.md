@@ -44,7 +44,10 @@ WHERE POP_EST > 10000000 ORDER BY POP_EST DESC LIMIT 10
 
 Unaliased computed fields are named `FIELD_1`, `FIELD_2`, and so on by output position;
 summaries are named `COUNT_field`, `SUM_field`, etc. Output names must be unique ignoring case
-for the standalone query APIs. All integer types map to Terrio's signed 64-bit `Integer` model;
+for all SQL entrypoints, including `convert --sql`. Duplicate names are rejected
+during planning, before a schema can discard a later column. This is an explicit
+policy difference from GDAL 3.13.3 conversions that keep the first duplicate;
+choose distinct aliases to retain both values. All integer types map to Terrio's signed 64-bit `Integer` model;
 OGR's distinction between 32-bit and 64-bit count/predicate fields is not represented.
 
 This is a defined subset of [OGRSQL](https://gdal.org/en/stable/user/ogr_sql_dialect.html).
@@ -153,3 +156,6 @@ text, logical schemas and CRS are exact. Floating values allow relative/absolute
 symmetric-difference area relative 1e-7 and envelope error absolute 1e-7 source
 units; original geometry WKB remains exact. These checks supplement the existing
 OGRSQL suite without changing its equivalence checks.
+
+Duplicate aliases are checked as intentional rejections across all four entrypoints;
+these are reported separately from output matches with GDAL's first-column policy.

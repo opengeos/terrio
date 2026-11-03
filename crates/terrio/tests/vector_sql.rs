@@ -377,3 +377,22 @@ fn standalone_filters_reject_spatial_functions_without_select_context() {
         assert!(query(&layers, statement).is_err(), "{statement}");
     }
 }
+
+#[test]
+fn duplicate_output_names_are_rejected_before_query_or_conversion_execution() {
+    let layers = data();
+    for statement in [
+        "SELECT name,pop AS name FROM cities",
+        "SELECT name,pop*2 AS name FROM cities WHERE pop<0",
+        "SELECT key AS n,COUNT(*) AS n FROM cities GROUP BY key",
+        "SELECT key AS n,COUNT(*) AS N FROM cities GROUP BY key",
+        "SELECT COUNT(*) AS n,SUM(pop) AS n FROM cities",
+        "SELECT *,pop AS name FROM cities",
+    ] {
+        let standalone = query(&layers, statement).expect_err(statement);
+        assert!(standalone.to_string().contains("duplicate output field"), "{standalone}");
+        let options = terrio::ops::vector_filter::VectorTranslateOptions { sql: Some(statement.into()), ..Default::default() };
+        let translated = terrio::ops::vector_filter::translate(&layers, &options).expect_err(statement);
+        assert!(translated.to_string().contains("duplicate output field"), "{translated}");
+    }
+}

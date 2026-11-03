@@ -1329,6 +1329,9 @@ test("SQL computed columns, DISTINCT and summary aggregates", () => {
   assert.deepEqual(summary.features[0].properties, { n: 3, total: 4 });
   assert.equal(summary.features[0].geometry, null);
   assert.equal(terrio.sql(src, "SELECT DISTINCT v FROM layer").toGeoJSON().features.length, 2);
+  for (const statement of ["SELECT v,v AS v FROM layer", "SELECT v AS n,COUNT(*) AS n FROM layer GROUP BY v"]) {
+    assert.throws(() => terrio.sql(src, statement), /duplicate output field/);
+  }
   const grouped = terrio.sql(src, "SELECT v, COUNT(*) AS n, SUM(v) AS total FROM layer GROUP BY v ORDER BY v").toGeoJSON();
   assert.deepEqual(grouped.features.map(f => f.properties), [{v:null, n:1, total:null}, {v:2, n:2, total:4}]);
   assert.ok(grouped.features.every(f => f.geometry === null));

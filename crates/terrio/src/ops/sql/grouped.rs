@@ -1,5 +1,5 @@
 //! Attribute GROUP BY with SQLite-style keys, checked against GDAL 3.13.3.
-use super::select::{Aggregate, Item, bound, field_value, key, primary_name};
+use super::select::{Aggregate, Item, add_output_field, bound, field_value, key, primary_name};
 use super::*;
 use std::collections::HashMap;
 
@@ -30,12 +30,12 @@ pub(super) fn execute(layer: &Layer, s: &Select, limit: Option<usize>) -> Result
                     _ => wbvector::FieldDef::new(name.clone(), wbvector::FieldType::Integer),
                 };
                 def.name = alias.clone().unwrap_or_else(|| name.clone());
-                out.schema.add_field(def);
+                add_output_field(&mut out.schema, def)?;
                 columns.push(Column::Key(i));
             }
             Item::Aggregate(op, field, distinct, alias) => {
                 let (def, plan) = Aggregate::plan(op, field, *distinct, alias, &layer.schema, s)?;
-                out.schema.add_field(def);
+                add_output_field(&mut out.schema, def)?;
                 columns.push(Column::Summary(plans.len()));
                 plans.push(plan);
             }

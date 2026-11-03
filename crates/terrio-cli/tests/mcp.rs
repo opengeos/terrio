@@ -38,6 +38,7 @@ fn sql_tool_executes_grouped_and_spatial_queries() {
     let input = dir.path().join("places.geojson");
     let grouped = dir.path().join("groups.gpkg");
     let spatial = dir.path().join("centroids.gpkg");
+    let duplicates = dir.path().join("duplicates.gpkg");
     std::fs::write(&input, r#"{"type":"FeatureCollection","name":"places","features":[{"type":"Feature","properties":{"v":2},"geometry":{"type":"Point","coordinates":[0,0]}},{"type":"Feature","properties":{"v":2},"geometry":{"type":"Point","coordinates":[1,0]}}]}"#).unwrap();
     let replies = session(&[
         call(1, "sql", &[input.to_str().unwrap(), grouped.to_str().unwrap(), "--query", "SELECT v,COUNT(*) AS n FROM places GROUP BY v"]),
@@ -46,9 +47,19 @@ fn sql_tool_executes_grouped_and_spatial_queries() {
             "sql",
             &[input.to_str().unwrap(), spatial.to_str().unwrap(), "--query", "SELECT ST_Centroid(ST_Buffer(geometry,1)) FROM places"],
         ),
+        call(3, "sql", &[input.to_str().unwrap(), duplicates.to_str().unwrap(), "--query", "SELECT v,v AS v FROM places"]),
+        call(
+            4,
+            "convert",
+            &[input.to_str().unwrap(), duplicates.to_str().unwrap(), "--sql", "SELECT v AS n,COUNT(*) AS n FROM places GROUP BY v"],
+        ),
     ]);
     assert_eq!(replies[&1]["result"]["isError"], false);
     assert_eq!(replies[&2]["result"]["isError"], false);
+    for id in [3, 4] {
+        assert_eq!(replies[&id]["result"]["isError"], true);
+        assert!(replies[&id]["result"]["content"][0]["text"].as_str().unwrap().contains("duplicate output field"));
+    }
     let groups = terrio::open_vector(grouped.to_str().unwrap(), &Default::default()).unwrap();
     assert_eq!(groups.layers[0].features[0].attributes, vec![terrio::FieldValue::Integer(2), terrio::FieldValue::Integer(2)]);
     let points = terrio::open_vector(spatial.to_str().unwrap(), &Default::default()).unwrap();

@@ -487,6 +487,12 @@ def test_sql_expressions_distinct_summary():
     assert feature["properties"] == {"n": 3, "total": 4}
     assert feature["geometry"] is None
     assert len(terrio.sql(src, "SELECT DISTINCT v FROM layer")) == 2
+    for statement in [
+        "SELECT v,v AS v FROM layer",
+        "SELECT v AS n,COUNT(*) AS n FROM layer GROUP BY v",
+    ]:
+        with pytest.raises(ValueError, match="duplicate output field"):
+            terrio.sql(src, statement)
     grouped = terrio.sql(
         src, "SELECT v, COUNT(*) AS n, SUM(v) AS total FROM layer GROUP BY v ORDER BY v"
     ).to_geojson()["features"]
