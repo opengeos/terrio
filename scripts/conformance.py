@@ -956,7 +956,7 @@ def suite_fractional_zonal(ctx):
     args = [sys.executable, str(SCRIPTS / "compare_fractional_zonal_with_gdal.py"), ctx.data,
             "--terrio", ctx.terrio, "--json"]
     package = ROOT / "js/pkg-node/terrio.js"
-    node = package.is_file() and shutil.which("node") is not None
+    node = node_exports_available(package, ["zonalStats"])
     if node:
         args += ["--node-package", str(package)]
     code, out, err = run(args)

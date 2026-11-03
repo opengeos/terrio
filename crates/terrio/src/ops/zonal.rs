@@ -1,6 +1,7 @@
 //! Per-polygon statistics across raster bands. Zones are evaluated independently, so overlapping
-//! zones can include the same pixel. Membership uses the GDAL-compatible rasterizer in pixel
-//! coordinates, with a cropped window per zone and one mask shared by bands of the same raster.
+//! zones can include the same pixel. Binary membership uses the GDAL-compatible rasterizer;
+//! fractional membership uses polygon/cell areas, matching GDAL 3.13.3. Each zone has a cropped
+//! window and one coverage mask shared by bands of the same raster.
 
 #[path = "zonal_fractional.rs"]
 mod fractional;
@@ -227,6 +228,8 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
         columns.push(indices);
     }
     let median = options.stats.contains(&Statistic::Median);
+    let weighted_variance = options.stats.contains(&Statistic::WeightedStdDev);
+    let weights = options.weights.as_ref().filter(|_| options.stats.iter().any(|s| s.weighted()));
     for f in &mut out.features {
         f.attributes.resize(out.schema.len(), FieldValue::Null);
         for group in &groups {
@@ -253,7 +256,7 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
                             let v = r.data.get_f64(index);
                             if v.is_finite() && crate::histogram::is_valid(v, nodata, r.data_type) {
                                 values.add(v, coverage);
-                                if let Some(weight) = &options.weights {
+                                if let Some(weight) = weights {
                                     let wi = (weight.band - 1) * r.cols * r.rows + (row + mask.row) * r.cols + col + mask.col;
                                     let w = weight.raster.raster.data.get_f64(wi);
                                     if !w.is_finite()
@@ -270,7 +273,9 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
                                         let contribution = coverage * w;
                                         if contribution > 0.0 {
                                             weighted.add(v, contribution);
-                                            if ![weighted.weight, weighted.sum, weighted.mean, weighted.m2].iter().all(|v| v.is_finite()) {
+                                            if ![weighted.weight, weighted.sum, weighted.mean].iter().all(|v| v.is_finite())
+                                                || (weighted_variance && !weighted.m2.is_finite())
+                                            {
                                                 return Err(Error::InvalidArgument(format!(
                                                     "zone {} weighted statistics overflow binary64 arithmetic",
                                                     f.fid
@@ -359,6 +364,9 @@ fn zone_mask(geometry: &Geometry, group: &Group<'_>, all_touched: bool, fraction
         c.y = -row;
         Ok(())
     })?;
+    if fractional {
+        super::topology::require_valid(&geometry, fid)?;
+    }
     let Some(bbox) = geometry.bbox() else { return Ok(None) };
     let r = &group.raster.raster;
     let col = (bbox.min_x.floor() - 1.0).clamp(0.0, r.cols as f64) as usize;
@@ -370,7 +378,6 @@ fn zone_mask(geometry: &Geometry, group: &Group<'_>, all_touched: bool, fraction
     }
     let (cols, rows) = (end_col - col, end_row - row);
     if fractional {
-        super::topology::require_valid(&geometry, fid)?;
         let pixels = fractional::coverage(&geometry, col, row, cols, rows);
         return Ok(Some(Mask { col, row, cols, rows, pixels: Coverage::Fractional(pixels) }));
     }

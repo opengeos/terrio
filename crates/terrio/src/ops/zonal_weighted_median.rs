@@ -24,7 +24,12 @@ pub(crate) fn median(sorted: &[(f64, f64)]) -> f64 {
     for (i, &(value, weight)) in bins.iter().enumerate() {
         let s = i as f64 * weight + (n - 1.0) * cumulative;
         if s > target {
-            return previous_x + (target - previous_s) * (value - previous_x) / (s - previous_s);
+            let fraction = (target - previous_s) / (s - previous_s);
+            return if previous_x.is_sign_negative() == value.is_sign_negative() {
+                previous_x + fraction * (value - previous_x)
+            } else {
+                previous_x * (1.0 - fraction) + value * fraction
+            };
         }
         previous_s = s;
         previous_x = value;
@@ -36,6 +41,13 @@ pub(crate) fn median(sorted: &[(f64, f64)]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::median;
+    #[test]
+    fn interpolation_preserves_finite_extremes_and_subnormals() {
+        assert_eq!(median(&[(-f64::MAX, 1.), (f64::MAX, 1.)]), 0.);
+        let tiny = f64::from_bits(1);
+        assert_eq!(median(&[(tiny, 1.), (tiny, 1.)]), tiny);
+        assert!(median(&[(f64::MAX / 2., 1.), (f64::MAX, 1.)]).is_finite());
+    }
     /// exactextract 0.3.0, Float64 source; unequal weights and duplicate values.
     #[test]
     fn unequal_coverages_and_histogram_bins_control_interpolation() {

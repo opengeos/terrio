@@ -521,3 +521,39 @@ fn fractional_geometry_errors_identify_the_source_zone() {
     assert!(text.contains("feature 100"));
     assert!(!text.contains("feature 0"));
 }
+
+#[test]
+fn only_requested_weighted_statistics_control_validation() {
+    use terrio::ops::zonal::ZonalWeight;
+    let r = raster(2, 1, 1, &[1e200, -1e200], None);
+    let l = zones(vec![Some(rectangle(0., 0., 2., 1.))]);
+    let inputs = [ZonalInput { prefix: "v".into(), raster: &r, band: 1 }];
+    let mut o = ZonalOptions {
+        stats: vec![S::WeightedSum, S::WeightedMean],
+        weights: Some(ZonalWeight { raster: std::sync::Arc::new(raster(2, 1, 1, &[1., 1.], None)), band: 1 }),
+        ..Default::default()
+    };
+    let out = zonal_stats(&l, &inputs, &o).unwrap();
+    assert_eq!(field(&out, 0, "v_weighted_sum"), &V::Float(0.));
+    assert_eq!(field(&out, 0, "v_weighted_mean"), &V::Float(0.));
+    o.stats = vec![S::WeightedStdDev];
+    assert!(zonal_stats(&l, &inputs, &o).unwrap_err().to_string().contains("overflow"));
+    o.stats = vec![S::Count];
+    o.weights = Some(ZonalWeight { raster: std::sync::Arc::new(raster(2, 1, 1, &[-1., -1.], None)), band: 1 });
+    assert_eq!(field(&zonal_stats(&l, &inputs, &o).unwrap(), 0, "v_count"), &V::Integer(2));
+}
+
+#[test]
+fn fractional_invalid_zones_outside_the_grid_are_rejected() {
+    let r = raster(2, 2, 1, &[1.; 4], None);
+    let g =
+        G::polygon(vec![Coord::xy(10., 10.), Coord::xy(12., 12.), Coord::xy(10., 12.), Coord::xy(12., 10.), Coord::xy(10., 10.)], vec![]);
+    assert!(
+        zonal_stats(
+            &zones(vec![Some(g)]),
+            &[ZonalInput { prefix: "v".into(), raster: &r, band: 1 }],
+            &ZonalOptions { fractional: true, ..Default::default() }
+        )
+        .is_err()
+    );
+}
