@@ -821,7 +821,13 @@ fn schema_fields(root: &Value) -> Result<Vec<FieldDef>> {
         });
     let properties = if is_feature {
         let nested = resolve_ref(document, &properties["properties"], 0)?;
-        nested.get("properties").and_then(Value::as_object).unwrap_or(properties)
+        if let Some(nested_properties) = nested.get("properties").and_then(Value::as_object) {
+            nested_properties
+        } else if nested.get("type").and_then(Value::as_str).is_some_and(|kind| kind != "object") {
+            properties // an explicitly scalar property named "properties" is a flat schema
+        } else {
+            return Ok(Vec::new()); // a Feature wrapper without usable property hints
+        }
     } else {
         properties
     };
@@ -1093,6 +1099,13 @@ mod tests {
         }}))
         .unwrap();
         assert!(flat.iter().any(|f| f.name == "sibling" && f.field_type == FieldType::Float));
+        assert!(
+            schema_fields(&json!({"properties":{
+                "type":{"const":"Feature"},"geometry":{"type":"object"},"properties":{"type":"object"}
+            }}))
+            .unwrap()
+            .is_empty()
+        );
         let scalar = schema_fields(&json!({"properties":{"properties":{"type":"string"}}})).unwrap();
         assert_eq!(scalar.len(), 1);
         assert_eq!(scalar[0].name, "properties");
