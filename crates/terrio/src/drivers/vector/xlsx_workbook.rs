@@ -28,6 +28,7 @@ use super::xlsx::{
     MAIN_NS, MAX_CELL_TEXT_UTF16, MAX_COLUMNS, MAX_ROWS, OD_RELS, PACKAGE, StringTable, XML_HEADER, column_letters, excel_serial_days,
     wall_clock_millis, xml_legal, xml_text,
 };
+use super::xlsx_options::real_date;
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -40,6 +41,11 @@ const MAX_FORMULA_UTF16: usize = 8192;
 const MAX_HEADER_FOOTER_UTF16: usize = 255;
 const MAX_CELL_FORMATS: usize = 64_000;
 const MAX_URL_UTF16: usize = 2079;
+/// The limits on a font's name and a number format's code.
+const MAX_FONT_NAME_UTF16: usize = 31;
+const MAX_NUM_FORMAT_UTF16: usize = 254;
+/// The schemes of links: others can reach local files or run code when clicked.
+const LINK_SCHEMES: [&str; 4] = ["http:", "https:", "mailto:", "ftp:"];
 /// The most cells `merge_write` formats: each is stored.
 const MAX_MERGE_WRITE_CELLS: u64 = 1 << 20;
 /// The errors a cell can hold.
@@ -140,7 +146,7 @@ pub enum CellValue {
     Boolean(bool),
     /// A date as `YYYY-MM-DD`. It needs a date number format to show as one, which it gets by default.
     Date(String),
-    /// A date-time as ISO 8601, written without a UTC offset, which a sheet cannot hold.
+    /// A date-time as ISO 8601. A UTC offset is dropped, leaving the wall clock, as a sheet cannot hold one.
     DateTime(String),
     /// An error such as `#N/A`.
     Error(String),
@@ -629,11 +635,15 @@ impl Worksheet {
         self.validations.push(Validation { range: Range::parse(range)?, items });
         Ok(())
     }
-    /// Links a cell to a URL.
+    /// Links a cell to an `http`, `https`, `mailto` or `ftp` address.
     pub fn hyperlink(&mut self, cell: &str, url: &str) -> Result<()> {
         let cell = parse_cell(cell)?;
         if url.is_empty() || url.encode_utf16().count() > MAX_URL_UTF16 || !url.chars().all(xml_legal) {
             return Err(invalid(format!("a link's address needs 1 to {MAX_URL_UTF16} characters XML can hold")));
+        }
+        let lower = url.to_ascii_lowercase();
+        if !LINK_SCHEMES.iter().any(|scheme| lower.starts_with(scheme)) {
+            return Err(invalid(format!("a link's address '{url}' does not start with one of {}", LINK_SCHEMES.join(" "))));
         }
         self.hyperlinks.retain(|h| h.cell != cell);
         self.hyperlinks.push(Hyperlink { cell, url: url.to_string() });
@@ -707,11 +717,6 @@ fn header_footer(text: &str) -> Result<String> {
     Ok(text.to_string())
 }
 
-/// Whether a date's text names a day of the calendar: 2024-02-30 would roll over to March.
-fn real_date(date: &str) -> bool {
-    datetime::parse_date(date).is_some_and(|days| datetime::format_date(i64::from(days)) == date)
-}
-
 /// A formula's text without its `=`, if it starts with one.
 fn formula_body(formula: &str) -> &str {
     formula.strip_prefix('=').unwrap_or(formula)
@@ -722,6 +727,12 @@ fn check_format(format: &Format) -> Result<()> {
     let texts = [format.font_name.as_deref(), format.num_format.as_deref()];
     if texts.iter().flatten().any(|text| text.is_empty() || !text.chars().all(xml_legal)) {
         return Err(invalid("a font name or number format is empty, or holds characters XML cannot".into()));
+    }
+    if format.font_name.as_deref().is_some_and(|name| name.encode_utf16().count() > MAX_FONT_NAME_UTF16) {
+        return Err(invalid(format!("a font name holds more than {MAX_FONT_NAME_UTF16} characters")));
+    }
+    if format.num_format.as_deref().is_some_and(|code| code.encode_utf16().count() > MAX_NUM_FORMAT_UTF16) {
+        return Err(invalid(format!("a number format holds more than {MAX_NUM_FORMAT_UTF16} characters")));
     }
     Ok(())
 }
@@ -843,7 +854,7 @@ impl Workbook {
     /// The creation time recorded in the properties, as ISO 8601. The same workbook with a fixed time
     /// writes the same bytes. Without one, none is recorded.
     pub fn set_creation_time(&mut self, time: &str) -> Result<()> {
-        if !super::xlsx_options::time_in_range(time) || datetime::parse_datetime(time).is_none() {
+        if !time.get(..10).is_some_and(real_date) || !super::xlsx_options::time_in_range(time) || datetime::parse_datetime(time).is_none() {
             return Err(invalid(format!("creation time '{time}' is not an ISO 8601 date-time")));
         }
         self.creation_time = Some(time.to_string());
@@ -1387,11 +1398,12 @@ fn comments_xml(sheet: &Worksheet) -> String {
     format!("{XML_HEADER}<comments xmlns=\"{MAIN_NS}\"><authors>{authors}</authors><commentList>{list}</commentList></comments>\n")
 }
 
-/// The drawing that shows a sheet's comments as notes, which Excel requires.
-fn comments_vml(sheet: &Worksheet) -> String {
-    let mut out = String::from(
+/// The drawing that shows a sheet's comments as notes, which Excel requires. Each sheet numbers its
+/// shapes in its own block of 1024.
+fn comments_vml(sheet: &Worksheet, number: usize) -> String {
+    let mut out = format!(
         "<xml xmlns:v=\"urn:schemas-microsoft-com:vml\" xmlns:o=\"urn:schemas-microsoft-com:office:office\" xmlns:x=\"urn:schemas-microsoft-com:office:excel\">\
-         <o:shapelayout v:ext=\"edit\"><o:idmap v:ext=\"edit\" data=\"1\"/></o:shapelayout>\
+         <o:shapelayout v:ext=\"edit\"><o:idmap v:ext=\"edit\" data=\"{number}\"/></o:shapelayout>\
          <v:shapetype id=\"_x0000_t202\" coordsize=\"21600,21600\" o:spt=\"202\" path=\"m,l,21600r21600,l21600,xe\"><v:stroke joinstyle=\"miter\"/><v:path gradientshapeok=\"t\" o:connecttype=\"rect\"/></v:shapetype>\n",
     );
     let mut comments: Vec<&Comment> = sheet.comments.iter().collect();
@@ -1401,7 +1413,7 @@ fn comments_vml(sheet: &Worksheet) -> String {
         let _ = writeln!(
             out,
             "<v:shape id=\"_x0000_s{}\" type=\"#_x0000_t202\" style=\"position:absolute;margin-left:60pt;margin-top:2pt;width:108pt;height:60pt;z-index:{};visibility:hidden\" fillcolor=\"#ffffe1\" o:insetmode=\"auto\"><v:fill color2=\"#ffffe1\"/><v:shadow on=\"t\" color=\"black\" obscured=\"t\"/><v:path o:connecttype=\"none\"/><x:ClientData ObjectType=\"Note\"><x:MoveWithCells/><x:SizeWithCells/><x:AutoFill>False</x:AutoFill><x:Row>{}</x:Row><x:Column>{}</x:Column></x:ClientData></v:shape>",
-            1025 + i,
+            number * 1024 + 1 + i,
             i + 1,
             row - 1,
             column - 1
@@ -1478,7 +1490,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
                 "<Override PartName=\"/xl/comments{number}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\"/>"
             );
             parts.push((format!("xl/comments{number}.xml"), comments_xml(sheet)));
-            parts.push((format!("xl/drawings/vmlDrawing{number}.vml"), comments_vml(sheet)));
+            parts.push((format!("xl/drawings/vmlDrawing{number}.vml"), comments_vml(sheet, number)));
         }
     }
     if styles.xfs.len() > MAX_CELL_FORMATS {
@@ -1610,6 +1622,13 @@ mod tests {
         assert!(s.print_header(&"x".repeat(256)).is_err());
         assert!(s.print_footer("\u{1}").is_err());
         assert!(s.hyperlink("A1", "").is_err());
+        assert!(s.hyperlink("A1", "file:///etc/passwd").is_err());
+        assert!(s.hyperlink("A1", "javascript:alert(1)").is_err());
+        assert!(s.hyperlink("A1", "MAILTO:a@example.com").is_ok());
+        assert!(s.write("A1", 1.0, &Format::new().font("x".repeat(32))).is_err());
+        assert!(s.write("A1", 1.0, &Format::new().num_format("0".repeat(255))).is_err());
+        assert!(s.write("A1", 1.0, &Format::new().num_format("0".repeat(254))).is_ok());
+        s.cells.clear();
         assert!(s.comment("A1", "\u{1}", "me").is_err());
         assert_eq!(s.value("A1").unwrap(), None);
     }
@@ -1786,7 +1805,8 @@ mod tests {
         let rels = part(&bytes, "xl/worksheets/_rels/sheet1.xml.rels");
         assert!(rels.contains("Target=\"https://example.com/?a=1&amp;b=2\" TargetMode=\"External\""));
         assert!(part(&bytes, "xl/comments1.xml").contains("<author>me</author>"));
-        assert!(part(&bytes, "xl/drawings/vmlDrawing1.vml").contains("<x:Row>0</x:Row>"));
+        let drawing = part(&bytes, "xl/drawings/vmlDrawing1.vml");
+        assert!(drawing.contains("<x:Row>0</x:Row>") && drawing.contains("data=\"1\"") && drawing.contains("_x0000_s1025"));
         assert!(part(&bytes, "[Content_Types].xml").contains("/xl/comments1.xml"));
     }
 
@@ -1802,6 +1822,7 @@ mod tests {
         assert!(workbook.define_name("1a", "x").is_err());
         workbook.set_creation_time("2024-01-02T03:04:05Z").unwrap();
         assert!(workbook.set_creation_time("2024-01-02T99:04:05Z").is_err());
+        assert!(workbook.set_creation_time("+024-01-02T03:04:05Z").is_err());
         workbook.set_title("T & T");
         let bytes = workbook.to_bytes().unwrap();
         assert_eq!(bytes, workbook.to_bytes().unwrap());
