@@ -394,12 +394,16 @@ pub fn translate_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: Over
     // most of its last row or column): the window of the output requested from the source, as
     // `gdal_translate`'s VRT source requests it (`VRTSimpleSource::GetSrcDstWindow`), possibly
     // past the raster's edge by less than an output pixel.
+    // `s` and `d` are the window and its destination clamped to the raster (`fix_windows`): a
+    // window past the raster's edge maps onto part of the output. A level read alone (`-ovr`,
+    // including `NONE`) scales and clamps its request to the level again (`fixed_request`), so a
+    // window past its edge is translated from the level read whole.
     let request = geom.rects.and_then(|(s, d)| {
-        if s != [x, y, xs, ys] {
+        if fixed.is_some() && s != [x, y, xs, ys] {
             return None;
         }
         if d == [0.0, 0.0, ow as f64, oh as f64] {
-            return Some((x, y, xs, ys));
+            return Some((s[0], s[1], s[2], s[3]));
         }
         // The output's pixels the destination reaches into, as GDAL counts them (to within
         // 0.001): all of them, the window then requested past its end in proportion.

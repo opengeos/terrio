@@ -83,6 +83,20 @@ fn overview_selections_are_checked() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("SOME"));
 }
 
+#[test]
+fn windows_past_the_edge_are_read_by_window() {
+    // A window past the right edge by less than an output pixel is requested past the edge in
+    // proportion, as gdal_translate's VRT source requests it (GDAL 3.12.1 writes these values),
+    // rather than translated from the raster read whole.
+    let dir = tempfile::tempdir().unwrap();
+    let mut src = terrio::open_raster_lazy(fixture().to_str().unwrap()).unwrap();
+    for (name, resampling) in [("near", Resampling::Nearest), ("bilinear", Resampling::Bilinear), ("average", Resampling::Average)] {
+        let out = translate(dir.path(), &["--srcwin", "10", "5", "54.3", "20", "--outsize", "13", "9", "-r", name]);
+        let o = ResampledReadOptions { window: Some((10.0, 5.0, 54.3, 20.0)), size: (13, 9), resampling, ..Default::default() };
+        assert_eq!(bytes(&out.raster.data), bytes(&src.read_resampled(&o).unwrap().raster.data), "{name}");
+    }
+}
+
 #[cfg(feature = "gdal")]
 #[test]
 fn gdal_named_inputs_are_translated_whole() {
