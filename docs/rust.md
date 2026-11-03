@@ -296,7 +296,11 @@ nodata override and optional Z coordinates), returning a line layer with IDs and
 (statistics, pixel inclusion, optional `dst_srs` and `decimal_places`); the result retains the
 source features and adds statistic fields. Output reprojection occurs after analysis, and
 rounding (0–15 decimal places, ties away from zero after binary64 scaling) leaves source
-attributes and counts intact. Zonal statistics reuse a cropped membership mask across
+attributes and integer counts intact. `ZonalOptions::fractional` enables coverage fractions;
+`ZonalOptions::weights` accepts a borrowed `ZonalWeight` raster/band for weighted statistics.
+Weight grids must match every value raster. Fractional counts are Real and are rounded
+when requested. See [the formulas and scope](cli.md#fractional-coverage-and-weighting-rasters).
+Zonal statistics reuse a cropped membership mask across
 bands of the same raster.
 `ops::sql::query` runs the [documented SQL subset](sql.md), including computed columns,
 DISTINCT, grouped summaries, attribute joins and the documented spatial functions,

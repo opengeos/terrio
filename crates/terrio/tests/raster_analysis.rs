@@ -378,3 +378,124 @@ fn zonal_output_controls_leave_source_and_analytical_grid_unchanged() {
     assert_eq!(field(&zonal_stats(&l, &inputs, &Default::default()).unwrap(), 0, "v_mean"), &V::Float(1.625));
     assert!(zonal_stats(&l, &inputs, &ZonalOptions { decimal_places: Some(16), ..Default::default() }).is_err());
 }
+
+#[test]
+fn fractional_zonal_coverage_and_weighted_statistics() {
+    use terrio::ops::zonal::ZonalWeight;
+    let r = raster(2, 1, 1, &[10., 30.], None);
+    let w = raster(2, 1, 1, &[2., 4.], None);
+    let l = zones(vec![Some(rectangle(0.5, 0., 2., 1.)), None, Some(rectangle(9., 9., 10., 10.))]);
+    let inputs = [ZonalInput { prefix: "v".into(), raster: &r, band: 1 }];
+    let o = ZonalOptions {
+        fractional: true,
+        weights: Some(ZonalWeight { raster: &w, band: 1 }),
+        stats: vec![S::Count, S::Min, S::Max, S::Mean, S::Sum, S::StdDev, S::Median, S::WeightedMean, S::WeightedSum, S::WeightedStdDev],
+        ..Default::default()
+    };
+    let out = zonal_stats(&l, &inputs, &o).unwrap();
+    for (name, expected) in [
+        ("count", 1.5),
+        ("min", 10.),
+        ("max", 30.),
+        ("sum", 35.),
+        ("median", 20.),
+        ("mean", 35. / 1.5),
+        ("stddev", (800f64 / 9.).sqrt()),
+        ("weighted_mean", 26.),
+        ("weighted_sum", 130.),
+        ("weighted_stddev", 8.),
+    ] {
+        let V::Float(got) = field(&out, 0, &format!("v_{name}")) else { panic!("expected float {name}") };
+        assert!((got - expected).abs() < 1e-10, "{name}: {got} != {expected}");
+    }
+    for row in [1, 2] {
+        assert_eq!(field(&out, row, "v_count"), &V::Float(0.));
+        assert_eq!(field(&out, row, "v_weighted_sum"), &V::Null);
+    }
+    assert_eq!(out.features[0].geometry, l.features[0].geometry);
+    assert_eq!(out.features[0].fid, l.features[0].fid);
+    assert!(zonal_stats(&l, &inputs, &ZonalOptions { all_touched: true, ..o.clone() }).is_err());
+    assert!(zonal_stats(&l, &inputs, &ZonalOptions { weights: None, ..o }).is_err());
+}
+
+#[test]
+fn fractional_zonal_triangle_holes_and_rotated_grids() {
+    let mut r = raster(2, 1, 1, &[10., 30.], None);
+    let triangle = G::polygon(vec![Coord::xy(0., 0.), Coord::xy(2., 0.), Coord::xy(0., 1.), Coord::xy(0., 0.)], vec![]);
+    let o = ZonalOptions { fractional: true, ..Default::default() };
+    let check = |r: &RasterDataset, g| {
+        let out = zonal_stats(&zones(vec![Some(g)]), &[ZonalInput { prefix: "v".into(), raster: r, band: 1 }], &o).unwrap();
+        assert_eq!(field(&out, 0, "v_count"), &V::Float(1.));
+        assert_eq!(field(&out, 0, "v_sum"), &V::Float(15.));
+    };
+    check(&r, triangle.clone());
+    let gt = [100., 10., 2., 200., 1., 10.];
+    r.set_geo_transform(gt);
+    let mut mapped = triangle;
+    terrio::vector::map_coords(&mut mapped, &mut |c| {
+        let row = 1. - c.y;
+        (c.x, c.y) = (gt[0] + c.x * gt[1] + row * gt[2], gt[3] + c.x * gt[4] + row * gt[5]);
+        Ok(())
+    })
+    .unwrap();
+    check(&r, mapped);
+    let r = raster(2, 2, 1, &[1.; 4], None);
+    let G::Polygon { exterior, .. } = rectangle(0., 0., 2., 2.) else { unreachable!() };
+    let G::Polygon { exterior: hole, .. } = rectangle(0.5, 0.5, 1.5, 1.5) else { unreachable!() };
+    let l = zones(vec![Some(G::Polygon { exterior, interiors: vec![hole] })]);
+    let out = zonal_stats(&l, &[ZonalInput { prefix: "v".into(), raster: &r, band: 1 }], &o).unwrap();
+    assert_eq!(field(&out, 0, "v_count"), &V::Float(3.));
+}
+
+#[test]
+fn zonal_weights_missing_zero_negative_and_grid_validation() {
+    use terrio::ops::zonal::ZonalWeight;
+    let r = raster(2, 1, 1, &[10., 30.], None);
+    let mut w = raster(2, 1, 1, &[0., 0.], None);
+    let l = zones(vec![Some(rectangle(0., 0., 2., 1.))]);
+    let inputs = [ZonalInput { prefix: "v".into(), raster: &r, band: 1 }];
+    let run = |w: &RasterDataset| {
+        zonal_stats(
+            &l,
+            &inputs,
+            &ZonalOptions {
+                weights: Some(ZonalWeight { raster: w, band: 1 }),
+                stats: vec![S::Count, S::Mean, S::WeightedMean, S::WeightedSum],
+                ..Default::default()
+            },
+        )
+    };
+    let out = run(&w).unwrap();
+    assert_eq!(field(&out, 0, "v_count"), &V::Integer(2));
+    assert_eq!(field(&out, 0, "v_weighted_sum"), &V::Float(0.));
+    assert_eq!(field(&out, 0, "v_weighted_mean"), &V::Null);
+    w.raster.set(0, 0, 1, f64::NAN).unwrap();
+    let out = run(&w).unwrap();
+    assert_eq!(field(&out, 0, "v_weighted_sum"), &V::Null);
+    assert_eq!(field(&out, 0, "v_mean"), &V::Float(20.));
+    w.raster.set(0, 0, 1, -1.).unwrap();
+    assert!(run(&w).is_err());
+    w.raster.set(0, 0, 1, 1.).unwrap();
+    w.set_geo_transform([1., 1., 0., 1., 0., -1.]);
+    assert!(run(&w).is_err());
+}
+
+#[test]
+fn zonal_uses_selected_band_nodata_and_rejects_weight_overflow() {
+    use terrio::ops::zonal::ZonalWeight;
+    let mut r = raster(2, 1, 2, &[1., 2., 10., -99.], None);
+    r.band_nodata = vec![None, Some(-99.)];
+    let l = zones(vec![Some(rectangle(0., 0., 2., 1.))]);
+    let inputs = [ZonalInput { prefix: "v".into(), raster: &r, band: 2 }];
+    let out = zonal_stats(&l, &inputs, &ZonalOptions { fractional: true, ..Default::default() }).unwrap();
+    assert_eq!(field(&out, 0, "v_count"), &V::Float(1.));
+    assert_eq!(field(&out, 0, "v_mean"), &V::Float(10.));
+    let w = raster(2, 1, 1, &[f64::MAX, 1.], None);
+    let error = zonal_stats(
+        &l,
+        &inputs,
+        &ZonalOptions { stats: vec![S::WeightedSum], weights: Some(ZonalWeight { raster: &w, band: 1 }), ..Default::default() },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("overflow"));
+}

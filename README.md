@@ -405,6 +405,7 @@ permit their redistribution with this attribution; its ESRI table (`esri.tsv.zst
 [projection engine data](https://github.com/Esri/projection-engine-db-doc) (Apache-2.0). The
 tables were produced with [PROJ](https://proj.org) and [GDAL](https://gdal.org). The projection
 formulas in `crates/terrio-crs/src/` are ported from PROJ (MIT licence), and the cloth simulation
-filter from CSF (Apache-2.0). [`NOTICE`](NOTICE) holds the notices of the code and data terrio
+filter from CSF (Apache-2.0). Coverage-weighted medians adapt exactextract
+(Apache-2.0). [`NOTICE`](NOTICE) holds the notices of the code and data terrio
 adapts, and [`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md) the licenses of the Rust crates
 it is built with.

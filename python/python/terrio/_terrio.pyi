@@ -2460,6 +2460,9 @@ def zonal_stats(
     t_srs: str | None = None,
     decimal_places: int | None = None,
     layer: str | None = None,
+    fractional: bool = False,
+    weights: str | os.PathLike[str] | Raster | None = None,
+    weight_band: int = 1,
 ) -> Layer:
     """Summarize bands for polygon zones; materializes source raster pixels.
 

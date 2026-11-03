@@ -2340,6 +2340,44 @@ each zone's intersecting window and are shared by requested bands of the same ra
 needs extra memory for a zone's contributing values. Integers above 2⁵³ can lose precision.
 Complex bands and geolocation arrays are unsupported. Standard vector input/output options apply.
 
+### Fractional coverage and weighting rasters
+
+```sh
+terrio zonal-stats zones.gpkg output.gpkg --raster dem.tif --fractional \
+  --weights population.tif --weight-band 1 \
+  --stats count,mean,sum,stddev,median,weighted_mean,weighted_sum,weighted_stddev
+```
+
+`--fractional` computes the polygon/cell intersection area in affine pixel coordinates:
+coverage `c` ranges from 0 to 1, holes are subtracted, and boundary-only contact contributes
+zero. It is incompatible with `--all-touched`. Count becomes a Real field equal to `sum(c)`;
+sum is `sum(value*c)`, mean divides that sum by count, and population standard deviation
+uses coverage weights. Min/max use any positive-coverage valid pixel. Median uses
+exactextract's interpolated coverage-weighted histogram. Integer center/all-touched counts
+and the existing unweighted defaults are retained.
+
+`--weights` supplies a second raster for `weighted_mean`, `weighted_sum` and
+`weighted_stddev` (`weighted_stdev` is an accepted alias). These statistics use weight
+`c * weighting_value`; other statistics ignore the weighting raster. Without `--fractional`,
+`c` is the existing binary center/all-touched membership. Select weighted statistics
+explicitly in `--stats`. The weighting band defaults to 1. Every value raster must have
+exactly the same dimensions, affine grid and equivalent CRS as the weighting raster;
+align differing grids before analysis. Finite negative contributing weights are errors.
+Zero weights contribute nothing. A nodata/nonfinite weight under a valid contributing
+value makes that zone's weighted statistics null, without changing its unweighted statistics.
+All-zero weights give weighted sum 0 and null weighted mean/standard deviation.
+
+Values use each selected band's nodata; nonfinite values are excluded. Empty zones retain
+count zero and null other statistics, including sums (exactextract/GDAL return zero sums
+for empty zones). All statistics use binary64 arithmetic; overflow in weighted accumulation is an error. Explicit decimal rounding applies
+to fractional counts as well as other new Real fields; integer counts and source attributes
+are unchanged. Valid polygons/multipolygons are required for fractional overlay. Coverage is
+planar in the raster grid, including rotated grids; geographic pixels are not weighted by
+spherical area. Raster pixels are materialized as before, and dataset masks are not retained
+by this eager dataset API. Numeric nodata remains available; use a nodata/NaN materialized
+raster when mask-band validity must affect this operation.
+
+
 ## Vector datasets
 
 These commands are GDAL 3.13's `gdal vector concat`, `partition`, `set-field-type`,

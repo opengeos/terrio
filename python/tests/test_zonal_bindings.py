@@ -222,3 +222,40 @@ def test_unsigned_decimal_precision_reports_conversion_error(precision):
 def test_raw_bytes_are_not_a_path_or_raster_input():
     with pytest.raises(ValueError, match="expected a path or a terrio.Raster"):
         terrio.mosaic(b"not-a-raster-upload")
+
+
+@pytest.mark.parametrize("kind", ["memory", "path", "lazy"])
+def test_fractional_zonal_weight_raster(kind, tmp_path):
+    """Coverage and a second raster affect only their documented statistics."""
+    gt = (0, 1, 0, 1, 0, -1)
+    values = terrio.Raster.from_array(np.array([[10.0, 30.0]]), gt, crs="EPSG:4326")
+    weights = terrio.Raster.from_array(np.array([[2.0, 4.0]]), gt, crs="EPSG:4326")
+    if kind != "memory":
+        path = str(tmp_path / "weights.tif")
+        weights.write(path)
+        weights = path if kind == "path" else terrio.open_raster(path, lazy=True)
+    zones = terrio.Layer.from_geojson(
+        {"type": "Polygon", "coordinates": [[[0.5, 0], [2, 0], [2, 1], [0.5, 1], [0.5, 0]]]},
+        crs="EPSG:4326",
+    )
+    result = terrio.zonal_stats(
+        zones,
+        values,
+        fractional=True,
+        weights=weights,
+        stats=["count", "sum", "median", "weighted_mean", "weighted_sum", "weighted_stddev"],
+    ).to_geojson()["features"][0]["properties"]
+    expected = {
+        "count": 1.5,
+        "sum": 35.0,
+        "median": 20.0,
+        "weighted_mean": 26.0,
+        "weighted_sum": 130.0,
+        "weighted_stddev": 8.0,
+    }
+    for stat, value in expected.items():
+        assert result[f"raster1_b1_{stat}"] == pytest.approx(value)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        terrio.zonal_stats(zones, values, fractional=True, all_touched=True)
+    with pytest.raises(ValueError, match="require a weighting raster"):
+        terrio.zonal_stats(zones, values, stats=["weighted_mean"])

@@ -143,12 +143,23 @@ struct ZonalOptions {
     prefixes: Option<Vec<String>>,
     stats: Option<Vec<String>>,
     all_touched: bool,
+    fractional: bool,
+    weight_band: usize,
     t_srs: Option<String>,
     decimal_places: Option<u8>,
 }
 impl Default for ZonalOptions {
     fn default() -> Self {
-        Self { bands: vec![1], prefixes: None, stats: None, all_touched: false, t_srs: None, decimal_places: None }
+        Self {
+            bands: vec![1],
+            prefixes: None,
+            stats: None,
+            all_touched: false,
+            fractional: false,
+            weight_band: 1,
+            t_srs: None,
+            decimal_places: None,
+        }
     }
 }
 /// Statistics for each polygon and raster band. Source pixels are materialized.
@@ -163,11 +174,15 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
             return Err(JsError::new("decimalPlaces must be a finite integer"));
         }
     }
-    let a: ZonalOptions = parse_options(&options)?;
+    let (rest, values) = split_options(&options, &["weights"])?;
+    let weights = values[0].as_ref().map(input_raster).transpose()?;
+    let a: ZonalOptions = parse_options(&rest)?;
     if a.prefixes.as_ref().is_some_and(|p| p.iter().any(|p| p.trim().is_empty())) {
         return Err(JsError::new("raster field prefixes cannot be empty"));
     }
     let options = terrio::ops::zonal::ZonalOptions {
+        fractional: a.fractional,
+        weights: weights.as_ref().map(|raster| terrio::ops::zonal::ZonalWeight { raster, band: a.weight_band }),
         stats: a
             .stats
             .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())

@@ -2179,3 +2179,38 @@ WFS identification without `--deep` also stays header-only: the regression serve
 a capabilities document over 1 MiB and records one request consuming 16,384 bytes.
 An explicit deep fallback may read the complete capabilities metadata when its
 root cannot be recognized from that prefix.
+
+
+### Fractional and weighted zonal statistics
+
+```sh
+python scripts/conformance.py ../terrio-data --only fractional-zonal --strict
+```
+
+Requires current Python bindings, GDAL 3.13.3, exactextract 0.3.0, NumPy and Shapely;
+Node/WASM is included when `js/pkg-node/terrio.js` is built. Six real-data cases
+(USGS DEM and NLCD, each with coverage-only, positive weights and missing weights)
+run through CLI, Python and optional Node/WASM. Zones include fractional edges,
+holes, overlaps and multipolygons. GDAL and exactextract must first agree within
+relative 2e-7 or absolute 1e-7; native results use the same allowance. Reference
+coverage is Float32, while native overlay areas are binary64. Source geometry,
+attributes, feature IDs, CRS, Real output types and null weighted statistics are
+checked separately and exactly. These are numeric comparisons within tolerance,
+not pixel-identical claims.
+
+Median uses exactextract on the same stored samples promoted to Float64, so its
+integer/Float32 quantile cast does not truncate the fractional result. GDAL 3.13.3
+advertises median but rejects it. Native empty zones keep null sums, while the
+references return zero sums; dedicated native regressions retain that documented
+policy. Weight rasters currently require identical grids and CRSs. The eager
+operation retains its existing full-raster materialization; fractional masks are
+cropped per zone and shared across bands, and binary membership masks retain their
+original Byte storage.
+
+A local optimized run passed all 18 comparisons within the stated tolerance. Maximum
+absolute errors were 0.00447 for coverage-only USGS statistics and 12.12 for sums
+weighted by the raw elevation-derived weights (sums about 1.16e10); NLCD maxima
+were 3.99e-5 and 0.00107, respectively.
+
+The weighted median port is attributed in its SPDX header and both NOTICE files;
+`reuse lint` checks the complete repository against REUSE 3.3.

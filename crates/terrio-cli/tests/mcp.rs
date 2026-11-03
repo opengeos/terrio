@@ -716,3 +716,42 @@ fn two_point_oblique_mercator_coordinates_and_refusal_through_mcp() {
     assert!((values[1] - -5279802.3632845115).abs() < 0.001);
     assert_eq!(replies[&2]["result"]["isError"], true);
 }
+
+#[test]
+fn zonal_tool_computes_fractional_weighted_statistics() {
+    let dir = tempfile::tempdir().unwrap();
+    let zones = dir.path().join("zones.geojson");
+    let input = dir.path().join("values.tif");
+    let weights = dir.path().join("weights.tif");
+    let output = dir.path().join("statistics.geojson");
+    std::fs::write(&zones, r#"{"type":"Polygon","coordinates":[[[0.5,0],[2,0],[2,1],[0.5,1],[0.5,0]]]}"#).unwrap();
+    for (path, data) in [(&input, vec![10., 30.]), (&weights, vec![2., 4.])] {
+        let cfg = terrio::RasterConfig { cols: 2, rows: 1, cell_size: 1., data_type: terrio::DataType::F64, ..Default::default() };
+        let mut ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, data).unwrap(), false);
+        ds.raster.crs.epsg = Some(4326);
+        ds.set_geo_transform([0., 1., 0., 1., 0., -1.]);
+        terrio::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+    }
+    let replies = session(&[call(
+        1,
+        "zonal-stats",
+        &[
+            zones.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "--raster",
+            input.to_str().unwrap(),
+            "--weights",
+            weights.to_str().unwrap(),
+            "--fractional",
+            "--prefix",
+            "v",
+            "--stats",
+            "count,weighted_mean,weighted_sum",
+        ],
+    )]);
+    assert_eq!(replies[&1]["result"]["isError"], false, "{}", replies[&1]);
+    let value: Value = serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+    assert_eq!(value["features"][0]["properties"]["v_b1_count"], 1.5);
+    assert_eq!(value["features"][0]["properties"]["v_b1_weighted_mean"], 26.);
+    assert_eq!(value["features"][0]["properties"]["v_b1_weighted_sum"], 130.);
+}

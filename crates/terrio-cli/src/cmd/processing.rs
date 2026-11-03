@@ -333,11 +333,23 @@ pub struct ZonalArgs {
     /// Include every pixel touched by each polygon, instead of pixels whose centres are inside.
     #[arg(long)]
     all_touched: bool,
+    /// Weight pixels by the polygon/cell intersection fraction. Incompatible with --all-touched.
+    #[arg(long, conflicts_with = "all_touched")]
+    fractional: bool,
+    /// Weighting raster, aligned to every input grid (for weighted_mean, weighted_sum, weighted_stddev).
+    #[arg(long)]
+    weights: Option<String>,
+    /// Weighting band, numbered from 1.
+    #[arg(long, default_value_t = 1)]
+    weight_band: usize,
 }
 
 pub fn zonal(a: ZonalArgs) -> Result<()> {
-    use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions, zonal_stats};
+    use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions, ZonalWeight, zonal_stats};
+    let weights = a.weights.as_deref().map(terrio::open_raster).transpose()?;
     let options = ZonalOptions {
+        fractional: a.fractional,
+        weights: weights.as_ref().map(|raster| ZonalWeight { raster, band: a.weight_band }),
         stats: a.stats.iter().map(|s| Statistic::parse(s)).collect::<Result<_>>()?,
         all_touched: a.all_touched,
         dst_srs: a.sources.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose()?,

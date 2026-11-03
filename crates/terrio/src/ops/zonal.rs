@@ -2,6 +2,9 @@
 //! zones can include the same pixel. Membership uses the GDAL-compatible rasterizer in pixel
 //! coordinates, with a cropped window per zone and one mask shared by bands of the same raster.
 
+#[path = "zonal_fractional.rs"]
+mod fractional;
+
 use super::rasterize::{Grid, RasterizeOptions, rasterize};
 use crate::crs::{SpatialRef, Transformer};
 use crate::{DataType, Error, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, RasterDataset, Result};
@@ -23,10 +26,16 @@ pub enum Statistic {
     StdDev,
     /// Median; the mean of the two middle values for an even count.
     Median,
+    /// Mean weighted by coverage and a second raster.
+    WeightedMean,
+    /// Sum weighted by coverage and a second raster.
+    WeightedSum,
+    /// Population standard deviation weighted by coverage and a second raster.
+    WeightedStdDev,
 }
 
 impl Statistic {
-    /// Parses `count`, `min`, `max`, `mean`, `sum`, `stddev` (`std`, `stdev`) or `median`.
+    /// Parses count/min/max/mean/sum/stddev/median or weighted_mean/weighted_sum/weighted_stddev.
     pub fn parse(name: &str) -> Result<Self> {
         Ok(match name.to_ascii_lowercase().as_str() {
             "count" => Self::Count,
@@ -36,8 +45,15 @@ impl Statistic {
             "sum" => Self::Sum,
             "stddev" | "std" | "stdev" => Self::StdDev,
             "median" => Self::Median,
+            "weighted_mean" => Self::WeightedMean,
+            "weighted_sum" => Self::WeightedSum,
+            "weighted_stddev" | "weighted_stdev" => Self::WeightedStdDev,
             _ => return Err(Error::InvalidArgument(format!("unknown zonal statistic '{name}'"))),
         })
+    }
+
+    fn weighted(self) -> bool {
+        matches!(self, Self::WeightedMean | Self::WeightedSum | Self::WeightedStdDev)
     }
 
     /// The suffix used in output field names.
@@ -50,6 +66,9 @@ impl Statistic {
             Self::Sum => "sum",
             Self::StdDev => "stddev",
             Self::Median => "median",
+            Self::WeightedMean => "weighted_mean",
+            Self::WeightedSum => "weighted_sum",
+            Self::WeightedStdDev => "weighted_stddev",
         }
     }
 }
@@ -64,9 +83,22 @@ pub struct ZonalInput<'a> {
     pub band: usize,
 }
 
+/// A weighting raster band. It must have the same grid and CRS as every value raster.
+#[derive(Debug, Clone, Copy)]
+pub struct ZonalWeight<'a> {
+    /// Nonnegative weights; nodata/nonfinite weights make weighted statistics null.
+    pub raster: &'a RasterDataset,
+    /// Band, numbered from 1.
+    pub band: usize,
+}
+
 /// Pixel inclusion and statistics for [`zonal_stats`].
 #[derive(Debug, Clone)]
-pub struct ZonalOptions {
+pub struct ZonalOptions<'a> {
+    /// Use exact polygon/cell intersection areas in pixel coordinates, rather than a binary mask.
+    pub fractional: bool,
+    /// Optional second raster for weighted_mean, weighted_sum and weighted_stddev.
+    pub weights: Option<ZonalWeight<'a>>,
     /// Statistics to calculate, in output order. Default: count, min, max, mean, sum, stddev.
     pub stats: Vec<Statistic>,
     /// Include every pixel touched by the polygon, instead of pixels whose centres are inside.
@@ -74,15 +106,17 @@ pub struct ZonalOptions {
     /// Reproject output geometries after computing statistics on the original zones.
     pub dst_srs: Option<SpatialRef>,
     /// Round only newly computed floating statistics to 0–15 decimal places, ties away from zero.
-    /// Counts and source attributes are unchanged. Trailing zero display is format-dependent.
+    /// Integer counts and source attributes are unchanged. Trailing zero display is format-dependent.
     pub decimal_places: Option<u8>,
 }
 
-impl Default for ZonalOptions {
+impl Default for ZonalOptions<'_> {
     fn default() -> Self {
         Self {
             stats: vec![Statistic::Count, Statistic::Min, Statistic::Max, Statistic::Mean, Statistic::Sum, Statistic::StdDev],
             all_touched: false,
+            fractional: false,
+            weights: None,
             dst_srs: None,
             decimal_places: None,
         }
@@ -96,7 +130,7 @@ impl Default for ZonalOptions {
 /// independently. Statistics use f64 values; integers above 2^53 can lose precision.
 ///
 /// `dst_srs` reprojects output geometries after analysis; `decimal_places` rounds only newly
-/// computed floating statistics. Both are optional and leave counts and source attributes intact.
+/// computed floating statistics. Both are optional and leave integer counts and source attributes intact.
 /// Raster grids may be rotated or south-up and use different CRSs. Each boundary is reprojected
 /// into each raster's CRS before rasterization; a boundary transformation failure is an error.
 /// Missing CRSs are accepted only when both zone and raster CRS are missing. Curved edges are
@@ -111,8 +145,18 @@ impl Default for ZonalOptions {
 /// terrio::write_vector(&[stats], "statistics.gpkg", &Default::default())?;
 /// # Ok::<(), terrio::Error>(())
 /// ```
-pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOptions) -> Result<Layer> {
+pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOptions<'_>) -> Result<Layer> {
     super::sample::validate_decimal_places(options.decimal_places)?;
+    if options.fractional && options.all_touched {
+        return Err(Error::InvalidArgument("fractional coverage and all_touched are mutually exclusive".into()));
+    }
+    if options.stats.iter().any(|s| s.weighted()) && options.weights.is_none() {
+        return Err(Error::InvalidArgument("weighted statistics require a weighting raster".into()));
+    }
+    if let Some(weight) = options.weights {
+        super::sample::check_raster(weight.raster)?;
+        super::sample::check_band(weight.raster, weight.band)?;
+    }
     if inputs.is_empty() || options.stats.is_empty() {
         return Err(Error::InvalidArgument("zonal statistics needs at least one raster band and one statistic".into()));
     }
@@ -138,6 +182,21 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
     for (i, input) in inputs.iter().enumerate() {
         super::sample::check_raster(input.raster)?;
         super::sample::check_band(input.raster, input.band)?;
+        if let Some(weight) = options.weights {
+            let r = &input.raster.raster;
+            let w = &weight.raster.raster;
+            let src = input.raster.crs();
+            let dst = weight.raster.crs();
+            if r.cols != w.cols
+                || r.rows != w.rows
+                || input.raster.geo_transform() != weight.raster.geo_transform()
+                || !(src.is_unknown() && dst.is_unknown() || src.same_as(&dst))
+            {
+                return Err(Error::InvalidArgument(
+                    "weighting and value rasters must have identical grids and CRS; align them before analysis".into(),
+                ));
+            }
+        }
         if input.prefix.trim().is_empty() {
             return Err(Error::InvalidArgument("zonal field prefixes cannot be empty".into()));
         }
@@ -159,7 +218,10 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
         for &stat in &options.stats {
             let name = super::geometry::unique_field(&out, &format!("{}_{}", input.prefix, stat.name()));
             indices.push(out.schema.len());
-            out.schema.add_field(FieldDef::new(name, if stat == Statistic::Count { FieldType::Integer } else { FieldType::Float }));
+            out.schema.add_field(FieldDef::new(
+                name,
+                if stat == Statistic::Count && !options.fractional { FieldType::Integer } else { FieldType::Float },
+            ));
         }
         columns.push(indices);
     }
@@ -168,38 +230,82 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
         f.attributes.resize(out.schema.len(), FieldValue::Null);
         for group in &groups {
             let mask = match &f.geometry {
-                Some(g) if !g.is_empty() => {
-                    zone_mask(g, group, options.all_touched).map_err(|e| Error::InvalidArgument(format!("zone {}: {e}", f.fid)))?
-                }
+                Some(g) if !g.is_empty() => zone_mask(g, group, options.all_touched, options.fractional)
+                    .map_err(|e| Error::InvalidArgument(format!("zone {}: {e}", f.fid)))?,
                 _ => None,
             };
             let r = &group.raster.raster;
-            let nodata = group.raster.nodata();
             for &(input, band) in &group.entries {
+                let nodata = group.raster.band_nodata(band + 1);
                 let mut values = Summary::default();
+                let mut weighted = Summary::default();
+                let mut invalid_weight = false;
                 let mut ordered = Vec::new();
                 if let Some(mask) = &mask {
                     for row in 0..mask.rows {
                         for col in 0..mask.cols {
-                            if mask.pixels[row * mask.cols + col] == 0 {
+                            let coverage = mask.pixels.get(row * mask.cols + col);
+                            if coverage == 0.0 {
                                 continue;
                             }
                             let index = band * r.cols * r.rows + (row + mask.row) * r.cols + col + mask.col;
                             let v = r.data.get_f64(index);
                             if v.is_finite() && crate::histogram::is_valid(v, nodata, r.data_type) {
-                                values.add(v);
+                                values.add(v, coverage);
+                                if let Some(weight) = options.weights {
+                                    let wi = (weight.band - 1) * r.cols * r.rows + (row + mask.row) * r.cols + col + mask.col;
+                                    let w = weight.raster.raster.data.get_f64(wi);
+                                    if !w.is_finite()
+                                        || !crate::histogram::is_valid(
+                                            w,
+                                            weight.raster.band_nodata(weight.band),
+                                            weight.raster.raster.data_type,
+                                        )
+                                    {
+                                        invalid_weight = true;
+                                    } else if w < 0.0 {
+                                        return Err(Error::InvalidArgument(format!("zone {} contains a negative weight", f.fid)));
+                                    } else if w > 0.0 {
+                                        let contribution = coverage * w;
+                                        if contribution > 0.0 {
+                                            weighted.add(v, contribution);
+                                            if ![weighted.weight, weighted.sum, weighted.mean, weighted.m2].iter().all(|v| v.is_finite()) {
+                                                return Err(Error::InvalidArgument(format!(
+                                                    "zone {} weighted statistics overflow binary64 arithmetic",
+                                                    f.fid
+                                                )));
+                                            }
+                                        }
+                                    }
+                                }
                                 if median {
-                                    ordered.push(v);
+                                    ordered.push((v, coverage));
                                 }
                             }
                         }
                     }
                 }
                 if median {
-                    ordered.sort_by(f64::total_cmp);
+                    ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
                 }
                 for (&column, &stat) in columns[input].iter().zip(&options.stats) {
-                    f.attributes[column] = values.stat(stat, &ordered);
+                    f.attributes[column] = if stat.weighted() {
+                        if invalid_weight || values.count == 0 {
+                            FieldValue::Null
+                        } else if stat == Statistic::WeightedSum {
+                            FieldValue::Float(weighted.sum)
+                        } else if weighted.weight == 0.0 {
+                            FieldValue::Null
+                        } else {
+                            FieldValue::Float(if stat == Statistic::WeightedMean {
+                                weighted.mean
+                            } else {
+                                (weighted.m2 / weighted.weight).max(0.0).sqrt()
+                            })
+                        }
+                    } else {
+                        values.stat(stat, &ordered, options.fractional)
+                    };
                 }
             }
         }
@@ -218,10 +324,24 @@ struct Mask {
     row: usize,
     cols: usize,
     rows: usize,
-    pixels: Vec<u8>,
+    pixels: Coverage,
 }
 
-fn zone_mask(geometry: &Geometry, group: &Group<'_>, all_touched: bool) -> Result<Option<Mask>> {
+enum Coverage {
+    Binary(Vec<u8>),
+    Fractional(Vec<f64>),
+}
+
+impl Coverage {
+    fn get(&self, i: usize) -> f64 {
+        match self {
+            Self::Binary(pixels) => f64::from(pixels[i]),
+            Self::Fractional(pixels) => pixels[i],
+        }
+    }
+}
+
+fn zone_mask(geometry: &Geometry, group: &Group<'_>, all_touched: bool, fractional: bool) -> Result<Option<Mask>> {
     let inv =
         super::invert_gt(&group.raster.geo_transform()).ok_or_else(|| Error::InvalidArgument("cannot invert the raster grid".into()))?;
     let mut geometry = geometry.clone();
@@ -248,6 +368,11 @@ fn zone_mask(geometry: &Geometry, group: &Group<'_>, all_touched: bool) -> Resul
         return Ok(None);
     }
     let (cols, rows) = (end_col - col, end_row - row);
+    if fractional {
+        super::topology::require_valid(&geometry, 0)?;
+        let pixels = fractional::coverage(&geometry, col, row, cols, rows);
+        return Ok(Some(Mask { col, row, cols, rows, pixels: Coverage::Fractional(pixels) }));
+    }
     let mut layer = Layer::new("zone");
     layer.features.push(Feature { fid: 1, geometry: Some(geometry), attributes: Vec::new() });
     let options = RasterizeOptions {
@@ -259,12 +384,13 @@ fn zone_mask(geometry: &Geometry, group: &Group<'_>, all_touched: bool) -> Resul
     };
     let mask = rasterize(&[layer], &options)?;
     let crate::raster::RasterData::U8(pixels) = mask.raster.data else { unreachable!() };
-    Ok(Some(Mask { col, row, cols, rows, pixels }))
+    Ok(Some(Mask { col, row, cols, rows, pixels: Coverage::Binary(pixels) }))
 }
 
 #[derive(Default)]
 struct Summary {
     count: usize,
+    weight: f64,
     sum: f64,
     mean: f64,
     m2: f64,
@@ -273,23 +399,24 @@ struct Summary {
 }
 
 impl Summary {
-    fn add(&mut self, value: f64) {
+    fn add(&mut self, value: f64, weight: f64) {
         if self.count == 0 {
             self.min = value;
             self.max = value;
         }
         self.count += 1;
-        self.sum += value;
+        self.weight += weight;
+        self.sum += value * weight;
         let delta = value - self.mean;
-        self.mean += delta / self.count as f64;
-        self.m2 += delta * (value - self.mean);
+        self.mean += if weight == 1.0 { delta / self.weight } else { (weight / self.weight) * delta };
+        self.m2 += weight * (delta * (value - self.mean));
         self.min = self.min.min(value);
         self.max = self.max.max(value);
     }
 
-    fn stat(&self, stat: Statistic, sorted: &[f64]) -> FieldValue {
+    fn stat(&self, stat: Statistic, sorted: &[(f64, f64)], fractional: bool) -> FieldValue {
         if stat == Statistic::Count {
-            return FieldValue::Integer(self.count as i64);
+            return if fractional { FieldValue::Float(self.weight) } else { FieldValue::Integer(self.count as i64) };
         }
         if self.count == 0 {
             return FieldValue::Null;
@@ -299,12 +426,16 @@ impl Summary {
             Statistic::Max => self.max,
             Statistic::Mean => self.mean,
             Statistic::Sum => self.sum,
-            Statistic::StdDev => (self.m2 / self.count as f64).max(0.0).sqrt(),
+            Statistic::StdDev => (self.m2 / self.weight).max(0.0).sqrt(),
             Statistic::Median => {
-                let mid = sorted.len() / 2;
-                if sorted.len() % 2 == 1 { sorted[mid] } else { sorted[mid - 1].midpoint(sorted[mid]) }
+                if fractional {
+                    fractional::median(sorted)
+                } else {
+                    let mid = sorted.len() / 2;
+                    if sorted.len() % 2 == 1 { sorted[mid].0 } else { sorted[mid - 1].0.midpoint(sorted[mid].0) }
+                }
             }
-            Statistic::Count => unreachable!(),
+            Statistic::Count | Statistic::WeightedMean | Statistic::WeightedSum | Statistic::WeightedStdDev => unreachable!(),
         })
     }
 }

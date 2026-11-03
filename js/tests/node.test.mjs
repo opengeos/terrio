@@ -3617,3 +3617,17 @@ test("a KML style table is read and written back", () => {
   const odd = kml.replaceAll("base", "__proto__");
   assert.equal(Object.getOwnPropertyDescriptor(terrio.open(new TextEncoder().encode(odd), "a.kml").styleTable, "__proto__").value, style);
 });
+
+test("fractional zonalStats combines coverage and a weighting raster", () => {
+  const values = terrio.rasterFromArray(new Float64Array([10, 30]), 2, 1, [0, 1, 0, 1, 0, -1], "EPSG:4326");
+  const weights = terrio.rasterFromArray(new Float64Array([2, 4]), 2, 1, [0, 1, 0, 1, 0, -1], "EPSG:4326");
+  const zones = {type: "Polygon", coordinates: [[[0.5, 0], [2, 0], [2, 1], [0.5, 1], [0.5, 0]]]};
+  const stats = ["count", "sum", "median", "weighted_mean", "weighted_sum", "weighted_stddev"];
+  for (const source of [weights, weights.toBytes("weights.tif")]) {
+    const result = terrio.zonalStats(zones, values, {fractional: true, weights: source, stats}).toGeoJSON().features[0].properties;
+    const expected = [1.5, 35, 20, 26, 130, 8];
+    stats.forEach((name, i) => assert.ok(Math.abs(result[`raster1_b1_${name}`] - expected[i]) < 1e-10));
+  }
+  assert.throws(() => terrio.zonalStats(zones, values, {fractional: true, allTouched: true}), /mutually exclusive/);
+  assert.throws(() => terrio.zonalStats(zones, values, {stats: ["weighted_mean"]}), /require a weighting raster/);
+});

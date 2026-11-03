@@ -513,6 +513,11 @@ supported transformers, built-in functions, kernels and masks.
 [commands](cli.md); see `help(terrio.contour)` for each one's arguments. `list_layers(path)` and
 `write_raster(raster, path, ...)` are the plain I/O helpers.
 
+For coverage-weighted zonal statistics, use `fractional=True`. A second aligned raster
+can be supplied as `weights=...`, with `weight_band=1`, then select `weighted_mean`,
+`weighted_sum` or `weighted_stddev` in `stats`. See the
+[formulas and limits](cli.md#fractional-coverage-and-weighting-rasters).
+
 ## Native multidimensional arrays
 
 See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
