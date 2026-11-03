@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Opening a vector dataset with layer names refuses a name no layer has, rather than reading
+  the layers the other names match, as GDAL refuses a layer it cannot fetch (#521).
+- A local `.aux.xml` sidecar's band `ColorInterp` overrides a GeoTIFF's and applies to other
+  rasters read whole, as GDAL reads it, so `preview`, `render` and `_repr_png_` draw an alpha
+  band it names. The renderer also draws a lazily read GeoTIFF's own alpha band (#521).
+- Rendering scales alpha as GDAL's warper does: 2^NBITS - 1, 65535 for UInt16, 32767 for
+  Int16 (was 255) and 255 otherwise, floating point included (#521).
+- Rendering a level without a fitting overview reads its sampled rows a row of blocks at a
+  time, decoding each block once (a 4000 x 4000 tiled GeoTIFF drew in a twelfth of the time),
+  and map views of vector layers index the features once instead of scanning and cloning them
+  for every tile (#521).
 - Zonal statistics use each selected band's own nodata value in every membership mode,
   fixing multi-band inputs whose nodata differs from band 1. Fractional coverage and
   aligned weighting rasters are available across Rust, CLI/MCP, Python and Node/WASM (#288).
