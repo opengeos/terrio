@@ -3649,26 +3649,34 @@ terrio preview dem.tif -o - | other-program              # PNG bytes on standard
 
 Draws a raster or vector dataset as an RGBA PNG, or in the terminal when there is no `-o`. A raster
 is read from its coarsest overview that still has the pixels the image needs; without a fitting
-overview, a level of more than 4 million pixels (4,194,304) is read one sampled row at a time. A
-preview of a large remote COG therefore transfers a small part of it: 400 pixels across from a 51.5
-MB 3612 x 3612 Float32 COG with three overviews took 720,896 bytes in two GETs; the default 1024
-pixels read its 1806 x 1806 overview, 10.1 MB.
+overview, a level of more than 4 million pixels (4,194,304) is read by its sampled rows, those in
+one row of the file's blocks together, so each block is read and decoded once. A preview of a large
+remote COG therefore transfers a small part of it: 400 pixels across from a 51.5 MB 3612 x 3612
+Float32 COG with three overviews took 720,896 bytes in two GETs; the default 1024 pixels read its
+1806 x 1806 overview, 10.1 MB.
 
 Pixels are drawn in the raster's own grid, without reprojecting or applying a rotation in its
 geotransform. Shrinking averages the valid pixels under each output pixel, weighted by alpha when
-there is an alpha band (paletted rasters take the nearest one); a level read row by row takes the
-nearest pixel instead. Images have at most 16,777,216 pixels (4096 x 4096), and up to 16,384 on a
-side. Nodata, masked pixels and an alpha band of 0 are transparent. Vector layers are
-burned with `rasterize` (every pixel a feature touches), north up, in one color or by a numeric
-field's values; points are drawn three pixels wide. A raster wider than 4,194,304 pixels with no
-overview to read from is refused: build overviews first. Reading row by row fetches the blocks of
-each sampled row, so a remote raster without overviews costs a request or more per output row;
-build overviews for remote previews.
+there is an alpha band (paletted rasters take the nearest one); a level read by sampled rows takes
+the nearest pixel instead. Images have at most 16,777,216 pixels (4096 x 4096), and up to 16,384 on
+a side. Nodata, masked pixels and an alpha band of 0 are transparent. An alpha band is opaque at
+GDAL's warper maximum (`SRC_ALPHA_MAX`): 2^NBITS - 1 for packed samples, 65535 for UInt16, 32767
+for Int16 and 255 for every other type, floating point included, so a Float32 alpha of 0 to 1 is
+drawn almost transparent, as GDAL 3.13 warps it. Vector layers are burned with `rasterize`'s burner
+(every pixel a feature touches), north up, in one color or by a numeric field's values; points are
+drawn three pixels wide. A map view indexes the features once, so that each tile burns only the
+features near it. A raster wider than 4,194,304 pixels with no overview to read from is refused:
+build overviews first. Without overviews, a preview reads every row of blocks its sampled rows fall
+in, which for most sizes is the whole level: a 16.8 MB 4000 x 4000 Byte GeoTIFF in 256-pixel tiles
+drawn 240 pixels wide took 16 GETs, one a row of tiles, and its whole size, so build overviews for
+remote previews.
 
 Without `--bands`, the red, green and blue bands are drawn when the color interpretation names
 them, else the first three bands of a Byte raster without a palette, else band 1, through the
-raster's own palette when it has one. `--stretch auto` draws Byte red, green and blue as stored and
-stretches everything else from its 2nd to its 98th percentile, measured on the pixels drawn.
+raster's own palette when it has one. Color interpretations are the file's, overridden by those of
+a local `.aux.xml` sidecar (its `ColorInterp`, an `Alpha` band for example), as GDAL reads them.
+`--stretch auto` draws Byte red, green and blue as stored and stretches everything else from its
+2nd to its 98th percentile, measured on the pixels drawn.
 
 Option | Description
 --- | ---
@@ -3717,8 +3725,9 @@ basemap, so it works offline and for any CRS. The page and its script are built 
 loads nothing from elsewhere. As with [`terrio ui`](#ui), the server listens on the loopback
 interface only and every tile request needs the session's random token; unlike it, it serves the
 map alone, not the forms that run commands. Tiles are drawn one at a time, since they share one
-reader of the dataset. A vector tile checks every feature's bounding box, then burns the features
-that touch it, so very large layers pan more slowly. It takes the `preview`
+reader of the dataset. A vector tile burns the features that touch it, found through a grid index
+built once a view; features spanning more than 64 of its cells are checked for every tile. It takes
+the `preview`
 options `--bands`, `--colormap`, `--stretch`, `--layer` and `--attribute`, plus:
 
 Option | Description

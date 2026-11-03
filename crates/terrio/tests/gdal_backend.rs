@@ -518,3 +518,21 @@ fn bytes_through_gdal() {
     // Nothing is left in /vsimem/.
     assert!(gdal::vsi::read_dir("/vsimem/", false).unwrap_or_default().iter().all(|p| !p.to_string_lossy().starts_with("terrio-")));
 }
+
+/// A misspelled layer name beside a valid one is refused through GDAL too, before any layer is
+/// read.
+#[test]
+fn a_misspelled_layer_name_is_refused_through_gdal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("points.geojson");
+    std::fs::write(
+        &path,
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#,
+    )
+    .unwrap();
+    let source = format!("GDAL:{}", path.to_str().unwrap());
+    let names = |n: &[&str]| terrio::VectorOpenOptions { layers: n.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+    assert_eq!(terrio::open_vector(&source, &names(&["points"])).unwrap().layers.len(), 1);
+    let error = terrio::open_vector(&source, &names(&["points", "pionts"])).unwrap_err();
+    assert!(error.to_string().contains("no layer named pionts"), "{error}");
+}

@@ -430,6 +430,7 @@ pub(crate) mod codec {
         #[cfg(feature = "tiles")]
         if (ext == "mvt" || ext == "gz" || ext == "pbf") && crate::tiles::is_mvt(&bytes) {
             let layers = crate::tiles::vector::read_tile_file(&bytes, name, &options.tiles)?;
+            let layers = crate::dataset::select_layers(layers, name, options)?;
             return Ok(Dataset::Vector(crate::dataset::finish_vector(layers, name, VectorDriver::MVT)));
         }
         if bytes.starts_with(b"SQLite format 3\0") {
@@ -594,10 +595,12 @@ pub(crate) mod codec {
     }
 
     /// Keeps the layers the options ask for.
-    fn finish_vector(layers: Vec<Layer>, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Dataset> {
+    pub(super) fn finish_vector(layers: Vec<Layer>, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Dataset> {
         let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
+        crate::dataset::check_layer_names(&options.layers, &names)?;
         let layers: Vec<Layer> =
             if options.layers.is_empty() { layers } else { layers.into_iter().filter(|l| options.layers.contains(&l.name)).collect() };
+        // A source without layers is refused, as before names were checked one by one.
         if layers.is_empty() {
             return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
         }
@@ -700,6 +703,23 @@ mod tests {
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
+
+    #[test]
+    fn a_misspelled_layer_name_is_refused_in_memory() {
+        let bytes = br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
+        let names = |n: &[&str]| VectorOpenOptions { layers: n.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+        // The codecs WebAssembly reads with; native builds read a spilled file.
+        let Dataset::Vector(kept) = codec::open(bytes.to_vec(), "points.geojson", &names(&["points"])).unwrap() else { panic!() };
+        assert_eq!(kept.layers.len(), 1);
+        let error = codec::open(bytes.to_vec(), "points.geojson", &names(&["points", "pionts"])).unwrap_err();
+        assert_eq!(error.to_string(), "no layer named pionts (layers: points)");
+    }
+
+    #[test]
+    fn a_source_without_layers_is_refused_in_memory() {
+        let error = codec::finish_vector(Vec::new(), VectorDriver::GeoJSON, &VectorOpenOptions::default()).unwrap_err();
+        assert!(error.to_string().starts_with("no layer named"), "{error}");
+    }
 
     /// A Zarr store opened from its files is a Zarr open, as GDAL's de-registered driver opens no
     /// store: refused under a raster allow-list without Zarr, opened with it or without a list.

@@ -5,6 +5,20 @@
 - `Workbook::open_bytes` now enforces the same compressed-size limit as `Workbook::open`.
   Workbook authoring and editing are checked against openpyxl in CI, including retained
   chart, drawing, table and theme parts (#405).
+- Opening a vector dataset with layer names refuses a name no layer has, rather than reading
+  the layers the other names match, as GDAL refuses a layer it cannot fetch (#521).
+- A local `.aux.xml` sidecar's band `ColorInterp` overrides a GeoTIFF's and applies to other
+  rasters read whole, as GDAL reads it, so `preview`, `render` and `_repr_png_` draw an alpha
+  band it names. The renderer now reads a lazily opened GeoTIFF's color interpretations too:
+  its own alpha band is drawn, and without `bands` the bands it names Red, Green and Blue are
+  drawn as RGB, in that order and whatever their type, where it drew the first three bands of a
+  Byte file, or band 1 otherwise (#521).
+- Rendering scales alpha as GDAL's warper does: 2^NBITS - 1, 65535 for UInt16, 32767 for
+  Int16 (was 255) and 255 otherwise, floating point included (#521).
+- Rendering a level without a fitting overview reads its sampled rows a row of blocks at a
+  time, decoding each block once (a 4000 x 4000 tiled GeoTIFF drew in a twelfth of the time),
+  and map views of vector layers index the features once instead of scanning and cloning them
+  for every tile (#521).
 - `LazyRaster::read_resampled` reads a window of some bands into an output of another size as
   GDAL's `RasterIO` reads it (`gdal_translate -outsize`, rasterio's `out_shape` reads): from the
   overview GDAL chooses, or the level `gdal_translate -ovr` names, by nearest neighbour or with
