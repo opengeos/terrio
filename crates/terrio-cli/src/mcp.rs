@@ -574,13 +574,17 @@ mod tests {
         assert_eq!(clip("abc".into(), 3, MAX_OUTPUT), "abc");
         assert_eq!(clip("abc".into(), 3, 1), "a\n… (output cut at 1 of 3 bytes)");
     }
+
     #[test]
     fn preview_directory_is_created_private() {
         let path = tempfile_directory().unwrap();
-        assert!(path.is_dir());
+        let is_dir = path.is_dir();
         #[cfg(unix)]
-        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o777, 0o700);
+        let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o777;
         std::fs::remove_dir(&path).unwrap();
+        assert!(is_dir);
+        #[cfg(unix)]
+        assert_eq!(mode, 0o700);
     }
 
     #[cfg(unix)]
