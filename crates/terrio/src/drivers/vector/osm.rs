@@ -1722,6 +1722,24 @@ mod tests {
         assert!(!is_sorted_pbf(&mut std::io::Cursor::new(b"<?xml version='1.0'?><osm/>".as_slice())));
     }
 
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn sorted_conversion_rejects_a_missing_name_beside_a_valid_one() {
+        let (nodes, ways, relations) = objects();
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("map.osm.pbf");
+        let target = dir.path().join("points.geojson");
+        std::fs::write(&source, pbf(&[vec![nodes], vec![ways], vec![relations]])).unwrap();
+        let mut options = crate::stream::ConvertOptions::default();
+        options.open.layers = vec!["points".into(), "pionts".into()];
+        let error = crate::stream::convert(source.to_str().unwrap(), target.to_str().unwrap(), &options).unwrap_err();
+        assert!(error.to_string().starts_with("no layer named pionts (layers: points, lines,"), "{error}");
+        assert!(!target.exists(), "invalid selection created an output");
+        options.open.layers = vec!["points".into()];
+        crate::stream::convert(source.to_str().unwrap(), target.to_str().unwrap(), &options).unwrap();
+        assert!(target.exists());
+    }
+
     /// A layer read alone (its relations built, the others skipped) has the features it has when
     /// every layer is read.
     #[test]
