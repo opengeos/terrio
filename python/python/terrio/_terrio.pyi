@@ -1276,12 +1276,13 @@ def viewshed(
     om: str = "NORMAL",
     ov: int = 0,
     band: int = 1,
+    os: int = 10,
     format: str | None = None,
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
 ) -> Raster:
-    """Single-observer visibility or minimum visible height on a projected DEM."""
+    """Single-observer or cumulative visibility, or minimum visible height on a projected DEM."""
     ...
 
 def compare(

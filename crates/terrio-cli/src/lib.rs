@@ -320,7 +320,7 @@ enum Command {
     ///
     /// Combines panchromatic and spectral bands.
     Pansharpen(cmd::pansharpen::Args),
-    /// Single-observer visibility or minimum visible height.
+    /// Single or cumulative viewsheds and minimum visible height.
     ///
     /// Like gdal_viewshed.
     Viewshed(cmd::viewshed::Args),
