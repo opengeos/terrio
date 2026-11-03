@@ -2863,7 +2863,7 @@ def suite_xlsx_workbook(ctx):
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 s.error = f"{group} comparison report failed: {exc}; " + tail(err or out)
                 return s
-            if code:
+            if code and not (code == 1 and any(row["status"] == DIFFERS for row in rows)):
                 s.error = f"{group} comparison exited {code}: " + tail(err or out)
                 return s
     return s

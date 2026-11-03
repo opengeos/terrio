@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import conformance
 
 
-@pytest.mark.parametrize("failure", [None, "missing", "empty", "malformed", "unknown", "exit", "differs"])
+@pytest.mark.parametrize("failure", [None, "missing", "empty", "malformed", "unknown", "exit", "differs", "crash-with-diff", "writer-diff-edit-exit"])
 def test_workbook_oracle_reports(monkeypatch, tmp_path, failure):
     example = tmp_path / "examples" / ("xlsx_workbook.exe" if os.name == "nt" else "xlsx_workbook")
     example.parent.mkdir()
@@ -26,17 +26,22 @@ def test_workbook_oracle_reports(monkeypatch, tmp_path, failure):
             return 0, "", ""
         calls.append(args[1])
         report = Path(args[-1])
-        status = "unknown" if failure == "unknown" else "differs" if failure == "differs" else "identical"
+        differs = failure in ("differs", "crash-with-diff") or (failure == "writer-diff-edit-exit" and report.stem == "writer")
+        status = "unknown" if failure == "unknown" else "differs" if differs else "identical"
         if failure != "missing":
             report.write_text("bad JSON" if failure == "malformed" else json.dumps({
                 "cases": [] if failure == "empty" else [{"name": "control", "status": status}]
             }))
-        return (1 if failure == "exit" else 0), "oracle output", ""
+        code = 2 if failure == "crash-with-diff" else 1 if failure in ("exit", "writer-diff-edit-exit") or differs else 0
+        return code, "oracle output", ""
 
     monkeypatch.setattr(conformance, "run", run)
     suite = conformance.suite_xlsx_workbook(SimpleNamespace(terrio=str(tmp_path / "terrio")))
-    if failure in ("missing", "empty", "malformed", "unknown", "exit"):
+    if failure in ("missing", "empty", "malformed", "unknown", "exit", "crash-with-diff", "writer-diff-edit-exit"):
         assert suite.error
+        if failure == "writer-diff-edit-exit":
+            assert len(calls) == 2
+            assert suite.error.startswith("edit comparison exited 1")
     else:
         assert not suite.error
         assert [c.group for c in suite.cases] == ["writer", "edit"]
