@@ -61,6 +61,8 @@ fn render(
         stretch: Stretch::parse(stretch).py()?,
         attribute,
     };
+    // An empty list of layers is no filter, as in the JavaScript binding.
+    let layers = layers.filter(|names| !names.is_empty());
     let vector_only = options.attribute.is_some() || layers.is_some();
     let png = if let Ok(raster) = src.cast::<PyRaster>() {
         if vector_only {
@@ -93,10 +95,7 @@ fn render(
             }
         })?
     } else {
-        let mut all = layers_from_object(src, None, None)?;
-        if let Some(names) = layers {
-            all.retain(|l| names.contains(&l.name));
-        }
+        let all = draw::select_layers(layers_from_object(src, None, None)?, &layers.unwrap_or_default()).py()?;
         py.detach_result(|| draw::render_vector(all, &options)?.to_png()).py()?
     };
     Ok(PyBytes::new(py, &png).unbind())

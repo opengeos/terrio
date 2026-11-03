@@ -589,6 +589,22 @@ pub fn render_vector(layers: Vec<Layer>, options: &RenderOptions) -> Result<Imag
     Renderer::vector(layers, options)?.image(options)
 }
 
+/// The layers named in `names`, in their order in `layers`; all of them when `names` is empty.
+///
+/// # Errors
+///
+/// When a name matches no layer.
+pub fn select_layers(mut layers: Vec<Layer>, names: &[String]) -> Result<Vec<Layer>> {
+    if names.is_empty() {
+        return Ok(layers);
+    }
+    if let Some(missing) = names.iter().find(|n| !layers.iter().any(|l| &l.name == *n)) {
+        return Err(Error::InvalidArgument(format!("no layer '{missing}'")));
+    }
+    layers.retain(|l| names.contains(&l.name));
+    Ok(layers)
+}
+
 /// The numeric values of `field` across the layers' features.
 fn attribute_values(layers: &[Layer], field: &str) -> Result<Vec<f64>> {
     let mut values = Vec::new();
@@ -597,7 +613,9 @@ fn attribute_values(layers: &[Layer], field: &str) -> Result<Vec<f64>> {
             .schema
             .field_index(field)
             .ok_or_else(|| Error::InvalidArgument(format!("layer '{}' has no field '{field}'", layer.name)))?;
-        values.extend(layer.features.iter().filter_map(|f| f.attributes.get(index).and_then(|v| v.as_f64())));
+        // Features without a geometry are not drawn, so they do not set the range either.
+        let drawn = layer.features.iter().filter(|f| f.geometry.is_some());
+        values.extend(drawn.filter_map(|f| f.attributes.get(index).and_then(|v| v.as_f64())));
     }
     Ok(values)
 }
@@ -834,8 +852,8 @@ mod tests {
             .collect();
         let image = render_raster(&mut LazyRaster::from(dataset), &RenderOptions { width: Some(1), ..Default::default() }).unwrap();
         let p = pixel(&image, 0, 0);
-        assert!(p[0] < 15 && p[2] > 240, "{p:?}");
-        assert_eq!(p[3], 133);
+        // Red 255 x 10 and blue 255 x 255, over the alpha sum 265; alpha a plain mean.
+        assert_eq!(p, [10, 0, 245, 133]);
     }
 
     #[test]
@@ -860,6 +878,14 @@ mod tests {
         // The point is in column 0; the region from column 1 leaves it out but shows its symbol.
         let right = renderer.region(Window::new(1, height - 10, 10, 10), 10, 10).unwrap();
         assert_eq!(pixel(&right, 0, 9)[3], 255);
+    }
+
+    #[test]
+    fn layers_are_selected_by_name_and_unknown_names_refused() {
+        let layers = vec![Layer::new("a"), Layer::new("b")];
+        assert_eq!(select_layers(layers.clone(), &[]).unwrap().len(), 2);
+        assert_eq!(select_layers(layers.clone(), &["b".into()]).unwrap()[0].name, "b");
+        assert!(select_layers(layers, &["c".into()]).is_err());
     }
 
     #[test]

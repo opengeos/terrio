@@ -46,6 +46,7 @@ def test_render_refuses_bad_options(grid):
     for kwargs in ({"colormap": "nope"}, {"stretch": "5,1"}, {"bands": [1, 2]}):
         with pytest.raises(ValueError):
             terrio.render(grid, **kwargs)
+    assert terrio.render(grid, layers=[]).startswith(b"\x89PNG")
     with pytest.raises(ValueError, match="vector"):
         terrio.render(terrio.open_raster(str(grid), lazy=True), attribute="v")
 

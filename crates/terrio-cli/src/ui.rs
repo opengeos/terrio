@@ -384,14 +384,16 @@ fn route(request: &Request, session: &Session) -> Reply {
 
 /// What the map page needs to know of the dataset on the map.
 fn view_info(session: &Session) -> Reply {
-    match &*lock(&session.view) {
+    // The session's lock is let go before the renderer's, which a tile being drawn may hold.
+    let opened = lock(&session.view).as_ref().map(|v| (v.name.clone(), v.generation, v.renderer.clone()));
+    match opened {
         None => failure(404, "no dataset is open: run preview from a form and choose Open map"),
-        Some(view) => {
-            let renderer = lock(&view.renderer);
+        Some((name, generation, renderer)) => {
+            let renderer = lock(&renderer);
             let (width, height) = renderer.size();
             let body = json!({
-                "name": view.name,
-                "generation": view.generation,
+                "name": name,
+                "generation": generation,
                 "width": width,
                 "height": height,
                 "kind": renderer.kind(),

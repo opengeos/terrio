@@ -3553,12 +3553,12 @@ terrio preview countries.gpkg -o population.png -a POP_EST -c viridis
 terrio preview dem.tif -o - | other-program              # PNG bytes on standard output
 ```
 
-Draws a raster or vector dataset as an RGBA PNG, or in the terminal when there is no `-o`. A
-raster is read from its coarsest overview that still has the pixels the image needs; without a
-fitting overview, a level of more than 16 million pixels is read one sampled row at a time. A
-preview of a large remote COG therefore transfers a small part of it: 400 pixels across from a
-51.5 MB 3612 x 3612 Float32 COG with three overviews took 720,896 bytes in two GETs; the default
-1024 pixels read its 1806 x 1806 overview, 10.1 MB.
+Draws a raster or vector dataset as an RGBA PNG, or in the terminal when there is no `-o`. A raster
+is read from its coarsest overview that still has the pixels the image needs; without a fitting
+overview, a level of more than 4 million pixels (4,194,304) is read one sampled row at a time. A
+preview of a large remote COG therefore transfers a small part of it: 400 pixels across from a 51.5
+MB 3612 x 3612 Float32 COG with three overviews took 720,896 bytes in two GETs; the default 1024
+pixels read its 1806 x 1806 overview, 10.1 MB.
 
 Pixels are drawn in the raster's own grid, without reprojecting or applying a rotation in its
 geotransform. Shrinking averages the valid pixels under each output pixel, weighted by alpha when

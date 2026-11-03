@@ -22,6 +22,7 @@ of blocks) and write the file when closed.
 from __future__ import annotations
 
 import contextlib
+import logging
 import ctypes
 import math
 import os
@@ -1278,6 +1279,8 @@ class DatasetReader(DatasetBase):
         try:
             return _terrio.render(raster, max_size=512)
         except Exception:
+            # A notebook shows the text form instead; the reason is kept for whoever looks.
+            logging.getLogger(__name__).debug("cannot draw %s", self.name, exc_info=True)
             return None
 
     def _load(self, raster: Any) -> None:
