@@ -398,6 +398,8 @@ rendering and filtering report `no layer named NAME (layers: AVAILABLE)` for a
 missing name. A file with exactly one layer also accepts the filename without its
 extension, without renaming the layer. This alias is a Terrio extension to GDAL
 3.13.3's layer-name lookup. Native GeoPackage table names remain case-insensitive.
+For ZIP archives, selection uses the main dataset member's filename (for example,
+`member` for `member.shp` inside `archive.zip`), rather than the archive's name.
 
 `openVector(bytes, filename, {layers})` and operations receiving `{bytes, filename}`
 can use the filename alias. A materialized `Dataset` does not retain its source

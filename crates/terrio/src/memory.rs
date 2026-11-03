@@ -529,7 +529,7 @@ pub(crate) mod codec {
             };
             let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar, options)?;
             let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, &main, driver)).collect();
-            return finish_vector(layers, name, driver, options);
+            return finish_vector(layers, &main, driver, options);
         }
         let mut ds = open(member, &main, options)?;
         // A raster's `.aux.xml` sidecar (a JPEG 2000's nodata value).
@@ -782,6 +782,26 @@ mod tests {
                 let error = codec::open(bytes, &filename, &o).unwrap_err();
                 assert_eq!(error.to_string(), "no layer named map (layers: roads, rivers)", "{ext}");
             }
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn zip_layer_selection_uses_member_names_through_each_reader() {
+        let bytes = br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
+        let source = open_vector_bytes(bytes.to_vec(), "source.geojson", &Default::default()).unwrap();
+        for filename in ["member.shp.zip", "member.mif"] {
+            let bytes = write_vector_bytes(&source.layers, filename, &Default::default()).unwrap();
+            let member = VectorOpenOptions { layers: vec!["member".into()], ..Default::default() };
+            let Dataset::Vector(codec) = codec::open(bytes.clone(), "archive.zip", &member).unwrap() else { panic!() };
+            let native = open_vector_bytes(bytes.clone(), "archive.zip", &member).unwrap();
+            assert_eq!(codec.layers[0].name, "member", "{filename}");
+            assert_eq!(codec.layers[0].features[0].geometry, native.layers[0].features[0].geometry, "{filename}");
+            let archive = VectorOpenOptions { layers: vec!["archive".into()], ..Default::default() };
+            let native_error = open_vector_bytes(bytes.clone(), "archive.zip", &archive).unwrap_err();
+            assert_eq!(native_error.to_string(), "no layer named archive (layers: member)", "{filename}");
+            let codec_error = codec::open(bytes, "archive.zip", &archive).unwrap_err();
+            assert_eq!(codec_error.to_string(), native_error.to_string(), "{filename}");
         }
     }
 

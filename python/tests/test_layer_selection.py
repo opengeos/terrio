@@ -42,3 +42,10 @@ def test_layer_alias_and_selection_errors(tmp_path):
         with pytest.raises(ValueError) as error:
             terrio.vector_grid(source, layers=["roads", "missing"])
         assert str(error.value) == "no layer named missing (layers: roads)"
+
+
+def test_render_preserves_context_for_other_vector_argument_errors():
+    with pytest.raises(ValueError) as error:
+        terrio.render("OAPIF:not-a-url")
+    assert "neither a raster nor a vector dataset" in str(error.value)
+    assert "as a vector dataset: OAPIF requires an HTTP(S) service URL" in str(error.value)

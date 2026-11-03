@@ -3756,3 +3756,16 @@ test("single named layer accepts the file stem across readers and operations", (
     () => terrio.vectorGrid(file, {layers: ["roads", "missing"]}),
   ]) assert.throws(call, /no layer named missing \(layers: roads\)/);
 });
+
+
+test("ZIP layer selection uses the member name rather than the archive name", () => {
+  const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{
+    type: "Feature", properties: {}, geometry: {type: "Point", coordinates: [1, 2]},
+  }]});
+  const bytes = source.toBytes("member.shp.zip");
+  const selected = terrio.openVector(bytes, "archive.zip", {layers: ["member"]});
+  assert.deepEqual(selected.layerNames(), ["member"]);
+  assert.throws(() => terrio.openVector(bytes, "archive.zip", {layers: ["archive"]}), /no layer named archive \(layers: member\)/);
+  selected.free();
+  source.free();
+});

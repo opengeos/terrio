@@ -43,6 +43,7 @@ fn writes_a_png_with_transparent_nodata_and_refuses_bad_outputs() {
         (vec!["preview", "grid.asc"], "not a terminal"),
         (vec!["preview", "grid.asc", "-o", "x.png", "--display", "kitty"], "--display"),
         (vec!["preview", "missing.tif", "-o", "x.png"], "neither a raster nor a vector dataset"),
+        (vec!["preview", "OAPIF:not-a-url", "-o", "x.png"], "neither a raster nor a vector dataset"),
     ] {
         let output = run(root, &args);
         assert!(!output.status.success(), "{args:?}");

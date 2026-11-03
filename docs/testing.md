@@ -2391,7 +2391,8 @@ operations, including file bytes passed directly to JavaScript operations:
 ```sh
 cargo test -p terrio --lib layer_selection
 cargo test -p terrio --test layer_selection
-cargo test -p terrio --lib named_layers
+cargo test -p terrio --lib zip_layer_selection
+cargo test -p terrio --lib named_layer
 cargo test -p terrio --features gdal --test gdal_backend
 pytest python/tests/test_layer_selection.py
 node --test --test-name-pattern='single named layer' js/tests/node.test.mjs
