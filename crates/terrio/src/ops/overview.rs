@@ -783,7 +783,7 @@ fn gdal_multiband(dir: &Directory, external: bool, compressed: bool, bands: usiz
 
 /// The band GDAL takes as an alpha band (its color interpretation, which `GDAL_METADATA` may
 /// override), numbered from 0.
-fn alpha_band(src: &mut LazyRaster) -> Option<usize> {
+pub(crate) fn alpha_band(src: &mut LazyRaster) -> Option<usize> {
     let header = src.header();
     let explicit = header.band_metadata.iter().position(|m| m.color_interp.as_deref().is_some_and(|c| c.eq_ignore_ascii_case("alpha")));
     if explicit.is_some() {

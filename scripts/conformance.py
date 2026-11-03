@@ -23,6 +23,8 @@ Suites:
                       (compare_catalogs_with_gdal.py)
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
+    translate-overviews  resized reads from overviews and HTTP COG bytes vs gdal_translate
+                      -outsize/-ovr (compare_translate_overviews_with_gdal.py)
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
     raster-query      compare, pixel-info and xyz vs gdal raster compare, gdal raster pixel-info,
                       gdallocationinfo and gdal2xyz.py (compare_raster_query_with_gdal.py)
@@ -926,6 +928,20 @@ def suite_overviews(ctx):
         "Full-resolution target grids, source-level selection and output pixels must match GDAL. "
         "Synthetic level markers and real USGS terrain exercise AUTO, AUTO-n, NONE and forced levels. "
         "A real COG served over HTTP must transfer less than half as many raster bytes with AUTO as NONE.",
+        2,
+    )
+
+
+def suite_translate_overviews(ctx):
+    """Resized translations read from overviews against gdal_translate -outsize/-ovr."""
+    return suite_json_ops(
+        ctx, "translate-overviews", "compare_translate_overviews_with_gdal.py", "Translate source overviews",
+        "`gdal_translate -outsize/-ovr`",
+        "Level markers check the stored resolution of AUTO, AUTO-n, NONE and forced levels; real USGS "
+        "terrain (Float32, nodata) and Landsat RGB (Byte, internal mask) check every resampling. Pixels, "
+        "types, nodata and geotransforms must match; differences of one value are reported within "
+        "tolerance (arm64 GDAL builds round fused multiply-adds). A real COG served over HTTP must "
+        "transfer less than half as many raster bytes with AUTO as NONE.",
         2,
     )
 
@@ -3183,6 +3199,7 @@ SUITES = OrderedDict(
         ("catalogs", suite_catalogs),
         ("vrt", suite_vrt),
         ("overviews", suite_overviews),
+        ("translate-overviews", suite_translate_overviews),
         ("raster-manage", suite_raster_manage),
         ("indexes", suite_indexes),
         ("geolocation", suite_geolocation),

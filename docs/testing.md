@@ -179,6 +179,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Histograms | `scripts/compare_hist_with_gdal.py` | `terrio info --hist` vs `gdalinfo -hist` and `-json -hist`, byte for byte, with `-stats` and with histograms stored in `.aux.xml` sidecars, on every data type |
 | Raster round trips | `scripts/raster_roundtrip.py` | GDAL writes → terrio reads; terrio writes → GDAL reads, pixel for pixel; COGs pass GDAL's validator |
 | Window and overview reads | `scripts/compare_windows_with_gdal.py` | every overview level of every GeoTIFF, local and remote over `/vsicurl/` |
+| Translations resized from overviews | `scripts/compare_translate_overviews_with_gdal.py` (`translate-overviews`) | `gdal_translate -outsize`, `-tr` and `-ovr` (AUTO, AUTO-n, NONE, levels) on level markers, real USGS terrain and Landsat RGB with an internal mask, every resampling: pixels, types, nodata, geotransforms; HTTP bytes of a real COG resized with AUTO against NONE |
 | Indexed raster catalogs | `scripts/compare_catalogs_with_gdal.py` | Real DEM mosaics in GeoPackage/FlatGeobuf indexes: z-order, nodata, masks, partial alpha, mixed CRS and Terrio-written indexes read by GDAL GTI; an 8x8 HTTP query from 1,002 features checks opens/cache bounds and actual bytes for both implementations |
 | Raster operations | `scripts/compare_ops_with_gdal.py` | translate, warp (all resampling methods), mosaic and VRT against `gdal_translate`, `gdalwarp`, `gdalbuildvrt`, `gdal_merge.py` |
 | Raster comparison, pixel queries, XYZ | `scripts/compare_raster_query_with_gdal.py` | `terrio compare` vs `gdal raster compare` (report lines and exit status), `terrio pixel-info` vs `gdal raster pixel-info` (GeoJSON, CSV) and `gdallocationinfo` (text, `-valonly`), `terrio xyz` vs `gdal2xyz.py`, on real rasters and derived copies. Registered in conformance as `raster-query`. |
@@ -1225,6 +1226,64 @@ With `--check-rasterio`, the script compares the cases with rasterio's masked re
 (`read(masked=True, out_dtype=...)`, NaN-filled, overviews as decimated reads, unscaled with
 `scales` and `offsets`): rasterio 1.4.3 (GDAL 3.10.3) read the 35 cases it can open identically;
 its GDAL had no netCDF driver for the other 3.
+
+## Resampled window reads (#429)
+
+```sh
+cargo test -p terrio --lib resampled_read
+cargo test -p terrio --test resampled_reads
+cargo test -p terrio-cli --test translate_overviews
+python scripts/make_resampled_reads_fixtures.py                  # GDAL's Python bindings
+python scripts/make_resampled_reads_fixtures.py --check-rasterio # rasterio
+python scripts/conformance.py ../terrio-data --only translate-overviews
+```
+
+`scripts/make_resampled_reads_fixtures.py` writes small GeoTIFFs with GDAL and, for 238 cases (a
+file, bands, a window, an output size, a resampling, an overview selection), the pixels and mask
+bands GDAL 3.13.2 reads, frozen in `tests/data/resampled_reads/expected.json.gz`. Pixels of several
+bands are read through `GDALDatasetRasterIOEx`, a band alone through `GDALRasterIOEx`, and masks
+through the bands' `GetMaskBand()`, called through `ctypes` with the floating-point window always
+given, as rasterio calls them: GDAL's Python bindings give it only for windows that are not whole,
+and GDAL then samples an overview from the integer window rounded to it. Selections other than
+`AUTO` are read as `gdal_translate -ovr` writes them. The rasters are Byte RGB with an internal
+mask and mask overviews, and the same with overviews built before the mask; UInt16 of odd size,
+Int16 and Float32 with nodata values (NaN included); Float32 with a `.ovr`; RGBA, and a UInt16
+alpha band; a paletted band; a `.msk` sidecar; and two bands all valid. Every method is read at
+whole and fractional windows, into smaller and larger outputs and outputs reduced on one axis,
+and at the selection thresholds; 36 cases are also read from the rasters read into memory.
+
+The fixtures pin GDAL's behaviour where it is not obvious:
+
+- Full resolution is a candidate of `GDALBandGetBestOverviewLevel` (ratio 1), so a reduction
+  within 0.1 of 1 reads it, and an overview reduced only on one axis (a single row) is never read.
+- An overview without a mask of its own is all valid in resampling: its band's mask band is not
+  the full-resolution mask. The mask band itself has the levels with masks of their own as
+  overviews, else none, and is then resampled from full resolution.
+- Cubic, cubic spline and Lanczos results are clamped to the band's `NBITS`: a GeoTIFF's internal
+  mask (1 bit) reads as 0 and 1 with those kernels.
+- An overview of a paletted GeoTIFF reports no color table, so its bands are interpolated.
+- GDAL 3.13 skips NaN values of a masked floating-point chunk (GDAL 3.12, whose overviews
+  terrio's follow, sums them as NaN); resampled reads follow 3.13, overviews 3.12. Mode fills a
+  footprint without a valid pixel with 0 for a NaN nodata value (`GDALIsValueInRange`).
+
+Values are compared bit for bit, but GDAL 3.13.2 built by clang for arm64 (Homebrew) contracts the
+multiply-adds of its average and RMS kernels into fused ones, rounding a mean exactly between two
+integers the other way: 13 average and RMS cases have up to 10 such values each, all within 1,
+and one Float32 bilinear case a value one ULP away. The test allows those differences in at most
+1% of a case's values. Rust does not fuse operations: terrio rounds as GDAL does where its compiler
+does not fuse them (x86-64). With `--check-rasterio`, rasterio 1.4.3 (GDAL 3.10.3) agrees with the
+`AUTO` cases but for the 8 Float32 NaN cases of 3.13's NaN skipping and one average.
+
+The `translate-overviews` conformance suite (`scripts/compare_translate_overviews_with_gdal.py`)
+compares `terrio translate` with `gdal_translate -outsize`, `-tr` and `-ovr` on levels holding
+markers, real USGS terrain (Float32, nodata) and Landsat RGB (Byte, internal mask): pixels, types,
+nodata and geotransforms, and the HTTP bytes of a real COG resized with `AUTO` and `NONE`.
+`gdal_translate` reads its output in swaths of 128 rows (into a GeoTIFF of default layout), and in
+blocks of 128 x 128 pixels when its bands are not the source's first ones in order, each a
+`RasterIO` request of its own: at a swath's first row or a block's first column, an average, RMS
+or mode output can come from the next source pixel (the request rounded to the level), where
+terrio reads the output in one request, as rasterio does. The suite's outputs stay within one
+swath and block for those methods.
 
 ## File management (#289)
 

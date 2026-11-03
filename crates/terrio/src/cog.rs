@@ -235,6 +235,32 @@ pub(crate) trait WindowSource: Send + Sync {
     fn read_mask(&mut self, _level: usize, _window: Window) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
+    /// Whether a level (`i + 1` for overview `i`) has a mask of its own, which
+    /// [`WindowSource::read_own_mask`] reads, rather than none: by default, every level of a
+    /// source with a mask.
+    fn level_has_own_mask(&self, _level: usize) -> bool {
+        self.has_mask()
+    }
+    /// Whether GDAL's band of a level without a mask of its own reports the mask flags of full
+    /// resolution, as an internal overview does: by default, every level.
+    fn level_keeps_mask_flags(&self, _level: usize) -> bool {
+        true
+    }
+    /// The overviews of GDAL's per-dataset mask band (see [`LazyRaster::mask_band_overviews`]):
+    /// by default, every overview of a source with a mask.
+    fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
+        if self.has_mask() { self.overviews() } else { Vec::new() }
+    }
+    /// The bits of a sample of the per-dataset mask band as stored (see
+    /// [`LazyRaster::mask_band_bits`]): by default, unknown.
+    fn mask_band_bits(&self) -> Option<u16> {
+        None
+    }
+    /// Reads a window of a level's own mask (see [`LazyRaster::read_level_mask`]): `None` for a
+    /// level without one. By default, [`WindowSource::read_mask`].
+    fn read_own_mask(&mut self, level: usize, window: Window) -> Result<Option<Vec<u8>>> {
+        self.read_mask(level, window)
+    }
     /// Files a non-streamed source reads; unknown inventories must fail before an export.
     fn input_paths(&self) -> Result<Vec<String>> {
         Err(Error::Unsupported("source inventory unavailable".into()))
@@ -277,6 +303,12 @@ struct SharedRaster {
     block: Option<(usize, usize)>,
     alpha: Option<usize>,
     mask: bool,
+    /// Per overview, whether the shared reader's overview has a mask of its own, and whether it
+    /// keeps the mask flags of full resolution without one.
+    own_masks: Vec<bool>,
+    keeps_mask_flags: Vec<bool>,
+    mask_overviews: Vec<(usize, usize)>,
+    mask_bits: Option<u16>,
 }
 impl SharedRaster {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, LazyRaster>> {
@@ -307,6 +339,21 @@ impl WindowSource for SharedRaster {
     }
     fn read_mask(&mut self, level: usize, window: Window) -> Result<Option<Vec<u8>>> {
         self.lock()?.read_mask(window, level.checked_sub(1))
+    }
+    fn level_has_own_mask(&self, level: usize) -> bool {
+        level.checked_sub(1).map_or(self.mask, |i| self.own_masks.get(i).copied().unwrap_or(false))
+    }
+    fn level_keeps_mask_flags(&self, level: usize) -> bool {
+        level.checked_sub(1).is_none_or(|i| self.keeps_mask_flags.get(i).copied().unwrap_or(true))
+    }
+    fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
+        self.mask_overviews.clone()
+    }
+    fn mask_band_bits(&self) -> Option<u16> {
+        self.mask_bits
+    }
+    fn read_own_mask(&mut self, level: usize, window: Window) -> Result<Option<Vec<u8>>> {
+        self.lock()?.read_level_mask(window, level.checked_sub(1))
     }
     fn streamed(&self) -> Option<&dyn StreamedSource> {
         Some(self)
@@ -365,10 +412,25 @@ impl LazyRaster {
         let block = self.block_size();
         let alpha = self.alpha_band();
         let mask = self.has_mask();
+        let own_masks = (0..overviews.len()).map(|i| self.level_has_own_mask(i)).collect();
+        let keeps_mask_flags = (0..overviews.len()).map(|i| self.level_keeps_mask_flags(i)).collect();
+        let mask_overviews = self.mask_band_overviews();
+        let mask_bits = self.mask_band_bits();
         let referenced = self.geotransform_present();
         let replacement = Self::from(header.clone());
         let original = std::mem::replace(self, replacement);
-        let shared = SharedRaster { referenced, reader: Arc::new(Mutex::new(original)), overviews, block, alpha, mask };
+        let shared = SharedRaster {
+            referenced,
+            reader: Arc::new(Mutex::new(original)),
+            overviews,
+            block,
+            alpha,
+            mask,
+            own_masks,
+            keeps_mask_flags,
+            mask_overviews,
+            mask_bits,
+        };
         *self = Self::from_source(header.clone(), Box::new(shared.clone()));
         Self::from_source(header, Box::new(shared))
     }
@@ -770,6 +832,19 @@ impl LazyRaster {
         }
     }
 
+    /// The bits of a sample of a level (full resolution, or an overview) as stored: an external
+    /// overview's own (its `.ovr` file is a dataset of its own, with its own `NBITS`), else
+    /// [`LazyRaster::sample_bits`].
+    pub(crate) fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        if let Inner::Tiff(t) = &self.inner
+            && overview.and_then(|i| t.levels.get(i + 1)).is_some_and(|l| l.external.is_some())
+            && let Some(ovr) = &t.ovr
+        {
+            return Some(ovr.bits);
+        }
+        self.sample_bits()
+    }
+
     /// The driver.
     pub fn driver(&self) -> RasterDriver {
         match &self.inner {
@@ -1072,19 +1147,10 @@ impl LazyRaster {
         let (lw, lh) = self.level_size(options.overview)?;
         window.check(lw, lh)?;
         let bands = read_bands(&options.bands, self.band_count())?;
-        let band_nodata: Vec<Option<f64>> = if let Inner::Tiff(t) = &self.inner {
-            let tags = t.tags_at_level(options.overview.map_or(0, |i| i + 1));
-            bands.iter().map(|b| tags.band_nodata.iter().find(|(i, _)| i == b).map(|(_, v)| *v).or(tags.nodata)).collect()
-        } else {
-            bands.iter().map(|b| self.band_nodata(*b)).collect()
-        };
+        let band_nodata = self.level_band_nodata(&bands, options.overview);
         let gt = self.level_geo_transform(options.overview)?;
-        let (data, nodata, has_nodata, crs) = match &mut self.inner {
-            Inner::Tiff(t) => {
-                let level = options.overview.map_or(0, |i| i + 1);
-                let data = t.read(level, window, &bands)?;
-                (data, t.tags.nodata.unwrap_or(-9999.0), t.tags.nodata.is_some(), Some(t.tags.crs_info()))
-            }
+        let data = match &mut self.inner {
+            Inner::Tiff(t) => t.read(options.overview.map_or(0, |i| i + 1), window, &bands)?,
             Inner::Memory(ds) => {
                 let r = &ds.raster;
                 if r.cols.checked_mul(r.rows).and_then(|n| n.checked_mul(r.bands)) != Some(r.data.len()) {
@@ -1096,32 +1162,64 @@ impl LazyRaster {
                         r.rows
                     )));
                 }
-                (cut(r, window, &bands), r.nodata, ds.has_nodata, Some(r.crs.clone()))
+                cut(r, window, &bands)
             }
-            Inner::Source(ds, s) => {
-                let data = s.read(options.overview.map_or(0, |i| i + 1), window, &bands)?;
-                (data, ds.raster.nodata, ds.has_nodata, Some(ds.raster.crs.clone()))
-            }
+            Inner::Source(_, s) => s.read(options.overview.map_or(0, |i| i + 1), window, &bands)?,
+        };
+        let (x, y) = (window.x as f64, window.y as f64);
+        let geo_transform = [gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]];
+        let (full_cols, full_rows) = (self.width() as f64, self.height() as f64);
+        let gcp = |pixel: f64, line: f64| (pixel * lw as f64 / full_cols - x, line * lh as f64 / full_rows - y);
+        let whole = options.overview.is_none() && window == Window::full(lw, lh);
+        self.window_dataset(&bands, band_nodata, data, (window.width, window.height), geo_transform, gcp, whole)
+    }
+
+    /// The nodata values of some bands (numbered from 1) at full resolution or of an overview,
+    /// whose own tags a GeoTIFF's overview may carry.
+    pub(crate) fn level_band_nodata(&self, bands: &[usize], overview: Option<usize>) -> Vec<Option<f64>> {
+        if let Inner::Tiff(t) = &self.inner {
+            let tags = t.tags_at_level(overview.map_or(0, |i| i + 1));
+            bands.iter().map(|b| tags.band_nodata.iter().find(|(i, _)| i == b).map(|(_, v)| *v).or(tags.nodata)).collect()
+        } else {
+            bands.iter().map(|b| self.band_nodata(*b)).collect()
+        }
+    }
+
+    /// The dataset of a read of some bands (numbered from 1): their pixels `data` on a grid of
+    /// `cols` × `rows` georeferenced by `geo_transform`, with the raster's description of those
+    /// bands, their nodata values `band_nodata`, and its GCPs moved onto the grid by `gcp`
+    /// (`(pixel, line)` to `(pixel, line)`). Band statistics are kept only when the read is the
+    /// `whole` full-resolution image.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn window_dataset(
+        &self,
+        bands: &[usize],
+        band_nodata: Vec<Option<f64>>,
+        data: RasterData,
+        (cols, rows): (usize, usize),
+        geo_transform: [f64; 6],
+        gcp: impl Fn(f64, f64) -> (f64, f64),
+        whole: bool,
+    ) -> Result<RasterDataset> {
+        let first_nodata = band_nodata.first().copied().flatten();
+        let crs = match &self.inner {
+            Inner::Tiff(t) => t.tags.crs_info(),
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.raster.crs.clone(),
         };
         let cfg = wbraster::RasterConfig {
-            cols: window.width,
-            rows: window.height,
+            cols,
+            rows,
             bands: bands.len(),
-            nodata,
+            nodata: first_nodata.unwrap_or(-9999.),
             data_type: data.data_type(),
-            crs: crs.unwrap_or_default(),
+            crs,
             // Source-wide statistics and other dataset items do not describe a subset.
             metadata: self.metadata().into_iter().filter(|(k, _)| k == "AREA_OR_POINT").collect(),
             ..Default::default()
         };
         let raster = crate::pixel::raster_from_data(cfg, data)?;
-        let (x, y) = (window.x as f64, window.y as f64);
-        let mut ds = RasterDataset::with_driver(raster, self.driver(), has_nodata);
-        let first_nodata = band_nodata.first().copied().flatten();
-        ds.has_nodata = first_nodata.is_some();
-        ds.raster.nodata = first_nodata.unwrap_or(-9999.);
-        ds.set_geo_transform([gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]]);
-        let (full_cols, full_rows) = (self.width(), self.height());
+        let mut ds = RasterDataset::with_driver(raster, self.driver(), first_nodata.is_some());
+        ds.set_geo_transform(geo_transform);
         let (gcps, band_metadata, color_table) = match &self.inner {
             Inner::Tiff(t) => (&t.tags.gcps, &t.tags.band_properties, &t.tags.color_table),
             Inner::Memory(source) | Inner::Source(source, _) => (&source.gcps, &source.band_metadata, &source.color_table),
@@ -1130,8 +1228,7 @@ impl LazyRaster {
             .iter()
             .cloned()
             .map(|mut g| {
-                g.pixel = g.pixel * lw as f64 / full_cols as f64 - window.x as f64;
-                g.line = g.line * lh as f64 / full_rows as f64 - window.y as f64;
+                (g.pixel, g.line) = gcp(g.pixel, g.line);
                 g
             })
             .collect();
@@ -1148,12 +1245,31 @@ impl LazyRaster {
         if bands == [1] {
             ds.color_table = color_table.clone();
         }
-        if options.overview.is_some() || window != Window::full(lw, lh) {
+        if !whole {
             for band in &mut ds.band_metadata {
                 band.items.retain(|(key, _)| !key.starts_with("STATISTICS_"));
             }
         }
         Ok(ds)
+    }
+
+    /// The tile (or strip) size `(width, height)` of the full-resolution image or of an overview,
+    /// when the format reads by blocks.
+    pub(crate) fn level_block_size(&self, overview: Option<usize>) -> Option<(usize, usize)> {
+        match &self.inner {
+            Inner::Tiff(t) => t.levels.get(overview.map_or(0, |i| i + 1)).map(|l| l.block),
+            Inner::Memory(_) => None,
+            Inner::Source(_, s) => s.block_size(),
+        }
+    }
+
+    /// Whether the first band has a color table (a paletted raster), which GDAL resamples by
+    /// nearest neighbour only.
+    pub(crate) fn has_color_table(&self) -> bool {
+        match &self.inner {
+            Inner::Tiff(t) => !t.tags.color_table.is_empty(),
+            Inner::Memory(ds) | Inner::Source(ds, _) => !ds.color_table.is_empty(),
+        }
     }
 
     /// Reads the pixels at columns `cols` of rows `rows` (each in any order, repeated or not) of
@@ -1261,6 +1377,113 @@ impl LazyRaster {
         t.masks.iter().any(|m| m.overview && (m.width, m.height) == (l.width, l.height))
     }
 
+    /// Reads a window of the per-dataset mask of the full-resolution image or of an overview as
+    /// GDAL's band of that level has it (`GetMaskBand()`), which weights its resampled reads: an
+    /// overview's own mask (an internal mask overview, the sidecar's overview of its size), else
+    /// `None`, all valid, as is the full-resolution image without a mask. Unlike
+    /// [`LazyRaster::read_mask`], an overview without a mask of its own does not sample the
+    /// full-resolution mask.
+    pub(crate) fn read_level_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+        let Some(i) = overview else { return self.read_mask(window, None) };
+        let (lw, lh) = self.level_size(overview)?;
+        window.check(lw, lh)?;
+        if let Inner::Tiff(t) = &mut self.inner
+            && t.levels[i + 1].external.is_some()
+        {
+            return read_tiff_own_mask(t, window, i + 1);
+        }
+        if let Some(m) = self.sidecar_mask.as_mut() {
+            return read_sidecar_own_mask(m, window, (lw, lh));
+        }
+        match &mut self.inner {
+            Inner::Source(_, source) if source.level_has_own_mask(i + 1) => source.read_own_mask(i + 1, window),
+            Inner::Source(..) => Ok(None),
+            Inner::Tiff(t) => read_tiff_own_mask(t, window, i + 1),
+            Inner::Memory(_) => Ok(None),
+        }
+    }
+
+    /// Whether overview `overview` has a per-dataset mask of its own, which
+    /// [`LazyRaster::read_level_mask`] reads, rather than none.
+    pub(crate) fn level_has_own_mask(&self, overview: usize) -> bool {
+        let Some(&size) = self.overviews().get(overview) else { return false };
+        if let Inner::Tiff(t) = &self.inner
+            && let Some(i) = t.levels[overview + 1].external
+        {
+            return match (&t.ovr_mask, &t.ovr) {
+                (Some(m), _) => (m.width(), m.height()) == size || m.overviews().contains(&size),
+                (None, Some(ovr)) => ovr.masks.iter().any(|m| m.overview == (i > 0) && (m.width, m.height) == size),
+                (None, None) => false,
+            };
+        }
+        if let Some(m) = &self.sidecar_mask {
+            return m.overviews().contains(&size);
+        }
+        match &self.inner {
+            Inner::Tiff(_) => self.has_overview_mask(overview),
+            Inner::Source(_, s) => s.level_has_own_mask(overview + 1),
+            Inner::Memory(_) => false,
+        }
+    }
+
+    /// Whether GDAL's band of overview `overview` reports the mask flags of full resolution when
+    /// it has no mask of its own (an internal overview), rather than its own (an external
+    /// overview, a dataset of its own).
+    pub(crate) fn level_keeps_mask_flags(&self, overview: usize) -> bool {
+        match &self.inner {
+            Inner::Tiff(t) => !t.levels.get(overview + 1).is_some_and(|l| l.external.is_some()),
+            Inner::Source(_, s) => s.level_keeps_mask_flags(overview + 1),
+            Inner::Memory(_) => true,
+        }
+    }
+
+    /// The overviews of GDAL's per-dataset mask band (a band's `GetMaskBand()` when the dataset
+    /// has a mask), largest first: the sidecar's overviews, or the levels of a GeoTIFF with an
+    /// internal mask of their own. A mask read into another size chooses among these, and reads
+    /// the full-resolution mask when there are none.
+    pub(crate) fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
+        if let Some(m) = &self.sidecar_mask {
+            return m.overviews();
+        }
+        match &self.inner {
+            Inner::Tiff(t) => (0..t.levels.len() - 1)
+                .filter(|&i| t.levels[i + 1].external.is_none() && self.has_overview_mask(i))
+                .map(|i| (t.levels[i + 1].width, t.levels[i + 1].height))
+                .collect(),
+            Inner::Source(_, s) => s.mask_band_overviews(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The bits of a sample of the per-dataset mask band as stored (GDAL's `NBITS`): 1 for a
+    /// GeoTIFF's internal mask, the sidecar's bits; `None` for other sources.
+    pub(crate) fn mask_band_bits(&self) -> Option<u16> {
+        match (&self.sidecar_mask, &self.inner) {
+            (Some(m), _) => m.sample_bits(),
+            (None, Inner::Tiff(t)) if !t.masks.is_empty() => Some(1),
+            (None, Inner::Source(_, s)) => s.mask_band_bits(),
+            _ => None,
+        }
+    }
+
+    /// Reads a window of GDAL's per-dataset mask band at full resolution or of its overview
+    /// `overview` (numbered in [`LazyRaster::mask_band_overviews`]): 255 for valid pixels, 0 for
+    /// invalid ones.
+    pub(crate) fn read_mask_band(&mut self, window: Window, overview: Option<usize>) -> Result<Vec<u8>> {
+        let all_valid = || vec![255; window.width * window.height];
+        let Some(j) = overview else { return Ok(self.read_mask(window, None)?.unwrap_or_else(all_valid)) };
+        let size = *self.mask_band_overviews().get(j).ok_or_else(|| Error::InvalidArgument(format!("no mask overview {j}")))?;
+        if let Some(m) = self.sidecar_mask.as_mut() {
+            return read_sidecar_own_mask(m, window, size)?.ok_or_else(|| Error::InvalidData("missing sidecar mask overview".into()));
+        }
+        let level = self
+            .overviews()
+            .iter()
+            .position(|s| *s == size)
+            .ok_or_else(|| Error::InvalidData(format!("no overview of the mask overview's size {size:?}")))?;
+        Ok(self.read_level_mask(window, Some(level))?.unwrap_or_else(all_valid))
+    }
+
     /// The first overview's `RESAMPLING` item, which GDAL writes with the overviews it builds
     /// (`GTIFFBuildOverviewMetadata`), if any.
     pub fn overview_resampling(&mut self) -> Option<String> {
@@ -1343,6 +1566,39 @@ fn read_tiff_mask(t: &mut TiffRaster, window: Window, level: usize) -> Result<Op
         }
     }
     Ok(Some(out))
+}
+
+/// A TIFF level's own mask, as GDAL's band of that level has it (see
+/// [`LazyRaster::read_level_mask`]): `None` for an overview without one.
+fn read_tiff_own_mask(t: &mut TiffRaster, window: Window, level: usize) -> Result<Option<Vec<u8>>> {
+    if let Some(i) = t.levels[level].external
+        && let Some(ovr) = t.ovr.as_mut()
+    {
+        if let Some(mask) = t.ovr_mask.as_mut() {
+            return read_sidecar_own_mask(mask, window, (ovr.levels[i].width, ovr.levels[i].height));
+        }
+        return read_tiff_own_mask(ovr, window, i);
+    }
+    let (lw, lh) = (t.levels[level].width, t.levels[level].height);
+    let w = (window.x, window.y, window.width, window.height);
+    let limit = t.limits.chunk_bytes;
+    let own = t.masks.iter().find(|m| m.overview == (level > 0) && (m.width, m.height) == (lw, lh));
+    let reader = t.decoder.inner();
+    own.map(|m| crate::tiff_mask::read_mask(reader, m, w, limit)).transpose()
+}
+
+/// Reads a window of a `.msk` sidecar's mask at a level of size `(lw, lh)` when the sidecar has
+/// one of that size (its full-resolution mask or an overview); `None` otherwise.
+fn read_sidecar_own_mask(m: &mut LazyRaster, window: Window, (lw, lh): (usize, usize)) -> Result<Option<Vec<u8>>> {
+    let level = if (lw, lh) == (m.width(), m.height()) {
+        None
+    } else {
+        match m.overviews().iter().position(|s| *s == (lw, lh)) {
+            Some(i) => Some(i),
+            None => return Ok(None),
+        }
+    };
+    read_sidecar_mask(m, window, m.level_size(level)?).map(Some)
 }
 
 /// Reads a window of a `.msk` sidecar's mask at a level of size `(lw, lh)`: the sidecar's own
