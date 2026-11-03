@@ -230,11 +230,13 @@ pub(super) fn resolve(base: &str, target: &str) -> String {
 }
 
 /// The properties part, with `set` replacing what was read: a child's local name and its XML.
-pub(super) fn core_properties(source: Option<&PackageSource>, root: &str, set: &[(&str, String)]) -> String {
+pub(super) fn core_properties(source: Option<&PackageSource>, root: &str, set: &[(&str, String)]) -> Result<String> {
     let header = super::XML_HEADER;
-    let Some((read_root, children)) = source.and_then(|s| s.core.as_deref()).and_then(|text| split_children(text, "core").ok()) else {
+    // A part read that cannot be parsed is refused rather than written without what it held.
+    let read = source.and_then(|s| s.core.as_deref()).map(|text| split_children(text, "core")).transpose()?;
+    let Some((read_root, children)) = read else {
         let body: String = set.iter().map(|(_, xml)| format!("{xml}\n")).collect();
-        return format!("{header}{root}\n{body}</cp:coreProperties>\n");
+        return Ok(format!("{header}{root}\n{body}</cp:coreProperties>\n"));
     };
     let close = read_root.name.clone();
     let mut start = read_root.start;
@@ -257,7 +259,7 @@ pub(super) fn core_properties(source: Option<&PackageSource>, root: &str, set: &
         out.push('\n');
     }
     out.push_str(&format!("</{close}>\n"));
-    out
+    Ok(out)
 }
 
 struct Root {
@@ -766,7 +768,10 @@ fn read_sheet_data(
                 let number = |name: &str| attribute(&e, name).and_then(|v| v.parse::<f64>().ok());
                 let hidden = attribute(&e, "hidden").is_some_and(|v| v == "1" || v == "true");
                 let outline = attribute(&e, "outlineLevel").and_then(|v| v.parse().ok()).unwrap_or(0);
-                let style_index = attribute(&e, "s").and_then(|v| v.parse::<usize>().ok()).filter(|&s| s < parts.formats.len());
+                // A row's style applies only with `customFormat`; without it, it stays as read.
+                let custom_format = attribute(&e, "customFormat").is_some_and(|v| v == "1" || v == "true");
+                let style_index =
+                    attribute(&e, "s").and_then(|v| v.parse::<usize>().ok()).filter(|&s| custom_format && s < parts.formats.len());
                 let style = style_index.and_then(|s| parts.formats.get(s));
                 if number("ht").is_some() || hidden || outline > 0 || style.is_some() {
                     let custom = attribute(&e, "customHeight").is_some_and(|v| v == "1" || v == "true");
@@ -2161,6 +2166,18 @@ mod tests {
         let options = crate::XlsxOptions { geometry: crate::CsvGeometry::AsXy, ..Default::default() };
         assert!(matches!(workbook.add_layer(&points, &options), Err(Error::InvalidArgument(_))));
         assert_eq!(workbook.sheet_names(), ["big"]);
+    }
+
+    #[test]
+    fn row_styles_without_custom_format_and_bad_properties() {
+        let styled = |b: String| b.replace("<row r=\"3\">", "<row r=\"3\" s=\"1\">");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &styled)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().set_row_height(3, 20.0).unwrap();
+        let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(!sheet.contains("customFormat"), "{sheet}");
+        let broken = |b: String| b.replace("</cp:coreProperties>", "");
+        let workbook = Workbook::open_bytes(&with_parts(&[("docProps/core.xml", &broken)])).unwrap();
+        assert!(matches!(workbook.to_bytes(), Err(Error::InvalidData(_))));
     }
 
     #[test]

@@ -2228,7 +2228,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         "<cp:coreProperties xmlns:cp=\"{PACKAGE}/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
          xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
     );
-    let core = open::core_properties(source, &core_root, &properties);
+    let core = open::core_properties(source, &core_root, &properties)?;
     let core_part = source.and_then(|s| s.core_part.clone()).unwrap_or_else(|| "docProps/core.xml".to_string());
     overrides.entry(format!("/{core_part}")).or_insert_with(|| "application/vnd.openxmlformats-package.core-properties+xml".to_string());
     // A package read without a properties relationship gets one for the part written.
