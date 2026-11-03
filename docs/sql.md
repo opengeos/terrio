@@ -43,9 +43,10 @@ WHERE POP_EST > 10000000 ORDER BY POP_EST DESC LIMIT 10
   qualified selections retain their qualifier in the output field name.
 
 Unaliased computed fields are named `FIELD_1`, `FIELD_2`, and so on by output position;
-summaries are named `COUNT_field`, `SUM_field`, etc. Output names must be unique ignoring case
-for all SQL entrypoints, including `convert --sql`. Duplicate names are rejected
-during planning, before a schema can discard a later column. This is an explicit
+summaries are named `COUNT_field`, `SUM_field`, etc. Standalone query APIs and grouped
+queries require output names unique ignoring ASCII case. Ordinary `convert --sql`
+retains its legacy case-only variants (`name` and `NAME`); exact repeated names
+are rejected in every SQL entrypoint before schema insertion. This is an explicit
 policy difference from GDAL 3.13.3 conversions that keep the first duplicate;
 choose distinct aliases to retain both values. All integer types map to Terrio's signed 64-bit `Integer` model;
 OGR's distinction between 32-bit and 64-bit count/predicate fields is not represented.
@@ -80,7 +81,9 @@ keys not selected may also group rows. Text keys are case-sensitive; null keys
 form one group. Filtering happens before grouping. Each group has independent
 `COUNT(DISTINCT field)` state. Empty grouped input produces no rows; ungrouped
 summaries still produce one row. Grouped results discard geometry and CRS.
-One selected output column or alias may supply `ORDER BY`; `LIMIT` applies after
+Qualified `ORDER BY` resolves a selected source grouping field even when an
+aggregate alias has the same name. Unqualified names prefer output aliases.
+One selected column or alias may supply `ORDER BY`; `LIMIT` applies after
 ordering. Without `ORDER BY`, Terrio emits groups in first-encountered source
 order. SQLite may produce a different group order; use `ORDER BY` for a portable
 ordering. The unordered conformance case compares the complete rows without
@@ -103,12 +106,15 @@ Supported spatial functions:
 | `ST_Area(geometry)` | Planar XY area in squared coordinate units; non-area geometries contribute zero. |
 | `ST_Length(geometry)` | Planar XY length of line components; polygon boundaries contribute zero, as in SpatiaLite. |
 | `ST_Intersects(a, b)` | Boundary-inclusive XY predicate: 1/0, or SpatiaLite's -1 when either geometry is null. |
-| `ST_Buffer(geometry, distance)` | Planar buffer with round joins/caps and 30 segments per quadrant. Requires valid input; invalid inputs or nonfinite distances return null. New geometry is XY. |
+| `ST_Buffer(geometry, distance)` | Planar buffer with round joins/caps and 30 segments per quadrant. Requires valid input; invalid inputs or nonfinite distances return null. New geometry is an XY MultiPolygon, including single-part buffers; the declaration is retained for all-null results. |
 | `ST_Centroid(geometry)` | Planar centroid of the highest-dimensional components, returned as an XY point. |
 | `ST_Transform(geometry, epsg)` | Constant positive target EPSG code and an EPSG-identified source CRS. Uses the shared CRS engine; nested transforms use the intermediate CRS. Geocentric transforms use XYZ; ordinary horizontal transforms retain source Z/M. |
 
 Because -1 is truthy in SQL, a bare `WHERE ST_Intersects(geometry, NULL)`
 selects rows. Use `WHERE ST_Intersects(a, b) = 1` to require a known intersection.
+`ST_Intersects` compares raw XY coordinates without checking or reconciling operand
+CRSs. Supply both operands in the same CRS, using `ST_Transform` when needed;
+mixing degrees and metres otherwise produces meaningless intersection results.
 Except for the predicate's -1 convention, null geometry propagates as null.
 Coordinate transformation failures return null for that geometry. Unsupported functions,
 invalid argument counts, non-geometry arguments and unsupported transform CRS codes

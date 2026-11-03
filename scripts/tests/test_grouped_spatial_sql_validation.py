@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import compare_grouped_spatial_sql_with_gdal as validation
 from compare_grouped_spatial_sql_with_gdal import compare
 from osgeo import ogr
 
@@ -77,3 +78,18 @@ def test_constructed_point_displacement_is_bounded():
     assert compare(([], None, [([], source)]), ([], None, [([], near)])) == "within tolerance"
     with pytest.raises(AssertionError, match="constructed geometry exceeds 1e-7"):
         compare(([], None, [([], source)]), ([], None, [([], far)]))
+
+
+def test_optional_node_surface_is_reported_and_required_surface_cannot_skip(tmp_path, monkeypatch):
+    package = tmp_path / "terrio.js"
+    status = validation.node_surface_status(package)
+    assert status["status"] == "not compared"
+    with pytest.raises(ValueError, match="package missing"):
+        validation.node_surface_status(package, required=True)
+    package.write_text("")
+    monkeypatch.setattr(validation.shutil, "which", lambda name: None)
+    assert validation.node_surface_status(package)["status"] == "not compared"
+    with pytest.raises(ValueError, match="runtime unavailable"):
+        validation.node_surface_status(package, required=True)
+    monkeypatch.setattr(validation.shutil, "which", lambda name: "/node")
+    assert validation.node_surface_status(package, required=True) is None

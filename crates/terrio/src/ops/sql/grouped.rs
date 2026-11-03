@@ -1,5 +1,5 @@
 //! Attribute GROUP BY with SQLite-style keys, checked against GDAL 3.13.3.
-use super::select::{Aggregate, Item, add_output_field, bound, field_value, key, primary_name};
+use super::select::{Aggregate, Item, add_output_field, bound, field_value, key};
 use super::*;
 use std::collections::HashMap;
 
@@ -30,12 +30,12 @@ pub(super) fn execute(layer: &Layer, s: &Select, limit: Option<usize>) -> Result
                     _ => wbvector::FieldDef::new(name.clone(), wbvector::FieldType::Integer),
                 };
                 def.name = alias.clone().unwrap_or_else(|| name.clone());
-                add_output_field(&mut out.schema, def)?;
+                add_output_field(&mut out.schema, def, true)?;
                 columns.push(Column::Key(i));
             }
             Item::Aggregate(op, field, distinct, alias) => {
                 let (def, plan) = Aggregate::plan(op, field, *distinct, alias, &layer.schema, s)?;
-                add_output_field(&mut out.schema, def)?;
+                add_output_field(&mut out.schema, def, true)?;
                 columns.push(Column::Summary(plans.len()));
                 plans.push(plan);
             }
@@ -46,10 +46,15 @@ pub(super) fn execute(layer: &Layer, s: &Select, limit: Option<usize>) -> Result
         .order_by
         .as_ref()
         .map(|(n, desc)| {
-            field_index(&out.schema, n)
-                .or_else(|| field_index(&out.schema, primary_name(n, s)))
-                .map(|i| (i, *desc))
-                .ok_or_else(|| syntax("grouped ORDER BY must name a selected column or alias".into()))
+            // Qualified names denote source fields; unqualified names prefer aliases.
+            let alias = if n.contains('.') { None } else { field_index(&out.schema, n) };
+            let selected = if alias.is_some() {
+                alias
+            } else {
+                let source = bound(&Expr::Field(n.clone()), &layer.schema, s)?;
+                columns.iter().position(|column| matches!(column, Column::Key(i) if keys[*i] == source))
+            };
+            selected.map(|i| (i, *desc)).ok_or_else(|| syntax("grouped ORDER BY must name a selected column or alias".into()))
         })
         .transpose()?;
     let mut index = HashMap::<Vec<String>, usize>::new();
@@ -90,16 +95,17 @@ pub(super) fn execute(layer: &Layer, s: &Select, limit: Option<usize>) -> Result
         out.features.push(Feature { fid: out.features.len() as u64, geometry: None, attributes });
     }
     if let Some((i, desc)) = order {
-        out.features.sort_by(|a, b| {
-            let (a, b) = (Value::from_field(&a.attributes[i]), Value::from_field(&b.attributes[i]));
-            let o = match (&a, &b) {
+        let mut sorted: Vec<_> = out.features.into_iter().map(|feature| (Value::from_field(&feature.attributes[i]), feature)).collect();
+        sorted.sort_by(|(a, _), (b, _)| {
+            let o = match (a, b) {
                 (Value::Null, Value::Null) => Ordering::Equal,
                 (Value::Null, _) => Ordering::Less,
                 (_, Value::Null) => Ordering::Greater,
-                _ => compare(&a, &b).unwrap_or(Ordering::Equal),
+                _ => compare(a, b).unwrap_or(Ordering::Equal),
             };
             if desc { o.reverse() } else { o }
         });
+        out.features = sorted.into_iter().map(|(_, feature)| feature).collect();
     }
     if let Some(n) = limit {
         out.features.truncate(n);

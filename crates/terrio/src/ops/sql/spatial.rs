@@ -49,7 +49,7 @@ pub(super) fn output_epsg(e: &Expr, source: Option<u32>) -> Option<u32> {
 pub(super) fn output_type(e: &Expr, source: Option<GeometryType>) -> Option<GeometryType> {
     match e {
         Expr::Call(n, _) if n == "ST_CENTROID" => Some(GeometryType::Point),
-        Expr::Call(n, _) if n == "ST_BUFFER" => None,
+        Expr::Call(n, _) if n == "ST_BUFFER" => Some(GeometryType::MultiPolygon),
         Expr::Transform(e, _) => output_type(e, source),
         Expr::Call(_, a) => output_type(&a[0], source),
         _ => source,
@@ -90,16 +90,7 @@ pub(super) fn evaluate(name: &str, args: &[Expr], f: &Feature) -> Value {
                 .ok()
                 .and_then(|mut l| l.features.pop()?.geometry)
                 .filter(|g| !g.all_coords().is_empty())
-                .map(|g| {
-                    let g = match g {
-                        Geometry::MultiPolygon(mut ps) if ps.len() == 1 => {
-                            let (exterior, interiors) = ps.remove(0);
-                            Geometry::Polygon { exterior, interiors }
-                        }
-                        g => g,
-                    };
-                    Value::Geometry(Box::new(g))
-                })
+                .map(|g| Value::Geometry(Box::new(g)))
                 .unwrap_or(Value::Null)
         }
         _ => Value::Null,

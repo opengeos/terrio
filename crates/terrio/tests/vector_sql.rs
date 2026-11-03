@@ -396,3 +396,38 @@ fn duplicate_output_names_are_rejected_before_query_or_conversion_execution() {
         assert!(translated.to_string().contains("duplicate output field"), "{translated}");
     }
 }
+
+#[test]
+fn qualified_group_order_uses_source_field_before_colliding_aggregate_alias() {
+    let layers = data();
+    let qualified = query(&layers, "SELECT key AS k,COUNT(*) AS key FROM cities c GROUP BY c.key ORDER BY c.key DESC LIMIT 1").unwrap();
+    assert_eq!(qualified.features[0].attributes, vec![V::Integer(2), V::Integer(1)]);
+    let alias = query(&layers, "SELECT key AS k,COUNT(*) AS key FROM cities c GROUP BY c.key ORDER BY key DESC LIMIT 1").unwrap();
+    assert_eq!(alias.features[0].attributes, vec![V::Integer(1), V::Integer(2)]);
+}
+
+#[test]
+fn buffers_declare_multipolygon_for_null_and_singlepart_results_without_crs() {
+    let mut source = Layer::new("shapes");
+    source.geom_type = Some(wbvector::GeometryType::Point);
+    source.features.push(Feature { fid: 1, geometry: None, attributes: vec![] });
+    for geometry in [None, Some(Geometry::Point(Coord::xy(0., 0.)))] {
+        source.features[0].geometry = geometry.clone();
+        let out = query(std::slice::from_ref(&source), "SELECT ST_Buffer(geometry,1) AS shape FROM shapes").unwrap();
+        assert_eq!(out.geom_type, Some(wbvector::GeometryType::MultiPolygon));
+        if geometry.is_none() {
+            assert!(out.features[0].geometry.is_none());
+        } else {
+            assert!(matches!(&out.features[0].geometry,Some(Geometry::MultiPolygon(parts)) if parts.len()==1));
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("buffer.gpkg");
+            terrio::write_vector(&[out], path.to_str().unwrap(), &Default::default()).unwrap();
+            let read = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap();
+            assert_eq!(read.layers[0].geom_type, Some(wbvector::GeometryType::MultiPolygon));
+            assert_eq!(read.layers[0].features[0].geometry.is_none(), geometry.is_none());
+        }
+    }
+}

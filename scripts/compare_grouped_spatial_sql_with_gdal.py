@@ -27,7 +27,7 @@ CASES = {
     "filtered groups and aggregate ordering": "SELECT CONTINENT AS continent, SUM(POP_EST) AS total FROM countries WHERE POP_EST>10000000 GROUP BY CONTINENT ORDER BY total DESC LIMIT 3",
     "unordered groups": "SELECT CONTINENT, COUNT(*) AS n FROM countries GROUP BY CONTINENT",
     "null predicate truthiness": "SELECT ADMIN,geometry FROM countries WHERE ST_Intersects(geometry,NULL) ORDER BY ADMIN LIMIT 3",
-    "qualified grouped ordering": "SELECT CONTINENT,COUNT(*) AS n FROM countries c GROUP BY c.CONTINENT ORDER BY c.CONTINENT",
+    "qualified grouped ordering": "SELECT CONTINENT AS region,COUNT(*) AS CONTINENT FROM countries c GROUP BY c.CONTINENT ORDER BY c.CONTINENT DESC LIMIT 1",
     "joined buffer distance": "SELECT c.ADMIN AS country,ST_Buffer(ST_Centroid(c.geometry),n.POP_EST/1000000000.0) AS geometry FROM countries c LEFT JOIN countries n ON c.ADMIN=n.ADMIN ORDER BY c.ADMIN LIMIT 4",
     "duplicate aliases rejected": "SELECT CONTINENT AS n,COUNT(*) AS n FROM countries GROUP BY CONTINENT",
     "empty groups": "SELECT CONTINENT, COUNT(*) AS n FROM countries WHERE POP_EST<0 GROUP BY CONTINENT",
@@ -133,6 +133,20 @@ def compare(expected, actual, buffer=False, schema_policy=None, unordered=False)
     return "within tolerance" if approximate else "identical"
 
 
+def node_surface_status(package, required=False):
+    """Report an unavailable optional surface, or reject an explicit request."""
+    reason = None
+    if not package.is_file():
+        reason = f"Node/WASM package missing: {package}"
+    elif not shutil.which("node"):
+        reason = "Node runtime unavailable"
+    if reason:
+        if required:
+            raise ValueError(reason)
+        return dict(name="node: optional WASM validation", status="not compared", detail=reason)
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data", type=Path)
@@ -153,10 +167,14 @@ def main():
         package = args.node_package or Path(
             os.environ.get("TERRIO_JS_PKG", "js/pkg-node/terrio.js")
         )
-        if args.node_package and not package.is_file():
-            parser.error(f"requested Node package is missing: {package}")
-        if package.is_file() and shutil.which("node"):
+        try:
+            node_status = node_surface_status(package, required=args.node_package is not None)
+        except ValueError as error:
+            parser.error(str(error))
+        if node_status is None:
             surfaces.append("node")
+        else:
+            rows.append(node_status)
         for name, query in CASES.items():
             ds = ogr.Open(str(source))
             reference = ds.ExecuteSQL(query, dialect="SQLite")
@@ -211,6 +229,11 @@ def main():
                             status=status,
                             detail="GDAL "
                             + gdal.VersionInfo("RELEASE_NAME")
+                            + (
+                                "; buffers use a stable MultiPolygon declaration; shape area/envelope compared with SpatiaLite"
+                                if name in ("nested buffer", "joined buffer distance")
+                                else ""
+                            )
                             + (
                                 "; intentional schema policy: statically typed empty/all-null expressions vs SQLite String inference"
                                 if name in ("empty groups", "null spatial values")

@@ -45,7 +45,8 @@ pub(crate) use select::execute as select_query;
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn query(layers: &[Layer], statement: &str) -> Result<Layer> {
-    let select = Select::parse(statement)?;
+    let mut select = Select::parse(statement)?;
+    select.strict_output_names = true;
     if !layers.iter().any(|l| l.name.eq_ignore_ascii_case(&select.from)) {
         return Err(Error::InvalidArgument(format!("SQL: no layer named '{}'", select.from)));
     }
@@ -83,6 +84,7 @@ pub struct Select {
     joins: Vec<select::Join>,
     alias: Option<String>,
     source_epsg: Option<u32>,
+    strict_output_names: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -321,7 +323,20 @@ impl Select {
         if p.pos < p.tokens.len() {
             return Err(syntax(format!("unexpected '{}'", p.tokens[p.pos])));
         }
-        Ok(Select { columns, from, filter, order_by, limit, distinct, group_by, items, joins, alias, source_epsg: None })
+        Ok(Select {
+            columns,
+            from,
+            filter,
+            order_by,
+            limit,
+            distinct,
+            group_by,
+            items,
+            joins,
+            alias,
+            source_epsg: None,
+            strict_output_names: false,
+        })
     }
 }
 

@@ -114,8 +114,9 @@ pub(super) fn bound(e: &Expr, schema: &Schema, s: &Select) -> Result<Expr> {
 
 // Schema::add_field keeps the first duplicate. Validate before insertion so
 // planned values and schema positions cannot diverge in any SQL entrypoint.
-pub(super) fn add_output_field(schema: &mut Schema, field: FieldDef) -> Result<()> {
-    if field_index(schema, &field.name).is_some() {
+pub(super) fn add_output_field(schema: &mut Schema, field: FieldDef, strict_case: bool) -> Result<()> {
+    let existing = if strict_case { field_index(schema, &field.name) } else { schema.field_index(&field.name) };
+    if existing.is_some() {
         return Err(syntax(format!("duplicate output field '{}'", field.name)));
     }
     schema.add_field(field);
@@ -334,7 +335,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
                                 def.name = short.into();
                             }
                         }
-                        add_output_field(&mut out.schema, def)?;
+                        add_output_field(&mut out.schema, def, s.strict_output_names)?;
                         expressions.push(Expr::Index(i));
                         found = true;
                     }
@@ -366,12 +367,12 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
                 } else {
                     FieldDef::new(name, expression_type(&e_bound, &schema)?)
                 };
-                add_output_field(&mut out.schema, def)?;
+                add_output_field(&mut out.schema, def, s.strict_output_names)?;
                 expressions.push(e_bound);
             }
             Item::Aggregate(op, field, distinct, alias) => {
                 let (def, agg) = Aggregate::plan(op, field, *distinct, alias, &schema, s)?;
-                add_output_field(&mut out.schema, def)?;
+                add_output_field(&mut out.schema, def, s.strict_output_names)?;
                 aggregates.push(agg);
             }
         }
