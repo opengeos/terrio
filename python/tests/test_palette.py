@@ -375,8 +375,10 @@ def test_palette_destination_reuses_the_remote_source(tmp_path, gdal, monkeypatc
             self.send_header("Content-Range", f"bytes {first}-{last}/{len(payload)}")
             self.send_header("Content-Length", str(last - first + 1))
             self.end_headers()
-            self.wfile.write(payload[first : last + 1])
+            # Counted before sending: the client can finish, and the test check, as soon as the
+            # bytes arrive.
             counts["bytes"] += last - first + 1
+            self.wfile.write(payload[first : last + 1])
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
         worker = threading.Thread(target=server.serve_forever, daemon=True)
