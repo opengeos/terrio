@@ -832,7 +832,7 @@ fn schema_fields(root: &Value) -> Result<Vec<FieldDef>> {
     };
     properties
         .iter()
-        .filter(|(_, value)| value.get("x-ogc-role").and_then(Value::as_str) != Some("primary-geometry"))
+        .filter(|(_, value)| !matches!(value.get("x-ogc-role").and_then(Value::as_str), Some("primary-geometry" | "id")))
         .map(|(name, value)| {
             let v = resolve_ref(document, value, 0)?;
             let kind =
@@ -1081,6 +1081,8 @@ mod tests {
     #[test]
     fn unusable_schema_falls_back_and_nonconforming_values_fail_explicitly() {
         assert!(schema_fields(&json!({"type":"object"})).unwrap().is_empty());
+        // OGC role=id describes the top-level feature identifier, not properties.id.
+        assert!(schema_fields(&json!({"properties":{"id":{"type":"string","x-ogc-role":"id"}}})).unwrap().is_empty());
         let mut inferred = at_items(&Default::default());
         inferred.fields = schema_fields(&json!({"properties":{
             "optional":{"anyOf":[{"type":"integer"},{"type":"null"}]},
