@@ -964,6 +964,30 @@ test("a raster of 2 GB, written and read back (memory64)", {
 
 // ─── Remote files ───────────────────────────────────────────────────────────────────────────────
 
+test("openOapif cancellation does not wait for an unread tee sibling", async () => {
+  for (const status of [503, 200]) {
+    let cancelled = 0;
+    const fetch = async () => ({
+      status,
+      body: {
+        cancel() { cancelled++; return new Promise(() => {}); },
+        getReader() { return {
+          read: async () => ({ done: false, value: new Uint8Array(1024) }),
+          cancel() { cancelled++; return new Promise(() => {}); },
+        }; },
+      },
+    });
+    let timer;
+    try {
+      await assert.rejects(Promise.race([
+        terrio.openOapif("https://example.test/collections", { fetch, maxVectorBytes: 64 }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("cancel hung")), 1000); }),
+      ]), status === 503 ? /HTTP status 503/ : /byte budget/);
+      assert.equal(cancelled, 1);
+    } finally { clearTimeout(timer); }
+  }
+});
+
 test("openOapif follows real HTTP pages and preserves schema and range", async () => {
   const { createServer } = await import("node:http");
   const requests = [];

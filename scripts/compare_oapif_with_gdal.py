@@ -36,25 +36,28 @@ def open_reference(url, options, bbox=None):
 
 
 def profiles():
+    cases = [
+        ("lakes paged schema", LAKES, [], None),
+        ("lakes preferred CRS fallback", LAKES, ["PREFERRED_CRS=EPSG:3857"], None),
+        ("BAG projected storage CRS", BUILDINGS, [], None),
+        ("BAG geographic authority axes", BUILDINGS, ["CRS=EPSG:4258"], None),
+    ]
     source, layer = open_reference(LAKES, [])
     first = layer.GetNextFeature()
     geometry = first.GetGeometryRef()
     while geometry.GetGeometryCount():
         geometry = geometry.GetGeometryRef(0)
     x, y, *_ = geometry.GetPoint(0)
-    return [
-        ("lakes paged schema", LAKES, [], None),
-        ("lakes preferred CRS fallback", LAKES, ["PREFERRED_CRS=EPSG:3857"], None),
-        ("lakes bbox", LAKES, [], [x - .0001, y - .0001, x + .0001, y + .0001]),
-        ("BAG projected storage CRS", BUILDINGS, [], None),
-        ("BAG geographic authority axes", BUILDINGS, ["CRS=EPSG:4258"], None),
-    ]
+    cases.insert(2, ("lakes bbox", LAKES, [], [x - .0001, y - .0001, x + .0001, y + .0001]))
+    return cases
 
 
 def field_kind(field):
     kind = field.GetType()
-    if kind in (ogr.OFTInteger, ogr.OFTInteger64):
+    if kind == ogr.OFTInteger:
         return "bool" if field.GetSubType() == ogr.OFSTBoolean else "integer"
+    if kind == ogr.OFTInteger64:
+        return "integer64"
     return {ogr.OFTReal: "float", ogr.OFTString: "text", ogr.OFTDate: "date", ogr.OFTDateTime: "datetime"}.get(kind, field.GetTypeName())
 
 
@@ -123,6 +126,10 @@ def compare(path, schema, crs, expected):
     if got_schema.get("documentdatum") == "text" and schema.get("documentdatum") == "date":
         normalized_schema["documentdatum"] = "date"
         differences.append("documentdatum honors advertised string versus GDAL inferred Date")
+    for name, kind in schema.items():
+        if kind == "integer" and normalized_schema.get(name) == "integer64":
+            normalized_schema[name] = "integer"
+            differences.append(f"{name}: Int32 widened losslessly to Int64")
     if normalized_schema != schema:
         raise AssertionError(f"field names/types differ: {got_schema} != {schema}")
     if not crs.IsSame(layer.GetSpatialRef(), ["IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES"]):
@@ -147,6 +154,8 @@ def compare(path, schema, crs, expected):
             if kind == "float" and a is not None and b is not None:
                 if not math.isclose(a, b, rel_tol=NUMERIC_REL, abs_tol=NUMERIC_ABS):
                     raise AssertionError(f"numeric property differs: {name}")
+                if a != b and "numeric attributes within tolerance" not in differences:
+                    differences.append("numeric attributes within tolerance")
             elif a != b:
                 raise AssertionError(f"attribute/null/id differs: {name}: {a} != {b}")
         geom = json.loads(got.GetGeometryRef().ExportToJson()) if got.GetGeometryRef() else None
@@ -157,7 +166,7 @@ def compare(path, schema, crs, expected):
 
 
 def run(args):
-    result = subprocess.run(list(map(str, args)), capture_output=True, text=True)
+    result = subprocess.run(list(map(str, args)), capture_output=True, text=True, timeout=120)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
 
@@ -179,7 +188,10 @@ def main():
             try:
                 cases = profiles()
             except Exception as error:
-                cases = []
+                cases = [
+                    ("BAG projected storage CRS", BUILDINGS, [], None),
+                    ("BAG geographic authority axes", BUILDINGS, ["CRS=EPSG:4258"], None),
+                ]
                 rows.append(dict(name="public OAPIF reference discovery", status="not compared", detail=str(error)))
             for index, (name, url, options, bbox) in enumerate(cases):
                 try:

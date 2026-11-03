@@ -3644,3 +3644,11 @@ CRS as unknown. A CRS error is returned when that collection is selected for
 feature reading. Synthetic `_oapif_id` values always contain serialized JSON;
 null or absent identifiers remain null. A schema's nested `properties` map is
 unwrapped only when its `type` field explicitly identifies a GeoJSON Feature.
+
+CRS references supplied by a service are parsed as literal definitions, without
+opening local files named by that metadata. Explicit caller CRS options retain
+the normal user-input parser.
+
+OAPIF items URLs honor `offset` and use URL `crs` as an explicit CRS selector;
+combining URL `crs` with `CRS`/`PREFERRED_CRS` options is rejected. Paging preserves
+active bbox/datetime/CRS selectors when next links omit them.

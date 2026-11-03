@@ -163,7 +163,8 @@ pub struct Reader {
     index: usize,
     features: Vec<Value>,
     ids: HashSet<String>,
-    previous_page_len: usize,
+    retained_cells: usize,
+    initial_offset: usize,
     fields: Vec<FieldDef>,
     layers: Vec<Layer>,
 }
@@ -193,8 +194,26 @@ impl Reader {
         if options.spatial_filter.is_some_and(|(a, b, c, d)| [a, b, c, d].iter().any(|n| !n.is_finite()) || a > c || b > d) {
             return Err(Error::InvalidArgument("OAPIF bbox must be finite with ordered bounds".into()));
         }
+        let mut options = options.clone();
+        let mut initial_offset = 0;
+        if let Some(query) = split_url(url).1 {
+            for pair in query.split('&') {
+                let Some((key, val)) = pair.split_once('=') else { continue };
+                let key = crate::vfs::decode_query_component(key);
+                let val = crate::vfs::decode_query_component(val);
+                if key == "offset" && split_url(url).0.trim_end_matches('/').ends_with("/items") {
+                    initial_offset = val.parse().map_err(|_| invalid("URL offset must be a nonnegative integer"))?;
+                }
+                if key == "crs" {
+                    if options.oapif.crs.is_some() || options.oapif.preferred_crs.is_some() {
+                        return Err(invalid("use either a URL crs or a CRS/PREFERRED_CRS option"));
+                    }
+                    options.oapif.crs = Some(val.into_owned());
+                }
+            }
+        }
         let mut reader = Self {
-            options: options.clone(),
+            options,
             origin,
             initial: url.into(),
             phase: Phase::Discover,
@@ -207,7 +226,8 @@ impl Reader {
             index: 0,
             features: Vec::new(),
             ids: HashSet::new(),
-            previous_page_len: 0,
+            retained_cells: 0,
+            initial_offset,
             fields: Vec::new(),
             layers: Vec::new(),
         };
@@ -275,14 +295,14 @@ impl Reader {
         Ok(VectorDataset::new(self.layers, VectorDriver::OAPIF))
     }
     fn check_memory(&self, cells: usize) -> Result<()> {
-        let estimate = self
-            .bytes
-            .saturating_mul(JSON_MEMORY_FACTOR)
-            .saturating_add(cells.saturating_mul(std::mem::size_of::<FieldValue>()).saturating_mul(2));
+        let estimate = self.bytes.saturating_mul(JSON_MEMORY_FACTOR).saturating_add(self.cell_bytes(cells));
         if estimate > self.options.oapif.max_vector_bytes {
             return Err(limited("JSON workspace exceeds OAPIF_MAX_VECTOR_BYTES"));
         }
         Ok(())
+    }
+    fn cell_bytes(&self, cells: usize) -> usize {
+        self.retained_cells.saturating_add(cells).saturating_mul(std::mem::size_of::<FieldValue>()).saturating_mul(2)
     }
     fn schedule(&mut self, url: String, phase: Phase) -> Result<()> {
         if crate::vfs::url_origin(&url).as_ref() != Some(&self.origin) {
@@ -295,7 +315,8 @@ impl Reader {
         if self.requests > self.options.oapif.max_pages {
             return Err(limited("service exceeds OAPIF_MAX_PAGES"));
         }
-        let remaining = self.options.oapif.max_vector_bytes / JSON_MEMORY_FACTOR - self.bytes;
+        let remaining = self.options.oapif.max_vector_bytes.saturating_sub(self.cell_bytes(0)) / JSON_MEMORY_FACTOR;
+        let remaining = remaining.saturating_sub(self.bytes);
         if remaining == 0 {
             return Err(limited("JSON workspace exceeds OAPIF_MAX_VECTOR_BYTES"));
         }
@@ -369,7 +390,10 @@ impl Reader {
         if self.collections.iter().any(|c| c.id == id) {
             return Err(invalid("collection listing repeats an identifier"));
         }
-        let base = if listing { append_path(source, &encode(id)) } else { source.into() };
+        if matches!(id, "." | "..") {
+            return Err(invalid("collection id cannot be a dot path segment"));
+        }
+        let base = if listing { append_path(split_url(source).0, &encode(id)) } else { source.into() };
         let items = link(value, "items", true).map(|href| self.follow(source, href)).unwrap_or_else(|| append_path(&base, "items"));
         let schema = if self.options.oapif.ignore_schema { None } else { schema_link(value).map(|href| self.follow(source, href)) };
         let (crs_uri, crs, swap, crs_error) = match select_crs(value, &self.options.oapif) {
@@ -416,7 +440,6 @@ impl Reader {
         self.features.clear();
         self.ids.clear();
         self.fields.clear();
-        self.previous_page_len = 0;
         if let Some(url) = self.collections[self.index].schema.clone() { self.schedule(url, Phase::Schema) } else { self.begin_items() }
     }
     fn begin_items(&mut self) -> Result<()> {
@@ -429,7 +452,9 @@ impl Reader {
             for pair in query.split('&') {
                 if let Some((key, value)) = pair.split_once('=') {
                     let key = crate::vfs::decode_query_component(key);
-                    if ["bbox", "datetime", "crs", "bbox-crs"].contains(&key.as_ref()) {
+                    if ["bbox", "datetime", "crs", "bbox-crs"].contains(&key.as_ref())
+                        || (key == "offset" && split_url(&self.initial).0.trim_end_matches('/').ends_with("/items"))
+                    {
                         url = query_value(&url, &key, &crate::vfs::decode_query_component(value));
                     }
                 }
@@ -438,7 +463,7 @@ impl Reader {
         let stop = self.options.max_features.map(|n| n.saturating_add(self.options.skip_features));
         let limit = stop.map_or(self.options.oapif.page_size, |n| n.min(self.options.oapif.page_size));
         url = query_value(&url, "limit", &limit.to_string());
-        if !is_crs84(&c.crs_uri) {
+        if has_query(&url, "crs") || !is_crs84(&c.crs_uri) {
             url = query_value(&url, "crs", &c.crs_uri);
         }
         if let Some(datetime) = &self.options.oapif.datetime {
@@ -457,7 +482,19 @@ impl Reader {
         if value.get("type").and_then(Value::as_str) != Some("FeatureCollection") {
             return Err(invalid("items response is not a GeoJSON FeatureCollection"));
         }
-        let next = link(&value, "next", true).map(|href| self.follow(source, href));
+        let next = link(&value, "next", true).map(|href| {
+            let mut next = self.follow(source, href);
+            if let Some(query) = split_url(source).1 {
+                for pair in query.split('&') {
+                    let key = crate::vfs::decode_query_component(pair.split('=').next().unwrap_or(""));
+                    if ["bbox", "datetime", "crs", "bbox-crs"].contains(&key.as_ref()) && !has_query(&next, &key) {
+                        next.push(if next.contains('?') { '&' } else { '?' });
+                        next.push_str(pair);
+                    }
+                }
+            }
+            next
+        });
         let matched = value.get("numberMatched").and_then(Value::as_u64);
         let returned = value.get("numberReturned").and_then(Value::as_u64);
         let page =
@@ -467,12 +504,6 @@ impl Reader {
         }
         if next.is_some() && page.is_empty() {
             return Err(invalid("empty feature page advertises another page"));
-        }
-        if self.previous_page_len > 0
-            && self.previous_page_len == page.len()
-            && self.features[self.features.len() - self.previous_page_len..] == page[..]
-        {
-            return Err(invalid("service repeats a feature page instead of advancing pagination"));
         }
         for feature in page.iter() {
             if feature.get("type").and_then(Value::as_str) != Some("Feature") {
@@ -487,7 +518,6 @@ impl Reader {
                 }
             }
         }
-        self.previous_page_len = page.len();
         self.features.append(page);
         let stop = self.options.max_features.map(|n| n.saturating_add(self.options.skip_features));
         if stop.is_some_and(|n| self.features.len() >= n) {
@@ -496,7 +526,7 @@ impl Reader {
         if let Some(next) = next {
             return self.schedule(next, Phase::Items);
         }
-        if matched.is_some_and(|n| n > self.features.len() as u64) {
+        if matched.is_some_and(|n| n > self.features.len().saturating_add(self.initial_offset) as u64) {
             return Err(invalid("service reports more matching features without a next link"));
         }
         self.end_collection()
@@ -509,7 +539,7 @@ impl Reader {
                 fields.extend(properties.keys().cloned());
             }
         }
-        self.check_memory(self.features.len().saturating_mul(fields.len().saturating_add(1)))?;
+        self.check_memory(self.features.len().saturating_mul(fields.len().saturating_add(2)))?;
         // GeoJSON's shared decoder flattens nested properties. Preserve their complete
         // JSON value as text here, so the advertised top-level schema remains meaningful.
         for feature in &mut self.features {
@@ -564,6 +594,7 @@ impl Reader {
             layer.extent = None;
         }
         self.options.keep_range(&mut layer);
+        self.retained_cells = self.retained_cells.saturating_add(layer.features.len().saturating_mul(layer.schema.fields().len()));
         self.layers.push(layer);
         self.index += 1;
         self.begin_collection()
@@ -678,10 +709,9 @@ fn select_crs(value: &Value, options: &OapifOpenOptions) -> Result<(String, Spat
             return Some(CRS84);
         }
         let crs = SpatialRef::parse(asked).ok()?;
-        supported
-            .iter()
-            .copied()
-            .find(|s| !is_crs84(s) && SpatialRef::parse(s).is_ok_and(|c| c.epsg == crs.epsg && c.esri == crs.esri && c.same_as(&crs)))
+        supported.iter().copied().find(|s| {
+            !is_crs84(s) && SpatialRef::parse_literal(s).is_ok_and(|c| c.epsg == crs.epsg && c.esri == crs.esri && c.same_as(&crs))
+        })
     };
     let requested = if let Some(asked) = &options.crs {
         Some(available(asked).ok_or_else(|| invalid("requested CRS is not advertised by the collection"))?)
@@ -689,7 +719,7 @@ fn select_crs(value: &Value, options: &OapifOpenOptions) -> Result<(String, Spat
         options.preferred_crs.as_deref().and_then(available)
     };
     let uri = requested.or_else(|| value.get("storageCrs").or_else(|| value.get("storageCRS")).and_then(Value::as_str)).unwrap_or(CRS84);
-    let crs = SpatialRef::parse(uri).map_err(|_| invalid("collection uses an unsupported CRS"))?;
+    let crs = SpatialRef::parse_literal(uri).map_err(|_| invalid("collection uses an unsupported CRS"))?;
     let swap = !is_crs84(uri) && !options.gis_friendly && north_first(&crs)?;
     Ok((uri.into(), crs, swap))
 }
@@ -881,6 +911,49 @@ mod tests {
         r
     }
     #[test]
+    fn catalog_paging_does_not_inherit_items_offsets_and_rejects_dot_ids() {
+        let mut r = Reader::new("https://example.test/collections", &Default::default()).unwrap();
+        accept(&mut r, json!({"collections":[], "links":[{"rel":"next","href":"?offset=1"}]}));
+        accept(&mut r, json!({"collections":[{"id":"a"}]}));
+        assert_eq!(r.next_request().unwrap().url, "https://example.test/collections/a/items?limit=1000");
+        for id in [".", ".."] {
+            let mut r = Reader::new("https://example.test/collections", &Default::default()).unwrap();
+            assert!(r.accept_response(&serde_json::to_vec(&json!({"collections":[{"id":id}]})).unwrap()).is_err());
+        }
+    }
+    #[test]
+    fn explicit_items_offset_crs_and_paging_selectors_are_preserved() {
+        let mut r =
+            Reader::new("https://example.test/collections/a/items?offset=1&crs=EPSG:4326&bbox=1,2,3,4&datetime=2020", &Default::default())
+                .unwrap();
+        let mut c = collection("a");
+        c["crs"] = json!([CRS84, "http://www.opengis.net/def/crs/EPSG/0/4326"]);
+        accept(&mut r, c);
+        assert!(r.next_request().unwrap().url.contains("offset=1"));
+        assert!(r.collections[0].swap);
+        let f = feature(Value::Null, json!({}));
+        accept(&mut r, page(vec![f.clone()], Some("?offset=2")));
+        let url = &r.next_request().unwrap().url;
+        for key in ["bbox", "datetime", "crs"] {
+            assert!(has_query(url, key));
+        }
+        // Identical ID-less pages at distinct next URLs are legitimate duplicates.
+        let mut last = page(vec![f], None);
+        last["numberMatched"] = json!(3);
+        accept(&mut r, last);
+        assert_eq!(r.finish().unwrap().layers[0].features.len(), 2);
+    }
+    #[test]
+    fn completed_layer_cells_consume_memory_and_request_headroom() {
+        let mut r = at_items(&Default::default());
+        r.retained_cells = 1000;
+        r.options.oapif.max_vector_bytes = r.cell_bytes(0) + r.bytes * JSON_MEMORY_FACTOR + JSON_MEMORY_FACTOR;
+        assert!(r.check_memory(1).is_err());
+        r.schedule("https://example.test/new".into(), Phase::Items).unwrap();
+        assert_eq!(r.next_request().unwrap().byte_limit, 1);
+        assert!(r.accept_response(b"{}").is_err());
+    }
+    #[test]
     fn landing_discovery_pagination_and_field_union_preserve_identity() {
         let mut r = Reader::new("OAPIF:https://example.test/api?key=private", &Default::default()).unwrap();
         accept(&mut r, json!({"links":[{"rel":"data","href":"/collections","type":"application/json"}]}));
@@ -949,6 +1022,20 @@ mod tests {
         accept(&mut r, page(vec![feature(json!(1), json!({"when":""}))], None));
         let l = r.finish().unwrap().layers.remove(0);
         assert_eq!(l.features[0].get(&l.schema, "when").unwrap(), &FieldValue::Text(String::new()));
+    }
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn metadata_crs_values_are_not_local_definition_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("definition.prj");
+        std::fs::write(&path, "EPSG:4326").unwrap();
+        let path = path.to_str().unwrap();
+        assert!(SpatialRef::parse(path).is_ok());
+        assert!(SpatialRef::parse_literal(path).is_err());
+        let mut c = collection("a");
+        c["storageCrs"] = json!(path);
+        let mut r = Reader::new("https://example.test/collections/a", &Default::default()).unwrap();
+        assert!(r.accept_response(&serde_json::to_vec(&c).unwrap()).unwrap_err().to_string().contains("unsupported CRS"));
     }
     #[test]
     fn catalog_metadata_and_selected_reads_ignore_other_collection_crs_errors() {

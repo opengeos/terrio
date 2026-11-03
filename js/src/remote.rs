@@ -814,6 +814,7 @@ pub async fn open_oapif(url: &str, options: JsValue) -> Result<Dataset, JsError>
         let response = JsFuture::from(promise).await.map_err(js_error)?;
         let status = get(&response, "status").as_f64().unwrap_or(0.) as u16;
         if !(200..300).contains(&status) {
+            oapif_cancel(&get(&response, "body"));
             return Err(JsError::new(&format!("OAPIF HTTP status {status}")));
         }
         let body = oapif_body(&response, request.byte_limit).await?;
@@ -839,11 +840,7 @@ async fn oapif_body(response: &JsValue, limit: usize) -> Result<Vec<u8>, JsError
         let bytes = js_sys::Uint8Array::new(&get(&chunk, "value"));
         let size = bytes.length() as usize;
         if size > limit.saturating_sub(data.len()) {
-            if let Ok(promise) =
-                call(&reader, "cancel", &[]).and_then(|p| p.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("invalid cancellation")))
-            {
-                let _ = JsFuture::from(promise).await;
-            }
+            oapif_cancel(&reader);
             return Err(JsError::new("OAPIF response exceeds its byte budget"));
         }
         data.try_reserve(size).map_err(|_| JsError::new("cannot allocate OAPIF response"))?;
@@ -852,4 +849,13 @@ async fn oapif_body(response: &JsValue, limit: usize) -> Result<Vec<u8>, JsError
         bytes.copy_to(&mut data[start..]);
     }
     Ok(data)
+}
+
+// Cancellation of a tee branch may wait for an unread sibling. Do not delay errors.
+fn oapif_cancel(body: &JsValue) {
+    if let Ok(promise) = call(body, "cancel", &[]).and_then(|p| p.dyn_into::<js_sys::Promise>().map_err(js_error)) {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = JsFuture::from(promise).await;
+        });
+    }
 }

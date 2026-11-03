@@ -2339,7 +2339,7 @@ def node_exports_available(module, names):
     try:
         result = subprocess.run([
             "node", "-e",
-            "const t=require(process.argv[1]);process.exit(process.argv.slice(2).every(n=>typeof t[n]==='function')?0:1)",
+            "const t=require(process.argv[1]);process.exit(process.argv.slice(2).every(n=>typeof t[n]==='function'&&(n!=='openOapif'||typeof fetch==='function'))?0:1)",
             str(module.resolve()), *names,
         ], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
