@@ -372,7 +372,8 @@ struct Cell {
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Dimension {
     size: Option<f64>,
-    /// Whether the column's width was set, rather than following the sheet's default.
+    /// Whether the column's width or the row's height was set, rather than following the default
+    /// or, for a row, its contents.
     custom: bool,
     /// The cell style read, written back while the format is not set again, which keeps what the
     /// model does not read of it, such as theme colors.
@@ -686,7 +687,8 @@ impl Worksheet {
         if !(0.0..=409.0).contains(&height) {
             return Err(invalid(format!("a row height of {height} is not from 0 to 409")));
         }
-        self.row_entry(row)?.size = Some(height);
+        let entry = self.row_entry(row)?;
+        (entry.size, entry.custom) = (Some(height), true);
         Ok(())
     }
     /// Hides or shows a row.
@@ -1601,6 +1603,9 @@ fn section_xml(sheet: &Worksheet, name: &str, context: &mut SheetContext<'_>, ou
             if let Some(zoom) = sheet.zoom {
                 let _ = write!(out, " zoomScale=\"{zoom}\" zoomScaleNormal=\"{zoom}\"");
             }
+            if context.selected == Some(true) {
+                out.push_str(" tabSelected=\"1\"");
+            }
             out.push_str(" workbookViewId=\"0\">");
             if let Some((rows, columns)) = sheet.frozen {
                 let pane = match (rows > 0, columns > 0) {
@@ -1773,7 +1778,11 @@ fn sheet_data_xml(sheet: &Worksheet, context: &mut SheetContext<'_>, out: &mut S
             None => {
                 if let Some(d) = sheet.rows.get(&row) {
                     if let Some(height) = d.size {
-                        let _ = write!(out, " ht=\"{height}\" customHeight=\"1\"");
+                        let _ = write!(out, " ht=\"{height}\"");
+                        // A height read without customHeight still follows the row's contents.
+                        if d.custom {
+                            out.push_str(" customHeight=\"1\"");
+                        }
                     }
                     if let Some(format) = &d.format {
                         let style = d.style_index.unwrap_or_else(|| context.styles.index(format));
@@ -1943,7 +1952,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         }
     }
     let mut next_sheet_id =
-        workbook.sheets.iter().filter_map(|s| s.source.as_ref().and_then(|x| x.sheet_id.parse::<u32>().ok())).max().unwrap_or(0) + 1;
+        workbook.sheets.iter().filter_map(|s| s.source.as_ref().and_then(|x| x.sheet_id.parse::<u32>().ok())).max().unwrap_or(0);
     let mut sheet_parts: Vec<(String, String)> = Vec::new();
     let other = |name: &str| source.and_then(|s| s.workbook_sections.get(name)).map(|raw| raw.concat());
     let mut book = format!(
@@ -1969,8 +1978,10 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
                 let target = part.strip_prefix(&base).map_or_else(|| format!("/{part}"), str::to_string);
                 relationships.push(Relationship { id: id.clone(), kind: format!("{OD_RELS}/worksheet"), target, external: false });
                 overrides.insert(format!("/{part}"), WORKSHEET_TYPE.to_string());
-                next_sheet_id += 1;
-                (part, id, (next_sheet_id - 1).to_string())
+                // A sheet id read at the top of the range leaves none for a new sheet.
+                next_sheet_id =
+                    next_sheet_id.checked_add(1).ok_or_else(|| invalid("the workbook's sheet ids leave none for a new sheet".into()))?;
+                (part, id, next_sheet_id.to_string())
             }
         };
         let state = if sheet.very_hidden {

@@ -671,7 +671,12 @@ fn read_sheet_data(
         match reader.read_event().map_err(|e| xml_error(part, e))? {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "row" => {
                 take_cells(budget, 4)?;
+                let previous = row;
                 row = attribute(&e, "r").and_then(|v| v.parse().ok()).unwrap_or(row + 1);
+                // A row again would overwrite the cells read before it.
+                if row <= previous {
+                    return Err(Error::InvalidData(format!("XLSX: '{part}' has row {row} out of order")));
+                }
                 if row == 0 || row as usize > super::MAX_ROWS {
                     return Err(Error::ResourceLimit(format!("XLSX: '{part}' holds a row past a sheet's limit")));
                 }
@@ -693,9 +698,8 @@ fn read_sheet_data(
                 let style_index = attribute(&e, "s").and_then(|v| v.parse::<usize>().ok()).filter(|&s| s < parts.formats.len());
                 let style = style_index.and_then(|s| parts.formats.get(s));
                 if number("ht").is_some() || hidden || outline > 0 || style.is_some() {
-                    sheet
-                        .rows
-                        .insert(row, Dimension { size: number("ht"), custom: false, style_index, hidden, outline, format: style.cloned() });
+                    let custom = attribute(&e, "customHeight").is_some_and(|v| v == "1" || v == "true");
+                    sheet.rows.insert(row, Dimension { size: number("ht"), custom, style_index, hidden, outline, format: style.cloned() });
                 }
             }
             event @ (Event::Start(_) | Event::Empty(_)) => {
@@ -1715,6 +1719,35 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), all);
+    }
+
+    #[test]
+    fn rows_read_twice_are_refused_and_heights_keep_fitting() {
+        let twice = |b: String| b.replace("<row r=\"3\">", "<row r=\"2\">");
+        assert!(matches!(Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &twice)])), Err(Error::InvalidData(_))));
+        let fitted = |b: String| b.replace("<row r=\"2\" ht=\"30\" customHeight=\"1\">", "<row r=\"2\" ht=\"30\">");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &fitted)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().set_row_outline(2, 1).unwrap();
+        let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(sheet.contains("<row r=\"2\" ht=\"30\" outlineLevel=\"1\">"), "{sheet}");
+    }
+
+    #[test]
+    fn a_full_range_of_sheet_ids_is_refused_for_a_new_sheet() {
+        let top = |b: String| b.replace("sheetId=\"9\"", "sheetId=\"4294967295\"");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/workbook.xml", &top)])).unwrap();
+        workbook.add_sheet("New").unwrap();
+        assert!(matches!(workbook.to_bytes(), Err(Error::InvalidArgument(m)) if m.contains("sheet ids")));
+    }
+
+    #[test]
+    fn a_new_view_selects_the_active_sheet_whose_view_is_written_again() {
+        let mut workbook = Workbook::open_bytes(&foreign_workbook()).unwrap();
+        workbook.move_sheet("Other", 0).unwrap();
+        workbook.sheet_mut("Other").unwrap().set_hidden(false);
+        workbook.sheet_mut("Other").unwrap().set_zoom(80).unwrap();
+        let bytes = workbook.to_bytes().unwrap();
+        assert!(text_part(&bytes, "xl/worksheets/sheet2.xml").contains("tabSelected=\"1\""));
     }
 
     #[test]
