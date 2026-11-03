@@ -1040,7 +1040,8 @@ mod tests {
     #[test]
     fn alpha_is_scaled_as_gdal_warps_it() {
         // GDAL 3.13 `gdalwarp` to Byte: Float32 alpha 0.5 and 1 give 0 and 1, Int16 16384 gives
-        // 127, UInt16 32768 gives 127, and 12-bit 2048 gives 127.
+        // 127, UInt16 32768 gives 127, and 12-bit 2048 gives 127; UInt32, Int32 and Int8 alpha
+        // 64 and 127 give 64 and 127.
         assert_eq!(alpha_max(DataType::F32, Some(32)), 255.0);
         assert_eq!(alpha_max(DataType::F64, None), 255.0);
         assert_eq!(alpha_max(DataType::I16, Some(16)), 32767.0);
@@ -1048,7 +1049,9 @@ mod tests {
         assert_eq!(alpha_max(DataType::U16, Some(12)), 4095.0);
         assert_eq!(alpha_max(DataType::U8, Some(1)), 1.0);
         assert_eq!(alpha_max(DataType::F32, Some(16)), 255.0);
-        assert_eq!(alpha_max(DataType::U32, None), 255.0);
+        assert_eq!(alpha_max(DataType::U32, Some(32)), 255.0);
+        assert_eq!(alpha_max(DataType::I32, Some(32)), 255.0);
+        assert_eq!(alpha_max(DataType::I8, Some(8)), 255.0);
     }
 
     #[test]

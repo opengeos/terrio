@@ -94,7 +94,9 @@ fn a_remote_raster_without_overviews_is_drawn_from_bands_of_blocks() {
     let image = terrio::ops::render::render_raster(&mut remote, &draw).unwrap();
     let (gets, bytes) = (requests.load(Ordering::SeqCst), sent.load(Ordering::SeqCst));
     eprintln!("open: {opened} GETs, {opened_bytes} bytes; draw: {gets} GETs, {bytes} bytes; file {file_size} bytes");
-    // A request or so a row of tiles, each tile fetched once: not one a sampled row.
+    // A request or so a row of tiles, each tile fetched once: not one a sampled row. This bounds
+    // the current behavior; it held before block reads too, as fetched bytes are cached. The
+    // unit test `sampled_rows_are_read_a_row_of_blocks_at_a_time` guards the block grouping.
     assert!(gets <= 20, "{gets} GETs to draw 240 rows from 16 rows of tiles");
     assert!(bytes <= file_size, "{bytes} bytes fetched from a {file_size}-byte file");
 

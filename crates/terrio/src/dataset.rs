@@ -1061,7 +1061,11 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
                 let driver = VectorDriver::ALL.iter().find(|d| d.to_wb().as_ref() == Some(&format)).map_or("unknown", |d| d.name());
                 crate::formats::check_driver_allowed(driver, path, crate::formats::Kind::Vector)?;
                 let layer = wbvector::read(path)?;
-                Ok(Dataset::Vector(VectorDataset::new(vec![fix_layer(layer, path, VectorDriver::GeoJSON)], VectorDriver::GeoJSON)))
+                let layers = select_layers(vec![layer], path, options)?;
+                Ok(Dataset::Vector(VectorDataset::new(
+                    layers.into_iter().map(|l| fix_layer(l, path, VectorDriver::GeoJSON)).collect(),
+                    VectorDriver::GeoJSON,
+                )))
             }
             Err(_) => Err(Error::Unsupported(format!("'{path}': format not recognized ({raster_err})"))),
         },

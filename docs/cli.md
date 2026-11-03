@@ -3716,8 +3716,9 @@ basemap, so it works offline and for any CRS. The page and its script are built 
 loads nothing from elsewhere. As with [`terrio ui`](#ui), the server listens on the loopback
 interface only and every tile request needs the session's random token; unlike it, it serves the
 map alone, not the forms that run commands. Tiles are drawn one at a time, since they share one
-reader of the dataset. A vector tile checks every feature's bounding box, then burns the features
-that touch it, so very large layers pan more slowly. It takes the `preview`
+reader of the dataset. A vector tile burns the features that touch it, found through a grid index
+built once a view; features spanning more than 64 of its cells are checked for every tile. It takes
+the `preview`
 options `--bands`, `--colormap`, `--stretch`, `--layer` and `--attribute`, plus:
 
 Option | Description
