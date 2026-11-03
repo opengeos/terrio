@@ -68,7 +68,7 @@ def test_render_draws_vector_layers_by_attribute(tmp_path):
     }
     path = tmp_path / "squares.geojson"
     path.write_text(json.dumps(collection))
-    for source in (path, terrio.open_vector(str(path))):
+    for source in (path, terrio.open_vector(str(path)), collection, json.dumps(collection)):
         pixels = _decode(
             terrio.render(source, max_size=30, attribute="v", colormap="gray", stretch="minmax")
         )

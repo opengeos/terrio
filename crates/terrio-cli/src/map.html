@@ -84,15 +84,17 @@ function load(level, col, row) {
   loading++;
   fetch(`/api/tile?${query}`, { headers })
     .then(async (response) => {
+      if (response.status === 409) return replaced();
       if (!response.ok) throw new Error((await response.json()).error || response.statusText);
       tile.image = await createImageBitmap(await response.blob());
       failure = "";
-      // Only a tile that arrived calls for a redraw: one that failed waits for the view to move.
       draw();
     })
     .catch((error) => {
       tile.failedAt = performance.now();
       failure = `Could not draw this part: ${error.message}`;
+      // Tiles skipped while this one was loading are asked for again.
+      draw();
     })
     .finally(() => {
       loading--;
@@ -105,6 +107,17 @@ function load(level, col, row) {
         }
       }
     });
+}
+// Another dataset has been opened in this server: the cached tiles are of the old one.
+function replaced() {
+  if (!info) return;
+  info = null;
+  for (const entry of tiles.values()) if (entry.image) entry.image.close();
+  tiles.clear();
+  byId("title").textContent = "Another dataset is open";
+  failure = "Another dataset has been opened: reload this page to see it.";
+  setStatus();
+  draw();
 }
 let queued = false;
 function draw() {
@@ -217,6 +230,18 @@ addEventListener("resize", resize);
     resize();
     fit();
     canvas.focus();
+    // A change of dataset is noticed even while every tile shown is cached.
+    const watch = setInterval(async () => {
+      try {
+        const now = await fetch("/api/view", { headers });
+        if (now.status === 404 || (now.ok && (await now.json()).generation !== body.generation)) {
+          clearInterval(watch);
+          replaced();
+        }
+      } catch {
+        // The server stopped: the tiles shown stay.
+      }
+    }, 5000);
   } catch (error) {
     byId("title").textContent = "No map";
     failure = error.message;

@@ -474,7 +474,7 @@ to 128 levels. The default rio-cogeo profile ignores this metadata tag.
 `terrio.render(src, *, width=None, height=None, max_size=1024, bands=None, colormap=None,
 stretch="auto", layers=None, attribute=None)` returns a PNG of a raster or vector dataset. `src`
 accepts a path (a raster, or else a vector dataset), a `Raster`, or vector layers (`VectorDataset`,
-`Layer`, a list of layers or GeoJSON). A raster is read from its coarsest overview that still has
+`Layer`, a list of layers, or GeoJSON as a mapping or as text). A raster is read from its coarsest overview that still has
 the pixels needed, so a remote COG transfers a small part of itself. The options are those of
 [`terrio preview`](cli.md#preview).
 
