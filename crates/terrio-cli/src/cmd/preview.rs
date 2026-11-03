@@ -1,7 +1,7 @@
 //! `terrio preview`: a picture of a dataset, as a PNG file or in the terminal.
 
 use std::io::{IsTerminal, Write};
-use terrio::ops::render::{self, Colormap, Image, RenderOptions, Renderer, Stretch};
+use terrio::ops::render::{self, Colormap, Image, RenderOptions, Renderer, Source, Stretch};
 use terrio::{Error, Result};
 
 /// How an image reaches the terminal.
@@ -88,30 +88,11 @@ pub fn renderer(input: &str, style: &Style) -> Result<Renderer> {
     }
 }
 
-enum Source {
-    Raster(terrio::LazyRaster),
-    Vector(Vec<terrio::Layer>),
-}
-
-/// Opens the dataset at `input`: a raster if it reads as one, else a vector dataset.
+/// Opens the dataset at `input`, quietly: driver messages of the raster attempt are not news if
+/// the dataset turns out to be a vector one.
 fn open(input: &str, style: &Style) -> Result<Source> {
-    match super::quiet(|| terrio::open_raster_lazy(input)) {
-        Ok(raster) => {
-            if style.attribute.is_some() || !style.layer.is_empty() {
-                return Err(Error::InvalidArgument("--attribute and --layer are for vector datasets".into()));
-            }
-            Ok(Source::Raster(raster))
-        }
-        Err(raster_error) => {
-            let open = terrio::VectorOpenOptions { layers: style.layer.clone(), ..Default::default() };
-            match super::quiet(|| terrio::open_vector(input, &open)) {
-                Ok(vector) => Ok(Source::Vector(vector.into_resolved_layers())),
-                Err(vector_error) => Err(Error::InvalidArgument(format!(
-                    "{input}: neither a raster nor a vector dataset (as a raster: {raster_error}; as a vector dataset: {vector_error})"
-                ))),
-            }
-        }
-    }
+    let vector_options = style.attribute.is_some() || !style.layer.is_empty();
+    super::quiet(|| render::open_source(input, &style.layer, vector_options))
 }
 
 /// Runs `terrio preview`.
@@ -144,13 +125,15 @@ pub fn run(mut args: Args) -> Result<()> {
     match (args.output.as_deref(), display) {
         (Some("-"), _) => write_stdout(&image.to_png()?),
         (Some(path), _) => {
-            // Without --overwrite, a file that appeared since the check is not replaced either.
+            // Encoded first, so that a failure leaves no file behind. Without --overwrite, a file
+            // that appeared since the check is not replaced either.
+            let png = image.to_png()?;
             let mut file = if args.overwrite {
                 std::fs::File::create(path)?
             } else {
                 std::fs::OpenOptions::new().write(true).create_new(true).open(path)?
             };
-            file.write_all(&image.to_png()?).map_err(Error::from)
+            file.write_all(&png).map_err(Error::from)
         }
         (None, Some(display)) => write_stdout(&encode(&image, display)?),
         (None, None) => unreachable!("no output means a display"),

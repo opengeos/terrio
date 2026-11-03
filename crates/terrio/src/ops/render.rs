@@ -30,7 +30,8 @@ pub const MAX_IMAGE_SIZE: usize = 16384;
 /// The most pixels of a level read at once, per band: 32 MiB of `f64` values a band. Larger
 /// levels are read one sampled row at a time instead.
 const MAX_DIRECT_PIXELS: usize = 1 << 22;
-/// The most pixels an image may have: 4096 x 4096. The values behind it take 8 bytes a band.
+/// The most pixels an image may have: 4096 x 4096. Drawing one holds the values read, 8 bytes a
+/// band per pixel (512 MiB for four bands at the cap), besides the 4 bytes a pixel of the image.
 pub const MAX_IMAGE_PIXELS: usize = 1 << 24;
 /// The longest side of the sample a [`Renderer`] measures its stretch on.
 const STYLE_SAMPLE_SIZE: usize = 512;
@@ -679,6 +680,37 @@ pub fn select_layers(mut layers: Vec<Layer>, names: &[String]) -> Result<Vec<Lay
     Ok(layers)
 }
 
+/// A dataset opened for drawing.
+pub enum Source {
+    /// A raster, read lazily.
+    Raster(LazyRaster),
+    /// Vector layers, with their style references resolved.
+    Vector(Vec<Layer>),
+}
+
+/// Opens `path` for drawing: as a raster if it reads as one, else as a vector dataset, keeping
+/// the layers named in `layers` (all when empty). `vector_options` says that vector-only options
+/// (an attribute or layer names) were given, which a raster refuses.
+///
+/// # Errors
+///
+/// When the path is neither, naming both errors, or a raster is given vector-only options.
+pub fn open_source(path: &str, layers: &[String], vector_options: bool) -> Result<Source> {
+    match crate::open_raster_lazy(path) {
+        Ok(_) if vector_options => Err(Error::InvalidArgument("attribute and layers are for vector datasets".into())),
+        Ok(raster) => Ok(Source::Raster(raster)),
+        Err(raster_error) => {
+            let open = crate::VectorOpenOptions { layers: layers.to_vec(), ..Default::default() };
+            match crate::open_vector(path, &open) {
+                Ok(vector) => Ok(Source::Vector(vector.into_resolved_layers())),
+                Err(vector_error) => Err(Error::InvalidArgument(format!(
+                    "{path}: neither a raster nor a vector dataset (as a raster: {raster_error}; as a vector dataset: {vector_error})"
+                ))),
+            }
+        }
+    }
+}
+
 /// The numeric values of `field` across the layers' features.
 fn attribute_values(layers: &[Layer], field: &str) -> Result<Vec<f64>> {
     let mut values = Vec::new();
@@ -687,9 +719,10 @@ fn attribute_values(layers: &[Layer], field: &str) -> Result<Vec<f64>> {
             .schema
             .field_index(field)
             .ok_or_else(|| Error::InvalidArgument(format!("layer '{}' has no field '{field}'", layer.name)))?;
-        // Features without a geometry are not drawn, so they do not set the range either.
+        // As `rasterize` burns them: numbers as they are, text parsed, and nulls and the rest as
+        // 0. Features without a geometry, or with an empty one, are not drawn and do not count.
         let drawn = layer.features.iter().filter(|f| f.geometry.as_ref().is_some_and(|g| !g.is_empty()));
-        values.extend(drawn.filter_map(|f| f.attributes.get(index).and_then(|v| v.as_f64())));
+        values.extend(drawn.map(|f| crate::ops::rasterize::attribute_value(f, index)));
     }
     Ok(values)
 }
@@ -946,6 +979,18 @@ mod tests {
         // The point is in column 0; the region from column 1 leaves it out but shows its symbol.
         let right = renderer.region(Window::new(1, height - 10, 10, 10), 10, 10).unwrap();
         assert_eq!(pixel(&right, 0, 9)[3], 255);
+    }
+
+    #[test]
+    fn null_attributes_count_as_the_zero_they_are_burned_as() {
+        let mut layer = square_layer();
+        layer.features[0].attributes[0] = FieldValue::Null;
+        let mut high = Feature::with_geometry(1, Geometry::polygon(ring(&[(3.0, 0.0), (4.0, 0.0), (4.0, 1.0), (3.0, 0.0)]), vec![]), 1);
+        high.attributes[0] = FieldValue::Float(10.0);
+        layer.push(high);
+        let options = RenderOptions { attribute: Some("height".into()), stretch: Stretch::MinMax, ..Default::default() };
+        let renderer = Renderer::vector(vec![layer], &options).unwrap();
+        assert_eq!(renderer.ranges, vec![(0.0, 10.0)]);
     }
 
     #[test]

@@ -73,26 +73,10 @@ fn render(
         crate::with_warnings(py, || draw::render_raster(inner, &options)?.to_png())?
     } else if let Ok(path) = src.extract::<std::path::PathBuf>() {
         let path = path.into_os_string().into_string().map_err(|_| crate::invalid("paths must be UTF-8"))?;
-        crate::with_warnings(py, || {
-            let raster = if vector_only { None } else { Some(terrio::open_raster_lazy(&path)) };
-            match raster {
-                Some(Ok(mut raster)) => draw::render_raster(&mut raster, &options)?.to_png(),
-                _ => {
-                    let raster_error = raster.and_then(|r| r.err()).map(|e| e.to_string());
-                    let open = terrio::VectorOpenOptions { layers: layers.clone().unwrap_or_default(), ..Default::default() };
-                    let vector = terrio::open_vector(&path, &open).map_err(|e| {
-                        if vector_only {
-                            e
-                        } else {
-                            let raster_error = raster_error.clone().unwrap_or_default();
-                            terrio::Error::InvalidArgument(format!(
-                                "{path}: neither a raster nor a vector dataset (as a raster: {raster_error}; as a vector dataset: {e})"
-                            ))
-                        }
-                    })?;
-                    draw::render_vector(vector.into_resolved_layers(), &options)?.to_png()
-                }
-            }
+        let names = layers.clone().unwrap_or_default();
+        crate::with_warnings(py, || match draw::open_source(&path, &names, vector_only)? {
+            draw::Source::Raster(mut raster) => draw::render_raster(&mut raster, &options)?.to_png(),
+            draw::Source::Vector(layers) => draw::render_vector(layers, &options)?.to_png(),
         })?
     } else {
         let all = draw::select_layers(layers_from_object(src, None, None)?, &layers.unwrap_or_default()).py()?;
