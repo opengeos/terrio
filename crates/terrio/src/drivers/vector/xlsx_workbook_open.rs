@@ -169,6 +169,7 @@ pub(super) struct PackageSource {
     strings: Vec<String>,
     plain_strings: HashMap<String, usize>,
     strings_root: Option<String>,
+    strings_tail: String,
 }
 
 impl PackageSource {
@@ -199,7 +200,13 @@ impl PackageSource {
 
     /// The shared strings to add to, starting from what was read.
     pub(super) fn shared_strings(&self) -> SharedStrings {
-        SharedStrings { root: self.strings_root.clone(), items: self.strings.clone(), plain: self.plain_strings.clone(), count: 0 }
+        SharedStrings {
+            root: self.strings_root.clone(),
+            items: self.strings.clone(),
+            tail: self.strings_tail.clone(),
+            plain: self.plain_strings.clone(),
+            count: 0,
+        }
     }
 }
 
@@ -829,7 +836,9 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
         "pane" if attribute(e, "state").is_some_and(|v| v.starts_with("frozen")) => {
             let split = |name: &str| attribute(e, name).and_then(|v| v.parse::<f64>().ok()).map_or(0, |v| v as u32);
             // Within the sheet, as the values are written back.
-            sheet.frozen = Some((split("ySplit").min(super::MAX_ROWS as u32 - 1), split("xSplit").min(super::MAX_COLUMNS as u32 - 1)));
+            let (rows, columns) = (split("ySplit").min(super::MAX_ROWS as u32 - 1), split("xSplit").min(super::MAX_COLUMNS as u32 - 1));
+            // A frozen pane of no rows or columns freezes nothing.
+            sheet.frozen = (rows > 0 || columns > 0).then_some((rows, columns));
         }
         _ => {}
     })?;
@@ -1034,11 +1043,15 @@ impl Workbook {
         let strings_part = find("/sharedStrings");
         let (mut raw_strings, mut plain_strings, mut strings) = (Vec::new(), HashMap::new(), Vec::new());
         let mut strings_root = None;
+        let mut strings_tail = String::new();
         if let Some(sst) = strings_part.as_deref().and_then(|p| text(&all, p)) {
             let (sst_root, items) = split_children(&sst, "sharedStrings.xml")?;
             plain_root(&sst_root, "sst", "sharedStrings.xml")?;
             strings_root = Some(sst_root.start);
-            for (i, (_, si)) in items.into_iter().enumerate() {
+            // Only `si` elements are strings: an `extLst` after them is kept for the end.
+            let (strings_items, others): (Vec<_>, Vec<_>) = items.into_iter().partition(|(name, _)| name == "si");
+            strings_tail = others.into_iter().map(|(_, xml)| xml).collect();
+            for (i, (_, si)) in strings_items.into_iter().enumerate() {
                 take_cells(&mut budget, 1 + si.len() / 32)?;
                 let mut reader = quick_xml::Reader::from_str(&si);
                 let (mut value, mut phonetic, mut rich) = (String::new(), 0usize, false);
@@ -1219,6 +1232,7 @@ impl Workbook {
             strings: raw_strings,
             plain_strings,
             strings_root,
+            strings_tail,
         }));
         Ok(workbook)
     }
@@ -1822,6 +1836,38 @@ mod tests {
         workbook.sheet_mut("Data").unwrap().comment("C1", "new", "me").unwrap();
         let rels = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/_rels/sheet1.xml.rels");
         assert!(!rels.contains("threadedComment"), "{rels}");
+    }
+
+    #[test]
+    fn a_strings_extension_stays_after_every_string() {
+        let ext = |b: String| b.replace("</sst>", "<extLst><ext uri=\"u\"/></extLst></sst>");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/sharedStrings.xml", &ext)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().write("C1", "", &Format::new()).unwrap();
+        workbook.sheet_mut("Data").unwrap().write("C2", "new", &Format::new()).unwrap();
+        let bytes = workbook.to_bytes().unwrap();
+        let strings = text_part(&bytes, "xl/sharedStrings.xml");
+        assert!(strings.find("<si><t>new</t></si>").unwrap() < strings.find("<extLst>").unwrap(), "{strings}");
+        let sheet = text_part(&bytes, "xl/worksheets/sheet1.xml");
+        assert!(sheet.contains("<c r=\"C1\" t=\"s\"><v>2</v></c>") && sheet.contains("<c r=\"C2\" t=\"s\"><v>3</v></c>"), "{sheet}");
+        let again = Workbook::open_bytes(&bytes).unwrap();
+        assert_eq!(again.sheet("Data").unwrap().value("C2").unwrap(), Some(&CellValue::Text("new".into())));
+    }
+
+    #[test]
+    fn a_frozen_pane_of_nothing_is_no_freeze() {
+        let empty = |b: String| b.replace("<pane ySplit=\"1\" topLeftCell=\"A2\" state=\"frozen\"/>", "<pane state=\"frozen\"/>");
+        let workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &empty)])).unwrap();
+        assert_eq!(workbook.sheet("Data").unwrap().frozen_panes(), None);
+    }
+
+    #[test]
+    fn moving_sheets_or_naming_asks_for_recalculation() {
+        let mut workbook = Workbook::open_bytes(&foreign_workbook()).unwrap();
+        workbook.define_name("total", "Data!$B$2").unwrap();
+        assert!(text_part(&workbook.to_bytes().unwrap(), "xl/workbook.xml").contains("fullCalcOnLoad=\"1\""));
+        let mut workbook = Workbook::open_bytes(&foreign_workbook()).unwrap();
+        workbook.move_sheet("Other", 0).unwrap();
+        assert!(text_part(&workbook.to_bytes().unwrap(), "xl/workbook.xml").contains("fullCalcOnLoad=\"1\""));
     }
 
     #[test]

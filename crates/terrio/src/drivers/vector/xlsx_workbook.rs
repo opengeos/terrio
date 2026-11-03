@@ -941,6 +941,8 @@ pub struct Workbook {
     sheets_changed: bool,
     /// The properties set since they were read.
     properties_edited: bool,
+    /// Whether a defined name changed since the workbook was read.
+    names_edited: bool,
 }
 
 impl Workbook {
@@ -1052,6 +1054,7 @@ impl Workbook {
             source.other_names.retain(|(n, _, _)| !n.eq_ignore_ascii_case(name));
         }
         self.defined_names.push((name.to_string(), reference.to_string()));
+        self.names_edited = true;
         Ok(())
     }
 
@@ -1401,6 +1404,8 @@ struct SharedStrings {
     /// The root element read, with its namespaces.
     root: Option<String>,
     items: Vec<String>,
+    /// What follows the strings read, such as `extLst`, written after every string.
+    tail: String,
     plain: HashMap<String, usize>,
     count: usize,
 }
@@ -1423,7 +1428,7 @@ impl SharedStrings {
             || format!("<sst xmlns=\"{MAIN_NS}\" count=\"{count}\" uniqueCount=\"{unique}\">"),
             |root| open::start_with(root, &[("count", &count), ("uniqueCount", &unique)]),
         );
-        format!("{XML_HEADER}{root}{}</sst>\n", self.items.concat())
+        format!("{XML_HEADER}{root}{}{}</sst>\n", self.items.concat(), self.tail)
     }
 }
 
@@ -2096,7 +2101,8 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         let _ = writeln!(names, "<definedName name=\"{}\">{}</definedName>", xml_text(name), xml_text(reference));
     }
     // The workbook part: what was read, in its order, with the model's sheets, names and views.
-    let edited = workbook.sheets.iter().any(|s| s.edited);
+    // What formulas refer to may have changed: cells, sheets, or what a name means.
+    let edited = workbook.sheets.iter().any(|s| s.edited) || workbook.sheets_changed || workbook.names_edited;
     let read = source.map_or(&[][..], |s| &s.workbook_order);
     for name in ordered(read, &WORKBOOK_ORDER) {
         let element = match name.as_str() {

@@ -9,9 +9,10 @@ use terrio::xlsx::{Align, BorderStyle, CellValue, Format, Orientation, VerticalA
 
 fn main() -> terrio::Result<()> {
     let path = std::env::args().nth(1).expect("an output path");
-    if path == "edit" && std::env::args().len() == 4 {
-        let input = std::env::args().nth(2).expect("an input path");
-        let output = std::env::args().nth(3).expect("an output path");
+    if path == "edit" {
+        let (Some(input), Some(output), None) = (std::env::args().nth(2), std::env::args().nth(3), std::env::args().nth(4)) else {
+            return Err(terrio::Error::InvalidArgument("usage: xlsx_workbook edit INPUT.xlsx OUTPUT.xlsx".into()));
+        };
         let mut workbook = Workbook::open(&input)?;
         let Some(first) = workbook.sheet_names().first().map(|s| s.to_string()) else {
             return Err(terrio::Error::InvalidArgument("the workbook has no sheet to edit".into()));
