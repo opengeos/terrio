@@ -103,6 +103,7 @@ __all__ = [
     "rgb_to_palette",
     "palette_to_rgb",
     "attach_palette",
+    "render",
     "read_color_table",
     "nodata_to_alpha",
     "reclassify",
@@ -286,6 +287,7 @@ class Raster:
     def dtype(self) -> str: ...
     @property
     def data_type(self) -> str: ...
+    def _repr_png_(self) -> bytes | None: ...
     @property
     def geolocation(self) -> list[tuple[str, str]] | None: ...
     @property
@@ -950,6 +952,21 @@ def convert(
 ) -> None: ...
 
 # Operations.
+
+def render(
+    src: _RasterSource | _VectorSource | os.PathLike[str],
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    max_size: int = 1024,
+    bands: Sequence[int] | None = None,
+    colormap: str | None = None,
+    stretch: str = "auto",
+    layers: Sequence[str] | None = None,
+    attribute: str | None = None,
+) -> bytes:
+    """Draws a raster or vector dataset as a PNG, reading as little of a raster as it can."""
+    ...
 
 def rasterize(
     src: _VectorSource,
@@ -2461,6 +2478,9 @@ def zonal_stats(
     t_srs: str | None = None,
     decimal_places: int | None = None,
     layer: str | None = None,
+    fractional: bool = False,
+    weights: str | os.PathLike[str] | Raster | None = None,
+    weight_band: int = 1,
 ) -> Layer:
     """Summarize bands for polygon zones; materializes source raster pixels.
 

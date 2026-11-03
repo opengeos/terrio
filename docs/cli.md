@@ -72,6 +72,7 @@ Every command, in alphabetical order. `terrio --help` prints this list, and
 | [`pipeline`](#pipelines) | Chain raster and vector operations |
 | [`pixel-info`](#pixel-info) | Query pixel values at given positions |
 | [`polygonize`](#polygonize) | Turn a raster band into polygons |
+| [`preview`](#preview) | Draw a raster or vector dataset as a PNG or in the terminal |
 | [`proximity`](#proximity) | Compute the distance to the nearest target pixel |
 | [`raster-index`](#rastervector-indexes-and-gti-creation) | Create a raster footprint index, with optional GTI metadata |
 | [`rasterize`](#rasterize) | Burn vector geometries into a raster |
@@ -102,6 +103,7 @@ Every command, in alphabetical order. `terrio --help` prints this list, and
 | [`vector-grid`](#vector-grid) | Grid scattered vector points into a raster |
 | [`vector-index`](#rastervector-indexes-and-gti-creation) | Create a vector envelope index of vector dataset layers |
 | [`vertices`](#geometry-operations) | Extract vertices as points |
+| [`view`](#view) | Pan and zoom a raster or vector dataset in your browser |
 | [`viewshed`](#viewshed) | Single or cumulative viewsheds and minimum visible height |
 | [`vsi`](#vsi) | Manage local, in-memory, cloud and archive files |
 | [`warp`](#warp) | Reproject and resample rasters (like gdalwarp) |
@@ -2357,6 +2359,57 @@ each zone's intersecting window and are shared by requested bands of the same ra
 needs extra memory for a zone's contributing values. Integers above 2⁵³ can lose precision.
 Complex bands and geolocation arrays are unsupported. Standard vector input/output options apply.
 
+### Fractional coverage and weighting rasters
+
+```sh
+terrio zonal-stats zones.gpkg output.gpkg --raster dem.tif --fractional \
+  --weights population.tif --weight-band 1 \
+  --stats count,mean,sum,stddev,median,weighted_mean,weighted_sum,weighted_stddev
+```
+
+`--fractional` computes the polygon/cell intersection area in affine pixel coordinates:
+coverage `c` ranges from 0 to 1, holes are subtracted, and boundary-only contact contributes
+zero. It is incompatible with `--all-touched`. Count becomes a Real field equal to `sum(c)`;
+sum is `sum(value*c)`, mean divides that sum by count, and population standard deviation
+uses coverage weights. Min/max use any positive-coverage valid pixel. Median uses
+exactextract's interpolated coverage-weighted histogram. Integer center/all-touched counts
+and the existing unweighted defaults are retained.
+
+`--weights` supplies a second raster for `weighted_mean`, `weighted_sum` and
+`weighted_stddev` (`weighted_stdev` is an accepted alias). These statistics use weight
+`c * weighting_value`; other statistics ignore the weighting raster. Without `--fractional`,
+`c` is the existing binary center/all-touched membership. Select weighted statistics
+explicitly in `--stats`. The weighting band defaults to 1. Every value raster must have
+exactly the same dimensions, affine grid and equivalent CRS as the weighting raster;
+align differing grids before analysis. Finite negative contributing weights are errors.
+Zero weights contribute nothing. A nodata/nonfinite weight under a valid contributing
+value makes that zone's weighted statistics null, without changing its unweighted statistics.
+All-zero weights give weighted sum 0 and null weighted mean/standard deviation.
+
+Values use each selected band's nodata in all modes, fixing the previous use of
+band 1's nodata for every band; nonfinite values are excluded. Empty zones retain
+count zero and null other statistics, including sums (exactextract/GDAL return zero sums
+for empty zones). All statistics use binary64 arithmetic; overflow in weighted accumulation is an error. Explicit decimal rounding applies
+to fractional counts as well as other new Real fields; integer counts and source attributes
+are unchanged. Valid polygons/multipolygons are required for fractional overlay. Coverage is
+planar in the raster grid, including rotated grids; geographic pixels are not weighted by
+spherical area. Raster pixels are materialized as before, and dataset masks are not retained
+by this eager dataset API. Numeric nodata remains available; use a nodata/NaN materialized
+raster when mask-band validity must affect this operation.
+
+
+A weighting raster is opened and validated only when a weighted statistic is
+requested; unweighted-only requests ignore it.
+
+Fractional coverage masks use eight bytes per cell of the zone window, compared
+with one byte for binary masks. On a complete 966×731 real NLCD window (706,146
+pixels), three local count-only runs used peak RSS 44.2–44.7 MiB for binary and
+49.6–50.6 MiB for fractional membership; median times were 0.068 and 0.080 s.
+These measurements include process overhead and are not portable thresholds.
+Requesting `median` additionally retains value/coverage pairs (16 bytes per
+contributing sample) in both membership modes. Binary coverage is always one;
+its median sample buffer previously used eight bytes per sample.
+
 ## Vector datasets
 
 These commands are GDAL 3.13's `gdal vector concat`, `partition`, `set-field-type`,
@@ -3559,6 +3612,10 @@ Option | Description
 `--port` | Port on 127.0.0.1; by default a free one
 `--no-open` | Print the address without opening a browser
 
+The `preview` form shows the image it draws below the command's output, and its **Open map**
+button opens the dataset in a [map](#view) in a new tab, drawn with the form's `--bands`,
+`--colormap`, `--stretch`, `--layer` and `--attribute`; the size options do not apply to a map.
+
 The server runs commands with your permissions, including those that overwrite or delete files, so
 it listens on the loopback interface only and each API request must carry a random token, which is
 part of the printed address: treat the address as a password. The token is briefly on the command
@@ -3568,8 +3625,97 @@ port (`ssh -L 8080:127.0.0.1:8080 host`, then `terrio ui --port 8080 --no-open` 
 
 As with [MCP tools](#mcp), a run returns up to 100,000 bytes of output when the command ends, a
 non-zero status for a query's result (`compare`, `pixel-info`) is not a failure, and `@FILE` lists
-are refused: enter the paths one per line instead. The page has no map or preview; for that use the
+are refused: enter the paths one per line instead. To try terrio without installing it, see the
 [Playground](playground.md).
+
+## preview
+
+```sh
+terrio preview dem.tif                                   # in the terminal
+terrio preview dem.tif -o dem.png -c terrain -s p2,p98
+terrio preview https://example.com/scene.tif -o rgb.png -b 4,3,2 --width 1024
+terrio preview countries.gpkg -o population.png -a POP_EST -c viridis
+terrio preview dem.tif -o - | other-program              # PNG bytes on standard output
+```
+
+Draws a raster or vector dataset as an RGBA PNG, or in the terminal when there is no `-o`. A raster
+is read from its coarsest overview that still has the pixels the image needs; without a fitting
+overview, a level of more than 4 million pixels (4,194,304) is read one sampled row at a time. A
+preview of a large remote COG therefore transfers a small part of it: 400 pixels across from a 51.5
+MB 3612 x 3612 Float32 COG with three overviews took 720,896 bytes in two GETs; the default 1024
+pixels read its 1806 x 1806 overview, 10.1 MB.
+
+Pixels are drawn in the raster's own grid, without reprojecting or applying a rotation in its
+geotransform. Shrinking averages the valid pixels under each output pixel, weighted by alpha when
+there is an alpha band (paletted rasters take the nearest one); a level read row by row takes the
+nearest pixel instead. Images have at most 16,777,216 pixels (4096 x 4096), and up to 16,384 on a
+side. Nodata, masked pixels and an alpha band of 0 are transparent. Vector layers are
+burned with `rasterize` (every pixel a feature touches), north up, in one color or by a numeric
+field's values; points are drawn three pixels wide. A raster wider than 4,194,304 pixels with no
+overview to read from is refused: build overviews first. Reading row by row fetches the blocks of
+each sampled row, so a remote raster without overviews costs a request or more per output row;
+build overviews for remote previews.
+
+Without `--bands`, the red, green and blue bands are drawn when the color interpretation names
+them, else the first three bands of a Byte raster without a palette, else band 1, through the
+raster's own palette when it has one. `--stretch auto` draws Byte red, green and blue as stored and
+stretches everything else from its 2nd to its 98th percentile, measured on the pixels drawn.
+
+Option | Description
+--- | ---
+`-o`, `--output` | PNG file, or `-` for its bytes on standard output; without it, draw in the terminal
+`--overwrite` | Replace an existing output file
+`--width`, `--height` | Image size; with one of them the other keeps the aspect ratio
+`--max-size` | Longest side when no size is given (1024); images are not enlarged to reach it
+`-b`, `--bands` | One band, or three as red,green,blue
+`-c`, `--colormap` | `gray`, `viridis`, `magma`, `inferno`, `plasma`, `terrain`, `rdbu` or `rdylgn`; `_r` reverses
+`-s`, `--stretch` | `auto`, `minmax`, `pLOW,pHIGH` (percentiles) or `LOW,HIGH` (values as stored, before a band's scale and offset); `minmax` and percentiles are measured on the drawn pixels, so a shrunk image's averaging can narrow them
+`-l`, `--layer` | Vector: draw this layer (repeatable); by default all, which must share a CRS
+`-a`, `--attribute` | Vector: color features by this numeric field (viridis unless `-c`); the stretch is measured on the features' values
+`--display` | `auto`, `kitty`, `iterm`, `sixel` or `blocks`; refused with `-o`
+
+In the terminal, `auto` picks Kitty's graphics protocol in Kitty and Ghostty, iTerm2 inline images
+in iTerm2 and WezTerm, sixels where `TERM` names foot, mlterm or sixel, and otherwise colored
+Unicode half blocks, two pixels to a character cell, as wide as the terminal. Inside tmux or
+screen, which do not pass graphics on without configuration, it is half blocks. With `auto`, a
+standard output that is not a terminal is refused rather than filled with escape codes; name a
+`--display` to write them anyway. `-o -` is refused when standard output is a terminal. Sixels use a fixed palette of 216 colors.
+
+Through [MCP](mcp.md), a preview's result carries the PNG as image content, so that an agent sees
+it. Without `-o` the PNG goes to a private temporary directory, removed after the call; `-o -` is
+refused there. Images over 8 MiB are not attached.
+
+The colormap stops are sampled from matplotlib's viridis, magma, inferno and plasma (CC0) and
+ColorBrewer's RdBu and RdYlGn (Apache-2.0); see `NOTICE`.
+
+## view
+
+```sh
+terrio view dem.tif -c terrain
+terrio view https://example.com/scene.tif -b 4,3,2 --port 8080 --no-open
+terrio view parcels.gpkg -a value
+```
+
+Serves a map of one dataset on 127.0.0.1 and opens it in your browser: drag or use the arrow keys
+to pan, scroll or press `+` and `-` to zoom, and `0` to fit. Tiles of 256 screen pixels are drawn
+on request from the overview each zoom level needs, with the [preview](#preview) code, so large and
+remote datasets stay quick. Colors stay the same across tiles: a stretch is measured once, on a
+sample of up to 512 pixels across. The footer shows the column, row and coordinates under the
+pointer.
+
+The map shows the data alone, in the raster's own grid (a vector dataset's CRS, north up), with no
+basemap, so it works offline and for any CRS. The page and its script are built into terrio; it
+loads nothing from elsewhere. As with [`terrio ui`](#ui), the server listens on the loopback
+interface only and every tile request needs the session's random token; unlike it, it serves the
+map alone, not the forms that run commands. Tiles are drawn one at a time, since they share one
+reader of the dataset. A vector tile checks every feature's bounding box, then burns the features
+that touch it, so very large layers pan more slowly. It takes the `preview`
+options `--bands`, `--colormap`, `--stretch`, `--layer` and `--attribute`, plus:
+
+Option | Description
+--- | ---
+`--port` | Port on 127.0.0.1; by default a free one
+`--no-open` | Print the address without opening a browser
 
 ## Machine-readable command catalog
 

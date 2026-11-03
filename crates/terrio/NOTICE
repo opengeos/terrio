@@ -1499,6 +1499,21 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 -------------------------------------------------------------------------------
+exactextract weighted quantiles
+------------------------------
+
+The coverage-weighted median in crates/terrio/src/ops/zonal_weighted_median.rs
+adapts WeightedQuantiles::prepare and ::quantile from exactextract's
+src/weighted_quantiles.cpp, revision 76a48f00a497a76c77a821a28705026ec051191a:
+https://github.com/isciences/exactextract
+
+  Copyright (c) 2019-2020 ISciences, LLC.
+  All rights reserved.
+
+Terrio combines equal values into a histogram and computes only its median;
+polygon/cell intersections use the existing Rust geo engine.
+Licensed under the Apache License, Version 2.0, reproduced below.
+
 Apache License, Version 2.0
 -------------------------------------------------------------------------------
 
@@ -1577,6 +1592,21 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+
+-------------------------------------------------------------------------------
+matplotlib colormaps (https://matplotlib.org) and ColorBrewer (https://colorbrewer2.org)
+-------------------------------------------------------------------------------
+
+Terrio files with colormap stops sampled from these sources:
+  crates/terrio/src/ops/render.rs
+
+The viridis, magma, inferno and plasma colormaps were designed by Nathaniel J. Smith, Stefan van
+der Walt and Eric Firing (matplotlib lib/matplotlib/_cm_listed.py) and released under CC0 1.0
+(LICENSES/CC0-1.0.txt). The RdBu and RdYlGn schemes are from ColorBrewer by Cynthia Brewer, Mark
+Harrower and The Pennsylvania State University, Copyright (c) 2002:
+
+Licensed under the Apache License, Version 2.0, reproduced in the "Apache License, Version 2.0"
+section above.
 
 -------------------------------------------------------------------------------
 OGC CityGML schemas (https://schemas.opengis.net/citygml/)

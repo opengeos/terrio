@@ -6,7 +6,8 @@ version.workspace = true
 edition.workspace = true
 # Bundles terrio, whose point cloud eigensolver is MPL-2.0. wasm-pack copies this into the npm
 # package.json, where npm asks for compound expressions in parentheses.
-license = "(MIT AND MPL-2.0)"
+# Apache-2.0 for the coverage-weighted median adapted from exactextract.
+license = "(MIT AND MPL-2.0 AND Apache-2.0)"
 rust-version.workspace = true
 repository.workspace = true
 
