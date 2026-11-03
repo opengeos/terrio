@@ -391,7 +391,8 @@ fn read_region(source: &mut LazyRaster, plan: &Plan, window: Window, tw: usize, 
             return Err(Error::Unsupported(format!("cannot draw a raster {sw} pixels wide without overviews; build overviews first")));
         }
         let block_rows = source.level_block_size(overview).map_or(1, |(_, h)| h.max(1));
-        let most_rows = MAX_DIRECT_PIXELS / sw;
+        // All bands are read at once: the rows of a read hold one band's budget in all.
+        let most_rows = (MAX_DIRECT_PIXELS / (sw * count.max(1))).max(1);
         let source_row = |row: usize| y0 + centre(row, sh, th);
         let mut row = 0;
         while row < th {
@@ -1213,27 +1214,29 @@ mod tests {
         assert!(pixel(&image, 0, 0)[0] < pixel(&image, 0, 9)[0]);
     }
 
-    #[test]
-    fn sampled_rows_are_read_a_row_of_blocks_at_a_time() {
-        use std::sync::{Arc, Mutex};
-        /// Strips of 512 rows whose pixels are their row; records the windows read.
-        struct Strips(Arc<Mutex<Vec<Window>>>);
-        impl crate::cog::WindowSource for Strips {
-            fn overviews(&self) -> Vec<(usize, usize)> {
-                Vec::new()
-            }
-            fn block_size(&self) -> Option<(usize, usize)> {
-                Some((3000, 512))
-            }
-            fn read(&mut self, _: usize, window: Window, bands: &[usize]) -> Result<wbraster::raster::RasterData> {
-                self.0.lock().unwrap().push(window);
-                let rows = (0..window.height).flat_map(|r| std::iter::repeat_n(((window.y + r) % 251) as u8, window.width));
-                Ok(wbraster::raster::RasterData::U8(rows.cycle().take(window.width * window.height * bands.len()).collect()))
-            }
+    /// Strips of 512 rows of 3000 pixels whose pixels are their row, read as `bands` bands.
+    struct Strips(std::sync::Arc<std::sync::Mutex<Vec<Window>>>);
+    impl crate::cog::WindowSource for Strips {
+        fn overviews(&self) -> Vec<(usize, usize)> {
+            Vec::new()
         }
-        let config = RasterConfig { cols: 3000, rows: 3000, bands: 1, data_type: DataType::U8, ..Default::default() };
+        fn block_size(&self) -> Option<(usize, usize)> {
+            Some((3000, 512))
+        }
+        fn read(&mut self, _: usize, window: Window, bands: &[usize]) -> Result<wbraster::raster::RasterData> {
+            self.0.lock().unwrap().push(window);
+            let rows = (0..window.height).flat_map(|r| std::iter::repeat_n(((window.y + r) % 251) as u8, window.width));
+            Ok(wbraster::raster::RasterData::U8(rows.cycle().take(window.width * window.height * bands.len()).collect()))
+        }
+    }
+
+    /// Renders 100 sampled rows of a 3000 by 3000 strip source of `bands` bands, returning the
+    /// windows read and the image.
+    fn render_strips(bands: usize) -> (Vec<Window>, Image) {
+        use std::sync::{Arc, Mutex};
+        let config = RasterConfig { cols: 3000, rows: 3000, bands, data_type: DataType::U8, ..Default::default() };
         let header = LazyRaster::from(crate::RasterDataset::new(
-            crate::pixel::raster_from_data(config, wbraster::raster::RasterData::U8(vec![0; 3000 * 3000])).unwrap(),
+            crate::pixel::raster_from_data(config, wbraster::raster::RasterData::U8(vec![0; 3000 * 3000 * bands])).unwrap(),
             false,
         ))
         .header();
@@ -1241,11 +1244,27 @@ mod tests {
         let mut source = LazyRaster::from_source(header, Box::new(Strips(reads.clone())));
         let options = RenderOptions { width: Some(100), stretch: Stretch::Range(0.0, 255.0), ..Default::default() };
         let image = render_raster(&mut source, &options).unwrap();
+        let reads = reads.lock().unwrap().clone();
+        (reads, image)
+    }
+
+    #[test]
+    fn sampled_rows_are_read_a_row_of_blocks_at_a_time() {
+        let (reads, image) = render_strips(1);
         // 100 sampled rows in 6 rows of strips: a read each, within its strip.
-        let reads = reads.lock().unwrap();
         assert_eq!(reads.len(), 6, "{reads:?}");
         assert!(reads.iter().all(|w| w.y / 512 == (w.y + w.height - 1) / 512 && w.width == 3000));
         // Output row 50 is source row 1515.
+        assert_eq!(pixel(&image, 0, 50)[0], (1515 % 251) as u8);
+    }
+
+    #[test]
+    fn sampled_reads_hold_one_bands_budget_across_bands() {
+        // Three bands are read at once, so each read's rows must hold one band's budget in all
+        // three; a strip of 512 rows is then read in more than one piece, none across strips.
+        let (reads, image) = render_strips(3);
+        assert!(reads.iter().all(|w| w.width * w.height * 3 <= MAX_DIRECT_PIXELS), "{reads:?}");
+        assert!(reads.iter().all(|w| w.y / 512 == (w.y + w.height - 1) / 512), "{reads:?}");
         assert_eq!(pixel(&image, 0, 50)[0], (1515 % 251) as u8);
     }
 
