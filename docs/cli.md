@@ -3560,8 +3560,9 @@ assigns sequential IDs when the schema has no explicit `fid` field; GDAL can
 retain source IDs instead. The pipeline conformance suite identifies this
 discrete writer-policy difference in its case details and checks the native
 sequence independently. Source identifiers needed as data should be retained in
-an ordinary attribute field. Writer option parity remains
-part of [#288](https://github.com/opengeos/terrio/issues/288).
+an ordinary attribute field. Writer option parity is not
+part of the completed GDAL parity round 2 ([#288](https://github.com/opengeos/terrio/issues/288))
+and is not yet implemented; it is an open item of the [roadmap](https://github.com/opengeos/terrio/blob/main/ROADMAP.md).
 
 A saved definition used as a nested `read` input contributes its evaluated dataset;
 its checkpoint and write artifacts are discarded. Execute a definition directly

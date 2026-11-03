@@ -109,8 +109,9 @@ documented; additional feature scope belongs in separate tracking issues.
 
 ## GDAL parity round 2
 
-[#288](https://github.com/opengeos/terrio/issues/288) tracks agreement and additional
-scope in existing commands separately from new command coverage.
+[#288](https://github.com/opengeos/terrio/issues/288) tracked agreement and additional
+scope in existing commands separately from new command coverage. All three items are
+complete.
 
 - [x] Resolve the eight original public-fixture output mismatches in #253. The
       [current measurements](docs/benchmark-253-current.md), merged in
@@ -122,18 +123,22 @@ scope in existing commands separately from new command coverage.
       CLI/MCP, Python and JavaScript/WASM. Implemented in
       [#507](https://github.com/opengeos/terrio/pull/507), with 56 GDAL 3.13.3
       comparisons and explicit numerical/schema policies.
-- [ ] Cumulative viewshed, weighted/fractional zonal statistics and OGC API Features reading.
-      Implementations are tracked in [#514](https://github.com/opengeos/terrio/pull/514),
-      [#516](https://github.com/opengeos/terrio/pull/516) and
-      [#522](https://github.com/opengeos/terrio/pull/522), respectively. This item awaits
-      completion of all three merges; supported scope and validation are in the CLI
-      and testing documentation.
+- [x] Cumulative viewshed, weighted/fractional zonal statistics and OGC API Features reading,
+      through Rust, CLI/MCP, Python and JavaScript/WASM. Cumulative viewshed merged in
+      [#514](https://github.com/opengeos/terrio/pull/514) (15 exact real-USGS comparisons
+      against GDAL 3.13.3); fractional coverage and weighting rasters in
+      [#516](https://github.com/opengeos/terrio/pull/516) (18 real-data comparisons within
+      documented tolerances against GDAL 3.13.3 and exactextract 0.3.0); OGC API Features
+      reading in [#522](https://github.com/opengeos/terrio/pull/522) (15 live pygeoapi/PDOK
+      comparisons: nine exact, six with documented schema normalization). Supported scope
+      and validation are in the CLI and testing documentation.
 
 ## Additional GDAL command coverage
 
 [#289](https://github.com/opengeos/terrio/issues/289) tracks unified GDAL command
 equivalents and their documented subsets. It remains open at the maintainer's request;
-additional option and output depth is tracked in [#288](https://github.com/opengeos/terrio/issues/288).
+the second round of option and output depth, [#288](https://github.com/opengeos/terrio/issues/288),
+is complete.
 Command-group progress:
 
 - [x] Palette conversion: RGB median cut, supplied palettes, RGB/RGBA expansion and
@@ -589,6 +594,9 @@ WebAssembly (the `terrio-js` npm package):
 
 ## Later
 
+- [ ] Pipeline writer options as GDAL has them, such as retaining source feature IDs in a
+      write step rather than assigning sequential ones (see the pipeline section of
+      [docs/cli.md](docs/cli.md)). Not part of GDAL parity round 2 (#288).
 - [x] ArcGIS feature-service JSON (the `ESRIJSON` driver): files by content and query URLs page by
       page, as GDAL's driver reads them.
 - [x] ArcGIS feature-service protocol buffers (the `ESRIPBF` driver, `f=pbf`): files by content and
