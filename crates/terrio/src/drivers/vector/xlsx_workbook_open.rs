@@ -1095,6 +1095,9 @@ impl Workbook {
     /// back: other parts, a sheet's other elements, and cells and settings that are not edited. A
     /// workbook past the limits on parts, cells or bytes is refused.
     pub fn open_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() as u64 > MAX_SHEET_BYTES {
+            return Err(Error::ResourceLimit(format!("XLSX: the compressed workbook is larger than {MAX_SHEET_BYTES} bytes")));
+        }
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
         if zip.len() > MAX_WORKBOOK_ENTRIES {
             return Err(Error::ResourceLimit(format!("XLSX: the archive holds more than {MAX_WORKBOOK_ENTRIES} parts")));
@@ -1398,6 +1401,17 @@ fn decode(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    #[test]
+    fn compressed_workbook_size_is_bounded_for_paths_and_bytes() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(MAX_SHEET_BYTES + 1).unwrap();
+        assert!(matches!(Workbook::open(file.path().to_str().unwrap()), Err(Error::ResourceLimit(_))));
+        // SAFETY: this private sparse file is not modified while its read-only mapping exists.
+        let bytes = unsafe { memmap2::MmapOptions::new().map(file.as_file()).unwrap() };
+        assert!(matches!(Workbook::open_bytes(&bytes), Err(Error::ResourceLimit(_))));
+    }
 
     fn part(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();

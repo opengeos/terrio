@@ -674,3 +674,40 @@ with other vector sources. The portable `oapif::Reader` exposes bounded
 `next_request` / `accept_response` steps; native HTTP and JavaScript fetch use
 the same state machine. GDAL 3.13.3 is the behavior reference. See the CLI
 section for scope, CRS/axis handling, schema inference and allocation limits.
+
+## XLSX workbooks
+
+With the `xlsx` feature, `terrio::xlsx::Workbook` creates workbooks or opens
+`.xlsx` and `.xlsm` packages for editing. Cell addresses use Excel's A1 notation:
+
+```rust
+use terrio::xlsx::{Format, Workbook};
+
+fn main() -> terrio::Result<()> {
+    let mut book = Workbook::new();
+    book.set_creation_time("2024-01-02T03:04:05Z")?;
+    let sheet = book.add_sheet("Summary")?;
+    sheet.write("B1", "Quantity", &Format::new().bold())?;
+    sheet.write("B2", 9.0, &Format::new().num_format("#,##0"))?;
+    book.save("report.xlsx")?;
+    Ok(())
+}
+```
+
+The model supports typed cells, formula expressions with supplied cached values,
+styles, merged ranges, row and column dimensions, sheet order and visibility,
+views, filters, list validation, hyperlinks, comments and print settings.
+[The workbook example](https://github.com/opengeos/terrio/blob/main/crates/terrio/examples/xlsx_workbook.rs) demonstrates
+these controls. Formulas are stored rather than evaluated.
+
+`Workbook::open` and `open_bytes` preserve unmodeled XML and package parts,
+including charts and macros, when saving edits. Unsupported shared-formula edits
+return an error. Opening holds the decompressed package in memory: compressed
+input and total decompressed parts are bounded at 8 GiB, each part at 2 GiB,
+with additional cell/model memory accounting. These are safety limits rather
+than recommended workbook sizes.
+
+`layer(sheet, &XlsxOptions)` projects a sheet into Terrio's vector model;
+`add_layer` imports a vector layer with the same table options used by the CLI
+and language bindings. The layer projection currently serializes and rereads the
+workbook, so it has additional memory and processing costs.

@@ -9,6 +9,8 @@ Usage:
 EXAMPLE is the built ``xlsx_workbook`` example of ``crates/terrio/examples``.
 """
 
+import argparse
+import json
 import subprocess
 import sys
 import tempfile
@@ -53,13 +55,14 @@ def main():
     Returns:
         The process exit code.
     """
-    if len(sys.argv) != 2:
-        print(__doc__, file=sys.stderr)
-        return 2
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("example")
+    parser.add_argument("--json", type=Path, help="Write the comparison cases as JSON")
+    args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="terrio-xlsx-edit-") as tmp:
         before, after = Path(tmp, "before.xlsx"), Path(tmp, "after.xlsx")
         source_workbook(before)
-        subprocess.run([sys.argv[1], "edit", str(before), str(after)], check=True)
+        subprocess.run([args.example, "edit", str(before), str(after)], check=True, timeout=120)
         with zipfile.ZipFile(before) as a, zipfile.ZipFile(after) as b:
             kept = [n for n in a.namelist() if "chart" in n or "drawing" in n or "table" in n or "theme" in n]
             parts = {n: n in b.namelist() and a.read(n) == b.read(n) for n in kept}
@@ -79,11 +82,16 @@ def main():
             ("kept parts", (bool(parts), all(parts.values())), (True, True)),
         ]
     failed = 0
+    cases = []
     for name, actual, wanted in checks:
         same = actual == wanted
         failed += not same
+        cases.append({"name": name, "status": "identical" if same else "differs",
+                      "detail": "" if same else f"{actual!r} != {wanted!r}"})
         print(f"{'OK  ' if same else 'DIFF'}  {name}" + ("" if same else f": {actual!r} != {wanted!r}"))
     print(f"{len(checks) - failed} of {len(checks)} identical")
+    if args.json:
+        args.json.write_text(json.dumps({"cases": cases}, indent=2) + "\n", encoding="utf-8")
     return 1 if failed else 0
 
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- XLSX workbook byte input now enforces the same compressed-size limit as path input.
+  Workbook authoring and editing are checked against openpyxl in CI, including retained
+  chart, drawing, table and theme parts (#405).
+
 - Zonal statistics use each selected band's own nodata value in every membership mode,
   fixing multi-band inputs whose nodata differs from band 1. Fractional coverage and
   aligned weighting rasters are available across Rust, CLI/MCP, Python and Node/WASM (#288).
