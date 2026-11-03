@@ -128,7 +128,9 @@ Unordered projections iterate borrowed source features and can stop once the req
 limit is reached; summaries use constant accumulator memory except `COUNT(DISTINCT ...)`.
 `DISTINCT` stores seen values, `ORDER BY` caches sort keys and feature references, and joins index
 secondary keys once, retaining the first row per matching key. Existing file-based SQL entry points load their input layers;
-chunked `FeatureStream` SQL is not supported. Ordinary streaming vector conversions retain
+chunked `FeatureStream` SQL is not supported. Spatial expressions in joined
+queries copy primary geometry into the joined evaluation row; ordinary attribute
+joins borrow geometry until output emission. Ordinary streaming vector conversions retain
 their existing path.
 
 `scripts/compare_vector_ops_with_gdal.py` includes Natural Earth SQL comparisons against

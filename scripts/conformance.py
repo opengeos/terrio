@@ -26,7 +26,8 @@ Suites:
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
     raster-query      compare, pixel-info and xyz vs gdal raster compare, gdal raster pixel-info,
                       gdallocationinfo and gdal2xyz.py (compare_raster_query_with_gdal.py)
-    grouped-spatial-sql         grouped and spatial SQL vs GDAL SQLite on Natural Earth
+    grouped-spatial-sql
+                      grouped and spatial SQL vs GDAL SQLite on Natural Earth
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
     analysis-output   zonal/point-sampling output reprojection and decimal rounding
     footprint         raster footprints, source/custom fields and singleparts vs GDAL

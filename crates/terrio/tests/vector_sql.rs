@@ -322,3 +322,27 @@ fn untransformed_geometry_projections_preserve_the_source_crs() {
         assert_eq!(out.crs.as_ref().unwrap().wkt, crs.wkt);
     }
 }
+
+#[test]
+fn geometry_projections_use_joined_attribute_arguments() {
+    let mut layers = data();
+    layers[1].schema.add_field(FieldDef::new("distance", FieldType::Float));
+    for feature in &mut layers[1].features {
+        feature.attributes.push(V::Float(1.25));
+    }
+    let out =
+        query(&layers, "SELECT name,ST_Buffer(c.geometry,n.distance) AS shape FROM cities c LEFT JOIN nations n ON c.key=n.id").unwrap();
+    assert!(out.features[..2].iter().all(|f| f.geometry.is_some()));
+    assert!(out.features[2..].iter().all(|f| f.geometry.is_none()));
+    let coordinates = out.features[0].geometry.as_ref().unwrap().all_coords();
+    let min_x = coordinates.iter().map(|c| c.x).fold(f64::INFINITY, f64::min);
+    let max_x = coordinates.iter().map(|c| c.x).fold(f64::NEG_INFINITY, f64::max);
+    assert!((min_x + 1.25).abs() < 1e-10 && (max_x - 1.25).abs() < 1e-10);
+}
+
+#[test]
+fn grouped_order_accepts_primary_table_qualifiers() {
+    let out = query(&data(), "SELECT key,COUNT(*) AS n FROM cities c GROUP BY c.key ORDER BY c.key DESC").unwrap();
+    assert_eq!(out.features.iter().map(|f| f.attributes[0].clone()).collect::<Vec<_>>(), vec![V::Integer(2), V::Integer(1), V::Null]);
+    assert!(query(&data(), "SELECT key,COUNT(*) AS n FROM cities c GROUP BY c.key ORDER BY missing.key").is_err());
+}

@@ -102,7 +102,7 @@ documented; additional feature scope belongs in separate tracking issues.
 scope in existing commands separately from new command coverage.
 
 - [x] Resolve the eight original public-fixture output mismatches in #253. The
-      [current measurements](benchmark-253-current.md), merged in
+      [current measurements](docs/benchmark-253-current.md), merged in
       [#493](https://github.com/opengeos/terrio/pull/493), record complete raster,
       vector and 1/2/4/12-CPU comparisons against GDAL 3.13.3. The separate
       vendor-reported files remain unavailable and are not independently certified.

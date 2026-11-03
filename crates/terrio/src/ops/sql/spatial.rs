@@ -1,4 +1,5 @@
 //! Planar spatial SQL subset, independently implemented against GDAL 3.13.3 SQLite.
+use super::super::topology;
 use super::*;
 use crate::{Geometry, GeometryType};
 use geo::{Area, Centroid, Intersects};
@@ -71,21 +72,21 @@ pub(super) fn evaluate(name: &str, args: &[Expr], f: &Feature) -> Value {
         return if name == "ST_INTERSECTS" { Value::Int(-1) } else { Value::Null };
     };
     match name {
-        "ST_AREA" => Value::Float(super::super::topology::to_geo(&g).unsigned_area()),
+        "ST_AREA" => Value::Float(topology::to_geo(&g).unsigned_area()),
         "ST_LENGTH" => Value::Float(length(&g)),
-        "ST_CENTROID" => super::super::topology::to_geo(&g)
+        "ST_CENTROID" => topology::to_geo(&g)
             .centroid()
             .map(|p| Value::Geometry(Box::new(Geometry::Point(wbvector::Coord::xy(p.x(), p.y())))))
             .unwrap_or(Value::Null),
         "ST_INTERSECTS" => match geometry(&args[1], f) {
-            Some(b) => Value::Int(super::super::topology::to_geo(&g).intersects(&super::super::topology::to_geo(&b)) as i64),
+            Some(b) => Value::Int(topology::to_geo(&g).intersects(&topology::to_geo(&b)) as i64),
             _ => Value::Int(-1),
         },
         "ST_BUFFER" => {
             let Some(distance) = eval(&args[1], f).as_f64().filter(|d| d.is_finite()) else { return Value::Null };
             let mut l = Layer::new("geometry");
             l.features.push(Feature { fid: f.fid, geometry: Some(g.into_owned()), attributes: Vec::new() });
-            super::super::topology::buffer(&l, &super::super::topology::BufferOptions { distance, quadrant_segments: 30 })
+            topology::buffer(&l, &topology::BufferOptions { distance, quadrant_segments: 30 })
                 .ok()
                 .and_then(|mut l| l.features.pop()?.geometry)
                 .filter(|g| !g.all_coords().is_empty())

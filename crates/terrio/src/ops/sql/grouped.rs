@@ -1,5 +1,5 @@
 //! Attribute GROUP BY with SQLite-style keys, checked against GDAL 3.13.3.
-use super::select::{Aggregate, Item, bound, field_value, key};
+use super::select::{Aggregate, Item, bound, field_value, key, primary_name};
 use super::*;
 use std::collections::HashMap;
 
@@ -47,6 +47,7 @@ pub(super) fn execute(layer: &Layer, s: &Select, limit: Option<usize>) -> Result
         .as_ref()
         .map(|(n, desc)| {
             field_index(&out.schema, n)
+                .or_else(|| field_index(&out.schema, primary_name(n, s)))
                 .map(|i| (i, *desc))
                 .ok_or_else(|| syntax("grouped ORDER BY must name a selected column or alias".into()))
         })

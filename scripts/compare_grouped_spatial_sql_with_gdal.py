@@ -27,6 +27,8 @@ CASES = {
     "filtered groups and aggregate ordering": "SELECT CONTINENT AS continent, SUM(POP_EST) AS total FROM countries WHERE POP_EST>10000000 GROUP BY CONTINENT ORDER BY total DESC LIMIT 3",
     "unordered groups": "SELECT CONTINENT, COUNT(*) AS n FROM countries GROUP BY CONTINENT",
     "null predicate truthiness": "SELECT ADMIN,geometry FROM countries WHERE ST_Intersects(geometry,NULL) ORDER BY ADMIN LIMIT 3",
+    "qualified grouped ordering": "SELECT CONTINENT,COUNT(*) AS n FROM countries c GROUP BY c.CONTINENT ORDER BY c.CONTINENT",
+    "joined buffer distance": "SELECT c.ADMIN AS country,ST_Buffer(ST_Centroid(c.geometry),n.POP_EST/1000000000.0) AS geometry FROM countries c LEFT JOIN countries n ON c.ADMIN=n.ADMIN ORDER BY c.ADMIN LIMIT 4",
     "empty groups": "SELECT CONTINENT, COUNT(*) AS n FROM countries WHERE POP_EST<0 GROUP BY CONTINENT",
     "area length and intersects": "SELECT ADMIN,geometry, ST_Area(geometry) AS area, ST_Length(geometry) AS length, ST_Intersects(geometry,geometry) AS intersects FROM countries ORDER BY ADMIN LIMIT 12",
     "centroid": "SELECT ADMIN,ST_Centroid(geometry) AS geometry FROM countries ORDER BY ADMIN LIMIT 12",
@@ -195,7 +197,7 @@ def main():
                     status = compare(
                         expected,
                         snapshot(actual_ds.GetLayer(0)),
-                        buffer=name == "nested buffer",
+                        buffer=name in ("nested buffer", "joined buffer distance"),
                         schema_policy=name,
                         unordered=name == "unordered groups",
                     )

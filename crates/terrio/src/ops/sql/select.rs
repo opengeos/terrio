@@ -402,7 +402,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
     };
     // Bound attribute expressions contain indices; only geometry remains a named
     // input. Ordinary joins keep borrowing primary geometry until result emission.
-    let needs_geometry = expressions.iter().any(|e| {
+    let needs_geometry = expressions.iter().chain(geometry_expr.iter()).any(|e| {
         let mut fields = Vec::new();
         collect_fields(e, &mut fields);
         !fields.is_empty()
@@ -452,7 +452,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
         out.features.push(Feature {
             fid: if s.distinct { out.features.len() as u64 } else { f.fid },
             geometry: if let Some(e) = &geometry_expr {
-                match eval(e, f) {
+                match eval(e, row) {
                     Value::Geometry(g) => Some(*g),
                     _ => None,
                 }
