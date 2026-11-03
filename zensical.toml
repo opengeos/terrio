@@ -41,6 +41,7 @@ nav = [
     { "Testing Against GDAL" = "testing.md" },
     { "Conformance" = "conformance.md" },
     { "Benchmarks" = "benchmarks.md" },
+    { "Benchmark Parity" = "benchmark-parity.md" },
   ] },
   { "Project" = [
     { "Architecture" = "architecture.md" },
@@ -48,6 +49,19 @@ nav = [
     { "Roadmap" = "roadmap.md" },
     { "Acknowledgements" = "acknowledgements.md" },
     { "How to Cite" = "citation.md" },
+    { "Engineering Records" = [
+      { "GDAL Parity Recommendations" = "gdal-parity-recommendations.md" },
+      { "Scientific WASM Builds" = "scientific-wasm-build.md" },
+      { "CRS Footprint" = "crs-footprint.md" },
+      { "CRS Benchmark Validation" = "crs-benchmark-validation.md" },
+      { "TIFF Metadata Cache Validation" = "tiff-metadata-cache-validation.md" },
+      { "Benchmark Mismatches (#253)" = "benchmark-253-current.md" },
+      { "Benchmark Rerun (#253)" = "benchmark-253-rerun.md" },
+      { "GEOS Retirement Audit" = "geos-retirement-audit.md" },
+      { "JTS Provenance" = "jts-provenance.md" },
+      { "MakeValid Implementation" = "make-valid-implementation.md" },
+      { "MakeValid Clean-Room Specification" = "make-valid-clean-room-spec.md" },
+    ] },
     { "Report Issues" = "https://github.com/opengeos/terrio/issues" },
   ] },
 ]
