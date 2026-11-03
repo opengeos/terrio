@@ -586,7 +586,10 @@ lakes.free();
 Options are `layers`, `bbox`, `pageSize`, `maxFeatures`, `skipFeatures`,
 `datetime`, `crs`, `preferredCrs`, `serverFeatureAxisOrder`, `ignoreSchema`,
 `maxVectorBytes` and `maxPages`. Optional `headers` and `fetch` support an
-authenticated same-origin service. Browsers require server CORS permission.
+authenticated same-origin service. `Accept` is reserved for the reader's
+JSON/GeoJSON content negotiation; omit it from caller-supplied headers. Other
+headers, including authentication headers, are forwarded. Browsers require
+server CORS permission.
 Fetch redirects are refused because browsers can conceal redirect destinations;
 open the canonical service URL. Response streams are bounded before allocation,
 and links must stay on the original origin. Native CLI/Python follow

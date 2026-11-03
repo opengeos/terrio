@@ -3619,7 +3619,10 @@ terrio convert OAPIF:https://demo.pygeoapi.io/master/collections/lakes lakes.gpk
 
 The same commands are available through MCP. `--layer` selects collections and
 `--spat` sends a bounding box. Plain conversion limits stop paging early; with
-SQL or attribute filters, the limit is applied after local filtering. Open
+SQL or attribute filters, the limit is applied after local filtering. `--spat`
+also disables source-limit pushdown: combining it with `--limit` does not bound
+network paging, and the reader can consume the entire bbox match set before
+applying the final limit. Open
 options include `PAGE_SIZE` (1000), `DATETIME`, `CRS`, `PREFERRED_CRS`,
 `SERVER_FEATURE_AXIS_ORDER=AUTHORITY_COMPLIANT|GIS_FRIENDLY`, `IGNORE_SCHEMA=YES`,
 and `URL` for a bare `OAPIF:` name. `CRS` must be advertised; `PREFERRED_CRS`
