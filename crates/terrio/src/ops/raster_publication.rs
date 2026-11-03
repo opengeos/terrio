@@ -6,6 +6,8 @@
 
 use super::raster_tile::{Convention, FolderSink, TileCell, TilePlan};
 use crate::crs::SpatialRef;
+// KML and HTML text here escape `'` too (`&apos;`), unlike GDAL's metadata XML
+// (`drivers::common::xml_escape`).
 use crate::drivers::vector::xml::escape as xml;
 use crate::{Error, RasterDataset, Result};
 use serde::Deserialize;
