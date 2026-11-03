@@ -2,7 +2,7 @@
 //! `terrio lineref` (GDAL's `ogrlineref`): `linerefCreate`, `linerefPosition`,
 //! `linerefCoordinates` and `linerefSubline`.
 
-use crate::ops::input_layers;
+use crate::ops::{input_layers, selected_input_layers};
 use crate::{Dataset, Inner, js_err, parse_options};
 use serde::Deserialize;
 use terrio::Layer;
@@ -73,12 +73,8 @@ pub fn vector_grid(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         nodata: a.nodata,
     };
     let algorithm = GridAlgorithm::with_params(a.algorithm.as_deref().unwrap_or("invdist"), &params).map_err(js_err)?;
-    let all = input_layers(&src)?;
     let named = a.layers.is_some();
-    let all: Vec<Layer> = match &a.layers {
-        Some(names) => terrio::ops::vector_filter::select_layers(all, names).map_err(js_err)?,
-        None => all,
-    };
+    let all = selected_input_layers(&src, a.layers.as_deref().unwrap_or_default())?;
     let four = |v: Option<[f64; 4]>| v.map(|[a, b, c, d]| (a, b, c, d));
     let o = VectorGridOptions {
         algorithm,

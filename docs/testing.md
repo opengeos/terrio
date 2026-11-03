@@ -2381,3 +2381,26 @@ python scripts/conformance.py ../terrio-data --only xlsx,xlsx-layout,xlsx-workbo
 The `xlsx` suite uses GDAL as the reference; `xlsx-layout` and `xlsx-workbook`
 use openpyxl. Default CI runs `xlsx-workbook` with the debug example, while the
 extended conformance job uses the release example.
+
+## Vector layer selection (#529)
+
+Readers, rendering and filtering share layer selection and the diagnostic
+`no layer named NAME (layers: AVAILABLE)`. An empty request keeps every layer;
+duplicate requests do not duplicate layers, and source order is retained. A file
+with exactly one layer also accepts its file stem without renaming the layer.
+The alias is a Terrio extension to GDAL 3.13.3's layer-name lookup. GeoPackage
+keeps its case-insensitive table names. Already materialized layers have no source
+filename, so operations select them by their actual names.
+
+Rust regressions exercise native paths, spilled bytes, the codecs used by WASM,
+and the optional GDAL backend. Python and Node regressions cover readers and
+operations, including file bytes passed directly to JavaScript operations:
+
+```sh
+cargo test -p terrio --lib layer_selection
+cargo test -p terrio --test layer_selection
+cargo test -p terrio --lib named_layers
+cargo test -p terrio --features gdal --test gdal_backend
+pytest python/tests/test_layer_selection.py
+node --test --test-name-pattern='single named layer' js/tests/node.test.mjs
+```

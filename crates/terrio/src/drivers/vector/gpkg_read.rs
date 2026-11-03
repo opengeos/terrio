@@ -110,7 +110,7 @@ pub(crate) type Rect = (f64, f64, f64, f64);
 /// Reads the layers of a GeoPackage file (`wanted` names them; all when empty), keeping only the
 /// features whose bounding box intersects `bbox` when it is given.
 pub(crate) fn read(path: &str, wanted: &[String], bbox: Option<Rect>) -> Result<Vec<Layer>> {
-    read_db(&crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(path))?, wanted, bbox)
+    read_db_named(&crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(path))?, wanted, bbox, Some(path))
 }
 
 /// Reads the layers of a GeoPackage held in memory (`wanted` names them; all when empty).
@@ -122,19 +122,15 @@ pub(crate) fn parse(bytes: Vec<u8>, wanted: &[String]) -> Result<Vec<Layer>> {
 /// only the features whose bounding box intersects it, found through the layer's R-tree index
 /// when it has one, as GDAL's spatial filters do.
 pub(crate) fn read_db(db: &Db, wanted: &[String], bbox: Option<Rect>) -> Result<Vec<Layer>> {
+    read_db_named(db, wanted, bbox, None)
+}
+
+/// Reads selected tables, also accepting the single-table file-stem alias.
+pub(crate) fn read_db_named(db: &Db, wanted: &[String], bbox: Option<Rect>, path: Option<&str>) -> Result<Vec<Layer>> {
     let (layers, _) = contents(db)?;
-    let names: Vec<&String> = layers.iter().map(|c| &c.name).collect();
-    for w in wanted {
-        if !names.iter().any(|n| n.eq_ignore_ascii_case(w)) {
-            let all: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-            return Err(Error::InvalidArgument(format!("no layer named {w} (layers: {})", all.join(", "))));
-        }
-    }
-    layers
-        .iter()
-        .filter(|c| wanted.is_empty() || wanted.iter().any(|w| w.eq_ignore_ascii_case(&c.name)))
-        .map(|c| read_layer(db, c, bbox))
-        .collect()
+    let names: Vec<&str> = layers.iter().map(|c| c.name.as_str()).collect();
+    let selected = crate::dataset::layer_selection(wanted, &names, path, true)?;
+    layers.iter().zip(selected).filter_map(|(c, keep)| keep.then_some(c)).map(|c| read_layer(db, c, bbox)).collect()
 }
 
 /// The terrio field type of a declared column type.
@@ -196,14 +192,10 @@ pub(crate) struct DeclaredLayer {
 pub(crate) fn declared_layers(path: &str, wanted: &[String]) -> Result<Vec<DeclaredLayer>> {
     let db = crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(path))?;
     let (layers, _) = contents(&db)?;
-    for w in wanted {
-        if !layers.iter().any(|c| c.name.eq_ignore_ascii_case(w)) {
-            let all: Vec<&str> = layers.iter().map(|c| c.name.as_str()).collect();
-            return Err(Error::InvalidArgument(format!("no layer named {w} (layers: {})", all.join(", "))));
-        }
-    }
+    let names: Vec<&str> = layers.iter().map(|c| c.name.as_str()).collect();
+    let selected = crate::dataset::layer_selection(wanted, &names, Some(path), true)?;
     let mut out = Vec::new();
-    for c in layers.iter().filter(|c| wanted.is_empty() || wanted.iter().any(|w| w.eq_ignore_ascii_case(&c.name))) {
+    for c in layers.iter().zip(selected).filter_map(|(c, keep)| keep.then_some(c)) {
         let sql = db.table_sql(&c.name).ok_or_else(|| bad(format!("no table '{}'", c.name)))?;
         let types = sqlite::column_types(&sql);
         let constraints = sqlite::column_constraints(&sql);

@@ -1,5 +1,5 @@
 //! Pictures of datasets: `render` (RGBA for a canvas) and `renderPng`.
-use crate::ops::{file_bytes, input_layers, invalid};
+use crate::ops::{file_bytes, invalid, selected_input_layers};
 use crate::{Dataset, Inner, js_err, parse_options};
 use serde::Deserialize;
 use terrio::ops::render::{self as draw, Colormap, Image, RenderOptions, Stretch};
@@ -44,7 +44,6 @@ fn image(src: &JsValue, options: &JsValue) -> Result<Image, JsError> {
         stretch: Stretch::parse(&args.stretch).map_err(js_err)?,
         attribute: args.attribute,
     };
-    let only = |layers: Vec<terrio::Layer>| draw::select_layers(layers, &args.layers).map_err(js_err);
     if let Some(inner) = Dataset::lookup(src) {
         let raster = matches!(&*inner.borrow(), Inner::Raster(_));
         if raster {
@@ -63,7 +62,7 @@ fn image(src: &JsValue, options: &JsValue) -> Result<Image, JsError> {
     {
         return draw::render_raster(&mut source, &render_options).map_err(js_err);
     }
-    draw::render_vector(only(input_layers(src)?)?, &render_options).map_err(js_err)
+    draw::render_vector(selected_input_layers(src, &args.layers)?, &render_options).map_err(js_err)
 }
 
 /// Draws a raster or vector dataset as RGBA pixels: {width, height, data}, data a

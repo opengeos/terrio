@@ -196,7 +196,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
             vec![csv::parse(&xml::decode(&bytes), stem, &options)?]
         }
         #[cfg(feature = "xlsx")]
-        VectorDriver::XLSX => xlsx::parse(bytes, &options.layers, &options.xlsx)?,
+        VectorDriver::XLSX => xlsx::parse_named(bytes, &options.layers, &options.xlsx, Some(name))?,
         #[cfg(feature = "parquet")]
         VectorDriver::Parquet => vec![geoparquet::parse(bytes, stem)?],
         VectorDriver::GML => gml::parse(&xml::parse(&xml::decode(&bytes))?, None)?,

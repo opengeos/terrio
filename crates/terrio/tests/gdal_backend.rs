@@ -536,3 +536,28 @@ fn a_misspelled_layer_name_is_refused_through_gdal() {
     let error = terrio::open_vector(&source, &names(&["points", "pionts"])).unwrap_err();
     assert!(error.to_string().contains("no layer named pionts"), "{error}");
 }
+
+/// Selection is shared with native/WASM readers; the file-stem alias is a Terrio extension
+/// to GDAL 3.13.3's exact layer-name lookup.
+#[test]
+fn a_named_layer_answers_to_the_file_stem_through_gdal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("map.geojson");
+    std::fs::write(&path, r#"{"type":"FeatureCollection","name":"roads","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#).unwrap();
+    let source = format!("GDAL:{}", path.display());
+    let options = |n: &[&str]| terrio::VectorOpenOptions { layers: n.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+    for names in [vec![], vec!["map"], vec!["roads"], vec!["map", "roads", "map"]] {
+        let ds = terrio::open_vector(&source, &options(&names)).unwrap();
+        assert_eq!(ds.layers.len(), 1);
+        assert_eq!(ds.layers[0].name, "roads");
+        assert_eq!(ds.layers[0].features.len(), 1);
+    }
+    let bytes = std::fs::read(&path).unwrap();
+    let ds = terrio::gdal_backend::open_vector_bytes(bytes, "map.geojson", &options(&["map"])).unwrap();
+    assert_eq!(ds.layers.len(), 1);
+    assert_eq!(ds.layers[0].name, "roads");
+    assert_eq!(
+        terrio::open_vector(&source, &options(&["map", "missing"])).unwrap_err().to_string(),
+        "no layer named missing (layers: roads)"
+    );
+}

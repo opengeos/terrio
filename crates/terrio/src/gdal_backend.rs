@@ -1020,11 +1020,12 @@ fn vector_from(ds: GdalDataset, path: &str, options: &VectorOpenOptions) -> Resu
     if names.is_empty() {
         return Err(Error::Unsupported(format!("'{path}' has no vector layers")));
     }
-    crate::dataset::check_layer_names(&options.layers, &names)?;
+    let available: Vec<&str> = names.iter().map(String::as_str).collect();
+    let selected = crate::dataset::layer_selection(&options.layers, &available, Some(strip_prefix(path).unwrap_or(path)), false)?;
     let mut layers = Vec::new();
-    for mut layer in ds.layers() {
+    for (mut layer, keep) in ds.layers().zip(selected) {
         let name = layer.name();
-        if !options.layers.is_empty() && !options.layers.contains(&name) {
+        if !keep {
             continue;
         }
         if let Some((x0, y0, x1, y1)) = options.spatial_filter {

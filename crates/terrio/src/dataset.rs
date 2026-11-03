@@ -299,7 +299,8 @@ pub enum Dataset {
 /// Options for opening vector datasets.
 #[derive(Debug, Clone, Default)]
 pub struct VectorOpenOptions {
-    /// Only these layers (by name). Empty means all.
+    /// Only these layers (by name). Empty means all. A single layer also answers to the
+    /// source file's stem; this alias does not rename it. Every requested name must match.
     pub layers: Vec<String>,
     /// How to read CSV files.
     pub csv: crate::drivers::vector::csv::CsvOptions,
@@ -1208,29 +1209,24 @@ pub(crate) fn finish_vector(layers: Vec<Layer>, path: &str, driver: VectorDriver
 
 /// Keeps the layers `options` asks for (all when it names none).
 pub(crate) fn select_layers(layers: Vec<Layer>, path: &str, options: &VectorOpenOptions) -> Result<Vec<Layer>> {
-    if options.layers.is_empty() {
-        return Ok(layers);
-    }
-    let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-    let single = layers.len() == 1;
-    // A single layer also answers to the file's name, which it is named after when it has none.
-    let matches = |layer: &Layer, name: &str| layer.name == name || single && name == stem;
-    // Every name must match a layer, as GDAL refuses a layer it cannot fetch: a misspelled name
-    // beside a valid one is not silently dropped.
-    if let Some(missing) = options.layers.iter().find(|n| !layers.iter().any(|l| matches(l, n))) {
-        let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
-        return Err(Error::InvalidArgument(format!("no layer named {missing} (layers: {})", names.join(", "))));
-    }
-    Ok(layers.into_iter().filter(|l| options.layers.iter().any(|n| matches(l, n))).collect())
+    let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
+    let selected = layer_selection(&options.layers, &names, Some(path), false)?;
+    Ok(layers.into_iter().zip(selected).filter_map(|(layer, keep)| keep.then_some(layer)).collect())
 }
 
-/// Refuses a requested layer name that none of `available` has, as GDAL refuses a layer it
-/// cannot fetch, rather than reading the layers the other names match.
-pub(crate) fn check_layer_names(requested: &[String], available: &[String]) -> Result<()> {
-    match requested.iter().find(|n| !available.contains(n)) {
-        Some(missing) => Err(Error::InvalidArgument(format!("no layer named {missing} (layers: {})", available.join(", ")))),
-        None => Ok(()),
+/// Selects from the complete source inventory before features are read. Empty requests keep
+/// all layers; a single layer also answers to the source file's stem, without being renamed.
+/// Missing requests use one diagnostic across readers and operations. Unlike GDAL 3.13.3,
+/// Terrio also accepts this file-stem alias. SQLite table lookup remains case-insensitive.
+pub(crate) fn layer_selection(requested: &[String], available: &[&str], path: Option<&str>, ignore_case: bool) -> Result<Vec<bool>> {
+    let stem = path.and_then(|p| Path::new(p).file_stem()).and_then(|s| s.to_str()).filter(|s| !s.is_empty());
+    let matches = |layer: &str, name: &str| {
+        layer == name || ignore_case && layer.eq_ignore_ascii_case(name) || available.len() == 1 && stem == Some(name)
+    };
+    if let Some(missing) = requested.iter().find(|n| !available.iter().any(|l| matches(l, n))) {
+        return Err(Error::InvalidArgument(format!("no layer named {missing} (layers: {})", available.join(", "))));
     }
+    Ok(available.iter().map(|l| requested.is_empty() || requested.iter().any(|n| matches(l, n))).collect())
 }
 
 /// Normalizes what drivers leave inconsistent: the layer name and the CRS of formats that are
@@ -1954,7 +1950,28 @@ mod tests {
         // A single layer also answers to the file's name.
         let single = super::select_layers(vec![crate::Layer::new("layer")], "/data/map.geojson", &options(&["map"])).unwrap();
         assert_eq!(single.len(), 1);
-        assert!(super::check_layer_names(&["roads".into(), "x".into()], &["roads".into()]).is_err());
+        assert!(super::layer_selection(&["roads".into(), "x".into()], &["roads"], None, false).is_err());
+    }
+
+    #[test]
+    fn layer_selection_preserves_order_and_rejects_aliases_for_multiple_layers() {
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let available = ["roads", "rivers"];
+        let select = |n: &[&str]| super::layer_selection(&names(n), &available, Some("map.kml"), false);
+        assert_eq!(select(&[]).unwrap(), [true, true]);
+        assert_eq!(select(&["rivers", "roads", "roads"]).unwrap(), [true, true]);
+        assert_eq!(select(&["rivers"]).unwrap(), [false, true]);
+        assert_eq!(select(&["roads", "map"]).unwrap_err().to_string(), "no layer named map (layers: roads, rivers)");
+        assert!(super::layer_selection(&names(&[""]), &["roads"], None, false).is_err());
+        for selector in [crate::ops::render::select_layers, crate::ops::vector_filter::select_layers] {
+            let layers = || available.iter().map(|n| crate::Layer::new(*n)).collect();
+            assert_eq!(selector(layers(), &[]).unwrap().len(), 2);
+            assert_eq!(selector(layers(), &names(&["rivers"])).unwrap()[0].name, "rivers");
+            assert_eq!(
+                selector(layers(), &names(&["roads", "missing"])).unwrap_err().to_string(),
+                "no layer named missing (layers: roads, rivers)"
+            );
+        }
     }
 
     #[test]

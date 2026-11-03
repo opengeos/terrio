@@ -405,7 +405,7 @@ pub(crate) mod codec {
             let driver = VectorDriver::HECRAS;
             let layers = crate::drivers::vector::read_bytes(bytes, name, driver, options)?.unwrap_or_default();
             let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, name, driver)).collect();
-            return finish_vector(layers, driver, options);
+            return finish_vector(layers, name, driver, options);
         }
         #[cfg(feature = "netcdf-hdf5")]
         if crate::drivers::hdf5::signature_offset_in(&bytes).is_some() {
@@ -469,7 +469,7 @@ pub(crate) mod codec {
         if matches!(driver, VectorDriver::KML | VectorDriver::KMZ) {
             let (layers, style_table) = crate::drivers::vector::read_kml_bytes(bytes, name, driver)?;
             let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, name, driver)).collect();
-            return finish_vector(layers, driver, options).map(|d| match d {
+            return finish_vector(layers, name, driver, options).map(|d| match d {
                 Dataset::Vector(v) => Dataset::Vector(VectorDataset { style_table, ..v }),
                 raster => raster,
             });
@@ -483,7 +483,7 @@ pub(crate) mod codec {
             )));
         };
         let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, name, driver)).collect();
-        finish_vector(layers, driver, options)
+        finish_vector(layers, name, driver, options)
     }
 
     /// Opens the main dataset of a zip archive held in memory.
@@ -529,7 +529,7 @@ pub(crate) mod codec {
             };
             let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar, options)?;
             let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, &main, driver)).collect();
-            return finish_vector(layers, driver, options);
+            return finish_vector(layers, name, driver, options);
         }
         let mut ds = open(member, &main, options)?;
         // A raster's `.aux.xml` sidecar (a JPEG 2000's nodata value).
@@ -595,11 +595,9 @@ pub(crate) mod codec {
     }
 
     /// Keeps the layers the options ask for.
-    pub(super) fn finish_vector(layers: Vec<Layer>, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Dataset> {
+    pub(super) fn finish_vector(layers: Vec<Layer>, name: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Dataset> {
         let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
-        crate::dataset::check_layer_names(&options.layers, &names)?;
-        let layers: Vec<Layer> =
-            if options.layers.is_empty() { layers } else { layers.into_iter().filter(|l| options.layers.contains(&l.name)).collect() };
+        let layers = crate::dataset::select_layers(layers, name, options)?;
         // A source without layers is refused, as before names were checked one by one.
         if layers.is_empty() {
             return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
@@ -716,8 +714,80 @@ mod tests {
     }
 
     #[test]
+    fn named_layers_answer_to_the_file_stem_through_each_reader() {
+        let bytes = br#"{"type":"FeatureCollection","name":"roads","features":[{"type":"Feature","properties":{"v":7},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
+        let options = |names: &[&str]| VectorOpenOptions { layers: names.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+        let dir = tempfile::tempdir().unwrap();
+        // Exercise the WASM codecs directly, as well as native paths and native spilled bytes.
+        for names in [vec![], vec!["map"], vec!["roads"], vec!["roads", "map", "map"]] {
+            let o = options(&names);
+            let path = dir.path().join("map.geojson");
+            std::fs::write(&path, bytes).unwrap();
+            let datasets = [
+                codec::open(bytes.to_vec(), "map.geojson", &o).unwrap(),
+                Dataset::Vector(crate::open_vector(path.to_str().unwrap(), &o).unwrap()),
+                Dataset::Vector(open_vector_bytes(bytes.to_vec(), "map.geojson", &o).unwrap()),
+            ];
+            for ds in datasets {
+                let Dataset::Vector(ds) = ds else { panic!() };
+                assert_eq!(ds.layers.len(), 1);
+                assert_eq!(ds.layers[0].name, "roads");
+                assert_eq!(ds.layers[0].features.len(), 1);
+            }
+        }
+        for names in [vec!["missing"], vec!["map", "missing"]] {
+            let o = options(&names);
+            let error = codec::open(bytes.to_vec(), "map.geojson", &o).unwrap_err();
+            assert_eq!(error.to_string(), "no layer named missing (layers: roads)");
+        }
+    }
+
+    #[test]
+    fn named_layer_selection_is_consistent_across_codecs() {
+        let source = codec::open(br#"{"type":"FeatureCollection","name":"roads","features":[{"type":"Feature","properties":{"v":7},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#.to_vec(), "source.geojson", &Default::default()).unwrap();
+        let Dataset::Vector(source) = source else { panic!() };
+        let mut extensions = vec!["geojson", "kml", "kmz", "gml"];
+        if cfg!(feature = "flatgeobuf") {
+            extensions.push("fgb");
+        }
+        if cfg!(feature = "parquet") {
+            extensions.push("parquet");
+        }
+        if cfg!(feature = "sqlite") {
+            extensions.push("gpkg");
+        }
+        if cfg!(feature = "xlsx") {
+            extensions.push("xlsx");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        for ext in extensions {
+            let filename = format!("map.{ext}");
+            let bytes = write_vector_bytes(&source.layers, &filename, &Default::default()).unwrap();
+            let o = VectorOpenOptions { layers: vec!["map".into()], ..Default::default() };
+            let Dataset::Vector(ds) = codec::open(bytes.clone(), &filename, &o).unwrap() else { panic!("{ext}") };
+            assert_eq!(ds.layers.len(), 1, "{ext}");
+            assert_eq!(ds.layers[0].features.len(), 1, "{ext}");
+            let path = dir.path().join(&filename);
+            crate::write_vector(&source.layers, path.to_str().unwrap(), &Default::default()).unwrap();
+            let native = crate::open_vector(path.to_str().unwrap(), &o).unwrap_or_else(|e| panic!("{ext}: {e}"));
+            assert_eq!(native.layers[0].name, ds.layers[0].name, "{ext}");
+            let o = VectorOpenOptions { layers: vec!["map".into(), "missing".into()], ..Default::default() };
+            let error = crate::open_vector(path.to_str().unwrap(), &o).unwrap_err();
+            assert_eq!(error.to_string(), format!("no layer named missing (layers: {})", ds.layers[0].name), "{ext}");
+            if matches!(ext, "kml" | "kmz" | "gpkg" | "xlsx") {
+                let mut other = source.layers[0].clone();
+                other.name = "rivers".into();
+                let bytes = write_vector_bytes(&[source.layers[0].clone(), other], &filename, &Default::default()).unwrap();
+                let o = VectorOpenOptions { layers: vec!["roads".into(), "map".into()], ..Default::default() };
+                let error = codec::open(bytes, &filename, &o).unwrap_err();
+                assert_eq!(error.to_string(), "no layer named map (layers: roads, rivers)", "{ext}");
+            }
+        }
+    }
+
+    #[test]
     fn a_source_without_layers_is_refused_in_memory() {
-        let error = codec::finish_vector(Vec::new(), VectorDriver::GeoJSON, &VectorOpenOptions::default()).unwrap_err();
+        let error = codec::finish_vector(Vec::new(), "empty.geojson", VectorDriver::GeoJSON, &VectorOpenOptions::default()).unwrap_err();
         assert!(error.to_string().starts_with("no layer named"), "{error}");
     }
 

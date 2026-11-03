@@ -264,9 +264,7 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
         d => return Err(Error::Unsupported(format!("the {} driver is not read as a stream", d.name()))),
     };
     let layer = crate::dataset::fix_layer(layer, path, driver);
-    if !options.layers.is_empty() && !options.layers.iter().any(|n| *n == layer.name || n == stem) {
-        return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), layer.name)));
-    }
+    crate::dataset::layer_selection(&options.layers, &[layer.name.as_str()], Some(path), false)?;
     Ok(vec![FeatureReader::new(layer, source)])
 }
 
@@ -721,15 +719,11 @@ fn open_gpkg(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Ve
         // Rasters only: as the dataset reader reports it.
         return open_layers_whole(path, options, batch);
     }
-    for w in &options.layers {
-        if !layers.iter().any(|c| c.name.eq_ignore_ascii_case(w)) {
-            let all: Vec<&str> = layers.iter().map(|c| c.name.as_str()).collect();
-            return Err(Error::InvalidArgument(format!("no layer named {w} (layers: {})", all.join(", "))));
-        }
-    }
+    let names: Vec<&str> = layers.iter().map(|c| c.name.as_str()).collect();
+    let selected = crate::dataset::layer_selection(&options.layers, &names, Some(path), true)?;
     crate::crs::prefetch();
     let mut out = Vec::new();
-    for c in layers.iter().filter(|c| options.layers.is_empty() || options.layers.iter().any(|w| w.eq_ignore_ascii_case(&c.name))) {
+    for c in layers.iter().zip(selected).filter_map(|(c, keep)| keep.then_some(c)) {
         let db = sqlite::FileDb::open(path)?;
         let def = gpkg_read::layer_def(&db, c)?;
         let (root, sql) = db.table_root(&c.name)?;

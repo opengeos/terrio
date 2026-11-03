@@ -746,15 +746,8 @@ pub fn render_vector(layers: Vec<Layer>, options: &RenderOptions) -> Result<Imag
 /// # Errors
 ///
 /// When a name matches no layer.
-pub fn select_layers(mut layers: Vec<Layer>, names: &[String]) -> Result<Vec<Layer>> {
-    if names.is_empty() {
-        return Ok(layers);
-    }
-    if let Some(missing) = names.iter().find(|n| !layers.iter().any(|l| &l.name == *n)) {
-        return Err(Error::InvalidArgument(format!("no layer '{missing}'")));
-    }
-    layers.retain(|l| names.contains(&l.name));
-    Ok(layers)
+pub fn select_layers(layers: Vec<Layer>, names: &[String]) -> Result<Vec<Layer>> {
+    super::vector_filter::select_layers(layers, names)
 }
 
 /// A dataset opened for drawing.
@@ -780,6 +773,7 @@ pub fn open_source(path: &str, layers: &[String], vector_options: bool) -> Resul
             let open = crate::VectorOpenOptions { layers: layers.to_vec(), ..Default::default() };
             match crate::open_vector(path, &open) {
                 Ok(vector) => Ok(Source::Vector(vector.into_resolved_layers())),
+                Err(error @ Error::InvalidArgument(_)) => Err(error),
                 Err(vector_error) => Err(Error::InvalidArgument(format!(
                     "{path}: neither a raster nor a vector dataset (as a raster: {raster_error}; as a vector dataset: {vector_error})"
                 ))),
