@@ -192,9 +192,45 @@ fn burn<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, ban
             prepare_shape(g, options.merge, &inv, values.len() - 1, &mut shapes);
         }
     }
+    draw_shapes(&mut bufs, &values, &shapes, (grid.cols, grid.rows), dtype, options.merge, options.all_touched);
+    Ok(if bands == 1 { bufs.pop().unwrap_or_default() } else { bufs.concat() })
+}
+
+/// Burns `geometries` with their values into a single `f64` band of `cols` by `rows` pixels on a
+/// north-up `geo_transform`, over `init`: [`rasterize`] without reprojection, filtering or
+/// attribute lookups, for callers that hold the geometries and values already, by reference.
+pub(crate) fn burn_geometries<'a>(
+    geometries: impl IntoIterator<Item = (&'a Geometry, f64)>,
+    geo_transform: [f64; 6],
+    (cols, rows): (usize, usize),
+    init: f64,
+    all_touched: bool,
+) -> Vec<f64> {
+    let [g0, g1, _, g3, _, g5] = geo_transform;
+    let inv = [-g0 / g1, 1.0 / g1, -g3 / g5, 1.0 / g5];
+    let (mut values, mut shapes) = (Vec::new(), Vec::new());
+    for (g, v) in geometries {
+        values.push(vec![v]);
+        prepare_shape(g, MergeAlg::default(), &inv, values.len() - 1, &mut shapes);
+    }
+    let mut bufs = vec![vec![init; cols * rows]];
+    draw_shapes(&mut bufs, &values, &shapes, (cols, rows), DataType::F64, MergeAlg::default(), all_touched);
+    bufs.pop().unwrap_or_default()
+}
+
+/// Draws `shapes` with their `values` into `bufs`, a buffer a band.
+fn draw_shapes<T: Pixel>(
+    bufs: &mut [Vec<T>],
+    values: &[Vec<f64>],
+    shapes: &[(usize, Shape)],
+    (cols, rows): (usize, usize),
+    dtype: DataType,
+    merge: MergeAlg,
+    all_touched: bool,
+) {
+    let bands = bufs.len();
     // Bands of rows are burned in parallel, each by every shape in turn: each pixel sees the same
     // burns in the same order as in a single pass.
-    let (cols, rows) = (grid.cols, grid.rows);
     let stripe_rows = rows.div_ceil(crate::par::threads()).max(1);
     let mut stripes: Vec<Vec<&mut [T]>> = (0..rows.div_ceil(stripe_rows)).map(|_| Vec::with_capacity(bands)).collect();
     for buf in bufs.iter_mut() {
@@ -202,20 +238,17 @@ fn burn<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, ban
             stripe.push(part);
         }
     }
-    let (values, shapes) = (&values, &shapes);
     crate::par::for_each_owned_coarse(stripes, |i, parts| {
         let row0 = i * stripe_rows;
         let nrows = parts.first().map_or(0, |p| p.len() / cols.max(1));
-        let mut b =
-            Burner { bufs: parts, row0, rows: nrows, values: &[], cols, dtype, merge: options.merge, visited: None, fill_visited: false };
+        let mut b = Burner { bufs: parts, row0, rows: nrows, values: &[], cols, dtype, merge, visited: None, fill_visited: false };
         for (v, shape) in shapes {
             if shape.touches(row0, nrows) {
                 b.values = &values[*v];
-                draw_shape(&mut b, shape, cols as i32, rows as i32, options.all_touched);
+                draw_shape(&mut b, shape, cols as i32, rows as i32, all_touched);
             }
         }
     });
-    Ok(if bands == 1 { bufs.pop().unwrap_or_default() } else { bufs.concat() })
 }
 
 fn needs_reprojection(layer: &Layer, crs: &SpatialRef) -> bool {

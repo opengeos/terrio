@@ -11,15 +11,15 @@
 //! Pictures of data: a raster or vector dataset as an RGBA image, for a quick look.
 //!
 //! Rasters are read lazily: from the coarsest overview that still covers the output size, and with
-//! no overview fit to read whole, one sampled row at a time, so a preview of a large remote file
-//! transfers a small part of it. Pixels are drawn in the raster's own grid, without reprojecting
-//! or applying a rotation in its geotransform. Vector layers are burned with
-//! [`rasterize`], and are drawn with north up.
+//! no overview fit to read whole, the sampled rows a row of blocks at a time, so a preview of a
+//! large remote file transfers a small part of it and decodes each block once. Pixels are drawn
+//! in the raster's own grid, without reprojecting or applying a rotation in its geotransform.
+//! Vector layers are burned with [`crate::ops::rasterize::rasterize`]'s burner, through a
+//! spatial index, and are drawn with north up.
 //!
 //! The colormap stops are sampled from matplotlib's viridis, magma, inferno and plasma (CC0) and
 //! ColorBrewer's RdBu and RdYlGn (Apache-2.0). See `NOTICE`.
 
-use crate::ops::rasterize::{RasterizeOptions, rasterize};
 use crate::{DataType, Error, FloatReadOptions, LazyRaster, Result, Window};
 use wbvector::{Geometry, Layer};
 
@@ -28,7 +28,7 @@ pub const DEFAULT_MAX_SIZE: usize = 1024;
 /// The longest side an image may have.
 pub const MAX_IMAGE_SIZE: usize = 16384;
 /// The most pixels of a level read at once, per band: 32 MiB of `f64` values a band. Larger
-/// levels are read one sampled row at a time instead.
+/// levels are read by their sampled rows instead, those in a row of blocks together.
 const MAX_DIRECT_PIXELS: usize = 1 << 22;
 /// The most pixels an image may have: 4096 x 4096. Drawing one holds the values read, 8 bytes a
 /// band per pixel (512 MiB for four bands at the cap), besides the 4 bytes a pixel of the image.
@@ -384,17 +384,33 @@ fn read_region(source: &mut LazyRaster, plan: &Plan, window: Window, tw: usize, 
     let centre = |i: usize, from: usize, to: usize| ((i as u128 * 2 + 1) * from as u128 / (to as u128 * 2)) as usize;
     let mut out = vec![f64::NAN; count * tw * th];
     if sw.saturating_mul(sh) > MAX_DIRECT_PIXELS {
-        // Too large to hold: the rows the output's rows land on, and their nearest columns.
+        // Too large to hold: the rows the output's rows land on, and their nearest columns. The
+        // rows in one row of the file's blocks are read together, as many as the budget holds,
+        // so that each block is read and decoded once rather than once a sampled row.
         if sw > MAX_DIRECT_PIXELS {
             return Err(Error::Unsupported(format!("cannot draw a raster {sw} pixels wide without overviews; build overviews first")));
         }
-        for row in 0..th {
-            let values = source.read_window_f64(Window::new(x0, y0 + centre(row, sh, th), sw, 1), &options)?;
-            for b in 0..count {
-                for col in 0..tw {
-                    out[(b * th + row) * tw + col] = values[b * sw + centre(col, sw, tw)];
+        let block_rows = source.block_size().map_or(1, |(_, h)| h.max(1));
+        let most_rows = MAX_DIRECT_PIXELS / sw;
+        let source_row = |row: usize| y0 + centre(row, sh, th);
+        let mut row = 0;
+        while row < th {
+            let first = source_row(row);
+            let mut end = row + 1;
+            while end < th && source_row(end) / block_rows == first / block_rows && source_row(end) - first < most_rows {
+                end += 1;
+            }
+            let height = source_row(end - 1) - first + 1;
+            let values = source.read_window_f64(Window::new(x0, first, sw, height), &options)?;
+            for r in row..end {
+                let offset = (source_row(r) - first) * sw;
+                for b in 0..count {
+                    for col in 0..tw {
+                        out[(b * th + r) * tw + col] = values[b * sw * height + offset + centre(col, sw, tw)];
+                    }
                 }
             }
+            row = end;
         }
         mask_by_alpha(&mut out, plan, tw * th);
         return Ok(out);
@@ -560,107 +576,144 @@ fn vector_extent(layers: &[Layer]) -> Result<[f64; 4]> {
     Ok([x0 - margin, y0 - margin, x1 + margin, y1 + margin])
 }
 
+/// A feature to draw: its geometry, the value it burns and its bounding box `[min_x, min_y,
+/// max_x, max_y]`.
+struct Drawn {
+    geometry: Geometry,
+    value: f64,
+    bbox: [f64; 4],
+}
+
+/// The cells a [`Drawn`] list is binned into, a side, at most.
+const INDEX_CELLS: usize = 256;
+/// The most cells a feature is binned into; larger features are looked at for every region, so
+/// that the index holds at most this many entries a feature.
+const MAX_FEATURE_CELLS: usize = 64;
+
+/// Features in drawing order, with a uniform grid over their extent listing the features whose
+/// box touches each cell, so that a region looks only at the features near it. It is built
+/// once, with about one feature a cell.
+struct Indexed {
+    features: Vec<Drawn>,
+    extent: [f64; 4],
+    cells: (usize, usize),
+    bins: Vec<Vec<u32>>,
+    large: Vec<u32>,
+}
+
+impl Indexed {
+    fn new(features: Vec<Drawn>, extent: [f64; 4]) -> Self {
+        // About one feature a cell, up to INDEX_CELLS a side, in the extent's aspect.
+        let side = (features.len() as f64).sqrt().ceil().clamp(1.0, INDEX_CELLS as f64);
+        let (w, h) = (extent[2] - extent[0], extent[3] - extent[1]);
+        let cells = if w >= h {
+            (side as usize, ((side * h / w).ceil() as usize).max(1))
+        } else {
+            (((side * w / h).ceil() as usize).max(1), side as usize)
+        };
+        let mut index = Self { features: Vec::new(), extent, cells, bins: vec![Vec::new(); cells.0 * cells.1], large: Vec::new() };
+        for (i, feature) in features.iter().enumerate() {
+            let (cols, rows) = index.span(feature.bbox);
+            if cols.len() * rows.len() > MAX_FEATURE_CELLS {
+                index.large.push(i as u32);
+            } else {
+                for row in rows {
+                    for col in cols.clone() {
+                        index.bins[row * cells.0 + col].push(i as u32);
+                    }
+                }
+            }
+        }
+        index.features = features;
+        index
+    }
+
+    /// The columns and rows of the cells `bbox` touches, clamped to the grid.
+    fn span(&self, bbox: [f64; 4]) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
+        let e = self.extent;
+        let cell = |v: f64, low: f64, high: f64, n: usize| (((v - low) / (high - low) * n as f64).floor().max(0.0) as usize).min(n - 1);
+        let (c0, c1) = (cell(bbox[0], e[0], e[2], self.cells.0), cell(bbox[2], e[0], e[2], self.cells.0));
+        let (r0, r1) = (cell(bbox[1], e[1], e[3], self.cells.1), cell(bbox[3], e[1], e[3], self.cells.1));
+        (c0..c1 + 1, r0..r1 + 1)
+    }
+
+    /// The features whose box touches `extent`, in drawing order, borrowed.
+    fn touching(&self, extent: [f64; 4]) -> impl Iterator<Item = (&Geometry, f64)> {
+        let touches = move |b: &[f64; 4]| b[0] <= extent[2] && b[2] >= extent[0] && b[1] <= extent[3] && b[3] >= extent[1];
+        let mut found = self.large.clone();
+        let e = self.extent;
+        if extent[0] <= e[2] && extent[2] >= e[0] && extent[1] <= e[3] && extent[3] >= e[1] {
+            let (cols, rows) = self.span(extent);
+            for row in rows {
+                for col in cols.clone() {
+                    found.extend_from_slice(&self.bins[row * self.cells.0 + col]);
+                }
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        found.into_iter().map(|i| &self.features[i as usize]).filter(move |f| touches(&f.bbox)).map(|f| (&f.geometry, f.value))
+    }
+}
+
 /// Vector features, split into points (drawn three pixels wide, since one pixel is hard to see)
-/// and other shapes, with each feature's bounding box `[min_x, min_y, max_x, max_y]`, so that a
-/// region rasterizes only the features that touch it.
+/// and other shapes, each indexed so that a region burns only the features that touch it.
 struct Features {
-    shapes: Vec<Layer>,
-    points: Vec<Layer>,
-    shape_boxes: Vec<Vec<Option<[f64; 4]>>>,
-    point_boxes: Vec<Vec<Option<[f64; 4]>>>,
+    shapes: Indexed,
+    points: Indexed,
 }
 
 impl Features {
-    fn split(layers: Vec<Layer>) -> Self {
+    /// The features of `layers` with a geometry and a finite bounding box, each with the value of
+    /// `attribute` as [`crate::ops::rasterize::rasterize`] burns it (1 without one).
+    fn split(layers: Vec<Layer>, attribute: Option<&str>, extent: [f64; 4]) -> Result<Self> {
         let (mut shapes, mut points) = (Vec::new(), Vec::new());
-        for mut layer in layers {
-            let features = std::mem::take(&mut layer.features);
-            let (mut shape_layer, mut point_layer) = (layer.clone(), layer);
-            for feature in features {
-                let is_point = matches!(feature.geometry, Some(Geometry::Point(_) | Geometry::MultiPoint(_)));
-                if is_point { point_layer.features.push(feature) } else { shape_layer.features.push(feature) }
+        for layer in layers {
+            let field = match attribute {
+                Some(name) => Some(
+                    layer
+                        .schema
+                        .field_index(name)
+                        .ok_or_else(|| Error::InvalidArgument(format!("layer '{}' has no field '{name}'", layer.name)))?,
+                ),
+                None => None,
+            };
+            for feature in layer.features {
+                let Some(b) = feature.geometry.as_ref().and_then(Geometry::bbox) else { continue };
+                let bbox = [b.min_x, b.min_y, b.max_x, b.max_y];
+                if !bbox.iter().all(|v| v.is_finite()) {
+                    continue;
+                }
+                let value = field.map_or(1.0, |i| crate::ops::rasterize::attribute_value(&feature, i));
+                let Some(geometry) = feature.geometry else { continue };
+                let is_point = matches!(geometry, Geometry::Point(_) | Geometry::MultiPoint(_));
+                let drawn = Drawn { geometry, value, bbox };
+                if is_point { points.push(drawn) } else { shapes.push(drawn) }
             }
-            shapes.push(shape_layer);
-            points.push(point_layer);
         }
-        let boxes = |layers: &[Layer]| -> Vec<Vec<Option<[f64; 4]>>> {
-            layers
-                .iter()
-                .map(|l| {
-                    l.features
-                        .iter()
-                        .map(|f| f.geometry.as_ref().and_then(Geometry::bbox).map(|b| [b.min_x, b.min_y, b.max_x, b.max_y]))
-                        .collect()
-                })
-                .collect()
-        };
-        let (shape_boxes, point_boxes) = (boxes(&shapes), boxes(&points));
-        Self { shapes, points, shape_boxes, point_boxes }
+        Ok(Self { shapes: Indexed::new(shapes, extent), points: Indexed::new(points, extent) })
     }
 }
 
-/// The features of `layers` whose box touches `extent`, borrowed when that is all of them.
-fn touching<'a>(layers: &'a [Layer], boxes: &[Vec<Option<[f64; 4]>>], extent: [f64; 4]) -> std::borrow::Cow<'a, [Layer]> {
-    let touches =
-        |b: &Option<[f64; 4]>| b.is_some_and(|b| b[0] <= extent[2] && b[2] >= extent[0] && b[1] <= extent[3] && b[3] >= extent[1]);
-    if boxes.iter().flatten().all(touches) {
-        return std::borrow::Cow::Borrowed(layers);
-    }
-    let subset = layers
-        .iter()
-        .zip(boxes)
-        .map(|(layer, boxes)| {
-            let features = layer.features.iter().zip(boxes).filter(|(_, b)| touches(b)).map(|(f, _)| f.clone()).collect();
-            Layer { features, ..empty_like(layer) }
-        })
-        .collect();
-    std::borrow::Cow::Owned(subset)
-}
-
-/// `layer`'s name, schema and CRS, without its features.
-fn empty_like(layer: &Layer) -> Layer {
-    let mut empty = Layer::new(layer.name.clone());
-    empty.geom_type = layer.geom_type;
-    empty.crs = layer.crs.clone();
-    empty.schema = layer.schema.clone();
-    empty
-}
-
-/// Burns `layers` over `extent`: the attribute's values, or 1 where a feature is; NaN elsewhere,
-/// and everywhere when there is no feature to burn.
-fn burn(layers: &[Layer], attribute: Option<&str>, extent: [f64; 4], width: usize, height: usize) -> Result<Vec<f64>> {
-    if layers.iter().all(|l| l.features.is_empty()) {
-        return Ok(vec![f64::NAN; width * height]);
-    }
-    let options = RasterizeOptions {
-        burn_values: if attribute.is_some() { Vec::new() } else { vec![1.0] },
-        attribute: attribute.map(str::to_string),
-        size: Some((width, height)),
-        extent: Some((extent[0], extent[1], extent[2], extent[3])),
-        data_type: Some(DataType::F64),
-        init: vec![f64::NAN],
-        nodata: Some(f64::NAN),
-        all_touched: true,
-        ..Default::default()
-    };
-    let raster = rasterize(layers, &options)?;
-    raster.read_window_f64(Window::full(width, height), &FloatReadOptions::default())
+/// Burns `features` over `extent`: their values; NaN elsewhere.
+fn burn<'a>(features: impl IntoIterator<Item = (&'a Geometry, f64)>, extent: [f64; 4], width: usize, height: usize) -> Vec<f64> {
+    let geo_transform = [extent[0], (extent[2] - extent[0]) / width as f64, 0.0, extent[3], 0.0, -(extent[3] - extent[1]) / height as f64];
+    crate::ops::rasterize::burn_geometries(features, geo_transform, (width, height), f64::NAN, true)
 }
 
 /// Draws `features` over `extent` at `width` by `height` pixels: the shapes, then the points on
 /// top, three pixels wide. Points are burned one pixel beyond each side, so that a point just
 /// outside the extent still widens into it, as at the seams between map tiles.
-fn draw_features(features: &Features, attribute: Option<&str>, extent: [f64; 4], width: usize, height: usize) -> Result<Vec<f64>> {
-    let shapes = touching(&features.shapes, &features.shape_boxes, extent);
-    let mut out = burn(&shapes, attribute, extent, width, height)?;
+fn draw_features(features: &Features, extent: [f64; 4], width: usize, height: usize) -> Vec<f64> {
+    let mut out = burn(features.shapes.touching(extent), extent, width, height);
     let (px, py) = ((extent[2] - extent[0]) / width as f64, (extent[3] - extent[1]) / height as f64);
     let padded = [extent[0] - px, extent[1] - py, extent[2] + px, extent[3] + py];
-    let points = touching(&features.points, &features.point_boxes, padded);
-    if points.iter().all(|l| l.features.is_empty()) {
-        return Ok(out);
+    let mut points = features.points.touching(padded).peekable();
+    if points.peek().is_none() {
+        return out;
     }
     let (pw, ph) = (width + 2, height + 2);
-    let burned = burn(&points, attribute, padded, pw, ph)?;
+    let burned = burn(points, padded, pw, ph);
     for row in 0..ph {
         for col in 0..pw {
             let v = burned[row * pw + col];
@@ -676,7 +729,7 @@ fn draw_features(features: &Features, attribute: Option<&str>, extent: [f64; 4],
             }
         }
     }
-    Ok(out)
+    out
 }
 
 /// Draws vector layers, with north up.
@@ -763,7 +816,7 @@ pub struct Renderer {
 
 enum Inner {
     Raster(LazyRaster),
-    Vector { features: Features, attribute: Option<String>, extent: [f64; 4], size: (usize, usize) },
+    Vector { features: Box<Features>, extent: [f64; 4], size: (usize, usize) },
 }
 
 impl std::fmt::Debug for Renderer {
@@ -817,8 +870,8 @@ impl Renderer {
             }
         };
         let plan = Plan { bands: vec![1], colors: 1, alpha_max: 255.0, mode };
-        let features = Features::split(layers);
-        Ok(Self { inner: Inner::Vector { features, attribute: options.attribute.clone(), extent, size }, plan, ranges })
+        let features = Box::new(Features::split(layers, options.attribute.as_deref(), extent)?);
+        Ok(Self { inner: Inner::Vector { features, extent, size }, plan, ranges })
     }
 
     /// The size of the whole dataset in this renderer's pixels, which [`Self::region`] takes
@@ -862,7 +915,7 @@ impl Renderer {
         check_size(width, height)?;
         let values = match &mut self.inner {
             Inner::Raster(source) => read_region(source, &self.plan, window, width, height)?,
-            Inner::Vector { features, attribute, extent, size } => {
+            Inner::Vector { features, extent, size } => {
                 let (ux, uy) = ((extent[2] - extent[0]) / size.0 as f64, (extent[3] - extent[1]) / size.1 as f64);
                 let part = [
                     extent[0] + window.x as f64 * ux,
@@ -870,7 +923,7 @@ impl Renderer {
                     extent[0] + (window.x + window.width) as f64 * ux,
                     extent[3] - window.y as f64 * uy,
                 ];
-                draw_features(features, attribute.as_deref(), part, width, height)?
+                draw_features(features, part, width, height)
             }
         };
         Ok(shade(&values, &self.plan, &self.ranges, width, height))
@@ -1058,6 +1111,37 @@ mod tests {
     }
 
     #[test]
+    fn the_index_finds_what_a_scan_finds_in_drawing_order() {
+        // Small squares on a lattice, a few spanning most of it, and a point.
+        let mut features = Vec::new();
+        for i in 0..400 {
+            let (x, y) = (f64::from(i % 20) * 5.0, f64::from(i / 20) * 5.0);
+            let size = if i % 97 == 0 { 80.0 } else { 3.0 };
+            features.push(Drawn { geometry: Geometry::point(x, y), value: f64::from(i), bbox: [x, y, x + size, y + size] });
+        }
+        let extent = [0.0, 0.0, 100.0, 100.0];
+        let scan = |features: &[Drawn], e: [f64; 4]| -> Vec<f64> {
+            features
+                .iter()
+                .filter(|f| f.bbox[0] <= e[2] && f.bbox[2] >= e[0] && f.bbox[1] <= e[3] && f.bbox[3] >= e[1])
+                .map(|f| f.value)
+                .collect()
+        };
+        let expected: Vec<Vec<f64>> =
+            [[0.0, 0.0, 100.0, 100.0], [12.0, 31.0, 19.0, 33.0], [-50.0, -50.0, -10.0, -10.0], [99.0, 0.0, 140.0, 4.0]]
+                .iter()
+                .map(|e| scan(&features, *e))
+                .collect();
+        let index = Indexed::new(features, extent);
+        assert!(index.cells.0 > 1 && !index.large.is_empty());
+        for (e, expected) in
+            [[0.0, 0.0, 100.0, 100.0], [12.0, 31.0, 19.0, 33.0], [-50.0, -50.0, -10.0, -10.0], [99.0, 0.0, 140.0, 4.0]].iter().zip(expected)
+        {
+            assert_eq!(index.touching(*e).map(|(_, v)| v).collect::<Vec<_>>(), expected, "{e:?}");
+        }
+    }
+
+    #[test]
     fn null_attributes_count_as_the_zero_they_are_burned_as() {
         let mut layer = square_layer();
         layer.features[0].attributes[0] = FieldValue::Null;
@@ -1117,6 +1201,42 @@ mod tests {
         let image = render_raster(&mut source, &options).unwrap();
         assert_eq!((image.width, image.height), (10, 10));
         assert!(pixel(&image, 0, 0)[0] < pixel(&image, 0, 9)[0]);
+    }
+
+    #[test]
+    fn sampled_rows_are_read_a_row_of_blocks_at_a_time() {
+        use std::sync::{Arc, Mutex};
+        /// Strips of 512 rows whose pixels are their row; records the windows read.
+        struct Strips(Arc<Mutex<Vec<Window>>>);
+        impl crate::cog::WindowSource for Strips {
+            fn overviews(&self) -> Vec<(usize, usize)> {
+                Vec::new()
+            }
+            fn block_size(&self) -> Option<(usize, usize)> {
+                Some((3000, 512))
+            }
+            fn read(&mut self, _: usize, window: Window, bands: &[usize]) -> Result<wbraster::raster::RasterData> {
+                self.0.lock().unwrap().push(window);
+                let rows = (0..window.height).flat_map(|r| std::iter::repeat_n(((window.y + r) % 251) as u8, window.width));
+                Ok(wbraster::raster::RasterData::U8(rows.cycle().take(window.width * window.height * bands.len()).collect()))
+            }
+        }
+        let config = RasterConfig { cols: 3000, rows: 3000, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let header = LazyRaster::from(crate::RasterDataset::new(
+            crate::pixel::raster_from_data(config, wbraster::raster::RasterData::U8(vec![0; 3000 * 3000])).unwrap(),
+            false,
+        ))
+        .header();
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let mut source = LazyRaster::from_source(header, Box::new(Strips(reads.clone())));
+        let options = RenderOptions { width: Some(100), stretch: Stretch::Range(0.0, 255.0), ..Default::default() };
+        let image = render_raster(&mut source, &options).unwrap();
+        // 100 sampled rows in 6 rows of strips: a read each, within its strip.
+        let reads = reads.lock().unwrap();
+        assert_eq!(reads.len(), 6, "{reads:?}");
+        assert!(reads.iter().all(|w| w.y / 512 == (w.y + w.height - 1) / 512 && w.width == 3000));
+        // Output row 50 is source row 1515.
+        assert_eq!(pixel(&image, 0, 50)[0], (1515 % 251) as u8);
     }
 
     #[test]
