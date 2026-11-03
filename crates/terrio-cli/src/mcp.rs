@@ -252,6 +252,7 @@ fn tempfile_directory() -> std::io::Result<std::path::PathBuf> {
     getrandom::fill(&mut secret).map_err(|e| std::io::Error::other(e.to_string()))?;
     let name: String = secret.iter().map(|b| format!("{b:02x}")).collect();
     let path = std::env::temp_dir().join(format!("terrio-preview-{name}"));
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -570,6 +571,15 @@ mod tests {
         assert_eq!(clip("abc".into(), 3, MAX_OUTPUT), "abc");
         assert_eq!(clip("abc".into(), 3, 1), "a\n… (output cut at 1 of 3 bytes)");
     }
+    #[test]
+    fn preview_directory_is_created_private() {
+        let path = tempfile_directory().unwrap();
+        assert!(path.is_dir());
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o777, 0o700);
+        std::fs::remove_dir(&path).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn panicked_query_tool_is_an_error() {
