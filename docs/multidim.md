@@ -166,3 +166,78 @@ no-clobber guarantee even when another process creates an empty destination.
 Named CLI transposition rejects ambiguous dimension names with an explicit error;
 use unique full dimension paths when available. Repeated identical dimension paths
 cannot be transposed by name.
+
+## JavaScript ownership and worker conformance
+
+`MultidimArray.read()` returns a JS-owned copy, not a borrowed view of WebAssembly
+linear memory. Each read has independent storage. Mutating or transferring its
+buffer does not change the source. A returned copy remains valid after subsequent
+reads, WebAssembly memory growth, and disposal of every dataset/array handle.
+Int64 and UInt64 copies remain BigInt typed arrays; do not convert them through Number.
+Packing attributes do not trigger scaling or masking: the fill sentinel remains a
+native sample. Decode CF conventions explicitly in the consumer if needed.
+
+Dataset, array, and derived view wrappers own Rust resources. Call `free()` on each
+wrapper in `finally` blocks, including intermediate selections. Derived views retain
+source storage through shared Rust ownership (Arc); they can still read after their
+parent dataset, array and intermediate views are freed. Releasing a dataset alone
+therefore need not release the encoded input. Do not call methods on freed wrappers.
+Releasing all wrappers allows reuse of allocations; it does not promise that the
+WebAssembly heap high-water mark shrinks.
+
+Pass bytes into a module worker, open and select there, free wrappers there, then
+transfer the JS-owned result buffer with `postMessage(result, [result.buffer])`.
+Transfer detaches the sender's buffer. WASM wrappers cannot be transferred. Worker
+termination cancels synchronous work by ending the worker; an AbortSignal alone
+cannot interrupt synchronous decoding. See `js/examples/scientific-worker.mjs` for
+a minimal single-threaded example using the existing `openMultidim` API.
+
+The independent fixture generator follows the h5netcdf/NumPy mechanism in
+`scripts/compare_multidim_with_gdal.py`:
+
+```sh
+python js/tests/scientific-fixtures.py
+node js/tests/scientific-browser.mjs js/pkg/terrio.js js/pkg/terrio_bg.wasm
+```
+
+The checked-in fixture is synthetic: a non-square Int16 packed cube with gzip
+chunks `(1,2,2)`, a fill sentinel, coordinate/calendar attributes, and UInt16,
+Int64, UInt64 and Float64 siblings. Expectations come from explicit source values,
+not a Terrio round trip. All comparisons are exact (including NaN identity).
+The runner takes a wasm-bindgen **web** module and matching WASM paths; adjust them
+to the full upstream build output. It follows `PLAYWRIGHT_MODULE` and `BROWSERS` from
+`js/tests/browser.mjs`. Missing artifacts or features fail rather than skip.
+It runs on a plain origin without COOP/COEP, checks main-thread and worker reads,
+forces one page of memory growth, transfers inputs/results, checks detachment,
+repeats three jobs per worker, and verifies retained copies after termination.
+It reports fixture bytes and direct conformance elapsed time; this timing is not
+a decode benchmark or a retained-memory/leak measurement. Byte-based opens still
+receive the whole encoded file; these tests make no HTTP range-I/O claim.
+The runner also reports module initialization separately.
+
+### Repeated initialization and decode lifecycle measurements
+
+The same runner starts five fresh module workers and performs one first decode
+plus twenty warm open/read/free cycles in each. Override the counts explicitly:
+
+```sh
+SCIENTIFIC_COLD_SAMPLES=10 SCIENTIFIC_WARM_SAMPLES=50 node js/tests/scientific-browser.mjs js/pkg/terrio.js js/pkg/terrio_bg.wasm
+```
+
+JSON output includes sample counts, median, nearest-rank p95 and maximum times
+for initialization (module import plus WASM initialization), cached initialization
+(repeated import and init in the same worker), first decode, and
+warm decode. Decode timing includes opening the encoded file, selecting `sample`,
+copying its native values to JavaScript and freeing both wrappers. Raw timings
+and memory counters before/after each worker's loop are retained in the output.
+Cold means a fresh worker/module instance; browser HTTP and compiled-module
+caches are not flushed. This is a small synthetic lifecycle workload, not a
+representative large-file throughput benchmark. Warm samples are pooled across
+workers and remain correlated; the output makes no statistical significance claim.
+
+Memory counters report WASM linear-memory capacity and, where the browser exposes
+it in workers, JS used/total heap bytes (`null` otherwise). These are not live Rust
+allocation counts, peak RSS or retained-input measurements. No forced GC is used;
+capacity growth or a nonshrinking heap alone is not evidence of a leak. Benchmark
+workers do not execute the conformance suite's explicit `memory.grow`. Worker
+startup, termination and input transfer are outside the timed decode sections.
