@@ -444,7 +444,8 @@ fn write_vector(
 ///     spat_srs: The CRS of `spat`. By default, that of the layer.
 ///     select: Keep only these fields, in this order.
 ///     limit: Keep at most this many features per layer.
-///     sql: Read the documented OGR SQL subset, including expressions, DISTINCT, summaries and LEFT JOIN.
+///     sql: Read the documented SQL subset, including expressions, DISTINCT, grouped summaries,
+///         LEFT JOIN and spatial functions.
 ///     nln: The output layer name.
 ///     nlt: Convert geometries: `"PROMOTE_TO_MULTI"`, `"POINT"`, `"MULTIPOLYGON"`...
 ///     explodecollections: Write each part of multi-part geometries as its own feature.
@@ -706,11 +707,13 @@ pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Optio
 ///
 /// Args:
 ///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
-///     query: SELECT statement, including computed columns, DISTINCT, summaries or LEFT JOIN.
+///     query: SELECT statement, including computed columns, DISTINCT, grouped summaries,
+///         LEFT JOIN or the documented spatial functions.
 ///     layers: Restrict the available input layers.
 ///
 /// Returns:
-///     Layer: The query result. DISTINCT and summaries discard geometry.
+///     Layer: The query result. DISTINCT, GROUP BY and summaries discard geometry.
+///     Spatial geometry expressions replace the primary geometry; see docs/sql.md for scope.
 #[pyfunction]
 #[pyo3(signature = (src, query, *, layers=None))]
 fn sql(py: Python<'_>, src: &Bound<'_, PyAny>, query: &str, layers: Option<Vec<String>>) -> PyResult<PyLayer> {

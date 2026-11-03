@@ -70,7 +70,7 @@ pub(super) struct Join {
     pub right: String,
 }
 
-fn primary_name<'a>(name: &'a str, s: &Select) -> &'a str {
+pub(super) fn primary_name<'a>(name: &'a str, s: &Select) -> &'a str {
     if let Some((prefix, field)) = name.split_once('.')
         && prefix.eq_ignore_ascii_case(s.alias.as_deref().unwrap_or(&s.from))
     {
@@ -82,6 +82,13 @@ fn primary_name<'a>(name: &'a str, s: &Select) -> &'a str {
 fn normalize(e: Expr, s: &Select) -> Expr {
     match e {
         Expr::Field(n) => Expr::Field(primary_name(&n, s).to_owned()),
+        Expr::Call(name, args) => {
+            let mut args: Vec<_> = args.into_iter().map(|e| normalize(e, s)).collect();
+            if name == "ST_TRANSFORM" && args.len() == 2 {
+                args.push(Expr::Literal(s.source_epsg.map(|n| Value::Int(n as i64)).unwrap_or(Value::Null)));
+            }
+            Expr::Call(name, args)
+        }
         Expr::Not(a) => Expr::Not(Box::new(normalize(*a, s))),
         Expr::Neg(a) => Expr::Neg(Box::new(normalize(*a, s))),
         Expr::Binary(op, a, b) => Expr::Binary(op, Box::new(normalize(*a, s)), Box::new(normalize(*b, s))),
@@ -101,18 +108,35 @@ fn normalize(e: Expr, s: &Select) -> Expr {
         e => e,
     }
 }
-fn bound(e: &Expr, schema: &Schema, s: &Select) -> Result<Expr> {
+pub(super) fn bound(e: &Expr, schema: &Schema, s: &Select) -> Result<Expr> {
     bind(&normalize(e.clone(), s), schema)
+}
+
+// Schema::add_field keeps the first duplicate. Validate before insertion so
+// planned values and schema positions cannot diverge in any SQL entrypoint.
+pub(super) fn add_output_field(schema: &mut Schema, field: FieldDef, strict_case: bool) -> Result<()> {
+    let existing = if strict_case { field_index(schema, &field.name) } else { schema.field_index(&field.name) };
+    if existing.is_some() {
+        return Err(syntax(format!("duplicate output field '{}'", field.name)));
+    }
+    schema.add_field(field);
+    Ok(())
 }
 
 fn expression_type(e: &Expr, schema: &Schema) -> Result<FieldType> {
     Ok(match e {
         Expr::Index(i) => schema.fields()[*i].field_type,
+        Expr::Geometry | Expr::Transform(..) => FieldType::Blob,
+        Expr::Call(name, _) => match name.as_str() {
+            "ST_AREA" | "ST_LENGTH" => FieldType::Float,
+            "ST_INTERSECTS" => FieldType::Integer,
+            _ => FieldType::Blob,
+        },
         Expr::Fid | Expr::Literal(Value::Int(_)) => FieldType::Integer,
         Expr::Literal(Value::Text(_)) | Expr::Binary(BinOp::Concat, _, _) => FieldType::Text,
         Expr::Literal(Value::Float(_)) => FieldType::Float,
         Expr::Literal(Value::Null) => FieldType::Text,
-        Expr::Literal(Value::Blob(_)) => FieldType::Blob,
+        Expr::Literal(Value::Blob(_) | Value::Geometry(_)) => FieldType::Blob,
         Expr::Neg(e) => {
             let ty = expression_type(e, schema)?;
             if !matches!(ty, FieldType::Integer | FieldType::Float | FieldType::Boolean) {
@@ -140,9 +164,9 @@ fn expression_type(e: &Expr, schema: &Schema) -> Result<FieldType> {
         Expr::Field(name) => return Err(syntax(format!("unbound field '{name}'"))),
     })
 }
-fn field_value(v: Value, ty: FieldType) -> FieldValue {
+pub(super) fn field_value(v: Value, ty: FieldType) -> FieldValue {
     match v {
-        Value::Null => FieldValue::Null,
+        Value::Null | Value::Geometry(_) => FieldValue::Null,
         Value::Blob(b) => FieldValue::Blob(b),
         Value::Int(i) if ty == FieldType::Float => FieldValue::Float(i as f64),
         Value::Int(i) if ty == FieldType::Boolean => FieldValue::Boolean(i != 0),
@@ -153,10 +177,11 @@ fn field_value(v: Value, ty: FieldType) -> FieldValue {
         Value::Text(s) => FieldValue::Text(s),
     }
 }
-fn key(v: &Value) -> String {
+pub(super) fn key(v: &Value) -> String {
     // DISTINCT uses exact, case-sensitive values in current OGRSQL (GDAL 3.12).
     match v {
         Value::Null => "n".into(),
+        Value::Geometry(_) => unreachable!("geometry is not an attribute key"),
         Value::Blob(b) => format!("b{b:?}"),
         Value::Text(s) => format!("s{s}"),
         Value::Int(i) => format!("i{i}"),
@@ -180,7 +205,7 @@ fn float_key(value: f64) -> Option<u64> {
 }
 fn join_keys(value: Value, indexing: bool) -> Vec<JoinKey> {
     match value {
-        Value::Null => Vec::new(),
+        Value::Null | Value::Geometry(_) => Vec::new(),
         Value::Blob(b) => vec![JoinKey::Blob(b)],
         Value::Int(i) => {
             let numeric = float_key(i as f64).unwrap();
@@ -227,7 +252,13 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
         .find(|l| l.name.eq_ignore_ascii_case(&s.from))
         .or_else(|| (layers.len() == 1).then(|| &layers[0]))
         .ok_or_else(|| syntax(format!("no layer named '{}'", s.from)))?;
-    let filter = s.filter.as_ref().map(|e| bound(&e.0, &layer.schema, s)).transpose()?;
+    let mut s = s.clone();
+    s.source_epsg = layer.crs_epsg();
+    let s = &s;
+    if !s.group_by.is_empty() {
+        return super::grouped::execute(layer, s, copy_limit);
+    }
+    let filter = s.filter.as_ref().map(|e| scalar(bound(&e.0, &layer.schema, s)?)).transpose()?;
     let mut schema = layer.schema.clone();
     let mut joins = Vec::new();
     let mut qualifiers = vec![s.alias.as_deref().unwrap_or(&s.from).to_ascii_lowercase()];
@@ -281,6 +312,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
     }
     let mut expressions = Vec::new();
     let mut aggregates = Vec::new();
+    let mut geometry_expr = None;
     for item in &s.items {
         match item {
             Item::Star(prefix) => {
@@ -303,7 +335,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
                                 def.name = short.into();
                             }
                         }
-                        out.schema.add_field(def);
+                        add_output_field(&mut out.schema, def, s.strict_output_names)?;
                         expressions.push(Expr::Index(i));
                         found = true;
                     }
@@ -314,6 +346,17 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
             }
             Item::Column(e, alias) => {
                 let e_bound = bound(e, &schema, s)?;
+                if super::spatial::is_geometry(&e_bound) {
+                    if geometry_expr.is_some() || summary || s.distinct || s.items.iter().any(|i| matches!(i, Item::Star(_))) {
+                        return Err(syntax("only one geometry column is supported, outside summaries and DISTINCT".into()));
+                    }
+                    if let Some(epsg) = super::spatial::output_epsg(&e_bound, None) {
+                        crate::crs::SpatialRef::from_epsg(epsg)?.apply_to_layer(&mut out);
+                    }
+                    out.geom_type = super::spatial::output_type(&e_bound, layer.geom_type);
+                    geometry_expr = Some(e_bound);
+                    continue;
+                }
                 let name = alias
                     .clone()
                     .unwrap_or_else(|| if let Expr::Field(n) = e { n.clone() } else { format!("FIELD_{}", expressions.len() + 1) });
@@ -324,33 +367,13 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
                 } else {
                     FieldDef::new(name, expression_type(&e_bound, &schema)?)
                 };
-                out.schema.add_field(def);
+                add_output_field(&mut out.schema, def, s.strict_output_names)?;
                 expressions.push(e_bound);
             }
             Item::Aggregate(op, field, distinct, alias) => {
-                let e = field.as_ref().map(|n| bound(&Expr::Field(n.clone()), &schema, s)).transpose()?;
-                let ty = e.as_ref().map(|e| expression_type(e, &schema)).transpose()?.unwrap_or(FieldType::Integer);
-                if matches!(op.as_str(), "SUM" | "AVG") && !matches!(ty, FieldType::Integer | FieldType::Float) {
-                    return Err(syntax("SUM and AVG require numeric fields".into()));
-                }
-                let out_ty = if op == "AVG" {
-                    FieldType::Float
-                } else if op == "COUNT" {
-                    FieldType::Integer
-                } else {
-                    ty
-                };
-                out.schema
-                    .add_field(FieldDef::new(alias.clone().unwrap_or_else(|| format!("{op}_{}", field.as_deref().unwrap_or("*"))), out_ty));
-                aggregates.push(Aggregate {
-                    op: op.clone(),
-                    expr: e,
-                    distinct: *distinct,
-                    seen: Default::default(),
-                    count: 0,
-                    value: Value::Null,
-                    input_type: ty,
-                });
+                let (def, agg) = Aggregate::plan(op, field, *distinct, alias, &schema, s)?;
+                add_output_field(&mut out.schema, def, s.strict_output_names)?;
+                aggregates.push(agg);
             }
         }
     }
@@ -358,7 +381,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
         .order_by
         .as_ref()
         .map(|(name, desc)| {
-            let e = bound(&Expr::Field(name.clone()), &layer.schema, s)?;
+            let e = scalar(bound(&Expr::Field(name.clone()), &layer.schema, s)?)?;
             if s.distinct
                 && !matches!(&s.items[0],Item::Column(Expr::Field(n),_) if primary_name(n,s).eq_ignore_ascii_case(primary_name(name,s)))
             {
@@ -388,6 +411,13 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
     } else {
         Box::new(layer.features.iter().filter(|f| filter.as_ref().is_none_or(|e| truth(e, f).value)))
     };
+    // Bound attribute expressions contain indices; only geometry remains a named
+    // input. Ordinary joins keep borrowing primary geometry until result emission.
+    let needs_geometry = expressions.iter().chain(geometry_expr.iter()).any(|e| {
+        let mut fields = Vec::new();
+        collect_fields(e, &mut fields);
+        !fields.is_empty()
+    });
     let mut seen = std::collections::HashSet::new();
     for f in features {
         if summary {
@@ -403,7 +433,8 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
         let row = if joins.is_empty() {
             f
         } else {
-            joined = Feature { fid: f.fid, geometry: None, attributes: f.attributes.clone() };
+            joined =
+                Feature { fid: f.fid, geometry: if needs_geometry { f.geometry.clone() } else { None }, attributes: f.attributes.clone() };
             joined.attributes.resize(layer.schema.len(), FieldValue::Null);
             for join in &joins {
                 let matched = join.lookup(f);
@@ -431,7 +462,16 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
             .collect();
         out.features.push(Feature {
             fid: if s.distinct { out.features.len() as u64 } else { f.fid },
-            geometry: if s.distinct { None } else { f.geometry.clone() },
+            geometry: if let Some(e) = &geometry_expr {
+                match eval(e, row) {
+                    Value::Geometry(g) => Some(*g),
+                    _ => None,
+                }
+            } else if s.distinct {
+                None
+            } else {
+                f.geometry.clone()
+            },
             attributes,
         });
     }
@@ -444,7 +484,8 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
     Ok((out, s.limit))
 }
 
-struct Aggregate {
+#[derive(Clone)]
+pub(super) struct Aggregate {
     op: String,
     expr: Option<Expr>,
     distinct: bool,
@@ -454,7 +495,31 @@ struct Aggregate {
     input_type: FieldType,
 }
 impl Aggregate {
-    fn push(&mut self, f: &Feature) -> Result<()> {
+    pub(super) fn plan(
+        op: &str,
+        field: &Option<String>,
+        distinct: bool,
+        alias: &Option<String>,
+        schema: &Schema,
+        s: &Select,
+    ) -> Result<(FieldDef, Self)> {
+        let expr = field.as_ref().map(|n| bound(&Expr::Field(n.clone()), schema, s)).transpose()?;
+        if expr.as_ref().is_some_and(super::spatial::is_geometry) {
+            return Err(syntax("summaries require attribute fields".into()));
+        }
+        let ty = expr.as_ref().map(|e| expression_type(e, schema)).transpose()?.unwrap_or(FieldType::Integer);
+        if matches!(op, "SUM" | "AVG") && !matches!(ty, FieldType::Integer | FieldType::Float) {
+            return Err(syntax("SUM and AVG require numeric fields".into()));
+        }
+        let out_ty = match op {
+            "AVG" => FieldType::Float,
+            "COUNT" => FieldType::Integer,
+            _ => ty,
+        };
+        let def = FieldDef::new(alias.clone().unwrap_or_else(|| format!("{op}_{}", field.as_deref().unwrap_or("*"))), out_ty);
+        Ok((def, Self { op: op.into(), expr, distinct, seen: Default::default(), count: 0, value: Value::Null, input_type: ty }))
+    }
+    pub(super) fn push(&mut self, f: &Feature) -> Result<()> {
         let mut v = self.expr.as_ref().map(|e| eval(e, f)).unwrap_or(Value::Int(1));
         if v != Value::Null && (self.op == "AVG" || (self.op == "SUM" && self.input_type == FieldType::Float)) {
             v = Value::Float(v.as_f64().ok_or_else(|| syntax("summary value does not match the numeric field type".into()))?);
@@ -497,7 +562,7 @@ impl Aggregate {
         };
         Ok(())
     }
-    fn finish(self) -> Value {
+    pub(super) fn finish(self) -> Value {
         match self.op.as_str() {
             "COUNT" => Value::Int(self.count as i64),
             "AVG" if self.count > 0 => Value::Float(self.value.as_f64().unwrap() / self.count as f64),

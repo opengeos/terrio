@@ -65,7 +65,6 @@ fn distinct_and_summaries_discard_geometry() {
         "SELECT SUM(name) FROM cities",
         "SELECT SUM(pop+1) FROM cities",
         "SELECT DISTINCT name,key FROM cities",
-        "SELECT COUNT(*) FROM cities GROUP BY key",
     ] {
         assert!(query(&layers, q).is_err(), "{q}");
     }
@@ -195,5 +194,240 @@ fn malformed_numeric_summary_values_report_errors() {
     l.features.push(Feature { fid: 0, geometry: None, attributes: vec![V::Text("invalid".into())] });
     for q in ["SELECT SUM(n) FROM numbers", "SELECT AVG(n) FROM numbers"] {
         assert!(query(std::slice::from_ref(&l), q).unwrap_err().to_string().contains("numeric field type"));
+    }
+}
+
+#[test]
+fn grouped_summaries_filter_nulls_order_and_limit_results() {
+    let out = query(
+        &data(),
+        "SELECT key, COUNT(*) AS n, COUNT(pop) AS valid, SUM(pop) AS total, AVG(pop) AS mean FROM cities GROUP BY key ORDER BY key",
+    )
+    .unwrap();
+    assert_eq!(out.features.len(), 3);
+    assert_eq!(out.features[0].attributes, vec![V::Null, V::Integer(1), V::Integer(0), V::Null, V::Null]);
+    assert_eq!(out.features[1].attributes, vec![V::Integer(1), V::Integer(2), V::Integer(2), V::Integer(14), V::Float(7.)]);
+    assert!(out.features.iter().all(|f| f.geometry.is_none()));
+    assert!(out.crs.is_none());
+    let top = query(&data(), "SELECT c.key AS k, SUM(pop) AS total FROM cities c WHERE pop>0 GROUP BY c.key ORDER BY total DESC LIMIT 1")
+        .unwrap();
+    assert_eq!(top.features[0].attributes, vec![V::Integer(1), V::Integer(14)]);
+    assert!(query(&data(), "SELECT COUNT(*) FROM cities WHERE pop<0 GROUP BY key").unwrap().features.is_empty());
+    assert!(query(&data(), "SELECT COUNT(*) FROM cities GROUP BY key LIMIT 0").unwrap().features.is_empty());
+    let distinct = query(&data(), "SELECT key,COUNT(DISTINCT name) AS n FROM cities GROUP BY key ORDER BY key").unwrap();
+    assert_eq!(
+        distinct.features.iter().map(|f| f.attributes[1].clone()).collect::<Vec<_>>(),
+        vec![V::Integer(1), V::Integer(2), V::Integer(1)]
+    );
+    let unordered = query(&data(), "SELECT key,COUNT(*) AS n FROM cities GROUP BY key").unwrap();
+    assert_eq!(unordered.features.iter().map(|f| f.attributes[0].clone()).collect::<Vec<_>>(), vec![V::Integer(1), V::Integer(2), V::Null]);
+    let multiple = query(&data(), "SELECT name, key, COUNT(*) FROM cities GROUP BY name,key ORDER BY name").unwrap();
+    assert_eq!(multiple.features.len(), 4); // SQLite grouping is case-sensitive.
+    for q in [
+        "SELECT name,COUNT(*) FROM cities GROUP BY key",
+        "SELECT * FROM cities GROUP BY key",
+        "SELECT COUNT(*) FROM cities GROUP BY missing",
+        "SELECT key,COUNT(*) FROM cities GROUP BY key HAVING COUNT(*)>1",
+        "SELECT key,COUNT(*) FROM cities GROUP BY key ORDER BY pop",
+    ] {
+        assert!(query(&data(), q).is_err(), "{q}");
+    }
+}
+
+#[test]
+fn spatial_sql_evaluates_nested_geometry_and_predicates() {
+    let layers = data();
+    let out = query(&layers, "SELECT name,ST_Area(geometry) AS area, ST_Length(geometry) AS length, ST_Intersects(geometry,ST_Buffer(geometry,1)) AS inside FROM cities WHERE ST_Area(geometry)=0 LIMIT 1").unwrap();
+    assert_eq!(out.features[0].attributes, vec![V::Text("A".into()), V::Float(0.), V::Float(0.), V::Integer(1)]);
+    let joined = query(
+        &layers,
+        "SELECT ST_Area(ST_Buffer(c.geometry,1)) AS area,n.name AS nation FROM cities c LEFT JOIN nations n ON c.key=n.id LIMIT 1",
+    )
+    .unwrap();
+    assert!(matches!(joined.features[0].attributes[0], V::Float(area) if area>3.));
+    assert_eq!(joined.features[0].attributes[1], V::Text("first".into()));
+    let centroid = query(&layers, "SELECT ST_Centroid(ST_Buffer(c.geometry,1)) AS shape FROM cities c LIMIT 1").unwrap();
+    assert!(centroid.schema.is_empty());
+    let Some(Geometry::Point(p)) = &centroid.features[0].geometry else { panic!("expected centroid point") };
+    assert!(p.x.abs() < 1e-12 && p.y.abs() < 1e-12);
+    let transformed = query(&layers, "SELECT name, ST_Transform(geometry,3857) AS shape FROM cities WHERE FID=11").unwrap();
+    let Some(Geometry::Point(p)) = &transformed.features[0].geometry else { panic!("expected transformed point") };
+    assert!((p.x - 111319.49079327357).abs() < 1e-8);
+    assert_eq!(transformed.crs_epsg(), Some(3857));
+    let nested = query(&layers, "SELECT ST_Transform(ST_Transform(geometry,3857),4326) FROM cities WHERE FID=11").unwrap();
+    let Some(Geometry::Point(p)) = &nested.features[0].geometry else { panic!("expected point") };
+    assert!((p.x - 1.).abs() < 1e-12);
+    let empty_buffer = query(&layers, "SELECT ST_Buffer(geometry,0) FROM cities LIMIT 1").unwrap();
+    assert!(empty_buffer.features[0].geometry.is_none());
+    let mut elevated = layers.clone();
+    elevated[0].features[0].geometry = Some(Geometry::Point(Coord::xyz(1., 0., 32.)));
+    let out = query(&elevated, "SELECT ST_Transform(geometry,3857) FROM cities LIMIT 1").unwrap();
+    assert_eq!(out.features[0].geometry.as_ref().unwrap().all_coords()[0].z, Some(32.));
+    assert_eq!(query(&layers, "SELECT name FROM cities WHERE ST_Intersects(geometry,NULL)").unwrap().features.len(), 4);
+    assert!(query(&layers, "SELECT name FROM cities WHERE ST_Intersects(geometry,NULL)=1").unwrap().features.is_empty());
+    let mut nulls = layers.clone();
+    nulls[0].features[0].geometry = None;
+    let out = query(&nulls, "SELECT ST_Area(geometry), ST_Intersects(geometry,geometry),ST_Area(NULL) FROM cities LIMIT 1").unwrap();
+    assert_eq!(out.features[0].attributes, vec![V::Null, V::Integer(-1), V::Null]);
+    for q in [
+        "SELECT ST_Area(pop) FROM cities",
+        "SELECT ST_Area(geometry,1) FROM cities",
+        "SELECT ST_Transform(geometry,pop) FROM cities",
+        "SELECT ST_Transform(geometry,99999999) FROM cities",
+        "SELECT ST_Buffer(geometry,1),ST_Centroid(geometry) FROM cities",
+        "SELECT unknown(geometry) FROM cities",
+    ] {
+        assert!(query(&layers, q).is_err(), "{q}");
+    }
+}
+
+#[test]
+fn geometry_is_rejected_in_scalar_sql_positions() {
+    for statement in [
+        "SELECT name FROM cities WHERE geometry='x'",
+        "SELECT name FROM cities ORDER BY geometry",
+        "SELECT geometry||'x' FROM cities",
+        "SELECT NOT geometry FROM cities",
+        "SELECT -geometry FROM cities",
+        "SELECT name FROM cities WHERE geometry",
+        "SELECT geometry AND TRUE FROM cities",
+        "SELECT geometry LIKE '%' FROM cities",
+        "SELECT name LIKE geometry FROM cities",
+        "SELECT pop IN (geometry) FROM cities",
+        "SELECT geometry IN (1) FROM cities",
+        "SELECT pop BETWEEN geometry AND 2 FROM cities",
+        "SELECT ST_Buffer(geometry,geometry) FROM cities",
+    ] {
+        let error = query(&data(), statement).expect_err(statement);
+        assert!(error.to_string().contains("geometry"), "{statement}: {error}");
+    }
+    let layers = data();
+    assert!(terrio::ops::sql::Expression::parse("geometry").unwrap().bind(&layers[0].schema).is_err());
+    let out = query(&layers, "SELECT geometry IS NULL AS missing FROM cities LIMIT 1").unwrap();
+    assert_eq!(out.features[0].attributes, vec![V::Integer(0)]);
+}
+
+#[test]
+fn untransformed_geometry_projections_preserve_the_source_crs() {
+    let mut layers = data();
+    let crs = wbvector::Crs { epsg: Some(99_999_999), wkt: Some("custom source WKT".into()) };
+    layers[0].crs = Some(crs.clone());
+    for statement in [
+        "SELECT geometry FROM cities LIMIT 1",
+        "SELECT ST_Centroid(geometry) FROM cities LIMIT 1",
+        "SELECT ST_Buffer(geometry,1) FROM cities LIMIT 1",
+    ] {
+        let out = query(&layers, statement).unwrap();
+        assert_eq!(out.crs.as_ref().unwrap().epsg, crs.epsg);
+        assert_eq!(out.crs.as_ref().unwrap().wkt, crs.wkt);
+    }
+}
+
+#[test]
+fn geometry_projections_use_joined_attribute_arguments() {
+    let mut layers = data();
+    layers[1].schema.add_field(FieldDef::new("distance", FieldType::Float));
+    for feature in &mut layers[1].features {
+        feature.attributes.push(V::Float(1.25));
+    }
+    let out =
+        query(&layers, "SELECT name,ST_Buffer(c.geometry,n.distance) AS shape FROM cities c LEFT JOIN nations n ON c.key=n.id").unwrap();
+    assert!(out.features[..2].iter().all(|f| f.geometry.is_some()));
+    assert!(out.features[2..].iter().all(|f| f.geometry.is_none()));
+    let coordinates = out.features[0].geometry.as_ref().unwrap().all_coords();
+    let min_x = coordinates.iter().map(|c| c.x).fold(f64::INFINITY, f64::min);
+    let max_x = coordinates.iter().map(|c| c.x).fold(f64::NEG_INFINITY, f64::max);
+    assert!((min_x + 1.25).abs() < 1e-10 && (max_x - 1.25).abs() < 1e-10);
+}
+
+#[test]
+fn grouped_order_accepts_primary_table_qualifiers() {
+    let out = query(&data(), "SELECT key,COUNT(*) AS n FROM cities c GROUP BY c.key ORDER BY c.key DESC").unwrap();
+    assert_eq!(out.features.iter().map(|f| f.attributes[0].clone()).collect::<Vec<_>>(), vec![V::Integer(2), V::Integer(1), V::Null]);
+    assert!(query(&data(), "SELECT key,COUNT(*) AS n FROM cities c GROUP BY c.key ORDER BY missing.key").is_err());
+}
+
+#[test]
+fn standalone_filters_reject_spatial_functions_without_select_context() {
+    for filter in ["ST_Transform(geometry,3857) IS NULL", "ST_Area(geometry)>0", "ST_Intersects(geometry,NULL)", "1+ST_Length(NULL)>0"] {
+        let layers = data();
+        let error = terrio::ops::sql::Expression::parse(filter).unwrap().bind(&layers[0].schema).expect_err(filter);
+        assert!(error.to_string().contains("SELECT"), "{error}");
+    }
+    let layers = data();
+    assert_eq!(
+        query(&layers, "SELECT name FROM cities WHERE ST_Intersects(ST_Transform(geometry,3857),ST_Transform(geometry,3857))=1")
+            .unwrap()
+            .features
+            .len(),
+        4
+    );
+    let parsed_select = terrio::ops::sql::Select::parse("SELECT name FROM cities WHERE ST_Area(NULL)>0").unwrap();
+    assert!(parsed_select.filter.unwrap().bind(&layers[0].schema).unwrap_err().to_string().contains("SELECT"));
+    assert!(terrio::ops::sql::Expression::parse("geometry IS NULL").unwrap().bind(&layers[0].schema).is_err());
+    let mut attributes = Layer::new("attributes");
+    attributes.schema.add_field(FieldDef::new("geometry", FieldType::Integer));
+    let row = Feature { fid: 0, geometry: None, attributes: vec![V::Integer(1)] };
+    assert!(terrio::ops::sql::Expression::parse("geometry=1").unwrap().bind(&attributes.schema).unwrap().matches(&row));
+    for statement in [
+        "SELECT DISTINCT geometry FROM cities",
+        "SELECT COUNT(DISTINCT geometry) FROM cities",
+        "SELECT COUNT(*) FROM cities GROUP BY geometry",
+    ] {
+        assert!(query(&layers, statement).is_err(), "{statement}");
+    }
+}
+
+#[test]
+fn duplicate_output_names_are_rejected_before_query_or_conversion_execution() {
+    let layers = data();
+    for statement in [
+        "SELECT name,pop AS name FROM cities",
+        "SELECT name,pop*2 AS name FROM cities WHERE pop<0",
+        "SELECT key AS n,COUNT(*) AS n FROM cities GROUP BY key",
+        "SELECT key AS n,COUNT(*) AS N FROM cities GROUP BY key",
+        "SELECT COUNT(*) AS n,SUM(pop) AS n FROM cities",
+        "SELECT *,pop AS name FROM cities",
+    ] {
+        let standalone = query(&layers, statement).expect_err(statement);
+        assert!(standalone.to_string().contains("duplicate output field"), "{standalone}");
+        let options = terrio::ops::vector_filter::VectorTranslateOptions { sql: Some(statement.into()), ..Default::default() };
+        let translated = terrio::ops::vector_filter::translate(&layers, &options).expect_err(statement);
+        assert!(translated.to_string().contains("duplicate output field"), "{translated}");
+    }
+}
+
+#[test]
+fn qualified_group_order_uses_source_field_before_colliding_aggregate_alias() {
+    let layers = data();
+    let qualified = query(&layers, "SELECT key AS k,COUNT(*) AS key FROM cities c GROUP BY c.key ORDER BY c.key DESC LIMIT 1").unwrap();
+    assert_eq!(qualified.features[0].attributes, vec![V::Integer(2), V::Integer(1)]);
+    let alias = query(&layers, "SELECT key AS k,COUNT(*) AS key FROM cities c GROUP BY c.key ORDER BY key DESC LIMIT 1").unwrap();
+    assert_eq!(alias.features[0].attributes, vec![V::Integer(1), V::Integer(2)]);
+}
+
+#[test]
+fn buffers_declare_multipolygon_for_null_and_singlepart_results_without_crs() {
+    let mut source = Layer::new("shapes");
+    source.geom_type = Some(wbvector::GeometryType::Point);
+    source.features.push(Feature { fid: 1, geometry: None, attributes: vec![] });
+    for geometry in [None, Some(Geometry::Point(Coord::xy(0., 0.)))] {
+        source.features[0].geometry = geometry.clone();
+        let out = query(std::slice::from_ref(&source), "SELECT ST_Buffer(geometry,1) AS shape FROM shapes").unwrap();
+        assert_eq!(out.geom_type, Some(wbvector::GeometryType::MultiPolygon));
+        if geometry.is_none() {
+            assert!(out.features[0].geometry.is_none());
+        } else {
+            assert!(matches!(&out.features[0].geometry,Some(Geometry::MultiPolygon(parts)) if parts.len()==1));
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("buffer.gpkg");
+            terrio::write_vector(&[out], path.to_str().unwrap(), &Default::default()).unwrap();
+            let read = terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap();
+            assert_eq!(read.layers[0].geom_type, Some(wbvector::GeometryType::MultiPolygon));
+            assert_eq!(read.layers[0].features[0].geometry.is_none(), geometry.is_none());
+        }
     }
 }
