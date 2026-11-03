@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
-//
-// Written to OGC API Features Part 1 and Part 2, using GDAL 3.13.3 as a behavior
-// reference. No GDAL code is translated here.
 
 //! Read-only OGC API Features with a transport-independent request/response reader.
+//! Written to OGC API Features Part 1/2, using GDAL 3.13.3 as a behavior reference.
+//! This is an original implementation; no GDAL code is translated here.
 //! Native callers use the existing synchronous HTTP transport; WebAssembly supplies fetch.
 
 use crate::crs::SpatialRef;
@@ -35,6 +34,8 @@ pub struct OapifOpenOptions {
     /// Ignore advertised JSON schemas and infer fields from all received pages.
     pub ignore_schema: bool,
     /// Conservative JSON workspace budget (default 1 GiB), including all response bytes × 32.
+    /// Cumulative response bytes across all collections are charged conservatively,
+    /// even after decoding; this is an aggregate work budget, not current heap usage.
     pub max_vector_bytes: usize,
     /// Maximum HTTP pages, including discovery and schemas (default 10000).
     pub max_pages: usize,
