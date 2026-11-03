@@ -483,10 +483,12 @@ fn sieve(
 ///
 /// `ox`, `oy` are observer coordinates in the DEM CRS; `oz` and `tz` are heights above
 /// the DEM. `md` is maximum distance (0 unlimited); `cc` is curvature coefficient
-/// (1 minus refraction, 0 flat Earth). `om` is NORMAL, DEM or GROUND. Numeric nodata
+/// (1 minus refraction, 0 flat Earth). `om` is NORMAL, DEM, GROUND or ACCUM. ACCUM ignores `ox`/`oy`;
+/// `os` sets observer spacing in pixels (default 10), and returns normalized Byte visibility.
+/// Pass `0, 0` for the required positional coordinates in ACCUM; the CLI may omit them. Numeric nodata
 /// is treated as elevation, as in GDAL; nonfinite elevations are rejected.
 #[pyfunction]
-#[pyo3(signature = (src, ox, oy, dst=None, *, oz=2.0, tz=0.0, md=0.0, cc=None, om="NORMAL", ov=0, band=1,
+#[pyo3(signature = (src, ox, oy, dst=None, *, oz=2.0, tz=0.0, md=0.0, cc=None, om="NORMAL", ov=0, band=1, os=10,
     format=None, compress=None, tile_size=None, bigtiff=false))]
 #[allow(clippy::too_many_arguments)]
 fn viewshed(
@@ -502,6 +504,7 @@ fn viewshed(
     om: &str,
     ov: u8,
     band: usize,
+    os: usize,
     format: Option<&str>,
     compress: Option<String>,
     tile_size: Option<u32>,
@@ -518,6 +521,7 @@ fn viewshed(
         curvature_coefficient: cc,
         mode: ViewshedMode::parse(om).py()?,
         out_of_range: ov,
+        observer_spacing: os,
     };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::viewshed::viewshed(&ds, &o)).py()?;
