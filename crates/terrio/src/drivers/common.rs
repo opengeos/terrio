@@ -825,7 +825,7 @@ pub(crate) fn pam_xml(crs: Option<&CrsInfo>, nodata: Option<f64>, bands: usize) 
     }
     let mut xml = String::from("<PAMDataset>\n");
     if let Some(wkt) = wkt {
-        let wkt = wkt.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+        let wkt = xml_escape(&wkt);
         xml.push_str(&format!("  <SRS dataAxisToSRSAxisMapping=\"1,2\">{wkt}</SRS>\n"));
     }
     if let Some(nd) = nodata {
@@ -840,8 +840,14 @@ pub(crate) fn pam_xml(crs: Option<&CrsInfo>, nodata: Option<f64>, bands: usize) 
     Some(xml)
 }
 
-fn xml_unescape(s: &str) -> String {
+/// Decodes the five predefined XML entities.
+pub(crate) fn xml_unescape(s: &str) -> String {
     s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+}
+
+/// Escapes `&`, `<`, `>` and `"` for XML text and attribute values; `'` is kept.
+pub(crate) fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 /// A raster whose geotransform is GDAL's default (no georeferencing).

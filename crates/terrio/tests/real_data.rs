@@ -6,12 +6,9 @@
 use std::path::PathBuf;
 use terrio::Dataset;
 
-fn data(name: &str) -> Option<String> {
-    let dir = PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?);
-    let p = dir.join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
-}
+#[path = "common/test_data.rs"]
+mod test_data;
+use test_data::data;
 
 /// The sum of a band's integer pixels weighted by their position, `value * (index % 251)`: a check
 /// of values and places, computed for GDAL's reads with NumPy.

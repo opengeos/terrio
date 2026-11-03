@@ -288,7 +288,7 @@ impl LazyRaster {
         }
         // An output no allocator can hold is refused before any buffer is sized from it.
         let what = "a resampled read";
-        let sample_bytes = bands.iter().map(|&b| sample_size(self.band_data_type(b))).sum::<usize>();
+        let sample_bytes = bands.iter().map(|&b| self.band_data_type(b).size_bytes()).sum::<usize>();
         let bytes = fallible::len(&[sample_bytes.max(1), bw, bh], what)?;
         fallible::reserve(&mut Vec::<u8>::new(), bytes, what)?;
         match o.resampling {
@@ -584,7 +584,7 @@ impl LazyRaster {
                 let kinds: Vec<MaskKind> =
                     kinds[part.bands.clone()].iter().zip(&bands).map(|(&k, &b)| self.kind_at(k, b, request.level)).collect();
                 let kinds = &kinds;
-                let sample_bytes = sample_size(self.band_data_type(bands[0]));
+                let sample_bytes = self.band_data_type(bands[0]).size_bytes();
                 resample(&resampled, &nodata, sample_bytes, &mut |w| {
                     let data = self.read_window(w, &options)?.raster.data;
                     let masks = self.weights(w, request.level, &bands, kinds, &nodata, &data)?;
@@ -1151,16 +1151,6 @@ fn alpha_mask(values: &RasterData) -> Vec<u8> {
         RasterData::U8(v) => v.clone(),
         RasterData::U16(v) => v.iter().map(|&a| if a > 0 && a < 257 { 1 } else { (u32::from(a) * 255 / 65535) as u8 }).collect(),
         other => other.to_f64_vec().into_iter().map(|a| a.clamp(0.0, 255.0) as u8).collect(),
-    }
-}
-
-/// The bytes of a sample of a type.
-fn sample_size(t: DataType) -> usize {
-    match t {
-        DataType::U8 | DataType::I8 => 1,
-        DataType::U16 | DataType::I16 => 2,
-        DataType::U32 | DataType::I32 | DataType::F32 => 4,
-        DataType::U64 | DataType::I64 | DataType::F64 => 8,
     }
 }
 

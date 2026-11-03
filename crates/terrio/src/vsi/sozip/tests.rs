@@ -875,6 +875,9 @@ fn native_member_reopens_reject_replaced_or_modified_archives() {
     assert_eq!(back, b"original");
     let reader = open_member(&location, "data").unwrap().unwrap();
     let reopen = reader.reopen().unwrap();
+    // An in-place rewrite of the same size and mtime is seen by its ctime, which kernels with
+    // coarse timestamps (one clock tick, up to 10 ms) leave unchanged within a tick.
+    std::thread::sleep(std::time::Duration::from_millis(50));
     fs::write(&path, original).unwrap();
     fs::File::open(&path).unwrap().set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
     assert!(reopen.open().is_err());

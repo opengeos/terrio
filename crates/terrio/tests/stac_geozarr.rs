@@ -5,16 +5,13 @@
 //! with `cargo test -- --ignored`. Its expected values come from GDAL 3.12's STACIT driver.
 
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use terrio::info::{Info, InfoOptions};
 use terrio::{DataType, Dataset, Raster, RasterConfig, RasterDataset, RasterWriteOptions, Window, WindowOptions};
 
-fn data(name: &str) -> Option<String> {
-    let dir = PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?);
-    let p = dir.join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
-}
+#[path = "common/test_data.rs"]
+mod test_data;
+use test_data::data;
 
 /// A 1-band UInt16 tile of `w` x `h` 10 m pixels with its top left corner at `(x0, y1)` in UTM
 /// zone 13N, its values `base + column` (0 is nodata).

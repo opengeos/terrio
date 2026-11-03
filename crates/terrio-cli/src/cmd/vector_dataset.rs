@@ -14,16 +14,12 @@
 //! `make-point`, `create` and `export-schema`).
 
 use super::processing::{VectorInput, VectorOutput};
-use terrio::crs::SpatialRef;
+use super::rasterout::srs;
 use terrio::formats::VectorDriver;
 use terrio::ops::concat::{ConcatMode, ConcatOptions, ConcatSource, FieldStrategy};
 use terrio::ops::partition::{PartitionOptions, PartitionScheme, PartitionWriteMode};
 use terrio::ops::vector_schema::{self as vs, FieldSelector, OgrSchema, OgrType};
 use terrio::{Error, Result};
-
-fn srs(s: &Option<String>) -> Result<Option<SpatialRef>> {
-    s.as_deref().map(SpatialRef::parse).transpose()
-}
 
 fn driver(format: Option<&str>) -> Result<Option<VectorDriver>> {
     format.map(|f| VectorDriver::from_name(f).ok_or_else(|| Error::InvalidArgument(format!("unknown vector format '{f}'")))).transpose()

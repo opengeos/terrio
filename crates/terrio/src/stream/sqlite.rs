@@ -1,32 +1,11 @@
 //! A read-only SQLite reader that reads pages from the file as it needs them, so that the
 //! feature tables of GeoPackages larger than memory are read a leaf page at a time.
 
-use crate::drivers::sqlite::{self, Db, SchemaEntry, Table, Value};
+use crate::drivers::sqlite::{self, Db, SchemaEntry, Table, Value, bad, varint};
 use crate::drivers::vector::gpkg_read::Tables;
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::Mutex;
-
-fn bad(msg: &str) -> Error {
-    Error::InvalidData(format!("SQLite: {msg}"))
-}
-
-/// Reads a varint at `i`: `(value, length)`.
-fn varint(b: &[u8], i: usize) -> Option<(i64, usize)> {
-    let mut v: u64 = 0;
-    for k in 0..9 {
-        let byte = *b.get(i + k)?;
-        if k == 8 {
-            v = (v << 8) | byte as u64;
-            return Some((v as i64, 9));
-        }
-        v = (v << 7) | (byte & 0x7f) as u64;
-        if byte & 0x80 == 0 {
-            return Some((v as i64, k + 1));
-        }
-    }
-    None
-}
 
 /// An SQLite database file read page by page.
 pub(crate) struct FileDb {

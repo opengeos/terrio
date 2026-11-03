@@ -1,8 +1,9 @@
 //! The reading half of `terrio.pyogrio`: a vector layer as pyogrio's `read` returns it, opened
 //! through `terrio::open_vector` (and so through the driver allow-list).
 
+use crate::vector::value_to_py;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList, PyString};
+use pyo3::types::{PyBytes, PyDict, PyList};
 use terrio::formats::VectorDriver;
 use terrio::{FieldValue, Geometry, VectorOpenOptions};
 
@@ -82,17 +83,6 @@ fn pyogrio_read<'py>(
     }
     out.set_item("fids", layer.features.iter().map(|f| f.fid).collect::<Vec<u64>>())?;
     Ok(out)
-}
-
-fn value_to_py<'py>(py: Python<'py>, v: &FieldValue) -> PyResult<Bound<'py, PyAny>> {
-    Ok(match v {
-        FieldValue::Integer(i) => i.into_pyobject(py)?.into_any(),
-        FieldValue::Float(f) => f.into_pyobject(py)?.into_any(),
-        FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => PyString::new(py, s).into_any(),
-        FieldValue::Boolean(b) => b.into_pyobject(py)?.to_owned().into_any(),
-        FieldValue::Blob(b) => PyBytes::new(py, b).into_any(),
-        FieldValue::Null => py.None().into_bound(py),
-    })
 }
 
 /// ISO WKB, little endian, as GDAL exports geometries to pyogrio: Z kept, M dropped (pyogrio

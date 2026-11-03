@@ -38,6 +38,7 @@ use crate::crs::SpatialRef;
 use crate::drivers::vector::datetime;
 use crate::drivers::vector::geoparquet as gp;
 use crate::drivers::vector::profile::LayerProfile;
+use crate::ops::simplify::open_ring;
 use crate::{Error, Result};
 use arrow_array::builder::{BinaryBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
@@ -843,14 +844,6 @@ fn list_level(a: &dyn Array) -> Result<(Vec<usize>, ArrayRef)> {
     }
 }
 
-/// A ring from coordinates, without its closing point (as terrio's rings are kept).
-fn ring(mut cs: Vec<Coord>) -> Ring {
-    if cs.len() > 1 && cs.first().map(|c| (c.x, c.y)) == cs.last().map(|c| (c.x, c.y)) {
-        cs.pop();
-    }
-    Ring::new(cs)
-}
-
 /// Decodes a native GeoArrow column.
 fn native_geometries(a: &dyn Array, kind: Native) -> Result<Vec<Option<Geometry>>> {
     let n = a.len();
@@ -890,7 +883,7 @@ fn native_geometries(a: &dyn Array, kind: Native) -> Result<Vec<Option<Geometry>
                     if kind == Native::MultiLineString {
                         return Some(Geometry::MultiLineString(parts));
                     }
-                    let mut rings = parts.into_iter().map(ring);
+                    let mut rings = parts.into_iter().map(open_ring);
                     let exterior = rings.next()?;
                     Some(Geometry::Polygon { exterior, interiors: rings.collect() })
                 })
@@ -906,7 +899,7 @@ fn native_geometries(a: &dyn Array, kind: Native) -> Result<Vec<Option<Geometry>
                     (!null(i)).then(|| {
                         let polygons = (o1[i]..o1[i + 1])
                             .filter_map(|p| {
-                                let mut rings = (o2[p]..o2[p + 1]).map(|r| ring(c.range(o3[r]..o3[r + 1])));
+                                let mut rings = (o2[p]..o2[p + 1]).map(|r| open_ring(c.range(o3[r]..o3[r + 1])));
                                 let exterior = rings.next()?;
                                 Some((exterior, rings.collect()))
                             })

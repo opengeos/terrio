@@ -286,14 +286,20 @@ impl Read for SparseFile {
 
 impl Seek for SparseFile {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let new = match pos {
-            SeekFrom::Start(p) => Some(p),
-            SeekFrom::End(d) => self.len.checked_add_signed(d),
-            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
-        };
-        self.pos = new.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before the start of the file"))?;
+        self.pos = seek_position(self.pos, self.len, pos)?;
         Ok(self.pos)
     }
+}
+
+/// The position a seek from `pos` moves a reader of `len` bytes at `cur` to; an error before the
+/// start (or past `u64::MAX`).
+pub(crate) fn seek_position(cur: u64, len: u64, pos: SeekFrom) -> io::Result<u64> {
+    match pos {
+        SeekFrom::Start(p) => Some(p),
+        SeekFrom::End(d) => len.checked_add_signed(d),
+        SeekFrom::Current(d) => cur.checked_add_signed(d),
+    }
+    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before the start of the file"))
 }
 
 // Row groups of remote GeoParquet files are read through the same blocks.

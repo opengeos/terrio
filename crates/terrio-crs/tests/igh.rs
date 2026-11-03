@@ -26,12 +26,9 @@ fn pinned_interrupted_goode_homolosine_fixture() {
     }
 }
 
-fn angular_error(actual: (f64, f64), expected: &serde_json::Value) -> f64 {
-    let lon = expected[0].as_f64().unwrap();
-    let lat = expected[1].as_f64().unwrap();
-    let dlon = (actual.0 - lon + 180.0).rem_euclid(360.0) - 180.0;
-    (dlon * lat.to_radians().cos()).abs().max((actual.1 - lat).abs())
-}
+#[path = "common/angular.rs"]
+mod angular;
+use angular::angular_error;
 
 #[test]
 fn all_zones_figures_units_and_interruptions_match_frozen_proj() {

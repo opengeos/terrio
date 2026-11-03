@@ -117,7 +117,7 @@ impl PyVectorDataset {
 }
 
 /// Converts an attribute value to a Python object.
-fn value_to_py<'py>(py: Python<'py>, v: &FieldValue) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn value_to_py<'py>(py: Python<'py>, v: &FieldValue) -> PyResult<Bound<'py, PyAny>> {
     Ok(match v {
         FieldValue::Integer(i) => i.into_pyobject(py)?.into_any(),
         FieldValue::Float(f) => f.into_pyobject(py)?.into_any(),

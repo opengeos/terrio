@@ -455,15 +455,6 @@ pub(crate) fn map_init<T: Sync, S, R: Send>(
     items.iter().map(|t| f(&mut s, t)).collect()
 }
 
-/// Maps `f` over mutable items in parallel, keeping the order.
-fn map_mut_on<const COARSE: bool, T: Send, R: Send>(items: &mut [T], f: impl Fn(&mut T) -> R + Sync + Send) -> Vec<R> {
-    #[cfg(threads)]
-    if let Some(p) = pool_for(COARSE, items.len(), 2) {
-        return p.install(|| items.par_iter_mut().map(f).collect());
-    }
-    items.iter_mut().map(f).collect()
-}
-
 /// Calls `f` on each item of an owned list with its index, in parallel.
 fn for_each_owned_on<const COARSE: bool, T: Send>(items: Vec<T>, f: impl Fn(usize, T) + Sync + Send) {
     #[cfg(threads)]
@@ -493,20 +484,6 @@ pub(crate) fn map_range<R: Send>(n: usize, f: impl Fn(usize) -> R + Sync + Send)
 /// [`map_range`] for coarse work, in parallel in WebAssembly with threads too.
 pub(crate) fn map_range_coarse<R: Send>(n: usize, f: impl Fn(usize) -> R + Sync + Send) -> Vec<R> {
     map_range_on::<true, R>(n, f)
-}
-
-/// Maps `f` over mutable items in parallel (fine-grained work), keeping the order.
-#[allow(dead_code)]
-pub(crate) fn map_mut<T: Send, R: Send>(items: &mut [T], f: impl Fn(&mut T) -> R + Sync + Send) -> Vec<R> {
-    map_mut_on::<false, T, R>(items, f)
-}
-
-/// [`map_mut`] for coarse work.
-// The COG overview reducer of #165 called this; COG overviews are now GDAL's
-// (`gdal_overview`), which do not.
-#[allow(dead_code)]
-pub(crate) fn map_mut_coarse<T: Send, R: Send>(items: &mut [T], f: impl Fn(&mut T) -> R + Sync + Send) -> Vec<R> {
-    map_mut_on::<true, T, R>(items, f)
 }
 
 /// Calls `f` on each item of an owned list with its index, in parallel (fine-grained work).

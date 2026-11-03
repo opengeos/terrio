@@ -61,6 +61,15 @@ use crate::dataset::{VectorOpenOptions, VectorWriteOptions};
 use crate::formats::VectorDriver;
 use wbvector::{GeometryType, Layer};
 
+/// A layer in WGS 84, reprojected when its CRS is another one.
+pub(crate) fn in_wgs84(layer: &Layer) -> Result<std::borrow::Cow<'_, Layer>> {
+    let srs = crate::crs::SpatialRef::from_layer(layer);
+    if srs.is_unknown() || srs.epsg == Some(4326) {
+        return Ok(std::borrow::Cow::Borrowed(layer));
+    }
+    Ok(std::borrow::Cow::Owned(crate::vector::reproject_layer(layer, &crate::crs::SpatialRef::from_epsg(4326)?)?))
+}
+
 /// A temporary file to write and read back (in memory in WebAssembly).
 pub(crate) trait Spill: std::io::Read + std::io::Write + std::io::Seek + Send {}
 impl<T: std::io::Read + std::io::Write + std::io::Seek + Send> Spill for T {}

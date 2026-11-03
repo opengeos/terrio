@@ -87,12 +87,12 @@ impl std::ops::Deref for Bytes {
     }
 }
 
-fn bad(msg: &str) -> Error {
+pub(crate) fn bad(msg: &str) -> Error {
     Error::InvalidData(format!("SQLite: {msg}"))
 }
 
 /// Reads a varint at `i`: `(value, length)`.
-fn varint(b: &[u8], i: usize) -> Option<(i64, usize)> {
+pub(crate) fn varint(b: &[u8], i: usize) -> Option<(i64, usize)> {
     let mut v: u64 = 0;
     for k in 0..9 {
         let byte = *b.get(i + k)?;

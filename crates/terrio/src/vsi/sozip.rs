@@ -1485,12 +1485,7 @@ impl Read for MemberReader {
 
 impl Seek for MemberReader {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        let new = match pos {
-            SeekFrom::Start(p) => Some(p),
-            SeekFrom::End(d) => self.size.checked_add_signed(d),
-            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
-        };
-        self.pos = new.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before the start"))?;
+        self.pos = crate::sparse::seek_position(self.pos, self.size, pos)?;
         Ok(self.pos)
     }
 }

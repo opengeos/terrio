@@ -7,17 +7,13 @@
 #![cfg(feature = "gdal")]
 
 use gdal::vector::{LayerAccess, LayerOptions, OGRFieldType, OGRwkbGeometryType};
-use std::path::PathBuf;
 use terrio::formats::{RasterDriver, VectorDriver};
 use terrio::raster::RasterData;
 use terrio::{FieldValue, Raster, RasterConfig, RasterDataset};
 
-fn data(name: &str) -> Option<String> {
-    let dir = PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?);
-    let p = dir.join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
-}
+#[path = "common/test_data.rs"]
+mod test_data;
+use test_data::data;
 
 /// A small georeferenced Int16 raster with a nodata value.
 fn sample() -> RasterDataset {

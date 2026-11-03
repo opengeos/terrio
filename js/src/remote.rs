@@ -6,7 +6,7 @@
 //! ([`terrio::sparse::SparseFile`]); when it needs blocks not fetched yet, they are fetched (in
 //! parallel requests, nearby ranges merged) and the read runs again, until it has all it needs.
 
-use crate::{Dataset, crs_string, dtype_name, js_err, parse_options, to_js, typed_array};
+use crate::{Dataset, crs_string, js_err, parse_options, to_js, typed_array};
 use serde::Deserialize;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -82,7 +82,7 @@ fn call(obj: &JsValue, method: &str, args: &[JsValue]) -> Result<JsValue, JsErro
 }
 
 /// A JavaScript exception as an error.
-fn js_error(e: JsValue) -> JsError {
+pub(crate) fn js_error(e: JsValue) -> JsError {
     let msg = e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).or_else(|| e.as_string()).unwrap_or_else(|| format!("{e:?}"));
     JsError::new(&msg)
 }
@@ -570,7 +570,7 @@ impl RemoteDataset {
     /// Rasters: the pixel type.
     #[wasm_bindgen(getter)]
     pub fn dtype(&self) -> Result<String, JsError> {
-        self.with_raster(|r| dtype_name(r.data_type()).to_string())
+        self.with_raster(|r| r.data_type().as_str().to_string())
     }
 
     /// Rasters: the nodata value.
