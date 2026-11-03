@@ -88,10 +88,11 @@ pub(crate) fn apply(pam: common::Pam, ds: &mut RasterDataset) {
         ds.has_nodata = true;
     }
     let bands = ds.raster.bands;
-    for (band, color) in pam.band_color_interp.into_iter().filter(|(b, _)| (1..=bands).contains(b)) {
-        if ds.band_metadata.len() < bands {
-            ds.band_metadata.resize_with(bands, Default::default);
-        }
+    let colors: Vec<(usize, String)> = pam.band_color_interp.into_iter().filter(|(b, _)| (1..=bands).contains(b)).collect();
+    if !colors.is_empty() && ds.band_metadata.len() < bands {
+        ds.band_metadata.resize_with(bands, Default::default);
+    }
+    for (band, color) in colors {
         ds.band_metadata[band - 1].color_interp = Some(color);
     }
 }

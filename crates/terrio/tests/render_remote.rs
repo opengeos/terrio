@@ -70,9 +70,9 @@ fn a_remote_raster_without_overviews_is_drawn_from_bands_of_blocks() {
     // 4000 x 4000 pixels (over the 4 Mpx read whole) of noise, uncompressed in tiles of 256:
     // 16 rows of tiles.
     let (cols, rows) = (4000, 4000);
-    let values: Vec<f64> = (0..(rows * cols) as u64).map(|i| (i.wrapping_mul(2_654_435_761) >> 7 & 255) as f64).collect();
+    let values: Vec<u8> = (0..(rows * cols) as u64).map(|i| ((i.wrapping_mul(2_654_435_761) >> 7) & 255) as u8).collect();
     let cfg = wbraster::RasterConfig { cols, rows, bands: 1, data_type: terrio::DataType::U8, ..Default::default() };
-    let data = wbraster::raster::RasterData::from_f64_vec(terrio::DataType::U8, values);
+    let data = wbraster::raster::RasterData::U8(values);
     let ds = terrio::RasterDataset::new(wbraster::Raster::from_data_native(cfg, data).unwrap(), false);
     let dir = tempfile::tempdir().unwrap();
     let local = dir.path().join("big.tif");

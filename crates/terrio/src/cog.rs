@@ -864,6 +864,15 @@ impl LazyRaster {
         }
     }
 
+    /// The tile (or strip) size of an overview (or of the full-resolution image for `None`): a
+    /// GeoTIFF's own for each level; for other sources, [`LazyRaster::block_size`].
+    pub(crate) fn level_block_size(&self, overview: Option<usize>) -> Option<(usize, usize)> {
+        match &self.inner {
+            Inner::Tiff(t) => t.levels.get(overview.map_or(0, |i| i + 1)).map(|l| l.block),
+            _ => self.block_size(),
+        }
+    }
+
     /// The geotransform of an overview (or of the full-resolution image for `None`).
     pub fn level_geo_transform(&self, overview: Option<usize>) -> Result<[f64; 6]> {
         let (w, h) = self.level_size(overview)?;

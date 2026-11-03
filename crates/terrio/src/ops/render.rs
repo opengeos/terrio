@@ -390,7 +390,7 @@ fn read_region(source: &mut LazyRaster, plan: &Plan, window: Window, tw: usize, 
         if sw > MAX_DIRECT_PIXELS {
             return Err(Error::Unsupported(format!("cannot draw a raster {sw} pixels wide without overviews; build overviews first")));
         }
-        let block_rows = source.block_size().map_or(1, |(_, h)| h.max(1));
+        let block_rows = source.level_block_size(overview).map_or(1, |(_, h)| h.max(1));
         let most_rows = MAX_DIRECT_PIXELS / sw;
         let source_row = |row: usize| y0 + centre(row, sh, th);
         let mut row = 0;

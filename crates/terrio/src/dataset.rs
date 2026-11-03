@@ -1203,7 +1203,7 @@ pub(crate) fn finish_vector(layers: Vec<Layer>, path: &str, driver: VectorDriver
 }
 
 /// Keeps the layers `options` asks for (all when it names none).
-fn select_layers(layers: Vec<Layer>, path: &str, options: &VectorOpenOptions) -> Result<Vec<Layer>> {
+pub(crate) fn select_layers(layers: Vec<Layer>, path: &str, options: &VectorOpenOptions) -> Result<Vec<Layer>> {
     if options.layers.is_empty() {
         return Ok(layers);
     }

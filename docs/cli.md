@@ -3657,15 +3657,17 @@ drawn almost transparent, as GDAL 3.13 warps it. Vector layers are burned with `
 (every pixel a feature touches), north up, in one color or by a numeric field's values; points are
 drawn three pixels wide. A map view indexes the features once, so that each tile burns only the
 features near it. A raster wider than 4,194,304 pixels with no overview to read from is refused:
-build overviews first. Without overviews, the whole level is still read: a 16.8 MB 4000 x 4000 Byte
-GeoTIFF in 256-pixel tiles took 16 GETs, one a row of tiles, and its whole size, so build overviews
-for remote previews.
+build overviews first. Without overviews, a preview reads every row of blocks its sampled rows fall
+in, which for most sizes is the whole level: a 16.8 MB 4000 x 4000 Byte GeoTIFF in 256-pixel tiles
+drawn 240 pixels wide took 16 GETs, one a row of tiles, and its whole size, so build overviews for
+remote previews.
 
 Without `--bands`, the red, green and blue bands are drawn when the color interpretation names
 them, else the first three bands of a Byte raster without a palette, else band 1, through the
 raster's own palette when it has one. Color interpretations are the file's, overridden by those of
-a local `.aux.xml` sidecar (its `ColorInterp`, an `Alpha` band for example), as GDAL reads them. `--stretch auto` draws Byte red, green and blue as stored and
-stretches everything else from its 2nd to its 98th percentile, measured on the pixels drawn.
+a local `.aux.xml` sidecar (its `ColorInterp`, an `Alpha` band for example), as GDAL reads them.
+`--stretch auto` draws Byte red, green and blue as stored and stretches everything else from its
+2nd to its 98th percentile, measured on the pixels drawn.
 
 Option | Description
 --- | ---
