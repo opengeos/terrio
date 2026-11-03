@@ -21,7 +21,9 @@
 - A dataset with a single named layer accepts its file stem as the layer name too, through native
   readers, in-memory codecs and the GDAL backend, with one diagnostic for a missing layer (#529).
 - The WebAssembly package can be built with a selection of scientific formats, such as NetCDF and
-  HDF5, as a single module.
+  HDF5, as a single module (#503).
+- `terrio-crs` 0.2.2 adds the two-point form of oblique Mercator, and
+  `SpatialRef::parse_literal`, which parses a CRS definition without reading it as a file path.
 - `Workbook::open_bytes` now enforces the same compressed-size limit as `Workbook::open`.
   Workbook authoring and editing are checked against openpyxl in CI, including retained
   chart, drawing, table and theme parts (#405).
