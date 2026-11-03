@@ -30,8 +30,9 @@ export CARGO_PROFILE_DEV_DEBUG=0
 export CARGO_PROFILE_TEST_DEBUG=0
 ```
 
-- Set `CARGO_BUILD_JOBS` to what the machine can spare, and lower it when several
-  worktrees build at once. Use `nice` to keep a desktop responsive.
+- Set `CARGO_BUILD_JOBS` to what the machine can spare, such as 4 on a shared desktop,
+  and lower it when several worktrees build at once. Cargo uses every core if it is
+  unset. Use `nice` to keep a desktop responsive.
 - Keep targets on disk rather than a memory-backed `/tmp`. Set
   `CARGO_TARGET_DIR` to a worktree-specific directory if necessary.
 - Give concurrent worktrees separate target directories; Cargo locks serialize
