@@ -1,6 +1,7 @@
 //! Per-polygon statistics across raster bands. Zones are evaluated independently, so overlapping
 //! zones can include the same pixel. Binary membership uses the GDAL-compatible rasterizer;
-//! fractional membership uses polygon/cell areas, matching GDAL 3.13.3. Each zone has a cropped
+//! fractional membership uses polygon/cell areas, agreeing with GDAL 3.13.3 within documented
+//! tolerances except for median and empty-zone sums. Each zone has a cropped
 //! window and one coverage mask shared by bands of the same raster.
 
 #[path = "zonal_fractional.rs"]
@@ -232,8 +233,8 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
         columns.push(indices);
     }
     let median = options.stats.contains(&Statistic::Median);
-    let weighted_variance = options.stats.contains(&Statistic::WeightedStdDev);
-    let weighted_mean = weighted_variance || options.stats.contains(&Statistic::WeightedMean);
+    let needs_weighted_m2 = options.stats.contains(&Statistic::WeightedStdDev);
+    let weighted_mean = needs_weighted_m2 || options.stats.contains(&Statistic::WeightedMean);
     let weighted_sum = options.stats.contains(&Statistic::WeightedSum);
     for f in &mut out.features {
         f.attributes.resize(out.schema.len(), FieldValue::Null);
@@ -280,7 +281,7 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
                                             weighted.add(v, contribution);
                                             if (weighted_sum && !weighted.sum.is_finite())
                                                 || (weighted_mean && (!weighted.weight.is_finite() || !weighted.mean.is_finite()))
-                                                || (weighted_variance && !weighted.m2.is_finite())
+                                                || (needs_weighted_m2 && !weighted.m2.is_finite())
                                             {
                                                 return Err(Error::InvalidArgument(format!(
                                                     "zone {} weighted statistics overflow binary64 arithmetic",
