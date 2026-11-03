@@ -390,7 +390,8 @@ impl LazyRaster {
         let (rx, ry) = (xs / bw, ys / bh);
         let geo_transform = [gt[0] + x * gt[1] + y * gt[2], gt[1] * rx, gt[2] * ry, gt[3] + x * gt[4] + y * gt[5], gt[4] * rx, gt[5] * ry];
         let gcp = |pixel: f64, line: f64| ((pixel - x) * bw / xs, (line - y) * bh / ys);
-        let whole = read.full.is_copy(read.buf) && read.buf == read.full.size;
+        // The whole image at full resolution: not an overview read alone at the raster's size.
+        let whole = read.full.is_copy(read.buf) && read.buf == read.full.size && read.fixed.is_none_or(|level| level.is_none());
         // The nodata values of the dataset read: a level read alone is one of its own
         // (`gdal_translate -ovr`), whose bands an external overview's tags describe.
         let nodata = self.level_band_nodata(&read.bands, read.fixed.flatten());
@@ -684,12 +685,12 @@ impl LazyRaster {
     fn resampled_mask_band(&mut self, read: &Read) -> Result<Vec<u8>> {
         let mask_overviews = self.mask_band_overviews();
         let request = match read.fixed {
-            // A level read alone: its own mask, if any, else (in GDAL, an all-valid mask band)
-            // nothing masked.
             // A level of which nothing is read: no valid pixel.
             Some(level) if fixed_is_empty(read.full, level.map_or(read.full.size, |i| self.overviews()[i])) => {
                 return Ok(vec![0; read.buf.0 * read.buf.1]);
             }
+            // A level read alone: its own mask, if any, else (in GDAL, an all-valid mask band)
+            // nothing masked.
             Some(Some(i)) => {
                 let size = self.overviews()[i];
                 match mask_overviews.iter().position(|s| *s == size) {

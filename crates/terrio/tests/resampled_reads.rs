@@ -296,3 +296,29 @@ fn shared_handles_weight_overviews_by_their_own_masks() {
         }
     }
 }
+
+/// An overview read alone at the raster's size is not the full-resolution image: its band
+/// statistics, which describe full resolution, are dropped.
+#[test]
+fn overview_reads_drop_full_resolution_statistics() {
+    use terrio::{DataType, Raster, RasterConfig, RasterDataset};
+    let config = RasterConfig { cols: 64, rows: 64, bands: 1, data_type: DataType::U8, ..Default::default() };
+    let mut ds = RasterDataset::new(
+        Raster::from_data_native(config, RasterData::U8((0..64 * 64).map(|i| (i % 251) as u8).collect())).unwrap(),
+        false,
+    );
+    ds.set_geo_transform([0.0, 1.0, 0.0, 64.0, 0.0, -1.0]);
+    ds.band_metadata = vec![terrio::BandMetadata { items: vec![("STATISTICS_MEAN".into(), "1".into())], ..Default::default() }];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cog.tif");
+    let options =
+        terrio::RasterWriteOptions { driver: Some(terrio::formats::RasterDriver::Cog), tile_size: Some(16), ..Default::default() };
+    terrio::write_raster_dataset(&ds, path.to_str().unwrap(), &options).unwrap();
+    let mut raster = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
+    assert!(!raster.overviews().is_empty());
+    let stats = |ds: &terrio::RasterDataset| ds.band_metadata.iter().any(|b| b.items.iter().any(|(k, _)| k.starts_with("STATISTICS_")));
+    let full = ResampledReadOptions { size: (64, 64), ..Default::default() };
+    assert!(stats(&raster.read_resampled(&full).unwrap()));
+    let level = ResampledReadOptions { overview: OverviewSelection::Level(0), ..full };
+    assert!(!stats(&raster.read_resampled(&level).unwrap()));
+}
