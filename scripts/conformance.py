@@ -30,6 +30,7 @@ Suites:
                       gdallocationinfo and gdal2xyz.py (compare_raster_query_with_gdal.py)
     grouped-spatial-sql
                       grouped and spatial SQL vs GDAL SQLite on Natural Earth
+    xlsx-workbook     workbook authoring and preserved edits vs openpyxl
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
     analysis-output   zonal/point-sampling output reprojection and decimal rounding
     footprint         raster footprints, source/custom fields and singleparts vs GDAL
@@ -67,8 +68,10 @@ Usage:
 Needs a release build of the command-line tool (``cargo build --release``), GDAL's command-line
 tools and Python bindings (``osgeo``) with NumPy; the point cloud suite needs the terrio Python
 package, laspy (with lazrs) and PDAL; the Arrow suite pyarrow, GeoPandas and Shapely; the CRS
-suite needs cargo. Suites whose requirements are missing are reported as skipped. Exits non-zero
-when a suite cannot run, and with ``--strict`` when any case differs.
+suite needs cargo. The XLSX workbook suite needs openpyxl and
+``cargo build --release -p terrio --example xlsx_workbook``. Missing Python dependencies
+are reported as skipped; a missing workbook example is an error. Exits non-zero when a suite
+cannot run, and with ``--strict`` when any case differs.
 """
 
 from __future__ import annotations
@@ -97,6 +100,8 @@ TOLERANCE = "within tolerance"
 DIFFERS = "differs"
 # A case whose reference values could not be computed (no coordinates to compare), reported apart.
 NOT_COMPARED = "not compared"
+
+GDAL_FREE_SUITES = frozenset(("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"))
 
 
 @dataclasses.dataclass
@@ -2836,6 +2841,52 @@ def suite_xlsx_layout(ctx):
     return s
 
 
+def suite_xlsx_workbook(ctx):
+    """Workbook authoring and lossless editing against openpyxl."""
+    s = Suite(
+        "xlsx-workbook", "XLSX workbook model", "openpyxl",
+        "Authored typed cells, cached formulas, styles, dimensions, sheet views, validation, "
+        "comments and print settings read by openpyxl. An openpyxl workbook edited by terrio "
+        "keeps other cells and its chart, drawing, table and theme parts byte-for-byte. "
+        "Formula expressions and supplied caches are checked; formulas are not evaluated.",
+    )
+    if missing_modules("openpyxl"):
+        s.skipped = "needs openpyxl"
+        return s
+    example = Path(ctx.terrio).parent / "examples" / ("xlsx_workbook.exe" if os.name == "nt" else "xlsx_workbook")
+    if not example.is_file():
+        s.error = "needs cargo build -p terrio --example xlsx_workbook in the CLI's build profile"
+        return s
+    with tempfile.TemporaryDirectory(prefix="terrio-xlsx-workbook-") as tmp:
+        workbook = Path(tmp, "workbook.xlsx")
+        code, out, err = run([str(example), str(workbook)])
+        if code:
+            s.error = "Workbook authoring failed: " + tail(err or out)
+            return s
+        for group, script, source in (
+            ("writer", "compare_xlsx_workbook_with_openpyxl.py", workbook),
+            ("edit", "compare_xlsx_edit_with_openpyxl.py", example),
+        ):
+            report = Path(tmp, group + ".json")
+            code, out, err = run([sys.executable, str(SCRIPTS / script), str(source), "--json", str(report)])
+            try:
+                rows = json.loads(report.read_text())["cases"]
+                if not isinstance(rows, list) or not rows:
+                    raise ValueError("empty or invalid cases")
+                for row in rows:
+                    status = row["status"]
+                    if status not in (IDENTICAL, DIFFERS):
+                        raise ValueError(f"invalid status: {status}")
+                    s.cases.append(Case(group, row["name"], status, row.get("detail", "")))
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                s.error = f"{group} comparison report failed: {exc}; " + tail(err or out)
+                return s
+            if code and not (code == 1 and any(row["status"] == DIFFERS for row in rows)):
+                s.error = f"{group} comparison exited {code}: " + tail(err or out)
+                return s
+    return s
+
+
 def suite_vector_geom(ctx):
     """Vector geometry commands on real data against gdal vector and GEOS."""
     s = Suite(
@@ -3191,6 +3242,7 @@ SUITES = OrderedDict(
         ("vector-dataset", suite_vector_dataset),
         ("xlsx", suite_xlsx),
         ("xlsx-layout", suite_xlsx_layout),
+        ("xlsx-workbook", suite_xlsx_workbook),
         ("rpftoc", suite_rpftoc),
         ("footprint", suite_footprint),
         ("analysis-bindings", suite_analysis_bindings),
@@ -3323,6 +3375,7 @@ def markdown(suites, ctx, vers):
         "",
         "```sh",
         "cargo build --release",
+        "cargo build --release -p terrio --example xlsx_workbook",
         "python scripts/conformance.py ../terrio-data --output docs/conformance.md",
         "```",
         "",
@@ -3416,7 +3469,7 @@ def main():
 
     def go(name):
         start = datetime.datetime.now()
-        if gdal_missing and name not in ("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write"):
+        if gdal_missing and name not in GDAL_FREE_SUITES:
             fn = SUITES[name]
             s = Suite(name, name, "", fn.__doc__ or "")
             s.skipped = "needs the Python modules " + ", ".join(gdal_missing)

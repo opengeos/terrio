@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `Workbook::open_bytes` now enforces the same compressed-size limit as `Workbook::open`.
+  Workbook authoring and editing are checked against openpyxl in CI, including retained
+  chart, drawing, table and theme parts (#405).
 - Opening a vector dataset with layer names refuses a name no layer has, rather than reading
   the layers the other names match, as GDAL refuses a layer it cannot fetch (#521).
 - A local `.aux.xml` sidecar's band `ColorInterp` overrides a GeoTIFF's and applies to other

@@ -157,6 +157,7 @@ cases that are not identical. The [Conformance](conformance.md) page is that rep
 
 ```sh
 cargo build --release
+cargo build --release -p terrio --example xlsx_workbook
 python scripts/conformance.py ../terrio-data --output docs/conformance.md
 python scripts/conformance.py ../terrio-data --only ops,dem-calc   # some suites
 python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs too; fail on a difference
@@ -2359,3 +2360,24 @@ four-feature read at page size three: metadata, schema and two item pages.
 These are observed public-service response sizes, not fixed assertions.
 All 15 CLI/Python/WASM comparisons passed: nine exact and six with the explicit
 schema normalizations above; maximum observed coordinate error was zero.
+
+### XLSX workbook interoperability
+
+The `xlsx-workbook` conformance suite checks authored cells, formulas and caches,
+styles, sheet views and print controls with openpyxl. It also edits an openpyxl
+workbook and checks retained cells, charts, tables and conditional formatting,
+including byte-for-byte preservation of chart, drawing, table and theme parts.
+It does not evaluate formulas. Native unit tests also cover macro preservation
+and malformed or oversized input.
+
+Install openpyxl and build the CLI and workbook example in the same profile:
+
+```sh
+cargo build --release -p terrio-cli
+cargo build --release -p terrio --example xlsx_workbook
+python scripts/conformance.py ../terrio-data --only xlsx,xlsx-layout,xlsx-workbook --strict
+```
+
+The `xlsx` suite uses GDAL as the reference; `xlsx-layout` and `xlsx-workbook`
+use openpyxl. Default CI runs `xlsx-workbook` with the debug example, while the
+extended conformance job uses the release example.

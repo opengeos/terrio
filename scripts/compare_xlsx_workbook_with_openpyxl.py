@@ -7,8 +7,11 @@ Usage:
     compare_xlsx_workbook_with_openpyxl.py WORKBOOK
 """
 
+import argparse
 import datetime
+import json
 import sys
+from pathlib import Path
 
 import openpyxl
 
@@ -19,11 +22,12 @@ def main():
     Returns:
         The process exit code.
     """
-    if len(sys.argv) != 2:
-        print(__doc__, file=sys.stderr)
-        return 2
-    book = openpyxl.load_workbook(sys.argv[1])
-    cached = openpyxl.load_workbook(sys.argv[1], data_only=True)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    parser.add_argument("workbook")
+    parser.add_argument("--json", type=Path, help="Write the comparison cases as JSON")
+    args = parser.parse_args()
+    book = openpyxl.load_workbook(args.workbook)
+    cached = openpyxl.load_workbook(args.workbook, data_only=True)
     sheet = book["LV Summary"]
     head = sheet["B1"]
     b3 = sheet["B3"]
@@ -80,11 +84,16 @@ def main():
         ("page footer", sheet.oddFooter.right.text, "Page &P"),
     ]
     failed = 0
+    cases = []
     for name, actual, wanted in checks:
         same = actual == wanted
         failed += not same
+        cases.append({"name": name, "status": "identical" if same else "differs",
+                      "detail": "" if same else f"{actual!r} != {wanted!r}"})
         print(f"{'OK  ' if same else 'DIFF'}  {name}" + ("" if same else f": {actual!r} != {wanted!r}"))
     print(f"{len(checks) - failed} of {len(checks)} identical")
+    if args.json:
+        args.json.write_text(json.dumps({"cases": cases}, indent=2) + "\n", encoding="utf-8")
     return 1 if failed else 0
 
 
