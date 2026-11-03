@@ -282,7 +282,7 @@ def suite_histograms(ctx):
         "`gdalinfo -hist` byte for byte, the JSON histograms (with `min` and `max` as GDAL prints "
         "them), with `-stats`, and the histograms GDAL stored in the `.aux.xml` sidecar.",
     )
-    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_hist_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json", *extra])
+    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_hist_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
     try:
         results = json.loads(out)
     except json.JSONDecodeError:
@@ -475,7 +475,7 @@ def suite_json_ops(ctx, key, script, title, reference, criteria, group_words, ex
         The suite.
     """
     s = Suite(key, title, reference, criteria)
-    _code, out, err = run([sys.executable, str(SCRIPTS / script), ctx.data, "--terrio", ctx.terrio, "--json"])
+    _code, out, err = run([sys.executable, str(SCRIPTS / script), ctx.data, "--terrio", ctx.terrio, "--json", *extra])
     try:
         results = json.loads(out)
     except json.JSONDecodeError:

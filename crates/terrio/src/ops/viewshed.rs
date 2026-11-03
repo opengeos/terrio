@@ -30,7 +30,7 @@ pub enum ViewshedMode {
     /// Minimum visible height above the DEM surface (Float64).
     Ground,
     /// Sum visibility from regularly spaced observers, scaled to Byte 0–255.
-    Accum,
+    Cumulative,
 }
 impl ViewshedMode {
     /// Parses NORMAL, DEM, GROUND or ACCUM, case-insensitively.
@@ -39,7 +39,7 @@ impl ViewshedMode {
             "NORMAL" => Ok(Self::Normal),
             "DEM" => Ok(Self::Dem),
             "GROUND" => Ok(Self::Ground),
-            "ACCUM" => Ok(Self::Accum),
+            "ACCUM" => Ok(Self::Cumulative),
             _ => Err(Error::InvalidArgument("viewshed mode must be NORMAL, DEM, GROUND or ACCUM".into())),
         }
     }
@@ -102,7 +102,7 @@ impl Default for ViewshedOptions {
 /// ellipsoid's semi-major axis in metres, matching GDAL even for non-metre projected units;
 /// use coefficient zero or convert the DEM to metres for physical consistency in that case.
 pub fn viewshed(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset> {
-    if o.mode == ViewshedMode::Accum {
+    if o.mode == ViewshedMode::Cumulative {
         return cumulative(ds, o);
     }
     let mut elevations = Vec::new();
@@ -171,7 +171,13 @@ fn execute(ds: &RasterDataset, o: &ViewshedOptions, z: &mut Vec<f64>, out: &mut 
     // GDAL samples the nearest row when Y is outside but X is inside; when X is
     // outside, the observer height is absolute and intervening space is unobstructed.
     let observer = o.observer_height + if inside_x { z[start_y * nw + start_x] } else { 0.0 };
-    let a = crs.to_wkt().as_deref().and_then(crate::crs::semi_major_axis).unwrap_or(6_378_137.0);
+    // A zero coefficient needs no ellipsoid lookup. Cumulative mode always takes
+    // this path, avoiding repeated WKT construction/parsing for every observer.
+    let a = if o.curvature_coefficient == Some(0.0) {
+        6_378_137.0
+    } else {
+        crs.to_wkt().as_deref().and_then(crate::crs::semi_major_axis).unwrap_or(6_378_137.0)
+    };
     let coeff = o.curvature_coefficient.unwrap_or(if (a / 6_378_137.0 - 1.0).abs() > 0.05 { 1.0 } else { 0.85714 });
     out.clear();
     out.resize(nw * nh, 0.0);
@@ -295,7 +301,8 @@ mod tests {
     #[test]
     fn cumulative_ridge_spacing_and_full_extent() {
         let src = dem(vec![0.0, 0.0, 10.0, 0.0, 0.0], 5, 1, None);
-        let o = ViewshedOptions { mode: ViewshedMode::Accum, observer_spacing: 2, curvature_coefficient: Some(0.0), ..Default::default() };
+        let o =
+            ViewshedOptions { mode: ViewshedMode::Cumulative, observer_spacing: 2, curvature_coefficient: Some(0.0), ..Default::default() };
         let out = viewshed(&src, &o).unwrap();
         assert_eq!(super::super::band_f64(&out.raster, 0), [170.0, 170.0, 255.0, 170.0, 170.0]);
         assert_eq!(out.geo_transform(), src.geo_transform());
@@ -308,7 +315,8 @@ mod tests {
     fn cumulative_normalization_preserves_reference_rounding() {
         for (n, expected) in [(7, 255.0), (25, 254.0)] {
             let src = dem(vec![0.0; n], n, 1, None);
-            let out = viewshed(&src, &ViewshedOptions { mode: ViewshedMode::Accum, observer_spacing: 1, ..Default::default() }).unwrap();
+            let out =
+                viewshed(&src, &ViewshedOptions { mode: ViewshedMode::Cumulative, observer_spacing: 1, ..Default::default() }).unwrap();
             assert!(super::super::band_f64(&out.raster, 0).iter().all(|v| *v == expected));
         }
     }
@@ -341,7 +349,7 @@ mod tests {
         // The radius crop includes the immediate neighbor, like GDAL.
         assert!(viewshed(&src, &local).is_err());
         assert!(viewshed(&src, &ViewshedOptions { observer_x: f64::INFINITY, ..o }).is_err());
-        assert_eq!(ViewshedMode::parse("ACCUM").unwrap(), ViewshedMode::Accum);
+        assert_eq!(ViewshedMode::parse("ACCUM").unwrap(), ViewshedMode::Cumulative);
     }
     #[test]
     fn outside_observers_and_radius_mask() {

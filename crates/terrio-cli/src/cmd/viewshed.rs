@@ -48,7 +48,7 @@ pub struct Args {
 
 pub fn run(a: Args) -> terrio::Result<()> {
     let mode = ViewshedMode::parse(&a.om)?;
-    if mode != ViewshedMode::Accum && (a.ox.is_none() || a.oy.is_none()) {
+    if mode != ViewshedMode::Cumulative && (a.ox.is_none() || a.oy.is_none()) {
         return Err(terrio::Error::InvalidArgument("--ox and --oy are required except in ACCUM mode".into()));
     }
     let ds = open(&a.input)?;
