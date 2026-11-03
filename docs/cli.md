@@ -3618,7 +3618,7 @@ Option | Description
 `--max-size` | Longest side when no size is given (1024); images are not enlarged to reach it
 `-b`, `--bands` | One band, or three as red,green,blue
 `-c`, `--colormap` | `gray`, `viridis`, `magma`, `inferno`, `plasma`, `terrain`, `rdbu` or `rdylgn`; `_r` reverses
-`-s`, `--stretch` | `auto`, `minmax`, `pLOW,pHIGH` (percentiles) or `LOW,HIGH` (values as stored, before a band's scale and offset)
+`-s`, `--stretch` | `auto`, `minmax`, `pLOW,pHIGH` (percentiles) or `LOW,HIGH` (values as stored, before a band's scale and offset); `minmax` and percentiles are measured on the drawn pixels, so a shrunk image's averaging can narrow them
 `-l`, `--layer` | Vector: draw this layer (repeatable); by default all, which must share a CRS
 `-a`, `--attribute` | Vector: color features by this numeric field (viridis unless `-c`); the stretch is measured on the features' values
 `--display` | `auto`, `kitty`, `iterm`, `sixel` or `blocks`
@@ -3628,7 +3628,7 @@ in iTerm2 and WezTerm, sixels where `TERM` names foot, mlterm or sixel, and othe
 Unicode half blocks, two pixels to a character cell, as wide as the terminal. Inside tmux or
 screen, which do not pass graphics on without configuration, it is half blocks. With `auto`, a
 standard output that is not a terminal is refused rather than filled with escape codes; name a
-`--display` to write them anyway. Sixels use a fixed palette of 216 colors.
+`--display` to write them anyway. `-o -` is refused when standard output is a terminal. Sixels use a fixed palette of 216 colors.
 
 Through [MCP](mcp.md), a preview's result carries the PNG as image content, so that an agent sees
 it. Without `-o` the PNG goes to a private temporary directory, removed after the call; `-o -` is

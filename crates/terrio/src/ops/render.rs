@@ -46,9 +46,10 @@ pub enum Stretch {
     /// Byte bands drawn as red, green and blue as stored; otherwise the 2nd to 98th percentile.
     #[default]
     Auto,
-    /// The smallest to the largest valid value.
+    /// The smallest to the largest valid value of the pixels measured: the drawn pixels, which
+    /// averaging may have narrowed, or for a [`Renderer`] a sample at most 512 pixels across.
     MinMax,
-    /// Between two percentiles of the valid values, from 0 to 100.
+    /// Between two percentiles of the valid values measured, from 0 to 100.
     Percentile(f64, f64),
     /// Between two values, as stored: before any band scale and offset.
     Range(f64, f64),
