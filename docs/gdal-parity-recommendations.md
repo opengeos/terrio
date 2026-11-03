@@ -195,3 +195,7 @@ conformance suite, and JavaScript tests of the WebAssembly build. The separate
 `terrio.rio` compatibility CLI still rejects `fillnodata`; the new operation is
 available through `terrio.fill_nodata` and `terrio fill-nodata`. Effort, demand and
 performance benefits for the remaining recommendations are estimates.
+
+Cumulative viewshed uses optional observer coordinates in the CLI. Python and
+JavaScript retain the existing required positional coordinates; pass `0, 0`
+for `ACCUM`, which ignores them.

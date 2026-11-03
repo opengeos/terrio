@@ -45,11 +45,12 @@ def test_cumulative_matches_gdal(tmp_path, spacing):
     input_path = str(tmp_path / "dem.tif")
     output_path = str(tmp_path / "reference.tif")
     src.write(input_path)
-    subprocess.run(
+    result = subprocess.run(
         ["gdal_viewshed", "-q", "-om", "ACCUM", "-os", str(spacing), input_path, output_path],
-        check=True,
         capture_output=True,
+        text=True,
     )
+    assert result.returncode == 0, result.stderr
     expected = gdal.Open(output_path)
     actual = terrio.viewshed(src, 0, 0, om="ACCUM", os=spacing)
     np.testing.assert_array_equal(actual.read(1), expected.ReadAsArray())
