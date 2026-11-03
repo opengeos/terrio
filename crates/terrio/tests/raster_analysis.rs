@@ -552,7 +552,7 @@ fn only_requested_weighted_statistics_control_validation() {
     o.stats = vec![S::WeightedSum];
     assert!(zonal_stats(&l, &large_inputs, &o).unwrap_err().to_string().contains("overflow"));
     o.stats = vec![S::Count];
-    o.weights = Some(ZonalWeight { raster: std::sync::Arc::new(raster(2, 1, 1, &[-1., -1.], None)), band: 1 });
+    o.weights = Some(ZonalWeight { raster: std::sync::Arc::new(raster(1, 1, 1, &[-1.], None)), band: 99 });
     assert_eq!(field(&zonal_stats(&l, &inputs, &o).unwrap(), 0, "v_count"), &V::Integer(2));
 }
 

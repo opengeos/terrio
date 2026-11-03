@@ -3626,3 +3626,6 @@ Clap distinguishes the metadata flag from literal values. For example,
 `terrio info -- --json-usage` treats `--json-usage` as the dataset name, and
 `--srcnodata --json-usage` treats it as the nodata argument's value. For the
 pipeline's trailing expression, put the metadata flag before expression tokens.
+
+A weighting raster is opened and validated only when a weighted statistic is
+requested; unweighted-only requests ignore it.

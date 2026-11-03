@@ -259,3 +259,9 @@ def test_fractional_zonal_weight_raster(kind, tmp_path):
         terrio.zonal_stats(zones, values, fractional=True, all_touched=True)
     with pytest.raises(ValueError, match="require a weighting raster"):
         terrio.zonal_stats(zones, values, stats=["weighted_mean"])
+
+
+def test_unweighted_statistics_do_not_open_unused_weight_paths(tmp_path):
+    zones, values = inputs()
+    out = terrio.zonal_stats(zones, values, stats=["count"], weights=str(tmp_path / "missing.tif"))
+    assert out.to_geojson()["features"][0]["properties"]["raster1_b1_count"] > 0

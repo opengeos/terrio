@@ -140,15 +140,16 @@ fn zonal_stats(
     if prefixes.as_ref().is_some_and(|p| p.iter().any(|p| p.trim().is_empty())) {
         return Err(pyo3::exceptions::PyValueError::new_err("raster field prefixes cannot be empty"));
     }
-    let weights = weights.map(|src| crate::ops::input_raster(py, src)).transpose()?;
+    let stats = stats
+        .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
+        .transpose()
+        .py()?
+        .unwrap_or_else(|| ZonalOptions::default().stats);
+    let weights = weights.filter(|_| stats.iter().any(|s| s.uses_weights())).map(|src| crate::ops::input_raster(py, src)).transpose()?;
     let options = ZonalOptions {
         fractional,
         weights: weights.map(|raster| ZonalWeight { raster: std::sync::Arc::new(raster), band: weight_band }),
-        stats: stats
-            .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
-            .transpose()
-            .py()?
-            .unwrap_or_else(|| ZonalOptions::default().stats),
+        stats,
         all_touched,
         dst_srs: t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().py()?,
         decimal_places,

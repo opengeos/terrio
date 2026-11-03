@@ -175,20 +175,21 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
         }
     }
     let (rest, values) = split_options(&options, &["weights"])?;
-    let weights = values[0].as_ref().map(input_raster).transpose()?;
     let a: ZonalOptions = parse_options(&rest)?;
     if a.prefixes.as_ref().is_some_and(|p| p.iter().any(|p| p.trim().is_empty())) {
         return Err(JsError::new("raster field prefixes cannot be empty"));
     }
+    let stats = a
+        .stats
+        .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
+        .transpose()
+        .map_err(js_err)?
+        .unwrap_or_else(|| terrio::ops::zonal::ZonalOptions::default().stats);
+    let weights = values[0].as_ref().filter(|_| stats.iter().any(|s| s.uses_weights())).map(input_raster).transpose()?;
     let options = terrio::ops::zonal::ZonalOptions {
         fractional: a.fractional,
         weights: weights.map(|raster| terrio::ops::zonal::ZonalWeight { raster: std::sync::Arc::new(raster), band: a.weight_band }),
-        stats: a
-            .stats
-            .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
-            .transpose()
-            .map_err(js_err)?
-            .unwrap_or_else(|| terrio::ops::zonal::ZonalOptions::default().stats),
+        stats,
         all_touched: a.all_touched,
         dst_srs: a.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?,
         decimal_places: a.decimal_places,

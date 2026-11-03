@@ -346,11 +346,12 @@ pub struct ZonalArgs {
 
 pub fn zonal(a: ZonalArgs) -> Result<()> {
     use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions, ZonalWeight, zonal_stats};
-    let weights = a.weights.as_deref().map(terrio::open_raster).transpose()?;
+    let stats: Vec<_> = a.stats.iter().map(|s| Statistic::parse(s)).collect::<Result<_>>()?;
+    let weights = a.weights.as_deref().filter(|_| stats.iter().any(|s| s.uses_weights())).map(terrio::open_raster).transpose()?;
     let options = ZonalOptions {
         fractional: a.fractional,
         weights: weights.map(|raster| ZonalWeight { raster: std::sync::Arc::new(raster), band: a.weight_band }),
-        stats: a.stats.iter().map(|s| Statistic::parse(s)).collect::<Result<_>>()?,
+        stats,
         all_touched: a.all_touched,
         dst_srs: a.sources.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose()?,
         decimal_places: a.sources.decimal_places,

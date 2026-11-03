@@ -754,4 +754,21 @@ fn zonal_tool_computes_fractional_weighted_statistics() {
     assert_eq!(value["features"][0]["properties"]["v_b1_count"], 1.5);
     assert_eq!(value["features"][0]["properties"]["v_b1_weighted_mean"], 26.);
     assert_eq!(value["features"][0]["properties"]["v_b1_weighted_sum"], 130.);
+    let unused = dir.path().join("unweighted.geojson");
+    let missing = dir.path().join("missing.tif");
+    let replies = session(&[call(
+        1,
+        "zonal-stats",
+        &[
+            zones.to_str().unwrap(),
+            unused.to_str().unwrap(),
+            "--raster",
+            input.to_str().unwrap(),
+            "--weights",
+            missing.to_str().unwrap(),
+            "--stats",
+            "count",
+        ],
+    )]);
+    assert_eq!(replies[&1]["result"]["isError"], false, "{}", replies[&1]);
 }

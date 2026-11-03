@@ -3628,6 +3628,8 @@ test("fractional zonalStats combines coverage and a weighting raster", () => {
     const expected = [1.5, 35, 20, 26, 130, 8];
     stats.forEach((name, i) => assert.ok(Math.abs(result[`raster1_b1_${name}`] - expected[i]) < 1e-10));
   }
+  // The existing binary rasterizer excludes the centre on this polygon's left boundary.
+  assert.equal(terrio.zonalStats(zones, values, {stats: ["count"], weights: new Uint8Array([0])}).toGeoJSON().features[0].properties.raster1_b1_count, 1);
   assert.throws(() => terrio.zonalStats(zones, values, {fractional: true, allTouched: true}), /mutually exclusive/);
   assert.throws(() => terrio.zonalStats(zones, values, {stats: ["weighted_mean"]}), /require a weighting raster/);
 });

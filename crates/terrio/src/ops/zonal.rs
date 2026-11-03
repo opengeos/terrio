@@ -54,7 +54,8 @@ impl Statistic {
         })
     }
 
-    fn weighted(self) -> bool {
+    /// Whether this statistic uses the optional weighting raster.
+    pub fn uses_weights(self) -> bool {
         matches!(self, Self::WeightedMean | Self::WeightedSum | Self::WeightedStdDev)
     }
 
@@ -152,10 +153,11 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
     if options.fractional && options.all_touched {
         return Err(Error::InvalidArgument("fractional coverage and all_touched are mutually exclusive".into()));
     }
-    if options.stats.iter().any(|s| s.weighted()) && options.weights.is_none() {
+    if options.stats.iter().any(|s| s.uses_weights()) && options.weights.is_none() {
         return Err(Error::InvalidArgument("weighted statistics require a weighting raster".into()));
     }
-    if let Some(weight) = &options.weights {
+    let weights = options.weights.as_ref().filter(|_| options.stats.iter().any(|s| s.uses_weights()));
+    if let Some(weight) = weights {
         super::sample::check_raster(&weight.raster)?;
         super::sample::check_band(&weight.raster, weight.band)?;
     }
@@ -184,7 +186,7 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
     for (i, input) in inputs.iter().enumerate() {
         super::sample::check_raster(input.raster)?;
         super::sample::check_band(input.raster, input.band)?;
-        if let Some(weight) = &options.weights {
+        if let Some(weight) = weights {
             let r = &input.raster.raster;
             let w = &weight.raster.raster;
             let value_crs = input.raster.crs();
@@ -231,7 +233,6 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
     let weighted_variance = options.stats.contains(&Statistic::WeightedStdDev);
     let weighted_mean = weighted_variance || options.stats.contains(&Statistic::WeightedMean);
     let weighted_sum = options.stats.contains(&Statistic::WeightedSum);
-    let weights = options.weights.as_ref().filter(|_| options.stats.iter().any(|s| s.weighted()));
     for f in &mut out.features {
         f.attributes.resize(out.schema.len(), FieldValue::Null);
         for group in &groups {
@@ -298,7 +299,7 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
                     ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
                 }
                 for (&column, &stat) in columns[input].iter().zip(&options.stats) {
-                    f.attributes[column] = if stat.weighted() {
+                    f.attributes[column] = if stat.uses_weights() {
                         if invalid_weight || values.count == 0 {
                             FieldValue::Null
                         } else if stat == Statistic::WeightedSum {
