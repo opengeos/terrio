@@ -46,7 +46,8 @@ pub(crate) fn finish(path: &str, driver: RasterDriver, mut raster: Raster) -> Ra
     RasterDataset::with_driver(raster, driver, has_nodata)
 }
 
-/// Fills in what a GDAL `.aux.xml` sidecar holds and the file does not: CRS, geotransform, nodata.
+/// Fills in what a GDAL `.aux.xml` sidecar holds and the file does not: CRS, geotransform,
+/// nodata; and the band color interpretations, which override the file's as GDAL reads them.
 pub(crate) fn apply_pam(path: &str, ds: &mut RasterDataset) {
     if let Some(pam) = common::read_pam(Path::new(path)) {
         apply(pam, ds);
@@ -85,6 +86,13 @@ pub(crate) fn apply(pam: common::Pam, ds: &mut RasterDataset) {
     {
         ds.raster.nodata = nd;
         ds.has_nodata = true;
+    }
+    let bands = ds.raster.bands;
+    for (band, color) in pam.band_color_interp.into_iter().filter(|(b, _)| (1..=bands).contains(b)) {
+        if ds.band_metadata.len() < bands {
+            ds.band_metadata.resize_with(bands, Default::default);
+        }
+        ds.band_metadata[band - 1].color_interp = Some(color);
     }
 }
 

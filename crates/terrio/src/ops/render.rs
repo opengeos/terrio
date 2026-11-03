@@ -285,14 +285,15 @@ fn plan(source: &LazyRaster, options: &RenderOptions) -> Result<Plan> {
     if count == 0 {
         return Err(Error::InvalidArgument("the raster has no bands".into()));
     }
-    let metadata = source.band_metadata();
+    // A GeoTIFF's band color interpretations, with those of its `.aux.xml` sidecar, and its
+    // palette are in its header, not in `LazyRaster::band_metadata` and `color_table`.
+    let header = source.header();
     let band_with = |name: &str| -> Option<usize> {
-        metadata.iter().position(|m| m.color_interp.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(name))).map(|i| i + 1)
+        header.band_metadata.iter().position(|m| m.color_interp.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(name))).map(|i| i + 1)
     };
     let byte = source.data_type() == DataType::U8;
-    // A GeoTIFF's palette is in its header, not in `LazyRaster::color_table`.
     let palette = if source.color_table().is_empty() {
-        crate::ops::palette::color_table(&source.header()).unwrap_or_default()
+        crate::ops::palette::color_table(&header).unwrap_or_default()
     } else {
         source.color_table().to_vec()
     };
@@ -318,11 +319,29 @@ fn plan(source: &LazyRaster, options: &RenderOptions) -> Result<Plan> {
         n => return Err(Error::InvalidArgument(format!("draw one band or three, not {n}"))),
     };
     let colors = bands.len();
-    if let Some(alpha) = band_with("Alpha").filter(|a| !bands.contains(a)) {
-        bands.push(alpha);
-    }
-    let alpha_max = if source.data_type() == DataType::U16 { 65535.0 } else { 255.0 };
+    let alpha = band_with("Alpha").filter(|a| !bands.contains(a));
+    bands.extend(alpha);
+    let alpha_max = alpha.map_or(255.0, |band| alpha_max(source.band_data_type(band), source.sample_bits()));
     Ok(Plan { bands, colors, alpha_max, mode })
+}
+
+/// The value of an opaque pixel in an alpha band of `data_type`, stored in `bits` bits, as GDAL's
+/// warper takes it (`SRC_ALPHA_MAX`, GDAL 3.13): 2^bits - 1 for packed integer samples (GDAL's
+/// `NBITS`), 65535 for UInt16, 32767 for Int16, and 255 otherwise. Floating-point alpha is on
+/// the 0 to 255 scale too, not 0 to 1.
+fn alpha_max(data_type: DataType, bits: Option<u16>) -> f64 {
+    let width = match data_type {
+        DataType::U8 | DataType::I8 => 8,
+        DataType::U16 | DataType::I16 => 16,
+        DataType::U32 | DataType::I32 => 32,
+        _ => 0,
+    };
+    match bits {
+        Some(bits) if (1..width).contains(&bits) => f64::from((1u32 << bits) - 1),
+        _ if data_type == DataType::U16 => 65535.0,
+        _ if data_type == DataType::I16 => 32767.0,
+        _ => 255.0,
+    }
 }
 
 /// The coarsest overview that still has `tw` by `th` pixels for `window`.
@@ -963,6 +982,55 @@ mod tests {
         let p = pixel(&image, 0, 0);
         // Red 255 x 10 and blue 255 x 255, over the alpha sum 265; alpha a plain mean.
         assert_eq!(p, [10, 0, 245, 133]);
+    }
+
+    #[test]
+    fn alpha_is_scaled_as_gdal_warps_it() {
+        // GDAL 3.13 `gdalwarp` to Byte: Float32 alpha 0.5 and 1 give 0 and 1, Int16 16384 gives
+        // 127, UInt16 32768 gives 127, and 12-bit 2048 gives 127.
+        assert_eq!(alpha_max(DataType::F32, Some(32)), 255.0);
+        assert_eq!(alpha_max(DataType::F64, None), 255.0);
+        assert_eq!(alpha_max(DataType::I16, Some(16)), 32767.0);
+        assert_eq!(alpha_max(DataType::U16, Some(16)), 65535.0);
+        assert_eq!(alpha_max(DataType::U16, Some(12)), 4095.0);
+        assert_eq!(alpha_max(DataType::U8, Some(1)), 1.0);
+        assert_eq!(alpha_max(DataType::F32, Some(16)), 255.0);
+        assert_eq!(alpha_max(DataType::U32, None), 255.0);
+    }
+
+    #[test]
+    fn a_geotiff_alpha_band_named_in_its_sidecar_masks_the_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rgba.tif").to_str().unwrap().to_string();
+        let config = RasterConfig { cols: 2, rows: 1, bands: 4, data_type: DataType::U8, ..Default::default() };
+        let data = wbraster::raster::RasterData::U8(vec![200, 200, 10, 10, 10, 10, 255, 0]);
+        let dataset = crate::RasterDataset::with_driver(
+            crate::pixel::raster_from_data(config, data).unwrap(),
+            crate::formats::RasterDriver::GTiff,
+            false,
+        );
+        let options = crate::RasterWriteOptions {
+            driver: Some(crate::formats::RasterDriver::GTiff),
+            creation_options: vec![("PHOTOMETRIC".into(), "MINISBLACK".into())],
+            ..Default::default()
+        };
+        crate::write_raster_dataset(&dataset, &path, &options).unwrap();
+        let draw = || render_raster(&mut crate::open_raster_lazy(&path).unwrap(), &RenderOptions::default()).unwrap();
+        // Without a sidecar, the 4th band is not alpha: both pixels are opaque.
+        assert_eq!([pixel(&draw(), 0, 0)[3], pixel(&draw(), 1, 0)[3]], [255, 255]);
+        let bands = ["Red", "Green", "Blue", "alpha"]
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("<PAMRasterBand band=\"{}\"><ColorInterp>{c}</ColorInterp></PAMRasterBand>", i + 1))
+            .collect::<String>();
+        std::fs::write(format!("{path}.aux.xml"), format!("<PAMDataset>{bands}</PAMDataset>")).unwrap();
+        // As GDAL 3.13 reads it: Red, Green, Blue, Alpha.
+        let image = draw();
+        assert_eq!(pixel(&image, 0, 0), [200, 10, 10, 255]);
+        assert_eq!(pixel(&image, 1, 0)[3], 0);
+        // A RasterDataset read whole has them too.
+        let read = crate::open_raster(&path).unwrap();
+        assert_eq!(read.band_metadata[3].color_interp.as_deref(), Some("Alpha"));
     }
 
     #[test]
