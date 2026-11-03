@@ -1731,7 +1731,10 @@ def pansharpen(
     ...
 
 def sql(src: Any, query: str, *, layers: list[str] | None = None) -> Layer:
-    """Run the documented OGR SQL subset; DISTINCT and summaries discard geometry."""
+    """Run the documented SQL subset with grouped summaries and spatial functions.
+
+    DISTINCT, GROUP BY and summaries discard geometry.
+    """
     ...
 
 def simplify(src: Any, tolerance: float, *, layer: str | None = None) -> Layer:

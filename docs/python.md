@@ -218,7 +218,8 @@ GeoPackage edits.
 
 `terrio.sql(src, query, layers=None)` returns a `Layer`. Inputs may be a vector path,
 `VectorDataset`, `Layer`, list of layers, or GeoJSON. It implements the shared
-[OGR SQL subset](sql.md), including computed columns, DISTINCT, summaries and attribute joins.
+[SQL subset](sql.md), including computed columns, DISTINCT, grouped summaries,
+attribute joins and the documented spatial functions.
 
 ```python
 result = terrio.sql("countries.gpkg", "SELECT ADMIN, POP_EST/1000000.0 AS millions FROM countries")

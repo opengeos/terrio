@@ -43,13 +43,17 @@ WHERE POP_EST > 10000000 ORDER BY POP_EST DESC LIMIT 10
   qualified selections retain their qualifier in the output field name.
 
 Unaliased computed fields are named `FIELD_1`, `FIELD_2`, and so on by output position;
-summaries are named `COUNT_field`, `SUM_field`, etc. Output names must be unique ignoring case
-for the standalone query APIs. All integer types map to Terrio's signed 64-bit `Integer` model;
+summaries are named `COUNT_field`, `SUM_field`, etc. Standalone query APIs and grouped
+queries require output names unique ignoring ASCII case. Ordinary `convert --sql`
+retains its legacy case-only variants (`name` and `NAME`); exact repeated names
+are rejected in every SQL entrypoint before schema insertion. This is an explicit
+policy difference from GDAL 3.13.3 conversions that keep the first duplicate;
+choose distinct aliases to retain both values. All integer types map to Terrio's signed 64-bit `Integer` model;
 OGR's distinction between 32-bit and 64-bit count/predicate fields is not represented.
 
 This is a defined subset of [OGRSQL](https://gdal.org/en/stable/user/ogr_sql_dialect.html).
-`GROUP BY`, spatial SQL, external-dataset joins, arbitrary `ON` expressions, `OFFSET`,
-`UNION`, casts, scalar functions and standard-deviation summaries are not implemented.
+External-dataset joins, arbitrary `ON` expressions, `OFFSET`,
+`UNION`, casts, general scalar functions and standard-deviation summaries are not implemented.
 String predicates (comparisons, `IN` and `BETWEEN`), like join lookups, ignore ASCII case
 as observed with GDAL 3.12; `ORDER BY` and `MIN`/`MAX` use case-sensitive ordering. SQL expressions should use explicit null tests where needed.
 Integer SUM reports an error on overflow. Row-expression integer addition, subtraction and
@@ -57,13 +61,91 @@ multiplication wrap at 64 bits; division/remainder overflow
 and division by zero yield null (OGRSQL instead uses an integer-maximum sentinel for non-null
 division by zero). Use floating-point expressions for larger numeric ranges.
 
+## Grouping and spatial functions
+
+The same engine also supports a defined subset of
+[GDAL's SQLite dialect](https://gdal.org/en/stable/user/sql_sqlite_dialect.html).
+It does not switch existing OGRSQL expressions, comparisons or joins to SQLite semantics.
+
+```sql
+SELECT CONTINENT, COUNT(*) AS n, SUM(POP_EST) AS population
+FROM countries GROUP BY CONTINENT ORDER BY population DESC LIMIT 5
+
+SELECT ADMIN, ST_Transform(ST_Centroid(geometry), 3857) AS shape
+FROM countries WHERE ST_Area(geometry) > 1
+```
+
+`GROUP BY` accepts one or more primary attribute fields (including qualified names).
+Selected columns must be grouping fields or the existing field-based aggregates;
+keys not selected may also group rows. Text keys are case-sensitive; null keys
+form one group. Filtering happens before grouping. Each group has independent
+`COUNT(DISTINCT field)` state. Empty grouped input produces no rows; ungrouped
+summaries still produce one row. Grouped results discard geometry and CRS.
+Qualified `ORDER BY` resolves a selected source grouping field even when an
+aggregate alias has the same name. Unqualified names prefer output aliases.
+One selected column or alias may supply `ORDER BY`; `LIMIT` applies after
+ordering. Without `ORDER BY`, Terrio emits groups in first-encountered source
+order. SQLite may produce a different group order; use `ORDER BY` for a portable
+ordering. The unordered conformance case compares the complete rows without
+requiring matching row order. Grouping does not support joins, SELECT DISTINCT,
+computed grouping keys, HAVING or aggregate expressions. It stores keys and accumulators per group,
+without copying the source features.
+
+The special `geometry` field denotes the primary geometry when there is no
+attribute of that name. Its primary table qualifier is accepted. Functions may
+nest and may appear in SELECT expressions and WHERE predicates within that SELECT.
+Standalone attribute-filter binding (`Expression::bind`, CLI `--where`, Python
+`where=`, and grid filters) rejects function calls and special geometry access;
+use a SELECT query through `sql`/`convert --sql` for spatial predicates. A real
+attribute named `geometry` remains a normal attribute in standalone filters.
+
+Supported spatial functions:
+
+| Function | Result and scope |
+|---|---|
+| `ST_Area(geometry)` | Planar XY area in squared coordinate units; non-area geometries contribute zero. |
+| `ST_Length(geometry)` | Planar XY length of line components; polygon boundaries contribute zero, as in SpatiaLite. |
+| `ST_Intersects(a, b)` | Boundary-inclusive XY predicate: 1/0, or SpatiaLite's -1 when either geometry is null. |
+| `ST_Buffer(geometry, distance)` | Planar buffer with round joins/caps and 30 segments per quadrant. Requires valid input; invalid inputs or nonfinite distances return null. New geometry is an XY MultiPolygon, including single-part buffers; the declaration is retained for all-null results. |
+| `ST_Centroid(geometry)` | Planar centroid of the highest-dimensional components, returned as an XY point. |
+| `ST_Transform(geometry, epsg)` | Constant positive target EPSG code and an EPSG-identified source CRS. Uses the shared CRS engine; nested transforms use the intermediate CRS. Geocentric transforms use XYZ; ordinary horizontal transforms retain source Z/M. |
+
+Because -1 is truthy in SQL, a bare `WHERE ST_Intersects(geometry, NULL)`
+selects rows. Use `WHERE ST_Intersects(a, b) = 1` to require a known intersection.
+`ST_Intersects` compares raw XY coordinates without checking or reconciling operand
+CRSs. Supply both operands in the same CRS, using `ST_Transform` when needed;
+mixing degrees and metres otherwise produces meaningless intersection results.
+Except for the predicate's -1 convention, null geometry propagates as null.
+Coordinate transformation failures return null for that geometry. Unsupported functions,
+invalid argument counts, non-geometry arguments and unsupported transform CRS codes
+are query errors, including for empty inputs. Transforms are prepared once per
+expression. No external geometry constructors, joined geometry columns, spatial
+aggregates or spatial indexes are provided by this subset.
+
+An explicit geometry expression replaces the result's primary geometry; only one
+is supported, so combining it with a wildcard or another geometry selection is
+an error. Geometry values are rejected as scalar operands, sort keys and bare
+predicates; `IS NULL` tests remain supported. Geometry aliases do not create
+attribute fields. Projections without a transform preserve the original CRS
+metadata. Scalar-only projections retain the primary geometry, following Terrio's existing SQL behavior; select
+geometry explicitly when comparing with SQLite projections. Geometry result types
+are known independently of the first row, whereas GDAL SQLite can infer a scalar
+column when its first geometry value is null. Terrio also retains static numeric
+types for empty grouped results and all-null scalar spatial expressions, where
+OGR SQLite infers String. The conformance suite checks these two narrow schema
+policies explicitly and reports them separately from exact schema matches. Buffer topology is two-dimensional
+and may have different vertex order or last-bit coordinates than GEOS; no claim
+of byte-identical constructed geometries is made.
+
 ## Execution and validation
 
 Unordered projections iterate borrowed source features and can stop once the requested result
 limit is reached; summaries use constant accumulator memory except `COUNT(DISTINCT ...)`.
 `DISTINCT` stores seen values, `ORDER BY` caches sort keys and feature references, and joins index
 secondary keys once, retaining the first row per matching key. Existing file-based SQL entry points load their input layers;
-chunked `FeatureStream` SQL is not supported. Ordinary streaming vector conversions retain
+chunked `FeatureStream` SQL is not supported. Spatial expressions in joined
+queries copy primary geometry into the joined evaluation row; ordinary attribute
+joins borrow geometry until output emission. Ordinary streaming vector conversions retain
 their existing path.
 
 `scripts/compare_vector_ops_with_gdal.py` includes Natural Earth SQL comparisons against
@@ -71,3 +153,15 @@ their existing path.
 It compares values, nulls, field names and logical types, complete geometry WKB and CRS
 retention, with duplicate, unmatched and null join keys. Integer widths normalize to the
 shared `Integer` model. These cases are included in the conformance workflow's vector suite.
+
+`scripts/compare_grouped_spatial_sql_with_gdal.py` (conformance suite `grouped-spatial-sql`) checks
+grouped and spatial queries on Natural Earth through standalone CLI/MCP,
+`convert --sql`, Python and an optional current Node/WASM package. Counts, nulls,
+text, logical schemas and CRS are exact. Floating values allow relative/absolute
+1e-10; constructed point displacement allows 1e-7 CRS units. Buffers allow
+symmetric-difference area relative 1e-7 and envelope error absolute 1e-7 source
+units; original geometry WKB remains exact. These checks supplement the existing
+OGRSQL suite without changing its equivalence checks.
+
+Duplicate aliases are checked as intentional rejections across all four entrypoints;
+these are reported separately from output matches with GDAL's first-column policy.

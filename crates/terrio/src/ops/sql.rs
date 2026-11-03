@@ -23,14 +23,19 @@ use crate::{Error, Result};
 use std::cmp::Ordering;
 use wbvector::{Feature, FieldValue, Layer, Schema};
 
+mod grouped;
 mod select;
+mod spatial;
 pub(crate) use select::execute as select_query;
 
 /// Runs a read-only `SELECT` using terrio's OGR SQL subset, preserving source geometry, CRS
 /// and feature IDs. Supports field selection/aliases, WHERE, one ORDER BY field, and LIMIT.
 /// FROM must name an input layer (case-insensitively). Supports computed expressions, single-field
 /// DISTINCT, COUNT/SUM/AVG/MIN/MAX summaries and same-dataset attribute LEFT JOINs.
-/// DISTINCT and summaries discard geometry. Output field names must be unique.
+/// GROUP BY accepts attribute fields and selected summaries, with ordering by selected output
+/// fields/aliases. Spatial functions support planar area, length, intersects, buffer, centroid
+/// and EPSG transforms; see the SQL guide for the defined subset and numerical tolerances.
+/// DISTINCT, GROUP BY and summaries discard geometry. Output field names must be unique.
 ///
 /// ```no_run
 /// let ds = terrio::open_vector("countries.gpkg", &Default::default())?;
@@ -40,16 +45,12 @@ pub(crate) use select::execute as select_query;
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn query(layers: &[Layer], statement: &str) -> Result<Layer> {
-    let select = Select::parse(statement)?;
+    let mut select = Select::parse(statement)?;
+    select.strict_output_names = true;
     if !layers.iter().any(|l| l.name.eq_ignore_ascii_case(&select.from)) {
         return Err(Error::InvalidArgument(format!("SQL: no layer named '{}'", select.from)));
     }
     let (layer, _) = super::vector_filter::run_select(layers, &select, select.limit)?;
-    for (i, field) in layer.schema.fields().iter().enumerate() {
-        if layer.schema.fields()[..i].iter().any(|f| f.name.eq_ignore_ascii_case(&field.name)) {
-            return Err(Error::InvalidArgument(format!("SQL: duplicate output field '{}'", field.name)));
-        }
-    }
     Ok(layer)
 }
 
@@ -77,9 +78,13 @@ pub struct Select {
     pub limit: Option<usize>,
     /// Whether to return unique values of one selected field, without geometry.
     pub distinct: bool,
+    /// Attribute fields used as grouping keys (SQLite-style, case-sensitive strings).
+    pub group_by: Vec<String>,
     items: Vec<select::Item>,
     joins: Vec<select::Join>,
     alias: Option<String>,
+    source_epsg: Option<u32>,
+    strict_output_names: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,6 +95,9 @@ enum Expr {
     Index(usize),
     /// The feature id.
     Fid,
+    Geometry,
+    Call(String, Vec<Expr>),
+    Transform(Box<Expr>, spatial::Transform),
     Literal(Value),
     Not(Box<Expr>),
     Neg(Box<Expr>),
@@ -144,6 +152,7 @@ enum Value {
     Float(f64),
     Text(String),
     Blob(Vec<u8>),
+    Geometry(Box<wbvector::Geometry>),
 }
 
 impl Value {
@@ -163,7 +172,7 @@ impl Value {
             Value::Int(i) => Some(*i as f64),
             Value::Float(f) => Some(*f),
             Value::Text(s) => s.trim().parse().ok(),
-            Value::Null | Value::Blob(_) => None,
+            Value::Null | Value::Blob(_) | Value::Geometry(_) => None,
         }
     }
 
@@ -172,7 +181,7 @@ impl Value {
             Value::Int(i) => i.to_string(),
             Value::Float(f) => f.to_string(),
             Value::Text(s) => s.clone(),
-            Value::Null | Value::Blob(_) => String::new(),
+            Value::Null | Value::Blob(_) | Value::Geometry(_) => String::new(),
         }
     }
 
@@ -182,7 +191,7 @@ impl Value {
             Value::Float(f) => *f != 0.0,
             Value::Text(s) => !s.is_empty(),
             Value::Blob(b) => !b.is_empty(),
-            Value::Null => false,
+            Value::Null | Value::Geometry(_) => false,
         }
     }
 }
@@ -203,7 +212,7 @@ impl Truth {
 }
 
 impl Expression {
-    /// Parses an expression.
+    /// Parses an expression. Standalone binding supports attributes only.
     pub fn parse(text: &str) -> Result<Self> {
         let tokens = tokenize(text)?;
         let mut p = Parser { tokens, pos: 0 };
@@ -224,7 +233,7 @@ impl Expression {
     /// Binds field names to a layer's schema, matching them case-insensitively. Fails when a field
     /// does not exist.
     pub fn bind(&self, schema: &Schema) -> Result<BoundExpression> {
-        Ok(BoundExpression(bind(&self.0, schema)?))
+        Ok(BoundExpression(scalar(bind_context(&self.0, schema, false)?)?))
     }
 }
 
@@ -282,6 +291,16 @@ impl Select {
             joins.push(select::Join { layer, alias, left, right });
         }
         let filter = if p.eat_keyword("WHERE") { Some(Expression(p.expr()?)) } else { None };
+        let mut group_by = Vec::new();
+        if p.eat_keyword("GROUP") {
+            p.expect_keyword("BY")?;
+            loop {
+                group_by.push(p.identifier()?);
+                if !p.eat(&Token::Comma) {
+                    break;
+                }
+            }
+        }
         let mut order_by = None;
         if p.eat_keyword("ORDER") {
             p.expect_keyword("BY")?;
@@ -304,7 +323,20 @@ impl Select {
         if p.pos < p.tokens.len() {
             return Err(syntax(format!("unexpected '{}'", p.tokens[p.pos])));
         }
-        Ok(Select { columns, from, filter, order_by, limit, distinct, items, joins, alias })
+        Ok(Select {
+            columns,
+            from,
+            filter,
+            order_by,
+            limit,
+            distinct,
+            group_by,
+            items,
+            joins,
+            alias,
+            source_epsg: None,
+            strict_output_names: false,
+        })
     }
 }
 
@@ -320,6 +352,13 @@ fn collect_fields<'a>(e: &'a Expr, out: &mut Vec<&'a str>) {
             }
         }
         Expr::Index(_) | Expr::Fid | Expr::Literal(_) => {}
+        Expr::Geometry => {
+            if !out.contains(&"geometry") {
+                out.push("geometry");
+            }
+        }
+        Expr::Call(_, args) => args.iter().for_each(|e| collect_fields(e, out)),
+        Expr::Transform(e, _) => collect_fields(e, out),
         Expr::Not(a) | Expr::Neg(a) | Expr::IsNull { expr: a, .. } => collect_fields(a, out),
         Expr::Binary(_, a, b) | Expr::Like { expr: a, pattern: b, .. } => {
             collect_fields(a, out);
@@ -342,25 +381,53 @@ pub(crate) fn field_index(schema: &Schema, name: &str) -> Option<usize> {
     schema.field_index(name).or_else(|| schema.fields().iter().position(|f| f.name.eq_ignore_ascii_case(name)))
 }
 
+// Geometry is a distinct SQL value, never an implicit scalar or truth value.
+fn scalar(e: Expr) -> Result<Expr> {
+    if spatial::is_geometry(&e) {
+        return Err(syntax("geometry values require a spatial function, geometry projection or IS NULL test".into()));
+    }
+    Ok(e)
+}
+
 fn bind(e: &Expr, schema: &Schema) -> Result<Expr> {
-    let b = |x: &Expr| bind(x, schema).map(Box::new);
+    bind_context(e, schema, true)
+}
+
+fn bind_context(e: &Expr, schema: &Schema, select_context: bool) -> Result<Expr> {
+    let bind_arg = |x: &Expr| bind_context(x, schema, select_context);
+    let b = |x: &Expr| bind_arg(x).map(Box::new);
+    let sb = |x: &Expr| scalar(bind_arg(x)?).map(Box::new);
     Ok(match e {
         Expr::Field(name) => match field_index(schema, name) {
             Some(i) => Expr::Index(i),
             None if name.eq_ignore_ascii_case("FID") => Expr::Fid,
+            None if select_context && name.eq_ignore_ascii_case("geometry") => Expr::Geometry,
             None => return Err(Error::InvalidArgument(format!("SQL: no field named '{name}'"))),
         },
-        Expr::Index(_) | Expr::Fid | Expr::Literal(_) => e.clone(),
-        Expr::Not(a) => Expr::Not(b(a)?),
-        Expr::Neg(a) => Expr::Neg(b(a)?),
-        Expr::Binary(op, x, y) => Expr::Binary(*op, b(x)?, b(y)?),
+        Expr::Index(_) | Expr::Fid | Expr::Geometry | Expr::Literal(_) => e.clone(),
+        Expr::Call(name, args) => {
+            if !select_context {
+                return Err(syntax("spatial functions require SELECT SQL, not standalone attribute filters".into()));
+            }
+            let args = args.iter().map(bind_arg).collect::<Result<Vec<_>>>()?;
+            spatial::validate(name, &args)?;
+            if name == "ST_TRANSFORM" {
+                Expr::Transform(Box::new(args[0].clone()), spatial::Transform::new(&args)?)
+            } else {
+                Expr::Call(name.clone(), args)
+            }
+        }
+        Expr::Transform(e, t) => Expr::Transform(b(e)?, t.clone()),
+        Expr::Not(a) => Expr::Not(sb(a)?),
+        Expr::Neg(a) => Expr::Neg(sb(a)?),
+        Expr::Binary(op, x, y) => Expr::Binary(*op, sb(x)?, sb(y)?),
         Expr::Like { expr, pattern, escape, negated, insensitive } => {
-            Expr::Like { expr: b(expr)?, pattern: b(pattern)?, escape: *escape, negated: *negated, insensitive: *insensitive }
+            Expr::Like { expr: sb(expr)?, pattern: sb(pattern)?, escape: *escape, negated: *negated, insensitive: *insensitive }
         }
         Expr::In { expr, list, negated } => {
-            Expr::In { expr: b(expr)?, list: list.iter().map(|x| bind(x, schema)).collect::<Result<_>>()?, negated: *negated }
+            Expr::In { expr: sb(expr)?, list: list.iter().map(|x| scalar(bind_arg(x)?)).collect::<Result<_>>()?, negated: *negated }
         }
-        Expr::Between { expr, low, high, negated } => Expr::Between { expr: b(expr)?, low: b(low)?, high: b(high)?, negated: *negated },
+        Expr::Between { expr, low, high, negated } => Expr::Between { expr: sb(expr)?, low: sb(low)?, high: sb(high)?, negated: *negated },
         Expr::IsNull { expr, negated } => Expr::IsNull { expr: b(expr)?, negated: *negated },
     })
 }
@@ -370,7 +437,7 @@ fn compare(a: &Value, b: &Value) -> Option<Ordering> {
         (Value::Null, _) | (_, Value::Null) => None,
         (Value::Int(x), Value::Int(y)) => Some(x.cmp(y)),
         (Value::Blob(x), Value::Blob(y)) => Some(x.cmp(y)),
-        (Value::Blob(_), _) | (_, Value::Blob(_)) => None,
+        (Value::Blob(_), _) | (_, Value::Blob(_)) | (Value::Geometry(_), _) | (_, Value::Geometry(_)) => None,
         (Value::Text(x), Value::Text(y)) => Some(x.cmp(y)),
         (Value::Text(_), _) | (_, Value::Text(_)) => match (a.as_f64(), b.as_f64()) {
             (Some(x), Some(y)) => x.partial_cmp(&y),
@@ -452,6 +519,9 @@ fn eval(e: &Expr, f: &Feature) -> Value {
         Expr::Literal(v) => v.clone(),
         Expr::Index(i) => f.attributes.get(*i).map(Value::from_field).unwrap_or(Value::Null),
         Expr::Fid => Value::Int(f.fid as i64),
+        Expr::Geometry => f.geometry.clone().map(|g| Value::Geometry(Box::new(g))).unwrap_or(Value::Null),
+        Expr::Call(name, args) => spatial::evaluate(name, args, f),
+        Expr::Transform(e, t) => t.evaluate(eval(e, f)),
         Expr::Field(_) => Value::Null,
         Expr::Neg(a) => match eval(a, f) {
             Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Null),
@@ -846,6 +916,23 @@ impl Parser {
                     return Err(syntax("expected ')'".into()));
                 }
                 Ok(e)
+            }
+            Some(Token::Ident(s)) if self.eat(&Token::LParen) => {
+                let mut args = Vec::new();
+                if !self.eat(&Token::RParen) {
+                    loop {
+                        args.push(self.expr()?);
+                        if self.eat(&Token::RParen) {
+                            break;
+                        }
+                        if !self.eat(&Token::Comma) {
+                            return Err(syntax("expected ',' or ')' in function".into()));
+                        }
+                    }
+                }
+                let name = s.to_ascii_uppercase();
+                spatial::validate_arity(&name, args.len())?;
+                Ok(Expr::Call(name, args))
             }
             Some(Token::Ident(s)) if s.eq_ignore_ascii_case("NULL") => Ok(Expr::Literal(Value::Null)),
             Some(Token::Ident(s)) if s.eq_ignore_ascii_case("TRUE") => Ok(Expr::Literal(Value::Int(1))),
