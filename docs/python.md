@@ -465,6 +465,25 @@ blocks need not be checked once the file is already invalid.
 The GDAL profile limits total parsed GDAL metadata to 4 MiB per file and XML nesting
 to 128 levels. The default rio-cogeo profile ignores this metadata tag.
 
+### Pictures of data
+
+`terrio.render(src, *, width=None, height=None, max_size=1024, bands=None, colormap=None,
+stretch="auto", layers=None, attribute=None)` returns a PNG of a raster or vector dataset. `src`
+accepts a path (a raster, or else a vector dataset), a `Raster`, or vector layers (`VectorDataset`,
+`Layer`, a list of layers or GeoJSON). A raster is read from its coarsest overview that still has
+the pixels needed, so a remote COG transfers a small part of itself. The options are those of
+[`terrio preview`](cli.md#preview).
+
+```python
+png = terrio.render("https://example.com/dem.tif", colormap="terrain", max_size=512)
+open("dem.png", "wb").write(png)
+terrio.render("countries.gpkg", attribute="POP_EST", colormap="viridis")
+```
+
+In Jupyter, a `Raster` and a `terrio.rio` dataset display as a picture of up to 512 pixels a side
+(their `_repr_png_`), without matplotlib; a closed dataset, or one that cannot be drawn, falls back
+to its text form.
+
 ### Indexed color conversion
 
 `terrio.rgb_to_palette(src, dst=None, *, color_count=256, bit_depth=5,

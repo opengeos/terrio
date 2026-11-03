@@ -72,6 +72,7 @@ Every command, in alphabetical order. `terrio --help` prints this list, and
 | [`pipeline`](#pipelines) | Chain raster and vector operations |
 | [`pixel-info`](#pixel-info) | Query pixel values at given positions |
 | [`polygonize`](#polygonize) | Turn a raster band into polygons |
+| [`preview`](#preview) | Draw a raster or vector dataset as a PNG or in the terminal |
 | [`proximity`](#proximity) | Compute the distance to the nearest target pixel |
 | [`raster-index`](#rastervector-indexes-and-gti-creation) | Create a raster footprint index, with optional GTI metadata |
 | [`rasterize`](#rasterize) | Burn vector geometries into a raster |
@@ -102,6 +103,7 @@ Every command, in alphabetical order. `terrio --help` prints this list, and
 | [`vector-grid`](#vector-grid) | Grid scattered vector points into a raster |
 | [`vector-index`](#rastervector-indexes-and-gti-creation) | Create a vector envelope index of vector dataset layers |
 | [`vertices`](#geometry-operations) | Extract vertices as points |
+| [`view`](#view) | Pan and zoom a raster or vector dataset in your browser |
 | [`viewshed`](#viewshed) | Single-observer visibility or minimum visible height |
 | [`vsi`](#vsi) | Manage local, in-memory, cloud and archive files |
 | [`warp`](#warp) | Reproject and resample rasters (like gdalwarp) |
@@ -3532,6 +3534,90 @@ the equivalent command line, quoted for a POSIX shell, to copy into a script. Re
 taken from the directory `terrio ui` started in. **Cancel**, or closing the tab, stops a running command, which can leave a
 partial output file; Ctrl-C stops the server. This works through both the `terrio` binary and the
 Python package's `terrio` command.
+
+Option | Description
+--- | ---
+`--port` | Port on 127.0.0.1; by default a free one
+`--no-open` | Print the address without opening a browser
+
+The `preview` form shows the image it draws below the command's output, and its **Open map**
+button opens the dataset in a [map](#view) in a new tab, with the form's options.
+
+## preview
+
+```sh
+terrio preview dem.tif                                   # in the terminal
+terrio preview dem.tif -o dem.png -c terrain -s p2,p98
+terrio preview https://example.com/scene.tif -o rgb.png -b 4,3,2 --width 1024
+terrio preview countries.gpkg -o population.png -a POP_EST -c viridis
+terrio preview dem.tif -o - | other-program              # PNG bytes on standard output
+```
+
+Draws a raster or vector dataset as an RGBA PNG, or in the terminal when there is no `-o`. A
+raster is read from its coarsest overview that still has the pixels the image needs; without a
+fitting overview, a level of more than 16 million pixels is read one sampled row at a time. A
+preview of a large remote COG therefore transfers a small part of it: 400 pixels across from a
+51.5 MB 3612 x 3612 Float32 COG with three overviews took 720,896 bytes in two GETs; the default
+1024 pixels read its 1806 x 1806 overview, 10.1 MB.
+
+Pixels are drawn in the raster's own grid, without reprojecting or applying a rotation in its
+geotransform. Shrinking averages the valid pixels under each output pixel (paletted rasters take
+the nearest one). Nodata, masked pixels and an alpha band of 0 are transparent. Vector layers are
+burned with `rasterize` (every pixel a feature touches), north up, in one color or by a numeric
+field's values; points are drawn three pixels wide.
+
+Without `--bands`, the red, green and blue bands are drawn when the color interpretation names
+them, else the first three bands of a Byte raster without a palette, else band 1, through the
+raster's own palette when it has one. `--stretch auto` draws Byte red, green and blue as stored and
+stretches everything else from its 2nd to its 98th percentile, measured on the pixels drawn.
+
+Option | Description
+--- | ---
+`-o`, `--output` | PNG file, or `-` for its bytes on standard output; without it, draw in the terminal
+`--overwrite` | Replace an existing output file
+`--width`, `--height` | Image size; with one of them the other keeps the aspect ratio
+`--max-size` | Longest side when no size is given (1024); images are not enlarged to reach it
+`-b`, `--bands` | One band, or three as red,green,blue
+`-c`, `--colormap` | `gray`, `viridis`, `magma`, `inferno`, `plasma`, `terrain`, `rdbu` or `rdylgn`; `_r` reverses
+`-s`, `--stretch` | `auto`, `minmax`, `pLOW,pHIGH` (percentiles) or `LOW,HIGH` (values)
+`-l`, `--layer` | Vector: draw this layer (repeatable); by default all, which must share a CRS
+`-a`, `--attribute` | Vector: color features by this numeric field (viridis unless `-c`)
+`--display` | `auto`, `kitty`, `iterm`, `sixel` or `blocks`
+
+In the terminal, `auto` picks Kitty's graphics protocol in Kitty and Ghostty, iTerm2 inline images
+in iTerm2 and WezTerm, sixels where `TERM` names foot, mlterm or sixel, and otherwise colored
+Unicode half blocks, two pixels to a character cell, as wide as the terminal. Inside tmux or
+screen, which do not pass graphics on without configuration, it is half blocks. With `auto`, a
+standard output that is not a terminal is refused rather than filled with escape codes; name a
+`--display` to write them anyway. Sixels use a fixed palette of 216 colors.
+
+Through [MCP](mcp.md), a preview's result carries the PNG as image content, so that an agent sees
+it. Without `-o` the PNG goes to a private temporary directory, removed after the call; `-o -` is
+refused there. Images over 8 MiB are not attached.
+
+The colormap stops are sampled from matplotlib's viridis, magma, inferno and plasma (CC0) and
+ColorBrewer's RdBu and RdYlGn (Apache-2.0); see `NOTICE`.
+
+## view
+
+```sh
+terrio view dem.tif -c terrain
+terrio view https://example.com/scene.tif -b 4,3,2 --port 8080 --no-open
+terrio view parcels.gpkg -a value
+```
+
+Serves a map of one dataset on 127.0.0.1 and opens it in your browser: drag or use the arrow keys
+to pan, scroll or press `+` and `-` to zoom, and `0` to fit. Tiles of 256 screen pixels are drawn
+on request from the overview each zoom level needs, with the [preview](#preview) code, so large and
+remote datasets stay quick. Colors stay the same across tiles: a stretch is measured once, on a
+sample of up to 512 pixels across. The footer shows the column, row and coordinates under the
+pointer.
+
+The map shows the data alone, in the raster's own grid (a vector dataset's CRS, north up), with no
+basemap, so it works offline and for any CRS. The page and its script are built into terrio; it
+loads nothing from elsewhere. As with [`terrio ui`](#ui), the server listens on the loopback
+interface only and every tile request needs the session's random token. It takes the `preview`
+options `--bands`, `--colormap`, `--stretch`, `--layer` and `--attribute`, plus:
 
 Option | Description
 --- | ---

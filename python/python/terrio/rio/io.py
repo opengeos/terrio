@@ -1264,6 +1264,21 @@ class DatasetReader(DatasetBase):
             raster = _OverviewRaster.open(raster, level, self.name)
         self._load(raster)
 
+    def _repr_png_(self) -> bytes | None:
+        """The dataset as a PNG of up to 512 pixels a side, which notebooks display.
+
+        Returns:
+            bytes | None: The PNG, or None when the dataset is closed or cannot be drawn, so that
+                the notebook falls back to the text form.
+        """
+        raster = getattr(self, "_raster", None)
+        if self.closed or not isinstance(raster, _terrio.Raster):
+            return None
+        try:
+            return _terrio.render(raster, max_size=512)
+        except Exception:
+            return None
+
     def _load(self, raster: Any) -> None:
         """Takes the dataset's properties from a terrio raster.
 

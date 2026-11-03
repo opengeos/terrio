@@ -57,6 +57,9 @@ other vector data: `info` lists their layers, and `info` and `convert` take the 
 (`--oo "CELL_SUMMARIES=Maximum Water Surface"`, see [HEC-RAS](hecras.md)), so an agent can "export
 the maximum water surface of each 2D cell of this plan to GeoPackage".
 
+`preview` returns the PNG it draws as image content, which the agent can look at: "show me this
+DEM with the terrain colormap" works without a file. See [preview](cli.md#preview).
+
 ## Permissions and safety
 
 terrio does not sandbox its tools: an agent can do what the server process can. Configure the MCP

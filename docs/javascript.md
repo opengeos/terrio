@@ -201,6 +201,20 @@ metadata-based rendering options. `rasterTiles(src, options, callback)` sends ea
 See the [CLI tiling reference](cli.md#separate-file-raster-tiles) for supported output
 and transparency policies.
 
+### Pictures of data
+
+`render(source, options)` draws a raster or vector dataset as `{width, height, data}`, `data` a
+`Uint8ClampedArray` of RGBA pixels for `new ImageData(data, width, height)`, and
+`renderPng(source, options)` returns PNG bytes. Sources are Datasets, uploaded bytes
+(`Uint8Array` or `{bytes, filename}`) or GeoJSON. Options: `width`, `height`, `maxSize` (1024),
+`bands`, `colormap`, `stretch`, `layers` and `attribute`, as in [`terrio preview`](cli.md#preview).
+Rasters are read from the coarsest overview that still has the pixels needed.
+
+```js
+const { width, height, data } = render(dataset, { colormap: "terrain", maxSize: 512 });
+canvas.getContext("2d").putImageData(new ImageData(data, width, height), 0, 0);
+```
+
 ### Indexed color conversion
 
 `rgbToPalette(source, {colorCount: 256, bitDepth: 5, dither: true, colorMap,

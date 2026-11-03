@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terrio map</title>
+<style>
+:root { color-scheme: light dark; --bg: #e9ece9; --panel: #ffffff; --text: #1d2521; --muted: #5d6a63; --line: #d9dfda; --bad: #b3261e; }
+@media (prefers-color-scheme: dark) { :root { --bg: #101412; --panel: #1c231f; --text: #e6ebe7; --muted: #9aa8a0; --line: #323c36; --bad: #f2b8b5; } }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+canvas { position: fixed; inset: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; outline: none; }
+canvas.dragging { cursor: grabbing; }
+.panel { position: fixed; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+#title { top: 12px; left: 12px; max-width: calc(100% - 96px); overflow-wrap: anywhere; font-weight: 600; }
+#status { bottom: 12px; left: 12px; max-width: calc(100% - 48px); color: var(--muted); font-variant-numeric: tabular-nums; }
+#status.bad { color: var(--bad); }
+#zoom { top: 12px; right: 12px; display: flex; flex-direction: column; gap: 4px; padding: 4px; }
+#zoom button { width: 44px; height: 44px; font: inherit; font-size: 18px; color: inherit; background: none; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="map" tabindex="0" aria-label="Map of the dataset. Drag or use the arrow keys to pan; scroll or press plus and minus to zoom; press 0 to fit."></canvas>
+<div class="panel" id="title">Loading…</div>
+<div class="panel" id="zoom">
+  <button type="button" id="in" aria-label="Zoom in">+</button>
+  <button type="button" id="out" aria-label="Zoom out">−</button>
+  <button type="button" id="fit" aria-label="Fit to window">⤢</button>
+</div>
+<div class="panel" id="status" role="status"></div>
+<script>
+"use strict";
+// Dataset names reach the page through textContent only.
+const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+const headers = { "X-Terrio-Token": token };
+const byId = (id) => document.getElementById(id);
+const canvas = byId("map"), context = canvas.getContext("2d"), statusBox = byId("status");
+const TILE = 256, MAX_LOADING = 6, MAX_CACHED = 512;
+const tiles = new Map();
+let info = null, scale = 1, centerX = 0, centerY = 0, loading = 0, failure = "", pointerText = "";
+
+function setStatus() {
+  statusBox.className = failure ? "panel bad" : "panel";
+  statusBox.textContent = failure || pointerText;
+  statusBox.hidden = !statusBox.textContent;
+}
+// The level whose pixels are the first at least as fine as the screen's.
+const levelOf = () => Math.max(0, Math.floor(Math.log2(1 / scale / (devicePixelRatio || 1)) + 1e-9));
+
+function resize() {
+  const ratio = devicePixelRatio || 1;
+  canvas.width = Math.round(innerWidth * ratio);
+  canvas.height = Math.round(innerHeight * ratio);
+  draw();
+}
+function fit() {
+  if (!info) return;
+  scale = Math.min(innerWidth / info.width, innerHeight / info.height, 8);
+  centerX = info.width / 2;
+  centerY = info.height / 2;
+  draw();
+}
+function tileAt(level, col, row) {
+  const key = `${level}/${col}/${row}`;
+  let tile = tiles.get(key);
+  if (tile) {
+    tiles.delete(key);
+    tiles.set(key, tile);
+  }
+  return tile || null;
+}
+function load(level, col, row) {
+  const key = `${level}/${col}/${row}`;
+  if (tiles.has(key) || loading >= MAX_LOADING) return;
+  const size = TILE * 2 ** level, x = col * size, y = row * size;
+  const w = Math.min(size, info.width - x), h = Math.min(size, info.height - y);
+  const query = new URLSearchParams({ g: info.generation, x, y, w, h, tw: Math.max(1, Math.round(w / 2 ** level)), th: Math.max(1, Math.round(h / 2 ** level)) });
+  const tile = { image: null, x, y, w, h };
+  tiles.set(key, tile);
+  loading++;
+  fetch(`/api/tile?${query}`, { headers })
+    .then(async (response) => {
+      if (!response.ok) throw new Error((await response.json()).error || response.statusText);
+      tile.image = await createImageBitmap(await response.blob());
+      failure = "";
+    })
+    .catch((error) => {
+      tiles.delete(key);
+      failure = `Could not draw this part: ${error.message}`;
+    })
+    .finally(() => {
+      loading--;
+      setStatus();
+      for (const [old, entry] of tiles) {
+        if (tiles.size <= MAX_CACHED) break;
+        if (entry.image) {
+          entry.image.close();
+          tiles.delete(old);
+        }
+      }
+      draw();
+    });
+}
+let queued = false;
+function draw() {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(() => {
+    queued = false;
+    paint();
+  });
+}
+function paint() {
+  const ratio = devicePixelRatio || 1;
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  if (!info) return;
+  const s = scale * ratio;
+  context.setTransform(s, 0, 0, s, canvas.width / 2 - centerX * s, canvas.height / 2 - centerY * s);
+  context.imageSmoothingEnabled = s < 1;
+  const left = Math.max(0, centerX - innerWidth / 2 / scale), right = Math.min(info.width, centerX + innerWidth / 2 / scale);
+  const top = Math.max(0, centerY - innerHeight / 2 / scale), bottom = Math.min(info.height, centerY + innerHeight / 2 / scale);
+  if (right <= left || bottom <= top) return;
+  const finest = Math.min(levelOf(), info.maxLevel);
+  // Coarser levels first, so that they show until finer tiles arrive.
+  for (let level = info.maxLevel; level >= finest; level--) {
+    const size = TILE * 2 ** level;
+    for (let row = Math.floor(top / size); row * size < bottom; row++) {
+      for (let col = Math.floor(left / size); col * size < right; col++) {
+        const tile = tileAt(level, col, row);
+        if (tile && tile.image) context.drawImage(tile.image, tile.x, tile.y, tile.w, tile.h);
+        else if (level === finest || level === info.maxLevel) load(level, col, row);
+      }
+    }
+  }
+}
+function zoomAt(factor, screenX, screenY) {
+  if (!info) return;
+  const next = Math.min(Math.max(scale * factor, Math.min(innerWidth / info.width, innerHeight / info.height) / 2), 32);
+  const dx = screenX - innerWidth / 2, dy = screenY - innerHeight / 2;
+  centerX += dx / scale - dx / next;
+  centerY += dy / scale - dy / next;
+  scale = next;
+  draw();
+}
+function describe(event) {
+  if (!info) return;
+  const col = centerX + (event.clientX - innerWidth / 2) / scale, row = centerY + (event.clientY - innerHeight / 2) / scale;
+  if (col < 0 || row < 0 || col >= info.width || row >= info.height) {
+    pointerText = "";
+  } else {
+    const g = info.geoTransform;
+    const coordinates = g ? `x ${(g[0] + col * g[1] + row * g[2]).toFixed(5)}, y ${(g[3] + col * g[4] + row * g[5]).toFixed(5)}` : "";
+    pointerText = info.kind === "raster" ? `column ${Math.floor(col)}, row ${Math.floor(row)}${coordinates && `; ${coordinates}`}` : coordinates;
+  }
+  setStatus();
+}
+let drag = null;
+canvas.addEventListener("pointerdown", (event) => {
+  drag = { x: event.clientX, y: event.clientY };
+  canvas.setPointerCapture(event.pointerId);
+  canvas.classList.add("dragging");
+});
+canvas.addEventListener("pointermove", (event) => {
+  describe(event);
+  if (!drag) return;
+  centerX -= (event.clientX - drag.x) / scale;
+  centerY -= (event.clientY - drag.y) / scale;
+  drag = { x: event.clientX, y: event.clientY };
+  draw();
+});
+for (const name of ["pointerup", "pointercancel"]) {
+  canvas.addEventListener(name, () => {
+    drag = null;
+    canvas.classList.remove("dragging");
+  });
+}
+canvas.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  zoomAt(Math.exp(-event.deltaY * (event.deltaMode === 1 ? 0.05 : 0.0015)), event.clientX, event.clientY);
+}, { passive: false });
+canvas.addEventListener("keydown", (event) => {
+  const step = 80 / scale;
+  const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  if (moves[event.key]) {
+    centerX += moves[event.key][0];
+    centerY += moves[event.key][1];
+    draw();
+  } else if (event.key === "+" || event.key === "=") zoomAt(1.5, innerWidth / 2, innerHeight / 2);
+  else if (event.key === "-") zoomAt(1 / 1.5, innerWidth / 2, innerHeight / 2);
+  else if (event.key === "0") fit();
+  else return;
+  event.preventDefault();
+});
+byId("in").addEventListener("click", () => zoomAt(1.5, innerWidth / 2, innerHeight / 2));
+byId("out").addEventListener("click", () => zoomAt(1 / 1.5, innerWidth / 2, innerHeight / 2));
+byId("fit").addEventListener("click", fit);
+addEventListener("resize", resize);
+
+(async () => {
+  try {
+    const response = await fetch("/api/view", { headers });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || response.statusText);
+    info = body;
+    info.maxLevel = Math.max(0, Math.ceil(Math.log2(Math.max(info.width, info.height) / TILE)));
+    byId("title").textContent = info.name;
+    document.title = `${info.name} – Terrio map`;
+    resize();
+    fit();
+    canvas.focus();
+  } catch (error) {
+    byId("title").textContent = "No map";
+    failure = error.message;
+    setStatus();
+  }
+})();
+setStatus();
+</script>
+</body>
+</html>

@@ -286,6 +286,10 @@ enum Command {
     Catalog(cmd::catalog::Args),
     /// Create a raster footprint index, with optional GTI metadata.
     RasterIndex(cmd::tile_index::RasterArgs),
+    /// Draw a raster or vector dataset as a PNG or in the terminal.
+    ///
+    /// Reads only the overview or rows the image needs, so large remote files are quick to preview.
+    Preview(cmd::preview::Args),
     /// Generate separate XYZ/TMS raster tiles in a directory.
     Tile(cmd::raster_tile::Args),
     /// Retile mosaics into overlapping files and pyramids.
@@ -419,6 +423,12 @@ enum Command {
     /// Serves a page on 127.0.0.1, with a form for every command, a file picker and the equivalent
     /// command line. Commands run on this computer as you; stop the server with Ctrl-C.
     Ui(ui::Args),
+    /// Pan and zoom a raster or vector dataset in your browser.
+    ///
+    /// Serves a map on 127.0.0.1 and draws the parts on screen as they are needed, so large and
+    /// remote datasets stay quick. It shows the data alone in its own grid, with no basemap. Stop
+    /// the server with Ctrl-C.
+    View(ui::ViewArgs),
 }
 
 /// Runs the command line `args` (the program name first) and returns the process exit code: 0 on
@@ -544,6 +554,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::AttachPalette(a) => cmd::palette::attach(a),
         Command::Warp(a) => cmd::warp::run(a),
         Command::Catalog(a) => cmd::catalog::run(a),
+        Command::Preview(a) => cmd::preview::run(a),
         Command::Tile(a) => cmd::raster_tile::run(&a),
         Command::Retile(a) => cmd::raster_retile::run(a),
         Command::RasterIndex(a) | Command::GtiCreate(a) => cmd::tile_index::raster(a),
@@ -576,6 +587,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Vsi(a) => cmd::vsi::run(a),
         Command::Mcp => serve_mcp(terrio),
         Command::Ui(a) => serve_ui(a, terrio),
+        Command::View(a) => ui::view(a),
     };
     for w in terrio::warnings::take() {
         eprintln!("terrio: warning: {w}");
