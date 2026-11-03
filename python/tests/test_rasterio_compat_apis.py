@@ -21,7 +21,9 @@ import terrio.rio as rio
 
 def _run(code: str) -> str:
     """Runs `code` in a fresh interpreter and returns its standard output; fails on an error."""
-    result = subprocess.run([sys.executable, "-c", textwrap.dedent(code)], capture_output=True, text=True, timeout=120)
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code)], capture_output=True, text=True, timeout=120
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout
 
@@ -311,7 +313,10 @@ def test_the_pth_line_installs_compat_before_user_code(tmp_path):
     (tmp_path / "terrio-compat.pth").write_text(terrio.compat.PTH_LINE)
     code = f"import site, sys; site.addsitedir({str(tmp_path)!r}); exec(sys.argv[1])"
     result = subprocess.run(
-        [sys.executable, "-c", code, textwrap.dedent(_IDENTITY)], capture_output=True, text=True, timeout=120
+        [sys.executable, "-c", code, textwrap.dedent(_IDENTITY)],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert result.returncode == 0, result.stderr
 
@@ -330,12 +335,16 @@ def server(tmp_path):
             a, _, b = self.headers["Range"][6:].partition("-")
             start, end = int(a), min(int(b), len(data) - 1)
             body = data[start : end + 1]
+            # Record before replying: the client can finish and read `sent` once the body arrives.
+            sent.append(len(body))
             self.send_response(206)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+            # Record before sending: the client can finish reading, and the test can
+            # assert, before this thread would run a statement after the write.
+            sent.append(len(body))
             self.end_headers()
             self.wfile.write(body)
-            sent.append(len(body))
 
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
