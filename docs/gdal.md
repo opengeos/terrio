@@ -74,7 +74,7 @@ their outputs locally; [`terrio vsi`](cli.md#vsi) copies files to S3 or Azure.
 ## Differences to know
 
 - terrio reads most raster formats whole into memory. GeoTIFF/COG, JPEG 2000, tile archives
-  (PMTiles, MBTiles), GRIB and raw-layout rasters are read by window, Zarr by chunk, and large
+  (PMTiles, MBTiles) and raw-layout rasters are read by window, Zarr by chunk, GRIB by band, and large
   vector layers and point clouds as streams. See
   [Formats](formats.md).
 - Downsampling with `translate` reads full resolution, where GDAL may use overviews. `warp` chooses
