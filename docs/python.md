@@ -699,7 +699,7 @@ uv run maturin develop --release
 uv run pytest
 ```
 
-### OGC API Features
+## OGC API Features
 
 `open_vector` reads explicit `OAPIF:` URLs through the shared Rust reader:
 

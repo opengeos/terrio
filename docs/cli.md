@@ -3588,7 +3588,7 @@ Clap distinguishes the metadata flag from literal values. For example,
 `--srcnodata --json-usage` treats it as the nodata argument's value. For the
 pipeline's trailing expression, put the metadata flag before expression tokens.
 
-### OGC API Features
+## OGC API Features
 
 `OAPIF:https://service/collections` opens a read-only OGC API Features catalog,
 a collection URL or an items URL. The explicit prefix avoids probing ordinary

@@ -661,7 +661,7 @@ static ALLOCATOR: terrio::NullSafeAllocator = terrio::NullSafeAllocator;
 API documentation: [docs.rs/terrio](https://docs.rs/terrio), or `cargo doc -p terrio --open` in
 the repository.
 
-### OGC API Features
+## OGC API Features
 
 `open_vector("OAPIF:https://service/collections", &options)` supports read-only
 OGC API Features with `VectorOpenOptions::oapif` (`OapifOpenOptions`).

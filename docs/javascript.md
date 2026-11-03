@@ -566,7 +566,7 @@ node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real
 To build one module with only the scientific formats, see
 [Scientific WASM builds](scientific-wasm-build.md).
 
-### OGC API Features
+## OGC API Features
 
 `await openOapif(url, options)` drives the shared Rust paging/schema reader over
 `fetch` and returns a vector Dataset:
