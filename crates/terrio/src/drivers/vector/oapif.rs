@@ -33,9 +33,10 @@ pub struct OapifOpenOptions {
     pub gis_friendly: bool,
     /// Ignore advertised JSON schemas and infer fields from all received pages.
     pub ignore_schema: bool,
-    /// Conservative JSON workspace budget (default 1 GiB), including all response bytes × 32.
-    /// Cumulative response bytes across all collections are charged conservatively,
-    /// even after decoding; this is an aggregate work budget, not current heap usage.
+    /// Conservative JSON workspace budget (default 1 GiB), including all response bytes × 32,
+    /// so the default admits about 32 MiB of cumulative response bodies. Bytes across all
+    /// collections are charged even after decoding; this is an aggregate work budget, not
+    /// current heap usage.
     pub max_vector_bytes: usize,
     /// Maximum HTTP pages, including discovery and schemas (default 10000).
     pub max_pages: usize,
@@ -292,6 +293,11 @@ impl Reader {
             if !self.visited.insert((self.index, self.phase, effective_url.into())) {
                 return Err(invalid("redirect returns to a previously read service page"));
             }
+            if self.phase == Phase::Items {
+                let asked = request.url.clone();
+                self.check_filters(&asked, effective_url, "redirect")?;
+            }
+            let request = self.request.as_mut().ok_or_else(|| invalid("unexpected response after completion"))?;
             request.url = effective_url.into();
         }
         self.accept_response(body)
@@ -303,6 +309,54 @@ impl Reader {
             return Err(invalid("service reader has pending requests"));
         }
         Ok(VectorDataset::new(self.layers, VectorDriver::OAPIF))
+    }
+    /// Rejects a follow-up items URL whose CRS or query filters differ from `source`.
+    fn check_filters(&self, source: &str, target: &str, what: &str) -> Result<()> {
+        if has_query(source, "crs") && !has_query(target, "crs") {
+            return Err(invalid(format!("{what} drops the requested crs")));
+        }
+        if let Some(query) = split_url(target).1 {
+            for pair in query.split('&') {
+                let Some((key, val)) = pair.split_once('=') else { continue };
+                if crate::vfs::decode_query_component(key).eq_ignore_ascii_case("crs") {
+                    let asked = crate::vfs::decode_query_component(val);
+                    let c = &self.collections[self.index];
+                    if is_crs84(&asked) != is_crs84(&c.crs_uri) || !SpatialRef::parse_literal(&asked).is_ok_and(|crs| crs.same_as(&c.crs)) {
+                        return Err(invalid(format!("{what} changes the collection CRS")));
+                    }
+                }
+            }
+        }
+
+        for key in ["datetime", "bbox", "bbox-crs"] {
+            let wanted =
+                query_parameter(source, key).or_else(|| (key == "bbox-crs" && has_query(source, "bbox")).then(|| CRS84.to_owned()));
+            if wanted.is_none() && key != "bbox-crs" && has_query(target, key) {
+                return Err(invalid(format!("{what} adds a {key} the request did not set")));
+            }
+            if let Some(wanted) = wanted {
+                let actual = query_parameter(target, key).or_else(|| (key == "bbox-crs").then(|| CRS84.to_owned()));
+                let same = actual.is_some_and(|actual| match key {
+                    "bbox" => {
+                        let parse = |text: &str| text.split(',').map(str::parse::<f64>).collect::<std::result::Result<Vec<_>, _>>();
+                        match (parse(&wanted), parse(&actual)) {
+                            (Ok(a), Ok(b)) => a == b && a.iter().all(|v| v.is_finite()),
+                            _ => false,
+                        }
+                    }
+                    "bbox-crs" => {
+                        is_crs84(&wanted) == is_crs84(&actual)
+                            && SpatialRef::parse_literal(&wanted)
+                                .is_ok_and(|a| SpatialRef::parse_literal(&actual).is_ok_and(|b| a.same_as(&b)))
+                    }
+                    _ => actual == wanted,
+                });
+                if !same {
+                    return Err(invalid(format!("{what} changes the requested {key}")));
+                }
+            }
+        }
+        Ok(())
     }
     fn check_memory(&self, cells: usize) -> Result<()> {
         let estimate = self.bytes.saturating_mul(JSON_MEMORY_FACTOR).saturating_add(self.cell_bytes(cells));
@@ -476,9 +530,6 @@ impl Reader {
         if let Some(url) = self.collections[self.index].schema.clone() { self.schedule(url, Phase::Schema) } else { self.begin_items() }
     }
     fn begin_items(&mut self) -> Result<()> {
-        if self.options.max_features == Some(0) {
-            return self.end_collection();
-        }
         let c = &self.collections[self.index];
         let mut url = c.items.clone();
         if let Some(query) = split_url(&self.initial).1 {
@@ -552,46 +603,7 @@ impl Reader {
             return self.end_collection();
         }
         if let Some(next) = next {
-            if let Some(query) = split_url(&next).1 {
-                for pair in query.split('&') {
-                    let Some((key, val)) = pair.split_once('=') else { continue };
-                    if crate::vfs::decode_query_component(key).eq_ignore_ascii_case("crs") {
-                        let asked = crate::vfs::decode_query_component(val);
-                        let c = &self.collections[self.index];
-                        if is_crs84(&asked) != is_crs84(&c.crs_uri)
-                            || !SpatialRef::parse_literal(&asked).is_ok_and(|crs| crs.same_as(&c.crs))
-                        {
-                            return Err(invalid("next page changes the collection CRS"));
-                        }
-                    }
-                }
-            }
-
-            for key in ["datetime", "bbox", "bbox-crs"] {
-                let wanted =
-                    query_parameter(source, key).or_else(|| (key == "bbox-crs" && has_query(source, "bbox")).then(|| CRS84.to_owned()));
-                if let Some(wanted) = wanted {
-                    let actual = query_parameter(&next, key).or_else(|| (key == "bbox-crs").then(|| CRS84.to_owned()));
-                    let same = actual.is_some_and(|actual| match key {
-                        "bbox" => {
-                            let parse = |text: &str| text.split(',').map(str::parse::<f64>).collect::<std::result::Result<Vec<_>, _>>();
-                            match (parse(&wanted), parse(&actual)) {
-                                (Ok(a), Ok(b)) => a == b && a.iter().all(|v| v.is_finite()),
-                                _ => false,
-                            }
-                        }
-                        "bbox-crs" => {
-                            is_crs84(&wanted) == is_crs84(&actual)
-                                && SpatialRef::parse_literal(&wanted)
-                                    .is_ok_and(|a| SpatialRef::parse_literal(&actual).is_ok_and(|b| a.same_as(&b)))
-                        }
-                        _ => actual == wanted,
-                    });
-                    if !same {
-                        return Err(invalid(format!("next page changes the requested {key}")));
-                    }
-                }
-            }
+            self.check_filters(source, &next, "next page")?;
             return self.schedule(next, Phase::Items);
         }
         if matched.is_some_and(|n| n > self.features.len().saturating_add(self.initial_offset) as u64) {
@@ -764,7 +776,10 @@ fn query_value(url: &str, name: &str, value: &str) -> String {
 fn link<'a>(value: &'a Value, rel: &str, geojson: bool) -> Option<&'a str> {
     let links = value.get("links")?.as_array()?;
     let matches = |l: &&Value| {
-        l.get("rel").and_then(Value::as_str).is_some_and(|r| r == rel || r == format!("http://www.opengis.net/def/rel/ogc/1.0/{rel}"))
+        l.get("href").is_some_and(Value::is_string)
+            && l.get("rel")
+                .and_then(Value::as_str)
+                .is_some_and(|r| r == rel || r == format!("http://www.opengis.net/def/rel/ogc/1.0/{rel}"))
     };
     let preferred = if geojson { "application/geo+json" } else { "application/json" };
     links
@@ -895,9 +910,11 @@ fn schema_fields_with_strings(root: &Value, string_fields: &mut HashSet<String>)
     };
     properties
         .iter()
-        .filter(|(_, value)| !matches!(value.get("x-ogc-role").and_then(Value::as_str), Some("primary-geometry" | "id")))
         .map(|(name, value)| {
             let v = resolve_ref(document, value, 0)?;
+            if matches!(v.get("x-ogc-role").and_then(Value::as_str), Some("primary-geometry" | "id")) {
+                return Ok(None);
+            }
             let kind =
                 v.get("type").and_then(|t| t.as_str().or_else(|| t.as_array()?.iter().filter_map(Value::as_str).find(|s| *s != "null")));
             let field_type = match (kind, v.get("format").and_then(Value::as_str)) {
@@ -1248,6 +1265,8 @@ mod tests {
         assert!(schema_fields(&json!({"type":"object"})).unwrap().is_empty());
         // OGC role=id describes the top-level feature identifier, not properties.id.
         assert!(schema_fields(&json!({"properties":{"id":{"type":"string","x-ogc-role":"id"}}})).unwrap().is_empty());
+        let referenced = json!({"properties":{"id":{"$ref":"#/$defs/id"}},"$defs":{"id":{"type":"string","x-ogc-role":"id"}}});
+        assert!(schema_fields(&referenced).unwrap().is_empty());
         let mut inferred = at_items(&Default::default());
         inferred.fields = schema_fields(&json!({"properties":{
             "optional":{"anyOf":[{"type":"integer"},{"type":"null"}]},
@@ -1348,6 +1367,29 @@ mod tests {
         accept(&mut r, page(vec![feature(json!(1), json!({}))], Some("?offset=1&bbox=1.0,2.0,3.0,4.0&datetime=2020")));
         accept(&mut r, page(vec![feature(json!(2), json!({}))], None));
         assert_eq!(r.finish().unwrap().layers[0].features.len(), 2);
+    }
+    #[test]
+    fn next_links_and_redirects_cannot_add_or_drop_filters() {
+        for added in ["bbox=0,0,1,1", "datetime=2021"] {
+            let mut r = at_items(&Default::default());
+            let p = page(vec![feature(json!(1), json!({}))], Some(&format!("?offset=1&{added}")));
+            assert!(r.accept_response(&serde_json::to_vec(&p).unwrap()).unwrap_err().to_string().contains("next page adds"));
+        }
+        let mut o = VectorOpenOptions { spatial_filter: Some((1., 2., 3., 4.)), ..Default::default() };
+        o.oapif.datetime = Some("2020".into());
+        let page_one = serde_json::to_vec(&page(vec![feature(json!(1), json!({}))], None)).unwrap();
+        let mut r = at_items(&o);
+        let error = r.accept_response_from(&page_one, "https://example.test/collections/a/items?limit=1000").unwrap_err();
+        assert!(error.to_string().contains("redirect changes the requested"), "{error}");
+        let mut r = at_items(&o);
+        let same = r.next_request().unwrap().url.replace("/collections/a/items", "/v2/collections/a/items");
+        r.accept_response_from(&page_one, &same).unwrap();
+        assert_eq!(r.finish().unwrap().layers[0].features.len(), 1);
+    }
+    #[test]
+    fn items_link_skips_links_without_href() {
+        let value = json!({"links":[{"rel":"items","type":"application/geo+json"},{"rel":"items","type":"application/geo+json","href":"/x/items"}]});
+        assert_eq!(link(&value, "items", true), Some("/x/items"));
     }
     #[test]
     fn source_id_fields_survive_null_ids_and_schema_only_collisions() {

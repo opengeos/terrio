@@ -2437,6 +2437,20 @@ try {const out=JSON.parse(new TextDecoder().decode(d.toBytes('probe.city.json',{
     return result.returncode == 0
 
 
+def node_gpkg_writer_available(module):
+    """Probe GeoPackage output, which needs the sqlite feature, not just the export list."""
+    if not node_exports_available(module, ["open"]):
+        return False
+    code = """const t=require(process.argv[1]);
+const d=t.open(new TextEncoder().encode('{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}]}'),'probe.geojson');
+try{process.exitCode=d.toBytes('probe.gpkg').length>0?0:1;}finally{d.free();}"""
+    try:
+        result = subprocess.run(["node", "-e", code, str(module.resolve())], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def node_citygml_writer_available(module):
     """Check the instance method and actual 2.0 namespace, not just the export list."""
     if not node_exports_available(module,["open"]):
@@ -3072,7 +3086,7 @@ def suite_oapif(ctx):
         return suite
     command = [sys.executable, str(SCRIPTS / "compare_oapif_with_gdal.py"), "--terrio", ctx.terrio, "--json"]
     package = ROOT / "js/pkg-node/terrio.js"
-    node = node_exports_available(package, ["openOapif"])
+    node = node_exports_available(package, ["openOapif"]) and node_gpkg_writer_available(package)
     if node:
         command += ["--node-package", str(package)]
     if ctx.remote:

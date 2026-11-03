@@ -612,7 +612,10 @@ server CORS permission.
 Fetch redirects are refused because browsers can conceal redirect destinations;
 open the canonical service URL. Response streams are bounded before allocation,
 and links must stay on the original origin. Native CLI/Python follow
-same-origin redirects. See the CLI section for shared schema and CRS rules.
+same-origin redirects. Native reads also retry HTTP 429, 500, 502, 503 and 504
+responses with backoff; `openOapif` does not retry, so a transient error status
+fails the read. Supply a retrying `fetch` when a service is unreliable. See the
+CLI section for shared schema and CRS rules.
 
 Signed numeric source IDs, or string IDs that conflict with a source `id`
 property, are preserved in `_oapif_id` text (with an extra leading underscore

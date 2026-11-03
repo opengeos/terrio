@@ -99,6 +99,15 @@ def coordinates(geometry):
     return geometry["coordinates"]
 
 
+def geometry_types(geometry):
+    """Return a geometry's type, recursing into GeometryCollection members."""
+    if geometry is None:
+        return None
+    if geometry["type"] == "GeometryCollection":
+        return ("GeometryCollection", [geometry_types(g) for g in geometry["geometries"]])
+    return geometry["type"]
+
+
 def check_coordinates(a, b):
     if a is None or b is None:
         if a != b:
@@ -170,7 +179,7 @@ def compare(path, schema, crs, expected):
             elif a != b:
                 raise AssertionError(f"attribute/null/id differs: {name}: {a} != {b}")
         geom = json.loads(got.GetGeometryRef().ExportToJson()) if got.GetGeometryRef() else None
-        if geom is not None and ref["geometry"] is not None and geom["type"] != ref["geometry"]["type"]:
+        if geom is not None and ref["geometry"] is not None and geometry_types(geom) != geometry_types(ref["geometry"]):
             raise AssertionError("geometry type differs")
         maximum = max(maximum, check_coordinates(coordinates(geom), coordinates(ref["geometry"])))
     return maximum, differences
