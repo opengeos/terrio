@@ -9,6 +9,7 @@ The API reference, with an example on each entry point, is on [docs.rs](https://
 `cargo doc -p terrio --open` builds it locally. The crate
 documentation opens with a tour of the API.
 
+
 ## Opening datasets
 
 ```rust,no_run
@@ -36,6 +37,7 @@ println!("{}", terrio::info::info(&ds, &Default::default()).to_text());
 `has_nodata` / `raster.nodata` fields, including explicit `None` entries. Read
 nodata with `band_nodata(band)` (one-based) or `nodata()` (band 1). To replace it
 with one shared value, clear the per-band vector and update both shared fields.
+
 
 ## Writing
 
@@ -74,6 +76,7 @@ The same codecs and creation options are available in WebAssembly.
 `ops::vector_filter::write_vector_with_mode` appends to or overwrites the layers of an existing
 output; GeoPackages are updated keeping their other tables.
 
+
 ## Streams
 
 `terrio::stream` reads and writes vector layers a chunk of features at a time, for layers larger
@@ -106,6 +109,7 @@ and tree-depth bookkeeping. Schemas with an integer `fid` field
 or neither a geometry type nor CRS must use `write_vector` instead. Creation
 truncates an existing output; dropping the writer before `finish` leaves it incomplete.
 
+
 ## Arrow
 
 `terrio::arrow` converts layers to and from Arrow record batches with a GeoArrow geometry column
@@ -122,6 +126,7 @@ let table = layer_to_arrow(&layer, &options)?; // schema and record batches
 let back = layer_from_arrow(&table.schema, &table.batches, "countries")?;
 # Ok::<(), terrio::Error>(())
 ```
+
 
 ## ndarray
 
@@ -181,6 +186,7 @@ arrays, and complex datasets are their stored component bands: each complex band
 then its imaginary parts. Bands are numbered from 0, as along the arrays' first axis. Reading and
 decoding still allocate: the guarantee covers the buffers once read.
 
+
 ## Reading windows lazily
 
 ```rust,no_run
@@ -204,6 +210,7 @@ let v = terrio::validate_cog("https://example.com/dem.tif", false)?;
 assert!(v.is_valid, "{:?}", v.errors);
 # Ok::<(), terrio::Error>(())
 ```
+
 
 ### Floating-point windows
 
@@ -244,6 +251,7 @@ comparison happens before: an `Int32` -2147483646 stays valid next to a nodata v
 -2147483647, although both read as -2147483648 in `f32`. Unscaled values are computed in `f64`,
 then rounded to `f32` once. Complex bands are refused.
 
+
 ## Bytes in memory
 
 ```rust,no_run
@@ -252,6 +260,7 @@ let ds = terrio::memory::open_vector_bytes(bytes, "countries.geojson", &Default:
 let fgb: Vec<u8> = terrio::memory::write_vector_bytes(&ds.layers, "countries.fgb", &Default::default())?;
 # Ok::<(), terrio::Error>(())
 ```
+
 
 ## Operations
 
@@ -366,6 +375,7 @@ let corner = translate::translate(&utm, &o)?;
 # Ok::<(), terrio::Error>(())
 ```
 
+
 ### Pansharpening
 
 ```rust
@@ -384,6 +394,7 @@ let virtual_raster = terrio::open_raster_lazy("sharp.vrt")?;
 Each `SpectralBand` can reference a separate raster. See [pansharpen](cli.md#pansharpen)
 for working types, interpolation, nodata, bit depth and extent handling.
 
+
 ### Viewshed
 
 ```rust
@@ -398,6 +409,7 @@ let visible = viewshed(&dem, &ViewshedOptions {
 
 `ViewshedMode::Dem` and `Ground` return minimum visible elevation or height above the DEM.
 See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
+
 
 ### Vector gridding and linear referencing
 
@@ -448,6 +460,7 @@ comparisons), `pixel_info_layer` queries at a layer's points, and `PixelInfo` pr
 CSV, text and `-valonly` output or builds a point layer. See [compare](cli.md#compare),
 [pixel-info](cli.md#pixel-info) and [xyz](cli.md#xyz).
 
+
 ### Vector datasets
 
 ```rust,no_run
@@ -472,6 +485,7 @@ writes them), `ops::vector_schema` (`set_field_type`, `export_schema`, `export_s
 `ops::make_point` are `terrio concat`, `partition`, `set-field-type`, `export-schema`,
 `create` and `make-point`; see [Vector datasets](cli.md#vector-datasets).
 
+
 ### Pixel-wise operations
 
 ```rust
@@ -490,6 +504,18 @@ let pixels = as_features(&nlcd, &AsFeaturesOptions { geometry: PixelGeometry::Po
 `mapping_from_file_text` reads mapping files. See [unscale](cli.md#unscale),
 [nodata-to-alpha](cli.md#nodata-to-alpha), [reclassify](cli.md#reclassify) and
 [as-features](cli.md#as-features).
+
+
+### Indexed color conversion
+
+`terrio::ops::palette` exposes `rgb_to_palette` with `PaletteOptions`,
+`palette_to_rgb`, `attach_palette` and their lazy-source variants. The lazy
+variants retain dataset validity masks, while the conversions materialize the
+pixels. `parse_color_table`, `color_table_from_bytes` and native
+`read_color_table` accept indexed text/QGIS tables or raster palettes. See
+[Palette conversion](cli.md#palette-conversion) for channel selection,
+quantization settings, supported formats and GDAL differences.
+
 
 ## File management
 
@@ -512,6 +538,7 @@ S3, Google Cloud Storage, Azure, HTTP and zip/tar locations (see [vsi](cli.md#vs
 `vsi::RemoteLister` plans a remote listing without doing I/O, for hosts that send the requests
 themselves (WebAssembly's `fetch`).
 
+
 ### Seek-optimized ZIP archives
 
 ```rust,no_run
@@ -528,6 +555,7 @@ Native outputs use atomic replacement on success. Existing archives are appended
 `create`; `optimize` requires `overwrite` to replace an output. See the
 [supported options and limitations](cli.md#vsi-sozip).
 
+
 ## Coordinate systems
 
 ```rust,no_run
@@ -539,10 +567,35 @@ let (x, y) = Transformer::new(&src, &dst)?.transform(-105.5, 39.5)?;
 # Ok::<(), terrio::Error>(())
 ```
 
+
 ## Point clouds
 
 `terrio::pointcloud` reads LAS, LAZ and COPC into columns, writes them and grids them into
 rasters: see [Point Clouds](point-clouds.md).
+
+
+## Native multidimensional arrays
+
+See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
+lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
+
+
+## GeoPackage validation
+
+```rust,no_run
+use terrio::{GpkgValidationOptions, validate_gpkg, validate_gpkg_bytes};
+let options = GpkgValidationOptions { full_check: true, ..Default::default() };
+let report = validate_gpkg("data.gpkg", &options)?;
+let from_bytes = validate_gpkg_bytes(&std::fs::read("data.gpkg")?, &options)?;
+assert!(report.is_complete && from_bytes.is_complete);
+# Ok::<(), terrio::Error>(())
+```
+
+`GpkgValidation` exposes validity, completeness, version, requirement-numbered
+errors, warnings and unsupported checks. It serializes validity/completeness as
+`valid`/`complete`. The `sqlite` feature is required. See the
+[supported checks and limitations](cli.md#geopackage-validation).
+
 
 ## Features
 
@@ -592,6 +645,7 @@ only with it.
 The `geotiff` build still pulls the JPEG XL decoder and encoder (`jxl-oxide`, `zune-jpegxl`):
 `wbraster`, terrio's raster data model, depends on them through its GeoTIFF reader.
 
+
 ## API stability
 
 terrio is heading for a stable 1.0 API. What to rely on, and the decisions behind it:
@@ -613,6 +667,7 @@ terrio is heading for a stable 1.0 API. What to rely on, and the decisions behin
 - **Minimum supported Rust version**: 1.90, raised only when needed, never to a release less
   than six months old (see [Contributing](contributing.md#minimum-supported-rust-version)).
 
+
 ## WebAssembly
 
 The library builds for `wasm32-unknown-unknown`, with any features; network access and
@@ -629,34 +684,3 @@ static ALLOCATOR: terrio::NullSafeAllocator = terrio::NullSafeAllocator;
 
 API documentation: [docs.rs/terrio](https://docs.rs/terrio), or `cargo doc -p terrio --open` in
 the repository.
-
-## Native multidimensional arrays
-
-See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
-lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
-
-### Indexed color conversion
-
-`terrio::ops::palette` exposes `rgb_to_palette` with `PaletteOptions`,
-`palette_to_rgb`, `attach_palette` and their lazy-source variants. The lazy
-variants retain dataset validity masks, while the conversions materialize the
-pixels. `parse_color_table`, `color_table_from_bytes` and native
-`read_color_table` accept indexed text/QGIS tables or raster palettes. See
-[Palette conversion](cli.md#palette-conversion) for channel selection,
-quantization settings, supported formats and GDAL differences.
-
-## GeoPackage validation
-
-```rust,no_run
-use terrio::{GpkgValidationOptions, validate_gpkg, validate_gpkg_bytes};
-let options = GpkgValidationOptions { full_check: true, ..Default::default() };
-let report = validate_gpkg("data.gpkg", &options)?;
-let from_bytes = validate_gpkg_bytes(&std::fs::read("data.gpkg")?, &options)?;
-assert!(report.is_complete && from_bytes.is_complete);
-# Ok::<(), terrio::Error>(())
-```
-
-`GpkgValidation` exposes validity, completeness, version, requirement-numbered
-errors, warnings and unsupported checks. It serializes validity/completeness as
-`valid`/`complete`. The `sqlite` feature is required. See the
-[supported checks and limitations](cli.md#geopackage-validation).

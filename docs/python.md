@@ -18,6 +18,7 @@ Working with xarray? `terrio.xarray.open_rasterio` (or `xr.open_dataset(path, en
 opens rasters lazily as DataArrays, as rioxarray does, and the `.terrio` accessor has rioxarray's
 `.rio` methods (`clip`, `reproject`, `to_raster`...): see [xarray](xarray.md).
 
+
 ## Rasters
 
 ```python
@@ -58,6 +59,7 @@ out.write("dem.zarr", options={"FORMAT": "ZARR_V3", "GEOREFERENCING_CONVENTION":
 red = terrio.open_raster('STACIT:"https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=-105.05,40.5,-104.95,40.6&datetime=2023-07-05":asset=red', lazy=True)
 terrio.open_raster("landsat.tif").write("landsat.pmtiles")  # Byte rasters as tiles (or .mbtiles)
 ```
+
 
 ## Vector data
 
@@ -101,6 +103,7 @@ journal, so appending to a large GeoPackage costs about as much as the features 
 process stopped in the middle leaves the file as it was (SQLite, GDAL and terrio play the journal
 back).
 
+
 ### Streams
 
 Layers larger than memory are read a chunk of features at a time with `terrio.open_stream`
@@ -128,6 +131,7 @@ terrio.convert("buildings.gpkg", "buildings.parquet", where="height > 10")  # in
 `bbox=(min_x, min_y, max_x, max_y)` reads only the features a GeoPackage's R-tree or a
 GeoParquet file's bounding boxes find. The Arrow stream has the schema `Layer.to_arrow()` gives
 (WKB geometries); a layer with date fields is read twice, once to choose their Arrow types.
+
 
 ### Arrow
 
@@ -162,6 +166,94 @@ named `geometry` or `wkb_geometry`; struct columns are flattened and lists becom
 `scripts/compare_arrow_with_gdal.py` checks both directions on real files against GDAL's Arrow
 streams (`ogr.Layer.GetArrowStreamAsPyArrow`, `ogr.Layer.WriteArrow`), pyarrow and GeoPandas:
 geometries are WKB-identical and attribute values equal.
+
+
+### Vector datasets
+
+```python
+merged = terrio.concat(["countries.gpkg", "us_counties.gpkg"], "merged.gpkg", mode="single",
+                       source_layer_field_name="source", dst_crs="EPSG:3857")
+files = terrio.partition("counties.gpkg", "out", ["STATE"], feature_limit=1000)  # paths written
+typed = terrio.set_field_type("countries.gpkg", "Integer64", field_name="POP_EST")
+points = terrio.make_point("trace.csv", "longitude", "latitude", crs="EPSG:4326")  # a Layer
+schema = terrio.export_schema("countries.gpkg")  # the OGR_SCHEMA dict
+terrio.create_vector("empty.gpkg", schema=schema)
+terrio.create_vector("sites.gpkg", output_layer="sites", geometry_type="POINT", crs="EPSG:4326",
+                     fields=["name:STRING(80)", "visits:INTEGER"])
+```
+
+These are `terrio concat`, `partition`, `set-field-type`, `make-point`, `export-schema` and
+`create` (GDAL's `gdal vector` commands of the same names); sources are paths or vector data in
+memory (`VectorDataset`, `Layer`, lists of layers, GeoJSON). Conversion warnings are issued as
+`UserWarning`s. See [Vector datasets](cli.md#vector-datasets) for the options, GDAL's rules
+and the differences. Filesystem `partition` is unavailable in Pyodide;
+the remaining imported APIs remain available.
+
+
+#### Renaming and updating vector datasets
+
+`rename_layer`, `edit_vector` and `update_vector` accept the same vector sources as
+`concat`. They return a new `VectorDataset` for memory inputs. For local files,
+`rename_layer(path, in_place=True, ...)` and `edit_vector(path, in_place=True, ...)`
+change a GeoPackage; `update_vector(source, destination_path, ...)` updates an
+existing destination. Read-only files and active SQLite journals are refused.
+
+```python
+renamed = terrio.rename_layer(countries, ascii=True, lower_case=True)
+assigned = terrio.edit_vector(renamed, crs="EPSG:4326")
+updated = terrio.update_vector(changes, renamed, key=["name"], mode="merge")
+terrio.edit_vector("countries.gpkg", in_place=True, metadata=["SOURCE=survey"])
+```
+
+Rename options mirror the CLI: `input_layer`, `output_layer`, `ascii`, `lower_case`,
+`filename_compatible`, `reserved_characters`, `replacement_character`, `max_length`.
+Edit supports `active_layer`, `crs` (`"none"` removes it), `geometry_type`,
+`unset_fid`, dataset/layer `metadata` and `unset_metadata` lists. Metadata edits
+require file paths because the memory model does not retain dataset metadata.
+Assigning a CRS changes its declaration without transforming coordinates.
+Update supports `input_layer`, `output_layer`, `key` and `mode` (`merge`,
+`update-only`, `append-only`); missing layer selections in multilayer datasets fail.
+File edits materialize the dataset and require space for a neighboring temporary
+copy. See the CLI documentation for atomicity and metadata preservation limits.
+
+The vector dataset copy operations `concat`, `rename_layer` and `edit_vector` refuse an
+existing destination path. Choose a new output path; use `in_place=True` for supported
+GeoPackage edits.
+
+
+### SQL queries
+
+`terrio.sql(src, query, layers=None)` returns a `Layer`. Inputs may be a vector path,
+`VectorDataset`, `Layer`, list of layers, or GeoJSON. It implements the shared
+[OGR SQL subset](sql.md), including computed columns, DISTINCT, summaries and attribute joins.
+
+```python
+result = terrio.sql("countries.gpkg", "SELECT ADMIN, POP_EST/1000000.0 AS millions FROM countries")
+summary = terrio.sql("countries.gpkg", "SELECT COUNT(*) AS n, SUM(POP_EST) AS population FROM countries")
+```
+
+Raw GeoJSON inputs use the layer name `layer`; use `Layer.from_geojson(..., name=...)`
+(Python) or `fromGeoJSON(src, name)` (JavaScript) to assign another name.
+
+
+### Vector geometry operations
+
+`simplify`, `segmentize`, `convex_hull`, `concave_hull`, `swap_xy`, `set_geom_type`, `combine`
+and `sort` run the [vector geometry commands](cli.md#vector-geometry-commands) (GDAL 3.13's
+`gdal vector` commands of those names) and return a `Layer`. Inputs may be a vector path,
+`VectorDataset`, `Layer`, list of layers, or GeoJSON, with a single layer, or the one `layer=`
+names. `convert(..., simplify=TOLERANCE)` and `convert(..., segmentize=MAX_LENGTH)` are
+`ogr2ogr`'s `-simplify` and `-segmentize`.
+
+```python
+groups = terrio.combine("places.gpkg", group_by=["adm0_a3"])
+hulls = terrio.concave_hull(groups, 0.3, allow_holes=True)
+simple = terrio.simplify("counties.gpkg", 0.01)
+dense = terrio.segmentize(simple, 0.1)
+multi = terrio.set_geom_type("roads.gpkg", multi=True, dim="XYZ")
+ordered = terrio.sort(multi, method="strtree")
+```
+
 
 ## Operations
 
@@ -205,6 +297,61 @@ kept by `clean_collar`) needs `dst`, which holds it, and the returned `Raster` i
 [clean-collar](cli.md#clean-collar-and-nearblack) and [enhance](cli.md#enhance) for the
 options, GDAL's arithmetic and the known differences.
 
+
+### Warp source overviews
+
+```python
+lazy = terrio.open_raster("large-cog.tif", lazy=True)
+preview = terrio.warp(lazy, ts=(256, 256))  # AUTO by default
+finer = terrio.warp(lazy, ts=(256, 256), overview="AUTO-1")
+full = terrio.warp(lazy, ts=(256, 256), overview="NONE")
+level = terrio.warp(lazy, overview=1)       # levels start at 0
+```
+
+Paths, lazy `Raster` objects, and mixed/repeated inputs in mosaics retain their
+stored overviews. Selection precedes pixel reads and does not alter the output grid
+computed from the original metadata. Only the source resolution changes. Loaded rasters
+have no stored overviews: a requested numeric level warns and uses full resolution.
+Calls with loaded inputs reuse their existing pixels, including repeated references.
+File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
+
+
+### Geolocation-array warping
+
+`terrio.warp(path, geoloc=True, t_srs="EPSG:4326")` requires the longitude/latitude arrays
+already exposed by netCDF/HDF-EOS drivers. Arrays are also used automatically when present.
+For coordinate rasters held separately or in memory, supply the first source's arrays directly:
+
+```python
+out = terrio.warp(source, t_srs="EPSG:4326", geolocation={
+    "x": longitude_raster, "y": latitude_raster,
+    "pixel_step": 2, "line_step": 2, "pixel_center": True,
+})
+```
+
+`x` and `y` each accept a raster or a path. `x_band` and `y_band` select their 1-based
+coordinate bands (default 1). Optional `srs` defaults to EPSG:4326;
+`pixel_offset`/`line_offset` default to 0 and steps to 1. The center shift is half an array
+step. Invalid coordinate cells remain empty. See [CLI warping](cli.md#warp) for the supported
+subset and comparison behavior at swath boundaries.
+
+
+### Fill nodata
+
+```python
+filled = terrio.fill_nodata("dem.tif", "filled.tif", max_distance=100,
+                           smoothing_iterations=1)
+nearest = terrio.fill_nodata("image.tif", band=2, mask="validity.tif",
+                            interpolation="nearest")
+```
+
+Inputs and masks may also be `terrio.Raster` objects. The result is a new, single-band
+raster, retaining the selected band's type, nodata and georeferencing. The mask is zero
+at holes and nonzero at donors; without it, the source mask or nodata defines holes.
+Distances are in pixels; zero searches the whole image. Smoothing affects only filled
+pixels and preserves the first/last rows. Valid source samples remain unchanged.
+
+
 ### Pansharpening
 
 ```python
@@ -218,6 +365,7 @@ All spectral inputs contribute to intensity; `bands` selects/reorders output ban
 the flattened input sequence. See [pansharpen](cli.md#pansharpen) for interpolation,
 working types, nodata, bit depth and extent handling.
 
+
 ### Viewshed
 
 ```python
@@ -228,6 +376,7 @@ height = terrio.viewshed("dem_utm.tif", 500000, 4400000, om="GROUND", cc=0)
 `om="NORMAL"` returns visibility; `DEM` and `GROUND` return minimum visible elevation
 or height above the DEM. `cc` is 1 minus refraction. See [viewshed](cli.md#viewshed) for
 units, curvature, radius cropping and input nodata behavior.
+
 
 ### Vector gridding and linear referencing
 
@@ -280,56 +429,6 @@ Missing/off-raster samples are retained as null values. Input paths cannot be us
 as the output. JavaScript hosts can serialize the GeoJSON result through a Dataset
 when they need file bytes; direct local file paths are a native API feature.
 
-### Vector datasets
-
-```python
-merged = terrio.concat(["countries.gpkg", "us_counties.gpkg"], "merged.gpkg", mode="single",
-                       source_layer_field_name="source", dst_crs="EPSG:3857")
-files = terrio.partition("counties.gpkg", "out", ["STATE"], feature_limit=1000)  # paths written
-typed = terrio.set_field_type("countries.gpkg", "Integer64", field_name="POP_EST")
-points = terrio.make_point("trace.csv", "longitude", "latitude", crs="EPSG:4326")  # a Layer
-schema = terrio.export_schema("countries.gpkg")  # the OGR_SCHEMA dict
-terrio.create_vector("empty.gpkg", schema=schema)
-terrio.create_vector("sites.gpkg", output_layer="sites", geometry_type="POINT", crs="EPSG:4326",
-                     fields=["name:STRING(80)", "visits:INTEGER"])
-```
-
-These are `terrio concat`, `partition`, `set-field-type`, `make-point`, `export-schema` and
-`create` (GDAL's `gdal vector` commands of the same names); sources are paths or vector data in
-memory (`VectorDataset`, `Layer`, lists of layers, GeoJSON). Conversion warnings are issued as
-`UserWarning`s. See [Vector datasets](cli.md#vector-datasets) for the options, GDAL's rules
-and the differences. Filesystem `partition` is unavailable in Pyodide;
-the remaining imported APIs remain available.
-
-#### Renaming and updating vector datasets
-
-`rename_layer`, `edit_vector` and `update_vector` accept the same vector sources as
-`concat`. They return a new `VectorDataset` for memory inputs. For local files,
-`rename_layer(path, in_place=True, ...)` and `edit_vector(path, in_place=True, ...)`
-change a GeoPackage; `update_vector(source, destination_path, ...)` updates an
-existing destination. Read-only files and active SQLite journals are refused.
-
-```python
-renamed = terrio.rename_layer(countries, ascii=True, lower_case=True)
-assigned = terrio.edit_vector(renamed, crs="EPSG:4326")
-updated = terrio.update_vector(changes, renamed, key=["name"], mode="merge")
-terrio.edit_vector("countries.gpkg", in_place=True, metadata=["SOURCE=survey"])
-```
-
-Rename options mirror the CLI: `input_layer`, `output_layer`, `ascii`, `lower_case`,
-`filename_compatible`, `reserved_characters`, `replacement_character`, `max_length`.
-Edit supports `active_layer`, `crs` (`"none"` removes it), `geometry_type`,
-`unset_fid`, dataset/layer `metadata` and `unset_metadata` lists. Metadata edits
-require file paths because the memory model does not retain dataset metadata.
-Assigning a CRS changes its declaration without transforming coordinates.
-Update supports `input_layer`, `output_layer`, `key` and `mode` (`merge`,
-`update-only`, `append-only`); missing layer selections in multilayer datasets fail.
-File edits materialize the dataset and require space for a neighboring temporary
-copy. See the CLI documentation for atomicity and metadata preservation limits.
-
-The vector dataset copy operations `concat`, `rename_layer` and `edit_vector` refuse an
-existing destination path. Choose a new output path; use `in_place=True` for supported
-GeoPackage edits.
 
 ### Pixel-wise operations
 
@@ -345,211 +444,6 @@ These follow GDAL's `gdal raster unscale`, `nodata-to-alpha`, `reclassify` and `
 see [unscale](cli.md#unscale), [nodata-to-alpha](cli.md#nodata-to-alpha),
 [reclassify](cli.md#reclassify) and [as-features](cli.md#as-features).
 
-## Analysis and topology
-
-`contour`, `footprint`, `zonal_stats`, `buffer`, `dissolve`, `make_valid`, `check_geometry`,
-`singlepart`, `clip_vector`, `layer_algebra`, `check_coverage`, `simplify_coverage`,
-`clean_coverage`, `blend`, `identify`, `check_dataset`, `pipeline`, `raster_tiles`, `retile`,
-`raster_index`, `vector_index` and `rpftoc_create` follow the matching
-[commands](cli.md); see `help(terrio.contour)` for each one's arguments. `list_layers(path)` and
-`write_raster(raster, path, ...)` are the plain I/O helpers.
-
-## File management
-
-```python
-terrio.vsi_list("s3://bucket/prefix", recursive=True)        # gdal vsi list
-terrio.vsi_list("/vsizip/data.zip", recursive=True, depth=2)
-terrio.vsi_copy("data", "s3://bucket/prefix", recursive=True)  # gdal vsi copy
-terrio.vsi_sync("data/", "s3://bucket/prefix", recursive=True, strategy="ETag")
-terrio.vsi_move("s3://bucket/old", "s3://bucket/new")
-terrio.vsi_delete("s3://bucket/prefix", recursive=True)
-terrio.vsi_write("/vsimem/a.txt", b"bytes"); terrio.vsi_read("/vsimem/a.txt")
-terrio.vsi_stat("gs://bucket/key")  # None when nothing is there
-```
-
-The `terrio vsi` commands as functions: entries are dictionaries (`name`, `type`, `size`,
-`modified` in seconds since the epoch, `last_modification_date`, `permissions`, `etag`), and the
-copy, sync, move and delete functions return a report (`copied`, `bytes`, `unchanged`,
-`deleted`, `errors`). `/vsimem/` files last as long as the process. Locations, semantics and the
-refusals of dangerous deletions are those of [vsi](cli.md#vsi).
-
-### Seek-optimized ZIP archives
-
-```python
-terrio.sozip_create(["roads.gpkg", "dem.tif"], "data.zip", junk_paths=True)
-terrio.sozip_list("data.zip")  # dictionaries with names, sizes and SOZip chunk sizes
-terrio.sozip_validate("data.zip")  # valid, sozip_files, messages, errors
-terrio.sozip_optimize("plain.zip", "seek.zip", enable="yes", chunk_size=65536)
-```
-
-The four functions share the [CLI options and limitations](cli.md#vsi-sozip).
-Creation and optimization return `added`, `seek_optimized` and `bytes` counts.
-Native outputs are replaced only after the entire operation succeeds.
-
-## COG validation
-
-```python
-ok, errors, warnings = terrio.validate_cog("dem.tif")  # rio_cogeo.cog_validate's result
-terrio.validate_cog("https://example.com/dem.tif", strict=True)  # warnings fail too
-```
-
-The checks and messages of `rio_cogeo.cogeo.cog_validate`, read from the file's structure without
-GDAL, for local files (a `str` or `os.PathLike`), URLs and S3 objects (range requests). See
-[Rust](rust.md#reading-windows-lazily).
-
-## Typing
-
-The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:
-
-```sh
-cd python && mypy --strict tests/typing/usage.py
-cd "$(mktemp -d)" && python -m mypy.stubtest terrio  # outside the source tree
-```
-
-Errors raise `terrio.TerrioError` subclasses, which also derive from the matching built-in
-exceptions: `NotFoundError` is a `FileNotFoundError`, `TerrioIOError` an `OSError`, and
-`InvalidArgumentError`, `CRSError`, `UnsupportedError` and `InvalidDataError` are `ValueError`s.
-`ResourceLimitError` is a `MemoryError`: reading exceeded a resource budget or available
-allocation capacity, including decoded-byte limits.
-
-## Building from source
-
-```sh
-cd python
-uv venv && uv pip install maturin numpy pytest
-uv run maturin develop --release
-uv run pytest
-```
-
-## Warp source overviews
-
-```python
-lazy = terrio.open_raster("large-cog.tif", lazy=True)
-preview = terrio.warp(lazy, ts=(256, 256))  # AUTO by default
-finer = terrio.warp(lazy, ts=(256, 256), overview="AUTO-1")
-full = terrio.warp(lazy, ts=(256, 256), overview="NONE")
-level = terrio.warp(lazy, overview=1)       # levels start at 0
-```
-
-Paths, lazy `Raster` objects, and mixed/repeated inputs in mosaics retain their
-stored overviews. Selection precedes pixel reads and does not alter the output grid
-computed from the original metadata. Only the source resolution changes. Loaded rasters
-have no stored overviews: a requested numeric level warns and uses full resolution.
-Calls with loaded inputs reuse their existing pixels, including repeated references.
-File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
-
-## SQL queries
-
-`terrio.sql(src, query, layers=None)` returns a `Layer`. Inputs may be a vector path,
-`VectorDataset`, `Layer`, list of layers, or GeoJSON. It implements the shared
-[OGR SQL subset](sql.md), including computed columns, DISTINCT, summaries and attribute joins.
-
-```python
-result = terrio.sql("countries.gpkg", "SELECT ADMIN, POP_EST/1000000.0 AS millions FROM countries")
-summary = terrio.sql("countries.gpkg", "SELECT COUNT(*) AS n, SUM(POP_EST) AS population FROM countries")
-```
-
-Raw GeoJSON inputs use the layer name `layer`; use `Layer.from_geojson(..., name=...)`
-(Python) or `fromGeoJSON(src, name)` (JavaScript) to assign another name.
-
-## Vector geometry operations
-
-`simplify`, `segmentize`, `convex_hull`, `concave_hull`, `swap_xy`, `set_geom_type`, `combine`
-and `sort` run the [vector geometry commands](cli.md#vector-geometry-commands) (GDAL 3.13's
-`gdal vector` commands of those names) and return a `Layer`. Inputs may be a vector path,
-`VectorDataset`, `Layer`, list of layers, or GeoJSON, with a single layer, or the one `layer=`
-names. `convert(..., simplify=TOLERANCE)` and `convert(..., segmentize=MAX_LENGTH)` are
-`ogr2ogr`'s `-simplify` and `-segmentize`.
-
-```python
-groups = terrio.combine("places.gpkg", group_by=["adm0_a3"])
-hulls = terrio.concave_hull(groups, 0.3, allow_holes=True)
-simple = terrio.simplify("counties.gpkg", 0.01)
-dense = terrio.segmentize(simple, 0.1)
-multi = terrio.set_geom_type("roads.gpkg", multi=True, dim="XYZ")
-ordered = terrio.sort(multi, method="strtree")
-```
-
-## Geolocation-array warping
-
-`terrio.warp(path, geoloc=True, t_srs="EPSG:4326")` requires the longitude/latitude arrays
-already exposed by netCDF/HDF-EOS drivers. Arrays are also used automatically when present.
-For coordinate rasters held separately or in memory, supply the first source's arrays directly:
-
-```python
-out = terrio.warp(source, t_srs="EPSG:4326", geolocation={
-    "x": longitude_raster, "y": latitude_raster,
-    "pixel_step": 2, "line_step": 2, "pixel_center": True,
-})
-```
-
-`x` and `y` each accept a raster or a path. `x_band` and `y_band` select their 1-based
-coordinate bands (default 1). Optional `srs` defaults to EPSG:4326;
-`pixel_offset`/`line_offset` default to 0 and steps to 1. The center shift is half an array
-step. Invalid coordinate cells remain empty. See [CLI warping](cli.md#warp) for the supported
-subset and comparison behavior at swath boundaries.
-
-## Fill nodata
-
-```python
-filled = terrio.fill_nodata("dem.tif", "filled.tif", max_distance=100,
-                           smoothing_iterations=1)
-nearest = terrio.fill_nodata("image.tif", band=2, mask="validity.tif",
-                            interpolation="nearest")
-```
-
-Inputs and masks may also be `terrio.Raster` objects. The result is a new, single-band
-raster, retaining the selected band's type, nodata and georeferencing. The mask is zero
-at holes and nonzero at donors; without it, the source mask or nodata defines holes.
-Distances are in pixels; zero searches the whole image. Smoothing affects only filled
-pixels and preserves the first/last rows. Valid source samples remain unchanged.
-
-## Native multidimensional arrays
-
-See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
-lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
-
-## Indexed raster catalogs
-
-```python
-catalog = terrio.open_catalog("tiles.gti.gpkg", cache_size=16, sort_field="priority")
-window = catalog.read(1, window=(100, 200, 256, 256))
-```
-
-Catalogs select features through the GeoPackage/FlatGeobuf spatial index and cache a bounded
-number of source datasets. `terrio.open_raster("GTI:tiles.gpkg", lazy=True)` also works with
-catalog defaults. For in-memory indexes and named source rasters:
-
-```python
-catalog = terrio.open_catalog(index_layer, {"left.tif": left, "right.tif": right},
-                             tr=(30, 30), sort_field="priority", cache_size=16)
-```
-
-The source mapping accepts `Raster` objects and paths, including `PathLike` values. Paths
-are opened only when selected and close on cache eviction. Supplied lazy rasters retain their
-window/overview reads; loaded buffers and existing readers remain shared with the caller.
-Replacing or deleting the original Python object does not replace the catalog's handle.
-
-Options include `layer`, `location_field`, `sort_field`, `sort_descending`, `tr`, `te`, `srs`,
-`bands`, `ot`, `nodata`, `alpha_band`, `cache_size` and `resampling`. Missing grid characteristics
-come from index metadata or one tile header. Dataset masks, source nodata and zero alpha are
-transparent. See [CLI catalogs](cli.md#catalog) for the supported GTI subset.
-
-## Serialized VRTs and uploaded sources
-
-```python
-virtual = terrio.warp("dem.tif", "projected.vrt", t_srs="EPSG:3857", ts=(512, 512))
-window = virtual.read(1, window=(32, 48, 128, 128))
-uploaded = terrio.open_vrt(xml, {"dem.tif": image_bytes})
-```
-
-`open_vrt` accepts source names mapped to file bytes, paths or `PathLike` objects;
-source windows remain lazy. `open_raster(path, lazy=True)` also opens VRT files
-lazily. The [serialized VRT support](cli.md#serialized-virtual-rasters) lists the
-supported transformers, built-in functions, kernels and masks.
-
-VSI listing bindings return structured flat entries. Nested tree presentation (`--tree`)
-is currently available through the CLI; JSON serialization flags apply to CLI output.
 
 ### Raster management
 
@@ -589,43 +483,6 @@ blocks need not be checked once the file is already invalid.
 The GDAL profile limits total parsed GDAL metadata to 4 MiB per file and XML nesting
 to 128 levels. The default rio-cogeo profile ignores this metadata tag.
 
-### GeoPackage maintenance
-
-`gpkg_repack(path)` compacts a native or `/vsimem/` GeoPackage in place and returns
-`bytes_before`, `bytes_after`, `page_size`, `pages_before` and `pages_after`.
-`gpkg_repack_bytes(data)` returns a compacted `bytes` copy of a self-contained GeoPackage,
-leaving the input unchanged. Both preserve encoded table/index records and schema SQL.
-See [supported scope and storage safety](cli.md#geopackage-repacking).
-
-### Multidimensional mosaics
-
-`terrio.mosaic_multidim(sources, dst=None, *, arrays=None)` builds a lazy
-coordinate-aligned mosaic. Each source can be a `MultidimDataset`, a scientific
-path/bytes, or a Zarr key/value dictionary. Read coordinate-aligned views through
-`output.array(name)`, or write a new netCDF/Zarr snapshot with `dst` or `write`.
-Source handles stay alive through the mosaic. See
-[Multidimensional mosaics](cli.md#multidimensional-mosaics) for alignment,
-priority, type preservation and supported scope.
-
-## Dataset file management
-
-`terrio.dataset_files(source, *, format=None)` returns the driver, owned files and a
-`directory` flag. `dataset_copy(source, destination, *, format=None, overwrite=False, allow_external_references=False)`
-and `dataset_rename(source, destination, *, format=None, overwrite=False, allow_external_references=False)` manage the complete file set and return affected paths
-and copied bytes. Paths may be strings or `os.PathLike` values, including VSI paths.
-`dataset_delete(sources, *, format=None)` preflights all inputs and returns a
-list of reports. VRT references stay in the source directory tree by default;
-`allow_external_references=True` permits trusted external assets. Deleting a VRT
-preserves referenced rasters. Reports include `recovery_files`: a nonempty list
-means the operation committed but cleanup left staged files. I/O releases the GIL.
-See the CLI file-management section for staging, rollback, overwrite and format rules.
-
-`parquet_create_metadata(inputs, output, *, overwrite=False)` accepts a sequence of string
-or pathlib partition paths and returns a dictionary containing `files`, `row_groups`,
-`rows`, `bytes` and `omitted_metadata_keys`. It writes a metadata-only file with relative
-partition references, merged GeoParquet bounds/types and regenerated Arrow schema metadata.
-Inputs, including referenced column files, are protected from overwrite. Schemas and CRS
-must agree; data pages are not validated. See [CLI supported scope](cli.md#parquet-metadata-files).
 
 ### Indexed color conversion
 
@@ -651,6 +508,154 @@ since that streaming path supports alpha bands rather than separate masks.
 Normal raster writes materialize the full raster and its mask; remote inputs
 therefore fetch the selected image blocks and mask blocks.
 
+
+### Serialized VRTs and uploaded sources
+
+```python
+virtual = terrio.warp("dem.tif", "projected.vrt", t_srs="EPSG:3857", ts=(512, 512))
+window = virtual.read(1, window=(32, 48, 128, 128))
+uploaded = terrio.open_vrt(xml, {"dem.tif": image_bytes})
+```
+
+`open_vrt` accepts source names mapped to file bytes, paths or `PathLike` objects;
+source windows remain lazy. `open_raster(path, lazy=True)` also opens VRT files
+lazily. The [serialized VRT support](cli.md#serialized-virtual-rasters) lists the
+supported transformers, built-in functions, kernels and masks.
+
+
+## Analysis and topology
+
+`contour`, `footprint`, `zonal_stats`, `buffer`, `dissolve`, `make_valid`, `check_geometry`,
+`singlepart`, `clip_vector`, `layer_algebra`, `check_coverage`, `simplify_coverage`,
+`clean_coverage`, `blend`, `identify`, `check_dataset`, `pipeline`, `raster_tiles`, `retile`,
+`raster_index`, `vector_index` and `rpftoc_create` follow the matching
+[commands](cli.md); see `help(terrio.contour)` for each one's arguments. `list_layers(path)` and
+`write_raster(raster, path, ...)` are the plain I/O helpers.
+
+
+## Native multidimensional arrays
+
+See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
+lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
+
+
+### Multidimensional mosaics
+
+`terrio.mosaic_multidim(sources, dst=None, *, arrays=None)` builds a lazy
+coordinate-aligned mosaic. Each source can be a `MultidimDataset`, a scientific
+path/bytes, or a Zarr key/value dictionary. Read coordinate-aligned views through
+`output.array(name)`, or write a new netCDF/Zarr snapshot with `dst` or `write`.
+Source handles stay alive through the mosaic. See
+[Multidimensional mosaics](cli.md#multidimensional-mosaics) for alignment,
+priority, type preservation and supported scope.
+
+
+## Indexed raster catalogs
+
+```python
+catalog = terrio.open_catalog("tiles.gti.gpkg", cache_size=16, sort_field="priority")
+window = catalog.read(1, window=(100, 200, 256, 256))
+```
+
+Catalogs select features through the GeoPackage/FlatGeobuf spatial index and cache a bounded
+number of source datasets. `terrio.open_raster("GTI:tiles.gpkg", lazy=True)` also works with
+catalog defaults. For in-memory indexes and named source rasters:
+
+```python
+catalog = terrio.open_catalog(index_layer, {"left.tif": left, "right.tif": right},
+                             tr=(30, 30), sort_field="priority", cache_size=16)
+```
+
+The source mapping accepts `Raster` objects and paths, including `PathLike` values. Paths
+are opened only when selected and close on cache eviction. Supplied lazy rasters retain their
+window/overview reads; loaded buffers and existing readers remain shared with the caller.
+Replacing or deleting the original Python object does not replace the catalog's handle.
+
+Options include `layer`, `location_field`, `sort_field`, `sort_descending`, `tr`, `te`, `srs`,
+`bands`, `ot`, `nodata`, `alpha_band`, `cache_size` and `resampling`. Missing grid characteristics
+come from index metadata or one tile header. Dataset masks, source nodata and zero alpha are
+transparent. See [CLI catalogs](cli.md#catalog) for the supported GTI subset.
+
+
+## File management
+
+```python
+terrio.vsi_list("s3://bucket/prefix", recursive=True)        # gdal vsi list
+terrio.vsi_list("/vsizip/data.zip", recursive=True, depth=2)
+terrio.vsi_copy("data", "s3://bucket/prefix", recursive=True)  # gdal vsi copy
+terrio.vsi_sync("data/", "s3://bucket/prefix", recursive=True, strategy="ETag")
+terrio.vsi_move("s3://bucket/old", "s3://bucket/new")
+terrio.vsi_delete("s3://bucket/prefix", recursive=True)
+terrio.vsi_write("/vsimem/a.txt", b"bytes"); terrio.vsi_read("/vsimem/a.txt")
+terrio.vsi_stat("gs://bucket/key")  # None when nothing is there
+```
+
+The `terrio vsi` commands as functions: entries are dictionaries (`name`, `type`, `size`,
+`modified` in seconds since the epoch, `last_modification_date`, `permissions`, `etag`), and the
+copy, sync, move and delete functions return a report (`copied`, `bytes`, `unchanged`,
+`deleted`, `errors`). `/vsimem/` files last as long as the process. Locations, semantics and the
+refusals of dangerous deletions are those of [vsi](cli.md#vsi).
+
+
+VSI listing bindings return structured flat entries. Nested tree presentation (`--tree`)
+is currently available through the CLI; JSON serialization flags apply to CLI output.
+
+### Seek-optimized ZIP archives
+
+```python
+terrio.sozip_create(["roads.gpkg", "dem.tif"], "data.zip", junk_paths=True)
+terrio.sozip_list("data.zip")  # dictionaries with names, sizes and SOZip chunk sizes
+terrio.sozip_validate("data.zip")  # valid, sozip_files, messages, errors
+terrio.sozip_optimize("plain.zip", "seek.zip", enable="yes", chunk_size=65536)
+```
+
+The four functions share the [CLI options and limitations](cli.md#vsi-sozip).
+Creation and optimization return `added`, `seek_optimized` and `bytes` counts.
+Native outputs are replaced only after the entire operation succeeds.
+
+
+### Dataset file management
+
+`terrio.dataset_files(source, *, format=None)` returns the driver, owned files and a
+`directory` flag. `dataset_copy(source, destination, *, format=None, overwrite=False, allow_external_references=False)`
+and `dataset_rename(source, destination, *, format=None, overwrite=False, allow_external_references=False)` manage the complete file set and return affected paths
+and copied bytes. Paths may be strings or `os.PathLike` values, including VSI paths.
+`dataset_delete(sources, *, format=None)` preflights all inputs and returns a
+list of reports. VRT references stay in the source directory tree by default;
+`allow_external_references=True` permits trusted external assets. Deleting a VRT
+preserves referenced rasters. Reports include `recovery_files`: a nonempty list
+means the operation committed but cleanup left staged files. I/O releases the GIL.
+See the CLI file-management section for staging, rollback, overwrite and format rules.
+
+`parquet_create_metadata(inputs, output, *, overwrite=False)` accepts a sequence of string
+or pathlib partition paths and returns a dictionary containing `files`, `row_groups`,
+`rows`, `bytes` and `omitted_metadata_keys`. It writes a metadata-only file with relative
+partition references, merged GeoParquet bounds/types and regenerated Arrow schema metadata.
+Inputs, including referenced column files, are protected from overwrite. Schemas and CRS
+must agree; data pages are not validated. See [CLI supported scope](cli.md#parquet-metadata-files).
+
+
+### GeoPackage maintenance
+
+`gpkg_repack(path)` compacts a native or `/vsimem/` GeoPackage in place and returns
+`bytes_before`, `bytes_after`, `page_size`, `pages_before` and `pages_after`.
+`gpkg_repack_bytes(data)` returns a compacted `bytes` copy of a self-contained GeoPackage,
+leaving the input unchanged. Both preserve encoded table/index records and schema SQL.
+See [supported scope and storage safety](cli.md#geopackage-repacking).
+
+
+## COG validation
+
+```python
+ok, errors, warnings = terrio.validate_cog("dem.tif")  # rio_cogeo.cog_validate's result
+terrio.validate_cog("https://example.com/dem.tif", strict=True)  # warnings fail too
+```
+
+The checks and messages of `rio_cogeo.cogeo.cog_validate`, read from the file's structure without
+GDAL, for local files (a `str` or `os.PathLike`), URLs and S3 objects (range requests). See
+[Rust](rust.md#reading-windows-lazily).
+
+
 ## GeoPackage validation
 
 ```python
@@ -663,3 +668,63 @@ Returns a dictionary with `valid`, `complete`, `version`, `errors`, `warnings` a
 `unsupported_checks`. Paths accept native or `/vsimem/` files; uploaded bytes are
 also supported. The [CLI reference](cli.md#geopackage-validation) documents the
 supported rules, SQL subset, case options, memory use and checkpoint requirement.
+
+
+## Runtime configuration
+
+Configuration options are environment variables, process-wide, or scoped with
+`terrio.rio.Env`. These functions inspect and limit what a process reads:
+
+```python
+from terrio.rio import Env
+
+with Env(GDAL_HTTP_TIMEOUT="30"):
+    terrio.config_options()  # {"GDAL_HTTP_TIMEOUT": "30"}: what this thread's scopes set
+
+# Options for the files under one prefix, as GDAL's VSISetPathSpecificOption.
+terrio.set_path_specific_option("/vsis3/my-bucket/", "AWS_REGION", "us-west-2")
+terrio.get_path_specific_option("/vsis3/my-bucket/a.tif", "AWS_REGION")  # "us-west-2"
+terrio.clear_path_specific_options()
+
+# Count what remote reads transfer, in total and by host and file.
+terrio.reset_network_stats()
+terrio.info("https://example.com/cog.tif")
+terrio.network_stats()  # {"request_count": 1, "received_bytes": 16384, "hosts": {...}, ...}
+terrio.clear_http_cache()
+
+# Limit the drivers this process may open, for files you do not trust.
+terrio.identify_drivers("data.gpkg")  # (["GPKG"], "GPKG"): by name, by content
+terrio.check_drivers("data.gpkg", ["GPKG"])  # raises UnsupportedError for another driver
+terrio.set_allowed_drivers(["GTiff"], kind="raster")
+terrio.allowed_drivers("raster")  # ["GTIFF"]
+```
+
+`set_allowed_drivers` lasts for the process: later calls narrow the list, and lifting it with
+`None` raises `InvalidArgumentError`. `GDAL_HTTP_HEADERS` set for a prefix is sent only to that
+prefix, never to another host a redirect leads to. See [Remote Data](remote-data.md) for the
+options themselves.
+
+## Typing
+
+The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:
+
+```sh
+cd python && mypy --strict tests/typing/usage.py
+cd "$(mktemp -d)" && python -m mypy.stubtest terrio  # outside the source tree
+```
+
+Errors raise `terrio.TerrioError` subclasses, which also derive from the matching built-in
+exceptions: `NotFoundError` is a `FileNotFoundError`, `TerrioIOError` an `OSError`, and
+`InvalidArgumentError`, `CRSError`, `UnsupportedError` and `InvalidDataError` are `ValueError`s.
+`ResourceLimitError` is a `MemoryError`: reading exceeded a resource budget or available
+allocation capacity, including decoded-byte limits.
+
+
+## Building from source
+
+```sh
+cd python
+uv venv && uv pip install maturin numpy pytest
+uv run maturin develop --release
+uv run pytest
+```

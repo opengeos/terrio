@@ -27,6 +27,21 @@ terrio's commands map onto GDAL's utilities, with GDAL's option names in kebab c
 | `gdallocationinfo` | `terrio pixel-info` |
 | `gdal2xyz.py` | `terrio xyz` |
 | `nearblack` | `terrio nearblack` |
+| `gdal_edit.py` | `terrio edit-raster` |
+| `gdal_footprint` | `terrio footprint` |
+| `gdal_pansharpen.py` | `terrio pansharpen` |
+| `gdal_retile.py` | `terrio retile` |
+| `gdal2tiles.py` | `terrio tile` |
+| `gdalcompare.py` | `terrio compare` |
+| `gdalenhance` | `terrio enhance` |
+| `gdaltindex` | `terrio raster-index` |
+| `ogrtindex` | `terrio vector-index` |
+| `rgb2pct.py`, `pct2rgb.py`, `gdalattachpct.py` | `terrio rgb-to-palette`, `palette-to-rgb`, `attach-palette` |
+| `gdalmdiminfo` | `terrio mdinfo` |
+| `gdalmanage` | `terrio dataset-files`, `dataset-copy`, `dataset-rename`, `dataset-delete` |
+| `ogrlineref` | `terrio lineref` |
+| `ogrmerge.py` | `terrio concat` |
+| `ogr_layer_algebra.py` | `terrio layer-algebra` |
 
 ## Options
 
@@ -53,13 +68,14 @@ terrio's commands map onto GDAL's utilities, with GDAL's option names in kebab c
 ## Paths
 
 GDAL's virtual file system prefixes work as they are: `/vsicurl/`, `/vsis3/`, `/vsigs/`,
-`/vsiaz/` and `/vsizip/`, nested or not. `s3://`, `gs://` and `az://` URLs work too. Remote outputs
-are not supported.
+`/vsiaz/` and `/vsizip/`, nested or not. `s3://`, `gs://` and `az://` URLs work too. Commands write
+their outputs locally; [`terrio vsi`](cli.md#vsi) copies files to S3 or Azure.
 
 ## Differences to know
 
-- terrio reads most raster formats whole into memory. GeoTIFF/COG and JPEG 2000 are read by
-  window, Zarr by chunk, and large vector layers and point clouds as streams. See
+- terrio reads most raster formats whole into memory. GeoTIFF/COG, JPEG 2000, tile archives
+  (PMTiles, MBTiles), GRIB and raw-layout rasters are read by window, Zarr by chunk, and large
+  vector layers and point clouds as streams. See
   [Formats](formats.md).
 - Downsampling with `translate` reads full resolution, where GDAL may use overviews. `warp` chooses
   an overview as GDAL does (`--overview AUTO`, the default).

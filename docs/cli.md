@@ -303,7 +303,7 @@ terrio pixel-info --position-dataset sites.gpkg dem.tif -o values.gpkg
 ```
 
 Pixel values at positions, as `gdal raster pixel-info` and `gdallocationinfo` (`locationinfo`
-is an alias). Positions are pairs of arguments (`X Y` or `X,Y`), `-p X,Y`, lines of standard
+is an alias). Positions are pairs of arguments (`X Y` or `X,Y`), `-p X,Y` (`--position`), lines of standard
 input (an `X Y` pair, then any text, reported as extra content; GDAL's tokenizing, quotes
 kept together) or the points of a vector dataset with `--position-dataset` (GDAL 3.13; centroids
 of other geometries, `-l` for the layer, `--include-field NAME|ALL|NONE`). `--position-crs` is
@@ -1196,7 +1196,14 @@ terrio update-raster replacement.tif filled.tif --resampling bilinear
 terrio overviews filled.tif --clean
 ```
 
-Overview methods are nearest, average, min, max and mode. Existing unrequested
+`edit-raster` also sets the georeferencing with `--crs`, `--bbox`, `--geotransform` (six
+comma-separated values, GDAL's `-a_gt`) or a repeatable `--gcp pixel,line,x,y[,z]`, and removes
+values with `--unset-nodata`, `--unset-metadata KEY` (repeatable), `--unset-all-metadata`
+(`-unsetmd`) and `--unset-stats`. `--approx-stats` stores statistics computed from an overview or
+sampled blocks rather than every pixel, and `--hist` stores histograms.
+
+Overview methods are nearest, average, min, max and mode. Without factors or `--levels`, automatic
+levels stop at the first overview that fits in `--min-size` pixels (256). Existing unrequested
 levels are retained. `--external` manages the supplied filename's `.ovr` sidecar,
 including when that filename is a symlink. Explicit compression applies to
 requested rebuilt levels. Updates retain destination pixels outside valid source
@@ -1349,7 +1356,10 @@ omits the suffix. `--source-layer-name` and zero-based `--source-layer-index` ar
 repeatable and select their union across all inputs without renumbering layers.
 A selector absent from one input is allowed; absence from every input is an error. Different
 vector schemas/CRSs are skipped with warnings unless accepted with the corresponding
-flags; an explicit `--output-crs` reprojects corners. Empty vector layers are skipped.
+flags (`--accept-different-schemas`, `--accept-different-crs`); an explicit `--output-crs`
+reprojects corners. Empty vector layers are skipped. `--min-pixel-size` and `--max-pixel-size` on
+`raster-index` and `gti-create` skip sources whose pixel size, `sqrt(envelope area / pixel count)`
+in index coordinates, falls outside the range.
 
 Inputs can be files, local directories, explicitly slash-terminated VSI directories,
 or `@FILE` lists. Directory scanning supports `--recursive` and repeatable case-sensitive
@@ -1434,7 +1444,8 @@ longitude/latitude with two columns at zoom zero, and `--tiling-scheme raster`
 retains a north-up source grid. `--convention tms` reverses filename rows while
 retaining the same pixel grids. `--tile-size`, `--min-zoom`, `--max-zoom` and
 `--min-x/--max-x/--min-y/--max-y` restrict generation. Coordinate restrictions
-use top-origin coordinates at the maximum zoom, including with TMS filenames.
+use top-origin coordinates at the maximum zoom, including with TMS filenames. Restrictions that do
+not intersect the input are an error unless `--no-intersection-ok` allows an empty result.
 
 ```sh
 terrio tile rgb.tif tiles --min-zoom 5 --max-zoom 8 --resampling nearest
@@ -1814,7 +1825,7 @@ terrio reclassify dem.tif zones.tif -m "NO_DATA=0;[0,1500)=1;[1500,inf)=2" --ot 
 terrio reclassify nlcd.tif groups.tif -m @mapping.txt
 ```
 
-As `gdal raster reclassify`, with GDAL's mapping syntax: `from=to` entries separated by `;`.
+As `gdal raster reclassify`, with GDAL's mapping syntax in `-m`/`--mapping`: `from=to` entries separated by `;`.
 `from` is a value, an interval (`[a,b)`, `(a,b]`, `(-inf,b]`, `[a,inf)`...), `NO_DATA` (the
 band's nodata value), `NAN` or `DEFAULT` (any other value); `to` is a value, `NO_DATA` or
 `PASS_THROUGH` (the value unchanged). Intervals must not overlap. `@file` reads one entry per
@@ -2030,7 +2041,7 @@ terrio pansharpen pan.tif rgbnir.tif rgb.tif --band 1 --band 2 --band 3 --bitdep
 ```
 
 GDAL-compatible weighted Brovey: `spectral * pan / sum(weight * spectral)` at the pan
-resolution. Inputs must have the same CRS (or all omit it) and north-up geotransforms. Spectral inputs may
+resolution. `--pan-band` picks the panchromatic file's band (1). Inputs must have the same CRS (or all omit it) and north-up geotransforms. Spectral inputs may
 be multiband files or `PATH,band=N`; `--band` selects/reorders outputs in their flattened
 input order. Every spectral input contributes intensity, including unselected output bands.
 Weights default to equal weights and are used as provided, without normalization.
@@ -2077,9 +2088,9 @@ terrio dem MODE INPUT [COLOR_FILE] OUTPUT [options]
 
 `MODE` is `hillshade`, `slope`, `aspect`, `color-relief` (which takes a color file), `TRI`, `TPI`
 or `roughness`. Options: `-b`, `--compute-edges`, `--alg Horn|ZevenbergenThorne` (hillshade,
-slope, aspect) or `--alg Riley|Wilson` (TRI); for hillshade `-z`, `-s` (`111120` for a geographic
+slope, aspect) or `--alg Riley|Wilson` (TRI); for hillshade `-z`/`--z-factor`, `-s` (`111120` for a geographic
 DEM in metres), `--xscale`/`--yscale`, `--az`, `--alt`, `--combined`, `--multidirectional`,
-`--igor`; `-p` (slope in percent); `--trigonometric`, `--zero-for-flat` (aspect); `--alpha`,
+`--igor`; `-p`/`--percent` (slope in percent); `--trigonometric`, `--zero-for-flat` (aspect); `--alpha`,
 `--exact-color-entry`, `--nearest-color-entry` (color relief). Without `-s`, geographic DEMs are
 scaled from the ellipsoid at their centre latitude, as `gdaldem` does since GDAL 3.11. Color files
 are GDAL's: `value R G B [A]` or `value colorname [A]`, where the value may be `nv` (the nodata
@@ -2260,7 +2271,7 @@ as GDAL's NumPy conversion does.
 ```sh
 terrio sample sites.gpkg samples.gpkg --raster dem.tif --raster rain.tif
 terrio sample sites.gpkg samples.gpkg --raster image.tif --band 1,2,3 --prefix image
-terrio point-sample sites.gpkg samples.gpkg --raster dem.tif --raster rain.tif \
+terrio sample sites.gpkg samples.gpkg --raster dem.tif --raster rain.tif \
   --t-srs EPSG:3857 --decimal-places 2
 ```
 
@@ -2504,7 +2515,8 @@ terrio edit data.gpkg edited.gpkg --active-layer roads --geometry-type LINESTRIN
 ```
 
 Assigns CRS without reprojecting, changes declared geometry type (including Z/M), or
-sets/removes dataset and layer metadata. Metadata edits and Z/M declarations require
+sets/removes dataset and layer metadata (`--metadata`, `--unset-metadata`, `--layer-metadata`,
+`--unset-layer-metadata`, each repeatable). Metadata edits and Z/M declarations require
 GeoPackage outputs; other output formats reject those options. `--active-layer` selects one
 layer, matching exact names first and otherwise ignoring ASCII case. Default CRS and
 geometry edits skip attribute-only tables. `--crs none` removes a CRS. `--unset-fid`
