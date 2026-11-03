@@ -59,7 +59,6 @@ opens in about 6 seconds in Node.js. Written with a nodata value, a JPEG 2000 co
 archive of the `.jp2` file and the `.aux.xml` sidecar that holds the value, as GDAL writes it;
 `open` reads that archive back.
 
-
 ## A smaller download: `terrio-js/core`
 
 The package holds two WebAssembly modules with the same API. `terrio-js` has every format above;
@@ -88,7 +87,6 @@ is passed only to the functions of its own module.
 
 Both modules are built for size: whole-program LTO, the codecs optimized for speed and the rest
 for size, and wasm-opt -Oz. The full module's sizes are in the table above.
-
 
 ## Threads: `terrio-js/load` and `terrio-js/threads`
 
@@ -123,7 +121,6 @@ Work on vector features (parsing and writing GeoJSON, FlatGeobuf, GeoPackage...)
 calling thread in WebAssembly: its many small allocations contend on WebAssembly's allocator, one
 lock for all threads, and ran several times slower on more threads.
 
-
 ## Datasets larger than 4 GB: `terrio-js/memory64`
 
 WebAssembly modules have 32-bit memories, at most 4 GB. The `terrio-js/memory64` module (every
@@ -157,7 +154,6 @@ them (`target_arch = "wasm32"` read as `target_family = "wasm"`): `tar`, which w
 on, acadrust and `arrow-buffer`; getrandom, which seeds ahash's hash maps, has no wasm64 backend
 and is given one (`crypto.getRandomValues`).
 
-
 ## Operations
 
 `translate(src, options)`, `warp(src, options)`, `mosaic(srcs, options)`, `rasterize(src, options)`,
@@ -169,7 +165,6 @@ camelCase options. So do `zonalStats`, `makeValid`, `checkGeometry`, `clipVector
 `checkCoverage`, `simplifyCoverage`, `cleanCoverage`, `blend`, `identify`, `checkDataset`,
 `pipeline`, `retile`, `planRetile`, `rasterIndex`, `vectorIndex`, `rpftocCreate` and `vsiStat`.
 `takeWarnings` returns the warnings collected so far.
-
 
 ### Raster management
 
@@ -193,7 +188,6 @@ so compute a template's extent from its geotransform. `createRaster` returns an
 in-memory dataset, so the file-only `copyOverviews` option of the CLI and Python
 is unavailable; add overviews to the encoded bytes with `addOverviews`.
 
-
 ### Separate raster tiles
 
 `planRasterTiles(src, options)` returns the grid and tile count without reading
@@ -206,7 +200,6 @@ metadata-based rendering options. `rasterTiles(src, options, callback)` sends ea
 `outputNodata`, `skipBlank` and `maxTiles`. The caller stores the emitted bytes.
 See the [CLI tiling reference](cli.md#separate-file-raster-tiles) for supported output
 and transparency policies.
-
 
 ### Indexed color conversion
 
@@ -230,7 +223,6 @@ or `{bytes, filename: "colors.txt"}`. Plain strings and `{text, filename}` also
 accept text tables. Tile-archive serialization rejects any raster with a
 dataset mask, including materialized palette results; use an explicit alpha band.
 
-
 ### Pansharpening
 
 ```javascript
@@ -245,7 +237,6 @@ const window = virtual.readBand(1, [100, 200, 64, 64]);
 Inputs can be datasets or raster bytes. All spectral inputs contribute to intensity;
 `bands` selects/reorders output bands. See [pansharpen](cli.md#pansharpen) for working
 types, interpolation, nodata, bit depth and extent handling.
-
 
 ### Focal statistics, collars and enhancement
 
@@ -267,7 +258,6 @@ These are `terrio neighbors`, `clean-collar`, `nearblack` and `enhance` (see
 and an input's mask is not kept (use `addAlpha`). There is no in-place update; LUT files are
 passed and returned as text.
 
-
 ### Viewshed
 
 ```javascript
@@ -278,7 +268,6 @@ const height = terrio.viewshed(dem, 500000, 4400000, { om: "GROUND", cc: 0 });
 The input can be a dataset or raster bytes. `om` selects NORMAL visibility, DEM minimum
 visible elevation, or GROUND minimum height above the DEM. `cc` is 1 minus refraction.
 See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
-
 
 ### Vector gridding and linear referencing
 
@@ -299,7 +288,6 @@ Linear reference lookups accept `{layer: "parts"}` to select a source layer.
 
 Reuse a Dataset, such as `terrio.open(bytes, "parts.gpkg")`, for repeated lookups; serialized
 bytes and GeoJSON are parsed on each call.
-
 
 ### Compare, pixel info and XYZ
 
@@ -326,7 +314,6 @@ separator between band values. For vector file bytes, pass the GeoJSON result to
 XYZ exports. Native Rust XYZ writers stream the output. Byte-based `compare` copies each
 input once and reuses that buffer for binary comparison and lazy reads.
 
-
 ### Pixel-wise operations
 
 ```javascript
@@ -347,7 +334,6 @@ For `nodataToAlpha`, non-finite overrides use the strings `"nan"`, `"inf"` or `"
 (as a scalar or in the nodata array). Raw JavaScript non-finite numbers and explicit null
 are rejected before JSON serialization, so they cannot silently become a default override.
 
-
 ### Geolocation-array warping
 
 Pass longitude and latitude rasters explicitly when array datasets cannot be reopened from
@@ -367,7 +353,6 @@ the explicit `geolocation` option supplies arrays for the first source. The oper
 pure Rust in full and core WASM builds. See [CLI warping](cli.md#warp) for invalid coordinates,
 antimeridian handling and boundary differences from GDAL.
 
-
 ## Vector datasets
 
 ```js
@@ -385,7 +370,6 @@ parts' relative paths and bytes, and `createVector` the bytes of the dataset, ra
 writing files. `exportSchema` describes the layers read (GeoPackage column declarations are
 read only from files, by the command line, Python and Rust). See
 [Vector datasets](cli.md#vector-datasets) for the options and GDAL's rules.
-
 
 ### Renaming and updating vector datasets
 
@@ -407,7 +391,6 @@ native path API because the memory model does not retain dataset metadata.
 Update accepts `inputLayer`, `outputLayer`, `key`, `mode` (`merge`, `update-only`,
 `append-only`); it matches feature IDs when `key` is omitted.
 
-
 ### SQL queries
 
 `sql(src, query)` returns a `Dataset` using the shared [OGR SQL subset](sql.md).
@@ -420,7 +403,6 @@ const summary = sql(countries, "SELECT COUNT(*) AS n, SUM(POP_EST) AS population
 
 Raw GeoJSON inputs use the layer name `layer`; use `Layer.from_geojson(..., name=...)`
 (Python) or `fromGeoJSON(src, name)` (JavaScript) to assign another name.
-
 
 ### Vector geometry operations
 
@@ -437,12 +419,10 @@ const simple = simplify(counties, 0.01);
 const sorted = sort(simple, { method: "hilbert" });
 ```
 
-
 ## Native multidimensional arrays
 
 See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
 lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
-
 
 ### Multidimensional mosaics
 
@@ -452,7 +432,6 @@ selects numeric arrays by path or unambiguous name. Source handles can be freed
 after construction; mosaic views keep the source data alive. See
 [Multidimensional mosaics](cli.md#multidimensional-mosaics) for alignment,
 priority, Int64/UInt64 handling and snapshot formats.
-
 
 ## Indexed raster catalogs
 
@@ -475,7 +454,6 @@ Options are `locationField`, `sortField`, `sortDescending`, `tr`, `te`, `srs`, `
 `nodata`, `alphaBand`, `cacheSize` and `resampling`. Source masks/nodata and zero alpha are
 transparent; tiles in other CRSs are reprojected into the index CRS. See
 [CLI catalogs](cli.md#catalog) for the supported GTI subset.
-
 
 ## File management
 
@@ -514,7 +492,6 @@ rules with full leader/trailer, row-order and interleaved-mask checks enabled
 for uploaded bytes unless `fullCheck: false` is supplied. External sidecars
 are unavailable for a standalone byte buffer.
 
-
 ### Seek-optimized ZIP archives
 
 ```javascript
@@ -529,7 +506,6 @@ These synchronous functions operate on uploaded `/vsimem/` files in WebAssembly.
 Creation and optimization return `added`, `seek_optimized` and `bytes` counts;
 validation returns `valid`, `sozip_files`, `messages` and `errors`. See the
 [supported options and limitations](cli.md#vsi-sozip).
-
 
 ### Dataset file management
 
@@ -551,7 +527,6 @@ Schemas and CRS must agree; GeoParquet bounds/types are merged and Arrow schema 
 is regenerated. Direct and referenced input partitions are protected from overwrite.
 See [CLI supported scope](cli.md#parquet-metadata-files); no data pages are validated.
 
-
 ### GeoPackage maintenance
 
 `gpkgRepack(path)` compacts an uploaded `/vsimem/` GeoPackage in place and returns
@@ -559,7 +534,6 @@ See [CLI supported scope](cli.md#parquet-metadata-files); no data pages are vali
 `gpkgRepackBytes(bytes)` returns a compacted `Uint8Array` copy of a self-contained image.
 Read the in-memory result with `vsiRead(path)`. Encoded records, indexes, rowids and schema SQL
 are retained. See [supported scope](cli.md#geopackage-repacking).
-
 
 ## GeoPackage validation
 
@@ -572,7 +546,6 @@ const fromPath = terrio.validateGpkgPath("/vsimem/data.gpkg", { unicodeCase: fal
 Both functions return `valid`, `complete`, `version`, `errors`, `warnings` and
 `unsupported_checks`. WebAssembly path inputs use `/vsimem/`; the bytes API accepts
 uploaded images directly. See the [supported rules and limitations](cli.md#geopackage-validation).
-
 
 ## Building
 

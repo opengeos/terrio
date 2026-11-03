@@ -27,9 +27,9 @@ scripts/             test data, comparisons with GDAL, benchmarks
 
 Rasters are held as `wbraster::Raster`: typed pixel buffers, band after band and row after row,
 with the georeferencing and CRS. `RasterDataset` adds the driver and whether nodata is declared.
-GeoTIFFs, tile archives (PMTiles, MBTiles), JPEG 2000, Zarr, GRIB and raw-layout rasters can also
-be opened lazily, to read windows and
-overviews without loading the image.
+GeoTIFFs, tile archives (PMTiles, MBTiles), JPEG 2000, Zarr and raw-layout rasters can also be
+opened lazily, to read windows and overviews without loading the image, and GRIB files to read a
+band at a time.
 
 Vector datasets are `wbvector::Layer`s: features with OGC simple-feature geometries (with Z and
 M), typed attributes and a schema.

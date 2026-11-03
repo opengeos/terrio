@@ -1,9 +1,9 @@
 # Getting Started
 
-This walk-through uses public data: Natural Earth countries and a USGS 3DEP elevation
-tile. [Install the `terrio` command](installation.md) first, or use `uvx terrio` in its place with
-[uv](https://docs.astral.sh/uv/). Run the steps in order, in an empty directory: later steps use
-the files earlier ones write.
+This walk-through uses public data: Natural Earth countries, a USGS 3DEP elevation tile and the
+Autzen lidar survey. [Install the `terrio` command](installation.md) first, or use `uvx terrio` in
+its place with [uv](https://docs.astral.sh/uv/). Run the steps in order, in an empty directory:
+later steps use the files earlier ones write.
 
 ## Look at a dataset
 
@@ -71,7 +71,7 @@ terrio mosaic subset.tif east.tif mosaic.tif
 # Burn country populations into a 0.1° grid
 terrio rasterize countries.gpkg population.tif -a POP_EST --tr 0.1 0.1 --ot Float64
 
-# Turn the raster back into polygons, one per run of equal values
+# Turn the raster back into polygons, one per connected area of equal values
 terrio polygonize population.tif population.gpkg --field POP_EST
 ```
 
