@@ -106,9 +106,11 @@ scope in existing commands separately from new command coverage.
       [#493](https://github.com/opengeos/terrio/pull/493), record complete raster,
       vector and 1/2/4/12-CPU comparisons against GDAL 3.13.3. The separate
       vendor-reported files remain unavailable and are not independently certified.
-- [ ] Grouped aggregates and the documented spatial SQL subset (area, length,
-      intersects, buffer, transform and centroid), with SQLite comparisons across
-      Rust, CLI/MCP, Python and JavaScript/WASM.
+- [x] Grouped aggregates and the [documented spatial SQL subset](docs/sql.md)
+      (area, length, intersects, buffer, transform and centroid), through Rust,
+      CLI/MCP, Python and JavaScript/WASM. Implemented in
+      [#507](https://github.com/opengeos/terrio/pull/507), with 56 GDAL 3.13.3
+      comparisons and explicit numerical/schema policies.
 - [ ] Cumulative viewshed, weighted/fractional zonal statistics and OGC API Features reading.
 
 ## Additional GDAL command coverage
