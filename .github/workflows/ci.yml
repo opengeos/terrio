@@ -106,7 +106,7 @@ jobs:
         if: always()
         run: |
           df -h .
-          du -sh target 2>/dev/null || echo "no target directory"
+          if [ -d target ]; then du -sh target; else echo "no target directory"; fi
 
   gdal:
     name: GDAL backend (feature build)
@@ -439,4 +439,4 @@ jobs:
         if: always()
         run: |
           df -h .
-          du -sh target 2>/dev/null || echo "no target directory"
+          if [ -d target ]; then du -sh target; else echo "no target directory"; fi
