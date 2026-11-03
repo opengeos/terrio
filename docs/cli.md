@@ -2379,6 +2379,15 @@ by this eager dataset API. Numeric nodata remains available; use a nodata/NaN ma
 raster when mask-band validity must affect this operation.
 
 
+A weighting raster is opened and validated only when a weighted statistic is
+requested; unweighted-only requests ignore it.
+
+Fractional coverage masks use eight bytes per cell of the zone window, compared
+with one byte for binary masks. On a complete 966×731 real NLCD window (706,146
+pixels), three local count-only runs used peak RSS 44.2–44.7 MiB for binary and
+49.6–50.6 MiB for fractional membership; median times were 0.068 and 0.080 s.
+These measurements include process overhead and are not portable thresholds.
+
 ## Vector datasets
 
 These commands are GDAL 3.13's `gdal vector concat`, `partition`, `set-field-type`,
@@ -3626,12 +3635,3 @@ Clap distinguishes the metadata flag from literal values. For example,
 `terrio info -- --json-usage` treats `--json-usage` as the dataset name, and
 `--srcnodata --json-usage` treats it as the nodata argument's value. For the
 pipeline's trailing expression, put the metadata flag before expression tokens.
-
-A weighting raster is opened and validated only when a weighted statistic is
-requested; unweighted-only requests ignore it.
-
-Fractional coverage masks use eight bytes per cell of the zone window, compared
-with one byte for binary masks. On a complete 966×731 real NLCD window (706,146
-pixels), three local count-only runs used peak RSS 44.2–44.7 MiB for binary and
-49.6–50.6 MiB for fractional membership; median times were 0.068 and 0.080 s.
-These measurements include process overhead and are not portable thresholds.
