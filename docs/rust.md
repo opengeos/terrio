@@ -244,6 +244,55 @@ comparison happens before: an `Int32` -2147483646 stays valid next to a nodata v
 -2147483647, although both read as -2147483648 in `f32`. Unscaled values are computed in `f64`,
 then rounded to `f32` once. Complex bands are refused.
 
+### Resampled windows
+
+`LazyRaster::read_resampled` reads a window of some bands into an output of another size as GDAL's
+`RasterIO` reads it, which `gdal_translate -outsize` and rasterio's
+`read(window=..., out_shape=..., resampling=...)` do: from the overview GDAL would choose, the
+window rounded to it as GDAL rounds it, then sampled by nearest neighbour (reading only the blocks
+holding the sampled pixels) or resampled with the kernels of `RasterIOResampled`, a strip of the
+source at a time. `ResampledReadOptions` takes the bands, the window in full-resolution pixels
+(possibly fractional), the output size, the resampling (nearest neighbour, bilinear, cubic, cubic
+spline, Lanczos, average, RMS or mode) and the overview, as `gdal_translate -ovr` takes it.
+
+```rust,no_run
+use terrio::ResampledReadOptions;
+use terrio::ops::Resampling;
+
+let mut cog = terrio::open_raster_lazy("https://example.com/cog.tif")?;
+let options = ResampledReadOptions {
+    window: Some((1024.0, 2048.0, 8192.0, 8192.0)),
+    size: (512, 512),
+    resampling: Resampling::Average,
+    ..Default::default()
+};
+let small = cog.read_resampled(&options)?; // the 512 x 512 overview's tiles, georeferenced
+# Ok::<(), terrio::Error>(())
+```
+
+- `OverviewSelection::Auto` (the default) chooses as `GDALBandGetBestOverviewLevel2`: when the
+  output is smaller than the window, the least reduced axis sets the desired reduction, and full
+  resolution then each overview is a candidate below that times 1.2 for nearest neighbour or 1.0
+  otherwise (`GDAL_OVERVIEW_OVERSAMPLING_THRESHOLD`), plus 0.1, the search stopping within 0.1 of
+  it. `AutoOffset(n)`, `None` and `Level(i)` read a level alone, as `gdal_translate -ovr` does.
+- Invalid pixels carry no weight: those the level's mask band masks (the dataset's mask, an
+  overview's own; an overview without one is all valid, as in GDAL), their band's nodata value
+  (NaN for NaN, nothing outside the type's range) or the alpha band of a two- or four-band raster.
+  Bands sharing a mask are resampled together by the bilinear, cubic, cubic spline and Lanczos
+  kernels, as `GDALDataset::RasterIOResampled` does. Paletted bands are read by nearest neighbour
+  with those kernels at full resolution; their average and RMS reads there are refused (GDAL
+  averages their colors). Overviews, which GDAL's GeoTIFF reader reports without a color table,
+  are resampled like other bands.
+- `read_resampled_masks` reads the bands' mask bands the same way, as `GetMaskBand()->RasterIO()`:
+  0 for invalid pixels, 255 for valid ones, values between where a kernel resampled them;
+  `read_resampled_with_masks` reads both, the nodata masks computed from the pixels read.
+- The output's geotransform covers the window at the output's size, its GCPs scaled with it. A
+  raster in memory (`LazyRaster::from(dataset)`) is read the same way, without overviews.
+
+Windows past the raster's edges are refused (but for less than an output pixel past its right or
+bottom edge, as GDAL's virtual datasets request), as are the methods only warps use (min, max,
+median, quartiles, sum), Gauss, and complex bands with methods other than nearest neighbour.
+
 ## Bytes in memory
 
 ```rust,no_run

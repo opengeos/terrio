@@ -954,9 +954,18 @@ terrio translate INPUT OUTPUT [options]
 ```
 
 `--srcwin`, `--projwin` (+ `--projwin-srs`), `-b` (repeatable), `--ot`, `--scale [SRC_MIN SRC_MAX
-[DST_MIN DST_MAX]]`, `--exponent`, `--outsize W H` (pixels or `%`), `--tr`, `-r`, `--a-nodata`,
-`--a-srs`, `--a-ullr`, and the output format options. Type conversion rounds and clamps as GDAL
-does.
+[DST_MIN DST_MAX]]`, `--exponent`, `--outsize W H` (pixels or `%`), `--tr`, `-r`, `--overview`
+(`--ovr`), `--a-nodata`, `--a-srs`, `--a-ullr`, and the output format options. Type conversion
+rounds and clamps as GDAL does.
+
+A raster read by window (GeoTIFF/COG, Zarr, virtual rasters) is read for the output alone, as
+`gdal_translate` reads it: the tiles of its window, of its bands, and, resized, from the overview
+GDAL's `RasterIO` chooses for the output's size (`--overview AUTO`, the default), or from the level
+`--overview AUTO-n`, `NONE` or a level number reads alone, as `gdal_translate -ovr` does. Without
+`--outsize` or `--tr`, a level read alone sets the output's resolution. Rescaling (`--scale`,
+`--exponent`), `--ot` with resampling other than nearest neighbour (which GDAL resamples in the
+output type) and windows past the raster's edges read the window from the whole raster at full
+resolution (or the level read alone).
 
 ## warp
 

@@ -16,6 +16,17 @@
   time, decoding each block once (a 4000 x 4000 tiled GeoTIFF drew in a twelfth of the time),
   and map views of vector layers index the features once instead of scanning and cloning them
   for every tile (#521).
+- `LazyRaster::read_resampled` reads a window of some bands into an output of another size as
+  GDAL's `RasterIO` reads it (`gdal_translate -outsize`, rasterio's `out_shape` reads): from the
+  overview GDAL chooses, or the level `gdal_translate -ovr` names, by nearest neighbour or with
+  the kernels of `RasterIOResampled`, pixels weighted by the level's mask band, nodata values or
+  alpha band. `read_resampled_masks` reads their mask bands the same way (#429).
+- `terrio translate --outsize/--tr` reads a raster read by window from its overviews, as
+  `gdal_translate` does, rather than reading it whole at full resolution: a 512 x 512 output of a
+  16384 x 16384 COG reads its 512 x 512 overview. `--overview` (`--ovr`) chooses the level as
+  `gdal_translate -ovr` does (#429).
+- Mode overviews and resampled reads of a raster whose nodata value is NaN fill a footprint
+  without a valid pixel with 0, as GDAL does (`GDALIsValueInRange`), rather than NaN.
 - Zonal statistics use each selected band's own nodata value in every membership mode,
   fixing multi-band inputs whose nodata differs from band 1. Fractional coverage and
   aligned weighting rasters are available across Rust, CLI/MCP, Python and Node/WASM (#288).

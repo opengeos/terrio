@@ -49,6 +49,8 @@ impl ResampledWindow {
             buf: self.buf,
             block_width: self.block_width,
             dataset: self.dataset,
+            max: None,
+            nan_aware: false,
         })
     }
 
