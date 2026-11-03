@@ -805,10 +805,12 @@ fn schema_fields(root: &Value) -> Result<Vec<FieldDef>> {
                 (Some("boolean"), _) => FieldType::Boolean,
                 (Some("string"), Some("date")) => FieldType::Date,
                 (Some("string"), Some("date-time")) => FieldType::DateTime,
-                _ => FieldType::Text,
+                (Some("string" | "object" | "array"), _) => FieldType::Text,
+                _ => return Ok(None),
             };
-            Ok(FieldDef::new(name, field_type))
+            Ok(Some(FieldDef::new(name, field_type)))
         })
+        .filter_map(Result::transpose)
         .collect()
 }
 fn resolve_ref<'a>(root: &'a Value, value: &'a Value, depth: usize) -> Result<&'a Value> {
@@ -1012,6 +1014,17 @@ mod tests {
     #[test]
     fn unusable_schema_falls_back_and_nonconforming_values_fail_explicitly() {
         assert!(schema_fields(&json!({"type":"object"})).unwrap().is_empty());
+        let mut inferred = at_items(&Default::default());
+        inferred.fields = schema_fields(&json!({"properties":{
+            "optional":{"anyOf":[{"type":"integer"},{"type":"null"}]},
+            "unknown":{"description":"no type hint"}, "typed":{"type":"string"}
+        }}))
+        .unwrap();
+        accept(&mut inferred, page(vec![feature(json!(1), json!({"optional":42,"unknown":2.5,"typed":"yes"}))], None));
+        let l = inferred.finish().unwrap().layers.remove(0);
+        assert_eq!(l.features[0].get(&l.schema, "optional").unwrap(), &FieldValue::Integer(42));
+        assert_eq!(l.features[0].get(&l.schema, "unknown").unwrap(), &FieldValue::Float(2.5));
+        assert_eq!(l.features[0].get(&l.schema, "typed").unwrap(), &FieldValue::Text("yes".into()));
         let scalar = schema_fields(&json!({"properties":{"properties":{"type":"string"}}})).unwrap();
         assert_eq!(scalar.len(), 1);
         assert_eq!(scalar[0].name, "properties");
