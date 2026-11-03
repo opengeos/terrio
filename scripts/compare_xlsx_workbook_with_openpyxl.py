@@ -19,7 +19,11 @@ def main():
     Returns:
         The process exit code.
     """
+    if len(sys.argv) != 2:
+        print(__doc__, file=sys.stderr)
+        return 2
     book = openpyxl.load_workbook(sys.argv[1])
+    cached = openpyxl.load_workbook(sys.argv[1], data_only=True)
     sheet = book["LV Summary"]
     head = sheet["B1"]
     b3 = sheet["B3"]
@@ -49,7 +53,7 @@ def main():
         ("date", (sheet["D5"].value, sheet["D5"].number_format), (datetime.datetime(2024, 1, 2), "yyyy-mm-dd")),
         ("date-time", sheet["E5"].value, datetime.datetime(2024, 1, 2, 12)),
         ("formula", sheet["F5"].value, "=B5*2"),
-        ("cached value", openpyxl.load_workbook(sys.argv[1], data_only=True)["LV Summary"]["F5"].value, 18),
+        ("cached value", cached["LV Summary"]["F5"].value, 18),
         ("protection", sheet["F5"].protection.locked, False),
         ("verbatim text", sheet["G5"].value, " verbatim "),
         ("column width", sheet.column_dimensions["A"].width, 15.7),

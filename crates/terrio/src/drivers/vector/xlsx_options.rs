@@ -246,7 +246,7 @@ pub(super) fn time_in_range(value: &str) -> bool {
     let number = |text: Option<&str>, max: u32| {
         text.is_some_and(|t| t.bytes().all(|b| b.is_ascii_digit()) && t.parse::<u32>().is_ok_and(|n| n <= max))
     };
-    let (clock, offset) = match time.find(['Z', 'z', '+', '-']) {
+    let (clock, offset) = match time.find(['Z', '+', '-']) {
         Some(i) => time.split_at(i),
         None => (time, ""),
     };
@@ -259,7 +259,7 @@ pub(super) fn time_in_range(value: &str) -> bool {
         && !fraction.is_empty()
         && fraction.bytes().all(|b| b.is_ascii_digit());
     let offset_ok = match offset {
-        "" | "Z" | "z" => true,
+        "" | "Z" => true,
         _ => offset.len() == 6 && number(offset.get(1..3), 14) && offset.as_bytes().get(3) == Some(&b':') && number(offset.get(4..6), 59),
     };
     clock_ok && offset_ok

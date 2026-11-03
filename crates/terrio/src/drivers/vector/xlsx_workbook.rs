@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
 //! A workbook model for spreadsheets laid out for people: sheets, typed cells, merged ranges, column
 //! and row settings, cell formats, sheet views, data tools, print setup and document properties.
 //!
@@ -54,6 +56,9 @@ fn parse_cell(cell: &str) -> Result<(u32, u32)> {
     let digits = cleaned.find(|c: char| c.is_ascii_digit()).ok_or_else(bad)?;
     let (letters, row) = cleaned.split_at(digits);
     let column = parse_column(letters).map_err(|_| bad())?;
+    if !row.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad());
+    }
     let row: u32 = row.parse().map_err(|_| bad())?;
     if row == 0 || row as usize > MAX_ROWS {
         return Err(bad());
@@ -454,6 +459,7 @@ impl Worksheet {
         }
         let value = value.into();
         check_value(&value, row, column)?;
+        check_format(format)?;
         self.cells.insert((row, column), Cell { value, format: format.clone() });
         Ok(())
     }
@@ -483,6 +489,7 @@ impl Worksheet {
         let parsed = Range::parse(range)?;
         // Before anything changes, so that a refusal leaves the sheet as it was.
         check_value(&value, parsed.first_row, parsed.first_column)?;
+        check_format(format)?;
         let area = u64::from(parsed.last_row - parsed.first_row + 1) * u64::from(parsed.last_column - parsed.first_column + 1);
         if area > MAX_MERGE_WRITE_CELLS {
             return Err(invalid(format!("merge_write formats each cell of a range, and {range} has {area}: use merge")));
@@ -543,6 +550,7 @@ impl Worksheet {
     }
     /// The format of a column's empty cells.
     pub fn set_column_format(&mut self, column: &str, format: &Format) -> Result<()> {
+        check_format(format)?;
         self.column_entry(column)?.format = Some(format.clone());
         Ok(())
     }
@@ -569,6 +577,7 @@ impl Worksheet {
     }
     /// The format of a row's empty cells.
     pub fn set_row_format(&mut self, row: u32, format: &Format) -> Result<()> {
+        check_format(format)?;
         self.row_entry(row)?.format = Some(format.clone());
         Ok(())
     }
@@ -698,6 +707,25 @@ fn header_footer(text: &str) -> Result<String> {
     Ok(text.to_string())
 }
 
+/// Whether a date's text names a day of the calendar: 2024-02-30 would roll over to March.
+fn real_date(date: &str) -> bool {
+    datetime::parse_date(date).is_some_and(|days| datetime::format_date(i64::from(days)) == date)
+}
+
+/// A formula's text without its `=`, if it starts with one.
+fn formula_body(formula: &str) -> &str {
+    formula.strip_prefix('=').unwrap_or(formula)
+}
+
+/// Refuses what a format cannot hold.
+fn check_format(format: &Format) -> Result<()> {
+    let texts = [format.font_name.as_deref(), format.num_format.as_deref()];
+    if texts.iter().flatten().any(|text| text.is_empty() || !text.chars().all(xml_legal)) {
+        return Err(invalid("a font name or number format is empty, or holds characters XML cannot".into()));
+    }
+    Ok(())
+}
+
 /// Refuses what a cell cannot hold.
 fn check_value(value: &CellValue, row: u32, column: u32) -> Result<()> {
     let at = || cell_name(row, column);
@@ -707,6 +735,10 @@ fn check_value(value: &CellValue, row: u32, column: u32) -> Result<()> {
         }
         CellValue::Text(s) if !s.chars().all(xml_legal) => Err(invalid(format!("cell {} holds characters XML cannot", at()))),
         CellValue::Number(v) if !v.is_finite() => Err(invalid(format!("cell {} holds a number that is not finite", at()))),
+        CellValue::Date(s) if !real_date(s) => Err(invalid(format!("cell {} holds '{s}', not a day of the calendar", at()))),
+        CellValue::DateTime(s) if !s.get(..10).is_some_and(real_date) => {
+            Err(invalid(format!("cell {} holds '{s}', not a day of the calendar", at())))
+        }
         CellValue::Date(s) if datetime::parse_date(s).and_then(|d| excel_serial_days(i64::from(d))).is_none() => {
             Err(invalid(format!("cell {} holds '{s}', not a date from 1900 on", at())))
         }
@@ -717,7 +749,7 @@ fn check_value(value: &CellValue, row: u32, column: u32) -> Result<()> {
             Err(invalid(format!("cell {} holds '{s}', not a date-time from 1900 on", at())))
         }
         CellValue::Error(e) if !ERRORS.contains(&e.as_str()) => Err(invalid(format!("cell {} holds '{e}', not an Excel error", at()))),
-        CellValue::Formula { formula, .. } if formula.trim_start_matches('=').is_empty() => {
+        CellValue::Formula { formula, .. } if formula_body(formula).trim().is_empty() => {
             Err(invalid(format!("cell {} holds an empty formula", at())))
         }
         CellValue::Formula { formula, .. } if formula.encode_utf16().count() > MAX_FORMULA_UTF16 || !formula.chars().all(xml_legal) => {
@@ -1106,7 +1138,7 @@ fn value_xml(value: &CellValue, strings: &mut StringTable) -> (&'static str, Str
         CellValue::Date(_) | CellValue::DateTime(_) => ("", format!("<v>{}</v>", serial(value).unwrap_or_default())),
         CellValue::Error(e) => (" t=\"e\"", format!("<v>{}</v>", xml_text(e))),
         CellValue::Formula { formula, cached } => {
-            let f = format!("<f>{}</f>", xml_text(formula.trim_start_matches('=')));
+            let f = format!("<f>{}</f>", xml_text(formula_body(formula)));
             match cached.as_deref() {
                 None | Some(CellValue::Blank) | Some(CellValue::Formula { .. }) => ("", f),
                 Some(CellValue::Text(s)) => (" t=\"str\"", format!("{f}<v>{}</v>", xml_text(s))),
@@ -1565,6 +1597,16 @@ mod tests {
         assert!(s.write("A1", CellValue::Formula { formula: "=".into(), cached: None }, &plain).is_err());
         assert!(s.write("A1", CellValue::Formula { formula: "x".repeat(MAX_FORMULA_UTF16 + 1), cached: None }, &plain).is_err());
         assert!(s.write("A1", CellValue::DateTime("2024-01-02T12:00:00+99:99".into()), &plain).is_err());
+        for date in ["2024-02-30", "2024-04-31", "2024/01/02"] {
+            assert!(s.write("A1", CellValue::Date(date.into()), &plain).is_err(), "{date}");
+            assert!(s.write("A1", CellValue::DateTime(format!("{date}T00:00:00")), &plain).is_err(), "{date}");
+        }
+        assert!(s.write("A1", CellValue::DateTime("2024-01-02T12:00:00z".into()), &plain).is_err());
+        assert!(s.write("A+1", 1.0, &plain).is_err());
+        assert!(s.write("A1", CellValue::Formula { formula: "=   ".into(), cached: None }, &plain).is_err());
+        assert!(s.write("A1", 1.0, &Format::new().font("a\u{1}")).is_err());
+        assert!(s.set_column_format("A", &Format::new().num_format("")).is_err());
+        assert!(s.set_row_format(1, &Format::new().num_format("\u{1}")).is_err());
         assert!(s.print_header(&"x".repeat(256)).is_err());
         assert!(s.print_footer("\u{1}").is_err());
         assert!(s.hyperlink("A1", "").is_err());
@@ -1692,12 +1734,15 @@ mod tests {
             s.write("A1", CellValue::formula("=1+1", 2.0), &Format::new()).unwrap();
             s.write("A2", CellValue::formula("\"a\"&\"<b\"", "a<b"), &Format::new()).unwrap();
             s.write("A3", CellValue::Formula { formula: "NOW()".into(), cached: None }, &Format::new()).unwrap();
+            s.write("A5", CellValue::Formula { formula: "==1".into(), cached: None }, &Format::new()).unwrap();
             s.write("A4", CellValue::Error("#N/A".into()), &Format::new()).unwrap();
         });
         let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
         assert!(sheet.contains("<c r=\"A1\"><f>1+1</f><v>2</v></c>"));
         assert!(sheet.contains("<c r=\"A2\" t=\"str\"><f>&quot;a&quot;&amp;&quot;&lt;b&quot;</f><v>a&lt;b</v></c>"), "{sheet}");
         assert!(sheet.contains("<c r=\"A3\"><f>NOW()</f></c>"));
+        // One `=` is the formula's mark; another is the formula's own, for Excel to refuse or not.
+        assert!(sheet.contains("<c r=\"A5\"><f>=1</f></c>"));
         assert!(sheet.contains("<c r=\"A4\" t=\"e\"><v>#N/A</v></c>"));
     }
 

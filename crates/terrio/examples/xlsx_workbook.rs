@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+// SPDX-License-Identifier: MIT
 //! Writes a report workbook with `terrio::xlsx`, for `scripts/compare_xlsx_workbook_with_openpyxl.py`.
 //!
 //! Usage: `cargo run -p terrio --example xlsx_workbook -- OUTPUT.xlsx`
