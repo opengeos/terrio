@@ -3587,3 +3587,42 @@ Clap distinguishes the metadata flag from literal values. For example,
 `terrio info -- --json-usage` treats `--json-usage` as the dataset name, and
 `--srcnodata --json-usage` treats it as the nodata argument's value. For the
 pipeline's trailing expression, put the metadata flag before expression tokens.
+
+### OGC API Features
+
+`OAPIF:https://service/collections` opens a read-only OGC API Features catalog,
+a collection URL or an items URL. The explicit prefix avoids probing ordinary
+HTTP files. `info` and layer listing read collection metadata without fetching
+features; unknown counts and schemas remain unknown until a data read.
+
+```sh
+terrio info OAPIF:https://demo.pygeoapi.io/master/collections/lakes --json
+terrio convert OAPIF:https://demo.pygeoapi.io/master/collections/lakes lakes.gpkg --limit 4 --oo PAGE_SIZE=3
+```
+
+The same commands are available through MCP. `--layer` selects collections and
+`--spat` sends a bounding box. Plain conversion limits stop paging early; with
+SQL or attribute filters, the limit is applied after local filtering. Open
+options include `PAGE_SIZE` (1000), `DATETIME`, `CRS`, `PREFERRED_CRS`,
+`SERVER_FEATURE_AXIS_ORDER=AUTHORITY_COMPLIANT|GIS_FRIENDLY`, `IGNORE_SCHEMA=YES`,
+and `URL` for a bare `OAPIF:` name. `CRS` must be advertised; `PREFERRED_CRS`
+falls back to storage CRS or CRS84. Output coordinates use GIS X/Y order;
+server bounding boxes follow the selected CRS axis order.
+
+Reads follow same-origin relative next links and reject cycles, repeated feature
+IDs, missing pages and external schema references. Native HTTP follows only
+same-origin redirects. Limits are `OAPIF_MAX_PAGES` (10000),
+`OAPIF_MAX_VECTOR_BYTES` (1 GiB conservative aggregate allocation budget), and
+16 MiB per response, further bounded by the HTTP JSON size setting.
+`OAPIF_MAX_FEATURES` and `OAPIF_SKIP_FEATURES` set the per-collection range.
+
+JSON Schema scalar types are honored, including absent nullable fields. Without
+a usable JSON schema, fields are inferred across all fetched pages. Nested
+objects/arrays remain JSON text rather than GDAL's flattened fields; a schema
+string without a date format remains text. XML schema, external JSON references,
+CQL/filter languages, transactions and streaming feature iteration are outside
+this reader's scope. Pages are accumulated within the allocation budget.
+
+Signed numeric source IDs, or string IDs that conflict with a source `id`
+property, are preserved in `_oapif_id` text (with an extra leading underscore
+if that field already exists); generated unsigned FIDs then follow row order.

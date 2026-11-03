@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Read-only OGC API Features discovery and bounded paging through Rust, CLI/MCP,
+  Python and JavaScript/WASM. Explicit `OAPIF:` URLs support collection selection,
+  spatial/temporal queries, advertised CRS and axis rules, and scalar JSON schemas.
+  Nested properties are preserved as JSON text; unsupported schema references and
+  incomplete pagination fail explicitly (#288).
+
 - `terrio::xlsx::Workbook` writes workbooks laid out for people: sheets, typed cells at their
   positions, merged ranges, column and row settings, cell formats, frozen panes, filters, list
   validations, defined names, hyperlinks, comments, print setup and document properties (#405).

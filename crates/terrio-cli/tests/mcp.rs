@@ -716,3 +716,34 @@ fn two_point_oblique_mercator_coordinates_and_refusal_through_mcp() {
     assert!((values[1] - -5279802.3632845115).abs() < 0.001);
     assert_eq!(replies[&2]["result"]["isError"], true);
 }
+
+#[cfg(not(target_family = "wasm"))]
+#[path = "../../terrio/tests/common/oapif.rs"]
+mod oapif_fixture;
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn oapif_conversion_through_mcp_bounds_plain_limits_and_keeps_filter_order() {
+    if !terrio::formats::VectorDriver::OAPIF.info().read {
+        return;
+    }
+    let server = oapif_fixture::Server::new();
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("limited.gpkg");
+    let filtered = dir.path().join("filtered.gpkg");
+    let url = format!("OAPIF:{}/alias", server.url);
+    let replies = session(&[
+        call(1, "convert", &[&url, plain.to_str().unwrap(), "--oo", "PAGE_SIZE=2", "--limit", "3"]),
+        call(2, "convert", &[&url, filtered.to_str().unwrap(), "--oo", "PAGE_SIZE=2", "--where", "value > 4", "--limit", "1"]),
+    ]);
+    for id in [1, 2] {
+        assert_eq!(replies[&id]["result"]["isError"], false, "{}", replies[&id]);
+    }
+    let a = terrio::open_vector(plain.to_str().unwrap(), &Default::default()).unwrap();
+    assert_eq!(a.layers[0].len(), 3);
+    let b = terrio::open_vector(filtered.to_str().unwrap(), &Default::default()).unwrap();
+    assert_eq!(b.layers[0].len(), 1);
+    assert_eq!(b.layers[0].features[0].get(&b.layers[0].schema, "value").unwrap(), &terrio::FieldValue::Float(4.5));
+    // Plain limit needs two item pages; filtering must inspect all three pages.
+    assert_eq!(server.requests.lock().unwrap().iter().filter(|(u, _)| u.contains("/items")).count(), 5);
+}

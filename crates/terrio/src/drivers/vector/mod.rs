@@ -37,6 +37,7 @@ pub mod hecras_options;
 pub mod kml;
 pub mod kml_style;
 pub mod mapinfo;
+pub mod oapif;
 #[cfg(feature = "osm")]
 pub mod osm;
 pub(crate) mod profile;
@@ -97,6 +98,9 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
         VectorDriver::CityGML => citygml::parse(&citygml::read_path_bytes(path, false)?)?,
         VectorDriver::ESRIJSON => vec![esrijson::read(path)?],
         VectorDriver::ESRIPBF => vec![esripbf::read(path)?],
+        VectorDriver::OAPIF => {
+            return Err(crate::Error::InvalidArgument("OAPIF metadata describes a service; open its endpoint with OAPIF:".into()));
+        }
         VectorDriver::WFS => {
             return Err(crate::Error::InvalidArgument("WFS access requires a service URL, not a local feature file".into()));
         }

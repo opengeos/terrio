@@ -61,7 +61,7 @@ pub struct ServiceLayerInfo {
 
 impl ServiceInfo {
     pub(crate) fn to_text(&self) -> String {
-        let mut out = format!("Driver: WFS\nWFS version: {}\nLayers: {}\n", self.version, self.layers.len());
+        let mut out = format!("Driver: {}\n{} version: {}\nLayers: {}\n", self.driver, self.driver, self.version, self.layers.len());
         for layer in &self.layers {
             let _ = writeln!(out, "\nLayer: {}", layer.name);
             if let Some(title) = &layer.title {

@@ -964,6 +964,50 @@ test("a raster of 2 GB, written and read back (memory64)", {
 
 // ─── Remote files ───────────────────────────────────────────────────────────────────────────────
 
+test("openOapif follows real HTTP pages and preserves schema and range", async () => {
+  const { createServer } = await import("node:http");
+  const requests = [];
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://localhost");
+    requests.push({ path: req.url, header: req.headers["x-test"] });
+    let value;
+    if (url.pathname === "/collections") {
+      value = { collections: [{ id: "places", links: [
+        { rel: "items", href: "/collections/places/items", type: "application/geo+json" },
+        { rel: "describedby", href: "/schema", type: "application/schema+json" },
+      ] }] };
+    } else if (url.pathname === "/schema") {
+      value = { type: "object", properties: { name: { type: "string" }, missing: { type: "integer" } } };
+    } else {
+      const start = Number(url.searchParams.get("offset") ?? 0);
+      const end = Math.min(start + Number(url.searchParams.get("limit") ?? 2), 5);
+      value = { type: "FeatureCollection", numberMatched: 5,
+        features: Array.from({ length: end - start }, (_, n) => ({ type: "Feature", id: n + start,
+          properties: { name: `p${n + start}` }, geometry: { type: "Point", coordinates: [10 + n + start, 20 + n + start, 3] } })),
+        links: end < 5 ? [{ rel: "next", href: `?offset=${end}&limit=2` }] : [],
+      };
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(value));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const result = await terrio.openOapif(`http://127.0.0.1:${server.address().port}/collections`, {
+      pageSize: 2, skipFeatures: 1, maxFeatures: 3, headers: { "X-Test": "present" },
+    });
+    const geojson = result.toGeoJSON();
+    assert.deepEqual(geojson.features.map(f => f.properties.name), ["p1", "p2", "p3"]);
+    assert.deepEqual(geojson.features[0].properties, { name: "p1", missing: null });
+    assert.deepEqual(geojson.features[0].geometry.coordinates, [11, 21, 3]);
+    assert.equal(requests.length, 4);
+    assert.ok(requests.every(r => r.header === "present"));
+    result.free();
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 /// Serves a directory over HTTP with range requests, counting the bytes sent.
 async function serve(dir) {
   const { createServer } = await import("node:http");

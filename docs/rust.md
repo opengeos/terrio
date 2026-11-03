@@ -660,3 +660,13 @@ static ALLOCATOR: terrio::NullSafeAllocator = terrio::NullSafeAllocator;
 
 API documentation: [docs.rs/terrio](https://docs.rs/terrio), or `cargo doc -p terrio --open` in
 the repository.
+
+### OGC API Features
+
+`open_vector("OAPIF:https://service/collections", &options)` supports read-only
+OGC API Features with `VectorOpenOptions::oapif` (`OapifOpenOptions`).
+Collection selection, spatial_filter and max_features/skip_features are shared
+with other vector sources. The portable `oapif::Reader` exposes bounded
+`next_request` / `accept_response` steps; native HTTP and JavaScript fetch use
+the same state machine. GDAL 3.13.3 is the behavior reference. See the CLI
+section for scope, CRS/axis handling, schema inference and allocation limits.

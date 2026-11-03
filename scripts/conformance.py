@@ -2980,6 +2980,40 @@ def suite_wfs(ctx):
     return suite
 
 
+def suite_oapif(ctx):
+    """Public OGC API Features pages through every supported surface."""
+    suite = Suite("oapif", "OGC API Features", "GDAL 3.13.3 OAPIF",
+                  "Live pygeoapi lakes and PDOK BAG buildings; paging, schema, bbox, storage CRS and authority axes. "
+                  "Every attribute and geometry coordinate checked, coordinates within 1e-8 source units. "
+                  "Advertised string dates and nested JSON remain lossless native representations; "
+                  "GDAL inferred dates and flattened href lists are explicitly normalized and reported. "
+                  "Source IDs checked as attributes where present; generated output FIDs excluded.")
+    if missing_modules("osgeo", "terrio"):
+        suite.skipped = "needs GDAL and current Python bindings"
+        return suite
+    command = [sys.executable, str(SCRIPTS / "compare_oapif_with_gdal.py"), "--terrio", ctx.terrio, "--json"]
+    package = ROOT / "js/pkg-node/terrio.js"
+    node = package.is_file() and shutil.which("node") is not None
+    if node:
+        command += ["--node-package", str(package)]
+    if ctx.remote:
+        command.append("--remote")
+    code, out, err = run(command)
+    try:
+        rows = json.loads(out)
+        for row in rows:
+            suite.cases.append(Case("oapif", row["name"], row["status"], row["detail"]))
+        if ctx.remote and len(rows) != (15 if node else 10):
+            suite.cases.append(Case("oapif", "complete public comparisons", NOT_COMPARED, "one or more public reference services unavailable"))
+    except (ValueError, KeyError, TypeError) as error:
+        suite.error = f"{error}: {tail(err or out)}"
+    if code and not suite.error and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or "OAPIF comparison failed")
+    if not node:
+        suite.cases.append(Case("oapif", "Node/WASM", NOT_COMPARED, "build js/pkg-node and install Node"))
+    return suite
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -3053,6 +3087,7 @@ SUITES = OrderedDict(
         ("gpkg", suite_gpkg),
         ("streams", suite_streams),
         ("wfs", suite_wfs),
+        ("oapif", suite_oapif),
         ("tiles", suite_tiles),
         ("grib", suite_grib),
         ("pointclouds", suite_pointclouds),

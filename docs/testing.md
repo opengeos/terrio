@@ -2179,3 +2179,33 @@ WFS identification without `--deep` also stays header-only: the regression serve
 a capabilities document over 1 MiB and records one request consuming 16,384 bytes.
 An explicit deep fallback may read the complete capabilities metadata when its
 root cannot be recognized from that prefix.
+
+### OGC API Features
+
+```sh
+python scripts/conformance.py ../terrio-data --only oapif --remote --strict
+```
+
+The public-service suite compares CLI, Python and Node/WASM reads with GDAL
+3.13.3 on pygeoapi Natural Earth lakes and PDOK BAG buildings. Five profiles
+exercise three-feature paging with a four-feature limit, advertised schema,
+spatial bounding boxes, preferred CRS fallback, projected storage CRS and
+geographic authority axes. All source attributes/nulls, IDs carried as fields,
+geometry types, vertices and equivalent CRS are checked. Coordinates allow
+1e-8 source units; real attributes allow relative 1e-12 or absolute 1e-10.
+Generated output FIDs are excluded because format conversion renumbers them.
+
+Physical schema differences are explicit: native nested `verblijfsobject` JSON
+is checked against GDAL's flattened `verblijfsobject.href` list, asserting that
+every nested key is checked. Native `documentdatum` follows the advertised
+string type, compared with GDAL's inferred Date as ISO text. These are reported
+as normalized agreement, not identical schemas. No source fields are dropped.
+Unavailable public services are reported as not compared.
+
+Native unit tests cover catalog paging, field union, local JSON references,
+axis/bbox/datetime handling, resource limits and terminal paging errors. Native
+HTTP tests measure seven requests including redirect/catalog/schema and three
+item pages for a bounded range; metadata-only reads fetch no items or schemas.
+Python and Node tests each observe four real localhost HTTP requests for
+catalog/schema and two item pages. MCP checks bounded conversion and filtering
+before a final feature limit.

@@ -565,3 +565,30 @@ node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real
 
 To build one module with only the scientific formats, see
 [Scientific WASM builds](scientific-wasm-build.md).
+
+### OGC API Features
+
+`await openOapif(url, options)` drives the shared Rust paging/schema reader over
+`fetch` and returns a vector Dataset:
+
+```javascript
+const lakes = await terrio.openOapif(
+  "https://demo.pygeoapi.io/master/collections/lakes",
+  { pageSize: 3, maxFeatures: 4 },
+);
+const geojson = lakes.toGeoJSON();
+lakes.free();
+```
+
+Options are `layers`, `bbox`, `pageSize`, `maxFeatures`, `skipFeatures`,
+`datetime`, `crs`, `preferredCrs`, `serverFeatureAxisOrder`, `ignoreSchema`,
+`maxVectorBytes` and `maxPages`. Optional `headers` and `fetch` support an
+authenticated same-origin service. Browsers require server CORS permission.
+Fetch redirects are refused because browsers can conceal redirect destinations;
+open the canonical service URL. Response streams are bounded before allocation,
+and links must stay on the original origin. Native CLI/Python follow
+same-origin redirects. See the CLI section for shared schema and CRS rules.
+
+Signed numeric source IDs, or string IDs that conflict with a source `id`
+property, are preserved in `_oapif_id` text (with an extra leading underscore
+if that field already exists); generated unsigned FIDs then follow row order.

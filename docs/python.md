@@ -698,3 +698,20 @@ uv venv && uv pip install maturin numpy pytest
 uv run maturin develop --release
 uv run pytest
 ```
+
+### OGC API Features
+
+`open_vector` reads explicit `OAPIF:` URLs through the shared Rust reader:
+
+```python
+places = terrio.open_vector(
+    "OAPIF:https://demo.pygeoapi.io/master/collections/lakes",
+    options={"PAGE_SIZE": "3", "OAPIF_MAX_FEATURES": "4"},
+)
+places.layers[0].write("lakes.gpkg")
+```
+
+Use `layers` and `bbox` for collection and spatial selection. The GDAL-style
+open options, CRS/axis rules, schema handling and bounded eager paging are
+described in the CLI OGC API Features section. `OAPIF_SKIP_FEATURES` and
+`OAPIF_MAX_FEATURES` apply a per-collection range.
