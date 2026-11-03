@@ -9,6 +9,7 @@ is explicit (--remote); unavailable services are reported as not compared.
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -27,6 +28,7 @@ BUILDINGS = "https://api.pdok.nl/kadaster/bag/ogc/v2/collections/pand"
 
 
 def open_reference(url, options, bbox=None):
+    gdal.SetConfigOption("GDAL_HTTP_TIMEOUT", "60")
     source = gdal.OpenEx("OAPIF:" + url, gdal.OF_VECTOR,
                          open_options=["PAGE_SIZE=3", "INITIAL_REQUEST_PAGE_SIZE=3", *options])
     layer = source.GetLayer(0)
@@ -84,6 +86,8 @@ def reference_rows(url, options, bbox):
         rows.append(dict(properties={field.GetName(): value(feature, i, field_kind(field))
                                      for i, field in enumerate(layer.schema)},
                          geometry=json.loads(feature.GetGeometryRef().ExportToJson()) if feature.GetGeometryRef() else None))
+    if not rows:
+        raise RuntimeError("reference returned no features; attributes and IDs were not compared")
     return schema, layer.GetSpatialRef().Clone(), rows
 
 
@@ -185,6 +189,7 @@ def main():
     parser.add_argument("--remote", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    os.environ["TERRIO_HTTP_TIMEOUT"] = "60"
     if not args.remote:
         rows = [dict(name="live OAPIF", status="not compared", detail="enable --remote for public OGC API services")]
     else:

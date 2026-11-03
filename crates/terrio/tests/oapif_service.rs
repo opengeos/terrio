@@ -25,6 +25,7 @@ fn native_reader_follows_redirect_base_and_stops_at_requested_range() {
     assert_eq!(requests.len(), 7, "{requests:?}");
     let pages: Vec<_> = requests.iter().filter(|(url, _)| url.contains("/items")).collect();
     assert_eq!(pages.len(), 3);
+    assert!(pages.iter().all(|(url, _)| url.contains("limit=2") && !url.contains('#')), "{pages:?}");
     assert!(pages.iter().all(|(_, accept)| accept.contains("application/geo+json")));
     assert!(requests.iter().any(|(u, _)| u == "/api/collections"), "relative link must use redirected /api/ base");
 }

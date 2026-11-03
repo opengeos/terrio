@@ -750,6 +750,9 @@ fn oapif_conversion_through_mcp_bounds_plain_limits_and_keeps_filter_order() {
     }
     let a = terrio::open_vector(plain.to_str().unwrap(), &Default::default()).unwrap();
     assert_eq!(a.layers[0].len(), 3);
+    for (i, expected) in [0.5, 1.5, 2.5].into_iter().enumerate() {
+        assert_eq!(a.layers[0].features[i].get(&a.layers[0].schema, "value").unwrap(), &terrio::FieldValue::Float(expected));
+    }
     let b = terrio::open_vector(filtered.to_str().unwrap(), &Default::default()).unwrap();
     assert_eq!(b.layers[0].len(), 1);
     assert_eq!(b.layers[0].features[0].get(&b.layers[0].schema, "value").unwrap(), &terrio::FieldValue::Float(4.5));

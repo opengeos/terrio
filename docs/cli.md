@@ -3624,10 +3624,15 @@ options include `PAGE_SIZE` (1000), `DATETIME`, `CRS`, `PREFERRED_CRS`,
 `SERVER_FEATURE_AXIS_ORDER=AUTHORITY_COMPLIANT|GIS_FRIENDLY`, `IGNORE_SCHEMA=YES`,
 and `URL` for a bare `OAPIF:` name. `CRS` must be advertised; `PREFERRED_CRS`
 falls back to storage CRS or CRS84. Output coordinates use GIS X/Y order;
-server bounding boxes follow the selected CRS axis order.
+server bounding boxes from API options follow the selected CRS axis order. URL
+`bbox` and `bbox-crs` values are passed through in server order (CRS84 by default
+when `bbox-crs` is absent); they are not interpreted as API X/Y bounds. Terrio
+recognizes these URL option names case-insensitively and sends canonical names.
 
 Reads follow same-origin relative next links and reject cycles, repeated feature
-IDs, missing pages and external schema references. Native HTTP follows only
+IDs and external schema references. A missing next page is detected only when
+`numberMatched` exceeds the number read; without that count, a final page with no
+next link ends the read. Native HTTP follows only
 same-origin redirects. Limits are `OAPIF_MAX_PAGES` (10000),
 `OAPIF_MAX_VECTOR_BYTES` (1 GiB conservative cumulative work budget), and
 16 MiB per response, further bounded by the HTTP JSON size setting.
@@ -3649,7 +3654,8 @@ if that field already exists); generated unsigned FIDs then follow row order.
 
 Non-null values incompatible with an advertised scalar type fail explicitly,
 including empty-string dates. Use `IGNORE_SCHEMA=YES` to infer types from the
-source values instead. Schemas without property definitions fall back to inference.
+source values instead. Schema fetch or parse failures also fail the read;
+`IGNORE_SCHEMA=YES` bypasses schema discovery. Schemas without property definitions fall back to inference.
 OAPIF-specific open options are rejected on other vector sources, even when their
 value equals the default.
 

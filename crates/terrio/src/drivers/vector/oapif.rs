@@ -168,6 +168,7 @@ pub struct Reader {
     retained_cells: usize,
     initial_offset: usize,
     fields: Vec<FieldDef>,
+    string_fields: HashSet<String>,
     layers: Vec<Layer>,
 }
 impl Reader {
@@ -182,6 +183,7 @@ impl Reader {
     fn start(url: &str, options: &VectorOpenOptions, metadata_only: bool) -> Result<Self> {
         let url = service_target(url).unwrap_or(url);
         let url = if url.is_empty() { options.oapif.url.as_deref().unwrap_or("") } else { url };
+        let url = url.split('#').next().unwrap_or(url);
         let origin = crate::vfs::url_origin(url)
             .filter(|(scheme, host)| matches!(scheme.as_str(), "http" | "https") && !host.is_empty())
             .ok_or_else(|| Error::InvalidArgument("OAPIF requires an HTTP(S) service URL".into()))?;
@@ -201,7 +203,7 @@ impl Reader {
         if let Some(query) = split_url(url).1 {
             for pair in query.split('&') {
                 let Some((key, val)) = pair.split_once('=') else { continue };
-                let key = crate::vfs::decode_query_component(key);
+                let key = crate::vfs::decode_query_component(key).to_ascii_lowercase();
                 let val = crate::vfs::decode_query_component(val);
                 if key == "offset" && split_url(url).0.trim_end_matches('/').ends_with("/items") {
                     initial_offset = val.parse().map_err(|_| invalid("URL offset must be a nonnegative integer"))?;
@@ -232,6 +234,7 @@ impl Reader {
             retained_cells: 0,
             initial_offset,
             fields: Vec::new(),
+            string_fields: HashSet::new(),
             layers: Vec::new(),
         };
         let (path, query) = split_url(url);
@@ -270,7 +273,7 @@ impl Reader {
         match self.phase {
             Phase::Discover => self.discover(&value, &request.url),
             Phase::Schema => {
-                self.fields = schema_fields(&value)?;
+                self.fields = schema_fields_with_strings(&value, &mut self.string_fields)?;
                 self.begin_items()
             }
             Phase::Items => self.items(value, &request.url),
@@ -280,6 +283,7 @@ impl Reader {
     /// Accepts a response after a same-origin redirect, resolving relative links against
     /// the effective URL. Use `accept_response` for transports that refuse redirects.
     pub fn accept_response_from(&mut self, body: &[u8], effective_url: &str) -> Result<()> {
+        let effective_url = effective_url.split('#').next().unwrap_or(effective_url);
         let request = self.request.as_mut().ok_or_else(|| invalid("unexpected response after completion"))?;
         if request.url != effective_url {
             if crate::vfs::url_origin(effective_url).as_ref() != Some(&self.origin) {
@@ -310,7 +314,10 @@ impl Reader {
     fn cell_bytes(&self, cells: usize) -> usize {
         self.retained_cells.saturating_add(cells).saturating_mul(std::mem::size_of::<FieldValue>()).saturating_mul(2)
     }
-    fn schedule(&mut self, url: String, phase: Phase) -> Result<()> {
+    fn schedule(&mut self, mut url: String, phase: Phase) -> Result<()> {
+        if let Some(fragment) = url.find('#') {
+            url.truncate(fragment);
+        }
         if crate::vfs::url_origin(&url).as_ref() != Some(&self.origin) {
             return Err(invalid("cross-origin service links are unsupported; open the linked service explicitly"));
         }
@@ -335,13 +342,15 @@ impl Reader {
         Ok(())
     }
     fn follow(&self, base: &str, href: &str) -> String {
-        let resolved = resolve(base, href);
+        let mut resolved = resolve(base, href);
+        if let Some(fragment) = resolved.find('#') {
+            resolved.truncate(fragment);
+        }
         // Preserve caller-supplied query selectors/authentication on this origin, without
         // overriding explicit links or leaking them to another origin.
         if crate::vfs::url_origin(&resolved).as_ref() != Some(&self.origin) {
             return resolved;
         }
-        let mut resolved = resolved;
         if let Some(query) = split_url(&self.initial).1 {
             for pair in query.split('&').filter(|s| !s.is_empty()) {
                 let key = crate::vfs::decode_query_component(pair.split('=').next().unwrap_or(""));
@@ -357,6 +366,9 @@ impl Reader {
         resolved
     }
     fn discover(&mut self, value: &Value, source: &str) -> Result<()> {
+        if value.get("type").and_then(Value::as_str) == Some("Feature") {
+            return Err(invalid("single-feature URLs are unsupported; open the collection items URL"));
+        }
         if let Some(collections) = value.get("collections").and_then(Value::as_array) {
             for entry in collections {
                 self.add_collection(entry, source, true)?;
@@ -447,6 +459,7 @@ impl Reader {
             }
             self.features.clear();
             self.fields.clear();
+            self.string_fields.clear();
             self.end_collection()?;
         }
         if self.index == self.collections.len() {
@@ -459,6 +472,7 @@ impl Reader {
         self.features.clear();
         self.ids.clear();
         self.fields.clear();
+        self.string_fields.clear();
         if let Some(url) = self.collections[self.index].schema.clone() { self.schedule(url, Phase::Schema) } else { self.begin_items() }
     }
     fn begin_items(&mut self) -> Result<()> {
@@ -470,7 +484,7 @@ impl Reader {
         if let Some(query) = split_url(&self.initial).1 {
             for pair in query.split('&') {
                 if let Some((key, value)) = pair.split_once('=') {
-                    let key = crate::vfs::decode_query_component(key);
+                    let key = crate::vfs::decode_query_component(key).to_ascii_lowercase();
                     if ["bbox", "datetime", "crs", "bbox-crs"].contains(&key.as_ref())
                         || (key == "offset" && split_url(&self.initial).0.trim_end_matches('/').ends_with("/items"))
                     {
@@ -504,7 +518,7 @@ impl Reader {
             if let Some(query) = split_url(source).1 {
                 for pair in query.split('&') {
                     let key = crate::vfs::decode_query_component(pair.split('=').next().unwrap_or(""));
-                    if ["bbox", "datetime", "crs", "bbox-crs"].contains(&key.as_ref()) && !has_query(&next, &key) {
+                    if ["bbox", "datetime", "crs", "bbox-crs", "limit"].contains(&key.as_ref()) && !has_query(&next, &key) {
                         next.push(if next.contains('?') { '&' } else { '?' });
                         next.push_str(pair);
                     }
@@ -594,6 +608,17 @@ impl Reader {
             }
         }
         self.check_memory(self.features.len().saturating_mul(fields.len().saturating_add(2)))?;
+        for feature in &self.features {
+            for name in &self.string_fields {
+                if feature
+                    .get("properties")
+                    .and_then(|properties| properties.get(name))
+                    .is_some_and(|value| !value.is_null() && !value.is_string())
+                {
+                    return Err(invalid("feature property disagrees with its advertised string schema"));
+                }
+            }
+        }
         // GeoJSON's shared decoder flattens nested properties. Preserve their complete
         // JSON value as text here, so the advertised top-level schema remains meaningful.
         for feature in &mut self.features {
@@ -633,7 +658,7 @@ impl Reader {
         let doc = json!({"type":"FeatureCollection", "name":c.id, "features":std::mem::take(&mut self.features)});
         let bytes = serde_json::to_vec(&doc).map_err(|_| limited("cannot assemble feature pages"))?;
         let mut layer = super::geojson::parse(&bytes, &c.id)?;
-        apply_schema(&mut layer, &self.fields)?;
+        apply_schema(&mut layer, &self.fields, doc["features"].as_array().unwrap())?;
         c.crs.apply_to_layer(&mut layer);
         if c.swap {
             for feature in &mut layer.features {
@@ -841,7 +866,11 @@ fn first_axis_direction(wkt: &str) -> Option<&str> {
     None
 }
 
+#[cfg(test)]
 fn schema_fields(root: &Value) -> Result<Vec<FieldDef>> {
+    schema_fields_with_strings(root, &mut HashSet::new())
+}
+fn schema_fields_with_strings(root: &Value, string_fields: &mut HashSet<String>) -> Result<Vec<FieldDef>> {
     let document = root;
     let root = resolve_ref(document, root, 0)?;
     let Some(properties) = root.get("properties").and_then(Value::as_object) else { return Ok(Vec::new()) };
@@ -880,6 +909,9 @@ fn schema_fields(root: &Value) -> Result<Vec<FieldDef>> {
                 (Some("string" | "object" | "array"), _) => FieldType::Text,
                 _ => return Ok(None),
             };
+            if kind == Some("string") {
+                string_fields.insert(name.clone());
+            }
             Ok(Some(FieldDef::new(name, field_type)))
         })
         .filter_map(Result::transpose)
@@ -892,17 +924,29 @@ fn resolve_ref<'a>(root: &'a Value, value: &'a Value, depth: usize) -> Result<&'
     let Some(reference) = value.get("$ref").and_then(Value::as_str) else { return Ok(value) };
     let path =
         reference.strip_prefix('#').ok_or_else(|| invalid("external JSON schema references are unsupported; use IGNORE_SCHEMA=YES"))?;
-    resolve_ref(root, root.pointer(path).ok_or_else(|| invalid("JSON schema reference does not exist"))?, depth + 1)
+    // URI fragments preserve literal plus signs; query decoding otherwise handles
+    // percent escapes before serde_json applies the JSON-pointer tilde escapes.
+    let path = path.replace('+', "%2B");
+    let path = crate::vfs::decode_query_component(&path);
+    resolve_ref(root, root.pointer(&path).ok_or_else(|| invalid("JSON schema reference does not exist"))?, depth + 1)
 }
-fn apply_schema(layer: &mut Layer, declared: &[FieldDef]) -> Result<()> {
+fn apply_schema(layer: &mut Layer, declared: &[FieldDef], raw: &[Value]) -> Result<()> {
     for field in declared {
         if let Some(index) = layer.schema.fields().iter().position(|f| f.name == field.name) {
             let old_type = layer.schema.fields()[index].field_type;
             if old_type != field.field_type {
-                for feature in &mut layer.features {
+                for (row, feature) in layer.features.iter_mut().enumerate() {
                     let value = &mut feature.attributes[index];
+                    if field.field_type == FieldType::Integer
+                        && let Some(integer) =
+                            raw[row].get("properties").and_then(|properties| properties.get(&field.name)).and_then(Value::as_i64)
+                    {
+                        *value = FieldValue::Integer(integer);
+                        continue;
+                    }
                     match (&*value, field.field_type) {
                         (FieldValue::Null, _) => {}
+                        (FieldValue::Text(_), FieldType::Text) => {}
                         (FieldValue::Integer(v), FieldType::Float) => *value = FieldValue::Float(*v as f64),
                         (FieldValue::Float(v), FieldType::Integer)
                             if v.fract() == 0.0 && (i64::MIN as f64..-(i64::MIN as f64)).contains(v) =>
@@ -991,6 +1035,88 @@ mod tests {
         let mut r = Reader::new("https://example.test/collections/a", options).unwrap();
         accept(&mut r, collection("a"));
         r
+    }
+    fn at_schema(schema: Value) -> Reader {
+        let mut r = Reader::new("https://example.test/collections/a", &Default::default()).unwrap();
+        let mut c = collection("a");
+        c["links"].as_array_mut().unwrap().push(json!({"rel":"describedby","type":"application/schema+json","href":"/schema"}));
+        accept(&mut r, c);
+        accept(&mut r, schema);
+        r
+    }
+    #[test]
+    fn schema_strings_preserve_mixed_text_dates_and_times_without_stringifying_numbers() {
+        let schema = json!({"properties":{"label":{"type":"string"}}});
+        let values = [json!("2020-01-01"), json!("Lake A"), json!("12:00:00"), json!("2020-01-01T12:00:00Z"), Value::Null];
+        let mut r = at_schema(schema.clone());
+        accept(&mut r, page(values.iter().enumerate().map(|(i, value)| feature(json!(i), json!({"label":value}))).collect(), None));
+        let l = r.finish().unwrap().layers.remove(0);
+        for (row, value) in l.features.iter().zip(values) {
+            let expected = value.as_str().map_or(FieldValue::Null, |text| FieldValue::Text(text.into()));
+            assert_eq!(row.get(&l.schema, "label").unwrap(), &expected);
+        }
+        for invalid_value in [json!(2), json!(true), json!({}), json!([])] {
+            let mut r = at_schema(schema.clone());
+            let value = page(vec![feature(json!(1), json!({"label":"Lake A"})), feature(json!(2), json!({"label":invalid_value}))], None);
+            assert!(r.accept_response(&serde_json::to_vec(&value).unwrap()).unwrap_err().to_string().contains("string schema"));
+        }
+    }
+    #[test]
+    fn schema_integer_endpoints_remain_exact_after_geojson_inference() {
+        let mut r = at_schema(json!({"properties":{"v":{"type":"integer"}}}));
+        accept(&mut r, page(vec![feature(json!(1), json!({"v":i64::MIN})), feature(json!(2), json!({"v":i64::MAX}))], None));
+        let l = r.finish().unwrap().layers.remove(0);
+        for (row, value) in l.features.iter().zip([i64::MIN, i64::MAX]) {
+            assert_eq!(row.get(&l.schema, "v").unwrap(), &FieldValue::Integer(value));
+        }
+    }
+    #[test]
+    fn local_reference_fragments_decode_percent_and_pointer_escapes_but_keep_plus() {
+        let mut r = at_schema(json!({"$defs":{"A B+C/~":{"type":"integer"}},
+            "properties":{"v":{"$ref":"#/$defs/A%20B+C~1~0"}}}));
+        accept(&mut r, page(vec![feature(json!(1), json!({"v":42}))], None));
+        let l = r.finish().unwrap().layers.remove(0);
+        assert_eq!(l.features[0].get(&l.schema, "v").unwrap(), &FieldValue::Integer(42));
+    }
+    #[test]
+    fn fragment_links_keep_auth_and_page_limits_and_cannot_hide_cycles() {
+        let o = VectorOpenOptions::default();
+        let mut r = Reader::new("https://example.test/collections/a?key=caller#intro", &o).unwrap();
+        assert_eq!(query_parameter(&r.next_request().unwrap().url, "key").as_deref(), Some("caller"));
+        accept(&mut r, collection("a"));
+        accept(&mut r, page(vec![feature(json!(1), json!({}))], Some("?offset=1#page")));
+        let url = &r.next_request().unwrap().url;
+        assert!(!url.contains('#'));
+        assert_eq!(query_parameter(url, "key").as_deref(), Some("caller"));
+        assert_eq!(query_parameter(url, "limit").as_deref(), Some("1000"));
+        let duplicate = page(vec![feature(json!(2), json!({}))], Some("?offset=1#other"));
+        assert!(r.accept_response(&serde_json::to_vec(&duplicate).unwrap()).unwrap_err().to_string().contains("cycle"));
+        let mut r = at_items(&o);
+        accept(&mut r, page(vec![feature(json!(1), json!({}))], Some("?offset=1&limit=2")));
+        assert_eq!(query_parameter(&r.next_request().unwrap().url, "limit").as_deref(), Some("2"));
+    }
+    #[test]
+    fn url_bbox_uses_server_order_and_case_insensitive_option_names() {
+        let mut r = Reader::new(
+            "https://example.test/collections/a/items?CRS=EPSG:4326&BBOX=51,7,53,9&BBOX-CRS=EPSG:4326&OFFSET=1",
+            &Default::default(),
+        )
+        .unwrap();
+        let mut c = collection("a");
+        c["crs"] = json!([CRS84, "http://www.opengis.net/def/crs/EPSG/0/4326"]);
+        accept(&mut r, c);
+        let url = &r.next_request().unwrap().url;
+        assert!(r.collections[0].swap);
+        assert_eq!(query_parameter(url, "bbox").as_deref(), Some("51,7,53,9"));
+        assert_eq!(query_parameter(url, "offset").as_deref(), Some("1"));
+        assert!(!url.contains("BBOX="));
+    }
+    #[test]
+    fn individual_feature_documents_are_rejected_without_deriving_items_urls() {
+        let mut r = Reader::new("https://example.test/collections/a/items/1", &Default::default()).unwrap();
+        let error = r.accept_response(&serde_json::to_vec(&feature(json!(1), json!({}))).unwrap()).unwrap_err();
+        assert!(error.to_string().contains("single-feature URLs are unsupported"));
+        assert!(r.next_request().is_none());
     }
     #[test]
     fn catalog_paging_does_not_inherit_items_offsets_and_rejects_dot_ids() {

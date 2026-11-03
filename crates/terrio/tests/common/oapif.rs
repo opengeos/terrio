@@ -75,10 +75,10 @@ impl Server {
                 "/api/collections/places/items" => {
                     let parameter = |name| target.split_once('?').map(|(_,q)|q).unwrap_or("").split('&').find_map(|p|p.split_once('=').filter(|(k,_)|*k==name).map(|(_,v)|v.to_owned()));
                     let offset = parameter("offset").and_then(|s|s.parse::<usize>().ok()).unwrap_or(0);
-                    let limit = parameter("limit").and_then(|s|s.parse::<usize>().ok()).unwrap_or(2);
+                    let limit = parameter("limit").and_then(|s|s.parse::<usize>().ok()).unwrap_or(5);
                     let end = offset.saturating_add(limit).min(5);
                     let features: Vec<_> = (offset..end).map(|i|json!({"type":"Feature","id":i,"properties":{"name":format!("p{i}"),"value":i as f64+0.5},"geometry":{"type":"Point","coordinates":[i as f64+10.,i as f64+20.,3.]}})).collect();
-                    let links = if end<5 {vec![json!({"rel":"next","href":format!("?offset={end}&limit={limit}")})]}else{Vec::new()};
+                    let links = if end<5 {vec![json!({"rel":"next","href":format!("?offset={end}#page-{end}")})]}else{Vec::new()};
                     json!({"type":"FeatureCollection","numberMatched":5,"numberReturned":features.len(),"features":features,"links":links})
                 },
                 _ => json!({"error":"unexpected test route"}),
