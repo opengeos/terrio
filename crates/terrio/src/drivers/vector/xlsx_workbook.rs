@@ -1515,8 +1515,9 @@ struct SheetContext<'a> {
 fn ordered(read: &[String], schema: &[&str]) -> Vec<String> {
     let place = |name: &str| schema.iter().position(|s| *s == name);
     let mut out: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for name in read {
-        if !out.contains(name) {
+        if seen.insert(name.as_str()) {
             out.push(name.clone());
         }
     }
@@ -1585,8 +1586,9 @@ fn section_xml(sheet: &Worksheet, name: &str, context: &mut SheetContext<'_>, ou
             if let Some(color) = sheet.tab_color {
                 let _ = write!(out, "<tabColor rgb=\"{}\"/>", rgb(color));
             }
+            // A tab color the model does not hold, such as a theme color, stays as read, in its place.
             for (name, xml) in &children {
-                if name == "outlinePr" {
+                if name == "outlinePr" || (name == "tabColor" && sheet.tab_color.is_none()) {
                     out.push_str(xml);
                 }
             }

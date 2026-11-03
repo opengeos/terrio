@@ -473,11 +473,15 @@ fn apply_border(xml: &str, format: &mut Format) {
                     });
                     format.borders[i] = style.map(|s| (s, None));
                     side = style.map(|_| i);
-                } else if local.as_ref() == "color"
-                    && let Some(i) = side
-                    && let Some(border) = &mut format.borders[i]
-                {
-                    border.1 = rgb_of(&e);
+                } else if local.as_ref() == "color" {
+                    if let Some(i) = side
+                        && let Some(border) = &mut format.borders[i]
+                    {
+                        border.1 = rgb_of(&e);
+                    }
+                } else {
+                    // Only a color inside a side is that side's: `diagonal` and the rest end it.
+                    side = None;
                 }
             }
             Event::Eof => break,
@@ -1748,6 +1752,25 @@ mod tests {
         workbook.sheet_mut("Other").unwrap().set_zoom(80).unwrap();
         let bytes = workbook.to_bytes().unwrap();
         assert!(text_part(&bytes, "xl/worksheets/sheet2.xml").contains("tabSelected=\"1\""));
+    }
+
+    #[test]
+    fn a_diagonals_color_is_not_a_sides() {
+        let mut format = Format::default();
+        apply_border(
+            "<border><bottom style=\"thin\"><color rgb=\"FF0000FF\"/></bottom><diagonal style=\"thin\"><color rgb=\"FFFF0000\"/></diagonal></border>",
+            &mut format,
+        );
+        assert_eq!(format.borders[3], Some((BorderStyle::Thin, Some(0x0000FF))));
+    }
+
+    #[test]
+    fn fitting_to_pages_keeps_a_theme_tab_color() {
+        let add = |b: String| b.replace("<dimension", "<sheetPr><tabColor theme=\"4\"/></sheetPr><dimension");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &add)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().print_fit_to_width(1);
+        let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(sheet.contains("<sheetPr><tabColor theme=\"4\"/><pageSetUpPr fitToPage=\"1\"/></sheetPr>"), "{sheet}");
     }
 
     #[test]
