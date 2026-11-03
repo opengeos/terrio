@@ -98,6 +98,9 @@ fn open(input: &str, style: &Style) -> Result<Source> {
 /// Runs `terrio preview`.
 pub fn run(mut args: Args) -> Result<()> {
     let display = match args.output.as_deref() {
+        Some(_) if args.display != "auto" => {
+            return Err(Error::InvalidArgument("--display draws in the terminal: leave it out with -o".into()));
+        }
         Some("-") if std::io::stdout().is_terminal() => {
             return Err(Error::InvalidArgument("standard output is a terminal: pipe the PNG bytes, or give -o FILE".into()));
         }

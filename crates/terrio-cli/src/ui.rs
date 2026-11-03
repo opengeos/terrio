@@ -371,7 +371,7 @@ fn route(request: &Request, session: &Session) -> Reply {
         ("GET", "/api/view") => view_info(session),
         ("POST", "/api/view") => match open_view(&request.body, session) {
             Ok(()) => view_info(session),
-            Err(message) => failure(400, &message),
+            Err(reply) => reply,
         },
         ("POST", "/api/list") => match list_directory(&request.body) {
             Ok(listing) => (200, "application/json", listing.to_string()),
@@ -405,17 +405,20 @@ fn view_info(session: &Session) -> Reply {
 }
 
 /// Opens the dataset named by a `preview` command line (`{"args": […]}`) for the map, replacing any.
-fn open_view(body: &[u8], session: &Session) -> Result<(), String> {
+fn open_view(body: &[u8], session: &Session) -> Result<(), Reply> {
     use clap::{Args as _, FromArgMatches as _};
-    let params: Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
-    let args: Vec<String> =
-        params.get("args").and_then(|a| serde_json::from_value(a.clone()).ok()).ok_or("args must be an array of strings")?;
+    let bad = |message: String| failure(400, &message);
+    let params: Value = serde_json::from_slice(body).map_err(|e| bad(e.to_string()))?;
+    let args: Vec<String> = params
+        .get("args")
+        .and_then(|a| serde_json::from_value(a.clone()).ok())
+        .ok_or_else(|| bad("args must be an array of strings".into()))?;
     let matches = crate::cmd::preview::Args::augment_args(clap::Command::new("preview"))
         .no_binary_name(true)
         .try_get_matches_from(&args)
-        .map_err(|e| e.to_string())?;
-    let parsed = crate::cmd::preview::Args::from_arg_matches(&matches).map_err(|e| e.to_string())?;
-    let renderer = crate::cmd::preview::renderer(&parsed.input, &parsed.style).map_err(|e| e.to_string())?;
+        .map_err(|e| bad(e.to_string()))?;
+    let parsed = crate::cmd::preview::Args::from_arg_matches(&matches).map_err(|e| bad(e.to_string()))?;
+    let renderer = crate::cmd::preview::renderer(&parsed.input, &parsed.style).map_err(|e| render_failure(&e))?;
     let mut view = lock(&session.view);
     let generation = view.as_ref().map_or(1, |v| v.generation + 1);
     *view = Some(View { name: parsed.input, generation, renderer: Arc::new(Mutex::new(renderer)) });
@@ -445,12 +448,16 @@ fn tile(query: &str, session: &Session) -> Result<Vec<u8>, Reply> {
         Some(view) => view.renderer.clone(),
     };
     let image = lock(&renderer).region(window, tw, th);
-    image.and_then(|image| image.to_png()).map_err(|e| match e {
-        // A tile the page asked for wrongly, or a raster that needs overviews to be drawn; anything
-        // else, a read failing, is the server's.
+    image.and_then(|image| image.to_png()).map_err(|e| render_failure(&e))
+}
+
+/// A request asked for wrongly, or a raster that needs overviews to be drawn, is the page's
+/// error; anything else, a read failing, is the server's.
+fn render_failure(e: &terrio::Error) -> Reply {
+    match e {
         terrio::Error::InvalidArgument(_) | terrio::Error::Unsupported(_) => failure(400, &e.to_string()),
         _ => failure(500, &e.to_string()),
-    })
+    }
 }
 
 /// A run's command and arguments: `{"name": …, "arguments": {"args": […]}}`, as an MCP tool call.

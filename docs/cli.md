@@ -3621,7 +3621,7 @@ Option | Description
 `-s`, `--stretch` | `auto`, `minmax`, `pLOW,pHIGH` (percentiles) or `LOW,HIGH` (values as stored, before a band's scale and offset); `minmax` and percentiles are measured on the drawn pixels, so a shrunk image's averaging can narrow them
 `-l`, `--layer` | Vector: draw this layer (repeatable); by default all, which must share a CRS
 `-a`, `--attribute` | Vector: color features by this numeric field (viridis unless `-c`); the stretch is measured on the features' values
-`--display` | `auto`, `kitty`, `iterm`, `sixel` or `blocks`
+`--display` | `auto`, `kitty`, `iterm`, `sixel` or `blocks`; refused with `-o`
 
 In the terminal, `auto` picks Kitty's graphics protocol in Kitty and Ghostty, iTerm2 inline images
 in iTerm2 and WezTerm, sixels where `TERM` names foot, mlterm or sixel, and otherwise colored

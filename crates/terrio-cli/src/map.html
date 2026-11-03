@@ -146,7 +146,12 @@ function paint() {
     for (let row = Math.floor(top / size); row * size < bottom; row++) {
       for (let col = Math.floor(left / size); col * size < right; col++) {
         const tile = tileAt(level, col, row);
-        if (tile && tile.image) context.drawImage(tile.image, tile.x, tile.y, tile.w, tile.h);
+        // Cleared first, so that a coarser tile does not show through this one's transparent
+        // (nodata) pixels.
+        if (tile && tile.image) {
+          context.clearRect(tile.x, tile.y, tile.w, tile.h);
+          context.drawImage(tile.image, tile.x, tile.y, tile.w, tile.h);
+        }
         else if (level === finest || level === info.maxLevel) load(level, col, row);
       }
     }
