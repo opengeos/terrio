@@ -15,6 +15,8 @@ use std::collections::HashSet;
 
 const CRS84: &str = "http://www.opengis.net/def/crs/OGC/1.3/CRS84";
 const RESPONSE_CAP: usize = 16 << 20;
+// Covers retained JSON Values, the temporary serialized collection and decoder
+// buffers. Per-field typed workspace is added separately by check_memory.
 const JSON_MEMORY_FACTOR: usize = 32;
 
 /// Options shared by native Rust, CLI/MCP, Python and JavaScript's fetch adapter.
@@ -472,7 +474,7 @@ impl Reader {
                 if !(id.is_string() || id.is_i64() || id.is_u64()) {
                     return Err(invalid("feature id must be a string or integer"));
                 }
-                if !self.ids.insert(id.as_str().map(str::to_owned).unwrap_or_else(|| id.to_string())) {
+                if !self.ids.insert(id.to_string()) {
                     return Err(invalid("service repeats a feature identifier across pages"));
                 }
             }
@@ -514,11 +516,13 @@ impl Reader {
         // The core model has unsigned FIDs, and its GeoJSON decoder uses a leading
         // id property for string IDs. Preserve signed IDs and conflicting properties
         // separately instead of silently losing either identifier or property data.
-        let separate_ids = self.features.iter().any(|f| {
-            let id = &f["id"];
-            id.as_i64().is_some_and(|n| n < 0)
-                || (id.is_string() && f.get("properties").and_then(|p| p.get("id")).is_some_and(|property| property != id))
-        });
+        let mixed_ids = self.features.iter().any(|f| f["id"].is_string()) && self.features.iter().any(|f| f["id"].is_number());
+        let separate_ids = mixed_ids
+            || self.features.iter().any(|f| {
+                let id = &f["id"];
+                id.as_i64().is_some_and(|n| n < 0)
+                    || (id.is_string() && f.get("properties").and_then(|p| p.get("id")).is_some_and(|property| property != id))
+            });
         if separate_ids {
             let mut name = "_oapif_id".to_owned();
             while fields.contains(name.as_str()) {
@@ -526,7 +530,7 @@ impl Reader {
             }
             for feature in &mut self.features {
                 if let Some(id) = feature.as_object_mut().and_then(|f| f.remove("id")) {
-                    let text = id.as_str().map(str::to_owned).unwrap_or_else(|| id.to_string());
+                    let text = if mixed_ids { id.to_string() } else { id.as_str().map(str::to_owned).unwrap_or_else(|| id.to_string()) };
                     let properties = feature.as_object_mut().unwrap().entry("properties").or_insert_with(|| json!({}));
                     if !properties.is_object() {
                         *properties = json!({});
@@ -670,7 +674,6 @@ fn select_crs(value: &Value, options: &OapifOpenOptions) -> Result<(String, Spat
             .iter()
             .copied()
             .find(|s| !is_crs84(s) && SpatialRef::parse(s).is_ok_and(|c| c.epsg == crs.epsg && c.esri == crs.esri && c.same_as(&crs)))
-            .or_else(|| is_crs84(asked).then_some(CRS84))
     };
     let requested = if let Some(asked) = &options.crs {
         Some(available(asked).ok_or_else(|| invalid("requested CRS is not advertised by the collection"))?)
@@ -684,22 +687,41 @@ fn select_crs(value: &Value, options: &OapifOpenOptions) -> Result<(String, Spat
 }
 fn north_first(crs: &SpatialRef) -> Result<bool> {
     let wkt = crs.to_wkt().ok_or_else(|| invalid("cannot determine the authority axis order"))?;
+    match first_axis_direction(&wkt) {
+        Some(direction) if direction.eq_ignore_ascii_case("north") => Ok(true),
+        Some(direction) if direction.eq_ignore_ascii_case("east") => Ok(false),
+        Some(_) => Err(invalid("authority axes other than north/east are unsupported")),
+        None => Ok(crs.is_geographic()),
+    }
+}
+/// Root coordinate-system axis, ignoring commas/brackets inside quoted names.
+fn first_axis_direction(wkt: &str) -> Option<&str> {
+    let bytes = wkt.as_bytes();
     let (mut depth, mut quoted) = (0usize, false);
-    for (i, b) in wkt.bytes().enumerate() {
+    for (i, &b) in bytes.iter().enumerate() {
         if b == b'"' {
             quoted = !quoted;
         }
         if quoted {
             continue;
         }
-        if depth == 1 && wkt[i..].starts_with("AXIS[") {
-            let axis = wkt[i..].split(']').next().unwrap_or("");
-            let direction = axis.split(',').nth(1).unwrap_or("").trim().to_ascii_uppercase();
-            return match direction.as_str() {
-                "NORTH" => Ok(true),
-                "EAST" => Ok(false),
-                _ => Err(invalid("authority axes other than north/east are unsupported")),
-            };
+        if depth == 1 && bytes.get(i..i + 5).is_some_and(|word| word.eq_ignore_ascii_case(b"AXIS[")) {
+            let tail = &bytes[i + 5..];
+            let mut in_name = false;
+            for (offset, &b) in tail.iter().enumerate() {
+                if b == b'"' {
+                    in_name = !in_name;
+                }
+                if !in_name && b == b',' {
+                    let direction = &tail[offset + 1..];
+                    let end = direction.iter().position(|b| matches!(b, b',' | b']' | b'[')).unwrap_or(direction.len());
+                    return std::str::from_utf8(&direction[..end]).ok().map(str::trim);
+                }
+                if !in_name && b == b']' {
+                    return None;
+                }
+            }
+            return None;
         }
         if b == b'[' {
             depth += 1;
@@ -707,8 +729,9 @@ fn north_first(crs: &SpatialRef) -> Result<bool> {
             depth = depth.saturating_sub(1);
         }
     }
-    Ok(crs.is_geographic())
+    None
 }
+
 fn schema_fields(root: &Value) -> Result<Vec<FieldDef>> {
     let document = root;
     let root = resolve_ref(document, root, 0)?;
@@ -908,6 +931,23 @@ mod tests {
         accept(&mut r, page(vec![feature(json!(1), json!({"when":""}))], None));
         let l = r.finish().unwrap().layers.remove(0);
         assert_eq!(l.features[0].get(&l.schema, "when").unwrap(), &FieldValue::Text(String::new()));
+    }
+    #[test]
+    fn axis_names_with_unicode_commas_and_escaped_quotes_are_safe() {
+        assert_eq!(first_axis_direction(r#"GEOGCS["é",AXIS["north, ""quoted"" name",NORTH]]"#), Some("NORTH"));
+        assert_eq!(first_axis_direction(r#"GEOGCS[é,axis["a, b",east]]"#), Some("east"));
+        assert_eq!(first_axis_direction(r#"PROJCS["x",GEOGCS["y",AXIS["latitude",NORTH]],AXIS["east",EAST]]"#), Some("EAST"));
+    }
+    #[test]
+    fn mixed_numeric_and_string_ids_remain_distinct_across_pages() {
+        let mut r = at_items(&Default::default());
+        accept(&mut r, page(vec![feature(json!(1), json!({}))], Some("?offset=1")));
+        accept(&mut r, page(vec![feature(json!("1"), json!({}))], None));
+        let l = r.finish().unwrap().layers.remove(0);
+        for (f, expected) in l.features.iter().zip([json!(1), json!("1")]) {
+            let FieldValue::Text(text) = f.get(&l.schema, "_oapif_id").unwrap() else { panic!() };
+            assert_eq!(serde_json::from_str::<Value>(text).unwrap(), expected);
+        }
     }
     #[test]
     fn authority_axes_bbox_temporal_filter_and_range() {

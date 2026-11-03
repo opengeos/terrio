@@ -3632,3 +3632,9 @@ including empty-string dates. Use `IGNORE_SCHEMA=YES` to infer types from the
 source values instead. Schemas without property definitions fall back to inference.
 OAPIF-specific open options are rejected on other vector sources, even when their
 value equals the default.
+
+`URL` supplies a bare `OAPIF:` only for APIs accepting open options (such as
+`open_vector` and conversion). Metadata-only `info` and layer listing require
+the complete prefixed service URL. Mixed numeric/string source IDs are preserved
+as serialized JSON in `_oapif_id` text, retaining the distinction between `1`
+and `"1"`.

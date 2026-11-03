@@ -182,8 +182,11 @@ viewshed and pansharpening can ship independently. Schedule indexed catalogs and
 the multidimensional model according to demand for continental mosaics and
 scientific data cubes, respectively.
 
-Other worthwhile follow-ups are weighted/fractional zonal statistics, OGC API
-Features access and overview refresh tooling. Avoid prioritizing proprietary
+Weighted/fractional zonal statistics and OGC API Features implementations are
+tracked in [#516](https://github.com/opengeos/terrio/pull/516) and
+[#522](https://github.com/opengeos/terrio/pull/522), with supported scope and
+reference comparisons in the CLI and testing documentation. Overview refresh
+remains a follow-up. Avoid prioritizing proprietary
 drivers and core database connections: the current roadmap explicitly excludes
 them and provides an optional GDAL backend for the long tail.
 
