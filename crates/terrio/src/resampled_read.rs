@@ -9,13 +9,13 @@
 // SPDX-License-Identifier: MIT
 //
 // Derived from (translated to Rust and modified):
-//   GDAL v3.13.2:
+//   GDAL v3.13.3:
 //     gcore/rasterio.cpp
 //     gcore/gdaldataset.cpp
 //     apps/gdal_translate_lib.cpp
 //     frmts/vrt/vrtsources.cpp
 // Written to match the behavior of (no code is translated from these sources):
-//   GDAL v3.13.2:
+//   GDAL v3.13.3:
 //     gcore/gdalrasterband.cpp (GDALRasterBand::GetMaskBand)
 //     frmts/gtiff/gtiffrasterband.cpp (GTiffRasterBand::GetMaskBand, GetMaskFlags)
 //     gcore/gdalnodatamaskband.cpp
@@ -27,9 +27,11 @@
 //! GDAL's mask bands weight them.
 
 use crate::cog::read_bands;
+use crate::dataset::fallible;
 use crate::drivers::gdal_overview::{Method, ResampledRead, Sample, nbits_max};
 use crate::ops::Resampling;
 use crate::ops::overview::OverviewSelection;
+use crate::ops::translate::round_if_close;
 use crate::{Error, LazyRaster, RasterDataset, Result, Window, WindowOptions};
 use std::ops::Range;
 use wbraster::DataType;
@@ -135,6 +137,10 @@ enum How {
     /// `RasterIOResampled`'s kernels, band by band or, `dataset`, together
     /// (`GDALDataset::RasterIOResampled`).
     Kernel { dataset: bool },
+    /// Nothing read: a level read alone whose window starts at its last column or row once
+    /// rounded, of which `VRTSimpleSource::GetSrcDstWindow` reads nothing. The output keeps the
+    /// value it starts with, each band's nodata value or 0.
+    Fill,
 }
 
 /// Some of the bands of a read (their positions among those asked for), read from a level one
@@ -280,6 +286,11 @@ impl LazyRaster {
         if bw == 0 || bh == 0 {
             return Err(Error::InvalidArgument(format!("the output size {bw}x{bh} is empty")));
         }
+        // An output no allocator can hold is refused before any buffer is sized from it.
+        let what = "a resampled read";
+        let sample_bytes = bands.iter().map(|&b| sample_size(self.band_data_type(b))).sum::<usize>();
+        let bytes = fallible::len(&[sample_bytes.max(1), bw, bh], what)?;
+        fallible::reserve(&mut Vec::<u8>::new(), bytes, what)?;
         match o.resampling {
             Resampling::Nearest
             | Resampling::Bilinear
@@ -372,7 +383,9 @@ impl LazyRaster {
         let geo_transform = [gt[0] + x * gt[1] + y * gt[2], gt[1] * rx, gt[2] * ry, gt[3] + x * gt[4] + y * gt[5], gt[4] * rx, gt[5] * ry];
         let gcp = |pixel: f64, line: f64| ((pixel - x) * bw / xs, (line - y) * bh / ys);
         let whole = read.full.is_copy(read.buf) && read.buf == read.full.size;
-        let nodata = self.level_band_nodata(&read.bands, None);
+        // The nodata values of the dataset read: a level read alone is one of its own
+        // (`gdal_translate -ovr`), whose bands an external overview's tags describe.
+        let nodata = self.level_band_nodata(&read.bands, read.fixed.flatten());
         self.window_dataset(&read.bands, nodata, data, read.buf, geo_transform, gcp, whole)
     }
 
@@ -384,7 +397,11 @@ impl LazyRaster {
         // `GDALDataset::IRasterIO` resamples bands together with these kernels only.
         let together = read.bands.len() > 1 && interpolates(read.resampling);
         if let Some(level) = read.fixed {
-            let request = fixed_request(read.full, level, level.map_or(read.full.size, |i| overviews[i]));
+            let size = level.map_or(read.full.size, |i| overviews[i]);
+            let request = fixed_request(read.full, level, size);
+            if fixed_is_empty(read.full, size) {
+                return vec![Part { bands: all, request, how: How::Fill }];
+            }
             return self.at_level(read, kinds, all, request, together);
         }
         if read.full.is_copy(read.buf) {
@@ -446,7 +463,7 @@ impl LazyRaster {
         let mut first: Option<(LevelMask, DataType)> = None;
         let mut count = 0;
         for (k, &b) in read.bands.iter().enumerate() {
-            let mask = self.level_mask(kinds[k], b, level);
+            let mask = self.level_mask(self.kind_at(kinds[k], b, level), b, level);
             let data_type = self.band_data_type(b);
             if (paletted && b == 1) || mask == LevelMask::Nodata {
                 break;
@@ -470,6 +487,23 @@ impl LazyRaster {
     /// overviews reporting none.
     fn paletted_at(&self, level: Option<usize>) -> bool {
         level.is_none() && self.has_color_table()
+    }
+
+    /// Where a band's validity comes from at a level whose band has mask band `kind` at full
+    /// resolution. An external overview is a dataset of its own (`GetMaskFlags` of its band): its
+    /// own mask, else its own nodata value, else the alpha band; an internal one shares full
+    /// resolution's.
+    fn kind_at(&self, kind: MaskKind, band: usize, level: Option<usize>) -> MaskKind {
+        let Some(i) = level.filter(|&i| !self.level_keeps_mask_flags(i)) else { return kind };
+        if self.level_has_own_mask(i) {
+            MaskKind::PerDataset
+        } else if self.level_band_nodata(&[band], level)[0].is_some() {
+            MaskKind::Nodata
+        } else if let MaskKind::Alpha(a) = kind {
+            MaskKind::Alpha(a)
+        } else {
+            MaskKind::AllValid
+        }
     }
 
     /// A band's mask band at a level. An internal overview without a mask of its own has an
@@ -511,6 +545,12 @@ impl LazyRaster {
         let request = part.request;
         let options = WindowOptions { bands: bands.clone(), overview: request.level };
         match part.how {
+            How::Fill => {
+                let n = read.buf.0 * read.buf.1;
+                let nodata = self.level_band_nodata(&bands, request.level);
+                let values = nodata.iter().flat_map(|nd| std::iter::repeat_n(nd.unwrap_or(0.0), n)).collect();
+                Ok(RasterData::from_f64_vec(self.band_data_type(bands[0]), values))
+            }
             How::Copy => {
                 let (x, y, w, h) = request.window;
                 Ok(self.read_window(Window::new(x, y, w, h), &options)?.raster.data)
@@ -532,7 +572,9 @@ impl LazyRaster {
                 }
                 let resampled = self.resampled_read(read, request, dataset);
                 let nodata = self.level_band_nodata(&bands, request.level);
-                let kinds = &kinds[part.bands.clone()];
+                let kinds: Vec<MaskKind> =
+                    kinds[part.bands.clone()].iter().zip(&bands).map(|(&k, &b)| self.kind_at(k, b, request.level)).collect();
+                let kinds = &kinds;
                 let sample_bytes = sample_size(self.band_data_type(bands[0]));
                 resample(&resampled, &nodata, sample_bytes, &mut |w| {
                     let data = self.read_window(w, &options)?.raster.data;
@@ -546,7 +588,8 @@ impl LazyRaster {
     /// The geometry of `RasterIOResampled` for a request of pixels.
     fn resampled_read(&self, read: &Read, request: Request, dataset: bool) -> ResampledRead {
         let block_width = self.level_block_size(request.level).map_or(request.size.0, |b| b.0);
-        let max = self.sample_bits().and_then(|bits| nbits_max(u32::from(bits), self.data_type()));
+        // The clamp of the level read, whose band's `NBITS` GDAL's `RasterIOResampled` takes.
+        let max = self.level_sample_bits(request.level).and_then(|bits| nbits_max(u32::from(bits), self.data_type()));
         resampled_read(read, request, dataset, block_width, max)
     }
 
@@ -634,6 +677,10 @@ impl LazyRaster {
         let request = match read.fixed {
             // A level read alone: its own mask, if any, else (in GDAL, an all-valid mask band)
             // nothing masked.
+            // A level of which nothing is read: no valid pixel.
+            Some(level) if fixed_is_empty(read.full, level.map_or(read.full.size, |i| self.overviews()[i])) => {
+                return Ok(vec![0; read.buf.0 * read.buf.1]);
+            }
             Some(Some(i)) => {
                 let size = self.overviews()[i];
                 match mask_overviews.iter().position(|s| *s == size) {
@@ -856,10 +903,18 @@ fn fixed_request(full: Request, level: Option<usize>, (lw, lh): (usize, usize)) 
     Request { level, size: (lw, lh), window: (x.min(lw - 1), y.min(lh - 1), xs, ys), fwindow: (fx, fy, fxs, fys) }
 }
 
-/// A value within 0.001 of a whole number, rounded to it (`RoundIfCloseToInt`).
-fn round_if_close(v: f64) -> f64 {
-    let closest = (v + 0.5).floor();
-    if (v - closest).abs() < 1e-3 { closest } else { v }
+/// Whether a level read alone has nothing to read: its window, scaled to the level of size
+/// `(lw, lh)`, starts at the level's last column or row once rounded up (within 0.001 of the next
+/// pixel), where `VRTSimpleSource::GetSrcDstWindow` reads nothing.
+fn fixed_is_empty(full: Request, (lw, lh): (usize, usize)) -> bool {
+    let (w, h) = full.size;
+    let (fx, fy, _, _) = full.fwindow;
+    let start = |off: f64| {
+        let start = off as usize;
+        if off - start as f64 > 1.0 - 1e-3 { start + 1 } else { start }
+    };
+    // Scaled as `fixed_request` scales it.
+    start(fx / (w as f64 / lw as f64)) >= lw || start(fy / (h as f64 / lh as f64)) >= lh
 }
 
 /// The columns and rows GDAL's `RasterIO` samples by nearest neighbour (`GDALRasterBand::

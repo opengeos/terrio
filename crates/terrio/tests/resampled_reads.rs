@@ -103,7 +103,8 @@ fn read_values(data: &RasterData) -> Vec<f64> {
 /// of the average and RMS kernels, and of floating-point kernels, into fused ones; x86-64 builds,
 /// whose arithmetic terrio's kernels follow, do not. A mean exactly between two integers may
 /// then round the other way, and a floating-point value differ in its last bit. Such
-/// differences are allowed in at most 1% of a case's values; any other is an error.
+/// differences are allowed in at most 1% of a case's values, or in one value of a case of fewer
+/// than 200 values; any other is an error.
 fn difference(read: &[f64], expected: &[f64], float: bool, case: &Case) -> Option<String> {
     if read.len() != expected.len() {
         return Some(format!("{} values, not {}", read.len(), expected.len()));
@@ -179,5 +180,97 @@ fn in_memory_reads_are_gdal_reads() {
         assert_eq!(d, None, "{}", case.name());
         let masks: Vec<f64> = masks.iter().map(|&m| f64::from(m)).collect();
         assert_eq!(difference(&masks, &values(case.masks.as_ref().unwrap(), "uint8"), false, case), None, "{}", case.name());
+    }
+}
+
+/// A window a level read alone starts at the level's last column of, once rounded, reads nothing,
+/// as `VRTSimpleSource::GetSrcDstWindow` does: the bands' nodata values or 0, masks of 0.
+#[test]
+fn level_reads_past_the_last_pixel_are_empty() {
+    let methods = [Resampling::Nearest, Resampling::Bilinear, Resampling::Cubic, Resampling::Average, Resampling::Rms, Resampling::Mode];
+    let mut raster = terrio::open_raster_lazy(dir().join("rgb_mask.tif").to_str().unwrap()).unwrap();
+    for resampling in methods {
+        for overview in [OverviewSelection::Level(0), OverviewSelection::None] {
+            let o =
+                ResampledReadOptions { window: Some((63.9995, 0.0, 1.0, 48.0)), size: (1, 4), resampling, overview, ..Default::default() };
+            let (read, masks) = raster.read_resampled_with_masks(&o).unwrap();
+            assert_eq!(read_values(&read.raster.data), [0.0; 12], "{resampling:?} {overview:?}");
+            assert_eq!(masks, [0; 12], "{resampling:?} {overview:?}");
+        }
+    }
+    let mut raster = terrio::open_raster_lazy(dir().join("i16_nodata.tif").to_str().unwrap()).unwrap();
+    let o = ResampledReadOptions {
+        window: Some((49.9995, 0.0, 1.0, 40.0)),
+        size: (1, 3),
+        resampling: Resampling::Average,
+        overview: OverviewSelection::None,
+        ..Default::default()
+    };
+    let (read, masks) = raster.read_resampled_with_masks(&o).unwrap();
+    assert_eq!(read_values(&read.raster.data), [-32768.0; 6]);
+    assert_eq!(masks, [0; 6]);
+}
+
+/// An external overview is a dataset of its own: its nodata value masks its pixels, though full
+/// resolution has none, for bands resampled together or band by band; a level read alone keeps
+/// its nodata value.
+#[test]
+fn external_overview_nodata_masks_its_pixels() {
+    use terrio::{DataType, Raster, RasterConfig, RasterDataset};
+    let dataset = |cols: usize, rows: usize, values: Vec<u8>, nodata: Option<f64>| {
+        let config = RasterConfig { cols, rows, bands: 3, data_type: DataType::U8, nodata: nodata.unwrap_or(-1.0), ..Default::default() };
+        let mut ds = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(values)).unwrap(), nodata.is_some());
+        ds.set_geo_transform([0.0, 64.0 / cols as f64, 0.0, 48.0, 0.0, -48.0 / rows as f64]);
+        ds
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base.tif");
+    terrio::write_raster_dataset(&dataset(64, 48, vec![1; 3 * 64 * 48], None), base.to_str().unwrap(), &Default::default()).unwrap();
+    // Each band one value, but for nodata pixels (7) at even rows and columns.
+    let ovr: Vec<u8> = (0..3)
+        .flat_map(|b| (0..24 * 32).map(move |i| if (i / 32) % 2 == 0 && (i % 32) % 2 == 0 { 7 } else { 100 + 50 * b as u8 }))
+        .collect();
+    let ovr_tif = dir.path().join("ovr.tif");
+    terrio::write_raster_dataset(&dataset(32, 24, ovr, Some(7.0)), ovr_tif.to_str().unwrap(), &Default::default()).unwrap();
+    std::fs::rename(&ovr_tif, dir.path().join("base.tif.ovr")).unwrap();
+    let mut raster = terrio::open_raster_lazy(base.to_str().unwrap()).unwrap();
+    assert_eq!(raster.overviews(), [(32, 24)]);
+    assert_eq!(raster.band_nodata(1), None);
+    // GDAL 3.12.1 reads these values of the same files. (Its cubic and Lanczos kernels give
+    // nodata where the pixel nearest an output pixel's center is invalid, here every one.)
+    for resampling in [Resampling::Bilinear, Resampling::Average, Resampling::Rms] {
+        for (overview, nodata) in [(OverviewSelection::Auto, None), (OverviewSelection::Level(0), Some(7.0))] {
+            let o = ResampledReadOptions { size: (16, 12), resampling, overview, ..Default::default() };
+            let expected: Vec<f64> = [100.0, 150.0, 200.0].iter().flat_map(|&v| [v; 16 * 12]).collect();
+            let read = raster.read_resampled(&o).unwrap();
+            assert_eq!(read_values(&read.raster.data), expected, "{resampling:?} {overview:?}");
+            assert_eq!(read.band_nodata(1), nodata, "{resampling:?} {overview:?}");
+            for band in 1..=3 {
+                let alone = raster.read_resampled(&ResampledReadOptions { bands: vec![band], ..o.clone() }).unwrap();
+                assert_eq!(
+                    read_values(&alone.raster.data),
+                    expected[(band - 1) * 192..band * 192],
+                    "{resampling:?} {overview:?} band {band}"
+                );
+            }
+        }
+    }
+}
+
+/// A shared handle reads as the raster it shares: an overview without a mask of its own is all
+/// valid, rather than sampling the full-resolution mask.
+#[test]
+fn shared_handles_weight_overviews_by_their_own_masks() {
+    let path = dir().join("rgb_mask_plain_overviews.tif");
+    let mut direct = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
+    let mut shared = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap().shared();
+    for resampling in [Resampling::Nearest, Resampling::Bilinear, Resampling::Cubic, Resampling::Average] {
+        for overview in [OverviewSelection::Auto, OverviewSelection::Level(0), OverviewSelection::Level(1)] {
+            let o = ResampledReadOptions { size: (13, 9), resampling, overview, ..Default::default() };
+            let (a, a_masks) = direct.read_resampled_with_masks(&o).unwrap();
+            let (b, b_masks) = shared.read_resampled_with_masks(&o).unwrap();
+            assert_eq!(read_values(&a.raster.data), read_values(&b.raster.data), "{resampling:?} {overview:?}");
+            assert_eq!(a_masks, b_masks, "{resampling:?} {overview:?}");
+        }
     }
 }

@@ -235,6 +235,32 @@ pub(crate) trait WindowSource: Send + Sync {
     fn read_mask(&mut self, _level: usize, _window: Window) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
+    /// Whether a level (`i + 1` for overview `i`) has a mask of its own, which
+    /// [`WindowSource::read_own_mask`] reads, rather than none: by default, every level of a
+    /// source with a mask.
+    fn level_has_own_mask(&self, _level: usize) -> bool {
+        self.has_mask()
+    }
+    /// Whether GDAL's band of a level without a mask of its own reports the mask flags of full
+    /// resolution, as an internal overview does: by default, every level.
+    fn level_keeps_mask_flags(&self, _level: usize) -> bool {
+        true
+    }
+    /// The overviews of GDAL's per-dataset mask band (see [`LazyRaster::mask_band_overviews`]):
+    /// by default, every overview of a source with a mask.
+    fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
+        if self.has_mask() { self.overviews() } else { Vec::new() }
+    }
+    /// The bits of a sample of the per-dataset mask band as stored (see
+    /// [`LazyRaster::mask_band_bits`]): by default, unknown.
+    fn mask_band_bits(&self) -> Option<u16> {
+        None
+    }
+    /// Reads a window of a level's own mask (see [`LazyRaster::read_level_mask`]): `None` for a
+    /// level without one. By default, [`WindowSource::read_mask`].
+    fn read_own_mask(&mut self, level: usize, window: Window) -> Result<Option<Vec<u8>>> {
+        self.read_mask(level, window)
+    }
     /// Files a non-streamed source reads; unknown inventories must fail before an export.
     fn input_paths(&self) -> Result<Vec<String>> {
         Err(Error::Unsupported("source inventory unavailable".into()))
@@ -277,6 +303,12 @@ struct SharedRaster {
     block: Option<(usize, usize)>,
     alpha: Option<usize>,
     mask: bool,
+    /// Per overview, whether the shared reader's overview has a mask of its own, and whether it
+    /// keeps the mask flags of full resolution without one.
+    own_masks: Vec<bool>,
+    keeps_mask_flags: Vec<bool>,
+    mask_overviews: Vec<(usize, usize)>,
+    mask_bits: Option<u16>,
 }
 impl SharedRaster {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, LazyRaster>> {
@@ -307,6 +339,21 @@ impl WindowSource for SharedRaster {
     }
     fn read_mask(&mut self, level: usize, window: Window) -> Result<Option<Vec<u8>>> {
         self.lock()?.read_mask(window, level.checked_sub(1))
+    }
+    fn level_has_own_mask(&self, level: usize) -> bool {
+        level.checked_sub(1).map_or(self.mask, |i| self.own_masks.get(i).copied().unwrap_or(false))
+    }
+    fn level_keeps_mask_flags(&self, level: usize) -> bool {
+        level.checked_sub(1).is_none_or(|i| self.keeps_mask_flags.get(i).copied().unwrap_or(true))
+    }
+    fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
+        self.mask_overviews.clone()
+    }
+    fn mask_band_bits(&self) -> Option<u16> {
+        self.mask_bits
+    }
+    fn read_own_mask(&mut self, level: usize, window: Window) -> Result<Option<Vec<u8>>> {
+        self.lock()?.read_level_mask(window, level.checked_sub(1))
     }
     fn streamed(&self) -> Option<&dyn StreamedSource> {
         Some(self)
@@ -365,10 +412,25 @@ impl LazyRaster {
         let block = self.block_size();
         let alpha = self.alpha_band();
         let mask = self.has_mask();
+        let own_masks = (0..overviews.len()).map(|i| self.level_has_own_mask(i)).collect();
+        let keeps_mask_flags = (0..overviews.len()).map(|i| self.level_keeps_mask_flags(i)).collect();
+        let mask_overviews = self.mask_band_overviews();
+        let mask_bits = self.mask_band_bits();
         let referenced = self.geotransform_present();
         let replacement = Self::from(header.clone());
         let original = std::mem::replace(self, replacement);
-        let shared = SharedRaster { referenced, reader: Arc::new(Mutex::new(original)), overviews, block, alpha, mask };
+        let shared = SharedRaster {
+            referenced,
+            reader: Arc::new(Mutex::new(original)),
+            overviews,
+            block,
+            alpha,
+            mask,
+            own_masks,
+            keeps_mask_flags,
+            mask_overviews,
+            mask_bits,
+        };
         *self = Self::from_source(header.clone(), Box::new(shared.clone()));
         Self::from_source(header, Box::new(shared))
     }
@@ -768,6 +830,19 @@ impl LazyRaster {
             Inner::Tiff(t) => Some(t.bits),
             Inner::Memory(_) | Inner::Source(..) => None,
         }
+    }
+
+    /// The bits of a sample of a level (full resolution, or an overview) as stored: an external
+    /// overview's own (its `.ovr` file is a dataset of its own, with its own `NBITS`), else
+    /// [`LazyRaster::sample_bits`].
+    pub(crate) fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        if let Inner::Tiff(t) = &self.inner
+            && overview.and_then(|i| t.levels.get(i + 1)).is_some_and(|l| l.external.is_some())
+            && let Some(ovr) = &t.ovr
+        {
+            return Some(ovr.bits);
+        }
+        self.sample_bits()
     }
 
     /// The driver.
@@ -1321,7 +1396,8 @@ impl LazyRaster {
             return read_sidecar_own_mask(m, window, (lw, lh));
         }
         match &mut self.inner {
-            Inner::Source(_, source) => source.read_mask(i + 1, window),
+            Inner::Source(_, source) if source.level_has_own_mask(i + 1) => source.read_own_mask(i + 1, window),
+            Inner::Source(..) => Ok(None),
             Inner::Tiff(t) => read_tiff_own_mask(t, window, i + 1),
             Inner::Memory(_) => Ok(None),
         }
@@ -1345,7 +1421,7 @@ impl LazyRaster {
         }
         match &self.inner {
             Inner::Tiff(_) => self.has_overview_mask(overview),
-            Inner::Source(_, s) => s.has_mask(),
+            Inner::Source(_, s) => s.level_has_own_mask(overview + 1),
             Inner::Memory(_) => false,
         }
     }
@@ -1354,7 +1430,11 @@ impl LazyRaster {
     /// it has no mask of its own (an internal overview), rather than its own (an external
     /// overview, a dataset of its own).
     pub(crate) fn level_keeps_mask_flags(&self, overview: usize) -> bool {
-        !matches!(&self.inner, Inner::Tiff(t) if t.levels.get(overview + 1).is_some_and(|l| l.external.is_some()))
+        match &self.inner {
+            Inner::Tiff(t) => !t.levels.get(overview + 1).is_some_and(|l| l.external.is_some()),
+            Inner::Source(_, s) => s.level_keeps_mask_flags(overview + 1),
+            Inner::Memory(_) => true,
+        }
     }
 
     /// The overviews of GDAL's per-dataset mask band (a band's `GetMaskBand()` when the dataset
@@ -1370,7 +1450,7 @@ impl LazyRaster {
                 .filter(|&i| t.levels[i + 1].external.is_none() && self.has_overview_mask(i))
                 .map(|i| (t.levels[i + 1].width, t.levels[i + 1].height))
                 .collect(),
-            Inner::Source(_, s) if s.has_mask() => s.overviews(),
+            Inner::Source(_, s) => s.mask_band_overviews(),
             _ => Vec::new(),
         }
     }
@@ -1381,6 +1461,7 @@ impl LazyRaster {
         match (&self.sidecar_mask, &self.inner) {
             (Some(m), _) => m.sample_bits(),
             (None, Inner::Tiff(t)) if !t.masks.is_empty() => Some(1),
+            (None, Inner::Source(_, s)) => s.mask_band_bits(),
             _ => None,
         }
     }
@@ -1395,8 +1476,12 @@ impl LazyRaster {
         if let Some(m) = self.sidecar_mask.as_mut() {
             return read_sidecar_own_mask(m, window, size)?.ok_or_else(|| Error::InvalidData("missing sidecar mask overview".into()));
         }
-        let level = self.overviews().iter().position(|s| *s == size);
-        Ok(self.read_level_mask(window, level)?.unwrap_or_else(all_valid))
+        let level = self
+            .overviews()
+            .iter()
+            .position(|s| *s == size)
+            .ok_or_else(|| Error::InvalidData(format!("no overview of the mask overview's size {size:?}")))?;
+        Ok(self.read_level_mask(window, Some(level))?.unwrap_or_else(all_valid))
     }
 
     /// The first overview's `RESAMPLING` item, which GDAL writes with the overviews it builds

@@ -7,6 +7,7 @@
 // Derived from (translated to Rust and modified):
 //   GDAL v3.13.3:
 //     apps/gdal_translate_lib.cpp
+//     frmts/vrt/vrtsources.cpp (VRTSimpleSource::GetSrcDstWindow)
 
 //! Subsetting, resizing, rescaling and type conversion: an equivalent of `gdal_translate`.
 //!
@@ -477,7 +478,7 @@ pub fn translate_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: Over
 
 /// A value within 0.001 of a whole number, rounded to it, as `gdal_translate`'s VRT source rounds
 /// its request (`RoundIfCloseToInt`).
-fn round_if_close(v: f64) -> f64 {
+pub(crate) fn round_if_close(v: f64) -> f64 {
     let closest = (v + 0.5).floor();
     if (v - closest).abs() < 1e-3 { closest } else { v }
 }

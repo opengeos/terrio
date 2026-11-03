@@ -82,3 +82,17 @@ fn overview_selections_are_checked() {
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("SOME"));
 }
+
+#[cfg(feature = "gdal")]
+#[test]
+fn gdal_named_inputs_are_translated_whole() {
+    // The lazy reader refuses `gdal:` names: they are read whole through GDAL, as before.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.tif");
+    let input = format!("gdal:{}", fixture().display());
+    let result =
+        Command::new(env!("CARGO_BIN_EXE_terrio")).args(["translate", &input]).arg(&out).args(["--outsize", "32", "24"]).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let out = terrio::open_raster(out.to_str().unwrap()).unwrap();
+    assert_eq!((out.raster.cols, out.raster.rows, out.raster.bands), (32, 24, 3));
+}

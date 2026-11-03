@@ -280,7 +280,9 @@ let small = cog.read_resampled(&options)?; // the 512 x 512 overview's tiles, ge
   (NaN for NaN, nothing outside the type's range) or the alpha band of a two- or four-band raster.
   Bands sharing a mask are resampled together by the bilinear, cubic, cubic spline and Lanczos
   kernels, as `GDALDataset::RasterIOResampled` does. Paletted bands are read by nearest neighbour
-  with those kernels; their average and RMS reads are refused (GDAL averages their colors).
+  with those kernels at full resolution; their average and RMS reads there are refused (GDAL
+  averages their colors). Overviews, which GDAL's GeoTIFF reader reports without a color table,
+  are resampled like other bands.
 - `read_resampled_masks` reads the bands' mask bands the same way, as `GetMaskBand()->RasterIO()`:
   0 for invalid pixels, 255 for valid ones, values between where a kernel resampled them;
   `read_resampled_with_masks` reads both, the nodata masks computed from the pixels read.

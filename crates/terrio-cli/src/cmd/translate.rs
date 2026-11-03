@@ -5,9 +5,9 @@
 
 //! `terrio translate`.
 
-use super::rasterout::{OutputArgs, srs};
+use super::rasterout::{OutputArgs, open, srs};
 use terrio::ops::overview::OverviewSelection;
-use terrio::ops::translate::{Scale, Size, TranslateOptions, translate_lazy};
+use terrio::ops::translate::{Scale, Size, TranslateOptions, translate, translate_lazy};
 use terrio::ops::{Resampling, parse_data_type};
 
 #[derive(clap::Args)]
@@ -65,9 +65,7 @@ pub struct Args {
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
-    // GeoTIFFs, Zarr stores and other rasters read by window are read for the output alone: the
-    // tiles or chunks its window touches, of its bands, from the overview it is read from.
-    let mut src = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
+    let overview = OverviewSelection::parse(&a.overview)?;
     let four = |v: &Option<Vec<f64>>| v.as_ref().map(|v| (v[0], v[1], v[2], v[3]));
     let scale = match a.scale.as_deref() {
         None => None,
@@ -100,6 +98,22 @@ pub fn run(a: Args) -> terrio::Result<()> {
         assign_srs: srs(&a.a_srs)?,
         assign_ullr: four(&a.a_ullr),
     };
-    let out = translate_lazy(&mut src, &o, OverviewSelection::parse(&a.overview)?)?;
+    // GeoTIFFs, Zarr stores and other rasters read by window are read for the output alone: the
+    // tiles or chunks its window touches, of its bands, from the overview it is read from. Rasters
+    // the lazy reader refuses (named `gdal:`, or of a format only GDAL reads) are read whole, as
+    // `open` reads them, at full resolution.
+    let out = match super::quiet(|| terrio::open_raster_lazy(&a.input)) {
+        Ok(mut src) => translate_lazy(&mut src, &o, overview)?,
+        Err(_) => {
+            let ds = open(&a.input)?;
+            if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
+                return Err(terrio::Error::Unsupported(format!(
+                    "--overview {} needs a raster read by window; {} is read whole",
+                    a.overview, a.input
+                )));
+            }
+            translate(&ds, &o)?
+        }
+    };
     a.out.write(&out, &a.output)
 }
