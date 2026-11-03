@@ -346,3 +346,34 @@ fn grouped_order_accepts_primary_table_qualifiers() {
     assert_eq!(out.features.iter().map(|f| f.attributes[0].clone()).collect::<Vec<_>>(), vec![V::Integer(2), V::Integer(1), V::Null]);
     assert!(query(&data(), "SELECT key,COUNT(*) AS n FROM cities c GROUP BY c.key ORDER BY missing.key").is_err());
 }
+
+#[test]
+fn standalone_filters_reject_spatial_functions_without_select_context() {
+    for filter in ["ST_Transform(geometry,3857) IS NULL", "ST_Area(geometry)>0", "ST_Intersects(geometry,NULL)", "1+ST_Length(NULL)>0"] {
+        let layers = data();
+        let error = terrio::ops::sql::Expression::parse(filter).unwrap().bind(&layers[0].schema).expect_err(filter);
+        assert!(error.to_string().contains("SELECT"), "{error}");
+    }
+    let layers = data();
+    assert_eq!(
+        query(&layers, "SELECT name FROM cities WHERE ST_Intersects(ST_Transform(geometry,3857),ST_Transform(geometry,3857))=1")
+            .unwrap()
+            .features
+            .len(),
+        4
+    );
+    let parsed_select = terrio::ops::sql::Select::parse("SELECT name FROM cities WHERE ST_Area(NULL)>0").unwrap();
+    assert!(parsed_select.filter.unwrap().bind(&layers[0].schema).unwrap_err().to_string().contains("SELECT"));
+    assert!(terrio::ops::sql::Expression::parse("geometry IS NULL").unwrap().bind(&layers[0].schema).is_err());
+    let mut attributes = Layer::new("attributes");
+    attributes.schema.add_field(FieldDef::new("geometry", FieldType::Integer));
+    let row = Feature { fid: 0, geometry: None, attributes: vec![V::Integer(1)] };
+    assert!(terrio::ops::sql::Expression::parse("geometry=1").unwrap().bind(&attributes.schema).unwrap().matches(&row));
+    for statement in [
+        "SELECT DISTINCT geometry FROM cities",
+        "SELECT COUNT(DISTINCT geometry) FROM cities",
+        "SELECT COUNT(*) FROM cities GROUP BY geometry",
+    ] {
+        assert!(query(&layers, statement).is_err(), "{statement}");
+    }
+}

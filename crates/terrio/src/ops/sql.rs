@@ -35,7 +35,7 @@ pub(crate) use select::execute as select_query;
 /// GROUP BY accepts attribute fields and selected summaries, with ordering by selected output
 /// fields/aliases. Spatial functions support planar area, length, intersects, buffer, centroid
 /// and EPSG transforms; see the SQL guide for the defined subset and numerical tolerances.
-/// DISTINCT and summaries discard geometry. Output field names must be unique.
+/// DISTINCT, GROUP BY and summaries discard geometry. Output field names must be unique.
 ///
 /// ```no_run
 /// let ds = terrio::open_vector("countries.gpkg", &Default::default())?;
@@ -215,7 +215,7 @@ impl Truth {
 }
 
 impl Expression {
-    /// Parses an expression.
+    /// Parses an expression. Standalone binding supports attributes only.
     pub fn parse(text: &str) -> Result<Self> {
         let tokens = tokenize(text)?;
         let mut p = Parser { tokens, pos: 0 };
@@ -236,7 +236,7 @@ impl Expression {
     /// Binds field names to a layer's schema, matching them case-insensitively. Fails when a field
     /// does not exist.
     pub fn bind(&self, schema: &Schema) -> Result<BoundExpression> {
-        Ok(BoundExpression(scalar(bind(&self.0, schema)?)?))
+        Ok(BoundExpression(scalar(bind_context(&self.0, schema, false)?)?))
     }
 }
 
@@ -380,18 +380,26 @@ fn scalar(e: Expr) -> Result<Expr> {
 }
 
 fn bind(e: &Expr, schema: &Schema) -> Result<Expr> {
-    let b = |x: &Expr| bind(x, schema).map(Box::new);
-    let sb = |x: &Expr| scalar(bind(x, schema)?).map(Box::new);
+    bind_context(e, schema, true)
+}
+
+fn bind_context(e: &Expr, schema: &Schema, select_context: bool) -> Result<Expr> {
+    let bind_arg = |x: &Expr| bind_context(x, schema, select_context);
+    let b = |x: &Expr| bind_arg(x).map(Box::new);
+    let sb = |x: &Expr| scalar(bind_arg(x)?).map(Box::new);
     Ok(match e {
         Expr::Field(name) => match field_index(schema, name) {
             Some(i) => Expr::Index(i),
             None if name.eq_ignore_ascii_case("FID") => Expr::Fid,
-            None if name.eq_ignore_ascii_case("geometry") => Expr::Geometry,
+            None if select_context && name.eq_ignore_ascii_case("geometry") => Expr::Geometry,
             None => return Err(Error::InvalidArgument(format!("SQL: no field named '{name}'"))),
         },
         Expr::Index(_) | Expr::Fid | Expr::Geometry | Expr::Literal(_) => e.clone(),
         Expr::Call(name, args) => {
-            let args = args.iter().map(|e| bind(e, schema)).collect::<Result<Vec<_>>>()?;
+            if !select_context {
+                return Err(syntax("spatial functions require SELECT SQL, not standalone attribute filters".into()));
+            }
+            let args = args.iter().map(bind_arg).collect::<Result<Vec<_>>>()?;
             spatial::validate(name, &args)?;
             if name == "ST_TRANSFORM" {
                 Expr::Transform(Box::new(args[0].clone()), spatial::Transform::new(&args)?)
@@ -407,7 +415,7 @@ fn bind(e: &Expr, schema: &Schema) -> Result<Expr> {
             Expr::Like { expr: sb(expr)?, pattern: sb(pattern)?, escape: *escape, negated: *negated, insensitive: *insensitive }
         }
         Expr::In { expr, list, negated } => {
-            Expr::In { expr: sb(expr)?, list: list.iter().map(|x| scalar(bind(x, schema)?)).collect::<Result<_>>()?, negated: *negated }
+            Expr::In { expr: sb(expr)?, list: list.iter().map(|x| scalar(bind_arg(x)?)).collect::<Result<_>>()?, negated: *negated }
         }
         Expr::Between { expr, low, high, negated } => Expr::Between { expr: sb(expr)?, low: sb(low)?, high: sb(high)?, negated: *negated },
         Expr::IsNull { expr, negated } => Expr::IsNull { expr: b(expr)?, negated: *negated },

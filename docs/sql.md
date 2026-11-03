@@ -87,7 +87,13 @@ without copying the source features.
 
 The special `geometry` field denotes the primary geometry when there is no
 attribute of that name. Its primary table qualifier is accepted. Functions may
-nest and may appear in SELECT expressions and WHERE predicates:
+nest and may appear in SELECT expressions and WHERE predicates within that SELECT.
+Standalone attribute-filter binding (`Expression::bind`, CLI `--where`, Python
+`where=`, and grid filters) rejects function calls and special geometry access;
+use a SELECT query through `sql`/`convert --sql` for spatial predicates. A real
+attribute named `geometry` remains a normal attribute in standalone filters.
+
+Supported spatial functions:
 
 | Function | Result and scope |
 |---|---|

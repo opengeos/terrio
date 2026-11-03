@@ -2543,10 +2543,14 @@ terrio sql countries.gpkg selected.gpkg --query \
   "SELECT ADMIN, POP_EST AS population FROM countries WHERE POP_EST > 10000000 ORDER BY POP_EST DESC LIMIT 10"
 ```
 
-Runs the read-only [OGR SQL subset](sql.md). `FROM` must name an input layer,
+Runs the read-only [SQL subset](sql.md). `FROM` must name an input layer,
 matched case-insensitively; `--layer` can restrict the available layers. Supports computed
 columns, aliases, single-field `DISTINCT`, `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, and attribute
 `LEFT JOIN` within the input dataset, plus `WHERE`, one primary `ORDER BY` field and `LIMIT`.
+Grouped queries support attribute `GROUP BY` and ordering by a selected output column
+or alias. The shared engine also supports the documented planar/EPSG spatial functions
+in SELECT expressions and that SELECT's WHERE clause; standalone `--where` filters
+remain attribute-only.
 
 ```sh
 terrio sql countries.gpkg population.gpkg --query \

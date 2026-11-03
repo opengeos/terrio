@@ -68,3 +68,12 @@ def test_unordered_comparison_preserves_group_values_and_multiplicity():
         compare(expected, (fields, None, [(["B", 3], None), (["A", 1], None)]), unordered=True)
     with pytest.raises(AssertionError, match="row counts"):
         compare(expected, (fields, None, [(["A", 1], None)]), unordered=True)
+
+
+def test_constructed_point_displacement_is_bounded():
+    source = ogr.CreateGeometryFromWkt("POINT (0 0)")
+    near = ogr.CreateGeometryFromWkt("POINT (0.00000001 0)")
+    far = ogr.CreateGeometryFromWkt("POINT (0.000001 0)")
+    assert compare(([], None, [([], source)]), ([], None, [([], near)])) == "within tolerance"
+    with pytest.raises(AssertionError, match="constructed geometry exceeds 1e-7"):
+        compare(([], None, [([], source)]), ([], None, [([], far)]))

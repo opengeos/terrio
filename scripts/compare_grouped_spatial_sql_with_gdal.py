@@ -212,7 +212,12 @@ def main():
                                 "; intentional schema policy: statically typed empty/all-null expressions vs SQLite String inference"
                                 if name in ("empty groups", "null spatial values")
                                 else ""
-                            ) + ("; unordered GROUP BY row order excluded; complete rows compared" if name == "unordered groups" else ""),
+                            )
+                            + (
+                                "; unordered GROUP BY row order excluded; complete rows compared"
+                                if name == "unordered groups"
+                                else ""
+                            ),
                         )
                     )
                 except Exception as error:
