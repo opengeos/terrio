@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `terrio::xlsx::Workbook::open` and `open_bytes` read a workbook to edit and save. Parts the model
+  does not hold, such as charts and macros, a sheet's other elements, and unedited cells and settings
+  are written back as they were. The workbook is held in memory whole, its parts expanding to at most 8 GiB,
+  and cells are charged by the memory they take, which keeps opening and saving near 8 GiB at most
+  (measured: 2 million cells peak at 0.9 to 1 GB).
+  `Workbook::layer` and `add_layer` view sheets as layers (#405).
 - `terrio::xlsx::Workbook` writes workbooks laid out for people: sheets, typed cells at their
   positions, merged ranges, column and row settings, cell formats, frozen panes, filters, list
   validations, defined names, hyperlinks, comments, print setup and document properties (#405).
