@@ -1109,7 +1109,7 @@ def warp(
     wo: Mapping[str, str] | None = None,
     geoloc: bool = False,
     geolocation: Mapping[str, Any] | None = None,
-    kernel_version: str = "3.12",
+    kernel_version: str | None = None,
     init: Raster | None = None,
 ) -> Raster: ...
 def mosaic(
@@ -1579,6 +1579,8 @@ def grid_points(
 # Helpers of terrio.rio.
 
 def tiff_tags(path: str) -> list[dict[int, str | bytes | list[int] | list[float]]] | None: ...
+def tiff_infers_cog_layout(path: str) -> bool: ...
+def gdal_compat() -> str: ...
 def resampled_region(
     resampling: str,
     raster_size: tuple[int, int],
@@ -1625,7 +1627,10 @@ def suggested_grid(
     rpc_options: Mapping[str, str] | None = None,
 ) -> tuple[tuple[float, float, float, float, float, float], int, int]: ...
 def warped_vrt_type(
-    src_type: str, src_nodata: Sequence[float | None], dst_nodata: Sequence[float | None]
+    src_type: str,
+    src_nodata: Sequence[float | None],
+    dst_nodata: Sequence[float | None],
+    kernel_version: str | None = None,
 ) -> tuple[str, list[float | None]]: ...
 @final
 class RegionWarp:
@@ -1646,6 +1651,7 @@ class RegionWarp:
         gcp_method: str = "auto",
         rpc: Mapping[str, str] | None = None,
         rpc_options: Mapping[str, str] | None = None,
+        kernel_version: str | None = None,
     ) -> RegionWarp: ...
     def source_window(self, region: _Window) -> _Window | None: ...
     def warp(

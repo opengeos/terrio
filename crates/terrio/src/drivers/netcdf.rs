@@ -55,6 +55,43 @@ pub(crate) fn is_netcdf(path: &Path) -> bool {
     b.starts_with(b"CDF") || (netcdf_ext && super::hdf5::has_signature(path))
 }
 
+/// Whether a `GDAL` global attribute names GDAL 1.9 or later, the netCDF driver that writes
+/// CF-conformant files (`NCDFIsGDALVersionGTE(version, 1900)`): `GDAL 3.12.1, released ...`.
+fn gdal_version_at_least_1_9(version: &str) -> bool {
+    let Some(rest) = version.get(..5).filter(|p| p.eq_ignore_ascii_case("GDAL ")).map(|_| &version[5..]) else {
+        return false;
+    };
+    // 2.0dev of 2011/12/29 was renamed 1.10dev.
+    if version.eq_ignore_ascii_case("GDAL 2.0dev, released 2011/12/29") {
+        return true;
+    }
+    let starts = |p: &str| rest.get(..p.len()).is_some_and(|r| r.eq_ignore_ascii_case(p));
+    if starts("1.9dev") {
+        return true;
+    }
+    if starts("1.8dev") {
+        return false;
+    }
+    // C's `atoi` of each of the first four `.`-separated tokens, clamped to 0..=99.
+    let atoi = |t: &str| {
+        let t = t.trim_start();
+        let (sign, digits) = match t.as_bytes().first() {
+            Some(b'-') => (-1i64, &t[1..]),
+            Some(b'+') => (1, &t[1..]),
+            _ => (1, t),
+        };
+        let n: i64 = digits.bytes().take_while(u8::is_ascii_digit).fold(0, |n, d| (n * 10 + i64::from(d - b'0')).min(1000));
+        (sign * n).clamp(0, 99)
+    };
+    let mut v = [0i64; 4];
+    for (slot, token) in v.iter_mut().zip(rest.split('.')) {
+        *slot = atoi(token);
+    }
+    let version =
+        if v[0] > 1 || v[1] >= 10 { v[0] * 1_000_000 + v[1] * 10_000 + v[2] * 100 } else { v[0] * 1000 + v[1] * 100 + v[2] * 10 + v[3] };
+    version >= 1900
+}
+
 fn attr<'a>(v: &'a NcVariable, name: &str) -> Option<&'a NcAttrValue> {
     v.attributes().iter().find(|a| a.name == name).map(|a| &a.value)
 }
@@ -522,6 +559,45 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         gt = Some([x[0] - dx / 2.0, dx, 0.0, top, 0.0, -dy.abs()]);
     }
     let from_coordinates = gt.is_some();
+    // GDAL 3.13 also reads the grid mapping's `GeoTransform` when the coordinates give one: an
+    // agreeing attribute (made north-up) is kept, and the row order of an axis-aligned grid is
+    // then that of a file written by GDAL 1.9 or later (south-up) or not (north-up); a
+    // disagreeing one is ignored, with a warning (`netCDFDataset::SetProjectionFromVar`).
+    if let Some(coordinate_gt) = gt
+        && crate::ops::warp::KernelVersion::configured() == crate::ops::warp::KernelVersion::Gdal313
+        && let Some(mut attribute) = grid_mapping.and_then(|g| attr_str(g, "GeoTransform")).and_then(|s| {
+            let v: Vec<f64> = s.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            <[f64; 6]>::try_from(v).ok()
+        })
+    {
+        let axis_aligned = |g: &[f64; 6]| g[2] == 0.0 && g[4] == 0.0;
+        if attribute[5] > 0.0 && axis_aligned(&attribute) {
+            attribute[3] += rows as f64 * attribute[5];
+            attribute[5] = -attribute[5];
+        }
+        let max_error = coordinate_gt
+            .iter()
+            .zip(&attribute)
+            .map(|(c, a)| (c - a).abs())
+            .zip(&attribute)
+            .filter(|(e, a)| *e > (*a * 1e-6).abs())
+            .map(|(e, _)| e)
+            .fold(0.0, f64::max);
+        if max_error > 0.0 {
+            crate::warnings::warn(format!(
+                "GeoTransform read from attribute of {} variable differs from value calculated from dimension variables (max diff = {max_error}). Using value calculated from dimension variables.",
+                attr_str(var, "grid_mapping").unwrap_or_default()
+            ));
+        } else {
+            if axis_aligned(&attribute) {
+                let gdal_cf = f.global_attributes().is_ok_and(|a| {
+                    a.iter().any(|a| a.name == "GDAL" && a.value.as_string().is_some_and(|v| gdal_version_at_least_1_9(&v)))
+                });
+                south_up = gdal_cf;
+            }
+            gt = Some(attribute);
+        }
+    }
     if gt.is_none() {
         gt = grid_mapping.and_then(|g| attr_str(g, "GeoTransform")).and_then(|s| {
             let v: Vec<f64> = s.split_whitespace().filter_map(|x| x.parse().ok()).collect();
@@ -928,5 +1004,23 @@ mod tests {
         // The second part of another type, or not right after the first.
         assert_eq!(complex_part(&compound(8, vec![field("r", 0, NcType::Float), field("i", 4, NcType::Int)])), None);
         assert_eq!(complex_part(&compound(16, vec![field("r", 0, NcType::Float), field("i", 8, NcType::Float)])), None);
+    }
+
+    #[test]
+    fn gdal_attribute_versions_from_1_9_mark_cf_files() {
+        for (version, cf) in [
+            ("GDAL 3.12.1, released 2025/12/22", true),
+            ("GDAL 1.9.0, released 2011/12/29", true),
+            ("GDAL 1.10.1, released 2013/08/26", true),
+            ("GDAL 1.9dev, released 2011/01/18", true),
+            ("GDAL 2.0dev, released 2011/12/29", true),
+            ("GDAL 1.8.1 ", false),
+            ("GDAL 1.8dev", false),
+            ("gdal 3.13.3", true),
+            ("terrio 0.7", false),
+            ("", false),
+        ] {
+            assert_eq!(gdal_version_at_least_1_9(version), cf, "{version}");
+        }
     }
 }

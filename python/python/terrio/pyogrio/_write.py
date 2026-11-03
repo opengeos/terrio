@@ -27,6 +27,8 @@ import os
 
 import numpy as np
 
+from terrio import _terrio
+
 
 def _escape(s: str) -> str:
     """A JSON string as json-c escapes it (GDAL keeps `/` unescaped)."""
@@ -288,8 +290,40 @@ def _crs_member(crs) -> str | None:
     return '{ "type": "name", "properties": { "name": ' + _escape(name) + " } }"
 
 
+def _plain(text: str) -> str:
+    """json-c's `JSON_C_TO_STRING_PLAIN` form of its `JSON_C_TO_STRING_SPACED` text.
+
+    The spaces outside strings are dropped (`[ ]` and `{ }` become `[]` and `{}`).
+
+    Args:
+        text: The spaced JSON text.
+
+    Returns:
+        str: The same JSON without the spaces.
+    """
+    out = []
+    in_string = escaped = False
+    for c in text:
+        if in_string:
+            out.append(c)
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                in_string = False
+        elif c != " ":
+            out.append(c)
+            in_string = c == '"'
+    return "".join(out)
+
+
 def to_geojson(df, layer: str) -> str:
-    """The GeoJSON text GDAL writes for a (Geo)DataFrame through pyogrio."""
+    """The GeoJSON text GDAL writes for a (Geo)DataFrame through pyogrio.
+
+    GDAL 3.13 writes each feature without spaces (json-c's plain form), GDAL 3.12 with them:
+    the version `terrio.gdal_compat()` names is followed.
+    """
     geometry_name = getattr(df, "_geometry_column_name", None)
     has_geometry = geometry_name is not None and geometry_name in df.columns
     columns = [c for c in df.columns if not (has_geometry and c == geometry_name)]
@@ -317,6 +351,8 @@ def to_geojson(df, layer: str) -> str:
             + _geometry(geoms[i])
             + " }"
         )
+    if _terrio.gdal_compat() != "3.12":
+        feats = [_plain(f) for f in feats]
     lines.append(",\n".join(feats))
     lines.append("]")
     lines.append("}")

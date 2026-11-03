@@ -1081,11 +1081,28 @@ Point-cloud reprojection currently rejects `--ct-opt` because it does not suppor
 these controls.
 
 GDAL 3.13 changed warp kernel scales and the bilinear/cubic downsampling threshold.
-Use `warp --kernel-version 3.13` to reproduce that behavior. The default `3.12`
-retains Terrio's earlier results and the repository's GDAL 3.12 conformance baseline.
-Both modes keep lazy window/overview reads. Versioned kernels and explicit
-coordinate-operation policies currently require materialized output rather than
-serialized warped VRTs.
+Use `warp --kernel-version 3.13` to reproduce that behavior. Without the option, warp
+follows the `TERRIO_GDAL_COMPAT` configuration option (`3.12` or `3.13`), else `3.12`,
+which retains Terrio's earlier results and the repository's GDAL 3.12 conformance
+baseline. Both modes keep lazy window/overview reads. A serialized warped VRT is
+resampled with the reader's configured version, as GDAL's warped VRTs are with the
+reader's GDAL: a different explicit version or explicit coordinate-operation policies
+require materialized output.
+
+`TERRIO_GDAL_COMPAT=3.13` reproduces the other GDAL 3.13 behaviors terrio follows
+where releases differ:
+
+- warp working types start from the source's type (an Int8 source stays Int8);
+- resampled reads and overviews give NaN pixels of masked floating-point chunks no weight;
+- netCDF rows follow the `GDAL` global attribute when a `GeoTransform` agrees with the
+  coordinates;
+- the WebP driver's refusal of non-Byte data uses GDAL 3.13's wording;
+- the Python rasterio and pyogrio compatibility layers report `LAYOUT=COG` for COG-shaped
+  TIFFs opened read-only and write GeoJSON features without spaces.
+
+Terrain arithmetic (`dem --kernel-version`) stays explicit: its 3.13 profile covers slope
+and standard hillshade only. terrio writes netCDF files with a `GDAL` global attribute naming
+GDAL's conventions, so that GDAL 3.13 reads their rows in order.
 
 GeoTIFF and COG translation and warping preserve `AREA_OR_POINT=Point`, including
 point tie points and rotated affine transforms, without moving pixel corners.

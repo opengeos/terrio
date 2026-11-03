@@ -171,6 +171,9 @@ class Structure:
     # The 92 values of the RPCCoefficientTag, or GDAL's RPC items of a sidecar.
     rpc_tag: list[float] | None = None
     rpc_items: dict[str, str] | None = None
+    # Whether IMAGE_STRUCTURE's LAYOUT=COG is GDAL 3.13's inference from the file's layout
+    # rather than its structural metadata: GDAL infers it for datasets opened read-only only.
+    layout_inferred: bool = False
 
     def alpha_band(self) -> int | None:
         """The band GDAL uses as the alpha of the others (1-based), as `GetMaskFlags` does.
@@ -421,6 +424,13 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
     if isinstance(ghost, str) and "LAYOUT=IFDS_BEFORE_DATA" in ghost:
         if "KNOWN_INCOMPATIBLE_EDITION=YES" not in ghost:
             image_structure["LAYOUT"] = "COG"
+    # GDAL 3.13 (`GTiffDataset::CheckCOGLayout()`) also reports a COG's layout without the
+    # structural metadata saying so.
+    if "LAYOUT" not in image_structure and _terrio.gdal_compat() != "3.12":
+        with contextlib.suppress(Exception):
+            if _terrio.tiff_infers_cog_layout(path):
+                image_structure["LAYOUT"] = "COG"
+                s.layout_inferred = True
     # libtiff's default BitsPerSample is 1, as the reader's.
     bits = _first(t.get(BITS), 1)
     tables = t.get(JPEG_TABLES)

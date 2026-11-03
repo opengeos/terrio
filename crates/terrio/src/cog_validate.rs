@@ -177,6 +177,7 @@ struct Tiff {
     ifds: Vec<Ifd>,
     ghost: Option<String>,
     expected_ifd_offset: u64,
+    big: bool,
 }
 
 /// Decodes numbers in the file's byte order.
@@ -462,7 +463,7 @@ fn read_tiff<R: Read + Seek>(f: &mut R, shown: &str, read_metadata: bool) -> Res
         expected_ifd_offset += "GDAL_STRUCTURAL_METADATA_SIZE=000000 bytes\n".len() as u64 + ghost_size;
         expected_ifd_offset += expected_ifd_offset % 2;
     }
-    Ok(Some(Tiff { ifds, ghost, expected_ifd_offset }))
+    Ok(Some(Tiff { ifds, ghost, expected_ifd_offset, big }))
 }
 
 /// GDAL's structural metadata block (`GDAL_STRUCTURAL_METADATA_SIZE=...`) at `offset`, if any.
@@ -525,7 +526,7 @@ pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> 
                     read_tiff(&mut std::io::BufReader::new(std::fs::File::open(ovr)?), &ovr.to_string_lossy(), false)
                         .ok()
                         .flatten()
-                        .unwrap_or(Tiff { ifds: Vec::new(), ghost: None, expected_ifd_offset: 8 }),
+                        .unwrap_or(Tiff { ifds: Vec::new(), ghost: None, expected_ifd_offset: 8, big: false }),
                 )
             } else {
                 None
@@ -544,6 +545,71 @@ pub fn validate_cog_with_options(path: &str, options: &CogValidationOptions) -> 
             validate_reader(&mut std::io::BufReader::new(std::fs::File::open(local.path())?), path, None, options, false)
         }
     }
+}
+
+/// Whether GDAL 3.13 reports `LAYOUT=COG` (in the `IMAGE_STRUCTURE` domain) for a TIFF it opens
+/// read-only whose structural metadata does not already say so: GDAL 3.13.3's
+/// `GTiffDataset::CheckCOGLayout()`, which GDAL 3.12 does not have. `false` for files that are
+/// not TIFFs.
+///
+/// Only the headers and offset arrays are read.
+pub fn gdal_infers_cog_layout(path: &str) -> Result<bool> {
+    let tiff = match Location::parse(path) {
+        #[cfg(remote)]
+        loc @ (Location::Url(_) | Location::S3 { .. }) => {
+            let remote = loc.remote().ok_or_else(|| Error::InvalidArgument(format!("'{path}' is not remote")))?;
+            read_tiff(&mut crate::http::RangeReader::open(&remote)?, path, false)?
+        }
+        Location::Local(p) => read_tiff(&mut std::io::BufReader::new(std::fs::File::open(&p)?), path, false)?,
+        _ => {
+            let local = crate::vfs::resolve(path)?;
+            read_tiff(&mut std::io::BufReader::new(std::fs::File::open(local.path())?), path, false)?
+        }
+    };
+    Ok(tiff.is_some_and(|t| infers_cog_layout(&t)))
+}
+
+/// GDAL 3.13.3's `GTiffDataset::CheckCOGLayout()` (see [`gdal_infers_cog_layout`]): a tiled image
+/// whose first IFD follows the header, with overviews when larger than 512 pixels, the overviews'
+/// IFDs after it, tiled and no larger than the image before them, and their data in reverse order
+/// (smallest overview first) before the image's.
+fn infers_cog_layout(tiff: &Tiff) -> bool {
+    let Some(main) = tiff.ifds.first() else { return false };
+    let needs_overviews = main.width > 512 || main.height > 512;
+    // GDAL scans the file for overviews here only when the image needs them; others are not
+    // known to it yet (a dataset just opened), so their layout is not checked.
+    let overviews: Vec<&Ifd> = if needs_overviews {
+        tiff.ifds[1..].iter().filter(|i| i.is_reduced() && !i.is_mask() && i.samples == main.samples).collect()
+    } else {
+        Vec::new()
+    };
+    // GDAL's `IsBlockAvailable(0)` of a read-only dataset: the first block, when its byte count
+    // is not zero.
+    let first_block = |i: &Ifd| (i.byte_counts.first().is_some_and(|&c| c != 0)).then(|| i.offsets.first().copied().unwrap_or(0));
+    let mut ok = main.tile.is_some() && !(overviews.is_empty() && needs_overviews);
+    ok = ok && main.offset == if tiff.big { 16 } else { 8 };
+    let (mut last_ifd, mut last_w, mut last_h) = (main.offset, main.width, main.height);
+    for o in &overviews {
+        ok = ok && o.offset > last_ifd && o.width <= last_w && o.height <= last_h && o.tile.is_some();
+        (last_ifd, last_w, last_h) = (o.offset, o.width, o.height);
+    }
+    let mut data = last_ifd;
+    for o in overviews.iter().rev() {
+        if !ok {
+            break;
+        }
+        ok = o.tile.is_some();
+        if let Some(offset) = first_block(o) {
+            ok = ok && offset > data;
+            data = offset;
+        }
+    }
+    if !overviews.is_empty()
+        && let Some(offset) = first_block(main)
+    {
+        ok = ok && offset > data;
+    }
+    ok
 }
 
 /// Validates an uploaded TIFF without decoding pixels or creating a temporary file.
@@ -820,7 +886,7 @@ fn check_blocks<R: Read + Seek>(
 /// Validates parsed TIFF structure, with the structure of its `.ovr` sidecar when it has one.
 fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool, gdal: bool) -> CogValidation {
     let mut v = CogValidation::default();
-    let Some(Tiff { ifds, ghost, expected_ifd_offset }) = tiff.filter(|t| !t.ifds.is_empty()) else {
+    let Some(Tiff { ifds, ghost, expected_ifd_offset, .. }) = tiff.filter(|t| !t.ifds.is_empty()) else {
         v.errors.push("The file is not a GeoTIFF".into());
         return v;
     };
@@ -844,7 +910,10 @@ fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool, gdal: bool)
     let factors: Vec<usize> = overviews.iter().map(|o| (main.width as f64 / o.width.max(1) as f64).round_ties_even() as usize).collect();
     v.overview_factors = factors.clone();
     let (block_w, block_h) = main.block();
-    if main.width > 512 || main.height > 512 {
+    // GDAL's validation script checks images larger than 512 pixels on either side; rio-cogeo,
+    // those larger on both.
+    let large = |w: u64, h: u64| if gdal { w > 512 || h > 512 } else { w > 512 && h > 512 };
+    if large(main.width, main.height) {
         if block_w == main.width && (!gdal || block_w > 1024) {
             v.errors.push("The file is greater than 512xH or 512xW, but is not tiled".into());
         }
@@ -948,7 +1017,7 @@ fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool, gdal: bool)
     }
     v.errors.extend(errors);
     for (ix, o) in overviews.iter().enumerate() {
-        if (o.width > 512 || o.height > 512) && o.block().0 == o.width && (!gdal || o.block().0 > 1024) {
+        if large(o.width, o.height) && o.block().0 == o.width && (!gdal || o.block().0 > 1024) {
             v.errors.push(format!("Overview of index {ix} is not tiled"));
         }
     }
@@ -1209,7 +1278,7 @@ mod tests {
         // IFDs of the main image and its overview, then image data, then the masks' IFDs: the
         // main image's mask first, as GDAL orders them.
         let ifds = vec![image(16, 1024, 0, 9000), image(200, 512, 1, 8000), image(10_000, 1024, 4, 7500), image(10_200, 512, 5, 7000)];
-        let v = validate(Some(Tiff { ifds, ghost: None, expected_ifd_offset: 8 }), None, false, false);
+        let v = validate(Some(Tiff { ifds, ghost: None, expected_ifd_offset: 8, big: false }), None, false, false);
         assert_eq!(
             v.layout_notes,
             vec![
@@ -1280,7 +1349,7 @@ mod tests {
             byte_counts: vec![8; 5000],
             ..Default::default()
         };
-        let tiff = Tiff { ifds: vec![image], ghost: Some("BLOCK_LEADER=SIZE_AS_UINT4".into()), expected_ifd_offset: 8 };
+        let tiff = Tiff { ifds: vec![image], ghost: Some("BLOCK_LEADER=SIZE_AS_UINT4".into()), expected_ifd_offset: 8, big: false };
         let mut errors = Vec::new();
         full_check(&mut std::io::Cursor::new(vec![0; 32]), &tiff, &mut errors).unwrap();
         assert_eq!(errors.len(), MAX_BLOCK_FINDINGS + 1);
@@ -1342,6 +1411,7 @@ mod tests {
             ifds: vec![main, overview, second, mask, first_mask, second_mask],
             ghost: Some("MASK_INTERLEAVED_WITH_IMAGERY=YES".into()),
             expected_ifd_offset: 8,
+            big: false,
         };
         let mut errors = Vec::new();
         full_check(&mut std::io::Cursor::new(vec![0; 100]), &tiff, &mut errors).unwrap();
@@ -1368,6 +1438,7 @@ mod tests {
             ifds: vec![main, unrelated, overview, unrelated_mask, mask],
             ghost: Some("MASK_INTERLEAVED_WITH_IMAGERY=YES".into()),
             expected_ifd_offset: 8,
+            big: false,
         };
         let mut errors = Vec::new();
         full_check(&mut std::io::Cursor::new(vec![0; 100]), &tiff, &mut errors).unwrap();
@@ -1387,7 +1458,8 @@ mod tests {
             ..Default::default()
         };
         let mask = Ifd { subfile_type: 4, offsets: vec![], byte_counts: vec![], ..main.clone() };
-        let tiff = Tiff { ifds: vec![main, mask], ghost: Some("MASK_INTERLEAVED_WITH_IMAGERY=YES".into()), expected_ifd_offset: 8 };
+        let tiff =
+            Tiff { ifds: vec![main, mask], ghost: Some("MASK_INTERLEAVED_WITH_IMAGERY=YES".into()), expected_ifd_offset: 8, big: false };
         let mut errors = Vec::new();
         full_check(&mut std::io::Cursor::new(vec![0; 32]), &tiff, &mut errors).unwrap();
         assert!(errors.iter().any(|e| e.to_ascii_lowercase().contains("mask") && e.contains("arrays")), "{errors:?}");
@@ -1399,6 +1471,7 @@ mod tests {
             ifds: vec![Ifd { width: 0, height: 1, tile: Some((1, 1)), planar: 2, samples: u64::MAX, ..Default::default() }],
             ghost: Some("BLOCK_ORDER=ROW_MAJOR".into()),
             expected_ifd_offset: 8,
+            big: false,
         };
         let mut errors = Vec::new();
         full_check(&mut std::io::Cursor::new(Vec::<u8>::new()), &tiff, &mut errors).unwrap();
@@ -1477,5 +1550,85 @@ mod tests {
         assert!(!v.is_valid);
         assert_eq!(v.errors, vec!["The file is not a GeoTIFF".to_string()]);
         assert!(validate_cog(dir.path().join("missing.tif").to_str().unwrap(), false).is_err());
+    }
+
+    /// A tiled image directory at `offset`, of `size` pixels, whose first block is at `data`.
+    fn tiled_ifd(offset: u64, size: u64, data: u64, subfile_type: u64) -> Ifd {
+        Ifd {
+            offset,
+            width: size,
+            height: size,
+            subfile_type,
+            samples: 1,
+            tile: Some((256, 256)),
+            offsets: vec![data],
+            byte_counts: vec![100],
+            ..Default::default()
+        }
+    }
+
+    fn layout(ifds: Vec<Ifd>, big: bool) -> bool {
+        infers_cog_layout(&Tiff { ifds, ghost: None, expected_ifd_offset: if big { 16 } else { 8 }, big })
+    }
+
+    #[test]
+    fn small_tiled_image_after_the_header_has_gdal_3_13_cog_layout() {
+        // As GDAL 3.13.3 reads a 64 x 64 tiled GeoTIFF that GDAL 3.12 wrote: LAYOUT=COG.
+        assert!(layout(vec![tiled_ifd(8, 64, 158, 0)], false));
+        assert!(layout(vec![tiled_ifd(16, 64, 300, 0)], true));
+        // The first IFD elsewhere, or a BigTIFF's at a classic TIFF's offset.
+        assert!(!layout(vec![tiled_ifd(4000, 64, 158, 0)], false));
+        assert!(!layout(vec![tiled_ifd(8, 64, 300, 0)], true));
+    }
+
+    #[test]
+    fn strips_or_large_images_without_overviews_have_no_cog_layout() {
+        let mut striped = tiled_ifd(8, 64, 146, 0);
+        striped.tile = None;
+        assert!(!layout(vec![striped], false));
+        assert!(!layout(vec![tiled_ifd(8, 600, 414, 0)], false));
+    }
+
+    #[test]
+    fn large_images_need_overview_data_before_the_image_data() {
+        // IFDs first, then the overview's data, then the image's: GDAL's COG order.
+        assert!(layout(vec![tiled_ifd(8, 600, 5000, 0), tiled_ifd(300, 300, 1000, 1)], false));
+        // The overview's data after the image's, as overviews added to an existing file.
+        assert!(!layout(vec![tiled_ifd(8, 600, 1000, 0), tiled_ifd(300, 300, 5000, 1)], false));
+        // An overview larger than the image, or its IFD before the image's.
+        assert!(!layout(vec![tiled_ifd(8, 600, 5000, 0), tiled_ifd(300, 700, 1000, 1)], false));
+        // Masks are not overviews: a large image with only a mask needs overviews still.
+        assert!(!layout(vec![tiled_ifd(8, 600, 5000, 0), tiled_ifd(300, 600, 1000, 4)], false));
+    }
+
+    #[test]
+    fn small_images_overviews_are_not_checked() {
+        // GDAL 3.13.3 scans for overviews only when the image needs them.
+        assert!(layout(vec![tiled_ifd(8, 400, 1000, 0), tiled_ifd(300, 200, 5000, 1)], false));
+    }
+
+    #[test]
+    fn gdal_infers_cog_layout_reads_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("not.tif");
+        std::fs::write(&path, b"not a tiff").unwrap();
+        assert!(!gdal_infers_cog_layout(path.to_str().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn rio_cogeo_checks_tiling_of_images_larger_than_512_on_both_sides() {
+        // A 525 x 375 striped overview: larger than 512 on one side only.
+        let main = tiled_ifd(8, 1050, 5000, 0);
+        let mut overview =
+            Ifd { offset: 300, width: 525, height: 375, subfile_type: 1, samples: 1, rows_per_strip: 1, ..Default::default() };
+        overview.offsets = vec![1000];
+        overview.byte_counts = vec![100];
+        let tiff = |overview: &Ifd| Tiff { ifds: vec![main.clone(), overview.clone()], ghost: None, expected_ifd_offset: 8, big: false };
+        let not_tiled = "Overview of index 0 is not tiled".to_string();
+        assert!(!validate(Some(tiff(&overview)), None, false, false).errors.contains(&not_tiled));
+        // GDAL's script checks either side; its strips up to 1024 wide pass as tiles.
+        assert!(!validate(Some(tiff(&overview)), None, false, true).errors.contains(&not_tiled));
+        overview.width = 1025;
+        assert!(validate(Some(tiff(&overview)), None, false, true).errors.contains(&not_tiled));
     }
 }

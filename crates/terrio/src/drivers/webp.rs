@@ -60,8 +60,13 @@ pub(crate) fn encode(r: &Raster, options: &[(String, String)]) -> Result<Vec<u8>
         return Err(Error::Unsupported(format!("WEBP driver doesn't support {} bands. Must be 3 (RGB) or 4 (RGBA) bands.", r.bands)));
     }
     let RasterData::U8(v) = &r.data else {
+        // GDAL 3.13 renamed the type in this message (`GDT_Byte` to `GDT_UInt8` in its source).
+        let only = match crate::ops::warp::KernelVersion::configured() {
+            crate::ops::warp::KernelVersion::Gdal312 => "Only eight bit byte bands supported.",
+            crate::ops::warp::KernelVersion::Gdal313 => "Only UInt8 bands supported.",
+        };
         return Err(Error::Unsupported(format!(
-            "WEBP driver doesn't support data type {}. Only eight bit byte bands supported.",
+            "WEBP driver doesn't support data type {}. {only}",
             crate::info::gdal_type_name(r.data_type)
         )));
     };

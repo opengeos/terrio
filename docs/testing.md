@@ -3,7 +3,9 @@
 GDAL is terrio's reference: drivers and operations are compared with GDAL on real-world files.
 The conformance suites run against GDAL 3.12.2 and PROJ 9.8.1 in `ci-extended.yml`, on every push
 to `main` and on pull requests on demand (Run workflow, or a `ci:conformance` or `ci:all` label).
-Suites that require GDAL 3.13 run only in a local environment with that version. Pull requests
+Suites that require GDAL 3.13 run only in a local environment with that version. The Python
+tests set `TERRIO_GDAL_COMPAT=3.13` when rasterio's (or `osgeo.gdal`'s) GDAL is 3.13, so that
+terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull requests
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 

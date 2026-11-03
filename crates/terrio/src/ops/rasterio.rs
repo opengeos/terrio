@@ -31,6 +31,9 @@ pub struct ResampledWindow {
     /// Resample as `GDALDataset::RasterIOResampled` (several bands sharing a mask, with
     /// bilinear, cubic, cubic spline or Lanczos kernels) rather than band by band.
     pub dataset: bool,
+    /// The GDAL release to reproduce: GDAL 3.13's convolution kernels leave out the NaN pixels
+    /// of a floating-point window with a nodata mask, where GDAL 3.12's make their result NaN.
+    pub kernel_version: crate::ops::warp::KernelVersion,
 }
 
 impl ResampledWindow {
@@ -50,7 +53,7 @@ impl ResampledWindow {
             block_width: self.block_width,
             dataset: self.dataset,
             max: None,
-            nan_aware: false,
+            nan_aware: self.kernel_version == crate::ops::warp::KernelVersion::Gdal313,
         })
     }
 
