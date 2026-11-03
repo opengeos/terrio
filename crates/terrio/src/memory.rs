@@ -10,10 +10,10 @@
 //!
 //! - reading: GeoTIFF, Esri ASCII grid, JPEG 2000 (JP2 and J2K), GeoPackage (vector layers and rasters), PMTiles and
 //!   MBTiles (raster and vector tiles), MVT tiles, GeoJSON, TopoJSON,
-//!   FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, DWG, DXF, OSM PBF and XML, and zip archives of these,
+//!   FlatGeobuf, CSV, XLSX, GeoParquet, KML, KMZ, GML, GPX, DWG, DXF, OSM PBF and XML, and zip archives of these,
 //!   and Shapefile and MapInfo (MIF/MID and TAB) in zip archives (or their `.shp` or `.mif` alone);
 //! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, JPEG 2000, GeoPackage (vector
-//!   layers and rasters), PMTiles and MBTiles, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML (without
+//!   layers and rasters), PMTiles and MBTiles, GeoJSON, TopoJSON, FlatGeobuf, CSV, XLSX, GeoParquet, KML, KMZ, GML (without
 //!   its schema), GPX, DWG, DXF and Shapefile ZIP archives (`.shp.zip`).
 //!
 //! Formats made of several files (a shapefile's `.shp`, `.dbf`, `.prj`...) are written as a zip
@@ -193,7 +193,7 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
 }
 
 /// Writes vector layers to bytes. `name` is a file name whose extension tells the format, unless
-/// the options name the driver. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers; CAD combines them into drawing layers.
+/// the options name the driver. GeoPackage, GPX, KML, KMZ, TopoJSON and XLSX hold several layers; CAD combines them into drawing layers.
 /// Shapefiles require an explicit ZIP filename (`roads.shp.zip`, or `.zip` with the
 /// Shapefile driver). The result is `application/zip` on native and WASM alike.
 /// Bare `.shp` names are refused: use [`crate::write_vector`] for filesystem members.
@@ -234,7 +234,11 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
         native::collect(dir.path(), path)
     }
     #[cfg(target_family = "wasm")]
-    codec::write_vector(layers, driver, options)
+    {
+        let mut options = options.clone();
+        options.xlsx = options.xlsx.for_name(name);
+        codec::write_vector(layers, driver, &options)
+    }
 }
 
 /// Native builds: bytes go through a temporary directory and the file drivers.
@@ -338,6 +342,10 @@ pub(crate) mod codec {
         if let Some(d) = VectorDriver::for_extension(name) {
             return Some(d);
         }
+        #[cfg(feature = "xlsx")]
+        if crate::drivers::vector::xlsx::looks_like(bytes, name) {
+            return Some(VectorDriver::XLSX);
+        }
         if bytes.starts_with(b"fgb") {
             return Some(VectorDriver::FlatGeobuf);
         }
@@ -438,7 +446,16 @@ pub(crate) mod codec {
         if crate::drivers::grib::is_grib_bytes(&bytes) {
             return crate::drivers::grib::read_bytes(&bytes).map(Dataset::Raster);
         }
-        if is_zip(&bytes) && ext != "kmz" {
+        // A workbook is a ZIP archive too, read by its own driver.
+        #[cfg(feature = "xlsx")]
+        let workbook = crate::drivers::vector::xlsx::looks_like(&bytes, name);
+        #[cfg(not(feature = "xlsx"))]
+        if is_zip(&bytes) && matches!(ext.as_str(), "xlsx" | "xlsm") {
+            return Err(crate::Error::disabled("xlsx"));
+        }
+        #[cfg(not(feature = "xlsx"))]
+        let workbook = false;
+        if is_zip(&bytes) && ext != "kmz" && !workbook {
             return open_zip(&bytes, name, options);
         }
         if RasterDriver::for_extension(name) == Some(RasterDriver::AAIGrid) {

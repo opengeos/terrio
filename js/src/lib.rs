@@ -453,8 +453,8 @@ struct VectorOpenOptions {
 
 /// Opens a vector dataset from its bytes, with driver open options. `filename` names the file
 /// (its extension tells the format when the content does not); `options` takes `layers` (names)
-/// and `openOptions`, the driver's open options by their GDAL names: the CSV options, the tile
-/// archive options and those of the HECRAS driver for HEC-RAS geometry and plan HDF files
+/// and `openOptions`, the driver's open options by their GDAL names: the CSV and XLSX options, the
+/// tile archive options and those of the HECRAS driver for HEC-RAS geometry and plan HDF files
 /// (`CELL_SUMMARIES`, `TIME_STEP`, ...). A list option takes a comma-separated string or an
 /// array of names.
 ///

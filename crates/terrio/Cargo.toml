@@ -94,7 +94,7 @@ ndarray = { workspace = true, optional = true }
 # Disabled drivers stay in the API (`RasterDriver`, `VectorDriver`) and fail with "built without
 # the `...` feature".
 [features]
-default = ["cad", "geotiff", "parquet", "remote", "avif", "netcdf-hdf5", "osm", "lzma", "flatgeobuf", "jp2", "lerc", "pointcloud", "tiles", "zarr", "sqlite", "grib", "hecras"]
+default = ["cad", "geotiff", "parquet", "remote", "avif", "netcdf-hdf5", "osm", "lzma", "flatgeobuf", "jp2", "lerc", "pointcloud", "tiles", "zarr", "sqlite", "grib", "hecras", "xlsx"]
 ## GeoTIFF and COG reading and writing. Always built (it is the core): the feature exists so that
 ## `features = ["geotiff"]` states what a build needs.
 geotiff = []
@@ -113,6 +113,8 @@ netcdf-hdf5 = ["dep:netcdf-reader", "dep:hdf5-reader"]
 ## Needs `netcdf-hdf5`: HEC-RAS files stay readable as HDF5 rasters, and in-memory opens find
 ## the root `File Type` with terrio's HDF5 reader.
 hecras = ["netcdf-hdf5", "dep:ras-commander-fast-hdf"]
+## XLSX and XLSM workbooks as vector layers (pure Rust).
+xlsx = []
 ## OpenStreetMap PBF and XML.
 osm = ["dep:osmpbfreader", "wbvector/osmpbf"]
 ## LZMA-compressed GeoTIFFs.

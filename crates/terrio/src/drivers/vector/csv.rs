@@ -115,7 +115,7 @@ const Y_NAMES: &[&str] = &["y", "lat", "latitude", "northing", "ycoord", "y_coor
 const Z_NAMES: &[&str] = &["z"];
 const GEOM_NAMES: &[&str] = &["wkt", "geometry", "geom", "the_geom"];
 
-fn matches_name(column: &str, patterns: &[String], defaults: &[&str]) -> bool {
+pub(super) fn matches_name(column: &str, patterns: &[String], defaults: &[&str]) -> bool {
     let column = column.trim().to_ascii_lowercase();
     let check = |p: &str| {
         let p = p.to_ascii_lowercase();
@@ -326,7 +326,7 @@ struct CsvScan {
     lonlat_xy: bool,
 }
 
-fn in_lonlat(g: &Geometry) -> Option<bool> {
+pub(super) fn in_lonlat(g: &Geometry) -> Option<bool> {
     g.bbox().map(|b| b.min_x >= -180.0 && b.max_x <= 180.0 && b.min_y >= -90.0 && b.max_y <= 90.0)
 }
 
@@ -567,16 +567,16 @@ impl<R: std::io::Read> Records<R> {
     }
 }
 
-fn parse_number(s: &str) -> Option<f64> {
+pub(super) fn parse_number(s: &str) -> Option<f64> {
     s.trim().parse::<f64>().ok().filter(|v| v.is_finite())
 }
 
-fn is_integer(s: &str) -> bool {
+pub(super) fn is_integer(s: &str) -> bool {
     let d = s.strip_prefix(['-', '+']).unwrap_or(s);
     !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()) && s.parse::<i64>().is_ok()
 }
 
-fn is_real(s: &str) -> bool {
+pub(super) fn is_real(s: &str) -> bool {
     // Plain decimal notation only, as GDAL detects it: no "nan", "inf" or hex.
     !s.is_empty() && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'.' | b'-' | b'+' | b'e' | b'E')) && s.parse::<f64>().is_ok()
 }

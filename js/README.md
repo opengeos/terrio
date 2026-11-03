@@ -52,7 +52,7 @@ In WebAssembly, these formats are read from and written to memory:
 | | Read | Write |
 |---|---|---|
 | Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
-| Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, FlatGeobuf\*, GeoPackage, GeoParquet, CSV, KML, KMZ, GML, GPX, DWG and DXF (full module), OSM PBF, zip archives of these, Shapefile and MapInfo (MIF/MID) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, KML, KMZ, GML, GPX, DWG and DXF (full module) |
+| Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, FlatGeobuf\*, GeoPackage, GeoParquet, CSV, XLSX, KML, KMZ, GML, GPX, DWG and DXF (full module), OSM PBF, zip archives of these, Shapefile and MapInfo (MIF/MID) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, XLSX, KML, KMZ, GML, GPX, DWG and DXF (full module) |
 | Point cloud | LAS, LAZ, COPC, PLY, E57 | LAS, LAZ, COPC, PLY, E57 |
 
 \* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
@@ -409,3 +409,18 @@ one-based row/column filenames. Options accept camelCase or snake_case.
 adds applicable browser viewers, MapML, STACTA and KML files. The callback must
 save companion files as well as images. See the [CLI reference](../docs/cli.md#retile)
 for output layouts, supported options, limits and measured GDAL differences.
+
+## Selective scientific package
+
+For a single-threaded NetCDF/HDF5 package using the existing `netcdf-hdf5`
+Cargo feature, see [Scientific WASM builds](../docs/scientific-wasm-build.md).
+`node js/build.mjs --no-default-features --features netcdf-hdf5 --out-dir pkg-scientific`
+builds only that module, with generated declarations and project license notices.
+Use a fresh output directory. This is a custom feature selection, not another
+published npm preset; `terrio-js/core` does not include NetCDF/HDF5.
+
+Packaging regressions run without Rust or WASM tools:
+
+```sh
+node --test js/tests/build*.test.mjs
+```

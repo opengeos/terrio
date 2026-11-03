@@ -178,6 +178,10 @@ fn identify_header(bytes: &[u8], name: &str, length: Option<u64>) -> Option<Iden
     if bytes.starts_with(b"PK\x03\x04") && ext == "kmz" {
         return vector(VectorDriver::KMZ);
     }
+    #[cfg(feature = "xlsx")]
+    if crate::drivers::vector::xlsx::looks_like(bytes, &filename) {
+        return vector(VectorDriver::XLSX);
+    }
     #[cfg(feature = "pointcloud")]
     if bytes.starts_with(b"LASF") || bytes.starts_with(b"ASTM-E57") || bytes.starts_with(b"ply\n") || bytes.starts_with(b"ply\r\n") {
         let driver = if bytes.starts_with(b"LASF") {
