@@ -125,8 +125,9 @@ complete.
       comparisons and explicit numerical/schema policies.
 - [x] Cumulative viewshed, weighted/fractional zonal statistics and OGC API Features reading,
       through Rust, CLI/MCP, Python and JavaScript/WASM. Cumulative viewshed merged in
-      [#514](https://github.com/opengeos/terrio/pull/514) (15 exact real-USGS comparisons
-      against GDAL 3.13.3); fractional coverage and weighting rasters in
+      [#514](https://github.com/opengeos/terrio/pull/514) (15 real-USGS comparisons against
+      GDAL 3.13.3, Node/WASM when built: exact but for a 1e-8-pixel geotransform allowance);
+      fractional coverage and weighting rasters in
       [#516](https://github.com/opengeos/terrio/pull/516) (18 real-data comparisons within
       documented tolerances against GDAL 3.13.3 and exactextract 0.3.0); OGC API Features
       reading in [#522](https://github.com/opengeos/terrio/pull/522) (15 live pygeoapi/PDOK
