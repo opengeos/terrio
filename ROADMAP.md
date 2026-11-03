@@ -137,7 +137,8 @@ complete.
 
 [#289](https://github.com/opengeos/terrio/issues/289) tracks unified GDAL command
 equivalents and their documented subsets. It remains open at the maintainer's request;
-the second round of option and output depth, [#288](https://github.com/opengeos/terrio/issues/288), is complete.
+the second round of option and output depth, [#288](https://github.com/opengeos/terrio/issues/288),
+is complete.
 Command-group progress:
 
 - [x] Palette conversion: RGB median cut, supplied palettes, RGB/RGBA expansion and
@@ -593,6 +594,9 @@ WebAssembly (the `terrio-js` npm package):
 
 ## Later
 
+- [ ] Pipeline writer options as GDAL has them, such as retaining source feature IDs in a
+      write step rather than assigning sequential ones (see the pipeline section of
+      [docs/cli.md](docs/cli.md)). Not part of GDAL parity round 2 (#288).
 - [x] ArcGIS feature-service JSON (the `ESRIJSON` driver): files by content and query URLs page by
       page, as GDAL's driver reads them.
 - [x] ArcGIS feature-service protocol buffers (the `ESRIPBF` driver, `f=pbf`): files by content and
