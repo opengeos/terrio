@@ -2153,6 +2153,8 @@ The output covers the complete DEM; `--md` must be zero, as GDAL disallows a
 maximum distance in cumulative mode. Each visible pixel contributes 1 and each hidden
 pixel 0. The sums
 are normalized to Byte with `floor((255 / maximum_sum) * sum)`, matching GDAL 3.13.3.
+Binary64 rounding can map the maximum to 254 (for example, when the maximum count
+is 25); the formula is retained for reference agreement.
 Observer and target heights apply to every observer. Curvature is disabled in ACCUM,
 including when `--cc` is supplied: GDAL 3.13.3 computes cumulative viewsheds in
 temporary rasters without a CRS, so its curvature adjustment is zero. Terrio matches

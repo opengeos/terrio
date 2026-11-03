@@ -282,7 +282,7 @@ def suite_histograms(ctx):
         "`gdalinfo -hist` byte for byte, the JSON histograms (with `min` and `max` as GDAL prints "
         "them), with `-stats`, and the histograms GDAL stored in the `.aux.xml` sidecar.",
     )
-    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_hist_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_hist_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json", *extra])
     try:
         results = json.loads(out)
     except json.JSONDecodeError:
@@ -458,7 +458,7 @@ def classify_raster(r):
     return DIFFERS, detail
 
 
-def suite_json_ops(ctx, key, script, title, reference, criteria, group_words):
+def suite_json_ops(ctx, key, script, title, reference, criteria, group_words, extra=()):
     """A suite of raster operations from a comparison script's JSON output.
 
     Args:
@@ -469,6 +469,7 @@ def suite_json_ops(ctx, key, script, title, reference, criteria, group_words):
         reference: What terrio is compared with.
         criteria: How cases are judged.
         group_words: How many words of a case's name name its operation.
+        extra: Optional arguments passed to the comparison script.
 
     Returns:
         The suite.
@@ -981,9 +982,9 @@ def suite_dem_calc(ctx):
         "the case's tolerance (float32 rounding of NumPy's SIMD functions, for example). "
         "Viewshed outside-observer/radius cases independently verify the radius mask, then "
         "compare in-radius pixels, avoiding GDAL's nondeterministic out-of-range boundary race. "
-        "Five cumulative viewshed cases compare every Byte pixel, CRS and mask with GDAL 3.13.3, "
-        "including observer spacing, a single observer, target height and GDAL's ignored curvature.",
+        "Cumulative viewshed is tested by its dedicated suite.",
         2,
+        extra=("--skip-cumulative",),
     )
 
 

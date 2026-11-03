@@ -484,7 +484,8 @@ fn sieve(
 /// `ox`, `oy` are observer coordinates in the DEM CRS; `oz` and `tz` are heights above
 /// the DEM. `md` is maximum distance (0 unlimited); `cc` is curvature coefficient
 /// (1 minus refraction, 0 flat Earth). `om` is NORMAL, DEM, GROUND or ACCUM. ACCUM ignores `ox`/`oy`;
-/// `os` sets observer spacing in pixels (default 10), and returns normalized Byte visibility. Numeric nodata
+/// `os` sets observer spacing in pixels (default 10), and returns normalized Byte visibility.
+/// Pass `0, 0` for the required positional coordinates in ACCUM; the CLI may omit them. Numeric nodata
 /// is treated as elevation, as in GDAL; nonfinite elevations are rejected.
 #[pyfunction]
 #[pyo3(signature = (src, ox, oy, dst=None, *, oz=2.0, tz=0.0, md=0.0, cc=None, om="NORMAL", ov=0, band=1, os=10,

@@ -37,6 +37,8 @@ def test_cumulative_matches_gdal(tmp_path, spacing):
     if shutil.which("gdal_viewshed") is None:
         pytest.skip("gdal_viewshed is required for the live comparison")
 
+    gdal.UseExceptions()
+    osr = pytest.importorskip("osgeo.osr")
     rng = np.random.default_rng(812)
     z = rng.uniform(0, 100, (9, 11)).astype("float64")
     src = terrio.Raster.from_array(z, (400000, 30, 0, 4400000, 0, -30), crs="EPSG:32613")
@@ -51,6 +53,21 @@ def test_cumulative_matches_gdal(tmp_path, spacing):
     expected = gdal.Open(output_path)
     actual = terrio.viewshed(src, 0, 0, om="ACCUM", os=spacing)
     np.testing.assert_array_equal(actual.read(1), expected.ReadAsArray())
+    # These integer-affine grid coefficients are copied without arithmetic.
     assert tuple(actual.transform) == expected.GetGeoTransform()
+    assert actual.dtype == "uint8" and actual.read(1).dtype == np.dtype("uint8")
+    assert actual.nodata is None and expected.GetRasterBand(1).GetNoDataValue() is None
+    assert expected.GetRasterBand(1).DataType == gdal.GDT_Byte
+    actual_srs = osr.SpatialReference()
+    actual_srs.SetFromUserInput(actual.crs)
+    assert expected.GetSpatialRef().IsSame(actual_srs, ["IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES"])
+    path = str(tmp_path / "actual.tif")
+    actual.write(path)
+    persisted = gdal.Open(path)
+    assert persisted.GetSpatialRef().IsSame(expected.GetSpatialRef())
+    np.testing.assert_array_equal(
+        persisted.GetRasterBand(1).GetMaskBand().ReadAsArray(),
+        expected.GetRasterBand(1).GetMaskBand().ReadAsArray(),
+    )
     assert actual.width == expected.RasterXSize
     assert actual.height == expected.RasterYSize

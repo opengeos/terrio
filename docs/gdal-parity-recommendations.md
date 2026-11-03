@@ -124,7 +124,8 @@ heights, maximum distance, curvature/refraction and projected-unit handling.
 CLI/MCP, Python and JavaScript expose the operation. Real projected DEM comparisons
 are registered in conformance; numeric input nodata is treated as elevation, as in
 GDAL, and nonfinite elevations must be filled or cropped first. Cumulative
-visibility remains outside this subset.
+visibility is available with `--om ACCUM --os N`, matching GDAL 3.13.3 normalization
+and its disabled curvature in cumulative mode.
 [GDAL viewshed](https://gdal.org/en/stable/programs/gdal_viewshed.html).
 
 Acceptance: compare with GDAL on projected DEMs, hills/ridges, maximum distances

@@ -105,6 +105,15 @@ pub fn viewshed(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset
     if o.mode == ViewshedMode::Accum {
         return cumulative(ds, o);
     }
+    let mut elevations = Vec::new();
+    let mut output = Vec::new();
+    let grid = execute(ds, o, &mut elevations, &mut output)?;
+    drop(elevations);
+    build_raster(grid, vec![output], if o.mode == ViewshedMode::Normal { DataType::U8 } else { DataType::F64 }, None, &ds.crs(), |v, _| v)
+}
+
+/// Runs one observer into reusable elevation and visibility buffers.
+fn execute(ds: &RasterDataset, o: &ViewshedOptions, z: &mut Vec<f64>, out: &mut Vec<f64>) -> Result<Grid> {
     let invalid = |s: &str| Error::InvalidArgument(s.into());
     if ds.complex || o.band == 0 || o.band > ds.raster.bands {
         return Err(invalid("viewshed requires a real source band"));
@@ -144,7 +153,8 @@ pub fn viewshed(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset
     }
     let (nw, nh) = (x1 - x0, y1 - y0);
     let src = super::BandView::of(&ds.raster, o.band - 1);
-    let mut z = Vec::with_capacity(nw * nh);
+    z.clear();
+    z.reserve(nw * nh);
     for y in y0..y1 {
         for x in x0..x1 {
             let v = src.get(y * w + x);
@@ -163,7 +173,8 @@ pub fn viewshed(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset
     let observer = o.observer_height + if inside_x { z[start_y * nw + start_x] } else { 0.0 };
     let a = crs.to_wkt().as_deref().and_then(crate::crs::semi_major_axis).unwrap_or(6_378_137.0);
     let coeff = o.curvature_coefficient.unwrap_or(if (a / 6_378_137.0 - 1.0).abs() > 0.05 { 1.0 } else { 0.85714 });
-    let mut out = vec![0.0; nw * nh];
+    out.clear();
+    out.resize(nw * nh, 0.0);
     for y in 0..nh {
         for x in 0..nw {
             let p = y * nw + x;
@@ -215,18 +226,10 @@ pub fn viewshed(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset
             z[p] = current.max(horizon);
         }
     }
-    drop(z);
     let mut output_gt = gt;
     output_gt[0] += x0 as f64 * gt[1];
     output_gt[3] += y0 as f64 * gt[5];
-    build_raster(
-        Grid { width: nw, height: nh, geo_transform: output_gt },
-        vec![out],
-        if o.mode == ViewshedMode::Normal { DataType::U8 } else { DataType::F64 },
-        None,
-        &crs,
-        |v, _| v,
-    )
+    Ok(Grid { width: nw, height: nh, geo_transform: output_gt })
 }
 
 /// GDAL 3.13.3 cumulative observer grid and Byte normalization. Reuses the normal
@@ -251,13 +254,15 @@ fn cumulative(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset> 
     // GDAL's cumulative executors write to MEM datasets without a CRS, so their
     // calcHeightAdjFactor() returns zero even when a coefficient was supplied.
     let mut single = ViewshedOptions { mode: ViewshedMode::Normal, out_of_range: 0, curvature_coefficient: Some(0.0), ..o.clone() };
+    let mut elevations = Vec::new();
+    let mut visible = Vec::new();
     for x in (0..w).step_by(o.observer_spacing) {
         for y in (0..h).step_by(o.observer_spacing) {
             single.observer_x = gt[0] + (x as f64 + 0.5) * gt[1];
             single.observer_y = gt[3] + (y as f64 + 0.5) * gt[5];
-            let visible = viewshed(ds, &single)?;
-            for (i, sum) in sums.iter_mut().enumerate() {
-                *sum += u32::from(visible.raster.data.get_f64(i) != 0.0);
+            execute(ds, &single, &mut elevations, &mut visible)?;
+            for (sum, value) in sums.iter_mut().zip(&visible) {
+                *sum += u32::from(*value != 0.0);
             }
         }
     }
@@ -297,6 +302,15 @@ mod tests {
         assert_eq!(out.nodata(), None);
         assert!(viewshed(&src, &ViewshedOptions { max_distance: 1.0, ..o.clone() }).is_err());
         assert!(viewshed(&src, &ViewshedOptions { observer_spacing: 0, ..o }).is_err());
+    }
+    /// GDAL 3.13.3 intentionally floors the rounded binary64 product, including at maximum.
+    #[test]
+    fn cumulative_normalization_preserves_reference_rounding() {
+        for (n, expected) in [(7, 255.0), (25, 254.0)] {
+            let src = dem(vec![0.0; n], n, 1, None);
+            let out = viewshed(&src, &ViewshedOptions { mode: ViewshedMode::Accum, observer_spacing: 1, ..Default::default() }).unwrap();
+            assert!(super::super::band_f64(&out.raster, 0).iter().all(|v| *v == expected));
+        }
     }
     #[test]
     fn ridge_heights_targets_and_radius() {

@@ -465,6 +465,7 @@ def main():
     ap.add_argument("--terrio", default=os.path.join(os.path.dirname(__file__), "..", "target", "release", "terrio"))
     ap.add_argument("--only", help="only cases whose name contains this")
     ap.add_argument("--json", action="store_true", help="print JSON")
+    ap.add_argument("--skip-cumulative", action="store_true", help="leave cumulative cases to their dedicated suite")
     ap.add_argument("--bindings", action="store_true", help="compare cumulative Python bindings too")
     ap.add_argument("--node-package", help="also compare cumulative Node/WASM with this built package")
     ap.add_argument("--keep", help="keep the outputs in this directory")
@@ -475,6 +476,8 @@ def main():
         print(f"GDAL {gdal.__version__} (terrio reproduces GDAL 3.12's arithmetic)\n")
     results = []
     for i, c in enumerate(cases(os.path.abspath(a.data), tmp)):
+        if a.skip_cumulative and c.get("cumulative"):
+            continue
         if a.only and a.only not in c["name"]:
             continue
         ext = c.get("ext", "tif")

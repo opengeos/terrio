@@ -363,7 +363,8 @@ cumulative = terrio.viewshed("dem_utm.tif", 0, 0, om="ACCUM", os=10)
 
 `om="NORMAL"` returns visibility; `DEM` and `GROUND` return minimum visible elevation
 or height above the DEM. `cc` is 1 minus refraction. For cumulative visibility, `os`
-sets observer spacing in pixels (default 10); observer coordinates are ignored.
+sets observer spacing in pixels (default 10). Python retains its positional
+coordinates: pass `0, 0` placeholders for ACCUM; the CLI permits omitting them.
 See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and input nodata behavior.
 
 ### Vector gridding and linear referencing
