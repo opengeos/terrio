@@ -340,9 +340,6 @@ def server(tmp_path):
             self.send_response(206)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
-            # Record before sending: the client can finish reading, and the test can
-            # assert, before this thread would run a statement after the write.
-            sent.append(len(body))
             self.end_headers()
             self.wfile.write(body)
 
