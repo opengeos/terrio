@@ -401,8 +401,13 @@ extension, without renaming the layer. This alias is a Terrio extension to GDAL
 For ZIP archives, selection uses the main dataset member's filename (for example,
 `member` for `member.shp` inside `archive.zip`), rather than the archive's name.
 
+HEC-RAS, WFS and OAPIF retain their driver-specific selection rules and error
+messages. HEC-RAS requires stored layer names; it does not accept filename aliases.
+
 `openVector(bytes, filename, {layers})` and operations receiving `{bytes, filename}`
-can use the filename alias. A materialized `Dataset` does not retain its source
+can use the filename alias. Bare `Uint8Array` inputs use the implicit filename
+`data`, so a single layer also answers to `data`; pass `{bytes, filename}` to give
+it a meaningful filename alias. A materialized `Dataset` does not retain its source
 filename, so subsequent operations use its actual layer names. For bytes from
 `map.geojson` containing one layer named `roads`:
 

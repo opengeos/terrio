@@ -1966,20 +1966,12 @@ fn convert_sorted_osm(data: &mut File, src: &str, dst: &str, options: &ConvertOp
     let driver = output_driver(dst, options);
     let schemas = osm::layer_schemas();
     // The layers asked for, as `open_vector` selects them.
-    let selected: Vec<usize> = if options.open.layers.is_empty() {
-        (0..schemas.len()).collect()
-    } else {
-        let s: Vec<usize> = (0..schemas.len()).filter(|&i| options.open.layers.contains(&schemas[i].name)).collect();
-        if s.is_empty() {
-            let names: Vec<&str> = schemas.iter().map(|l| l.name.as_str()).collect();
-            return Err(Error::InvalidArgument(format!(
-                "no layer named {} (layers: {})",
-                options.open.layers.join(", "),
-                names.join(", ")
-            )));
-        }
-        s
-    };
+    let names: Vec<&str> = schemas.iter().map(|layer| layer.name.as_str()).collect();
+    let selected: Vec<usize> = crate::dataset::layer_selection(&options.open.layers, &names, Some(src), false)?
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, keep)| keep.then_some(index))
+        .collect();
     let mut wanted = [false; 5];
     for &i in &selected {
         wanted[i] = true;
