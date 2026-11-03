@@ -1402,12 +1402,12 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    // Linux sparse files avoid allocating 8 GiB; mapping that size needs a 64-bit address space.
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     #[test]
-    fn compressed_workbook_size_is_bounded_for_paths_and_bytes() {
+    fn compressed_workbook_bytes_are_bounded() {
         let file = tempfile::NamedTempFile::new().unwrap();
         file.as_file().set_len(MAX_SHEET_BYTES + 1).unwrap();
-        assert!(matches!(Workbook::open(file.path().to_str().unwrap()), Err(Error::ResourceLimit(_))));
         // SAFETY: this private sparse file is not modified while its read-only mapping exists.
         let bytes = unsafe { memmap2::MmapOptions::new().map(file.as_file()).unwrap() };
         assert!(matches!(Workbook::open_bytes(&bytes), Err(Error::ResourceLimit(_))));

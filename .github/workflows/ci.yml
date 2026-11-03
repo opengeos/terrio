@@ -409,7 +409,9 @@ jobs:
           cargo build -p terrio-cli
           cargo build -p terrio --example xlsx_workbook
           python scripts/conformance.py terrio-data --terrio target/debug/terrio --only xlsx-workbook --strict --output xlsx-workbook.md
-          cat xlsx-workbook.md >> "$GITHUB_STEP_SUMMARY"
+      - name: XLSX workbook summary
+        if: ${{ always() && hashFiles('xlsx-workbook.md') != '' }}
+        run: cat xlsx-workbook.md >> "$GITHUB_STEP_SUMMARY"
       - name: Python bindings against GDAL
         shell: micromamba-shell {0}
         env:
