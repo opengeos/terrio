@@ -28,16 +28,18 @@ iteration, including Python and WASM development builds:
 ```sh
 export CARGO_PROFILE_DEV_DEBUG=0
 export CARGO_PROFILE_TEST_DEBUG=0
-export CARGO_BUILD_JOBS=2
 ```
 
+- Set `CARGO_BUILD_JOBS` to what the machine can spare, and lower it when several
+  worktrees build at once. Use `nice` to keep a desktop responsive.
 - Keep targets on disk rather than a memory-backed `/tmp`. Set
   `CARGO_TARGET_DIR` to a worktree-specific directory if necessary.
 - Give concurrent worktrees separate target directories; Cargo locks serialize
   builds sharing a target directory. Bound total parallelism across workers.
 - When `sccache` is available, reuse its compiler cache across worktrees with
-  `RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0`. Incremental Rust builds cannot be
-  cached by sccache. Without it, keep incremental compilation for repeated edits.
+  `RUSTC_WRAPPER=sccache`. It caches dependencies; workspace crates built
+  incrementally are not cached. Keep incremental compilation for repeated edits, and
+  add `CARGO_INCREMENTAL=0` only for one-off builds that should fill the cache.
 - Use `cargo check`, focused tests and development binding builds during edits.
   Run optimized package builds for final validation when affected.
 - Reuse completed checks until source, features or build settings change. Preserve

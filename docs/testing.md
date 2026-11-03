@@ -457,12 +457,13 @@ information with `CARGO_PROFILE_DEV_DEBUG=2 cargo test`; this increases disk use
 Incremental compilation remains available locally for repeated edits.
 
 For several independent worktrees, use a shared compiler cache such as `sccache`
-with `RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0`. Rust incremental compilation
-cannot be cached by sccache. Keep each active worktree's target directory separate:
+with `RUSTC_WRAPPER=sccache`. It caches dependencies; Rust incremental compilation
+cannot be cached by sccache, so keep it for repeated edits and add
+`CARGO_INCREMENTAL=0` only for one-off builds that should fill the cache. Keep each active worktree's target directory separate:
 a single shared Cargo target directory serializes concurrent builds on its lock.
 Put build targets on disk rather than a memory-backed `/tmp`, and limit aggregate
-build parallelism when running multiple worktrees (for example, `CARGO_BUILD_JOBS=2`
-per worktree). Use development WASM/Python builds for iteration; run optimized
+build parallelism when running multiple worktrees (for example, by lowering
+`CARGO_BUILD_JOBS` per worktree). Use development WASM/Python builds for iteration; run optimized
 package builds for final validation.
 
 CI saves dependency caches for PR updates as well as main, disables incremental
