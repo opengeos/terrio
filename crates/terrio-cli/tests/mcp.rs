@@ -726,6 +726,54 @@ fn two_point_oblique_mercator_coordinates_and_refusal_through_mcp() {
     assert_eq!(replies[&2]["result"]["isError"], true);
 }
 
+#[cfg(not(target_family = "wasm"))]
+#[path = "../../terrio/tests/common/oapif.rs"]
+mod oapif_fixture;
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn oapif_conversion_through_mcp_bounds_plain_limits_and_keeps_filter_order() {
+    if !terrio::formats::VectorDriver::OAPIF.info().read {
+        return;
+    }
+    let server = oapif_fixture::Server::new();
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("limited.gpkg");
+    let filtered = dir.path().join("filtered.gpkg");
+    let url = format!("OAPIF:{}/alias", server.url);
+    let replies = session(&[
+        call(1, "convert", &[&url, plain.to_str().unwrap(), "--oo", "PAGE_SIZE=2", "--limit", "3"]),
+        call(2, "convert", &[&url, filtered.to_str().unwrap(), "--oo", "PAGE_SIZE=2", "--where", "value > 4", "--limit", "1"]),
+    ]);
+    for id in [1, 2] {
+        assert_eq!(replies[&id]["result"]["isError"], false, "{}", replies[&id]);
+    }
+    let a = terrio::open_vector(plain.to_str().unwrap(), &Default::default()).unwrap();
+    assert_eq!(a.layers[0].len(), 3);
+    for (i, expected) in [0.5, 1.5, 2.5].into_iter().enumerate() {
+        assert_eq!(a.layers[0].features[i].get(&a.layers[0].schema, "value").unwrap(), &terrio::FieldValue::Float(expected));
+    }
+    let b = terrio::open_vector(filtered.to_str().unwrap(), &Default::default()).unwrap();
+    assert_eq!(b.layers[0].len(), 1);
+    assert_eq!(b.layers[0].features[0].get(&b.layers[0].schema, "value").unwrap(), &terrio::FieldValue::Float(4.5));
+    // Plain limit needs two item pages; filtering must inspect all three pages.
+    assert_eq!(server.requests.lock().unwrap().iter().filter(|(u, _)| u.contains("/items")).count(), 5);
+}
+
+#[test]
+fn oapif_open_options_are_rejected_on_other_vector_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.geojson");
+    let output = dir.path().join("out.gpkg");
+    std::fs::write(&input, r#"{"type":"FeatureCollection","features":[]}"#).unwrap();
+    for option in ["CRS=EPSG:3857", "PAGE_SIZE=1000", "OAPIF_MAX_FEATURES=0", "OAPIF_SKIP_FEATURES=0"] {
+        let replies = session(&[call(1, "convert", &[input.to_str().unwrap(), output.to_str().unwrap(), "--oo", option])]);
+        assert_eq!(replies[&1]["result"]["isError"], true, "{}", replies[&1]);
+        assert!(replies[&1]["result"]["content"][0]["text"].as_str().unwrap().contains("OAPIF"));
+        assert!(!output.exists());
+    }
+}
+
 #[test]
 fn zonal_tool_computes_fractional_weighted_statistics() {
     let dir = tempfile::tempdir().unwrap();

@@ -185,8 +185,10 @@ scientific data cubes, respectively.
 
 Weighted/fractional zonal statistics now extend the existing zonal operation, with
 aligned weighting rasters and exactextract-style coverage fractions (see the CLI
-for the supported statistics and numeric allowances). Other worthwhile follow-ups
-are OGC API Features access and overview refresh tooling. Avoid prioritizing proprietary
+for the supported statistics and numeric allowances). Read-only OGC API Features
+access is tracked in [#522](https://github.com/opengeos/terrio/pull/522), with
+supported scope and reference comparisons in the CLI and testing documentation.
+Overview refresh tooling remains a follow-up. Avoid prioritizing proprietary
 drivers and core database connections: the current roadmap explicitly excludes
 them and provides an optional GDAL backend for the long tail.
 

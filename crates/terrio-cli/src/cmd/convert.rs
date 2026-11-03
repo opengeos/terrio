@@ -145,7 +145,12 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
     }
     let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
     let translate = a.vector.to_options(t_srs)?;
-    let mut open = VectorOpenOptions { layers: a.layers.clone(), spatial_filter: a.vector.spatial_hint(&a.input), ..Default::default() };
+    let mut open = VectorOpenOptions {
+        layers: a.layers.clone(),
+        spatial_filter: a.vector.spatial_hint(&a.input),
+        max_features: a.vector.source_limit(&a.input),
+        ..Default::default()
+    };
     for (k, v) in key_values(&a.open_options)? {
         if !open.set(k, v)? {
             return Err(terrio::Error::InvalidArgument(format!("unknown open option '{k}'")));
@@ -276,7 +281,11 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
         };
         output_mask = r.read_mask(window, a.overview)?;
         Dataset::Raster(r.read_window(window, &opts)?)
-    } else if a.layers.is_empty() && a.open_options.is_empty() && a.vector.spatial_hint(&a.input).is_none() {
+    } else if a.layers.is_empty()
+        && a.open_options.is_empty()
+        && a.vector.spatial_hint(&a.input).is_none()
+        && a.vector.source_limit(&a.input).is_none()
+    {
         let ds = super::quiet(|| terrio::open(&a.input))?;
         if let Dataset::Raster(r) = &ds {
             // `open` returns pixels only: the validity comes from the lazy reader, when it has one.
@@ -288,7 +297,12 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
         ds
     } else {
         let spatial_filter = a.vector.spatial_hint(&a.input);
-        let mut options = VectorOpenOptions { layers: a.layers.clone(), spatial_filter, ..Default::default() };
+        let mut options = VectorOpenOptions {
+            layers: a.layers.clone(),
+            spatial_filter,
+            max_features: a.vector.source_limit(&a.input),
+            ..Default::default()
+        };
         for (k, v) in key_values(&a.open_options)? {
             if !options.set(k, v)? {
                 return Err(terrio::Error::InvalidArgument(format!("unknown open option '{k}'")));

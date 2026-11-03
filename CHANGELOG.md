@@ -15,6 +15,15 @@
   and cells are charged by the memory they take, which keeps opening and saving near 8 GiB at most
   (measured: 2 million cells peak at 0.9 to 1 GB).
   `Workbook::layer` and `add_layer` view sheets as layers (#405).
+- Read-only OGC API Features discovery and bounded paging through Rust, CLI/MCP,
+  Python and JavaScript/WASM. Explicit `OAPIF:` URLs support collection selection,
+  spatial/temporal queries, advertised CRS and axis rules, and scalar JSON schemas.
+  Nested properties are preserved as JSON text; unsupported schema references fail
+  explicitly. Incomplete pagination fails when `numberMatched` or a next link
+  reveals missing features; otherwise a final page ends the read (#288).
+- Native JSON requests send a caller- or document-supplied `Accept` header in place of
+  the default `application/geo+json, application/json` instead of sending both, so STAC
+  link `headers` that set `Accept` now control content negotiation (#288).
 - `terrio::xlsx::Workbook` writes workbooks laid out for people: sheets, typed cells at their
   positions, merged ranges, column and row settings, cell formats, frozen panes, filters, list
   validations, defined names, hyperlinks, comments, print setup and document properties (#405).

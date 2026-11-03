@@ -324,6 +324,8 @@ pub struct VectorOpenOptions {
     pub feature_server_paging: Option<bool>,
     /// Native WFS paging and retained-data budgets.
     pub wfs: crate::drivers::vector::wfs::WfsOpenOptions,
+    /// Native and portable OGC API Features options.
+    pub oapif: crate::drivers::vector::oapif::OapifOpenOptions,
     /// How to read HEC-RAS geometry and plan HDF files: meshes and the stored values to join.
     pub hecras: crate::drivers::vector::hecras_options::HecRasOpenOptions,
     /// How to read XLSX workbooks: header rows, field types and geometry columns.
@@ -345,6 +347,16 @@ impl VectorOpenOptions {
     /// # Ok::<(), terrio::Error>(())
     /// ```
     pub fn set(&mut self, key: &str, value: &str) -> Result<bool> {
+        if key.eq_ignore_ascii_case("OAPIF_MAX_FEATURES") || key.eq_ignore_ascii_case("OAPIF_SKIP_FEATURES") {
+            let number = value.parse::<usize>().map_err(|_| Error::InvalidArgument(format!("{key} must be a nonnegative integer")))?;
+            self.oapif.configured = true;
+            if key.eq_ignore_ascii_case("OAPIF_MAX_FEATURES") {
+                self.max_features = Some(number);
+            } else {
+                self.skip_features = number;
+            }
+            return Ok(true);
+        }
         if key.eq_ignore_ascii_case("FEATURE_SERVER_PAGING") {
             self.feature_server_paging = Some(crate::tiles::parse_bool(value)?);
             return Ok(true);
@@ -354,7 +366,8 @@ impl VectorOpenOptions {
             || self.shapefile.set(key, value)?
             || self.tiles.set(key, value)?
             || self.hecras.set(key, value)?
-            || self.wfs.set(key, value)?;
+            || self.wfs.set(key, value)?
+            || self.oapif.set(key, value)?;
         Ok(self.xlsx.set(key, value)? || known)
     }
 
@@ -590,6 +603,7 @@ fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    options.oapif.validate_source(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
@@ -613,6 +627,15 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
 /// what it can of without a word. Other paths (`None`) go on as usual, as do URLs whose request
 /// fails before their answer is recognized, which report their own errors.
 pub(crate) fn open_remote_vector(path: &str, options: &VectorOpenOptions) -> Option<Result<VectorDataset>> {
+    if let Some(target) = crate::drivers::vector::oapif::service_target(path) {
+        #[cfg(remote)]
+        return Some(crate::drivers::vector::oapif::open(target, options));
+        #[cfg(not(remote))]
+        {
+            let _ = target;
+            return Some(Err(crate::drivers::vector::oapif::transport_required()));
+        }
+    }
     if let Some(target) = crate::drivers::vector::wfs::service_target(path) {
         #[cfg(remote)]
         return Some(crate::drivers::vector::wfs::open(target, options));
@@ -809,6 +832,7 @@ fn read_feature_service(url: &str, first: &[u8], driver: VectorDriver, options: 
 }
 
 pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    options.oapif.validate_source(path)?;
     if let Some(result) = crate::stac::open(path) {
         return match result? {
             Dataset::Vector(v) => Ok(v),
@@ -831,6 +855,15 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
 /// The layer names of a vector dataset, without reading the features when the format allows it.
 pub fn list_layers(path: &str) -> Result<Vec<String>> {
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
+    if let Some(target) = crate::drivers::vector::oapif::service_target(path) {
+        #[cfg(remote)]
+        return crate::drivers::vector::oapif::list_layers(target);
+        #[cfg(not(remote))]
+        {
+            let _ = target;
+            return Err(Error::disabled("remote"));
+        }
+    }
     if let Some(target) = crate::drivers::vector::wfs::service_target(path) {
         #[cfg(remote)]
         return crate::drivers::vector::wfs::list_layers(target);

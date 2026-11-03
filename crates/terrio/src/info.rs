@@ -431,6 +431,15 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
     #[cfg(not(feature = "pointcloud"))]
     let kind = None;
     crate::formats::check_allowed(path, kind)?;
+    if let Some(target) = crate::drivers::vector::oapif::service_target(path) {
+        #[cfg(remote)]
+        return Ok(Info::VectorService(crate::drivers::vector::oapif::info(target)?));
+        #[cfg(not(remote))]
+        {
+            let _ = target;
+            return Err(crate::drivers::vector::oapif::transport_required());
+        }
+    }
     if let Some(target) = crate::drivers::vector::wfs::service_target(path) {
         #[cfg(remote)]
         return Ok(Info::VectorService(crate::drivers::vector::wfs::info(target)?));

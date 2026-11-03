@@ -3750,3 +3750,87 @@ Clap distinguishes the metadata flag from literal values. For example,
 `terrio info -- --json-usage` treats `--json-usage` as the dataset name, and
 `--srcnodata --json-usage` treats it as the nodata argument's value. For the
 pipeline's trailing expression, put the metadata flag before expression tokens.
+
+## OGC API Features
+
+`OAPIF:https://service/collections` opens a read-only OGC API Features catalog,
+a collection URL or an items URL. The explicit prefix avoids probing ordinary
+HTTP files. `info` and layer listing read collection metadata without fetching
+features; unknown counts and schemas remain unknown until a data read.
+
+```sh
+terrio info OAPIF:https://demo.pygeoapi.io/master/collections/lakes --json
+terrio convert OAPIF:https://demo.pygeoapi.io/master/collections/lakes lakes.gpkg --limit 4 --oo PAGE_SIZE=3
+```
+
+The same commands are available through MCP. `--layer` selects collections and
+`--spat` sends a bounding box. Plain conversion limits stop paging early; with
+SQL or attribute filters, the limit is applied after local filtering. `--spat`
+also disables source-limit pushdown: combining it with `--limit` does not bound
+network paging, and the reader can consume the entire bbox match set before
+applying the final limit. Open
+options include `PAGE_SIZE` (1000), `DATETIME`, `CRS`, `PREFERRED_CRS`,
+`SERVER_FEATURE_AXIS_ORDER=AUTHORITY_COMPLIANT|GIS_FRIENDLY`, `IGNORE_SCHEMA=YES`,
+and `URL` for a bare `OAPIF:` name. `CRS` must be advertised; `PREFERRED_CRS`
+falls back to storage CRS or CRS84. Output coordinates use GIS X/Y order;
+server bounding boxes from API options follow the selected CRS axis order. URL
+`bbox` and `bbox-crs` values are passed through in server order (CRS84 by default
+when `bbox-crs` is absent); they are not interpreted as API X/Y bounds. Terrio
+recognizes these URL option names case-insensitively and sends canonical names.
+
+Reads follow same-origin relative next links and reject cycles, repeated feature
+IDs and external schema references. A missing next page is detected only when
+`numberMatched` exceeds the number read; without that count, a final page with no
+next link ends the read. Native HTTP follows only
+same-origin redirects. Limits are `OAPIF_MAX_PAGES` (10000),
+`OAPIF_MAX_VECTOR_BYTES` (1 GiB conservative cumulative work budget), and
+16 MiB per response, further bounded by the HTTP JSON size setting.
+The aggregate budget charges all response bytes across all collections at 32×,
+even after decoding, plus retained typed cells. It is not a current-heap limit;
+the default therefore allows at most about 32 MiB of cumulative response bodies.
+`OAPIF_MAX_FEATURES` and `OAPIF_SKIP_FEATURES` set the per-collection range.
+
+JSON Schema scalar types are honored, including absent nullable fields. Without
+a usable JSON schema, fields are inferred across all fetched pages. Nested
+objects/arrays remain JSON text rather than GDAL's flattened fields; a schema
+string without a date format remains text. XML schema, external JSON references,
+CQL/filter languages, transactions and streaming feature iteration are outside
+this reader's scope. Pages are accumulated within the allocation budget.
+
+Signed numeric source IDs, or string IDs that conflict with a source `id`
+property, are preserved as serialized JSON in `_oapif_id` text (with an extra leading underscore
+if that field already exists); generated unsigned FIDs then follow row order.
+
+Non-null values incompatible with an advertised scalar type fail explicitly,
+including empty-string dates. Use `IGNORE_SCHEMA=YES` to infer types from the
+source values instead. Schema fetch or parse failures also fail the read;
+`IGNORE_SCHEMA=YES` bypasses schema discovery. Schemas without property definitions fall back to inference.
+OAPIF-specific open options are rejected on other vector sources, even when their
+value equals the default.
+
+`URL` supplies a bare `OAPIF:` only for APIs accepting open options (such as
+`open_vector` and conversion). Metadata-only `info` and layer listing require
+the complete prefixed service URL. Mixed numeric/string source IDs are preserved
+as serialized JSON in `_oapif_id` text, retaining the distinction between `1`
+and `"1"`.
+
+Metadata discovery retains collections whose CRS cannot be read, reporting their
+CRS as unknown. A CRS error is returned when that collection is selected for
+feature reading. Synthetic `_oapif_id` values always contain serialized JSON;
+null or absent identifiers remain null. A schema's nested `properties` map is
+unwrapped only when its `type` field explicitly identifies a GeoJSON Feature.
+
+CRS references supplied by a service are parsed as literal definitions, without
+opening local files named by that metadata. Explicit caller CRS options retain
+the normal user-input parser.
+
+OAPIF items URLs honor `offset` and use URL `crs` as an explicit CRS selector;
+combining URL `crs` with `CRS`/`PREFERRED_CRS` options is rejected. Paging preserves
+active bbox/datetime/CRS selectors when next links omit them.
+
+OAPIF metadata extents that cross the antimeridian are reported as unknown.
+A zero-feature range returns empty layers without schema or item requests.
+
+When string feature identifiers coexist with a source or schema `id` field,
+the identifiers use `_oapif_id` so source `id` values and nulls remain intact.
+Empty pages with advancing next links are followed within the same page budget.

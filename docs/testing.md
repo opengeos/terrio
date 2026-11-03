@@ -2262,3 +2262,41 @@ runs measured binary median 0.06796 s / peak RSS 44.2–44.7 MiB, and fractional
 median 0.08048 s / peak RSS 49.6–50.6 MiB. Both counts matched the source's valid
 pixel count. The masks themselves use 706,146 and 5,649,168 bytes respectively;
 the process measurements include decoding and runtime overhead.
+
+### OGC API Features
+
+```sh
+python scripts/conformance.py ../terrio-data --only oapif --remote --strict
+```
+
+The public-service suite compares CLI, Python and Node/WASM reads with GDAL
+3.13.3 on pygeoapi Natural Earth lakes and PDOK BAG buildings. Five profiles
+exercise three-feature paging with a four-feature limit, advertised schema,
+spatial bounding boxes, preferred CRS fallback, projected storage CRS and
+geographic authority axes. All source attributes/nulls, IDs carried as fields,
+geometry types, vertices and equivalent CRS are checked. Coordinates allow
+1e-8 source units; real attributes allow relative 1e-12 or absolute 1e-10.
+Generated output FIDs are excluded because format conversion renumbers them.
+
+Physical schema differences are explicit: the service returns a flattened
+`verblijfsobject.href` array, preserved natively as JSON text and checked against
+GDAL's StringList. The service schema's absent `verblijfsobject` field is retained
+natively and checked to be null in every row. Native `documentdatum` follows the
+advertised string type, compared with GDAL's inferred Date as ISO text. These are reported
+as normalized agreement, not identical schemas. No source fields are dropped.
+Unavailable public services are reported as not compared.
+
+Native unit tests cover catalog paging, field union, local JSON references,
+axis/bbox/datetime handling, resource limits and terminal paging errors. Native
+HTTP tests measure seven requests including redirect/catalog/schema and three
+item pages for a bounded range; metadata-only reads fetch no items or schemas.
+Python and Node tests each observe four real localhost HTTP requests for
+catalog/schema and two item pages. MCP checks bounded conversion and filtering
+before a final feature limit.
+
+A local pygeoapi lakes measurement fetched one metadata response (4,509 body
+bytes) for layer listing, and four responses (32,622 body bytes) for the
+four-feature read at page size three: metadata, schema and two item pages.
+These are observed public-service response sizes, not fixed assertions.
+All 15 CLI/Python/WASM comparisons passed: nine exact and six with the explicit
+schema normalizations above; maximum observed coordinate error was zero.

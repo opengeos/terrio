@@ -2414,7 +2414,7 @@ def node_exports_available(module, names):
     try:
         result = subprocess.run([
             "node", "-e",
-            "const t=require(process.argv[1]);process.exit(process.argv.slice(2).every(n=>typeof t[n]==='function')?0:1)",
+            "const t=require(process.argv[1]);process.exit(process.argv.slice(2).every(n=>typeof t[n]==='function'&&(n!=='openOapif'||typeof fetch==='function'))?0:1)",
             str(module.resolve()), *names,
         ], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
@@ -2430,6 +2430,20 @@ def node_cityjson_writer_available(module):
 const doc={type:'CityJSON',version:'2.0',transform:{scale:[1,1,1],translate:[0,0,0]},CityObjects:{probe:{type:'Building'}},vertices:[]};
 const d=t.open(new TextEncoder().encode(JSON.stringify(doc)),'probe.city.json');
 try {const out=JSON.parse(new TextDecoder().decode(d.toBytes('probe.city.json',{cityjsonVersion:'1.1'})));process.exitCode=out.version==='1.1'?0:1;}finally{d.free();}"""
+    try:
+        result = subprocess.run(["node", "-e", code, str(module.resolve())], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def node_gpkg_writer_available(module):
+    """Probe GeoPackage output, which needs the sqlite feature, not just the export list."""
+    if not node_exports_available(module, ["open"]):
+        return False
+    code = """const t=require(process.argv[1]);
+const d=t.open(new TextEncoder().encode('{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}]}'),'probe.geojson');
+try{process.exitCode=d.toBytes('probe.gpkg').length>0?0:1;}finally{d.free();}"""
     try:
         result = subprocess.run(["node", "-e", code, str(module.resolve())], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
@@ -3055,6 +3069,45 @@ def suite_wfs(ctx):
     return suite
 
 
+def suite_oapif(ctx):
+    """Public OGC API Features pages through every supported surface."""
+    suite = Suite("oapif", "OGC API Features", "GDAL 3.13.3 OAPIF",
+                  "Live pygeoapi lakes and PDOK BAG buildings; paging, schema, bbox, storage CRS and authority axes. "
+                  "Every attribute and geometry coordinate checked, coordinates within 1e-8 source units. "
+                  "Advertised string dates and nested JSON remain lossless native representations; "
+                  "GDAL inferred dates and href StringLists are explicitly normalized and reported; advertised absent fields checked null. "
+                  "Source IDs checked as attributes where present; generated output FIDs excluded.")
+    if missing_modules("osgeo", "terrio"):
+        suite.skipped = "needs GDAL and current Python bindings"
+        return suite
+    from osgeo import gdal
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13 for the reference comparisons"
+        return suite
+    command = [sys.executable, str(SCRIPTS / "compare_oapif_with_gdal.py"), "--terrio", ctx.terrio, "--json"]
+    package = ROOT / "js/pkg-node/terrio.js"
+    node = node_exports_available(package, ["openOapif"]) and node_gpkg_writer_available(package)
+    if node:
+        command += ["--node-package", str(package)]
+    if ctx.remote:
+        command.append("--remote")
+    code, out, err = run(command)
+    try:
+        rows = json.loads(out)
+        for row in rows:
+            status = {"identical": IDENTICAL, "tolerance": TOLERANCE, "not compared": NOT_COMPARED}.get(row["status"], DIFFERS)
+            suite.cases.append(Case("oapif", row["name"], status, row["detail"]))
+        if ctx.remote and len(rows) != (15 if node else 10):
+            suite.cases.append(Case("oapif", "complete public comparisons", NOT_COMPARED, "one or more public reference services unavailable"))
+    except (ValueError, KeyError, TypeError) as error:
+        suite.error = f"{error}: {tail(err or out)}"
+    if code and not suite.error and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or "OAPIF comparison failed")
+    if not node:
+        suite.cases.append(Case("oapif", "Node/WASM", NOT_COMPARED, "build js/pkg-node and install Node"))
+    return suite
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -3130,6 +3183,7 @@ SUITES = OrderedDict(
         ("gpkg", suite_gpkg),
         ("streams", suite_streams),
         ("wfs", suite_wfs),
+        ("oapif", suite_oapif),
         ("tiles", suite_tiles),
         ("grib", suite_grib),
         ("pointclouds", suite_pointclouds),

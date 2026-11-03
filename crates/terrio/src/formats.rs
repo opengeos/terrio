@@ -134,6 +134,8 @@ pub enum VectorDriver {
     GML,
     /// OGC Web Feature Service, read-only (the native remote transport).
     WFS,
+    /// OGC API Features service, using JSON metadata and GeoJSON features.
+    OAPIF,
     /// GPS Exchange Format.
     GPX,
     /// AutoCAD DXF (ASCII or binary). Requires the `cad` feature.
@@ -396,6 +398,7 @@ impl VectorDriver {
         Self::KMZ,
         Self::GML,
         Self::WFS,
+        Self::OAPIF,
         Self::GPX,
         Self::DXF,
         Self::DWG,
@@ -431,6 +434,7 @@ impl VectorDriver {
             Self::KMZ => ("KMZ", "Zipped KML", &["kmz"], true, true),
             Self::GML => ("GML", "Geography Markup Language", &["gml"], true, true),
             Self::WFS => ("WFS", "OGC Web Feature Service", &[], true, false),
+            Self::OAPIF => ("OAPIF", "OGC API Features", &[], true, false),
             Self::GPX => ("GPX", "GPS Exchange Format", &["gpx"], true, true),
             Self::DXF => ("DXF", "AutoCAD DXF", &["dxf"], true, true),
             Self::DWG => ("DWG", "AutoCAD DWG", &["dwg"], true, true),
@@ -460,6 +464,7 @@ impl VectorDriver {
             Self::HECRAS => ("hecras", cfg!(feature = "hecras")),
             Self::XLSX => ("xlsx", cfg!(feature = "xlsx")),
             Self::WFS => ("remote", cfg!(remote)),
+            Self::OAPIF => ("remote", cfg!(remote) || cfg!(target_arch = "wasm32")),
             Self::MBTiles | Self::PMTiles | Self::MVT => ("tiles", cfg!(feature = "tiles")),
             _ => return None,
         };
@@ -530,6 +535,7 @@ impl VectorDriver {
             | Self::ESRIJSON
             | Self::ESRIPBF
             | Self::WFS
+            | Self::OAPIF
             | Self::DXF
             | Self::DWG
             | Self::GeoJSONSeq
@@ -816,6 +822,9 @@ enum Named {
 
 /// The drivers a dataset's name points to (see [`Named`]).
 fn named_drivers(trimmed: &str) -> Named {
+    if crate::drivers::vector::oapif::service_target(trimmed).is_some() {
+        return Named::Prefix("OAPIF");
+    }
     if crate::drivers::vector::wfs::service_target(trimmed).is_some() {
         return Named::Prefix("WFS");
     }
