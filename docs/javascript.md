@@ -201,6 +201,20 @@ metadata-based rendering options. `rasterTiles(src, options, callback)` sends ea
 See the [CLI tiling reference](cli.md#separate-file-raster-tiles) for supported output
 and transparency policies.
 
+### Pictures of data
+
+`render(source, options)` draws a raster or vector dataset as `{width, height, data}`, `data` a
+`Uint8ClampedArray` of RGBA pixels for `new ImageData(data, width, height)`, and
+`renderPng(source, options)` returns PNG bytes. Sources are Datasets, uploaded bytes
+(`Uint8Array` or `{bytes, filename}`) or GeoJSON. Options: `width`, `height`, `maxSize` (1024),
+`bands`, `colormap`, `stretch`, `layers` and `attribute`, as in [`terrio preview`](cli.md#preview).
+Rasters are read from the coarsest overview that still has the pixels needed.
+
+```js
+const { width, height, data } = render(dataset, { colormap: "terrain", maxSize: 512 });
+canvas.getContext("2d").putImageData(new ImageData(data, width, height), 0, 0);
+```
+
 ### Indexed color conversion
 
 `rgbToPalette(source, {colorCount: 256, bitDepth: 5, dither: true, colorMap,
@@ -267,6 +281,9 @@ const height = terrio.viewshed(dem, 500000, 4400000, { om: "GROUND", cc: 0 });
 
 The input can be a dataset or raster bytes. `om` selects NORMAL visibility, DEM minimum
 visible elevation, or GROUND minimum height above the DEM. `cc` is 1 minus refraction.
+For cumulative visibility, pass `{ om: "ACCUM", os: 10 }`; `os` sets observer
+spacing in pixels (default 10). JavaScript retains positional coordinates:
+use `viewshed(dem, 0, 0, { om: "ACCUM", os: 10 })`; the CLI permits omitting them.
 See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
 
 ### Vector gridding and linear referencing

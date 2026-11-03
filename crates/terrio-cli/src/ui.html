@@ -18,6 +18,7 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
+.images img { display: block; max-width: 100%; height: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 6px; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
 .app { display: grid; grid-template-columns: 270px minmax(0, 1fr); height: 100%; }
@@ -243,6 +244,7 @@ function show(command) {
   const copy = el("button", { type: "button", className: "action", textContent: "Copy command" });
   const status = el("span", { className: "status", role: "status" });
   const output = el("pre", { id: "output", hidden: true });
+  const images = el("div", { className: "images" });
   const form = el("form", { noValidate: false, autocomplete: "off" });
   form.append(...main.map((f) => f.node));
   if (optional.length) {
@@ -250,7 +252,36 @@ function show(command) {
     details.append(el("div", { className: "option-grid" }, ...optional.map((f) => f.node)));
     form.append(details);
   }
-  form.append(el("div", { className: "bar" }, run, cancel, copy, status), el("h2", { textContent: "Command (POSIX shell quoting)" }), preview, output);
+  form.append(el("div", { className: "bar" }, run, cancel, copy, status), el("h2", { textContent: "Command (POSIX shell quoting)" }), preview, output, images);
+  if (command.path[1] === "preview") {
+    const openMap = el("button", { type: "button", className: "action", textContent: "Open map" });
+    form.querySelector(".bar").insertBefore(openMap, status);
+    openMap.addEventListener("click", async () => {
+      if (!form.reportValidity()) return;
+      // The tab is opened now, while the click still allows it, and pointed at the map once the
+      // dataset is open: browsers refuse pop-ups opened later.
+      const tab = window.open("", "_blank");
+      if (!tab) {
+        status.className = "status bad";
+        status.textContent = "The browser blocked the new tab: allow pop-ups for this page.";
+        return;
+      }
+      tab.opener = null;
+      status.className = "status";
+      status.textContent = "Opening…";
+      try {
+        const response = await fetch("/api/view", { method: "POST", headers, body: JSON.stringify({ args: commandLine(command, fields) }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || response.statusText);
+        tab.location.href = `/map#token=${encodeURIComponent(token)}`;
+        status.textContent = "Opened in a new tab.";
+      } catch (error) {
+        tab.close();
+        status.className = "status bad";
+        status.textContent = `Error: ${error.message}`;
+      }
+    });
+  }
 
   const render = () => {
     const tokens = commandLine(command, fields);
@@ -280,6 +311,7 @@ function show(command) {
     status.className = "status";
     status.textContent = "Running…";
     output.hidden = true;
+    images.replaceChildren();
     const started = performance.now();
     try {
       const response = await fetch("/api/run", {
@@ -291,7 +323,8 @@ function show(command) {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || response.statusText);
       const seconds = ((performance.now() - started) / 1000).toFixed(1);
-      output.textContent = result.content.map((c) => c.text).join("\n");
+      output.textContent = result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+      images.replaceChildren(...result.content.filter((c) => c.type === "image").map((c) => el("img", { src: `data:${c.mimeType};base64,${c.data}`, alt: "The image the command drew" })));
       output.classList.toggle("bad", result.isError);
       output.hidden = false;
       status.className = result.isError ? "status bad" : "status";

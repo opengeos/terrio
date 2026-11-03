@@ -358,11 +358,14 @@ working types, nodata, bit depth and extent handling.
 ```python
 visible = terrio.viewshed("dem_utm.tif", 500000, 4400000, oz=2, tz=0, md=5000)
 height = terrio.viewshed("dem_utm.tif", 500000, 4400000, om="GROUND", cc=0)
+cumulative = terrio.viewshed("dem_utm.tif", 0, 0, om="ACCUM", os=10)
 ```
 
 `om="NORMAL"` returns visibility; `DEM` and `GROUND` return minimum visible elevation
-or height above the DEM. `cc` is 1 minus refraction. See [viewshed](cli.md#viewshed) for
-units, curvature, radius cropping and input nodata behavior.
+or height above the DEM. `cc` is 1 minus refraction. For cumulative visibility, `os`
+sets observer spacing in pixels (default 10). Python retains its positional
+coordinates: pass `0, 0` placeholders for ACCUM; the CLI permits omitting them.
+See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and input nodata behavior.
 
 ### Vector gridding and linear referencing
 
@@ -465,6 +468,25 @@ Full block validation stops at 1,000 findings and reports the limit; remaining
 blocks need not be checked once the file is already invalid.
 The GDAL profile limits total parsed GDAL metadata to 4 MiB per file and XML nesting
 to 128 levels. The default rio-cogeo profile ignores this metadata tag.
+
+### Pictures of data
+
+`terrio.render(src, *, width=None, height=None, max_size=1024, bands=None, colormap=None,
+stretch="auto", layers=None, attribute=None)` returns a PNG of a raster or vector dataset. `src`
+accepts a path (a raster, or else a vector dataset), a `Raster`, or vector layers (`VectorDataset`,
+`Layer`, a list of layers, or GeoJSON as a mapping or as text). A raster is read from its coarsest overview that still has
+the pixels needed, so a remote COG transfers a small part of itself. The options are those of
+[`terrio preview`](cli.md#preview).
+
+```python
+png = terrio.render("https://example.com/dem.tif", colormap="terrain", max_size=512)
+open("dem.png", "wb").write(png)
+terrio.render("countries.gpkg", attribute="POP_EST", colormap="viridis")
+```
+
+In Jupyter, a `Raster` and a `terrio.rio` dataset display as a picture of up to 512 pixels a side
+(their `_repr_png_`), without matplotlib; a closed dataset, or one that cannot be drawn, falls back
+to its text form.
 
 ### Indexed color conversion
 

@@ -122,7 +122,10 @@ def test_bytes_and_layer_listings_are_checked_by_content_and_kind(files):
         assert type(terrio.open_bytes(tif, "a.tif")).__name__ == "Raster"
         assert type(terrio.open_bytes(tif, "a.tif", lazy=True)).__name__ == "Raster"
         for data, name, lazy in [
-            (png, "a.png", False), (png, "a.tif", False), (png, "a.png", True), (png, "a.tif", True),
+            (png, "a.png", False),
+            (png, "a.tif", False),
+            (png, "a.png", True),
+            (png, "a.tif", True),
             (gj, "a.geojson", False), (gj, "a.shp", False),
         ]:
             with pytest.raises(ValueError, match="not allowed"):
@@ -183,7 +186,8 @@ _IDENTITY = """
     import rasterio
     assert rasterio is sys.modules["terrio.rio"]
     for sub in terrio.compat.RASTERIO_SUBMODULES:
-        alias, real = importlib.import_module("rasterio." + sub), importlib.import_module("terrio.rio." + sub)
+        alias = importlib.import_module("rasterio." + sub)
+        real = importlib.import_module("terrio.rio." + sub)
         assert alias is real, sub
         assert sys.modules["rasterio." + sub] is sys.modules["terrio.rio." + sub], sub
         assert real.__spec__.name == "terrio.rio." + sub, (sub, real.__spec__.name)
@@ -225,7 +229,10 @@ def test_compat_registers_terrios_accessor_as_rio():
         import numpy as np, xarray as xr
         import rioxarray
         assert rioxarray is sys.modules["terrio.xarray"]
-        da = xr.DataArray(np.zeros((2, 3)), dims=("y", "x"), coords={"y": [1.5, 0.5], "x": [0.5, 1.5, 2.5]})
+        da = xr.DataArray(
+            np.zeros((2, 3)), dims=("y", "x"),
+            coords={"y": [1.5, 0.5], "x": [0.5, 1.5, 2.5]}
+        )
         assert type(da.rio).__module__.startswith("terrio.xarray"), type(da.rio)
         assert da.rio.transform() == da.terrio.transform()
         """

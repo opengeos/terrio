@@ -225,7 +225,7 @@ fn needs_reprojection(layer: &Layer, crs: &SpatialRef) -> bool {
 
 /// The value to burn from a feature's field, as GDAL reads it: numbers as they are, text parsed as
 /// a number, and 0 for nulls and anything else.
-fn attribute_value(f: &Feature, i: usize) -> f64 {
+pub(crate) fn attribute_value(f: &Feature, i: usize) -> f64 {
     match f.attributes.get(i) {
         Some(FieldValue::Integer(v)) => *v as f64,
         Some(FieldValue::Float(v)) => *v,

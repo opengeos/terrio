@@ -88,7 +88,7 @@ fn documented_command_list_matches_the_catalog() {
         .collect();
     // The catalog leaves out the servers: their summaries come from `--help`.
     let help = String::from_utf8(run(&["--help"], dir.path()).stdout).unwrap();
-    for server in ["mcp", "ui"] {
+    for server in ["mcp", "ui", "view"] {
         let summary = help.lines().find_map(|line| line.trim_start().strip_prefix(&format!("{server} "))).unwrap();
         expected.push((server.to_string(), summary.trim().to_string()));
     }

@@ -371,12 +371,13 @@ def test_palette_destination_reuses_the_remote_source(tmp_path, gdal, monkeypatc
             counts["gets"] += 1
             first, last = self.headers["Range"].removeprefix("bytes=").split("-", 1)
             first, last = int(first), min(int(last), len(payload) - 1)
-            # Counted before the reply: the client may check the counts as soon as it has read it.
-            counts["bytes"] += last - first + 1
             self.send_response(206)
             self.send_header("Content-Range", f"bytes {first}-{last}/{len(payload)}")
             self.send_header("Content-Length", str(last - first + 1))
             self.end_headers()
+            # Counted before sending: the client can finish, and the test check, as soon as the
+            # bytes arrive.
+            counts["bytes"] += last - first + 1
             self.wfile.write(payload[first : last + 1])
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:

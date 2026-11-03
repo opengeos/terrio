@@ -103,6 +103,7 @@ __all__ = [
     "rgb_to_palette",
     "palette_to_rgb",
     "attach_palette",
+    "render",
     "read_color_table",
     "nodata_to_alpha",
     "reclassify",
@@ -286,6 +287,7 @@ class Raster:
     def dtype(self) -> str: ...
     @property
     def data_type(self) -> str: ...
+    def _repr_png_(self) -> bytes | None: ...
     @property
     def geolocation(self) -> list[tuple[str, str]] | None: ...
     @property
@@ -951,6 +953,21 @@ def convert(
 
 # Operations.
 
+def render(
+    src: _RasterSource | _VectorSource | os.PathLike[str],
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    max_size: int = 1024,
+    bands: Sequence[int] | None = None,
+    colormap: str | None = None,
+    stretch: str = "auto",
+    layers: Sequence[str] | None = None,
+    attribute: str | None = None,
+) -> bytes:
+    """Draws a raster or vector dataset as a PNG, reading as little of a raster as it can."""
+    ...
+
 def rasterize(
     src: _VectorSource,
     dst: str | None = None,
@@ -1259,12 +1276,13 @@ def viewshed(
     om: str = "NORMAL",
     ov: int = 0,
     band: int = 1,
+    os: int = 10,
     format: str | None = None,
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
 ) -> Raster:
-    """Single-observer visibility or minimum visible height on a projected DEM."""
+    """Single-observer or cumulative visibility, or minimum visible height on a projected DEM."""
     ...
 
 def compare(

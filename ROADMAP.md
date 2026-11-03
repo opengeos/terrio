@@ -37,7 +37,13 @@ appearance require a separate future design.
 
 - [x] `terrio ui`: forms generated from the command catalog, served on the loopback
       interface with a session token, with a file browser, the equivalent command line
-      and cancellation. No map or preview; output arrives when a command ends.
+      and cancellation; output arrives when a command ends.
+- [x] Data visualization ([#513](https://github.com/opengeos/terrio/issues/513)): a shared
+      render operation (overview-aware, nodata transparent, stretches, colormaps, palettes,
+      vector layers), `terrio preview` (PNG, PNG bytes, Kitty/iTerm2/sixel/half-block terminal
+      output), PNG image content in MCP results, `terrio.render`/`render`/`renderPng` bindings,
+      notebook `_repr_png_`, and `terrio view` plus an Open map button in `terrio ui`: a
+      pan-and-zoom map in the data's own grid, without a basemap.
 
 ## Machine-readable CLI metadata (#386)
 

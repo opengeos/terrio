@@ -77,6 +77,7 @@ pub mod raster_retile;
 pub mod raster_tile;
 pub mod rasterio;
 pub mod rasterize;
+pub mod render;
 pub mod rpc;
 pub mod sample;
 pub mod sieve;
