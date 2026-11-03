@@ -13,11 +13,11 @@ pub struct Args {
     input: String,
     output: String,
     /// Observer easting in the DEM CRS.
-    #[arg(long, allow_negative_numbers = true)]
-    ox: f64,
+    #[arg(long, allow_negative_numbers = true, required_if_eq_any([("om", "NORMAL"), ("om", "DEM"), ("om", "GROUND")]))]
+    ox: Option<f64>,
     /// Observer northing in the DEM CRS.
-    #[arg(long, allow_negative_numbers = true)]
-    oy: f64,
+    #[arg(long, allow_negative_numbers = true, required_if_eq_any([("om", "NORMAL"), ("om", "DEM"), ("om", "GROUND")]))]
+    oy: Option<f64>,
     /// Observer height above the DEM, in elevation units.
     #[arg(long, default_value_t = 2.0, allow_negative_numbers = true)]
     oz: f64,
@@ -30,9 +30,12 @@ pub struct Args {
     /// Curvature coefficient (1 minus refraction). 0 disables curvature, 1 disables refraction.
     #[arg(long, allow_negative_numbers = true)]
     cc: Option<f64>,
-    /// NORMAL visibility, DEM minimum visible elevation, or GROUND minimum height above DEM.
+    /// NORMAL visibility, DEM minimum visible elevation, GROUND minimum height above DEM, or ACCUM cumulative visibility.
     #[arg(long, default_value = "NORMAL")]
     om: String,
+    /// Spacing between ACCUM observers, in pixels.
+    #[arg(long, default_value_t = 10)]
+    os: usize,
     /// Output value outside the maximum distance.
     #[arg(long, default_value_t = 0)]
     ov: u8,
@@ -44,17 +47,22 @@ pub struct Args {
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
+    let mode = ViewshedMode::parse(&a.om)?;
+    if mode != ViewshedMode::Cumulative && (a.ox.is_none() || a.oy.is_none()) {
+        return Err(terrio::Error::InvalidArgument("--ox and --oy are required except in ACCUM mode".into()));
+    }
     let ds = open(&a.input)?;
     let o = ViewshedOptions {
         band: a.band,
-        observer_x: a.ox,
-        observer_y: a.oy,
+        observer_x: a.ox.unwrap_or(0.0),
+        observer_y: a.oy.unwrap_or(0.0),
         observer_height: a.oz,
         target_height: a.tz,
         max_distance: a.md,
         curvature_coefficient: a.cc,
-        mode: ViewshedMode::parse(&a.om)?,
+        mode,
         out_of_range: a.ov,
+        observer_spacing: a.os,
     };
     a.out.write(&viewshed(&ds, &o)?, &a.output)
 }
