@@ -473,9 +473,22 @@ impl Worksheet {
 
     /// Forgets an element as it was read, for the model to write it.
     fn touch(&mut self, section: &str) {
+        debug_assert!(SHEET_ORDER.contains(&section), "{section} is not a worksheet element");
         if let Some(source) = &mut self.source {
             source.sections.remove(section);
         }
+    }
+
+    /// Refuses to replace the cell that holds a shared formula read, which the cells sharing it need.
+    fn check_not_shared_master(&self, row: u32, column: u32) -> Result<()> {
+        let master = self.cells.get(&(row, column)).and_then(|c| c.raw.as_deref()).is_some_and(open::holds_shared_master);
+        if master {
+            return Err(invalid(format!(
+                "cell {} holds the formula other cells share; write those cells first, or edit the workbook in a spreadsheet program",
+                cell_name(row, column)
+            )));
+        }
+        Ok(())
     }
 
     /// Forgets a sheet-scoped name as it was read, for the model's value to replace it.
@@ -547,6 +560,7 @@ impl Worksheet {
         let value = value.into();
         check_value(&value, row, column)?;
         check_format(format)?;
+        self.check_not_shared_master(row, column)?;
         self.cells.insert((row, column), Cell { value, format: format.clone(), raw: None });
         self.edited = true;
         Ok(())
@@ -582,6 +596,11 @@ impl Worksheet {
         let area = u64::from(parsed.last_row - parsed.first_row + 1) * u64::from(parsed.last_column - parsed.first_column + 1);
         if area > MAX_MERGE_WRITE_CELLS {
             return Err(invalid(format!("merge_write formats each cell of a range, and {range} has {area}: use merge")));
+        }
+        for row in parsed.first_row..=parsed.last_row {
+            for column in parsed.first_column..=parsed.last_column {
+                self.check_not_shared_master(row, column)?;
+            }
         }
         self.merge(range)?;
         for row in parsed.first_row..=parsed.last_row {
@@ -1238,22 +1257,28 @@ impl StyleTable {
             .enumerate()
             .map(|(i, code)| format!("<numFmt numFmtId=\"{}\" formatCode=\"{}\"/>", self.first_num_format + i, xml_text(code)));
         let formats: Vec<String> = self.source.iter().flat_map(|s| s.num_formats.iter().cloned()).chain(new_formats).collect();
-        if !formats.is_empty() {
-            let _ = writeln!(out, "<numFmts count=\"{}\">{}</numFmts>", formats.len(), formats.concat());
-        }
-        let _ = writeln!(out, "<fonts count=\"{}\">{}</fonts>", self.fonts.len(), self.fonts.concat());
-        let _ = writeln!(out, "<fills count=\"{}\">{}</fills>", self.fills.len(), self.fills.concat());
-        let _ = writeln!(out, "<borders count=\"{}\">{}</borders>", self.borders.len(), self.borders.concat());
         let other = |name: &str| self.source.as_ref().and_then(|s| s.sections.get(name)).map(|raw| raw.concat());
-        out.push_str(&other("cellStyleXfs").unwrap_or_else(|| {
-            "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>\n".to_string()
-        }));
-        let _ = writeln!(out, "<cellXfs count=\"{}\">{}</cellXfs>", self.xfs.len(), self.xfs.concat());
-        out.push_str(&other("cellStyles").unwrap_or_else(|| {
-            "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>\n".to_string()
-        }));
-        for name in ["dxfs", "tableStyles", "colors", "extLst"] {
-            out.push_str(&other(name).unwrap_or_default());
+        let read = self.source.as_ref().map_or(&[][..], |s| &s.order);
+        // In the order read, so that what the schema list lacks, such as `mc:AlternateContent`, keeps its place.
+        for name in ordered(read, &STYLE_ORDER) {
+            let element = match name.as_str() {
+                "numFmts" => (!formats.is_empty()).then(|| format!("<numFmts count=\"{}\">{}</numFmts>", formats.len(), formats.concat())),
+                "fonts" => Some(format!("<fonts count=\"{}\">{}</fonts>", self.fonts.len(), self.fonts.concat())),
+                "fills" => Some(format!("<fills count=\"{}\">{}</fills>", self.fills.len(), self.fills.concat())),
+                "borders" => Some(format!("<borders count=\"{}\">{}</borders>", self.borders.len(), self.borders.concat())),
+                "cellStyleXfs" => Some(other("cellStyleXfs").unwrap_or_else(|| {
+                    "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>".to_string()
+                })),
+                "cellXfs" => Some(format!("<cellXfs count=\"{}\">{}</cellXfs>", self.xfs.len(), self.xfs.concat())),
+                "cellStyles" => Some(other("cellStyles").unwrap_or_else(|| {
+                    "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>".to_string()
+                })),
+                _ => other(&name),
+            };
+            if let Some(element) = element {
+                out.push_str(&element);
+                out.push('\n');
+            }
         }
         let _ = writeln!(out, "{close}");
         out
@@ -1356,6 +1381,8 @@ fn effective_format(cell: &Cell) -> std::borrow::Cow<'_, Format> {
 /// The shared strings being written: those read, as they were, then new plain ones.
 #[derive(Default)]
 struct SharedStrings {
+    /// The root element read, with its namespaces.
+    root: Option<String>,
     items: Vec<String>,
     plain: HashMap<String, usize>,
     count: usize,
@@ -1374,12 +1401,12 @@ impl SharedStrings {
     }
 
     fn to_xml(&self) -> String {
-        format!(
-            "{XML_HEADER}<sst xmlns=\"{MAIN_NS}\" count=\"{}\" uniqueCount=\"{}\">{}</sst>\n",
-            self.count.max(self.items.len()),
-            self.items.len(),
-            self.items.concat()
-        )
+        let (count, unique) = (self.count.max(self.items.len()).to_string(), self.items.len().to_string());
+        let root = self.root.as_deref().map_or_else(
+            || format!("<sst xmlns=\"{MAIN_NS}\" count=\"{count}\" uniqueCount=\"{unique}\">"),
+            |root| open::start_with(root, &[("count", &count), ("uniqueCount", &unique)]),
+        );
+        format!("{XML_HEADER}{root}{}</sst>\n", self.items.concat())
     }
 }
 
@@ -1407,6 +1434,10 @@ fn relationships_xml(relationships: &[Relationship]) -> String {
     out.push_str("</Relationships>\n");
     out
 }
+
+/// The stylesheet's elements, in the order the schema requires.
+const STYLE_ORDER: [&str; 11] =
+    ["numFmts", "fonts", "fills", "borders", "cellStyleXfs", "cellXfs", "cellStyles", "dxfs", "tableStyles", "colors", "extLst"];
 
 /// The worksheet's elements, in the order the schema requires.
 const SHEET_ORDER: [&str; 38] = [
@@ -1466,7 +1497,7 @@ fn ordered(read: &[String], schema: &[&str]) -> Vec<String> {
     let place = |name: &str| schema.iter().position(|s| *s == name);
     let mut out: Vec<String> = Vec::new();
     for name in read {
-        if out.last() != Some(name) {
+        if !out.contains(name) {
             out.push(name.clone());
         }
     }
@@ -1508,10 +1539,21 @@ fn sheet_xml(sheet: &Worksheet, context: &mut SheetContext<'_>) -> String {
 fn section_xml(sheet: &Worksheet, name: &str, context: &mut SheetContext<'_>, out: &mut String) {
     let p = &sheet.print;
     match name {
-        "sheetPr" if sheet.tab_color.is_some() || p.fit_to.is_some() => {
-            out.push_str("<sheetPr>");
+        "sheetPr" => {
+            // What was read of it, such as the `codeName` that ties a sheet to its macros, stays.
+            let read = sheet.source.as_ref().and_then(|s| s.read_sheet_pr.as_deref()).map(open::sheet_properties);
+            let (attributes, children) = read.unwrap_or_default();
+            if sheet.tab_color.is_none() && p.fit_to.is_none() && attributes.is_empty() && children.is_empty() {
+                return;
+            }
+            let _ = write!(out, "<sheetPr{attributes}>");
             if let Some(color) = sheet.tab_color {
                 let _ = write!(out, "<tabColor rgb=\"{}\"/>", rgb(color));
+            }
+            for (name, xml) in &children {
+                if name == "outlinePr" {
+                    out.push_str(xml);
+                }
             }
             if p.fit_to.is_some() {
                 out.push_str("<pageSetUpPr fitToPage=\"1\"/>");
@@ -2068,19 +2110,19 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         );
         parts.insert("_rels/.rels".to_string(), format!("{}{relationship}{}", &rels[..end], &rels[end..]).into_bytes());
     }
+    // A package read keeps its relationships, those to custom properties and thumbnails among them.
     let package_rels_read = source.is_some_and(|s| s.parts.contains_key("_rels/.rels"));
-    parts.entry("_rels/.rels".to_string()).or_insert_with(|| {
-        format!(
-            "{XML_HEADER}<Relationships xmlns=\"{PACKAGE}/relationships\">\n\
+    if !package_rels_read && !parts.contains_key("_rels/.rels") {
+        parts.insert("_rels/.rels".to_string(), {
+            format!(
+                "{XML_HEADER}<Relationships xmlns=\"{PACKAGE}/relationships\">\n\
              <Relationship Id=\"rId1\" Type=\"{OD_RELS}/officeDocument\" Target=\"xl/workbook.xml\"/>\n\
              <Relationship Id=\"rId2\" Type=\"{PACKAGE}/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>\n\
              <Relationship Id=\"rId3\" Type=\"{OD_RELS}/extended-properties\" Target=\"docProps/app.xml\"/>\n\
              </Relationships>\n"
-        )
-        .into_bytes()
-    });
-    if package_rels_read && !parts.contains_key("_rels/.rels") {
-        unreachable!("a package's relationships are written");
+            )
+            .into_bytes()
+        });
     }
     if source.is_none() {
         overrides

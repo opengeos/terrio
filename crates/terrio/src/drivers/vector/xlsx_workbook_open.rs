@@ -37,6 +37,8 @@ pub(super) struct SheetSource {
     pub(super) order: Vec<String>,
     /// The relationships of the links the model holds.
     pub(super) link_ids: Vec<String>,
+    /// The sheet's properties as read, for what the model does not hold of them.
+    pub(super) read_sheet_pr: Option<String>,
 }
 
 impl SheetSource {
@@ -47,9 +49,10 @@ impl SheetSource {
             let mut rest = raw.as_str();
             while let Some(i) = rest.find("r:id=") {
                 rest = &rest[i + 5..];
-                let quote = rest.chars().next().unwrap_or('"');
-                if let Some(end) = rest[1..].find(quote) {
-                    ids.insert(rest[1..=end].to_string());
+                let Some(quote) = rest.chars().next().filter(|c| matches!(c, '"' | '\'')) else { continue };
+                let value = &rest[quote.len_utf8()..];
+                if let Some(end) = value.find(quote) {
+                    ids.insert(value[..end].to_string());
                 }
             }
         }
@@ -64,6 +67,45 @@ pub(super) fn first_attribute(xml: &str, element: &str, name: &str) -> Option<St
         match reader.read_event().ok()? {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == element => return attribute(&e, name),
             Event::Eof => return None,
+            _ => {}
+        }
+    }
+}
+
+/// A start tag written again with these attributes set, whatever their values were.
+pub(super) fn start_with(xml: &str, set: &[(&str, &str)]) -> String {
+    let Some(e) = first_start(xml) else { return xml.to_string() };
+    let mut out = format!("<{}", e.name().as_ref());
+    for attr in e.attributes().flatten() {
+        if !set.iter().any(|(name, _)| *name == attr.key.as_ref()) {
+            out.push_str(&format!(" {}=\"{}\"", attr.key.as_ref(), attr.value));
+        }
+    }
+    for (name, value) in set {
+        out.push_str(&format!(" {name}=\"{value}\""));
+    }
+    out.push('>');
+    out
+}
+
+/// The attributes of the sheet properties read, and their children: what the model writes again
+/// around its own.
+pub(super) fn sheet_properties(xml: &str) -> (String, Vec<(String, String)>) {
+    let attributes = first_start(xml)
+        .map_or_else(String::new, |e| e.attributes().flatten().map(|a| format!(" {}=\"{}\"", a.key.as_ref(), a.value)).collect());
+    let children = split_children(xml, "sheetPr").map(|(_, c)| c).unwrap_or_default();
+    (attributes, children)
+}
+
+/// Whether a cell read holds the formula a range of cells shares.
+pub(super) fn holds_shared_master(cell: &str) -> bool {
+    let mut reader = quick_xml::Reader::from_str(cell);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e) | Event::Empty(e)) if e.local_name().as_ref() == "f" => {
+                return attribute(&e, "t").as_deref() == Some("shared") && attribute(&e, "ref").is_some();
+            }
+            Ok(Event::Eof) | Err(_) => return false,
             _ => {}
         }
     }
@@ -88,6 +130,8 @@ pub(super) struct StyleSource {
     pub(super) root: String,
     pub(super) sections: BTreeMap<String, Vec<String>>,
     pub(super) num_formats: Vec<String>,
+    /// The elements' names, in the order they were read.
+    pub(super) order: Vec<String>,
     fonts: Vec<String>,
     fills: Vec<String>,
     borders: Vec<String>,
@@ -115,6 +159,7 @@ pub(super) struct PackageSource {
     styles: Option<StyleSource>,
     strings: Vec<String>,
     plain_strings: HashMap<String, usize>,
+    strings_root: Option<String>,
 }
 
 impl PackageSource {
@@ -145,7 +190,7 @@ impl PackageSource {
 
     /// The shared strings to add to, starting from what was read.
     pub(super) fn shared_strings(&self) -> SharedStrings {
-        SharedStrings { items: self.strings.clone(), plain: self.plain_strings.clone(), count: 0 }
+        SharedStrings { root: self.strings_root.clone(), items: self.strings.clone(), plain: self.plain_strings.clone(), count: 0 }
     }
 }
 
@@ -506,6 +551,7 @@ fn list_items(sections: &BTreeMap<String, Vec<String>>, name: &str) -> Result<Ve
 fn read_styles(text: &str) -> Result<(StyleSource, Vec<Format>, Vec<CellKind>)> {
     let (root, children) = split_children(text, "styles.xml")?;
     plain_root(&root, "styleSheet", "styles.xml")?;
+    let order: Vec<String> = children.iter().map(|(n, _)| n.clone()).collect();
     let sections = sections_of(children);
     let num_formats = list_items(&sections, "numFmts")?;
     let mut codes = HashMap::new();
@@ -524,6 +570,7 @@ fn read_styles(text: &str) -> Result<(StyleSource, Vec<Format>, Vec<CellKind>)> 
         xfs: list_items(&sections, "cellXfs")?,
         next_num_format: codes.keys().copied().max().map_or(164, |max| (max as usize + 1).max(164)),
         num_formats,
+        order,
         sections: {
             let mut other = sections;
             for name in ["numFmts", "fonts", "fills", "borders", "cellXfs"] {
@@ -940,8 +987,12 @@ impl Workbook {
         // Strings as read keep their rich text; the plain ones are shared with new cells.
         let strings_part = find("/sharedStrings");
         let (mut raw_strings, mut plain_strings, mut strings) = (Vec::new(), HashMap::new(), Vec::new());
+        let mut strings_root = None;
         if let Some(sst) = strings_part.as_deref().and_then(|p| text(&all, p)) {
-            for (i, (_, si)) in split_children(&sst, "sharedStrings.xml")?.1.into_iter().enumerate() {
+            let (sst_root, items) = split_children(&sst, "sharedStrings.xml")?;
+            plain_root(&sst_root, "sst", "sharedStrings.xml")?;
+            strings_root = Some(sst_root.start);
+            for (i, (_, si)) in items.into_iter().enumerate() {
                 take_cells(&mut budget, 1 + si.len() / 32)?;
                 let mut reader = quick_xml::Reader::from_str(&si);
                 let (mut value, mut phonetic, mut rich) = (String::new(), 0usize, false);
@@ -1043,11 +1094,13 @@ impl Workbook {
                     other_hyperlinks: Vec::new(),
                     order,
                     link_ids: Vec::new(),
+                    read_sheet_pr: None,
                 };
                 for xml in data.iter().flatten() {
                     read_sheet_data(xml, &part, &mut sheet, &mut source, &parts, &mut budget)?;
                 }
                 read_settings(&mut sheet, &mut source, &part, &formats, &mut budget)?;
+                source.read_sheet_pr = source.sections.get("sheetPr").and_then(|r| r.first()).cloned();
                 let sheet_base = part.rsplit_once('/').map_or(String::new(), |(d, _)| format!("{d}/"));
                 for r in source.relationships.iter().filter(|r| r.kind.ends_with("/comments")) {
                     let comments_part = resolve_target(&sheet_base, &r.target);
@@ -1113,11 +1166,13 @@ impl Workbook {
             styles,
             strings: raw_strings,
             plain_strings,
+            strings_root,
         }));
         Ok(workbook)
     }
 
-    /// A sheet's table as a layer, read as the XLSX driver reads it with these options.
+    /// A sheet's table as a layer, read as the XLSX driver reads it with these options. The workbook
+    /// is written to memory to be read, so this costs a save.
     pub fn layer(&self, sheet: &str, options: &crate::XlsxOptions) -> Result<wbvector::Layer> {
         let name = self.sheet(sheet)?.name.clone();
         let mut layers = super::super::xlsx::parse(self.to_bytes()?, std::slice::from_ref(&name), options)?;
@@ -1530,6 +1585,89 @@ mod tests {
         let mut workbook = Workbook::new();
         assert!(workbook.add_layer(&layer, &Default::default()).is_err());
         assert!(workbook.sheet_names().is_empty());
+    }
+
+    /// The test workbook with some parts replaced.
+    fn with_parts(changes: &[(&str, &dyn Fn(String) -> String)]) -> Vec<u8> {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(foreign_workbook())).unwrap();
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..zip.len() {
+            let mut file = zip.by_index(i).unwrap();
+            let name = file.name().unwrap().to_string();
+            let mut body = String::new();
+            file.read_to_string(&mut body).unwrap();
+            let body = changes.iter().filter(|(n, _)| *n == name).fold(body, |b, (_, f)| f(b));
+            out.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+            out.write_all(body.as_bytes()).unwrap();
+        }
+        out.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn the_packages_own_relationships_are_kept() {
+        let custom = "<Relationship Id=\"rId9\" Type=\"urn:custom-properties\" Target=\"docProps/custom.xml\"/>";
+        let add = |b: String| b.replace("</Relationships>", &format!("{custom}</Relationships>"));
+        let bytes = Workbook::open_bytes(&with_parts(&[("_rels/.rels", &add)])).unwrap().to_bytes().unwrap();
+        let rels = text_part(&bytes, "_rels/.rels");
+        assert!(rels.contains(custom) && !rels.contains("extended-properties"), "{rels}");
+    }
+
+    #[test]
+    fn sheet_properties_keep_what_the_model_lacks() {
+        let add = |b: String| b.replace("<dimension", "<sheetPr codeName=\"Sheet1\"><outlinePr summaryBelow=\"0\"/></sheetPr><dimension");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &add)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().set_tab_color(0x00FF00);
+        let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(
+            sheet.contains("<sheetPr codeName=\"Sheet1\"><tabColor rgb=\"FF00FF00\"/><outlinePr summaryBelow=\"0\"/></sheetPr>"),
+            "{sheet}"
+        );
+    }
+
+    #[test]
+    fn a_relationship_mark_in_text_does_not_stop_a_save() {
+        let add =
+            |b: String| b.replace("<pageSetup", "<headerFooter><oddHeader>&amp;Ar:id=\u{e9}r:id=</oddHeader></headerFooter><pageSetup");
+        let workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &add)])).unwrap();
+        assert!(workbook.to_bytes().is_ok());
+    }
+
+    #[test]
+    fn repeated_elements_are_written_once() {
+        let add = |b: String| {
+            b.replace("<pageSetup", "<conditionalFormatting sqref=\"B1\"><cfRule type=\"expression\" priority=\"2\"><formula>1</formula></cfRule></conditionalFormatting><pageSetup")
+        };
+        let bytes = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &add)])).unwrap().to_bytes().unwrap();
+        assert_eq!(text_part(&bytes, "xl/worksheets/sheet1.xml").matches("<conditionalFormatting").count(), 2);
+    }
+
+    #[test]
+    fn styles_and_strings_keep_what_the_model_lacks() {
+        let styles = |b: String| b.replace("<cellStyleXfs", "<mc:AlternateContent xmlns:mc=\"urn:mc\"/><cellStyleXfs");
+        let strings = |b: String| b.replace("<sst ", "<sst xmlns:x=\"urn:x\" ");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/styles.xml", &styles), ("xl/sharedStrings.xml", &strings)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().write("C1", "new", &Format::new().italic()).unwrap();
+        let bytes = workbook.to_bytes().unwrap();
+        let styles = text_part(&bytes, "xl/styles.xml");
+        assert!(styles.find("<borders").unwrap() < styles.find("<mc:AlternateContent").unwrap());
+        assert!(styles.find("<mc:AlternateContent").unwrap() < styles.find("<cellStyleXfs").unwrap());
+        let strings = text_part(&bytes, "xl/sharedStrings.xml");
+        assert!(strings.contains("xmlns:x=\"urn:x\"") && strings.contains("uniqueCount=\"3\""), "{strings}");
+    }
+
+    #[test]
+    fn the_master_of_a_shared_formula_is_not_replaced() {
+        let shared = |b: String| {
+            b.replace("<c r=\"B2\"><f>1+1</f><v>2</v></c>", "<c r=\"B2\"><f t=\"shared\" ref=\"B2:B3\" si=\"0\">A2*2</f><v>2</v></c>")
+                .replace("<c r=\"B3\" t=\"inlineStr\"><is><t>inline</t></is></c>", "<c r=\"B3\"><f t=\"shared\" si=\"0\"/><v>2</v></c>")
+        };
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &shared)])).unwrap();
+        let s = workbook.sheet_mut("Data").unwrap();
+        assert!(matches!(s.write("B2", 1.0, &Format::new()), Err(Error::InvalidArgument(m)) if m.contains("share")));
+        assert!(s.merge_write("A2:B2", "t", &Format::new()).is_err());
+        assert!(s.merged_ranges().iter().all(|r| r != "A2:B2"));
+        // The cells sharing it may change.
+        s.write("B3", 5.0, &Format::new()).unwrap();
     }
 
     #[test]
