@@ -2151,6 +2151,8 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         let element = match name.as_str() {
             "bookViews" => Some(other("bookViews").filter(|raw| view_fits(raw)).unwrap_or_else(|| view.clone())),
             "sheets" => Some(format!("<sheets>\n{sheets_xml}</sheets>")),
+            // A new workbook in the 1904 date system says so; one read keeps its own.
+            "workbookPr" if source.is_none() && workbook.date1904 => Some("<workbookPr date1904=\"1\"/>".to_string()),
             "definedNames" => (!names.is_empty()).then(|| format!("<definedNames>\n{names}</definedNames>")),
             // Cached values may be out of date after an edit: Excel computes them again on opening.
             "calcPr" if source.is_some() && edited => Some(

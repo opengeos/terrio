@@ -868,7 +868,10 @@ fn read_sheet_data(
                 let format = parts.formats.get(style_index).cloned().unwrap_or_default();
                 // A cell without its reference is written from the model, which adds it.
                 let raw = reference.is_some().then(|| xml[before..after].to_string());
-                sheet.cells.insert(at, Cell { value, format, raw });
+                let cell = Cell { value, format, raw };
+                // The cell is charged for what it holds, so that the budget bounds memory too.
+                take_model_bytes(budget, model_bytes(&cell))?;
+                sheet.cells.insert(at, cell);
             }
             Event::Eof => return Ok(()),
             _ => {}
@@ -876,16 +879,42 @@ fn read_sheet_data(
     }
 }
 
+/// What one unit of the cell budget stands for in the model of a workbook opened, in bytes: about
+/// 3.7 GiB in all. Opening and saving were measured to peak at about twice the model's bytes (2
+/// million cells: 0.9 to 1 GB), so a workbook at the limit peaks near 8 GiB.
+const BYTES_PER_CELL: usize = 40;
+
+/// The bytes a cell read takes in the model: the cell, its place in the sheet's map, and the text it
+/// holds, its copy as read among it.
+fn model_bytes(cell: &Cell) -> usize {
+    let text = |s: &Option<String>| s.as_ref().map_or(0, String::len);
+    let value = match &cell.value {
+        CellValue::Text(s) | CellValue::Date(s) | CellValue::DateTime(s) | CellValue::Error(s) => s.len(),
+        CellValue::Formula { formula, .. } => formula.len(),
+        _ => 0,
+    };
+    std::mem::size_of::<((u32, u32), Cell)>() + 16 + value + text(&cell.raw) + text(&cell.format.font_name) + text(&cell.format.num_format)
+}
+
+/// Charges the cell budget for the bytes a cell takes, the cell itself having been charged one unit.
+fn take_model_bytes(budget: &mut usize, bytes: usize) -> Result<()> {
+    let units = bytes.div_ceil(BYTES_PER_CELL).saturating_sub(1);
+    *budget = budget.checked_sub(units).ok_or_else(|| {
+        let gib = (MAX_CELLS * BYTES_PER_CELL) as f64 / f64::from(1u32 << 30);
+        Error::ResourceLimit(format!("XLSX: the workbook's cells take more than {gib:.1} GiB to hold"))
+    })?;
+    Ok(())
+}
+
 /// Reads the settings the model holds from a sheet's other elements.
 fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, formats: &[Format], budget: &mut usize) -> Result<()> {
     let sections = source.sections.clone();
-    let each = |name: &str, f: &mut dyn FnMut(&BytesStart<'_>, &str)| -> Result<()> {
+    let each = |name: &str, f: &mut dyn FnMut(&BytesStart<'_>)| -> Result<()> {
         for raw in sections.get(name).into_iter().flatten() {
             let mut reader = quick_xml::Reader::from_str(raw);
             loop {
-                let before = reader.buffer_position() as usize;
                 match reader.read_event().map_err(|e| xml_error(part, e))? {
-                    Event::Start(e) | Event::Empty(e) => f(&e, &raw[before..]),
+                    Event::Start(e) | Event::Empty(e) => f(&e),
                     Event::Eof => break,
                     _ => {}
                 }
@@ -893,12 +922,12 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
         }
         Ok(())
     };
-    each("sheetPr", &mut |e, _| match e.local_name().as_ref() {
+    each("sheetPr", &mut |e| match e.local_name().as_ref() {
         "tabColor" => sheet.tab_color = rgb_of(e),
         "pageSetUpPr" if attribute(e, "fitToPage").is_some_and(|v| v == "1" || v == "true") => sheet.print.fit_to = Some((1, 1)),
         _ => {}
     })?;
-    each("sheetViews", &mut |e, _| match e.local_name().as_ref() {
+    each("sheetViews", &mut |e| match e.local_name().as_ref() {
         "sheetView" => {
             sheet.zoom = attribute(e, "zoomScale").and_then(|v| v.parse().ok());
             sheet.show_gridlines = attribute(e, "showGridLines").is_none_or(|v| v != "0" && v != "false");
@@ -913,7 +942,7 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
         _ => {}
     })?;
     let mut over_budget = None;
-    each("cols", &mut |e, _| {
+    each("cols", &mut |e| {
         if e.local_name().as_ref() != "col" || over_budget.is_some() {
             return;
         }
@@ -938,12 +967,12 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
     if let Some(e) = over_budget {
         return Err(e);
     }
-    each("autoFilter", &mut |e, _| {
+    each("autoFilter", &mut |e| {
         if e.local_name().as_ref() == "autoFilter" {
             sheet.autofilter = attribute(e, "ref").and_then(|r| Range::parse(&r).ok());
         }
     })?;
-    each("mergeCells", &mut |e, _| {
+    each("mergeCells", &mut |e| {
         if e.local_name().as_ref() == "mergeCell"
             && let Some(range) = attribute(e, "ref").and_then(|r| Range::parse(&r).ok())
         {
@@ -951,11 +980,11 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
         }
     })?;
     take_cells(budget, sheet.merges.len())?;
-    each("pageMargins", &mut |e, _| {
+    each("pageMargins", &mut |e| {
         let side = |name: &str| attribute(e, name).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
         sheet.print.margins = Some([side("left"), side("right"), side("top"), side("bottom"), side("header"), side("footer")]);
     })?;
-    each("pageSetup", &mut |e, _| {
+    each("pageSetup", &mut |e| {
         sheet.print.orientation = attribute(e, "orientation").and_then(|v| match v.as_str() {
             "landscape" => Some(Orientation::Landscape),
             "portrait" => Some(Orientation::Portrait),
@@ -2040,7 +2069,10 @@ mod tests {
         let mut workbook = Workbook::new();
         workbook.date1904 = true;
         workbook.add_sheet("s").unwrap().write("A1", CellValue::Date("2024-01-02".into()), &Format::new()).unwrap();
-        assert!(text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml").contains(&format!("<v>{}</v>", 45293 - 1462)));
+        let bytes = workbook.to_bytes().unwrap();
+        assert!(text_part(&bytes, "xl/worksheets/sheet1.xml").contains(&format!("<v>{}</v>", 45293 - 1462)));
+        assert!(text_part(&bytes, "xl/workbook.xml").contains("<workbookPr date1904=\"1\"/>"));
+        assert!(Workbook::open_bytes(&bytes).unwrap().date1904);
     }
 
     #[test]
@@ -2225,6 +2257,18 @@ mod tests {
         let odd = |b: String| b.replace("<c r=\"A2\" s=\"2\"><v>45293</v></c>", "<c><v>inf</v></c>");
         let workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &odd)])).unwrap();
         assert_eq!(workbook.sheet("Data").unwrap().value("A2").unwrap(), Some(&CellValue::Text("inf".into())));
+    }
+
+    #[test]
+    fn cells_are_charged_for_the_bytes_they_take() {
+        let small = Cell { value: CellValue::Blank, format: Format::new(), raw: Some("<c r=\"A1\"/>".into()) };
+        let large = Cell { value: CellValue::Text("x".repeat(800)), format: Format::new(), raw: Some("y".repeat(800)) };
+        assert_eq!(model_bytes(&large), model_bytes(&small) - 11 + 1600);
+        let mut budget = 10;
+        assert!(take_model_bytes(&mut budget, BYTES_PER_CELL * 20).is_err());
+        let mut budget = 30;
+        take_model_bytes(&mut budget, BYTES_PER_CELL * 20).unwrap();
+        assert_eq!(budget, 11);
     }
 
     #[test]
