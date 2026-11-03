@@ -1499,7 +1499,8 @@ test("viewshed visibility, height and byte input", () => {
   assert.equal(ground.dtype, "float64");
   assert.deepEqual([...ground.readBand(1)], [0, 0, 0, 14, 18]);
   assert.equal(terrio.viewshed(dem, 5, 5, { md: 20 }).width, 3);
-  assert.throws(() => terrio.viewshed(dem, 5, 5, { om: "ACCUM" }), /mode/);
+  assert.deepEqual([...terrio.viewshed(dem, 0, 0, { om: "ACCUM", os: 2, cc: 0 }).readBand(1)], [170, 170, 255, 170, 170]);
+  assert.throws(() => terrio.viewshed(dem, 0, 0, { om: "ACCUM", os: 0 }), /spacing/);
 });
 
 test("warp from subsampled pixel-center geolocation arrays", () => {

@@ -140,6 +140,11 @@ fn viewshed_tool_writes_height_raster() {
     let replies = session(&[
         json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
         call(2, "viewshed", &[input.to_str().unwrap(), output.to_str().unwrap(), "--ox", "5", "--oy", "5", "--om", "GROUND", "--cc", "0"]),
+        call(
+            3,
+            "viewshed",
+            &[input.to_str().unwrap(), dir.path().join("accum.tif").to_str().unwrap(), "--om", "ACCUM", "--os", "2", "--cc", "0"],
+        ),
     ]);
     assert!(replies[&1]["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "viewshed"));
     assert_eq!(replies[&2]["result"]["isError"], false);
@@ -147,6 +152,10 @@ fn viewshed_tool_writes_height_raster() {
     assert_eq!(out.raster.data_type, terrio::DataType::F64);
     assert_eq!(out.raster.get(0, 0, 3), 14.0);
     assert_eq!(out.raster.get(0, 0, 4), 18.0);
+    assert_eq!(replies[&3]["result"]["isError"], false);
+    let accum = terrio::open_raster(dir.path().join("accum.tif").to_str().unwrap()).unwrap();
+    assert_eq!(accum.raster.data_type, terrio::DataType::U8);
+    assert_eq!((0..5).map(|x| accum.raster.get(0, 0, x)).collect::<Vec<_>>(), [170.0, 170.0, 255.0, 170.0, 170.0]);
 }
 
 #[test]
