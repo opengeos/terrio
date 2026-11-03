@@ -5,8 +5,9 @@
 // Derived from (translated to Rust and modified):
 //   GDAL v3.13.3:
 //     alg/viewshed/viewshed_executor.cpp
+//     alg/viewshed/cumulative.cpp
 
-//! Single-observer viewsheds using GDAL's Wang (2000) edge recurrence.
+//! Single-observer and cumulative viewsheds using GDAL's Wang (2000) edge recurrence.
 //!
 //! Requires a north-up projected DEM whose horizontal and vertical units agree. Numeric
 //! input nodata is treated as elevation, as in GDAL: this can
@@ -28,15 +29,18 @@ pub enum ViewshedMode {
     Dem,
     /// Minimum visible height above the DEM surface (Float64).
     Ground,
+    /// Sum visibility from regularly spaced observers, scaled to Byte 0–255.
+    Accum,
 }
 impl ViewshedMode {
-    /// Parses NORMAL, DEM or GROUND, case-insensitively.
+    /// Parses NORMAL, DEM, GROUND or ACCUM, case-insensitively.
     pub fn parse(s: &str) -> Result<Self> {
         match s.to_ascii_uppercase().as_str() {
             "NORMAL" => Ok(Self::Normal),
             "DEM" => Ok(Self::Dem),
             "GROUND" => Ok(Self::Ground),
-            _ => Err(Error::InvalidArgument("viewshed mode must be NORMAL, DEM or GROUND (cumulative visibility is not supported)".into())),
+            "ACCUM" => Ok(Self::Accum),
+            _ => Err(Error::InvalidArgument("viewshed mode must be NORMAL, DEM, GROUND or ACCUM".into())),
         }
     }
 }
@@ -57,12 +61,15 @@ pub struct ViewshedOptions {
     /// Maximum distance; zero means unlimited. Also crops the output rectangle.
     pub max_distance: f64,
     /// Curvature coefficient, equal to 1 minus atmospheric refraction coefficient.
+    /// Ignored in ACCUM, matching GDAL 3.13.3 (its temporary rasters have no CRS).
     /// Zero disables curvature, 1 uses no refraction. None uses GDAL's Earth/non-Earth default.
     pub curvature_coefficient: Option<f64>,
     /// Output information.
     pub mode: ViewshedMode,
     /// Value outside the maximum distance (default 0).
     pub out_of_range: u8,
+    /// Observer spacing in pixels for ACCUM (default 10). Must be positive.
+    pub observer_spacing: usize,
 }
 impl Default for ViewshedOptions {
     fn default() -> Self {
@@ -76,6 +83,7 @@ impl Default for ViewshedOptions {
             curvature_coefficient: None,
             mode: ViewshedMode::Normal,
             out_of_range: 0,
+            observer_spacing: 10,
         }
     }
 }
@@ -84,13 +92,19 @@ impl Default for ViewshedOptions {
 ///
 /// The observer is snapped to its containing pixel, as in GDAL. Ground/DEM modes ignore
 /// target height. The output has no nodata value: nonfinite input is an error, and out-of-range
-/// pixels have `out_of_range`. Cumulative visibility is unsupported.
+/// pixels have `out_of_range`. ACCUM ignores observer coordinates and places observers at
+/// pixel (0, 0) and every `observer_spacing` pixels along both axes. Output covers the
+/// complete input, with visibility sums scaled by floor((255 / maximum sum) * sum),
+/// as in GDAL 3.13.3. Work is O(observers × pixels), with sequential, bounded-memory execution.
 /// Outside observers follow GDAL: the nearest raster edge starts unobstructed. If observer X
 /// is outside, observer height is absolute; if only Y is outside, elevation is sampled on the
 /// nearest row at observer X. Distances use the snapped observer pixel. Curvature uses the CRS
 /// ellipsoid's semi-major axis in metres, matching GDAL even for non-metre projected units;
 /// use coefficient zero or convert the DEM to metres for physical consistency in that case.
 pub fn viewshed(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset> {
+    if o.mode == ViewshedMode::Accum {
+        return cumulative(ds, o);
+    }
     let invalid = |s: &str| Error::InvalidArgument(s.into());
     if ds.complex || o.band == 0 || o.band > ds.raster.bands {
         return Err(invalid("viewshed requires a real source band"));
@@ -215,6 +229,50 @@ pub fn viewshed(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset
     )
 }
 
+/// GDAL 3.13.3 cumulative observer grid and Byte normalization. Reuses the normal
+/// recurrence on the full DEM; counters are checked before allocating or running.
+fn cumulative(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset> {
+    if o.observer_spacing == 0 {
+        return Err(Error::InvalidArgument("cumulative observer spacing must be positive".into()));
+    }
+    if o.max_distance != 0.0 {
+        return Err(Error::InvalidArgument("maximum distance cannot be used in cumulative mode".into()));
+    }
+    let (w, h) = (ds.raster.cols, ds.raster.rows);
+    let observers = w.div_ceil(o.observer_spacing).checked_mul(h.div_ceil(o.observer_spacing));
+    if observers.is_none_or(|n| n > u32::MAX as usize) {
+        return Err(Error::InvalidArgument("cumulative visibility exceeds UInt32 counter capacity".into()));
+    }
+    if o.curvature_coefficient.is_some_and(|v| !v.is_finite()) {
+        return Err(Error::InvalidArgument("viewshed options must be finite".into()));
+    }
+    let gt = ds.geo_transform();
+    let mut sums = vec![0u32; w * h];
+    // GDAL's cumulative executors write to MEM datasets without a CRS, so their
+    // calcHeightAdjFactor() returns zero even when a coefficient was supplied.
+    let mut single = ViewshedOptions { mode: ViewshedMode::Normal, out_of_range: 0, curvature_coefficient: Some(0.0), ..o.clone() };
+    for x in (0..w).step_by(o.observer_spacing) {
+        for y in (0..h).step_by(o.observer_spacing) {
+            single.observer_x = gt[0] + (x as f64 + 0.5) * gt[1];
+            single.observer_y = gt[3] + (y as f64 + 0.5) * gt[5];
+            let visible = viewshed(ds, &single)?;
+            for (i, sum) in sums.iter_mut().enumerate() {
+                *sum += u32::from(visible.raster.data.get_f64(i) != 0.0);
+            }
+        }
+    }
+    let max = sums.iter().copied().max().unwrap_or(0);
+    let factor = if max == 0 { 0.0 } else { 255.0 / f64::from(max) };
+    build_raster(
+        Grid::of(&ds.raster),
+        vec![sums.into_iter().map(|n| (factor * f64::from(n)).floor()).collect()],
+        DataType::U8,
+        None,
+        &ds.crs(),
+        |v, _| v,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +286,17 @@ mod tests {
             |v, _| v,
         )
         .unwrap()
+    }
+    #[test]
+    fn cumulative_ridge_spacing_and_full_extent() {
+        let src = dem(vec![0.0, 0.0, 10.0, 0.0, 0.0], 5, 1, None);
+        let o = ViewshedOptions { mode: ViewshedMode::Accum, observer_spacing: 2, curvature_coefficient: Some(0.0), ..Default::default() };
+        let out = viewshed(&src, &o).unwrap();
+        assert_eq!(super::super::band_f64(&out.raster, 0), [170.0, 170.0, 255.0, 170.0, 170.0]);
+        assert_eq!(out.geo_transform(), src.geo_transform());
+        assert_eq!(out.nodata(), None);
+        assert!(viewshed(&src, &ViewshedOptions { max_distance: 1.0, ..o.clone() }).is_err());
+        assert!(viewshed(&src, &ViewshedOptions { observer_spacing: 0, ..o }).is_err());
     }
     #[test]
     fn ridge_heights_targets_and_radius() {
@@ -258,7 +327,7 @@ mod tests {
         // The radius crop includes the immediate neighbor, like GDAL.
         assert!(viewshed(&src, &local).is_err());
         assert!(viewshed(&src, &ViewshedOptions { observer_x: f64::INFINITY, ..o }).is_err());
-        assert!(ViewshedMode::parse("ACCUM").is_err());
+        assert_eq!(ViewshedMode::parse("ACCUM").unwrap(), ViewshedMode::Accum);
     }
     #[test]
     fn outside_observers_and_radius_mask() {

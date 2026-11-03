@@ -2179,3 +2179,27 @@ WFS identification without `--deep` also stays header-only: the regression serve
 a capabilities document over 1 MiB and records one request consuming 16,384 bytes.
 An explicit deep fallback may read the complete capabilities metadata when its
 root cannot be recognized from that prefix.
+
+
+### Cumulative viewshed
+
+Build the optimized CLI and current Python bindings, and optionally the Node/WASM
+package, then run:
+
+```sh
+python scripts/conformance.py ../terrio-data --only cumulative-viewshed --strict
+```
+
+The suite compares a real USGS DEM projected to 151 × 141 pixels with GDAL 3.13.3:
+five cases through CLI, Python and, when built, Node/WASM (15 comparisons).
+Observer spacings 10, 17, 19, and 1000, observer/target heights and an explicit
+curvature coefficient are exercised. Byte pixels, dimensions, types, nodata,
+masks and CRS are exact; the geotransform allowance is 1e-8 pixels. The native
+operation and GDAL both ignore curvature in cumulative mode: GDAL's temporary
+rasters have no CRS from which to obtain the ellipsoid. Numeric nodata remains
+an elevation, as in GDAL; this suite does not imply missing DEM pixels are safe.
+
+Rust and binding regressions also cover a ridge with known visibility sums,
+spacing zero, maximum-distance rejection and the normal/height modes. MCP executes
+cumulative mode without observer coordinates. Execution is sequential, with
+O(pixels) working memory and O(observers × pixels) work.

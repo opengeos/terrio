@@ -358,11 +358,13 @@ working types, nodata, bit depth and extent handling.
 ```python
 visible = terrio.viewshed("dem_utm.tif", 500000, 4400000, oz=2, tz=0, md=5000)
 height = terrio.viewshed("dem_utm.tif", 500000, 4400000, om="GROUND", cc=0)
+cumulative = terrio.viewshed("dem_utm.tif", 0, 0, om="ACCUM", os=10)
 ```
 
 `om="NORMAL"` returns visibility; `DEM` and `GROUND` return minimum visible elevation
-or height above the DEM. `cc` is 1 minus refraction. See [viewshed](cli.md#viewshed) for
-units, curvature, radius cropping and input nodata behavior.
+or height above the DEM. `cc` is 1 minus refraction. For cumulative visibility, `os`
+sets observer spacing in pixels (default 10); observer coordinates are ignored.
+See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and input nodata behavior.
 
 ### Vector gridding and linear referencing
 

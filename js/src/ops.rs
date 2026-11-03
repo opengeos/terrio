@@ -982,17 +982,18 @@ struct ViewshedArgs {
     cc: Option<f64>,
     om: String,
     ov: u8,
+    os: usize,
 }
 impl Default for ViewshedArgs {
     fn default() -> Self {
-        Self { band: 1, oz: 2.0, tz: 0.0, md: 0.0, cc: None, om: "NORMAL".into(), ov: 0 }
+        Self { band: 1, oz: 2.0, tz: 0.0, md: 0.0, cc: None, om: "NORMAL".into(), ov: 0, os: 10 }
     }
 }
 
 /// Single-observer visibility or minimum visible height on a projected DEM.
 /// `ox`, `oy` are coordinates in the DEM CRS. Options: `band`, `oz` (observer height),
 /// `tz` (target height), `md` (maximum distance, 0 unlimited), `cc` (curvature coefficient,
-/// 1 minus refraction), `om` (NORMAL/DEM/GROUND), `ov` (out-of-range value).
+/// 1 minus refraction), `om` (NORMAL/DEM/GROUND/ACCUM), `os` (ACCUM observer spacing in pixels, default 10), `ov` (out-of-range value).
 /// Numeric nodata is treated as elevation, as in GDAL; nonfinite elevations are rejected.
 #[wasm_bindgen]
 pub fn viewshed(src: JsValue, ox: f64, oy: f64, options: JsValue) -> Result<Dataset, JsError> {
@@ -1008,6 +1009,7 @@ pub fn viewshed(src: JsValue, ox: f64, oy: f64, options: JsValue) -> Result<Data
         curvature_coefficient: a.cc,
         mode: ViewshedMode::parse(&a.om).map_err(js_err)?,
         out_of_range: a.ov,
+        observer_spacing: a.os,
     };
     let ds = input_raster(&src)?;
     Ok(Dataset::from_raster(terrio::ops::viewshed::viewshed(&ds, &o).map_err(js_err)?))

@@ -102,7 +102,7 @@ Every command, in alphabetical order. `terrio --help` prints this list, and
 | [`vector-grid`](#vector-grid) | Grid scattered vector points into a raster |
 | [`vector-index`](#rastervector-indexes-and-gti-creation) | Create a vector envelope index of vector dataset layers |
 | [`vertices`](#geometry-operations) | Extract vertices as points |
-| [`viewshed`](#viewshed) | Single-observer visibility or minimum visible height |
+| [`viewshed`](#viewshed) | Single-observer or cumulative visibility, or minimum visible height |
 | [`vsi`](#vsi) | Manage local, in-memory, cloud and archive files |
 | [`warp`](#warp) | Reproject and resample rasters (like gdalwarp) |
 | [`xyz`](#xyz) | Write raster pixels as XYZ text (like gdal2xyz.py) |
@@ -2124,6 +2124,7 @@ pixels from both, and terrio reads such VRTs (`gdaldem`'s too) as GDAL reads the
 ```sh
 terrio viewshed dem_utm.tif visible.tif --ox 500000 --oy 4400000 --oz 2 --tz 0 --md 5000
 terrio viewshed dem_utm.tif height.tif --ox 500000 --oy 4400000 --om GROUND --cc 0
+terrio viewshed dem_utm.tif cumulative.tif --om ACCUM --os 10
 ```
 
 Single-observer viewshed using GDAL's default edge recurrence. `--om NORMAL` produces Byte
@@ -2143,8 +2144,22 @@ coefficient, equal to 1 minus the atmospheric refraction coefficient: 0 gives a 
 
 Like GDAL, numeric nodata values are treated as elevations and masks are ignored; this can
 produce misleading occlusion. Nonfinite elevations in the processed rectangle produce an
-error. Fill or crop missing elevations before use. Output has no nodata marker. Cumulative
-visibility is not supported. The command is also an MCP tool.
+error. Fill or crop missing elevations before use. Output has no nodata marker. The command
+is also an MCP tool.
+
+`--om ACCUM` places observers at pixel (0, 0), then every `--os` pixels along both
+axes (default 10; must be positive). Observer coordinates are ignored and may be omitted.
+The output covers the complete DEM; `--md` must be zero, as GDAL disallows a
+maximum distance in cumulative mode. Each visible pixel contributes 1 and each hidden
+pixel 0. The sums
+are normalized to Byte with `floor((255 / maximum_sum) * sum)`, matching GDAL 3.13.3.
+Observer and target heights apply to every observer. Curvature is disabled in ACCUM,
+including when `--cc` is supplied: GDAL 3.13.3 computes cumulative viewsheds in
+temporary rasters without a CRS, so its curvature adjustment is zero. Terrio matches
+that behavior; single-observer modes still apply curvature. Terrio honors `--band`;
+GDAL 3.13.3 cumulative mode always reads band 1. Execution is sequential and uses
+O(pixels) working memory; runtime grows with observers × pixels. Use wider spacing
+or crop the DEM for large inputs. Counter overflow is rejected before computation.
 
 Terrio applies the radius mask deterministically. GDAL 3.12 can race its left/right row jobs
 for an outside observer, occasionally leaving an out-of-range boundary pixel visible. The
