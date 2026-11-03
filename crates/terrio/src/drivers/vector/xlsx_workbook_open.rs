@@ -690,12 +690,12 @@ fn read_sheet_data(
                 let number = |name: &str| attribute(&e, name).and_then(|v| v.parse::<f64>().ok());
                 let hidden = attribute(&e, "hidden").is_some_and(|v| v == "1" || v == "true");
                 let outline = attribute(&e, "outlineLevel").and_then(|v| v.parse().ok()).unwrap_or(0);
-                let style = attribute(&e, "s").and_then(|v| v.parse::<usize>().ok()).and_then(|s| parts.formats.get(s));
+                let style_index = attribute(&e, "s").and_then(|v| v.parse::<usize>().ok()).filter(|&s| s < parts.formats.len());
+                let style = style_index.and_then(|s| parts.formats.get(s));
                 if number("ht").is_some() || hidden || outline > 0 || style.is_some() {
-                    sheet.rows.insert(
-                        row,
-                        Dimension { size: number("ht"), custom: false, style_index: None, hidden, outline, format: style.cloned() },
-                    );
+                    sheet
+                        .rows
+                        .insert(row, Dimension { size: number("ht"), custom: false, style_index, hidden, outline, format: style.cloned() });
                 }
             }
             event @ (Event::Start(_) | Event::Empty(_)) => {
@@ -820,7 +820,8 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
         }
         "pane" if attribute(e, "state").is_some_and(|v| v.starts_with("frozen")) => {
             let split = |name: &str| attribute(e, name).and_then(|v| v.parse::<f64>().ok()).map_or(0, |v| v as u32);
-            sheet.frozen = Some((split("ySplit"), split("xSplit")));
+            // Within the sheet, as the values are written back.
+            sheet.frozen = Some((split("ySplit").min(super::MAX_ROWS as u32 - 1), split("xSplit").min(super::MAX_COLUMNS as u32 - 1)));
         }
         _ => {}
     })?;
@@ -830,7 +831,7 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
             return;
         }
         let bound = |name: &str| attribute(e, name).and_then(|v| v.parse::<u32>().ok());
-        let (Some(min), Some(max)) = (bound("min"), bound("max")) else { return };
+        let (Some(min), Some(max)) = (bound("min").filter(|&m| m > 0), bound("max")) else { return };
         let max = max.min(super::MAX_COLUMNS as u32);
         // Each column of a range is held: the work is charged before it is done.
         if let Err(e) = take_cells(budget, max.saturating_sub(min) as usize + 1) {
@@ -1086,12 +1087,17 @@ impl Workbook {
         for raw in workbook_sections.get("sheets").into_iter().flatten() {
             for (_, xml) in split_children(raw, &workbook_part)?.1 {
                 let Some(e) = first_start(&xml) else { continue };
-                let (Some(name), Some(rel_id)) = (attribute(&e, "name"), attribute(&e, "id")) else { continue };
+                let (Some(name), Some(rel_id)) = (attribute(&e, "name"), attribute(&e, "id")) else {
+                    return Err(Error::InvalidData(format!("XLSX: '{workbook_part}' has a sheet without a name or relationship")));
+                };
                 let sheet_id = attribute(&e, "sheetId").unwrap_or_else(|| (index + 1).to_string());
                 let target = workbook_relationships.iter().find(|r| r.id == rel_id).filter(|r| r.kind.ends_with("/worksheet"));
                 let Some(part) = target.map(|r| resolve_target(&base, &r.target)) else {
                     return Err(Error::Unsupported(format!("XLSX: cannot edit '{name}', which is not a worksheet")));
                 };
+                if sheet_parts.contains(&part) {
+                    return Err(Error::InvalidData(format!("XLSX: two sheets of '{workbook_part}' are the part '{part}'")));
+                }
                 let sheet_text = text(&all, &part).ok_or_else(|| Error::InvalidData(format!("XLSX: the workbook lacks part '{part}'")))?;
                 let rels_name = super::rels_part(&part);
                 let relationships = text(&all, &rels_name).map(|t| rels_of(&t, &rels_name)).transpose()?.unwrap_or_default();
@@ -1663,6 +1669,61 @@ mod tests {
         let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
         assert!(sheet.contains("<col min=\"1\" max=\"2\" width=\"20\" customWidth=\"1\" style=\"1\"/>"), "{sheet}");
         assert!(sheet.contains("<dataValidation type=\"list\" allowBlank=\"0\" showDropDown=\"1\" prompt=\"p\" sqref=\"F2\">"), "{sheet}");
+    }
+
+    #[test]
+    fn malformed_and_out_of_range_reads_are_handled() {
+        let unnamed = |b: String| b.replace("<sheet name=\"Data\" sheetId=\"7\" r:id=\"rId1\"/>", "<sheet sheetId=\"7\" r:id=\"rId1\"/>");
+        assert!(matches!(Workbook::open_bytes(&with_parts(&[("xl/workbook.xml", &unnamed)])), Err(Error::InvalidData(_))));
+        let shared = |b: String| b.replace("Target=\"/xl/worksheets/sheet2.xml\"", "Target=\"worksheets/sheet1.xml\"");
+        assert!(matches!(Workbook::open_bytes(&with_parts(&[("xl/_rels/workbook.xml.rels", &shared)])), Err(Error::InvalidData(_))));
+        let far = |b: String| {
+            b.replace("<pane ySplit=\"1\"", "<pane xSplit=\"4294967295\" ySplit=\"4294967295\"").replace("<col min=\"1\"", "<col min=\"0\"")
+        };
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &far)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().set_zoom(90).unwrap();
+        workbook.sheet_mut("Data").unwrap().set_column_width("Z", 9.0).unwrap();
+        let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(sheet.contains("topLeftCell=\"XFD1048576\"") && !sheet.contains("min=\"0\""), "{sheet}");
+        let quoted = |b: String| b.replace("sheetId=\"9\"", "sheetId=\"9&quot;x\"");
+        let book =
+            text_part(&Workbook::open_bytes(&with_parts(&[("xl/workbook.xml", &quoted)])).unwrap().to_bytes().unwrap(), "xl/workbook.xml");
+        assert!(book.contains("sheetId=\"9&quot;x\""), "{book}");
+    }
+
+    #[test]
+    fn a_part_the_model_writes_is_written_once() {
+        let orphan = |b: String| b.replace("Target=\"styles.xml\"", "Target=\"looks.xml\"");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(with_parts(&[("xl/_rels/workbook.xml.rels", &orphan)]))).unwrap();
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..zip.len() {
+            let mut file = zip.by_index(i).unwrap();
+            let name = file.name().unwrap().to_string();
+            let mut body = Vec::new();
+            file.read_to_end(&mut body).unwrap();
+            out.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+            out.write_all(&body).unwrap();
+            if name == "xl/styles.xml" {
+                out.start_file("xl/looks.xml", zip::write::SimpleFileOptions::default()).unwrap();
+                out.write_all(&body).unwrap();
+            }
+        }
+        let bytes = Workbook::open_bytes(&out.finish().unwrap().into_inner()).unwrap().to_bytes().unwrap();
+        let zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut names: Vec<String> = zip.file_names().map(|n| n.unwrap().into_owned()).collect();
+        let all = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), all);
+    }
+
+    #[test]
+    fn row_styles_are_kept_as_read() {
+        let styled = |b: String| b.replace("<row r=\"3\">", "<row r=\"3\" s=\"1\" customFormat=\"1\">");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &styled)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().set_row_height(3, 20.0).unwrap();
+        let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(sheet.contains("<row r=\"3\" ht=\"20\" customHeight=\"1\" s=\"1\" customFormat=\"1\">"), "{sheet}");
     }
 
     #[test]

@@ -706,7 +706,8 @@ impl Worksheet {
     /// The format of a row's empty cells.
     pub fn set_row_format(&mut self, row: u32, format: &Format) -> Result<()> {
         check_format(format)?;
-        self.row_entry(row)?.format = Some(format.clone());
+        let entry = self.row_entry(row)?;
+        (entry.format, entry.style_index) = (Some(format.clone()), None);
         Ok(())
     }
 
@@ -1775,7 +1776,8 @@ fn sheet_data_xml(sheet: &Worksheet, context: &mut SheetContext<'_>, out: &mut S
                         let _ = write!(out, " ht=\"{height}\" customHeight=\"1\"");
                     }
                     if let Some(format) = &d.format {
-                        let _ = write!(out, " s=\"{}\" customFormat=\"1\"", context.styles.index(format));
+                        let style = d.style_index.unwrap_or_else(|| context.styles.index(format));
+                        let _ = write!(out, " s=\"{style}\" customFormat=\"1\"");
                     }
                     if d.hidden {
                         out.push_str(" hidden=\"1\"");
@@ -1978,8 +1980,13 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         } else {
             ""
         };
-        let _ =
-            writeln!(sheets_xml, "<sheet name=\"{}\" sheetId=\"{sheet_id}\"{state} r:id=\"{}\"/>", xml_text(&sheet.name), xml_text(&id));
+        let _ = writeln!(
+            sheets_xml,
+            "<sheet name=\"{}\" sheetId=\"{}\"{state} r:id=\"{}\"/>",
+            xml_text(&sheet.name),
+            xml_text(&sheet_id),
+            xml_text(&id)
+        );
         let quoted = format!("'{}'", sheet.name.replace('\'', "''"));
         let mut name = |defined: &str, hidden: bool, reference: &str| {
             let hidden = if hidden { " hidden=\"1\"" } else { "" };
@@ -2189,10 +2196,14 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         (strings_part, strings.to_xml().into_bytes().into()),
         (core_part, core.into_bytes().into()),
     ];
+    // A part read that the model writes under the same name, such as an unreferenced `xl/styles.xml`,
+    // is written once, from the model.
+    let written: std::collections::HashSet<String> =
+        all.iter().map(|(n, _)| n.clone()).chain(sheet_parts.iter().map(|(n, _)| n.clone())).collect();
     let read_parts = source.iter().flat_map(|s| s.parts.iter());
     all.extend(
         read_parts
-            .filter(|(name, _)| !dropped.contains(*name) && !parts.contains_key(*name))
+            .filter(|(name, _)| !dropped.contains(*name) && !parts.contains_key(*name) && !written.contains(*name))
             .map(|(n, b)| (n.clone(), b.as_slice().into())),
     );
     all.extend(parts.into_iter().map(|(name, bytes)| (name, bytes.into())));
