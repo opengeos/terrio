@@ -3612,8 +3612,11 @@ server bounding boxes follow the selected CRS axis order.
 Reads follow same-origin relative next links and reject cycles, repeated feature
 IDs, missing pages and external schema references. Native HTTP follows only
 same-origin redirects. Limits are `OAPIF_MAX_PAGES` (10000),
-`OAPIF_MAX_VECTOR_BYTES` (1 GiB conservative aggregate allocation budget), and
+`OAPIF_MAX_VECTOR_BYTES` (1 GiB conservative cumulative work budget), and
 16 MiB per response, further bounded by the HTTP JSON size setting.
+The aggregate budget charges all response bytes across all collections at 32×,
+even after decoding, plus retained typed cells. It is not a current-heap limit;
+the default therefore allows at most about 32 MiB of cumulative response bodies.
 `OAPIF_MAX_FEATURES` and `OAPIF_SKIP_FEATURES` set the per-collection range.
 
 JSON Schema scalar types are honored, including absent nullable fields. Without

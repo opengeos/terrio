@@ -395,7 +395,9 @@ impl Reader {
             return Err(invalid("collection id cannot be a dot path segment"));
         }
         let base = if listing { append_path(split_url(source).0, &encode(id)) } else { source.into() };
-        let items = link(value, "items", true).map(|href| self.follow(source, href)).unwrap_or_else(|| append_path(&base, "items"));
+        let items = link(value, "items", true)
+            .map(|href| self.follow(source, href))
+            .unwrap_or_else(|| self.follow(source, &append_path(&base, "items")));
         let schema = if self.options.oapif.ignore_schema { None } else { schema_link(value).map(|href| self.follow(source, href)) };
         let (crs_uri, crs, swap, crs_error) = match select_crs(value, &self.options.oapif) {
             Ok((uri, crs, swap)) => (uri, crs, swap, None),
@@ -913,10 +915,10 @@ mod tests {
     }
     #[test]
     fn catalog_paging_does_not_inherit_items_offsets_and_rejects_dot_ids() {
-        let mut r = Reader::new("https://example.test/collections", &Default::default()).unwrap();
+        let mut r = Reader::new("https://example.test/collections?key=caller", &Default::default()).unwrap();
         accept(&mut r, json!({"collections":[], "links":[{"rel":"next","href":"?offset=1"}]}));
         accept(&mut r, json!({"collections":[{"id":"a"}]}));
-        assert_eq!(r.next_request().unwrap().url, "https://example.test/collections/a/items?limit=1000");
+        assert_eq!(r.next_request().unwrap().url, "https://example.test/collections/a/items?key=caller&limit=1000");
         for id in [".", ".."] {
             let mut r = Reader::new("https://example.test/collections", &Default::default()).unwrap();
             assert!(r.accept_response(&serde_json::to_vec(&json!({"collections":[{"id":id}]})).unwrap()).is_err());
