@@ -47,7 +47,9 @@ const MAX_NUM_FORMAT_UTF16: usize = 254;
 /// The schemes of links: others can reach local files or run code when clicked.
 const LINK_SCHEMES: [&str; 4] = ["http:", "https:", "mailto:", "ftp:"];
 /// The most cells `merge_write` formats: each is stored.
-const MAX_MERGE_WRITE_CELLS: u64 = 1 << 20;
+const MAX_MERGE_WRITE_CELLS: u64 = 1 << 16;
+/// The comments of a sheet: each sheet's note shapes take a block of 1024 ids.
+const MAX_COMMENTS: usize = 1024;
 /// The errors a cell can hold.
 const ERRORS: [&str; 7] = ["#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A"];
 
@@ -655,6 +657,12 @@ impl Worksheet {
         if !text.chars().chain(author.chars()).all(xml_legal) {
             return Err(invalid("a comment holds characters XML cannot".into()));
         }
+        if text.encode_utf16().count() > MAX_CELL_TEXT_UTF16 {
+            return Err(invalid(format!("a comment holds up to {MAX_CELL_TEXT_UTF16} characters")));
+        }
+        if self.comments.len() >= MAX_COMMENTS && !self.comments.iter().any(|c| c.cell == cell) {
+            return Err(invalid(format!("a sheet holds up to {MAX_COMMENTS} comments")));
+        }
         self.comments.retain(|c| c.cell != cell);
         self.comments.push(Comment { cell, text: text.to_string(), author: author.to_string() });
         Ok(())
@@ -802,14 +810,16 @@ impl Workbook {
         Ok(self.sheets.last_mut().expect("a sheet was just added"))
     }
 
-    /// A sheet by its name.
+    /// A sheet by its name, whatever its case, as Excel tells names apart.
     pub fn sheet(&self, name: &str) -> Result<&Worksheet> {
-        self.sheets.iter().find(|s| s.name == name).ok_or_else(|| invalid(format!("no sheet named '{name}'")))
+        let wanted = name.to_lowercase();
+        self.sheets.iter().find(|s| s.name.to_lowercase() == wanted).ok_or_else(|| invalid(format!("no sheet named '{name}'")))
     }
 
-    /// A sheet by its name, to change.
+    /// A sheet by its name, whatever its case, to change.
     pub fn sheet_mut(&mut self, name: &str) -> Result<&mut Worksheet> {
-        self.sheets.iter_mut().find(|s| s.name == name).ok_or_else(|| invalid(format!("no sheet named '{name}'")))
+        let wanted = name.to_lowercase();
+        self.sheets.iter_mut().find(|s| s.name.to_lowercase() == wanted).ok_or_else(|| invalid(format!("no sheet named '{name}'")))
     }
 
     /// Renames a sheet. Formulas that name it are not rewritten.
@@ -826,7 +836,9 @@ impl Workbook {
 
     /// Moves a sheet to a position, from 0.
     pub fn move_sheet(&mut self, name: &str, index: usize) -> Result<()> {
-        let from = self.sheets.iter().position(|s| s.name == name).ok_or_else(|| invalid(format!("no sheet named '{name}'")))?;
+        let wanted = name.to_lowercase();
+        let from =
+            self.sheets.iter().position(|s| s.name.to_lowercase() == wanted).ok_or_else(|| invalid(format!("no sheet named '{name}'")))?;
         if index >= self.sheets.len() {
             return Err(invalid(format!("position {index} is past the {} sheets", self.sheets.len())));
         }
@@ -835,10 +847,12 @@ impl Workbook {
         Ok(())
     }
 
-    /// Removes a sheet. Returns whether there was one of that name.
+    /// Removes a sheet. Returns whether there was one of that name. Formulas and defined names that
+    /// refer to it are not rewritten.
     pub fn remove_sheet(&mut self, name: &str) -> bool {
+        let wanted = name.to_lowercase();
         let before = self.sheets.len();
-        self.sheets.retain(|s| s.name != name);
+        self.sheets.retain(|s| s.name.to_lowercase() != wanted);
         self.sheets.len() != before
     }
 
@@ -1643,6 +1657,12 @@ mod tests {
         assert!(s.merged_ranges().is_empty());
         assert_eq!(s.value("B1").unwrap(), Some(&CellValue::Number(1.0)));
         assert!(s.merge_write("A1:XFD1048576", "t", &plain).is_err());
+        assert!(s.comment("A1", &"x".repeat(MAX_CELL_TEXT_UTF16 + 1), "me").is_err());
+        for row in 1..=MAX_COMMENTS as u32 {
+            s.comment(&format!("Z{row}"), "c", "me").unwrap();
+        }
+        assert!(s.comment("Y1", "c", "me").is_err());
+        s.comment("Z1", "replaced", "me").unwrap();
         s.merge("A2:XFD1048576").unwrap();
     }
 
@@ -1695,6 +1715,10 @@ mod tests {
         workbook.move_sheet("c", 0).unwrap();
         assert!(workbook.move_sheet("c", 2).is_err());
         assert_eq!(workbook.sheet_names(), ["c", "A"]);
+        assert_eq!(workbook.sheet("C").unwrap().name(), "c");
+        workbook.sheet_mut("a").unwrap().set_zoom(100).unwrap();
+        workbook.move_sheet("a", 0).unwrap();
+        workbook.move_sheet("C", 0).unwrap();
         assert!(workbook.remove_sheet("A"));
         assert!(!workbook.remove_sheet("A"));
         workbook.sheet_mut("c").unwrap().set_hidden(true);
