@@ -374,6 +374,9 @@ struct Dimension {
     size: Option<f64>,
     /// Whether the column's width was set, rather than following the sheet's default.
     custom: bool,
+    /// The cell style read, written back while the format is not set again, which keeps what the
+    /// model does not read of it, such as theme colors.
+    style_index: Option<usize>,
     hidden: bool,
     outline: u8,
     format: Option<Format>,
@@ -406,6 +409,8 @@ struct PrintSetup {
 struct Validation {
     range: Range,
     items: Vec<String>,
+    /// The rule's other attributes as read, such as `allowBlank` and its prompts, written back.
+    attributes: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -672,7 +677,8 @@ impl Worksheet {
     /// The format of a column's empty cells.
     pub fn set_column_format(&mut self, column: &str, format: &Format) -> Result<()> {
         check_format(format)?;
-        self.column_entry(column)?.format = Some(format.clone());
+        let entry = self.column_entry(column)?;
+        (entry.format, entry.style_index) = (Some(format.clone()), None);
         Ok(())
     }
     /// A row's height in points, up to 409.
@@ -755,7 +761,7 @@ impl Worksheet {
         if items.join(",").encode_utf16().count() > 255 {
             return Err(invalid("a list validation's items are more than 255 characters together".into()));
         }
-        self.validations.push(Validation { range: Range::parse(range)?, items });
+        self.validations.push(Validation { range: Range::parse(range)?, items, attributes: None });
         self.touch("dataValidations");
         Ok(())
     }
@@ -1645,7 +1651,8 @@ fn section_xml(sheet: &Worksheet, name: &str, context: &mut SheetContext<'_>, ou
                     out.push_str(" customWidth=\"1\"");
                 }
                 if let Some(format) = &d.format {
-                    let _ = write!(out, " style=\"{}\"", context.styles.index(format));
+                    let style = d.style_index.unwrap_or_else(|| context.styles.index(format));
+                    let _ = write!(out, " style=\"{style}\"");
                 }
                 if d.hidden {
                     out.push_str(" hidden=\"1\"");
@@ -1679,9 +1686,10 @@ fn section_xml(sheet: &Worksheet, name: &str, context: &mut SheetContext<'_>, ou
             out.push_str(&others.concat());
             for v in &sheet.validations {
                 let list = v.items.join(",").replace('"', "\"\"");
+                let attributes = v.attributes.as_deref().unwrap_or(" allowBlank=\"1\" showErrorMessage=\"1\"");
                 let _ = write!(
                     out,
-                    "<dataValidation type=\"list\" allowBlank=\"1\" showErrorMessage=\"1\" sqref=\"{}\"><formula1>{}</formula1></dataValidation>",
+                    "<dataValidation type=\"list\"{attributes} sqref=\"{}\"><formula1>{}</formula1></dataValidation>",
                     v.range.text(),
                     xml_text(&format!("\"{list}\""))
                 );

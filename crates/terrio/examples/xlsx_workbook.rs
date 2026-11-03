@@ -9,7 +9,7 @@ use terrio::xlsx::{Align, BorderStyle, CellValue, Format, Orientation, VerticalA
 
 fn main() -> terrio::Result<()> {
     let path = std::env::args().nth(1).expect("an output path");
-    if path == "edit" {
+    if path == "edit" && std::env::args().len() == 4 {
         let input = std::env::args().nth(2).expect("an input path");
         let output = std::env::args().nth(3).expect("an output path");
         let mut workbook = Workbook::open(&input)?;

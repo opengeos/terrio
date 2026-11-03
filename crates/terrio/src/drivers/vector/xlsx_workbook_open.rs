@@ -106,13 +106,13 @@ pub(super) fn with_selection(views: &str, selected: bool) -> String {
     out
 }
 
-/// Whether a cell read holds the formula a range of cells shares.
+/// Whether a cell read holds the formula a range of cells shares, or an array formula over a range.
 pub(super) fn holds_shared_master(cell: &str) -> bool {
     let mut reader = quick_xml::Reader::from_str(cell);
     loop {
         match reader.read_event() {
             Ok(Event::Start(e) | Event::Empty(e)) if e.local_name().as_ref() == "f" => {
-                return attribute(&e, "t").as_deref() == Some("shared") && attribute(&e, "ref").is_some();
+                return matches!(attribute(&e, "t").as_deref(), Some("shared" | "array")) && attribute(&e, "ref").is_some();
             }
             Ok(Event::Eof) | Err(_) => return false,
             _ => {}
@@ -692,7 +692,10 @@ fn read_sheet_data(
                 let outline = attribute(&e, "outlineLevel").and_then(|v| v.parse().ok()).unwrap_or(0);
                 let style = attribute(&e, "s").and_then(|v| v.parse::<usize>().ok()).and_then(|s| parts.formats.get(s));
                 if number("ht").is_some() || hidden || outline > 0 || style.is_some() {
-                    sheet.rows.insert(row, Dimension { size: number("ht"), custom: false, hidden, outline, format: style.cloned() });
+                    sheet.rows.insert(
+                        row,
+                        Dimension { size: number("ht"), custom: false, style_index: None, hidden, outline, format: style.cloned() },
+                    );
                 }
             }
             event @ (Event::Start(_) | Event::Empty(_)) => {
@@ -838,9 +841,10 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
         let custom = attribute(e, "customWidth").is_some_and(|v| v == "1" || v == "true");
         let hidden = attribute(e, "hidden").is_some_and(|v| v == "1" || v == "true");
         let outline = attribute(e, "outlineLevel").and_then(|v| v.parse().ok()).unwrap_or(0);
-        let format = attribute(e, "style").and_then(|v| v.parse::<usize>().ok()).and_then(|s| formats.get(s)).cloned();
+        let style_index = attribute(e, "style").and_then(|v| v.parse::<usize>().ok()).filter(|&s| s < formats.len());
+        let format = style_index.and_then(|s| formats.get(s)).cloned();
         for column in min..=max {
-            sheet.columns.insert(column, Dimension { size: width, custom, hidden, outline, format: format.clone() });
+            sheet.columns.insert(column, Dimension { size: width, custom, style_index, hidden, outline, format: format.clone() });
         }
     })?;
     if let Some(e) = over_budget {
@@ -894,7 +898,14 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
                 let formula = split_children(&xml, part).ok()?.1.into_iter().find(|(n, _)| n == "formula1")?.1;
                 let text = element_text(&formula);
                 let inner = text.strip_prefix('"')?.strip_suffix('"')?;
-                Some(Validation { range, items: inner.replace("\"\"", "\"").split(',').map(str::to_string).collect() })
+                let attributes: String = e
+                    .attributes()
+                    .flatten()
+                    .filter(|a| !matches!(a.key.as_ref(), "type" | "sqref"))
+                    .map(|a| format!(" {}=\"{}\"", a.key.as_ref(), a.value))
+                    .collect();
+                let items = inner.replace("\"\"", "\"").split(',').map(str::to_string).collect();
+                Some(Validation { range, items, attributes: Some(attributes) })
             });
             match list {
                 Some(v) => sheet.validations.push(v),
@@ -1154,9 +1165,8 @@ impl Workbook {
         if let Some(calc) = find("/calcChain") {
             overrides.retain(|(part, _)| part.trim_start_matches('/') != calc);
         }
-        let calc_kind = "/calcChain";
         let workbook_relationships: Vec<Relationship> =
-            workbook_relationships.into_iter().filter(|r| !r.kind.ends_with(calc_kind)).collect();
+            workbook_relationships.into_iter().filter(|r| !r.kind.ends_with("/calcChain")).collect();
         let core_part = package.iter().find(|r| r.kind.ends_with("/core-properties")).map(|r| resolve_target("", &r.target));
         let core = core_part.as_deref().and_then(|p| text(&all, p));
         modelled.extend(core_part.clone());
@@ -1292,10 +1302,8 @@ mod tests {
         assert_eq!(s.value("A3").unwrap(), Some(&CellValue::Boolean(true)));
         assert_eq!(s.value("B3").unwrap(), Some(&CellValue::Text("inline".into())));
         assert_eq!(s.format("A1").unwrap(), Some(&Format::new().bold().font("Aptos").font_size(14.0)));
-        assert_eq!(
-            s.format("A2").unwrap().unwrap(),
-            &Format::new().num_format("yyyy-mm-dd").font("Aptos").font_size(11.0).clone().tap_default()
-        );
+        // The first font is the workbook's default, which a format does not read into its fields.
+        assert_eq!(s.format("A2").unwrap(), Some(&Format::new().num_format("yyyy-mm-dd")));
         assert_eq!(s.merged_ranges(), ["D1:E1"]);
         assert_eq!(s.column_width("B").unwrap(), Some(20.0));
         assert_eq!(s.row_height(2), Some(30.0));
@@ -1303,19 +1311,6 @@ mod tests {
         assert_eq!(s.hyperlink_of("A1").unwrap(), Some("https://example.com/"));
         assert_eq!(s.comment_of("B1").unwrap(), Some(("note", "me")));
         assert!(workbook.sheet("Other").unwrap().is_hidden());
-    }
-
-    trait TapDefault {
-        fn tap_default(self) -> Format;
-    }
-
-    impl TapDefault for Format {
-        /// The first font is the default, which a format does not read into its fields.
-        fn tap_default(mut self) -> Format {
-            self.font_name = None;
-            self.font_size_tenths = None;
-            self
-        }
     }
 
     #[test]
@@ -1645,6 +1640,29 @@ mod tests {
             sheet.contains("<sheetFormatPr baseColWidth=\"10\" defaultRowHeight=\"16\" outlineLevelRow=\"2\" outlineLevelCol=\"0\"/>"),
             "{sheet}"
         );
+    }
+
+    #[test]
+    fn unedited_columns_and_rules_keep_what_was_read() {
+        let change = |b: String| {
+            b.replace(
+                "<col min=\"1\" max=\"2\" width=\"20\" customWidth=\"1\"/>",
+                "<col min=\"1\" max=\"2\" width=\"20\" customWidth=\"1\" style=\"1\"/>",
+            )
+            .replace(
+                "<dataValidation type=\"list\" sqref=\"F2\">",
+                "<dataValidation type=\"list\" allowBlank=\"0\" showDropDown=\"1\" prompt=\"p\" sqref=\"F2\">",
+            )
+            .replace("<c r=\"B2\"><f>1+1</f><v>2</v></c>", "<c r=\"B2\"><f t=\"array\" ref=\"B2\">1+1</f><v>2</v></c>")
+        };
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &change)])).unwrap();
+        let s = workbook.sheet_mut("Data").unwrap();
+        assert!(s.write("B2", 1.0, &Format::new()).is_err());
+        s.set_column_width("E", 12.0).unwrap();
+        s.validate_list("F3", &["z"]).unwrap();
+        let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
+        assert!(sheet.contains("<col min=\"1\" max=\"2\" width=\"20\" customWidth=\"1\" style=\"1\"/>"), "{sheet}");
+        assert!(sheet.contains("<dataValidation type=\"list\" allowBlank=\"0\" showDropDown=\"1\" prompt=\"p\" sqref=\"F2\">"), "{sheet}");
     }
 
     #[test]
