@@ -14,6 +14,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// The longest side of a raster's picture in a notebook.
 pub(crate) const NOTEBOOK_SIZE: usize = 512;
 
+// The default is written out, because Python shows a default that is not a literal as `...`.
+const _: () = assert!(draw::DEFAULT_MAX_SIZE == 1024);
+
 /// Draws a raster or vector dataset as a PNG, reading as little of a raster as the size allows.
 ///
 /// A raster is read from its coarsest overview that still has the pixels needed, so a remote COG
@@ -38,7 +41,7 @@ pub(crate) const NOTEBOOK_SIZE: usize = 512;
 /// Returns:
 ///     bytes: The PNG.
 #[pyfunction]
-#[pyo3(signature = (src, *, width=None, height=None, max_size=draw::DEFAULT_MAX_SIZE, bands=None, colormap=None, stretch="auto", layers=None, attribute=None))]
+#[pyo3(signature = (src, *, width=None, height=None, max_size=1024, bands=None, colormap=None, stretch="auto", layers=None, attribute=None))]
 #[allow(clippy::too_many_arguments)]
 fn render(
     py: Python<'_>,
