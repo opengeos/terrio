@@ -487,6 +487,28 @@ def test_sql_expressions_distinct_summary():
     assert feature["properties"] == {"n": 3, "total": 4}
     assert feature["geometry"] is None
     assert len(terrio.sql(src, "SELECT DISTINCT v FROM layer")) == 2
+    for statement in [
+        "SELECT v,v AS v FROM layer",
+        "SELECT v AS n,COUNT(*) AS n FROM layer GROUP BY v",
+    ]:
+        with pytest.raises(ValueError, match="duplicate output field"):
+            terrio.sql(src, statement)
+    grouped = terrio.sql(
+        src, "SELECT v, COUNT(*) AS n, SUM(v) AS total FROM layer GROUP BY v ORDER BY v"
+    ).to_geojson()["features"]
+    assert [f["properties"] for f in grouped] == [
+        {"v": None, "n": 1, "total": None},
+        {"v": 2, "n": 2, "total": 4},
+    ]
+    assert all(f["geometry"] is None for f in grouped)
+    spatial = terrio.sql(
+        src,
+        "SELECT ST_Centroid(ST_Buffer(geometry,1)) AS shape, "
+        "ST_Area(geometry) AS area FROM layer LIMIT 1",
+    ).to_geojson()["features"][0]
+    assert spatial["properties"] == {"area": 0.0}
+    assert spatial["geometry"]["type"] == "Point"
+    assert spatial["geometry"]["coordinates"] == pytest.approx([0, 0], abs=1e-12)
 
 
 @pytest.mark.parametrize("center", [False, True])
