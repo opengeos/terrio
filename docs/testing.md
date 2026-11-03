@@ -2210,3 +2210,10 @@ item pages for a bounded range; metadata-only reads fetch no items or schemas.
 Python and Node tests each observe four real localhost HTTP requests for
 catalog/schema and two item pages. MCP checks bounded conversion and filtering
 before a final feature limit.
+
+A local pygeoapi lakes measurement fetched one metadata response (4,509 body
+bytes) for layer listing, and four responses (32,622 body bytes) for the
+four-feature read at page size three: metadata, schema and two item pages.
+These are observed public-service response sizes, not fixed assertions.
+All 15 CLI/Python/WASM comparisons passed: nine exact and six with the explicit
+schema normalizations above; maximum observed coordinate error was zero.
