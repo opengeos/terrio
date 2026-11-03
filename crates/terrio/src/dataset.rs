@@ -1187,13 +1187,7 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
     } else {
         let format = driver.to_wb().ok_or_else(|| Error::Unsupported(format!("the {} driver cannot read", driver.name())))?;
         let layer = format.read(path)?;
-        if !options.layers.is_empty() && !options.layers.contains(&layer.name) {
-            let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-            if !options.layers.iter().any(|l| l == stem) {
-                return Err(Error::InvalidArgument(format!("no layer named {}", options.layers.join(", "))));
-            }
-        }
-        vec![layer]
+        select_layers(vec![layer], path, options)?
     };
     // The Shapefile driver reads only the range; the others read every feature.
     if driver != VectorDriver::Shapefile {
@@ -1215,13 +1209,24 @@ fn select_layers(layers: Vec<Layer>, path: &str, options: &VectorOpenOptions) ->
     }
     let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
     let single = layers.len() == 1;
-    let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
-    let kept: Vec<Layer> =
-        layers.into_iter().filter(|l| options.layers.contains(&l.name) || single && options.layers.iter().any(|n| n == stem)).collect();
-    if kept.is_empty() {
-        return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
+    // A single layer also answers to the file's name, which it is named after when it has none.
+    let matches = |layer: &Layer, name: &str| layer.name == name || single && name == stem;
+    // Every name must match a layer, as GDAL refuses a layer it cannot fetch: a misspelled name
+    // beside a valid one is not silently dropped.
+    if let Some(missing) = options.layers.iter().find(|n| !layers.iter().any(|l| matches(l, n))) {
+        let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
+        return Err(Error::InvalidArgument(format!("no layer named {missing} (layers: {})", names.join(", "))));
     }
-    Ok(kept)
+    Ok(layers.into_iter().filter(|l| options.layers.iter().any(|n| matches(l, n))).collect())
+}
+
+/// Refuses a requested layer name that none of `available` has, as GDAL refuses a layer it
+/// cannot fetch, rather than reading the layers the other names match.
+pub(crate) fn check_layer_names(requested: &[String], available: &[String]) -> Result<()> {
+    match requested.iter().find(|n| !available.contains(n)) {
+        Some(missing) => Err(Error::InvalidArgument(format!("no layer named {missing} (layers: {})", available.join(", ")))),
+        None => Ok(()),
+    }
 }
 
 /// Normalizes what drivers leave inconsistent: the layer name and the CRS of formats that are
@@ -1933,6 +1938,20 @@ pub(crate) mod fallible {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_misspelled_layer_name_beside_a_valid_one_is_refused() {
+        let options = |names: &[&str]| crate::VectorOpenOptions { layers: names.iter().map(|n| n.to_string()).collect(), ..Default::default() };
+        let layers = || vec![crate::Layer::new("roads"), crate::Layer::new("rivers")];
+        let kept = super::select_layers(layers(), "/data/map.kml", &options(&["rivers"])).unwrap();
+        assert_eq!(kept.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["rivers"]);
+        let error = super::select_layers(layers(), "/data/map.kml", &options(&["roads", "rivres"])).unwrap_err();
+        assert_eq!(error.to_string(), "no layer named rivres (layers: roads, rivers)");
+        // A single layer also answers to the file's name.
+        let single = super::select_layers(vec![crate::Layer::new("layer")], "/data/map.geojson", &options(&["map"])).unwrap();
+        assert_eq!(single.len(), 1);
+        assert!(super::check_layer_names(&["roads".into(), "x".into()], &["roads".into()]).is_err());
+    }
+
     #[test]
     fn resource_errors_name_the_remote_source_without_cached_paths_or_queries() {
         let local = "/private/cache/input.hdf";

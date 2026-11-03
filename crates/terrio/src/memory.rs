@@ -596,11 +596,9 @@ pub(crate) mod codec {
     /// Keeps the layers the options ask for.
     fn finish_vector(layers: Vec<Layer>, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Dataset> {
         let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
+        crate::dataset::check_layer_names(&options.layers, &names)?;
         let layers: Vec<Layer> =
             if options.layers.is_empty() { layers } else { layers.into_iter().filter(|l| options.layers.contains(&l.name)).collect() };
-        if layers.is_empty() {
-            return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
-        }
         Ok(Dataset::Vector(VectorDataset::new(layers, driver)))
     }
 
