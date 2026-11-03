@@ -229,6 +229,8 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
     }
     let median = options.stats.contains(&Statistic::Median);
     let weighted_variance = options.stats.contains(&Statistic::WeightedStdDev);
+    let weighted_mean = weighted_variance || options.stats.contains(&Statistic::WeightedMean);
+    let weighted_sum = options.stats.contains(&Statistic::WeightedSum);
     let weights = options.weights.as_ref().filter(|_| options.stats.iter().any(|s| s.weighted()));
     for f in &mut out.features {
         f.attributes.resize(out.schema.len(), FieldValue::Null);
@@ -273,7 +275,8 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
                                         let contribution = coverage * w;
                                         if contribution > 0.0 {
                                             weighted.add(v, contribution);
-                                            if ![weighted.weight, weighted.sum, weighted.mean].iter().all(|v| v.is_finite())
+                                            if (weighted_sum && !weighted.sum.is_finite())
+                                                || (weighted_mean && (!weighted.weight.is_finite() || !weighted.mean.is_finite()))
                                                 || (weighted_variance && !weighted.m2.is_finite())
                                             {
                                                 return Err(Error::InvalidArgument(format!(
