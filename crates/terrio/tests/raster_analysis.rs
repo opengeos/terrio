@@ -388,7 +388,7 @@ fn fractional_zonal_coverage_and_weighted_statistics() {
     let inputs = [ZonalInput { prefix: "v".into(), raster: &r, band: 1 }];
     let o = ZonalOptions {
         fractional: true,
-        weights: Some(ZonalWeight { raster: &w, band: 1 }),
+        weights: Some(ZonalWeight { raster: std::sync::Arc::new(w.clone()), band: 1 }),
         stats: vec![S::Count, S::Min, S::Max, S::Mean, S::Sum, S::StdDev, S::Median, S::WeightedMean, S::WeightedSum, S::WeightedStdDev],
         ..Default::default()
     };
@@ -459,7 +459,7 @@ fn zonal_weights_missing_zero_negative_and_grid_validation() {
             &l,
             &inputs,
             &ZonalOptions {
-                weights: Some(ZonalWeight { raster: w, band: 1 }),
+                weights: Some(ZonalWeight { raster: std::sync::Arc::new(w.clone()), band: 1 }),
                 stats: vec![S::Count, S::Mean, S::WeightedMean, S::WeightedSum],
                 ..Default::default()
             },
@@ -487,15 +487,37 @@ fn zonal_uses_selected_band_nodata_and_rejects_weight_overflow() {
     r.band_nodata = vec![None, Some(-99.)];
     let l = zones(vec![Some(rectangle(0., 0., 2., 1.))]);
     let inputs = [ZonalInput { prefix: "v".into(), raster: &r, band: 2 }];
-    let out = zonal_stats(&l, &inputs, &ZonalOptions { fractional: true, ..Default::default() }).unwrap();
-    assert_eq!(field(&out, 0, "v_count"), &V::Float(1.));
-    assert_eq!(field(&out, 0, "v_mean"), &V::Float(10.));
+    for fractional in [false, true] {
+        let out = zonal_stats(&l, &inputs, &ZonalOptions { fractional, ..Default::default() }).unwrap();
+        assert_eq!(field(&out, 0, "v_count"), if fractional { &V::Float(1.) } else { &V::Integer(1) });
+        assert_eq!(field(&out, 0, "v_mean"), &V::Float(10.));
+    }
     let w = raster(2, 1, 1, &[f64::MAX, 1.], None);
     let error = zonal_stats(
         &l,
         &inputs,
-        &ZonalOptions { stats: vec![S::WeightedSum], weights: Some(ZonalWeight { raster: &w, band: 1 }), ..Default::default() },
+        &ZonalOptions {
+            stats: vec![S::WeightedSum],
+            weights: Some(ZonalWeight { raster: std::sync::Arc::new(w.clone()), band: 1 }),
+            ..Default::default()
+        },
     )
     .unwrap_err();
     assert!(error.to_string().contains("overflow"));
+}
+
+#[test]
+fn fractional_geometry_errors_identify_the_source_zone() {
+    let r = raster(2, 2, 1, &[1.; 4], None);
+    let g = G::polygon(vec![Coord::xy(0., 0.), Coord::xy(2., 2.), Coord::xy(0., 2.), Coord::xy(2., 0.), Coord::xy(0., 0.)], vec![]);
+    let error = zonal_stats(
+        &zones(vec![Some(g)]),
+        &[ZonalInput { prefix: "v".into(), raster: &r, band: 1 }],
+        &ZonalOptions { fractional: true, ..Default::default() },
+    )
+    .unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("zone 100"));
+    assert!(text.contains("feature 100"));
+    assert!(!text.contains("feature 0"));
 }

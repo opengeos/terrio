@@ -32,3 +32,16 @@ pub(crate) fn median(sorted: &[(f64, f64)]) -> f64 {
     }
     previous_x
 }
+
+#[cfg(test)]
+mod tests {
+    use super::median;
+    /// exactextract 0.3.0, Float64 source; unequal weights and duplicate values.
+    #[test]
+    fn unequal_coverages_and_histogram_bins_control_interpolation() {
+        assert!((median(&[(0., 0.25), (10., 1.), (20., 0.75)]) - 12.0).abs() < 1e-12);
+        let repeated = median(&[(0., 0.25), (10., 0.5), (10., 0.5), (20., 0.75)]);
+        assert!((repeated - 12.0).abs() < 1e-12);
+        assert_eq!(median(&[(3., 0.1), (3., 0.9)]), 3.);
+    }
+}

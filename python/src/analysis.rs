@@ -143,7 +143,7 @@ fn zonal_stats(
     let weights = weights.map(|src| crate::ops::input_raster(py, src)).transpose()?;
     let options = ZonalOptions {
         fractional,
-        weights: weights.as_ref().map(|raster| ZonalWeight { raster, band: weight_band }),
+        weights: weights.map(|raster| ZonalWeight { raster: std::sync::Arc::new(raster), band: weight_band }),
         stats: stats
             .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())
             .transpose()

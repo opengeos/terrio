@@ -349,7 +349,7 @@ pub fn zonal(a: ZonalArgs) -> Result<()> {
     let weights = a.weights.as_deref().map(terrio::open_raster).transpose()?;
     let options = ZonalOptions {
         fractional: a.fractional,
-        weights: weights.as_ref().map(|raster| ZonalWeight { raster, band: a.weight_band }),
+        weights: weights.map(|raster| ZonalWeight { raster: std::sync::Arc::new(raster), band: a.weight_band }),
         stats: a.stats.iter().map(|s| Statistic::parse(s)).collect::<Result<_>>()?,
         all_touched: a.all_touched,
         dst_srs: a.sources.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose()?,

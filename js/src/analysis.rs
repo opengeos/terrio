@@ -182,7 +182,7 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
     }
     let options = terrio::ops::zonal::ZonalOptions {
         fractional: a.fractional,
-        weights: weights.as_ref().map(|raster| terrio::ops::zonal::ZonalWeight { raster, band: a.weight_band }),
+        weights: weights.map(|raster| terrio::ops::zonal::ZonalWeight { raster: std::sync::Arc::new(raster), band: a.weight_band }),
         stats: a
             .stats
             .map(|names| names.iter().map(|s| Statistic::parse(s)).collect::<terrio::Result<Vec<_>>>())

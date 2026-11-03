@@ -2214,3 +2214,14 @@ were 3.99e-5 and 0.00107, respectively.
 
 The weighted median port is attributed in its SPDX header and both NOTICE files;
 `reuse lint` checks the complete repository against REUSE 3.3.
+
+The boundary fast path uses an R-tree of polygon edges and row scanline parity;
+only boundary candidate cells require polygon overlay. It agrees with independent
+per-cell overlays on interior, exterior, partial-cell and raster-surrounding shapes.
+A local optimized 966 × 731 real NLCD run (706,146 pixels, count/mean/sum/stddev/median,
+one fractional zone) took median 1.03 s before and 0.119 s afterward over three runs.
+Peak RSS was 67.4–69.6 MiB before and 69.6–70.1 MiB afterward. Against exactextract
+on the same samples promoted to Float64, the largest relative statistic error was
+2.74e-10; maximum absolute sum error was 0.00761. These are local measurements,
+not portable performance thresholds. Fractional masks retain binary64 coverage
+(8 bytes/cell); existing binary membership masks remain Byte.

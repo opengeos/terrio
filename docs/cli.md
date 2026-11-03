@@ -2367,7 +2367,8 @@ Zero weights contribute nothing. A nodata/nonfinite weight under a valid contrib
 value makes that zone's weighted statistics null, without changing its unweighted statistics.
 All-zero weights give weighted sum 0 and null weighted mean/standard deviation.
 
-Values use each selected band's nodata; nonfinite values are excluded. Empty zones retain
+Values use each selected band's nodata in all modes, fixing the previous use of
+band 1's nodata for every band; nonfinite values are excluded. Empty zones retain
 count zero and null other statistics, including sums (exactextract/GDAL return zero sums
 for empty zones). All statistics use binary64 arithmetic; overflow in weighted accumulation is an error. Explicit decimal rounding applies
 to fractional counts as well as other new Real fields; integer counts and source attributes

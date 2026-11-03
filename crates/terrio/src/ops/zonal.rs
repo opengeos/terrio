@@ -8,6 +8,7 @@ mod fractional;
 use super::rasterize::{Grid, RasterizeOptions, rasterize};
 use crate::crs::{SpatialRef, Transformer};
 use crate::{DataType, Error, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, RasterDataset, Result};
+use std::sync::Arc;
 
 /// A statistic for [`zonal_stats`]. Standard deviation is the population standard deviation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,22 +84,22 @@ pub struct ZonalInput<'a> {
     pub band: usize,
 }
 
-/// A weighting raster band. It must have the same grid and CRS as every value raster.
-#[derive(Debug, Clone, Copy)]
-pub struct ZonalWeight<'a> {
+/// A shared weighting raster band. Its grid and CRS must match every value raster.
+#[derive(Debug, Clone)]
+pub struct ZonalWeight {
     /// Nonnegative weights; nodata/nonfinite weights make weighted statistics null.
-    pub raster: &'a RasterDataset,
+    pub raster: Arc<RasterDataset>,
     /// Band, numbered from 1.
     pub band: usize,
 }
 
 /// Pixel inclusion and statistics for [`zonal_stats`].
 #[derive(Debug, Clone)]
-pub struct ZonalOptions<'a> {
+pub struct ZonalOptions {
     /// Use exact polygon/cell intersection areas in pixel coordinates, rather than a binary mask.
     pub fractional: bool,
     /// Optional second raster for weighted_mean, weighted_sum and weighted_stddev.
-    pub weights: Option<ZonalWeight<'a>>,
+    pub weights: Option<ZonalWeight>,
     /// Statistics to calculate, in output order. Default: count, min, max, mean, sum, stddev.
     pub stats: Vec<Statistic>,
     /// Include every pixel touched by the polygon, instead of pixels whose centres are inside.
@@ -110,7 +111,7 @@ pub struct ZonalOptions<'a> {
     pub decimal_places: Option<u8>,
 }
 
-impl Default for ZonalOptions<'_> {
+impl Default for ZonalOptions {
     fn default() -> Self {
         Self {
             stats: vec![Statistic::Count, Statistic::Min, Statistic::Max, Statistic::Mean, Statistic::Sum, Statistic::StdDev],
@@ -145,7 +146,7 @@ impl Default for ZonalOptions<'_> {
 /// terrio::write_vector(&[stats], "statistics.gpkg", &Default::default())?;
 /// # Ok::<(), terrio::Error>(())
 /// ```
-pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOptions<'_>) -> Result<Layer> {
+pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOptions) -> Result<Layer> {
     super::sample::validate_decimal_places(options.decimal_places)?;
     if options.fractional && options.all_touched {
         return Err(Error::InvalidArgument("fractional coverage and all_touched are mutually exclusive".into()));
@@ -153,9 +154,9 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
     if options.stats.iter().any(|s| s.weighted()) && options.weights.is_none() {
         return Err(Error::InvalidArgument("weighted statistics require a weighting raster".into()));
     }
-    if let Some(weight) = options.weights {
-        super::sample::check_raster(weight.raster)?;
-        super::sample::check_band(weight.raster, weight.band)?;
+    if let Some(weight) = &options.weights {
+        super::sample::check_raster(&weight.raster)?;
+        super::sample::check_band(&weight.raster, weight.band)?;
     }
     if inputs.is_empty() || options.stats.is_empty() {
         return Err(Error::InvalidArgument("zonal statistics needs at least one raster band and one statistic".into()));
@@ -182,15 +183,15 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
     for (i, input) in inputs.iter().enumerate() {
         super::sample::check_raster(input.raster)?;
         super::sample::check_band(input.raster, input.band)?;
-        if let Some(weight) = options.weights {
+        if let Some(weight) = &options.weights {
             let r = &input.raster.raster;
             let w = &weight.raster.raster;
-            let src = input.raster.crs();
-            let dst = weight.raster.crs();
+            let value_crs = input.raster.crs();
+            let weight_crs = weight.raster.crs();
             if r.cols != w.cols
                 || r.rows != w.rows
                 || input.raster.geo_transform() != weight.raster.geo_transform()
-                || !(src.is_unknown() && dst.is_unknown() || src.same_as(&dst))
+                || !((value_crs.is_unknown() && weight_crs.is_unknown()) || value_crs.same_as(&weight_crs))
             {
                 return Err(Error::InvalidArgument(
                     "weighting and value rasters must have identical grids and CRS; align them before analysis".into(),
@@ -230,7 +231,7 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
         f.attributes.resize(out.schema.len(), FieldValue::Null);
         for group in &groups {
             let mask = match &f.geometry {
-                Some(g) if !g.is_empty() => zone_mask(g, group, options.all_touched, options.fractional)
+                Some(g) if !g.is_empty() => zone_mask(g, group, options.all_touched, options.fractional, f.fid)
                     .map_err(|e| Error::InvalidArgument(format!("zone {}: {e}", f.fid)))?,
                 _ => None,
             };
@@ -252,7 +253,7 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
                             let v = r.data.get_f64(index);
                             if v.is_finite() && crate::histogram::is_valid(v, nodata, r.data_type) {
                                 values.add(v, coverage);
-                                if let Some(weight) = options.weights {
+                                if let Some(weight) = &options.weights {
                                     let wi = (weight.band - 1) * r.cols * r.rows + (row + mask.row) * r.cols + col + mask.col;
                                     let w = weight.raster.raster.data.get_f64(wi);
                                     if !w.is_finite()
@@ -341,7 +342,7 @@ impl Coverage {
     }
 }
 
-fn zone_mask(geometry: &Geometry, group: &Group<'_>, all_touched: bool, fractional: bool) -> Result<Option<Mask>> {
+fn zone_mask(geometry: &Geometry, group: &Group<'_>, all_touched: bool, fractional: bool, fid: u64) -> Result<Option<Mask>> {
     let inv =
         super::invert_gt(&group.raster.geo_transform()).ok_or_else(|| Error::InvalidArgument("cannot invert the raster grid".into()))?;
     let mut geometry = geometry.clone();
@@ -369,7 +370,7 @@ fn zone_mask(geometry: &Geometry, group: &Group<'_>, all_touched: bool, fraction
     }
     let (cols, rows) = (end_col - col, end_row - row);
     if fractional {
-        super::topology::require_valid(&geometry, 0)?;
+        super::topology::require_valid(&geometry, fid)?;
         let pixels = fractional::coverage(&geometry, col, row, cols, rows);
         return Ok(Some(Mask { col, row, cols, rows, pixels: Coverage::Fractional(pixels) }));
     }
