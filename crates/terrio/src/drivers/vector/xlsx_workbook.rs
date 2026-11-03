@@ -1489,6 +1489,8 @@ struct SheetContext<'a> {
     relationships: Vec<Relationship>,
     /// The relationship id of the comments' drawing, when they are written.
     drawing: Option<String>,
+    /// Whether the sheet is the one a new view selects, when the view read is replaced.
+    selected: Option<bool>,
 }
 
 /// The elements to write: those read, in their order, with the schema's others where it puts them.
@@ -1524,7 +1526,10 @@ fn sheet_xml(sheet: &Worksheet, context: &mut SheetContext<'_>) -> String {
         match sheet.source.as_ref().and_then(|s| s.sections.get(&name)) {
             Some(raw) => {
                 for element in raw {
-                    out.push_str(element);
+                    match context.selected.filter(|_| name == "sheetViews") {
+                        Some(selected) => out.push_str(&open::with_selection(element, selected)),
+                        None => out.push_str(element),
+                    }
                     out.push('\n');
                 }
             }
@@ -1899,6 +1904,9 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         workbook.sheets.iter().filter_map(|s| s.source.as_ref().map(|x| x.part.as_str())).collect();
     if let Some(source) = source {
         for gone in source.sheet_parts.iter().filter(|p| !kept_sheets.contains(p.as_str())) {
+            // The sheet's cells go with it.
+            dropped.insert(gone.clone());
+            dropped.insert(rels_part(gone));
             overrides.remove(&format!("/{gone}"));
             relationships.retain(|r| open::resolve(&base, &r.target) != *gone);
         }
@@ -1906,6 +1914,20 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
     let mut next_sheet_id =
         workbook.sheets.iter().filter_map(|s| s.source.as_ref().and_then(|x| x.sheet_id.parse::<u32>().ok())).max().unwrap_or(0) + 1;
     let mut sheet_parts: Vec<(String, String)> = Vec::new();
+    let other = |name: &str| source.and_then(|s| s.workbook_sections.get(name)).map(|raw| raw.concat());
+    let mut book = format!(
+        "{XML_HEADER}{}\n",
+        source.map_or_else(|| format!("<workbook xmlns=\"{MAIN_NS}\" xmlns:r=\"{OD_RELS}\">"), |s| s.workbook_root.clone())
+    );
+    let first_visible = workbook.sheets.iter().position(|s| !s.hidden).unwrap_or(0);
+    let view = format!("<bookViews><workbookView activeTab=\"{first_visible}\"/></bookViews>");
+    // A view read stays while its active sheet is still there and shown.
+    let view_fits = |raw: &str| {
+        let active = open::first_attribute(raw, "workbookView", "activeTab").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+        !workbook.sheets_changed && workbook.sheets.get(active).is_some_and(|s| !s.hidden)
+    };
+    // A new view makes its active sheet the one selected; the sheets' views read are told so.
+    let new_view = source.is_some() && other("bookViews").is_none_or(|raw| !view_fits(&raw));
     for (i, sheet) in workbook.sheets.iter().enumerate() {
         let number = i + 1;
         let (part, id, sheet_id) = match &sheet.source {
@@ -2005,6 +2027,7 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
             date1904: workbook.date1904,
             relationships: sheet_relationships,
             drawing,
+            selected: new_view.then_some(i == first_visible),
         };
         let xml = sheet_xml(sheet, &mut context);
         let sheet_relationships = context.relationships;
@@ -2023,18 +2046,6 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         let _ = writeln!(names, "<definedName name=\"{}\">{}</definedName>", xml_text(name), xml_text(reference));
     }
     // The workbook part: what was read, in its order, with the model's sheets, names and views.
-    let other = |name: &str| source.and_then(|s| s.workbook_sections.get(name)).map(|raw| raw.concat());
-    let mut book = format!(
-        "{XML_HEADER}{}\n",
-        source.map_or_else(|| format!("<workbook xmlns=\"{MAIN_NS}\" xmlns:r=\"{OD_RELS}\">"), |s| s.workbook_root.clone())
-    );
-    let first_visible = workbook.sheets.iter().position(|s| !s.hidden).unwrap_or(0);
-    let view = format!("<bookViews><workbookView activeTab=\"{first_visible}\"/></bookViews>");
-    // A view read stays while its active sheet is still there and shown.
-    let view_fits = |raw: &str| {
-        let active = open::first_attribute(raw, "workbookView", "activeTab").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
-        !workbook.sheets_changed && workbook.sheets.get(active).is_some_and(|s| !s.hidden)
-    };
     let edited = workbook.sheets.iter().any(|s| s.edited);
     let read = source.map_or(&[][..], |s| &s.workbook_order);
     for name in ordered(read, &WORKBOOK_ORDER) {

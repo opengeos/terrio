@@ -97,6 +97,15 @@ pub(super) fn sheet_properties(xml: &str) -> (String, Vec<(String, String)>) {
     (attributes, children)
 }
 
+/// A sheet's views read, with the first one selected or not, and the others not.
+pub(super) fn with_selection(views: &str, selected: bool) -> String {
+    let mut out = views.replace(" tabSelected=\"1\"", "").replace(" tabSelected=\"true\"", "");
+    if selected && let Some(i) = out.find("<sheetView ").or_else(|| out.find("<sheetView>")) {
+        out.insert_str(i + "<sheetView".len(), " tabSelected=\"1\"");
+    }
+    out
+}
+
 /// Whether a cell read holds the formula a range of cells shares.
 pub(super) fn holds_shared_master(cell: &str) -> bool {
     let mut reader = quick_xml::Reader::from_str(cell);
@@ -730,9 +739,8 @@ fn read_sheet_data(
                                     _ => {}
                                 }
                             }
-                            Event::Empty(c) if c.local_name().as_ref() == "f" => {
-                                formula.get_or_insert_with(String::new);
-                            }
+                            // An empty formula shares another cell's: the cell reads as its cached value.
+                            Event::Empty(c) if c.local_name().as_ref() == "f" => {}
                             Event::End(c) => {
                                 depth -= 1;
                                 match c.local_name().as_ref() {
@@ -1413,6 +1421,13 @@ mod tests {
         assert!(!text_part(&bytes, "xl/_rels/workbook.xml.rels").contains("/xl/worksheets/sheet2.xml"));
         let reopened = Workbook::open_bytes(&bytes).unwrap();
         assert_eq!(reopened.sheet_names(), ["New", "Data"]);
+        // The removed sheet's part goes, and only the new active sheet is selected.
+        assert!(
+            !text_part(&bytes, "[Content_Types].xml").contains("sheet2.xml")
+                || part(&bytes, "xl/worksheets/sheet2.xml").is_some_and(|b| !String::from_utf8_lossy(&b).contains("<sheetData/>"))
+        );
+        let data_part = reopened.sheet("Data").unwrap().source.as_ref().unwrap().part.clone();
+        assert!(!text_part(&bytes, &data_part).contains("tabSelected"));
     }
 
     #[test]
@@ -1666,7 +1681,8 @@ mod tests {
         assert!(matches!(s.write("B2", 1.0, &Format::new()), Err(Error::InvalidArgument(m)) if m.contains("share")));
         assert!(s.merge_write("A2:B2", "t", &Format::new()).is_err());
         assert!(s.merged_ranges().iter().all(|r| r != "A2:B2"));
-        // The cells sharing it may change.
+        // A cell sharing it reads as its cached value, and may change.
+        assert_eq!(s.value("B3").unwrap(), Some(&CellValue::Number(2.0)));
         s.write("B3", 5.0, &Format::new()).unwrap();
     }
 
