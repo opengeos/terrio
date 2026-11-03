@@ -102,7 +102,7 @@ Every command, in alphabetical order. `terrio --help` prints this list, and
 | [`vector-grid`](#vector-grid) | Grid scattered vector points into a raster |
 | [`vector-index`](#rastervector-indexes-and-gti-creation) | Create a vector envelope index of vector dataset layers |
 | [`vertices`](#geometry-operations) | Extract vertices as points |
-| [`viewshed`](#viewshed) | Single-observer or cumulative visibility, or minimum visible height |
+| [`viewshed`](#viewshed) | Single or cumulative viewsheds and minimum visible height |
 | [`vsi`](#vsi) | Manage local, in-memory, cloud and archive files |
 | [`warp`](#warp) | Reproject and resample rasters (like gdalwarp) |
 | [`xyz`](#xyz) | Write raster pixels as XYZ text (like gdal2xyz.py) |
