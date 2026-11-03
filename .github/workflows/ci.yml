@@ -81,12 +81,13 @@ jobs:
         os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v7
-      # Two jobs died of a full disk while compiling, and their logs were lost: a notice records the
-      # space they started with. The toolchains removed are ones these jobs do not use.
+      # Jobs have died of a full disk while compiling (especially on AWS-hosted runners, which
+      # start with less free space than Azure-hosted runners), losing their logs: a notice records
+      # the space they started with. The toolchains removed are ones these jobs do not use.
       - name: Reclaim runner disk
         run: |
           echo "::notice title=Free disk at start::$(df -h --output=size,used,avail . | tail -1)"
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           echo "::notice title=Free disk after reclaiming::$(df -h --output=size,used,avail . | tail -1)"
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -112,12 +113,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # Two jobs died of a full disk while compiling, and their logs were lost: a notice records the
-      # space they started with. The toolchains removed are ones these jobs do not use.
+      # Jobs have died of a full disk while compiling (especially on AWS-hosted runners, which
+      # start with less free space than Azure-hosted runners), losing their logs: a notice records
+      # the space they started with. The toolchains removed are ones these jobs do not use.
       - name: Reclaim runner disk
         run: |
           echo "::notice title=Free disk at start::$(df -h --output=size,used,avail . | tail -1)"
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           echo "::notice title=Free disk after reclaiming::$(df -h --output=size,used,avail . | tail -1)"
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -365,6 +367,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # This job builds the full workspace in debug mode, builds the Python wheel in release mode,
+      # and installs a micromamba GDAL environment plus test data (~38 GB total). Reclaim unused
+      # pre-installed toolchains so AWS-hosted runners do not run out of disk space.
+      - name: Reclaim runner disk
+        run: |
+          echo "::notice title=Free disk at start::$(df -h --output=size,used,avail . | tail -1)"
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          echo "::notice title=Free disk after reclaiming::$(df -h --output=size,used,avail . | tail -1)"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: mamba-org/setup-micromamba@v3
@@ -425,3 +435,8 @@ jobs:
         run: |
           python scripts/compare_xarray_with_rioxarray.py terrio-data --output xarray.md
           cat xarray.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Disk use of the build
+        if: always()
+        run: |
+          df -h .
+          du -sh target 2>/dev/null || echo "no target directory"

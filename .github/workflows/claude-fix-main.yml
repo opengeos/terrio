@@ -145,6 +145,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      checks: read
     env:
       GIT_AUTHOR_NAME: ${{ needs.gate.outputs.login }}
       GIT_AUTHOR_EMAIL: ${{ needs.gate.outputs.id }}+${{ needs.gate.outputs.login }}@users.noreply.github.com
@@ -192,6 +193,18 @@ jobs:
               --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | "\(.id)\t\(.name)"' |
             while IFS=$'\t' read -r job jobname; do
               printf '%s\t%s\t%s\t%s\n' "$id" "$name" "$jobname" "$url" >> .cifix/jobs.tsv
+              # A runner that loses communication or runs out of disk can die before uploading its
+              # step log: record step states and check-run annotations first so the cause is still
+              # visible when the log is empty.
+              {
+                echo "=== Steps ==="
+                gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$job" < /dev/null 2> /dev/null \
+                  --jq '.steps[]? | "\(.status)\t\(.conclusion // "-")\t\(.name)"' || true
+                echo "=== Annotations ==="
+                gh api "repos/$GITHUB_REPOSITORY/check-runs/$job/annotations" < /dev/null 2> /dev/null \
+                  --jq '.[]? | "\(.annotation_level)\t\(.title // ""): \(.message)"' || true
+                echo "=== Log matches ==="
+              } > ".cifix/logs/$job.txt"
               gh run view --repo "$GITHUB_REPOSITORY" --job "$job" --log-failed < /dev/null 2> /dev/null |
                 sed 's/\x1b\[[0-9;]*m//g' |
                 grep -n -i -E -B 5 -A 40 'FAILED|panicked|error(\[|:)|^E  |assert|Traceback|##\[error\]' \
@@ -203,9 +216,9 @@ jobs:
               if [ "$total" -gt $((2 * keep)) ]; then
                 { head -n "$keep" "$RUNNER_TEMP/matches.txt"
                   echo "[... $((total - 2 * keep)) of $total matched lines cut; the log is incomplete ...]"
-                  tail -n "$keep" "$RUNNER_TEMP/matches.txt"; } > ".cifix/logs/$job.txt"
+                  tail -n "$keep" "$RUNNER_TEMP/matches.txt"; } >> ".cifix/logs/$job.txt"
               else
-                cp "$RUNNER_TEMP/matches.txt" ".cifix/logs/$job.txt"
+                cat "$RUNNER_TEMP/matches.txt" >> ".cifix/logs/$job.txt"
               fi
             done
           done < .cifix/runs.tsv
