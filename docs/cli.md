@@ -3545,7 +3545,8 @@ Option | Description
 `--no-open` | Print the address without opening a browser
 
 The `preview` form shows the image it draws below the command's output, and its **Open map**
-button opens the dataset in a [map](#view) in a new tab, with the form's options.
+button opens the dataset in a [map](#view) in a new tab, drawn with the form's `--bands`,
+`--colormap`, `--stretch`, `--layer` and `--attribute`; the size options do not apply to a map.
 
 The server runs commands with your permissions, including those that overwrite or delete files, so
 it listens on the loopback interface only and each API request must carry a random token, which is
@@ -3582,7 +3583,10 @@ there is an alpha band (paletted rasters take the nearest one); a level read row
 nearest pixel instead. Images have at most 16,777,216 pixels (4096 x 4096), and up to 16,384 on a
 side. Nodata, masked pixels and an alpha band of 0 are transparent. Vector layers are
 burned with `rasterize` (every pixel a feature touches), north up, in one color or by a numeric
-field's values; points are drawn three pixels wide.
+field's values; points are drawn three pixels wide. A raster wider than 4,194,304 pixels with no
+overview to read from is refused: build overviews first. Reading row by row fetches the blocks of
+each sampled row, so a remote raster without overviews costs a request or more per output row;
+build overviews for remote previews.
 
 Without `--bands`, the red, green and blue bands are drawn when the color interpretation names
 them, else the first three bands of a Byte raster without a palette, else band 1, through the
@@ -3636,7 +3640,8 @@ basemap, so it works offline and for any CRS. The page and its script are built 
 loads nothing from elsewhere. As with [`terrio ui`](#ui), the server listens on the loopback
 interface only and every tile request needs the session's random token; unlike it, it serves the
 map alone, not the forms that run commands. Tiles are drawn one at a time, since they share one
-reader of the dataset. It takes the `preview`
+reader of the dataset. A vector tile checks every feature's bounding box, then burns the features
+that touch it, so very large layers pan more slowly. It takes the `preview`
 options `--bands`, `--colormap`, `--stretch`, `--layer` and `--attribute`, plus:
 
 Option | Description

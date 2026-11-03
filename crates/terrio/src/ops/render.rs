@@ -507,8 +507,8 @@ pub fn render_raster(source: &mut LazyRaster, options: &RenderOptions) -> Result
 
 /// The layers' common extent `(min_x, min_y, max_x, max_y)`, widened if it has no width or height.
 fn vector_extent(layers: &[Layer]) -> Result<[f64; 4]> {
-    let crs_key = |l: &Layer| l.crs.as_ref().map(|c| (c.epsg, c.wkt.clone()));
-    if layers.windows(2).any(|pair| crs_key(&pair[0]) != crs_key(&pair[1])) {
+    let crs: Vec<crate::crs::SpatialRef> = layers.iter().map(crate::crs::SpatialRef::from_layer).collect();
+    if crs.windows(2).any(|pair| !pair[0].same_as(&pair[1])) {
         return Err(Error::InvalidArgument("the layers have different CRSs: choose one layer".into()));
     }
     let mut extent = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
@@ -688,7 +688,7 @@ fn attribute_values(layers: &[Layer], field: &str) -> Result<Vec<f64>> {
             .field_index(field)
             .ok_or_else(|| Error::InvalidArgument(format!("layer '{}' has no field '{field}'", layer.name)))?;
         // Features without a geometry are not drawn, so they do not set the range either.
-        let drawn = layer.features.iter().filter(|f| f.geometry.is_some());
+        let drawn = layer.features.iter().filter(|f| f.geometry.as_ref().is_some_and(|g| !g.is_empty()));
         values.extend(drawn.filter_map(|f| f.attributes.get(index).and_then(|v| v.as_f64())));
     }
     Ok(values)
@@ -737,6 +737,9 @@ impl Renderer {
     /// When the layers have nothing to draw or different CRSs, or the attribute is not a field.
     pub fn vector(layers: Vec<Layer>, options: &RenderOptions) -> Result<Self> {
         options.stretch.check()?;
+        if !options.bands.is_empty() {
+            return Err(Error::InvalidArgument("bands are for rasters, not vector datasets".into()));
+        }
         if options.colormap.is_some() && options.attribute.is_none() {
             return Err(Error::InvalidArgument("a colormap colors vector features by an attribute: give one".into()));
         }
@@ -1016,6 +1019,8 @@ mod tests {
         let options =
             RenderOptions { max_size: 16, attribute: Some("height".into()), stretch: Stretch::Range(0.0, 7.0), ..Default::default() };
         let image = render_vector(vec![square_layer()], &options).unwrap();
+        let banded = RenderOptions { bands: vec![1], ..Default::default() };
+        assert!(render_vector(vec![square_layer()], &banded).is_err());
         let missing = RenderOptions { attribute: Some("nope".into()), ..Default::default() };
         assert!(render_vector(vec![square_layer()], &missing).is_err());
         assert_eq!(pixel(&image, 8, 4)[..3], [0xfd, 0xe7, 0x25]);

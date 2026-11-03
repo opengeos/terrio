@@ -143,7 +143,15 @@ pub fn run(mut args: Args) -> Result<()> {
     };
     match (args.output.as_deref(), display) {
         (Some("-"), _) => write_stdout(&image.to_png()?),
-        (Some(path), _) => std::fs::write(path, image.to_png()?).map_err(Error::from),
+        (Some(path), _) => {
+            // Without --overwrite, a file that appeared since the check is not replaced either.
+            let mut file = if args.overwrite {
+                std::fs::File::create(path)?
+            } else {
+                std::fs::OpenOptions::new().write(true).create_new(true).open(path)?
+            };
+            file.write_all(&image.to_png()?).map_err(Error::from)
+        }
         (None, Some(display)) => write_stdout(&encode(&image, display)?),
         (None, None) => unreachable!("no output means a display"),
     }

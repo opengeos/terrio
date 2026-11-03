@@ -1590,7 +1590,8 @@ der Walt and Eric Firing (matplotlib lib/matplotlib/_cm_listed.py) and released 
 (LICENSES/CC0-1.0.txt). The RdBu and RdYlGn schemes are from ColorBrewer by Cynthia Brewer, Mark
 Harrower and The Pennsylvania State University, Copyright (c) 2002:
 
-Licensed under the Apache License, Version 2.0, reproduced at the end of this file.
+Licensed under the Apache License, Version 2.0, reproduced in the "Apache License, Version 2.0"
+section above.
 
 -------------------------------------------------------------------------------
 OGC CityGML schemas (https://schemas.opengis.net/citygml/)

@@ -311,6 +311,7 @@ function show(command) {
     status.className = "status";
     status.textContent = "Running…";
     output.hidden = true;
+    images.replaceChildren();
     const started = performance.now();
     try {
       const response = await fetch("/api/run", {

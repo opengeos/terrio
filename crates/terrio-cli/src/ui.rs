@@ -439,13 +439,17 @@ fn tile(query: &str, session: &Session) -> Result<Vec<u8>, Reply> {
         return Err(failure(400, "the tile is too large"));
     }
     let generation = number("g")?;
-    let renderer = lock(&session.view)
-        .as_ref()
-        .filter(|v| v.generation == generation)
-        .map(|v| v.renderer.clone())
-        .ok_or_else(|| failure(409, "another dataset has been opened: reload this page"))?;
+    let renderer = match &*lock(&session.view) {
+        None => return Err(failure(404, "no dataset is open")),
+        Some(view) if view.generation != generation => return Err(failure(409, "another dataset has been opened: reload this page")),
+        Some(view) => view.renderer.clone(),
+    };
     let image = lock(&renderer).region(window, tw, th);
-    image.and_then(|image| image.to_png()).map_err(|e| failure(400, &e.to_string()))
+    image.and_then(|image| image.to_png()).map_err(|e| match e {
+        // A tile the page asked for wrongly; anything else, a read failing, is the server's.
+        terrio::Error::InvalidArgument(_) => failure(400, &e.to_string()),
+        _ => failure(500, &e.to_string()),
+    })
 }
 
 /// A run's command and arguments: `{"name": …, "arguments": {"args": […]}}`, as an MCP tool call.
@@ -522,6 +526,7 @@ fn respond_bytes(stream: &mut TcpStream, (status, content_type): (u16, &str), bo
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
+        500 => "Internal Server Error",
         _ => "Error",
     };
     let head = format!(
