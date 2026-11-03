@@ -179,3 +179,7 @@ same-file.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[example]]
+name = "xlsx_workbook"
+required-features = ["xlsx"]

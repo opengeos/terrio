@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `terrio::xlsx::Workbook` writes workbooks laid out for people: sheets, typed cells at their
+  positions, merged ranges, column and row settings, cell formats, frozen panes, filters, list
+  validations, defined names, hyperlinks, comments, print setup and document properties (#405).
 - XLSX layout options beyond GDAL: `HEADER_ROWS`, `RANGE` and `FIRST_ROW` when reading, and
   `HEADER_STYLE`, `FREEZE_HEADER`, `AUTOFILTER`, `COLUMN_WIDTH`, `DATE_FORMAT`, `DATETIME_FORMAT`
   and `CREATION_TIME` when writing. A workbook's sheets may expand to 8 GiB together (#405).

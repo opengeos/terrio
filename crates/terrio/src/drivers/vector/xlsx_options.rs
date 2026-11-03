@@ -229,7 +229,10 @@ impl XlsxOptions {
             "DATE_FORMAT" => self.date_format = Some(value.to_string()),
             "DATETIME_FORMAT" => self.datetime_format = Some(value.to_string()),
             "CREATION_TIME" => {
-                if crate::drivers::vector::datetime::parse_datetime(value).is_none() || !time_in_range(value) {
+                if !value.get(..10).is_some_and(real_date)
+                    || crate::drivers::vector::datetime::parse_datetime(value).is_none()
+                    || !time_in_range(value)
+                {
                     return Err(Error::InvalidArgument(format!("XLSX CREATION_TIME '{value}' is not an ISO 8601 date-time")));
                 }
                 self.creation_time = Some(value.to_string());
@@ -240,13 +243,19 @@ impl XlsxOptions {
     }
 }
 
+/// Whether a date's text names a day of the calendar: 2024-02-30 would roll over to March.
+pub(super) fn real_date(date: &str) -> bool {
+    use crate::drivers::vector::datetime;
+    datetime::parse_date(date).is_some_and(|days| datetime::format_date(i64::from(days)) == date)
+}
+
 /// Whether a date-time's clock, and its offset of `Z` or `+hh:mm` if any, are in range, with nothing after.
-fn time_in_range(value: &str) -> bool {
+pub(super) fn time_in_range(value: &str) -> bool {
     let Some(time) = value.get(11..) else { return true };
     let number = |text: Option<&str>, max: u32| {
         text.is_some_and(|t| t.bytes().all(|b| b.is_ascii_digit()) && t.parse::<u32>().is_ok_and(|n| n <= max))
     };
-    let (clock, offset) = match time.find(['Z', 'z', '+', '-']) {
+    let (clock, offset) = match time.find(['Z', '+', '-']) {
         Some(i) => time.split_at(i),
         None => (time, ""),
     };
@@ -259,7 +268,7 @@ fn time_in_range(value: &str) -> bool {
         && !fraction.is_empty()
         && fraction.bytes().all(|b| b.is_ascii_digit());
     let offset_ok = match offset {
-        "" | "Z" | "z" => true,
+        "" | "Z" => true,
         _ => offset.len() == 6 && number(offset.get(1..3), 14) && offset.as_bytes().get(3) == Some(&b':') && number(offset.get(4..6), 59),
     };
     clock_ok && offset_ok

@@ -261,6 +261,13 @@ mod tiff_mask;
 pub mod vfs;
 pub mod vsi;
 pub mod warnings;
+/// Spreadsheet workbooks laid out for people: sheets, cell formats, merged ranges and print setup.
+#[cfg(feature = "xlsx")]
+pub mod xlsx {
+    pub use crate::drivers::vector::xlsx_workbook::{
+        Align, BorderStyle, CellValue, Format, Orientation, VerticalAlign, Workbook, Worksheet,
+    };
+}
 
 pub use cog::{LazyRaster, TiffReadLimits, Window, WindowOptions, open_raster_lazy};
 pub use cog_validate::{
