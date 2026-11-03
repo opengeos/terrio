@@ -2036,7 +2036,8 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
         sheet_relationships.retain(|r| {
             let drop = !referenced.contains(&r.id)
                 && ((r.kind.ends_with("/hyperlink") && !hyperlinks_kept && link_ids.contains(&r.id))
-                    || (sheet.comments_edited && (r.kind.ends_with("/comments") || r.kind.ends_with("/vmlDrawing"))));
+                    || (sheet.comments_edited
+                        && (r.kind.ends_with("/comments") || r.kind.ends_with("/vmlDrawing") || r.kind.ends_with("/threadedComment"))));
             if drop && !r.external {
                 let target = open::resolve(&sheet_base, &r.target);
                 dropped.insert(target.clone());

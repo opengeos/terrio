@@ -899,6 +899,7 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
     }
     for raw in sections.get("dataValidations").into_iter().flatten() {
         for (_, xml) in split_children(raw, part)?.1 {
+            take_cells(budget, 1)?;
             let list = first_start(&xml).and_then(|e| {
                 if attribute(&e, "type").as_deref() != Some("list") {
                     return None;
@@ -922,12 +923,16 @@ fn read_settings(sheet: &mut Worksheet, source: &mut SheetSource, part: &str, fo
             }
         }
     }
+    let external: HashMap<String, String> =
+        source.relationships.iter().filter(|r| r.external).map(|r| (r.id.clone(), r.target.clone())).collect();
     for raw in sections.get("hyperlinks").into_iter().flatten() {
         for (_, xml) in split_children(raw, part)?.1 {
+            take_cells(budget, 1)?;
             let link = first_start(&xml).and_then(|e| {
                 let id = attribute(&e, "id")?;
-                let cell = parse_cell(attribute(&e, "ref")?.split(':').next()?).ok()?;
-                let url = source.relationships.iter().find(|r| r.id == id && r.external)?.target.clone();
+                // A link over a range stays as read: the model links single cells.
+                let cell = parse_cell(attribute(&e, "ref").filter(|r| !r.contains(':'))?.as_str()).ok()?;
+                let url = external.get(&id)?.clone();
                 Some((Hyperlink { cell, url }, id))
             });
             match link {
@@ -990,8 +995,15 @@ impl Workbook {
         let mut all: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         for index in 0..zip.len() {
             let (name, data) = read_bytes(&mut zip, index, &mut total)?;
-            if !name.ends_with('/') {
-                all.insert(name, data);
+            if name.ends_with('/') {
+                continue;
+            }
+            // Part names stay inside the package, and each names one part.
+            if name.starts_with('/') || name.contains('\\') || name.split('/').any(|s| s == ".." || s == ".") {
+                return Err(Error::InvalidData(format!("XLSX: the archive has a part named '{name}', outside the package")));
+            }
+            if all.insert(name.clone(), data).is_some() {
+                return Err(Error::InvalidData(format!("XLSX: the archive has two parts named '{name}'")));
             }
         }
         let text = |all: &BTreeMap<String, Vec<u8>>, name: &str| all.get(name).map(|b| decode(b));
@@ -1092,6 +1104,8 @@ impl Workbook {
         modelled.extend(find("/calcChain"));
         let mut sheet_parts = Vec::new();
         let mut index = 0usize;
+        let by_id: HashMap<&str, &Relationship> = workbook_relationships.iter().map(|r| (r.id.as_str(), r)).collect();
+        let mut seen_parts = std::collections::HashSet::new();
         for raw in workbook_sections.get("sheets").into_iter().flatten() {
             for (_, xml) in split_children(raw, &workbook_part)?.1 {
                 let Some(e) = first_start(&xml) else { continue };
@@ -1099,11 +1113,11 @@ impl Workbook {
                     return Err(Error::InvalidData(format!("XLSX: '{workbook_part}' has a sheet without a name or relationship")));
                 };
                 let sheet_id = attribute(&e, "sheetId").unwrap_or_else(|| (index + 1).to_string());
-                let target = workbook_relationships.iter().find(|r| r.id == rel_id).filter(|r| r.kind.ends_with("/worksheet"));
+                let target = by_id.get(rel_id.as_str()).filter(|r| r.kind.ends_with("/worksheet"));
                 let Some(part) = target.map(|r| resolve_target(&base, &r.target)) else {
                     return Err(Error::Unsupported(format!("XLSX: cannot edit '{name}', which is not a worksheet")));
                 };
-                if sheet_parts.contains(&part) {
+                if !seen_parts.insert(part.clone()) {
                     return Err(Error::InvalidData(format!("XLSX: two sheets of '{workbook_part}' are the part '{part}'")));
                 }
                 let sheet_text = text(&all, &part).ok_or_else(|| Error::InvalidData(format!("XLSX: the workbook lacks part '{part}'")))?;
@@ -1771,6 +1785,43 @@ mod tests {
         workbook.sheet_mut("Data").unwrap().print_fit_to_width(1);
         let sheet = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/sheet1.xml");
         assert!(sheet.contains("<sheetPr><tabColor theme=\"4\"/><pageSetUpPr fitToPage=\"1\"/></sheetPr>"), "{sheet}");
+    }
+
+    #[test]
+    fn range_links_stay_as_read_and_bad_part_names_are_refused() {
+        let range = |b: String| b.replace("<hyperlink ref=\"A1\" r:id=\"rId2\"/>", "<hyperlink ref=\"A1:A3\" r:id=\"rId2\"/>");
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/sheet1.xml", &range)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().hyperlink("C1", "https://example.org/").unwrap();
+        let bytes = workbook.to_bytes().unwrap();
+        assert!(text_part(&bytes, "xl/worksheets/sheet1.xml").contains("<hyperlink ref=\"A1:A3\" r:id=\"rId2\"/>"));
+        assert!(text_part(&bytes, "xl/worksheets/_rels/sheet1.xml.rels").contains("Id=\"rId2\""));
+        for name in ["../escape.xml", "/abs.xml", "xl/./x.xml"] {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(foreign_workbook())).unwrap();
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i).unwrap();
+                let part = file.name().unwrap().to_string();
+                let mut body = Vec::new();
+                file.read_to_end(&mut body).unwrap();
+                zip.start_file(part.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+                zip.write_all(&body).unwrap();
+            }
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(b"x").unwrap();
+            let bytes = zip.finish().unwrap().into_inner();
+            assert!(matches!(Workbook::open_bytes(&bytes), Err(Error::InvalidData(_))), "{name}");
+        }
+    }
+
+    #[test]
+    fn threaded_comments_go_when_the_notes_are_written_again() {
+        let threads = |b: String| {
+            b.replace("</Relationships>", "<Relationship Id=\"rId7\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/threadedComment\" Target=\"../threadedComments/t1.xml\"/></Relationships>")
+        };
+        let mut workbook = Workbook::open_bytes(&with_parts(&[("xl/worksheets/_rels/sheet1.xml.rels", &threads)])).unwrap();
+        workbook.sheet_mut("Data").unwrap().comment("C1", "new", "me").unwrap();
+        let rels = text_part(&workbook.to_bytes().unwrap(), "xl/worksheets/_rels/sheet1.xml.rels");
+        assert!(!rels.contains("threadedComment"), "{rels}");
     }
 
     #[test]
