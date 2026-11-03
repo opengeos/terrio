@@ -773,18 +773,15 @@ pub async fn open_oapif(url: &str, options: JsValue) -> Result<Dataset, JsError>
         spatial_filter: a.bbox.map(|b| (b[0], b[1], b[2], b[3])),
         skip_features: a.skip_features,
         max_features: a.max_features,
-        oapif: terrio::OapifOpenOptions {
-            page_size: a.page_size,
-            datetime: a.datetime,
-            crs: a.crs,
-            preferred_crs: a.preferred_crs,
-            ignore_schema: a.ignore_schema,
-            max_vector_bytes: a.max_vector_bytes,
-            max_pages: a.max_pages,
-            ..Default::default()
-        },
         ..Default::default()
     };
+    o.oapif.page_size = a.page_size;
+    o.oapif.datetime = a.datetime;
+    o.oapif.crs = a.crs;
+    o.oapif.preferred_crs = a.preferred_crs;
+    o.oapif.ignore_schema = a.ignore_schema;
+    o.oapif.max_vector_bytes = a.max_vector_bytes;
+    o.oapif.max_pages = a.max_pages;
     if let Some(order) = a.server_feature_axis_order {
         o.oapif.set("SERVER_FEATURE_AXIS_ORDER", &order).map_err(js_err)?;
     }

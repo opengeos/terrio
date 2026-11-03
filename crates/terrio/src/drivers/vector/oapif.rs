@@ -18,7 +18,7 @@ const RESPONSE_CAP: usize = 16 << 20;
 const JSON_MEMORY_FACTOR: usize = 32;
 
 /// Options shared by native Rust, CLI/MCP, Python and JavaScript's fetch adapter.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OapifOpenOptions {
     /// Requested feature page size (default 1000). A server can return smaller pages.
     pub page_size: usize,
@@ -38,6 +38,7 @@ pub struct OapifOpenOptions {
     pub max_pages: usize,
     /// Service URL when the dataset name is the bare OAPIF: prefix.
     pub url: Option<String>,
+    pub(crate) configured: bool,
 }
 impl Default for OapifOpenOptions {
     fn default() -> Self {
@@ -51,6 +52,7 @@ impl Default for OapifOpenOptions {
             max_vector_bytes: 1 << 30,
             max_pages: 10000,
             url: None,
+            configured: false,
         }
     }
 }
@@ -85,7 +87,23 @@ impl OapifOpenOptions {
             "URL" => self.url = Some(value.into()),
             _ => return Ok(false),
         }
+        self.configured = true;
         Ok(true)
+    }
+    pub(crate) fn validate_source(&self, path: &str) -> Result<()> {
+        if service_target(path).is_none() && self != &Self::default() {
+            return Err(Error::InvalidArgument("OAPIF open options require an OAPIF: source".into()));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(remote))]
+pub(crate) fn transport_required() -> Error {
+    if cfg!(target_arch = "wasm32") {
+        Error::Unsupported("OAPIF in WebAssembly requires openOapif or a transport for oapif::Reader".into())
+    } else {
+        Error::disabled("remote")
     }
 }
 
@@ -694,12 +712,9 @@ fn north_first(crs: &SpatialRef) -> Result<bool> {
 fn schema_fields(root: &Value) -> Result<Vec<FieldDef>> {
     let document = root;
     let root = resolve_ref(document, root, 0)?;
-    let properties = root.get("properties").and_then(Value::as_object).ok_or_else(|| invalid("JSON schema has no properties"))?;
+    let Some(properties) = root.get("properties").and_then(Value::as_object) else { return Ok(Vec::new()) };
     let properties = if let Some(feature_properties) = properties.get("properties") {
-        resolve_ref(document, feature_properties, 0)?
-            .get("properties")
-            .and_then(Value::as_object)
-            .ok_or_else(|| invalid("Feature schema has no feature properties"))?
+        resolve_ref(document, feature_properties, 0)?.get("properties").and_then(Value::as_object).unwrap_or(properties)
     } else {
         properties
     };
@@ -876,6 +891,23 @@ mod tests {
             let FieldValue::Text(text) = f.get(&layer.schema, "links").unwrap() else { panic!() };
             assert_eq!(serde_json::from_str::<Value>(text).unwrap(), json!([{"href":"a","other":true}]));
         }
+    }
+    #[test]
+    fn unusable_schema_falls_back_and_nonconforming_values_fail_explicitly() {
+        assert!(schema_fields(&json!({"type":"object"})).unwrap().is_empty());
+        let scalar = schema_fields(&json!({"properties":{"properties":{"type":"string"}}})).unwrap();
+        assert_eq!(scalar.len(), 1);
+        assert_eq!(scalar[0].name, "properties");
+        let mut r = at_items(&Default::default());
+        r.fields = vec![FieldDef::new("when", FieldType::Date)];
+        let err = r.accept_response(&serde_json::to_vec(&page(vec![feature(json!(1), json!({"when":""}))], None)).unwrap()).unwrap_err();
+        assert!(err.to_string().contains("advertised JSON schema"));
+        let mut o = VectorOpenOptions::default();
+        o.oapif.ignore_schema = true;
+        let mut r = at_items(&o);
+        accept(&mut r, page(vec![feature(json!(1), json!({"when":""}))], None));
+        let l = r.finish().unwrap().layers.remove(0);
+        assert_eq!(l.features[0].get(&l.schema, "when").unwrap(), &FieldValue::Text(String::new()));
     }
     #[test]
     fn authority_axes_bbox_temporal_filter_and_range() {

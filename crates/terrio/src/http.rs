@@ -1360,12 +1360,7 @@ pub(crate) fn get_with_headers_capped(url: &str, headers: &[(String, String)], c
     request("GET", url, None, headers, cap, redirects)
 }
 
-/// Sends a `GET` or a `POST` (of a JSON `body`) with extra `headers`, and returns the response's
-/// body: redirects followed as `redirects` allows (for a `POST`, only those keeping the method,
-/// 307 and 308), each checked before anything is sent to where it leads, the extra headers
-/// dropped when a redirect leads to another origin (they may hold keys), and transient errors and
-/// statuses (429, 500, 502, 503, 504) retried. A body over `cap` bytes is an error, read no
-/// further than the cap.
+/// A bounded response body and the effective URL after same-origin redirects.
 pub(crate) struct JsonResponse {
     pub body: Vec<u8>,
     pub url: String,
@@ -1376,6 +1371,12 @@ pub(crate) fn get_json_response(url: &str, accept: &str, cap: u64) -> Result<Jso
     request_response("GET", url, None, &[("Accept".into(), accept.into())], cap.min(json_max_size()), Redirects::SameOrigin)
 }
 
+/// Sends a `GET` or a `POST` (of a JSON `body`) with extra `headers`, and returns the response's
+/// body: redirects followed as `redirects` allows (for a `POST`, only those keeping the method,
+/// 307 and 308), each checked before anything is sent to where it leads, the extra headers
+/// dropped when a redirect leads to another origin (they may hold keys), and transient errors and
+/// statuses (429, 500, 502, 503, 504) retried. A body over `cap` bytes is an error, read no
+/// further than the cap.
 fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, String)], cap: u64, policy: Redirects) -> Result<Vec<u8>> {
     request_response(method, url, body, headers, cap, policy).map(|response| response.body)
 }

@@ -747,3 +747,17 @@ fn oapif_conversion_through_mcp_bounds_plain_limits_and_keeps_filter_order() {
     // Plain limit needs two item pages; filtering must inspect all three pages.
     assert_eq!(server.requests.lock().unwrap().iter().filter(|(u, _)| u.contains("/items")).count(), 5);
 }
+
+#[test]
+fn oapif_open_options_are_rejected_on_other_vector_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.geojson");
+    let output = dir.path().join("out.gpkg");
+    std::fs::write(&input, r#"{"type":"FeatureCollection","features":[]}"#).unwrap();
+    for option in ["CRS=EPSG:3857", "PAGE_SIZE=1000", "OAPIF_MAX_FEATURES=0", "OAPIF_SKIP_FEATURES=0"] {
+        let replies = session(&[call(1, "convert", &[input.to_str().unwrap(), output.to_str().unwrap(), "--oo", option])]);
+        assert_eq!(replies[&1]["result"]["isError"], true, "{}", replies[&1]);
+        assert!(replies[&1]["result"]["content"][0]["text"].as_str().unwrap().contains("OAPIF"));
+        assert!(!output.exists());
+    }
+}

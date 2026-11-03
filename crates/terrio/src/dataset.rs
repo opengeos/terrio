@@ -349,6 +349,7 @@ impl VectorOpenOptions {
     pub fn set(&mut self, key: &str, value: &str) -> Result<bool> {
         if key.eq_ignore_ascii_case("OAPIF_MAX_FEATURES") || key.eq_ignore_ascii_case("OAPIF_SKIP_FEATURES") {
             let number = value.parse::<usize>().map_err(|_| Error::InvalidArgument(format!("{key} must be a nonnegative integer")))?;
+            self.oapif.configured = true;
             if key.eq_ignore_ascii_case("OAPIF_MAX_FEATURES") {
                 self.max_features = Some(number);
             } else {
@@ -602,6 +603,7 @@ fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    options.oapif.validate_source(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
@@ -631,7 +633,7 @@ pub(crate) fn open_remote_vector(path: &str, options: &VectorOpenOptions) -> Opt
         #[cfg(not(remote))]
         {
             let _ = target;
-            return Some(Err(Error::disabled("remote")));
+            return Some(Err(crate::drivers::vector::oapif::transport_required()));
         }
     }
     if let Some(target) = crate::drivers::vector::wfs::service_target(path) {
@@ -830,6 +832,7 @@ fn read_feature_service(url: &str, first: &[u8], driver: VectorDriver, options: 
 }
 
 pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    options.oapif.validate_source(path)?;
     if let Some(result) = crate::stac::open(path) {
         return match result? {
             Dataset::Vector(v) => Ok(v),

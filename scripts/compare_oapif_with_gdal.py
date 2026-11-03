@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
 """Compare live OGC API Features through GDAL, CLI, Python and optional Node/WASM.
 
 Uses static Natural Earth lakes on pygeoapi and PDOK BAG buildings. Network access

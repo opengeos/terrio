@@ -222,6 +222,7 @@ pub fn can_read_stream(driver: VectorDriver) -> bool {
 /// are read whole. Remote files are downloaded first (except as their drivers read them in
 /// place).
 pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Vec<FeatureReader>> {
+    options.oapif.validate_source(path)?;
     let batch = batch.max(1);
     // `.json` files may be STAC items or collections, which the dataset reader recognizes.
     let driver = VectorDriver::for_extension(path).filter(|_| crate::formats::extension(path).as_deref() != Some("json"));
@@ -1780,6 +1781,7 @@ fn same_dataset(src: &str, dst: &str) -> bool {
 /// written to a GeoPackage go one after another, and OpenStreetMap PBF files sorted by type then
 /// id (as osmium, Geofabrik and the planet write them) are read a block at a time.
 pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
+    options.open.oapif.validate_source(src)?;
     crate::dataset::ensure_vector_options_apply(&options.write, options.write.driver.or_else(|| VectorDriver::for_extension(dst)))?;
 
     // The source is read by the driver its name points to (OpenStreetMap files by a reader of their

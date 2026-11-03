@@ -3626,3 +3626,9 @@ this reader's scope. Pages are accumulated within the allocation budget.
 Signed numeric source IDs, or string IDs that conflict with a source `id`
 property, are preserved in `_oapif_id` text (with an extra leading underscore
 if that field already exists); generated unsigned FIDs then follow row order.
+
+Non-null values incompatible with an advertised scalar type fail explicitly,
+including empty-string dates. Use `IGNORE_SCHEMA=YES` to infer types from the
+source values instead. Schemas without property definitions fall back to inference.
+OAPIF-specific open options are rejected on other vector sources, even when their
+value equals the default.

@@ -169,6 +169,7 @@ pub(crate) fn read_kml_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver) -
 /// from memory itself. Formats made of several files are read from their main file alone (a
 /// shapefile without attributes or CRS): see [`read_parts`].
 pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Option<Vec<Layer>>> {
+    options.oapif.validate_source(name)?;
     crate::formats::check_driver_allowed(driver.name(), name, crate::formats::Kind::Vector)?;
     driver.ensure_built()?;
     if matches!(driver, VectorDriver::Shapefile | VectorDriver::MapInfo) {
