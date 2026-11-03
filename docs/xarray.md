@@ -58,7 +58,7 @@ work too); errors have rioxarray's names (`terrio.xarray.exceptions`: `MissingCR
   reads that window of the bands it selects, and nothing else. GeoTIFFs and COGs (local, or
   `https://`, `s3://`, `gs://`, `az://` and GDAL's `/vsicurl/` paths) are read tile by tile, and
   remote ones fetch only the tiles a window needs, with HTTP range requests; JPEG 2000, Zarr and raw-layout
-  rasters (ENVI, EHdr, SRTM HGT) are also read by window; other formats (netCDF, ERDAS Imagine...)
+  rasters (ENVI, EHdr, SRTM HGT; remote, only SRTM HGT) are also read by window; other formats (netCDF, ERDAS Imagine...)
   are read into memory when first read.
 - **Dask.** `chunks` (an int, a dict, `True` or `"auto"` for chunks aligned on the file's blocks,
   as rioxarray chooses them) makes dask arrays, with rioxarray's chunks. Reads are thread-safe
