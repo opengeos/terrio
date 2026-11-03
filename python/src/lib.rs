@@ -24,6 +24,7 @@ mod pyogrio;
 mod query;
 mod raster;
 mod raster_tile;
+mod render;
 mod rio;
 mod rpftoc;
 mod stream;
@@ -250,6 +251,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     terrain::register(m)?;
     tile_index::register(m)?;
     raster_tile::register(m)?;
+    render::register(m)?;
     rpftoc::register(m)?;
     query::register(m)?;
     pixel::register(m)?;

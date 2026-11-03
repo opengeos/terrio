@@ -13,7 +13,7 @@ fn root() -> Command {
 }
 
 fn exposed(command: &Command) -> bool {
-    !matches!(command.get_name(), "mcp" | "ui" | "help")
+    !matches!(command.get_name(), "mcp" | "ui" | "view" | "help")
 }
 
 /// The top-level commands served by both the JSON catalog and MCP tools/list.

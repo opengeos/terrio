@@ -3634,3 +3634,25 @@ test("fractional zonalStats combines coverage and a weighting raster", () => {
   assert.throws(() => terrio.zonalStats(zones, values, {fractional: true, allTouched: true}), /mutually exclusive/);
   assert.throws(() => terrio.zonalStats(zones, values, {stats: ["weighted_mean"]}), /require a weighting raster/);
 });
+
+test("render draws rasters and vector layers as RGBA and PNG", () => {
+  const grid = new TextEncoder().encode("ncols 4\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\nNODATA_value -9\n1 2 3 4\n5 6 7 -9\n");
+  const raster = terrio.open(grid, "grid.asc");
+  const image = terrio.render(raster, { colormap: "viridis", stretch: "minmax" });
+  assert.equal(image.width, 4);
+  assert.equal(image.height, 2);
+  assert.ok(image.data instanceof Uint8ClampedArray);
+  assert.deepEqual([...image.data.slice(0, 4)], [0x44, 0x01, 0x54, 255]);
+  assert.equal(image.data[7 * 4 + 3], 0);
+  assert.equal(terrio.render({ bytes: grid, filename: "grid.asc" }, { width: 8 }).width, 8);
+  const png = terrio.renderPng(raster, { maxSize: 2 });
+  assert.deepEqual([...png.slice(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+  assert.throws(() => terrio.render(raster, { colormap: "nope" }), /colormap/);
+  assert.throws(() => terrio.render(raster, { unknown: 1 }), /unknown/);
+  assert.throws(() => terrio.render(raster, { attribute: "v" }), /vector datasets/);
+
+  const squares = terrio.fromGeoJSON(SQUARES, "squares");
+  const drawn = terrio.render(squares, { maxSize: 40 });
+  assert.ok(Math.max(drawn.width, drawn.height) === 40);
+  assert.ok(drawn.data.some((value, i) => i % 4 === 3 && value === 255));
+});
