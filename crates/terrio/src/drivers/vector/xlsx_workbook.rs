@@ -1917,6 +1917,8 @@ fn rels_part(part: &str) -> String {
     if directory.is_empty() { format!("_rels/{file}.rels") } else { format!("{directory}/_rels/{file}.rels") }
 }
 
+/// The largest block of 1024 shape ids a notes drawing is given, keeping ids within 32 bits.
+const MAX_VML_BLOCK: usize = 4_000_000;
 const WORKSHEET_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
 const COMMENTS_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml";
 const STYLES_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml";
@@ -2108,7 +2110,12 @@ fn write_package(workbook: &Workbook) -> Result<Vec<u8>> {
                 defaults.push(("vml".into(), VML_TYPE.into()));
             }
             parts.insert(comments, comments_xml(sheet).into_bytes());
-            parts.insert(vml, comments_vml(sheet, idmap_base + number).into_bytes());
+            // Shape ids are 1024 to a block and must stay within what a drawing can number.
+            let block = idmap_base
+                .checked_add(number)
+                .filter(|b| *b <= MAX_VML_BLOCK)
+                .ok_or_else(|| invalid("the notes drawings read number their shapes past what a new one can".into()))?;
+            parts.insert(vml, comments_vml(sheet, block).into_bytes());
             drawing = Some(shapes);
         }
         let mut context = SheetContext {

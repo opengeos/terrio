@@ -2198,6 +2198,26 @@ mod tests {
     }
 
     #[test]
+    fn a_huge_drawing_block_read_is_refused_on_save() {
+        let vml = "<xml><o:shapelayout><o:idmap data=\"18446744073709551615\"/></o:shapelayout></xml>";
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(foreign_workbook())).unwrap();
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).unwrap();
+            let name = file.name().unwrap().to_string();
+            let mut body = Vec::new();
+            file.read_to_end(&mut body).unwrap();
+            zip.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(&body).unwrap();
+        }
+        zip.start_file("xl/drawings/vmlDrawing9.vml", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(vml.as_bytes()).unwrap();
+        let mut workbook = Workbook::open_bytes(&zip.finish().unwrap().into_inner()).unwrap();
+        workbook.sheet_mut("Data").unwrap().comment("C1", "new", "me").unwrap();
+        assert!(matches!(workbook.to_bytes(), Err(Error::InvalidArgument(_))));
+    }
+
+    #[test]
     fn layers_view_sheets_both_ways() {
         let mut layer = wbvector::Layer::new("points");
         layer.add_field(wbvector::FieldDef::new("name", wbvector::FieldType::Text));
