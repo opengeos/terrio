@@ -1020,6 +1020,7 @@ fn vector_from(ds: GdalDataset, path: &str, options: &VectorOpenOptions) -> Resu
     if names.is_empty() {
         return Err(Error::Unsupported(format!("'{path}' has no vector layers")));
     }
+    crate::dataset::check_layer_names(&options.layers, &names)?;
     let mut layers = Vec::new();
     for mut layer in ds.layers() {
         let name = layer.name();
@@ -1030,9 +1031,6 @@ fn vector_from(ds: GdalDataset, path: &str, options: &VectorOpenOptions) -> Resu
             layer.set_spatial_filter_rect(x0, y0, x1, y1);
         }
         layers.push(layer_from(&mut layer, &name, &mut budget)?);
-    }
-    if layers.is_empty() {
-        return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
     }
     // `finish_vector` names unnamed layers after the file: use the path without GDAL's syntax.
     Ok(finish_vector(layers, strip_prefix(path).unwrap_or(path), VectorDriver::Gdal))

@@ -1061,7 +1061,11 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
                 let driver = VectorDriver::ALL.iter().find(|d| d.to_wb().as_ref() == Some(&format)).map_or("unknown", |d| d.name());
                 crate::formats::check_driver_allowed(driver, path, crate::formats::Kind::Vector)?;
                 let layer = wbvector::read(path)?;
-                Ok(Dataset::Vector(VectorDataset::new(vec![fix_layer(layer, path, VectorDriver::GeoJSON)], VectorDriver::GeoJSON)))
+                let layers = select_layers(vec![layer], path, options)?;
+                Ok(Dataset::Vector(VectorDataset::new(
+                    layers.into_iter().map(|l| fix_layer(l, path, VectorDriver::GeoJSON)).collect(),
+                    VectorDriver::GeoJSON,
+                )))
             }
             Err(_) => Err(Error::Unsupported(format!("'{path}': format not recognized ({raster_err})"))),
         },
@@ -1187,13 +1191,7 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
     } else {
         let format = driver.to_wb().ok_or_else(|| Error::Unsupported(format!("the {} driver cannot read", driver.name())))?;
         let layer = format.read(path)?;
-        if !options.layers.is_empty() && !options.layers.contains(&layer.name) {
-            let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-            if !options.layers.iter().any(|l| l == stem) {
-                return Err(Error::InvalidArgument(format!("no layer named {}", options.layers.join(", "))));
-            }
-        }
-        vec![layer]
+        select_layers(vec![layer], path, options)?
     };
     // The Shapefile driver reads only the range; the others read every feature.
     if driver != VectorDriver::Shapefile {
@@ -1209,19 +1207,30 @@ pub(crate) fn finish_vector(layers: Vec<Layer>, path: &str, driver: VectorDriver
 }
 
 /// Keeps the layers `options` asks for (all when it names none).
-fn select_layers(layers: Vec<Layer>, path: &str, options: &VectorOpenOptions) -> Result<Vec<Layer>> {
+pub(crate) fn select_layers(layers: Vec<Layer>, path: &str, options: &VectorOpenOptions) -> Result<Vec<Layer>> {
     if options.layers.is_empty() {
         return Ok(layers);
     }
     let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
     let single = layers.len() == 1;
-    let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
-    let kept: Vec<Layer> =
-        layers.into_iter().filter(|l| options.layers.contains(&l.name) || single && options.layers.iter().any(|n| n == stem)).collect();
-    if kept.is_empty() {
-        return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
+    // A single layer also answers to the file's name, which it is named after when it has none.
+    let matches = |layer: &Layer, name: &str| layer.name == name || single && name == stem;
+    // Every name must match a layer, as GDAL refuses a layer it cannot fetch: a misspelled name
+    // beside a valid one is not silently dropped.
+    if let Some(missing) = options.layers.iter().find(|n| !layers.iter().any(|l| matches(l, n))) {
+        let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
+        return Err(Error::InvalidArgument(format!("no layer named {missing} (layers: {})", names.join(", "))));
     }
-    Ok(kept)
+    Ok(layers.into_iter().filter(|l| options.layers.iter().any(|n| matches(l, n))).collect())
+}
+
+/// Refuses a requested layer name that none of `available` has, as GDAL refuses a layer it
+/// cannot fetch, rather than reading the layers the other names match.
+pub(crate) fn check_layer_names(requested: &[String], available: &[String]) -> Result<()> {
+    match requested.iter().find(|n| !available.contains(n)) {
+        Some(missing) => Err(Error::InvalidArgument(format!("no layer named {missing} (layers: {})", available.join(", ")))),
+        None => Ok(()),
+    }
 }
 
 /// Normalizes what drivers leave inconsistent: the layer name and the CRS of formats that are
@@ -1933,6 +1942,21 @@ pub(crate) mod fallible {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_misspelled_layer_name_beside_a_valid_one_is_refused() {
+        let options =
+            |names: &[&str]| crate::VectorOpenOptions { layers: names.iter().map(|n| n.to_string()).collect(), ..Default::default() };
+        let layers = || vec![crate::Layer::new("roads"), crate::Layer::new("rivers")];
+        let kept = super::select_layers(layers(), "/data/map.kml", &options(&["rivers"])).unwrap();
+        assert_eq!(kept.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["rivers"]);
+        let error = super::select_layers(layers(), "/data/map.kml", &options(&["roads", "rivres"])).unwrap_err();
+        assert_eq!(error.to_string(), "no layer named rivres (layers: roads, rivers)");
+        // A single layer also answers to the file's name.
+        let single = super::select_layers(vec![crate::Layer::new("layer")], "/data/map.geojson", &options(&["map"])).unwrap();
+        assert_eq!(single.len(), 1);
+        assert!(super::check_layer_names(&["roads".into(), "x".into()], &["roads".into()]).is_err());
+    }
+
     #[test]
     fn resource_errors_name_the_remote_source_without_cached_paths_or_queries() {
         let local = "/private/cache/input.hdf";

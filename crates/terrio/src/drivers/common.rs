@@ -656,6 +656,9 @@ pub(crate) struct Pam {
     pub dataset_nodata: Option<f64>,
     /// Explicit band nodata, with one-based band indices.
     pub band_nodata: Vec<(usize, f64)>,
+    /// Band color interpretations (`ColorInterp`) other than `Undefined`, with one-based band
+    /// indices, as GDAL names them: `Alpha`, `Red`...
+    pub band_color_interp: Vec<(usize, String)>,
 }
 
 /// Reads the `.aux.xml` sidecar of a dataset, if there is one.
@@ -693,9 +696,24 @@ pub(crate) fn parse_pam(xml: &str) -> Pam {
                 .collect()
         })
         .unwrap_or_default();
+    let band_color_interp: Vec<(usize, String)> = root
+        .as_ref()
+        .map(|root| {
+            root.children
+                .iter()
+                .filter(|e| e.name == "PAMRasterBand")
+                .filter_map(|e| {
+                    // GDAL keeps the file's interpretation over an `Undefined` one.
+                    let name = crate::geotiff::color_interpretation(&e.child("ColorInterp")?.text);
+                    (name != "Undefined").then_some(())?;
+                    Some((e.attr("band")?.parse::<usize>().ok()?, name.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let dataset_nodata = root.as_ref().and_then(|root| root.child("NoDataValue").and_then(|e| parse_f64(&e.text)));
     let nodata = band_nodata.iter().find(|(b, _)| *b == 1).map(|(_, v)| *v).or(dataset_nodata);
-    Pam { crs, geo_transform, nodata, dataset_nodata, band_nodata }
+    Pam { crs, geo_transform, nodata, dataset_nodata, band_nodata, band_color_interp }
 }
 
 /// Records differing band nodata for TIFF, which has only one embedded nodata tag.
@@ -1152,5 +1170,27 @@ mod dataset_pam_fallback_tests {
         .unwrap();
         super::super::nodata::apply(pam, &mut ds);
         assert_eq!(ds.band_nodata, vec![Some(-10.), Some(-20.)]);
+    }
+
+    #[test]
+    fn band_color_interpretations_apply_but_undefined_ones_do_not() {
+        // As GDAL 3.13 reads them: names in any case, `Undefined` and bands beyond the raster's
+        // left out.
+        let pam = super::parse_pam(
+            "<PAMDataset><PAMRasterBand band=\"1\"><ColorInterp>Undefined</ColorInterp></PAMRasterBand><PAMRasterBand band=\"2\"><ColorInterp>alpha</ColorInterp></PAMRasterBand><PAMRasterBand band=\"3\"><ColorInterp>Red</ColorInterp></PAMRasterBand></PAMDataset>",
+        );
+        assert_eq!(pam.band_color_interp, vec![(2, "Alpha".to_string()), (3, "Red".to_string())]);
+        let mut ds = crate::ops::build_raster(
+            crate::ops::Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+            vec![vec![1.], vec![2.]],
+            wbraster::DataType::F64,
+            None,
+            &Default::default(),
+            crate::ops::convert_value,
+        )
+        .unwrap();
+        super::super::nodata::apply(pam, &mut ds);
+        let colors: Vec<Option<&str>> = ds.band_metadata.iter().map(|b| b.color_interp.as_deref()).collect();
+        assert_eq!(colors, [None, Some("Alpha")]);
     }
 }

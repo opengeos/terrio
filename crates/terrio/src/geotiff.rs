@@ -570,7 +570,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
 }
 
 /// Canonical GDAL band roles; unknown metadata roles map to Undefined as GDAL does.
-fn color_interpretation(value: &str) -> &'static str {
+pub(crate) fn color_interpretation(value: &str) -> &'static str {
     const NAMES: &[&str] = &[
         "Undefined",
         "Gray",
@@ -716,6 +716,12 @@ impl GeoTags {
         };
         self.nodata = self.nodata.or(pam.dataset_nodata);
         self.band_nodata = pam.band_nodata;
+        // The sidecar's color interpretations override the file's, as GDAL reads them.
+        for (band, color) in pam.band_color_interp {
+            if let Some(properties) = band.checked_sub(1).and_then(|i| self.band_properties.get_mut(i)) {
+                properties.color_interp = Some(color);
+            }
+        }
         if let Some(crs) = pam.crs {
             self.epsg = crs.epsg;
             self.proj4 = None;

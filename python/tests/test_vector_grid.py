@@ -187,11 +187,12 @@ def test_keyword_zero_radius_matches_packed_error():
             terrio.vector_grid(source, algorithm=algorithm, **options)
 
 
-def test_existing_sql_layer_selection_remains_permissive(tmp_path):
-    """Strict selection belongs to the new gridding/lineref entry points."""
+def test_sql_refuses_a_layer_name_no_layer_has(tmp_path):
+    """A misspelled name beside a valid one is an error, from a path or a layer (#521)."""
     layer = terrio.Layer.from_geojson(points_geojson([(1, 1, 2.0)]), name="points")
     path = str(tmp_path / "points.geojson")
     layer.write(path)
     for source in (layer, path):
-        selected = terrio.sql(source, "SELECT * FROM points", layers=["points", "missing"])
-        assert len(selected) == 1
+        assert len(terrio.sql(source, "SELECT * FROM points", layers=["points"])) == 1
+        with pytest.raises(terrio.errors.InvalidArgumentError, match="missing"):
+            terrio.sql(source, "SELECT * FROM points", layers=["points", "missing"])
