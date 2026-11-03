@@ -100,16 +100,21 @@ pub fn run(a: Args) -> terrio::Result<()> {
     };
     // GeoTIFFs, Zarr stores and other rasters read by window are read for the output alone: the
     // tiles or chunks its window touches, of its bands, from the overview it is read from. Rasters
-    // named `gdal:`, and those the lazy reader cannot decode (GDAL may), are read whole, as `open`
-    // reads them, at full resolution; other errors (a missing file, a network failure) are kept.
+    // named `gdal:`, and those the lazy reader cannot read (GDAL may), are read whole, as `open`
+    // reads them, at full resolution. Errors GDAL's fallback does not retry either (invalid
+    // arguments, network failures, missing local files, resource refusals) are kept.
     let gdal_named = a.input.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("gdal:"));
     let lazy = if gdal_named {
         None
     } else {
         match super::quiet(|| terrio::open_raster_lazy(&a.input)) {
             Ok(src) => Some(src),
-            Err(terrio::Error::Unsupported(_)) => None,
-            Err(e) => return Err(e),
+            Err(e @ (terrio::Error::InvalidArgument(_) | terrio::Error::Http(_))) => return Err(e),
+            Err(e) if e.is_resource_refusal() => return Err(e),
+            Err(terrio::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound && !a.input.contains(':') => {
+                return Err(terrio::Error::Io(e));
+            }
+            Err(_) => None,
         }
     };
     let out = match lazy {

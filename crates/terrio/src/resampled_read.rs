@@ -233,7 +233,7 @@ impl LazyRaster {
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_masks(&mut self, options: &ResampledReadOptions) -> Result<Vec<u8>> {
         let read = self.check_resampled(options)?;
-        let kinds = self.mask_kinds(&read.bands);
+        let kinds = self.read_mask_kinds(&read);
         // A nodata mask band reads its band band by band, as a read of that band alone does.
         let mut nodata = Vec::with_capacity(read.bands.len());
         for (k, &b) in read.bands.iter().enumerate() {
@@ -254,7 +254,7 @@ impl LazyRaster {
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_with_masks(&mut self, options: &ResampledReadOptions) -> Result<(RasterDataset, Vec<u8>)> {
         let read = self.check_resampled(options)?;
-        let kinds = self.mask_kinds(&read.bands);
+        let kinds = self.read_mask_kinds(&read);
         let data = self.resample_bands(&read, &kinds)?;
         let n = read.buf.0 * read.buf.1;
         // GDAL reads bands with a nodata mask band by band, as the read did.
@@ -344,6 +344,14 @@ impl LazyRaster {
                 _ => MaskKind::AllValid,
             })
             .collect()
+    }
+
+    /// The mask kinds of a read's bands (see [`MaskKind`]): those of the level read alone, a
+    /// dataset of its own (`gdal_translate -ovr`), else of full resolution.
+    fn read_mask_kinds(&mut self, read: &Read) -> Vec<MaskKind> {
+        let kinds = self.mask_kinds(&read.bands);
+        let level = read.fixed.flatten();
+        kinds.iter().zip(&read.bands).map(|(&k, &b)| self.kind_at(k, b, level)).collect()
     }
 
     /// The alpha band GDAL takes as the other bands' mask band: band 2 of two or band 4 of four,
@@ -649,8 +657,8 @@ impl LazyRaster {
             match kinds[k] {
                 MaskKind::AllValid => out.resize(out.len() + n, 255),
                 MaskKind::Nodata => {
-                    let nd =
-                        self.band_nodata(b).ok_or_else(|| Error::InvalidData(format!("band {b} has a nodata mask but no nodata value")))?;
+                    let nd = self.level_band_nodata(&[b], read.fixed.flatten())[0]
+                        .ok_or_else(|| Error::InvalidData(format!("band {b} has a nodata mask but no nodata value")))?;
                     let (data, j) = nodata(k).ok_or_else(|| Error::InvalidData("the pixels of a nodata mask were not read".into()))?;
                     out.extend(nodata_mask(data, j, n, nd).unwrap_or_else(|| vec![255; n]));
                 }
@@ -1113,14 +1121,13 @@ fn band_of(data: &RasterData, band: usize, n: usize) -> RasterData {
 
 /// Buffers one after the other.
 fn concat(parts: Vec<RasterData>) -> RasterData {
-    let mut parts = parts.into_iter();
-    let Some(mut out) = parts.next() else { return RasterData::U8(Vec::new()) };
-    for part in parts {
-        let at = out.len();
-        let mut grown = RasterData::new_filled(out.data_type(), at + part.len(), 0.0);
-        place(&mut grown, &out, 0);
-        place(&mut grown, &part, at);
-        out = grown;
+    let Some(first) = parts.first() else { return RasterData::U8(Vec::new()) };
+    // Allocated once, each part copied in at its offset.
+    let mut out = RasterData::new_filled(first.data_type(), parts.iter().map(RasterData::len).sum(), 0.0);
+    let mut at = 0;
+    for part in &parts {
+        place(&mut out, part, at);
+        at += part.len();
     }
     out
 }

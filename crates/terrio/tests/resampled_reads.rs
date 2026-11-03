@@ -216,28 +216,15 @@ fn level_reads_past_the_last_pixel_are_empty() {
 /// its nodata value.
 #[test]
 fn external_overview_nodata_masks_its_pixels() {
-    use terrio::{DataType, Raster, RasterConfig, RasterDataset};
-    let dataset = |cols: usize, rows: usize, values: Vec<u8>, nodata: Option<f64>| {
-        let config = RasterConfig { cols, rows, bands: 3, data_type: DataType::U8, nodata: nodata.unwrap_or(-1.0), ..Default::default() };
-        let mut ds = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(values)).unwrap(), nodata.is_some());
-        ds.set_geo_transform([0.0, 64.0 / cols as f64, 0.0, 48.0, 0.0, -48.0 / rows as f64]);
-        ds
-    };
     let dir = tempfile::tempdir().unwrap();
-    let base = dir.path().join("base.tif");
-    terrio::write_raster_dataset(&dataset(64, 48, vec![1; 3 * 64 * 48], None), base.to_str().unwrap(), &Default::default()).unwrap();
-    // Each band one value, but for nodata pixels (7) at even rows and columns.
-    let ovr: Vec<u8> = (0..3)
-        .flat_map(|b| (0..24 * 32).map(move |i| if (i / 32) % 2 == 0 && (i % 32) % 2 == 0 { 7 } else { 100 + 50 * b as u8 }))
-        .collect();
-    let ovr_tif = dir.path().join("ovr.tif");
-    terrio::write_raster_dataset(&dataset(32, 24, ovr, Some(7.0)), ovr_tif.to_str().unwrap(), &Default::default()).unwrap();
-    std::fs::rename(&ovr_tif, dir.path().join("base.tif.ovr")).unwrap();
+    let base = external_overview_with_nodata(dir.path());
     let mut raster = terrio::open_raster_lazy(base.to_str().unwrap()).unwrap();
     assert_eq!(raster.overviews(), [(32, 24)]);
     assert_eq!(raster.band_nodata(1), None);
-    // GDAL 3.12.1 reads these values of the same files. (Its cubic and Lanczos kernels give
-    // nodata where the pixel nearest an output pixel's center is invalid, here every one.)
+    // Not a fixture case (those are GDAL 3.13.2's reads): GDAL 3.12.1's `ReadRaster` and
+    // `gdal_translate -ovr 0` were checked to read these values of the same files. (Its cubic and
+    // Lanczos kernels give nodata where the pixel nearest an output pixel's center is invalid,
+    // here every one.)
     for resampling in [Resampling::Bilinear, Resampling::Average, Resampling::Rms] {
         for (overview, nodata) in [(OverviewSelection::Auto, None), (OverviewSelection::Level(0), Some(7.0))] {
             let o = ResampledReadOptions { size: (16, 12), resampling, overview, ..Default::default() };
@@ -247,14 +234,49 @@ fn external_overview_nodata_masks_its_pixels() {
             assert_eq!(read.band_nodata(1), nodata, "{resampling:?} {overview:?}");
             for band in 1..=3 {
                 let alone = raster.read_resampled(&ResampledReadOptions { bands: vec![band], ..o.clone() }).unwrap();
-                assert_eq!(
-                    read_values(&alone.raster.data),
-                    expected[(band - 1) * 192..band * 192],
-                    "{resampling:?} {overview:?} band {band}"
-                );
+                let expected = &expected[(band - 1) * 192..band * 192];
+                assert_eq!(read_values(&alone.raster.data), expected, "{resampling:?} {overview:?} band {band}");
             }
         }
     }
+}
+
+/// The masks of an external overview read alone are those of its nodata value, which the output
+/// takes, though full resolution has none.
+#[test]
+fn external_overview_masks_follow_its_nodata() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = external_overview_with_nodata(dir.path());
+    let mut raster = terrio::open_raster_lazy(base.to_str().unwrap()).unwrap();
+    let o = ResampledReadOptions { size: (32, 24), overview: OverviewSelection::Level(0), ..Default::default() };
+    let (read, masks) = raster.read_resampled_with_masks(&o).unwrap();
+    assert_eq!(read.band_nodata(1), Some(7.0));
+    let expected: Vec<u8> = read_values(&read.raster.data).iter().map(|&v| if v == 7.0 { 0 } else { 255 }).collect();
+    assert!(expected.contains(&0));
+    assert_eq!(masks, expected);
+    assert_eq!(raster.read_resampled_masks(&o).unwrap(), expected);
+}
+
+/// A raster of 64 x 48 pixels, three Byte bands without nodata, whose external overview of
+/// 32 x 24 pixels has nodata 7: each band one value (100, 150, 200) but for nodata pixels at even
+/// rows and columns. Returns the raster's path.
+fn external_overview_with_nodata(dir: &std::path::Path) -> PathBuf {
+    use terrio::{DataType, Raster, RasterConfig, RasterDataset};
+    let dataset = |cols: usize, rows: usize, values: Vec<u8>, nodata: Option<f64>| {
+        let config = RasterConfig { cols, rows, bands: 3, data_type: DataType::U8, nodata: nodata.unwrap_or(-1.0), ..Default::default() };
+        let mut ds = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(values)).unwrap(), nodata.is_some());
+        ds.set_geo_transform([0.0, 64.0 / cols as f64, 0.0, 48.0, 0.0, -48.0 / rows as f64]);
+        ds
+    };
+    let base = dir.join("base.tif");
+    terrio::write_raster_dataset(&dataset(64, 48, vec![1; 3 * 64 * 48], None), base.to_str().unwrap(), &Default::default()).unwrap();
+    let ovr: Vec<u8> = (0..3)
+        .flat_map(|b| (0..24 * 32).map(move |i| if (i / 32) % 2 == 0 && (i % 32) % 2 == 0 { 7 } else { 100 + 50 * b as u8 }))
+        .collect();
+    let ovr_tif = dir.join("ovr.tif");
+    terrio::write_raster_dataset(&dataset(32, 24, ovr, Some(7.0)), ovr_tif.to_str().unwrap(), &Default::default()).unwrap();
+    std::fs::rename(&ovr_tif, dir.join("base.tif.ovr")).unwrap();
+    base
 }
 
 /// A shared handle reads as the raster it shares: an overview without a mask of its own is all
