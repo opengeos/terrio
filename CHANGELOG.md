@@ -5,12 +5,13 @@
 - Warps with `sum` resampling give each output pixel the sum of the valid source pixels it
   overlaps, each weighted by the share of its area inside the output pixel (on the source grid, a
   quadrilateral when the output grid is turned or reprojected), so that an output grid covering a
-  source keeps its total. An upsampled output pixel took the whole value of its source pixel, an
-  output pixel overhanging the source's edge counted as covered whole, and one much larger than the
-  source was left empty; a reprojected `sum` also changed with the memory limit it was warped
-  under. VRT sources resampled with `sum` share their pixels by area too, also from a source
-  window with fractional edges, which was copied pixel for pixel when it spanned as many pixels as
-  its destination.
+  source keeps its total in a floating-point output; an integer output rounds each pixel, and
+  keeps the total only up to that rounding. An upsampled output pixel took the whole value of its
+  source pixel, an output pixel overhanging the source's edge counted as covered whole, and one
+  much larger than the source was left empty; a reprojected `sum` also changed with the memory
+  limit it was warped under. VRT sources resampled with `sum` share their pixels by area too, also
+  from a source window with fractional edges, which was copied pixel for pixel when it spanned as
+  many pixels as its destination.
 - With `GDAL_INGESTED_BYTES_AT_OPEN` (or `TERRIO_INGESTED_BYTES_AT_OPEN`) above a block (64 KiB
   by default), opening a remote file that the process-wide cache holds takes the ingested blocks
   from there and requests only those it no longer holds. Every reader of a file requested them
