@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Warps with `sum` resampling give each output pixel the sum of the valid source pixels it
+  overlaps, each weighted by the share of its area inside the output pixel (on the source grid, a
+  quadrilateral when the output grid is turned or reprojected), so that an output grid covering a
+  source keeps its total. An upsampled output pixel took the whole value of its source pixel, and
+  an output pixel overhanging the source's edge counted as covered whole. VRT sources resampled
+  with `sum` share their pixels by area too.
+
 ## 0.7.0 (2026-11-03)
 
 - Visualization: `terrio::ops::render` draws a raster or vector dataset as 8-bit RGBA, reading a

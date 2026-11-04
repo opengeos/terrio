@@ -136,7 +136,8 @@ pub enum Resampling {
     Q1,
     /// Third quartile of the contributing pixels.
     Q3,
-    /// Sum of the contributing pixels, weighted by their coverage.
+    /// Sum of the contributing pixels, each weighted by the share of its area inside the output
+    /// pixel.
     Sum,
 }
 

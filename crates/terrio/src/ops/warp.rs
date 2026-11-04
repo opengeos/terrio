@@ -2921,6 +2921,10 @@ impl WarpContext<'_> {
     fn warp_chunk<T: crate::pixel::Pixel>(&self, c: &Chunk, src: &SrcData<T>, sink: &Sink, rows: Vec<RowOut>) {
         let (xscale, yscale) = self.scales(c);
         let k = Kernel { src, win: *c, xscale, yscale, method: self.resampling };
+        if self.resampling == Resampling::Sum {
+            crate::par::for_each_owned(rows, |row, mut out| self.warp_sum_row(c, &k, sink, row, &mut out));
+            return;
+        }
         if self.resampling.is_area_based() {
             crate::par::for_each_owned(rows, |row, mut out| self.warp_area_row(c, &k, sink, row, &mut out));
             return;
@@ -3133,6 +3137,301 @@ impl WarpContext<'_> {
                 }
             }
         }
+    }
+
+    /// `sum`: each output pixel is the sum of the valid source pixels it overlaps, each times the
+    /// share of its area inside the output pixel. On the source grid, an output pixel is the
+    /// quadrilateral of its four corners; neighbouring pixels share their corners, so that the
+    /// output pixels tile the source and, where they cover it whole, keep its total. A pixel that
+    /// overlaps no valid source pixel is left as it is.
+    fn warp_sum_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
+        let xmargin = 2.0 * (1.0f64).max((1.0 / k.xscale).ceil());
+        let ymargin = 2.0 * (1.0f64).max((1.0 / k.yscale).ceil());
+        let n = c.dw;
+        // The corners of the row's pixels, along its top edge and along its bottom edge.
+        let corners = |y: usize| {
+            let mut xs: Vec<f64> = (0..=n).map(|i| (c.dx + i) as f64).collect();
+            let mut ys = vec![(c.dy + y) as f64; n + 1];
+            let mut ok = vec![false; n + 1];
+            self.approx.transform(true, &mut xs, &mut ys, &mut ok);
+            (xs, ys, ok)
+        };
+        let (top_x, top_y, top_ok) = corners(row);
+        let (bottom_x, bottom_y, bottom_ok) = corners(row + 1);
+        let (sxo, syo, sw, sh) = (c.sx as f64, c.sy as f64, c.sw as f64, c.sh as f64);
+        let (mut areas, mut carry) = (Vec::new(), Vec::new());
+        for i in 0..n {
+            if !(top_ok[i] && top_ok[i + 1] && bottom_ok[i + 1] && bottom_ok[i]) {
+                continue;
+            }
+            // The quadrilateral, corner after corner, in the pixels of the chunk's source window.
+            let q = [
+                (top_x[i] - sxo, top_y[i] - syo),
+                (top_x[i + 1] - sxo, top_y[i + 1] - syo),
+                (bottom_x[i + 1] - sxo, bottom_y[i + 1] - syo),
+                (bottom_x[i] - sxo, bottom_y[i] - syo),
+            ];
+            // A corner far outside the window (or not a number) leaves the pixel alone, as the
+            // other area-based methods leave it.
+            if !q.iter().all(|&(x, y)| x >= -xmargin && x <= sw + xmargin && y >= -ymargin && y <= sh + ymargin) {
+                continue;
+            }
+            let (x0, x1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
+            let (y0, y1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
+            // The window's pixels within the quadrilateral's bounds.
+            let cols = (floor_i(x0.max(0.0)) as usize, (ceil_i(x1.min(sw)).max(0) as usize).min(c.sw));
+            let rows = (floor_i(y0.max(0.0)) as usize, (ceil_i(y1.min(sh)).max(0) as usize).min(c.sh));
+            if cols.0 >= cols.1 || rows.0 >= rows.1 {
+                continue;
+            }
+            let nx = cols.1 - cols.0;
+            let rectangle = (q[0].1 == q[1].1 && q[2].1 == q[3].1 && q[0].0 == q[3].0 && q[1].0 == q[2].0)
+                || (q[0].0 == q[1].0 && q[2].0 == q[3].0 && q[0].1 == q[3].1 && q[1].1 == q[2].1);
+            // The paths of a quadrilateral inside the window: a pixel turned by a few degrees, as a
+            // change of CRS turns it, and one within 2 x 2 source pixels. All the paths are exact.
+            let inside = x0 >= 0.0 && y0 >= 0.0 && x1 <= sw && y1 <= sh;
+            if rectangle {
+                // An axis-aligned rectangle: each share is the product of the overlaps along the axes.
+                areas.clear();
+                for y in rows.0..rows.1 {
+                    let wy = overlap(y0, y1, y);
+                    areas.extend((cols.0..cols.1).map(|x| wy * overlap(x0, x1, x)));
+                }
+            } else if !(inside && clean_block_areas(&q, cols, rows, &mut areas)) {
+                if inside && cols.1 - cols.0 <= 2 && rows.1 - rows.0 <= 2 {
+                    block_areas(&q, cols, rows, &mut areas);
+                } else {
+                    quad_cell_areas(&q, cols, rows, &mut areas, &mut carry);
+                }
+            }
+            let mut found = false;
+            for (b, o) in out.iter_mut().enumerate() {
+                let (values, valid) = (k.src.bands[b], k.src.valid[b].as_deref());
+                let (mut sum, mut any) = (0.0, false);
+                for (j, y) in (rows.0..rows.1).enumerate() {
+                    // The row's pixels in the window, which hold its columns side by side.
+                    let start = k.index(cols.0, y);
+                    for (at, (w, v)) in (start..).zip(areas[j * nx..(j + 1) * nx].iter().zip(&values[start..start + nx])) {
+                        if *w > 0.0 && valid.is_none_or(|m| m[at]) {
+                            sum += crate::pixel::Pixel::to_f64(*v) * w;
+                            any = true;
+                        }
+                    }
+                }
+                if any {
+                    o[i] = sink.value(sum, b);
+                    found = true;
+                }
+            }
+            if found {
+                sink.avoid_all(out, i);
+            }
+        }
+    }
+}
+
+/// The length of the interval `[lo, hi]` inside pixel `p`, `[p, p + 1]`.
+fn overlap(lo: f64, hi: f64, p: usize) -> f64 {
+    (hi.min(p as f64 + 1.0) - lo.max(p as f64)).max(0.0)
+}
+
+/// `x.floor()`, for a finite `x` within the range of `i64`, without the call to `floor` that
+/// targets without SSE4.1 make.
+fn floor_i(x: f64) -> i64 {
+    let t = x as i64;
+    if (t as f64) > x { t - 1 } else { t }
+}
+
+/// `x.ceil()`, as [`floor_i`].
+fn ceil_i(x: f64) -> i64 {
+    let t = x as i64;
+    if (t as f64) < x { t + 1 } else { t }
+}
+
+/// The area of the quadrilateral `q` inside each pixel of a block of at most 2 × 2 pixels
+/// (`cols` × `rows`) that holds it whole, row after row in `areas`: from the areas of the
+/// quadrilateral, of its part left of the block's middle column line, of its part above the
+/// block's middle row line, and of its part in both, the top left pixel holds the last, the top
+/// right and the bottom left the differences, the bottom right the rest. Each of those areas is
+/// `∮ y dx` along the boundary of the part (`∮ min(y, 1) dx` for a part above `y = 1`), to which
+/// the stretch along the middle column line adds nothing.
+fn block_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize), areas: &mut Vec<f64>) {
+    // `∫ min(y, 1) dx` along the segment from `a` to `b`.
+    let below_one = |a: (f64, f64), b: (f64, f64)| match (a.1 <= 1.0, b.1 <= 1.0) {
+        (true, true) => 0.5 * (b.0 - a.0) * (a.1 + b.1),
+        (false, false) => b.0 - a.0,
+        (above_a, _) => {
+            let m = a.0 + (1.0 - a.1) / (b.1 - a.1) * (b.0 - a.0);
+            if above_a { 0.5 * (m - a.0) * (a.1 + 1.0) + (b.0 - m) } else { (m - a.0) + 0.5 * (b.0 - m) * (1.0 + b.1) }
+        }
+    };
+    // In the block's coordinates, where its middle lines are x = 1 and y = 1.
+    let p = q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64));
+    // Twice the signed areas: whole, whole above y = 1, left of x = 1, and left of and above.
+    let (mut whole, mut top, mut left, mut corner) = (0.0, 0.0, 0.0, 0.0);
+    for k in 0..4 {
+        let (a, b) = (p[k], p[(k + 1) % 4]);
+        whole += 0.5 * (b.0 - a.0) * (a.1 + b.1);
+        top += below_one(a, b);
+        let (a, b) = match (a.0 <= 1.0, b.0 <= 1.0) {
+            (true, true) => (a, b),
+            (false, false) => continue,
+            (true, false) => (a, (1.0, a.1 + (1.0 - a.0) / (b.0 - a.0) * (b.1 - a.1))),
+            (false, true) => ((1.0, a.1 + (1.0 - a.0) / (b.0 - a.0) * (b.1 - a.1)), b),
+        };
+        left += 0.5 * (b.0 - a.0) * (a.1 + b.1);
+        corner += below_one(a, b);
+    }
+    let sign = if whole < 0.0 { -1.0 } else { 1.0 };
+    let (whole, top, left, corner) = (sign * whole, sign * top, sign * left, sign * corner);
+    areas.clear();
+    match (cols.1 - cols.0, rows.1 - rows.0) {
+        (1, 1) => areas.push(whole),
+        (2, 1) => areas.extend([left, whole - left]),
+        (1, 2) => areas.extend([top, whole - top]),
+        _ => areas.extend([corner, top - corner, left - corner, whole - left - top + corner]),
+    }
+    for area in areas.iter_mut() {
+        *area = area.clamp(0.0, 1.0);
+    }
+}
+
+/// The area of the quadrilateral `[tl, tr, br, bl]` inside each pixel of the block of pixels
+/// `cols` × `rows` (at least 2 × 2, holding it whole), row after row in `areas`, when each of its
+/// corners lies in the corner pixel of the block it names and its sides run within 45 degrees of
+/// the axes: a pixel turned by a few degrees, each of whose sides stays within one row or one
+/// column of the block's border. The pixels inside the border are covered whole; along the border,
+/// a side cuts each pixel straight across, so that its covered area is its height (or width) at
+/// its middle; in a corner, the covered part is the quadrilateral that the corner of the shape and
+/// the pixel's inner sides make. Returns false, computing nothing, for any other quadrilateral.
+fn clean_block_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize), areas: &mut Vec<f64>) -> bool {
+    let (nx, ny) = (cols.1 - cols.0, rows.1 - rows.0);
+    if nx < 2 || ny < 2 {
+        return false;
+    }
+    // In the block's coordinates, where the inner sides of its last column and row are x = w and
+    // y = h.
+    let [tl, tr, br, bl] = q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64));
+    let (w, h) = ((nx - 1) as f64, (ny - 1) as f64);
+    let across = |a: (f64, f64), b: (f64, f64)| b.0 - a.0 > (b.1 - a.1).abs();
+    let down = |a: (f64, f64), b: (f64, f64)| b.1 - a.1 > (b.0 - a.0).abs();
+    if !(tl.0 < 1.0
+        && tl.1 < 1.0
+        && tr.0 >= w
+        && tr.1 < 1.0
+        && br.0 >= w
+        && br.1 >= h
+        && bl.0 < 1.0
+        && bl.1 >= h
+        && across(tl, tr)
+        && across(bl, br)
+        && down(tl, bl)
+        && down(tr, br))
+    {
+        return false;
+    }
+    // The sides as lines: y at x for the top and the bottom, x at y for the left and the right.
+    let (top_slope, bottom_slope) = ((tr.1 - tl.1) / (tr.0 - tl.0), (br.1 - bl.1) / (br.0 - bl.0));
+    let (left_slope, right_slope) = ((bl.0 - tl.0) / (bl.1 - tl.1), (br.0 - tr.0) / (br.1 - tr.1));
+    let top = |x: f64| tl.1 + (x - tl.0) * top_slope;
+    let bottom = |x: f64| bl.1 + (x - bl.0) * bottom_slope;
+    let left = |y: f64| tl.0 + (y - tl.1) * left_slope;
+    let right = |y: f64| tr.0 + (y - tr.1) * right_slope;
+    let quad =
+        |a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)| 0.5 * ((a.0 - c.0) * (b.1 - d.1) - (b.0 - d.0) * (a.1 - c.1)).abs();
+    areas.clear();
+    areas.resize(nx * ny, 1.0);
+    areas[0] = quad(tl, (1.0, top(1.0)), (1.0, 1.0), (left(1.0), 1.0));
+    areas[nx - 1] = quad((w, top(w)), tr, (right(1.0), 1.0), (w, 1.0));
+    areas[(ny - 1) * nx] = quad((left(h), h), (1.0, h), (1.0, bottom(1.0)), bl);
+    areas[ny * nx - 1] = quad((w, h), (right(h), h), br, (w, bottom(w)));
+    for x in 1..nx - 1 {
+        let middle = x as f64 + 0.5;
+        areas[x] = 1.0 - top(middle);
+        areas[(ny - 1) * nx + x] = bottom(middle) - h;
+    }
+    for y in 1..ny - 1 {
+        let middle = y as f64 + 0.5;
+        areas[y * nx] = 1.0 - left(middle);
+        areas[y * nx + nx - 1] = right(middle) - w;
+    }
+    true
+}
+
+/// The area of the quadrilateral `q` (its corners in order, in pixel coordinates) inside each
+/// pixel `[x, x + 1] × [y, y + 1]` of the columns `cols.0..cols.1` and the rows `rows.0..rows.1`,
+/// row after row in `areas`. `carry` is scratch space.
+///
+/// By Green's theorem, the area of a polygon inside a pixel is the sum, over the polygon's edges,
+/// of the integral along the part of the edge over the pixel's column of how far the edge is below
+/// the pixel's top, `clamp(y - top, 0, 1)`, signed by the direction the edge runs in `x`. A piece
+/// of an edge counts whole in the rows above it, in part in those it crosses and not at all in
+/// those below it: the whole counts are carried up each column once all edges are summed.
+fn quad_cell_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize), areas: &mut Vec<f64>, carry: &mut Vec<f64>) {
+    let (nx, ny) = (cols.1 - cols.0, rows.1 - rows.0);
+    areas.clear();
+    areas.resize(nx * ny, 0.0);
+    // `carry[col * (ny + 1) + r]` counts in every row of the column above row `r`.
+    carry.clear();
+    carry.resize(nx * (ny + 1), 0.0);
+    let row_index = |y: i64| y.clamp(rows.0 as i64, rows.1 as i64) as usize - rows.0;
+    // Twice the signed area: its sign is the sign of the sums.
+    let mut orientation = 0.0;
+    for e in 0..4 {
+        let ((ax, ay), (bx, by)) = (q[e], q[(e + 1) % 4]);
+        orientation += (bx - ax) * (ay + by);
+        if ax == bx {
+            continue;
+        }
+        let sign = if bx > ax { 1.0 } else { -1.0 };
+        let ((lx, ly), (rx, ry)) = if ax < bx { ((ax, ay), (bx, by)) } else { ((bx, by), (ax, ay)) };
+        let (lo, hi) = (lx.max(cols.0 as f64), rx.min(cols.1 as f64));
+        if lo >= hi {
+            continue;
+        }
+        let slope = (ry - ly) / (rx - lx);
+        let mut x = lo as usize;
+        while (x as f64) < hi {
+            // The piece of the edge over column `x`.
+            let (xa, xb) = (lo.max(x as f64), hi.min((x + 1) as f64));
+            if xa < xb {
+                let (ya, yb) = (ly + slope * (xa - lx), ly + slope * (xb - lx));
+                let length = sign * (xb - xa);
+                let col = x - cols.0;
+                let first = row_index(floor_i(ya.min(yb)));
+                carry[col * (ny + 1) + first] += length;
+                for r in first..row_index(ceil_i(ya.max(yb))) {
+                    let top = (rows.0 + r) as f64;
+                    areas[r * nx + col] += length * ramp_mean(ya - top, yb - top);
+                }
+            }
+            x += 1;
+        }
+    }
+    let sign = if orientation < 0.0 { -1.0 } else { 1.0 };
+    for col in 0..nx {
+        let mut carried = 0.0;
+        for r in (0..ny).rev() {
+            carried += carry[col * (ny + 1) + r + 1];
+            let area = &mut areas[r * nx + col];
+            *area = (sign * (*area + carried)).clamp(0.0, 1.0);
+        }
+    }
+}
+
+/// The mean of `clamp(t, 0, 1)` as `t` goes linearly from `a` to `b`.
+fn ramp_mean(a: f64, b: f64) -> f64 {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    if hi <= 0.0 {
+        0.0
+    } else if lo >= 1.0 {
+        1.0
+    } else if lo >= 0.0 {
+        if hi <= 1.0 { 0.5 * (lo + hi) } else { 1.0 - (1.0 - lo) * (1.0 - lo) / (2.0 * (hi - lo)) }
+    } else if hi <= 1.0 {
+        hi * hi / (2.0 * (hi - lo))
+    } else {
+        (hi - 0.5) / (hi - lo)
     }
 }
 
@@ -4159,6 +4458,177 @@ mod tests {
         let out = warp(&[&ds], &o).unwrap();
         // Output pixel centre (1, 1) falls on the corner between four inputs: GDAL takes (1, 1).
         assert_eq!(out.raster.data.to_f64_vec()[0], 9.0);
+    }
+
+    /// The `sum` of output pixel `(c, r)` of the axis-aligned grid `gt`: each valid pixel of `src`
+    /// (in the same CRS) times the share of its area inside the output pixel, from the
+    /// intersections of their rectangles. `None` when no valid pixel overlaps it.
+    fn rectangle_sum(src: &RasterDataset, gt: [f64; 6], c: usize, r: usize) -> Option<f64> {
+        let s = src.geo_transform();
+        let overlap = |a0: f64, a1: f64, b0: f64, b1: f64| (a1.min(b1) - a0.max(b0)).max(0.0);
+        let (x0, x1, y0, y1) =
+            (gt[0] + c as f64 * gt[1], gt[0] + (c + 1) as f64 * gt[1], gt[3] + (r + 1) as f64 * gt[5], gt[3] + r as f64 * gt[5]);
+        let mut sum = None;
+        for sr in 0..src.raster.rows {
+            for sc in 0..src.raster.cols {
+                let v = src.raster.get(0, sr as isize, sc as isize);
+                let (sx0, sx1, sy0, sy1) =
+                    (s[0] + sc as f64 * s[1], s[0] + (sc + 1) as f64 * s[1], s[3] + (sr + 1) as f64 * s[5], s[3] + sr as f64 * s[5]);
+                let share = overlap(x0, x1, sx0, sx1) * overlap(y0, y1, sy0, sy1) / (s[1] * -s[5]);
+                if share > 0.0 && (!src.has_nodata || Some(v) != src.nodata()) {
+                    *sum.get_or_insert(0.0) += v * share;
+                }
+            }
+        }
+        sum
+    }
+
+    #[test]
+    fn sum_weights_each_source_pixel_by_its_area_inside_the_output_pixel() {
+        let whole = raster(6, 4, [0.0, 1.0, 0.0, 4.0, 0.0, -1.0], 32610, |c, r| (1 + c + 7 * r) as f64);
+        let mut holes = whole.clone();
+        holes.has_nodata = true;
+        holes.raster.set(0, 1, 2, -9999.0).unwrap();
+        holes.raster.set(0, 2, 4, -9999.0).unwrap();
+        let grids = [
+            // Upsampled by 2: each output pixel holds a quarter of a source pixel.
+            ([0.0, 0.5, 0.0, 4.0, 0.0, -0.5], (12, 8)),
+            // Downsampled by 2: each output pixel holds four source pixels whole.
+            ([0.0, 2.0, 0.0, 4.0, 0.0, -2.0], (3, 2)),
+            // 1.5 source pixels per output pixel, shifted by a quarter pixel: output pixels hold
+            // parts of source pixels, and those of the edges overhang the source.
+            ([-0.25, 1.5, 0.0, 4.25, 0.0, -1.5], (5, 3)),
+        ];
+        for (name, src) in [("whole", &whole), ("with nodata", &holes)] {
+            for (gt, size) in grids {
+                let o = WarpOptions {
+                    dst_transform: Some(gt),
+                    size: Some(size),
+                    resampling: Resampling::Sum,
+                    output_type: Some(DataType::F64),
+                    ..Default::default()
+                };
+                let out = warp(&[src], &o).unwrap();
+                for r in 0..size.1 {
+                    for c in 0..size.0 {
+                        let got = out.raster.get(0, r as isize, c as isize);
+                        match rectangle_sum(src, gt, c, r) {
+                            Some(want) => assert!((got - want).abs() < 1e-9, "{name} {gt:?} ({c}, {r}): {got}, not {want}"),
+                            None => assert_eq!(Some(got), out.nodata(), "{name} {gt:?} ({c}, {r}) has no valid source pixel"),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The area of the convex polygon `poly` inside pixel `[x, x + 1] × [y, y + 1]`: the polygon
+    /// clipped by each side of the pixel in turn, then the shoelace formula.
+    fn clipped_area(poly: &[(f64, f64)], x: f64, y: f64) -> f64 {
+        let mut p = poly.to_vec();
+        let inside: [&dyn Fn((f64, f64)) -> f64; 4] = [&|p| p.0 - x, &|p| x + 1.0 - p.0, &|p| p.1 - y, &|p| y + 1.0 - p.1];
+        for f in inside {
+            let mut clipped = Vec::new();
+            for i in 0..p.len() {
+                let (a, b) = (p[i], p[(i + 1) % p.len()]);
+                if f(a) >= 0.0 {
+                    clipped.push(a);
+                }
+                if (f(a) >= 0.0) != (f(b) >= 0.0) {
+                    let t = f(a) / (f(a) - f(b));
+                    clipped.push((a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1)));
+                }
+            }
+            p = clipped;
+        }
+        0.5 * (0..p.len()).map(|i| p[i].0 * p[(i + 1) % p.len()].1 - p[(i + 1) % p.len()].0 * p[i].1).sum::<f64>().abs()
+    }
+
+    /// Output pixels turned on the source grid (by 10 degrees, and by 45) are quadrilaterals: the
+    /// `sum` takes each source pixel times the area of it inside the output pixel's quadrilateral.
+    #[test]
+    fn sum_of_a_turned_output_pixel_takes_the_part_of_each_source_pixel_inside_it() {
+        let ds = raster(24, 24, [0.0, 1.0, 0.0, 24.0, 0.0, -1.0], 32610, |c, r| (1 + c + 25 * r) as f64);
+        // 8 x 8 output pixels of 0.9 and of 2.5 source pixels, which the grid overhangs in part.
+        for (degrees, size) in [(10.0f64, 0.9), (45.0, 0.9), (10.0, 2.5)] {
+            let (s, c) = degrees.to_radians().sin_cos();
+            let gt = [2.3, size * c, size * s, 21.7, size * s, -size * c];
+            let o = WarpOptions {
+                dst_transform: Some(gt),
+                size: Some((8, 8)),
+                resampling: Resampling::Sum,
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![-1.0]),
+                ..Default::default()
+            };
+            let out = warp(&[&ds], &o).unwrap();
+            // A corner of the output grid, in source pixels.
+            let corner =
+                |i: usize, j: usize| (gt[0] + i as f64 * gt[1] + j as f64 * gt[2], 24.0 - (gt[3] + i as f64 * gt[4] + j as f64 * gt[5]));
+            for j in 0..8 {
+                for i in 0..8 {
+                    let quad = [corner(i, j), corner(i + 1, j), corner(i + 1, j + 1), corner(i, j + 1)];
+                    let mut want = None;
+                    for y in 0..24 {
+                        for x in 0..24 {
+                            let area = clipped_area(&quad, x as f64, y as f64);
+                            if area > 0.0 {
+                                *want.get_or_insert(0.0) += area * ds.raster.get(0, y, x);
+                            }
+                        }
+                    }
+                    let got = out.raster.get(0, j as isize, i as isize);
+                    match want {
+                        Some(want) => assert!((got - want).abs() < 1e-9, "{degrees} degrees, {size} ({i}, {j}): {got}, not {want}"),
+                        None => assert_eq!(Some(got), out.nodata(), "{degrees} degrees, {size} ({i}, {j}) covers no source pixel"),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Over an output grid that covers a source whole, the `sum` keeps the source's total across a
+    /// change of CRS too, where output pixels are quadrilaterals on the source's grid: warped in
+    /// memory (in one chunk and in many), read lazily, and written as it is warped.
+    #[test]
+    fn sum_keeps_the_total_of_a_source_it_covers_across_a_reprojection() {
+        let dir = tempfile::tempdir().unwrap();
+        // 2.2 degrees west of the zone's central meridian, where its grid is turned by about 1.3
+        // degrees from longitude and latitude.
+        let ds = raster(64, 48, [300000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| ((c * 7 + r * 13) % 50) as f64 + 0.25);
+        let total: f64 = ds.raster.data.to_f64_vec().iter().sum();
+        let input = dir.path().join("src.tif");
+        crate::write_raster_dataset(&ds, input.to_str().unwrap(), &Default::default()).unwrap();
+        // The source's footprint and 0.002 degrees around it, in output pixels a little smaller
+        // than the source's (30 m).
+        let geographic = SpatialRef::from_epsg(4326).unwrap();
+        let footprint = warp(&[&ds], &WarpOptions { dst_srs: Some(geographic.clone()), ..Default::default() }).unwrap();
+        let (gt, (w, h)) = (footprint.geo_transform(), (footprint.raster.cols as f64, footprint.raster.rows as f64));
+        let extent = (gt[0] - 0.002, gt[3] + h * gt[5] - 0.002, gt[0] + w * gt[1] + 0.002, gt[3] + 0.002);
+        for memory_limit in [64.0 * 1024.0 * 1024.0, 2000.0] {
+            let o = WarpOptions {
+                dst_srs: Some(geographic.clone()),
+                extent: Some(extent),
+                resolution: Some((0.0003, 0.00025)),
+                resampling: Resampling::Sum,
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![f64::NAN]),
+                memory_limit,
+                ..Default::default()
+            };
+            let streamed = dir.path().join("out.tif");
+            warp_to_path(&[input.to_str().unwrap().into()], &o, streamed.to_str().unwrap(), &Default::default()).unwrap();
+            let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+            for (path, out) in [
+                ("memory", warp(&[&ds], &o).unwrap()),
+                ("lazy", warp_lazy(&mut lazy, &o).unwrap()),
+                ("streamed", crate::open_raster(streamed.to_str().unwrap()).unwrap()),
+            ] {
+                let sum: f64 = out.raster.data.to_f64_vec().iter().filter(|v| !v.is_nan()).sum();
+                // Rounding apart (under 1e-15 of the total here), the sums are the total.
+                assert!(((sum - total) / total).abs() < 1e-12, "{path}, {memory_limit} bytes: {sum}, not {total}");
+            }
+        }
     }
 
     #[test]

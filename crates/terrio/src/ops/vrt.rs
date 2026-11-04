@@ -1147,7 +1147,8 @@ pub(crate) fn gdal_average_with_origin(
 
 /// Resamples a floating-point source window to `out` pixels as GDAL's overview code does
 /// (`GDALRasterIOResampled()`): separable convolution kernels stretched when downsampling,
-/// coverage-weighted averages, or the most frequent value.
+/// coverage-weighted averages, or the most frequent value. A `sum` adds each valid source pixel
+/// times the share of its area inside the destination pixel.
 fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize)) -> Vec<Option<f64>> {
     let (fx, fy, fw, fh) = win;
     let (ow, oh) = out;
@@ -1187,7 +1188,8 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                                 continue;
                             }
                             let wx = (x1.min(x as f64 + 1.0) - x0.max(x as f64)).max(0.0);
-                            let weight = if s.resampling == Resampling::Average || s.resampling == Resampling::Rms { wx * wy } else { 1.0 };
+                            let weight =
+                                if matches!(s.resampling, Resampling::Average | Resampling::Rms | Resampling::Sum) { wx * wy } else { 1.0 };
                             if weight > 0.0 {
                                 vals.push((s.values.get(i), weight));
                             }
@@ -1501,5 +1503,42 @@ mod tests {
         let mut out = vec![-1.0; 4];
         r.read(2, 2, &mut out, |v| v);
         assert_eq!(out, vec![2.5, 4.5, 10.5, 12.5]);
+    }
+
+    /// A source resampled with `sum` gives each destination pixel the part of each source pixel
+    /// that lies inside it.
+    #[test]
+    fn sum_resampling_shares_each_source_pixel_by_the_area_inside_each_destination_pixel() {
+        let values: Vec<f64> = (1..=9).map(f64::from).collect();
+        // 2 × 2 pixels into 4 × 4: a quarter of a source pixel in each.
+        let r = SourceRead {
+            values: crate::ops::BandView::F64(&values[..4]),
+            valid: None,
+            width: 2,
+            height: 2,
+            src_type: DataType::F32,
+            src_rect: [0.0, 0.0, 2.0, 2.0],
+            dst_rect: [0.0, 0.0, 4.0, 4.0],
+            resampling: Resampling::Sum,
+            working_float: false,
+            invalid_value: None,
+        };
+        let mut out = vec![-1.0; 16];
+        r.read(4, 4, &mut out, |v| v);
+        let quarters: Vec<f64> =
+            [1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 3.0, 3.0, 4.0, 4.0].iter().map(|v| v / 4.0).collect();
+        assert_eq!(out, quarters);
+        // 3 × 3 pixels into 2 × 2: a source pixel whole, halves of two and a quarter of one in each.
+        let r = SourceRead {
+            values: crate::ops::BandView::F64(&values),
+            width: 3,
+            height: 3,
+            src_rect: [0.0, 0.0, 3.0, 3.0],
+            dst_rect: [0.0, 0.0, 2.0, 2.0],
+            ..r
+        };
+        let mut out = vec![-1.0; 4];
+        r.read(2, 2, &mut out, |v| v);
+        assert_eq!(out, vec![5.25, 8.25, 14.25, 17.25]);
     }
 }
