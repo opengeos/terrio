@@ -7,17 +7,13 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use terrio::{Dataset, Window, WindowOptions};
 
-fn data(name: &str) -> Option<String> {
-    let dir = PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?);
-    let p = dir.join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
-}
+#[path = "common/test_data.rs"]
+mod test_data;
+use test_data::data;
 
 /// Half the width of the Web Mercator world.
 const MAX_GM: f64 = 20037508.342789244;

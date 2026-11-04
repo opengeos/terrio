@@ -21,6 +21,7 @@
 
 use super::profile::LayerProfile;
 use crate::crs::SpatialRef;
+use crate::ops::simplify::open_ring;
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -412,14 +413,6 @@ fn split_parts(parts: Vec<Vec<Coord>>) -> (Vec<Vec<Coord>>, bool) {
     let split = !pieces.is_empty();
     rings.extend(pieces);
     (rings, split)
-}
-
-/// A ring without the closing vertex its record repeats.
-fn open_ring(mut cs: Vec<Coord>) -> Ring {
-    if cs.len() > 1 && (cs[0].x, cs[0].y) == (cs[cs.len() - 1].x, cs[cs.len() - 1].y) {
-        cs.pop();
-    }
-    Ring::new(cs)
 }
 
 /// One polygon as a polygon, several as a multipolygon.

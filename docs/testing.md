@@ -3,7 +3,9 @@
 GDAL is terrio's reference: drivers and operations are compared with GDAL on real-world files.
 The conformance suites run against GDAL 3.12.2 and PROJ 9.8.1 in `ci-extended.yml`, on every push
 to `main` and on pull requests on demand (Run workflow, or a `ci:conformance` or `ci:all` label).
-Suites that require GDAL 3.13 run only in a local environment with that version. Pull requests
+Suites that require GDAL 3.13 run only in a local environment with that version. The Python
+tests set `TERRIO_GDAL_COMPAT=3.13` when rasterio's (or `osgeo.gdal`'s) GDAL is 3.13, so that
+terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull requests
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
@@ -2070,7 +2072,9 @@ premultiplied RGBA, partial-channel nodata, typed masks with valid NaNs, mask
 retention when alpha is removed, and an excluded maximum zoom retaining the lower
 zoom's resampler. Python exercises loaded/lazy/path inputs and typed dataset masks;
 JavaScript exercises incremental callbacks, partial-channel nodata and preservation
-of the original callback exception. Retile output layouts are not implemented yet.
+of the original callback exception. For `gdal_retile.py` grids and pyramids, see
+the [retile section](cli.md#retile) of the CLI reference and the "Retile layouts"
+row of the table above.
 
 ```sh
 python scripts/conformance.py ../terrio-data --only raster-tiles --strict

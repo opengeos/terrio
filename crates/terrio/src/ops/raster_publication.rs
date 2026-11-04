@@ -6,6 +6,9 @@
 
 use super::raster_tile::{Convention, FolderSink, TileCell, TilePlan};
 use crate::crs::SpatialRef;
+// KML and HTML text here escape `'` too (`&apos;`), unlike GDAL's metadata XML
+// (`drivers::common::xml_escape`).
+use crate::drivers::vector::xml::escape as xml;
 use crate::{Error, RasterDataset, Result};
 use serde::Deserialize;
 use serde_json::json;
@@ -339,7 +342,7 @@ impl<'a> Publication<'a> {
             })
             .collect();
         let bands: Vec<_> =
-            (0..source.raster.bands).map(|i| json!({"name":format!("Band{}",i+1),"data_type":dtype(source.raster.data_type)})).collect();
+            (0..source.raster.bands).map(|i| json!({"name":format!("Band{}",i+1),"data_type":source.raster.data_type.as_str()})).collect();
         let scheme = if self.scheme.eq_ignore_ascii_case("raster") { "raster" } else { self.scheme };
         let document = json!({
             "stac_version":"1.1.0", "type":"Feature", "id":if self.options.title.is_empty(){"tiles"}else{&self.options.title},
@@ -488,9 +491,6 @@ fn html(title: &str) -> String {
         xml(title)
     )
 }
-fn xml(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
-}
 fn js(value: &impl serde::Serialize) -> String {
     serde_json::to_string(value)
         .unwrap()
@@ -515,19 +515,4 @@ fn put(sink: &mut dyn FolderSink, name: &str, bytes: &[u8]) -> Result<()> {
         sink.put(name, bytes)?;
     }
     Ok(())
-}
-fn dtype(t: crate::DataType) -> &'static str {
-    use crate::DataType::*;
-    match t {
-        U8 => "uint8",
-        I8 => "int8",
-        U16 => "uint16",
-        I16 => "int16",
-        U32 => "uint32",
-        I32 => "int32",
-        U64 => "uint64",
-        I64 => "int64",
-        F32 => "float32",
-        F64 => "float64",
-    }
 }

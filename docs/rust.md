@@ -310,9 +310,14 @@ rasters; `vector_filter` (with the `sql` parser), `rasterize` and `polygonize`; 
 options struct mirroring the command-line options.
 
 Other modules follow the matching sections of the [CLI reference](cli.md): `ops::{blend,
-fill_nodata, edit, update, overview, layer_algebra, coverage, coverage_clean, coverage_simplify,
-pipeline, raster_tile, raster_retile, tile_index, rpftoc, vector_clip}` and the top-level
-`dataset_files`, `gpkg_maintenance`, `parquet_metadata`, `inspection`, `catalog` and `check`.
+compare, contour, coverage, coverage_clean, coverage_simplify, edit, fill_nodata, layer_algebra,
+lineref, overview, palette, pansharpen, pipeline, pixel_info, raster_retile, raster_tile, render,
+rpftoc, tile_index, topology, update, vector_clip, vector_geom, vector_grid, viewshed, xyz, zonal}`
+and the top-level `dataset_files`, `gpkg_maintenance`, `parquet_metadata`, `inspection`, `catalog`
+and `check`. `ops::render::{render_raster, render_vector}` draws a `LazyRaster` or vector
+`Layer`s into an RGBA `Image` (`width`, `height`, `rgba`, and `Image::to_png()` for PNG bytes)
+from `RenderOptions` (`width`, `height`, `max_size`, `bands`, `colormap`, `stretch`, `attribute`),
+reading a `LazyRaster` from the coarsest fitting overview.
 
 `ops::neighbors::{neighbors, neighbors_to_path}` computes focal statistics (`gdal raster
 neighbors`) from `NeighborsOptions` (kernels, `NeighborMethod`s, size, band, output type and
@@ -656,6 +661,7 @@ the operations and the streams. The other drivers are features:
 | `jp2` | on | JPEG 2000. |
 | `grib` | on | GRIB1 and GRIB2 reading and GRIB2 writing (pure Rust, CCSDS packing with `rust-aec`; JPEG 2000 packing needs `jp2`). |
 | `flatgeobuf` | on | FlatGeobuf. |
+| `xlsx` | on | XLSX and XLSM workbooks as vector layers and the `terrio::xlsx` workbook model, in pure Rust. |
 | `osm` | on | OpenStreetMap PBF and XML. |
 | `pointcloud` | on | LAS, LAZ, COPC, EPT, PLY and E57 (the `pointcloud` module). |
 | `lerc` | on | LERC-compressed GeoTIFFs, read and written. |
@@ -721,8 +727,9 @@ OGC API Features with `VectorOpenOptions::oapif` (`OapifOpenOptions`).
 Collection selection, spatial_filter and max_features/skip_features are shared
 with other vector sources. The portable `oapif::Reader` exposes bounded
 `next_request` / `accept_response` steps; native HTTP and JavaScript fetch use
-the same state machine. GDAL 3.13.3 is the behavior reference. See the CLI
-section for scope, CRS/axis handling, schema inference and allocation limits.
+the same state machine. GDAL 3.13.3 is the behavior reference. See the
+[CLI section](cli.md#ogc-api-features) for scope, CRS/axis handling, schema inference and
+allocation limits.
 
 ## XLSX workbooks
 

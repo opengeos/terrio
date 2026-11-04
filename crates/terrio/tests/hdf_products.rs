@@ -7,7 +7,8 @@
 //! The files come from `scripts/fetch_test_data.sh` (GDAL's test files in `gdal_hdf5` and
 //! `gdal_netcdf`; NASA products in `hdfeos5`, fetched only with Earthdata Login credentials). The
 //! tests skip themselves without `TERRIO_TEST_DATA` or the files. The trailing `bands` files are in
-//! `tests/data/netcdf_bands` (`scripts/make_netcdf_bands_fixtures.py`).
+//! `tests/data/netcdf_bands` (`scripts/make_netcdf_bands_fixtures.py`), the `_Unsigned` ones in
+//! `tests/data/netcdf_unsigned` (`scripts/make_netcdf_unsigned_fixtures.py`).
 
 // Geotransforms as `gdalinfo` prints them, digit for digit.
 #![allow(clippy::excessive_precision)]
@@ -237,6 +238,27 @@ fn netcdf_trailing_bands() {
         let gdal: Vec<(String, String)> =
             e["geolocation"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string())).collect();
         assert_eq!(items, gdal, "{case}");
+    }
+}
+
+/// `Short` variables flagged `_Unsigned` whose `valid_range`, or `valid_min` and `valid_max`, hold
+/// `[9200, -9536]` in the variable's signed type, as GOES ABI L2 products do
+/// (`scripts/make_netcdf_unsigned_fixtures.py`): the bounds are read as unsigned too (9200 to
+/// 56000), so only the pixels outside them are nodata, as GDAL 3.12.2 reads them. The expected
+/// pixels, the bottom row first as for any file without a geotransform, are in `expected.json`,
+/// which the script writes.
+#[test]
+fn netcdf_unsigned_valid_range() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_unsigned");
+    let text = std::fs::read_to_string(dir.join("expected.json")).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let path = dir.join("valid_range.nc");
+    for var in ["valid_range", "valid_min_max"] {
+        let ds = open(&format!("NETCDF:\"{}\":{var}", path.display()));
+        assert_eq!(ds.data_type_name(), "UInt16", "{var}");
+        assert_eq!(ds.nodata(), Some(65535.0), "{var}");
+        let gdal: Vec<f64> = expected[var].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        assert_eq!(ds.raster.data.to_f64_vec(), gdal, "{var}");
     }
 }
 

@@ -11,6 +11,7 @@
 //! Files holding vector layers and rasters open as their vector layers; their raster tables are
 //! subdatasets, named as GDAL names them (`GPKG:file.gpkg:table`).
 
+use super::common::xml_escape;
 use super::sqlite::{Db, Table, Value};
 use super::{common, nodata};
 use crate::formats::RasterDriver;
@@ -454,10 +455,6 @@ fn tile_stats(values: &[f64], valid: impl Fn(f64) -> bool) -> [Option<f64>; 4] {
     if n == 0 { [None; 4] } else { [Some(min), Some(max), Some(mean), Some((m2 / n as f64).sqrt())] }
 }
 
-fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
-}
-
 /// Adds a raster to a GeoPackage being built, as the tile table `table`.
 pub(crate) fn add_raster(
     b: &mut crate::drivers::vector::geopackage::Builder,
@@ -619,7 +616,7 @@ pub(crate) fn add_raster(
     if !r.metadata.is_empty() {
         xml.push_str("  <Metadata>\n");
         for (k, v) in &r.metadata {
-            xml.push_str(&format!("    <MDI key=\"{}\">{}</MDI>\n", escape_xml(k), escape_xml(v)));
+            xml.push_str(&format!("    <MDI key=\"{}\">{}</MDI>\n", xml_escape(k), xml_escape(v)));
         }
         xml.push_str("  </Metadata>\n");
     }

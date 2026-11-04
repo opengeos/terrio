@@ -45,7 +45,7 @@ use std::rc::{Rc, Weak};
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 use terrio::formats::{RasterDriver, VectorDriver};
 use terrio::ops::vector_filter::VectorTranslateOptions;
-use terrio::{DataType, Layer, LazyRaster, RasterDataset, RasterWriteOptions, VectorWriteOptions, Window, WindowOptions};
+use terrio::{Layer, LazyRaster, RasterDataset, RasterWriteOptions, VectorWriteOptions, Window, WindowOptions};
 use wasm_bindgen::prelude::*;
 use wbraster::raster::RasterData;
 
@@ -90,6 +90,13 @@ const FEATURES: &[(&str, bool)] = &[
     ("tiles", cfg!(feature = "tiles")),
     ("zarr", cfg!(feature = "zarr")),
 ];
+
+/// A JavaScript exception as an error.
+pub(crate) fn js_error(e: JsValue) -> JsError {
+    use wasm_bindgen::JsCast;
+    let msg = e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).or_else(|| e.as_string()).unwrap_or_else(|| format!("{e:?}"));
+    JsError::new(&msg)
+}
 
 /// Converts a terrio error into a JavaScript `Error`. Formats this build leaves out say which
 /// module has them.
@@ -205,22 +212,6 @@ fn raster_data(array: &JsValue) -> Result<RasterData, JsError> {
         Float32Array => F32, Float64Array => F64
     );
     Err(JsError::new("expected a typed array (Uint8Array, Int16Array, Float32Array...)"))
-}
-
-/// The JavaScript name of a pixel type's typed array element, as in `Float32Array`.
-fn dtype_name(t: DataType) -> &'static str {
-    match t {
-        DataType::U8 => "uint8",
-        DataType::I8 => "int8",
-        DataType::U16 => "uint16",
-        DataType::I16 => "int16",
-        DataType::U32 => "uint32",
-        DataType::I32 => "int32",
-        DataType::U64 => "uint64",
-        DataType::I64 => "int64",
-        DataType::F32 => "float32",
-        DataType::F64 => "float64",
-    }
 }
 
 /// Options for [`Dataset::to_bytes`], as a JavaScript object.
@@ -665,7 +656,7 @@ impl Dataset {
     /// The pixel type: `uint8`, `int16`, `float32`...
     #[wasm_bindgen(getter)]
     pub fn dtype(&self) -> Result<String, JsError> {
-        Ok(dtype_name(self.raster()?.data_type()).into())
+        Ok(self.raster()?.data_type().as_str().into())
     }
 
     /// The raster's nodata value, or `undefined`.

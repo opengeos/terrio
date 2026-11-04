@@ -14,7 +14,7 @@ WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a fil
 format, and written back to bytes.
 
 ```js
-import init, { open, fromGeoJSON, rasterFromArray, transformPoints, describeCrs } from "terrio-js";
+import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs, openPoints, pointsFromArrays } from "terrio-js";
 
 await init(); // in Node.js: await init({ module_or_path: fs.readFileSync(wasmPath) })
 
@@ -52,7 +52,7 @@ In WebAssembly, these formats are read from and written to memory:
 | | Read | Write |
 |---|---|---|
 | Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
-| Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, FlatGeobuf\*, GeoPackage, GeoParquet, CSV, XLSX, KML, KMZ, GML, GPX, DWG and DXF (full module), OSM PBF, zip archives of these, Shapefile and MapInfo (MIF/MID) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, XLSX, KML, KMZ, GML, GPX, DWG and DXF (full module) |
+| Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, FlatGeobuf\*, GeoPackage, GeoParquet, CSV, XLSX, CityJSON, CityGML, KML, KMZ, GML, GPX, DWG and DXF (full module), OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, Shapefile and MapInfo (MIF and TAB) in zip archives, HEC-RAS (full module) | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, GeoParquet, CSV, XLSX, CityJSON, CityGML, Shapefile (`.shp.zip`), KML, KMZ, GML, GPX, PMTiles, MBTiles, DWG and DXF (full module) |
 | Point cloud | LAS, LAZ, COPC, PLY, E57 | LAS, LAZ, COPC, PLY, E57 |
 
 \* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
@@ -61,7 +61,7 @@ file's size for lines and five for polygons (3.2 GB and 5.4 GB in native builds)
 2 million OpenStreetMap lines opens in about 3 seconds in Node.js, and a 1 GB file of 2.3 million
 polygons runs out of memory, but in the memory64 module (see below). `openUrl` reads files with a
 spatial index by bounding box, decoding only the features found; a file without one is still read
-whole.
+whole. `openOapif(url, options)` reads OGC API Features services over `fetch`.
 
 JPEG 2000 files decode with the codec of GDAL's JP2OpenJPEG driver (a Rust port of OpenJPEG), with
 their GeoJP2 or GMLJP2 georeferencing: a Sentinel-2 band (`T10SEG_..._B04.jp2`, 10980 x 10980)
@@ -74,11 +74,11 @@ archive of the `.jp2` file and the `.aux.xml` sidecar that holds the value, as G
 
 The package holds two WebAssembly modules with the same API. `terrio-js` has every format above;
 `terrio-js/core` leaves out the heaviest ones (GeoParquet and Arrow IPC, netCDF and HDF5, point
-clouds, JPEG 2000, GRIB, Zarr, AVIF tiles and OpenStreetMap) and keeps GeoTIFF/COG with all its
+clouds, JPEG 2000, GRIB, Zarr, AVIF tiles, OpenStreetMap, CAD and HEC-RAS) and keeps GeoTIFF/COG with all its
 compressions, GeoJSON and the other text formats, FlatGeobuf, GeoPackage, Shapefile, PMTiles and
 MBTiles, the CRS transformations and the operations, with a smaller download. The full module also
 includes DWG/DXF through the `cad` feature; the core module leaves CAD out. See the
-[CAD supported subset](../docs/formats.md#cad-drawings-dwg-and-dxf).
+[CAD supported subset](https://terrio.dev/formats/#cad-drawings-dwg-and-dxf).
 
 Measured from the optimized CAD-enabled [CI package at `b371d79`](https://github.com/opengeos/terrio/actions/runs/40144408237)
 (`wasm-release` profile, wasm-opt `-Oz`). MB are decimal (1,000,000 bytes); compression uses
@@ -260,7 +260,7 @@ The source object maps stored locations to raster/vector Datasets, uploaded
 discovery is unavailable in WASM. `DatasetIndex` retains `count`, `metadata`,
 `layer()` and `toBytes(filename?, {format}?)`; keep this object to preserve GTI
 metadata when encoding GeoPackage/FlatGeobuf. `.shp.zip` encodes a Shapefile archive.
-Options use camelCase versions of the [CLI subset](../docs/cli.md#rastervector-indexes-and-gti-creation),
+Options use camelCase versions of the [CLI subset](https://terrio.dev/cli/#rastervector-indexes-and-gti-creation),
 including `locationName`, `sourceCrsFieldName`, `sourceCrsFormat`, `fetchMetadata`
 (triples), `minPixelSize`, `maxPixelSize`, `resolution`, `bbox`, `bandCount`, `ot`,
 `nodata`, `colorInterpretations`, `mask` and `metadata`. Vector selectors are
@@ -410,13 +410,13 @@ Retile uses matching-CRS north-up inputs, recursive factor-two pyramids and
 one-based row/column filenames. Options accept camelCase or snake_case.
 `rasterTiles(input, {publication: {viewers: ["all"], kml: true}}, onFile)`
 adds applicable browser viewers, MapML, STACTA and KML files. The callback must
-save companion files as well as images. See the [CLI reference](../docs/cli.md#retile)
+save companion files as well as images. See the [CLI reference](https://terrio.dev/cli/#retile)
 for output layouts, supported options, limits and measured GDAL differences.
 
 ## Selective scientific package
 
 For a single-threaded NetCDF/HDF5 package using the existing `netcdf-hdf5`
-Cargo feature, see [Scientific WASM builds](../docs/scientific-wasm-build.md).
+Cargo feature, see [Scientific WASM builds](https://terrio.dev/scientific-wasm-build/).
 `node js/build.mjs --no-default-features --features netcdf-hdf5 --out-dir pkg-scientific`
 builds only that module, with generated declarations and project license notices.
 Use a fresh output directory. This is a custom feature selection, not another

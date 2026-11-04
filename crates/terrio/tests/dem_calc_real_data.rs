@@ -7,7 +7,6 @@
 //! The files live outside the repository: set `TERRIO_TEST_DATA` to their directory (see
 //! `scripts/fetch_test_data.sh`). Without it, these tests pass without checking anything.
 
-use std::path::PathBuf;
 use terrio::DataType;
 use terrio::RasterDataset;
 use terrio::ops::calc::{CalcInput, CalcOptions, calc};
@@ -15,12 +14,9 @@ use terrio::ops::dem::{ColorMap, DemOptions, DemProduct, Shading, color_relief, 
 use terrio::ops::proximity::{ProximityOptions, proximity};
 use terrio::ops::sieve::{SieveOptions, sieve};
 
-fn data(name: &str) -> Option<String> {
-    let dir = PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?);
-    let p = dir.join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
-}
+#[path = "common/test_data.rs"]
+mod test_data;
+use test_data::data;
 
 fn checksum(ds: &RasterDataset) -> u64 {
     let r = &ds.raster;

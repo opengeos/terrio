@@ -3,6 +3,11 @@
 //! Windows checks rely on the filesystem provider supplying stable, unique file
 //! IDs (including the legacy file index). Providers that do not honor that
 //! contract cannot offer reliable replacement detection.
+//!
+//! On Unix a file rewritten in place with the same length and modification time is told apart by
+//! its change time (ctime) only. Kernels keep ctime at the resolution of a coarse clock (a timer
+//! tick, a few milliseconds), so such a rewrite within the same tick as the snapshot is not
+//! detected.
 
 use std::fs::{File, Metadata};
 use std::io;

@@ -620,7 +620,7 @@ fn grid_points_into(
     }
     let mut engine = Engine::new(x, y, z, &alg);
     // The blocks `gdal_grid` processes: whole rows, as many as the GeoTIFF's strips grown to 16 MB.
-    let size = data_type_size(data_type);
+    let size = data_type.size_bytes();
     let block_rows = block_rows(cols, rows, bands.max(1), size);
     // As gdal_grid, which flips the y extent to write north-up rows.
     let (top, bottom) = (extent.y_max, extent.y_min);
@@ -679,15 +679,6 @@ fn block_rows(cols: usize, rows: usize, bands: usize, size: usize) -> usize {
     let desired = 16 * 1024 * 1024;
     let per = desired / (cols * size).max(1);
     if strip < rows && strip < per { ((per / strip) * strip).clamp(1, rows) } else { strip }
-}
-
-fn data_type_size(dt: DataType) -> usize {
-    match dt {
-        DataType::U8 | DataType::I8 => 1,
-        DataType::U16 | DataType::I16 => 2,
-        DataType::U32 | DataType::I32 | DataType::F32 => 4,
-        DataType::U64 | DataType::I64 | DataType::F64 => 8,
-    }
 }
 
 /// A block of rows: its first cell's corner, its cell size and its size.

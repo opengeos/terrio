@@ -15,6 +15,7 @@
 //! A `MultiGeometry` of one geometry type is a multi-part geometry, and ground overlays are
 //! polygons. Writing produces a Document per layer, each with its typed Schema.
 
+use super::in_wgs84;
 use super::kml_style;
 use super::xml::{self, Element};
 use crate::{Error, Result};
@@ -572,14 +573,6 @@ fn is_own_field(name: &str) -> bool {
 /// The fields written as ExtendedData.
 fn data_fields(layer: &Layer) -> Vec<usize> {
     (0..layer.schema.len()).filter(|&i| !is_own_field(&layer.schema.fields()[i].name)).collect()
-}
-
-fn in_wgs84(layer: &Layer) -> Result<std::borrow::Cow<'_, Layer>> {
-    let srs = crate::crs::SpatialRef::from_layer(layer);
-    if srs.is_unknown() || srs.epsg == Some(4326) {
-        return Ok(std::borrow::Cow::Borrowed(layer));
-    }
-    Ok(std::borrow::Cow::Owned(crate::vector::reproject_layer(layer, &crate::crs::SpatialRef::from_epsg(4326)?)?))
 }
 
 fn schema(l: &Layer) -> String {

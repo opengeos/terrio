@@ -30,6 +30,10 @@ use crate::{Error, Result};
 use std::path::Path;
 use wbraster::{DataType, Raster};
 
+/// The `GDAL` global attribute: a GDAL version from 1.9 (`NCDFIsGDALVersionGTE`), naming the
+/// conventions followed rather than claiming GDAL wrote the file.
+const GDAL_CONVENTIONS: &str = "GDAL 3.12 conventions, written by terrio";
+
 const NC_DIMENSION: u32 = 0x0A;
 const NC_VARIABLE: u32 = 0x0B;
 const NC_ATTRIBUTE: u32 = 0x0C;
@@ -459,7 +463,10 @@ pub(crate) fn groups_to_bytes(rasters: &[(&str, &Raster, Option<f64>)], options:
     let chunking = !options.chunking.is_some_and(|c| matches!(c.to_ascii_uppercase().as_str(), "NO" | "FALSE" | "OFF" | "0"));
     let mut dims: Vec<(String, usize)> = Vec::new();
     let mut vars: Vec<Var> = Vec::new();
-    let mut globals: Vec<(String, Attr)> = vec![("Conventions".into(), Attr::Text("CF-1.5".into()))];
+    // `GDAL` says the file follows GDAL's netCDF conventions since 1.9 (rows south to north, under
+    // a north-up `GeoTransform`): GDAL 3.13 reads the rows of a file without it top-down.
+    let mut globals: Vec<(String, Attr)> =
+        vec![("Conventions".into(), Attr::Text("CF-1.5".into())), ("GDAL".into(), Attr::Text(GDAL_CONVENTIONS.into()))];
     for (g, r, nodata) in rasters {
         let group = group_of(g);
         let (rdims, rvars) = raster_vars(r, *nodata, version)?;
@@ -845,6 +852,22 @@ mod tests {
                 assert!((gt[0] - 10.0).abs() < 1e-9 && (gt[3] - 50.0).abs() < 1e-9 && (gt[5] + 0.25).abs() < 1e-12, "{gt:?}");
             }
         }
+    }
+
+    #[test]
+    fn rows_keep_their_order_when_read_as_gdal_313_does() {
+        // GDAL 3.13 takes the rows of a file whose `GeoTransform` agrees with its coordinates as
+        // stored (north-up) unless a `GDAL` global attribute says GDAL's conventions (south-up).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.nc");
+        let r = raster(DataType::F32, 1, 4326);
+        write(&r, None, &path, &Options::default()).unwrap();
+        crate::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), Some("3.13".to_string()))].into());
+        let read = super::super::netcdf::read(&path, None);
+        crate::config::pop_scope();
+        let ds = read.unwrap();
+        assert_eq!(ds.raster.data.to_f64_vec(), r.data.to_f64_vec());
+        assert!(ds.raster.metadata.iter().any(|(k, v)| k == "NC_GLOBAL#GDAL" && v == GDAL_CONVENTIONS));
     }
 
     #[test]

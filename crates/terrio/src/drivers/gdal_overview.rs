@@ -185,6 +185,9 @@ pub(crate) struct Plan {
     margin: i64,
     /// The destination block (`nDstChunkXSize`, `nDstChunkYSize`).
     chunk: (usize, usize),
+    /// Whether NaN values of a masked floating-point chunk carry no weight, as in GDAL 3.13:
+    /// the configured [`crate::ops::warp::KernelVersion`] where the plan is made.
+    nan_aware: bool,
 }
 
 /// A destination block's source window along one axis: the first pixel and count read.
@@ -221,7 +224,8 @@ impl Plan {
             cx *= 2;
         }
         let cx = cx.min(dst.0 as i64) as usize;
-        Self { method, src, dst, rx, ry, margin, chunk: (cx, block as usize) }
+        let nan_aware = crate::ops::warp::KernelVersion::configured() == crate::ops::warp::KernelVersion::Gdal313;
+        Self { method, src, dst, rx, ry, margin, chunk: (cx, block as usize), nan_aware }
     }
 
     fn span(&self, dst0: usize, dst_n: usize, ratio: f64, src: usize, dst: usize) -> Span {
@@ -1854,7 +1858,7 @@ fn block_row_t<T: Sample>(
             nodata,
             dt: T::DT,
             max: None,
-            nan_aware: false,
+            nan_aware: plan.nan_aware,
             ovr: (plan.dst.0 as i64, plan.dst.1 as i64),
         };
         resample_block(plan.method, &args, &win)
