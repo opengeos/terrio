@@ -293,13 +293,15 @@ def rasterize(
         else:
             idx = _burn(geoms, list(range(1, len(geoms) + 1)), shape, transform, all_touched, False)
             hit = idx > 0
-            # Each value is converted on its own: a list mixing ints above 2**63 with others
-            # would become float64 and lose precision. Python ints the dtype cannot hold are
-            # refused, as rasterio refuses them, rather than wrapped.
-            try:
-                lut = np.array([np.array(v, dtype=out.dtype) for v in values], dtype=out.dtype)
-            except OverflowError as e:
-                raise ValueError("shape values cannot be cast to specified dtype") from e
+            # Converted straight to the output dtype: inferring a dtype first would make ints
+            # above 2**63 mixed with others float64 and lose precision. Integers the dtype cannot
+            # hold are refused, as rasterio refuses them, rather than wrapped (NumPy < 2 wraps),
+            # and so are floats outside its range and NaN.
+            if out.dtype.kind in "iu":
+                info = np.iinfo(out.dtype)
+                if not all(info.min <= v <= info.max for v in values):
+                    raise ValueError("shape values cannot be cast to specified dtype")
+            lut = np.array(values, dtype=out.dtype)
             out[hit] = lut[idx[hit] - 1]
     if writer is not None:
         writer.write(out, 1)
