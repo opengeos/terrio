@@ -8,6 +8,11 @@
   source keeps its total. An upsampled output pixel took the whole value of its source pixel, and
   an output pixel overhanging the source's edge counted as covered whole. VRT sources resampled
   with `sum` share their pixels by area too.
+- With `GDAL_INGESTED_BYTES_AT_OPEN` (or `TERRIO_INGESTED_BYTES_AT_OPEN`) above a block (64 KiB
+  by default), opening a remote file that the process-wide cache holds takes the ingested blocks
+  from there and requests only those it no longer holds. Every reader of a file requested them
+  again (twice for each `terrio.rio.open`), so that opening a URL again was never served from the
+  cache.
 
 ## 0.7.0 (2026-11-03)
 
