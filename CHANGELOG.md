@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `terrio.xarray` (`engine="terrio"`, `open_rasterio`) skips applying a band's scale and offset
+  when they are 1 and 0, and applies them in place otherwise: masked reads are 20% faster.
+- `Raster.from_array` copies arrays 3 to 8 times faster: C-ordered arrays as one slice, others
+  made contiguous by numpy, and the raster no longer filled with nodata before the data replaces
+  it. `terrio::raster_from_data` builds a `Raster` from its data that way.
+- `terrio.rio.features.rasterize` looks burn values up in one array operation, not per pixel in
+  Python: 5-7x faster on large grids (`crop`/`mask` in `terrio.xarray`). Integer values above
+  2**63 mixed with other values are burnt exactly, where they were rounded through float64.
 - Warps with `sum` resampling give each output pixel the sum of the valid source pixels it
   overlaps, each weighted by the share of its area inside the output pixel (on the source grid, a
   quadrilateral when the output grid is turned or reprojected), so that an output grid covering a
