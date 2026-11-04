@@ -1025,6 +1025,10 @@ based on the full-resolution source. Use `NONE` when the source pyramids were bu
 with a filter unsuitable for the analysis. Mosaics select a level independently for
 each source. GCP/RPC transformations retain their full-resolution coordinate meaning.
 
+`-r sum` takes no overview under `AUTO` or `AUTO-n`, as an overview averages the
+pixels a sum adds: it reads the full resolution, so a coarse `sum` of a remote raster
+with overviews reads much more of it. `--overview n` reads level `n` for a `sum` too.
+
 Forced GCP overviews can give slightly different automatically suggested bounds than GDAL,
 which refits GCPs at the selected resolution. Specify `--te` and `--ts` for an identical
 target grid; Terrio keeps its full-resolution grid while selecting source pixels.
@@ -1171,12 +1175,11 @@ Raster creation options (compression, tiles, masks, overviews and metadata overr
 are rejected for a serialized warp; set the warp grid through the warp options.
 With `sum`, each output pixel is the sum of the valid source pixels it overlaps,
 each weighted by the share of its area inside the output pixel, so that a grid
-covering the source read at full resolution keeps its total, up to floating-point
-rounding, in a floating-point output; an integer output also rounds each pixel to a
-whole number and clamps it to its type's range (a Byte output stores 255 for a sum
-of 400). A `sum` from an overview of the source, which `--overview AUTO` (the
-default) can choose, adds the overview's pixels; `--overview NONE` reads the full
-resolution.
+covering the source keeps its total, up to floating-point rounding, in a
+floating-point output; an integer output also rounds each pixel to a whole number
+and clamps it to its type's range (a Byte output stores 255 for a sum of 400).
+A `sum` reads the source's full resolution unless a level is given (`--overview n`,
+whose total it then keeps): `AUTO` and `AUTO-n` choose no overview for it.
 GDAL 3.12's generic `sum` polygon path can lose overlap area on pixel boundaries,
 including when a redundant identity CRS transformer disables its affine fast path.
 Terrio preserves conservative affine overlap sums; its results match GDAL's affine

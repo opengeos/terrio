@@ -333,6 +333,9 @@ Paths, lazy `Raster` objects, and mixed/repeated inputs in mosaics retain their
 stored overviews. Selection precedes pixel reads and does not alter the output grid
 computed from the original metadata. Only the source resolution changes. Loaded rasters
 have no stored overviews: a requested numeric level warns and uses full resolution.
+With `resampling="sum"`, `"AUTO"` and `"AUTO-n"` choose no overview, as an overview
+averages the pixels a sum adds: the full resolution is read, which costs more for a
+remote raster. A level (`overview=1`) is read as asked.
 Calls with loaded inputs reuse their existing pixels, including repeated references.
 File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
 
