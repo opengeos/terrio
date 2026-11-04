@@ -3561,9 +3561,10 @@ fn working_type(
 /// (`GDALWarpResolveWorkingDataType()`) before the VRT exists, from the source's type and the
 /// source and output nodata values, drops source nodata values that no band's type holds, and
 /// creates the bands in that type. So a Byte source with an output nodata value of -1 gives an
-/// Int16 VRT, one of 300 a UInt16 VRT, and an Int8 source an Int16 VRT with GDAL 3.12 (whose
-/// resolution starts at Byte) but an Int8 one with GDAL 3.13 (see [`working_type`]). `src_nodata`
-/// has one value (or `None`) per band; `dst_nodata` one per band or one for all.
+/// Int16 VRT, one of 300 a UInt16 VRT, and an Int8 source an Int16 VRT with GDAL 3.12, whose
+/// resolution starts at Byte, but an Int8 one with GDAL 3.13, whose resolution starts at the
+/// source's type. `src_nodata` has one value (or `None`) per band; `dst_nodata` one per band or
+/// one for all.
 pub fn warped_vrt_type(
     version: KernelVersion,
     src_type: DataType,

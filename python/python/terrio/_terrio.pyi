@@ -120,6 +120,8 @@ __all__ = [
     "merge_points",
     "append_points",
     "tiff_tags",
+    "tiff_infers_cog_layout",
+    "gdal_compat",
     "crs_info",
     "crs_to_projjson",
     "suggested_grid",

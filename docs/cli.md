@@ -1101,8 +1101,12 @@ where releases differ:
   TIFFs opened read-only and write GeoJSON features without spaces.
 
 Terrain arithmetic (`dem --kernel-version`) stays explicit: its 3.13 profile covers slope
-and standard hillshade only. terrio writes netCDF files with a `GDAL` global attribute naming
-GDAL's conventions, so that GDAL 3.13 reads their rows in order.
+and standard hillshade only.
+
+Every netCDF file terrio writes, whatever `TERRIO_GDAL_COMPAT` is, carries a `GDAL` global
+attribute (`GDAL 3.12 conventions, written by terrio`) declaring GDAL's row order (south to
+north under a north-up `GeoTransform`): GDAL 3.13 reads the rows of a file without it upside
+down, and GDAL 3.12 reads the file as before.
 
 GeoTIFF and COG translation and warping preserve `AREA_OR_POINT=Point`, including
 point tie points and rotated affine transforms, without moving pixel corners.

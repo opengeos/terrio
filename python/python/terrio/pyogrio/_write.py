@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime as _dt
 import math
 import os
+import re
 
 import numpy as np
 
@@ -290,6 +291,10 @@ def _crs_member(crs) -> str | None:
     return '{ "type": "name", "properties": { "name": ' + _escape(name) + " } }"
 
 
+# A JSON string (kept whole) or a space outside one (dropped).
+_PLAIN_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"| ')
+
+
 def _plain(text: str) -> str:
     """json-c's `JSON_C_TO_STRING_PLAIN` form of its `JSON_C_TO_STRING_SPACED` text.
 
@@ -301,21 +306,7 @@ def _plain(text: str) -> str:
     Returns:
         str: The same JSON without the spaces.
     """
-    out = []
-    in_string = escaped = False
-    for c in text:
-        if in_string:
-            out.append(c)
-            if escaped:
-                escaped = False
-            elif c == "\\":
-                escaped = True
-            elif c == '"':
-                in_string = False
-        elif c != " ":
-            out.append(c)
-            in_string = c == '"'
-    return "".join(out)
+    return _PLAIN_TOKEN.sub(lambda m: "" if m.group(0) == " " else m.group(0), text)
 
 
 def to_geojson(df, layer: str) -> str:

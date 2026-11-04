@@ -174,6 +174,9 @@ class Structure:
     # Whether IMAGE_STRUCTURE's LAYOUT=COG is GDAL 3.13's inference from the file's layout
     # rather than its structural metadata: GDAL infers it for datasets opened read-only only.
     layout_inferred: bool = False
+    # The file whose layout GDAL 3.13 would check when IMAGE_STRUCTURE is first read (see
+    # `infer_layout`); None once checked, or when nothing is to be checked.
+    layout_path: str | None = None
 
     def alpha_band(self) -> int | None:
         """The band GDAL uses as the alpha of the others (1-based), as `GetMaskFlags` does.
@@ -425,12 +428,9 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
         if "KNOWN_INCOMPATIBLE_EDITION=YES" not in ghost:
             image_structure["LAYOUT"] = "COG"
     # GDAL 3.13 (`GTiffDataset::CheckCOGLayout()`) also reports a COG's layout without the
-    # structural metadata saying so.
+    # structural metadata saying so, checked when IMAGE_STRUCTURE is first read.
     if "LAYOUT" not in image_structure and _terrio.gdal_compat() != "3.12":
-        with contextlib.suppress(Exception):
-            if _terrio.tiff_infers_cog_layout(path):
-                image_structure["LAYOUT"] = "COG"
-                s.layout_inferred = True
+        s.layout_path = path
     # libtiff's default BitsPerSample is 1, as the reader's.
     bits = _first(t.get(BITS), 1)
     tables = t.get(JPEG_TABLES)
@@ -581,6 +581,24 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
             if _first(ifd.get(WIDTH)) == s.width and _first(ifd.get(HEIGHT)) == s.height:
                 s.has_mask = True
     return s
+
+
+def infer_layout(s: Structure) -> None:
+    """Adds GDAL 3.13's inferred `LAYOUT=COG` to IMAGE_STRUCTURE, once.
+
+    GDAL checks a TIFF's layout when its IMAGE_STRUCTURE metadata is first read, so the file's
+    directories are read again only then, and only under GDAL 3.13 compatibility.
+
+    Args:
+        s: The structure (see `Structure.layout_path`).
+    """
+    path, s.layout_path = s.layout_path, None
+    if path is None:
+        return
+    with contextlib.suppress(Exception):
+        if _terrio.tiff_infers_cog_layout(path):
+            s.namespaces.setdefault("IMAGE_STRUCTURE", {})["LAYOUT"] = "COG"
+            s.layout_inferred = True
 
 
 def _vertical_unit(wkt: str | None) -> str | None:
