@@ -21,9 +21,11 @@ kind found among vector layers, rasters and point clouds (LAS, LAZ, COPC, PLY, E
 ## Reading in place
 
 GeoTIFFs and COGs are opened lazily: `terrio info` fetches the header only, and window or overview
-reads fetch only the tiles they touch, merging adjacent ranges into one request. PMTiles archives
+reads fetch only the tiles they touch, merging adjacent ranges into one request (including GeoTIFF
+members of seek-optimized ZIP archives, SOZip, over `/vsizip//vsicurl/`). PMTiles archives,
 Zarr stores, JPEG 2000, GRIB, SRTM HGT, STAC tiled assets, COPC and EPT are read in place too
-(below). Other formats are downloaded to a temporary
+(below), and WFS (`WFS:`), OGC API Features (`OAPIF:`) and ArcGIS feature-service queries
+(`ESRIJSON`, `ESRIPBF`) are read page by page (see [Formats](formats.md#vectors)). Other formats are downloaded to a temporary
 directory first; a remote shapefile's `.shx`, `.dbf`, `.prj` and `.cpg`
 come with it.
 

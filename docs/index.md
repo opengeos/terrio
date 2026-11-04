@@ -23,30 +23,33 @@ terrio rasterize counties.gpkg counties.tif -a FIPS --tr 0.01 0.01
   netCDF-4, with groups), HDF5, ERDAS Imagine,
   ENVI, Esri grids, GeoPackage tiles, VRT and more. See [Formats](formats.md).
 - **Vectors**: GeoPackage, GeoParquet, FlatGeobuf, Shapefile, GeoJSON (and GeoJSONSeq), CSV, XLSX,
-  KML/KMZ, GML, GPX, TopoJSON, MapInfo and OpenStreetMap PBF, with layers larger than memory read
-  and converted as streams of features in the formats that allow it; and ArcGIS feature-service
-  JSON and protocol buffers, whose layers are read into memory whole.
+  KML/KMZ, GML, GPX, DWG, DXF, CityJSON, CityGML, TopoJSON, MapInfo and OpenStreetMap PBF, with
+  layers larger than memory read and converted as streams of features in the formats that allow it;
+  and WFS, OGC API Features (`OAPIF`), and ArcGIS feature-service JSON and protocol buffers, whose
+  layers are read into memory whole.
 - **HEC-RAS**: the 2D meshes, cross sections, structures and other features of HEC-RAS geometry
   and plan HDF files, with their stored attributes and results, as vector layers. See
   [HEC-RAS](hecras.md).
-- **Point clouds**: LAS 1.0 to 1.4 (with waveforms), LAZ, COPC, PLY and E57, read and written,
-  and EPT read; remote COPC and EPT read by bounds and octree level; files larger than memory in
-  chunks; PDAL's filters (SMRF ground classification, outliers, ranges, sampling, voxels);
-  gridding to DEMs as PDAL and `gdal_grid` do. See [Point Clouds](point-clouds.md).
+- **Point clouds**: LAS 1.0 to 1.4 (with waveforms), LAZ, COPC, EPT, PLY and E57, read and written;
+  remote COPC and EPT read by bounds and octree level, and EPT datasets updated in place; files
+  larger than memory in chunks; PDAL's filters (SMRF, PMF and CSF ground classification, height
+  above ground, outliers, ranges, normals, clustering, covariance features, sampling, voxels,
+  colorization, overlay, hexbin and more); gridding to DEMs as PDAL and `gdal_grid` do. See
+  [Point Clouds](point-clouds.md).
 - **Cloud data in place**: HTTP(S) range requests, `s3://`, `gs://` and `az://` objects, zip
   archives, and GDAL's `/vsicurl/`, `/vsis3/`, `/vsizip/` prefixes. Remote COGs are read window by
   window. See [Remote Data](remote-data.md).
 - **GDAL-style operations**: `translate`, `warp` (14 resampling methods), `mosaic` and VRTs,
-  `rasterize`, `polygonize`, `dem`, `calc`, `contour`, overviews, and `convert` with OGR SQL filters. See [Command Line](cli.md).
+  `rasterize`, `polygonize`, `dem`, `calc`, `contour`, `viewshed`, `preview`, overviews, and `convert` with OGR SQL filters. See [Command Line](cli.md).
 - **Vector operations**: buffers, overlays, dissolves, hulls, simplification, validity repair,
   polygon coverages, zonal statistics and [OGR SQL](sql.md). See [Command Line](cli.md).
 - **Coordinate reference systems**: EPSG codes, WKT, PROJ strings and `.prj` files, identified and
   transformed the way GDAL does. See [Coordinate Systems](crs.md).
 - **Every interface**: the [command line](cli.md), a [Rust library](rust.md), a
   [Python package](python.md) with NumPy arrays, an [npm package](javascript.md) compiled to
-  WebAssembly, an [MCP server](mcp.md) for AI agents, and a [browser UI](#browser-ui) for the
-  commands. Try it in the [playground](playground.md) or the [notebooks](notebooks.md), with
-  nothing to install.
+  WebAssembly, an [MCP server](mcp.md) for AI agents, and a [browser UI](#browser-ui) and
+  [interactive map](cli.md#view) for the commands and datasets. Try it in the
+  [playground](playground.md) or the [notebooks](notebooks.md), with nothing to install.
 
 ## Browser UI
 
@@ -59,8 +62,9 @@ terrio ui
 ![The terrio ui page: a searchable list of commands beside the form for terrio info, with the equivalent command line and the output of a run on a remote GeoTIFF](assets/terrio-ui.webp)
 
 Pick files with the built-in file browser or enter a URL, run or cancel the command, read its
-output, and copy the equivalent command line into a script. See [`ui`](cli.md#ui) for the options,
-the security model and the limits.
+output, and copy the equivalent command line into a script. On `preview`, **Open map** opens the
+dataset in a pan-and-zoom map in a new tab (or run [`terrio view`](cli.md#view) directly). See
+[`ui`](cli.md#ui) for the options, the security model and the limits.
 
 ## Where to go next
 
@@ -93,5 +97,5 @@ terrio is in early development. The API may change before 1.0. See the
 
 ## License
 
-MIT, except the point cloud eigensolver (MPL-2.0). See
-[NOTICE](https://github.com/opengeos/terrio/blob/main/NOTICE).
+MIT, except the point cloud eigensolver (MPL-2.0) and Apache-2.0 components (CSF, exactextract
+weighted medians, ColorBrewer). See [NOTICE](https://github.com/opengeos/terrio/blob/main/NOTICE).

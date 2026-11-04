@@ -62,7 +62,7 @@ terrio.open_raster("landsat.tif").write("landsat.pmtiles")  # Byte rasters as ti
 ## Vector data
 
 ```python
-ds = terrio.open_vector("countries.gpkg")  # or .shp, .geojson, .fgb, .parquet, .kml, .zip...
+ds = terrio.open_vector("countries.gpkg")  # or .shp, .geojson, .fgb, .parquet, .xlsx, .dxf, .dwg, .city.json, .citygml, .kml, .zip, WFS:, OAPIF:...
 layer = ds.layers[0]  # also ds["countries"]
 layer.name, layer.crs, layer.geometry_type, layer.fields, len(layer), layer.bounds
 collection = layer.to_geojson()  # a GeoJSON FeatureCollection dict
@@ -81,7 +81,20 @@ terrio.write_vector(layer, "world.gpkg", append=True)
 terrio.convert("more.shp", "world.gpkg", nln="countries", overwrite=True)
 ```
 
-Driver open options go in `options`, by their GDAL names, as `terrio convert --oo` takes them.
+The GeoPackage is changed in place, as SQLite changes it: only the pages that change are written (new
+rows, R-tree nodes, the tables describing the layer), in a transaction protected by a rollback
+journal, so appending to a large GeoPackage costs about as much as the features appended, and a
+process stopped in the middle leaves the file as it was (SQLite, GDAL and terrio play the journal
+back).
+
+Driver open options go in `options`, by their GDAL names, as `terrio convert --oo` takes them
+(`HEADERS`, `FIELD_TYPES`, `HEADER_ROWS`, `FIRST_ROW` and `RANGE` for XLSX; `X_POSSIBLE_NAMES` and
+`Y_POSSIBLE_NAMES` for CSV and XLSX; `ZOOM_LEVEL` and `CLIP` for vector tiles; `WFS_*` and
+`OAPIF_*`), and layer creation options go in `options` on `write_vector`, `Layer.write` and
+`Layer.to_bytes`, or `lco` on `convert` (`GEOMETRY`, `HEADER_STYLE`, `FREEZE_HEADER`, `AUTOFILTER`,
+`COLUMN_WIDTH`, `DATE_FORMAT`, `DATETIME_FORMAT` and `CREATION_TIME` for XLSX; `RFC7946` for
+GeoJSON); `cityjson_version`, `citygml_version` and `citygml_lod0_surface` control CityJSON and
+CityGML writes.
 HEC-RAS geometry and plan HDF files (the package is built with the `hecras` feature) read as
 vector layers this way, with the results HEC-RAS stored joined by open options
 (see [HEC-RAS](hecras.md)):
@@ -94,12 +107,6 @@ plan = terrio.open_vector(
 )
 terrio.info("BaldEagleDamBrk.p03.hdf", layers=["mesh_cells"], options={"CELL_ATTRIBUTES": "MINIMUM_ELEVATION"})
 ```
-
-The file is changed in place, as SQLite changes it: only the pages that change are written (new
-rows, R-tree nodes, the tables describing the layer), in a transaction protected by a rollback
-journal, so appending to a large GeoPackage costs about as much as the features appended, and a
-process stopped in the middle leaves the file as it was (SQLite, GDAL and terrio play the journal
-back).
 
 ### Layer selection
 
@@ -233,7 +240,7 @@ Assigning a CRS changes its declaration without transforming coordinates.
 Update supports `input_layer`, `output_layer`, `key` and `mode` (`merge`,
 `update-only`, `append-only`); missing layer selections in multilayer datasets fail.
 File edits materialize the dataset and require space for a neighboring temporary
-copy. See the CLI documentation for atomicity and metadata preservation limits.
+copy. See the [CLI documentation](cli.md#edit) for atomicity and metadata preservation limits.
 
 The vector dataset copy operations `concat`, `rename_layer` and `edit_vector` refuse an
 existing destination path. Choose a new output path; use `in_place=True` for supported
@@ -653,7 +660,7 @@ list of reports. VRT references stay in the source directory tree by default;
 `allow_external_references=True` permits trusted external assets. Deleting a VRT
 preserves referenced rasters. Reports include `recovery_files`: a nonempty list
 means the operation committed but cleanup left staged files. I/O releases the GIL.
-See the CLI file-management section for staging, rollback, overwrite and format rules.
+See the [CLI file-management section](cli.md#dataset-copy-dataset-rename-dataset-delete-dataset-files) for staging, rollback, overwrite and format rules.
 
 `parquet_create_metadata(inputs, output, *, overwrite=False)` accepts a sequence of string
 or pathlib partition paths and returns a dictionary containing `files`, `row_groups`,
@@ -766,5 +773,5 @@ places.layers[0].write("lakes.gpkg")
 
 Use `layers` and `bbox` for collection and spatial selection. The GDAL-style
 open options, CRS/axis rules, schema handling and bounded eager paging are
-described in the CLI OGC API Features section. `OAPIF_SKIP_FEATURES` and
+described in the [CLI OGC API Features section](cli.md#ogc-api-features). `OAPIF_SKIP_FEATURES` and
 `OAPIF_MAX_FEATURES` apply a per-collection range.

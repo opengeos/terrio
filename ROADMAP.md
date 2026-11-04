@@ -31,7 +31,7 @@ appearance require a separate future design.
 - [x] CityJSON 1.1/2.0 reader, merged in [#464](https://github.com/opengeos/terrio/pull/464).
 - [x] CityGML 2.0/3.0 reader ([#470](https://github.com/opengeos/terrio/pull/470)).
 - [x] CityJSON 1.1/2.0 writer ([#473](https://github.com/opengeos/terrio/pull/473)).
-- [ ] CityGML 2.0/3.0 writer ([#480](https://github.com/opengeos/terrio/pull/480)).
+- [x] CityGML 2.0/3.0 writer ([#480](https://github.com/opengeos/terrio/pull/480)).
 
 ## Local browser interface
 
@@ -114,11 +114,11 @@ scope in existing commands separately from new command coverage. All three items
 complete.
 
 - [x] Resolve the eight original public-fixture output mismatches in #253. The
-      [current measurements](docs/benchmark-253-current.md), merged in
+      [current measurements](https://terrio.dev/benchmark-253-current/), merged in
       [#493](https://github.com/opengeos/terrio/pull/493), record complete raster,
       vector and 1/2/4/12-CPU comparisons against GDAL 3.13.3. The separate
       vendor-reported files remain unavailable and are not independently certified.
-- [x] Grouped aggregates and the [documented spatial SQL subset](docs/sql.md)
+- [x] Grouped aggregates and the [documented spatial SQL subset](https://terrio.dev/sql/)
       (area, length, intersects, buffer, transform and centroid), through Rust,
       CLI/MCP, Python and JavaScript/WASM. Implemented in
       [#507](https://github.com/opengeos/terrio/pull/507), with 56 GDAL 3.13.3
@@ -577,12 +577,12 @@ WebAssembly (the `terrio-js` npm package):
       makes small parallel allocations slower.
 - [x] A smaller download: optional formats split out or loaded on demand, and size-optimized builds.
       Done: the package holds a second module, `terrio-js/core`, without GeoParquet and Arrow,
-      netCDF/HDF5, point clouds, JPEG 2000, Zarr, AVIF and OSM: 8.9 MB (3.0 MB gzipped, 2.3 MB
-      with Brotli), against 16.4 MB (5.6 MB, 4.1 MB) for the full one, which a page can import when
+      netCDF/HDF5, point clouds, JPEG 2000, GRIB, Zarr, AVIF, OSM, CAD and HEC-RAS: 9.67 MB (3.36 MB gzipped, 2.56 MB
+      with Brotli), against 22.10 MB (7.71 MB, 5.67 MB) for the full one, which a page can import when
       it needs those formats; formats left out say which module has them. Both are built with
-      whole-program LTO, the codecs optimized for speed and the rest for size, and wasm-opt -Oz:
-      the full module went from 20.6 MB (6.7 MB gzipped) to 16.4 MB, and decodes GeoTIFFs and JPEG
-      2000 and writes COGs as fast in Node.js.
+      whole-program LTO, the codecs optimized for speed and the rest for size, and wasm-opt -Oz,
+      and decode GeoTIFFs and JPEG
+      2000 and write COGs as fast in Node.js.
 - [x] Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support
       it. Done: a memory64 module, `terrio-js/memory64` (every format, up to 16 GB), which
       `load({ memory64: true })` picks where the runtime has 64-bit memories (Node.js 24+, Chrome
@@ -591,13 +591,13 @@ WebAssembly (the `terrio-js` npm package):
       2 GB raster is written and read back. Built on nightly Rust (`wasm64-unknown-unknown`,
       tier 3, `-Z build-std`) with cargo and wasm-bindgen, wasm-pack and its wasm-opt not
       supporting it yet, and with build-time patches of three crates that treat WebAssembly as
-      wasm32 only (`tar`, `zstd-sys`, `arrow-buffer`); single-threaded.
+      wasm32 only (`tar`, `acadrust`, `arrow-buffer`); single-threaded.
 
 ## Later
 
 - [ ] Pipeline writer options as GDAL has them, such as retaining source feature IDs in a
       write step rather than assigning sequential ones (see the pipeline section of
-      [docs/cli.md](docs/cli.md)). Not part of GDAL parity round 2 (#288).
+      [the CLI reference](https://terrio.dev/cli/#pipelines)). Not part of GDAL parity round 2 (#288).
 - [x] ArcGIS feature-service JSON (the `ESRIJSON` driver): files by content and query URLs page by
       page, as GDAL's driver reads them.
 - [x] ArcGIS feature-service protocol buffers (the `ESRIPBF` driver, `f=pbf`): files by content and

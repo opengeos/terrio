@@ -151,6 +151,7 @@ ndvi = terrio.calc("(B - A * 1.0) / (B + A * 1.0)", A="landsat.tif", A_band=3, B
                    type="Float32")  # like gdal_calc.py, with NumPy's typing rules
 dist = terrio.proximity("roads.tif", values=[1], distunits="GEO")
 clean = terrio.sieve("landcover.tif", threshold=10, connectedness=8)
+png = terrio.render("dem.tif", colormap="terrain", max_size=512)  # PNG bytes; Rasters also render in Jupyter
 xs, ys = terrio.transform_points([699960], [3900000], "EPSG:32610", "EPSG:4326")
 
 data = open("dem.tif", "rb").read()
@@ -207,7 +208,7 @@ encoded = index.to_bytes("index.fgb")
 
 `raster_index`/`vector_index` return `DatasetIndex` (count, layer, metadata,
 `to_bytes`, `write`); optional `dst` writes the result. Options follow the
-[CLI index subset](../docs/cli.md#rastervector-indexes-and-gti-creation) in snake_case;
+[CLI index subset](https://terrio.dev/cli/#rastervector-indexes-and-gti-creation) in snake_case;
 repeatable options are lists: `filename_filters`, `source_layer_names`,
 `source_layer_indexes`, `color_interpretations`. `fetch_metadata` is a list of
 `(key, field, type)` triples, and `metadata` is a dictionary. Non-finite nodata
@@ -389,5 +390,5 @@ in-memory `Raster`. Set `prefix="name"` to choose it explicitly.
 `terrio.raster_tiles(source, output, publication={"viewers": ["all"], "kml": True})`
 adds applicable Leaflet/OpenLayers pages, MapML, STACTA and KML companions.
 `publication.url` names the tile directory itself. Serve the directory over HTTP
-to use the viewers. See the [CLI reference](../docs/cli.md#retile) for supported
+to use the viewers. See the [CLI reference](https://terrio.dev/cli/#retile) for supported
 options, memory limits, resume rules and measured GDAL differences.

@@ -2070,7 +2070,8 @@ premultiplied RGBA, partial-channel nodata, typed masks with valid NaNs, mask
 retention when alpha is removed, and an excluded maximum zoom retaining the lower
 zoom's resampler. Python exercises loaded/lazy/path inputs and typed dataset masks;
 JavaScript exercises incremental callbacks, partial-channel nodata and preservation
-of the original callback exception. Retile output layouts are not implemented yet.
+of the original callback exception. For `gdal_retile.py` grids and pyramids, see
+[Separate-file raster retiling (#440)](#separate-file-raster-retiling-440) below.
 
 ```sh
 python scripts/conformance.py ../terrio-data --only raster-tiles --strict

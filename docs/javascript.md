@@ -37,7 +37,7 @@ In WebAssembly, these formats are read from and written to memory:
 | | Read | Write |
 |---|---|---|
 | Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
-| Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, FlatGeobuf\*, GeoPackage, CSV, XLSX, GeoParquet, CityJSON, CityGML, KML, KMZ, GML, GPX, OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives, DWG, DXF | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, CSV, XLSX, GeoParquet, CityJSON (`cityjsonVersion`: `"1.1"` or `"2.0"`), DWG, DXF, Shapefile (`.shp.zip`), KML, KMZ (`kmzResources` packs icon images), GML, GPX, PMTiles, MBTiles (`minzoom`, `maxzoom` options) |
+| Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, OAPIF (`openOapif`), FlatGeobuf\*, GeoPackage, CSV, XLSX, GeoParquet, CityJSON, CityGML, KML, KMZ, GML, GPX, OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives, DWG, DXF, HEC-RAS | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, CSV, XLSX, GeoParquet, CityJSON (`cityjsonVersion`: `"1.1"` or `"2.0"`), CityGML (`citygmlVersion`: `"2.0"` or `"3.0"`, `citygmlLod0Surface`: `"footprint"` or `"roof-edge"`), DWG, DXF, Shapefile (`.shp.zip`), KML, KMZ (`kmzResources` packs icon images), GML, GPX, PMTiles, MBTiles (`minzoom`, `maxzoom` options) |
 
 \* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
 whole, within WebAssembly's 4 GB of memory; with the file's bytes, that takes about four times the
@@ -69,14 +69,14 @@ MBTiles, the CRS transformations and the operations, at about half the size:
 
 | Module | `.wasm` | gzip | Brotli |
 |---|---|---|---|
-| `terrio-js` | 16.9 MB | 5.9 MB | 4.3 MB |
-| `terrio-js/core` | 9.2 MB | 3.2 MB | 2.4 MB |
+| `terrio-js` | 22.10 MB | 7.71 MB | 5.67 MB |
+| `terrio-js/core` | 9.67 MB | 3.36 MB | 2.56 MB |
 
 ```js
 import init, { open, features } from "terrio-js/core";
 
 await init();
-features(); // { build: "terrio-js/core", features: ["flatgeobuf", "lerc", "lzma", "sqlite", "tiles"] }
+features(); // { build: "terrio-js/core", features: ["flatgeobuf", "lerc", "lzma", "sqlite", "tiles", "xlsx"] }
 ```
 
 A format the module leaves out fails with a message that says so (``built without the `jp2`
@@ -571,7 +571,8 @@ VRT references stay in the source directory tree by default; enable
 `allowExternalReferences` only for trusted external assets. VRT deletion preserves
 referenced rasters. Reports contain `recovery_files`; leftovers indicate a committed
 operation whose staged cleanup needs attention. The CLI file-management section documents
-companion discovery, overwrite, staging and recovery behavior shared by these APIs.
+companion discovery, overwrite, staging and recovery behavior shared by these APIs; see
+[`dataset-copy`](cli.md#dataset-copy-dataset-rename-dataset-delete-dataset-files).
 
 `parquetCreateMetadata(inputs, output, {overwrite: false})` creates a metadata-only Parquet
 file from an array of uploaded `/vsimem/` partition paths. It returns `files`, `row_groups`,
@@ -646,7 +647,7 @@ and links must stay on the original origin. Native CLI/Python follow
 same-origin redirects. Native reads also retry HTTP 429, 500, 502, 503 and 504
 responses with backoff; `openOapif` does not retry, so a transient error status
 fails the read. Supply a retrying `fetch` when a service is unreliable. See the
-CLI section for shared schema and CRS rules.
+[CLI section](cli.md#ogc-api-features) for shared schema and CRS rules.
 
 Signed numeric source IDs, or string IDs that conflict with a source `id`
 property, are preserved in `_oapif_id` text (with an extra leading underscore

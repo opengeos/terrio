@@ -528,6 +528,35 @@ payloads. See [validation details and known differences](testing.md#geopackage-s
 
 ## convert
 
+```sh
+terrio convert INPUT OUTPUT [-f FORMAT] [options]
+```
+
+| Option | Applies to | Meaning |
+|---|---|---|
+| `-f`, `--format`, `--of` | both | Output driver short name (`GTiff`, `COG`, `GPKG`, `ESRI Shapefile`...) |
+| `--t-srs CRS` | both | Reproject |
+| `--ct-opt KEY=VALUE` | both | Coordinate operation options (`ALLOW_BALLPARK=NO`, `ONLY_BEST=YES`, `PROMOTE_TO_3D=YES`) |
+| `--compress`, `--tile-size`, `--bigtiff` | rasters | GeoTIFF/COG creation options |
+| `--srcwin X Y W H`, `--overview N` | rasters | Read a window or an overview level |
+| `-l`, `--layer` | vectors | Only these layers |
+| `--where EXPR` | vectors | OGR SQL attribute filter |
+| `--spat XMIN YMIN XMAX YMAX`, `--spat-srs` | vectors | Spatial filter |
+| `--select FIELDS`, `--limit N` | vectors | Fields to keep, number of features |
+| `--sql STATEMENT` | vectors | `SELECT ... FROM ... WHERE ... ORDER BY ... LIMIT` |
+| `--nln NAME`, `--nlt TYPE` | vectors | New layer name, geometry type (`PROMOTE_TO_MULTI`...) |
+| `--explodecollections` | vectors | One feature per part |
+| `--simplify TOL`, `--segmentize MAX_LEN` | vectors | Simplify geometries or bound segment lengths before reprojection |
+| `--s-srs`, `--a-srs` | vectors | Override or assign the CRS |
+| `--append`, `--overwrite` | vectors, rasters (`--append`) | Add to or replace layers of an existing GeoPackage or vector tile archive; add a raster to a PMTiles or MBTiles archive of image tiles |
+| `--oo KEY=VALUE` | vectors | Open options (`X_POSSIBLE_NAMES=...` for CSV/XLSX; `HEADERS`, `FIELD_TYPES`, `HEADER_ROWS`, `FIRST_ROW`, `RANGE` for XLSX; `ZOOM_LEVEL`, `CLIP` for tiles; `WFS_*`, `OAPIF_*`...) |
+| `--lco KEY=VALUE` | vectors | Layer creation options (`RFC7946=YES` for GeoJSON; `GEOMETRY=AS_WKT|AS_XY` for CSV; `GEOMETRY=AS_XY|AS_WKT|NONE`, `HEADER_STYLE=BOLD`, `FREEZE_HEADER=YES`, `AUTOFILTER=YES`, `COLUMN_WIDTH=AUTO|<n>`, `DATE_FORMAT`, `DATETIME_FORMAT`, `CREATION_TIME` for XLSX...) |
+| `--co KEY=VALUE` | rasters | Creation options (Zarr; netCDF: `FORMAT=NC4`, `COMPRESS=DEFLATE`, `ZLEVEL`, `CHUNKING`; PMTiles and MBTiles: `TILE_FORMAT=WEBP`...) |
+| `--minzoom N`, `--maxzoom N` | both | Zoom levels of PMTiles, MBTiles and MVT outputs |
+| `--kmz-resource PATH[=FILE]` | vectors | Pack an icon or companion file into a KMZ archive |
+| `--cityjson-version 1.1\|2.0` | vectors | CityJSON output version (default `2.0`) |
+| `--citygml-version 2.0\|3.0`, `--citygml-lod0-surface footprint\|roof-edge` | vectors | CityGML output version (default `3.0`) and 2.0 LoD 0 building surface |
+
 CityJSON output defaults to 2.0. Select 1.1 with `--cityjson-version 1.1`; use
 `.city.json`/`.cityjson` or `--format CityJSON`. See [CityJSON](formats.md#cityjson)
 for the flat model and coordinate quantization limits.
@@ -539,29 +568,6 @@ For an unclassified 2.0 building LoD 0 surface, choose
 Native class/LoD/geometry restrictions are checked before the output is written.
 The flat view writes native geometry and generic JSON annotations; solids,
 appearance and implicit templates are not reconstructed.
-
-```sh
-terrio convert INPUT OUTPUT [-f FORMAT] [options]
-```
-
-| Option | Applies to | Meaning |
-|---|---|---|
-| `-f`, `--format`, `--of` | both | Output driver short name (`GTiff`, `COG`, `GPKG`, `ESRI Shapefile`...) |
-| `--t-srs CRS` | both | Reproject |
-| `--compress`, `--tile-size`, `--bigtiff` | rasters | GeoTIFF/COG creation options |
-| `--srcwin X Y W H`, `--overview N` | rasters | Read a window or an overview level |
-| `-l`, `--layer` | vectors | Only these layers |
-| `--where EXPR` | vectors | OGR SQL attribute filter |
-| `--spat XMIN YMIN XMAX YMAX`, `--spat-srs` | vectors | Spatial filter |
-| `--select FIELDS`, `--limit N` | vectors | Fields to keep, number of features |
-| `--sql STATEMENT` | vectors | `SELECT ... FROM ... WHERE ... ORDER BY ... LIMIT` |
-| `--nln NAME`, `--nlt TYPE` | vectors | New layer name, geometry type (`PROMOTE_TO_MULTI`...) |
-| `--explodecollections` | vectors | One feature per part |
-| `--s-srs`, `--a-srs` | vectors | Override or assign the CRS |
-| `--append`, `--overwrite` | vectors, rasters (`--append`) | Add to or replace layers of an existing GeoPackage or vector tile archive; add a raster to a PMTiles or MBTiles archive of image tiles |
-| `--oo`, `--lco KEY=VALUE` | vectors | Open and layer creation options (`RFC7946=YES`...) |
-| `--co KEY=VALUE` | rasters | Creation options (Zarr; netCDF: `FORMAT=NC4`, `COMPRESS=DEFLATE`, `ZLEVEL`, `CHUNKING`; PMTiles and MBTiles: `TILE_FORMAT=WEBP`...) |
-| `--minzoom N`, `--maxzoom N` | both | Zoom levels of PMTiles, MBTiles and MVT outputs |
 
 GeoTIFF/COG WebP output accepts `--compress WEBP --co WEBP_LOSSLESS=YES` or
 `--co WEBP_LEVEL=0..100` for lossy quality. Supported inputs are Byte RGB/RGBA;
@@ -3448,7 +3454,6 @@ offset, units and nodata. Numeric integer/float metadata compares by value.
 
 An array present in only some inputs is retained; regions belonging to other
 inputs use that array's nodata value, or zero when it has none.
->
 
 ## grid
 
@@ -3763,7 +3768,7 @@ numeric ranges and runtime parser constraints remain enforced by the CLI. The ca
 `calc` compatibility flags, even when ordinary `--help` omits them.
 
 The catalog shares the MCP command tree and excludes
-`mcp`, `ui` and the generated `help` subcommand; MCP tool arguments remain `args: string[]`.
+`mcp`, `ui`, `view` and the generated `help` subcommand; MCP tool arguments remain `args: string[]`.
 
 Clap distinguishes the metadata flag from literal values. For example,
 `terrio info -- --json-usage` treats `--json-usage` as the dataset name, and
