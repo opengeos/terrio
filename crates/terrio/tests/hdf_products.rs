@@ -259,23 +259,28 @@ fn netcdf_unsigned_valid_range() {
     }
 }
 
-/// `Int64` variables flagged `_Unsigned`, which GDAL reads as `Int64`, and `Short` variables whose
-/// `valid_range`, or `valid_min` and `valid_max`, are inverted (`[10, -10]`), which GDAL ignores
-/// (`scripts/make_netcdf_int64_unsigned_fixtures.py`): the pixels and nodata GDAL 3.12.2 reads.
+/// `Int64` variables flagged `_Unsigned`, which GDAL reads as `Int64` (with netCDF's default
+/// nodata without `_FillValue`), and `Short` variables whose
+/// `valid_range`, or `valid_min` and `valid_max`, are inverted (`[10, -10]`, or `[-100, 100]` read
+/// as unsigned), which GDAL ignores (`scripts/make_netcdf_int64_unsigned_fixtures.py`): the pixels
+/// and nodata GDAL 3.12.2 reads.
 #[test]
 fn netcdf_int64_unsigned_and_inverted_ranges() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_int64_unsigned/ranges.nc");
     // GDAL's pixels, the bottom row first as for any file without a geotransform: none masked.
-    let gdal = [-9.0, -2.0, -1.0, 30000.0, 5.0, 10.0, 1000.0, -10.0];
-    for (var, data_type) in [
-        ("int64_unsigned", "Int64"),
-        ("int64_unsigned_inverted_range", "Int64"),
-        ("short_inverted_range", "Int16"),
-        ("short_inverted_min_max", "Int16"),
+    let signed = [-9.0, -2.0, -1.0, 30000.0, 5.0, 10.0, 1000.0, -10.0];
+    let unsigned = [65527.0, 65534.0, 65535.0, 30000.0, 5.0, 10.0, 1000.0, 65526.0];
+    for (var, data_type, nodata, gdal) in [
+        ("int64_unsigned", "Int64", -1.0, signed),
+        ("int64_unsigned_inverted_range", "Int64", -1.0, signed),
+        ("short_inverted_range", "Int16", -1.0, signed),
+        ("short_inverted_min_max", "Int16", -1.0, signed),
+        ("short_unsigned_straddling_range", "UInt16", 65535.0, unsigned),
+        ("int64_unsigned_default_fill", "Int64", -9223372036854775806.0, signed),
     ] {
         let ds = open(&format!("NETCDF:\"{}\":{var}", path.display()));
         assert_eq!(ds.data_type_name(), data_type, "{var}");
-        assert_eq!(ds.nodata(), Some(-1.0), "{var}");
+        assert_eq!(ds.nodata(), Some(nodata), "{var}");
         assert_eq!(ds.raster.data.to_f64_vec(), gdal, "{var}");
     }
 }
