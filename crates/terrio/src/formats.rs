@@ -183,6 +183,26 @@ pub struct DriverInfo {
 }
 
 impl RasterDriver {
+    /// Whether terrio reads files of this format by window, in place, rather than whole:
+    /// GeoTIFF, JPEG 2000, VRT and the raw layouts (SRTM HGT, EHdr, ENVI, SAGA, ERS, Idrisi and
+    /// Surfer 6 binary grids).
+    pub fn reads_by_window(self) -> bool {
+        matches!(
+            self,
+            Self::GTiff
+                | Self::Cog
+                | Self::JP2
+                | Self::VRT
+                | Self::SRTMHGT
+                | Self::EHdr
+                | Self::ENVI
+                | Self::SAGA
+                | Self::ERS
+                | Self::RST
+                | Self::GSBG
+        )
+    }
+
     /// Every raster driver.
     pub const ALL: &[RasterDriver] = &[
         Self::GTiff,

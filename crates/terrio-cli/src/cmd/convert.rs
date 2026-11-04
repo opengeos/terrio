@@ -201,21 +201,7 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
         && a.open_options.is_empty();
     // GeoTIFF, JPEG 2000, VRT and raw-layout inputs are read by window (other files of these
     // extensions, such as Surfer's text grids, are read whole, then written by strip).
-    let streamed_in = matches!(
-        RasterDriver::for_extension(&a.input),
-        Some(
-            RasterDriver::GTiff
-                | RasterDriver::JP2
-                | RasterDriver::SRTMHGT
-                | RasterDriver::EHdr
-                | RasterDriver::ENVI
-                | RasterDriver::SAGA
-                | RasterDriver::ERS
-                | RasterDriver::RST
-                | RasterDriver::GSBG
-                | RasterDriver::VRT
-        )
-    );
+    let streamed_in = RasterDriver::for_extension(&a.input).is_some_and(RasterDriver::reads_by_window);
     if !(tiff_out || tiles_out) || !plain || !streamed_in {
         return Ok(None);
     }

@@ -977,9 +977,12 @@ A GeoTIFF or COG output of such a raster is read, converted and written a strip 
 as `gdal_translate` copies its output in chunks, so that neither the output nor the input is held
 whole: a mosaic larger than memory can be translated. This covers outputs that copy a window of the
 input (with `-b`, `--ot`, `--a-nodata`, `--a-srs` or `--a-ullr`) and those resized by nearest
-neighbour, `bilinear`, `cubic` or `cubicspline`. Outputs resized by `average`, `rms`, `mode` or
-`lanczos` are made whole before being written: a strip of them read alone differs from the whole
-output where it starts inside a source row.
+neighbour, `bilinear`, `cubic` or `cubicspline` from the overview `--overview AUTO` chooses.
+These are made whole before being written: outputs resized by `average`, `rms`, `mode` or `lanczos`
+(a strip of them read alone differs from the whole output where it starts inside a source row),
+resized from a level read alone (`--overview NONE` or a level number), of complex bands, or that
+replace one of the input's files. A VRT is read by strips when its sources are GeoTIFFs or other
+files read by window, copied or picked by nearest neighbour; other VRTs are read whole.
 
 ## warp
 

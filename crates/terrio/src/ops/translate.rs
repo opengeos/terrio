@@ -333,10 +333,11 @@ pub fn translate_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: Over
 /// with `options`, the same file. An output read by window and written as a GeoTIFF or a COG is
 /// read, converted and written a strip of rows at a time, so that neither it nor the source is
 /// held whole (`gdal_translate` copies its output in chunks too), when it copies a window of the
-/// source or is resampled by nearest neighbour or a bilinear, cubic or cubic spline kernel. Other
-/// outputs (resampled by average, RMS, mode or Lanczos, or of another format), those that
-/// [`translate_lazy`] translates from the source read whole, and outputs that replace one of the
-/// source's files are written from the output translated whole.
+/// source or is resampled by nearest neighbour or a bilinear, cubic or cubic spline kernel from
+/// the overview `RasterIO` chooses (`OverviewSelection::Auto`). Other outputs (resampled by
+/// average, RMS, mode or Lanczos, from a level read alone, of complex bands or of another
+/// format), those that [`translate_lazy`] translates from the source read whole, and outputs
+/// that replace one of the source's files are written from the output translated whole.
 ///
 /// # Errors
 ///
@@ -372,8 +373,10 @@ fn write_lazy(
     if !streams || !read.by_strips {
         return crate::write_raster_dataset(&read.rows(src, 0, oh)?, path, options);
     }
-    // About 64 MB of values per strip, counted as the 8-byte values sources such as VRTs read in.
-    let rows = rows_per_strip.unwrap_or_else(|| super::strips::strip_rows(ow, read.read.bands.len(), 8, None)).clamp(1, oh);
+    // About 64 MB of values per strip, counted as the 8-byte values sources such as VRTs read in;
+    // a copy's strips are rows of the source's blocks, which a warped VRT computes whole.
+    let block = if read.copy { src.block_size().map(|(_, h)| h) } else { None };
+    let rows = rows_per_strip.unwrap_or_else(|| super::strips::strip_rows(ow, read.read.bands.len(), 8, block)).clamp(1, oh);
     let first = read.rows(src, 0, rows)?;
     let header = read.header(src, &first, oh);
     let mut out = super::strips::StripWriter::create(&header, path, options)?;
@@ -413,9 +416,12 @@ struct LazyRead {
     whole: bool,
     /// Whether a strip of the output's rows read alone holds the values the whole read gives
     /// them: an output that copies a window of the source, or one resampled by nearest
-    /// neighbour or a bilinear, cubic or cubic spline kernel. Other resamplings (average, RMS,
-    /// mode, Lanczos) of a strip starting within a source row differ from the whole read's.
+    /// neighbour or a bilinear, cubic or cubic spline kernel from the overview `RasterIO`
+    /// chooses. Other resamplings (average, RMS, mode, Lanczos) of a strip starting within a
+    /// source row differ from the whole read's, as may a level read alone.
     by_strips: bool,
+    /// Whether the output copies a window of the source, pixel for pixel.
+    copy: bool,
     /// The conversion of the values read: type, nodata and georeferencing.
     values: TranslateOptions,
 }
@@ -636,7 +642,12 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
         && read
             .window
             .is_some_and(|(wx, wy, wxs, wys)| [wx, wy, wxs, wys].iter().all(|v| v.fract() == 0.0) && (wxs, wys) == (ow as f64, oh as f64));
-    let by_strips = copy || matches!(resampling, Resampling::Nearest | Resampling::Bilinear | Resampling::Cubic | Resampling::CubicSpline);
+    // A level read alone (`--overview NONE` or a level) rounds each request's window to whole
+    // pixels within 0.001 (`fixed_request`): a strip's own origin may round off the whole
+    // output's sampling grid.
+    let by_strips = copy
+        || (fixed.is_none()
+            && matches!(resampling, Resampling::Nearest | Resampling::Bilinear | Resampling::Cubic | Resampling::CubicSpline));
     let values = TranslateOptions {
         output_type: o.output_type,
         assign_nodata: o.assign_nodata,
@@ -644,7 +655,7 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
         assign_ullr: o.assign_ullr,
         ..Default::default()
     };
-    Ok(Planned::Read(LazyRead { read, together, gt: geom.gt, gcps, whole, by_strips, values }))
+    Ok(Planned::Read(LazyRead { read, together, gt: geom.gt, gcps, whole, by_strips, copy, values }))
 }
 
 /// A value within 0.001 of a whole number, rounded to it, as `gdal_translate`'s VRT source rounds
@@ -800,12 +811,14 @@ mod tests {
                 OverviewSelection::Auto,
             ),
         ];
-        // Every case but the average and the Lanczos resampling is written by strips.
+        // Every case is written by strips but the average and the Lanczos resampling, and the
+        // levels read alone (`NONE` or a level) that are not copies.
         for (k, (input, o, overview)) in cases.iter().enumerate() {
             let mut src = crate::open_raster_lazy(input).unwrap();
             let by_strips = matches!(plan_lazy(&mut src, o, *overview).unwrap(), Planned::Read(r) if r.by_strips);
             let resampling = o.resampling.unwrap_or_default();
-            assert_eq!(by_strips, !matches!(resampling, Resampling::Average | Resampling::Lanczos), "case {k}: {o:?}");
+            let expected = !matches!(resampling, Resampling::Average | Resampling::Lanczos) && *overview == OverviewSelection::Auto;
+            assert_eq!(by_strips, expected, "case {k}: {o:?}");
         }
         for (k, (input, o, overview)) in cases.iter().enumerate() {
             for (driver, ext) in [(RasterDriver::Cog, "cog.tif"), (RasterDriver::GTiff, "tif")] {

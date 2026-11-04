@@ -1044,11 +1044,12 @@ impl LazyRaster {
     }
 
     /// Writes the full-resolution image to `path`, as [`crate::write_raster_dataset`] writes the
-    /// raster [`LazyRaster::read`] reads. A GeoTIFF or JPEG 2000 file read in place, or a VRT,
-    /// written as a GeoTIFF or a COG (in a compression terrio's own writer encodes) is read and
-    /// written a strip of rows at a time, so that it is never held whole; a PMTiles or MBTiles archive is
-    /// built a tile row at a time (and a raster already on its zoom level's Web Mercator pixel
-    /// grid read a strip at a time); other rasters are read whole, then written.
+    /// raster [`LazyRaster::read`] reads. A GeoTIFF or JPEG 2000 file read in place, or a VRT of
+    /// such files copied or picked by nearest neighbour, written as a GeoTIFF or a COG (in a
+    /// compression terrio's own writer encodes) is read and written a strip of rows at a time,
+    /// so that it is never held whole; a PMTiles or MBTiles archive is built a tile row at a
+    /// time (and a raster already on its zoom level's Web Mercator pixel grid read a strip at a
+    /// time); other rasters are read whole, then written.
     ///
     /// ```no_run
     /// use terrio::RasterWriteOptions;
@@ -1129,6 +1130,13 @@ impl LazyRaster {
             header.band_metadata = t.tags.band_properties.clone();
             header.color_table = t.tags.color_table.clone();
             header.gcps = t.tags.gcps.clone();
+        }
+        // A source read whole keeps its dataset's metadata items only when its driver reads
+        // them so (see `LazyRaster::read`); a window keeps `AREA_OR_POINT` alone.
+        if let Inner::Source(_, source) = &self.inner
+            && !source.whole_read_keeps_metadata()
+        {
+            header.raster.metadata.retain(|(k, _)| k == "AREA_OR_POINT");
         }
         let rows = crate::ops::strips::strip_rows(width, bands, value_size, block);
         let mut out = crate::ops::strips::StripWriter::create_masked(&header, path, options, source_mask)?;
@@ -1250,6 +1258,12 @@ impl LazyRaster {
             }
         }
         Ok(ds)
+    }
+
+    /// Whether the raster is a source that reads by window ([`WindowSource::reads_by_window`]).
+    #[cfg(test)]
+    pub(crate) fn source_reads_by_window(&self) -> bool {
+        matches!(&self.inner, Inner::Source(_, s) if s.reads_by_window())
     }
 
     /// Whether a read of some bands (numbered from 1) gives complex bands: whole complex bands

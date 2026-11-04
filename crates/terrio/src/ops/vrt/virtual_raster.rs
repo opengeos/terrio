@@ -982,9 +982,26 @@ impl WindowSource for Reader {
     fn has_mask(&self) -> bool {
         self.description.root.child("MaskBand").is_some()
     }
-    /// A window reads the parts of the sources that overlap it.
+    /// A window reads the parts of the sources that overlap it, the values a whole read gives
+    /// them, when each source is a file read by window copied or picked by nearest neighbour.
+    /// A resampled source's window is padded by a fixed margin, which a downsampling kernel can
+    /// reach past; a source read whole is decoded again for every window once more sources
+    /// are read than the reader keeps open; a VRT source and a warped or pansharpened VRT are
+    /// not described here.
     fn reads_by_window(&self) -> bool {
-        true
+        let description = &self.description;
+        if description.warped || description.pansharpen.is_some() {
+            return false;
+        }
+        description.layout.bands.iter().flat_map(|b| &b.sources).all(|s| {
+            let windowed = match self.sources.get(&s.filename) {
+                Some(source) => source.is_lazy(),
+                None => crate::formats::RasterDriver::for_extension(&s.filename)
+                    .is_some_and(|d| d.reads_by_window() && d != crate::formats::RasterDriver::VRT),
+            };
+            let copied = !s.src_rect[0].is_nan() && s.src_rect[2] == s.dst_rect[2] && s.src_rect[3] == s.dst_rect[3];
+            windowed && (copied || s.resampling == Resampling::Nearest)
+        })
     }
     fn read_mask(&mut self, _level: usize, window: Window) -> Result<Option<Vec<u8>>> {
         let _depth = ReadDepth::enter()?;
@@ -1418,8 +1435,9 @@ mod tests {
 
     #[test]
     fn vrt_written_by_strips_is_the_vrt_read_whole() {
-        // A mosaic of two GeoTIFFs, side by side: written by strips, as `LazyRaster::write`
-        // writes a source read by window, it is the file the whole mosaic is written as.
+        // A mosaic of two GeoTIFFs, side by side, with dataset and band metadata: written by
+        // strips, as `LazyRaster::write` writes a source read by window, it is the file the
+        // whole mosaic is written as.
         let dir = tempfile::tempdir().unwrap();
         let at = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
         let rgb = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/resampled_reads/rgb_mask.tif");
@@ -1431,23 +1449,50 @@ mod tests {
                      <DstRect xOff=\"{x}\" yOff=\"0\" xSize=\"64\" ySize=\"48\"/></SimpleSource>"
                 )
             };
-            format!("<VRTRasterBand dataType=\"Byte\" band=\"{b}\">{}{}</VRTRasterBand>", source(0), source(64))
+            format!(
+                "<VRTRasterBand dataType=\"Byte\" band=\"{b}\"><Metadata><MDI key=\"STATISTICS_MAXIMUM\">238</MDI></Metadata>\
+                 {}{}</VRTRasterBand>",
+                source(0),
+                source(64)
+            )
         };
         let vrt = at("mosaic.vrt");
         std::fs::write(
             &vrt,
             format!(
-                "<VRTDataset rasterXSize=\"128\" rasterYSize=\"48\"><GeoTransform>500000, 30, 0, 4100000, 0, -30</GeoTransform>{}</VRTDataset>",
+                "<VRTDataset rasterXSize=\"128\" rasterYSize=\"48\"><GeoTransform>500000, 30, 0, 4100000, 0, -30</GeoTransform>\
+                 <Metadata><MDI key=\"AREA_OR_POINT\">Area</MDI><MDI key=\"TIFFTAG_ARTIST\">mosaic</MDI></Metadata>{}</VRTDataset>",
                 (1..=3).map(band).collect::<String>()
             ),
         )
         .unwrap();
         let mut src = open_virtual_raster(&vrt).unwrap();
+        assert!(src.source_reads_by_window());
         let options = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), ..Default::default() };
         let (whole, strips) = (at("whole.tif"), at("strips.tif"));
         crate::write_raster_dataset(&src.read().unwrap(), &whole, &options).unwrap();
         src.write(&strips, &options).unwrap();
         assert!(std::fs::read(&whole).unwrap() == std::fs::read(&strips).unwrap());
+
+        // Sources resampled other than by nearest neighbour, VRT sources and files read whole
+        // are read whole: a window of them is not always the whole read's.
+        let one = |file: &str, size: usize, resampling: &str| {
+            format!(
+                "<VRTDataset rasterXSize=\"{size}\" rasterYSize=\"{size}\"><VRTRasterBand dataType=\"Byte\" band=\"1\">\
+                 <ComplexSource resampling=\"{resampling}\"><SourceFilename relativeToVRT=\"0\">{file}</SourceFilename>\
+                 <SourceBand>1</SourceBand><SrcRect xOff=\"0\" yOff=\"0\" xSize=\"64\" ySize=\"48\"/>\
+                 <DstRect xOff=\"0\" yOff=\"0\" xSize=\"{size}\" ySize=\"{size}\"/></ComplexSource></VRTRasterBand></VRTDataset>"
+            )
+        };
+        let reads_by_window = |xml: String| {
+            let path = at("one.vrt");
+            std::fs::write(&path, xml).unwrap();
+            open_virtual_raster(&path).unwrap().source_reads_by_window()
+        };
+        assert!(reads_by_window(one(rgb, 20, "nearest")));
+        assert!(!reads_by_window(one(rgb, 20, "lanczos")));
+        assert!(!reads_by_window(one(&vrt, 20, "nearest")));
+        assert!(!reads_by_window(one("/elsewhere/image.png", 20, "nearest")));
     }
 
     #[test]
