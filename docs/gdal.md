@@ -37,8 +37,14 @@ terrio's commands map onto GDAL's utilities, with GDAL's option names in kebab c
 | `gdaltindex` | `terrio raster-index` |
 | `ogrtindex` | `terrio vector-index` |
 | `rgb2pct.py`, `pct2rgb.py`, `gdalattachpct.py` | `terrio rgb-to-palette`, `palette-to-rgb`, `attach-palette` |
+| `gdal_create` | `terrio create-raster` |
 | `gdalmdiminfo` | `terrio mdinfo` |
+| `gdalmdimtranslate` | `terrio mdconvert`, `mdmosaic`, `mdread` |
 | `gdalmanage` | `terrio dataset-files`, `dataset-copy`, `dataset-rename`, `dataset-delete` |
+| `gdal vsi` | `terrio vsi` |
+| `sozip` | `terrio vsi sozip` |
+| `validate_cloud_optimized_geotiff.py` | `terrio validate-cog` |
+| `gdal pipeline` | `terrio pipeline` |
 | `ogrlineref` | `terrio lineref` |
 | `ogrmerge.py` | `terrio concat` |
 | `ogr_layer_algebra.py` | `terrio layer-algebra` |
@@ -171,7 +177,7 @@ let ntf = terrio::memory::open_raster_bytes(std::fs::read("image.ntf")?, "image.
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Not covered: rotated geotransforms and GCP-only georeferencing (as for terrio's own drivers),
+Not covered: rotated geotransforms and GCP-only georeferencing on the GDAL bridge,
 appending to existing datasets through GDAL (`--append`), and updating GDAL datasets in place.
 
 ## Vector read budget

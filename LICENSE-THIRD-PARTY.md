@@ -270,7 +270,7 @@ Used by:
 - [arrow-select 58.4.1](https://github.com/apache/arrow-rs)
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
 - [ctutils 0.4.3](https://github.com/RustCrypto/utils)
-- [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
+- [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs)
 - [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op)
 - [parquet 58.4.1](https://github.com/apache/arrow-rs)
 - [siphasher 1.0.4](https://github.com/jedisct1/rust-siphash)
@@ -6615,9 +6615,9 @@ Used by:
 - [jxl-threadpool 1.0.0](https://github.com/tirr-c/jxl-oxide.git)
 - [jxl-vardct 0.11.1](https://github.com/tirr-c/jxl-oxide.git)
 - [laz 0.13.0](https://github.com/tmontaigu/laz-rs)
-- [lerc-core 0.5.0](https://github.com/i-norden/lerc-rust)
+- [lerc-core 0.5.2](https://github.com/i-norden/lerc-rust)
 - [lerc-reader 0.5.0](https://github.com/i-norden/lerc-rust)
-- [lerc-writer 0.5.0](https://github.com/i-norden/lerc-rust)
+- [lerc-writer 0.5.2](https://github.com/i-norden/lerc-rust)
 - [libc 0.2.191](https://github.com/rust-lang/libc)
 - [miniz_oxide 0.8.9](https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
 - [miniz_oxide 0.9.1](https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
@@ -7316,7 +7316,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
+- [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs)
 
 ```text
 // Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
@@ -7582,7 +7582,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
+- [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs)
 
 ```text
 Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
@@ -9721,7 +9721,7 @@ Used by:
 
 - [tracing-core 0.1.36](https://github.com/tokio-rs/tracing)
 - [zip 8.6.0](https://github.com/zip-rs/zip2)
-- [zip 9.1.3](https://github.com/zip-rs/zip2)
+- [zip 9.3.0](https://github.com/zip-rs/zip2)
 
 ```text
 The MIT License (MIT)
@@ -10903,7 +10903,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 Used by:
 
-- [acadrust 0.6.7](https://github.com/hakanaktt/acadrust)
+- [acadrust 0.6.8](https://github.com/hakanaktt/acadrust)
 
 ```text
 Mozilla Public License Version 2.0
