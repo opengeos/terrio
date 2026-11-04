@@ -365,6 +365,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | CityJSON | CityJSON 1.1 and 2.0 (flat XYZ view) | ✓ | ✓ | city.json, cityjson, json (by content) |
 | CityGML | CityGML 2.0 and 3.0 (flat XYZ view) | ✓ | ✓ | citygml, gml/xml (by content) |
 | WFS | Read-only WFS 1.0, 1.1 and 2.0 services | ✓ | — | WFS: endpoint or GetCapabilities URL |
+| OAPIF | Read-only OGC API Features services | ✓ | — | OAPIF: service, collections or items URL |
 | ESRIJSON | JSON of ArcGIS feature-service queries, from files and URLs | ✓ | — | json (by content), query URLs |
 | ESRIPBF | Protocol buffers of ArcGIS feature-service queries, from files and URLs | ✓ | — | pbf (by content), query URLs |
 | GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
@@ -382,7 +383,7 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | HECRAS | HEC-RAS geometry and plan HDF5 (the `hecras` feature) | ✓ | | g##.hdf, p##.hdf (by content) |
 | PMTiles | PMTiles v3 vector tiles (MVT) | ✓ | ✓ | pmtiles |
 | MBTiles | MBTiles vector tiles (MVT) | ✓ | ✓ | mbtiles |
-| MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, pbf |
+| MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, z/x/y.pbf |
 
 ### CityJSON
 
@@ -696,6 +697,19 @@ query parameters can still appear in transport errors.
 The protocol references are [OGC WFS 2.0](https://docs.ogc.org/is/09-025r2/09-025r2.html)
 and [GDAL's WFS driver](https://gdal.org/en/stable/drivers/vector/wfs.html).
 
+### OAPIF
+
+The `OAPIF` driver reads OGC API Features services, collection URLs and items URLs when opened
+with an explicit `OAPIF:` prefix (`OAPIF:https://service/collections`), or through JavaScript's
+`openOapif` over `fetch`. `info` without `--layer` or `--oo`, and `list_layers`, inspect
+`/collections` metadata without downloading features; `info` with `--layer` or `--oo` opens the
+service and reads features. Data reads page through items using `next` links, honor advertised JSON
+Schema scalar types and CRS axis rules, and support bounding-box, datetime, CRS and feature-range
+options (`PAGE_SIZE`, `DATETIME`, `CRS`, `PREFERRED_CRS`, `SERVER_FEATURE_AXIS_ORDER`,
+`IGNORE_SCHEMA`, `OAPIF_MAX_FEATURES`, `OAPIF_SKIP_FEATURES`, `OAPIF_MAX_PAGES`,
+`OAPIF_MAX_VECTOR_BYTES`). See [OGC API Features](cli.md#ogc-api-features) for the supported scope,
+schema and ID rules, and resource limits.
+
 ### ESRIJSON
 
 The `ESRIJSON` driver reads the JSON of ArcGIS feature-service queries (`f=json`) as GDAL's
@@ -805,11 +819,43 @@ reads it.
   marks the one above as a header; a layer whose first feature is all text reads back with
   `Field1`, `Field2` and its names as a first row, as in GDAL, unless read with `HEADERS=FORCE`.
   Layers have no time type, so a time of day reads as `HH:MM:SS` text and is written back as text.
-  Beyond 2,000 fields, where GDAL fails, sheets still read. Cells out of column order are refused, where GDAL shifts the row's values. Excel's limits are refused when writing: 1,048,576 rows, 16,384 columns and 32,767 characters
-  per cell. Workbooks of more than 100 million cells, with rows, shared strings and repeated long
-  strings counting towards that, of a sheet past Excel's row or column limit, or with a part that expands
-  past 2 GiB, are refused when reading. Append and overwrite layer modes refuse an existing workbook, which they would rewrite without its layout. Beyond GDAL, `--oo HEADER_ROWS=n` reads a header of several rows, a merged heading naming each column under it and a column's headings joined with ` / ` (`Quantity / Phase Type / 1PH`), and `--oo RANGE=A5:K40` or `--oo FIRST_ROW=n` read a table that does not start at A1 (the later of the two sets the first row); feature ids stay the sheet's row numbers. The layer creation options `HEADER_STYLE=BOLD`, `FREEZE_HEADER=YES`, `AUTOFILTER=YES`, `COLUMN_WIDTH=AUTO|<n>`, `DATE_FORMAT`, `DATETIME_FORMAT` and `CREATION_TIME` lay out what is written; without them sheets are written as GDAL writes them. A date format must keep `dd` or `yy`, and a date-time format also `hh`, for the driver to read its cells back as dates. The Rust module `terrio::xlsx` writes workbooks laid out for people: cell formats, merged ranges, frozen panes, data tools and print setup. `Workbook::open` reads a workbook to edit: parts it does not model, such as charts and macros, a sheet's other elements, and unedited cells and settings are written back as they were, and after an edit the workbook asks Excel to recompute formulas when it opens the file, which a workbook set to calculate manually may not do until asked. A cell sharing another cell's formula reads as its cached value. A workbook opened is held in memory whole: its parts may expand to 8 GiB, and its cells are charged against a budget by the memory they take, which refuses a workbook whose cells would need more than about 3.7 GiB. Opening and saving peak at about twice that for the cells: a sheet of 2 million cells took 0.9 to 1 GB, so the largest workbook opened takes about 8 GiB, about 16 million empty cells or fewer with text. An edited setting is written from the model, so what it does not hold of that element is lost: a page setup's scale, for example. Editing comments writes them again as plain notes, dropping threaded comments. The cell holding a formula that other cells share, or an array formula, cannot be replaced, as they depend on it; the other cells of an array may be, but Excel computes them again from the array's formula. The XLSX driver itself, which reads sheets as layers, reads merges only in header rows; styles, merged cells, charts and other workbook content
-  are not read or kept yet ([#405](https://github.com/opengeos/terrio/issues/405)).
+  Beyond 2,000 fields, where GDAL fails, sheets still read. Cells out of column order are refused,
+  where GDAL shifts the row's values. Excel's limits are refused when writing: 1,048,576 rows,
+  16,384 columns and 32,767 characters per cell. Workbooks of more than 100 million cells, with
+  rows, shared strings and repeated long strings counting towards that, of a sheet past Excel's row
+  or column limit, or with a part that expands past 2 GiB, are refused when reading. Append and
+  overwrite layer modes refuse an existing workbook, which they would rewrite without its layout.
+
+  Beyond GDAL, `--oo HEADER_ROWS=n` reads a header of several rows, a merged heading naming each
+  column under it and a column's headings joined with ` / ` (`Quantity / Phase Type / 1PH`), and
+  `--oo RANGE=A5:K40` or `--oo FIRST_ROW=n` read a table that does not start at A1 (the later of
+  the two sets the first row); feature ids stay the sheet's row numbers. The layer creation options
+  `HEADER_STYLE=BOLD`, `FREEZE_HEADER=YES`, `AUTOFILTER=YES`, `COLUMN_WIDTH=AUTO|<n>`,
+  `DATE_FORMAT`, `DATETIME_FORMAT` and `CREATION_TIME` (see [`terrio convert` options](cli.md#convert))
+  lay out what is written; without them sheets are written as GDAL writes them. A date format must
+  keep `dd` or `yy`, and a date-time format also `hh`, for the driver to read its cells back as
+  dates.
+
+  The Rust module `terrio::xlsx` writes workbooks laid out for people: cell formats, merged ranges,
+  frozen panes, data tools and print setup. `Workbook::open` reads a workbook to edit: parts it
+  does not model, such as charts and macros, a sheet's other elements, and unedited cells and
+  settings are written back as they were, and after an edit the workbook asks Excel to recompute
+  formulas when it opens the file, which a workbook set to calculate manually may not do until
+  asked. A cell sharing another cell's formula reads as its cached value.
+
+  A workbook opened is held in memory whole: its parts may expand to 8 GiB, and its cells are
+  charged against a budget by the memory they take, which refuses a workbook whose cells would need
+  more than about 3.7 GiB. Opening and saving peak at about twice that for the cells: a sheet of 2
+  million cells took 0.9 to 1 GB, so the largest workbook opened takes about 8 GiB, about 16
+  million empty cells or fewer with text. An edited setting is written from the model, so what it
+  does not hold of that element is lost: a page setup's scale, for example. Editing comments writes
+  them again as plain notes, dropping threaded comments. The cell holding a formula that other
+  cells share, or an array formula, cannot be replaced, as they depend on it; the other cells of an
+  array may be, but Excel computes them again from the array's formula. When reading sheets as flat
+  vector layers (`open_vector`, `terrio convert`), the XLSX driver uses merges only in header rows
+  and ignores styles and non-sheet parts; in the workbook API, `Workbook::add_layer` currently
+  applies `GEOMETRY` and not yet the layer layout options
+  ([#405](https://github.com/opengeos/terrio/issues/405)).
 
 - **GeoPackage** layers are read with spatial filters through their R-tree index (`terrio convert
   --spat`, `VectorOpenOptions::spatial_filter`, Python's `open_vector(bbox=...)`): the
@@ -1061,8 +1107,10 @@ See [Point Clouds](point-clouds.md).
 
 ## In WebAssembly
 
-The browser and Node.js package reads from bytes, or by range with `openUrl`. GRIB files are read there too, band by band
-(the full module). JPEG 2000 is read and written there with the same
+The browser and Node.js package reads from bytes, or by range with `openUrl` (and OGC API Features
+with `openOapif`). GRIB files and HEC-RAS geometry and plan HDF5 files are read there too (the
+full module), as are DWG and DXF drawings (read and written in the full module), XLSX workbooks,
+and CityJSON and CityGML models. JPEG 2000 is read and written there with the same
 codec as natively (written with a nodata value, it comes back as a zip archive of the JP2 file and
 its `.aux.xml` sidecar), and GeoTIFFs in every compression above are read. Formats made
 of several files (Shapefile, MapInfo MIF and TAB) are read from zip archives of their files;

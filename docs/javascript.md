@@ -37,7 +37,7 @@ In WebAssembly, these formats are read from and written to memory:
 | | Read | Write |
 |---|---|---|
 | Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
-| Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, FlatGeobuf\*, GeoPackage, CSV, XLSX, GeoParquet, CityJSON, CityGML, KML, KMZ, GML, GPX, OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives, DWG, DXF | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, CSV, XLSX, GeoParquet, CityJSON (`cityjsonVersion`: `"1.1"` or `"2.0"`), DWG, DXF, Shapefile (`.shp.zip`), KML, KMZ (`kmzResources` packs icon images), GML, GPX, PMTiles, MBTiles (`minzoom`, `maxzoom` options) |
+| Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, FlatGeobuf\*, GeoPackage, CSV, XLSX, GeoParquet, CityJSON, CityGML, KML, KMZ, GML, GPX, OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives, DWG and DXF (full module), HEC-RAS (full module) | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, CSV, XLSX, GeoParquet, CityJSON (`cityjsonVersion`: `"1.1"` or `"2.0"`), CityGML (`citygmlVersion`: `"2.0"` or `"3.0"`, `citygmlLod0Surface`: `"footprint"` or `"roof-edge"`), DWG and DXF (full module), Shapefile (`.shp.zip`), KML, KMZ (`kmzResources` packs icon images), GML, GPX, PMTiles, MBTiles (`minzoom`, `maxzoom` options) |
 
 \* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
 whole, within WebAssembly's 4 GB of memory; with the file's bytes, that takes about four times the
@@ -45,7 +45,7 @@ file's size for lines and five for polygons (3.2 GB and 5.4 GB in native builds)
 2 million OpenStreetMap lines opens in about 3 seconds in Node.js, and a 1 GB file of 2.3 million
 polygons runs out of memory, but in the memory64 module (see below). `openUrl` reads files with a
 spatial index by bounding box, decoding only the features found; a file without one is still read
-whole.
+whole. `openOapif(url, options)` reads OGC API Features services over `fetch`.
 
 HEC-RAS geometry and plan HDF files (the full module) open as vector layers with `open`, and with
 `openVector(bytes, filename, { layers, openOptions })` to join the results HEC-RAS stored
@@ -65,12 +65,13 @@ The package holds two WebAssembly modules with the same API. `terrio-js` has eve
 `terrio-js/core` leaves out the heaviest ones (GeoParquet and Arrow IPC, netCDF and HDF5, point
 clouds, JPEG 2000, GRIB, Zarr, AVIF tiles, OpenStreetMap, CAD and HEC-RAS) and keeps GeoTIFF/COG with all its
 compressions, GeoJSON and the other text formats, FlatGeobuf, GeoPackage, Shapefile, PMTiles and
-MBTiles, the CRS transformations and the operations, at about half the size:
+MBTiles, the CRS transformations and the operations, at about half the size (measured from the
+[CI package at `b371d79`](https://github.com/opengeos/terrio/actions/runs/40144408237), decimal MB):
 
 | Module | `.wasm` | gzip | Brotli |
 |---|---|---|---|
-| `terrio-js` | 16.9 MB | 5.9 MB | 4.3 MB |
-| `terrio-js/core` | 9.2 MB | 3.2 MB | 2.4 MB |
+| `terrio-js` | 22.10 MB | 7.71 MB | 5.67 MB |
+| `terrio-js/core` | 9.67 MB | 3.36 MB | 2.56 MB |
 
 ```js
 import init, { open, features } from "terrio-js/core";
@@ -571,7 +572,8 @@ VRT references stay in the source directory tree by default; enable
 `allowExternalReferences` only for trusted external assets. VRT deletion preserves
 referenced rasters. Reports contain `recovery_files`; leftovers indicate a committed
 operation whose staged cleanup needs attention. The CLI file-management section documents
-companion discovery, overwrite, staging and recovery behavior shared by these APIs.
+companion discovery, overwrite, staging and recovery behavior shared by these APIs; see
+[`dataset-copy`](cli.md#dataset-copy-dataset-rename-dataset-delete-dataset-files).
 
 `parquetCreateMetadata(inputs, output, {overwrite: false})` creates a metadata-only Parquet
 file from an array of uploaded `/vsimem/` partition paths. It returns `files`, `row_groups`,
@@ -646,7 +648,7 @@ and links must stay on the original origin. Native CLI/Python follow
 same-origin redirects. Native reads also retry HTTP 429, 500, 502, 503 and 504
 responses with backoff; `openOapif` does not retry, so a transient error status
 fails the read. Supply a retrying `fetch` when a service is unreliable. See the
-CLI section for shared schema and CRS rules.
+[CLI section](cli.md#ogc-api-features) for shared schema and CRS rules.
 
 Signed numeric source IDs, or string IDs that conflict with a source `id`
 property, are preserved in `_oapif_id` text (with an extra leading underscore
