@@ -1030,6 +1030,13 @@ block of the source's pixels and its sum is a fraction of the total: it reads th
 resolution, so a coarse `sum` of a remote raster with overviews reads much more of it.
 `--overview n` reads level `n` for a `sum` too.
 
+A `sum` holds the source window an output chunk reads and 8 bytes per pixel of it for the
+pixels' shares: 12 bytes per pixel for one Float32 band. A coarse output, such as `--ts 1 1`,
+reads the whole source in one chunk, and a `sum` with several sources or a cutline holds every
+source whole. When this estimate exceeds 4 GiB, the `sum` is refused before its source is read;
+set `TERRIO_WARP_SUM_MAX_BYTES` to a positive integer byte count to change the budget, or sum a
+level with `--overview n`. Invalid settings are argument errors.
+
 Forced GCP overviews can give slightly different automatically suggested bounds than GDAL,
 which refits GCPs at the selected resolution. Specify `--te` and `--ts` for an identical
 target grid; Terrio keeps its full-resolution grid while selecting source pixels.
@@ -1181,6 +1188,7 @@ floating-point output; an integer output also rounds each pixel to a whole numbe
 and clamps it to its type's range (a Byte output stores 255 for a sum of 400).
 A `sum` reads the source's full resolution unless a level is given (`--overview n`),
 and then sums that level's pixels: `AUTO` and `AUTO-n` choose no overview for it.
+Its memory budget is that of `terrio warp -r sum` (`TERRIO_WARP_SUM_MAX_BYTES`).
 GDAL 3.12's generic `sum` polygon path can lose overlap area on pixel boundaries,
 including when a redundant identity CRS transformer disables its affine fast path.
 Terrio preserves conservative affine overlap sums; its results match GDAL's affine

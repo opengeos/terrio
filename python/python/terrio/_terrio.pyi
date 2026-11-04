@@ -170,6 +170,7 @@ __all__ = [
     "_set_http_retry_logger",
     "_set_warp_nodata_logger",
     "RegionWarp",
+    "check_sum_window",
     "config_push",
     "config_pop",
     "config_get",
@@ -1634,6 +1635,7 @@ def warped_vrt_type(
     dst_nodata: Sequence[float | None],
     kernel_version: str | None = None,
 ) -> tuple[str, list[float | None]]: ...
+def check_sum_window(pixels: int, pixel_bytes: int) -> None: ...
 @final
 class RegionWarp:
     def __new__(

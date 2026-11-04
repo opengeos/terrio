@@ -26,6 +26,17 @@
   and 67.1 MB where its coarsest overview took 2 requests and 1.1 MB, and a `WarpedVRT` read at an
   eighth of its size takes 5 requests and 67.1 MB where it took 2 and 1.1 MB. `--overview n`
   (`overview=n` in Python) still reads level `n`, more cheaply, and the `sum` is then that level's.
+- A `sum` is refused before its source is read when it would hold more than 4 GiB, estimated as the
+  source window an output chunk reads and 8 bytes per pixel of it for the pixels' shares (12 bytes
+  per pixel for one Float32 band): a coarse output reads the whole source in one chunk, and a `sum`
+  with several sources or a cutline holds every source whole. The error, `Error::ResourceLimit`
+  (Python `ResourceLimitError`), names `--overview n` (`overview=n`) to sum a level and
+  `TERRIO_WARP_SUM_MAX_BYTES`, a positive byte count, to change the budget; a `sum` read of a
+  `WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a band or dataset are refused the same way.
+  A 1 × 1 `sum` of a 16384 × 16384 Float32 band (3 GiB) passes, and one of a 32768 × 32768 band
+  (12 GiB) now errors, where it summed an overview (with overviews) or held the whole window in
+  memory (without); a `sum` of several sources over 4 GiB in all now errors at any output size,
+  where it held them all.
 - With `GDAL_INGESTED_BYTES_AT_OPEN` (or `TERRIO_INGESTED_BYTES_AT_OPEN`) above a block (64 KiB
   by default), opening a remote file that the process-wide cache holds takes the ingested blocks
   from there and requests only those it no longer holds. Every reader of a file requested them

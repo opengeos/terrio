@@ -1554,6 +1554,44 @@ fn src_nodata(s: &Source, o: &WarpOptions, band: usize) -> Option<f64> {
     }
 }
 
+/// The default of `TERRIO_WARP_SUM_MAX_BYTES`: 4 GiB.
+const SUM_MAX_BYTES: u64 = 4 << 30;
+
+/// The memory a `sum` holds for a source window of `pixels` pixels of `bytes` bytes (all its
+/// bands): the window, and 8 bytes per pixel for the shares of an output pixel's footprint, which
+/// can be the whole window. An estimate: one Float32 band gives 12 bytes per pixel, the peak
+/// measured in the same CRS; a reprojected `sum` held up to about 20, a `WarpedVRT` read 24.
+pub fn sum_estimate(pixels: u64, bytes: usize) -> u64 {
+    pixels.saturating_mul(bytes as u64 + 8)
+}
+
+/// Refuses a `sum` whose estimated memory `need` exceeds `TERRIO_WARP_SUM_MAX_BYTES` (a positive
+/// number of bytes, 4 GiB by default), before its source is read.
+pub fn check_sum_budget(need: u64) -> Result<()> {
+    let limit = match std::env::var("TERRIO_WARP_SUM_MAX_BYTES") {
+        Ok(v) => v.trim().parse::<u64>().ok().filter(|n| *n > 0),
+        Err(std::env::VarError::NotPresent) => Some(SUM_MAX_BYTES),
+        Err(_) => None,
+    }
+    .ok_or_else(|| Error::InvalidArgument("TERRIO_WARP_SUM_MAX_BYTES must be a positive integer".into()))?;
+    if need > limit {
+        return Err(Error::ResourceLimit(format!(
+            "a `sum` would hold about {need} bytes of source pixels and their shares, more than \
+             TERRIO_WARP_SUM_MAX_BYTES={limit}: sum an overview level with `--overview n` (`overview=n` in Python), \
+             or raise TERRIO_WARP_SUM_MAX_BYTES"
+        )));
+    }
+    Ok(())
+}
+
+/// [`check_sum_budget`] for the largest source window of a `sum`'s chunks, `bytes` per pixel.
+fn check_sum_chunks(o: &WarpOptions, chunks: &[Chunk], bytes: usize) -> Result<()> {
+    if o.resampling != Resampling::Sum {
+        return Ok(());
+    }
+    check_sum_budget(sum_estimate(chunks.iter().map(|c| c.sw as u64 * c.sh as u64).max().unwrap_or(0), bytes))
+}
+
 /// Reprojects and resamples one or more rasters into one output, as `gdalwarp` does. Later
 /// sources are drawn over earlier ones where they have valid pixels.
 pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset> {
@@ -1786,6 +1824,7 @@ fn warp_reader_selected(
         header.raster.bands = bands.len();
         header.raster.data = RasterData::new_filled(header.raster.data_type, 0, 0.);
     }
+    let src_bytes = header.raster.data_type.size_bytes() * header.raster.bands;
     if let Some(dtype) = working {
         header.raster.data_type = dtype;
         header.raster.data = RasterData::new_filled(dtype, 0, 0.);
@@ -1799,6 +1838,7 @@ fn warp_reader_selected(
     let n = grid.width * grid.height;
     let t = p.transformer(0)?;
     let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
+    check_sum_chunks(o, &chunks, src_bytes)?;
     let nodata = p.src_nodata(0, o);
     if working.is_some() && nodata.iter().any(Option::is_some) {
         storage.avoid_nodata = Some(bands == 1 || !unified_sink);
@@ -1903,11 +1943,23 @@ pub fn warp_sources(sources: &mut [&mut dyn WarpSource], o: &WarpOptions) -> Res
     let info = sources.iter_mut().map(|s| s.info()).collect::<Result<Vec<_>>>()?;
     let refs: Vec<_> = info.iter().map(|s| &s.raster).collect();
     let mut p = Plan::new(&refs, o)?;
+    let overviews = (0..sources.len()).map(|k| p.select_overview(k, &info[k].overviews, o)).collect::<Result<Vec<_>>>()?;
+    if o.resampling == Resampling::Sum {
+        // Every source is read whole, and an output pixel's shares can cover a chunk's window.
+        let (mut need, mut window) = (0u64, 0);
+        for (k, s) in info.iter().enumerate() {
+            let (grid, raster) = (p.srcs[k].grid, &s.raster.raster);
+            let pixels = grid.width as u64 * grid.height as u64;
+            need = need.saturating_add(pixels.saturating_mul((raster.data_type.size_bytes() * raster.bands) as u64));
+            let t = p.transformer(k)?;
+            window = window.max(p.context(k, &t, o).1.iter().map(|c| c.sw as u64 * c.sh as u64).max().unwrap_or(0));
+        }
+        check_sum_budget(need.saturating_add(sum_estimate(window, 0)))?;
+    }
     let mut data = Vec::with_capacity(sources.len());
     let mut masks = Vec::with_capacity(sources.len());
     for (k, source) in sources.iter_mut().enumerate() {
-        let overview = p.select_overview(k, &info[k].overviews, o)?;
-        let grid = p.srcs[k].grid;
+        let (overview, grid) = (overviews[k], p.srcs[k].grid);
         data.push(source.read_window(crate::Window::full(grid.width, grid.height), &crate::WindowOptions { overview, bands: Vec::new() })?);
         masks.push(source_mask(*source, crate::Window::full(grid.width, grid.height), overview)?);
     }
@@ -2020,6 +2072,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let w = grid.width;
     let t = p.transformer(0)?;
     let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
+    check_sum_chunks(o, &chunks, header.raster.data_type.size_bytes() * header.raster.bands)?;
     if src.has_mask() {
         ctx.global_validity = true;
         storage.src_masked = true;

@@ -336,7 +336,13 @@ have no stored overviews: a requested numeric level warns and uses full resoluti
 With `resampling="sum"`, `"AUTO"` and `"AUTO-n"` choose no overview, as an overview
 has one pixel per block of the source's pixels and its sum is a fraction of the total:
 the full resolution is read, which costs more for a remote raster. A level
-(`overview=1`) is read as asked.
+(`overview=1`) is read as asked. A `sum` whose source window, estimated with 8 bytes
+per pixel for the pixels' shares, would hold more than 4 GiB raises `ResourceLimitError`
+(a `MemoryError`) before it is read, and so do a `sum` read of a `WarpedVRT` and a `sum`
+`terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a level (for the
+`terrio.rio` ones, a source opened with `overview_level=n`), and the
+`TERRIO_WARP_SUM_MAX_BYTES` environment variable, a positive integer byte count, changes
+the budget.
 Calls with loaded inputs reuse their existing pixels, including repeated references.
 File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
 

@@ -152,7 +152,9 @@ class WarpedVRT(DatasetReader):
     of any of its bands, is warped from the source's full resolution rather than from an implicit
     overview. A reduced read of a window can take an implicit overview or resample the VRT's
     pixels, so its sum is not the source's: for a full-resolution total, read the window at full
-    size, or the whole VRT at the reduced size.
+    size, or the whole VRT at the reduced size. A `sum` read whose source window would hold more
+    than `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError` before the
+    window is read.
     """
 
     def __init__(
@@ -718,6 +720,10 @@ class WarpedVRT(DatasetReader):
             out[b] = self._init[b] if b < self._src_count else 0
         written = np.zeros((h, w), bool)
         if win is not None and win[2] > 0 and win[3] > 0:
+            if self.resampling == Resampling.sum:
+                # Refused before the window is read when its memory would exceed the budget.
+                itemsize = np.dtype(self.src_dataset.dtypes[0]).itemsize
+                _terrio.check_sum_window(win[2] * win[3], itemsize * self._src_count)
             data, mask = self._source_window(grid.level, win)
             warped, written = rw.warp(region, win, data, mask, self._init_value, direct)
             warped = np.asarray(warped)

@@ -736,6 +736,8 @@ def reproject(
 
     Raises:
         ValueError: If the arguments conflict or are not supported.
+        ResourceLimitError: If a `sum` of a band or dataset would hold more than
+            `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default); it is raised before the bands are read.
     """
     from terrio.rio import Band
     from terrio.rio.io import DatasetBase
@@ -765,6 +767,10 @@ def reproject(
         source = Band(source, list(source.indexes), source.dtypes[0], source.shape)
     if isinstance(source, Band):
         ds, bidx = source.ds, source.bidx
+        if rs == Resampling.sum:
+            # Refused before the bands are read when their memory would exceed the budget.
+            count = len(bidx) if isinstance(bidx, (list, tuple)) else 1
+            _terrio.check_sum_window(ds.width * ds.height, np.dtype(source.dtype).itemsize * count)
         arr = ds.read(bidx)
         src_transform = ds.transform
         src_crs = src_crs or ds.crs

@@ -46,6 +46,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(warp, m)?)?;
     m.add_function(wrap_pyfunction!(mosaic, m)?)?;
     m.add_class::<PyRegionWarp>()?;
+    m.add_function(wrap_pyfunction!(check_sum_window, m)?)?;
     Ok(())
 }
 
@@ -1632,6 +1633,13 @@ fn mosaic(
         })
         .py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff).map(Some)
+}
+
+/// Refuses, before it is read, a `sum`'s source window of `pixels` pixels of `pixel_bytes` bytes
+/// (all its bands) whose estimated memory exceeds `TERRIO_WARP_SUM_MAX_BYTES`.
+#[pyfunction]
+fn check_sum_window(pixels: u64, pixel_bytes: usize) -> PyResult<()> {
+    terrio::ops::warp::check_sum_budget(terrio::ops::warp::sum_estimate(pixels, pixel_bytes)).py()
 }
 
 /// A source level (a raster or one of its overviews) warped into a grid one region at a time, as

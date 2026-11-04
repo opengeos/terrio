@@ -7,7 +7,9 @@ import terrio
 import terrio.rio
 from terrio.rio.control import GroundControlPoint
 from terrio.rio.enums import Resampling
+from terrio.rio.transform import from_origin
 from terrio.rio.vrt import WarpedVRT
+from terrio.rio.warp import reproject
 
 GT = (0.0, 1.0, 0.0, 32.0, 0.0, -1.0)
 
@@ -132,6 +134,41 @@ def test_a_reduced_read_of_a_gcp_sum_warped_vrt_keeps_the_total(tmp_path):
         full = vrt.read(1).astype("float64").sum()
         reduced = vrt.read(1, out_shape=(vrt.height // 4, vrt.width // 4)).astype("float64").sum()
     assert reduced == pytest.approx(full, rel=1e-6)
+
+
+def test_a_sum_over_its_memory_budget_is_refused_before_its_source_is_read(tmp_path, monkeypatch):
+    # 32 x 32 Float32 ones with an overview at 4. A `sum` holds 4 bytes per source pixel and 8 of
+    # shares: 12,288 bytes at full resolution; two sources, both whole and the shares, 16,384.
+    path = str(tmp_path / "ones.tif")
+    terrio.Raster.from_array(np.ones((32, 32), "float32"), GT, crs="EPSG:3857").write(
+        path, overviews=[4], overview_resampling="average"
+    )
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "10000")
+    refused = r"TERRIO_WARP_SUM_MAX_BYTES=10000.*--overview n"
+    with pytest.raises(terrio.ResourceLimitError, match=refused):
+        terrio.warp(path, ts=(1, 1), resampling="sum")
+    with pytest.raises(terrio.ResourceLimitError, match=refused):
+        terrio.warp([path, path], ts=(1, 1), resampling="sum")
+    with terrio.rio.open(path) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        with pytest.raises(terrio.ResourceLimitError, match=refused):
+            vrt.read(1, out_shape=(1, 1))
+    one = {"dst_transform": from_origin(0, 32, 32, 32), "dst_crs": "EPSG:3857"}
+    with terrio.rio.open(path) as src:
+        with pytest.raises(terrio.ResourceLimitError, match=refused):
+            reproject(terrio.rio.band(src, 1), np.zeros((1, 1)), resampling=Resampling.sum, **one)
+    level = terrio.warp(path, ts=(1, 1), resampling="sum", ot="Float64", overview=0)
+    assert level.read(1).sum() == 64.0
+    average = terrio.warp(path, ts=(1, 1), resampling="average", overview="NONE")
+    assert average.read(1).sum() == 1.0
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "20000")
+    full = terrio.warp(path, ts=(1, 1), resampling="sum", ot="Float64")
+    assert full.read(1).sum() == 1024.0
+    with terrio.rio.open(path) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        assert vrt.read(1, out_shape=(1, 1)).sum() == 1024.0
+    reprojected = np.zeros((1, 1))
+    with terrio.rio.open(path) as src:
+        reproject(terrio.rio.band(src, 1), reprojected, resampling=Resampling.sum, **one)
+    assert reprojected.sum() == 1024.0
 
 
 @pytest.mark.parametrize("mode", [True, False])
