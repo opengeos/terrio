@@ -92,19 +92,22 @@ def test_reduced_reads_of_a_whole_sum_warped_vrt_read_full_resolution(tmp_path):
         np.testing.assert_array_equal(reduced, overview.read(1))
 
 
-def test_a_repeated_band_of_a_sum_warped_vrt_reads_as_the_band_alone(tmp_path):
-    # Only a read of every band is warped into the buffer from the full resolution: a read that
-    # repeats a band takes an implicit overview, as the band alone does.
-    path = tmp_path / "ones.tif"
-    terrio.Raster.from_array(
+@pytest.mark.parametrize("overviews", [[2, 4], None])
+def test_a_reduced_read_of_any_bands_of_a_sum_warped_vrt_reads_full_resolution(tmp_path, overviews):
+    # A reduced read of the whole grid is warped from the full resolution whichever bands it
+    # reads: one band, a repeated band or every band, with or without overviews.
+    path = str(tmp_path / "ones.tif")
+    raster = terrio.Raster.from_array(
         np.ones((2, 8, 8), "float32"), (0.0, 1.0, 0.0, 8.0, 0.0, -1.0), crs="EPSG:3857"
-    ).write(str(path), overviews=[2, 4], overview_resampling="average")
-    with terrio.rio.open(str(path)) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
-        alone = vrt.read([1], out_shape=(1, 4, 4))
-        repeated = vrt.read([1, 1], out_shape=(2, 4, 4))
-        every = vrt.read([2, 1], out_shape=(2, 4, 4))
-    np.testing.assert_array_equal(repeated, np.concatenate([alone, alone]))
-    np.testing.assert_array_equal(every, np.full((2, 4, 4), 4.0))
+    )
+    if overviews:
+        raster.write(path, overviews=overviews, overview_resampling="average")
+    else:
+        raster.write(path)
+    with terrio.rio.open(path) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        for bands in ([1], [1, 1], [2], [2, 1]):
+            read = vrt.read(bands, out_shape=(len(bands), 4, 4))
+            np.testing.assert_array_equal(read, np.full((len(bands), 4, 4), 4.0), str(bands))
 
 
 @pytest.mark.xfail(

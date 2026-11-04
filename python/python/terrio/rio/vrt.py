@@ -147,13 +147,13 @@ class WarpedVRT(DatasetReader):
 
     rasterio's `WarpedVRT` is GDAL's warped VRT, whose reads this one follows.
     Pixels are warped when they are read, region by region, from the windows of the source (or
-    of its overviews) each region needs. With `sum` resampling, a reduced read of every band of
-    the whole VRT, from a source georeferenced by a transform or RPCs, is warped from the source's
-    full resolution rather than from an implicit overview. Other reduced reads, of a window, of
-    some of the bands or of a VRT georeferenced by GCPs, can take an implicit overview or resample
-    the VRT's pixels, so their sum is not the source's. For a full-resolution total, read the
-    window at full size, or, from a source georeferenced by a transform or RPCs, every band of
-    the whole VRT at the reduced size.
+    of its overviews) each region needs. With `sum` resampling, a reduced read of the whole VRT,
+    of any of its bands, from a source georeferenced by a transform or RPCs, is warped from the
+    source's full resolution rather than from an implicit overview. Other reduced reads, of a
+    window or of a VRT georeferenced by GCPs, can take an implicit overview or resample the VRT's
+    pixels, so their sum is not the source's. For a full-resolution total, read the window at full
+    size, or, from a source georeferenced by a transform or RPCs, the whole VRT at the reduced
+    size.
     """
 
     def __init__(
@@ -900,19 +900,22 @@ class WarpedVRT(DatasetReader):
         nx, ny, nxs, nys = iw
         bh, bw = buf
         whole = iw == (0, 0, grid.width, grid.height)
+        if (
+            self.resampling == Resampling.sum
+            and whole
+            and grid.full
+            and (bw < nxs or bh < nys)
+            and self._warp_gcps is None
+        ):
+            # A reduced read of the whole `sum` VRT, of any of its bands, is warped from the full
+            # resolution into a grid of the buffer's size, as below: an implicit overview has one
+            # pixel per block of the VRT's pixels, so its sum would be a fraction of the total.
+            full = (0, 0, bw, bh)
+            return self._dataset_io(grid.rescaled(bw, bh), idx, full, full, buf, rs, False)
         if (not whole and (bw <= grid.bx or bh <= grid.by)) or len(idx) < self._count:
             # Small requests and band subsets go through the cached blocks.
             return self._fallback_io(grid, idx, iw, fw, buf, rs, routed)
-        # A whole read of every band of a `sum` VRT is warped into the buffer from the full
-        # resolution below: an implicit overview has one pixel per block of the VRT's pixels, so
-        # its sum would be a fraction of the total.
-        whole_sum = (
-            self.resampling == Resampling.sum
-            and whole
-            and len(set(idx)) == self._count
-            and self._warp_gcps is None
-        )
-        if (bw < nxs or bh < nys) and grid.full and self._overview_sizes and not whole_sum:
+        if (bw < nxs or bh < nys) and grid.full and self._overview_sizes:
             # GDALDataset::TryOverviewRasterIO(), choosing with GDALBandGetBestOverviewLevel2().
             moved = self._to_overview(grid, iw, fw, buf, rs, True)
             if moved is not None:
