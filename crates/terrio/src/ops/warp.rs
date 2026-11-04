@@ -4933,6 +4933,38 @@ mod tests {
         }
     }
 
+    /// Through the RPCs of a source and a DEM, whose long rows of points sample the DEM together,
+    /// a `sum` does not depend on the chunks either: in one chunk and in many, with the corners
+    /// transformed exactly and interpolated, the output is the same, bit for bit.
+    #[test]
+    fn sum_through_rpcs_and_a_dem_is_the_same_whatever_the_chunks() {
+        use super::super::rpc::{RpcOptions, tests};
+        let dir = tempfile::tempdir().unwrap();
+        let dem = tests::dem(dir.path()).to_str().unwrap().to_string();
+        let mut src = raster(100, 100, [0.0, 1.0, 0.0, 100.0, 0.0, -1.0], 4326, |c, r| ((c * 7 + r * 13) % 50) as f64 + 0.25);
+        src.has_nodata = false;
+        for error_threshold in [0.0, 0.125, 4.0] {
+            let warped = |memory_limit: f64| {
+                let o = WarpOptions {
+                    rpc: Some(tests::rpc()),
+                    rpc_options: RpcOptions { dem: Some(dem.clone()), height: Some(10.0), height_scale: 10.0, ..Default::default() },
+                    resampling: Resampling::Sum,
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![f64::NAN]),
+                    memory_limit,
+                    error_threshold,
+                    ..Default::default()
+                };
+                warp(&[&src], &o).unwrap().raster.data.to_f64_vec()
+            };
+            let whole = warped(64.0 * 1024.0 * 1024.0);
+            for memory_limit in [40000.0, 6000.0] {
+                let differ = whole.iter().zip(&warped(memory_limit)).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                assert_eq!(differ, 0, "error threshold {error_threshold}, {memory_limit} bytes");
+            }
+        }
+    }
+
     #[test]
     fn nodata_and_bilinear() {
         let ds = raster(4, 4, [0.0, 1.0, 0.0, 4.0, 0.0, -1.0], 32610, |c, _| if c == 0 { -9999.0 } else { c as f64 });
@@ -5019,7 +5051,8 @@ mod tests {
 
     /// With an RPC source and a DEM, a row of 10 points or more samples the DEM together, which
     /// can move its points: a part of a row is then transformed exactly with its whole row, and
-    /// comes out as with the whole row.
+    /// comes out as with the whole row, also where the DEM's ridges make the interpolation split
+    /// the row down to a few points.
     #[test]
     fn approx_transformer_transforms_whole_rows_for_an_rpc_source_with_a_dem() {
         use super::super::rpc::{RpcOptions, RpcTransformer, tests};
@@ -5027,22 +5060,28 @@ mod tests {
         let options = RpcOptions {
             dem: Some(tests::dem(dir.path()).to_str().unwrap().into()),
             height: Some(10.0),
-            height_scale: 2.0,
+            height_scale: 10.0,
             ..Default::default()
         };
         let geographic = SpatialRef::from_epsg(4326).unwrap();
         let rpc = std::sync::Arc::new(RpcTransformer::new(&tests::rpc(), &options).unwrap());
         let mut t = GenImgProj::with_georef(&geographic, &geographic, Georef::Rpc(rpc)).unwrap();
-        t.set_dst_gt([9.95, 0.003, 0.0, 45.02, 0.0, -0.003]);
+        t.set_dst_gt([9.88, 0.0005, 0.0, 45.02, 0.0, -0.0005]);
         assert!(!t.pointwise(true) && t.pointwise(false));
-        let a = Approx { base: &t, max_error: 0.0 };
-        let row = || ((0..30).map(f64::from).collect::<Vec<f64>>(), vec![0.0; 30], vec![false; 30]);
-        let (mut wx, mut wy, mut wok) = row();
-        a.transform(true, &mut wx, &mut wy, &mut wok);
-        let (mut px, mut py, mut pok) = row();
-        a.transform_part(true, &mut px, &mut py, &mut pok, 3..8);
-        for i in 3..8 {
-            assert_eq!((px[i].to_bits(), py[i].to_bits(), pok[i]), (wx[i].to_bits(), wy[i].to_bits(), wok[i]), "point {i}");
+        let n = SUM_CORNER_BATCH + 1;
+        let row = || ((0..n).map(|i| i as f64).collect::<Vec<f64>>(), vec![0.0; n], vec![false; n]);
+        for max_error in [0.0, 0.125, 4.0] {
+            let a = Approx { base: &t, max_error };
+            let (mut wx, mut wy, mut wok) = row();
+            a.transform(true, &mut wx, &mut wy, &mut wok);
+            for need in [3..8, 0..1, 0..n, 3..40, 100..101, 200..n, n - 2..n, 255..258] {
+                let (mut px, mut py, mut pok) = row();
+                a.transform_part(true, &mut px, &mut py, &mut pok, need.clone());
+                for i in need {
+                    let (part, whole) = ((px[i].to_bits(), py[i].to_bits(), pok[i]), (wx[i].to_bits(), wy[i].to_bits(), wok[i]));
+                    assert_eq!(part, whole, "threshold {max_error}, point {i}: ({}, {}), not ({}, {})", px[i], py[i], wx[i], wy[i]);
+                }
+            }
         }
     }
 
