@@ -22,9 +22,14 @@
   from there and requests only those it no longer holds. Every reader of a file requested them
   again (twice for each `terrio.rio.open`), so that opening a URL again was never served from the
   cache.
-- netCDF: a signed variable flagged `_Unsigned` reads its `valid_range` (or `valid_min` and
-  `valid_max`) as unsigned too, as GDAL does. Such a range holding negative bounds, as GOES ABI L2
-  products' `[9200, -9536]` does, made every pixel nodata.
+- netCDF: a `Byte`, `Short` or `Int` variable flagged `_Unsigned` reads its `valid_range` (or
+  `valid_min` and `valid_max`) as unsigned too, as GDAL does. Such a range holding negative bounds,
+  as GOES ABI L2 products' `[9200, -9536]` does, made every pixel nodata.
+- netCDF: `Int64` variables flagged `_Unsigned` are read as `Int64`, as GDAL reads them, where they
+  were read as `UInt64` without nodata, and with every pixel `0` given a `valid_range`; without
+  `_FillValue`, they take netCDF's default `Int64` nodata (`-9223372036854775806`). An
+  inverted `valid_range` (or `valid_min` above `valid_max`) is ignored, as GDAL ignores it, where
+  it made every pixel nodata (#553).
 
 ## 0.7.0 (2026-11-03)
 

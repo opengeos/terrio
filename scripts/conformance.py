@@ -261,7 +261,7 @@ def suite_subdatasets(ctx):
     out, err = "", ""
     # The test data's directories, then the repository's fixtures.
     dirs = [(sub, os.path.join(ctx.data, sub)) for sub in ("", "gdal_hdf5", "gdal_netcdf", "hdfeos5")]
-    dirs += [(sub, str(ROOT / "crates/terrio/tests/data" / sub)) for sub in ("netcdf_unsigned",)]
+    dirs += [(sub, str(ROOT / "crates/terrio/tests/data" / sub)) for sub in ("netcdf_unsigned", "netcdf_int64_unsigned")]
     for sub, d in dirs:
         if not os.path.isdir(d):
             continue
