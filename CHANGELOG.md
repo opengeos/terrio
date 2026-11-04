@@ -30,6 +30,10 @@
   `_FillValue`, they take netCDF's default `Int64` nodata (`-9223372036854775806`). An
   inverted `valid_range` (or `valid_min` above `valid_max`) is ignored, as GDAL ignores it, where
   it made every pixel nodata (#553).
+- Zonal statistics over many rasters use 45% less peak memory on many threads, as fast (100
+  Sentinel-2 bands, 10,000 fields: 4.7 GB to 2.6 GB on 32 threads): each raster reads 2 strips
+  ahead instead of 4 when rasters are reduced in parallel, and the memory a reduced raster
+  freed is returned to the system (Linux, glibc).
 - Zonal statistics at datacube scale: zones are computed once per distinct raster grid and
   shared by every raster on it; rasters are read lazily (local, remote, STAC, Zarr) in strips of
   block rows, only where zones lie, and in parallel. `ops::zonal::zonal_stats` takes
