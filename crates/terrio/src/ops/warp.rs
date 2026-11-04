@@ -2990,9 +2990,10 @@ impl WarpContext<'_> {
             let mut rows = rows.into_iter();
             let groups: Vec<Vec<RowOut>> = (0..c.dh.div_ceil(group)).map(|_| rows.by_ref().take(group).collect()).collect();
             crate::par::for_each_owned(groups, |g, outs| {
-                let mut top = self.sum_corners(c, g * group);
+                let mut batch = CornerBatch::default();
+                let mut top = self.sum_corners(c, g * group, &mut batch);
                 for (j, mut out) in outs.into_iter().enumerate() {
-                    let bottom = self.sum_corners(c, g * group + j + 1);
+                    let bottom = self.sum_corners(c, g * group + j + 1, &mut batch);
                     self.warp_sum_row(c, &k, sink, (&top, &bottom), &mut out);
                     top = bottom;
                 }
@@ -3216,12 +3217,13 @@ impl WarpContext<'_> {
     /// The corners of a chunk's output pixels along its row `y` of corners (from its top edge), on
     /// the source grid. Each is interpolated within its batch of the whole grid's corners, the
     /// `SUM_CORNER_BATCH` columns from a multiple of that number, so that the chunks (or regions)
-    /// sharing a corner agree on it; of a batch, only the chunk's corners are computed.
-    fn sum_corners(&self, c: &Chunk, y: usize) -> CornerRow {
+    /// sharing a corner agree on it; of a batch, only the chunk's corners are computed. `scratch`
+    /// holds a batch's points, for the rows of corners of a group of rows to share.
+    fn sum_corners(&self, c: &Chunk, y: usize, scratch: &mut CornerBatch) -> CornerRow {
         const BATCH: usize = SUM_CORNER_BATCH;
         let n = c.dw;
         let mut row = CornerRow { x: Vec::with_capacity(n + 1), y: Vec::with_capacity(n + 1), ok: Vec::with_capacity(n + 1) };
-        let (mut xs, mut ys, mut ok) = (vec![0.0; BATCH + 1], vec![0.0; BATCH + 1], vec![false; BATCH + 1]);
+        let CornerBatch { x: xs, y: ys, ok } = scratch;
         for batch in c.dx / BATCH..=(c.dx + n) / BATCH {
             let start = batch * BATCH;
             for (i, (x, v)) in xs.iter_mut().zip(ys.iter_mut()).enumerate() {
@@ -3229,7 +3231,7 @@ impl WarpContext<'_> {
             }
             // The batch's corners that the chunk needs; its last is the next batch's first.
             let need = c.dx.max(start) - start..(c.dx + n).min(start + BATCH - 1) - start + 1;
-            self.approx.transform_part(true, &mut xs, &mut ys, &mut ok, need.clone());
+            self.approx.transform_part(true, xs, ys, ok, need.clone());
             row.x.extend_from_slice(&xs[need.clone()]);
             row.y.extend_from_slice(&ys[need.clone()]);
             row.ok.extend_from_slice(&ok[need]);
@@ -3336,6 +3338,20 @@ struct CornerRow {
     x: Vec<f64>,
     y: Vec<f64>,
     ok: Vec<bool>,
+}
+
+/// The points of a batch of corners ([`SUM_CORNER_BATCH`] columns and the next batch's first).
+struct CornerBatch {
+    x: Vec<f64>,
+    y: Vec<f64>,
+    ok: Vec<bool>,
+}
+
+impl Default for CornerBatch {
+    fn default() -> Self {
+        let n = SUM_CORNER_BATCH + 1;
+        CornerBatch { x: vec![0.0; n], y: vec![0.0; n], ok: vec![false; n] }
+    }
 }
 
 /// The batches of output pixel corners along a row that a `sum` interpolates corners within: the
