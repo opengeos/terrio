@@ -251,43 +251,41 @@ impl VarRef<'_> {
 fn all_variables<'a>(f: &'a NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf5File>) -> Result<Vec<VarRef<'a>>> {
     let root = f.root_group().map_err(|e| err(path, e))?;
     let classic = matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5);
-    // NetCDF-4 groups and variables come back in name order; their object headers were allocated
-    // in definition order, which is GDAL's order.
-    let addresses = if classic { None } else { hdf5() };
-    let group_address = |group_path: &str| -> u64 {
-        addresses
-            .as_ref()
-            .and_then(|h| {
-                let mut g = h.root_group().ok()?;
-                for part in group_path.split('/').filter(|p| !p.is_empty()) {
-                    g = g.group(part).ok()?;
-                }
-                Some(g.address())
-            })
-            .unwrap_or(u64::MAX)
+    // NetCDF-4 groups and variables come back in name order. GDAL lists them in definition order
+    // (netCDF's ids): the creation order of the HDF5 links, which netCDF-4 groups track.
+    let h5 = if classic { None } else { hdf5() };
+    // A group's child group names and dataset names, in creation order.
+    let members = |group_path: &str| -> Option<(Vec<String>, Vec<String>)> {
+        let mut g = h5.as_ref()?.root_group().ok()?;
+        for part in group_path.split('/').filter(|p| !p.is_empty()) {
+            g = g.group(part).ok()?;
+        }
+        g.member_names().ok()
     };
-    fn visit<'a>(chain: Vec<&'a NcGroup>, prefix: &str, classic: bool, group_address: &dyn Fn(&str) -> u64, out: &mut Vec<VarRef<'a>>) {
+    type Members<'m> = dyn Fn(&str) -> Option<(Vec<String>, Vec<String>)> + 'm;
+    fn visit<'a>(chain: Vec<&'a NcGroup>, prefix: &str, classic: bool, members: &Members, out: &mut Vec<VarRef<'a>>) {
         let g = *chain.last().unwrap_or(&chain[0]);
+        let (group_order, var_order) = if classic { Default::default() } else { members(prefix).unwrap_or_default() };
+        let rank = |order: &[String], name: &str| order.iter().position(|n| n == name).unwrap_or(usize::MAX);
         let mut vars: Vec<&NcVariable> = g.variables.iter().collect();
         if !classic {
-            vars.sort_by_key(|v| v.data_offset);
+            // Then by object header address, allocated mostly in definition order.
+            vars.sort_by_key(|v| (rank(&var_order, &v.name), v.data_offset));
         }
         for v in vars {
             let full = if prefix.is_empty() { v.name.clone() } else { format!("{prefix}/{}", v.name) };
             out.push(VarRef { groups: chain.clone(), v, full });
         }
         let mut children: Vec<(&NcGroup, String)> = g.groups.iter().map(|c| (c, format!("{prefix}/{}", c.name))).collect();
-        if !classic {
-            children.sort_by_key(|(_, p)| group_address(p));
-        }
+        children.sort_by_key(|(c, _)| rank(&group_order, &c.name));
         for (c, p) in children {
             let mut next = chain.clone();
             next.push(c);
-            visit(next, &p, classic, group_address, out);
+            visit(next, &p, classic, members, out);
         }
     }
     let mut out = Vec::new();
-    visit(vec![root], "", classic, &group_address, &mut out);
+    visit(vec![root], "", classic, &members, &mut out);
     Ok(out)
 }
 

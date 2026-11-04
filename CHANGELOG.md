@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- netCDF: netCDF-4 variables and groups are listed in definition order, the creation order of their
+  HDF5 links, as GDAL lists them. They were ordered by object header address, which a variable
+  written with netCDF's default fill value moves out of definition order.
+
 ## 0.7.0 (2026-11-03)
 
 - Visualization: `terrio::ops::render` draws a raster or vector dataset as 8-bit RGBA, reading a

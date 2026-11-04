@@ -7,7 +7,8 @@
 //! The files come from `scripts/fetch_test_data.sh` (GDAL's test files in `gdal_hdf5` and
 //! `gdal_netcdf`; NASA products in `hdfeos5`, fetched only with Earthdata Login credentials). The
 //! tests skip themselves without `TERRIO_TEST_DATA` or the files. The trailing `bands` files are in
-//! `tests/data/netcdf_bands` (`scripts/make_netcdf_bands_fixtures.py`).
+//! `tests/data/netcdf_bands` (`scripts/make_netcdf_bands_fixtures.py`), the definition order one in
+//! `tests/data/netcdf_order` (`scripts/make_netcdf_order_fixtures.py`).
 
 // Geotransforms as `gdalinfo` prints them, digit for digit.
 #![allow(clippy::excessive_precision)]
@@ -238,6 +239,20 @@ fn netcdf_trailing_bands() {
             e["geolocation"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string())).collect();
         assert_eq!(items, gdal, "{case}");
     }
+}
+
+/// A netCDF-4 file whose variables and groups are defined in reverse name order, with
+/// object headers out of that order (`scripts/make_netcdf_order_fixtures.py`): the subdatasets in
+/// definition order, as GDAL 3.12.2 lists them.
+#[test]
+fn netcdf4_definition_order() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_order/definition_order.nc");
+    let path = path.to_string_lossy();
+    let terrio::info::Info::Raster(info) = terrio::info::info_path(&path, &Default::default()).unwrap() else { panic!("not a raster") };
+    let names: Vec<&str> = info.subdatasets.iter().map(|s| s.name.rsplit(':').next().unwrap()).collect();
+    let vars = ["zulu", "yankee", "xray", "whiskey", "victor"];
+    let gdal: Vec<String> = ["", "/sierra/", "/romeo/"].iter().flat_map(|g| vars.iter().map(move |v| format!("{g}{v}"))).collect();
+    assert_eq!(names, gdal);
 }
 
 /// NASA HDF-EOS5 products (fetched with Earthdata Login credentials only): the georeferencing GDAL
