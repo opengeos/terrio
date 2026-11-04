@@ -72,7 +72,7 @@ netcdf-reader = { version = "0.10.1", default-features = false, features = ["net
 hdf5-reader = { version = "0.10.1", default-features = false }
 # HEC-RAS geometry and plan HDF files (the `hecras` feature): the read-only engine behind
 # ras-commander. It owns every HEC-RAS rule; terrio's driver only translates its values.
-ras-commander-fast-hdf = { version = "0.2.4", default-features = false, features = ["hdf", "mesh", "results"] }
+ras-commander-fast-hdf = { version = "0.3.0", default-features = false, features = ["hdf", "mesh", "results"] }
 # The portable decoder: the same pixels on every platform, closer to libjpeg's than its SIMD paths.
 jpeg-decoder = { version = "0.3", default-features = false, features = ["platform_independent"] }
 # GeoPackage JPEG tiles; the version wbraster already uses.
