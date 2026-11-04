@@ -3242,9 +3242,10 @@ impl WarpContext<'_> {
     /// `sum`: each output pixel is the sum of the valid source pixels it overlaps, each times the
     /// share of its area inside the output pixel. On the source grid, an output pixel is the
     /// quadrilateral of its four corners; neighbouring pixels share their corners, so that the
-    /// output pixels tile the source and, where they cover it whole, keep its total in a
-    /// floating-point output (an integer output rounds each pixel, and keeps the total only up to
-    /// that rounding). A pixel that overlaps no valid source pixel is left as it is.
+    /// output pixels tile the source and, where they cover it whole, keep its total up to
+    /// rounding: floating-point rounding in a floating-point output, and the rounding of each
+    /// pixel to a whole number in an integer one. A pixel that overlaps no valid source pixel is
+    /// left as it is.
     fn warp_sum_row<T: crate::pixel::Pixel>(
         &self,
         c: &Chunk,
@@ -4723,11 +4724,11 @@ mod tests {
     }
 
     /// Over an output grid that covers a source whole, a floating-point `sum` keeps the source's
-    /// total across a change of CRS too, where output pixels are quadrilaterals on the source's
-    /// grid: warped in memory (in one chunk and in many), read lazily, and written as it is warped;
-    /// for a source whose output is a block, also with an error threshold below zero (which must
-    /// not narrow a chunk's source window), and for one whose output is a strip wider than two
-    /// batches of corners.
+    /// total, up to floating-point rounding, across a change of CRS too, where output pixels are
+    /// quadrilaterals on the source's grid: warped in memory (in one chunk and in many), read
+    /// lazily, and written as it is warped; for a source whose output is a block, also with an
+    /// error threshold below zero (which must not narrow a chunk's source window), and for one
+    /// whose output is a strip wider than two batches of corners.
     #[test]
     fn sum_keeps_the_total_of_a_source_it_covers_across_a_reprojection() {
         let dir = tempfile::tempdir().unwrap();
