@@ -1389,10 +1389,12 @@ impl<'a> Plan<'a> {
         Ok(Self { srcs, dst_srs, grid, bands, out_type, dst_nodata, dst_nodata_all })
     }
 
-    /// Select the input resolution after computing the target grid at full resolution.
+    /// Select the input resolution after computing the target grid at full resolution. A `sum`
+    /// takes no overview by itself (`AUTO`, `AUTO-n`): an overview averages the pixels it adds,
+    /// whose sum is the overview's total, not the source's. It reads a level when given one.
     fn select_overview(&mut self, k: usize, levels: &[(usize, usize)], o: &WarpOptions) -> Result<Option<usize>> {
         let full = self.srcs[k].grid;
-        if levels.is_empty() && !matches!(o.overview, OverviewSelection::Level(_)) {
+        if (levels.is_empty() || o.resampling == Resampling::Sum) && !matches!(o.overview, OverviewSelection::Level(_)) {
             return Ok(None);
         }
         let ratio = if matches!(o.overview, OverviewSelection::Auto | OverviewSelection::AutoOffset(_)) {
@@ -4973,6 +4975,49 @@ mod tests {
                 assert_eq!(differ, 0, "error threshold {error_threshold}, {memory_limit} bytes");
             }
         }
+    }
+
+    /// A `sum` reads the full resolution of a source with overviews unless a level is given, in a
+    /// lazy warp, a warp of several sources, a streamed warp and a serialized warped VRT: an
+    /// overview averages the source's pixels, and their sum is the overview's total. `average`
+    /// still reads the overview the automatic choice gives.
+    #[test]
+    fn sum_reads_the_full_resolution_of_a_source_with_overviews_unless_a_level_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        // `n` x `n` pixels of `f`, with overviews at the factors `levels`.
+        let write = |name: &str, n: usize, levels: Vec<usize>, resampling: &str, f: fn(usize, usize) -> f64| {
+            let path = dir.path().join(name).to_str().unwrap().to_string();
+            let ds = raster(n, n, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, f);
+            let o = crate::RasterWriteOptions { overviews: levels, overview_resampling: Some(resampling.into()), ..Default::default() };
+            crate::write_raster_dataset(&ds, &path, &o).unwrap();
+            path
+        };
+        let ones = write("ones.tif", 4, vec![2], "average", |_, _| 1.0);
+        let deep = write("deep.tif", 8, vec![2, 4], "average", |_, _| 1.0);
+        let ramp = write("ramp.tif", 4, vec![2], "nearest", |c, r| (c + 4 * r) as f64);
+        // The 2 x 2 output, the same through every path that reads the source by window.
+        let warped = |path: &str, resampling: Resampling, overview: OverviewSelection| -> Vec<f64> {
+            let o = WarpOptions { size: Some((2, 2)), resampling, overview, output_type: Some(DataType::F64), ..Default::default() };
+            let lazy = warp_lazy(&mut crate::open_raster_lazy(path).unwrap(), &o).unwrap().raster.data.to_f64_vec();
+            let many = warp_paths(&[path.into(), path.into()], &o).unwrap().raster.data.to_f64_vec();
+            assert_eq!(many, lazy, "{path}, {resampling:?}, {overview:?}: several sources");
+            for name in ["streamed.tif", "serialized.vrt"] {
+                let out = dir.path().join(name).to_str().unwrap().to_string();
+                warp_to_path(&[path.into()], &o, &out, &Default::default()).unwrap();
+                let read = crate::open_raster_lazy(&out).unwrap().read().unwrap().raster.data.to_f64_vec();
+                assert_eq!(read, lazy, "{path}, {resampling:?}, {overview:?}: {name}");
+            }
+            lazy
+        };
+        let total = |path: &str, overview| warped(path, Resampling::Sum, overview).iter().sum::<f64>();
+        assert_eq!(total(&ones, OverviewSelection::Auto), 16.0);
+        assert_eq!(total(&ones, OverviewSelection::None), 16.0);
+        assert_eq!(total(&ones, OverviewSelection::Level(0)), 4.0);
+        assert_eq!(total(&deep, OverviewSelection::AutoOffset(1)), 64.0);
+        assert_eq!(total(&deep, OverviewSelection::Level(0)), 16.0);
+        let average = |overview| warped(&ramp, Resampling::Average, overview);
+        assert_eq!(average(OverviewSelection::Auto), average(OverviewSelection::Level(0)));
+        assert_ne!(average(OverviewSelection::Auto), average(OverviewSelection::None));
     }
 
     #[test]

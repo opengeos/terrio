@@ -50,6 +50,21 @@ def test_finer_auto_and_explicit_bounds(pyramid):
         terrio.warp(lazy, overview="invalid")
 
 
+@pytest.mark.parametrize(
+    ("mode", "total"), [(None, 16.0), ("AUTO", 16.0), ("NONE", 16.0), (0, 4.0)]
+)
+def test_sum_reads_full_resolution_unless_a_level_is_given(tmp_path, mode, total):
+    # An overview averages the pixels a sum adds: summing it would give the overview's total.
+    path = tmp_path / "ones.tif"
+    terrio.Raster.from_array(
+        np.ones((4, 4), "float32"), (0.0, 1.0, 0.0, 4.0, 0.0, -1.0), crs="EPSG:3857"
+    ).write(str(path), overviews=[2], overview_resampling="average")
+    lazy = terrio.open_raster(str(path), lazy=True)
+    for src in [str(path), lazy]:
+        out = terrio.warp(src, ts=(2, 2), resampling="sum", ot="Float64", overview=mode)
+        assert out.read(1).sum() == total
+
+
 @pytest.mark.parametrize("mode", [True, False])
 def test_rejects_boolean_overview(pyramid, mode):
     with pytest.raises(terrio.InvalidArgumentError, match="boolean"):
