@@ -146,6 +146,7 @@ class WarpedVRT(DatasetReader):
     """A read-only view of a dataset reprojected into another CRS or grid, as rasterio's.
 
     rasterio's `WarpedVRT` is GDAL's warped VRT, whose reads this one follows.
+    Reduced reads with `sum` resampling are an exception, described below.
     Pixels are warped when they are read, region by region, from the windows of the source (or
     of its overviews) each region needs. With `sum` resampling, a reduced read of the whole VRT,
     of any of its bands, from a source georeferenced by a transform or RPCs, is warped from the
