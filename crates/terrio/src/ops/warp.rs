@@ -3343,18 +3343,24 @@ fn overlap(lo: f64, hi: f64, p: usize) -> f64 {
     (hi.min(p as f64 + 1.0) - lo.max(p as f64)).max(0.0)
 }
 
-/// `x.floor()`, for a finite `x` within the range of `i64`, without the call to `floor` that
-/// targets without SSE4.1 make.
+/// `x.floor()`, for a finite `x`, without the call to `floor` that targets without SSE4.1 make.
+/// A value beyond ±2^62 is taken as ±2^62, so that neither the cast nor the step to the next
+/// integer leaves the range of `i64`; callers clamp the result to a window far smaller.
 fn floor_i(x: f64) -> i64 {
+    let x = x.clamp(-INTEGER_LIMIT, INTEGER_LIMIT);
     let t = x as i64;
     if (t as f64) > x { t - 1 } else { t }
 }
 
 /// `x.ceil()`, as [`floor_i`].
 fn ceil_i(x: f64) -> i64 {
+    let x = x.clamp(-INTEGER_LIMIT, INTEGER_LIMIT);
     let t = x as i64;
     if (t as f64) < x { t + 1 } else { t }
 }
+
+/// The magnitude [`floor_i`] and [`ceil_i`] clamp their argument to: 2^62.
+const INTEGER_LIMIT: f64 = (1u64 << 62) as f64;
 
 /// The area of the quadrilateral `q` inside each pixel of a block of at most 2 × 2 pixels
 /// (`cols` × `rows`) that holds it whole, row after row in `areas`: from the areas of the
@@ -4772,6 +4778,26 @@ mod tests {
             let got = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
             assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-9), "{cols} x {rows} source: {got:?}, not {want:?}");
         }
+    }
+
+    /// A turned output pixel whose corners lie about 2e19 source pixels from the source, beyond
+    /// the range of a 64-bit integer, still holds the source inside it whole.
+    #[test]
+    fn sum_of_an_output_pixel_with_corners_beyond_the_integer_range_takes_the_source_inside_it() {
+        // 2 x 2 source pixels of 1e-15 m at the origin, in one output pixel of 40 km turned by 10
+        // degrees and centred on them.
+        let ds = raster(2, 2, [0.0, 1e-15, 0.0, 2e-15, 0.0, -1e-15], 32610, |c, r| (1 + c + 2 * r) as f64);
+        let (s, c) = 10f64.to_radians().sin_cos();
+        let size = 40000.0;
+        let o = WarpOptions {
+            dst_transform: Some([-0.5 * size * (c + s), size * c, size * s, -0.5 * size * (s - c), size * s, -size * c]),
+            size: Some((1, 1)),
+            resampling: Resampling::Sum,
+            output_type: Some(DataType::F64),
+            dst_nodata: Nodata::Values(vec![-1.0]),
+            ..Default::default()
+        };
+        assert_eq!(warp(&[&ds], &o).unwrap().raster.data.to_f64_vec(), [1.0 + 2.0 + 3.0 + 4.0]);
     }
 
     /// Where a change of CRS bends the output's rows across the source's grid, the corners of a
