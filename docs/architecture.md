@@ -41,8 +41,8 @@ the whole image, and GRIB files to read a band at a time.
 
 Vector datasets are `wbvector::Layer`s: features with OGC simple-feature geometries (with Z and
 M), typed attributes and a schema. Point clouds use a columnar `PointCloud` model and chunked
-`PointCloudReader`, and multidimensional scientific stores expose hierarchical `MdGroup` and
-`MdArray` views alongside their 2D raster views.
+`PointCloudReader`, and multidimensional scientific stores expose hierarchical `multidim::Group`
+and `multidim::Array` views (`MdArray` in JavaScript) alongside their 2D raster views.
 
 ## Building on whitebox_next_gen
 

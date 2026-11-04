@@ -65,7 +65,8 @@ The package holds two WebAssembly modules with the same API. `terrio-js` has eve
 `terrio-js/core` leaves out the heaviest ones (GeoParquet and Arrow IPC, netCDF and HDF5, point
 clouds, JPEG 2000, GRIB, Zarr, AVIF tiles, OpenStreetMap, CAD and HEC-RAS) and keeps GeoTIFF/COG with all its
 compressions, GeoJSON and the other text formats, FlatGeobuf, GeoPackage, Shapefile, PMTiles and
-MBTiles, the CRS transformations and the operations, at about half the size:
+MBTiles, the CRS transformations and the operations, at about half the size (measured from the
+[CI package at `b371d79`](https://github.com/opengeos/terrio/actions/runs/40144408237), decimal MB):
 
 | Module | `.wasm` | gzip | Brotli |
 |---|---|---|---|

@@ -114,11 +114,11 @@ scope in existing commands separately from new command coverage. All three items
 complete.
 
 - [x] Resolve the eight original public-fixture output mismatches in #253. The
-      [current measurements](https://terrio.dev/benchmark-253-current/), merged in
+      [current measurements](docs/benchmark-253-current.md), merged in
       [#493](https://github.com/opengeos/terrio/pull/493), record complete raster,
       vector and 1/2/4/12-CPU comparisons against GDAL 3.13.3. The separate
       vendor-reported files remain unavailable and are not independently certified.
-- [x] Grouped aggregates and the [documented spatial SQL subset](https://terrio.dev/sql/)
+- [x] Grouped aggregates and the [documented spatial SQL subset](docs/sql.md)
       (area, length, intersects, buffer, transform and centroid), through Rust,
       CLI/MCP, Python and JavaScript/WASM. Implemented in
       [#507](https://github.com/opengeos/terrio/pull/507), with 56 GDAL 3.13.3
@@ -596,7 +596,7 @@ WebAssembly (the `terrio-js` npm package):
 
 - [ ] Pipeline writer options as GDAL has them, such as retaining source feature IDs in a
       write step rather than assigning sequential ones (see the pipeline section of
-      [the CLI reference](https://terrio.dev/cli/#pipelines)). Not part of GDAL parity round 2 (#288).
+      [docs/cli.md](docs/cli.md#pipelines)). Not part of GDAL parity round 2 (#288).
 - [x] ArcGIS feature-service JSON (the `ESRIJSON` driver): files by content and query URLs page by
       page, as GDAL's driver reads them.
 - [x] ArcGIS feature-service protocol buffers (the `ESRIPBF` driver, `f=pbf`): files by content and
