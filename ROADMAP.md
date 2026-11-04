@@ -580,9 +580,8 @@ WebAssembly (the `terrio-js` npm package):
       netCDF/HDF5, point clouds, JPEG 2000, GRIB, Zarr, AVIF, OSM, CAD and HEC-RAS: 9.67 MB (3.36 MB gzipped, 2.56 MB
       with Brotli), against 22.10 MB (7.71 MB, 5.67 MB) for the full one, which a page can import when
       it needs those formats; formats left out say which module has them. Both are built with
-      whole-program LTO, the codecs optimized for speed and the rest for size, and wasm-opt -Oz,
-      and decode GeoTIFFs and JPEG
-      2000 and write COGs as fast in Node.js.
+      whole-program LTO, the codecs optimized for speed and the rest for size, and wasm-opt -Oz:
+      both decode GeoTIFFs and write COGs as fast in Node.js, and the full module decodes JPEG 2000.
 - [x] Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support
       it. Done: a memory64 module, `terrio-js/memory64` (every format, up to 16 GB), which
       `load({ memory64: true })` picks where the runtime has 64-bit memories (Node.js 24+, Chrome

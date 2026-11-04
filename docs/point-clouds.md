@@ -123,9 +123,11 @@ and the other dimensions in terrio's own.
 ## Larger than memory
 
 `terrio convert` (to every point cloud format: LAS, LAZ, COPC, PLY, E57 and EPT), `terrio info
---stats`, `terrio grid` (the statistics), `terrio filter range`, `terrio filter expression` and
-`terrio filter hexbin` read and write points in chunks (`--chunk-points`, a million by default), so
-their memory does not grow with the file. On a 3.05 GB LAS file of 101.7 million points:
+--stats`, `terrio grid` (the statistics), `terrio filter range` and `terrio filter expression` read
+and write points in chunks (`--chunk-points`, a million by default), so their memory does not grow
+with the file. `terrio filter hexbin` also reads points in chunks (`--chunk-points`), keeping a
+count per occupied hexagon, so its memory grows with the number of occupied hexagons rather than
+the point count. On a 3.05 GB LAS file of 101.7 million points:
 
 | Command | Time | Peak memory |
 |---|---:|---:|

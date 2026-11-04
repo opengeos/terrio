@@ -52,7 +52,7 @@ In WebAssembly, these formats are read from and written to memory:
 | | Read | Write |
 |---|---|---|
 | Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
-| Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, OAPIF (`openOapif`), FlatGeobuf\*, GeoPackage, GeoParquet, CSV, XLSX, CityJSON, CityGML, KML, KMZ, GML, GPX, DWG and DXF (full module), OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, Shapefile and MapInfo (MIF and TAB) in zip archives, HEC-RAS (full module) | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, GeoParquet, CSV, XLSX, CityJSON, CityGML, Shapefile (`.shp.zip`), KML, KMZ, GML, GPX, PMTiles, MBTiles, DWG and DXF (full module) |
+| Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, FlatGeobuf\*, GeoPackage, GeoParquet, CSV, XLSX, CityJSON, CityGML, KML, KMZ, GML, GPX, DWG and DXF (full module), OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, Shapefile and MapInfo (MIF and TAB) in zip archives, HEC-RAS (full module) | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, GeoParquet, CSV, XLSX, CityJSON, CityGML, Shapefile (`.shp.zip`), KML, KMZ, GML, GPX, PMTiles, MBTiles, DWG and DXF (full module) |
 | Point cloud | LAS, LAZ, COPC, PLY, E57 | LAS, LAZ, COPC, PLY, E57 |
 
 \* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
@@ -61,7 +61,7 @@ file's size for lines and five for polygons (3.2 GB and 5.4 GB in native builds)
 2 million OpenStreetMap lines opens in about 3 seconds in Node.js, and a 1 GB file of 2.3 million
 polygons runs out of memory, but in the memory64 module (see below). `openUrl` reads files with a
 spatial index by bounding box, decoding only the features found; a file without one is still read
-whole.
+whole. `openOapif(url, options)` reads OGC API Features services over `fetch`.
 
 JPEG 2000 files decode with the codec of GDAL's JP2OpenJPEG driver (a Rust port of OpenJPEG), with
 their GeoJP2 or GMLJP2 georeferencing: a Sentinel-2 band (`T10SEG_..._B04.jp2`, 10980 x 10980)

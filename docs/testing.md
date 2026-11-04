@@ -2071,7 +2071,8 @@ retention when alpha is removed, and an excluded maximum zoom retaining the lowe
 zoom's resampler. Python exercises loaded/lazy/path inputs and typed dataset masks;
 JavaScript exercises incremental callbacks, partial-channel nodata and preservation
 of the original callback exception. For `gdal_retile.py` grids and pyramids, see
-[Separate-file raster retiling (#440)](#separate-file-raster-retiling-440) below.
+the [retile section](cli.md#retile) of the CLI reference and the "Retile layouts"
+row of the table above.
 
 ```sh
 python scripts/conformance.py ../terrio-data --only raster-tiles --strict

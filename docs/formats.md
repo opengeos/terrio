@@ -701,8 +701,9 @@ and [GDAL's WFS driver](https://gdal.org/en/stable/drivers/vector/wfs.html).
 
 The `OAPIF` driver reads OGC API Features services, collection URLs and items URLs when opened
 with an explicit `OAPIF:` prefix (`OAPIF:https://service/collections`), or through JavaScript's
-`openOapif` over `fetch`. `info` and `list_layers` inspect `/collections` metadata without
-downloading features; data reads page through items using `next` links, honor advertised JSON
+`openOapif` over `fetch`. `info` without `--layer` or `--oo`, and `list_layers`, inspect
+`/collections` metadata without downloading features; `info` with `--layer` or `--oo` opens the
+service and reads features. Data reads page through items using `next` links, honor advertised JSON
 Schema scalar types and CRS axis rules, and support bounding-box, datetime, CRS and feature-range
 options (`PAGE_SIZE`, `DATETIME`, `CRS`, `PREFERRED_CRS`, `SERVER_FEATURE_AXIS_ORDER`,
 `IGNORE_SCHEMA`, `OAPIF_MAX_FEATURES`, `OAPIF_SKIP_FEATURES`, `OAPIF_MAX_PAGES`,

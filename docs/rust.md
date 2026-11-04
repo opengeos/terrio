@@ -314,10 +314,10 @@ compare, contour, coverage, coverage_clean, coverage_simplify, edit, fill_nodata
 lineref, overview, palette, pansharpen, pipeline, pixel_info, raster_retile, raster_tile, render,
 rpftoc, tile_index, topology, update, vector_clip, vector_geom, vector_grid, viewshed, xyz, zonal}`
 and the top-level `dataset_files`, `gpkg_maintenance`, `parquet_metadata`, `inspection`, `catalog`
-and `check`. `ops::render::{render, render_png}` draws a raster or vector dataset into an RGBA
-`Rendered` buffer (`width`, `height`, `rgba`) or PNG bytes from `RenderOptions` (`width`, `height`,
-`max_size`, `bands`, `colormap`, `stretch`, `layers`, `attribute`), reading a `LazyRaster` from the
-coarsest fitting overview.
+and `check`. `ops::render::{render_raster, render_vector}` draws a `LazyRaster` or vector
+`Layer`s into an RGBA `Image` (`width`, `height`, `rgba`, and `Image::to_png()` for PNG bytes)
+from `RenderOptions` (`width`, `height`, `max_size`, `bands`, `colormap`, `stretch`, `attribute`),
+reading a `LazyRaster` from the coarsest fitting overview.
 
 `ops::neighbors::{neighbors, neighbors_to_path}` computes focal statistics (`gdal raster
 neighbors`) from `NeighborsOptions` (kernels, `NeighborMethod`s, size, band, output type and

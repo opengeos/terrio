@@ -549,8 +549,8 @@ terrio convert INPUT OUTPUT [-f FORMAT] [options]
 | `--simplify TOL`, `--segmentize MAX_LEN` | vectors | Simplify geometries or bound segment lengths before reprojection |
 | `--s-srs`, `--a-srs` | vectors | Override or assign the CRS |
 | `--append`, `--overwrite` | vectors, rasters (`--append`) | Add to or replace layers of an existing GeoPackage or vector tile archive; add a raster to a PMTiles or MBTiles archive of image tiles |
-| `--oo KEY=VALUE` | vectors | Open options (`X_POSSIBLE_NAMES=...` for CSV/XLSX; `HEADERS`, `FIELD_TYPES`, `HEADER_ROWS`, `FIRST_ROW`, `RANGE` for XLSX; `ZOOM_LEVEL`, `CLIP` for tiles; `WFS_*`, `OAPIF_*`...) |
-| `--lco KEY=VALUE` | vectors | Layer creation options (`RFC7946=YES` for GeoJSON; `GEOMETRY=AS_WKT|AS_XY` for CSV; `GEOMETRY=AS_XY|AS_WKT|NONE`, `HEADER_STYLE=BOLD`, `FREEZE_HEADER=YES`, `AUTOFILTER=YES`, `COLUMN_WIDTH=AUTO|<n>`, `DATE_FORMAT`, `DATETIME_FORMAT`, `CREATION_TIME` for XLSX...) |
+| `--oo KEY=VALUE` | vectors | Open options (`X_POSSIBLE_NAMES=...` for CSV/XLSX; `HEADERS`, `FIELD_TYPES`, `HEADER_ROWS`, `FIRST_ROW`, `RANGE` for XLSX; `ZOOM_LEVEL`, `CLIP` for tiles; `WFS_*`; `DATETIME`, `CRS`, `PAGE_SIZE`, `IGNORE_SCHEMA` and `OAPIF_*` limits for OAPIF...) |
+| `--lco KEY=VALUE` | vectors | Layer creation options (`RFC7946=YES` for GeoJSON; `GEOMETRY=AS_WKT\|AS_XY` for CSV; `GEOMETRY=AS_XY\|AS_WKT\|NONE`, `HEADER_STYLE=BOLD`, `FREEZE_HEADER=YES`, `AUTOFILTER=YES`, `COLUMN_WIDTH=AUTO\|<n>`, `DATE_FORMAT`, `DATETIME_FORMAT`, `CREATION_TIME` for XLSX...) |
 | `--co KEY=VALUE` | rasters | Creation options (Zarr; netCDF: `FORMAT=NC4`, `COMPRESS=DEFLATE`, `ZLEVEL`, `CHUNKING`; PMTiles and MBTiles: `TILE_FORMAT=WEBP`...) |
 | `--minzoom N`, `--maxzoom N` | both | Zoom levels of PMTiles, MBTiles and MVT outputs |
 | `--kmz-resource PATH[=FILE]` | vectors | Pack an icon or companion file into a KMZ archive |
