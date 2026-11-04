@@ -368,12 +368,15 @@ pub struct ZonalArgs {
     weight_band: usize,
     /// A CSV table of labelled inputs, with a header: `path` (required), and optional `time`
     /// (such as 2024-07-01), `label` (such as B04) and `band` (a band number; by default each
-    /// --band). Rows of the same path, or of a --raster path, share one read. Labelled rows name
+    /// --band). Table rows naming the same path, or a --raster path, share its read. Labelled rows name
     /// fields TIME_LABEL_STATISTIC (TIME_LABEL_bN_STATISTIC when a row without `band` takes
     /// several --band); others FILE_STEM_bN_STATISTIC. Quote fields containing commas.
     #[arg(long, value_name = "FILE")]
     inputs: Option<String>,
 }
+
+/// The most statistic columns `zonal-stats` adds, in any format: FlatGeobuf's column limit.
+const MAX_COLUMNS: usize = u16::MAX as usize;
 
 /// SQLite's default column limit, which GeoPackage tables share (feature ID and geometry included).
 const GPKG_MAX_COLUMNS: usize = 2000;
@@ -526,6 +529,12 @@ pub fn zonal(a: ZonalArgs) -> Result<()> {
         }
     }
     let columns: usize = plan.iter().map(|(_, b)| b.len()).sum::<usize>() * options.stats.len();
+    // Every feature holds a value per column: a bound for every format (FlatGeobuf's own).
+    if columns > MAX_COLUMNS {
+        return Err(Error::InvalidArgument(format!(
+            "zonal statistics would add {columns} columns; at most {MAX_COLUMNS} are written: request fewer statistics or inputs"
+        )));
+    }
     let layers = a.sources.input.open()?;
     if a.sources.output.driver()? == Some(VectorDriver::GPKG)
         && let Some(l) = layers.iter().find(|l| l.schema.len() + columns + 2 > GPKG_MAX_COLUMNS)

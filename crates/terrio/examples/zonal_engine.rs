@@ -31,7 +31,11 @@ fn main() -> terrio::Result<()> {
         .enumerate()
         .map(|(i, line)| {
             // Paths, as the CLI passes them: each file is open only while it is read.
-            let path = line.split(',').next().unwrap_or_default().to_string();
+            // The first field, unquoted as CSV writers quote it (`"a,b.tif"`, `""` for a quote).
+            let path = match line.strip_prefix('"') {
+                Some(rest) => rest.split_once("\",").map_or(rest.trim_end_matches('"'), |(p, _)| p).replace("\"\"", "\""),
+                None => line.split(',').next().unwrap_or_default().to_string(),
+            };
             ZonalSource { raster: ZonalRaster::Path(path), bands: vec![ZonalBand::new(1, format!("r{i}"))] }
         })
         .collect::<Vec<_>>();

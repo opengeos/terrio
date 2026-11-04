@@ -183,12 +183,36 @@ pub fn label_prefix(time: Option<&str>, label: &str) -> String {
     joined.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
 }
 
+/// The time label of an ISO 8601 date-time from Python or JavaScript, named alike on every
+/// surface: a UTC offset `+00:00` is `Z`, a zero fraction of a second is dropped
+/// (`06:30:00.000Z` is `06:30:00Z`), and midnight, naive or UTC, is the date alone.
+pub fn time_text(iso: &str) -> String {
+    let mut t = iso.trim().to_string();
+    if let Some(utc) = t.strip_suffix("+00:00") {
+        t = format!("{utc}Z");
+    }
+    if let Some(dot) = t.rfind('.').filter(|&d| t[..d].contains('T')) {
+        let end = t[dot + 1..].find(|c: char| !c.is_ascii_digit()).map_or(t.len(), |e| dot + 1 + e);
+        if end > dot + 1 && t[dot + 1..end].bytes().all(|b| b == b'0') {
+            t.replace_range(dot..end, "");
+        }
+    }
+    for midnight in ["T00:00:00Z", "T00:00:00"] {
+        if let Some(day) = t.strip_suffix(midnight) {
+            return day.to_string();
+        }
+    }
+    t
+}
+
 /// The bands of one labelled input (a CLI `--inputs` row, a Python dict, a JavaScript object):
 /// each of `bands`, its fields named by [`label_prefix`] when the input has a time or a label,
 /// else `unlabelled(band)`. A label given to several bands is suffixed with each band's number
 /// (`B04_b1`, `B04_b2`), so that their fields say which band they hold. Every band gets a
 /// `label`, `bN` when the input gives none, so that outputs with a band dimension can name it.
+/// Blank times and labels are absent, as an empty `--inputs` cell is.
 pub fn labelled_bands(bands: &[usize], time: Option<&str>, label: Option<&str>, unlabelled: impl Fn(usize) -> String) -> Vec<ZonalBand> {
+    let (time, label) = (time.filter(|t| !t.trim().is_empty()), label.filter(|l| !l.trim().is_empty()));
     bands
         .iter()
         .map(|&band| {
@@ -255,9 +279,33 @@ impl Default for ZonalOptions {
     }
 }
 
-/// The most bytes of zone values a source holds in one pass over its bands, for statistics that
-/// keep values (median, quantiles, mode, minority, variety).
-/// Small in unit tests, so that they reduce bands in several passes.
+/// Holds `bytes` of the values budget that the passes of all sources share, waiting while other
+/// passes hold it, until dropped. A pass always runs when no other holds any, so the values held
+/// together stay within `VALUES_PER_PASS`, or within one pass's when that is larger.
+fn hold_values(budget: &(Mutex<usize>, std::sync::Condvar), bytes: usize) -> Result<impl Drop + '_> {
+    struct Held<'a>(&'a (Mutex<usize>, std::sync::Condvar), usize);
+    impl Drop for Held<'_> {
+        fn drop(&mut self) {
+            if let Ok(mut used) = self.0.0.lock() {
+                *used -= self.1;
+            }
+            self.0.1.notify_all();
+        }
+    }
+    let lock = || Error::InvalidArgument("zonal values budget lock poisoned".into());
+    let (used, released) = budget;
+    let mut held = used.lock().map_err(|_| lock())?;
+    while bytes > 0 && *held > 0 && *held + bytes > VALUES_PER_PASS {
+        held = released.wait(held).map_err(|_| lock())?;
+    }
+    *held += bytes;
+    Ok(Held(budget, bytes))
+}
+
+/// The most bytes of zone values that the passes of all sources hold together, for statistics
+/// that keep values (median, quantiles, mode, minority, variety); one pass may exceed it when it
+/// runs alone. While a zone finishes, a sorted copy of one band's values adds 16 bytes per pixel
+/// of that zone. Small in unit tests, so that they reduce bands in several passes.
 const VALUES_PER_PASS: usize = if cfg!(test) { 64 } else { 1 << 30 };
 
 /// Rows read at a time: terrio's strip size for `bands` of this raster (about 8 MB of values, or
@@ -408,24 +456,42 @@ pub fn zonal_stats_with(
     // The grid of each source; none for a source without bands, which is not read.
     let mut source_grid: Vec<Option<usize>> = Vec::new();
     let mut nodata = Vec::new();
+    // Paths are opened for their headers on the pool, a few at a time, and closed again (see
+    // `ZonalRaster::Path`); the warnings of their opening are recorded on the calling thread.
+    let paths: Vec<Option<&str>> = sources
+        .iter()
+        .map(|s| match &s.raster {
+            ZonalRaster::Path(path) if !s.bands.is_empty() => Some(path.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut path_headers = crate::par::map_init(
+        &paths,
+        || (),
+        |_, path| {
+            path.map(|path| {
+                let header = crate::open_raster_lazy(path).map(|r| (r.header(), index::GridKey::of(&r)));
+                (header, crate::warnings::take())
+            })
+        },
+    )
+    .into_iter();
     for source in sources.iter() {
+        let path_header = path_headers.next().flatten();
         if source.bands.is_empty() {
             nodata.push(Vec::new());
             source_grid.push(None);
             continue;
         }
-        // A path is opened for its header and closed again (see `ZonalRaster::Path`).
-        let opened;
-        let raster = match &source.raster {
-            ZonalRaster::Open(raster) => raster,
-            ZonalRaster::Path(path) => {
-                opened = crate::open_raster_lazy(path)?;
-                &opened
+        let (header, grid) = match (&source.raster, path_header) {
+            (ZonalRaster::Open(raster), _) => (raster.header(), index::GridKey::of(raster)),
+            (ZonalRaster::Path(_), Some((header, warnings))) => {
+                warnings.into_iter().for_each(crate::warnings::warn);
+                header?
             }
+            (ZonalRaster::Path(_), None) => unreachable!("paths with bands are opened above"),
         };
-        let header = raster.header();
         super::sample::check_raster(&header)?;
-        let grid = index::GridKey::of(raster);
         if let Some(w) = &weight_header {
             let weight_grid = index::GridKey { cols: w.raster.cols, rows: w.raster.rows, geo_transform: w.geo_transform(), crs: w.crs() };
             if !grid.same(&weight_grid) {
@@ -464,6 +530,8 @@ pub fn zonal_stats_with(
     let ahead = 1;
     // Warnings of the rasters opened on other threads, recorded again on the calling thread.
     let warnings = Mutex::new(Vec::new());
+    // Bytes of zone values held by the passes running now, and their release.
+    let values_held = (Mutex::new(0usize), std::sync::Condvar::new());
     // The error of the first failing source, by index. Sources after it are skipped: those before
     // it were taken first and still run, so the error reported is the same.
     let failure: Mutex<Option<(usize, Error)>> = Mutex::new(None);
@@ -480,6 +548,10 @@ pub fn zonal_stats_with(
                 if let Ok(mut w) = warnings.lock() {
                     w.extend(crate::warnings::take());
                 }
+                // The zones were built for the grid its header had: a file replaced since is refused.
+                if !index::GridKey::of(&opened).same(&grids[grid].0) {
+                    return Err(Error::InvalidArgument(format!("{path} changed grid while zonal statistics were computed")));
+                }
                 &mut opened
             }
         };
@@ -492,16 +564,19 @@ pub fn zonal_stats_with(
         // Statistics that keep values hold every open zone's values for each band reduced at once.
         // Bands are reduced in groups whose values take at most `VALUES_PER_PASS` (one band at a
         // time when one band's take more), so that a zone covering a whole multi-band raster holds
-        // one band's values, as 0.7.0 did. Each further pass reads the raster again.
-        let group = match plan.value_bytes_per_pixel() {
-            0 => bands.len(),
-            bytes => {
-                let per_band = reduce::open_pixels_peak(zone_index, raster.height(), strip_rows(raster, 1)) * bytes;
-                VALUES_PER_PASS / per_band.max(1)
-            }
+        // one band's values, as 0.7.0 did. Each further pass reads the raster again. Passes of all
+        // sources share the budget (`hold_values`).
+        // Values per band at the strip height of a pass of `n` bands (strips of fewer bands are
+        // taller); the largest group that fits, or one band.
+        let per_band = |n: usize| match plan.value_bytes_per_pixel() {
+            0 => 0,
+            bytes => reduce::open_pixels_peak(zone_index, raster.height(), strip_rows(raster, n)) * bytes,
         };
+        let group = (1..=bands.len()).rev().find(|&n| n * per_band(n) <= VALUES_PER_PASS).unwrap_or(1);
+        let per_band = per_band(group);
         let mut band = 0;
-        for group in bands.chunks(group.clamp(1, bands.len().max(1))) {
+        for group in bands.chunks(group.max(1)) {
+            let _held = hold_values(&values_held, per_band * group.len())?;
             let weight = match (&mut weight_raster, weights, &weight_header) {
                 (Some(raster), Some(w), Some(h)) => Some(reduce::WeightSpec { raster, band: w.band, nodata: h.band_nodata(w.band) }),
                 _ => None,
@@ -576,9 +651,28 @@ fn release_freed_memory() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Statistic, ZonalBand, ZonalOptions, ZonalSource, labelled_bands, zonal_stats};
+    use super::{Statistic, ZonalBand, ZonalOptions, ZonalSource, hold_values, labelled_bands, zonal_stats};
     use crate::vector::Coord;
     use crate::{DataType, Feature, Geometry, Layer, LazyRaster, Raster, RasterConfig, RasterDataset};
+
+    #[test]
+    fn passes_wait_while_others_hold_the_values_budget() {
+        // 64 bytes in tests: a pass of 40 waits for another of 40, one of 0 never does.
+        let budget = (std::sync::Mutex::new(0usize), std::sync::Condvar::new());
+        let first = hold_values(&budget, 40).unwrap();
+        drop(hold_values(&budget, 0).unwrap());
+        std::thread::scope(|scope| {
+            let second = scope.spawn(|| {
+                let _held = hold_values(&budget, 40).unwrap();
+                *budget.0.lock().unwrap()
+            });
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert_eq!(*budget.0.lock().unwrap(), 40);
+            drop(first);
+            assert_eq!(second.join().unwrap(), 40);
+        });
+        assert_eq!(*budget.0.lock().unwrap(), 0);
+    }
 
     #[test]
     fn bands_reduced_in_several_passes_match_bands_reduced_alone() {
@@ -600,6 +694,23 @@ mod tests {
         let alone = zonal_stats(&zones, &mut [source(&[1]), source(&[2]), source(&[3])], &options).unwrap();
         assert_eq!(together.features[0].attributes, alone.features[0].attributes);
         assert_eq!(together.features[0].attributes.len(), 9);
+    }
+
+    #[test]
+    fn time_text_names_python_and_javascript_times_alike() {
+        for (iso, text) in [
+            ("2024-07-01T00:00:00", "2024-07-01"),
+            ("2024-07-01T00:00:00+00:00", "2024-07-01"),
+            ("2024-07-01T00:00:00.000Z", "2024-07-01"),
+            ("2024-07-11T06:30:00.000Z", "2024-07-11T06:30:00Z"),
+            ("2024-07-11T06:30:00+00:00", "2024-07-11T06:30:00Z"),
+            ("2024-07-11T06:30:00.250Z", "2024-07-11T06:30:00.250Z"),
+            ("2024-07-11T06:30:00+02:00", "2024-07-11T06:30:00+02:00"),
+            ("2024-07-11", "2024-07-11"),
+        ] {
+            assert_eq!(super::time_text(iso), text, "{iso}");
+        }
+        assert_eq!(labelled_bands(&[1], Some(" "), Some(""), |b| format!("s_b{b}"))[0].prefix, "s_b1");
     }
 
     #[test]

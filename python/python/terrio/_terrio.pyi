@@ -192,6 +192,10 @@ __all__ = [
 
 __version__: str
 
+class _SupportsToDictRecords(Protocol):
+    # A pandas DataFrame of labelled rows, read as `to_dict("records")`.
+    def to_dict(self, orient: Literal["records"]) -> Any: ...
+
 class _SupportsGeoInterface(Protocol):
     @property
     def __geo_interface__(self) -> Any: ...
@@ -2482,7 +2486,7 @@ def zonal_stats(
     | Raster
     | dict[str, Any]
     | Sequence[str | os.PathLike[str] | Raster | dict[str, Any]]
-    | Any,
+    | _SupportsToDictRecords,
     *,
     bands: Sequence[int] | None = None,
     prefixes: Sequence[str] | None = None,

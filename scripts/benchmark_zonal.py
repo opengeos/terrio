@@ -335,7 +335,7 @@ def main():
                             except AssertionError as error:
                                 entry["equivalence"] = dict(equivalent=False, detail=str(error))
                         results.append(entry)
-    summary = dict(machine=platform.node(), cpu=platform.processor() or platform.machine(), cores=os.cpu_count(),
+    summary = dict(cpu=platform.processor() or platform.machine(), cores=os.cpu_count(),
                    python=platform.python_version(), results=results)
     text = json.dumps(summary, indent=2)
     if args.json:

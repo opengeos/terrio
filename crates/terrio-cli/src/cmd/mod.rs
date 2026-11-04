@@ -120,9 +120,12 @@ pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
 pub fn read_list_text(list: &str, what: &str) -> terrio::Result<String> {
     use std::io::Read;
     if std::env::var_os("TERRIO_MCP_TOOL").is_some() {
-        return Err(terrio::Error::InvalidArgument(format!(
-            "{what} are not read in MCP tool calls: pass each input as an argument (name a file beginning with @ as ./@name)"
-        )));
+        let hint = if what.starts_with("--inputs") {
+            "pass each raster as a --raster argument"
+        } else {
+            "pass each input as an argument (name a file beginning with @ as ./@name)"
+        };
+        return Err(terrio::Error::InvalidArgument(format!("{what} are not read in MCP tool calls: {hint}")));
     }
     let meta = std::fs::metadata(list).map_err(|e| unreadable(list, e))?;
     if !meta.is_file() {

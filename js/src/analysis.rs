@@ -246,8 +246,7 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
                 if date.get_time().is_nan() {
                     return Err(JsError::new(&format!("'{key}' is an invalid Date")));
                 }
-                let iso = String::from(date.to_iso_string());
-                return Ok(Some(iso.strip_suffix("T00:00:00.000Z").map(String::from).unwrap_or(iso)));
+                return Ok(Some(terrio::ops::zonal::time_text(&String::from(date.to_iso_string()))));
             }
             v.as_string()
                 .or_else(|| v.as_f64().map(|n| n.to_string()))

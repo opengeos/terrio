@@ -342,4 +342,4 @@ def test_zonal_labelled_inputs_missing_values_and_several_bands(tmp_path):
     # UTC midnight is named by its date too, as in JavaScript.
     frame["time"] = frame["time"].dt.tz_localize("UTC")
     got = props(frame)
-    assert (got["2024_07_01_B04_mean"], got["2024_07_11T06_30_00_00_00_b1_mean"]) == (2.0, 2.0)
+    assert (got["2024_07_01_B04_mean"], got["2024_07_11T06_30_00Z_b1_mean"]) == (2.0, 2.0)

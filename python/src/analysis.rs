@@ -215,8 +215,7 @@ fn zonal_stats(
         let text = |v: Bound<'_, PyAny>| -> PyResult<String> {
             if v.hasattr("isoformat")? {
                 let iso: String = v.call_method0("isoformat")?.extract()?;
-                let day = iso.strip_suffix("T00:00:00").or_else(|| iso.strip_suffix("T00:00:00+00:00"));
-                return Ok(day.map(String::from).unwrap_or(iso));
+                return Ok(terrio::ops::zonal::time_text(&iso));
             }
             Ok(v.str()?.to_string())
         };

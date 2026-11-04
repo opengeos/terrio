@@ -2389,7 +2389,8 @@ Repeat `--raster` for multiple rasters (or give `--raster @FILE`, a list of path
 and use `--band` for comma-separated bands from each. `--inputs FILE` reads a CSV table with a
 header: `path` (required), and optional `time`, `label` and `band` (a band number; by default
 each `--band`); quote fields that contain commas (RFC 4180 quoting; a row with more fields than
-the header is an error). Rows of the same path, or of a `--raster` path, share one read. Over
+the header is an error). Table rows naming the same path, or a `--raster` path, share its read
+(each `--raster` is read once per time it is given). Over
 MCP, `--inputs` tables and `@FILE` lists are refused: pass each raster as a `--raster` argument
 (labelled rows are not available there).
 Default statistics are `count,min,max,mean,sum,stddev`. Also available: `variance`, `cv`
@@ -2429,18 +2430,22 @@ accepted only when both the zones and the raster have no CRS. Reprojection trans
 vertices without densifying curved edges. Zones are computed once per distinct grid (size,
 geotransform and CRS) and shared by every raster on it, so many dates of one Sentinel-2 tile
 cost one zone computation per resolution. Rasters are read lazily, local or remote, in strips of
-block rows (about 8 MB of values), and only the strips and columns that zones cover; rasters are
+block rows (about 8 MB of values), only the strips that zones cover, each over the columns from
+its leftmost to its rightmost zone pixel; rasters are
 processed in parallel (`RAYON_NUM_THREADS` sets the number of threads). Memory follows the
 strip size and the number of threads, not the raster size: each raster being reduced holds up
 to five strips of about 8 MB of its bands, or of a whole row of blocks when that is larger (a
 row of 1024-row blocks of ten UInt16 bands 10,980 columns wide is 225 MB), and one raster is
 reduced per thread. Median, quantiles, mode, minority and variety also keep each zone's values
 from the strip of its first row to that of its last: 8 bytes per pixel and band (16 with
-`--fractional`). A raster's bands are reduced together while their values take at most 1 GiB,
-else in groups that do, one band at a time when one band's take more (a zone covering a whole
-multi-band raster), each group reading the raster again. The zones of each grid are held as
-spans of covered pixels (a few bytes per covered row of each zone) until every raster is
-reduced. Integers above 2⁵³ can lose precision.
+`--fractional`), and while a zone finishes, a sorted copy of one band's values (16 bytes per
+pixel). The rasters reduced at once keep at most 1 GiB of values together: a raster's bands
+are reduced in groups that fit, one band at a time when one band's take more (a zone covering a
+whole multi-band raster), each group reading the raster again, and a group waits while others
+hold the budget. The zones of each grid are held as
+spans of covered pixels until every raster is reduced: 24 bytes per covered run of a row,
+and per partially covered cell with `--fractional`. Building a zone takes a mask of its bounding
+box for a moment, a byte per pixel (8 with `--fractional`). Integers above 2⁵³ can lose precision.
 Complex bands and geolocation arrays are unsupported. Standard vector input/output options apply.
 
 ### Fractional coverage and weighting rasters
