@@ -6,13 +6,14 @@ Usage:
 The file holds two `Short` variables flagged `_Unsigned = "true"` with `_FillValue = -1`, as GOES
 ABI L2 products are: `valid_range` holds `[9200, -9536]` (unsigned 9200 to 56000) and the other
 variable the same bounds as `valid_min` and `valid_max`. Their values lie below, on, inside and
-above the unsigned range, and on the fill value. The printed values are the pixels GDAL (through
-rasterio) reads, the expected values of the `netcdf_unsigned_valid_range` test. Needs netCDF4 and
-rasterio.
+above the unsigned range, and on the fill value. The pixels GDAL (through rasterio) reads are
+printed and written to `expected.json`, the expected values of the `netcdf_unsigned_valid_range`
+test. Needs netCDF4 and rasterio.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import netCDF4
@@ -54,9 +55,13 @@ def main() -> None:
                 var.setncattr("valid_max", np.int16(-9536))
             var[:] = VALUES
     print(f"GDAL {rasterio.__gdal_version__}")
+    expected = {}
     for name in ("valid_range", "valid_min_max"):
         with rasterio.open(f'NETCDF:"{path}":{name}') as ds:
-            print(name, ds.dtypes[0], ds.nodata, ds.read(1).ravel().tolist())
+            pixels = ds.read(1).ravel().tolist()
+            expected[name] = pixels
+            print(name, ds.dtypes[0], ds.nodata, pixels)
+    (OUT / "expected.json").write_text(json.dumps(expected, indent=1) + "\n")
 
 
 if __name__ == "__main__":
