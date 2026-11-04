@@ -1142,6 +1142,9 @@ a `.aux.xml` sidecar when nodata differs between bands or a Float32 nodata
 value needs its original double precision; keep that sidecar with the TIFF. A standalone TIFF byte buffer has only the shared embedded nodata tag.
 Raster creation options (compression, tiles, masks, overviews and metadata overrides)
 are rejected for a serialized warp; set the warp grid through the warp options.
+With `sum`, each output pixel is the sum of the valid source pixels it overlaps,
+each weighted by the share of its area inside the output pixel, so that a grid
+covering the source keeps its total in a floating-point output.
 GDAL 3.12's generic `sum` polygon path can lose overlap area on pixel boundaries,
 including when a redundant identity CRS transformer disables its affine fast path.
 Terrio preserves conservative affine overlap sums; its results match GDAL's affine
