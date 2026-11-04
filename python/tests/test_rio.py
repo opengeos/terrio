@@ -632,7 +632,8 @@ def test_rasterize_overlapping_shapes_match_burning_one_by_one(values, dtype):
 def test_rasterize_burns_values_as_rasterio():
     # rasterio 1.5.2 (GDAL) burns values through float64: NaN as 0, rounded half away from zero,
     # clamped to an integer dtype's range, overflowing floats to infinity. Recorded with rasterio
-    # 1.5.2 on NumPy 2.5.4.
+    # 1.5.2 on NumPy 2.5.4. Left out: values of 2**64 and above into uint64, the one difference
+    # (GDAL burns 0, terrio the maximum).
     T = Affine(1, 0, 0, 0, -1, 4)
     left = {"type": "Polygon", "coordinates": [[(0, 0), (2, 0), (2, 4), (0, 4), (0, 0)]]}
     right = {"type": "Polygon", "coordinates": [[(2, 0), (4, 0), (4, 4), (2, 4), (2, 0)]]}
@@ -663,6 +664,8 @@ def test_rasterize_burns_values_as_rasterio():
         # Above 2**52, adding 0.5 in float64 rounds up, in GDAL as here.
         ((2**52 + 3, 1), "int64", [4503599627370500, 1]),
         ((2**53 - 1, 1), "int64", [9007199254740992, 1]),
+        # IDs above 2**53 lose their low bits: distinct IDs can burn alike.
+        ((2**53 + 1, 2**53 + 3), "int64", [9007199254740992, 9007199254740996]),
     ]
     for values, dtype, expected in cases:
         got = features.rasterize(

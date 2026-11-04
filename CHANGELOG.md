@@ -14,8 +14,8 @@
   `terrio.xarray`). Burn values follow rasterio 1.5 (GDAL): through float64, then into an
   integer dtype NaN as 0, rounded half away from zero and clamped to its range, where values
   outside it wrapped and fractions were truncated; integers above 2**52 can change through float64,
-  as in GDAL. 25 of 26 edge cases match rasterio 1.5.2 (GDAL 3.12.2); the other, values of 2**64
-  and above into uint64, burns the maximum where GDAL burns 0.
+  as in GDAL. Every edge case tested matches rasterio 1.5.2 (GDAL 3.12.2) but one: values of
+  2**64 and above into uint64 burn the maximum where GDAL burns 0.
 - Warps with `sum` resampling give each output pixel the sum of the valid source pixels it
   overlaps, each weighted by the share of its area inside the output pixel (on the source grid, a
   quadrilateral when the output grid is turned or reprojected), so that an output grid covering a
