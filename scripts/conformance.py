@@ -265,9 +265,12 @@ def suite_subdatasets(ctx):
     for sub, d in dirs:
         if not os.path.isdir(d):
             continue
-        _code, o, e = run([sys.executable, str(SCRIPTS / "compare_with_gdal.py"), "--subdatasets", d], {"TERRIO_BIN": ctx.terrio})
+        code, o, e = run([sys.executable, str(SCRIPTS / "compare_with_gdal.py"), "--subdatasets", d], {"TERRIO_BIN": ctx.terrio})
         out += o
         err += e
+        # It exits 1 on a difference; otherwise a nonzero exit is a failed run.
+        if code and not re.search(r"^DIFF", o, re.M):
+            s.error = tail(e or o)
         for line in o.splitlines():
             m = re.match(r"^(OK|DIFF)\s+(\S+) (.+?)(?::\s+(.*))?$", line)
             if m:
