@@ -178,13 +178,12 @@ fn type_code(t: &NcType) -> u8 {
 }
 
 /// The value of a signed type's bits read as unsigned (`_Unsigned = "true"`): negative values
-/// of `Byte`, `Short`, `Int` and `Int64` wrap around, others are kept, as GDAL 3.12.2 reads them.
+/// of `Byte`, `Short` and `Int` wrap around, others are kept, as GDAL 3.12.2 reads them.
 fn as_unsigned(v: f64, t: &NcType) -> f64 {
     let bits = match t {
         NcType::Byte => 8,
         NcType::Short => 16,
         NcType::Int => 32,
-        NcType::Int64 => 64,
         _ => return v,
     };
     if v < 0.0 { v + 2f64.powi(bits) } else { v }
@@ -1009,9 +1008,8 @@ mod tests {
         assert_eq!(as_unsigned(9200.0, &NcType::Short), 9200.0);
         assert_eq!(as_unsigned(-1.0, &NcType::Byte), 255.0);
         assert_eq!(as_unsigned(-1.0, &NcType::Int), 4294967295.0);
-        // Int64 wraps around 2^64 (exact in f64 here: a multiple of the 2^11 spacing above 2^63).
-        assert_eq!(as_unsigned(-4096.0, &NcType::Int64), 2f64.powi(64) - 4096.0);
-        assert_eq!(as_unsigned(9200.0, &NcType::Int64), 9200.0);
+        // `_Unsigned` is ignored on `Int64`.
+        assert_eq!(as_unsigned(-1.0, &NcType::Int64), -1.0);
         assert_eq!(as_unsigned(-1.0, &NcType::Float), -1.0);
         assert_eq!(as_unsigned(f64::NEG_INFINITY, &NcType::Short), f64::NEG_INFINITY);
         let mut d = RasterData::U16(vec![9199, 9200, 32197, 56000, 56001, 65535]);
