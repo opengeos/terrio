@@ -9,3 +9,5 @@ node_modules/
 *.so
 *.pyd
 site/
+# GDAL statistics sidecars the conformance suite writes next to the netCDF fixtures.
+crates/terrio/tests/data/netcdf_*/*.aux.xml
