@@ -203,8 +203,9 @@ def terrio_columns(path, stats):
     for f in features:
         for n in out:
             out[n].append(f.GetField(n))
-    # 2024_07_01_red_mean -> 2024-07-01_red_mean
-    return {re.sub(r"^(\d{4})_(\d{2})_(\d{2})_", r"\1-\2-\3_", n): v for n, v in out.items()}
+    # 2024_07_01_red_mean -> 2024-07-01_red_mean; --prefix outputs' 2024_07_01_red_b1_mean too.
+    key = lambda n: re.sub(r"_b1_([^_]+)$", r"_\1", re.sub(r"^(\d{4})_(\d{2})_(\d{2})_", r"\1-\2-\3_", n))
+    return {key(n): v for n, v in out.items()}
 
 
 def compare(reference, other, stats, rel=1e-6, abs_=1e-6):
