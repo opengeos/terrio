@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- netCDF: a `Byte`, `Short` or `Int` variable flagged `_Unsigned` reads its `valid_range` (or
-  `valid_min` and `valid_max`) as unsigned too, as GDAL does. Such a range holding negative bounds,
-  as GOES ABI L2 products' `[9200, -9536]` does, made every pixel nodata.
+- netCDF: a signed variable flagged `_Unsigned` reads its `valid_range` (or `valid_min` and
+  `valid_max`) as unsigned too, as GDAL does. Such a range holding negative bounds, as GOES ABI L2
+  products' `[9200, -9536]` does, made every pixel nodata.
 - netCDF: `Int64` variables flagged `_Unsigned` are read as `Int64`, as GDAL reads them, where they
   were read as `UInt64` without nodata, and with every pixel `0` given a `valid_range`; without
   `_FillValue`, they take netCDF's default `Int64` nodata (`-9223372036854775806`). An
