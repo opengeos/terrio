@@ -108,6 +108,13 @@ pub(crate) use map_data;
 
 /// A raster of `data` (band-major, of `cfg.data_type`), as `Raster::from_data_native` builds it
 /// but without first allocating and filling a buffer of nodata values that `data` replaces.
+/// The fields are mapped as `wbraster::Raster::new` maps them (wbraster 0.2.1): keep the two in
+/// step, which `raster_from_data_matches_from_data_native` checks.
+///
+/// # Errors
+///
+/// When the length of `data` is not `cols × rows × bands` (at least one band), or overflows, or
+/// its type is not `cfg.data_type`.
 pub fn raster_from_data(cfg: wbraster::RasterConfig, data: wbraster::raster::RasterData) -> crate::Result<wbraster::Raster> {
     let bands = cfg.bands.max(1);
     let Some(len) = cfg.cols.checked_mul(cfg.rows).and_then(|n| n.checked_mul(bands)) else {
@@ -156,10 +163,21 @@ mod tests {
 
     #[test]
     fn raster_from_data_matches_from_data_native() {
-        let data = || RasterData::I16((0..12).collect());
-        let ours = raster_from_data(cfg(), data()).unwrap();
-        let theirs = Raster::from_data_native(cfg(), data()).unwrap();
-        assert_eq!(format!("{ours:?}"), format!("{theirs:?}"));
+        let configs = [
+            cfg(),
+            RasterConfig { cell_size_y: None, ..cfg() },
+            RasterConfig { bands: 0, cols: 6, ..cfg() },
+            RasterConfig { crs: CrsInfo::default(), metadata: Vec::new(), nodata: f64::NAN, ..cfg() },
+        ];
+        for c in configs {
+            let data = || RasterData::I16((0..12).collect());
+            let ours = raster_from_data(c.clone(), data()).unwrap();
+            let theirs = Raster::from_data_native(c, data()).unwrap();
+            assert_eq!(format!("{ours:?}"), format!("{theirs:?}"));
+        }
+        // Mismatches are refused as wbraster refuses them.
+        assert!(raster_from_data(cfg(), RasterData::I16(vec![0; 11])).is_err());
+        assert!(raster_from_data(cfg(), RasterData::U16(vec![0; 12])).is_err());
     }
 
     #[test]

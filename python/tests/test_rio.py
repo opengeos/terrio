@@ -629,6 +629,16 @@ def test_rasterize_overlapping_shapes_match_burning_one_by_one(values, dtype):
         np.testing.assert_array_equal(got, want)
 
 
+def test_rasterize_refuses_values_the_dtype_cannot_hold():
+    T = Affine(1, 0, 0, 0, -1, 4)
+    box = {"type": "Polygon", "coordinates": [[(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)]]}
+    other = {"type": "Polygon", "coordinates": [[(2, 2), (4, 2), (4, 4), (2, 4), (2, 2)]]}
+    for values, dtype in (((-1, 2**63 + 5), "int64"), ((300, 1), "uint8"), ((-1, 1), "uint64")):
+        shapes = list(zip((box, other), values, strict=True))
+        with pytest.raises(ValueError, match="cannot be cast"):
+            features.rasterize(shapes, out_shape=(4, 4), transform=T, dtype=dtype)
+
+
 def test_warp_merge_mask(dem, tmp_path):
     path, data = dem
     with rio.open(path) as ds:
