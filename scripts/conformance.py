@@ -254,18 +254,23 @@ def suite_subdatasets(ctx):
         "GDAL's netCDF and HDF5 drivers",
         "Every netCDF and HDF5 file of the test data (netCDF-4 groups, HDF5 products, GDAL's "
         "HDF-EOS5, complex, COSMO-SkyMed and netCDF geolocation test files, NASA HDF-EOS5 grids and "
-        "swaths when fetched): the subdataset list (names and descriptions) and, for HDF5, the "
-        "metadata as GDAL reports them, then each subdataset's summary (geolocation arrays "
-        "included) and every pixel.",
+        "swaths when fetched, the repository's `_Unsigned` fixtures): the subdataset list (names "
+        "and descriptions) and, for HDF5, the metadata as GDAL reports them, then each "
+        "subdataset's summary (geolocation arrays included) and every pixel.",
     )
     out, err = "", ""
-    for sub in ("", "gdal_hdf5", "gdal_netcdf", "hdfeos5"):
-        d = os.path.join(ctx.data, sub)
+    # The test data's directories, then the repository's fixtures.
+    dirs = [(sub, os.path.join(ctx.data, sub)) for sub in ("", "gdal_hdf5", "gdal_netcdf", "hdfeos5")]
+    dirs += [(sub, str(ROOT / "crates/terrio/tests/data" / sub)) for sub in ("netcdf_unsigned",)]
+    for sub, d in dirs:
         if not os.path.isdir(d):
             continue
-        _code, o, e = run([sys.executable, str(SCRIPTS / "compare_with_gdal.py"), "--subdatasets", d], {"TERRIO_BIN": ctx.terrio})
+        code, o, e = run([sys.executable, str(SCRIPTS / "compare_with_gdal.py"), "--subdatasets", d], {"TERRIO_BIN": ctx.terrio})
         out += o
         err += e
+        # It exits 1 on a difference; otherwise a nonzero exit is a failed run.
+        if code and not re.search(r"^DIFF", o, re.M):
+            s.error = tail(e or o)
         for line in o.splitlines():
             m = re.match(r"^(OK|DIFF)\s+(\S+) (.+?)(?::\s+(.*))?$", line)
             if m:

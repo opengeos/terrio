@@ -177,6 +177,19 @@ fn type_code(t: &NcType) -> u8 {
     }
 }
 
+/// The value of a signed type's bits read as unsigned (`_Unsigned = "true"`): negative values
+/// of `Byte`, `Short`, `Int` and `Int64` wrap around, others are kept, as GDAL 3.12.2 reads them.
+fn as_unsigned(v: f64, t: &NcType) -> f64 {
+    let bits = match t {
+        NcType::Byte => 8,
+        NcType::Short => 16,
+        NcType::Int => 32,
+        NcType::Int64 => 64,
+        _ => return v,
+    };
+    if v < 0.0 { v + 2f64.powi(bits) } else { v }
+}
+
 /// Replaces the values outside `[lo, hi]` with the nodata value, as GDAL's netCDF driver applies
 /// a variable's `valid_range` (or `valid_min` and `valid_max`).
 fn mask_outside(data: &mut RasterData, lo: f64, hi: f64, nodata: f64) {
@@ -668,16 +681,8 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         };
     }
     // A signed type read as unsigned keeps its fill value's bits.
-    if unsigned && let Some(nd) = nodata.filter(|v| *v < 0.0) {
-        let bits = match var.dtype() {
-            NcType::Byte => 8,
-            NcType::Short => 16,
-            NcType::Int => 32,
-            _ => 0,
-        };
-        if bits > 0 {
-            nodata = Some(nd + (1u64 << bits) as f64);
-        }
+    if unsigned {
+        nodata = nodata.map(|nd| as_unsigned(nd, var.dtype()));
     }
     if complex.is_some() {
         nodata = None;
@@ -693,6 +698,8 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
             },
         };
         if let Some((lo, hi)) = range {
+            // The range is in the variable's type: unsigned too when `_Unsigned`, as GDAL reads it.
+            let (lo, hi) = if unsigned { (as_unsigned(lo, var.dtype()), as_unsigned(hi, var.dtype())) } else { (lo, hi) };
             mask_outside(&mut data, lo, hi, nd);
         }
     }
@@ -987,6 +994,24 @@ mod tests {
         let mut d = RasterData::I16(vec![-9997, 0, 255, 300, -9999]);
         mask_outside(&mut d, 0.0, 255.0, -9999.0);
         assert_eq!(d.to_f64_vec(), vec![-9999.0, 0.0, 255.0, -9999.0, -9999.0]);
+    }
+
+    #[test]
+    fn reads_signed_values_as_unsigned() {
+        // GOES ABI L2: Short `_Unsigned`, `_FillValue = -1`, `valid_range = [9200, -9536]`.
+        assert_eq!(as_unsigned(-1.0, &NcType::Short), 65535.0);
+        assert_eq!(as_unsigned(-9536.0, &NcType::Short), 56000.0);
+        assert_eq!(as_unsigned(9200.0, &NcType::Short), 9200.0);
+        assert_eq!(as_unsigned(-1.0, &NcType::Byte), 255.0);
+        assert_eq!(as_unsigned(-1.0, &NcType::Int), 4294967295.0);
+        // Int64 wraps around 2^64 (exact in f64 here: a multiple of the 2^11 spacing above 2^63).
+        assert_eq!(as_unsigned(-4096.0, &NcType::Int64), 2f64.powi(64) - 4096.0);
+        assert_eq!(as_unsigned(9200.0, &NcType::Int64), 9200.0);
+        assert_eq!(as_unsigned(-1.0, &NcType::Float), -1.0);
+        assert_eq!(as_unsigned(f64::NEG_INFINITY, &NcType::Short), f64::NEG_INFINITY);
+        let mut d = RasterData::U16(vec![9199, 9200, 32197, 56000, 56001, 65535]);
+        mask_outside(&mut d, as_unsigned(9200.0, &NcType::Short), as_unsigned(-9536.0, &NcType::Short), 65535.0);
+        assert_eq!(d.to_f64_vec(), vec![65535.0, 9200.0, 32197.0, 56000.0, 65535.0, 65535.0]);
     }
 
     #[test]
