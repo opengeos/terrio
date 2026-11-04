@@ -535,7 +535,7 @@ pub fn raster_from_array(
         crs: crs.to_crs_info(),
         ..Default::default()
     };
-    let mut raster = terrio::Raster::from_data_native(cfg, data).map_err(|e| js_err(e.into()))?;
+    let mut raster = terrio::raster_from_data(cfg, data).map_err(js_err)?;
     raster.x_min = g[0];
     raster.cell_size_x = g[1];
     raster.cell_size_y = -g[5];
