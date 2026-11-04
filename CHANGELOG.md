@@ -7,22 +7,25 @@
   quadrilateral when the output grid is turned or reprojected), so that an output grid covering a
   source keeps its total, up to floating-point rounding in a floating-point output (a Float32 one
   rounds each pixel to 32 bits), and up to the rounding of each pixel to a whole number and its
-  clamping to the type's range in an integer one (a Byte output stores 255 for a sum of 400). A
-  `sum` reads the source's full resolution unless it is given a level (`--overview n`, `overview=n`
-  in Python): `AUTO`, the default, and `AUTO-n` chose an overview, with one pixel per block of the
-  source's pixels, so that a coarse `sum` gave a fraction of the total (about a quarter at factor
-  2). A reduced read of a whole `sum` `WarpedVRT` (`read(out_shape=...)` of every band, from a
-  source georeferenced by a transform or RPCs) also warps the source's full resolution into the
-  buffer, rather than reading the VRT's implicit overviews. A coarse `sum` of a raster with
-  overviews now reads more: to EPSG:4326 at a sixteenth of its resolution, a remote 4096 × 4096
-  Float32 COG with overviews at 2, 4 and 8 takes 17 requests and 67.1 MB, its whole full resolution,
-  where its coarsest overview took 2 requests and 1.1 MB. An upsampled output pixel took the whole
-  value of its source pixel, an output pixel overhanging the source's edge counted as covered whole,
-  and one much larger than the source was left empty; a reprojected `sum` also changed with the
-  memory limit it was warped under. VRT sources resampled with `sum` share their pixels by area too,
-  also from a source window with fractional edges, which was copied pixel for pixel when it spanned
-  as many pixels as its destination, and their sums reach the band's type unrounded: they were
-  rounded to the source's type, which dropped a Byte source's fractions and capped its sums at 255.
+  clamping to the type's range in an integer one (a Byte output stores 255 for a sum of 400). An
+  upsampled output pixel took the whole value of its source pixel, an output pixel overhanging the
+  source's edge counted as covered whole, and one much larger than the source was left empty; a
+  reprojected `sum` also changed with the memory limit it was warped under. VRT sources resampled
+  with `sum` share their pixels by area too, also from a source window with fractional edges, which
+  was copied pixel for pixel when it spanned as many pixels as its destination, and their sums reach
+  the band's type unrounded: they were rounded to the source's type, which dropped a Byte source's
+  fractions and capped its sums at 255.
+- A `sum` now reads the source's full resolution unless it is given an overview level:
+  `--overview AUTO`, the default, and `AUTO-n` choose no overview for it, and a reduced read of a
+  whole `sum` `WarpedVRT` (`read(out_shape=...)` of every band, from a source georeferenced by a
+  transform or RPCs) no longer takes one of the VRT's implicit overviews. An overview has one pixel
+  per block of the source's pixels, so a `sum` of it gave a fraction of the total, about a quarter
+  at factor 2. A coarse `sum` of a raster with overviews now reads more: from a remote 4096 × 4096
+  Float32 COG with overviews at 2, 4 and 8, a warp to EPSG:4326 at a sixteenth of its resolution
+  takes 17 requests and 67.1 MB where its coarsest overview took 2 requests and 1.1 MB, and a
+  `WarpedVRT` read at an eighth of its size takes 5 requests and 67.1 MB where it took 2 and 1.1 MB.
+  `--overview n` (`overview=n` in Python) still reads level `n`, more cheaply, and the `sum` is then
+  that level's.
 - With `GDAL_INGESTED_BYTES_AT_OPEN` (or `TERRIO_INGESTED_BYTES_AT_OPEN`) above a block (64 KiB
   by default), opening a remote file that the process-wide cache holds takes the ingested blocks
   from there and requests only those it no longer holds. Every reader of a file requested them
