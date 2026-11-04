@@ -178,13 +178,12 @@ fn type_code(t: &NcType) -> u8 {
 }
 
 /// The value of a signed type's bits read as unsigned (`_Unsigned = "true"`): negative values
-/// of `Byte`, `Short`, `Int` and `Int64` wrap around, others are kept, as GDAL 3.12.2 reads them.
+/// of `Byte`, `Short` and `Int` wrap around, others are kept, as GDAL 3.12.2 reads them.
 fn as_unsigned(v: f64, t: &NcType) -> f64 {
     let bits = match t {
         NcType::Byte => 8,
         NcType::Short => 16,
         NcType::Int => 32,
-        NcType::Int64 => 64,
         _ => return v,
     };
     if v < 0.0 { v + 2f64.powi(bits) } else { v }
@@ -488,7 +487,10 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     } else {
         1
     };
-    let unsigned = attr_str(var, "_Unsigned").is_some_and(|s| s.eq_ignore_ascii_case("true"));
+    // `_Unsigned` marks the signed types of netCDF-3; GDAL ignores it on `Int64`, which netCDF-4
+    // pairs with `UInt64`.
+    let unsigned = matches!(var.dtype(), NcType::Byte | NcType::Short | NcType::Int)
+        && attr_str(var, "_Unsigned").is_some_and(|s| s.eq_ignore_ascii_case("true"));
     let name = read_path;
     // The values band by band: pixel-interleaved ones are read through their bands axis first.
     macro_rules! values {
@@ -526,8 +528,7 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         (NcType::Int, false) => typed!(i32, I32),
         (NcType::Int, true) => reinterpret!(i32, u32, U32),
         (NcType::UInt, _) => typed!(u32, U32),
-        (NcType::Int64, false) => typed!(i64, I64),
-        (NcType::Int64, true) => reinterpret!(i64, u64, U64),
+        (NcType::Int64, _) => typed!(i64, I64),
         (NcType::UInt64, _) => typed!(u64, U64),
         (NcType::Float, _) => typed!(f32, F32),
         (NcType::Double, _) => typed!(f64, F64),
@@ -700,7 +701,10 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         if let Some((lo, hi)) = range {
             // The range is in the variable's type: unsigned too when `_Unsigned`, as GDAL reads it.
             let (lo, hi) = if unsigned { (as_unsigned(lo, var.dtype()), as_unsigned(hi, var.dtype())) } else { (lo, hi) };
-            mask_outside(&mut data, lo, hi, nd);
+            // GDAL ignores an inverted range.
+            if lo <= hi {
+                mask_outside(&mut data, lo, hi, nd);
+            }
         }
     }
     let raster_bands = if complex.is_some() { bands * 2 } else { bands };
@@ -1004,9 +1008,8 @@ mod tests {
         assert_eq!(as_unsigned(9200.0, &NcType::Short), 9200.0);
         assert_eq!(as_unsigned(-1.0, &NcType::Byte), 255.0);
         assert_eq!(as_unsigned(-1.0, &NcType::Int), 4294967295.0);
-        // Int64 wraps around 2^64 (exact in f64 here: a multiple of the 2^11 spacing above 2^63).
-        assert_eq!(as_unsigned(-4096.0, &NcType::Int64), 2f64.powi(64) - 4096.0);
-        assert_eq!(as_unsigned(9200.0, &NcType::Int64), 9200.0);
+        // `_Unsigned` is ignored on `Int64`.
+        assert_eq!(as_unsigned(-1.0, &NcType::Int64), -1.0);
         assert_eq!(as_unsigned(-1.0, &NcType::Float), -1.0);
         assert_eq!(as_unsigned(f64::NEG_INFINITY, &NcType::Short), f64::NEG_INFINITY);
         let mut d = RasterData::U16(vec![9199, 9200, 32197, 56000, 56001, 65535]);
