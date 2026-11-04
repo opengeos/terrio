@@ -3145,8 +3145,6 @@ impl WarpContext<'_> {
     /// output pixels tile the source and, where they cover it whole, keep its total. A pixel that
     /// overlaps no valid source pixel is left as it is.
     fn warp_sum_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
-        let xmargin = 2.0 * (1.0f64).max((1.0 / k.xscale).ceil());
-        let ymargin = 2.0 * (1.0f64).max((1.0 / k.yscale).ceil());
         let n = c.dw;
         // The corners of the row's pixels, along its top edge and along its bottom edge.
         let corners = |y: usize| {
@@ -3171,16 +3169,17 @@ impl WarpContext<'_> {
                 (bottom_x[i + 1] - sxo, bottom_y[i + 1] - syo),
                 (bottom_x[i] - sxo, bottom_y[i] - syo),
             ];
-            // A corner far outside the window (or not a number) leaves the pixel alone, as the
-            // other area-based methods leave it.
-            if !q.iter().all(|&(x, y)| x >= -xmargin && x <= sw + xmargin && y >= -ymargin && y <= sh + ymargin) {
+            // A corner that is not a finite number leaves the pixel alone. The others may lie far
+            // beyond the window, as those of a pixel much larger than the source do: only the
+            // window's pixels within the quadrilateral's bounds are visited.
+            if !q.iter().all(|&(x, y)| x.is_finite() && y.is_finite()) {
                 continue;
             }
             let (x0, x1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
             let (y0, y1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
             // The window's pixels within the quadrilateral's bounds.
-            let cols = (floor_i(x0.max(0.0)) as usize, (ceil_i(x1.min(sw)).max(0) as usize).min(c.sw));
-            let rows = (floor_i(y0.max(0.0)) as usize, (ceil_i(y1.min(sh)).max(0) as usize).min(c.sh));
+            let cols = (floor_i(x0.clamp(0.0, sw)) as usize, (ceil_i(x1.clamp(0.0, sw)) as usize).min(c.sw));
+            let rows = (floor_i(y0.clamp(0.0, sh)) as usize, (ceil_i(y1.clamp(0.0, sh)) as usize).min(c.sh));
             if cols.0 >= cols.1 || rows.0 >= rows.1 {
                 continue;
             }
@@ -4628,6 +4627,30 @@ mod tests {
                 // Rounding apart (under 1e-15 of the total here), the sums are the total.
                 assert!(((sum - total) / total).abs() < 1e-12, "{path}, {memory_limit} bytes: {sum}, not {total}");
             }
+        }
+    }
+
+    /// An output pixel much larger than the source holds the part of the source inside it, however
+    /// far its corners lie beyond the source: one source pixel inside it, and a few source pixels
+    /// across the line between two output pixels.
+    #[test]
+    fn sum_of_an_output_pixel_much_larger_than_the_source_takes_the_source_inside_it() {
+        // Output pixels of 1 km; source pixels of 10 m, the 3 x 2 source's first column west of
+        // the line between the output's columns, at x = 1000 m.
+        let o = WarpOptions {
+            dst_transform: Some([0.0, 1000.0, 0.0, 3000.0, 0.0, -1000.0]),
+            size: Some((2, 2)),
+            resampling: Resampling::Sum,
+            output_type: Some(DataType::F64),
+            dst_nodata: Nodata::Values(vec![-1.0]),
+            ..Default::default()
+        };
+        for (x, (cols, rows), want) in
+            [(1200.0, (1, 1), [-1.0, -1.0, -1.0, 7.0]), (990.0, (3, 2), [-1.0, -1.0, 7.0 + 10.0, 8.0 + 9.0 + 11.0 + 12.0])]
+        {
+            let ds = raster(cols, rows, [x, 10.0, 0.0, 1800.0, 0.0, -10.0], 32610, |c, r| (7 + c + 3 * r) as f64);
+            let got = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+            assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-9), "{cols} x {rows} source: {got:?}, not {want:?}");
         }
     }
 
