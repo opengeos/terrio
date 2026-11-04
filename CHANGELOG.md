@@ -4,8 +4,8 @@
 
 - `terrio.xarray` (`engine="terrio"`, `open_rasterio`) skips applying a band's scale and offset
   when they are 1 and 0, and applies them in place otherwise: reads with `mask_and_scale` take
-  20% less time (8000 x 8000 float32).
-- `Raster.from_array` copies arrays 2.5 times faster, 7 times for views that are not C-ordered
+  19% less time (8000 x 8000 float32).
+- `Raster.from_array` copies arrays 2.6 times faster, 6.9 times for views that are not C-ordered
   (169 MB float32): C-ordered arrays as one slice, others made contiguous by numpy, and the
   raster no longer filled with nodata before the data replaces it. `terrio::raster_from_data`
   builds a `Raster` from its data that way, as JavaScript's `rasterFromArray` now does.
@@ -13,8 +13,8 @@
   Python: 9 times faster for 2,000 shapes on an 8000 x 8000 grid (`crop`/`mask` in
   `terrio.xarray`). Burn values follow rasterio 1.5 (GDAL): through float64, then into an
   integer dtype NaN as 0, rounded half away from zero and clamped to its range, where values
-  outside it wrapped and fractions were truncated; integers above 2**52 can round up by one, as
-  in GDAL. 25 of 26 edge cases match rasterio 1.5.2 (GDAL 3.12.2); the other, values of 2**64
+  outside it wrapped and fractions were truncated; integers above 2**52 can change through float64,
+  as in GDAL. 25 of 26 edge cases match rasterio 1.5.2 (GDAL 3.12.2); the other, values of 2**64
   and above into uint64, burns the maximum where GDAL burns 0.
 - Warps with `sum` resampling give each output pixel the sum of the valid source pixels it
   overlaps, each weighted by the share of its area inside the output pixel (on the source grid, a

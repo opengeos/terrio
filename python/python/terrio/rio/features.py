@@ -226,7 +226,10 @@ def rasterize(
 
     Args:
         shapes: Geometries, or `(geometry, value)` pairs. Geometries are GeoJSON-like mappings
-            or objects with `__geo_interface__`.
+            or objects with `__geo_interface__`. Values are burnt as rasterio (GDAL) burns them,
+            through float64: integers are exact up to 2**52 (larger ones can change, such as
+            IDs above it), and into an integer `dtype` NaN is 0, values are rounded half away
+            from zero and clamped to its range.
         out_shape: The output shape `(rows, cols)`, when `out` is not given.
         fill: The value of pixels no geometry covers.
         nodata: The nodata value of a written dataset, and the masked value with `masked`.
