@@ -110,16 +110,11 @@ def test_a_reduced_read_of_any_bands_of_a_sum_warped_vrt_reads_full_resolution(t
             np.testing.assert_array_equal(read, np.full((len(bands), 4, 4), 4.0), str(bands))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a VRT georeferenced by GCPs is read through its bands at a reduced size, and they "
-    "resample its pixels or take an implicit overview rather than add the pixels",
-)
 def test_a_reduced_read_of_a_gcp_sum_warped_vrt_keeps_the_total(tmp_path):
     """A `sum` VRT georeferenced by GCPs keeps its total when its whole grid is read reduced.
 
-    The total of the read should be that of the full-resolution read, up to the rounding of each
-    output pixel to 32 bits (a relative 1e-6).
+    The total of the read is that of the full-resolution read, up to the rounding of each output
+    pixel to 32 bits (a relative 1e-6).
     """
     width, height = 64, 48
     path = str(tmp_path / "gcps.tif")

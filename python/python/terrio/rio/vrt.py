@@ -149,12 +149,10 @@ class WarpedVRT(DatasetReader):
     Reduced reads with `sum` resampling are an exception, described below.
     Pixels are warped when they are read, region by region, from the windows of the source (or
     of its overviews) each region needs. With `sum` resampling, a reduced read of the whole VRT,
-    of any of its bands, from a source georeferenced by a transform or RPCs, is warped from the
-    source's full resolution rather than from an implicit overview. Other reduced reads, of a
-    window or of a VRT georeferenced by GCPs, can take an implicit overview or resample the VRT's
-    pixels, so their sum is not the source's. For a full-resolution total, read the window at full
-    size, or, from a source georeferenced by a transform or RPCs, the whole VRT at the reduced
-    size.
+    of any of its bands, is warped from the source's full resolution rather than from an implicit
+    overview. A reduced read of a window can take an implicit overview or resample the VRT's
+    pixels, so its sum is not the source's: for a full-resolution total, read the window at full
+    size, or the whole VRT at the reduced size.
     """
 
     def __init__(
@@ -906,7 +904,6 @@ class WarpedVRT(DatasetReader):
             and whole
             and grid.full
             and (bw < nxs or bh < nys)
-            and self._warp_gcps is None
         ):
             # A reduced read of the whole `sum` VRT, of any of its bands, is warped from the full
             # resolution into a grid of the buffer's size, as below: an implicit overview has one
