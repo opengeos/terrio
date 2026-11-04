@@ -3281,8 +3281,9 @@ impl WarpContext<'_> {
     /// quadrilateral of its four corners; neighbouring pixels share their corners, so that the
     /// output pixels tile the source and, where they cover it whole, keep its total up to
     /// rounding: floating-point rounding in a floating-point output, and in an integer one the
-    /// rounding of each pixel to a whole number and its clamping to the type's range. A pixel
-    /// that overlaps no valid source pixel is left as it is.
+    /// rounding of each pixel to a whole number and its clamping to the type's range. The source
+    /// is the level the warp reads: from an overview it chose, the total is the overview's, not
+    /// the full resolution's. A pixel that overlaps no valid source pixel is left as it is.
     fn warp_sum_row<T: crate::pixel::Pixel>(
         &self,
         c: &Chunk,
