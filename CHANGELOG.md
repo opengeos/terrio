@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `terrio translate` and `terrio convert` read a VRT a strip of rows at a time when writing a
+  GeoTIFF or COG, so a mosaic larger than memory can be copied or converted. Both read the whole
+  VRT into memory as 64-bit values first: translating a 98304 x 114688 RGB mosaic to a COG asked
+  for 270 GB and failed (#558). On a 16384 x 16384 RGB mosaic of 16 GeoTIFFs written as a JPEG
+  COG, `translate` now peaks at 0.3 GB and `convert` at 1 GB, down from 10.3 GB, and the files are
+  the same, byte for byte. `translate` streams any input read by window this way when the output
+  copies a window of the input or is resized by nearest neighbour or a bilinear, cubic or cubic
+  spline kernel; outputs resized by average, RMS, mode or Lanczos are still made whole first.
+  `translate_lazy_to_file` is the Rust entry point.
+
 - Warps with `sum` resampling give each output pixel the sum of the valid source pixels it
   overlaps, each weighted by the share of its area inside the output pixel (on the source grid, a
   quadrilateral when the output grid is turned or reprojected), so that an output grid covering a

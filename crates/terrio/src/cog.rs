@@ -270,6 +270,12 @@ pub(crate) trait WindowSource: Send + Sync {
     fn streamed(&self) -> Option<&dyn StreamedSource> {
         None
     }
+    /// Whether a window is read from the parts of the source it covers alone, so that
+    /// [`LazyRaster::write`] reads the source a strip of rows at a time (on one thread) rather
+    /// than whole. False for sources that decode the whole raster for any window.
+    fn reads_by_window(&self) -> bool {
+        false
+    }
     /// Reads a window of some bands (numbered from 1) of a level (0 for full resolution, `i + 1`
     /// for overview `i`), band after band.
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData>;
@@ -1038,9 +1044,9 @@ impl LazyRaster {
     }
 
     /// Writes the full-resolution image to `path`, as [`crate::write_raster_dataset`] writes the
-    /// raster [`LazyRaster::read`] reads. A GeoTIFF or JPEG 2000 file read in place and written as
-    /// a GeoTIFF or a COG (in a compression terrio's own writer encodes) is read and written a
-    /// strip of rows at a time, so that it is never held whole; a PMTiles or MBTiles archive is
+    /// raster [`LazyRaster::read`] reads. A GeoTIFF or JPEG 2000 file read in place, or a VRT,
+    /// written as a GeoTIFF or a COG (in a compression terrio's own writer encodes) is read and
+    /// written a strip of rows at a time, so that it is never held whole; a PMTiles or MBTiles archive is
     /// built a tile row at a time (and a raster already on its zoom level's Web Mercator pixel
     /// grid read a strip at a time); other rasters are read whole, then written.
     ///
@@ -1107,7 +1113,7 @@ impl LazyRaster {
         let can_stream = can_stream
             && match &self.inner {
                 Inner::Tiff(t) => t.file.is_some() || t.zip.is_some(),
-                Inner::Source(_, _) => source_mask,
+                Inner::Source(_, s) => source_mask || s.reads_by_window(),
                 _ => false,
             };
         if !can_stream {
@@ -1220,9 +1226,9 @@ impl LazyRaster {
         let raster = crate::pixel::raster_from_data(cfg, data)?;
         let mut ds = RasterDataset::with_driver(raster, self.driver(), first_nodata.is_some());
         ds.set_geo_transform(geo_transform);
-        let (gcps, band_metadata, color_table) = match &self.inner {
-            Inner::Tiff(t) => (&t.tags.gcps, &t.tags.band_properties, &t.tags.color_table),
-            Inner::Memory(source) | Inner::Source(source, _) => (&source.gcps, &source.band_metadata, &source.color_table),
+        let (gcps, color_table) = match &self.inner {
+            Inner::Tiff(t) => (&t.tags.gcps, &t.tags.color_table),
+            Inner::Memory(source) | Inner::Source(source, _) => (&source.gcps, &source.color_table),
         };
         ds.gcps = gcps
             .iter()
@@ -1232,16 +1238,9 @@ impl LazyRaster {
                 g
             })
             .collect();
-        ds.band_metadata = bands.iter().map(|&b| band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
+        ds.band_metadata = self.bands_metadata(bands);
         ds.band_nodata = band_nodata;
-        // Whole complex bands (a band's real then imaginary parts) are read as complex bands,
-        // described band by band.
-        if self.is_complex() && bands.len().is_multiple_of(2) && bands.as_chunks::<2>().0.iter().all(|p| p[0] % 2 == 1 && p[1] == p[0] + 1)
-        {
-            ds.complex = true;
-            ds.band_metadata =
-                bands.as_chunks::<2>().0.iter().map(|p| band_metadata.get((p[0] - 1) / 2).cloned().unwrap_or_default()).collect();
-        }
+        ds.complex = self.reads_complex(bands);
         if bands == [1] {
             ds.color_table = color_table.clone();
         }
@@ -1251,6 +1250,25 @@ impl LazyRaster {
             }
         }
         Ok(ds)
+    }
+
+    /// Whether a read of some bands (numbered from 1) gives complex bands: whole complex bands
+    /// (a band's real then imaginary parts), which are read as complex bands.
+    fn reads_complex(&self, bands: &[usize]) -> bool {
+        self.is_complex() && bands.len().is_multiple_of(2) && bands.as_chunks::<2>().0.iter().all(|p| p[0] % 2 == 1 && p[1] == p[0] + 1)
+    }
+
+    /// The description and metadata of some bands (numbered from 1) as a read of the whole image
+    /// gives them, band statistics included: per complex band for whole complex bands.
+    pub(crate) fn bands_metadata(&self, bands: &[usize]) -> Vec<crate::BandMetadata> {
+        let band_metadata = match &self.inner {
+            Inner::Tiff(t) => &t.tags.band_properties,
+            Inner::Memory(source) | Inner::Source(source, _) => &source.band_metadata,
+        };
+        if self.reads_complex(bands) {
+            return bands.as_chunks::<2>().0.iter().map(|p| band_metadata.get((p[0] - 1) / 2).cloned().unwrap_or_default()).collect();
+        }
+        bands.iter().map(|&b| band_metadata.get(b - 1).cloned().unwrap_or_default()).collect()
     }
 
     /// The tile (or strip) size `(width, height)` of the full-resolution image or of an overview,

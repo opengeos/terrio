@@ -7,7 +7,7 @@
 
 use super::rasterout::{OutputArgs, open, srs};
 use terrio::ops::overview::OverviewSelection;
-use terrio::ops::translate::{Scale, Size, TranslateOptions, translate, translate_lazy};
+use terrio::ops::translate::{Scale, Size, TranslateOptions, translate, translate_lazy_to_file};
 use terrio::ops::{Resampling, parse_data_type};
 
 #[derive(clap::Args)]
@@ -117,8 +117,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
             Err(_) => None,
         }
     };
+    // A raster read by window is written as it is translated: a GeoTIFF or COG a strip at a time.
     let out = match lazy {
-        Some(mut src) => translate_lazy(&mut src, &o, overview)?,
+        Some(mut src) => return translate_lazy_to_file(&mut src, &o, overview, &a.output, &a.out.options()?),
         None => {
             if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
                 return Err(terrio::Error::Unsupported(format!(

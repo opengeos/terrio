@@ -199,7 +199,7 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
         && (tiles_out || (a.minzoom.is_none() && a.maxzoom.is_none()))
         && a.layers.is_empty()
         && a.open_options.is_empty();
-    // GeoTIFF, JPEG 2000 and raw-layout inputs are read by window (other files of these
+    // GeoTIFF, JPEG 2000, VRT and raw-layout inputs are read by window (other files of these
     // extensions, such as Surfer's text grids, are read whole, then written by strip).
     let streamed_in = matches!(
         RasterDriver::for_extension(&a.input),
@@ -213,6 +213,7 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
                 | RasterDriver::ERS
                 | RasterDriver::RST
                 | RasterDriver::GSBG
+                | RasterDriver::VRT
         )
     );
     if !(tiff_out || tiles_out) || !plain || !streamed_in {

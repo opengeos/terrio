@@ -973,6 +973,14 @@ GDAL's `RasterIO` chooses for the output's size (`--overview AUTO`, the default)
 output type) and windows past the raster's edges read the window from the whole raster at full
 resolution (or the level read alone).
 
+A GeoTIFF or COG output of such a raster is read, converted and written a strip of rows at a time,
+as `gdal_translate` copies its output in chunks, so that neither the output nor the input is held
+whole: a mosaic larger than memory can be translated. This covers outputs that copy a window of the
+input (with `-b`, `--ot`, `--a-nodata`, `--a-srs` or `--a-ullr`) and those resized by nearest
+neighbour, `bilinear`, `cubic` or `cubicspline`. Outputs resized by `average`, `rms`, `mode` or
+`lanczos` are made whole before being written: a strip of them read alone differs from the whole
+output where it starts inside a source row.
+
 ## warp
 
 ```sh

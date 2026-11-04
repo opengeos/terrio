@@ -982,6 +982,10 @@ impl WindowSource for Reader {
     fn has_mask(&self) -> bool {
         self.description.root.child("MaskBand").is_some()
     }
+    /// A window reads the parts of the sources that overlap it.
+    fn reads_by_window(&self) -> bool {
+        true
+    }
     fn read_mask(&mut self, _level: usize, window: Window) -> Result<Option<Vec<u8>>> {
         let _depth = ReadDepth::enter()?;
         let Some(mask) = self.mask.clone() else {
@@ -1410,6 +1414,40 @@ mod tests {
         let error = raster.read_window(Window::new(0, 0, 1, 1), &Default::default()).unwrap_err();
         assert!(matches!(error, Error::Unsupported(_)));
         assert!(error.to_string().contains("8 million samples"));
+    }
+
+    #[test]
+    fn vrt_written_by_strips_is_the_vrt_read_whole() {
+        // A mosaic of two GeoTIFFs, side by side: written by strips, as `LazyRaster::write`
+        // writes a source read by window, it is the file the whole mosaic is written as.
+        let dir = tempfile::tempdir().unwrap();
+        let at = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
+        let rgb = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/resampled_reads/rgb_mask.tif");
+        let band = |b: usize| {
+            let source = |x: usize| {
+                format!(
+                    "<SimpleSource><SourceFilename relativeToVRT=\"0\">{rgb}</SourceFilename><SourceBand>{b}</SourceBand>\
+                     <SrcRect xOff=\"0\" yOff=\"0\" xSize=\"64\" ySize=\"48\"/>\
+                     <DstRect xOff=\"{x}\" yOff=\"0\" xSize=\"64\" ySize=\"48\"/></SimpleSource>"
+                )
+            };
+            format!("<VRTRasterBand dataType=\"Byte\" band=\"{b}\">{}{}</VRTRasterBand>", source(0), source(64))
+        };
+        let vrt = at("mosaic.vrt");
+        std::fs::write(
+            &vrt,
+            format!(
+                "<VRTDataset rasterXSize=\"128\" rasterYSize=\"48\"><GeoTransform>500000, 30, 0, 4100000, 0, -30</GeoTransform>{}</VRTDataset>",
+                (1..=3).map(band).collect::<String>()
+            ),
+        )
+        .unwrap();
+        let mut src = open_virtual_raster(&vrt).unwrap();
+        let options = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), ..Default::default() };
+        let (whole, strips) = (at("whole.tif"), at("strips.tif"));
+        crate::write_raster_dataset(&src.read().unwrap(), &whole, &options).unwrap();
+        src.write(&strips, &options).unwrap();
+        assert!(std::fs::read(&whole).unwrap() == std::fs::read(&strips).unwrap());
     }
 
     #[test]
