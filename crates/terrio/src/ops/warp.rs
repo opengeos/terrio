@@ -4947,7 +4947,15 @@ mod tests {
             let warped = |memory_limit: f64| {
                 let o = WarpOptions {
                     rpc: Some(tests::rpc()),
-                    rpc_options: RpcOptions { dem: Some(dem.clone()), height: Some(10.0), height_scale: 10.0, ..Default::default() },
+                    rpc_options: RpcOptions {
+                        dem: Some(dem.clone()),
+                        height: Some(10.0),
+                        height_scale: 10.0,
+                        // Beyond the DEM, which the batches of corners reach: else they fail
+                        // there, and every corner is transformed exactly.
+                        dem_missing_value: Some(0.0),
+                        ..Default::default()
+                    },
                     resampling: Resampling::Sum,
                     output_type: Some(DataType::F64),
                     dst_nodata: Nodata::Values(vec![f64::NAN]),
