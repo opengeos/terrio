@@ -1179,8 +1179,8 @@ each weighted by the share of its area inside the output pixel, so that a grid
 covering the source keeps its total, up to floating-point rounding, in a
 floating-point output; an integer output also rounds each pixel to a whole number
 and clamps it to its type's range (a Byte output stores 255 for a sum of 400).
-A `sum` reads the source's full resolution unless a level is given (`--overview n`,
-whose total it then keeps): `AUTO` and `AUTO-n` choose no overview for it.
+A `sum` reads the source's full resolution unless a level is given (`--overview n`),
+and then sums that level's pixels: `AUTO` and `AUTO-n` choose no overview for it.
 GDAL 3.12's generic `sum` polygon path can lose overlap area on pixel boundaries,
 including when a redundant identity CRS transformer disables its affine fast path.
 Terrio preserves conservative affine overlap sums; its results match GDAL's affine
