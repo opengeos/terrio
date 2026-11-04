@@ -248,7 +248,7 @@ terrio.warp("dem.tif", "dem_4326.tif", t_srs="EPSG:4326", resampling="bilinear")
 
 The operations (`convert`, `translate`, `warp`, `mosaic`, `rasterize`, `polygonize`, `dem`,
 `calc`, `proximity`, `sieve`, `fill_nodata`, `viewshed`, `zonal_stats` and more) take the
-command-line options as keyword arguments; `render` and `render_png` render datasets and rasters
+command-line options as keyword arguments; `render` renders datasets as PNG bytes and rasters
 display as inline PNGs in Jupyter notebooks. See [python/README.md](python/README.md).
 
 rasterio scripts run with an import change, `import terrio.rio as rasterio`: datasets, windows,

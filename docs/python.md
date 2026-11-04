@@ -87,14 +87,12 @@ journal, so appending to a large GeoPackage costs about as much as the features 
 process stopped in the middle leaves the file as it was (SQLite, GDAL and terrio play the journal
 back).
 
-Driver open options go in `options`, by their GDAL names, as `terrio convert --oo` takes them
-(`HEADERS`, `FIELD_TYPES`, `HEADER_ROWS`, `FIRST_ROW` and `RANGE` for XLSX; `X_POSSIBLE_NAMES` and
-`Y_POSSIBLE_NAMES` for CSV and XLSX; `ZOOM_LEVEL` and `CLIP` for vector tiles; `WFS_*`; and
-`DATETIME`, `CRS`, `PAGE_SIZE`, `IGNORE_SCHEMA` and `OAPIF_*` limits for OAPIF), and layer creation
-options go in `options` on `write_vector`, `Layer.write`, `Layer.to_bytes` and `convert`
-(`GEOMETRY`, `HEADER_STYLE`, `FREEZE_HEADER`, `AUTOFILTER`, `COLUMN_WIDTH`, `DATE_FORMAT`,
-`DATETIME_FORMAT` and `CREATION_TIME` for XLSX; `RFC7946` for GeoJSON); `cityjson_version`,
-`citygml_version` and `citygml_lod0_surface` control CityJSON and CityGML writes.
+Driver open options go in `options` on `open_vector` and `info`, by their GDAL names, as `terrio
+convert --oo` takes them (`HEADERS`, `FIELD_TYPES`, `HEADER_ROWS`, `FIRST_ROW` and `RANGE` for XLSX;
+`X_POSSIBLE_NAMES` and `Y_POSSIBLE_NAMES` for CSV and XLSX; `ZOOM_LEVEL` and `CLIP` for vector tiles;
+`WFS_*`; and `DATETIME`, `CRS`, `PAGE_SIZE`, `IGNORE_SCHEMA` and `OAPIF_*` limits for OAPIF);
+`write_vector`, `Layer.write`, `Layer.to_bytes`, `VectorDataset.write` and `convert` take
+`cityjson_version`, `citygml_version` and `citygml_lod0_surface` for CityJSON and CityGML writes.
 HEC-RAS geometry and plan HDF files (the package is built with the `hecras` feature) read as
 vector layers this way, with the results HEC-RAS stored joined by open options
 (see [HEC-RAS](hecras.md)):

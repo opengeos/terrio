@@ -94,7 +94,7 @@ not a guarantee for other Rust/wasm-opt versions:
 import init, { open, features } from "terrio-js/core";
 
 await init();
-features(); // { build: "terrio-js/core", features: ["flatgeobuf", "lerc", "lzma", "sqlite", "tiles", "xlsx"] }
+features(); // { build: "terrio-js/core", features: ["flatgeobuf", "lerc", "lzma", "sqlite", "tiles"] }
 ```
 
 A format the module leaves out fails with a message that says so (``built without the `jp2`

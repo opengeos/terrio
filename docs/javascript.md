@@ -76,7 +76,7 @@ MBTiles, the CRS transformations and the operations, at about half the size:
 import init, { open, features } from "terrio-js/core";
 
 await init();
-features(); // { build: "terrio-js/core", features: ["flatgeobuf", "lerc", "lzma", "sqlite", "tiles", "xlsx"] }
+features(); // { build: "terrio-js/core", features: ["flatgeobuf", "lerc", "lzma", "sqlite", "tiles"] }
 ```
 
 A format the module leaves out fails with a message that says so (``built without the `jp2`
