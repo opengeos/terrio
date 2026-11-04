@@ -70,7 +70,7 @@ pub(super) fn coverage(geometry: &Geometry, col: usize, row: usize, cols: usize,
         }
         crossings.sort_by(f64::total_cmp);
         // Every ring clipped to this row; boundary cells clip these again to their columns.
-        // ponytail: each ring is clipped whole per row, O(vertices × rows); look up the row's
+        // Each ring is clipped whole per row, O(vertices × rows); look up the row's
         // edges in the R-tree instead if polygons with very many vertices become slow.
         let strip: Vec<Vec<Vec<[f64; 2]>>> = if boundary.iter().any(|b| *b) {
             rings

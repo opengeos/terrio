@@ -465,7 +465,7 @@ pub fn zonal_stats_with(
             }
         };
         let bands: Vec<_> = source.bands.iter().zip(&nodata[s]).map(|(b, &nodata)| reduce::BandSpec { band: b.band, nodata }).collect();
-        // ponytail: each source reads the weight band again (all share one grid); reduce the
+        // Each source reads the weight band again (all share one grid); reduce the
         // sources of a grid together, reading each weight strip once, if weighted runs over many
         // sources are slow. That holds every source's open zones at once, so bound the group.
         let mut weight_raster = weights.map(|w| w.lock().map(|mut r| r.shared())).transpose()?;
@@ -502,6 +502,7 @@ pub fn zonal_stats_with(
         if drivers <= 1 {
             for (s, source) in sources.iter_mut().enumerate() {
                 record(s, reduce_one(s, source));
+                release_freed_memory();
             }
         } else {
             let queue = Mutex::new(sources.iter_mut().enumerate());

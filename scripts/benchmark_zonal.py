@@ -167,7 +167,8 @@ for path, day, band in spec["rasters"]:
     result = exact_extract(path, spec["zones"], [names.get(s, s) for s in spec["stats"]], output="pandas")
     for s in spec["stats"]:
         out[f"{day}_{band}_{s}"] = [None if x != x else float(x) for x in result[names.get(s, s)]]
-json.dump(out, open(spec["output"], "w"))
+with open(spec["output"], "w") as f:
+    json.dump(out, f)
 """
 
 
@@ -197,7 +198,7 @@ def terrio_columns(path, stats):
     out = {n: [] for n in names if n.split("_")[-1] in stats}
     features = list(layer)
     # FlatGeobuf rows are in spatial-index order; other tools keep the input order.
-    # ponytail: assumes a field_id in input order (generated fields); --fields-file needs one.
+    # Assumes a field_id in input order (generated fields); --fields-file needs one.
     if "field_id" in names:
         features.sort(key=lambda f: f.GetField("field_id"))
     for f in features:
@@ -224,7 +225,7 @@ def compare(reference, other, stats, rel=1e-6, abs_=1e-6):
             worst_rel = max(worst_rel, d / max(abs(a), 1e-300))
             compared += 1
     return dict(max_abs=worst_abs, max_rel=worst_rel, values=compared,
-                equivalent=all(worst_abs <= abs_ or worst_rel <= rel for _ in [0]))
+                equivalent=worst_abs <= abs_ or worst_rel <= rel)
 
 
 def main():

@@ -228,11 +228,13 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
             continue;
         }
         let raster = get(item, "raster").ok_or_else(|| JsError::new("each input object needs a 'raster' (a Dataset or a file's bytes)"))?;
-        // Text, a number or a boolean as `String(v)` writes it, or a Date in ISO 8601.
+        // Text, a number or a boolean as `String(v)` writes it, or a Date in ISO 8601, its date
+        // alone at midnight UTC (as the CLI and Python name it).
         let text = |key: &str| -> Result<Option<String>, JsError> {
             let Some(v) = get(item, key) else { return Ok(None) };
             if let Some(date) = v.dyn_ref::<js_sys::Date>() {
-                return Ok(Some(date.to_iso_string().into()));
+                let iso = String::from(date.to_iso_string());
+                return Ok(Some(iso.strip_suffix("T00:00:00.000Z").map(String::from).unwrap_or(iso)));
             }
             v.as_string()
                 .or_else(|| v.as_f64().map(|n| n.to_string()))

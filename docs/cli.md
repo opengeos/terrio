@@ -2429,8 +2429,12 @@ geotransform and CRS) and shared by every raster on it, so many dates of one Sen
 cost one zone computation per resolution. Rasters are read lazily, local or remote, in strips of
 block rows (at least 256 rows), and only the strips and columns that zones cover; rasters are
 processed in parallel (`RAYON_NUM_THREADS` sets the number of threads). Memory follows the
-strip size and the number of threads, not the raster size. Median, quantiles, mode, minority
-and variety keep each open zone's values for one band at a time. Integers above 2⁵³ can lose precision.
+strip size and the number of threads, not the raster size: each raster being reduced holds up
+to five strips of about 8 MB of its bands, or of a whole row of blocks when that is larger (a
+row of 1024-row blocks of ten UInt16 bands 10,980 columns wide is 225 MB), and one raster is
+reduced per thread. Median, quantiles, mode, minority and variety also keep the values of every
+band in each zone a strip reaches until the zone's last row is read: 8 bytes per pixel and band
+(16 with `--fractional`). Integers above 2⁵³ can lose precision.
 Complex bands and geolocation arrays are unsupported. Standard vector input/output options apply.
 
 ### Fractional coverage and weighting rasters

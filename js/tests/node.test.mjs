@@ -3512,7 +3512,7 @@ test("zonalStats names numeric and Date times, and each band of a label", () => 
   const zones={type:"Polygon",coordinates:[[[0,0],[2,0],[2,2],[0,2],[0,0]]]};
   const rows=[{raster,time:2024,label:"B04"},{raster,time:new Date(Date.UTC(2024,6,1)),label:"B08",band:2}];
   const p=terrio.zonalStats(zones,rows,{stats:["count"]}).toGeoJSON().features[0].properties;
-  assert.equal(p["2024_B04_count"],3);assert.equal(p["2024_07_01T00_00_00_000Z_B08_count"],3);
+  assert.equal(p["2024_B04_count"],3);assert.equal(p["2024_07_01_B08_count"],3);
   const q=terrio.zonalStats(zones,[{raster,label:"B04"}],{bands:[1,2],stats:["mean"]}).toGeoJSON().features[0].properties;
   assert.equal(q.B04_b1_mean,2);assert.ok(Math.abs(q.B04_b2_mean-50/3)<1e-9);
   assert.throws(()=>terrio.zonalStats(zones,[{raster,time:{}}],{}),/'time' must be a string/);
