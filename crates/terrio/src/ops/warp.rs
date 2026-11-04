@@ -450,6 +450,13 @@ impl GenImgProj {
         }
         true
     }
+
+    /// Whether [`GenImgProj::transform`] gives each point what it gives it alone, whichever points
+    /// come with it. Points to an RPC source's pixels are not: a long row of them samples a row of
+    /// the DEM together.
+    fn pointwise(&self, dst_to_src: bool) -> bool {
+        !(dst_to_src && matches!(self.src_gcp, Some(Georef::Rpc(_))))
+    }
 }
 
 fn same_crs(a: &SpatialRef, b: &SpatialRef) -> bool {
@@ -466,30 +473,76 @@ struct Approx<'a> {
 
 impl Approx<'_> {
     fn transform(&self, inv: bool, x: &mut [f64], y: &mut [f64], ok: &mut [bool]) -> bool {
+        self.transform_part(inv, x, y, ok, 0..x.len())
+    }
+
+    /// [`Approx::transform`] for the points in `need` only. Each of them comes out as `transform`
+    /// gives it: a point depends on the row's ends and on the points the interpolation is checked
+    /// at, which are transformed whatever `need` is, not on which other points are computed. The
+    /// other points are left as they are, or computed too.
+    fn transform_part(&self, inv: bool, x: &mut [f64], y: &mut [f64], ok: &mut [bool], need: std::ops::Range<usize>) -> bool {
         let n = x.len();
         if n == 0 {
             return true;
         }
         let mid = (n - 1) / 2;
         if n <= 5 || y[0] != y[n - 1] || y[0] != y[mid] || x[0] == x[n - 1] || x[0] == x[mid] || self.max_error == 0.0 {
-            return self.base.transform(inv, x, y, ok);
+            return self.exact(inv, x, y, ok, 0..n, &need);
         }
         let mut xs = [x[0], x[mid], x[n - 1]];
         let mut ys = [y[0], y[mid], y[n - 1]];
         let mut oks = [false; 3];
         if !self.base.transform(inv, &mut xs, &mut ys, &mut oks) || !oks.iter().all(|b| *b) {
-            return self.base.transform(inv, x, y, ok);
+            return self.exact(inv, x, y, ok, 0..n, &need);
         }
-        self.internal(inv, x, y, ok, xs, ys)
+        self.internal(inv, x, y, ok, xs, ys, need)
     }
 
-    fn internal(&self, inv: bool, x: &mut [f64], y: &mut [f64], ok: &mut [bool], xs: [f64; 3], ys: [f64; 3]) -> bool {
+    /// Transforms the points of `range` exactly: those also in `need`, or all of them when the
+    /// base transformer does not transform each point alone.
+    fn exact(
+        &self,
+        inv: bool,
+        x: &mut [f64],
+        y: &mut [f64],
+        ok: &mut [bool],
+        range: std::ops::Range<usize>,
+        need: &std::ops::Range<usize>,
+    ) -> bool {
+        let range = if self.base.pointwise(inv) { range.start.max(need.start)..range.end.min(need.end) } else { range };
+        if range.is_empty() {
+            return true;
+        }
+        self.base.transform(inv, &mut x[range.clone()], &mut y[range.clone()], &mut ok[range])
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn internal(
+        &self,
+        inv: bool,
+        x: &mut [f64],
+        y: &mut [f64],
+        ok: &mut [bool],
+        xs: [f64; 3],
+        ys: [f64; 3],
+        need: std::ops::Range<usize>,
+    ) -> bool {
         let n = x.len();
         let mid = (n - 1) / 2;
         let dx = (xs[2] - xs[0]) / (x[n - 1] - x[0]);
         let dy = (ys[2] - ys[0]) / (x[n - 1] - x[0]);
         let error = ((xs[0] + dx * (x[mid] - x[0])) - xs[1]).abs() + ((ys[0] + dy * (x[mid] - x[0])) - ys[1]).abs();
         if error > self.max_error {
+            // The ends and the middle, transformed already, where they are needed.
+            let anchors = |x: &mut [f64], y: &mut [f64], ok: &mut [bool], at: &[(usize, usize)]| {
+                for &(i, k) in at {
+                    if need.contains(&i) {
+                        x[i] = xs[k];
+                        y[i] = ys[k];
+                        ok[i] = true;
+                    }
+                }
+            };
             let (a, b, c) = ((mid - 1) / 2, mid - 1, mid + (n - mid - 1) / 2);
             let mut xm = [x[a], x[b], x[c]];
             let mut ym = [y[a], y[b], y[c]];
@@ -509,36 +562,32 @@ impl Approx<'_> {
                 false
             };
             if !success || !om.iter().all(|b| *b) {
-                let s1 = self.base.transform(inv, &mut x[1..mid], &mut y[1..mid], &mut ok[1..mid]);
-                let s2 = self.base.transform(inv, &mut x[mid + 1..n - 1], &mut y[mid + 1..n - 1], &mut ok[mid + 1..n - 1]);
-                for (i, k) in [(0, 0), (mid, 1), (n - 1, 2)] {
-                    x[i] = xs[k];
-                    y[i] = ys[k];
-                    ok[i] = true;
-                }
+                let s1 = self.exact(inv, x, y, ok, 1..mid, &need);
+                let s2 = self.exact(inv, x, y, ok, mid + 1..n - 1, &need);
+                anchors(x, y, ok, &[(0, 0), (mid, 1), (n - 1, 2)]);
                 return s1 && s2;
             }
             if !base1 {
-                self.internal(inv, &mut x[..mid], &mut y[..mid], &mut ok[..mid], [xs[0], xm[0], xm[1]], [ys[0], ym[0], ym[1]]);
+                let first = need.start.min(mid)..need.end.min(mid);
+                if !first.is_empty() {
+                    self.internal(inv, &mut x[..mid], &mut y[..mid], &mut ok[..mid], [xs[0], xm[0], xm[1]], [ys[0], ym[0], ym[1]], first);
+                }
             } else {
-                self.base.transform(inv, &mut x[1..mid], &mut y[1..mid], &mut ok[1..mid]);
-                x[0] = xs[0];
-                y[0] = ys[0];
-                ok[0] = true;
+                self.exact(inv, x, y, ok, 1..mid, &need);
+                anchors(x, y, ok, &[(0, 0)]);
             }
             if !base2 {
-                self.internal(inv, &mut x[mid..], &mut y[mid..], &mut ok[mid..], [xs[1], xm[2], xs[2]], [ys[1], ym[2], ys[2]]);
-            } else {
-                self.base.transform(inv, &mut x[mid + 1..n - 1], &mut y[mid + 1..n - 1], &mut ok[mid + 1..n - 1]);
-                for (i, k) in [(mid, 1), (n - 1, 2)] {
-                    x[i] = xs[k];
-                    y[i] = ys[k];
-                    ok[i] = true;
+                let second = need.start.max(mid) - mid..need.end.max(mid) - mid;
+                if !second.is_empty() {
+                    self.internal(inv, &mut x[mid..], &mut y[mid..], &mut ok[mid..], [xs[1], xm[2], xs[2]], [ys[1], ym[2], ys[2]], second);
                 }
+            } else {
+                self.exact(inv, x, y, ok, mid + 1..n - 1, &need);
+                anchors(x, y, ok, &[(mid, 1), (n - 1, 2)]);
             }
             return true;
         }
-        for i in (0..n).rev() {
+        for i in need.rev() {
             let d = x[i] - x[0];
             x[i] = xs[0] + dx * d;
             y[i] = ys[0] + dy * d;
@@ -2930,7 +2979,19 @@ impl WarpContext<'_> {
         let (xscale, yscale) = self.scales(c);
         let k = Kernel { src, win: *c, xscale, yscale, method: self.resampling };
         if self.resampling == Resampling::Sum {
-            crate::par::for_each_owned(rows, |row, mut out| self.warp_sum_row(c, &k, sink, row, &mut out));
+            // The rows in groups, a few for each thread: a row of corners between two rows of a
+            // group is transformed once, for both.
+            let group = crate::par::chunk_len(c.dh, 1);
+            let mut rows = rows.into_iter();
+            let groups: Vec<Vec<RowOut>> = (0..c.dh.div_ceil(group)).map(|_| rows.by_ref().take(group).collect()).collect();
+            crate::par::for_each_owned(groups, |g, outs| {
+                let mut top = self.sum_corners(c, g * group);
+                for (j, mut out) in outs.into_iter().enumerate() {
+                    let bottom = self.sum_corners(c, g * group + j + 1);
+                    self.warp_sum_row(c, &k, sink, (&top, &bottom), &mut out);
+                    top = bottom;
+                }
+            });
             return;
         }
         if self.resampling.is_area_based() {
@@ -3147,37 +3208,48 @@ impl WarpContext<'_> {
         }
     }
 
+    /// The corners of a chunk's output pixels along its row `y` of corners (from its top edge), on
+    /// the source grid. Each is interpolated within its batch of the whole grid's corners, the
+    /// `SUM_CORNER_BATCH` columns from a multiple of that number, so that the chunks (or regions)
+    /// sharing a corner agree on it; of a batch, only the chunk's corners are computed.
+    fn sum_corners(&self, c: &Chunk, y: usize) -> CornerRow {
+        const BATCH: usize = SUM_CORNER_BATCH;
+        let n = c.dw;
+        let mut row = CornerRow { x: Vec::with_capacity(n + 1), y: Vec::with_capacity(n + 1), ok: Vec::with_capacity(n + 1) };
+        let (mut xs, mut ys, mut ok) = (vec![0.0; BATCH + 1], vec![0.0; BATCH + 1], vec![false; BATCH + 1]);
+        for batch in c.dx / BATCH..=(c.dx + n) / BATCH {
+            let start = batch * BATCH;
+            for (i, (x, v)) in xs.iter_mut().zip(ys.iter_mut()).enumerate() {
+                (*x, *v) = ((start + i) as f64, (c.dy + y) as f64);
+            }
+            // The batch's corners that the chunk needs; its last is the next batch's first.
+            let need = c.dx.max(start) - start..(c.dx + n).min(start + BATCH - 1) - start + 1;
+            self.approx.transform_part(true, &mut xs, &mut ys, &mut ok, need.clone());
+            row.x.extend_from_slice(&xs[need.clone()]);
+            row.y.extend_from_slice(&ys[need.clone()]);
+            row.ok.extend_from_slice(&ok[need]);
+        }
+        row
+    }
+
     /// `sum`: each output pixel is the sum of the valid source pixels it overlaps, each times the
     /// share of its area inside the output pixel. On the source grid, an output pixel is the
     /// quadrilateral of its four corners; neighbouring pixels share their corners, so that the
     /// output pixels tile the source and, where they cover it whole, keep its total in a
     /// floating-point output (an integer output rounds each pixel, and keeps the total only up to
     /// that rounding). A pixel that overlaps no valid source pixel is left as it is.
-    fn warp_sum_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
+    fn warp_sum_row<T: crate::pixel::Pixel>(
+        &self,
+        c: &Chunk,
+        k: &Kernel<T>,
+        sink: &Sink,
+        (top, bottom): (&CornerRow, &CornerRow),
+        out: &mut [&mut [f64]],
+    ) {
         let n = c.dw;
-        // The corners of the row's pixels, along its top edge and along its bottom edge. Each is
-        // interpolated within its batch of the grid's corners, not within the chunk's columns, so
-        // that the chunks (or regions) sharing a corner agree on it.
-        let corners = |y: usize| {
-            const BATCH: usize = SUM_CORNER_BATCH;
-            let (mut cx, mut cy, mut cok) = (Vec::with_capacity(n + 1), Vec::with_capacity(n + 1), Vec::with_capacity(n + 1));
-            let (mut xs, mut ys, mut ok) = (vec![0.0; BATCH + 1], vec![0.0; BATCH + 1], vec![false; BATCH + 1]);
-            for batch in c.dx / BATCH..=(c.dx + n) / BATCH {
-                let start = batch * BATCH;
-                for (i, (x, v)) in xs.iter_mut().zip(ys.iter_mut()).enumerate() {
-                    (*x, *v) = ((start + i) as f64, (c.dy + y) as f64);
-                }
-                self.approx.transform(true, &mut xs, &mut ys, &mut ok);
-                // The batch's corners that the row needs; its last is the next batch's first.
-                let (lo, hi) = (c.dx.max(start) - start, (c.dx + n).min(start + BATCH - 1) - start);
-                cx.extend_from_slice(&xs[lo..=hi]);
-                cy.extend_from_slice(&ys[lo..=hi]);
-                cok.extend_from_slice(&ok[lo..=hi]);
-            }
-            (cx, cy, cok)
-        };
-        let (top_x, top_y, top_ok) = corners(row);
-        let (bottom_x, bottom_y, bottom_ok) = corners(row + 1);
+        // The corners of the row's pixels, along its top edge and along its bottom edge.
+        let (top_x, top_y, top_ok) = (&top.x, &top.y, &top.ok);
+        let (bottom_x, bottom_y, bottom_ok) = (&bottom.x, &bottom.y, &bottom.ok);
         let (sxo, syo, sw, sh) = (c.sx as f64, c.sy as f64, c.sw as f64, c.sh as f64);
         let (mut areas, mut carry) = (Vec::new(), Vec::new());
         for i in 0..n {
@@ -3252,6 +3324,13 @@ impl WarpContext<'_> {
             }
         }
     }
+}
+
+/// A row of output pixel corners on the source grid, and whether each could be transformed.
+struct CornerRow {
+    x: Vec<f64>,
+    y: Vec<f64>,
+    ok: Vec<bool>,
 }
 
 /// The batches of output pixel corners along a row that a `sum` interpolates corners within: the
@@ -4787,6 +4866,34 @@ mod tests {
         for i in 0..n {
             let (ex, ey) = t.point(true, i as f64 + 0.5, 10.5).unwrap();
             assert!((xs[i] - ex).abs() + (ys[i] - ey).abs() <= 0.25, "{i}");
+        }
+    }
+
+    /// The approximate transformer gives each point of a part of a row as it gives it with the
+    /// whole row, whatever the part: the interpolation follows the row's ends and the points it is
+    /// checked at, which every part transforms. Along a row of a polar stereographic grid, which
+    /// bends across a longitude and latitude source, it splits the row many times.
+    #[test]
+    fn approx_transformer_gives_a_part_of_a_row_as_the_whole_row() {
+        let ds = raster(120, 80, [-120.0, 0.5, 0.0, 70.0, 0.0, -0.5], 4326, |_, _| 0.0);
+        let (polar, geographic) = (SpatialRef::from_epsg(3413).unwrap(), SpatialRef::from_epsg(4326).unwrap());
+        let (gt, ..) = suggested_output(&ds, &polar).unwrap();
+        let mut t = GenImgProj::new(ds.geo_transform(), &geographic, &polar).unwrap();
+        t.set_dst_gt(gt);
+        let n = SUM_CORNER_BATCH + 1;
+        let row = || ((0..n).map(|i| i as f64).collect::<Vec<f64>>(), vec![30.0; n], vec![false; n]);
+        for max_error in [0.125, 4.0, 0.0] {
+            let a = Approx { base: &t, max_error };
+            let (mut wx, mut wy, mut wok) = row();
+            a.transform(true, &mut wx, &mut wy, &mut wok);
+            for need in [0..1, 0..n, 3..40, 100..101, 200..n, n - 2..n, 255..258] {
+                let (mut px, mut py, mut pok) = row();
+                a.transform_part(true, &mut px, &mut py, &mut pok, need.clone());
+                for i in need {
+                    let (part, whole) = ((px[i].to_bits(), py[i].to_bits(), pok[i]), (wx[i].to_bits(), wy[i].to_bits(), wok[i]));
+                    assert_eq!(part, whole, "threshold {max_error}, point {i}: ({}, {}), not ({}, {})", px[i], py[i], wx[i], wy[i]);
+                }
+            }
         }
     }
 
