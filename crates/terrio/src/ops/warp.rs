@@ -2769,8 +2769,9 @@ impl WarpContext<'_> {
         if self.resampling == Resampling::Sum && !self.translation {
             // A `sum` takes every source pixel inside its output pixels' corners, which are
             // interpolated to within the error threshold and lie between the points sampled
-            // here: a pixel more than the threshold around these bounds holds them.
-            let pad = 1.0 + self.approx.max_error.ceil();
+            // here: a pixel more than the threshold around these bounds holds them. A threshold
+            // below zero interpolates nothing, and pads as one of zero does.
+            let pad = 1.0 + self.approx.max_error.max(0.0).ceil();
             (x0, y0, x1, y1) = (x0 - pad, y0 - pad, x1 + pad, y1 + pad);
         }
         if x0 > sw || x1 < 0.0 || y0 > sh || y1 < 0.0 {
@@ -4618,12 +4619,13 @@ mod tests {
     /// Over an output grid that covers a source whole, a floating-point `sum` keeps the source's
     /// total across a change of CRS too, where output pixels are quadrilaterals on the source's
     /// grid: warped in memory (in one chunk and in many), read lazily, and written as it is warped;
-    /// for a source whose output is a block, and for one whose output is a strip wider than two
+    /// for a source whose output is a block, also with an error threshold below zero (which must
+    /// not narrow a chunk's source window), and for one whose output is a strip wider than two
     /// batches of corners.
     #[test]
     fn sum_keeps_the_total_of_a_source_it_covers_across_a_reprojection() {
         let dir = tempfile::tempdir().unwrap();
-        for (cols, rows) in [(64, 48), (1100, 4)] {
+        for (cols, rows, thresholds) in [(64, 48, &[0.125, -2.0][..]), (1100, 4, &[0.125][..])] {
             // 2.2 degrees west of the zone's central meridian, where its grid is turned by about
             // 1.3 degrees from longitude and latitude.
             let ds = raster(cols, rows, [300000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| ((c * 7 + r * 13) % 50) as f64 + 0.25);
@@ -4636,7 +4638,7 @@ mod tests {
             let footprint = warp(&[&ds], &WarpOptions { dst_srs: Some(geographic.clone()), ..Default::default() }).unwrap();
             let (gt, (w, h)) = (footprint.geo_transform(), (footprint.raster.cols as f64, footprint.raster.rows as f64));
             let extent = (gt[0] - 0.002, gt[3] + h * gt[5] - 0.002, gt[0] + w * gt[1] + 0.002, gt[3] + 0.002);
-            for memory_limit in [64.0 * 1024.0 * 1024.0, 2000.0] {
+            for (&error_threshold, memory_limit) in thresholds.iter().flat_map(|t| [(t, 64.0 * 1024.0 * 1024.0), (t, 2000.0)]) {
                 let o = WarpOptions {
                     dst_srs: Some(geographic.clone()),
                     extent: Some(extent),
@@ -4645,6 +4647,7 @@ mod tests {
                     output_type: Some(DataType::F64),
                     dst_nodata: Nodata::Values(vec![f64::NAN]),
                     memory_limit,
+                    error_threshold,
                     ..Default::default()
                 };
                 let streamed = dir.path().join("out.tif");
@@ -4659,7 +4662,7 @@ mod tests {
                     // Rounding apart (under 1e-15 of the total here), the sums are the total.
                     assert!(
                         ((sum - total) / total).abs() < 1e-12,
-                        "{cols} x {rows} source, {path}, {memory_limit} bytes, {} x {} output: {sum}, not {total}",
+                        "{cols} x {rows} source, {path}, {memory_limit} bytes, error threshold {error_threshold}, {} x {} output: {sum}, not {total}",
                         out.raster.cols,
                         out.raster.rows
                     );
