@@ -922,15 +922,23 @@ impl Drop for AgentScope {
     }
 }
 
+/// Outside any [`AgentScope`], the agent of the whole process: opening and reading remote files
+/// from many threads reuses connections (and TLS sessions) rather than opening one per file.
+static PROCESS_AGENT: std::sync::Mutex<Option<(AgentSettings, ureq::Agent)>> = std::sync::Mutex::new(None);
+
 /// The agent requests are sent with: no automatic redirects (followed by [`Client`], which
 /// signs only the first request), no compression. Within an [`AgentScope`], the scope's agent
-/// when its settings are the same.
+/// when its settings are the same; otherwise the process's.
 fn agent(options: &HttpOptions) -> ureq::Agent {
     let settings: AgentSettings = (options.timeout, options.connect_timeout, options.user_agent.clone());
     SHARED_AGENT.with(|shared| {
         let mut shared = shared.borrow_mut();
         if shared.0 == 0 {
-            return new_agent(options);
+            let mut process = PROCESS_AGENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            return match &*process {
+                Some((s, agent)) if *s == settings => agent.clone(),
+                _ => process.insert((settings, new_agent(options))).1.clone(),
+            };
         }
         match &shared.1 {
             Some((s, agent)) if *s == settings => agent.clone(),
@@ -966,6 +974,10 @@ fn new_agent(options: &HttpOptions) -> ureq::Agent {
         .user_agent(options.user_agent.as_str())
         .timeout_global(options.timeout)
         .timeout_connect(Some(options.connect_timeout))
+        // A fixed idle pool sized for parallel reads (ureq keeps 3 per host by default); it could
+        // follow the thread count if 64 proves too few or too many.
+        .max_idle_connections(64)
+        .max_idle_connections_per_host(64)
         .build()
         .into()
 }
