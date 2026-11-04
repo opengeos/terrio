@@ -1572,7 +1572,7 @@ mod tests {
     }
 
     #[test]
-    fn small_tiled_image_after_the_header_has_gdal_3_13_cog_layout() {
+    fn small_tiled_image_after_the_header_has_cog_layout_as_gdal_313_reads_it() {
         // As GDAL 3.13.3 reads a 64 x 64 tiled GeoTIFF that GDAL 3.12 wrote: LAYOUT=COG.
         assert!(layout(vec![tiled_ifd(8, 64, 158, 0)], false));
         assert!(layout(vec![tiled_ifd(16, 64, 300, 0)], true));

@@ -57,7 +57,7 @@ pub(crate) fn is_netcdf(path: &Path) -> bool {
 
 /// Whether a `GDAL` global attribute names GDAL 1.9 or later, the netCDF driver that writes
 /// CF-conformant files (`NCDFIsGDALVersionGTE(version, 1900)`): `GDAL 3.12.1, released ...`.
-fn gdal_version_at_least_1_9(version: &str) -> bool {
+fn gdal_attribute_marks_cf_netcdf(version: &str) -> bool {
     let Some(rest) = version.get(..5).filter(|p| p.eq_ignore_ascii_case("GDAL ")).map(|_| &version[5..]) else {
         return false;
     };
@@ -567,7 +567,7 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         && crate::ops::warp::KernelVersion::configured() == crate::ops::warp::KernelVersion::Gdal313
         && let Some(mut attribute) = grid_mapping.and_then(|g| attr_str(g, "GeoTransform")).and_then(|s| {
             let v: Vec<f64> = s.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-            <[f64; 6]>::try_from(v).ok()
+            <[f64; 6]>::try_from(v).ok().filter(|g| g.iter().all(|x| x.is_finite()))
         })
     {
         let axis_aligned = |g: &[f64; 6]| g[2] == 0.0 && g[4] == 0.0;
@@ -575,13 +575,14 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
             attribute[3] += rows as f64 * attribute[5];
             attribute[5] = -attribute[5];
         }
+        // Relative to each attribute element, as GDAL compares them (a zero is compared exactly).
         let max_error = coordinate_gt
             .iter()
             .zip(&attribute)
-            .map(|(c, a)| (c - a).abs())
-            .zip(&attribute)
-            .filter(|(e, a)| *e > (*a * 1e-6).abs())
-            .map(|(e, _)| e)
+            .filter_map(|(c, a)| {
+                let e = (c - a).abs();
+                (e > (a * 1e-6).abs()).then_some(e)
+            })
             .fold(0.0, f64::max);
         if max_error > 0.0 {
             crate::warnings::warn(format!(
@@ -591,7 +592,7 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         } else {
             if axis_aligned(&attribute) {
                 let gdal_cf = f.global_attributes().is_ok_and(|a| {
-                    a.iter().any(|a| a.name == "GDAL" && a.value.as_string().is_some_and(|v| gdal_version_at_least_1_9(&v)))
+                    a.iter().any(|a| a.name == "GDAL" && a.value.as_string().is_some_and(|v| gdal_attribute_marks_cf_netcdf(&v)))
                 });
                 south_up = gdal_cf;
             }
@@ -1007,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn gdal_attribute_versions_from_1_9_mark_cf_files() {
+    fn gdal_attribute_marks_cf_netcdf_from_the_cf_driver_on() {
         for (version, cf) in [
             ("GDAL 3.12.1, released 2025/12/22", true),
             ("GDAL 1.9.0, released 2011/12/29", true),
@@ -1020,7 +1021,7 @@ mod tests {
             ("terrio 0.7", false),
             ("", false),
         ] {
-            assert_eq!(gdal_version_at_least_1_9(version), cf, "{version}");
+            assert_eq!(gdal_attribute_marks_cf_netcdf(version), cf, "{version}");
         }
     }
 }

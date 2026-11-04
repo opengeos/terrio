@@ -490,7 +490,6 @@ fn resampled_window(
         buf,
         block_width,
         dataset,
-        kernel_version: terrio::ops::warp::KernelVersion::configured(),
     }
 }
 

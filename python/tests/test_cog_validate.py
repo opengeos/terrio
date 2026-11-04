@@ -120,8 +120,13 @@ def test_non_square_blocks_agree_with_rio_cogeo(tmp_path):
                 expected = cogeo.cog_validate(str(path), strict=strict, quiet=True)
             except (IndexError, UnboundLocalError):
                 # rio-cogeo 5.4 and 7.0 fail on a sparse image none of whose scanned blocks is
-                # stored: there is nothing to compare with.
+                # stored: terrio's verdict is that of the other tiled files without overviews.
                 assert path.name.startswith("sparse_"), path.name
+                warning = (
+                    "The file is greater than 512xH or 512xW, "
+                    "it is recommended to include internal overviews"
+                )
+                assert got == (not strict, [], [warning]), path.name
                 continue
             assert got == (expected[0], list(expected[1]), list(expected[2])), path.name
             compared.add(path.name)

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from terrio import _terrio
+from terrio.errors import TerrioError
 from terrio.rio._jpeg_quality import guess_jpeg_quality
 from terrio.rio.enums import ColorInterp
 
@@ -592,13 +593,23 @@ def infer_layout(s: Structure) -> None:
     Args:
         s: The structure (see `Structure.layout_path`).
     """
-    path, s.layout_path = s.layout_path, None
+    path = s.layout_path
     if path is None:
         return
-    with contextlib.suppress(Exception):
-        if _terrio.tiff_infers_cog_layout(path):
-            s.namespaces.setdefault("IMAGE_STRUCTURE", {})["LAYOUT"] = "COG"
-            s.layout_inferred = True
+    structure = s.namespaces.setdefault("IMAGE_STRUCTURE", {})
+    # GDAL infers the layout only when no LAYOUT item is there (one from GDAL_METADATA).
+    if "LAYOUT" in structure:
+        s.layout_path = None
+        return
+    try:
+        inferred = _terrio.tiff_infers_cog_layout(path)
+    except TerrioError:
+        # Left to be checked again on the next request (a failed remote read).
+        return
+    s.layout_path = None
+    if inferred:
+        structure["LAYOUT"] = "COG"
+        s.layout_inferred = True
 
 
 def _vertical_unit(wkt: str | None) -> str | None:

@@ -232,7 +232,11 @@ mod tests {
         }
         let u16 = common::make_raster(4, 4, 3, RasterData::U16(vec![0; 48]), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
         let err = encode(&u16, &[]).unwrap_err().to_string();
-        assert!(err.contains("WEBP driver doesn't support data type UInt16. Only eight bit byte bands supported."), "{err}");
+        let only = match crate::ops::warp::KernelVersion::configured() {
+            crate::ops::warp::KernelVersion::Gdal312 => "Only eight bit byte bands supported.",
+            crate::ops::warp::KernelVersion::Gdal313 => "Only UInt8 bands supported.",
+        };
+        assert!(err.contains(&format!("WEBP driver doesn't support data type UInt16. {only}")), "{err}");
         let err = encode(&raster(16384, 1, 3, vec![0; 3 * 16384]), &[]).unwrap_err().to_string();
         assert!(err.contains("WEBP maximum image dimensions are 16383 x 16383."), "{err}");
         assert!(encode(&raster(16383, 1, 3, vec![0; 3 * 16383]), &[]).is_ok());

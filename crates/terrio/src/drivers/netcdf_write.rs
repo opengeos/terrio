@@ -855,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_keep_their_order_when_read_as_gdal_3_13() {
+    fn rows_keep_their_order_when_read_as_gdal_313_does() {
         // GDAL 3.13 takes the rows of a file whose `GeoTransform` agrees with its coordinates as
         // stored (north-up) unless a `GDAL` global attribute says GDAL's conventions (south-up).
         let dir = tempfile::tempdir().unwrap();

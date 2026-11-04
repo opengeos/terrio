@@ -77,6 +77,9 @@ def test_row_order_of_gdal_written_netcdf_is_gdals(tmp_path, gdal, gdal_version_
     """Files GDAL writes (rows south to north under a north-up `GeoTransform`), with and without
     the `GDAL` global attribute that GDAL 3.13 takes the row order from: terrio reads the rows,
     and the geotransform, as the installed GDAL does (see `TERRIO_GDAL_COMPAT`)."""
+    version = ".".join(gdal.__version__.split(".")[:2])
+    if version != terrio.gdal_compat():
+        pytest.skip(f"terrio reproduces GDAL {terrio.gdal_compat()}, osgeo.gdal is {version}")
     gdal.UseExceptions()
     values = np.arange(12, dtype="float32").reshape(3, 4)
     mem = gdal.GetDriverByName("MEM").Create("", 4, 3, 1, gdal.GDT_Float32)

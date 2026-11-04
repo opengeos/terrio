@@ -32,8 +32,8 @@ def _reference_gdal_version():
 
 # terrio reproduces GDAL 3.12 by default; compare with the GDAL installed here instead (see
 # `terrio.gdal_compat`). Child processes inherit the setting. An explicit setting is kept.
-if _reference_gdal_version() == "3.13":
-    os.environ.setdefault("TERRIO_GDAL_COMPAT", "3.13")
+if _reference_gdal_version() == "3.13" and not os.environ.get("TERRIO_GDAL_COMPAT", "").strip():
+    os.environ["TERRIO_GDAL_COMPAT"] = "3.13"
 
 # Tests of the memory checks: their child processes set `RLIMIT_AS` and read `/proc`, or expect
 # `usable_memory`, which reads `/proc`.
