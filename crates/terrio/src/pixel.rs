@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn raster_from_data_rejects_overflowing_dimensions() {
-        let big = RasterConfig { cols: 1 << 32, rows: 1 << 32, bands: 1, ..cfg() };
+        let big = RasterConfig { cols: usize::MAX, rows: 2, bands: 1, ..cfg() };
         assert!(raster_from_data(big, RasterData::I16(Vec::new())).is_err());
     }
 }

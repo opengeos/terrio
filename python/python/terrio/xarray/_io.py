@@ -608,7 +608,7 @@ class TerrioArrayWrapper(BackendArray):
             if self._unsigned_dtype is not None:
                 out = out.astype(self._unsigned_dtype)
             if self.masked:
-                out = out.astype(self.dtype)
+                out = out.astype(self.dtype, copy=False)
                 if invalid is not None:
                     np.copyto(out, self.fill_value, where=invalid)
             if self.mask_and_scale:

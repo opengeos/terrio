@@ -11,8 +11,9 @@
   builds a `Raster` from its data that way, as JavaScript's `rasterFromArray` now does.
 - `terrio.rio.features.rasterize` looks burn values up in one array operation, not per pixel in
   Python: 9 times faster for 2,000 shapes on an 8000 x 8000 grid (`crop`/`mask` in
-  `terrio.xarray`). Integer values above
-  2**63 mixed with other values are burnt exactly, where they were rounded through float64.
+  `terrio.xarray`). Given an integer
+  `dtype`, values above 2**63 mixed with other values are burnt exactly, where they were rounded
+  through float64.
 - Warps with `sum` resampling give each output pixel the sum of the valid source pixels it
   overlaps, each weighted by the share of its area inside the output pixel (on the source grid, a
   quadrilateral when the output grid is turned or reprojected), so that an output grid covering a
