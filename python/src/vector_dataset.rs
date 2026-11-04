@@ -2,11 +2,10 @@
 //! from coordinate fields, dataset creation and schema export (GDAL's `gdal vector concat`,
 //! `partition`, `set-field-type`, `make-point`, `create` and `export-schema`).
 
-use crate::ops::input_layers;
+use crate::ops::{input_layers, srs};
 use crate::vector::{PyLayer, PyVectorDataset};
 use crate::{Detach, PyResultExt, invalid, with_warnings};
 use pyo3::prelude::*;
-use terrio::crs::SpatialRef;
 use terrio::formats::VectorDriver;
 use terrio::ops::concat::{ConcatMode, ConcatOptions, ConcatSource, FieldStrategy};
 #[cfg(not(target_family = "wasm"))]
@@ -27,10 +26,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(edit_vector, m)?)?;
     m.add_function(wrap_pyfunction!(update_vector, m)?)?;
     Ok(())
-}
-
-fn srs(s: Option<&str>) -> PyResult<Option<SpatialRef>> {
-    s.map(SpatialRef::parse).transpose().py()
 }
 
 fn driver(name: Option<&str>) -> PyResult<Option<VectorDriver>> {

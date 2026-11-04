@@ -211,7 +211,8 @@ fn parse_with_limits(text: &str, max_elements: usize, max_depth: usize, strict: 
     doc.children.into_iter().next().ok_or_else(|| Error::InvalidData("XML: no root element".into()))
 }
 
-/// Escapes text for XML content and attribute values.
+/// Escapes text for XML content and attribute values, `'` included (unlike
+/// `drivers::common::xml_escape`, which keeps it as GDAL's metadata writers do).
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {

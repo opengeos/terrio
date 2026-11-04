@@ -6,20 +6,27 @@ crates/terrio        the library
   formats.rs         the driver registry, with GDAL's short names
   drivers/           terrio's own raster drivers; drivers/vector/ its vector drivers
   geotiff.rs, cog.rs GeoTIFF tags and decoding, lazy window and overview reads
+  resampled_read.rs  overview-aware resampled window reads (GDAL RasterIO semantics)
+  catalog.rs         GTI-compatible indexed raster catalogs with bounded source caching
+  stac.rs, stacta.rs STAC items, API searches, STACIT mosaics and STACTA tiled assets
   tiles/             PMTiles, MBTiles and MVT: archives, tile pyramids, vector tile clipping
-  vfs.rs             locations: paths, URLs, s3://, gs://, az://, zip archives, /vsi prefixes
+  vfs.rs, sparse.rs  locations: paths, URLs, s3://, gs://, az://, zip archives, /vsi prefixes
   http.rs, s3.rs     range requests with a block cache; AWS Signature Version 4
   crs.rs             terrio::crs, over crates/terrio-crs
-  multidim/          native groups, dimensions and arrays
-  pointcloud/        LAS, LAZ, COPC, EPT, PLY, E57 and filters
-  vsi/               terrio vsi file management
-  ops/               translate, warp, mosaic, vrt, vector filters and SQL, rasterize, polygonize
+  arrow.rs           Arrow and GeoArrow record batch import and export
+  multidim/          native groups, dimensions, coordinate arrays and multidimensional mosaics
+  pointcloud/        LAS, LAZ, COPC, EPT, PLY, E57 and PDAL filters
+  vsi/               terrio vsi file management and seek-optimized ZIP (SOZip)
+  par.rs             fork-safe process-local rayon thread pool
+  ops/               translate, warp, mosaic, vrt, render, dem, calc, viewshed, pansharpen,
+                     zonal, contour, footprint, vector filters/SQL, topology, coverages,
+                     rasterize, polygonize, tiling/retiling and pipelines
   memory.rs          datasets from and to bytes
   info.rs            summaries
 crates/terrio-crs    standalone coordinate systems: parsing, identification, transformation
-crates/terrio-cli    the terrio command and MCP server
-python/              Python bindings (PyO3, NumPy)
-js/                  WebAssembly bindings (wasm-bindgen)
+crates/terrio-cli    the terrio command, MCP server, browser UI (ui, view) and usage catalog
+python/              Python bindings (PyO3, NumPy, terrio.rio, terrio.xarray)
+js/                  WebAssembly bindings (wasm-bindgen, core, threads and memory64 modules)
 scripts/             test data, comparisons with GDAL, benchmarks
 ```
 
@@ -27,20 +34,24 @@ scripts/             test data, comparisons with GDAL, benchmarks
 
 Rasters are held as `wbraster::Raster`: typed pixel buffers, band after band and row after row,
 with the georeferencing and CRS. `RasterDataset` adds the driver and whether nodata is declared.
-GeoTIFFs, tile archives (PMTiles, MBTiles), JPEG 2000, Zarr and raw-layout rasters can also be
-opened lazily, to read windows and overviews without loading the image, and GRIB files to read a
-band at a time.
+GeoTIFFs, tile archives (PMTiles, MBTiles), JPEG 2000, Zarr, VRTs, STAC mosaics (`STACIT`), tiled
+STAC assets (`STACTA`), GTI raster catalogs and raw-layout rasters can also be opened lazily
+(`LazyRaster`), to read windows, overviews and resampled outputs (`read_resampled`) without loading
+the whole image, and GRIB files to read a band at a time.
 
 Vector datasets are `wbvector::Layer`s: features with OGC simple-feature geometries (with Z and
-M), typed attributes and a schema.
+M), typed attributes and a schema. Point clouds use a columnar `PointCloud` model and chunked
+`PointCloudReader`, and multidimensional scientific stores expose hierarchical `multidim::Group`
+and `multidim::Array` views (`MdArray` in JavaScript) alongside their 2D raster views.
 
 ## Building on whitebox_next_gen
 
 The `wbraster`, `wbvector` and `wbprojection` crates supply the data model, many codecs and a
 fallback for projections terrio does not compute itself. Testing them against GDAL found codecs that decoded wrong pixels or lost
-georeferencing, so terrio has its own drivers for GeoTIFF, JPEG 2000, Zarr, netCDF, HFA,
-GeoPackage (on its own SQLite file reader and writer), the Esri formats, FlatGeobuf, CSV,
-GeoJSON, GeoParquet, GML, GPX, KML, TopoJSON, MapInfo, OSM and shapefile writing. Upstream bugs
+georeferencing, so terrio has its own drivers for GeoTIFF, JPEG 2000, GRIB, Zarr, netCDF, HDF5, HFA,
+GeoPackage (on its own SQLite file reader and writer), PMTiles/MBTiles/MVT, the Esri formats, FlatGeobuf, CSV, XLSX,
+GeoJSON, GeoParquet, GML, GPX, KML, CityJSON, CityGML, DWG/DXF, TopoJSON, MapInfo, OSM, WFS,
+OGC API Features (`OAPIF`), HEC-RAS and shapefile writing. Upstream bugs
 are listed in the pull requests that replaced them.
 
 ## Parallelism
@@ -49,7 +60,9 @@ Native builds spread the heavy work over all cores with rayon: decoding and enco
 tiles and strips, building COG overviews, warping and resampling (by output row), rasterizing (by
 bands of rows), writing Zarr chunks, and decoding and encoding vector features. Each piece of
 work is computed on its own and the results are combined in input order, so outputs are the same
-bytes as a single-threaded run gives. WebAssembly builds run the same code sequentially.
+bytes as a single-threaded run gives. The default WebAssembly build runs the same code sequentially;
+`terrio-js/threads` runs the raster and codec loops across a pool of Web Workers or Node.js worker
+threads over shared WebAssembly memory.
 
 All of it runs on one thread pool, terrio's own (`crates/terrio/src/par.rs`), never on rayon's
 global pool. A `fork()`ed child, as Python's `multiprocessing` starts on Linux, has only the

@@ -34,6 +34,10 @@ pub struct ResampledWindow {
 }
 
 impl ResampledWindow {
+    /// The read, with the kernels of the GDAL release configured for the calling thread
+    /// ([`crate::ops::warp::KernelVersion::configured`]): GDAL 3.13's convolution kernels leave
+    /// out the NaN pixels of a floating-point window with a nodata mask, where GDAL 3.12's make
+    /// their result NaN.
     fn read(&self) -> Result<ResampledRead> {
         let method = Method::parse(&self.resampling)
             .filter(|m| *m != Method::Nearest)
@@ -50,7 +54,7 @@ impl ResampledWindow {
             block_width: self.block_width,
             dataset: self.dataset,
             max: None,
-            nan_aware: false,
+            nan_aware: crate::ops::warp::KernelVersion::configured() == crate::ops::warp::KernelVersion::Gdal313,
         })
     }
 

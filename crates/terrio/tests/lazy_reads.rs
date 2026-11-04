@@ -5,15 +5,11 @@
 //! `scripts/fetch_test_data.sh`). Without it, these tests pass without checking anything. The tests
 //! that read public cloud files are ignored by default: run them with `cargo test -- --ignored`.
 
-use std::path::PathBuf;
 use terrio::{Window, WindowOptions};
 
-fn data(name: &str) -> Option<String> {
-    let dir = PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?);
-    let p = dir.join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
-}
+#[path = "common/test_data.rs"]
+mod test_data;
+use test_data::data;
 
 const TIFFS: &[&str] = &[
     "ECOv002_L2T_LSTE_26860_001_10SGD_20230401T203733_0710_01_LST.tif",

@@ -5,16 +5,12 @@
 //! The files live outside the repository: set `TERRIO_TEST_DATA` to their directory (see
 //! `scripts/fetch_test_data.sh`). Without it, these tests pass without checking anything.
 
-use std::path::PathBuf;
 use terrio::VectorOpenOptions;
 use terrio::ops::vector_filter::{VectorTranslateOptions, WriteMode, translate, write_vector_with_mode};
 
-fn data(name: &str) -> Option<String> {
-    let dir = PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?);
-    let p = dir.join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
-}
+#[path = "common/test_data.rs"]
+mod test_data;
+use test_data::data;
 
 fn open(path: &str, bbox: Option<(f64, f64, f64, f64)>) -> terrio::Layer {
     let o = VectorOpenOptions { spatial_filter: bbox, ..Default::default() };

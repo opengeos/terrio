@@ -11,7 +11,7 @@ and its projected CRS 49911 uses westing then northing.
 ```rust
 use terrio_crs::{SpatialRef, Transformer};
 
-let source = SpatialRef::parse("EPSG:4326")?;
+let source = SpatialRef::parse("EPSG:4326")?; // or parse_literal to refuse file paths
 let target = SpatialRef::parse("EPSG:3857")?;
 let transformer = Transformer::new(&source, &target)?;
 let (x, y) = transformer.transform(-100.0, 40.0)?;
@@ -21,10 +21,10 @@ let (x, y) = transformer.transform(-100.0, 40.0)?;
 ## Features and supported scope
 
 The default configuration works offline and uses the native projection engine.
-In the checked-in 117-method PROJ conformance inventory it supports 42 methods;
+In the checked-in 117-method PROJ conformance inventory it supports 43 methods;
 `wbprojection-fallback` adds 46 methods, including Hammer, Aitoff and Eckert.
 The inventory is a test corpus, not an exhaustive list of EPSG CRSs. The remaining
-29 methods are explicitly refused. Known Krovak inverse differences off Bessel's
+28 methods are explicitly refused. Known Krovak inverse differences off Bessel's
 ellipsoid are recorded in the conformance tests.
 
 | Feature | Default | Effect |

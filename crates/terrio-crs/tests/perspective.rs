@@ -26,12 +26,9 @@ fn pinned_tilted_perspective_fixture_and_backside_refusal() {
     }
 }
 
-fn angular_error(actual: (f64, f64), expected: &serde_json::Value) -> f64 {
-    let lon = expected[0].as_f64().unwrap();
-    let lat = expected[1].as_f64().unwrap();
-    let dlon = (actual.0 - lon + 180.0).rem_euclid(360.0) - 180.0;
-    (dlon * lat.to_radians().cos()).abs().max((actual.1 - lat).abs())
-}
+#[path = "common/angular.rs"]
+mod angular;
+use angular::angular_error;
 
 #[test]
 fn all_aspects_figures_units_and_domains_match_frozen_proj() {

@@ -24,7 +24,11 @@ pytestmark = pytest.mark.filterwarnings("ignore:Dataset has no geotransform")
 
 # GDAL's messages (`WEBPDataset::CreateCopy`).
 _BANDS = "WEBP driver doesn't support {} bands. Must be 3 (RGB) or 4 (RGBA) bands."
-_TYPE = "WEBP driver doesn't support data type UInt16. Only eight bit byte bands supported."
+_TYPE = "WEBP driver doesn't support data type UInt16. " + (
+    "Only UInt8 bands supported."
+    if terrio.gdal_compat() == "3.13"
+    else "Only eight bit byte bands supported."
+)
 
 
 def _encode(memfile, driver, data, **options):

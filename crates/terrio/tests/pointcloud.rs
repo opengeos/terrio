@@ -7,30 +7,15 @@
 //! (`scripts/compare_pointclouds.py` compares every point of every file). The tests that read
 //! public cloud files are ignored by default: run them with `cargo test -- --ignored`.
 
-use std::path::PathBuf;
 use terrio::crs::SpatialRef;
 use terrio::pointcloud::grid::{GridOptions, GridStat, grid};
 use terrio::pointcloud::{
     self, Dimension, PointCloud, PointFilter, PointFormat, PointReadOptions, PointWriteOptions, ReturnKind, ValueType, Values,
 };
 
-fn data(name: &str) -> Option<String> {
-    let dir = PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?);
-    let p = dir.join("pointcloud").join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
-}
-
-/// A deterministic pseudo-random sequence in [0, 1).
-fn noise(n: usize, seed: u64) -> Vec<f64> {
-    let mut s = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-    (0..n)
-        .map(|_| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            (s >> 11) as f64 / (1u64 << 53) as f64
-        })
-        .collect()
-}
+#[path = "common/pointcloud.rs"]
+mod fixtures;
+use fixtures::{data, noise};
 
 /// A synthetic point cloud with every standard dimension of a point format and two extra
 /// dimensions, coordinates on the 0.01 grid.

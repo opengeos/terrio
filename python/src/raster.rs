@@ -69,22 +69,6 @@ fn complex_to_numpy<'py>(py: Python<'py>, data: RasterData, plane: usize, shape:
     }
 }
 
-/// The NumPy name of a pixel type.
-fn dtype_name(t: DataType) -> &'static str {
-    match t {
-        DataType::U8 => "uint8",
-        DataType::I8 => "int8",
-        DataType::U16 => "uint16",
-        DataType::I16 => "int16",
-        DataType::U32 => "uint32",
-        DataType::I32 => "int32",
-        DataType::U64 => "uint64",
-        DataType::I64 => "int64",
-        DataType::F32 => "float32",
-        DataType::F64 => "float64",
-    }
-}
-
 /// Moves pixels into a NumPy array of the given shape, without converting them.
 pub(crate) fn to_numpy<'py>(py: Python<'py>, data: RasterData, shape: &[usize]) -> PyResult<Bound<'py, PyAny>> {
     macro_rules! arr {
@@ -162,7 +146,7 @@ impl PyRaster {
         match (self.is_complex(), self.inner.data_type()) {
             (true, DataType::F64) => "complex128",
             (true, _) => "complex64",
-            (false, t) => dtype_name(t),
+            (false, t) => t.as_str(),
         }
     }
 

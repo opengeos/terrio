@@ -47,9 +47,9 @@ pub struct Args {
     /// med, q1, q3, sum.
     #[arg(short = 'r', long = "resampling", default_value = "near")]
     resampling: String,
-    /// GDAL resampling behavior to reproduce: 3.12 (default) or 3.13.
-    #[arg(long, default_value = "3.12")]
-    kernel_version: String,
+    /// GDAL resampling behavior to reproduce: 3.12 or 3.13; TERRIO_GDAL_COMPAT, else 3.12, by default.
+    #[arg(long)]
+    kernel_version: Option<String>,
     /// Source overview: AUTO, AUTO-n, NONE, or a level numbered from 0.
     #[arg(long, alias = "ovr", default_value = "AUTO")]
     overview: String,
@@ -124,7 +124,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
     let rpc_options = RpcOptions::from_options(&to)?;
     let has_dem = rpc_options.dem.is_some();
     let mut o = WarpOptions {
-        kernel_version: terrio::ops::warp::KernelVersion::parse(&a.kernel_version)?,
+        kernel_version: terrio::ops::warp::KernelVersion::parse_or_configured(a.kernel_version.as_deref())?,
         transform_options: terrio::crs::TransformOptions::from_options(&to)?,
         geoloc: force_geoloc,
         src_srs: srs(&a.s_srs)?,

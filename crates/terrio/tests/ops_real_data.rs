@@ -4,19 +4,15 @@
 //! The files live outside the repository: set `TERRIO_TEST_DATA` to their directory (see
 //! `scripts/fetch_test_data.sh`). Without it, these tests pass without checking anything.
 
-use std::path::PathBuf;
 use terrio::crs::SpatialRef;
 use terrio::ops::mosaic::{MosaicOptions, MosaicSource, build_vrt, mosaic};
 use terrio::ops::translate::{TranslateOptions, translate};
 use terrio::ops::warp::{WarpOptions, warp};
 use terrio::ops::{Resampling, vrt::VrtDataset};
 
-fn data(name: &str) -> Option<String> {
-    let dir = PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?);
-    let p = dir.join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
-}
+#[path = "common/test_data.rs"]
+mod test_data;
+use test_data::data;
 
 /// Asserts that two geotransforms agree to a small fraction of a pixel.
 fn assert_gt(a: [f64; 6], b: [f64; 6], tol_px: f64) {

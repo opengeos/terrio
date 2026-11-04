@@ -142,8 +142,10 @@
 //! - `netcdf-hdf5`: NetCDF, HDF5 and HDF-EOS;
 //! - `sqlite`: GeoPackage and SQLite/SpatiaLite;
 //! - `tiles`: MBTiles, PMTiles and MVT ([`tiles`]); `avif`: their AVIF tiles;
-//! - `zarr`, `jp2` (JPEG 2000), `flatgeobuf`, `osm` (OpenStreetMap);
+//! - `zarr`, `jp2` (JPEG 2000), `grib` (GRIB1 and GRIB2), `flatgeobuf`, `osm` (OpenStreetMap);
 //! - `xlsx`: XLSX and XLSM workbooks, in pure Rust;
+//! - `cad`: DWG and DXF drawings, in pure Rust;
+//! - `hecras`: HEC-RAS geometry and plan HDF5 files as vector layers (needs `netcdf-hdf5`);
 //! - `pointcloud`: LAS, LAZ, COPC, EPT, PLY and E57 ([`pointcloud`]);
 //! - `lerc` and `lzma`: GeoTIFFs with those compressions.
 //!
@@ -151,6 +153,8 @@
 //! [`formats::VectorDriver`], listed as neither read nor written: opening or writing their files
 //! fails with [`Error::Unsupported`] ("built without the `zarr` feature").
 //!
+//! - `libzstd` (off by default): Zstandard through the zstd C library natively, for faster decoding
+//!   and higher compression levels than the default pure-Rust `ruzstd`.
 //! - `gdal` (off by default): the optional GDAL backend (`gdal_backend`), which opens the formats
 //!   terrio has no driver for through GDAL, and writes rasters with GDAL's drivers. It is the only
 //!   C dependency, opt-in: GDAL must be installed.
@@ -274,7 +278,8 @@ pub mod xlsx {
 
 pub use cog::{LazyRaster, TiffReadLimits, Window, WindowOptions, open_raster_lazy};
 pub use cog_validate::{
-    CogValidation, CogValidationOptions, CogValidationProfile, validate_cog, validate_cog_bytes, validate_cog_with_options,
+    CogValidation, CogValidationOptions, CogValidationProfile, gdal_infers_cog_layout, validate_cog, validate_cog_bytes,
+    validate_cog_with_options,
 };
 /// The memory the process can use, which reads refuse windows past.
 pub use dataset::fallible::usable_memory;

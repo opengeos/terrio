@@ -55,6 +55,43 @@ pub(crate) fn is_netcdf(path: &Path) -> bool {
     b.starts_with(b"CDF") || (netcdf_ext && super::hdf5::has_signature(path))
 }
 
+/// Whether a `GDAL` global attribute names GDAL 1.9 or later, the netCDF driver that writes
+/// CF-conformant files (`NCDFIsGDALVersionGTE(version, 1900)`): `GDAL 3.12.1, released ...`.
+fn gdal_attribute_marks_cf_netcdf(version: &str) -> bool {
+    let Some(rest) = version.get(..5).filter(|p| p.eq_ignore_ascii_case("GDAL ")).map(|_| &version[5..]) else {
+        return false;
+    };
+    // 2.0dev of 2011/12/29 was renamed 1.10dev.
+    if version.eq_ignore_ascii_case("GDAL 2.0dev, released 2011/12/29") {
+        return true;
+    }
+    let starts = |p: &str| rest.get(..p.len()).is_some_and(|r| r.eq_ignore_ascii_case(p));
+    if starts("1.9dev") {
+        return true;
+    }
+    if starts("1.8dev") {
+        return false;
+    }
+    // C's `atoi` of each of the first four `.`-separated tokens, clamped to 0..=99.
+    let atoi = |t: &str| {
+        let t = t.trim_start();
+        let (sign, digits) = match t.as_bytes().first() {
+            Some(b'-') => (-1i64, &t[1..]),
+            Some(b'+') => (1, &t[1..]),
+            _ => (1, t),
+        };
+        let n: i64 = digits.bytes().take_while(u8::is_ascii_digit).fold(0, |n, d| (n * 10 + i64::from(d - b'0')).min(1000));
+        (sign * n).clamp(0, 99)
+    };
+    let mut v = [0i64; 4];
+    for (slot, token) in v.iter_mut().zip(rest.split('.')) {
+        *slot = atoi(token);
+    }
+    let version =
+        if v[0] > 1 || v[1] >= 10 { v[0] * 1_000_000 + v[1] * 10_000 + v[2] * 100 } else { v[0] * 1000 + v[1] * 100 + v[2] * 10 + v[3] };
+    version >= 1900
+}
+
 fn attr<'a>(v: &'a NcVariable, name: &str) -> Option<&'a NcAttrValue> {
     v.attributes().iter().find(|a| a.name == name).map(|a| &a.value)
 }
@@ -138,6 +175,19 @@ fn type_code(t: &NcType) -> u8 {
         NcType::UInt64 => 11,
         _ => 0,
     }
+}
+
+/// The value of a signed type's bits read as unsigned (`_Unsigned = "true"`): negative values
+/// of `Byte`, `Short`, `Int` and `Int64` wrap around, others are kept, as GDAL 3.12.2 reads them.
+fn as_unsigned(v: f64, t: &NcType) -> f64 {
+    let bits = match t {
+        NcType::Byte => 8,
+        NcType::Short => 16,
+        NcType::Int => 32,
+        NcType::Int64 => 64,
+        _ => return v,
+    };
+    if v < 0.0 { v + 2f64.powi(bits) } else { v }
 }
 
 /// Replaces the values outside `[lo, hi]` with the nodata value, as GDAL's netCDF driver applies
@@ -522,6 +572,46 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         gt = Some([x[0] - dx / 2.0, dx, 0.0, top, 0.0, -dy.abs()]);
     }
     let from_coordinates = gt.is_some();
+    // GDAL 3.13 also reads the grid mapping's `GeoTransform` when the coordinates give one: an
+    // agreeing attribute (made north-up) is kept, and the row order of an axis-aligned grid is
+    // then that of a file written by GDAL 1.9 or later (south-up) or not (north-up); a
+    // disagreeing one is ignored, with a warning (`netCDFDataset::SetProjectionFromVar`).
+    if let Some(coordinate_gt) = gt
+        && crate::ops::warp::KernelVersion::configured() == crate::ops::warp::KernelVersion::Gdal313
+        && let Some(mut attribute) = grid_mapping.and_then(|g| attr_str(g, "GeoTransform")).and_then(|s| {
+            let v: Vec<f64> = s.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            <[f64; 6]>::try_from(v).ok().filter(|g| g.iter().all(|x| x.is_finite()))
+        })
+    {
+        let axis_aligned = |g: &[f64; 6]| g[2] == 0.0 && g[4] == 0.0;
+        if attribute[5] > 0.0 && axis_aligned(&attribute) {
+            attribute[3] += rows as f64 * attribute[5];
+            attribute[5] = -attribute[5];
+        }
+        // Relative to each attribute element, as GDAL compares them (a zero is compared exactly).
+        let max_error = coordinate_gt
+            .iter()
+            .zip(&attribute)
+            .filter_map(|(c, a)| {
+                let e = (c - a).abs();
+                (e > (a * 1e-6).abs()).then_some(e)
+            })
+            .fold(0.0, f64::max);
+        if max_error > 0.0 {
+            crate::warnings::warn(format!(
+                "GeoTransform read from attribute of {} variable differs from value calculated from dimension variables (max diff = {max_error}). Using value calculated from dimension variables.",
+                attr_str(var, "grid_mapping").unwrap_or_default()
+            ));
+        } else {
+            if axis_aligned(&attribute) {
+                let gdal_cf = f.global_attributes().is_ok_and(|a| {
+                    a.iter().any(|a| a.name == "GDAL" && a.value.as_string().is_some_and(|v| gdal_attribute_marks_cf_netcdf(&v)))
+                });
+                south_up = gdal_cf;
+            }
+            gt = Some(attribute);
+        }
+    }
     if gt.is_none() {
         gt = grid_mapping.and_then(|g| attr_str(g, "GeoTransform")).and_then(|s| {
             let v: Vec<f64> = s.split_whitespace().filter_map(|x| x.parse().ok()).collect();
@@ -591,16 +681,8 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         };
     }
     // A signed type read as unsigned keeps its fill value's bits.
-    if unsigned && let Some(nd) = nodata.filter(|v| *v < 0.0) {
-        let bits = match var.dtype() {
-            NcType::Byte => 8,
-            NcType::Short => 16,
-            NcType::Int => 32,
-            _ => 0,
-        };
-        if bits > 0 {
-            nodata = Some(nd + (1u64 << bits) as f64);
-        }
+    if unsigned {
+        nodata = nodata.map(|nd| as_unsigned(nd, var.dtype()));
     }
     if complex.is_some() {
         nodata = None;
@@ -616,6 +698,8 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
             },
         };
         if let Some((lo, hi)) = range {
+            // The range is in the variable's type: unsigned too when `_Unsigned`, as GDAL reads it.
+            let (lo, hi) = if unsigned { (as_unsigned(lo, var.dtype()), as_unsigned(hi, var.dtype())) } else { (lo, hi) };
             mask_outside(&mut data, lo, hi, nd);
         }
     }
@@ -913,6 +997,24 @@ mod tests {
     }
 
     #[test]
+    fn reads_signed_values_as_unsigned() {
+        // GOES ABI L2: Short `_Unsigned`, `_FillValue = -1`, `valid_range = [9200, -9536]`.
+        assert_eq!(as_unsigned(-1.0, &NcType::Short), 65535.0);
+        assert_eq!(as_unsigned(-9536.0, &NcType::Short), 56000.0);
+        assert_eq!(as_unsigned(9200.0, &NcType::Short), 9200.0);
+        assert_eq!(as_unsigned(-1.0, &NcType::Byte), 255.0);
+        assert_eq!(as_unsigned(-1.0, &NcType::Int), 4294967295.0);
+        // Int64 wraps around 2^64 (exact in f64 here: a multiple of the 2^11 spacing above 2^63).
+        assert_eq!(as_unsigned(-4096.0, &NcType::Int64), 2f64.powi(64) - 4096.0);
+        assert_eq!(as_unsigned(9200.0, &NcType::Int64), 9200.0);
+        assert_eq!(as_unsigned(-1.0, &NcType::Float), -1.0);
+        assert_eq!(as_unsigned(f64::NEG_INFINITY, &NcType::Short), f64::NEG_INFINITY);
+        let mut d = RasterData::U16(vec![9199, 9200, 32197, 56000, 56001, 65535]);
+        mask_outside(&mut d, as_unsigned(9200.0, &NcType::Short), as_unsigned(-9536.0, &NcType::Short), 65535.0);
+        assert_eq!(d.to_f64_vec(), vec![65535.0, 9200.0, 32197.0, 56000.0, 65535.0, 65535.0]);
+    }
+
+    #[test]
     fn parses_subdataset_names() {
         assert_eq!(parse_subdataset("NETCDF:\"/data/a b.nc\":u_wind"), Some(("/data/a b.nc".into(), "u_wind".into())));
         assert_eq!(parse_subdataset("netcdf:wind.nc:v"), Some(("wind.nc".into(), "v".into())));
@@ -928,5 +1030,23 @@ mod tests {
         // The second part of another type, or not right after the first.
         assert_eq!(complex_part(&compound(8, vec![field("r", 0, NcType::Float), field("i", 4, NcType::Int)])), None);
         assert_eq!(complex_part(&compound(16, vec![field("r", 0, NcType::Float), field("i", 8, NcType::Float)])), None);
+    }
+
+    #[test]
+    fn gdal_attribute_marks_cf_netcdf_from_the_cf_driver_on() {
+        for (version, cf) in [
+            ("GDAL 3.12.1, released 2025/12/22", true),
+            ("GDAL 1.9.0, released 2011/12/29", true),
+            ("GDAL 1.10.1, released 2013/08/26", true),
+            ("GDAL 1.9dev, released 2011/01/18", true),
+            ("GDAL 2.0dev, released 2011/12/29", true),
+            ("GDAL 1.8.1 ", false),
+            ("GDAL 1.8dev", false),
+            ("gdal 3.13.3", true),
+            ("terrio 0.7", false),
+            ("", false),
+        ] {
+            assert_eq!(gdal_attribute_marks_cf_netcdf(version), cf, "{version}");
+        }
     }
 }

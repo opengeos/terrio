@@ -3,7 +3,7 @@
 //! Implements the documented SQLite file format (<https://sqlite.org/fileformat2.html>).
 //! Table records, index keys, rowids, text encodings and schema SQL are preserved. Every tree
 //! is packed anew, including overflow chains, with new schema root pointers and pointer maps.
-use super::sqlite_edit::varint;
+use super::sqlite::varint;
 use super::vector::sqlite::{self as writer, PageStore};
 use crate::{Error, Result};
 use std::collections::{BTreeMap, BTreeSet};

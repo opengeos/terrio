@@ -1033,6 +1033,8 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
                 return dict(spaces.get(ns, {}))
             return dict(s.band_tags[bidx - 1])
         if ns:
+            if ns == "IMAGE_STRUCTURE":
+                _tiff.infer_layout(s)
             return dict(s.namespaces.get(ns, {}))
         return dict(s.tags)
 
@@ -2342,6 +2344,12 @@ class DatasetWriter(DatasetReader):
         """
         DatasetReader.__init__(self, self.name)
         self.mode = "r+"
+        # GDAL infers a COG's layout for read-only datasets only.
+        if self._structure is not None:
+            self._structure.layout_path = None
+            if self._structure.layout_inferred:
+                self._structure.namespaces.get("IMAGE_STRUCTURE", {}).pop("LAYOUT", None)
+                self._structure.layout_inferred = False
         raster = self._raster
         assert raster is not None
         try:
