@@ -1,0 +1,37 @@
+<PAMDataset>
+  <Subdataset name="valid_range">
+    <PAMDataset>
+      <Metadata>
+        <MDI key="valid_range#valid_range">{9200,-9536}</MDI>
+        <MDI key="valid_range#_FillValue">-1</MDI>
+        <MDI key="valid_range#_Unsigned">true</MDI>
+      </Metadata>
+      <PAMRasterBand band="1">
+        <Metadata>
+          <MDI key="STATISTICS_MINIMUM">9200</MDI>
+          <MDI key="STATISTICS_MAXIMUM">56000</MDI>
+          <MDI key="STATISTICS_MEAN">26561.166666667</MDI>
+          <MDI key="STATISTICS_STDDEV">16241.813952642</MDI>
+        </Metadata>
+      </PAMRasterBand>
+    </PAMDataset>
+  </Subdataset>
+  <Subdataset name="valid_min_max">
+    <PAMDataset>
+      <Metadata>
+        <MDI key="valid_min_max#valid_max">-9536</MDI>
+        <MDI key="valid_min_max#valid_min">9200</MDI>
+        <MDI key="valid_min_max#_FillValue">-1</MDI>
+        <MDI key="valid_min_max#_Unsigned">true</MDI>
+      </Metadata>
+      <PAMRasterBand band="1">
+        <Metadata>
+          <MDI key="STATISTICS_MINIMUM">9200</MDI>
+          <MDI key="STATISTICS_MAXIMUM">56000</MDI>
+          <MDI key="STATISTICS_MEAN">26561.166666667</MDI>
+          <MDI key="STATISTICS_STDDEV">16241.813952642</MDI>
+        </Metadata>
+      </PAMRasterBand>
+    </PAMDataset>
+  </Subdataset>
+</PAMDataset>
