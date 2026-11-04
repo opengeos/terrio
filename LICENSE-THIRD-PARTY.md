@@ -8541,7 +8541,7 @@ THIS SOFTWARE.
 
 Used by:
 
-- [ras-commander-fast-hdf 0.2.4](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+- [ras-commander-fast-hdf 0.3.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
 
 ```text
 Supercluster 8.0.1: ISC License
@@ -8570,7 +8570,7 @@ THIS SOFTWARE.
 
 Used by:
 
-- [ras-commander-fast-hdf 0.2.4](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+- [ras-commander-fast-hdf 0.3.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
 
 ```text
 # MIT License
@@ -9323,7 +9323,7 @@ SOFTWARE.
 
 Used by:
 
-- [ras-commander-fast-hdf 0.2.4](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+- [ras-commander-fast-hdf 0.3.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
 
 ```text
 MIT License
@@ -9557,7 +9557,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [ras-commander-fast-hdf 0.2.4](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+- [ras-commander-fast-hdf 0.3.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
 
 ```text
 MIT License

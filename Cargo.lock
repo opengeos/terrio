@@ -2153,9 +2153,9 @@ dependencies = [
 
 [[package]]
 name = "ras-commander-fast-hdf"
-version = "0.2.4"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f83f3af0b5dcb17aac6e31bc3742770c8c37f5f22fcf3640024e724d86203de"
+checksum = "0bd6ba5132c53b68a36e9b206d6ddf0aa04e812bc59a3739244de28f66319671"
 dependencies = [
  "flate2",
  "hdf5-reader",
