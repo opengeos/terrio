@@ -905,12 +905,7 @@ class WarpedVRT(DatasetReader):
         nx, ny, nxs, nys = iw
         bh, bw = buf
         whole = iw == (0, 0, grid.width, grid.height)
-        if (
-            self.resampling == Resampling.sum
-            and whole
-            and grid.full
-            and (bw < nxs or bh < nys)
-        ):
+        if self.resampling == Resampling.sum and whole and grid.full and (bw < nxs or bh < nys):
             # A reduced read of the whole `sum` VRT, of any of its bands, is warped from the full
             # resolution into a grid of the buffer's size, as below: an implicit overview has one
             # pixel per block of the VRT's pixels, so its sum would be a fraction of the total.
