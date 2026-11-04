@@ -533,6 +533,7 @@ pub(crate) struct SourceRead<'a> {
     /// The source's height.
     pub height: usize,
     /// The source's data type (resampled values are rounded to it, as GDAL does).
+    /// A `sum` is not: its value goes to the output's type as it is.
     pub src_type: DataType,
     /// The source window.
     pub src_rect: [f64; 4],
@@ -606,10 +607,13 @@ impl SourceRead<'_> {
         } else {
             resample_window(self, (fx, fy, fw, fh), (ow, oh))
         };
+        // A `sum` adds shares of source pixels, which neither the source type's precision nor its
+        // range holds: it is passed on as it is, for `f` to store in the output's type.
+        let keep = self.working_float || self.resampling == Resampling::Sum;
         crate::par::chunks_mut(rows, dw, |r, line| {
             for c in 0..ow {
                 match res[r * ow + c] {
-                    Some(v) => line[x0 + c] = f(if self.working_float { v } else { convert_value(v, self.src_type) }),
+                    Some(v) => line[x0 + c] = f(if keep { v } else { convert_value(v, self.src_type) }),
                     None => {
                         if let Some(v) = self.invalid_value {
                             line[x0 + c] = f(v);
@@ -1605,5 +1609,40 @@ mod tests {
         assert_eq!(out[..2], [12.5, 22.5]);
         let r = SourceRead { src_rect: [1.0, 1.0, 2.0, 2.0], ..base };
         assert_eq!(r.plain_copy(2, 2), Ok(Some(PlainCopy { src: (1, 1), dst_x: 0, cols: 2, dst_rows: 0..2 })));
+    }
+
+    /// A `sum` read is not rounded to the source's type: its fractions, and sums beyond that
+    /// type's range, reach the caller, which stores them in the output's type. A Byte pixel of 1
+    /// upsampled to 2 × 2 gives four 0.25 in a floating-point output, and four Byte pixels of 200
+    /// summed into one give 800 in a UInt16 output.
+    #[test]
+    fn sum_resampling_is_not_rounded_to_the_source_type() {
+        let one = [1.0];
+        let r = SourceRead {
+            values: crate::ops::BandView::F64(&one),
+            valid: None,
+            width: 1,
+            height: 1,
+            src_type: DataType::U8,
+            src_rect: [0.0, 0.0, 1.0, 1.0],
+            dst_rect: [0.0, 0.0, 2.0, 2.0],
+            resampling: Resampling::Sum,
+            working_float: false,
+            invalid_value: None,
+        };
+        let mut quarters = vec![-1.0; 4];
+        r.read(2, 2, &mut quarters, |v| v);
+        let two_hundreds = [200.0; 4];
+        let r = SourceRead {
+            values: crate::ops::BandView::F64(&two_hundreds),
+            width: 2,
+            height: 2,
+            src_rect: [0.0, 0.0, 2.0, 2.0],
+            dst_rect: [0.0, 0.0, 1.0, 1.0],
+            ..r
+        };
+        let mut total = vec![-1.0; 1];
+        r.read(1, 1, &mut total, |v| convert_value(v, DataType::U16));
+        assert_eq!((quarters, total), (vec![0.25; 4], vec![800.0]));
     }
 }

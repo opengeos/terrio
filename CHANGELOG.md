@@ -11,7 +11,8 @@
   much larger than the source was left empty; a reprojected `sum` also changed with the memory
   limit it was warped under. VRT sources resampled with `sum` share their pixels by area too, also
   from a source window with fractional edges, which was copied pixel for pixel when it spanned as
-  many pixels as its destination.
+  many pixels as its destination, and their sums reach the band's type unrounded: they were
+  rounded to the source's type, which dropped a Byte source's fractions and capped its sums at 255.
 - With `GDAL_INGESTED_BYTES_AT_OPEN` (or `TERRIO_INGESTED_BYTES_AT_OPEN`) above a block (64 KiB
   by default), opening a remote file that the process-wide cache holds takes the ingested blocks
   from there and requests only those it no longer holds. Every reader of a file requested them
