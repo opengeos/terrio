@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- netCDF: a signed variable flagged `_Unsigned` reads its `valid_range` (or `valid_min` and
+  `valid_max`) as unsigned too, as GDAL does. Such a range holding negative bounds, as GOES ABI L2
+  products' `[9200, -9536]` does, made every pixel nodata.
+
 ## 0.7.0 (2026-11-03)
 
 - Visualization: `terrio::ops::render` draws a raster or vector dataset as 8-bit RGBA, reading a
