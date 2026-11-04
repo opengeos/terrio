@@ -74,6 +74,10 @@ enum Codec {
     /// compression `.0`, which the `tiff` crate inverts (unsigned and floating-point ones, one
     /// sample per pixel) or refuses (the others): read as stored, as libtiff gives them to GDAL.
     WhiteIsZero(u16),
+    /// Deflate of little-endian integer samples (or floating-point ones without a predictor),
+    /// inflated in one call into the result: faster than the `tiff` crate's streaming reader and
+    /// its predictor.
+    Deflate,
 }
 
 /// A sample type of the TIFF image.
@@ -294,6 +298,11 @@ impl ChunkCodec {
         let format = first(dec.find_tag_unsigned_vec::<u16>(Tag::SampleFormat)?, 1);
         // Complex samples, which the crate does not read: in the lossless compressions only.
         let complex = Sample::complex_part(format, packed_bits);
+        let predictor = dec.find_tag_unsigned::<u16>(Tag::Predictor)?.unwrap_or(1);
+        let inflated_here = cfg!(target_endian = "little")
+            && dec.byte_order() == tiff::tags::ByteOrder::LittleEndian
+            && photometric != Some(6) // YCbCr may be subsampled: left to the crate
+            && Sample::new(format, packed_bits).is_some_and(|s| s != Sample::F16 && (predictor == 1 || (predictor == 2 && !s.is_float())));
         let codec = match compression {
             1 | 5 | 8 | 32946 | 32773 | LZMA | ZSTD if complex.is_some() => Codec::Complex(compression),
             _ if complex.is_some() => {
@@ -312,6 +321,7 @@ impl ChunkCodec {
             7 => Codec::Jpeg,
             WEBP => Codec::WebP,
             1 | 8 | 32946 | 32773 if misread => Codec::Chunky(compression),
+            8 | 32946 if inflated_here => Codec::Deflate,
             _ => return Ok(None),
         };
         let tiled = dec.get_chunk_type() == ChunkType::Tile;
@@ -353,7 +363,6 @@ impl ChunkCodec {
                 invalid(format!("TIFF compression {compression} with {bits}-bit samples (format {format}) is not supported"))
             })?,
         };
-        let predictor = dec.find_tag_unsigned::<u16>(Tag::Predictor)?.unwrap_or(1);
         // libtiff's predictors are those of its codecs that take one: uncompressed and PackBits
         // complex and WhiteIsZero chunks are read as stored, whatever the tag says.
         let predictor = if matches!(codec, Codec::Complex(1 | 32773) | Codec::WhiteIsZero(1 | 32773)) { 1 } else { predictor };
@@ -423,6 +432,7 @@ impl ChunkCodec {
                 self.lossless(raw, w, h)?
             }
             Codec::Lerc => self.lerc(raw, w, h)?,
+            Codec::Deflate => return self.deflate(&raw, w, h, dw, dh),
             Codec::Jxl => self.jxl(&raw, w, h)?,
             Codec::Jpeg => self.jpeg(&raw, w, h)?,
             Codec::WebP => self.webp(&raw, w, h)?,
@@ -457,6 +467,62 @@ impl ChunkCodec {
         }
         let bytes = self.unpack(&packed, dw, dh)?;
         self.result(&bytes, dw, dw, dh)
+    }
+
+    /// Inflates a Deflate chunk of `h` rows of `w` pixels in one call, straight into the result,
+    /// and undoes its horizontal predictor; a chunk with padding (an edge tile) is then cut to its
+    /// `dw` x `dh` image data. A stream ending short is an error, as in libtiff.
+    fn deflate(&self, raw: &[u8], w: usize, h: usize, dw: usize, dh: usize) -> TiffResult<DecodingResult> {
+        let what = "a TIFF chunk";
+        let len = fallible::len(&[w, h, self.spp], what)?;
+        macro_rules! zeros {
+            ($($s:ident: $z:expr),*) => {
+                match self.sample {
+                    $(Sample::$s => DecodingResult::$s(fallible::filled_now(len, $z, what)?),)*
+                    Sample::F16 => unreachable!("Float16 is left to the `tiff` crate"),
+                }
+            };
+        }
+        let mut res = zeros!(U8: 0, I8: 0, U16: 0, I16: 0, U32: 0, I32: 0, U64: 0, I64: 0, F32: 0.0, F64: 0.0);
+        let mut z = flate2::Decompress::new(true);
+        let mut buf = res.as_buffer(0);
+        let out = buf.as_bytes_mut();
+        z.decompress(raw, out, flate2::FlushDecompress::Finish).map_err(|e| invalid(format!("Deflate: {e}")))?;
+        if z.total_out() < out.len() as u64 {
+            return Err(invalid(format!("Deflate: chunk of {} bytes, {} expected", z.total_out(), out.len())));
+        }
+        drop(buf);
+        if self.predictor == 2 {
+            let (row, spp) = (w * self.spp, self.spp);
+            macro_rules! acc {
+                ($($s:ident),*) => {
+                    match &mut res {
+                        $(DecodingResult::$s(v) => {
+                            for r in v.chunks_exact_mut(row) {
+                                if spp == 1 {
+                                    // a running sum: no index, so no bounds check per sample
+                                    let mut acc = r[0];
+                                    for x in &mut r[1..] {
+                                        acc = acc.wrapping_add(*x);
+                                        *x = acc;
+                                    }
+                                } else {
+                                    for i in spp..row {
+                                        r[i] = r[i].wrapping_add(r[i - spp]);
+                                    }
+                                }
+                            }
+                        })*
+                        _ => unreachable!("predictor 2 is read here for integer samples only"),
+                    }
+                };
+            }
+            acc!(U8, I8, U16, I16, U32, I32, U64, I64);
+        }
+        if (dw, dh) == (w, h) {
+            return Ok(res);
+        }
+        self.result(res.as_buffer(0).as_bytes(), w, dw, dh)
     }
 
     /// The bytes of `h` rows of `w` pixels of decoded samples.
@@ -1075,6 +1141,41 @@ mod tests {
         b.extend(0u64.to_le_bytes());
         b.extend(data);
         b
+    }
+
+    /// Deflate chunks inflated here give what the `tiff` crate gives: 16-bit gray and 8-bit RGB,
+    /// with and without the horizontal predictor, the last strip shorter than the others.
+    #[test]
+    fn deflate_chunks_decode_as_the_tiff_crate_decodes_them() {
+        use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
+        use tiff::tags::Predictor;
+        let (w, h) = (37u32, 23u32);
+        let gray: Vec<u16> = (0..w * h).map(|i| (i.wrapping_mul(2654435761) >> 17) as u16).collect();
+        let rgb: Vec<u8> = (0..w * h * 3).map(|i| (i.wrapping_mul(40503) >> 7) as u8).collect();
+        for predictor in [Predictor::None, Predictor::Horizontal] {
+            for gray_image in [true, false] {
+                let mut b = std::io::Cursor::new(Vec::new());
+                let mut enc = TiffEncoder::new(&mut b).unwrap().with_compression(Compression::Deflate(DeflateLevel::Fast)).with_predictor(predictor);
+                if gray_image {
+                    let mut img = enc.new_image::<colortype::Gray16>(w, h).unwrap();
+                    img.rows_per_strip(5).unwrap();
+                    img.write_data(&gray).unwrap();
+                } else {
+                    let mut img = enc.new_image::<colortype::RGB8>(w, h).unwrap();
+                    img.rows_per_strip(5).unwrap();
+                    img.write_data(&rgb).unwrap();
+                }
+                let file = b.into_inner();
+                let mut dec = Decoder::new(std::io::Cursor::new(&file)).unwrap();
+                let codec = ChunkCodec::new(&mut dec, usize::MAX, None).unwrap().expect("Deflate is inflated here");
+                assert_eq!(codec.codec, Codec::Deflate);
+                for idx in 0..dec.strip_count().unwrap() {
+                    let ours = codec.read(&mut dec, idx).unwrap();
+                    let crate_ = dec.read_chunk(idx).unwrap();
+                    assert_eq!(format!("{ours:?}"), format!("{crate_:?}"), "strip {idx}, {predictor:?}, gray {gray_image}");
+                }
+            }
+        }
     }
 
     /// A chunk's byte count from the header is not allocated before the file backs it: a corrupt
