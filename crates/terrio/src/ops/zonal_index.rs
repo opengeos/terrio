@@ -54,14 +54,6 @@ pub(super) struct ZoneIndex {
     pub zones: Vec<Zone>,
 }
 
-impl ZoneIndex {
-    /// Bytes held by the spans, for diagnostics and benchmarks.
-    #[allow(dead_code)]
-    pub fn span_bytes(&self) -> usize {
-        self.zones.iter().map(|z| z.spans.len() * std::mem::size_of::<Span>()).sum()
-    }
-}
-
 /// Builds the zones of `layer` on `grid`, transforming boundaries from the layer's CRS.
 pub(super) fn build(layer: &Layer, grid: &GridKey, all_touched: bool, fractional: bool) -> Result<ZoneIndex> {
     let src = SpatialRef::from_layer(layer);
@@ -127,8 +119,9 @@ fn zone(
         return Ok(None);
     }
     let (cols, rows) = (end_col - col, end_row - row);
-    let coverage: Vec<f64> = if fractional {
-        super::fractional::coverage(&geometry, col, row, cols, rows)
+    // A pixel mask becomes spans as it is: a byte per pixel of the zone's bounding box.
+    let spans = if fractional {
+        spans(&super::fractional::coverage(&geometry, col, row, cols, rows), col, row, cols)
     } else {
         let mut layer = Layer::new("zone");
         layer.features.push(Feature { fid: 1, geometry: Some(geometry), attributes: Vec::new() });
@@ -141,9 +134,8 @@ fn zone(
         };
         let mask = rasterize(&[layer], &options)?;
         let crate::raster::RasterData::U8(pixels) = mask.raster.data else { unreachable!() };
-        pixels.into_iter().map(f64::from).collect()
+        spans(&pixels, col, row, cols)
     };
-    let spans = spans(&coverage, col, row, cols);
     if spans.is_empty() {
         return Ok(None);
     }
@@ -154,10 +146,11 @@ fn zone(
 
 /// Row-major spans of a cropped coverage window at (`col`, `row`): runs of full coverage merged,
 /// each partial cell alone, uncovered cells left out.
-fn spans(coverage: &[f64], col: usize, row: usize, cols: usize) -> Vec<Span> {
+fn spans<T: Copy + Into<f64>>(coverage: &[T], col: usize, row: usize, cols: usize) -> Vec<Span> {
     let mut spans: Vec<Span> = Vec::new();
     for (r, line) in coverage.chunks(cols).enumerate() {
-        for (c, &v) in line.iter().enumerate() {
+        for (c, v) in line.iter().enumerate() {
+            let v: f64 = (*v).into();
             if v == 0.0 {
                 continue;
             }

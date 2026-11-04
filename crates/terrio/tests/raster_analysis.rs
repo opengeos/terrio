@@ -740,3 +740,12 @@ fn zonal_label_prefix_sanitizes() {
     assert_eq!(label_prefix(None, "NDVI"), "NDVI");
     assert_eq!(label_prefix(Some("2024-07-01T10:30:00Z"), "nir 08"), "2024_07_01T10_30_00Z_nir_08");
 }
+
+#[test]
+fn zonal_sources_without_bands_are_not_opened() {
+    let r = raster(2, 2, 1, &[1., 2., 3., 4.], None);
+    let l = zones(vec![Some(rectangle(0., 0., 2., 2.))]);
+    let unread = ZonalSource { raster: terrio::ops::zonal::ZonalRaster::Path("missing.tif".into()), bands: vec![] };
+    let out = zonal_stats(&l, &mut [unread, src("v", &r, 1)], &ZonalOptions { stats: vec![S::Mean], ..Default::default() }).unwrap();
+    assert_eq!(out.features[0].attributes.last(), Some(&V::Float(2.5)));
+}

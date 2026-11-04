@@ -219,11 +219,14 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
     }
     let mut sources: Vec<ZonalSource> = Vec::new();
     // Labelled rows naming the same raster (`Object.is`) share one source, read once, as in the
-    // CLI and Python: (raster, source index).
-    let mut row_sources: Vec<(JsValue, usize)> = Vec::new();
+    // CLI and Python, as do plain items before them: raster -> source index.
+    let row_sources = js_sys::Map::new();
     for (item, prefix) in items.iter().zip(&prefixes) {
         if !is_row(item) {
             let bands = a.bands.iter().map(|&band| ZonalBand::new(band, format!("{prefix}_b{band}"))).collect();
+            if !row_sources.has(item) {
+                row_sources.set(item, &JsValue::from(sources.len() as u32));
+            }
             sources.push(ZonalSource { raster: crate::ops::input_lazy_raster(item)?.into(), bands });
             continue;
         }
@@ -251,10 +254,10 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
             None => a.bands.clone(),
         };
         let bands = terrio::ops::zonal::labelled_bands(&row_bands, time.as_deref(), label.as_deref(), |band| format!("{prefix}_b{band}"));
-        match row_sources.iter().find(|(r, _)| js_sys::Object::is(r, &raster)) {
-            Some(&(_, i)) => sources[i].bands.extend(bands),
+        match row_sources.get(&raster).as_f64() {
+            Some(i) => sources[i as usize].bands.extend(bands),
             None => {
-                row_sources.push((raster.clone(), sources.len()));
+                row_sources.set(&raster, &JsValue::from(sources.len() as u32));
                 sources.push(ZonalSource { raster: crate::ops::input_lazy_raster(&raster)?.into(), bands });
             }
         }

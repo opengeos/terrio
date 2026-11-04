@@ -397,6 +397,11 @@ pub fn zonal_stats_with(
     let mut source_grid: Vec<Option<usize>> = Vec::new();
     let mut nodata = Vec::new();
     for source in sources.iter() {
+        if source.bands.is_empty() {
+            nodata.push(Vec::new());
+            source_grid.push(None);
+            continue;
+        }
         // A path is opened for its header and closed again (see `ZonalRaster::Path`).
         let opened;
         let raster = match &source.raster {
@@ -421,17 +426,13 @@ pub fn zonal_stats_with(
             super::sample::check_band(&header, band.band)?;
         }
         nodata.push(source.bands.iter().map(|b| header.band_nodata(b.band)).collect::<Vec<_>>());
-        source_grid.push(if source.bands.is_empty() {
-            None
-        } else {
-            Some(match grids.iter().position(|(g, _)| g.same(&grid)) {
-                Some(i) => i,
-                None => {
-                    grids.push((grid, None));
-                    grids.len() - 1
-                }
-            })
-        });
+        source_grid.push(Some(match grids.iter().position(|(g, _)| g.same(&grid)) {
+            Some(i) => i,
+            None => {
+                grids.push((grid, None));
+                grids.len() - 1
+            }
+        }));
     }
     for (grid, zone_index) in &mut grids {
         *zone_index = Some(index::build(zones, grid, options.all_touched, options.fractional)?);
@@ -451,8 +452,14 @@ pub fn zonal_stats_with(
     let ahead = 1;
     // Warnings of the rasters opened on other threads, recorded again on the calling thread.
     let warnings = Mutex::new(Vec::new());
+    // The error of the first failing source, by index. Sources after it are skipped: those before
+    // it were taken first and still run, so the error reported is the same.
+    let failure: Mutex<Option<(usize, Error)>> = Mutex::new(None);
     let reduce_one = |s: usize, source: &mut ZonalSource| -> Result<()> {
         let Some(grid) = source_grid[s] else { return Ok(()) };
+        if failure.lock().is_ok_and(|f| f.as_ref().is_some_and(|(first, _)| *first < s)) {
+            return Ok(());
+        }
         let mut opened;
         let raster = match &mut source.raster {
             ZonalRaster::Open(raster) => raster,
@@ -481,8 +488,6 @@ pub fn zonal_stats_with(
         }
         Ok(())
     };
-    // The error of the first failing source, by index.
-    let failure: Mutex<Option<(usize, Error)>> = Mutex::new(None);
     let record = |s: usize, result: Result<()>| {
         if let Err(e) = result
             && let Ok(mut failure) = failure.lock()

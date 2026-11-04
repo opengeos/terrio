@@ -469,14 +469,21 @@ pub fn zonal(a: ZonalArgs) -> Result<()> {
             (path.clone(), a.sources.bands.iter().map(|&band| ZonalBand::new(band, format!("{prefix}_b{band}"))).collect())
         })
         .collect();
+    let mut by_path: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, (path, _)) in plan.iter().enumerate() {
+        by_path.entry(path.clone()).or_insert(i);
+    }
     for row in rows {
         let bands = row.band.map_or_else(|| a.sources.bands.clone(), |b| vec![b]);
         let stem = std::path::Path::new(&row.path).file_stem().and_then(|s| s.to_str()).unwrap_or("raster").to_string();
         let labelled =
             terrio::ops::zonal::labelled_bands(&bands, row.time.as_deref(), row.label.as_deref(), |band| format!("{stem}_b{band}"));
-        match plan.iter_mut().find(|(p, _)| *p == row.path) {
-            Some((_, existing)) => existing.extend(labelled),
-            None => plan.push((row.path, labelled)),
+        match by_path.get(&row.path) {
+            Some(&i) => plan[i].1.extend(labelled),
+            None => {
+                by_path.insert(row.path.clone(), plan.len());
+                plan.push((row.path, labelled));
+            }
         }
     }
     let columns: usize = plan.iter().map(|(_, b)| b.len()).sum::<usize>() * options.stats.len();

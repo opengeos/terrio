@@ -175,16 +175,19 @@ fn zonal_stats(
     if prefixes.len() != items.len() {
         return Err(pyo3::exceptions::PyValueError::new_err("give one prefix per raster, or omit prefixes"));
     }
-    // Sources in first-appearance order; labelled rows naming the same path share one source.
+    // Sources in first-appearance order; labelled rows naming the path of an earlier item or row
+    // share its source, as in the CLI.
     let mut sources: Vec<ZonalSource> = Vec::new();
-    let mut paths: Vec<Option<String>> = Vec::new();
+    let mut paths: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (item, prefix) in items.iter().zip(&prefixes) {
         let Ok(row) = item.cast::<pyo3::types::PyDict>() else {
+            if let Some(path) = crate::ops::raster_path(item)? {
+                paths.entry(path).or_insert(sources.len());
+            }
             sources.push(ZonalSource {
                 raster: zonal_raster(py, item)?,
                 bands: bands.iter().map(|&band| ZonalBand::new(band, format!("{prefix}_b{band}"))).collect(),
             });
-            paths.push(None);
             continue;
         };
         // None, NaN, NaT (which differ from themselves) and pandas' NA, a DataFrame's missing
@@ -201,11 +204,13 @@ fn zonal_stats(
         }
         let raster = get("raster")?
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("each input dict needs a 'raster' (a path or a terrio.Raster)"))?;
-        // A date or datetime (a DataFrame's Timestamp) in ISO 8601, its date alone at midnight.
+        // A date or datetime (a DataFrame's Timestamp) in ISO 8601, its date alone at midnight
+        // (naive or UTC, as JavaScript names a Date at midnight UTC).
         let text = |v: Bound<'_, PyAny>| -> PyResult<String> {
             if v.hasattr("isoformat")? {
                 let iso: String = v.call_method0("isoformat")?.extract()?;
-                return Ok(iso.strip_suffix("T00:00:00").map(String::from).unwrap_or(iso));
+                let day = iso.strip_suffix("T00:00:00").or_else(|| iso.strip_suffix("T00:00:00+00:00"));
+                return Ok(day.map(String::from).unwrap_or(iso));
             }
             Ok(v.str()?.to_string())
         };
@@ -222,11 +227,13 @@ fn zonal_stats(
         let row_bands =
             terrio::ops::zonal::labelled_bands(&row_bands, time.as_deref(), label.as_deref(), |band| format!("{prefix}_b{band}"));
         let path = crate::ops::raster_path(&raster)?;
-        match path.as_ref().and_then(|p| paths.iter().position(|q| q.as_ref() == Some(p))) {
-            Some(i) => sources[i].bands.extend(row_bands),
+        match path.as_ref().and_then(|p| paths.get(p)) {
+            Some(&i) => sources[i].bands.extend(row_bands),
             None => {
+                if let Some(path) = path {
+                    paths.insert(path, sources.len());
+                }
                 sources.push(ZonalSource { raster: zonal_raster(py, &raster)?, bands: row_bands });
-                paths.push(path);
             }
         }
     }
