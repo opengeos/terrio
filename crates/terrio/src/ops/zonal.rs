@@ -186,7 +186,8 @@ pub fn label_prefix(time: Option<&str>, label: &str) -> String {
 /// The bands of one labelled input (a CLI `--inputs` row, a Python dict, a JavaScript object):
 /// each of `bands`, its fields named by [`label_prefix`] when the input has a time or a label,
 /// else `unlabelled(band)`. A label given to several bands is suffixed with each band's number
-/// (`B04_b1`, `B04_b2`), so that their fields say which band they hold.
+/// (`B04_b1`, `B04_b2`), so that their fields say which band they hold. Every band gets a
+/// `label`, `bN` when the input gives none, so that outputs with a band dimension can name it.
 pub fn labelled_bands(bands: &[usize], time: Option<&str>, label: Option<&str>, unlabelled: impl Fn(usize) -> String) -> Vec<ZonalBand> {
     bands
         .iter()

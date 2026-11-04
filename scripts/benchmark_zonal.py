@@ -76,6 +76,8 @@ def download(data, features):
     rows = []
     for f in features:
         day = f["properties"]["datetime"][:10]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise ValueError(f"unexpected STAC datetime {f['properties']['datetime']!r}")
         for band in BANDS:
             url = f["assets"][band]["href"]
             path = data / "s2" / day / f"{band}.tif"
