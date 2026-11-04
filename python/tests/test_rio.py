@@ -602,6 +602,7 @@ def test_features():
     [
         ([3, -7, 300], "int16"),
         ([2**40 + 3, -1, 2**33], "int64"),
+        ([2**63 + 5, 1, 2**63 + 9], "uint64"),
         ([1.5, -2.25, float("nan")], "float32"),
         ([1, 2.5, 3], None),
     ],
@@ -632,13 +633,13 @@ def test_rasterize_overlapping_shapes_match_burning_one_by_one(values, dtype):
 def test_rasterize_burns_values_as_rasterio():
     # rasterio 1.5.2 (GDAL) burns values through float64: NaN as 0, rounded half away from zero,
     # clamped to an integer dtype's range, overflowing floats to infinity. Recorded with rasterio
-    # 1.5.2 on NumPy 2.5.4. Left out: values of 2**64 and above into uint64, the one difference
-    # (GDAL burns 0, terrio the maximum).
+    # 1.5.2 on NumPy 2.5.4, except integers above 2**52, which stay exact here (below). Left out:
+    # values of 2**64 and above into uint64 (GDAL burns 0, terrio the maximum).
     T = Affine(1, 0, 0, 0, -1, 4)
     left = {"type": "Polygon", "coordinates": [[(0, 0), (2, 0), (2, 4), (0, 4), (0, 0)]]}
     right = {"type": "Polygon", "coordinates": [[(2, 0), (4, 0), (4, 4), (2, 4), (2, 0)]]}
     cases = [
-        ((9223372036854775813, 1), "uint64", [9223372036854775808, 1]),
+        ((9223372036854775813, 1), "uint64", [9223372036854775813, 1]),
         ((9223372036854775813, -1), "int64", [9223372036854775807, -1]),
         ((300, 1), "uint8", [255, 1]),
         ((2.5, 1), "uint8", [3, 1]),
@@ -661,11 +662,13 @@ def test_rasterize_burns_values_as_rasterio():
         ((-9223372036854775818, 1), "int64", [-9223372036854775808, 1]),
         ((70000.7, -3), "int16", [32767, -3]),
         ((True, 2), "uint8", [1, 2]),
-        # Above 2**52, adding 0.5 in float64 rounds up, in GDAL as here.
-        ((2**52 + 3, 1), "int64", [4503599627370500, 1]),
-        ((2**53 - 1, 1), "int64", [9007199254740992, 1]),
-        # IDs above 2**53 lose their low bits: distinct IDs can burn alike.
-        ((2**53 + 1, 2**53 + 3), "int64", [9007199254740992, 9007199254740996]),
+        # Integers stay exact where GDAL rounds them through float64 (2**52 + 3 as 2**52 + 4,
+        # 2**53 + 1 and 2**53 + 3 alike): the differences from rasterio.
+        ((2**52 + 3, 1), "int64", [4503599627370499, 1]),
+        ((2**53 - 1, 1), "int64", [9007199254740991, 1]),
+        ((2**53 + 1, 2**53 + 3), "int64", [9007199254740993, 9007199254740995]),
+        # Floats round by adding 0.5 in float64, as in GDAL.
+        ((4503599627370495.5, 1), "int64", [4503599627370496, 1]),
     ]
     for values, dtype, expected in cases:
         got = features.rasterize(

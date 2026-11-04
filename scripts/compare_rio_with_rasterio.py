@@ -1347,17 +1347,17 @@ def _f_rasterize(rio: Any, ctx: Ctx) -> Any:
 
 @check("features", "rasterize: burn values rounded, clamped and NaN as 0 into integer dtypes")
 def _f_rasterize_values(rio: Any, ctx: Ctx) -> Any:
-    # Burn values go through float64 as in GDAL. Values of 2**64 and above into uint64 differ
-    # (GDAL burns 0, terrio the maximum) and are left out.
+    # Burn values as in GDAL. Integers above 2**52 differ (terrio keeps them exact where GDAL rounds
+    # them through float64) and are left out, as are values of 2**64 and above into uint64.
     F = rio.features
     t = rio.transform.from_origin(500000, 4100000, 30, 30)
     shapes = (GEOMS[1][0], GEOMS[4][0])
     cases = [
-        ((2**63 + 5, 1), "uint64"), ((2**63 + 5, -1), "int64"), ((300, 1), "uint8"),
+        ((2**40 + 5, -1), "uint64"), ((2**63 + 5, -1), "int64"), ((300, 1), "uint8"),
         ((2.5, 1), "uint8"), ((-2.5, 1), "int16"), ((-0.4, 1), "uint8"),
         ((float("nan"), 1), "int32"), ((float("inf"), 1), "int32"), ((float("-inf"), 1), "uint16"),
         ((np.float64(2**63), 1), "int64"), ((np.int64(300), 1), "uint8"), ((-1, 1), "uint64"),
-        ((1e40, 1), "float32"), ((2**52 + 3, 1), "int64"), ((70000.7, -3), "int16"),
+        ((1e40, 1), "float32"), ((4503599627370495.5, 1), "int64"), ((70000.7, -3), "int16"),
     ]
     return [F.rasterize(list(zip(shapes, values)), out_shape=(120, 150), transform=t, dtype=dtype) for values, dtype in cases]
 

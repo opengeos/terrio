@@ -11,11 +11,12 @@
   builds a `Raster` from its data that way, as JavaScript's `rasterFromArray` now does.
 - `terrio.rio.features.rasterize` looks burn values up in one array operation, not per pixel in
   Python: 9 times faster for 2,000 shapes on an 8000 x 8000 grid (`crop`/`mask` in
-  `terrio.xarray`). Burn values follow rasterio 1.5 (GDAL): through float64, then into an
-  integer dtype NaN as 0, rounded half away from zero and clamped to its range, where values
-  outside it wrapped and fractions were truncated; integers above 2**52 can change through float64,
-  as in GDAL. Every edge case tested matches rasterio 1.5.2 (GDAL 3.12.2) but one: values of
-  2**64 and above into uint64 burn the maximum where GDAL burns 0.
+  `terrio.xarray`). Into an integer dtype, integer burn values stay exact (IDs above 2**53 and
+  2**63 included) and are clamped to its range, where values outside it wrapped; other values
+  are rounded half away from zero and clamped, NaN as 0, as rasterio 1.5.2 (GDAL 3.12.2) burns
+  them, where fractions were truncated. Edge cases match rasterio but for integers above 2**52,
+  which GDAL rounds through float64 and terrio keeps exact, and values of 2**64 and above into
+  uint64, which burn its maximum where GDAL burns 0.
 - Warps with `sum` resampling give each output pixel the sum of the valid source pixels it
   overlaps, each weighted by the share of its area inside the output pixel (on the source grid, a
   quadrilateral when the output grid is turned or reprojected), so that an output grid covering a

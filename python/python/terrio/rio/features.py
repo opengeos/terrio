@@ -184,26 +184,32 @@ def _burn(
 
 
 def _burn_values(values: Sequence[Any], dtype: np.dtype) -> np.ndarray:
-    """Burn values as rasterio 1.5.2 (GDAL 3.12.2) burns them into `dtype`.
+    """Burn values in `dtype`, as rasterio 1.5.2 (GDAL 3.12.2) burns them but integers exact.
 
-    Values go through float64, then into an integer dtype NaN is 0, values are rounded half away
-    from zero (adding 0.5 in float64, so integers above 2**52 can round up, as in GDAL) and
-    clamped to its range; floats overflow to infinity. One difference: GDAL burns values of 2**64
-    and above as 0 into uint64, these give its maximum.
+    Into a float dtype, values go through float64 (floats overflow to infinity). Into an integer
+    dtype, integers are kept exact and clamped to its range; other values are rounded half away
+    from zero by adding 0.5 in float64 and clamped, NaN as 0, as GDAL burns them. Differences
+    from rasterio: integers above 2**52, which GDAL rounds through float64, stay exact, and those
+    of 2**64 and above into uint64 burn its maximum where GDAL burns 0.
     """
-    vals = np.array([float(v) for v in values], dtype=np.float64)
     if dtype.kind not in "iu":
         with np.errstate(over="ignore"):
-            return vals.astype(dtype)
+            return np.array([float(v) for v in values], dtype=np.float64).astype(dtype)
     info = np.iinfo(dtype)
-    vals = np.where(np.isnan(vals), 0.0, vals)
-    vals = np.where(vals < 0, np.ceil(vals - 0.5), np.floor(vals + 0.5))
-    high, low = vals >= float(info.max), vals <= float(info.min)
-    lut = np.zeros(len(vals), dtype)
-    inside = ~(high | low)
-    lut[inside] = vals[inside].astype(dtype)
-    lut[high], lut[low] = info.max, info.min
-    return lut
+    burnt = []
+    for v in values:
+        if isinstance(v, (int, np.integer)):
+            n = int(v)
+        else:
+            f = float(v)
+            if math.isnan(f):
+                n = 0
+            elif math.isinf(f):
+                n = info.max if f > 0 else info.min
+            else:
+                n = math.floor(f + 0.5) if f >= 0 else math.ceil(f - 0.5)
+        burnt.append(min(max(n, info.min), info.max))
+    return np.array(burnt, dtype=dtype)
 
 
 def rasterize(
@@ -226,10 +232,9 @@ def rasterize(
 
     Args:
         shapes: Geometries, or `(geometry, value)` pairs. Geometries are GeoJSON-like mappings
-            or objects with `__geo_interface__`. Values are burnt as rasterio (GDAL) burns them,
-            through float64: integers are exact up to 2**52 (larger ones can change, such as
-            IDs above it), and into an integer `dtype` NaN is 0, values are rounded half away
-            from zero and clamped to its range.
+            or objects with `__geo_interface__`. Into an integer `dtype`, integer values are
+            burnt exactly (IDs of any size it holds) and clamped to its range; other values are
+            rounded half away from zero and clamped, NaN as 0, as rasterio (GDAL) burns them.
         out_shape: The output shape `(rows, cols)`, when `out` is not given.
         fill: The value of pixels no geometry covers.
         nodata: The nodata value of a written dataset, and the masked value with `masked`.
