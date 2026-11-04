@@ -4,6 +4,9 @@ import numpy as np
 import pytest
 
 import terrio
+import terrio.rio
+from terrio.rio.enums import Resampling
+from terrio.rio.vrt import WarpedVRT
 
 GT = (0.0, 1.0, 0.0, 32.0, 0.0, -1.0)
 
@@ -63,6 +66,29 @@ def test_sum_reads_full_resolution_unless_a_level_is_given(tmp_path, mode, total
     for src in [str(path), lazy]:
         out = terrio.warp(src, ts=(2, 2), resampling="sum", ot="Float64", overview=mode)
         assert out.read(1).sum() == total
+
+
+def test_reduced_reads_of_a_whole_sum_warped_vrt_read_full_resolution(tmp_path):
+    # An implicit overview of the VRT has one pixel per block: its sum would be a fraction.
+    gt = (0.0, 1.0, 0.0, 8.0, 0.0, -1.0)
+    ones, ramp = tmp_path / "ones.tif", tmp_path / "ramp.tif"
+    terrio.Raster.from_array(np.ones((8, 8), "float32"), gt, crs="EPSG:3857").write(
+        str(ones), overviews=[2, 4], overview_resampling="average"
+    )
+    values = np.add.outer(np.arange(8) * 8, np.arange(8)).astype("float32")
+    terrio.Raster.from_array(values, gt, crs="EPSG:3857").write(
+        str(ramp), overviews=[2, 4], overview_resampling="nearest"
+    )
+    with terrio.rio.open(str(ones)) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        np.testing.assert_array_equal(vrt.read(1), np.ones((8, 8)))
+        np.testing.assert_array_equal(vrt.read(1, out_shape=(4, 4)), np.full((4, 4), 4.0))
+        np.testing.assert_array_equal(vrt.read(1, out_shape=(2, 2)), np.full((2, 2), 16.0))
+        np.testing.assert_array_equal(vrt.read(out_shape=(1, 2, 2)), np.full((1, 2, 2), 16.0))
+    # `average` still reads the implicit overview, warped from the source's own overview.
+    with terrio.rio.open(str(ramp)) as src, WarpedVRT(src, resampling=Resampling.average) as vrt:
+        reduced = vrt.read(1, out_shape=(2, 2))
+    with terrio.rio.open(str(ramp), overview_level=1) as overview:
+        np.testing.assert_array_equal(reduced, overview.read(1))
 
 
 @pytest.mark.parametrize("mode", [True, False])

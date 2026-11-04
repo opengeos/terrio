@@ -147,7 +147,9 @@ class WarpedVRT(DatasetReader):
 
     rasterio's `WarpedVRT` is GDAL's warped VRT, whose reads this one follows.
     Pixels are warped when they are read, region by region, from the windows of the source (or
-    of its overviews) each region needs.
+    of its overviews) each region needs. With `sum` resampling, a reduced read of the whole VRT
+    (every band, from a source georeferenced by a transform or RPCs) is warped from the source's
+    full resolution rather than from an implicit overview.
     """
 
     def __init__(
@@ -897,7 +899,11 @@ class WarpedVRT(DatasetReader):
         if (not whole and (bw <= grid.bx or bh <= grid.by)) or len(idx) < self._count:
             # Small requests and band subsets go through the cached blocks.
             return self._fallback_io(grid, idx, iw, fw, buf, rs, routed)
-        if (bw < nxs or bh < nys) and grid.full and self._overview_sizes:
+        # A whole read of a `sum` VRT is warped into the buffer from the full resolution below:
+        # an implicit overview has one pixel per block of the VRT's pixels, so its sum would be
+        # a fraction of the total.
+        summed = self.resampling == Resampling.sum and whole and self._warp_gcps is None
+        if (bw < nxs or bh < nys) and grid.full and self._overview_sizes and not summed:
             # GDALDataset::TryOverviewRasterIO(), choosing with GDALBandGetBestOverviewLevel2().
             moved = self._to_overview(grid, iw, fw, buf, rs, True)
             if moved is not None:
