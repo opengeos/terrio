@@ -79,7 +79,7 @@ pub fn footprint(ds: &RasterDataset, options: &FootprintOptions) -> Result<Layer
         }
     }
     let config = RasterConfig { cols: r.cols, rows: r.rows, bands: 1, data_type: DataType::U8, nodata: 0.0, ..Default::default() };
-    let mut mask = RasterDataset::new(crate::pixel::raster_from_data(config, crate::raster::RasterData::U8(valid))?, true);
+    let mut mask = RasterDataset::new(crate::raster_from_data(config, crate::raster::RasterData::U8(valid))?, true);
     mask.set_geo_transform(ds.geo_transform());
     mask.raster.crs = r.crs.clone();
     let regions = polygonize(&mask, &PolygonizeOptions::default())?;

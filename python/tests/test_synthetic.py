@@ -93,8 +93,9 @@ def test_from_array_2d_and_bool():
     ],
     ids=["reversed_strided", "fortran", "transposed"],
 )
-def test_from_array_non_contiguous(view):
-    a = np.arange(2 * 6 * 8, dtype="float32").reshape(2, 6, 8)
+@pytest.mark.parametrize("dtype", ["float32", "int16", "uint64"])
+def test_from_array_non_contiguous(view, dtype):
+    a = np.arange(2 * 6 * 8, dtype=dtype).reshape(2, 6, 8)
     v = view(a)
     out = terrio.Raster.from_array(v, (0, 1, 0, 0, 0, -1)).read()
     assert out.dtype == v.dtype

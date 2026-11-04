@@ -294,9 +294,9 @@ def rasterize(
             idx = _burn(geoms, list(range(1, len(geoms) + 1)), shape, transform, all_touched, False)
             hit = idx > 0
             # Converted straight to the output dtype: inferring a dtype first would make ints
-            # above 2**63 mixed with others float64 and lose precision. Integers the dtype cannot
-            # hold are refused, as rasterio refuses them, rather than wrapped (NumPy < 2 wraps),
-            # and so are floats outside its range and NaN.
+            # above 2**63 mixed with others float64 and lose precision. For integer dtypes, values
+            # the dtype cannot hold (out of range, NaN) are refused, as rasterio refuses them,
+            # rather than wrapped (NumPy < 2 wraps) or clamped.
             if out.dtype.kind in "iu":
                 info = np.iinfo(out.dtype)
                 if not all(info.min <= v <= info.max for v in values):

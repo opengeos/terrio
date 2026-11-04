@@ -114,7 +114,8 @@ pub(crate) use map_data;
 /// # Errors
 ///
 /// When the length of `data` is not `cols × rows × bands` (at least one band), or overflows, or
-/// its type is not `cfg.data_type`.
+/// its type is not `cfg.data_type`. Like `from_data_native`, nothing else is checked: zero
+/// columns or rows and any cell size are accepted as given.
 pub fn raster_from_data(cfg: wbraster::RasterConfig, data: wbraster::raster::RasterData) -> crate::Result<wbraster::Raster> {
     let bands = cfg.bands.max(1);
     let Some(len) = cfg.cols.checked_mul(cfg.rows).and_then(|n| n.checked_mul(bands)) else {
@@ -168,9 +169,14 @@ mod tests {
             RasterConfig { cell_size_y: None, ..cfg() },
             RasterConfig { bands: 0, cols: 6, ..cfg() },
             RasterConfig { crs: CrsInfo::default(), metadata: Vec::new(), nodata: f64::NAN, ..cfg() },
+            RasterConfig { cell_size: f64::NAN, cell_size_y: Some(f64::INFINITY), ..cfg() },
+            RasterConfig { cell_size: 0.0, cell_size_y: Some(-0.0), ..cfg() },
+            RasterConfig { cols: 0, ..cfg() },
+            RasterConfig { rows: 0, bands: 0, ..cfg() },
         ];
         for c in configs {
-            let data = || RasterData::I16((0..12).collect());
+            let n = c.cols * c.rows * c.bands.max(1);
+            let data = || RasterData::I16((0..n as i16).collect());
             let ours = raster_from_data(c.clone(), data()).unwrap();
             let theirs = Raster::from_data_native(c, data()).unwrap();
             assert_eq!(format!("{ours:?}"), format!("{theirs:?}"));
