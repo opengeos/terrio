@@ -1390,8 +1390,9 @@ impl<'a> Plan<'a> {
     }
 
     /// Select the input resolution after computing the target grid at full resolution. A `sum`
-    /// takes no overview by itself (`AUTO`, `AUTO-n`): an overview averages the pixels it adds,
-    /// whose sum is the overview's total, not the source's. It reads a level when given one.
+    /// takes no overview by itself (`AUTO`, `AUTO-n`): an overview has one pixel per block of the
+    /// source's pixels, so its sum is a fraction of the source's total. It reads a level when
+    /// given one.
     fn select_overview(&mut self, k: usize, levels: &[(usize, usize)], o: &WarpOptions) -> Result<Option<usize>> {
         let full = self.srcs[k].grid;
         if (levels.is_empty() || o.resampling == Resampling::Sum) && !matches!(o.overview, OverviewSelection::Level(_)) {
@@ -4980,8 +4981,8 @@ mod tests {
 
     /// A `sum` reads the full resolution of a source with overviews unless a level is given, in a
     /// lazy warp, a warp of several sources, a streamed warp and a serialized warped VRT: an
-    /// overview averages the source's pixels, and their sum is the overview's total. `average`
-    /// still reads the overview the automatic choice gives.
+    /// overview has one pixel per block of the source's pixels, so its sum is a fraction of the
+    /// source's total. `average` still reads the overview the automatic choice gives.
     #[test]
     fn sum_reads_the_full_resolution_of_a_source_with_overviews_unless_a_level_is_given() {
         let dir = tempfile::tempdir().unwrap();

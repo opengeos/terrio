@@ -54,7 +54,7 @@ def test_finer_auto_and_explicit_bounds(pyramid):
     ("mode", "total"), [(None, 16.0), ("AUTO", 16.0), ("NONE", 16.0), (0, 4.0)]
 )
 def test_sum_reads_full_resolution_unless_a_level_is_given(tmp_path, mode, total):
-    # An overview averages the pixels a sum adds: summing it would give the overview's total.
+    # The overview has one pixel per 2-by-2 block: its sum is a quarter of the total.
     path = tmp_path / "ones.tif"
     terrio.Raster.from_array(
         np.ones((4, 4), "float32"), (0.0, 1.0, 0.0, 4.0, 0.0, -1.0), crs="EPSG:3857"

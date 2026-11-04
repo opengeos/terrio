@@ -9,8 +9,8 @@
   rounds each pixel to 32 bits), and up to the rounding of each pixel to a whole number and its
   clamping to the type's range in an integer one (a Byte output stores 255 for a sum of 400). A
   `sum` reads the source's full resolution unless it is given a level (`--overview n`, `overview=n`
-  in Python): `AUTO`, the default, and `AUTO-n` chose an overview, which averages the pixels a sum
-  adds, so that a coarse `sum` gave a fraction of the total (a quarter from an overview at factor
+  in Python): `AUTO`, the default, and `AUTO-n` chose an overview, with one pixel per block of the
+  source's pixels, so that a coarse `sum` gave a fraction of the total (about a quarter at factor
   2). A coarse `sum` of a raster with overviews now reads more: to EPSG:4326 at a sixteenth of its
   resolution, a remote 4096 × 4096 Float32 COG with overviews at 2, 4 and 8 takes 17 requests and
   67.1 MB, its whole full resolution, where its coarsest overview took 2 requests and 1.1 MB. An

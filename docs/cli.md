@@ -1025,9 +1025,10 @@ based on the full-resolution source. Use `NONE` when the source pyramids were bu
 with a filter unsuitable for the analysis. Mosaics select a level independently for
 each source. GCP/RPC transformations retain their full-resolution coordinate meaning.
 
-`-r sum` takes no overview under `AUTO` or `AUTO-n`, as an overview averages the
-pixels a sum adds: it reads the full resolution, so a coarse `sum` of a remote raster
-with overviews reads much more of it. `--overview n` reads level `n` for a `sum` too.
+`-r sum` takes no overview under `AUTO` or `AUTO-n`, as an overview has one pixel per
+block of the source's pixels and its sum is a fraction of the total: it reads the full
+resolution, so a coarse `sum` of a remote raster with overviews reads much more of it.
+`--overview n` reads level `n` for a `sum` too.
 
 Forced GCP overviews can give slightly different automatically suggested bounds than GDAL,
 which refits GCPs at the selected resolution. Specify `--te` and `--ts` for an identical
