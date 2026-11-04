@@ -597,6 +597,36 @@ def test_features():
     assert features.bounds(geoms[0]) == (500000, 4099700, 500300, 4100000)
 
 
+@pytest.mark.parametrize(
+    "values, dtype",
+    [
+        ([3, -7, 300], "int16"),
+        ([2**63 + 5, 1, 2**63 + 9], "uint64"),
+        ([1.5, -2.25, float("nan")], "float32"),
+        ([1, 2.5, 3], None),
+    ],
+)
+def test_rasterize_overlapping_shapes_match_burning_one_by_one(values, dtype):
+    # Later shapes win where they overlap, values keep their exact integer precision.
+    T = Affine(1, 0, 0, 0, -1, 40)
+
+    def square(x, y, size):
+        ring = [(x, y), (x + size, y), (x + size, y - size), (x, y - size), (x, y)]
+        return {"type": "Polygon", "coordinates": [ring]}
+
+    geoms = [square(2, 38, 20), square(10, 30, 20), square(15, 25, 3)]
+    shapes = list(zip(geoms, values, strict=True))
+    for all_touched in (False, True):
+        got = features.rasterize(
+            shapes, out_shape=(40, 40), transform=T, dtype=dtype, all_touched=all_touched
+        )
+        want = np.zeros((40, 40), dtype=got.dtype)
+        for g, v in shapes:
+            hit = features.geometry_mask([g], (40, 40), T, all_touched=all_touched, invert=True)
+            want[hit] = v
+        np.testing.assert_array_equal(got, want)
+
+
 def test_warp_merge_mask(dem, tmp_path):
     path, data = dem
     with rio.open(path) as ds:

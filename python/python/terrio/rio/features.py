@@ -293,13 +293,10 @@ def rasterize(
         else:
             idx = _burn(geoms, list(range(1, len(geoms) + 1)), shape, transform, all_touched, False)
             hit = idx > 0
-            vals = np.array(values, dtype=object if out.dtype.kind in "iu" else np.float64)
-            burnt = (
-                np.array([vals[i - 1] for i in idx[hit]], dtype=np.float64)
-                if out.dtype.kind == "f"
-                else np.array([vals[i - 1] for i in idx[hit]])
-            )
-            out[hit] = burnt.astype(out.dtype) if burnt.size else burnt
+            # Each value is cast on its own: a list mixing ints above 2**63 with others
+            # would become float64 and lose precision.
+            lut = np.array([np.asarray(v).astype(out.dtype) for v in values], dtype=out.dtype)
+            out[hit] = lut[idx[hit] - 1]
     if writer is not None:
         writer.write(out, 1)
         if not isinstance(dst_path, type(writer)) or dst_path is not writer:
