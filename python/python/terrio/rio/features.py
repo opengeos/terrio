@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from typing import Any
 
 import numpy as np
@@ -183,6 +183,29 @@ def _burn(
     return np.asarray(r.read(1))
 
 
+def _burn_values(values: Sequence[Any], dtype: np.dtype) -> np.ndarray:
+    """Burn values as rasterio 1.5.2 (GDAL 3.12.2) burns them into `dtype`.
+
+    Values go through float64, then into an integer dtype NaN is 0, values are rounded half away
+    from zero (adding 0.5 in float64, so integers above 2**52 can round up, as in GDAL) and
+    clamped to its range; floats overflow to infinity. One difference: GDAL burns values of 2**64
+    and above as 0 into uint64, these give its maximum.
+    """
+    vals = np.array([float(v) for v in values], dtype=np.float64)
+    if dtype.kind not in "iu":
+        with np.errstate(over="ignore"):
+            return vals.astype(dtype)
+    info = np.iinfo(dtype)
+    vals = np.where(np.isnan(vals), 0.0, vals)
+    vals = np.where(vals < 0, np.ceil(vals - 0.5), np.floor(vals + 0.5))
+    high, low = vals >= float(info.max), vals <= float(info.min)
+    lut = np.zeros(len(vals), dtype)
+    inside = ~(high | low)
+    lut[inside] = vals[inside].astype(dtype)
+    lut[high], lut[low] = info.max, info.min
+    return lut
+
+
 def rasterize(
     shapes: Iterable[Any],
     out_shape: Any = None,
@@ -293,16 +316,7 @@ def rasterize(
         else:
             idx = _burn(geoms, list(range(1, len(geoms) + 1)), shape, transform, all_touched, False)
             hit = idx > 0
-            # Converted straight to the output dtype: inferring a dtype first would make ints
-            # above 2**63 mixed with others float64 and lose precision. For integer dtypes, values
-            # the dtype cannot hold (out of range, NaN) are refused, as rasterio refuses them,
-            # rather than wrapped (NumPy < 2 wraps) or clamped.
-            if out.dtype.kind in "iu":
-                info = np.iinfo(out.dtype)
-                if not all(info.min <= v <= info.max for v in values):
-                    raise ValueError("shape values cannot be cast to specified dtype")
-            lut = np.array(values, dtype=out.dtype)
-            out[hit] = lut[idx[hit] - 1]
+            out[hit] = _burn_values(values, out.dtype)[idx[hit] - 1]
     if writer is not None:
         writer.write(out, 1)
         if not isinstance(dst_path, type(writer)) or dst_path is not writer:

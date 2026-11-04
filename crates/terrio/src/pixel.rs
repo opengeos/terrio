@@ -106,10 +106,10 @@ macro_rules! map_data {
 }
 pub(crate) use map_data;
 
+// The fields are mapped as `wbraster::Raster::new` maps them (wbraster 0.2.1): keep the two in
+// step, which `raster_from_data_matches_from_data_native` checks.
 /// A raster of `data` (band-major, of `cfg.data_type`), as `Raster::from_data_native` builds it
 /// but without first allocating and filling a buffer of nodata values that `data` replaces.
-/// The fields are mapped as `wbraster::Raster::new` maps them (wbraster 0.2.1): keep the two in
-/// step, which `raster_from_data_matches_from_data_native` checks.
 ///
 /// # Errors
 ///

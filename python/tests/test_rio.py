@@ -601,13 +601,13 @@ def test_features():
     "values, dtype",
     [
         ([3, -7, 300], "int16"),
-        ([2**63 + 5, 1, 2**63 + 9], "uint64"),
+        ([2**40 + 3, -1, 2**33], "int64"),
         ([1.5, -2.25, float("nan")], "float32"),
         ([1, 2.5, 3], None),
     ],
 )
 def test_rasterize_overlapping_shapes_match_burning_one_by_one(values, dtype):
-    # Later shapes win where they overlap, values keep their exact integer precision.
+    # Later shapes win where they overlap.
     T = Affine(1, 0, 0, 0, -1, 40)
 
     def square(x, y, size):
@@ -629,22 +629,52 @@ def test_rasterize_overlapping_shapes_match_burning_one_by_one(values, dtype):
         np.testing.assert_array_equal(got, want)
 
 
-def test_rasterize_refuses_values_the_dtype_cannot_hold():
+def test_rasterize_burns_values_as_rasterio():
+    # rasterio 1.5.2 (GDAL) burns values through float64: NaN as 0, rounded half away from zero,
+    # clamped to an integer dtype's range, overflowing floats to infinity. Recorded with rasterio
+    # 1.5.2 on NumPy 2.5.4.
     T = Affine(1, 0, 0, 0, -1, 4)
-    box = {"type": "Polygon", "coordinates": [[(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)]]}
-    other = {"type": "Polygon", "coordinates": [[(2, 2), (4, 2), (4, 4), (2, 4), (2, 2)]]}
-    cases = (
-        ((-1, 2**63 + 5), "int64"),
-        ((300, 1), "uint8"),
-        ((-1, 1), "uint64"),
-        ((np.int64(300), 1), "uint8"),
-        ((300.0, 1), "uint8"),
-        ((float("nan"), 1), "int32"),
-    )
-    for values, dtype in cases:
-        shapes = list(zip((box, other), values, strict=True))
-        with pytest.raises(ValueError, match="cannot be cast"):
-            features.rasterize(shapes, out_shape=(4, 4), transform=T, dtype=dtype)
+    left = {"type": "Polygon", "coordinates": [[(0, 0), (2, 0), (2, 4), (0, 4), (0, 0)]]}
+    right = {"type": "Polygon", "coordinates": [[(2, 0), (4, 0), (4, 4), (2, 4), (2, 0)]]}
+    cases = [
+        ((9223372036854775813, 1), "uint64", [9223372036854775808, 1]),
+        ((9223372036854775813, -1), "int64", [9223372036854775807, -1]),
+        ((300, 1), "uint8", [255, 1]),
+        ((2.5, 1), "uint8", [3, 1]),
+        ((-2.5, 1), "int16", [-3, 1]),
+        ((-1.5, 1), "int16", [-2, 1]),
+        ((0.5, 1), "uint8", [1, 1]),
+        ((1.5, 1), "uint8", [2, 1]),
+        ((-0.4, 1), "uint8", [0, 1]),
+        ((math.nan, 1), "int32", [0, 1]),
+        ((math.inf, 1), "int32", [2147483647, 1]),
+        ((-math.inf, 1), "uint16", [0, 1]),
+        ((np.float64(2**63), 1), "int64", [9223372036854775807, 1]),
+        ((np.int64(300), 1), "uint8", [255, 1]),
+        ((-1, 1), "uint64", [0, 1]),
+        ((1e40, 1), "float32", [float("inf"), 1.0]),
+        ((-1e40, 1), "float32", [float("-inf"), 1.0]),
+        ((math.nan, 1), "float32", [float("nan"), 1.0]),
+        ((0.1, 1), "float32", [0.10000000149011612, 1.0]),
+        ((9007199254740993, 1), "float64", [9007199254740992.0, 1.0]),
+        ((-9223372036854775818, 1), "int64", [-9223372036854775808, 1]),
+        ((70000.7, -3), "int16", [32767, -3]),
+        ((True, 2), "uint8", [1, 2]),
+        # Above 2**52, adding 0.5 in float64 rounds up, in GDAL as here.
+        ((2**52 + 3, 1), "int64", [4503599627370500, 1]),
+        ((2**53 - 1, 1), "int64", [9007199254740992, 1]),
+    ]
+    for values, dtype, expected in cases:
+        got = features.rasterize(
+            list(zip((left, right), values, strict=True)),
+            out_shape=(4, 4),
+            transform=T,
+            dtype=dtype,
+        )
+        assert got.dtype == np.dtype(dtype)
+        np.testing.assert_array_equal(
+            got[0, ::2], np.array(expected, dtype=dtype), err_msg=f"{values} {dtype}"
+        )
 
 
 def test_warp_merge_mask(dem, tmp_path):
