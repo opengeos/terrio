@@ -5,6 +5,7 @@ import pytest
 
 import terrio
 import terrio.rio
+from terrio.rio.control import GroundControlPoint
 from terrio.rio.enums import Resampling
 from terrio.rio.vrt import WarpedVRT
 
@@ -89,6 +90,34 @@ def test_reduced_reads_of_a_whole_sum_warped_vrt_read_full_resolution(tmp_path):
         reduced = vrt.read(1, out_shape=(2, 2))
     with terrio.rio.open(str(ramp), overview_level=1) as overview:
         np.testing.assert_array_equal(reduced, overview.read(1))
+
+
+def test_reduced_reads_of_a_gcp_sum_warped_vrt_go_through_the_bands(tmp_path):
+    """A `sum` VRT georeferenced by GCPs keeps its reduced reads of the whole grid as they were.
+
+    Such a read is never warped into the buffer: it goes through the VRT's bands, which choose
+    an implicit overview themselves, so the `sum` guard leaves it to them. On a grid aligned with
+    the source's pixels, a `sum` VRT then reads as an `average` one does. At 196 -> 50, read with
+    `average`, the bands would choose a finer overview than the dataset's choice.
+    """
+    n = 196
+    path = str(tmp_path / "gcps.tif")
+    gcps = [
+        GroundControlPoint(row=r, col=c, x=500000 + c * 10, y=4100000 - r * 10)
+        for r in (0, n)
+        for c in (0, n)
+    ]
+    profile = dict(width=n, height=n, count=1, dtype="float32", gcps=gcps, crs="EPSG:32611")
+    with terrio.rio.open(path, "w", driver="GTiff", **profile) as dst:
+        dst.write(np.add.outer(np.arange(n) * n, np.arange(n)).astype("float32")[None])
+    with terrio.rio.open(path, "r+") as dst:
+        dst.build_overviews([2, 4], Resampling.average)
+    reads = []
+    for method in (Resampling.sum, Resampling.average):
+        with terrio.rio.open(path) as src, WarpedVRT(src, resampling=method) as vrt:
+            reads.append(vrt.read(1, out_shape=(50, 50), resampling=Resampling.average))
+    assert reads[0].shape == (50, 50) and reads[0].min() < reads[0].max()
+    np.testing.assert_array_equal(reads[0], reads[1])
 
 
 @pytest.mark.parametrize("mode", [True, False])
