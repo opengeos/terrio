@@ -345,7 +345,7 @@ pub(crate) fn pipelined<R: Send>(
 
 /// How many strips [`read_ahead`] reads at once, ahead of the one worked on.
 #[cfg(not(target_family = "wasm"))]
-const READ_AHEAD: usize = 4;
+pub(crate) const READ_AHEAD: usize = 4;
 
 /// Runs `work` on `n` strips in order, `read` reading each: up to [`READ_AHEAD`] strips are read
 /// at once on other threads, ahead of the one worked on, so that a strip slow to read does not
@@ -356,10 +356,26 @@ const READ_AHEAD: usize = 4;
 pub(crate) fn read_ahead<R: Send>(
     n: usize,
     read: impl Fn(usize) -> Result<R> + Sync,
+    work: impl FnMut(usize, R) -> Result<()>,
+) -> Result<()> {
+    #[cfg(not(target_family = "wasm"))]
+    let ahead = READ_AHEAD;
+    #[cfg(target_family = "wasm")]
+    let ahead = 1;
+    read_ahead_by(ahead, n, read, work)
+}
+
+/// [`read_ahead`] with at most `ahead` strips read and not yet worked on (at least one): callers
+/// running many at once read fewer ahead each, as each strip held ahead is memory.
+pub(crate) fn read_ahead_by<R: Send>(
+    ahead: usize,
+    n: usize,
+    read: impl Fn(usize) -> Result<R> + Sync,
     mut work: impl FnMut(usize, R) -> Result<()>,
 ) -> Result<()> {
     #[cfg(target_family = "wasm")]
     {
+        let _ = ahead;
         for i in 0..n {
             work(i, read(i)?)?;
         }
@@ -369,7 +385,7 @@ pub(crate) fn read_ahead<R: Send>(
     {
         use std::collections::BTreeMap;
         use std::sync::{Condvar, Mutex};
-        let ahead = READ_AHEAD;
+        let ahead = ahead.max(1);
         /// The next strip to read, the strips worked on, and whether to stop.
         struct State {
             next: usize,

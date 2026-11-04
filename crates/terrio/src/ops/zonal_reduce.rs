@@ -78,6 +78,7 @@ pub(super) fn reduce_source(
     weight: Option<WeightSpec<'_>>,
     plan: &Plan<'_>,
     strip_rows: usize,
+    ahead: usize,
 ) -> Result<Vec<Vec<Vec<FieldValue>>>> {
     let features = plan.fids.len();
     let empty = plan.empty();
@@ -93,7 +94,8 @@ pub(super) fn reduce_source(
     // Open zones: (zone, next span, one accumulator per band).
     let mut open: Vec<(usize, usize, Vec<Accumulator>)> = Vec::new();
     let mut next = 0;
-    crate::ops::strips::read_ahead(
+    crate::ops::strips::read_ahead_by(
+        ahead,
         windows.len(),
         |i| {
             let window = windows[i];
@@ -487,7 +489,7 @@ mod tests {
         let mut mean = |names: &[&str]| {
             let stats: Vec<Statistic> = names.iter().map(|s| Statistic::parse(s).unwrap()).collect();
             let plan = Plan::new(&stats, false, &[0]);
-            reduce_source(&index, &mut raster, &[BandSpec { band: 1, nodata: None }], None, &plan, rows).unwrap()[0][0][0].clone()
+            reduce_source(&index, &mut raster, &[BandSpec { band: 1, nodata: None }], None, &plan, rows, 4).unwrap()[0][0][0].clone()
         };
         let expected = crate::FieldValue::Float(sum / (cols * rows) as f64);
         assert_eq!(mean(&["mean"]), expected);
@@ -518,10 +520,10 @@ mod tests {
             let index = build(&layer, &GridKey::of(&raster), false, fractional).unwrap();
             let plan = Plan::new(&stats, fractional, &fids);
             let bands = || vec![BandSpec { band: 1, nodata: None }, BandSpec { band: 2, nodata: None }];
-            let whole = reduce_source(&index, &mut raster, &bands(), None, &plan, rows).unwrap();
+            let whole = reduce_source(&index, &mut raster, &bands(), None, &plan, rows, 4).unwrap();
             assert!(whole[0][0].iter().all(|v| !v.is_null()));
             for strip in [1, 7, 64] {
-                assert_eq!(reduce_source(&index, &mut raster, &bands(), None, &plan, strip).unwrap(), whole, "strip {strip}");
+                assert_eq!(reduce_source(&index, &mut raster, &bands(), None, &plan, strip, 1).unwrap(), whole, "strip {strip}");
             }
         }
     }
