@@ -147,9 +147,13 @@ class WarpedVRT(DatasetReader):
 
     rasterio's `WarpedVRT` is GDAL's warped VRT, whose reads this one follows.
     Pixels are warped when they are read, region by region, from the windows of the source (or
-    of its overviews) each region needs. With `sum` resampling, a reduced read of the whole VRT
-    (every band, from a source georeferenced by a transform or RPCs) is warped from the source's
-    full resolution rather than from an implicit overview.
+    of its overviews) each region needs. With `sum` resampling, a reduced read of every band of
+    the whole VRT, from a source georeferenced by a transform or RPCs, is warped from the source's
+    full resolution rather than from an implicit overview. Other reduced reads, of a window, of
+    some of the bands or of a VRT georeferenced by GCPs, can take an implicit overview or resample
+    the VRT's pixels, so their sum is not the source's. For a full-resolution total, read the
+    window at full size, or, from a source georeferenced by a transform or RPCs, every band of
+    the whole VRT at the reduced size.
     """
 
     def __init__(
