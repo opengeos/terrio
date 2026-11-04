@@ -178,7 +178,7 @@ fn type_code(t: &NcType) -> u8 {
 }
 
 /// The value of a signed type's bits read as unsigned (`_Unsigned = "true"`): negative values
-/// of `Byte`, `Short` and `Int` wrap around, others are kept.
+/// of `Byte`, `Short` and `Int` wrap around, others are kept, as GDAL 3.12.2 reads them.
 fn as_unsigned(v: f64, t: &NcType) -> f64 {
     let bits = match t {
         NcType::Byte => 8,
