@@ -3496,6 +3496,29 @@ test("zonalStats exposes multiple rasters, bands, nodata and membership controls
 });
 
 
+test("zonalStats labels inputs with time and band, and adds quantiles and mode", () => {
+  const raster=terrio.rasterFromArray(new Float32Array([1,2,3,-99,10,20,20,-99]),2,2,[0,1,0,2,0,-1],"EPSG:4326",-99);
+  const zones={type:"Polygon",coordinates:[[[0,0],[2,0],[2,2],[0,2],[0,0]]]};
+  const rows=[{raster,time:"2024-07-01",label:"B04"},{raster,time:"2024-07-11",label:"B04",band:2}];
+  const p=terrio.zonalStats(zones,rows,{stats:["mean","quantile_50","mode","variety"]}).toGeoJSON().features[0].properties;
+  assert.equal(p["2024_07_01_B04_mean"],2);assert.equal(p["2024_07_01_B04_quantile_50"],2);
+  assert.equal(p["2024_07_11_B04_mode"],20);assert.equal(p["2024_07_11_B04_variety"],2);
+  assert.throws(()=>terrio.zonalStats(zones,rows,{prefixes:["a","b"]}),/prefixes/);
+  assert.throws(()=>terrio.zonalStats(zones,[{time:"2024-07-01"}],{}),/raster/);
+});
+
+test("zonalStats names numeric and Date times, and each band of a label", () => {
+  const raster=terrio.rasterFromArray(new Float32Array([1,2,3,-99,10,20,20,-99]),2,2,[0,1,0,2,0,-1],"EPSG:4326",-99);
+  const zones={type:"Polygon",coordinates:[[[0,0],[2,0],[2,2],[0,2],[0,0]]]};
+  const rows=[{raster,time:2024,label:"B04"},{raster,time:new Date(Date.UTC(2024,6,1)),label:"B08",band:2}];
+  const p=terrio.zonalStats(zones,rows,{stats:["count"]}).toGeoJSON().features[0].properties;
+  assert.equal(p["2024_B04_count"],3);assert.equal(p["2024_07_01T00_00_00_000Z_B08_count"],3);
+  const q=terrio.zonalStats(zones,[{raster,label:"B04"}],{bands:[1,2],stats:["mean"]}).toGeoJSON().features[0].properties;
+  assert.equal(q.B04_b1_mean,2);assert.ok(Math.abs(q.B04_b2_mean-50/3)<1e-9);
+  assert.throws(()=>terrio.zonalStats(zones,[{raster,time:{}}],{}),/'time' must be a string/);
+});
+
+
 test("zonalStats retains every named layer and its statistics", () => {
   const raster=terrio.rasterFromArray(new Float32Array([1,2,3,-99]),2,2,[0,1,0,2,0,-1],"EPSG:4326",-99);
   const zones=(name,ring)=>terrio.fromGeoJSON({type:"FeatureCollection",features:[{type:"Feature",properties:{name},geometry:{type:"Polygon",coordinates:[ring]}}]},name);

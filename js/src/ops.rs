@@ -58,6 +58,20 @@ pub(crate) fn input_raster(v: &JsValue) -> Result<RasterDataset, JsError> {
     Err(invalid("expected a raster: a Dataset, a Uint8Array or { bytes, filename }"))
 }
 
+/// A raster given to an operation, read lazily: a `Dataset` (sharing its reader) or a file's bytes.
+pub(crate) fn input_lazy_raster(v: &JsValue) -> Result<terrio::LazyRaster, JsError> {
+    if let Some(inner) = Dataset::lookup(v) {
+        return match &mut *inner.borrow_mut() {
+            Inner::Raster(r) => Ok(r.shared()),
+            Inner::Vector(..) => Err(invalid("expected a raster, got a vector dataset")),
+        };
+    }
+    if let Some((bytes, name)) = file_bytes(v) {
+        return terrio::memory::open_raster_lazy_bytes(bytes, &name).map_err(js_err);
+    }
+    Err(invalid("expected a raster: a Dataset, a Uint8Array or { bytes, filename }"))
+}
+
 /// Rasters given to an operation: one, or an array of them.
 pub(crate) fn input_rasters(v: &JsValue) -> Result<Vec<RasterDataset>, JsError> {
     let out: Vec<RasterDataset> = if js_sys::Array::is_array(v) {

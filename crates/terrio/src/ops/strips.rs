@@ -349,7 +349,10 @@ const READ_AHEAD: usize = 4;
 
 /// Runs `work` on `n` strips in order, `read` reading each: up to [`READ_AHEAD`] strips are read
 /// at once on other threads, ahead of the one worked on, so that a strip slow to read does not
-/// hold up the next ones (in turn on WebAssembly).
+/// hold up the next ones (in turn on WebAssembly). The caller waits for those threads without
+/// running pool work, so natively it should not be a thread of terrio's pool: `read` may need the
+/// pool (`par::install` in JPEG XL decoding), and callers waiting on every thread of it would
+/// leave it none.
 pub(crate) fn read_ahead<R: Send>(
     n: usize,
     read: impl Fn(usize) -> Result<R> + Sync,

@@ -265,3 +265,74 @@ def test_unweighted_statistics_do_not_open_unused_weight_paths(tmp_path):
     zones, values = inputs()
     out = terrio.zonal_stats(zones, values, stats=["count"], weights=str(tmp_path / "missing.tif"))
     assert out.to_geojson()["features"][0]["properties"]["raster1_b1_count"] > 0
+
+
+def test_zonal_labelled_inputs_dicts_and_dataframe(tmp_path):
+    zones, raster = inputs()
+    path = tmp_path / "B04.tif"
+    raster.write(str(path))
+    rows = [
+        {"raster": str(path), "time": "2024-07-01", "label": "B04"},
+        {"raster": raster, "time": "2024-07-11", "label": "B04", "band": 2},
+    ]
+    out = terrio.zonal_stats(zones, rows, stats=["mean", "quantile_50", "variety"])
+    props = out.to_geojson()["features"][0]["properties"]
+    assert props["2024_07_01_B04_mean"] == 2.0
+    assert props["2024_07_01_B04_quantile_50"] == 2.0
+    assert props["2024_07_11_B04_mean"] == 20.0
+    assert props["2024_07_11_B04_variety"] == 3
+    with pytest.raises(ValueError, match="prefixes"):
+        terrio.zonal_stats(zones, rows, prefixes=["a", "b"])
+    with pytest.raises(ValueError, match="raster"):
+        terrio.zonal_stats(zones, [{"time": "2024-07-01"}])
+    pd = pytest.importorskip("pandas")
+    frame = pd.DataFrame(
+        {
+            "raster": [str(path), str(path)],
+            "time": ["2024-07-01", "2024-07-11"],
+            "label": ["B04", "B04"],
+        }
+    )
+    props = terrio.zonal_stats(zones, frame, stats=["mean"]).to_geojson()["features"][0][
+        "properties"
+    ]
+    assert props["2024_07_01_B04_mean"] == props["2024_07_11_B04_mean"] == 2.0
+
+
+def test_zonal_labelled_inputs_missing_values_and_several_bands(tmp_path):
+    zones, raster = inputs()
+    path = tmp_path / "B04.tif"
+    raster.write(str(path))
+
+    def props(rows, **options):
+        out = terrio.zonal_stats(zones, rows, stats=["mean"], **options)
+        return out.to_geojson()["features"][0]["properties"]
+
+    # A None label is no label; a label over several bands names each band.
+    assert props([{"raster": str(path), "label": None}])["raster1_b1_mean"] == 2.0
+    several = props([{"raster": str(path), "label": "B04"}], bands=[1, 2])
+    assert (several["B04_b1_mean"], several["B04_b2_mean"]) == (2.0, 20.0)
+    pd = pytest.importorskip("pandas")
+    # Missing DataFrame values (NaN) are absent, and a band column of floats holds band numbers.
+    frame = pd.DataFrame(
+        {
+            "raster": [str(path), str(path)],
+            "time": ["2024-07-01", np.nan],
+            "label": ["B04", "B08"],
+            "band": [2, None],
+        }
+    )
+    assert frame["band"].dtype == "float64"
+    got = props(frame)
+    assert (got["2024_07_01_B04_mean"], got["B08_mean"]) == (20.0, 2.0)
+    assert not any(key.startswith("nan") for key in got)
+    # Timestamps name fields by their date; pandas' NA is missing.
+    frame = pd.DataFrame(
+        {
+            "raster": [str(path), str(path)],
+            "time": pd.to_datetime(["2024-07-01", "2024-07-11 06:30"], format="ISO8601"),
+            "label": pd.array(["B04", pd.NA], dtype="string"),
+        }
+    )
+    got = props(frame)
+    assert (got["2024_07_01_B04_mean"], got["2024_07_11T06_30_00_b1_mean"]) == (2.0, 2.0)

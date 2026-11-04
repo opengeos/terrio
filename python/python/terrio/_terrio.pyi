@@ -2477,7 +2477,12 @@ def make_valid(src: Any, *, layer: str | None = None) -> Layer:
 
 def zonal_stats(
     zones: Any,
-    rasters: str | os.PathLike[str] | Raster | Sequence[str | os.PathLike[str] | Raster],
+    rasters: str
+    | os.PathLike[str]
+    | Raster
+    | Mapping[str, Any]
+    | Sequence[str | os.PathLike[str] | Raster | Mapping[str, Any]]
+    | Any,
     *,
     bands: Sequence[int] | None = None,
     prefixes: Sequence[str] | None = None,
@@ -2490,10 +2495,17 @@ def zonal_stats(
     weights: str | os.PathLike[str] | Raster | None = None,
     weight_band: int = 1,
 ) -> Layer:
-    """Summarize bands for polygon zones; materializes source raster pixels.
+    """Summarize bands for polygon zones; rasters are read lazily, by block.
 
-    Field-name collisions receive _2, _3, etc. suffixes. Repeated raster path
-    entries are read separately, without a path cache.
+    ``rasters`` items are paths or ``Raster`` objects, or labelled dicts with keys
+    ``raster`` (required), ``time``, ``label`` and ``band`` (or a pandas DataFrame with
+    those columns; None and NaN are missing values). Labelled fields are named
+    ``TIME_LABEL_STATISTIC``, or ``TIME_LABEL_bN_STATISTIC`` for a label over several
+    ``bands``; dicts naming the same path share one read. Statistics: count, min, max,
+    mean, sum, stddev, variance, cv, median, quantile_P (P from 0 to 100), mode
+    (majority), minority, variety, and
+    weighted_mean, weighted_sum, weighted_stddev with ``weights``.
+    Field-name collisions receive _2, _3, etc. suffixes.
     """
     ...
 

@@ -2370,21 +2370,47 @@ terrio zonal-stats counties.gpkg stats.gpkg --raster image.tif --band 1,2 --pref
   --stats count,min,max,mean,sum,stddev,median --all-touched
 terrio zonal-stats counties.gpkg stats.gpkg --raster dem.tif \
   --t-srs EPSG:3857 --decimal-places 2
+terrio zonal-stats fields.gpkg stats.fgb --inputs s2.csv \
+  --stats count,mean,stddev,quantile_25,median,quantile_75,mode
+```
+
+`s2.csv` labels each input with a date and band, as Sentinel-2 assets (one single-band COG per
+band and date) need:
+
+```text
+path,time,label
+s3://bucket/S2A_20240701/B04.tif,2024-07-01,B04
+s3://bucket/S2A_20240701/B08.tif,2024-07-01,B08
+s3://bucket/S2B_20240711/B04.tif,2024-07-11,B04
 ```
 
 `zonal-stats` (alias `zonal`) adds statistics independently for each polygon or multipolygon.
-Repeat `--raster` for multiple rasters and use `--band` for comma-separated bands from each.
-Default statistics are `count,min,max,mean,sum,stddev`; `median` is available explicitly.
-Standard deviation uses the population definition. Fields are `FILE_STEM_bN_STATISTIC`, or
-`PREFIX_bN_STATISTIC` when one `--prefix` is supplied per raster. Name collisions get `_2`,
-`_3`, etc. `count` is an integer; the other statistics use 64-bit floats.
+Repeat `--raster` for multiple rasters (or give `--raster @FILE`, a list of paths one per line)
+and use `--band` for comma-separated bands from each. `--inputs FILE` reads a CSV table with a
+header: `path` (required), and optional `time`, `label` and `band` (a band number; by default
+each `--band`); quote fields that contain commas. Rows of the same path, or of a `--raster`
+path, share one read.
+Default statistics are `count,min,max,mean,sum,stddev`. Also available: `variance`, `cv`
+(standard deviation over mean, null when the mean is 0), `median`, `quantile_P` for a
+percentage P from 0 to 100 (`quantile_25`, `quantile_2.5`), `mode` (alias `majority`: the value
+covering most of the zone, ties to the larger value), `minority` (ties to the smaller value)
+and `variety` (the number of distinct values). Quantiles interpolate linearly between the
+closest ranks, as numpy's default, so `quantile_50` equals `median`. Standard deviation and
+variance use the population definition. Fields are `FILE_STEM_bN_STATISTIC`,
+`PREFIX_bN_STATISTIC` when one `--prefix` is supplied per raster, or `TIME_LABEL_STATISTIC`
+for labelled `--inputs` rows (characters other than letters, digits and `_` become `_`:
+`2024_07_01_B04_mean`); a labelled row without `band` that takes several `--band` names each
+`TIME_LABEL_bN_STATISTIC`. Name collisions get `_2`, `_3`, etc. `count` and `variety` are
+integers; the other statistics use 64-bit floats. GeoPackage tables hold at most 2000 columns:
+a request that would exceed it fails before reading rasters; write FlatGeobuf or Parquet for
+more.
 
 By default, a pixel contributes when its centre lies in the zone, following GDAL's rasterization
 boundary rules. `--all-touched` includes every touched pixel. Holes are excluded. Overlapping
 zones are evaluated independently, so a pixel can contribute to multiple zones. Declared nodata
 and non-finite values are excluded; alpha bands and external masks are not applied implicitly.
 With no valid contributing pixels, including null/empty geometries and zones outside the raster,
-`count` is 0 and every other statistic is null. Source geometry, Z/M, attributes and CRS remain
+`count` and `variety` are 0 and every other statistic is null. Source geometry, Z/M, attributes and CRS remain
 unchanged by default. All non-null geometries must be polygons or multipolygons.
 
 `--t-srs CRS` reprojects output zones after statistics are computed, so it does not change
@@ -2398,9 +2424,13 @@ are subject to floating-point representation. For point inputs, use `sample`/`po
 Rasters may use different resolutions, CRSs, rotated grids or south-up grids. Boundaries are
 transformed for each raster; a boundary transformation failure is an error. Missing CRSs are
 accepted only when both the zones and the raster have no CRS. Reprojection transforms stored
-vertices without densifying curved edges. The rasters are loaded into memory; masks cover only
-each zone's intersecting window and are shared by requested bands of the same raster. Median
-needs extra memory for a zone's contributing values. Integers above 2⁵³ can lose precision.
+vertices without densifying curved edges. Zones are computed once per distinct grid (size,
+geotransform and CRS) and shared by every raster on it, so many dates of one Sentinel-2 tile
+cost one zone computation per resolution. Rasters are read lazily, local or remote, in strips of
+block rows (at least 256 rows), and only the strips and columns that zones cover; rasters are
+processed in parallel (`RAYON_NUM_THREADS` sets the number of threads). Memory follows the
+strip size and the number of threads, not the raster size. Median, quantiles, mode, minority
+and variety keep each open zone's values for one band at a time. Integers above 2⁵³ can lose precision.
 Complex bands and geolocation arrays are unsupported. Standard vector input/output options apply.
 
 ### Fractional coverage and weighting rasters

@@ -2293,6 +2293,19 @@ attributes, feature IDs, CRS, Real output types and null weighted statistics are
 checked separately and exactly. These are numeric comparisons within tolerance,
 not pixel-identical claims.
 
+Quantiles (`quantile_25`, `quantile_75`), `mode`, `minority`, `variety`, `variance` and `cv`
+are compared with exactextract 0.3.0 on the same Float64 samples: quantiles, variance and cv
+within the allowance above, and mode, minority and variety exactly, except where several values'
+total coverages lie within the coverage tolerance of the winner's (relative 2e-7 or absolute
+1e-7). There the choice depends on coverage rounding (terrio binary64, exactextract Float32: one
+USGS DEM zone has 18 boundary cells at coverage 0.1, which the two compute 3e-8 apart), and terrio's
+value must be one of the near-tied values; such cases are reported within tolerance. A local run
+(2026-11-04) passed all 18 comparisons within tolerance, with one near-tied `minority` on each
+USGS DEM case. The centre/all-touched suite (`zonal-bindings`) compares the same statistics
+with GDAL masks + NumPy (`np.quantile(..., method="linear")`, mode/minority by pixel count with
+ties to the larger/smaller value): 12 of 12 cases identical or within its tolerance, mode,
+minority and variety exact.
+
 Median uses exactextract on the same stored samples promoted to Float64, so its
 integer/Float32 quantile cast does not truncate the fractional result. GDAL 3.13.3
 advertises median but rejects it. Native empty zones keep null sums, while the

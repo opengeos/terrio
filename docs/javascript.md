@@ -468,7 +468,10 @@ const simple = simplify(counties, 0.01);
 const sorted = sort(simple, { method: "hilbert" });
 ```
 
-`zonalStats` accepts `fractional: true`, `weights` as a dataset/upload, and optional
+`zonalStats` also takes labelled objects `{raster, time, label, band}` among its rasters (fields
+`TIME_LABEL_STATISTIC`, or `TIME_LABEL_bN_STATISTIC` for a label over several `bands`; a `time`
+or `label` is a string, a number or a `Date`, written in ISO 8601), and the statistics of the [command](cli.md#zonal-stats), quantiles and
+mode included. It accepts `fractional: true`, `weights` as a dataset/upload, and optional
 `weightBand` (default 1). Select `weighted_mean`, `weighted_sum` or `weighted_stddev`
 in `stats` for a second aligned weighting raster; see the
 [formulas and limits](cli.md#fractional-coverage-and-weighting-rasters).

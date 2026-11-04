@@ -116,7 +116,7 @@ fn make_valid(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> 
     vector_op(py, src, layer, topology::make_valid)
 }
 
-/// Summarize raster bands for polygon zones. All input raster pixels are materialized.
+/// Summarize raster bands for polygon zones; rasters are read lazily, by block.
 /// Prefix defaults are raster1, raster2, etc.; fields are PREFIX_bN_STATISTIC.
 #[pyfunction]
 #[pyo3(signature=(zones, rasters, *, bands=None, prefixes=None, stats=None, all_touched=false, t_srs=None, decimal_places=None, layer=None, fractional=false, weights=None, weight_band=1))]
@@ -136,7 +136,7 @@ fn zonal_stats(
     weights: Option<&Bound<'_, PyAny>>,
     weight_band: usize,
 ) -> PyResult<PyLayer> {
-    use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions, ZonalWeight};
+    use terrio::ops::zonal::{Statistic, ZonalBand, ZonalOptions, ZonalSource, ZonalWeight};
     if prefixes.as_ref().is_some_and(|p| p.iter().any(|p| p.trim().is_empty())) {
         return Err(pyo3::exceptions::PyValueError::new_err("raster field prefixes cannot be empty"));
     }
@@ -145,34 +145,101 @@ fn zonal_stats(
         .transpose()
         .py()?
         .unwrap_or_else(|| ZonalOptions::default().stats);
-    let weights = weights.filter(|_| stats.iter().any(|s| s.uses_weights())).map(|src| crate::ops::input_raster(py, src)).transpose()?;
+    let weights =
+        weights.filter(|_| stats.iter().any(|s| s.uses_weights())).map(|src| crate::ops::input_lazy_raster(py, src)).transpose()?;
     let options = ZonalOptions {
         fractional,
-        weights: weights.map(|raster| ZonalWeight { raster: std::sync::Arc::new(raster), band: weight_band }),
+        weights: weights.map(|raster| ZonalWeight::new(raster, weight_band)),
         stats,
         all_touched,
         dst_srs: t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().py()?,
         decimal_places,
     };
     let zones = crate::vector_geom::one_layer(py, zones, layer)?;
-    let rasters: Vec<_> = crate::ops::input_rasters(py, rasters)?.into_iter().map(|(_, raster)| raster).collect();
-    let prefixes = prefixes.unwrap_or_else(|| (1..=rasters.len()).map(|i| format!("raster{i}")).collect());
-    if prefixes.len() != rasters.len() {
+    let bands = bands.unwrap_or_else(|| vec![1]);
+    // A DataFrame of labelled rows becomes its records; a dict is one labelled row.
+    let items = if rasters.hasattr("to_dict")? && !rasters.is_instance_of::<pyo3::types::PyDict>() {
+        rasters.call_method1("to_dict", ("records",))?.extract::<Vec<Bound<'_, PyAny>>>()?
+    } else if rasters.is_instance_of::<pyo3::types::PyDict>() {
+        vec![rasters.clone()]
+    } else {
+        crate::ops::raster_items(rasters)?
+    };
+    let labelled = items.iter().any(|i| i.is_instance_of::<pyo3::types::PyDict>());
+    if labelled && prefixes.is_some() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "prefixes cannot be combined with labelled inputs (dicts): their fields are named TIME_LABEL",
+        ));
+    }
+    let prefixes = prefixes.unwrap_or_else(|| (1..=items.len()).map(|i| format!("raster{i}")).collect());
+    if prefixes.len() != items.len() {
         return Err(pyo3::exceptions::PyValueError::new_err("give one prefix per raster, or omit prefixes"));
     }
-    let bands = bands.unwrap_or_else(|| vec![1]);
-    let inner = py
-        .detach_result(|| {
-            let mut inputs = Vec::new();
-            for (raster, prefix) in rasters.iter().zip(&prefixes) {
-                for &band in &bands {
-                    inputs.push(ZonalInput { prefix: format!("{prefix}_b{band}"), raster, band });
-                }
+    // Sources in first-appearance order; labelled rows naming the same path share one source.
+    let mut sources: Vec<ZonalSource> = Vec::new();
+    let mut paths: Vec<Option<String>> = Vec::new();
+    for (item, prefix) in items.iter().zip(&prefixes) {
+        let Ok(row) = item.cast::<pyo3::types::PyDict>() else {
+            sources.push(ZonalSource {
+                raster: zonal_raster(py, item)?,
+                bands: bands.iter().map(|&band| ZonalBand::new(band, format!("{prefix}_b{band}"))).collect(),
+            });
+            paths.push(None);
+            continue;
+        };
+        // None, NaN, NaT (which differ from themselves) and pandas' NA, a DataFrame's missing
+        // values, are absent.
+        let missing = |v: &Bound<'_, PyAny>| v.is_none() || v.ne(v).unwrap_or(false) || v.get_type().name().is_ok_and(|n| n == "NAType");
+        let get = |key: &str| -> PyResult<Option<Bound<'_, PyAny>>> { Ok(row.get_item(key)?.filter(|v| !missing(v))) };
+        for key in row.keys() {
+            let key: String = key.extract()?;
+            if !matches!(key.as_str(), "raster" | "time" | "label" | "band") {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown input key '{key}' (expected raster, time, label, band)"
+                )));
             }
-            terrio::ops::zonal::zonal_stats(&zones, &inputs, &options)
-        })
-        .py()?;
+        }
+        let raster = get("raster")?
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("each input dict needs a 'raster' (a path or a terrio.Raster)"))?;
+        // A date or datetime (a DataFrame's Timestamp) in ISO 8601, its date alone at midnight.
+        let text = |v: Bound<'_, PyAny>| -> PyResult<String> {
+            if v.hasattr("isoformat")? {
+                let iso: String = v.call_method0("isoformat")?.extract()?;
+                return Ok(iso.strip_suffix("T00:00:00").map(String::from).unwrap_or(iso));
+            }
+            Ok(v.str()?.to_string())
+        };
+        let time = get("time")?.map(text).transpose()?;
+        let label = get("label")?.map(text).transpose()?;
+        let row_bands = match get("band")? {
+            // A DataFrame's band column is float when some row has none: 2.0 is band 2.
+            Some(b) => vec![
+                b.extract::<usize>()
+                    .or_else(|e| b.extract::<f64>().ok().filter(|f| f.fract() == 0.0 && *f >= 1.0).map(|f| f as usize).ok_or(e))?,
+            ],
+            None => bands.clone(),
+        };
+        let row_bands =
+            terrio::ops::zonal::labelled_bands(&row_bands, time.as_deref(), label.as_deref(), |band| format!("{prefix}_b{band}"));
+        let path = crate::ops::raster_path(&raster)?;
+        match path.as_ref().and_then(|p| paths.iter().position(|q| q.as_ref() == Some(p))) {
+            Some(i) => sources[i].bands.extend(row_bands),
+            None => {
+                sources.push(ZonalSource { raster: zonal_raster(py, &raster)?, bands: row_bands });
+                paths.push(path);
+            }
+        }
+    }
+    let inner = crate::with_warnings(py, || terrio::ops::zonal::zonal_stats(&zones, &mut sources, &options))?;
     Ok(PyLayer::from(inner))
+}
+
+/// A zonal raster: a path, opened only while it is read (see `ZonalRaster::Path`), or a `Raster`.
+fn zonal_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<terrio::ops::zonal::ZonalRaster> {
+    Ok(match crate::ops::raster_path(src)? {
+        Some(path) => terrio::ops::zonal::ZonalRaster::Path(path),
+        None => crate::ops::input_lazy_raster(py, src)?.into(),
+    })
 }
 
 /// Recursively split multipart geometries/collections; IDs restart at one.

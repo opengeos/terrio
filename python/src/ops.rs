@@ -1062,18 +1062,7 @@ fn nodata_arg(v: Option<&Bound<'_, PyAny>>) -> PyResult<Nodata> {
 /// The rasters given to an operation: one path or `Raster`, or a sequence of them, with the
 /// paths (or made-up names for rasters in memory).
 pub(crate) fn input_rasters(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<Vec<(String, RasterDataset)>> {
-    let items: Vec<Bound<'_, PyAny>> = if src.is_instance_of::<PyString>()
-        || src.is_instance_of::<PyBytes>()
-        || src.hasattr("__fspath__")?
-        || src.cast::<PyRaster>().is_ok()
-    {
-        vec![src.clone()]
-    } else {
-        src.extract().map_err(|_| invalid("expected a path, a terrio.Raster, or a sequence of them"))?
-    };
-    if items.is_empty() {
-        return Err(invalid("no input rasters"));
-    }
+    let items = raster_items(src)?;
     // Sources are told apart by name: rasters in memory get one of their own.
     items
         .iter()
@@ -1086,6 +1075,32 @@ pub(crate) fn input_rasters(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<
             None => Ok((format!("{MEMORY_PREFIX}{k}>"), input_raster(py, i)?)),
         })
         .collect()
+}
+
+/// One path or `Raster`, or the items of a sequence of them (not empty).
+pub(crate) fn raster_items<'py>(src: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'py, PyAny>>> {
+    let items: Vec<Bound<'py, PyAny>> = if src.is_instance_of::<PyString>()
+        || src.is_instance_of::<PyBytes>()
+        || src.hasattr("__fspath__")?
+        || src.cast::<PyRaster>().is_ok()
+    {
+        vec![src.clone()]
+    } else {
+        src.extract().map_err(|_| invalid("expected a path, a terrio.Raster, or a sequence of them"))?
+    };
+    if items.is_empty() {
+        return Err(invalid("no input rasters"));
+    }
+    Ok(items)
+}
+
+/// A raster opened lazily from a path, or a handle sharing a `Raster`'s reader (pixels are not
+/// copied).
+pub(crate) fn input_lazy_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<terrio::LazyRaster> {
+    match raster_path(src)? {
+        Some(path) => crate::with_warnings(py, || terrio::open_raster_lazy(&path)),
+        None => Ok(src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut().inner.shared()),
+    }
 }
 
 /// The start of the names given to rasters in memory.

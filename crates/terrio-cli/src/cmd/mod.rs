@@ -98,46 +98,52 @@ pub const MAX_FILE_LIST: u64 = 64 << 20;
 /// inputs that fail to open, so a client could otherwise read any text file back line by line.
 /// They pass their inputs as an array instead.
 pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
-    use std::io::Read;
     let mut out = Vec::with_capacity(inputs.len());
     for input in inputs {
         let Some(list) = input.strip_prefix('@') else {
             out.push(input.clone());
             continue;
         };
-        if std::env::var_os("TERRIO_MCP_TOOL").is_some() {
-            return Err(terrio::Error::InvalidArgument(
-                "@FILE lists are not read in MCP tool calls: pass each input as an argument (name a file beginning with @ as ./@name)"
-                    .into(),
-            ));
-        }
-        let meta = std::fs::metadata(list).map_err(|e| unreadable(list, e))?;
-        if !meta.is_file() {
-            return Err(unreadable(list, "not a regular file"));
-        }
-        if meta.len() > MAX_FILE_LIST {
-            return Err(unreadable(list, format_args!("larger than {} MiB", MAX_FILE_LIST >> 20)));
-        }
-        // The size is checked again on the bytes read: the file may have grown since `metadata`,
-        // and a pseudo-file reports a size of 0 while it yields data without end.
-        let mut text = String::new();
-        let read = std::fs::File::open(list).and_then(|f| f.take(MAX_FILE_LIST + 1).read_to_string(&mut text));
-        match read {
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Err(unreadable(list, "not UTF-8 text (save it as UTF-8)")),
-            Err(e) => return Err(unreadable(list, e)),
-            Ok(_) if text.len() as u64 > MAX_FILE_LIST => {
-                return Err(unreadable(list, format_args!("larger than {} MiB", MAX_FILE_LIST >> 20)));
-            }
-            Ok(_) => {}
-        }
+        let text = read_list_text(list, "@FILE lists")?;
         let before = out.len();
-        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         out.extend(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from));
         if out.len() == before {
             return Err(terrio::Error::InvalidArgument(format!("the file list {list} names no inputs")));
         }
     }
     Ok(out)
+}
+
+/// The text of a list file named on the command line (`@FILE`, `--inputs FILE`): a regular UTF-8
+/// file of at most [`MAX_FILE_LIST`] bytes, without a byte-order mark. MCP tool calls refuse
+/// `what` before touching the file, since errors would echo its lines.
+pub fn read_list_text(list: &str, what: &str) -> terrio::Result<String> {
+    use std::io::Read;
+    if std::env::var_os("TERRIO_MCP_TOOL").is_some() {
+        return Err(terrio::Error::InvalidArgument(format!(
+            "{what} are not read in MCP tool calls: pass each input as an argument (name a file beginning with @ as ./@name)"
+        )));
+    }
+    let meta = std::fs::metadata(list).map_err(|e| unreadable(list, e))?;
+    if !meta.is_file() {
+        return Err(unreadable(list, "not a regular file"));
+    }
+    if meta.len() > MAX_FILE_LIST {
+        return Err(unreadable(list, format_args!("larger than {} MiB", MAX_FILE_LIST >> 20)));
+    }
+    // The size is checked again on the bytes read: the file may have grown since `metadata`,
+    // and a pseudo-file reports a size of 0 while it yields data without end.
+    let mut text = String::new();
+    let read = std::fs::File::open(list).and_then(|f| f.take(MAX_FILE_LIST + 1).read_to_string(&mut text));
+    match read {
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Err(unreadable(list, "not UTF-8 text (save it as UTF-8)")),
+        Err(e) => return Err(unreadable(list, e)),
+        Ok(_) if text.len() as u64 > MAX_FILE_LIST => {
+            return Err(unreadable(list, format_args!("larger than {} MiB", MAX_FILE_LIST >> 20)));
+        }
+        Ok(_) => {}
+    }
+    Ok(text.strip_prefix('\u{feff}').map(String::from).unwrap_or(text))
 }
 
 /// The error for an `@FILE` input whose list cannot be used, because of `why`.

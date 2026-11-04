@@ -30,6 +30,44 @@
   `_FillValue`, they take netCDF's default `Int64` nodata (`-9223372036854775806`). An
   inverted `valid_range` (or `valid_min` above `valid_max`) is ignored, as GDAL ignores it, where
   it made every pixel nodata (#553).
+- Zonal statistics at datacube scale: zones are computed once per distinct raster grid and
+  shared by every raster on it; rasters are read lazily (local, remote, STAC, Zarr) in strips of
+  block rows, only where zones lie, and in parallel. `ops::zonal::zonal_stats` takes
+  `ZonalSource`s (a `LazyRaster`, or a path opened only while it is read so that thousands of
+  files stay within the open-file limit, and its bands); `zonal_stats_with` hands each finished
+  band to a sink instead of building a layer.
+- **Breaking (Rust API, `terrio::ops::zonal`):** the CLI, Python and JavaScript are unchanged.
+  - `zonal_stats(zones, &mut sources, &options)` takes `ZonalSource`s instead of a slice of
+    `ZonalInput`s (removed). Wrap a raster in memory with `LazyRaster::from(dataset)`, open one
+    with `open_raster_lazy` (then `.into()` a `ZonalRaster`), or give its path
+    (`ZonalRaster::Path`), and name each band with `ZonalBand::new(band, prefix)`:
+
+    ```rust
+    // 0.7.0
+    zonal_stats(&zones, &[ZonalInput { prefix: "dem".into(), raster: &dem, band: 1 }], &options)?;
+    // now
+    let mut sources = [ZonalSource { raster: LazyRaster::from(dem).into(), bands: vec![ZonalBand::new(1, "dem")] }];
+    zonal_stats(&zones, &mut sources, &options)?;
+    ```
+
+  - `ZonalWeight::raster` is an `Arc<Mutex<LazyRaster>>`: build it with
+    `ZonalWeight::new(raster, band)`.
+  - `Statistic` has new variants, so exhaustive `match`es need the new arms; it no longer
+    implements `Eq` (`Quantile` holds an `f64`), and `Statistic::name` returns a `String`.
+- New zonal statistics `variance`, `cv`, `quantile_P`, `mode` (`majority`), `minority` and
+  `variety`, checked against GDAL masks + NumPy and exactextract 0.3.0.
+- Labelled zonal inputs: `zonal-stats --inputs FILE.csv` (`path,time,label,band`) and
+  `--raster @FILE`; dicts or a DataFrame in Python, `{raster, time, label, band}` objects in
+  JavaScript. Labelled fields are named `TIME_LABEL_STATISTIC` (`TIME_LABEL_bN_STATISTIC` for
+  a label over several bands). Outputs that would exceed GeoPackage's 2000 columns fail before
+  rasters are read.
+- Zonal statistics reduce each run of pixels in a loop of its sample type, and track the running
+  mean and M2 only when stddev, variance or cv is requested: about four times less CPU than
+  before. `mean` is the sum over the count, as exactextract computes it (within 3e-12 of 0.7.0's
+  running mean on 10^7 float32 pixels), whatever other statistics are requested.
+- Fractional zonal coverage clips each ring to rows and boundary cells (axis-aligned
+  Sutherland–Hodgman and shoelace areas) instead of general polygon overlays: about ten times
+  less coverage time, with the same exact cell areas within floating-point roundoff.
 
 ## 0.7.0 (2026-11-03)
 

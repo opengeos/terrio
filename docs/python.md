@@ -566,7 +566,19 @@ supported transformers, built-in functions, kernels and masks.
 [commands](cli.md); see `help(terrio.contour)` for each one's arguments. `list_layers(path)` and
 `write_raster(raster, path, ...)` are the plain I/O helpers.
 
-For coverage-weighted zonal statistics, use `fractional=True`. A second aligned raster
+`zonal_stats` reads rasters lazily (paths, URLs, STAC assets or `Raster` objects) and accepts
+labelled inputs: dicts, or a pandas DataFrame, with `raster`, `time`, `label` and `band`:
+
+```python
+# items: pystac Items, e.g. from pystac_client's search(...).items()
+rows = [{"raster": item.assets[band].href, "time": item.datetime.date().isoformat(), "label": band}
+        for item in items for band in ["red", "nir"]]
+stats = terrio.zonal_stats(fields, rows, stats=["mean", "quantile_25", "quantile_75", "mode"])
+# fields named 2024_07_01_red_mean, 2024_07_01_nir_mean, ...
+```
+
+Statistics include `variance`, `cv`, `quantile_P`, `mode`, `minority` and `variety`; see the
+[command](cli.md#zonal-stats). For coverage-weighted zonal statistics, use `fractional=True`. A second aligned raster
 can be supplied as `weights=...`, with `weight_band=1`, then select `weighted_mean`,
 `weighted_sum` or `weighted_stddev` in `stats`. See the
 [formulas and limits](cli.md#fractional-coverage-and-weighting-rasters).

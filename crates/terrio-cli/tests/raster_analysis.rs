@@ -135,3 +135,210 @@ fn zonal_and_point_sampling_support_output_crs_and_decimal_places() {
         }
     }
 }
+
+#[test]
+fn zonal_results_do_not_depend_on_thread_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    for (i, name) in ["a.tif", "b.tif", "c.tif"].iter().enumerate() {
+        let cfg =
+            terrio::RasterConfig { cols: 300, rows: 300, bands: 2, data_type: terrio::DataType::F32, cell_size: 1., ..Default::default() };
+        let values = (0..2 * 300 * 300).map(|v| ((v * (i + 3) * 7919) % 1013) as f64 / 7.).collect();
+        let mut r = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, values).unwrap(), false);
+        r.raster.crs.epsg = Some(4326);
+        let options = terrio::RasterWriteOptions { tile_size: Some(64), ..Default::default() };
+        terrio::write_raster_dataset(&r, d.join(name).to_str().unwrap(), &options).unwrap();
+    }
+    let mut features = Vec::new();
+    for k in 0..40 {
+        let (x, y) = ((k * 37 % 250) as f64 + 0.3, (k * 53 % 250) as f64 + 0.6);
+        let (w, h) = (5. + (k % 7) as f64 * 6.1, 4. + (k % 5) as f64 * 9.7);
+        features.push(format!(
+            r#"{{"type":"Feature","properties":{{"k":{k}}},"geometry":{{"type":"Polygon","coordinates":[[[{x},{y}],[{},{y}],[{},{}],[{x},{}],[{x},{y}]]]}}}}"#,
+            x + w,
+            x + w,
+            y + h,
+            y + h
+        ));
+    }
+    std::fs::write(d.join("zones.geojson"), format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, features.join(","))).unwrap();
+    let stats = "count,min,max,mean,sum,stddev,variance,cv,median,quantile_25,mode,minority,variety";
+    for fractional in [false, true] {
+        let mut outputs = Vec::new();
+        for threads in ["1", "4"] {
+            let out = format!("out_{threads}_{fractional}.geojson");
+            let mut args = vec!["zonal-stats", "zones.geojson", &out, "--raster", "a.tif", "--raster", "b.tif", "--raster", "c.tif"];
+            args.extend(["--band", "1,2", "--stats", stats]);
+            if fractional {
+                args.push("--fractional");
+            }
+            let r =
+                Command::new(env!("CARGO_BIN_EXE_terrio")).args(&args).env("RAYON_NUM_THREADS", threads).current_dir(d).output().unwrap();
+            assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+            outputs.push(std::fs::read(d.join(&out)).unwrap());
+        }
+        assert_eq!(outputs[0], outputs[1]);
+        let out = layer(&d.join(format!("out_1_{fractional}.geojson")));
+        let filled = out.features.iter().filter(|f| f.get(&out.schema, "c_b2_quantile_25").is_ok_and(|v| !v.is_null())).count();
+        assert!(filled >= 30, "{filled} zones with statistics");
+    }
+}
+
+/// JPEG XL tiles decode on terrio's pool (`par::install`) from the threads that read strips ahead.
+/// With at least as many sources as pool threads, sources reduced on the pool itself left no
+/// thread to decode on, and the command never finished.
+#[test]
+fn zonal_jxl_sources_finish_with_more_sources_than_threads() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    let cfg = terrio::RasterConfig { cols: 512, rows: 512, data_type: terrio::DataType::U8, cell_size: 1., ..Default::default() };
+    let mut r =
+        terrio::RasterDataset::new(terrio::Raster::from_data(cfg, (0..512 * 512).map(|v| (v % 251) as f64).collect()).unwrap(), false);
+    r.raster.crs.epsg = Some(3857);
+    let options = terrio::RasterWriteOptions { compression: Some("JXL".into()), tile_size: Some(128), ..Default::default() };
+    let mut args = vec!["zonal-stats".to_string(), "zones.geojson".into(), "out.geojson".into(), "--stats".into(), "count".into()];
+    for i in 0..4 {
+        terrio::write_raster_dataset(&r, d.join(format!("s{i}.tif")).to_str().unwrap(), &options).unwrap();
+        args.extend(["--raster".into(), format!("s{i}.tif")]);
+    }
+    std::fs::write(d.join("zones.geojson"),r#"{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"EPSG:3857"}},"features":[{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,0],[512,0],[512,512],[0,512],[0,0]]]}}]}"#).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_terrio")).args(&args).env("RAYON_NUM_THREADS", "2").current_dir(d).spawn().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("zonal-stats over JPEG XL sources did not finish within 120 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    assert!(status.success());
+    let out = layer(&d.join("out.geojson"));
+    assert_eq!(out.features[0].get(&out.schema, "s3_b1_count").unwrap(), &terrio::FieldValue::Integer(512 * 512));
+}
+
+/// Two dated single-band `B04.tif` rasters (as Sentinel-2 assets are named) and one zone.
+fn dated_rasters(d: &Path) {
+    for (date, offset) in [("2024-07-01", 0.), ("2024-07-11", 100.)] {
+        std::fs::create_dir_all(d.join(date)).unwrap();
+        let cfg = terrio::RasterConfig { cols: 4, rows: 4, data_type: terrio::DataType::F64, cell_size: 1., ..Default::default() };
+        let mut r =
+            terrio::RasterDataset::new(terrio::Raster::from_data(cfg, (1..=16).map(|v| v as f64 + offset).collect()).unwrap(), false);
+        r.raster.crs.epsg = Some(4326);
+        terrio::write_raster_dataset(&r, d.join(date).join("B04.tif").to_str().unwrap(), &Default::default()).unwrap();
+    }
+    std::fs::write(d.join("zones.geojson"),r#"{"type":"FeatureCollection","name":"zones","features":[{"type":"Feature","properties":{"name":"all"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[4,0],[4,4],[0,4],[0,0]]]}}]}"#).unwrap();
+}
+
+#[test]
+fn zonal_inputs_csv_labels_dates_and_bands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    dated_rasters(d);
+    std::fs::write(d.join("inputs.csv"), "path,time,label\n2024-07-01/B04.tif,2024-07-01,B04\n\"2024-07-11/B04.tif\",2024-07-11,B04\n")
+        .unwrap();
+    ok(&["zonal-stats", "zones.geojson", "labelled.gpkg", "--inputs", "inputs.csv", "--stats", "mean"], d);
+    let out = layer(&d.join("labelled.gpkg"));
+    assert_eq!(out.features[0].get(&out.schema, "2024_07_01_B04_mean").unwrap(), &terrio::FieldValue::Float(8.5));
+    assert_eq!(out.features[0].get(&out.schema, "2024_07_11_B04_mean").unwrap(), &terrio::FieldValue::Float(108.5));
+    // Unlabelled rows keep FILE_STEM_bN names; `band` selects a band number.
+    std::fs::write(d.join("plain.csv"), "path,band\n2024-07-01/B04.tif,1\n").unwrap();
+    ok(&["zonal-stats", "zones.geojson", "plain.gpkg", "--inputs", "plain.csv", "--stats", "mean"], d);
+    let out = layer(&d.join("plain.gpkg"));
+    assert_eq!(out.features[0].get(&out.schema, "B04_b1_mean").unwrap(), &terrio::FieldValue::Float(8.5));
+    for (bad, why) in [("time,label\nx,y\n", "path"), ("path,colour\na.tif,red\n", "colour"), ("path,band\n2024-07-01/B04.tif,0\n", "band")]
+    {
+        std::fs::write(d.join("bad.csv"), bad).unwrap();
+        let r = run(&["zonal-stats", "zones.geojson", "bad.gpkg", "--inputs", "bad.csv"], d);
+        assert!(!r.status.success());
+        assert!(String::from_utf8_lossy(&r.stderr).contains(why), "{}", String::from_utf8_lossy(&r.stderr));
+    }
+}
+
+#[test]
+fn zonal_raster_file_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    dated_rasters(d);
+    std::fs::write(d.join("list.txt"), "2024-07-01/B04.tif\n\n2024-07-11/B04.tif\n").unwrap();
+    ok(&["zonal-stats", "zones.geojson", "listed.geojson", "--raster", "@list.txt", "--prefix", "a", "--prefix", "b"], d);
+    ok(
+        &[
+            "zonal-stats",
+            "zones.geojson",
+            "flags.geojson",
+            "--raster",
+            "2024-07-01/B04.tif",
+            "--raster",
+            "2024-07-11/B04.tif",
+            "--prefix",
+            "a",
+            "--prefix",
+            "b",
+        ],
+        d,
+    );
+    assert_eq!(std::fs::read(d.join("listed.geojson")).unwrap(), std::fs::read(d.join("flags.geojson")).unwrap());
+}
+
+#[test]
+fn zonal_too_many_columns_for_geopackage_says_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    dated_rasters(d);
+    let mut csv = String::from("path,time,label\n");
+    for i in 0..400 {
+        csv.push_str(&format!("2024-07-01/B04.tif,t{i},B04\n"));
+    }
+    std::fs::write(d.join("many.csv"), csv).unwrap();
+    let r = run(&["zonal-stats", "zones.geojson", "many.gpkg", "--inputs", "many.csv"], d);
+    assert!(!r.status.success());
+    let err = String::from_utf8_lossy(&r.stderr);
+    assert!(err.contains("2400 columns") && err.contains("GeoPackage allows 2000"), "{err}");
+    ok(&["zonal-stats", "zones.geojson", "many.fgb", "--inputs", "many.csv"], d);
+    assert_eq!(layer(&d.join("many.fgb")).schema.len(), 1 + 2400);
+}
+
+#[test]
+fn zonal_inputs_tables_are_refused_in_mcp_tool_calls() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    dated_rasters(d);
+    std::fs::write(d.join("inputs.csv"), "path\n2024-07-01/B04.tif\n").unwrap();
+    for args in [&["--inputs", "inputs.csv"][..], &["--raster", "@inputs.csv"][..]] {
+        let r = Command::new(env!("CARGO_BIN_EXE_terrio"))
+            .args(["zonal-stats", "zones.geojson", "out.geojson"])
+            .args(args)
+            .env("TERRIO_MCP_TOOL", "1")
+            .current_dir(d)
+            .output()
+            .unwrap();
+        assert!(!r.status.success());
+        assert!(String::from_utf8_lossy(&r.stderr).contains("not read in MCP tool calls"), "{}", String::from_utf8_lossy(&r.stderr));
+    }
+}
+
+/// Rasters listed by path are opened only while they are read: more of them than the open-file
+/// limit allows at once still run.
+#[cfg(unix)]
+#[test]
+fn zonal_reads_more_rasters_than_the_open_file_limit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    dated_rasters(d);
+    let list: String = (0..200).map(|i| format!("r{i}.tif\n")).collect();
+    for i in 0..200 {
+        std::os::unix::fs::symlink(d.join("2024-07-01/B04.tif"), d.join(format!("r{i}.tif"))).unwrap();
+    }
+    std::fs::write(d.join("list.txt"), list).unwrap();
+    let command = format!(
+        "ulimit -n 64 && exec '{}' zonal-stats zones.geojson out.fgb --raster @list.txt --stats mean",
+        env!("CARGO_BIN_EXE_terrio")
+    );
+    let r = Command::new("sh").arg("-c").arg(command).current_dir(d).output().unwrap();
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let out = layer(&d.join("out.fgb"));
+    assert_eq!(out.features[0].get(&out.schema, "r199_b1_mean").unwrap(), &terrio::FieldValue::Float(8.5));
+}

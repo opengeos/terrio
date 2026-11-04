@@ -1,11 +1,11 @@
 //! Exact polygon/cell intersection areas in the raster's affine pixel space.
 use crate::Geometry;
-use geo::{Area, BooleanOps, BoundingRect};
+use geo::BoundingRect;
 use rstar::{AABB, RTree, RTreeObject};
 
 #[path = "zonal_weighted_median.rs"]
 mod quantiles;
-pub(super) use quantiles::median;
+pub(super) use quantiles::quantile;
 
 #[derive(Clone)]
 struct Edge(geo::Line<f64>);
@@ -32,10 +32,15 @@ pub(super) fn coverage(geometry: &Geometry, col: usize, row: usize, cols: usize,
             .flat_map(|ring| ring.lines().map(Edge))
             .collect(),
     );
-    let rect = |x0, y0, x1, y1| geo::Rect::new(geo::Coord { x: x0, y: y0 }, geo::Coord { x: x1, y: y1 }).to_polygon();
+    let rings: Vec<Vec<Vec<[f64; 2]>>> = polygons
+        .0
+        .iter()
+        .map(|p| std::iter::once(p.exterior()).chain(p.interiors()).map(|r| r.0.iter().map(|c| [c.x, c.y]).collect()).collect())
+        .collect();
     let mut values = vec![0.0; cols * rows];
     let mut boundary = vec![false; cols];
     let mut crossings = Vec::new();
+    let (mut a, mut b) = (Vec::new(), Vec::new());
     for y in 0..rows {
         let bottom = -((row + y + 1) as f64);
         let top = bottom + 1.;
@@ -64,10 +69,27 @@ pub(super) fn coverage(geometry: &Geometry, col: usize, row: usize, cols: usize,
             boundary[start..end].fill(true);
         }
         crossings.sort_by(f64::total_cmp);
-        let strip = boundary
-            .iter()
-            .any(|b| *b)
-            .then(|| polygons.intersection(&geo::MultiPolygon(vec![rect(col as f64, bottom, (col + cols) as f64, top)])));
+        // Every ring clipped to this row; boundary cells clip these again to their columns.
+        // ponytail: each ring is clipped whole per row, O(vertices × rows); look up the row's
+        // edges in the R-tree instead if polygons with very many vertices become slow.
+        let strip: Vec<Vec<Vec<[f64; 2]>>> = if boundary.iter().any(|b| *b) {
+            rings
+                .iter()
+                .map(|polygon| {
+                    polygon
+                        .iter()
+                        .map(|ring| {
+                            clip(ring, &mut a, 1, bottom, true);
+                            let mut out = Vec::new();
+                            clip(&a, &mut out, 1, top, false);
+                            out
+                        })
+                        .collect()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut crossing = 0;
         for x in 0..cols {
             let left = (col + x) as f64;
@@ -75,12 +97,16 @@ pub(super) fn coverage(geometry: &Geometry, col: usize, row: usize, cols: usize,
                 crossing += 1;
             }
             values[y * cols + x] = if boundary[x] {
-                strip
-                    .as_ref()
-                    .unwrap()
-                    .intersection(&geo::MultiPolygon(vec![rect(left, bottom, left + 1., top)]))
-                    .unsigned_area()
-                    .clamp(0., 1.)
+                let mut area = 0.;
+                for polygon in &strip {
+                    for (k, ring) in polygon.iter().enumerate() {
+                        clip(ring, &mut a, 0, left, true);
+                        clip(&a, &mut b, 0, left + 1., false);
+                        let part = shoelace(&b, left, bottom).abs();
+                        area += if k == 0 { part } else { -part };
+                    }
+                }
+                area.clamp(0., 1.)
             } else if crossing % 2 == 1 {
                 1.
             } else {
@@ -91,20 +117,68 @@ pub(super) fn coverage(geometry: &Geometry, col: usize, row: usize, cols: usize,
     values
 }
 
+/// Sutherland–Hodgman: `ring` clipped to the half-plane `p[axis] >= v` (`keep_above`) or
+/// `p[axis] <= v`. The output may run along the clip line, but its signed area is exactly the
+/// part of the ring inside the half-plane, holes and concave rings included.
+fn clip(ring: &[[f64; 2]], out: &mut Vec<[f64; 2]>, axis: usize, v: f64, keep_above: bool) {
+    out.clear();
+    let inside = |p: &[f64; 2]| if keep_above { p[axis] >= v } else { p[axis] <= v };
+    let Some(mut prev) = ring.last().copied() else { return };
+    for &cur in ring {
+        if inside(&prev) != inside(&cur) {
+            let t = (v - prev[axis]) / (cur[axis] - prev[axis]);
+            let mut p = [prev[0] + t * (cur[0] - prev[0]), prev[1] + t * (cur[1] - prev[1])];
+            p[axis] = v;
+            out.push(p);
+        }
+        if inside(&cur) {
+            out.push(cur);
+        }
+        prev = cur;
+    }
+}
+
+/// Signed area of a ring, relative to (`x0`, `y0`) to keep cell-sized areas precise.
+fn shoelace(ring: &[[f64; 2]], x0: f64, y0: f64) -> f64 {
+    let Some(&last) = ring.last() else { return 0. };
+    let (mut px, mut py) = (last[0] - x0, last[1] - y0);
+    let mut twice = 0.;
+    for p in ring {
+        let (x, y) = (p[0] - x0, p[1] - y0);
+        twice += px * y - x * py;
+        (px, py) = (x, y);
+    }
+    twice / 2.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vector::Coord;
+    use geo::{Area, BooleanOps};
+    /// An exterior ring and its holes, as (x, y) points.
+    type Shape = (&'static [(f64, f64)], &'static [&'static [(f64, f64)]]);
     #[test]
     fn scanline_interior_and_boundary_candidates_match_cell_overlays() {
-        let shapes = [
-            vec![(-10., -10.), (20., -10.), (20., 20.), (-10., 20.), (-10., -10.)],
-            vec![(0.2, -0.1), (9.7, -9.2), (0.3, -9.4), (0.2, -0.1)],
-            vec![(3.2, -2.1), (3.8, -2.1), (3.8, -2.9), (3.2, -2.9), (3.2, -2.1)],
-            vec![(-1., -3.), (11., -3.), (11., -7.), (-1., -7.), (-1., -3.)],
+        let ring = |points: &[(f64, f64)]| points.iter().map(|&(x, y)| Coord::xy(x, y)).collect::<Vec<_>>();
+        let shapes: [Shape; 6] = [
+            (&[(-10., -10.), (20., -10.), (20., 20.), (-10., 20.), (-10., -10.)], &[]),
+            (&[(0.2, -0.1), (9.7, -9.2), (0.3, -9.4), (0.2, -0.1)], &[]),
+            (&[(3.2, -2.1), (3.8, -2.1), (3.8, -2.9), (3.2, -2.9), (3.2, -2.1)], &[]),
+            (&[(-1., -3.), (11., -3.), (11., -7.), (-1., -7.), (-1., -3.)], &[]),
+            // Concave: a U whose arms and notch share rows and cells.
+            (&[(0.3, -0.4), (9.6, -0.2), (9.4, -9.7), (6.2, -9.5), (6.6, -3.3), (3.1, -3.6), (3.4, -9.1), (0.5, -9.8), (0.3, -0.4)], &[]),
+            // Clockwise exterior with a hole inside one cell, and one crossing several cells.
+            (
+                &[(0.5, -0.5), (0.5, -9.5), (9.5, -9.5), (9.5, -0.5), (0.5, -0.5)],
+                &[
+                    &[(2.2, -2.2), (2.8, -2.2), (2.8, -2.8), (2.2, -2.8), (2.2, -2.2)],
+                    &[(4.3, -4.1), (7.7, -5.2), (5.1, -7.9), (4.3, -4.1)],
+                ],
+            ),
         ];
-        for points in shapes {
-            let g = Geometry::polygon(points.into_iter().map(|(x, y)| Coord::xy(x, y)).collect(), vec![]);
+        for (exterior, holes) in shapes {
+            let g = Geometry::polygon(ring(exterior), holes.iter().map(|h| ring(h)).collect());
             let fast = coverage(&g, 0, 0, 10, 10);
             let geo::Geometry::Polygon(p) = super::super::super::topology::to_geo(&g) else { unreachable!() };
             for y in 0..10 {
