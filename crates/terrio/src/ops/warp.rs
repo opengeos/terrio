@@ -495,7 +495,7 @@ impl Approx<'_> {
         if !self.base.transform(inv, &mut xs, &mut ys, &mut oks) || !oks.iter().all(|b| *b) {
             return self.exact(inv, x, y, ok, 0..n, &need);
         }
-        self.internal(inv, x, y, ok, xs, ys, need)
+        self.internal(inv, x, y, ok, (xs, ys), need)
     }
 
     /// Transforms the points of `range` exactly: those also in `need`, or all of them when the
@@ -516,15 +516,13 @@ impl Approx<'_> {
         self.base.transform(inv, &mut x[range.clone()], &mut y[range.clone()], &mut ok[range])
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn internal(
         &self,
         inv: bool,
         x: &mut [f64],
         y: &mut [f64],
         ok: &mut [bool],
-        xs: [f64; 3],
-        ys: [f64; 3],
+        (xs, ys): ([f64; 3], [f64; 3]),
         need: std::ops::Range<usize>,
     ) -> bool {
         let n = x.len();
@@ -570,7 +568,7 @@ impl Approx<'_> {
             if !base1 {
                 let first = need.start.min(mid)..need.end.min(mid);
                 if !first.is_empty() {
-                    self.internal(inv, &mut x[..mid], &mut y[..mid], &mut ok[..mid], [xs[0], xm[0], xm[1]], [ys[0], ym[0], ym[1]], first);
+                    self.internal(inv, &mut x[..mid], &mut y[..mid], &mut ok[..mid], ([xs[0], xm[0], xm[1]], [ys[0], ym[0], ym[1]]), first);
                 }
             } else {
                 self.exact(inv, x, y, ok, 1..mid, &need);
@@ -579,7 +577,14 @@ impl Approx<'_> {
             if !base2 {
                 let second = need.start.max(mid) - mid..need.end.max(mid) - mid;
                 if !second.is_empty() {
-                    self.internal(inv, &mut x[mid..], &mut y[mid..], &mut ok[mid..], [xs[1], xm[2], xs[2]], [ys[1], ym[2], ys[2]], second);
+                    self.internal(
+                        inv,
+                        &mut x[mid..],
+                        &mut y[mid..],
+                        &mut ok[mid..],
+                        ([xs[1], xm[2], xs[2]], [ys[1], ym[2], ys[2]]),
+                        second,
+                    );
                 }
             } else {
                 self.exact(inv, x, y, ok, mid + 1..n - 1, &need);
