@@ -13,12 +13,8 @@ fn total(path: &Path) -> f64 {
     (0..r.rows).flat_map(|row| (0..r.cols).map(move |col| (row, col))).map(|(row, col)| r.get(0, row as isize, col as isize)).sum()
 }
 
-#[test]
-fn a_sum_over_its_memory_budget_is_refused_before_its_source_is_read() {
-    let tmp = tempfile::tempdir().unwrap();
-    let d = tmp.path();
-    // 32 x 32 Float32 ones with an overview at 4. A `sum` holds 4 bytes per source pixel and 8 of
-    // shares: 12,288 bytes at full resolution, 768 for the overview's 64 pixels.
+/// Writes `ones.tif`: 32 x 32 Float32 ones of 1-unit pixels in EPSG:3857.
+fn write_ones(dir: &Path) {
     let cfg = terrio::RasterConfig {
         cols: 32,
         rows: 32,
@@ -30,7 +26,16 @@ fn a_sum_over_its_memory_budget_is_refused_before_its_source_is_read() {
     };
     let mut r = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, vec![1.0; 1024]).unwrap(), false);
     r.raster.crs.epsg = Some(3857);
-    terrio::write_raster_dataset(&r, d.join("ones.tif").to_str().unwrap(), &Default::default()).unwrap();
+    terrio::write_raster_dataset(&r, dir.join("ones.tif").to_str().unwrap(), &Default::default()).unwrap();
+}
+
+#[test]
+fn a_sum_over_its_memory_budget_is_refused_before_its_source_is_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    // 32 x 32 Float32 ones with an overview at 4. A `sum` holds 4 bytes per source pixel and 8 of
+    // shares: 12,288 bytes at full resolution, 768 for the overview's 64 pixels.
+    write_ones(d);
     assert!(run(d, "20000", &["overviews", "ones.tif", "4", "-r", "average"]).status.success());
     let sum = ["warp", "ones.tif", "out.tif", "-r", "sum", "--ts", "1", "1", "--ot", "Float64"];
 
@@ -48,4 +53,33 @@ fn a_sum_over_its_memory_budget_is_refused_before_its_source_is_read() {
     let average = run(d, "10000", &["warp", "ones.tif", "avg.tif", "-r", "average", "--ts", "1", "1", "--overview", "NONE"]);
     assert!(average.status.success(), "{}", String::from_utf8_lossy(&average.stderr));
     assert_eq!(total(&d.join("avg.tif")), 1.0);
+}
+
+/// An 18919 x 18919 Float32 VRT holding 32 x 32 ones in its corner.
+const LARGE: &str = r#"<VRTDataset rasterXSize="18919" rasterYSize="18919">
+  <SRS>EPSG:3857</SRS>
+  <GeoTransform>0, 1, 0, 32, 0, -1</GeoTransform>
+  <VRTRasterBand dataType="Float32" band="1">
+    <SimpleSource>
+      <SourceFilename relativeToVRT="1">ones.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SrcRect xOff="0" yOff="0" xSize="32" ySize="32"/>
+      <DstRect xOff="0" yOff="0" xSize="32" ySize="32"/>
+    </SimpleSource>
+  </VRTRasterBand>
+</VRTDataset>"#;
+
+#[test]
+fn a_sum_just_over_the_default_budget_is_refused() {
+    // 18919 x 18919 pixels of 12 bytes: 4,295,142,732, just over the default 4 GiB.
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    std::fs::write(d.join("large.vrt"), LARGE).unwrap();
+    write_ones(d);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_terrio"));
+    command.args(["warp", "large.vrt", "out.tif", "-r", "sum", "--ts", "1", "1"]).current_dir(d);
+    let refused = command.env_remove("TERRIO_WARP_SUM_MAX_BYTES").output().unwrap();
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "{message}");
+    assert!(message.contains("about 4295142732 bytes") && message.contains("TERRIO_WARP_SUM_MAX_BYTES=4294967296"), "{message}");
 }
