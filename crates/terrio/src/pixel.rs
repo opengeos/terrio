@@ -108,7 +108,7 @@ pub(crate) use map_data;
 
 /// A raster of `data` (band-major, of `cfg.data_type`), as `Raster::from_data_native` builds it
 /// but without first allocating and filling a buffer of nodata values that `data` replaces.
-pub(crate) fn raster_from_data(cfg: wbraster::RasterConfig, data: wbraster::raster::RasterData) -> crate::Result<wbraster::Raster> {
+pub fn raster_from_data(cfg: wbraster::RasterConfig, data: wbraster::raster::RasterData) -> crate::Result<wbraster::Raster> {
     let bands = cfg.bands.max(1);
     if data.len() != cfg.cols * cfg.rows * bands || cfg.data_type != data.data_type() {
         // Let wbraster report the error.

@@ -311,6 +311,7 @@ pub use resampled_read::ResampledReadOptions;
 pub use ndarray_ext::{ArrayError, BandLayout, FloatElement, RasterArrayExt, RasterElement};
 
 /// The raster type: pixels, georeferencing and CRS, in memory.
+pub use pixel::raster_from_data;
 pub use wbraster::{DataType, Raster, RasterConfig};
 /// The vector types: layers of features with geometries and attributes.
 pub use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
