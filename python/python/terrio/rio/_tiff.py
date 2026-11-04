@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from terrio import _terrio
+from terrio.errors import TerrioError
 from terrio.rio._jpeg_quality import guess_jpeg_quality
 from terrio.rio.enums import ColorInterp
 
@@ -171,6 +172,12 @@ class Structure:
     # The 92 values of the RPCCoefficientTag, or GDAL's RPC items of a sidecar.
     rpc_tag: list[float] | None = None
     rpc_items: dict[str, str] | None = None
+    # Whether IMAGE_STRUCTURE's LAYOUT=COG is GDAL 3.13's inference from the file's layout
+    # rather than its structural metadata: GDAL infers it for datasets opened read-only only.
+    layout_inferred: bool = False
+    # The file whose layout GDAL 3.13 would check when IMAGE_STRUCTURE is first read (see
+    # `infer_layout`); None once checked, or when nothing is to be checked.
+    layout_path: str | None = None
 
     def alpha_band(self) -> int | None:
         """The band GDAL uses as the alpha of the others (1-based), as `GetMaskFlags` does.
@@ -421,6 +428,10 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
     if isinstance(ghost, str) and "LAYOUT=IFDS_BEFORE_DATA" in ghost:
         if "KNOWN_INCOMPATIBLE_EDITION=YES" not in ghost:
             image_structure["LAYOUT"] = "COG"
+    # GDAL 3.13 (`GTiffDataset::CheckCOGLayout()`) also reports a COG's layout without the
+    # structural metadata saying so, checked when IMAGE_STRUCTURE is first read.
+    if "LAYOUT" not in image_structure and _terrio.gdal_compat() != "3.12":
+        s.layout_path = path
     # libtiff's default BitsPerSample is 1, as the reader's.
     bits = _first(t.get(BITS), 1)
     tables = t.get(JPEG_TABLES)
@@ -571,6 +582,34 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
             if _first(ifd.get(WIDTH)) == s.width and _first(ifd.get(HEIGHT)) == s.height:
                 s.has_mask = True
     return s
+
+
+def infer_layout(s: Structure) -> None:
+    """Adds GDAL 3.13's inferred `LAYOUT=COG` to IMAGE_STRUCTURE, once.
+
+    GDAL checks a TIFF's layout when its IMAGE_STRUCTURE metadata is first read, so the file's
+    directories are read again only then, and only under GDAL 3.13 compatibility.
+
+    Args:
+        s: The structure (see `Structure.layout_path`).
+    """
+    path = s.layout_path
+    if path is None:
+        return
+    structure = s.namespaces.setdefault("IMAGE_STRUCTURE", {})
+    # GDAL infers the layout only when no LAYOUT item is there (one from GDAL_METADATA).
+    if "LAYOUT" in structure:
+        s.layout_path = None
+        return
+    try:
+        inferred = _terrio.tiff_infers_cog_layout(path)
+    except TerrioError:
+        # Left to be checked again on the next request (a failed remote read).
+        return
+    s.layout_path = None
+    if inferred:
+        structure["LAYOUT"] = "COG"
+        s.layout_inferred = True
 
 
 def _vertical_unit(wkt: str | None) -> str | None:

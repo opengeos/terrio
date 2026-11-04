@@ -15,6 +15,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(resampled_region, m)?)?;
     m.add_function(wrap_pyfunction!(resampled_read, m)?)?;
     m.add_function(wrap_pyfunction!(tiff_tags, m)?)?;
+    m.add_function(wrap_pyfunction!(tiff_infers_cog_layout, m)?)?;
+    m.add_function(wrap_pyfunction!(gdal_compat, m)?)?;
     m.add_function(wrap_pyfunction!(crs_info, m)?)?;
     m.add_function(wrap_pyfunction!(crs_projjson, m)?)?;
     m.add_function(wrap_pyfunction!(crs_to_projjson, m)?)?;
@@ -259,6 +261,33 @@ fn tiff_tags<'py>(py: Python<'py>, path: &str) -> PyResult<Option<Bound<'py, PyL
     Ok(Some(out))
 }
 
+/// Whether GDAL 3.13 reports `LAYOUT=COG` for a TIFF opened read-only without structural
+/// metadata saying so (`GTiffDataset::CheckCOGLayout()`, which GDAL 3.12 does not have).
+///
+/// Args:
+///     path: A local path, a URL, an `s3://` object or a zip archive member.
+///
+/// Returns:
+///     bool: Whether the file's layout is one GDAL 3.13 reports as a COG's; False for files
+///     that are not TIFFs.
+///
+/// Raises:
+///     TerrioIOError: If the file cannot be read.
+#[pyfunction]
+fn tiff_infers_cog_layout(py: Python<'_>, path: &str) -> PyResult<bool> {
+    py.detach_result(|| terrio::gdal_infers_cog_layout(path)).py()
+}
+
+/// The GDAL release whose behavior terrio reproduces where releases differ, for the calling
+/// thread: the `TERRIO_GDAL_COMPAT` option (`Env` scopes, then the environment), else 3.12.
+///
+/// Returns:
+///     str: `"3.12"` or `"3.13"`.
+#[pyfunction]
+fn gdal_compat() -> &'static str {
+    terrio::ops::warp::KernelVersion::configured().as_str()
+}
+
 /// Describes a CRS.
 ///
 /// Args:
@@ -383,6 +412,9 @@ fn suggested_grid(
 ///     src_type: The source's data type, as GDAL names it (`"Byte"`...).
 ///     src_nodata: One source nodata value (or None) per band.
 ///     dst_nodata: The output nodata values (or None): one per band, or one for every band.
+///     kernel_version: The GDAL release whose resolution to reproduce, "3.12" (from Byte: an
+///         Int8 source gives Int16) or "3.13" (from the source's type). By default the
+///         `TERRIO_GDAL_COMPAT` option's, else "3.12".
 ///
 /// Returns:
 ///     tuple: GDAL's name of the type, and the source nodata values (None for every band when no
@@ -391,13 +423,16 @@ fn suggested_grid(
 /// Raises:
 ///     ValueError: If the type is unknown.
 #[pyfunction]
+#[pyo3(signature = (src_type, src_nodata, dst_nodata, kernel_version=None))]
 fn warped_vrt_type(
     src_type: &str,
     src_nodata: Vec<Option<f64>>,
     dst_nodata: Vec<Option<f64>>,
+    kernel_version: Option<&str>,
 ) -> PyResult<(&'static str, Vec<Option<f64>>)> {
     let t = terrio::ops::parse_data_type(src_type).py()?;
-    let (w, src_nodata) = terrio::ops::warp::warped_vrt_type(t, src_nodata, &dst_nodata);
+    let version = terrio::ops::warp::KernelVersion::parse_or_configured(kernel_version).py()?;
+    let (w, src_nodata) = terrio::ops::warp::warped_vrt_type(version, t, src_nodata, &dst_nodata);
     Ok((terrio::ops::data_type_name(w), src_nodata))
 }
 

@@ -70,3 +70,29 @@ def test_write_netcdf_groups(tmp_path):
         terrio.write_netcdf_groups([("/x", ra), ("x", rb)], str(tmp_path / "bad.nc"))
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.write_netcdf_groups([], str(tmp_path / "none.nc"))
+
+
+@pytest.mark.parametrize("gdal_version_attribute", ["YES", "NO"])
+def test_row_order_of_gdal_written_netcdf_is_gdals(tmp_path, gdal, gdal_version_attribute):
+    """Files GDAL writes (rows south to north under a north-up `GeoTransform`), with and without
+    the `GDAL` global attribute that GDAL 3.13 takes the row order from: terrio reads the rows,
+    and the geotransform, as the installed GDAL does (see `TERRIO_GDAL_COMPAT`)."""
+    version = ".".join(gdal.__version__.split(".")[:2])
+    if version != terrio.gdal_compat():
+        pytest.skip(f"terrio reproduces GDAL {terrio.gdal_compat()}, osgeo.gdal is {version}")
+    gdal.UseExceptions()
+    values = np.arange(12, dtype="float32").reshape(3, 4)
+    mem = gdal.GetDriverByName("MEM").Create("", 4, 3, 1, gdal.GDT_Float32)
+    mem.SetGeoTransform([500000, 30, 0, 4100000, 0, -30])
+    mem.SetProjection("EPSG:32611")
+    mem.GetRasterBand(1).WriteArray(values)
+    path = str(tmp_path / f"gdal_{gdal_version_attribute}.nc")
+    gdal.GetDriverByName("netCDF").CreateCopy(
+        path, mem, options=[f"WRITE_GDAL_VERSION={gdal_version_attribute}"]
+    )
+    mem = None
+    reference = gdal.Open(path)
+    expected = reference.GetRasterBand(1).ReadAsArray()
+    r = terrio.open_raster(path)
+    np.testing.assert_array_equal(r.read().reshape(expected.shape), expected)
+    np.testing.assert_allclose(r.transform, reference.GetGeoTransform(), rtol=0, atol=1e-9)

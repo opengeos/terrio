@@ -17,6 +17,7 @@ from rasterio.enums import Resampling as RR  # noqa: E402
 from rasterio.vrt import WarpedVRT as RasterioVRT  # noqa: E402
 from rasterio.windows import Window as RW  # noqa: E402
 
+import terrio  # noqa: E402
 import terrio.rio as trio  # noqa: E402
 from terrio.rio.enums import Resampling as TR  # noqa: E402
 from terrio.rio.vrt import WarpedVRT  # noqa: E402
@@ -702,14 +703,16 @@ def rotated_sources(tmp_path_factory):
 
 # The type of a warped VRT without `dtype`, as rasterio 1.5.0 (GDAL 3.12.1) gives it: the source's
 # widened to hold the nodata value (`GDALWarpResolveWorkingDataType()`, from Byte: an Int8 source
-# gives Int16), for `nodata=` and for `src_nodata=` alone; `src_nodata=` with `nodata=None` keeps
-# the source's type when it cannot hold the value (GDAL drops it).
+# gives Int16; GDAL 3.13 starts from the source's type, so Int8 holding -7 stays Int8), for
+# `nodata=` and for `src_nodata=` alone; `src_nodata=` with `nodata=None` keeps the source's type
+# when it cannot hold the value (GDAL drops it).
+_INT8 = "int8" if terrio.gdal_compat() == "3.13" else "int16"
 WIDENED = [
     ("uint8", -1, "int16", "uint8"),
     ("uint8", 300, "uint16", "uint8"),
     ("uint8", -2.5, "float32", "uint8"),
     ("uint8", float("nan"), "float64", "uint8"),
-    ("int8", -7, "int16", "int16"),
+    ("int8", -7, _INT8, _INT8),
     ("uint16", -1, "int32", "uint16"),
     ("int16", 40000, "int32", "int16"),
     ("uint32", -1, "int64", "uint32"),

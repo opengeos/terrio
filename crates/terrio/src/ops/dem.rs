@@ -108,7 +108,8 @@ pub enum ColorSelection {
 /// apply to it.
 #[derive(Debug, Clone)]
 pub struct DemOptions {
-    /// GDAL arithmetic version; 3.12 preserves existing results.
+    /// GDAL arithmetic version; 3.12 by default (not `TERRIO_GDAL_COMPAT`: the 3.13 profile covers
+    /// slope and standard hillshade only).
     /// Standard hillshade in 3.13 follows CPU-dependent SIMD rounding; it is not bit-portable.
     pub kernel_version: super::warp::KernelVersion,
     /// The band to process, from 1 (`-b`).

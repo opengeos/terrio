@@ -274,7 +274,8 @@ pub mod xlsx {
 
 pub use cog::{LazyRaster, TiffReadLimits, Window, WindowOptions, open_raster_lazy};
 pub use cog_validate::{
-    CogValidation, CogValidationOptions, CogValidationProfile, validate_cog, validate_cog_bytes, validate_cog_with_options,
+    CogValidation, CogValidationOptions, CogValidationProfile, gdal_infers_cog_layout, validate_cog, validate_cog_bytes,
+    validate_cog_with_options,
 };
 /// The memory the process can use, which reads refuse windows past.
 pub use dataset::fallible::usable_memory;

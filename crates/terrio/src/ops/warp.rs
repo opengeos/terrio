@@ -151,32 +151,68 @@ fn collect_polygons(g: &wbvector::Geometry, out: &mut Polygons) {
     }
 }
 
-/// GDAL raster arithmetic version, shared by warp resampling and terrain operations.
-/// The default retains Terrio's GDAL 3.12 results.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// The GDAL release whose behavior terrio reproduces where releases differ: warp and resampled
+/// reads, overviews, and what the bindings' rasterio-compatible layer reports. Terrain arithmetic
+/// ([`super::dem::DemOptions`]) takes it explicitly only.
+///
+/// The default is [`KernelVersion::configured`]: the `TERRIO_GDAL_COMPAT` configuration option
+/// (`3.12` or `3.13`), else GDAL 3.12.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelVersion {
     /// Window-ratio scales and the GDAL 3.12 bilinear/cubic threshold.
-    #[default]
     Gdal312,
     /// Local transformed-square scales and the GDAL 3.13 bilinear/cubic threshold.
     Gdal313,
 }
 
+/// The configuration option choosing the default [`KernelVersion`].
+pub const GDAL_COMPAT_OPTION: &str = "TERRIO_GDAL_COMPAT";
+
 impl KernelVersion {
     /// Parse a supported GDAL version.
     pub fn parse(value: &str) -> Result<Self> {
-        match value {
+        match value.trim() {
             "3.12" => Ok(Self::Gdal312),
             "3.13" => Ok(Self::Gdal313),
             _ => Err(Error::InvalidArgument("kernel version must be 3.12 or 3.13".into())),
         }
+    }
+
+    /// The version `TERRIO_GDAL_COMPAT` selects for the calling thread (see [`crate::config::get`]),
+    /// else GDAL 3.12. An unsupported value is reported as a warning and ignored.
+    pub fn configured() -> Self {
+        crate::config::get(GDAL_COMPAT_OPTION).map_or(Self::Gdal312, |v| {
+            Self::parse(&v).unwrap_or_else(|_| {
+                crate::warnings::warn(format!("{GDAL_COMPAT_OPTION}={v} is not 3.12 or 3.13: GDAL 3.12 behavior is used"));
+                Self::Gdal312
+            })
+        })
+    }
+
+    /// The version as GDAL numbers it (`3.12`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Gdal312 => "3.12",
+            Self::Gdal313 => "3.13",
+        }
+    }
+
+    /// The version a binding's optional argument names, else the configured one.
+    pub fn parse_or_configured(value: Option<&str>) -> Result<Self> {
+        value.map_or_else(|| Ok(Self::configured()), Self::parse)
+    }
+}
+
+impl Default for KernelVersion {
+    fn default() -> Self {
+        Self::configured()
     }
 }
 
 /// Options for [`warp`], named after `gdalwarp`'s.
 #[derive(Debug, Clone)]
 pub struct WarpOptions {
-    /// GDAL kernel behavior to reproduce, 3.12 by default.
+    /// GDAL kernel behavior to reproduce: [`KernelVersion::configured`] by default.
     pub kernel_version: KernelVersion,
     /// Coordinate operation selection controls.
     pub transform_options: crate::crs::TransformOptions,
@@ -1430,7 +1466,7 @@ impl<'a> Plan<'a> {
         let masked = nodata.iter().any(Option::is_some) || o.cutline.is_some();
         let unified_multiband = self.bands > 1 && o.unified_src_nodata != Some(false);
         let storage = Storage {
-            work_type: working_type(self.out_type, s.ds.raster.data_type, &nodata, &self.dst_nodata_all),
+            work_type: working_type(o.kernel_version, self.out_type, s.ds.raster.data_type, &nodata, &self.dst_nodata_all),
             out_type: self.out_type,
             dst_nodata: self.dst_nodata_all.clone(),
             resampling: o.resampling,
@@ -3492,24 +3528,32 @@ fn usable_src_nodata(nodata: Vec<Option<f64>>, src_type: DataType) -> Vec<Option
     nodata
 }
 
-/// `GDALWarpResolveWorkingDataType()` (GDAL 3.12, which rasterio's warps and warped VRTs leave to
-/// resolve): the type GDAL's kernels read, compute and store in, the union of the output's and the
-/// source's types and of the types holding the source and output nodata values, band by band.
-/// GDAL picks its kernels by it (see [`has_no_mask_kernel`]) and moves values off the nodata value
-/// in it (see [`Sink::value`]).
-fn working_type(out_type: DataType, src_type: DataType, src_nodata: &[Option<f64>], dst_nodata: &[Option<f64>]) -> DataType {
-    let mut w = DataType::U8;
+/// `GDALWarpResolveWorkingDataType()` (which rasterio's warps and warped VRTs leave to resolve):
+/// the type GDAL's kernels read, compute and store in, the union of the output's and the source's
+/// types and of the types holding the source and output nodata values, band by band. GDAL 3.12
+/// starts the union at Byte (an Int8 source works in Int16); GDAL 3.13 at the first of these
+/// types, Byte only without bands. GDAL picks its kernels by it (see [`has_no_mask_kernel`]) and
+/// moves values off the nodata value in it (see [`Sink::value`]).
+fn working_type(
+    version: KernelVersion,
+    out_type: DataType,
+    src_type: DataType,
+    src_nodata: &[Option<f64>],
+    dst_nodata: &[Option<f64>],
+) -> DataType {
+    let union = |w: Option<DataType>, t: DataType| w.map_or(t, |w| type_union(w, t));
+    let mut w = (version == KernelVersion::Gdal312).then_some(DataType::U8);
     for (band, nd) in src_nodata.iter().enumerate() {
-        w = type_union(w, out_type);
-        w = type_union(w, src_type);
+        let mut t = type_union(union(w, out_type), src_type);
         if let Some(v) = nd {
-            w = type_union_with_value(w, *v);
+            t = type_union_with_value(t, *v);
         }
         if let Some(v) = dst_nodata.get(band).or(dst_nodata.last()).copied().flatten() {
-            w = type_union_with_value(w, v);
+            t = type_union_with_value(t, v);
         }
+        w = Some(t);
     }
-    w
+    w.unwrap_or(DataType::U8)
 }
 
 /// The data type of the bands of a warped VRT created without one, and the source nodata values
@@ -3517,12 +3561,19 @@ fn working_type(out_type: DataType, src_type: DataType, src_nodata: &[Option<f64
 /// (`GDALWarpResolveWorkingDataType()`) before the VRT exists, from the source's type and the
 /// source and output nodata values, drops source nodata values that no band's type holds, and
 /// creates the bands in that type. So a Byte source with an output nodata value of -1 gives an
-/// Int16 VRT, one of 300 a UInt16 VRT, and an Int8 source an Int16 VRT (the resolution starts at
-/// Byte). `src_nodata` has one value (or `None`) per band; `dst_nodata` one per band or one for all.
-pub fn warped_vrt_type(src_type: DataType, src_nodata: Vec<Option<f64>>, dst_nodata: &[Option<f64>]) -> (DataType, Vec<Option<f64>>) {
+/// Int16 VRT, one of 300 a UInt16 VRT, and an Int8 source an Int16 VRT with GDAL 3.12, whose
+/// resolution starts at Byte, but an Int8 one with GDAL 3.13, whose resolution starts at the
+/// source's type. `src_nodata` has one value (or `None`) per band; `dst_nodata` one per band or
+/// one for all.
+pub fn warped_vrt_type(
+    version: KernelVersion,
+    src_type: DataType,
+    src_nodata: Vec<Option<f64>>,
+    dst_nodata: &[Option<f64>],
+) -> (DataType, Vec<Option<f64>>) {
     let src_nodata = usable_src_nodata(src_nodata, src_type);
     // No output yet: the union with the output's type is the union with the source's again.
-    (working_type(src_type, src_type, &src_nodata, dst_nodata), src_nodata)
+    (working_type(version, src_type, src_type, &src_nodata, dst_nodata), src_nodata)
 }
 
 /// `GDALCopyWords()`'s conversion of a working-type value to the output type: to a float type a
@@ -3619,9 +3670,17 @@ pub struct RegionWarp {
     src_nodata: Vec<Option<f64>>,
     dst_nodata: Option<f64>,
     translation: bool,
+    kernel_version: KernelVersion,
 }
 
 impl RegionWarp {
+    /// Reproduces the resampling of another GDAL release than the configured one (see
+    /// [`KernelVersion::configured`], read when the warp is created).
+    pub fn with_kernel_version(mut self, kernel_version: KernelVersion) -> Self {
+        self.kernel_version = kernel_version;
+        self
+    }
+
     /// A warp of the bands of a source of `src_size` pixels, georeferenced by `src_gt` in
     /// `src_srs`, into a grid georeferenced by `dst_gt` in `dst_srs`. `src_nodata` has one value
     /// (or `None`) per band.
@@ -3644,7 +3703,18 @@ impl RegionWarp {
         let mut t = GenImgProj::new(src_gt, src_srs, dst_srs)?;
         t.set_dst_gt(dst_gt);
         let translation = t.ct.is_none() && is_pixel_translation(&src_gt, &dst_gt);
-        Ok(Self { t, src_w: src_size.0, src_h: src_size.1, resampling, error_threshold, out_type, src_nodata, dst_nodata, translation })
+        Ok(Self {
+            t,
+            src_w: src_size.0,
+            src_h: src_size.1,
+            resampling,
+            error_threshold,
+            out_type,
+            src_nodata,
+            dst_nodata,
+            translation,
+            kernel_version: KernelVersion::configured(),
+        })
     }
 
     /// As [`RegionWarp::new`], for a source georeferenced by GCPs instead of a geotransform, as
@@ -3677,6 +3747,7 @@ impl RegionWarp {
             src_nodata,
             dst_nodata,
             translation: false,
+            kernel_version: KernelVersion::configured(),
         })
     }
 
@@ -3713,6 +3784,7 @@ impl RegionWarp {
             src_nodata,
             dst_nodata,
             translation: false,
+            kernel_version: KernelVersion::configured(),
         })
     }
 
@@ -3734,7 +3806,7 @@ impl RegionWarp {
             dst_has_nodata: self.dst_nodata.is_some(),
             cutline: false,
             unified_center: false,
-            kernel_version: KernelVersion::default(),
+            kernel_version: self.kernel_version,
             // GDAL's defaults: no SOURCE_EXTRA, SAMPLE_STEPS not ALL.
             source_extra: None,
             sample_all: false,
@@ -4558,7 +4630,8 @@ mod tests {
     #[test]
     fn working_type_is_gdals() {
         use DataType::{F32, F64, I16, I32, U8, U16, U32};
-        let w = |out, src, src_nd: Option<f64>, dst_nd| working_type(out, src, &[src_nd, src_nd], &[dst_nd, dst_nd]);
+        let w =
+            |out, src, src_nd: Option<f64>, dst_nd| working_type(KernelVersion::Gdal312, out, src, &[src_nd, src_nd], &[dst_nd, dst_nd]);
         assert_eq!(w(F32, F64, Some(9999.0), Some(9999.0)), F64);
         assert_eq!(w(F64, F32, None, None), F64);
         assert_eq!(w(U8, F32, None, Some(255.0)), F32);
@@ -4588,9 +4661,10 @@ mod tests {
     #[test]
     fn warped_vrt_types_are_gdals() {
         use DataType::{F32, F64, I8, I16, I32, I64, U8, U16, U32, U64};
-        let dst = |t, v: f64| warped_vrt_type(t, vec![None], &[Some(v)]);
-        let both = |t, v: f64| warped_vrt_type(t, vec![Some(v)], &[Some(v)]);
-        let src = |t, v: f64| warped_vrt_type(t, vec![Some(v)], &[None]);
+        let v312 = KernelVersion::Gdal312;
+        let dst = |t, v: f64| warped_vrt_type(v312, t, vec![None], &[Some(v)]);
+        let both = |t, v: f64| warped_vrt_type(v312, t, vec![Some(v)], &[Some(v)]);
+        let src = |t, v: f64| warped_vrt_type(v312, t, vec![Some(v)], &[None]);
         let nan = f64::NAN;
         let measured = [
             (U8, 7.0, U8, U8, U8),
@@ -4625,8 +4699,16 @@ mod tests {
         for (t, v, d, b, s) in measured {
             assert_eq!((dst(t, v).0, both(t, v).0, src(t, v).0), (d, b, s), "{t:?} with {v}");
         }
-        assert_eq!(warped_vrt_type(I8, vec![None], &[None]).0, I16);
-        assert_eq!(warped_vrt_type(U8, vec![None], &[None]).0, U8);
+        assert_eq!(warped_vrt_type(v312, I8, vec![None], &[None]).0, I16);
+        assert_eq!(warped_vrt_type(v312, U8, vec![None], &[None]).0, U8);
+        // GDAL 3.13 starts the union at the source's type: an Int8 source stays Int8 unless a
+        // nodata value needs more.
+        let v313 = KernelVersion::Gdal313;
+        assert_eq!(warped_vrt_type(v313, I8, vec![None], &[None]).0, I8);
+        assert_eq!(warped_vrt_type(v313, I8, vec![Some(-7.0)], &[Some(-7.0)]).0, I8);
+        assert_eq!(warped_vrt_type(v313, I8, vec![None], &[Some(200.0)]).0, I16);
+        assert_eq!(warped_vrt_type(v313, U8, vec![None], &[Some(-1.0)]).0, I16);
+        assert_eq!(working_type(v313, F32, I8, &[], &[]), U8);
         // The warp keeps a source nodata value its type holds (NaN in a float), not others.
         assert_eq!(src(U8, -1.0).1, vec![None]);
         assert_eq!(src(U8, 7.0).1, vec![Some(7.0)]);

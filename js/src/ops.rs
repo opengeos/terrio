@@ -284,7 +284,7 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     };
     let mut o = WarpOptions {
         transform_options: terrio::crs::TransformOptions { allow_ballpark: a.allow_ballpark, only_best: a.only_best, ..Default::default() },
-        kernel_version: terrio::ops::warp::KernelVersion::parse(a.kernel_version.as_deref().unwrap_or("3.12")).map_err(js_err)?,
+        kernel_version: terrio::ops::warp::KernelVersion::parse_or_configured(a.kernel_version.as_deref()).map_err(js_err)?,
         geoloc: a.geoloc,
         src_srs: srs(a.s_srs.as_deref())?,
         dst_srs: srs(a.t_srs.as_deref())?,
