@@ -3265,7 +3265,8 @@ impl WarpContext<'_> {
             for (i, (x, v)) in xs.iter_mut().zip(ys.iter_mut()).enumerate() {
                 (*x, *v) = ((start + i) as f64, (c.dy + y) as f64);
             }
-            // The batch's corners that the chunk needs; its last is the next batch's first.
+            // The batch's corners that the chunk needs, short of the batch's last point: that is
+            // the next batch's first, which the next batch computes.
             let need = c.dx.max(start) - start..(c.dx + n).min(start + BATCH - 1) - start + 1;
             self.approx.transform_part(true, xs, ys, ok, need.clone());
             row.x.extend_from_slice(&xs[need.clone()]);
