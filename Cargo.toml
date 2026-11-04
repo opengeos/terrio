@@ -68,7 +68,7 @@ ruzstd = "0.9"
 # (every HEC-RAS geometry and plan file, among others) and old fill value messages
 # (roteiro-gis/netcdf-rust#95). The HEC-RAS engine uses the same hdf5-reader 0.10.1, so a build
 # compiles one HDF5 reader.
-netcdf-reader = { version = "0.10.1", default-features = false, features = ["netcdf4"] }
+netcdf-reader = { version = "0.12.0", default-features = false, features = ["netcdf4"] }
 hdf5-reader = { version = "0.10.1", default-features = false }
 # HEC-RAS geometry and plan HDF files (the `hecras` feature): the read-only engine behind
 # ras-commander. It owns every HEC-RAS rule; terrio's driver only translates its values.
