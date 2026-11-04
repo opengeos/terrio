@@ -487,7 +487,10 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     } else {
         1
     };
-    let unsigned = attr_str(var, "_Unsigned").is_some_and(|s| s.eq_ignore_ascii_case("true"));
+    // `_Unsigned` marks the signed types of netCDF-3; GDAL ignores it on `Int64`, which netCDF-4
+    // pairs with `UInt64`.
+    let unsigned = matches!(var.dtype(), NcType::Byte | NcType::Short | NcType::Int)
+        && attr_str(var, "_Unsigned").is_some_and(|s| s.eq_ignore_ascii_case("true"));
     let name = read_path;
     // The values band by band: pixel-interleaved ones are read through their bands axis first.
     macro_rules! values {
@@ -525,8 +528,7 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         (NcType::Int, false) => typed!(i32, I32),
         (NcType::Int, true) => reinterpret!(i32, u32, U32),
         (NcType::UInt, _) => typed!(u32, U32),
-        (NcType::Int64, false) => typed!(i64, I64),
-        (NcType::Int64, true) => reinterpret!(i64, u64, U64),
+        (NcType::Int64, _) => typed!(i64, I64),
         (NcType::UInt64, _) => typed!(u64, U64),
         (NcType::Float, _) => typed!(f32, F32),
         (NcType::Double, _) => typed!(f64, F64),
@@ -699,7 +701,10 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         if let Some((lo, hi)) = range {
             // The range is in the variable's type: unsigned too when `_Unsigned`, as GDAL reads it.
             let (lo, hi) = if unsigned { (as_unsigned(lo, var.dtype()), as_unsigned(hi, var.dtype())) } else { (lo, hi) };
-            mask_outside(&mut data, lo, hi, nd);
+            // GDAL ignores an inverted range.
+            if lo <= hi {
+                mask_outside(&mut data, lo, hi, nd);
+            }
         }
     }
     let raster_bands = if complex.is_some() { bands * 2 } else { bands };
