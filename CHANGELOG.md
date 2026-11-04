@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Warps with `sum` resampling give each output pixel the sum of the valid source pixels it
+  overlaps, each weighted by the share of its area inside the output pixel (on the source grid, a
+  quadrilateral when the output grid is turned or reprojected), so that an output grid covering a
+  source read at full resolution keeps its total, up to floating-point rounding in a floating-point
+  output (a Float32 one rounds each pixel to 32 bits), and up to the rounding of each pixel to a
+  whole number and its clamping to the type's range in an integer one (a Byte output stores 255 for
+  a sum of 400). A warp that reads an overview of the source, as `--overview AUTO` (the default) can
+  choose, sums the overview's pixels instead; `--overview NONE` (`overview="NONE"` in Python) reads
+  the full resolution. An upsampled output pixel took the whole value of its source pixel, an output
+  pixel overhanging the source's edge counted as covered whole, and one much larger than the source
+  was left empty; a reprojected `sum` also changed with the memory limit it was warped under. VRT
+  sources resampled with `sum` share their pixels by area too, also from a source window with
+  fractional edges, which was copied pixel for pixel when it spanned as many pixels as its
+  destination, and their sums reach the band's type unrounded: they were rounded to the source's
+  type, which dropped a Byte source's fractions and capped its sums at 255.
+- With `GDAL_INGESTED_BYTES_AT_OPEN` (or `TERRIO_INGESTED_BYTES_AT_OPEN`) above a block (64 KiB
+  by default), opening a remote file that the process-wide cache holds takes the ingested blocks
+  from there and requests only those it no longer holds. Every reader of a file requested them
+  again (twice for each `terrio.rio.open`), so that opening a URL again was never served from the
+  cache.
 - netCDF: a `Byte`, `Short` or `Int` variable flagged `_Unsigned` reads its `valid_range` (or
   `valid_min` and `valid_max`) as unsigned too, as GDAL does. Such a range holding negative bounds,
   as GOES ABI L2 products' `[9200, -9536]` does, made every pixel nodata.

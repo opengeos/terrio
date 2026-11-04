@@ -1687,8 +1687,9 @@ impl RangeReader {
     }
 
     /// Opens a remote file, fetching its first bytes: `FIRST_READ` of them (a block, when
-    /// blocks are smaller), or `ingested_bytes_at_open` in whole blocks. A file in the
-    /// process-wide cache is opened without a request.
+    /// blocks are smaller), or `ingested_bytes_at_open` in whole blocks. A file whose first bytes
+    /// the process-wide cache holds is opened without a request; of whole blocks of first bytes,
+    /// only those the cache no longer holds are requested.
     pub fn open_with(remote: &Remote, options: HttpOptions) -> Result<Self> {
         Self::open_following(remote, options, Redirects::Any)
     }
@@ -1716,7 +1717,11 @@ impl RangeReader {
             whole: None,
             prefix: None,
         };
-        if !shared.load_cached(first_len) {
+        if let Some(missing) = shared.load_cached(first_len) {
+            // The blocks of the first bytes that the process-wide cache no longer holds, each run
+            // of them in one request.
+            shared.fetch_blocks(&missing, 0)?;
+        } else {
             let first = shared.client.fetch(Some((0, first_len - 1)))?;
             match first.status {
                 206 => {
@@ -1783,24 +1788,39 @@ impl RangeReader {
 }
 
 impl Shared {
-    /// Takes the file's length and first bytes from the process-wide cache. Returns whether it
-    /// holds them: its whole content, or at least `first_len` bytes from its start.
-    fn load_cached(&mut self, first_len: u64) -> bool {
+    /// Takes the file's length and its first `first_len` bytes from the process-wide cache, when
+    /// it holds the file. A first read shorter than a block (the default one) is taken only when
+    /// the cache holds all of it, in the whole file, its prefix or its first block: otherwise it
+    /// is requested as a first read is. A first read of whole blocks (`ingested_bytes_at_open`)
+    /// is taken block by block. Returns the blocks of the first bytes the cache no longer holds,
+    /// or `None` when the first read is to be requested.
+    fn load_cached(&mut self, first_len: u64) -> Option<Vec<u64>> {
         let cache = file_cache();
-        let Some(file) = cache.files.get(&self.key) else { return false };
-        let first: u64 =
-            file.whole.as_ref().or(file.prefix.as_ref()).or(file.blocks.get(&(self.block_size, 0))).map_or(0, |d| d.len() as u64);
-        if first < first_len.min(file.len) {
-            return false;
+        let file = cache.files.get(&self.key)?;
+        let end = first_len.min(file.len);
+        let prefix = file.prefix.as_ref().map_or(0, |p| p.len() as u64);
+        let first_block = file.blocks.get(&(self.block_size, 0)).map_or(0, |b| b.len() as u64);
+        if file.whole.is_none() && first_len < self.block_size && prefix.max(first_block) < end {
+            return None;
         }
         self.len = file.len;
         self.whole = file.whole.clone();
         self.prefix = file.prefix.clone();
-        if let Some(b) = file.blocks.get(&(self.block_size, 0)) {
-            self.blocks.insert(0, b.clone());
-            self.order.push_back(0);
+        if self.whole.is_some() || end <= prefix {
+            return Some(Vec::new());
         }
-        true
+        let mut missing = Vec::new();
+        for b in 0..end.div_ceil(self.block_size) {
+            match file.blocks.get(&(self.block_size, b)) {
+                Some(block) => {
+                    if self.blocks.insert(b, block.clone()).is_none() {
+                        self.order.push_back(b);
+                    }
+                }
+                None => missing.push(b),
+            }
+        }
+        Some(missing)
     }
 
     /// Takes block `b` from the process-wide cache. Returns whether it held it.
@@ -3110,6 +3130,71 @@ mod tests {
         clear_cache();
         let _ = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
         assert_eq!(seen.lock().unwrap().len(), n + 4, "requested again after clear_cache");
+    }
+
+    /// With `GDAL_INGESTED_BYTES_AT_OPEN` over a block, the first open of a GeoTIFF requests the
+    /// ingested bytes, in one request, and the opens of the URL after it take them from the
+    /// process-wide cache, without a request.
+    #[cfg(feature = "geotiff")]
+    #[test]
+    fn ingested_header_bytes_are_requested_once_and_reopened_from_the_cache() {
+        let _serial = cache_test_guard();
+        let config = crate::RasterConfig { cols: 1024, rows: 1024, bands: 1, data_type: crate::DataType::U8, ..Default::default() };
+        let pixels = crate::raster::RasterData::U8((0..1024 * 1024).map(|i| (i % 251) as u8).collect());
+        let source = crate::RasterDataset::new(crate::Raster::from_data_native(config, pixels).unwrap(), false);
+        let options = crate::RasterWriteOptions {
+            driver: Some(crate::formats::RasterDriver::Cog),
+            compression: Some("NONE".into()),
+            ..Default::default()
+        };
+        let bytes = crate::memory::write_raster_bytes(&source, "source.tif", &options).unwrap();
+        assert!(bytes.len() > 1_000_000);
+        let (base, seen) = serve_recording(bytes, None);
+        let url = format!("{base}/a.tif");
+        crate::config::push_scope(HashMap::from([("GDAL_INGESTED_BYTES_AT_OPEN".to_string(), Some("131072".to_string()))]));
+        let mut per_open = Vec::new();
+        for _ in 0..3 {
+            let requests = seen.lock().unwrap().len();
+            let asked = asked_bytes(&seen);
+            assert_eq!(crate::LazyRaster::open(&url).unwrap().width(), 1024);
+            let requests = seen.lock().unwrap().len() - requests;
+            per_open.push((requests, asked_bytes(&seen) - asked));
+        }
+        crate::config::pop_scope();
+        // (requests, bytes) of each open.
+        assert_eq!(per_open, [(1, 131_072), (0, 0), (0, 0)], "{:?}", header_values(&seen, "range"));
+    }
+
+    /// An open that ingests more of a file than the process-wide cache holds takes what it holds
+    /// and requests only the rest: after an open that read the first 16,384 bytes, an open
+    /// ingesting three 65,536-byte blocks asks for the bytes after them, the next open asks for
+    /// nothing, and once the first and the last block are dropped from the cache, an open asks
+    /// for those two alone.
+    #[test]
+    fn an_open_requests_only_the_ingested_bytes_the_cache_does_not_hold() {
+        let _serial = cache_test_guard();
+        let data = test_data();
+        let (base, seen) = serve_recording(data.clone(), None);
+        let url = format!("{base}/data");
+        let first = HttpOptions { block_size: 65_536, ..options() };
+        RangeReader::open_with(&Remote::Url(url.clone()), first.clone()).unwrap();
+        let ingest = HttpOptions { ingested_bytes_at_open: Some(196_608), ..first };
+        let mut r = RangeReader::open_with(&Remote::Url(url.clone()), ingest.clone()).unwrap();
+        RangeReader::open_with(&Remote::Url(url.clone()), ingest.clone()).unwrap();
+        assert_eq!(header_values(&seen, "range"), ["bytes=0-16383", "bytes=16384-196607"]);
+        assert_eq!(read_range(&mut r, 150_000, 1_000), data[150_000..151_000], "read from the blocks taken at open");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        let mut cache = file_cache();
+        let key = cache.files.keys().find(|key| key.starts_with(&format!("{url} "))).unwrap().clone();
+        let blocks = &mut cache.files.get_mut(&key).unwrap().blocks;
+        let dropped: u64 = blocks.iter().filter(|((_, b), _)| *b != 1).map(|(_, d)| d.len() as u64).sum();
+        blocks.retain(|&(_, b), _| b == 1);
+        cache.bytes -= dropped;
+        drop(cache);
+        let mut r = RangeReader::open_with(&Remote::Url(url), ingest).unwrap();
+        assert_eq!(header_values(&seen, "range")[2..], ["bytes=16384-65535", "bytes=131072-196607"]);
+        assert_eq!(read_range(&mut r, 0, 196_608), data[..196_608]);
+        assert_eq!(seen.lock().unwrap().len(), 4);
     }
 
     #[test]
