@@ -635,7 +635,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -991,13 +991,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hdf5-core"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c3d4ad873a5db535c052705e1b34070391157f4acc0ca50fcdc9c5923780112"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "hdf5-reader"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b86dd95f258700fce52515079812ca60707b87b6d8679178f4f2a308fc08ea0b"
 dependencies = [
  "flate2",
- "hdf5-core",
+ "hdf5-core 0.10.1",
  "libc",
  "lru",
  "lz4_flex 0.11.6",
@@ -1005,6 +1014,23 @@ dependencies = [
  "ndarray",
  "parking_lot",
  "rayon",
+ "smallvec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "hdf5-reader"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1ac773e9e47f3765399b71525783c203c53844c83d52a73f3f313d0a040e413"
+dependencies = [
+ "flate2",
+ "hdf5-core 0.12.1",
+ "libc",
+ "lru",
+ "memmap2",
+ "ndarray",
+ "parking_lot",
  "smallvec",
  "thiserror 2.0.21",
 ]
@@ -1600,7 +1626,7 @@ version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe0bc613be39bb169ac13389d82a085b007d4af4fae90eeacae3d28c4f515b92"
 dependencies = [
- "hdf5-reader",
+ "hdf5-reader 0.10.1",
  "memmap2",
  "ndarray",
  "netcdf-core",
@@ -2158,7 +2184,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bd6ba5132c53b68a36e9b206d6ddf0aa04e812bc59a3739244de28f66319671"
 dependencies = [
  "flate2",
- "hdf5-reader",
+ "hdf5-reader 0.10.1",
  "ndarray",
  "rayon",
  "robust",
@@ -2337,7 +2363,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2703,10 +2729,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2730,7 +2756,7 @@ dependencies = [
  "geo",
  "geographiclib-rs",
  "half",
- "hdf5-reader",
+ "hdf5-reader 0.12.1",
  "hmac",
  "image-webp",
  "jpeg-decoder",
@@ -3311,7 +3337,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
