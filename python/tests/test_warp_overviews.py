@@ -107,32 +107,33 @@ def test_a_repeated_band_of_a_sum_warped_vrt_reads_as_the_band_alone(tmp_path):
     np.testing.assert_array_equal(every, np.full((2, 4, 4), 4.0))
 
 
-def test_reduced_reads_of_a_gcp_sum_warped_vrt_go_through_the_bands(tmp_path):
-    """A `sum` VRT georeferenced by GCPs keeps its reduced reads of the whole grid as they were.
+@pytest.mark.xfail(
+    strict=True,
+    reason="a VRT georeferenced by GCPs is read through its bands at a reduced size, and they "
+    "resample its pixels or take an implicit overview rather than add the pixels",
+)
+def test_a_reduced_read_of_a_gcp_sum_warped_vrt_keeps_the_total(tmp_path):
+    """A `sum` VRT georeferenced by GCPs keeps its total when its whole grid is read reduced.
 
-    Such a read is never warped into the buffer: it goes through the VRT's bands, which choose
-    an implicit overview themselves, so the `sum` guard leaves it to them. On a grid aligned with
-    the source's pixels, a `sum` VRT then reads as an `average` one does. At 196 -> 50, read with
-    `average`, the bands would choose a finer overview than the dataset's choice.
+    The total of the read should be that of the full-resolution read, up to the rounding of each
+    output pixel to 32 bits (a relative 1e-6).
     """
-    n = 196
+    width, height = 64, 48
     path = str(tmp_path / "gcps.tif")
     gcps = [
         GroundControlPoint(row=r, col=c, x=500000 + c * 10, y=4100000 - r * 10)
-        for r in (0, n)
-        for c in (0, n)
+        for r in (0, height)
+        for c in (0, width)
     ]
-    profile = dict(width=n, height=n, count=1, dtype="float32", gcps=gcps, crs="EPSG:32611")
-    with terrio.rio.open(path, "w", driver="GTiff", **profile) as dst:
-        dst.write(np.add.outer(np.arange(n) * n, np.arange(n)).astype("float32")[None])
+    profile = dict(width=width, height=height, count=1, dtype="float32", gcps=gcps)
+    with terrio.rio.open(path, "w", driver="GTiff", crs="EPSG:32611", **profile) as dst:
+        dst.write(np.add.outer(np.arange(height) * width, np.arange(width)).astype("float32")[None])
     with terrio.rio.open(path, "r+") as dst:
         dst.build_overviews([2, 4], Resampling.average)
-    reads = []
-    for method in (Resampling.sum, Resampling.average):
-        with terrio.rio.open(path) as src, WarpedVRT(src, resampling=method) as vrt:
-            reads.append(vrt.read(1, out_shape=(50, 50), resampling=Resampling.average))
-    assert reads[0].shape == (50, 50) and reads[0].min() < reads[0].max()
-    np.testing.assert_array_equal(reads[0], reads[1])
+    with terrio.rio.open(path) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        full = vrt.read(1).astype("float64").sum()
+        reduced = vrt.read(1, out_shape=(vrt.height // 4, vrt.width // 4)).astype("float64").sum()
+    assert reduced == pytest.approx(full, rel=1e-6)
 
 
 @pytest.mark.parametrize("mode", [True, False])
