@@ -1395,7 +1395,14 @@ impl<'a> Plan<'a> {
     /// given one.
     fn select_overview(&mut self, k: usize, levels: &[(usize, usize)], o: &WarpOptions) -> Result<Option<usize>> {
         let full = self.srcs[k].grid;
-        if (levels.is_empty() || o.resampling == Resampling::Sum) && !matches!(o.overview, OverviewSelection::Level(_)) {
+        let explicit = matches!(o.overview, OverviewSelection::Level(_));
+        // Without stored levels there is nothing to choose; an explicit level still goes to
+        // `select`, which warns that it is missing.
+        if levels.is_empty() && !explicit {
+            return Ok(None);
+        }
+        // A `sum` takes no overview by itself: it reads the full resolution unless given a level.
+        if o.resampling == Resampling::Sum && !explicit {
             return Ok(None);
         }
         let ratio = if matches!(o.overview, OverviewSelection::Auto | OverviewSelection::AutoOffset(_)) {

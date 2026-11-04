@@ -902,13 +902,13 @@ class WarpedVRT(DatasetReader):
         # A whole read of every band of a `sum` VRT is warped into the buffer from the full
         # resolution below: an implicit overview has one pixel per block of the VRT's pixels, so
         # its sum would be a fraction of the total.
-        summed = (
+        whole_sum = (
             self.resampling == Resampling.sum
             and whole
             and len(set(idx)) == self._count
             and self._warp_gcps is None
         )
-        if (bw < nxs or bh < nys) and grid.full and self._overview_sizes and not summed:
+        if (bw < nxs or bh < nys) and grid.full and self._overview_sizes and not whole_sum:
             # GDALDataset::TryOverviewRasterIO(), choosing with GDALBandGetBestOverviewLevel2().
             moved = self._to_overview(grid, iw, fw, buf, rs, True)
             if moved is not None:
