@@ -9,7 +9,6 @@
 //! it is not set); their expected values come from PDAL 2.9, and
 //! `scripts/compare_pointclouds.py` compares every point with PDAL's.
 
-use std::path::PathBuf;
 use terrio::crs::SpatialRef;
 use terrio::pointcloud::filters::{
     self, BandDimension, CovarianceFeaturesOptions, DbscanOptions, DimRange, EigenvaluesOptions, FeatureMode, Neighbourhood,
@@ -18,12 +17,9 @@ use terrio::pointcloud::filters::{
 use terrio::pointcloud::{self, Dimension, PointCloud, Values};
 use terrio::{FieldDef, FieldType, FieldValue, Geometry, Layer, Raster, RasterConfig, RasterDataset};
 
-fn data(name: &str) -> Option<String> {
-    let dir = PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?);
-    let p = dir.join("pointcloud").join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
-}
+#[path = "common/pointcloud.rs"]
+mod fixtures;
+use fixtures::data;
 
 /// Points from coordinates, with intensities 0, 1, 2...
 fn points(xyz: &[[f64; 3]]) -> PointCloud {

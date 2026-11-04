@@ -4,7 +4,7 @@
 //! WebAssembly has no local file system and no signed requests: local paths fail, and writes to
 //! object stores are not available (`listUrl` lists public buckets and SAS-token URLs).
 
-use crate::{js_err, parse_options, to_js};
+use crate::{js_err, js_error, parse_options, to_js};
 use serde::Deserialize;
 use terrio::vsi::{self, CopyOptions, ListOptions, RemoteLister, SyncOptions};
 use wasm_bindgen::prelude::*;
@@ -126,11 +126,6 @@ pub fn vsi_sync(src: &str, dst: &str, options: JsValue) -> Result<JsValue, JsErr
 
 fn get(v: &JsValue, key: &str) -> JsValue {
     js_sys::Reflect::get(v, &JsValue::from_str(key)).unwrap_or(JsValue::UNDEFINED)
-}
-
-fn js_error(e: JsValue) -> JsError {
-    let msg = e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).or_else(|| e.as_string()).unwrap_or_else(|| format!("{e:?}"));
-    JsError::new(&msg)
 }
 
 fn cancel_body(value: &JsValue) {

@@ -1990,12 +1990,7 @@ impl Read for RangeReader {
 
 impl Seek for RangeReader {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let new = match pos {
-            SeekFrom::Start(p) => Some(p),
-            SeekFrom::End(d) => self.len.checked_add_signed(d),
-            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
-        };
-        self.pos = new.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before the start of the file"))?;
+        self.pos = crate::sparse::seek_position(self.pos, self.len, pos)?;
         Ok(self.pos)
     }
 }

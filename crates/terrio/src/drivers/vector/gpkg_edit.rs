@@ -28,6 +28,7 @@ use super::geopackage as gw;
 use super::gpkg_update::{self as gu, Database, columns, int, text};
 use super::sqlite as w;
 use crate::crs::SpatialRef;
+use crate::drivers::common::{xml_escape as escape, xml_unescape as unescape};
 use crate::drivers::sqlite::{self as r, Db};
 pub(crate) use crate::ops::vector_edit::UpdateCounts;
 use crate::ops::vector_edit::{KeyValue, key_of_field};
@@ -332,14 +333,6 @@ pub(crate) fn set_geometry_type(d: &mut Database, name: &str, t: Option<wbvector
 
 /// Metadata items by domain (`""` for the default domain), in order.
 pub(crate) type Metadata = Vec<(String, Vec<(String, String)>)>;
-
-fn unescape(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
-}
-
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
-}
 
 /// The domains and items of GDAL's `<GDALMultiDomainMetadata>` XML.
 pub(crate) fn parse_metadata_xml(xml: &str) -> Metadata {

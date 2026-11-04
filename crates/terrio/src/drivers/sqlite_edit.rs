@@ -29,6 +29,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use super::sqlite::varint;
 use super::vector::sqlite::{self as w, PageStore};
 use crate::{Error, Result};
 
@@ -42,29 +43,12 @@ const SECTOR: usize = 512;
 const PENDING_BYTE: i64 = 0x4000_0000;
 
 fn bad(msg: impl std::fmt::Display) -> Error {
-    Error::InvalidData(format!("SQLite: {msg}"))
+    super::sqlite::bad(&msg.to_string())
 }
 
 /// Why a database cannot be changed in place (it is left untouched).
 #[derive(Debug)]
 pub(crate) struct NotInPlace(#[allow(dead_code)] pub String);
-
-/// Reads a varint at `i`: `(value, length)`.
-pub(crate) fn varint(b: &[u8], i: usize) -> Option<(i64, usize)> {
-    let mut v: u64 = 0;
-    for k in 0..9 {
-        let byte = *b.get(i + k)?;
-        if k == 8 {
-            v = (v << 8) | byte as u64;
-            return Some((v as i64, 9));
-        }
-        v = (v << 7) | (byte & 0x7f) as u64;
-        if byte & 0x80 == 0 {
-            return Some((v as i64, k + 1));
-        }
-    }
-    None
-}
 
 /// A b-tree page, parsed: its type, cells (as stored, with child pointers, payload sizes and
 /// overflow page numbers) and right-most child.

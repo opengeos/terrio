@@ -125,7 +125,7 @@ pub(crate) fn split_options(options: &JsValue, keys: &[&str]) -> Result<(JsValue
     Ok((copy.into(), taken))
 }
 
-fn srs(s: Option<&str>) -> Result<Option<SpatialRef>, JsError> {
+pub(crate) fn srs(s: Option<&str>) -> Result<Option<SpatialRef>, JsError> {
     s.map(SpatialRef::parse).transpose().map_err(js_err)
 }
 

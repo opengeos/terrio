@@ -63,6 +63,11 @@ thread_local! {
     static EXIT_CODE: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
 }
 
+/// Parses an optional CRS argument.
+pub fn srs(s: &Option<String>) -> terrio::Result<Option<terrio::crs::SpatialRef>> {
+    s.as_deref().map(terrio::crs::SpatialRef::parse).transpose()
+}
+
 /// Sets the exit status of the command running on this thread, should it succeed.
 pub fn set_exit_code(code: i32) {
     EXIT_CODE.with(|c| c.set(code));

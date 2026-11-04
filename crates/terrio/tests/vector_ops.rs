@@ -6,18 +6,14 @@
 //! `scripts/fetch_test_data.sh`). Without it, these tests pass without checking anything.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use terrio::ops::polygonize::{PolygonizeOptions, polygonize};
 use terrio::ops::rasterize::{Grid, RasterizeOptions, rasterize};
 use terrio::ops::vector_filter::{VectorTranslateOptions, translate};
 use terrio::{DataType, Geometry};
 
-fn data(name: &str) -> Option<String> {
-    let dir = PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?);
-    let p = dir.join(name);
-    assert!(p.exists(), "{} is missing from TERRIO_TEST_DATA", p.display());
-    Some(p.to_string_lossy().into_owned())
-}
+#[path = "common/test_data.rs"]
+mod test_data;
+use test_data::data;
 
 fn layers(path: &str) -> Vec<terrio::Layer> {
     terrio::open_vector(path, &Default::default()).unwrap().layers

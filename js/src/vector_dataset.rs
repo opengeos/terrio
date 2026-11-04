@@ -3,10 +3,9 @@
 //! same names). Files are bytes: `partition` returns the parts' paths and bytes, and
 //! `createVector` the new dataset's bytes.
 
-use crate::ops::{file_bytes, input_layers};
+use crate::ops::{file_bytes, input_layers, srs};
 use crate::{Dataset, Inner, js_err, parse_options, to_js};
 use serde::Deserialize;
-use terrio::crs::SpatialRef;
 use terrio::formats::VectorDriver;
 use terrio::ops::concat::{ConcatMode, ConcatOptions, ConcatSource, FieldStrategy};
 use terrio::ops::partition::{PartitionOptions, PartitionScheme};
@@ -16,10 +15,6 @@ use wasm_bindgen::prelude::*;
 
 fn invalid(msg: impl std::fmt::Display) -> JsError {
     JsError::new(&msg.to_string())
-}
-
-fn srs(s: Option<&str>) -> Result<Option<SpatialRef>, JsError> {
-    s.map(SpatialRef::parse).transpose().map_err(js_err)
 }
 
 /// The layers of a source and the driver that read them, when known.

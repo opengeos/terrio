@@ -2122,21 +2122,6 @@ fn dtype_v2(t: DataType) -> &'static str {
     }
 }
 
-fn dtype_v3(t: DataType) -> &'static str {
-    match t {
-        DataType::U8 => "uint8",
-        DataType::I8 => "int8",
-        DataType::U16 => "uint16",
-        DataType::I16 => "int16",
-        DataType::U32 => "uint32",
-        DataType::I32 => "int32",
-        DataType::U64 => "uint64",
-        DataType::I64 => "int64",
-        DataType::F32 => "float32",
-        DataType::F64 => "float64",
-    }
-}
-
 fn fill_json(v: Option<f64>) -> Value {
     match v {
         None => Value::Null,
@@ -2283,7 +2268,7 @@ fn write_array(dir: &Path, a: &NewArray, compression: Option<&str>, version: Ver
                 "zarr_format": 3,
                 "node_type": "array",
                 "shape": a.shape,
-                "data_type": dtype_v3(a.data_type),
+                "data_type": a.data_type.as_str(),
                 "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": a.chunks}},
                 "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
                 "fill_value": fill,
@@ -3187,6 +3172,27 @@ mod tests {
         assert_eq!(v3(r#""zarr_format": 3,"#).unwrap(), vec![7.0; 4]);
         for format in [r#""zarr_format": 2,"#, r#""zarr_format": 65535,"#, ""] {
             assert_eq!(v3(format).unwrap_err().to_string(), "Zarr: Unhandled zarr_format value", "{format}");
+        }
+    }
+
+    #[test]
+    fn zarr_v3_and_stac_data_type_names() {
+        // Persisted in Zarr v3 `data_type` and STAC `data_type`: wbraster's names must stay these.
+        use DataType::*;
+        let names = [
+            (U8, "uint8"),
+            (I8, "int8"),
+            (U16, "uint16"),
+            (I16, "int16"),
+            (U32, "uint32"),
+            (I32, "int32"),
+            (U64, "uint64"),
+            (I64, "int64"),
+            (F32, "float32"),
+            (F64, "float64"),
+        ];
+        for (t, name) in names {
+            assert_eq!(t.as_str(), name);
         }
     }
 }

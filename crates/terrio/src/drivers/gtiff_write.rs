@@ -1867,13 +1867,7 @@ pub(crate) fn parse_gdal_band_metadata(xml: &str) -> Vec<(usize, String, String)
 
 // GDAL TIFF Item values carry a second CPL-escaped layer after XML decoding.
 // The writer mirrors GDAL; decoding only XML would change values and literal entities.
-pub(crate) fn xml_unescape(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
-}
-
-pub(crate) fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
-}
+pub(crate) use super::common::{xml_escape, xml_unescape};
 
 /// A GeoTIFF written a few rows at a time, so that rasters larger than memory can be written: the
 /// image data first, as rows of blocks are complete, then the image's directory at the end of the

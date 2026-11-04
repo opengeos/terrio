@@ -21,10 +21,11 @@
 //! hstore syntax (`"key"=>"value"`). Tags are listed in key order, where GDAL keeps the file's
 //! order.
 
+use crate::ops::simplify::open_ring;
 use crate::{Error, Result};
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Tags};
 use std::collections::HashMap;
-use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Ring};
+use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
 const CLOSED_WAYS_ARE_POLYGONS: &[&str] = &[
     "aeroway",
@@ -371,7 +372,7 @@ impl Builder {
             let w = &ways[&id];
             let tags: Vec<(&str, &str)> = w.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             let attrs = SPECS[3].attributes(&layers[3].schema, id, true, &tags);
-            let g = Geometry::MultiPolygon(vec![(ring(coords(w)), vec![])]);
+            let g = Geometry::MultiPolygon(vec![(open_ring(coords(w)), vec![])]);
             layers[3].push(Feature { fid: id as u64, geometry: Some(g), attributes: attrs });
         }
         layers
@@ -489,7 +490,7 @@ fn relation_feature<'a>(
                     (Member::Way(_), Some(w)) => {
                         let cs = w.coords;
                         parts.push(if w.area {
-                            Geometry::Polygon { exterior: ring(cs), interiors: vec![] }
+                            Geometry::Polygon { exterior: open_ring(cs), interiors: vec![] }
                         } else {
                             Geometry::LineString(cs)
                         });
@@ -708,13 +709,6 @@ fn finish_element(
         Some(_) => b.relations.push(Relation { id, members: std::mem::take(members), tags: std::mem::take(tags) }),
         None => {}
     }
-}
-
-fn ring(mut cs: Vec<Coord>) -> Ring {
-    if cs.len() > 1 && cs.first().map(|c| (c.x, c.y)) == cs.last().map(|c| (c.x, c.y)) {
-        cs.pop();
-    }
-    Ring::new(cs)
 }
 
 /// Joins open lines sharing end points into closed rings; lines that close no ring are dropped.
@@ -1507,7 +1501,7 @@ pub(crate) fn read_sorted_pbf(
             let (id, cs, tags) = &chunk[k];
             let tags: Vec<(&str, &str)> = tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             let attrs = SPECS[3].attributes(&schemas[3], *id, true, &tags);
-            Feature { fid: *id as u64, geometry: Some(Geometry::MultiPolygon(vec![(ring(cs.clone()), vec![])])), attributes: attrs }
+            Feature { fid: *id as u64, geometry: Some(Geometry::MultiPolygon(vec![(open_ring(cs.clone()), vec![])])), attributes: attrs }
         });
         emit(3, features)?;
     }
