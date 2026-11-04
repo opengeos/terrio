@@ -1050,11 +1050,11 @@ pub fn parse_rpc_file(text: &str, rpb: bool) -> Option<Vec<(String, String)>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// RPCs of a 100 x 100 image over 0.2 degrees, with a parallax along the samples.
-    fn rpc() -> Rpc {
+    pub(crate) fn rpc() -> Rpc {
         let mut items: Vec<(String, String)> = [
             ("LINE_OFF", "50"),
             ("SAMP_OFF", "50"),
@@ -1106,13 +1106,9 @@ mod tests {
         assert!((b.0 - a.0 - 50.0 * 0.05 * (500.0 / 500.0)).abs() < 1e-9 && (b.1 - a.1).abs() < 1e-12);
     }
 
-    /// Heights from a DEM: a row of points at one latitude (sampled from one row of the DEM)
-    /// gives what the points give one by one; points off the DEM fail unless a missing value is
-    /// given; the inverse finds the points back.
-    #[test]
-    fn dem_heights() {
-        let dir = tempfile::tempdir().unwrap();
-        let dem = dir.path().join("dem.tif");
+    /// A DEM under the image of [`rpc`], written to `dir`.
+    pub(crate) fn dem(dir: &std::path::Path) -> std::path::PathBuf {
+        let dem = dir.join("dem.tif");
         let (cols, rows) = (300usize, 260usize);
         let cfg = wbraster::RasterConfig {
             cols,
@@ -1130,6 +1126,16 @@ mod tests {
         let data = (0..rows * cols).map(|i| 300.0 + ((i % cols) as f64 * 0.37).sin() * 200.0 + (i / cols) as f64).collect();
         let ds = crate::RasterDataset::new(wbraster::Raster::from_data(cfg, data).unwrap(), true);
         crate::write_raster_dataset(&ds, dem.to_str().unwrap(), &Default::default()).unwrap();
+        dem
+    }
+
+    /// Heights from a DEM: a row of points at one latitude (sampled from one row of the DEM)
+    /// gives what the points give one by one; points off the DEM fail unless a missing value is
+    /// given; the inverse finds the points back.
+    #[test]
+    fn dem_heights() {
+        let dir = tempfile::tempdir().unwrap();
+        let dem = dem(dir.path());
         let r = rpc();
         for interpolation in [DemInterpolation::Bilinear, DemInterpolation::Cubic, DemInterpolation::Near] {
             let o = RpcOptions { dem: Some(dem.to_str().unwrap().into()), dem_interpolation: interpolation, ..Default::default() };

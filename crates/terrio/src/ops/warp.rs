@@ -4944,6 +4944,35 @@ mod tests {
         }
     }
 
+    /// With an RPC source and a DEM, a row of 10 points or more samples the DEM together, which
+    /// can move its points: a part of a row is then transformed exactly with its whole row, and
+    /// comes out as with the whole row.
+    #[test]
+    fn approx_transformer_transforms_whole_rows_for_an_rpc_source_with_a_dem() {
+        use super::super::rpc::{RpcOptions, RpcTransformer, tests};
+        let dir = tempfile::tempdir().unwrap();
+        let options = RpcOptions {
+            dem: Some(tests::dem(dir.path()).to_str().unwrap().into()),
+            height: Some(10.0),
+            height_scale: 2.0,
+            ..Default::default()
+        };
+        let geographic = SpatialRef::from_epsg(4326).unwrap();
+        let rpc = std::sync::Arc::new(RpcTransformer::new(&tests::rpc(), &options).unwrap());
+        let mut t = GenImgProj::with_georef(&geographic, &geographic, Georef::Rpc(rpc)).unwrap();
+        t.set_dst_gt([9.95, 0.003, 0.0, 45.02, 0.0, -0.003]);
+        assert!(!t.pointwise(true) && t.pointwise(false));
+        let a = Approx { base: &t, max_error: 0.0 };
+        let row = || ((0..30).map(f64::from).collect::<Vec<f64>>(), vec![0.0; 30], vec![false; 30]);
+        let (mut wx, mut wy, mut wok) = row();
+        a.transform(true, &mut wx, &mut wy, &mut wok);
+        let (mut px, mut py, mut pok) = row();
+        a.transform_part(true, &mut px, &mut py, &mut pok, 3..8);
+        for i in 3..8 {
+            assert_eq!((px[i].to_bits(), py[i].to_bits(), pok[i]), (wx[i].to_bits(), wy[i].to_bits(), wok[i]), "point {i}");
+        }
+    }
+
     #[test]
     fn rasterizes_pixel_centres() {
         let square = vec![vec![(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0), (1.0, 1.0)]];
