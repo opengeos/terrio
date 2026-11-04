@@ -620,6 +620,8 @@ def test_rasterize_overlapping_shapes_match_burning_one_by_one(values, dtype):
         got = features.rasterize(
             shapes, out_shape=(40, 40), transform=T, dtype=dtype, all_touched=all_touched
         )
+        if dtype is not None:
+            assert got.dtype == np.dtype(dtype)
         want = np.zeros((40, 40), dtype=got.dtype)
         for g, v in shapes:
             hit = features.geometry_mask([g], (40, 40), T, all_touched=all_touched, invert=True)

@@ -96,9 +96,9 @@ def test_from_array_2d_and_bool():
 def test_from_array_non_contiguous(view):
     a = np.arange(2 * 6 * 8, dtype="float32").reshape(2, 6, 8)
     v = view(a)
-    np.testing.assert_array_equal(
-        terrio.Raster.from_array(v, (0, 1, 0, 0, 0, -1)).read(), np.ascontiguousarray(v)
-    )
+    out = terrio.Raster.from_array(v, (0, 1, 0, 0, 0, -1)).read()
+    assert out.dtype == v.dtype
+    np.testing.assert_array_equal(out, np.ascontiguousarray(v))
 
 
 def test_from_array_rejects_bad_input():

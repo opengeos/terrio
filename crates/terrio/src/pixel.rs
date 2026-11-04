@@ -110,7 +110,10 @@ pub(crate) use map_data;
 /// but without first allocating and filling a buffer of nodata values that `data` replaces.
 pub fn raster_from_data(cfg: wbraster::RasterConfig, data: wbraster::raster::RasterData) -> crate::Result<wbraster::Raster> {
     let bands = cfg.bands.max(1);
-    if data.len() != cfg.cols * cfg.rows * bands || cfg.data_type != data.data_type() {
+    let Some(len) = cfg.cols.checked_mul(cfg.rows).and_then(|n| n.checked_mul(bands)) else {
+        return Err(wbraster::RasterError::InvalidDimensions { cols: cfg.cols, rows: cfg.rows }.into());
+    };
+    if data.len() != len || cfg.data_type != data.data_type() {
         // Let wbraster report the error.
         return Ok(wbraster::Raster::from_data_native(cfg, data)?);
     }
@@ -128,4 +131,40 @@ pub fn raster_from_data(cfg: wbraster::RasterConfig, data: wbraster::raster::Ras
         metadata: cfg.metadata,
         data,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wbraster::{CrsInfo, DataType, Raster, RasterConfig, raster::RasterData};
+
+    fn cfg() -> RasterConfig {
+        RasterConfig {
+            cols: 3,
+            rows: 2,
+            bands: 2,
+            x_min: 10.0,
+            y_min: -5.0,
+            cell_size: 2.0,
+            cell_size_y: Some(-3.0),
+            nodata: -9.0,
+            data_type: DataType::I16,
+            crs: CrsInfo::from_epsg(32611),
+            metadata: vec![("k".into(), "v".into())],
+        }
+    }
+
+    #[test]
+    fn raster_from_data_matches_from_data_native() {
+        let data = || RasterData::I16((0..12).collect());
+        let ours = raster_from_data(cfg(), data()).unwrap();
+        let theirs = Raster::from_data_native(cfg(), data()).unwrap();
+        assert_eq!(format!("{ours:?}"), format!("{theirs:?}"));
+    }
+
+    #[test]
+    fn raster_from_data_rejects_overflowing_dimensions() {
+        let big = RasterConfig { cols: 1 << 32, rows: 1 << 32, bands: 1, ..cfg() };
+        assert!(raster_from_data(big, RasterData::I16(Vec::new())).is_err());
+    }
 }

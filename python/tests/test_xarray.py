@@ -119,6 +119,20 @@ def test_masked_and_scaled(files):
     assert np.isnan(rgb.values[:, 20, 30]).all()
 
 
+def test_scale_only_and_offset_only(tmp_path):
+    raw = np.arange(12, dtype="int16").reshape(2, 2, 3)
+    p = str(tmp_path / "so.tif")
+    profile = dict(driver="GTiff", width=3, height=2, count=2, dtype="int16", crs="EPSG:32611")
+    with rio.open(p, "w", transform=TRANSFORM, **profile) as dst:
+        dst.write(raw)
+        dst.scales = [2.0, 1.0]
+        dst.offsets = [0.0, 10.0]
+    with pytest.warns(UserWarning, match="differ across bands"):
+        got = txr.open_rasterio(p, mask_and_scale=True).values
+    np.testing.assert_array_equal(got[0], raw[0] * 2.0)
+    np.testing.assert_array_equal(got[1], raw[1] + 10.0)
+
+
 def test_reads_only_the_window(files, monkeypatch):
     windows = []
     read = _io._Source.read

@@ -90,7 +90,8 @@ pub(crate) fn from_numpy(array: &Bound<'_, PyUntypedArray>) -> PyResult<RasterDa
             $(if dtype.is_equiv_to(&numpy::dtype::<$t>(py)) {
                 // A slice copy, numpy making strided arrays contiguous first: walking the array
                 // element by element was 8 to 36 times slower than either.
-                // (`as_slice` takes Fortran-ordered arrays too, in their memory order.)
+                // Only C-contiguous arrays are read in place: `as_slice` on a Fortran-ordered
+                // array returns its memory order, not C order, so other layouts go through numpy.
                 let a = array.cast::<PyArrayDyn<$t>>()?;
                 if a.is_c_contiguous() && let Ok(values) = a.readonly().as_slice() {
                     return Ok(RasterData::$v(values.to_vec()));
