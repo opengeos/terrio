@@ -328,7 +328,8 @@ fn sample_sources(a: &SampleArgs) -> Result<(Vec<terrio::RasterDataset>, Vec<Str
 fn sample_prefixes(given: &[String], rasters: &[String]) -> Result<Vec<String>> {
     if !given.is_empty() && given.len() != rasters.len() {
         return Err(Error::InvalidArgument(format!(
-            "give one --prefix per raster ({} given, @FILE lists counted by their paths), or omit all prefixes",
+            "give one --prefix per raster ({} prefixes for {} rasters, @FILE lists counted by their paths), or omit all prefixes",
+            given.len(),
             rasters.len()
         )));
     }
@@ -385,31 +386,62 @@ struct InputRow {
     band: Option<usize>,
 }
 
-/// The fields of a CSV line, with RFC 4180 quoting (`"a,b"`, `""` for a quote).
-fn csv_fields(line: &str) -> Vec<String> {
-    let (mut fields, mut field, mut quoted, mut chars) = (Vec::new(), String::new(), false, line.chars().peekable());
+/// The records of a CSV text, with RFC 4180 quoting: `"a,b"`, `""` for a quote, and line breaks
+/// inside quotes. Unquoted fields are trimmed, quoted ones kept as written; blank lines are
+/// skipped. An unterminated quote is an error.
+fn csv_records(text: &str) -> std::result::Result<Vec<Vec<String>>, String> {
+    let (mut records, mut record) = (Vec::new(), Vec::new());
+    let (mut field, mut quoted, mut was_quoted) = (String::new(), false, false);
+    let end_field = |field: &mut String, was_quoted: &mut bool| {
+        let f = std::mem::take(field);
+        if std::mem::take(was_quoted) { f } else { f.trim().to_string() }
+    };
+    let end_record = |record: &mut Vec<String>, records: &mut Vec<Vec<String>>| {
+        let r = std::mem::take(record);
+        if r.iter().any(|f| !f.is_empty()) {
+            records.push(r);
+        }
+    };
+    let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             '"' if quoted && chars.peek() == Some(&'"') => {
                 field.push('"');
                 chars.next();
             }
-            '"' => quoted = !quoted,
-            ',' if !quoted => fields.push(std::mem::take(&mut field).trim().to_string()),
+            '"' if quoted => quoted = false,
+            '"' if !was_quoted && field.trim().is_empty() => {
+                field.clear();
+                (quoted, was_quoted) = (true, true);
+            }
+            ',' if !quoted => record.push(end_field(&mut field, &mut was_quoted)),
+            '\n' | '\r' if !quoted => {
+                if c == '\r' && chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                record.push(end_field(&mut field, &mut was_quoted));
+                end_record(&mut record, &mut records);
+            }
+            // After a closing quote, only whitespace before the separator.
+            c if was_quoted && !quoted && c.is_whitespace() => {}
+            c if was_quoted && !quoted => return Err(format!("text '{c}' after a closing quote")),
             c => field.push(c),
         }
     }
-    fields.push(field.trim().to_string());
-    fields
+    if quoted {
+        return Err("a quoted field is not closed".into());
+    }
+    record.push(end_field(&mut field, &mut was_quoted));
+    end_record(&mut record, &mut records);
+    Ok(records)
 }
 
 /// The rows of an `--inputs` CSV table.
 fn read_inputs(file: &str) -> Result<Vec<InputRow>> {
     let text = super::read_list_text(file, "--inputs tables")?;
     let bad = |why: String| Error::InvalidArgument(format!("--inputs {file}: {why}"));
-    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
-    let header: Vec<String> =
-        csv_fields(lines.next().ok_or_else(|| bad("empty table".into()))?).iter().map(|h| h.to_ascii_lowercase()).collect();
+    let mut records = csv_records(&text).map_err(bad)?.into_iter();
+    let header: Vec<String> = records.next().ok_or_else(|| bad("empty table".into()))?.iter().map(|h| h.to_ascii_lowercase()).collect();
     if let Some(unknown) = header.iter().find(|h| !matches!(h.as_str(), "path" | "time" | "label" | "band")) {
         return Err(bad(format!("unknown column '{unknown}' (expected path, time, label, band)")));
     }
@@ -417,8 +449,15 @@ fn read_inputs(file: &str) -> Result<Vec<InputRow>> {
     let path = column("path").ok_or_else(|| bad("the header has no 'path' column".into()))?;
     let (time, label, band) = (column("time"), column("label"), column("band"));
     let mut rows = Vec::new();
-    for (n, line) in lines.enumerate() {
-        let fields = csv_fields(line);
+    for (n, fields) in records.enumerate() {
+        if fields.len() > header.len() {
+            return Err(bad(format!(
+                "row {} has {} fields, the header {} (quote fields containing commas)",
+                n + 1,
+                fields.len(),
+                header.len()
+            )));
+        }
         let get = |i: Option<usize>| i.and_then(|i| fields.get(i)).filter(|v| !v.is_empty()).cloned();
         let row_path = get(Some(path)).ok_or_else(|| bad(format!("row {} has no path", n + 1)))?;
         let row_band = match get(band) {
@@ -722,4 +761,17 @@ pub fn clean_coverage(a: CleanCoverageArgs) -> Result<()> {
     };
     let layers = terrio::ops::coverage_clean::clean_coverage_layers(&input, a.active_layer.as_deref(), &options)?;
     a.output.write(layers)
+}
+
+#[cfg(test)]
+mod inputs_tests {
+    use super::csv_records;
+
+    #[test]
+    fn csv_records_follow_rfc_4180_quoting() {
+        let text = "path,label\n\" a,b.tif \",\"two\nlines\"\r\n\nc.tif , \"say \"\"hi\"\"\"  \n";
+        assert_eq!(csv_records(text).unwrap(), [vec!["path", "label"], vec![" a,b.tif ", "two\nlines"], vec!["c.tif", "say \"hi\""]]);
+        assert!(csv_records("path\n\"open.tif\n").unwrap_err().contains("not closed"));
+        assert!(csv_records("path\n\"a\"b\n").unwrap_err().contains("after a closing quote"));
+    }
 }

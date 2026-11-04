@@ -255,6 +255,11 @@ impl Default for ZonalOptions {
     }
 }
 
+/// The most bytes of zone values a source holds in one pass over its bands, for statistics that
+/// keep values (median, quantiles, mode, minority, variety).
+/// Small in unit tests, so that they reduce bands in several passes.
+const VALUES_PER_PASS: usize = if cfg!(test) { 64 } else { 1 << 30 };
+
 /// Rows read at a time: terrio's strip size for `bands` of this raster (about 8 MB of values, or
 /// a row of blocks when larger), as other operations that read by strips use.
 fn strip_rows(raster: &LazyRaster, bands: usize) -> usize {
@@ -364,6 +369,12 @@ pub fn zonal_stats_with(
     }
     if options.stats.iter().any(|s| s.uses_weights()) && options.weights.is_none() {
         return Err(Error::InvalidArgument("weighted statistics require a weighting raster".into()));
+    }
+    if let Some(p) = options.stats.iter().find_map(|s| match s {
+        Statistic::Quantile(p) if !(0.0..=100.0).contains(p) => Some(p),
+        _ => None,
+    }) {
+        return Err(Error::InvalidArgument(format!("quantile percentage {p} is not between 0 and 100")));
     }
     let weights = options.weights.as_ref().filter(|_| options.stats.iter().any(|s| s.uses_weights()));
     let weight_header = match weights {
@@ -477,15 +488,29 @@ pub fn zonal_stats_with(
         // sources of a grid together, reading each weight strip once, if weighted runs over many
         // sources are slow. That holds every source's open zones at once, so bound the group.
         let mut weight_raster = weights.map(|w| w.lock().map(|mut r| r.shared())).transpose()?;
-        let weight = match (&mut weight_raster, weights, &weight_header) {
-            (Some(raster), Some(w), Some(h)) => Some(reduce::WeightSpec { raster, band: w.band, nodata: h.band_nodata(w.band) }),
-            _ => None,
-        };
         let zone_index = grids[grid].1.as_ref().expect("built above");
-        let strip = strip_rows(raster, bands.len());
-        let values = reduce::reduce_source(zone_index, raster, &bands, weight, &plan, strip, ahead)?;
-        for (band, values) in values.into_iter().enumerate() {
-            sink(BandStats { source: s, band, values })?;
+        // Statistics that keep values hold every open zone's values for each band reduced at once.
+        // Bands are reduced in groups whose values take at most `VALUES_PER_PASS` (one band at a
+        // time when one band's take more), so that a zone covering a whole multi-band raster holds
+        // one band's values, as 0.7.0 did. Each further pass reads the raster again.
+        let group = match plan.value_bytes_per_pixel() {
+            0 => bands.len(),
+            bytes => {
+                let per_band = reduce::open_pixels_peak(zone_index, raster.height(), strip_rows(raster, 1)) * bytes;
+                VALUES_PER_PASS / per_band.max(1)
+            }
+        };
+        let mut band = 0;
+        for group in bands.chunks(group.clamp(1, bands.len().max(1))) {
+            let weight = match (&mut weight_raster, weights, &weight_header) {
+                (Some(raster), Some(w), Some(h)) => Some(reduce::WeightSpec { raster, band: w.band, nodata: h.band_nodata(w.band) }),
+                _ => None,
+            };
+            let strip = strip_rows(raster, group.len());
+            for values in reduce::reduce_source(zone_index, raster, group, weight, &plan, strip, ahead)? {
+                sink(BandStats { source: s, band, values })?;
+                band += 1;
+            }
         }
         Ok(())
     };
@@ -551,7 +576,31 @@ fn release_freed_memory() {
 
 #[cfg(test)]
 mod tests {
-    use super::labelled_bands;
+    use super::{Statistic, ZonalBand, ZonalOptions, ZonalSource, labelled_bands, zonal_stats};
+    use crate::vector::Coord;
+    use crate::{DataType, Feature, Geometry, Layer, LazyRaster, Raster, RasterConfig, RasterDataset};
+
+    #[test]
+    fn bands_reduced_in_several_passes_match_bands_reduced_alone() {
+        // 3 bands of 6 x 6; a zone of 30 pixels holds 240 bytes of values per band, over the
+        // 64 bytes a pass may hold in tests, so each band takes a pass of its own.
+        let values: Vec<f64> = (0..3 * 36).map(|i| ((i * 37) % 11) as f64).collect();
+        let cfg = RasterConfig { cols: 6, rows: 6, bands: 3, data_type: DataType::F64, ..Default::default() };
+        let mut r = RasterDataset::new(Raster::from_data(cfg, values).unwrap(), false);
+        r.set_geo_transform([0.0, 1.0, 0.0, 6.0, 0.0, -1.0]);
+        let ring = vec![Coord::xy(0., 0.), Coord::xy(6., 0.), Coord::xy(6., 5.), Coord::xy(0., 5.), Coord::xy(0., 0.)];
+        let mut zones = Layer::new("zones");
+        zones.features.push(Feature { fid: 1, geometry: Some(Geometry::polygon(ring, vec![])), attributes: Vec::new() });
+        let options = ZonalOptions { stats: vec![Statistic::Median, Statistic::Mode, Statistic::Mean], ..Default::default() };
+        let source = |bands: &[usize]| ZonalSource {
+            raster: LazyRaster::from(r.clone()).into(),
+            bands: bands.iter().map(|&b| ZonalBand::new(b, format!("b{b}"))).collect(),
+        };
+        let together = zonal_stats(&zones, &mut [source(&[1, 2, 3])], &options).unwrap();
+        let alone = zonal_stats(&zones, &mut [source(&[1]), source(&[2]), source(&[3])], &options).unwrap();
+        assert_eq!(together.features[0].attributes, alone.features[0].attributes);
+        assert_eq!(together.features[0].attributes.len(), 9);
+    }
 
     #[test]
     fn labelled_bands_name_each_band_of_a_label_and_keep_unlabelled_names() {

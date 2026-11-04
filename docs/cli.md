@@ -2388,8 +2388,10 @@ s3://bucket/S2B_20240711/B04.tif,2024-07-11,B04
 Repeat `--raster` for multiple rasters (or give `--raster @FILE`, a list of paths one per line)
 and use `--band` for comma-separated bands from each. `--inputs FILE` reads a CSV table with a
 header: `path` (required), and optional `time`, `label` and `band` (a band number; by default
-each `--band`); quote fields that contain commas. Rows of the same path, or of a `--raster`
-path, share one read.
+each `--band`); quote fields that contain commas (RFC 4180 quoting; a row with more fields than
+the header is an error). Rows of the same path, or of a `--raster` path, share one read. Over
+MCP, `--inputs` tables and `@FILE` lists are refused: pass each raster as a `--raster` argument
+(labelled rows are not available there).
 Default statistics are `count,min,max,mean,sum,stddev`. Also available: `variance`, `cv`
 (standard deviation over mean, null when the mean is 0), `median`, `quantile_P` for a
 percentage P from 0 to 100 (`quantile_25`, `quantile_2.5`), `mode` (alias `majority`: the value
@@ -2427,14 +2429,18 @@ accepted only when both the zones and the raster have no CRS. Reprojection trans
 vertices without densifying curved edges. Zones are computed once per distinct grid (size,
 geotransform and CRS) and shared by every raster on it, so many dates of one Sentinel-2 tile
 cost one zone computation per resolution. Rasters are read lazily, local or remote, in strips of
-block rows (at least 256 rows), and only the strips and columns that zones cover; rasters are
+block rows (about 8 MB of values), and only the strips and columns that zones cover; rasters are
 processed in parallel (`RAYON_NUM_THREADS` sets the number of threads). Memory follows the
 strip size and the number of threads, not the raster size: each raster being reduced holds up
 to five strips of about 8 MB of its bands, or of a whole row of blocks when that is larger (a
 row of 1024-row blocks of ten UInt16 bands 10,980 columns wide is 225 MB), and one raster is
-reduced per thread. Median, quantiles, mode, minority and variety also keep the values of every
-band in each zone a strip reaches until the zone's last row is read: 8 bytes per pixel and band
-(16 with `--fractional`). Integers above 2⁵³ can lose precision.
+reduced per thread. Median, quantiles, mode, minority and variety also keep each zone's values
+from the strip of its first row to that of its last: 8 bytes per pixel and band (16 with
+`--fractional`). A raster's bands are reduced together while their values take at most 1 GiB,
+else in groups that do, one band at a time when one band's take more (a zone covering a whole
+multi-band raster), each group reading the raster again. The zones of each grid are held as
+spans of covered pixels (a few bytes per covered row of each zone) until every raster is
+reduced. Integers above 2⁵³ can lose precision.
 Complex bands and geolocation arrays are unsupported. Standard vector input/output options apply.
 
 ### Fractional coverage and weighting rasters
@@ -2471,9 +2477,9 @@ for empty zones). All statistics use binary64 arithmetic; overflow in weighted a
 to fractional counts as well as other new Real fields; integer counts and source attributes
 are unchanged. Valid polygons/multipolygons are required for fractional overlay. Coverage is
 planar in the raster grid, including rotated grids; geographic pixels are not weighted by
-spherical area. Raster pixels are materialized as before, and dataset masks are not retained
-by this eager dataset API. Numeric nodata remains available; use a nodata/NaN materialized
-raster when mask-band validity must affect this operation.
+spherical area. Rasters are read in strips as above; dataset masks are not applied. Numeric
+nodata remains available; use a nodata/NaN raster when mask-band validity must affect this
+operation.
 
 
 A weighting raster is opened and validated only when a weighted statistic is

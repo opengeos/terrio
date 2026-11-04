@@ -333,11 +333,14 @@ fn zonal_reads_more_rasters_than_the_open_file_limit() {
         std::os::unix::fs::symlink(d.join("2024-07-01/B04.tif"), d.join(format!("r{i}.tif"))).unwrap();
     }
     std::fs::write(d.join("list.txt"), list).unwrap();
-    let command = format!(
-        "ulimit -n 64 && exec '{}' zonal-stats zones.geojson out.fgb --raster @list.txt --stats mean",
-        env!("CARGO_BIN_EXE_terrio")
-    );
-    let r = Command::new("sh").arg("-c").arg(command).current_dir(d).output().unwrap();
+    // The binary is the script's $0, not text in it; few threads keep their open rasters under the limit.
+    let r = Command::new("sh")
+        .args(["-c", r#"ulimit -n 64 && exec "$0" zonal-stats zones.geojson out.fgb --raster @list.txt --stats mean"#])
+        .arg(env!("CARGO_BIN_EXE_terrio"))
+        .env("RAYON_NUM_THREADS", "4")
+        .current_dir(d)
+        .output()
+        .unwrap();
     assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
     let out = layer(&d.join("out.fgb"));
     assert_eq!(out.features[0].get(&out.schema, "r199_b1_mean").unwrap(), &terrio::FieldValue::Float(8.5));

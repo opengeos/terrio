@@ -35,7 +35,11 @@
   block rows, only where zones lie, and in parallel, and the memory a reduced raster freed is
   returned to the system (Linux, glibc). `zonal-stats` on 100 Sentinel-2 COGs and 10,000 fields
   (`mean`, 32 threads) takes 4.0 s and 0.8 GB of peak memory, where 0.7.0 took 80 s and 12.7 GB,
-  with the same results (relative differences under 2e-14). `ops::zonal::zonal_stats` takes
+  with the same results (relative differences under 2e-14). Median, quantiles, mode, minority
+  and variety reduce a multi-band raster's bands in groups whose values fit 1 GiB: `median` over
+  a zone covering a whole 10-band Sentinel-2 tile takes 24 s and 2.8 GB, where 0.7.0 took 46 s
+  and 5.2 GB; on 10,000 fields, 2.6 s and 1.0 GB, where it took 18 s and 2.5 GB.
+  `ops::zonal::zonal_stats` takes
   `ZonalSource`s (a `LazyRaster`, or a path opened only while it is read so that thousands of
   files stay within the open-file limit, and its bands); `zonal_stats_with` hands each finished
   band to a sink instead of building a layer.

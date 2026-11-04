@@ -175,15 +175,21 @@ fn zonal_stats(
     if prefixes.len() != items.len() {
         return Err(pyo3::exceptions::PyValueError::new_err("give one prefix per raster, or omit prefixes"));
     }
-    // Sources in first-appearance order; labelled rows naming the path of an earlier item or row
-    // share its source, as in the CLI.
+    // Sources in first-appearance order; labelled rows naming the raster (its path, or the same
+    // terrio.Raster) of an earlier item or row share its source, as in the CLI.
+    #[derive(PartialEq, Eq, Hash)]
+    enum Key {
+        Path(String),
+        Object(usize),
+    }
+    let key = |raster: &Bound<'_, PyAny>| -> PyResult<Key> {
+        Ok(crate::ops::raster_path(raster)?.map_or(Key::Object(raster.as_ptr() as usize), Key::Path))
+    };
     let mut sources: Vec<ZonalSource> = Vec::new();
-    let mut paths: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<Key, usize> = std::collections::HashMap::new();
     for (item, prefix) in items.iter().zip(&prefixes) {
         let Ok(row) = item.cast::<pyo3::types::PyDict>() else {
-            if let Some(path) = crate::ops::raster_path(item)? {
-                paths.entry(path).or_insert(sources.len());
-            }
+            seen.entry(key(item)?).or_insert(sources.len());
             sources.push(ZonalSource {
                 raster: zonal_raster(py, item)?,
                 bands: bands.iter().map(|&band| ZonalBand::new(band, format!("{prefix}_b{band}"))).collect(),
@@ -226,13 +232,10 @@ fn zonal_stats(
         };
         let row_bands =
             terrio::ops::zonal::labelled_bands(&row_bands, time.as_deref(), label.as_deref(), |band| format!("{prefix}_b{band}"));
-        let path = crate::ops::raster_path(&raster)?;
-        match path.as_ref().and_then(|p| paths.get(p)) {
+        match seen.get(&key(&raster)?) {
             Some(&i) => sources[i].bands.extend(row_bands),
             None => {
-                if let Some(path) = path {
-                    paths.insert(path, sources.len());
-                }
+                seen.insert(key(&raster)?, sources.len());
                 sources.push(ZonalSource { raster: zonal_raster(py, &raster)?, bands: row_bands });
             }
         }

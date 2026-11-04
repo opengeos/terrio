@@ -276,6 +276,9 @@ def test_zonal_labelled_inputs_dicts_and_dataframe(tmp_path):
         {"raster": raster, "time": "2024-07-11", "label": "B04", "band": 2},
     ]
     out = terrio.zonal_stats(zones, rows, stats=["mean", "quantile_50", "variety"])
+    # Rows naming the same Raster object share its source, as rows of the same path do.
+    shared = terrio.zonal_stats(zones, [raster, {"raster": raster, "label": "B04", "band": 2}])
+    assert shared.to_geojson()["features"][0]["properties"]["B04_mean"] == 20.0
     props = out.to_geojson()["features"][0]["properties"]
     assert props["2024_07_01_B04_mean"] == 2.0
     assert props["2024_07_01_B04_quantile_50"] == 2.0

@@ -39,7 +39,7 @@ pub(super) struct Span {
 }
 
 /// One feature's pixels: spans in row-major order within rows `row_start..row_end`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct Zone {
     pub feature: usize,
     pub row_start: usize,
@@ -66,6 +66,10 @@ pub(super) fn build(layer: &Layer, grid: &GridKey, all_touched: bool, fractional
     };
     if needs_transform {
         Transformer::new(&src, &grid.crs)?;
+    }
+    // Spans hold rows and columns as u32.
+    if grid.cols > u32::MAX as usize || grid.rows > u32::MAX as usize {
+        return Err(Error::InvalidArgument(format!("zonal statistics take grids of at most {} rows and columns", u32::MAX)));
     }
     let inv = super::super::invert_gt(&grid.geo_transform).ok_or_else(|| Error::InvalidArgument("cannot invert the raster grid".into()))?;
     let indices: Vec<usize> = (0..layer.features.len()).collect();

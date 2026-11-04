@@ -2310,10 +2310,9 @@ Median uses exactextract on the same stored samples promoted to Float64, so its
 integer/Float32 quantile cast does not truncate the fractional result. GDAL 3.13.3
 advertises median but rejects it. Native empty zones keep null sums, while the
 references return zero sums; dedicated native regressions retain that documented
-policy. Weight rasters currently require identical grids and CRSs. The eager
-operation retains its existing full-raster materialization; fractional masks are
-cropped per zone and shared across bands, and binary membership masks retain their
-original Byte storage.
+policy. Weight rasters currently require identical grids and CRSs. Rasters are read
+in strips; zones are computed once per grid as spans of covered pixels (fractional
+coverages cropped per zone), shared across bands and rasters.
 
 A local optimized run passed all 18 comparisons within the stated tolerance. Maximum
 absolute errors were 0.00447 for coverage-only USGS statistics and 12.12 for sums

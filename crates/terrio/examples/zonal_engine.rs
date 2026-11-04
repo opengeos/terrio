@@ -11,7 +11,7 @@
 //! `INPUTS.csv` has a header and `path` as its first column (other columns are ignored); every
 //! row is band 1 of its file. `STATS` is comma-separated, as `terrio zonal-stats --stats`.
 
-use terrio::ops::zonal::{Statistic, ZonalBand, ZonalOptions, ZonalSource, zonal_stats_with};
+use terrio::ops::zonal::{Statistic, ZonalBand, ZonalOptions, ZonalRaster, ZonalSource, zonal_stats_with};
 
 fn main() -> terrio::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -30,10 +30,11 @@ fn main() -> terrio::Result<()> {
         .filter(|l| !l.trim().is_empty())
         .enumerate()
         .map(|(i, line)| {
-            let path = line.split(',').next().unwrap_or_default();
-            Ok(ZonalSource { raster: terrio::open_raster_lazy(path)?.into(), bands: vec![ZonalBand::new(1, format!("r{i}"))] })
+            // Paths, as the CLI passes them: each file is open only while it is read.
+            let path = line.split(',').next().unwrap_or_default().to_string();
+            ZonalSource { raster: ZonalRaster::Path(path), bands: vec![ZonalBand::new(1, format!("r{i}"))] }
         })
-        .collect::<terrio::Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     let opened = start.elapsed();
     let bands = std::sync::atomic::AtomicUsize::new(0);
     zonal_stats_with(&zones, &mut sources, &options, &|stats| {

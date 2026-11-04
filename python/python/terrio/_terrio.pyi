@@ -2480,8 +2480,8 @@ def zonal_stats(
     rasters: str
     | os.PathLike[str]
     | Raster
-    | Mapping[str, Any]
-    | Sequence[str | os.PathLike[str] | Raster | Mapping[str, Any]]
+    | dict[str, Any]
+    | Sequence[str | os.PathLike[str] | Raster | dict[str, Any]]
     | Any,
     *,
     bands: Sequence[int] | None = None,
@@ -2501,9 +2501,9 @@ def zonal_stats(
     ``raster`` (required), ``time``, ``label`` and ``band`` (or a pandas DataFrame with
     those columns; None and NaN are missing values). Labelled fields are named
     ``TIME_LABEL_STATISTIC``, or ``TIME_LABEL_bN_STATISTIC`` for a label over several
-    ``bands``; dicts naming the same path share one read. Statistics: count, min, max,
-    mean, sum, stddev, variance, cv, median, quantile_P (P from 0 to 100), mode
-    (majority), minority, variety, and
+    ``bands``; dicts naming the path or Raster of an earlier item or dict share its read.
+    Statistics: count, min, max, mean, sum, stddev, variance, cv, median, quantile_P (P from 0
+    to 100), mode (majority), minority, variety, and
     weighted_mean, weighted_sum, weighted_stddev with ``weights``.
     Field-name collisions receive _2, _3, etc. suffixes.
     """

@@ -14,6 +14,8 @@ docs/benchmarks.md.
 """
 
 import argparse
+import csv
+import io
 import json
 import math
 import os
@@ -213,7 +215,7 @@ def terrio_columns(path, stats):
 
 def compare(reference, other, stats, rel=1e-6, abs_=1e-6):
     """Maximum absolute and relative differences of `other` from `reference` for shared keys."""
-    worst_abs, worst_rel, compared = 0.0, 0.0, 0
+    worst_abs, worst_rel, compared, failing = 0.0, 0.0, 0, 0
     for key, values in other.items():
         if key not in reference:
             raise AssertionError(f"missing column {key}")
@@ -223,11 +225,12 @@ def compare(reference, other, stats, rel=1e-6, abs_=1e-6):
                     raise AssertionError(f"{key}[{i}]: null mismatch {a} vs {b}")
                 continue
             d = abs(a - b)
-            worst_abs = max(worst_abs, d)
-            worst_rel = max(worst_rel, d / max(abs(a), 1e-300))
+            r = d / max(abs(a), 1e-300)
+            worst_abs, worst_rel = max(worst_abs, d), max(worst_rel, r)
+            # Each value passes when either tolerance holds for it.
+            failing += d > abs_ and r > rel
             compared += 1
-    return dict(max_abs=worst_abs, max_rel=worst_rel, values=compared,
-                equivalent=worst_abs <= abs_ or worst_rel <= rel)
+    return dict(max_abs=worst_abs, max_rel=worst_rel, values=compared, equivalent=failing == 0)
 
 
 def main():
@@ -282,7 +285,11 @@ def main():
                 with tempfile.TemporaryDirectory(dir=args.data) as work:
                     work = Path(work)
                     inputs = work / "inputs.csv"
-                    inputs.write_text("path,time,label\n" + "".join(f"{u if args.remote else p},{d},{b}\n" for p, d, b, u in rows))
+                    table = io.StringIO()
+                    writer = csv.writer(table, lineterminator="\n")
+                    writer.writerow(["path", "time", "label"])
+                    writer.writerows([u if args.remote else p, d, b] for p, d, b, u in rows)
+                    inputs.write_text(table.getvalue())
                     commands = {}
                     stat_list = ",".join(stats)
                     extra = ["--fractional"] if args.method == "fractional" else []

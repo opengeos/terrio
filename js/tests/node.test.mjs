@@ -3516,6 +3516,8 @@ test("zonalStats names numeric and Date times, and each band of a label", () => 
   const q=terrio.zonalStats(zones,[{raster,label:"B04"}],{bands:[1,2],stats:["mean"]}).toGeoJSON().features[0].properties;
   assert.equal(q.B04_b1_mean,2);assert.ok(Math.abs(q.B04_b2_mean-50/3)<1e-9);
   assert.throws(()=>terrio.zonalStats(zones,[{raster,time:{}}],{}),/'time' must be a string/);
+  assert.throws(()=>terrio.zonalStats(zones,[{raster,time:new Date(NaN)}],{}),/invalid Date/);
+  assert.throws(()=>terrio.zonalStats(zones,[{raster,bands:[2]}],{}),/unknown input key 'bands'/);
 });
 
 

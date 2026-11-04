@@ -231,11 +231,21 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
             continue;
         }
         let raster = get(item, "raster").ok_or_else(|| JsError::new("each input object needs a 'raster' (a Dataset or a file's bytes)"))?;
+        if let Some(key) = js_sys::Object::keys(item.unchecked_ref::<js_sys::Object>())
+            .iter()
+            .filter_map(|k| k.as_string())
+            .find(|k| !matches!(k.as_str(), "raster" | "time" | "label" | "band"))
+        {
+            return Err(JsError::new(&format!("unknown input key '{key}' (expected raster, time, label, band)")));
+        }
         // Text, a number or a boolean as `String(v)` writes it, or a Date in ISO 8601, its date
         // alone at midnight UTC (as the CLI and Python name it).
         let text = |key: &str| -> Result<Option<String>, JsError> {
             let Some(v) = get(item, key) else { return Ok(None) };
             if let Some(date) = v.dyn_ref::<js_sys::Date>() {
+                if date.get_time().is_nan() {
+                    return Err(JsError::new(&format!("'{key}' is an invalid Date")));
+                }
                 let iso = String::from(date.to_iso_string());
                 return Ok(Some(iso.strip_suffix("T00:00:00.000Z").map(String::from).unwrap_or(iso)));
             }

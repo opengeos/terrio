@@ -34,6 +34,12 @@ pub(super) struct Plan<'a> {
 }
 
 impl<'a> Plan<'a> {
+    /// Bytes kept per pixel and band until a zone finishes: its value, and its coverage in
+    /// fractional mode; none when no statistic keeps values.
+    pub fn value_bytes_per_pixel(&self) -> usize {
+        if self.keep_values { 8 * (1 + usize::from(self.fractional)) } else { 0 }
+    }
+
     pub fn new(stats: &'a [Statistic], fractional: bool, fids: &'a [u64]) -> Self {
         Self {
             stats,
@@ -65,6 +71,29 @@ pub(super) fn strip_windows(index: &ZoneIndex, rows: usize, strip_rows: usize) -
         *e = (e.0.min(row), e.1.max(row + 1), e.2.min(col), e.3.max(end));
     }
     extents.into_iter().flatten().map(|(r0, r1, c0, c1)| Window::new(c0, r0, c1 - c0, r1 - r0)).collect()
+}
+
+/// The most pixels of the zones open at once while strips of `strip_rows` rows are reduced: what
+/// each band's value lists hold at their peak, as `reduce_source` opens a zone at the strip of its
+/// first row and finishes it after the strip of its last.
+pub(super) fn open_pixels_peak(index: &ZoneIndex, rows: usize, strip_rows: usize) -> usize {
+    let strip_rows = strip_rows.max(1);
+    let mut change = vec![0i64; rows.div_ceil(strip_rows) + 1];
+    for zone in &index.zones {
+        let pixels: i64 = zone.spans.iter().map(|s| i64::from(s.len)).sum();
+        change[zone.row_start / strip_rows] += pixels;
+        change[(zone.row_end - 1) / strip_rows + 1] -= pixels;
+    }
+    let mut open = 0i64;
+    change
+        .iter()
+        .map(|c| {
+            open += c;
+            open
+        })
+        .max()
+        .unwrap_or(0)
+        .max(0) as usize
 }
 
 /// Statistics of each band (in `bands` order) for each statistic (in plan order) and feature
@@ -433,8 +462,24 @@ fn quantile(sorted: &[(f64, f64)], q: f64, fractional: bool) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::index::{GridKey, build};
-    use super::{BandSpec, Plan, reduce_source};
+    use super::super::index::{GridKey, Span, Zone, ZoneIndex, build};
+    use super::{BandSpec, Plan, open_pixels_peak, reduce_source};
+
+    #[test]
+    fn open_pixels_peak_counts_zones_open_in_the_same_strip() {
+        let zone = |row_start: usize, row_end: usize, len| Zone {
+            feature: 0,
+            row_start,
+            row_end,
+            spans: (row_start..row_end).map(|row| Span { row: row as u32, col: 0, len, coverage: 1.0 }).collect(),
+        };
+        // Strips of 10 rows: the zones of rows 0-14 (30 pixels) and 12-29 (18) are open together
+        // in strip 1; the zone of row 40 (100) is alone.
+        let zones = vec![zone(0, 15, 2), zone(12, 30, 1), zone(40, 41, 100)];
+        assert_eq!(open_pixels_peak(&ZoneIndex { zones: zones.clone() }, 50, 10), 100);
+        assert_eq!(open_pixels_peak(&ZoneIndex { zones: zones[..2].to_vec() }, 50, 10), 48);
+        assert_eq!(open_pixels_peak(&ZoneIndex { zones: Vec::new() }, 50, 10), 0);
+    }
     use crate::ops::zonal::Statistic;
     use crate::vector::Coord;
     use crate::{DataType, Feature, Geometry, Layer, LazyRaster, Raster, RasterConfig, RasterDataset};

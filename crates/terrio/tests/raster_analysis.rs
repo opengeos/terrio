@@ -749,3 +749,11 @@ fn zonal_sources_without_bands_are_not_opened() {
     let out = zonal_stats(&l, &mut [unread, src("v", &r, 1)], &ZonalOptions { stats: vec![S::Mean], ..Default::default() }).unwrap();
     assert_eq!(out.features[0].attributes.last(), Some(&V::Float(2.5)));
 }
+
+#[test]
+fn zonal_quantiles_outside_0_to_100_are_refused() {
+    let r = raster(2, 2, 1, &[1., 2., 3., 4.], None);
+    let l = zones(vec![Some(rectangle(0., 0., 2., 2.))]);
+    let o = ZonalOptions { stats: vec![S::Quantile(150.0)], ..Default::default() };
+    assert!(zonal_stats(&l, &mut [src("v", &r, 1)], &o).unwrap_err().to_string().contains("between 0 and 100"));
+}
