@@ -2722,6 +2722,7 @@ dependencies = [
  "delaunator",
  "e57",
  "encoding_rs",
+ "fdeflate",
  "flatbuffers 24.12.23",
  "flate2",
  "flatgeobuf",

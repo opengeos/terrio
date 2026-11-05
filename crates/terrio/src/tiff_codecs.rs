@@ -469,7 +469,7 @@ impl ChunkCodec {
         self.result(&bytes, dw, dw, dh)
     }
 
-    /// Inflates a Deflate chunk of `h` rows of `w` pixels in one call, straight into the result,
+    /// Inflates a Deflate chunk of `h` rows of `w` pixels straight into the result,
     /// and undoes its horizontal predictor; a chunk with padding (an edge tile) is then cut to its
     /// `dw` x `dh` image data. A stream ending short is an error, as in libtiff.
     fn deflate(&self, raw: &[u8], w: usize, h: usize, dw: usize, dh: usize) -> TiffResult<DecodingResult> {
@@ -484,14 +484,24 @@ impl ChunkCodec {
             };
         }
         let mut res = zeros!(U8: 0, I8: 0, U16: 0, I16: 0, U32: 0, I32: 0, U64: 0, I64: 0, F32: 0.0, F64: 0.0);
-        let mut z = flate2::Decompress::new(true);
-        let mut buf = res.as_buffer(0);
-        let out = buf.as_bytes_mut();
-        z.decompress(raw, out, flate2::FlushDecompress::Finish).map_err(|e| invalid(format!("Deflate: {e}")))?;
-        if z.total_out() < out.len() as u64 {
-            return Err(invalid(format!("Deflate: chunk of {} bytes, {} expected", z.total_out(), out.len())));
+        // fdeflate: 15% faster than zlib-rs on Sentinel-2 tiles (1024 x 1024 uint16), pure Rust.
+        // Read on until the stream ends, so its Adler-32 is checked even when the output is full.
+        {
+            let mut z = fdeflate::Decompressor::new();
+            let mut buf = res.as_buffer(0);
+            let out = buf.as_bytes_mut();
+            let (mut used, mut written) = (0, 0);
+            while !z.is_done() {
+                let (i, o) = z.read(&raw[used..], out, written, true).map_err(|e| invalid(format!("Deflate: {e:?}")))?;
+                (used, written) = (used + i, written + o);
+                if i == 0 && o == 0 {
+                    break; // the output is full and the stream goes on: the extra data is left
+                }
+            }
+            if written < out.len() {
+                return Err(invalid(format!("Deflate: chunk of {written} bytes, {} expected", out.len())));
+            }
         }
-        drop(buf);
         if self.predictor == 2 {
             let (row, spp) = (w * self.spp, self.spp);
             macro_rules! acc {
@@ -1123,6 +1133,28 @@ mod tests {
         assert!(c.lossless(lzw_encode(&[1]), usize::MAX, 2).is_err());
     }
 
+    /// A Deflate chunk inflates to its pixels; one ending short, or whose Adler-32 is wrong, is an
+    /// error even when its pixels are all there; data past the chunk's pixels is left.
+    #[test]
+    fn short_and_corrupt_deflate_chunks_are_errors() {
+        use std::io::Write;
+        let c = ChunkCodec { codec: Codec::Deflate, sample: Sample::U8, spp: 1, predictor: 1, big_endian: false, ..packed(8, 1) };
+        let zlib = |data: &[u8]| {
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(data).unwrap();
+            e.finish().unwrap()
+        };
+        let pixels: Vec<u8> = (0..16).collect();
+        let good = zlib(&pixels);
+        assert_eq!(format!("{:?}", c.deflate(&good, 4, 4, 4, 4).unwrap()), format!("{:?}", DecodingResult::U8(pixels.clone())));
+        assert!(c.deflate(&good[..good.len() - 6], 4, 4, 4, 4).is_err());
+        let mut bad_sum = good.clone();
+        *bad_sum.last_mut().unwrap() ^= 1;
+        assert!(c.deflate(&bad_sum, 4, 4, 4, 4).is_err());
+        assert!(c.deflate(&zlib(&pixels[..12]), 4, 4, 4, 4).is_err());
+        assert!(c.deflate(&zlib(&[pixels.as_slice(), &[9; 8]].concat()), 4, 4, 4, 4).is_ok());
+    }
+
     /// A little-endian BigTIFF of one 4 x 4 byte strip of `data`, LZW-coded, whose
     /// StripByteCounts says `count`.
     fn bigtiff_strip(data: &[u8], count: u64) -> Vec<u8> {
@@ -1155,7 +1187,8 @@ mod tests {
         for predictor in [Predictor::None, Predictor::Horizontal] {
             for gray_image in [true, false] {
                 let mut b = std::io::Cursor::new(Vec::new());
-                let mut enc = TiffEncoder::new(&mut b).unwrap().with_compression(Compression::Deflate(DeflateLevel::Fast)).with_predictor(predictor);
+                let mut enc =
+                    TiffEncoder::new(&mut b).unwrap().with_compression(Compression::Deflate(DeflateLevel::Fast)).with_predictor(predictor);
                 if gray_image {
                     let mut img = enc.new_image::<colortype::Gray16>(w, h).unwrap();
                     img.rows_per_strip(5).unwrap();

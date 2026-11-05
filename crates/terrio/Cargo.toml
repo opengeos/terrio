@@ -50,6 +50,7 @@ encoding_rs.workspace = true
 osmpbfreader = { workspace = true, optional = true }
 half.workspace = true
 flate2.workspace = true
+fdeflate.workspace = true
 weezl.workspace = true
 png.workspace = true
 lz4_flex = { workspace = true, optional = true }
