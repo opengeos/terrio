@@ -223,6 +223,9 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
                         | "_terrio_attribute_types"
                 )
             })
+            // `null` holds no value: an attribute the reader could not represent, such as a
+            // netCDF vlen, which GDAL's netCDF writer leaves out too.
+            .filter(|(_, value)| !value.is_null())
             .map(|(name, value)| {
                 let (values, shape) = match value {
                     Value::Array(v) => (v.clone(), Some(vec![v.len() as u64])),

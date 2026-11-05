@@ -254,14 +254,14 @@ def suite_subdatasets(ctx):
         "GDAL's netCDF and HDF5 drivers",
         "Every netCDF and HDF5 file of the test data (netCDF-4 groups, HDF5 products, GDAL's "
         "HDF-EOS5, complex, COSMO-SkyMed and netCDF geolocation test files, NASA HDF-EOS5 grids and "
-        "swaths when fetched, the repository's `_Unsigned` fixtures): the subdataset list (names "
+        "swaths when fetched, the repository's `_Unsigned` and user-defined attribute fixtures): the subdataset list (names "
         "and descriptions) and, for HDF5, the metadata as GDAL reports them, then each "
         "subdataset's summary (geolocation arrays included) and every pixel.",
     )
     out, err = "", ""
     # The test data's directories, then the repository's fixtures.
     dirs = [(sub, os.path.join(ctx.data, sub)) for sub in ("", "gdal_hdf5", "gdal_netcdf", "hdfeos5")]
-    dirs += [(sub, str(ROOT / "crates/terrio/tests/data" / sub)) for sub in ("netcdf_unsigned", "netcdf_int64_unsigned")]
+    dirs += [(sub, str(ROOT / "crates/terrio/tests/data" / sub)) for sub in ("netcdf_unsigned", "netcdf_int64_unsigned", "netcdf_user_defined")]
     for sub, d in dirs:
         if not os.path.isdir(d):
             continue

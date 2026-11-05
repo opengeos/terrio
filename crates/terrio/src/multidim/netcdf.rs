@@ -1,7 +1,7 @@
 //! Metadata and typed hyperslabs shared by netCDF classic, netCDF-4 and numeric HDF5.
 use super::*;
 use netcdf_reader::{
-    NcAttrValue, NcAttribute, NcFile, NcGroup, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem, NcType, NcValue,
+    NcAttrValue, NcAttribute, NcFile, NcGroup, NcIntegerValue, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem, NcType, NcValue,
 };
 
 fn error(e: impl std::fmt::Display) -> Error {
@@ -36,8 +36,8 @@ fn floating(value: f64) -> Value {
 /// A user-defined attribute value as JSON, as GDAL 3.13's `gdalmdiminfo` prints it: a compound
 /// as an object of its fields and an enum as its integer. `None` for the fixed-size array, opaque
 /// and vlen values GDAL does not support, at any depth: GDAL then prints the whole attribute as
-/// `null`.
-fn user_value(v: &NcValue) -> Option<Value> {
+/// `null`. A char is its code, as GDAL reads it; `t` is the value's declared type.
+fn user_value(v: &NcValue, t: &NcType) -> Option<Value> {
     Some(match v {
         NcValue::Byte(x) => serde_json::json!(x),
         NcValue::Char(x) | NcValue::UByte(x) => serde_json::json!(x),
@@ -49,10 +49,25 @@ fn user_value(v: &NcValue) -> Option<Value> {
         NcValue::UInt64(x) => serde_json::json!(x),
         NcValue::Float(x) => floating(f64::from(*x)),
         NcValue::Double(x) => floating(*x),
+        NcValue::String(x) if matches!(t, NcType::Char) && x.len() <= 1 => serde_json::json!(x.bytes().next().unwrap_or(0)),
         NcValue::String(x) => Value::String(x.clone()),
-        NcValue::Enum(e) => serde_json::to_value(e.value.as_i128()?).ok()?,
+        NcValue::Enum(e) => match e.value {
+            NcIntegerValue::I8(x) => serde_json::json!(x),
+            NcIntegerValue::U8(x) => serde_json::json!(x),
+            NcIntegerValue::I16(x) => serde_json::json!(x),
+            NcIntegerValue::U16(x) => serde_json::json!(x),
+            NcIntegerValue::I32(x) => serde_json::json!(x),
+            NcIntegerValue::U32(x) => serde_json::json!(x),
+            NcIntegerValue::I64(x) => serde_json::json!(x),
+            NcIntegerValue::U64(x) => serde_json::json!(x),
+        },
         NcValue::Compound(fields) => {
-            Value::Object(fields.iter().map(|f| Some((f.name.clone(), user_value(&f.value)?))).collect::<Option<_>>()?)
+            let types = match t {
+                NcType::Compound { fields, .. } => fields.as_slice(),
+                _ => &[],
+            };
+            let field_type = |name: &str| types.iter().find(|f| f.name == name).map_or(&NcType::String, |f| &f.dtype);
+            Value::Object(fields.iter().map(|f| Some((f.name.clone(), user_value(&f.value, field_type(&f.name))?))).collect::<Option<_>>()?)
         }
         NcValue::Array(_) | NcValue::Opaque(_) | NcValue::VLen(_) => return None,
     })
@@ -79,7 +94,9 @@ fn attribute(a: &NcAttrValue) -> Value {
         NcAttrValue::Doubles(v) => one(v.iter().map(|&x| floating(x)).collect()),
         NcAttrValue::Chars(s) => Value::String(s.clone()),
         NcAttrValue::Strings(v) => one(v.iter().cloned().map(Value::String).collect()),
-        NcAttrValue::UserDefined { values, .. } => values.iter().map(user_value).collect::<Option<Vec<_>>>().map_or(Value::Null, one),
+        NcAttrValue::UserDefined { dtype, values } => {
+            values.iter().map(|v| user_value(v, dtype)).collect::<Option<Vec<_>>>().map_or(Value::Null, one)
+        }
     }
 }
 fn attributes(attrs: &[NcAttribute]) -> Value {

@@ -332,38 +332,39 @@ fn snapshots_reject_conflicting_dimension_declarations() {
     }
 }
 
-fn user_defined_fixture() -> String {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_user_defined/user_defined_attrs.nc");
-    path.to_str().unwrap().to_owned()
+fn user_defined_fixture() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_user_defined")
 }
 
-/// Compound, enum and vlen attributes (`tests/data/netcdf_user_defined`, from its CDL by
-/// `ncgen -4`) as GDAL 3.13.3 reports them: `gdalmdiminfo` prints a compound as an object of its
-/// fields, an enum as its integer, and a vlen or a compound with an array field as `null`;
-/// `gdalinfo` keeps a compound or vlen key with an empty value.
+/// Compound, enum and vlen attributes (`tests/data/netcdf_user_defined`) as GDAL 3.13.3 reports
+/// them, from the `expected.json` that `scripts/make_netcdf_user_defined_fixture.py` writes:
+/// `gdalmdiminfo` prints a compound as an object of its fields (a nested enum and char as their
+/// integers), a top-level enum as its integer, and a vlen or a compound with an array field as
+/// `null`; `gdalinfo` keeps each key with an empty value. The enum's metadata differs (see
+/// `netcdf_enum_attribute_metadata_differs_from_gdal`).
 #[cfg(feature = "netcdf-hdf5")]
 #[test]
 fn netcdf_user_defined_attributes_match_gdal() {
-    let path = user_defined_fixture();
+    let dir = user_defined_fixture();
+    let expected: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("expected.json")).unwrap()).unwrap();
+    let path = dir.join("user_defined_attrs.nc");
+    let path = path.to_str().unwrap();
 
-    let ds = terrio::multidim::open(&path).unwrap();
-    assert_eq!(ds.root.attributes["title"], json!("user-defined attributes"));
-    assert_eq!(ds.root.attributes["origin"], json!({"id": 1, "elevation": -3.25}));
-    let z = ds.array("/z").unwrap();
-    assert_eq!(z.info.attributes["station"], json!({"id": 7, "elevation": 12.5}));
-    assert_eq!(z.info.attributes["flag"], json!(1));
-    assert_eq!(z.info.attributes["counts"], serde_json::Value::Null);
-    assert_eq!(z.info.attributes["grid"], serde_json::Value::Null);
-    assert_eq!(z.info.attributes["units"], json!("m"));
+    let ds = terrio::multidim::open(path).unwrap();
+    for (group, attrs) in [("/", &ds.root.attributes), ("/z", &ds.array("/z").unwrap().info.attributes)] {
+        for (name, value) in expected["multidim"][group].as_object().unwrap() {
+            assert_eq!(attrs.get(name), Some(value), "{group} {name}");
+        }
+    }
 
-    let raster = terrio::open_raster(&path).unwrap();
-    let meta = |k: &str| raster.raster.metadata.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
-    assert_eq!(meta("NC_GLOBAL#origin"), Some(""));
-    assert_eq!(meta("NC_GLOBAL#title"), Some("user-defined attributes"));
-    assert_eq!(meta("z#station"), Some(""));
-    assert_eq!(meta("z#counts"), Some(""));
-    assert_eq!(meta("z#grid"), Some(""));
-    assert_eq!(meta("z#units"), Some("m"));
+    let raster = terrio::open_raster(path).unwrap();
+    for (key, value) in expected["metadata"].as_object().unwrap() {
+        if key == "z#flag" {
+            continue;
+        }
+        let got = raster.raster.metadata.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        assert_eq!(got, value.as_str().map(Some).unwrap(), "{key}");
+    }
 }
 
 /// Known difference from GDAL 3.13.3: `gdalinfo` leaves an enum attribute empty (`z#flag=`), but
@@ -372,7 +373,28 @@ fn netcdf_user_defined_attributes_match_gdal() {
 #[cfg(feature = "netcdf-hdf5")]
 #[test]
 fn netcdf_enum_attribute_metadata_differs_from_gdal() {
-    let raster = terrio::open_raster(&user_defined_fixture()).unwrap();
+    let path = user_defined_fixture().join("user_defined_attrs.nc");
+    let raster = terrio::open_raster(path.to_str().unwrap()).unwrap();
     let flag = raster.raster.metadata.iter().find(|(k, _)| k == "z#flag").map(|(_, v)| v.as_str());
     assert_eq!(flag, Some("1"));
+}
+
+/// A netCDF snapshot of a file with user-defined attributes: the attributes GDAL cannot read
+/// either (`null`, a vlen or a compound with an array field) are left out, as `gdalmdimtranslate`
+/// leaves them out, and a compound is kept as its JSON text, as an object attribute of any source
+/// is; the HDF5 writer has no compound type.
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn netcdf_snapshot_of_user_defined_attributes() {
+    let path = user_defined_fixture().join("user_defined_attrs.nc");
+    let original = terrio::multidim::open(path.to_str().unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("copy.nc");
+    original.write(file.to_str().unwrap()).unwrap();
+    let opened = terrio::multidim::open(file.to_str().unwrap()).unwrap();
+    let z = opened.array("/z").unwrap();
+    assert_eq!(z.info.attributes.get("counts"), None);
+    assert_eq!(z.info.attributes.get("grid"), None);
+    assert_eq!(z.info.attributes.get("station"), Some(&json!(r#"{"id":7,"elevation":12.5}"#)));
+    assert_eq!(opened.root.attributes.get("title"), Some(&json!("user-defined attributes")));
 }
