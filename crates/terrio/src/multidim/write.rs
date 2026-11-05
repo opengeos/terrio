@@ -231,7 +231,10 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             // `gdalmdimtranslate -of netCDF` leaves it out (`zero_length_netcdf_copy` in
             // `tests/data/netcdf_user_defined/expected.json`); netCDF-C would read a zero-length
             // string attribute back as "". A typed empty list is written with its type.
-            .filter(|(name, value)| !value.is_null() && (types.contains_key(*name) || value.as_array().is_none_or(|v| !v.is_empty())))
+            .filter(|(name, value)| {
+                let empty_untyped = value.as_array().is_some_and(|v| v.is_empty()) && !types.contains_key(*name);
+                !value.is_null() && !empty_untyped
+            })
             .map(|(name, value)| {
                 let (values, shape) = match value {
                     Value::Array(v) => (v.clone(), Some(vec![v.len() as u64])),
