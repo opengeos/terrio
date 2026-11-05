@@ -3162,6 +3162,8 @@ impl WarpContext<'_> {
         // Nearest values are source values, which a working type equal to the output's holds
         // exactly: `Sink::value` then only moves them off the output nodata (see `Sink::passes`).
         let passes = nearest && sink.passes;
+        // With one band, the unified check below already tests the band's own validity.
+        let all_bands = global_validity && !(self.unified_center && self.bands == 1);
         let nodata: Vec<Option<f64>> = (0..self.bands).map(|b| sink.avoid_nodata.then(|| sink.nodata(b)).flatten()).collect();
         let mut xs = vec![0.0; c.dw];
         let mut ys = vec![0.0; c.dw];
@@ -3235,7 +3237,7 @@ impl WarpContext<'_> {
                 // GWKGeneralCaseThread() and the other kernels: with a unified source mask, a
                 // pixel whose source pixel is invalid is left alone; with per-band masks and the
                 // shared validity of `UNIFIED_SRC_NODATA=PARTIAL`, one whose every band is invalid.
-                if (self.unified_center && !k.valid(0, ix, iy)) || (global_validity && (0..self.bands).all(|b| !k.valid(b, ix, iy))) {
+                if (self.unified_center && !k.valid(0, ix, iy)) || (all_bands && (0..self.bands).all(|b| !k.valid(b, ix, iy))) {
                     continue;
                 }
                 let (fx, fy) = (xs[i] - sxo, ys[i] - syo);
@@ -3247,7 +3249,7 @@ impl WarpContext<'_> {
                         found = true;
                     }
                 }
-                if found {
+                if found && sink.avoid_all_nodata {
                     sink.avoid_all(out, i);
                 }
             }
