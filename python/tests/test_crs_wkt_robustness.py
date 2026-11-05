@@ -37,9 +37,10 @@ CASE_1424_PRJ = (
 )
 LIMIT = 2 << 30
 TIMEOUT = 60
-# terrio's pool starts a thread per core by default, each with its own stack and malloc arena
-# inside LIMIT; a fixed count keeps the limit's headroom the same on every machine.
-THREADS = "4"
+# terrio's pool and OpenBLAS (started by numpy's import) start a thread per core by default, each
+# with its own stack and malloc arena inside LIMIT; fixed counts keep the limit's headroom the
+# same on every machine, as the subprocess tests of test_hardening.py do.
+CHILD_ENV = {"RAYON_NUM_THREADS": "4", "OPENBLAS_NUM_THREADS": "1", "MALLOC_ARENA_MAX": "2"}
 
 
 def _limit():
@@ -63,7 +64,7 @@ def _run(code, *args):
             text=True,
             timeout=TIMEOUT,
             preexec_fn=_limit,
-            env={**os.environ, "RAYON_NUM_THREADS": THREADS},
+            env={**os.environ, **CHILD_ENV},
         )
     except subprocess.TimeoutExpired:
         pytest.fail(f"no answer within {TIMEOUT} s")

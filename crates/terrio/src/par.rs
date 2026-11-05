@@ -103,7 +103,19 @@ mod native {
         register();
         let forks = FORKS.load(Ordering::Acquire);
         // rayon's defaults, as its global pool has: `RAYON_NUM_THREADS` threads, else one a core.
-        let pool = rayon::ThreadPoolBuilder::new().thread_name(|i| format!("terrio-par-{i}")).build().expect("terrio's thread pool starts");
+        // A job spawned on the pool that panics stops there, the panic hook having reported it:
+        // without a handler, rayon aborts the process (rayon-core 1.13). This covers `spawn` and a
+        // `rayon::spawn` by a dependency inside `install`; `join`, `scope` and parallel iterators
+        // still give the panic to their caller. A job's result reaches its caller through a
+        // channel or a lazily initialized value, so the caller sees a closed channel (an error) or
+        // an uninitialized value (computed again on its own thread). Under memory pressure, a
+        // decoder that panics on a failed allocation (`ruzstd`'s ring buffer, in the EPSG table
+        // `crs::prefetch` loads) thus no longer aborts a process that would answer.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("terrio-par-{i}"))
+            .panic_handler(|_| {})
+            .build()
+            .expect("terrio's thread pool starts");
         // Each thread of the pool runs a first job before the pool is used, so that none of them is
         // still starting, nor making a one-time initialization, when the call that started the
         // pool returns: a child forked then would inherit what the thread held, and wait for it
@@ -172,18 +184,9 @@ mod native {
     /// so the thread would run it again and again for the length of the fork, never helping with
     /// the work of the jobs the fork waits for, nor running other parallel work, nor reaching the
     /// work queued below it (when a running job queued it: that job's own parallel work).
-    ///
-    /// A job that panics stops there: rayon aborts the process on a panic in a spawned job, so
-    /// the panic is caught here, after the panic hook has reported it. A job's result reaches
-    /// its caller through a channel or a lazily initialized value, so the caller sees a closed
-    /// channel (an error) or an uninitialized value (computed again on its own thread). Under
-    /// memory pressure, a decoder that panics on a failed allocation (`ruzstd`'s ring buffer, in
-    /// the EPSG table `crs::prefetch` loads) thus no longer aborts a process that would answer.
     fn submit(f: Box<dyn FnOnce() + Send>) {
         pool().spawn(move || match Running::enter() {
-            Some(_running) => {
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-            }
+            Some(_running) => f(),
             None => hold_back(f),
         });
     }
@@ -433,7 +436,8 @@ pub(crate) fn install<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 
 /// Runs `f` in the background on terrio's thread pool (native builds). A fork waits for the
 /// background work running to finish (see the module's documentation), so `f` must be short, and
-/// must not wait for other background work.
+/// must not wait for other background work. A panic in `f` stops `f` alone, never the process:
+/// the panic hook reports it, and a channel `f` would answer through is closed.
 #[cfg(not(target_family = "wasm"))]
 pub(crate) fn spawn(f: impl FnOnce() + Send + 'static) {
     native::spawn(f);
@@ -708,7 +712,7 @@ mod tests {
             panic!("a background job panics");
         });
         // The job's sender is dropped as it unwinds: its caller sees the channel closed.
-        assert!(rx.recv_timeout(std::time::Duration::from_secs(30)).is_err());
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(30)), Err(std::sync::mpsc::RecvTimeoutError::Disconnected));
         let (tx, rx) = std::sync::mpsc::channel();
         spawn(move || tx.send(7).unwrap());
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(30)), Ok(7));
