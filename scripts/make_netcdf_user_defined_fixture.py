@@ -7,8 +7,9 @@ The file, generated from `user_defined_attrs.cdl` by `ncgen -4`, holds attribute
 types: compounds (one with a 2-D array field, one with enum, ubyte and char fields), an enum and an
 int vlen. The attributes `gdalmdiminfo` prints and the metadata `gdalinfo -json` reports are
 written to `expected.json`, the expected values of the `netcdf_user_defined_attributes_match_gdal`
-test, with the GDAL version that produced them. Needs `ncgen`, `gdalmdiminfo` and `gdalinfo` on
-`PATH`.
+test, with the GDAL version that produced them. `zero_length_attrs.h5`, written with h5py, holds
+zero-length compound and int attributes, which `ncgen` cannot write; `gdalmdiminfo` prints both
+as `null`. Needs `ncgen`, `gdalmdiminfo` and `gdalinfo` on `PATH`, and h5py and numpy.
 """
 
 from __future__ import annotations
@@ -16,6 +17,9 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+
+import h5py
+import numpy as np
 
 OUT = Path(__file__).resolve().parent.parent / "crates" / "terrio" / "tests" / "data" / "netcdf_user_defined"
 
@@ -36,13 +40,21 @@ def main() -> None:
     """Regenerates the fixture and its `expected.json`."""
     nc = OUT / "user_defined_attrs.nc"
     subprocess.run(["ncgen", "-4", "-o", str(nc), str(OUT / "user_defined_attrs.cdl")], check=True)
+    h5 = OUT / "zero_length_attrs.h5"
+    with h5py.File(h5, "w") as f:
+        z = f.create_dataset("z", data=np.zeros((2, 3), "f4"))
+        z.attrs.create("empty", np.zeros(0, np.dtype([("id", "<i4"), ("elevation", "<f8")])))
+        z.attrs.create("ints", np.zeros(0, "<i4"))
+        z.attrs["units"] = "m"
     mdim = run_json("gdalmdiminfo", str(nc))
+    zero = run_json("gdalmdiminfo", str(h5))
     info = run_json("gdalinfo", "-json", str(nc))
     version = subprocess.run(["gdalinfo", "--version"], check=True, capture_output=True, text=True).stdout.strip()
     expected = {
         "gdal": version,
         "multidim": {"/": mdim["attributes"], "/z": mdim["arrays"]["z"]["attributes"]},
         "metadata": info["metadata"][""],
+        "zero_length": zero["arrays"]["z"]["attributes"],
     }
     (OUT / "expected.json").write_text(json.dumps(expected, indent=2) + "\n")
     print(json.dumps(expected, indent=2))

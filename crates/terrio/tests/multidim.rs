@@ -415,3 +415,28 @@ fn netcdf_snapshot_leaves_out_null_attributes() {
     assert_eq!(opened.root.attributes.get("comment"), None);
     assert_eq!(opened.root.attributes.get("title"), Some(&json!("multidimensional test")));
 }
+
+/// Zero-length compound and int attributes (`zero_length_attrs.h5`, written with h5py) are `null`,
+/// as GDAL 3.13.3's `gdalmdiminfo` prints them (`zero_length` in `expected.json`), and a netCDF
+/// snapshot leaves them out.
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn zero_length_attributes_are_null_and_left_out_of_snapshots() {
+    let dir = user_defined_fixture();
+    let expected: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("expected.json")).unwrap()).unwrap();
+    let ds = terrio::multidim::open(dir.join("zero_length_attrs.h5").to_str().unwrap()).unwrap();
+    let attrs = &ds.array("/z").unwrap().info.attributes;
+    for (name, value) in expected["zero_length"].as_object().unwrap() {
+        assert_eq!(attrs.get(name), Some(value), "{name}");
+    }
+    assert_eq!(attrs.get("units"), Some(&json!("m")));
+
+    let out = tempfile::tempdir().unwrap();
+    let file = out.path().join("copy.nc");
+    ds.write(file.to_str().unwrap()).unwrap();
+    let opened = terrio::multidim::open(file.to_str().unwrap()).unwrap();
+    let z = opened.array("/z").unwrap();
+    assert_eq!(z.info.attributes.get("empty"), None);
+    assert_eq!(z.info.attributes.get("ints"), None);
+    assert_eq!(z.info.attributes.get("units"), Some(&json!("m")));
+}
