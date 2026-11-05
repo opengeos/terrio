@@ -339,8 +339,8 @@ fn user_defined_fixture() -> String {
 
 /// Compound, enum and vlen attributes (`tests/data/netcdf_user_defined`, from its CDL by
 /// `ncgen -4`) as GDAL 3.13.3 reports them: `gdalmdiminfo` prints a compound as an object of its
-/// fields, an enum as its integer and a vlen as `null`; `gdalinfo` keeps a compound or vlen key
-/// with an empty value.
+/// fields, an enum as its integer, and a vlen or a compound with an array field as `null`;
+/// `gdalinfo` keeps a compound or vlen key with an empty value.
 #[cfg(feature = "netcdf-hdf5")]
 #[test]
 fn netcdf_user_defined_attributes_match_gdal() {
@@ -353,6 +353,7 @@ fn netcdf_user_defined_attributes_match_gdal() {
     assert_eq!(z.info.attributes["station"], json!({"id": 7, "elevation": 12.5}));
     assert_eq!(z.info.attributes["flag"], json!(1));
     assert_eq!(z.info.attributes["counts"], serde_json::Value::Null);
+    assert_eq!(z.info.attributes["grid"], serde_json::Value::Null);
     assert_eq!(z.info.attributes["units"], json!("m"));
 
     let raster = terrio::open_raster(&path).unwrap();
@@ -361,6 +362,7 @@ fn netcdf_user_defined_attributes_match_gdal() {
     assert_eq!(meta("NC_GLOBAL#title"), Some("user-defined attributes"));
     assert_eq!(meta("z#station"), Some(""));
     assert_eq!(meta("z#counts"), Some(""));
+    assert_eq!(meta("z#grid"), Some(""));
     assert_eq!(meta("z#units"), Some("m"));
 }
 
